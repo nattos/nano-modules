@@ -187,6 +187,16 @@ add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)
 
+# NanoLooper WASM module integration test (requires nanolooper.wasm to be built)
+if(EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
+  add_executable(test_nanolooper_wasm tests/test_nanolooper_wasm.cpp)
+  target_link_libraries(test_nanolooper_wasm PRIVATE wasm_host Catch2::Catch2WithMain)
+  target_compile_definitions(test_nanolooper_wasm PRIVATE
+    NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/build/nanolooper.wasm"
+  )
+  catch_discover_tests(test_nanolooper_wasm)
+endif()
+
 add_executable(test_draw_list tests/test_draw_list.cpp)
 target_include_directories(test_draw_list PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_draw_list PRIVATE Catch2::Catch2WithMain)

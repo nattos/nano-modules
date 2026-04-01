@@ -6,7 +6,10 @@
  */
 
 #include "core.h"
-#include <math.h>
+
+/* Use compiler builtins instead of libc math */
+#define floor(x) __builtin_floor(x)
+#define sinf(x) __builtin_sinf(x)
 
 /* ======================================================================
  * Host function imports

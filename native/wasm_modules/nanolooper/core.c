@@ -1,5 +1,9 @@
 #include "core.h"
-#include <math.h>
+
+/* Use compiler builtins instead of libc math */
+#define floor(x) __builtin_floor(x)
+#define fmod(x, y) __builtin_fmod(x, y)
+#define fabs(x) __builtin_fabs(x)
 
 #define EPSILON 1e-6
 

@@ -4,6 +4,7 @@
 #include "bridge/param_cache.h"
 #include "canvas/draw_list.h"
 
+#include <cmath>
 #include <cstring>
 
 namespace wasm {
@@ -56,10 +57,36 @@ static void env_log(wasm_exec_env_t env, int32_t msg_ptr, int32_t msg_len) {
   host->log(std::string(native_ptr, msg_len));
 }
 
+// Math builtins — WASM clang may emit these as imports
+static double env_fmod(wasm_exec_env_t env, double a, double b) {
+  return fmod(a, b);
+}
+
+static float env_fmodf(wasm_exec_env_t env, float a, float b) {
+  return fmodf(a, b);
+}
+
+static float env_sinf(wasm_exec_env_t env, float a) {
+  return sinf(a);
+}
+
+static double env_floor(wasm_exec_env_t env, double a) {
+  return floor(a);
+}
+
+static double env_fabs(wasm_exec_env_t env, double a) {
+  return fabs(a);
+}
+
 static NativeSymbol env_symbols[] = {
     {"resolume_get_param", reinterpret_cast<void*>(env_resolume_get_param), "(I)F", nullptr},
     {"resolume_set_param", reinterpret_cast<void*>(env_resolume_set_param), "(IF)", nullptr},
     {"log", reinterpret_cast<void*>(env_log), "(ii)", nullptr},
+    {"fmod", reinterpret_cast<void*>(env_fmod), "(FF)F", nullptr},
+    {"fmodf", reinterpret_cast<void*>(env_fmodf), "(ff)f", nullptr},
+    {"sinf", reinterpret_cast<void*>(env_sinf), "(f)f", nullptr},
+    {"floor", reinterpret_cast<void*>(env_floor), "(F)F", nullptr},
+    {"fabs", reinterpret_cast<void*>(env_fabs), "(F)F", nullptr},
 };
 
 // ========================================================================
@@ -95,7 +122,7 @@ static void canvas_draw_text(wasm_exec_env_t env,
 static NativeSymbol canvas_symbols[] = {
     {"fill_rect", reinterpret_cast<void*>(canvas_fill_rect), "(ffffffff)", nullptr},
     {"draw_image", reinterpret_cast<void*>(canvas_draw_image), "(iffff)", nullptr},
-    {"draw_text", reinterpret_cast<void*>(canvas_draw_text), "(iiffffff)", nullptr},
+    {"draw_text", reinterpret_cast<void*>(canvas_draw_text), "(iifffffff)", nullptr},
 };
 
 // ========================================================================
