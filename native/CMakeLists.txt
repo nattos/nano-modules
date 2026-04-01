@@ -259,3 +259,23 @@ target_link_libraries(bridge_harness PRIVATE bridge_loader)
 target_compile_definitions(bridge_harness PRIVATE
   BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
 )
+
+# --- GL Harness (macOS visual test with WASM module) ---
+if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
+  add_executable(looper_harness tools/harness/main.mm)
+  target_include_directories(looper_harness PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(looper_harness PRIVATE
+    bridge_loader
+    canvas_renderer
+    "-framework Cocoa"
+    "-framework OpenGL"
+    "-framework AVFoundation"
+    "-framework AudioToolbox"
+  )
+  # Link synth
+  target_sources(looper_harness PRIVATE src/plugin/synth.mm)
+  target_compile_definitions(looper_harness PRIVATE
+    BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
+    NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/build/nanolooper.wasm"
+  )
+endif()
