@@ -215,6 +215,30 @@ if(APPLE)
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
     LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
   )
+
+  # NanoLooper FFGL plugin bundle (WASM-based looper)
+  add_library(NanoLooper MODULE
+    src/plugin/looper_plugin.cpp
+    src/plugin/bridge_loader.cpp
+    src/plugin/synth.mm
+    src/canvas/canvas_renderer.cpp
+    src/canvas/image_loader.mm
+  )
+  target_include_directories(NanoLooper PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(NanoLooper PRIVATE
+    ffgl::sdk
+    "-framework OpenGL"
+    "-framework CoreGraphics"
+    "-framework Foundation"
+    "-framework AVFoundation"
+    "-framework AudioToolbox"
+  )
+  set_target_properties(NanoLooper PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
+  )
 endif()
 
 # --- Bridge Harness (manual testing tool) ---
