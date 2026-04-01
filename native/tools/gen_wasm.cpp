@@ -68,6 +68,7 @@ void print_array(const char* name, const bytes& data) {
 // WASM type constants
 const uint8_t TYPE_I32 = 0x7f;
 const uint8_t TYPE_I64 = 0x7e;
+const uint8_t TYPE_F32 = 0x7d;
 const uint8_t TYPE_F64 = 0x7c;
 const uint8_t TYPE_FUNC = 0x60;
 
@@ -282,6 +283,122 @@ bytes gen_log_module() {
   return wasm;
 }
 
+// Generate CANVAS_TEST_MODULE: imports canvas.fill_rect, exports "draw_rect"
+bytes gen_canvas_test_module() {
+  bytes wasm = wasm_header();
+
+  // Type section: 2 types
+  bytes types;
+  append(types, uleb128(2));
+  // type 0: (f32,f32,f32,f32,f32,f32,f32,f32) -> () — canvas.fill_rect
+  append(types, make_functype(
+    {TYPE_F32, TYPE_F32, TYPE_F32, TYPE_F32, TYPE_F32, TYPE_F32, TYPE_F32, TYPE_F32}, {}));
+  append(types, make_functype({}, {}));  // type 1: () -> ()
+  append(wasm, make_section(1, types));
+
+  // Import section: 1 import from "canvas"
+  bytes imports;
+  append(imports, uleb128(1));
+  append(imports, make_import_func("canvas", "fill_rect", 0));
+  append(wasm, make_section(2, imports));
+
+  // Function section: 1 local func
+  bytes funcs;
+  append(funcs, uleb128(1));
+  append(funcs, uleb128(1)); // type 1
+  append(wasm, make_section(3, funcs));
+
+  // Export section
+  bytes exports;
+  append(exports, uleb128(1));
+  append(exports, make_export_func("draw_rect", 1));
+  append(wasm, make_section(7, exports));
+
+  // Code section: draw_rect calls fill_rect(10, 20, 100, 50, 1.0, 0.5, 0.0, 0.8)
+  bytes code;
+  append(code, uleb128(1));
+  {
+    bytes body;
+    body.push_back(0x00); // 0 locals
+
+    // Push 8 f32 constants
+    auto push_f32 = [&](float val) {
+      body.push_back(0x43); // f32.const
+      uint8_t* p = reinterpret_cast<uint8_t*>(&val);
+      body.insert(body.end(), p, p + 4);
+    };
+    push_f32(10.0f);  push_f32(20.0f);   // x, y
+    push_f32(100.0f); push_f32(50.0f);   // w, h
+    push_f32(1.0f);   push_f32(0.5f);    // r, g
+    push_f32(0.0f);   push_f32(0.8f);    // b, a
+
+    body.push_back(0x10); append(body, uleb128(0)); // call fill_rect (func 0)
+    body.push_back(0x0b); // end
+
+    append(code, uleb128(body.size()));
+    append(code, body);
+  }
+  append(wasm, make_section(10, code));
+  return wasm;
+}
+
+// Generate HOST_TIMING_MODULE: imports host.get_time, exports "check_time"
+// check_time calls host.get_time and stores result in memory at offset 0
+bytes gen_host_timing_module() {
+  bytes wasm = wasm_header();
+
+  // Type section
+  bytes types;
+  append(types, uleb128(2));
+  append(types, make_functype({}, {TYPE_F64}));  // type 0: () -> (f64) — host.get_time
+  append(types, make_functype({}, {}));          // type 1: () -> ()
+  append(wasm, make_section(1, types));
+
+  // Import section
+  bytes imports;
+  append(imports, uleb128(1));
+  append(imports, make_import_func("host", "get_time", 0));
+  append(wasm, make_section(2, imports));
+
+  // Function section
+  bytes funcs;
+  append(funcs, uleb128(1));
+  append(funcs, uleb128(1)); // type 1
+  append(wasm, make_section(3, funcs));
+
+  // Memory section
+  bytes memory;
+  append(memory, uleb128(1));
+  memory.push_back(0x00); append(memory, uleb128(1)); // min 1 page
+  append(wasm, make_section(5, memory));
+
+  // Export section
+  bytes exports;
+  append(exports, uleb128(2));
+  append(exports, make_export_memory("memory", 0));
+  append(exports, make_export_func("check_time", 1));
+  append(wasm, make_section(7, exports));
+
+  // Code section: check_time stores host.get_time() at memory[0]
+  bytes code;
+  append(code, uleb128(1));
+  {
+    bytes body;
+    body.push_back(0x00); // 0 locals
+    body.push_back(0x41); append(body, uleb128(0)); // i32.const 0 (memory offset)
+    body.push_back(0x10); append(body, uleb128(0)); // call host.get_time (func 0)
+    body.push_back(0x39); // f64.store
+    body.push_back(0x03); // align=3 (8 bytes)
+    body.push_back(0x00); // offset=0
+    body.push_back(0x0b); // end
+
+    append(code, uleb128(body.size()));
+    append(code, body);
+  }
+  append(wasm, make_section(10, code));
+  return wasm;
+}
+
 int main() {
   printf("// Auto-generated WASM test modules\n\n");
 
@@ -293,6 +410,12 @@ int main() {
 
   auto log = gen_log_module();
   print_array("LOG_MODULE", log);
+
+  auto canvas_test = gen_canvas_test_module();
+  print_array("CANVAS_TEST_MODULE", canvas_test);
+
+  auto host_timing = gen_host_timing_module();
+  print_array("HOST_TIMING_MODULE", host_timing);
 
   return 0;
 }

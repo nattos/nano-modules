@@ -32,7 +32,6 @@ bool WasmHost::init() {
 void WasmHost::shutdown() {
   if (!initialized_) return;
 
-  // Unload all modules
   for (auto& [id, m] : modules_) {
     cleanup_module(m);
   }
@@ -53,7 +52,6 @@ int32_t WasmHost::load_module(const uint8_t* bytecode, uint32_t len) {
   }
 
   LoadedModule m;
-  // Copy bytecode — WAMR requires writable buffer that lives as long as the module
   m.bytecode.assign(bytecode, bytecode + len);
 
   char error_buf[256] = {0};
@@ -65,7 +63,7 @@ int32_t WasmHost::load_module(const uint8_t* bytecode, uint32_t len) {
     return -1;
   }
 
-  m.instance = wasm_runtime_instantiate(m.module, 8192, 8192,
+  m.instance = wasm_runtime_instantiate(m.module, 16384, 16384,
                                          error_buf, sizeof(error_buf));
   if (!m.instance) {
     last_error_ = std::string("Failed to instantiate module: ") + error_buf;
@@ -73,7 +71,7 @@ int32_t WasmHost::load_module(const uint8_t* bytecode, uint32_t len) {
     return -1;
   }
 
-  m.exec_env = wasm_runtime_create_exec_env(m.instance, 8192);
+  m.exec_env = wasm_runtime_create_exec_env(m.instance, 16384);
   if (!m.exec_env) {
     last_error_ = "Failed to create execution environment";
     wasm_runtime_deinstantiate(m.instance);
@@ -81,11 +79,15 @@ int32_t WasmHost::load_module(const uint8_t* bytecode, uint32_t len) {
     return -1;
   }
 
-  // Attach this WasmHost as user_data so host functions can find it
-  wasm_runtime_set_user_data(m.exec_env, this);
+  m.context.host = this;
 
   int32_t id = next_id_++;
   modules_[id] = std::move(m);
+
+  // Set user_data AFTER insertion so the pointer is stable
+  auto& stored = modules_[id];
+  wasm_runtime_set_user_data(stored.exec_env, &stored.context);
+
   return id;
 }
 
@@ -96,28 +98,115 @@ void WasmHost::unload_module(int32_t module_id) {
   modules_.erase(it);
 }
 
+WasmHost::LoadedModule* WasmHost::find_module(int32_t id) {
+  auto it = modules_.find(id);
+  return it != modules_.end() ? &it->second : nullptr;
+}
+
 int32_t WasmHost::call_function(int32_t module_id, const char* func_name) {
-  auto it = modules_.find(module_id);
-  if (it == modules_.end()) {
+  auto* m = find_module(module_id);
+  if (!m) {
     last_error_ = "Module not found";
     return -1;
   }
 
-  auto& m = it->second;
-  wasm_function_inst_t func = wasm_runtime_lookup_function(m.instance, func_name);
+  wasm_function_inst_t func = wasm_runtime_lookup_function(m->instance, func_name);
   if (!func) {
     last_error_ = std::string("Function not found: ") + func_name;
     return -1;
   }
 
-  if (!wasm_runtime_call_wasm(m.exec_env, func, 0, nullptr)) {
-    const char* exception = wasm_runtime_get_exception(m.instance);
+  if (!wasm_runtime_call_wasm(m->exec_env, func, 0, nullptr)) {
+    const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
-    wasm_runtime_clear_exception(m.instance);
+    wasm_runtime_clear_exception(m->instance);
     return -1;
   }
 
   return 0;
+}
+
+int32_t WasmHost::call_function_f64(int32_t module_id, const char* func_name, double arg) {
+  auto* m = find_module(module_id);
+  if (!m) { last_error_ = "Module not found"; return -1; }
+
+  wasm_function_inst_t func = wasm_runtime_lookup_function(m->instance, func_name);
+  if (!func) { last_error_ = std::string("Function not found: ") + func_name; return -1; }
+
+  wasm_val_t args[1] = {{.kind = WASM_F64, .of = {.f64 = arg}}};
+  wasm_val_t results[1] = {};
+
+  if (!wasm_runtime_call_wasm_a(m->exec_env, func, 0, results, 1, args)) {
+    const char* exception = wasm_runtime_get_exception(m->instance);
+    last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
+    wasm_runtime_clear_exception(m->instance);
+    return -1;
+  }
+  return 0;
+}
+
+int32_t WasmHost::call_function_i32_f64(int32_t module_id, const char* func_name,
+                                         int32_t a, double b) {
+  auto* m = find_module(module_id);
+  if (!m) { last_error_ = "Module not found"; return -1; }
+
+  wasm_function_inst_t func = wasm_runtime_lookup_function(m->instance, func_name);
+  if (!func) { last_error_ = std::string("Function not found: ") + func_name; return -1; }
+
+  wasm_val_t args[2] = {
+    {.kind = WASM_I32, .of = {.i32 = a}},
+    {.kind = WASM_F64, .of = {.f64 = b}},
+  };
+  wasm_val_t results[1] = {};
+
+  if (!wasm_runtime_call_wasm_a(m->exec_env, func, 0, results, 2, args)) {
+    const char* exception = wasm_runtime_get_exception(m->instance);
+    last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
+    wasm_runtime_clear_exception(m->instance);
+    return -1;
+  }
+  return 0;
+}
+
+int32_t WasmHost::call_function_i32_i32(int32_t module_id, const char* func_name,
+                                         int32_t a, int32_t b) {
+  auto* m = find_module(module_id);
+  if (!m) { last_error_ = "Module not found"; return -1; }
+
+  wasm_function_inst_t func = wasm_runtime_lookup_function(m->instance, func_name);
+  if (!func) { last_error_ = std::string("Function not found: ") + func_name; return -1; }
+
+  wasm_val_t args[2] = {
+    {.kind = WASM_I32, .of = {.i32 = a}},
+    {.kind = WASM_I32, .of = {.i32 = b}},
+  };
+  wasm_val_t results[1] = {};
+
+  if (!wasm_runtime_call_wasm_a(m->exec_env, func, 0, results, 2, args)) {
+    const char* exception = wasm_runtime_get_exception(m->instance);
+    last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
+    wasm_runtime_clear_exception(m->instance);
+    return -1;
+  }
+  return 0;
+}
+
+void WasmHost::set_draw_list(int32_t module_id, canvas::DrawList* dl) {
+  auto* m = find_module(module_id);
+  if (m) m->context.draw_list = dl;
+}
+
+void WasmHost::set_frame_state(int32_t module_id, FrameState* fs) {
+  auto* m = find_module(module_id);
+  if (m) m->context.frame_state = fs;
+}
+
+void WasmHost::set_audio_callback(int32_t module_id, AudioTriggerCallback cb, void* userdata) {
+  auto* m = find_module(module_id);
+  if (m) {
+    m->context.audio_callback = cb;
+    m->context.audio_userdata = userdata;
+  }
 }
 
 void WasmHost::log(const std::string& msg) {

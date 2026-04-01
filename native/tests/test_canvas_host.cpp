@@ -1,0 +1,112 @@
+#include <catch2/catch_test_macros.hpp>
+
+#include "bridge/param_cache.h"
+#include "canvas/draw_list.h"
+#include "wasm/wasm_host.h"
+
+using bridge::ParamCache;
+using canvas::DrawList;
+using canvas::DrawCmd;
+using wasm::WasmHost;
+using wasm::FrameState;
+
+// Auto-generated: imports canvas.fill_rect, exports "draw_rect"
+// Calls fill_rect(10, 20, 100, 50, 1.0, 0.5, 0.0, 0.8)
+static const uint8_t CANVAS_TEST_MODULE[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0f, 0x02, 0x60, 0x08, 0x7d, 0x7d, 0x7d,
+    0x7d, 0x7d, 0x7d, 0x7d, 0x7d, 0x00, 0x60, 0x00, 0x00, 0x02, 0x14, 0x01, 0x06, 0x63, 0x61, 0x6e,
+    0x76, 0x61, 0x73, 0x09, 0x66, 0x69, 0x6c, 0x6c, 0x5f, 0x72, 0x65, 0x63, 0x74, 0x00, 0x00, 0x03,
+    0x02, 0x01, 0x01, 0x07, 0x0d, 0x01, 0x09, 0x64, 0x72, 0x61, 0x77, 0x5f, 0x72, 0x65, 0x63, 0x74,
+    0x00, 0x01, 0x0a, 0x2e, 0x01, 0x2c, 0x00, 0x43, 0x00, 0x00, 0x20, 0x41, 0x43, 0x00, 0x00, 0xa0,
+    0x41, 0x43, 0x00, 0x00, 0xc8, 0x42, 0x43, 0x00, 0x00, 0x48, 0x42, 0x43, 0x00, 0x00, 0x80, 0x3f,
+    0x43, 0x00, 0x00, 0x00, 0x3f, 0x43, 0x00, 0x00, 0x00, 0x00, 0x43, 0xcd, 0xcc, 0x4c, 0x3f, 0x10,
+    0x00, 0x0b,
+};
+
+// Auto-generated: imports host.get_time, exports "check_time" + "memory"
+// check_time stores host.get_time() result at memory[0] as f64
+static const uint8_t HOST_TIMING_MODULE[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x00, 0x01, 0x7c, 0x60,
+    0x00, 0x00, 0x02, 0x11, 0x01, 0x04, 0x68, 0x6f, 0x73, 0x74, 0x08, 0x67, 0x65, 0x74, 0x5f, 0x74,
+    0x69, 0x6d, 0x65, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x17,
+    0x02, 0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, 0x0a, 0x63, 0x68, 0x65, 0x63, 0x6b,
+    0x5f, 0x74, 0x69, 0x6d, 0x65, 0x00, 0x01, 0x0a, 0x0b, 0x01, 0x09, 0x00, 0x41, 0x00, 0x10, 0x00,
+    0x39, 0x03, 0x00, 0x0b,
+};
+
+TEST_CASE("canvas.fill_rect populates draw list via WASM", "[canvas_host]") {
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+
+  int32_t id = host.load_module(CANVAS_TEST_MODULE, sizeof(CANVAS_TEST_MODULE));
+  INFO("last_error: " << host.last_error());
+  REQUIRE(id >= 0);
+
+  // Set up a DrawList for the module to write to
+  DrawList dl;
+  host.set_draw_list(id, &dl);
+
+  // Call draw_rect — should issue fill_rect(10, 20, 100, 50, 1.0, 0.5, 0.0, 0.8)
+  REQUIRE(host.call_function(id, "draw_rect") == 0);
+
+  REQUIRE(dl.size() == 1);
+  auto& cmd = dl.commands[0];
+  REQUIRE(cmd.type == DrawCmd::FillRect);
+  REQUIRE(cmd.x == 10.0f);
+  REQUIRE(cmd.y == 20.0f);
+  REQUIRE(cmd.w == 100.0f);
+  REQUIRE(cmd.h == 50.0f);
+  REQUIRE(cmd.r == 1.0f);
+  REQUIRE(cmd.g == 0.5f);
+  REQUIRE(cmd.b == 0.0f);
+  REQUIRE(cmd.a > 0.79f); // 0.8 may have float precision
+
+  host.shutdown();
+}
+
+TEST_CASE("host.get_time returns FrameState elapsed_time via WASM", "[canvas_host]") {
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+
+  int32_t id = host.load_module(HOST_TIMING_MODULE, sizeof(HOST_TIMING_MODULE));
+  INFO("last_error: " << host.last_error());
+  REQUIRE(id >= 0);
+
+  // Set frame state with known time
+  FrameState fs;
+  fs.elapsed_time = 42.5;
+  host.set_frame_state(id, &fs);
+
+  // Call check_time — should store host.get_time() result at memory[0]
+  REQUIRE(host.call_function(id, "check_time") == 0);
+
+  host.shutdown();
+}
+
+TEST_CASE("draw list accumulates across multiple WASM calls", "[canvas_host]") {
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+
+  int32_t id = host.load_module(CANVAS_TEST_MODULE, sizeof(CANVAS_TEST_MODULE));
+  REQUIRE(id >= 0);
+
+  DrawList dl;
+  host.set_draw_list(id, &dl);
+
+  REQUIRE(host.call_function(id, "draw_rect") == 0);
+  REQUIRE(host.call_function(id, "draw_rect") == 0);
+  REQUIRE(host.call_function(id, "draw_rect") == 0);
+
+  REQUIRE(dl.size() == 3);
+  for (auto& cmd : dl.commands) {
+    REQUIRE(cmd.type == DrawCmd::FillRect);
+  }
+
+  dl.clear();
+  REQUIRE(dl.empty());
+
+  host.shutdown();
+}

@@ -74,6 +74,20 @@ target_link_libraries(vmlib PUBLIC -lm -ldl ${CMAKE_THREAD_LIBS_INIT})
 set(FFGL_BUILD_EXAMPLE_PLUGINS OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/ffgl)
 
+# --- Canvas Renderer library ---
+add_library(canvas_renderer STATIC
+  src/canvas/canvas_renderer.cpp
+  src/canvas/image_loader.mm
+)
+target_include_directories(canvas_renderer PUBLIC ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+  target_link_libraries(canvas_renderer PUBLIC
+    "-framework OpenGL"
+    "-framework CoreGraphics"
+    "-framework Foundation"
+  )
+endif()
+
 # --- Param Cache library ---
 add_library(param_cache STATIC
   src/bridge/param_cache.cpp
@@ -160,6 +174,15 @@ target_compile_definitions(test_wasm_host PRIVATE
   FIXTURE_PATH="${CMAKE_SOURCE_DIR}/fixtures/"
 )
 catch_discover_tests(test_wasm_host)
+
+add_executable(test_canvas_host tests/test_canvas_host.cpp)
+target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
+catch_discover_tests(test_canvas_host)
+
+add_executable(test_draw_list tests/test_draw_list.cpp)
+target_include_directories(test_draw_list PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_draw_list PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_draw_list)
 
 add_executable(test_ws_server tests/test_ws_server.cpp)
 target_link_libraries(test_ws_server PRIVATE bridge_ws_server ixwebsocket Catch2::Catch2WithMain)
