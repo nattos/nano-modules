@@ -9,12 +9,12 @@ BridgeLoader::~BridgeLoader() {
 }
 
 bool BridgeLoader::load(const char* dylib_path) {
-  if (handle_) return true; // Already loaded
+  if (handle_) return true;
 
   handle_ = dlopen(dylib_path, RTLD_NOW | RTLD_GLOBAL);
   if (!handle_) return false;
 
-  // Resolve all function pointers
+  // Core functions
   bridge_init = reinterpret_cast<BridgeInitFn>(dlsym(handle_, "bridge_init"));
   bridge_release = reinterpret_cast<BridgeReleaseFn>(dlsym(handle_, "bridge_release"));
   bridge_get_param = reinterpret_cast<BridgeGetParamFn>(dlsym(handle_, "bridge_get_param"));
@@ -24,7 +24,14 @@ bool BridgeLoader::load(const char* dylib_path) {
   bridge_unload_wasm = reinterpret_cast<BridgeUnloadWasmFn>(dlsym(handle_, "bridge_unload_wasm"));
   bridge_call_wasm = reinterpret_cast<BridgeCallWasmFn>(dlsym(handle_, "bridge_call_wasm"));
 
-  // Verify all required functions were found
+  // Extended functions
+  bridge_set_frame_state = reinterpret_cast<BridgeSetFrameStateFn>(dlsym(handle_, "bridge_set_frame_state"));
+  bridge_set_ffgl_param = reinterpret_cast<BridgeSetFfglParamFn>(dlsym(handle_, "bridge_set_ffgl_param"));
+  bridge_render = reinterpret_cast<BridgeRenderFn>(dlsym(handle_, "bridge_render"));
+  bridge_call_tick = reinterpret_cast<BridgeCallTickFn>(dlsym(handle_, "bridge_call_tick"));
+  bridge_call_on_param = reinterpret_cast<BridgeCallOnParamFn>(dlsym(handle_, "bridge_call_on_param"));
+  bridge_set_audio_callback = reinterpret_cast<BridgeSetAudioCallbackFn>(dlsym(handle_, "bridge_set_audio_callback"));
+
   if (!bridge_init || !bridge_release || !bridge_get_param ||
       !bridge_set_param || !bridge_tick) {
     unload();
@@ -51,6 +58,12 @@ void BridgeLoader::unload() {
   bridge_load_wasm = nullptr;
   bridge_unload_wasm = nullptr;
   bridge_call_wasm = nullptr;
+  bridge_set_frame_state = nullptr;
+  bridge_set_ffgl_param = nullptr;
+  bridge_render = nullptr;
+  bridge_call_tick = nullptr;
+  bridge_call_on_param = nullptr;
+  bridge_set_audio_callback = nullptr;
 }
 
 } // namespace plugin

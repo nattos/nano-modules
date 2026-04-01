@@ -94,9 +94,10 @@ add_library(param_cache STATIC
 )
 target_include_directories(param_cache PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
-# --- Resolume Protocol library ---
+# --- Resolume Protocol + Composition library ---
 add_library(resolume_protocol STATIC
   src/resolume/protocol.cpp
+  src/resolume/composition.cpp
 )
 target_include_directories(resolume_protocol PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(resolume_protocol PUBLIC nlohmann_json::nlohmann_json)
@@ -128,6 +129,7 @@ add_library(bridge_server SHARED
   src/bridge/bridge_server.cpp
   src/bridge/bridge_api.cpp
   src/bridge/param_cache.cpp
+  src/bridge/composition_cache.cpp
 )
 target_include_directories(bridge_server PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(bridge_server PRIVATE
@@ -174,6 +176,12 @@ target_compile_definitions(test_wasm_host PRIVATE
   FIXTURE_PATH="${CMAKE_SOURCE_DIR}/fixtures/"
 )
 catch_discover_tests(test_wasm_host)
+
+add_executable(test_composition_cache tests/test_composition_cache.cpp
+  src/bridge/composition_cache.cpp src/resolume/composition.cpp)
+target_include_directories(test_composition_cache PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_composition_cache PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_composition_cache)
 
 add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
