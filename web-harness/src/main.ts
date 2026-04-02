@@ -106,6 +106,10 @@ async function main() {
   updateMetadata(host);
   statusEl.textContent = 'Running';
 
+  // Expose for debugging
+  (window as any).__host = host;
+  (window as any).__wasm = wasmModule;
+
   // State editor
   stateEditBtn.addEventListener('click', () => {
     stateEditing = true;
@@ -118,8 +122,19 @@ async function main() {
   stateApplyBtn.addEventListener('click', () => {
     try {
       const newState = JSON.parse(stateTextarea.value);
+
+      // Update the canonical state (what state.read will see)
       host.pluginState = newState;
-      host.onStateChange(newState);
+
+      // Notify the WASM module that state has changed
+      // The module will call state.read to pull the updated grid
+      wasmModule.onStateChanged();
+
+      addLogEntry({
+        timestamp: host.frameState.elapsedTime,
+        level: 'log',
+        message: 'State patch applied externally',
+      });
     } catch (e) {
       addLogEntry({ timestamp: host.frameState.elapsedTime, level: 'error', message: `Invalid JSON: ${e}` });
     }

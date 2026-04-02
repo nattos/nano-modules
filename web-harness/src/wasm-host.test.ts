@@ -27,6 +27,7 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
     tick: exports.tick as (dt: number) => void,
     render: exports.render as (vpW: number, vpH: number) => void,
     onParamChange: exports.on_param_change as (index: number, value: number) => void,
+    onStateChanged: exports.on_state_changed as () => void,
   };
 
   return { host, module: wasmModule };
@@ -104,8 +105,53 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
     state: {
       set_metadata: (_idPtr: number, _idLen: number, _versionPacked: number) => {},
       console_log: (_level: number, _msgPtr: number, _msgLen: number) => {},
-      set: (_pathPtr: number, _pathLen: number, _jsonPtr: number, _jsonLen: number) => {},
-      read: () => 0,
+      set: (_pathPtr: number, _pathLen: number, _jsonPtr: number, _jsonLen: number) => {
+        try {
+          host.pluginState = JSON.parse(new TextDecoder().decode(
+            new Uint8Array(getMemory().buffer, _jsonPtr, _jsonLen)));
+        } catch {}
+      },
+      read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
+             outputPtr: number, outputSize: number, resultsPtr: number): number => {
+        const mem = new DataView(getMemory().buffer);
+        const bytes = new Uint8Array(getMemory().buffer);
+        const dec = new TextDecoder();
+        let overflowCount = 0;
+        for (let i = 0; i < fieldCount; i++) {
+          const fOff = layoutPtr + i * 20;
+          const pathOffset = mem.getInt32(fOff, true);
+          const pathLen = mem.getInt32(fOff + 4, true);
+          const type = mem.getInt32(fOff + 8, true);
+          const bufOffset = mem.getInt32(fOff + 12, true);
+          const capacity = mem.getInt32(fOff + 16, true);
+          const rOff = resultsPtr + i * 8;
+          const pathStr = dec.decode(bytes.slice(pathsPtr + pathOffset, pathsPtr + pathOffset + pathLen));
+          let val: any = host.pluginState;
+          if (pathStr.length > 0) {
+            for (const token of pathStr.split('/').filter((t: string) => t !== '')) {
+              if (val == null) { val = undefined; break; }
+              val = val[token];
+            }
+          }
+          if (val === undefined || val === null) {
+            bytes[rOff] = 0; bytes[rOff + 1] = 0; mem.setInt32(rOff + 4, 0, true);
+            continue;
+          }
+          bytes[rOff] = 1;
+          const absOff = outputPtr + bufOffset;
+          if (type === 5 && Array.isArray(val)) {
+            const wc = Math.min(val.length, capacity);
+            mem.setInt32(absOff, wc, true);
+            for (let j = 0; j < wc; j++) mem.setInt32(absOff + 4 + j * 4, Number(val[j]), true);
+            bytes[rOff + 1] = val.length > capacity ? 1 : 0;
+            if (val.length > capacity) overflowCount++;
+            mem.setInt32(rOff + 4, val.length, true);
+          } else {
+            bytes[rOff + 1] = 0; mem.setInt32(rOff + 4, 0, true);
+          }
+        }
+        return overflowCount;
+      },
     },
   };
 }
@@ -167,6 +213,74 @@ describe('WasmHost', () => {
     const texts = host.drawList.filter(c => c.type === 'draw_text').map(c => c.text);
     expect(texts).toContain('Looper');
     expect(texts).toContain('Connecting...');
+  });
+
+  it('on_state_changed reads grid from canonical state', async () => {
+    const { host, module } = await loadHost();
+    module.init();
+    host.frameState.barPhase = 0.1;
+
+    // Trigger some events normally
+    module.onParamChange(0, 1.0);
+    module.onParamChange(0, 0.0);
+    module.tick(0.016);
+
+    // Now externally modify the canonical state (simulating a client edit)
+    host.pluginState = {
+      phase: 0,
+      recording: false,
+      event_count: 3,
+      grid: [[0, 4], [8], [], []]
+    };
+
+    // Notify the module — it should read the grid via state.read
+    module.onStateChanged();
+
+    // Tick to publish updated state — the module should now reflect the edited grid
+    host.frameState.viewportW = 1920;
+    host.frameState.viewportH = 1080;
+    host.drawList = [];
+    module.tick(0.016);
+
+    // After tick, the module publishes its internal state which should match the edit
+    expect(host.pluginState.event_count).toBe(3);
+    expect(host.pluginState.grid[0]).toEqual([0, 4]);
+    expect(host.pluginState.grid[1]).toEqual([8]);
+    expect(host.pluginState.grid[2]).toEqual([]);
+    expect(host.pluginState.grid[3]).toEqual([]);
+  });
+
+  it('on_state_changed preserves all channels when editing one', async () => {
+    const { host, module } = await loadHost();
+    module.init();
+    host.frameState.barPhase = 0.0;
+
+    // Set up events on all 4 channels via the state
+    host.pluginState = {
+      phase: 0, recording: false, event_count: 4,
+      grid: [[1], [3], [5], [7]]
+    };
+    module.onStateChanged();
+    module.tick(0.016);
+
+    // Verify all 4 channels loaded
+    expect(host.pluginState.event_count).toBe(4);
+    expect(host.pluginState.grid).toEqual([[1], [3], [5], [7]]);
+
+    // Now edit: remove only channel 0's event
+    host.pluginState = {
+      phase: 0, recording: false, event_count: 3,
+      grid: [[], [3], [5], [7]]
+    };
+    module.onStateChanged();
+    module.tick(0.016);
+
+    // Channels 1-3 must still have their events
+    expect(host.pluginState.event_count).toBe(3);
+    expect(host.pluginState.grid[0]).toEqual([]);
+    expect(host.pluginState.grid[1]).toEqual([3]);
+    expect(host.pluginState.grid[2]).toEqual([5]);
+    expect(host.pluginState.grid[3]).toEqual([7]);
   });
 
   it('multiple ticks then render works', async () => {

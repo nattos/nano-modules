@@ -8,7 +8,14 @@
  */
 
 #include <stdint.h>
-#include <string.h>
+
+/* Use builtin memcpy to avoid libc dependency in WASM builds */
+#ifndef __cplusplus
+#define jdoc_memcpy __builtin_memcpy
+#else
+#include <cstring>
+#define jdoc_memcpy memcpy
+#endif
 
 /* Field types (must match json_doc::FieldType) */
 enum {
@@ -40,13 +47,13 @@ typedef struct {
 
 static inline double jdoc_get_f64(const void* buf, int offset) {
   double v;
-  memcpy(&v, (const char*)buf + offset, 8);
+  jdoc_memcpy(&v, (const char*)buf + offset, 8);
   return v;
 }
 
 static inline int32_t jdoc_get_i32(const void* buf, int offset) {
   int32_t v;
-  memcpy(&v, (const char*)buf + offset, 4);
+  jdoc_memcpy(&v, (const char*)buf + offset, 4);
   return v;
 }
 
@@ -70,13 +77,13 @@ static inline int32_t jdoc_get_array_count(const void* buf, int offset) {
 
 static inline double jdoc_get_array_f64(const void* buf, int offset, int index) {
   double v;
-  memcpy(&v, (const char*)buf + offset + 4 + index * 8, 8);
+  jdoc_memcpy(&v, (const char*)buf + offset + 4 + index * 8, 8);
   return v;
 }
 
 static inline int32_t jdoc_get_array_i32(const void* buf, int offset, int index) {
   int32_t v;
-  memcpy(&v, (const char*)buf + offset + 4 + index * 4, 4);
+  jdoc_memcpy(&v, (const char*)buf + offset + 4 + index * 4, 4);
   return v;
 }
 

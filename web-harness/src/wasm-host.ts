@@ -16,6 +16,7 @@ export interface WasmModule {
   tick(dt: number): void;
   render(vpW: number, vpH: number): void;
   onParamChange(index: number, value: number): void;
+  onStateChanged(): void;
 }
 
 export interface ConsoleEntry {
@@ -170,7 +171,90 @@ export class WasmHost {
             this.onStateChange(this.pluginState);
           } catch { /* ignore invalid JSON */ }
         },
-        read: () => 0, // Not needed in web harness (modules can use set/get directly)
+        read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
+               outputPtr: number, outputSize: number, resultsPtr: number): number => {
+          // Implement json-doc read: fill output buffer from pluginState
+          const mem = new DataView(this.memory.buffer);
+          const bytes = new Uint8Array(this.memory.buffer);
+          let overflowCount = 0;
+
+          // Field struct: 5 x i32 = 20 bytes each
+          const FIELD_SIZE = 20;
+          // Result struct: u8 found, u8 overflowed, [2 pad], i32 actual_size = 8 bytes
+          const RESULT_SIZE = 8;
+
+          for (let i = 0; i < fieldCount; i++) {
+            const fOff = layoutPtr + i * FIELD_SIZE;
+            const pathOffset = mem.getInt32(fOff, true);
+            const pathLen = mem.getInt32(fOff + 4, true);
+            const type = mem.getInt32(fOff + 8, true);
+            const bufOffset = mem.getInt32(fOff + 12, true);
+            const capacity = mem.getInt32(fOff + 16, true);
+
+            const rOff = resultsPtr + i * RESULT_SIZE;
+
+            // Read path string from WASM memory
+            const pathStr = decoder.decode(bytes.slice(pathsPtr + pathOffset, pathsPtr + pathOffset + pathLen));
+
+            // Resolve path in pluginState (JSON Pointer)
+            let val: any = this.pluginState;
+            if (pathStr.length > 0) {
+              const tokens = pathStr.split('/').filter(t => t !== '');
+              for (const token of tokens) {
+                if (val == null) { val = undefined; break; }
+                val = val[token];
+              }
+            }
+
+            if (val === undefined || val === null) {
+              bytes[rOff] = 0;
+              bytes[rOff + 1] = 0;
+              mem.setInt32(rOff + 4, 0, true);
+              continue;
+            }
+
+            bytes[rOff] = 1;
+
+            const absOff = outputPtr + bufOffset;
+
+            if (type === 0) { // JDOC_F64
+              mem.setFloat64(absOff, Number(val), true);
+              bytes[rOff + 1] = 0;
+              mem.setInt32(rOff + 4, 8, true);
+            } else if (type === 1) { // JDOC_I32
+              mem.setInt32(absOff, Number(val), true);
+              bytes[rOff + 1] = 0;
+              mem.setInt32(rOff + 4, 4, true);
+            } else if (type === 3) { // JDOC_BOOL
+              mem.setInt32(absOff, val ? 1 : 0, true);
+              bytes[rOff + 1] = 0;
+              mem.setInt32(rOff + 4, 4, true);
+            } else if (type === 5 && Array.isArray(val)) { // JDOC_ARRAY_I32
+              const actualCount = val.length;
+              const writeCount = Math.min(actualCount, capacity);
+              mem.setInt32(absOff, writeCount, true);
+              for (let j = 0; j < writeCount; j++) {
+                mem.setInt32(absOff + 4 + j * 4, Number(val[j]), true);
+              }
+              const overflowed = actualCount > capacity ? 1 : 0;
+              bytes[rOff + 1] = overflowed;
+              if (overflowed) overflowCount++;
+              mem.setInt32(rOff + 4, actualCount, true);
+            } else if (type === 4 && Array.isArray(val)) { // JDOC_ARRAY_F64
+              const actualCount = val.length;
+              const writeCount = Math.min(actualCount, capacity);
+              mem.setInt32(absOff, writeCount, true);
+              for (let j = 0; j < writeCount; j++) {
+                mem.setFloat64(absOff + 4 + j * 8, Number(val[j]), true);
+              }
+              const overflowed = actualCount > capacity ? 1 : 0;
+              bytes[rOff + 1] = overflowed;
+              if (overflowed) overflowCount++;
+              mem.setInt32(rOff + 4, actualCount, true);
+            }
+          }
+          return overflowCount;
+        },
       },
     };
 
@@ -184,6 +268,7 @@ export class WasmHost {
       tick: exports.tick as (dt: number) => void,
       render: exports.render as (vpW: number, vpH: number) => void,
       onParamChange: exports.on_param_change as (index: number, value: number) => void,
+      onStateChanged: exports.on_state_changed as () => void,
     };
   }
 }

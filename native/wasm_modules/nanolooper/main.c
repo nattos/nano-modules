@@ -6,6 +6,7 @@
  */
 
 #include "core.h"
+#include "../../src/json/json_doc_client.h"
 
 /* Use compiler builtins instead of libc math */
 #define floor(x) __builtin_floor(x)
@@ -56,6 +57,10 @@ extern void state_console_log(int level, const char* msg, int msg_len);
 
 __attribute__((import_module("state"), import_name("set")))
 extern void state_set(const char* path, int path_len, const char* json, int json_len);
+
+__attribute__((import_module("state"), import_name("read")))
+extern int state_read(const char* layout, int field_count, const char* paths,
+                      char* output, int output_size, char* results);
 
 /* resolume module */
 __attribute__((import_module("resolume"), import_name("trigger_clip")))
@@ -398,6 +403,85 @@ void on_param_change(int index, double value) {
   } else if (index == PID_SHOW_OVERLAY) {
     show_overlay = pressed;
   }
+}
+
+/* --- State change handler (called by host when canonical state is modified) --- */
+
+/* Buffer layout for reading grid from state document */
+struct GridReadBuf {
+  /* 4 channels, each: [i32 count][i32 steps[16]] = 4 + 64 = 68 bytes */
+  int32_t ch0_count; int32_t ch0_steps[NUM_STEPS];
+  int32_t ch1_count; int32_t ch1_steps[NUM_STEPS];
+  int32_t ch2_count; int32_t ch2_steps[NUM_STEPS];
+  int32_t ch3_count; int32_t ch3_steps[NUM_STEPS];
+};
+
+/* Paths for state.read layout (packed, null-separated) */
+static const char grid_paths[] =
+  "/grid/0\0"   /* 0: offset 0, len 7 */
+  "/grid/1\0"   /* 1: offset 8, len 7 */
+  "/grid/2\0"   /* 2: offset 16, len 7 */
+  "/grid/3\0";  /* 3: offset 24, len 7 */
+
+#define GRID_CH_SIZE (4 + NUM_STEPS * 4)  /* i32 count + i32[16] */
+
+static JDocField grid_layout[NUM_CHANNELS] = {
+  { 0,  7, JDOC_TYPE_ARRAY_I32, 0 * GRID_CH_SIZE, NUM_STEPS },
+  { 8,  7, JDOC_TYPE_ARRAY_I32, 1 * GRID_CH_SIZE, NUM_STEPS },
+  { 16, 7, JDOC_TYPE_ARRAY_I32, 2 * GRID_CH_SIZE, NUM_STEPS },
+  { 24, 7, JDOC_TYPE_ARRAY_I32, 3 * GRID_CH_SIZE, NUM_STEPS },
+};
+
+static void load_grid_from_state(void) {
+  struct GridReadBuf buf;
+  JDocResult results[NUM_CHANNELS];
+
+  int overflow = state_read(
+    (const char*)grid_layout, NUM_CHANNELS,
+    grid_paths,
+    (char*)&buf, (int)sizeof(buf),
+    (char*)results);
+  (void)overflow;
+
+  /* Only update if we actually got grid data */
+  int any_found = 0;
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    if (results[i].found) any_found = 1;
+  }
+  if (!any_found) return;
+
+  /* Rebuild looper events from the grid arrays */
+  looper.event_count = 0;
+  looper.undo_count = 0;
+  looper.redo_count = 0;
+
+  int32_t* channel_data[NUM_CHANNELS] = {
+    buf.ch0_steps, buf.ch1_steps, buf.ch2_steps, buf.ch3_steps
+  };
+  int32_t channel_counts[NUM_CHANNELS] = {
+    buf.ch0_count, buf.ch1_count, buf.ch2_count, buf.ch3_count
+  };
+
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    if (!results[ch].found) continue;
+    int count = channel_counts[ch];
+    if (count > NUM_STEPS) count = NUM_STEPS;
+    for (int j = 0; j < count; j++) {
+      int step = channel_data[ch][j];
+      if (step >= 0 && step < NUM_STEPS && looper.event_count < MAX_EVENTS) {
+        looper.events[looper.event_count].time = (double)step;
+        looper.events[looper.event_count].channel = ch;
+        looper.event_count++;
+      }
+    }
+  }
+
+  log_msg(LOG_INFO, "Grid loaded from state");
+}
+
+__attribute__((export_name("on_state_changed")))
+void on_state_changed(void) {
+  load_grid_from_state();
 }
 
 __attribute__((export_name("render")))

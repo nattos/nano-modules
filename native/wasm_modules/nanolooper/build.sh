@@ -50,6 +50,7 @@ echo "Building nanolooper.wasm..."
   -Wl,--export=tick \
   -Wl,--export=render \
   -Wl,--export=on_param_change \
+  -Wl,--export=on_state_changed \
   -Wl,--allow-undefined \
   core.c main.c \
   -o "$OUT_DIR/nanolooper.wasm"
