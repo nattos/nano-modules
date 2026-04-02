@@ -86,6 +86,8 @@ static float flash[NUM_CHANNELS];
 
 /* Modifier keys */
 static int delete_held;
+static int delete_acted;           /* did delete+trigger happen during this press? */
+static int last_action_was_clear;  /* was the last standalone delete a clear-all? */
 static int mute_held;
 static int record_held;
 static int show_overlay;
@@ -195,6 +197,8 @@ void init(void) {
     channel_connected[i] = 0;
   }
   delete_held = 0;
+  delete_acted = 0;
+  last_action_was_clear = 0;
   mute_held = 0;
   record_held = 0;
 }
@@ -245,10 +249,13 @@ void on_param_change(int index, double value) {
       /* Rising edge */
       if (delete_held) {
         looper_clear_channel(&looper, ch);
+        delete_acted = 1;
+        last_action_was_clear = 0;
         gate_off(ch);
       } else if (mute_held) {
         gate_off(ch);
       } else {
+        last_action_was_clear = 0;
         looper_trigger(&looper, ch, phase);
         gate_on(ch);
       }
@@ -257,18 +264,41 @@ void on_param_change(int index, double value) {
       gate_off(ch);
     }
   } else if (index == PID_DELETE) {
-    delete_held = pressed;
     if (pressed) {
-      looper_clear_all(&looper);
+      delete_held = 1;
+      delete_acted = 0;
+    } else if (delete_held) {
+      /* Release: if no trigger was pressed during hold, do clear or undo */
+      if (!delete_acted) {
+        if (last_action_was_clear && looper.undo_count > 0) {
+          /* Double-tap delete = undo */
+          looper_undo(&looper);
+          last_action_was_clear = 0;
+        } else {
+          looper_clear_all(&looper);
+          last_action_was_clear = 1;
+        }
+        for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+      }
+      delete_held = 0;
     }
   } else if (index == PID_MUTE) {
     mute_held = pressed;
   } else if (index == PID_UNDO) {
-    if (pressed) looper_undo(&looper);
+    if (pressed) {
+      looper_undo(&looper);
+      last_action_was_clear = 0;
+      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+    }
   } else if (index == PID_REDO) {
-    if (pressed) looper_redo(&looper);
+    if (pressed) {
+      looper_redo(&looper);
+      last_action_was_clear = 0;
+      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+    }
   } else if (index == PID_RECORD) {
     if (pressed && !record_held) {
+      last_action_was_clear = 0;
       looper_begin_destructive_record(&looper);
     } else if (!pressed && record_held) {
       looper_end_destructive_record(&looper);
