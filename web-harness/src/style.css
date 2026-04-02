@@ -152,6 +152,12 @@ body {
 .log-entry .log-msg { flex: 1; }
 .log-entry.log-warn .log-msg { color: var(--app-hi-color3); }
 .log-entry.log-error .log-msg { color: var(--app-hi-color1); }
+.log-data {
+  color: var(--app-hi-color2);
+  font-size: 10px;
+  opacity: 0.85;
+  margin-left: 2px;
+}
 
 /* State editor */
 #state-textarea {

@@ -57,11 +57,17 @@ function updateStateDisplay(state: any) {
 function addLogEntry(entry: ConsoleEntry) {
   const div = document.createElement('div');
   div.className = `log-entry log-${entry.level}`;
-  div.innerHTML = `<span class="log-time">${entry.timestamp.toFixed(1)}s</span><span class="log-msg">${escapeHtml(entry.message)}</span>`;
+
+  let html = `<span class="log-time">${entry.timestamp.toFixed(1)}s</span>`;
+  html += `<span class="log-msg">${escapeHtml(entry.message)}`;
+  if (entry.data !== undefined) {
+    html += ` <span class="log-data">${escapeHtml(JSON.stringify(entry.data))}</span>`;
+  }
+  html += `</span>`;
+  div.innerHTML = html;
+
   consoleEl.appendChild(div);
-  // Auto-scroll
   consoleEl.scrollTop = consoleEl.scrollHeight;
-  // Cap DOM entries
   while (consoleEl.children.length > 200) {
     consoleEl.removeChild(consoleEl.firstChild!);
   }

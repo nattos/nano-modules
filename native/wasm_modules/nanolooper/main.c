@@ -58,6 +58,10 @@ extern void state_console_log(int level, const char* msg, int msg_len);
 __attribute__((import_module("state"), import_name("set")))
 extern void state_set(const char* path, int path_len, const char* json, int json_len);
 
+__attribute__((import_module("state"), import_name("console_log_structured")))
+extern void state_console_log_structured(int level, const char* msg, int msg_len,
+                                          const char* json, int json_len);
+
 __attribute__((import_module("state"), import_name("read")))
 extern int state_read(const char* layout, int field_count, const char* paths,
                       char* output, int output_size, char* results);
@@ -159,6 +163,10 @@ static void log_msg(int level, const char* msg) {
   state_console_log(level, msg, str_len(msg));
 }
 
+static void log_structured(int level, const char* msg, const char* json) {
+  state_console_log_structured(level, msg, str_len(msg), json, str_len(json));
+}
+
 /* Publish the current sequencer grid state as JSON */
 static void publish_state(void) {
   /* Build a JSON string representing the grid and playback state.
@@ -211,6 +219,19 @@ static void publish_state(void) {
   /* Set the entire state document */
   static const char path[] = "";
   state_set(path, 0, buf, pos);
+}
+
+/* Quick JSON snippet builder for structured logs */
+static char _jbuf[128];
+static const char* json_ch_step(int ch, int step) {
+  int p = 0;
+  _jbuf[p++] = '{'; _jbuf[p++] = '"'; _jbuf[p++] = 'c'; _jbuf[p++] = 'h'; _jbuf[p++] = '"'; _jbuf[p++] = ':';
+  _jbuf[p++] = '0' + ch;
+  _jbuf[p++] = ','; _jbuf[p++] = '"'; _jbuf[p++] = 's'; _jbuf[p++] = 't'; _jbuf[p++] = 'e'; _jbuf[p++] = 'p'; _jbuf[p++] = '"'; _jbuf[p++] = ':';
+  if (step >= 10) { _jbuf[p++] = '0' + step / 10; }
+  _jbuf[p++] = '0' + step % 10;
+  _jbuf[p++] = '}'; _jbuf[p] = 0;
+  return _jbuf;
 }
 
 static void gate_on(int ch) {
@@ -338,16 +359,15 @@ void on_param_change(int index, double value) {
         delete_acted = 1;
         last_action_was_clear = 0;
         gate_off(ch);
-        log_msg(LOG_INFO, ch == 0 ? "Clear channel 1" : ch == 1 ? "Clear channel 2" :
-                          ch == 2 ? "Clear channel 3" : "Clear channel 4");
+        log_structured(LOG_INFO, "Clear channel", json_ch_step(ch + 1, -1));
       } else if (mute_held) {
         gate_off(ch);
       } else {
+        int step = (int)phase % NUM_STEPS;
         last_action_was_clear = 0;
         looper_trigger(&looper, ch, phase);
         gate_on(ch);
-        log_msg(LOG_INFO, ch == 0 ? "Trigger ch1" : ch == 1 ? "Trigger ch2" :
-                          ch == 2 ? "Trigger ch3" : "Trigger ch4");
+        log_structured(LOG_INFO, "Trigger", json_ch_step(ch + 1, step));
       }
     } else if (!pressed && was) {
       /* Falling edge */

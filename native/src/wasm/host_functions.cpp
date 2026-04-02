@@ -392,9 +392,44 @@ static int32_t state_read(wasm_exec_env_t env,
                         output, output_size, results);
 }
 
+static void state_console_log_structured(wasm_exec_env_t env,
+    int32_t level, int32_t msg_ptr, int32_t msg_len,
+    int32_t json_ptr, int32_t json_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, msg_ptr, msg_len)) return;
+  if (!wasm_runtime_validate_app_addr(inst, json_ptr, json_len)) return;
+
+  char* msg = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, msg_ptr));
+  char* json_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, json_ptr));
+  if (!msg || !json_str) return;
+
+  const char* levels[] = {"log", "warn", "error"};
+  std::string lvl = (level >= 0 && level < 3) ? levels[level] : "log";
+  auto* frame = ctx->frame_state;
+  double ts = frame ? frame->elapsed_time : 0.0;
+
+  nlohmann::json data;
+  try {
+    data = nlohmann::json::parse(std::string(json_str, json_len));
+  } catch (...) {
+    data = std::string(json_str, json_len);
+  }
+
+  // Create entry with both message and structured data
+  bridge::ConsoleEntry entry;
+  entry.timestamp = ts;
+  entry.level = lvl;
+  entry.data = nlohmann::json{{"message", std::string(msg, msg_len)}, {"data", data}};
+  ctx->state_doc->log(ctx->plugin_key, entry);
+}
+
 static NativeSymbol state_symbols[] = {
     {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
     {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
+    {"console_log_structured", reinterpret_cast<void*>(state_console_log_structured), "(iiiii)", nullptr},
     {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},
     {"read", reinterpret_cast<void*>(state_read), "(iiiiii)i", nullptr},
 };

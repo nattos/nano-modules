@@ -23,6 +23,7 @@ export interface ConsoleEntry {
   timestamp: number;
   level: string;
   message: string;
+  data?: any;  // structured data (from console_log_structured)
 }
 
 export type AudioCallback = (channel: number) => void;
@@ -144,6 +145,27 @@ export class WasmHost {
             timestamp: this.frameState.elapsedTime,
             level: LEVELS[level] ?? 'log',
             message,
+          };
+          this.consoleLogs.push(entry);
+          if (this.consoleLogs.length > 200) {
+            this.consoleLogs = this.consoleLogs.slice(-100);
+          }
+          this.onLog(entry);
+        },
+        console_log_structured: (level: number, msgPtr: number, msgLen: number,
+                                  jsonPtr: number, jsonLen: number) => {
+          const message = this.readString(msgPtr, msgLen);
+          let data: any;
+          try {
+            data = JSON.parse(this.readString(jsonPtr, jsonLen));
+          } catch {
+            data = this.readString(jsonPtr, jsonLen);
+          }
+          const entry: ConsoleEntry = {
+            timestamp: this.frameState.elapsedTime,
+            level: LEVELS[level] ?? 'log',
+            message,
+            data,
           };
           this.consoleLogs.push(entry);
           if (this.consoleLogs.length > 200) {
