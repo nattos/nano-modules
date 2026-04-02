@@ -285,11 +285,11 @@ void render(int vp_w, int vp_h) {
 
   /* Scale factor: base design at 1080p, scale proportionally */
   float scale = (float)vp_h / 1080.0f;
-  float gw = 8.0f * scale;        /* glyph width at base size */
-  float lh = 8.0f * scale;        /* line height at base size */
-  float font_size = 8.0f * scale; /* base font size */
-  float margin = 16.0f * scale;
-  float row_gap = 4.0f * scale;
+  float gw = 24.0f * scale;        /* glyph width (monospace advance) */
+  float lh = 28.0f * scale;        /* line height */
+  float font_size = 24.0f * scale; /* bitmap font render size */
+  float margin = 20.0f * scale;
+  float row_gap = 6.0f * scale;
 
   float y = margin;
 

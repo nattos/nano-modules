@@ -216,7 +216,7 @@ void CanvasRenderer::buildFontAtlas() {
       uint8_t bits = kFont8x8[i][py];
       for (int px = 0; px < kFontGlyphW; px++) {
         if (bits & (1 << px)) {
-          int ax = col * kFontGlyphW + px;
+          int ax = col * kFontGlyphW + (kFontGlyphW - 1 - px);
           int ay = row * kFontGlyphH + py;
           pixels[ay * kFontAtlasW + ax] = 255;
         }

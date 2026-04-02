@@ -78,6 +78,19 @@ static double env_fabs(wasm_exec_env_t env, double a) {
   return fabs(a);
 }
 
+static int32_t env_strlen(wasm_exec_env_t env, int32_t ptr) {
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  // Find the null terminator
+  int32_t len = 0;
+  while (true) {
+    if (!wasm_runtime_validate_app_addr(inst, ptr + len, 1)) break;
+    char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, ptr + len));
+    if (!p || *p == '\0') break;
+    len++;
+  }
+  return len;
+}
+
 static NativeSymbol env_symbols[] = {
     {"resolume_get_param", reinterpret_cast<void*>(env_resolume_get_param), "(I)F", nullptr},
     {"resolume_set_param", reinterpret_cast<void*>(env_resolume_set_param), "(IF)", nullptr},
@@ -87,6 +100,7 @@ static NativeSymbol env_symbols[] = {
     {"sinf", reinterpret_cast<void*>(env_sinf), "(f)f", nullptr},
     {"floor", reinterpret_cast<void*>(env_floor), "(F)F", nullptr},
     {"fabs", reinterpret_cast<void*>(env_fabs), "(F)F", nullptr},
+    {"strlen", reinterpret_cast<void*>(env_strlen), "(i)i", nullptr},
 };
 
 // ========================================================================

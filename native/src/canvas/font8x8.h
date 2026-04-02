@@ -4,7 +4,7 @@
 
 // Public domain 8x8 bitmap font (font8x8_basic, CC0)
 // 96 glyphs covering ASCII 32 (space) through 127
-// Each glyph is 8 bytes (rows top to bottom), bit 0 = leftmost pixel
+// Each glyph is 8 bytes (rows top to bottom), bit 0 = rightmost pixel (standard LSB)
 static const uint8_t kFont8x8[96][8] = {
   {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // 32 ' '
   {0x04,0x04,0x04,0x04,0x04,0x00,0x04,0x00}, // 33 '!'
