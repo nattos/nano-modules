@@ -96,6 +96,14 @@ add_library(json_utils STATIC
 target_include_directories(json_utils PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(json_utils PUBLIC nlohmann_json::nlohmann_json)
 
+# --- State Document + Observer Registry ---
+add_library(state_system STATIC
+  src/bridge/state_document.cpp
+  src/bridge/observer_registry.cpp
+)
+target_include_directories(state_system PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(state_system PUBLIC json_utils)
+
 # --- Param Cache library ---
 add_library(param_cache STATIC
   src/bridge/param_cache.cpp
@@ -212,6 +220,14 @@ catch_discover_tests(test_json_patch)
 add_executable(test_json_doc tests/test_json_doc.cpp)
 target_link_libraries(test_json_doc PRIVATE json_utils Catch2::Catch2WithMain)
 catch_discover_tests(test_json_doc)
+
+add_executable(test_observer_registry tests/test_observer_registry.cpp)
+target_link_libraries(test_observer_registry PRIVATE state_system Catch2::Catch2WithMain)
+catch_discover_tests(test_observer_registry)
+
+add_executable(test_state_document tests/test_state_document.cpp)
+target_link_libraries(test_state_document PRIVATE state_system Catch2::Catch2WithMain)
+catch_discover_tests(test_state_document)
 
 add_executable(test_draw_list tests/test_draw_list.cpp)
 target_include_directories(test_draw_list PRIVATE ${CMAKE_SOURCE_DIR}/src)
