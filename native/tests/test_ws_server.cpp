@@ -129,7 +129,7 @@ TEST_CASE("message callback receives client messages", "[ws_server][integration]
   WsServer server;
 
   std::string received;
-  server.set_message_callback([&](const std::string& msg) {
+  server.set_message_callback([&](int /*client_id*/, const std::string& msg) {
     received = msg;
   });
 

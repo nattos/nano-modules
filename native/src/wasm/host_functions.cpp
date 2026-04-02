@@ -2,7 +2,9 @@
 #include "wasm/wasm_host.h"
 #include "wasm/wasm_context.h"
 #include "bridge/param_cache.h"
+#include "bridge/state_document.h"
 #include "canvas/draw_list.h"
+#include "json/json_doc.h"
 
 #include <cmath>
 #include <cstring>
@@ -286,6 +288,118 @@ static NativeSymbol resolume_symbols[] = {
 };
 
 // ========================================================================
+// Module "state" — plugin metadata, logging, state access
+// ========================================================================
+
+static void state_set_metadata(wasm_exec_env_t env,
+    int32_t id_ptr, int32_t id_len, int32_t version_packed) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, id_ptr, id_len)) return;
+  char* id_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, id_ptr));
+  if (!id_str) return;
+
+  bridge::PluginMetadata meta;
+  meta.id = std::string(id_str, id_len);
+  meta.major = (version_packed >> 16) & 0xFF;
+  meta.minor = (version_packed >> 8) & 0xFF;
+  meta.patch = version_packed & 0xFF;
+
+  ctx->plugin_key = ctx->state_doc->register_plugin(0, meta);
+}
+
+static void state_console_log(wasm_exec_env_t env,
+    int32_t level, int32_t msg_ptr, int32_t msg_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, msg_ptr, msg_len)) return;
+  char* msg = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, msg_ptr));
+  if (!msg) return;
+
+  const char* levels[] = {"log", "warn", "error"};
+  std::string lvl = (level >= 0 && level < 3) ? levels[level] : "log";
+
+  auto* frame = ctx->frame_state;
+  double ts = frame ? frame->elapsed_time : 0.0;
+
+  ctx->state_doc->log(ctx->plugin_key,
+      {ts, lvl, std::string(msg, msg_len)});
+}
+
+static void state_set(wasm_exec_env_t env,
+    int32_t path_ptr, int32_t path_len,
+    int32_t json_ptr, int32_t json_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
+  if (!wasm_runtime_validate_app_addr(inst, json_ptr, json_len)) return;
+
+  char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  char* json_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, json_ptr));
+  if (!path || !json_str) return;
+
+  std::string path_s(path, path_len);
+  std::string json_s(json_str, json_len);
+
+  try {
+    auto val = nlohmann::json::parse(json_s);
+    // Apply as a replace patch on the plugin's state
+    std::vector<json_patch::PatchOp> ops = {{"replace", path_s, val, {}}};
+    ctx->state_doc->apply_client_patch(ctx->plugin_key, ops);
+  } catch (...) {
+    // Invalid JSON, ignore
+  }
+}
+
+static int32_t state_read(wasm_exec_env_t env,
+    int32_t layout_ptr, int32_t field_count,
+    int32_t paths_ptr, int32_t output_ptr,
+    int32_t output_size, int32_t results_ptr) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return -1;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  int32_t layout_bytes = field_count * sizeof(json_doc::Field);
+  int32_t results_bytes = field_count * sizeof(json_doc::FieldResult);
+
+  if (!wasm_runtime_validate_app_addr(inst, layout_ptr, layout_bytes)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, output_ptr, output_size)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, results_ptr, results_bytes)) return -1;
+
+  auto* layout = static_cast<json_doc::Field*>(
+      wasm_runtime_addr_app_to_native(inst, layout_ptr));
+  auto* output = static_cast<uint8_t*>(
+      wasm_runtime_addr_app_to_native(inst, output_ptr));
+  auto* results = static_cast<json_doc::FieldResult*>(
+      wasm_runtime_addr_app_to_native(inst, results_ptr));
+
+  // paths_ptr validation: we need to find the max extent
+  // For now, validate a generous range
+  if (!wasm_runtime_validate_app_addr(inst, paths_ptr, 1)) return -1;
+  auto* paths = static_cast<const char*>(
+      wasm_runtime_addr_app_to_native(inst, paths_ptr));
+
+  if (!layout || !output || !results || !paths) return -1;
+
+  auto state = ctx->state_doc->get_plugin_state(ctx->plugin_key);
+  return json_doc::read(state, layout, field_count, paths,
+                        output, output_size, results);
+}
+
+static NativeSymbol state_symbols[] = {
+    {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
+    {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
+    {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},
+    {"read", reinterpret_cast<void*>(state_read), "(iiiiii)i", nullptr},
+};
+
+// ========================================================================
 // Registration
 // ========================================================================
 
@@ -307,6 +421,10 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "resolume", resolume_symbols,
       sizeof(resolume_symbols) / sizeof(NativeSymbol));
+
+  ok = ok && wasm_runtime_register_natives(
+      "state", state_symbols,
+      sizeof(state_symbols) / sizeof(NativeSymbol));
 
   return ok;
 }

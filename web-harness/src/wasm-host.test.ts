@@ -101,6 +101,12 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       get_bpm: () => 120,
       load_thumbnail: (_index: number) => -1,
     },
+    state: {
+      set_metadata: (_idPtr: number, _idLen: number, _versionPacked: number) => {},
+      console_log: (_level: number, _msgPtr: number, _msgLen: number) => {},
+      set: (_pathPtr: number, _pathLen: number, _jsonPtr: number, _jsonLen: number) => {},
+      read: () => 0,
+    },
   };
 }
 

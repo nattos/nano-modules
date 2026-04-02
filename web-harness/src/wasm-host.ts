@@ -18,9 +18,18 @@ export interface WasmModule {
   onParamChange(index: number, value: number): void;
 }
 
+export interface ConsoleEntry {
+  timestamp: number;
+  level: string;
+  message: string;
+}
+
 export type AudioCallback = (channel: number) => void;
+export type StateChangeCallback = (state: any) => void;
+export type LogCallback = (entry: ConsoleEntry) => void;
 
 const decoder = new TextDecoder();
+const LEVELS = ['log', 'warn', 'error'];
 
 export class WasmHost {
   private instance!: WebAssembly.Instance;
@@ -31,7 +40,15 @@ export class WasmHost {
     elapsedTime: 0, deltaTime: 0, barPhase: 0, bpm: 120,
     viewportW: 0, viewportH: 0, params: new Array(16).fill(0),
   };
+
+  // State system
+  pluginState: any = {};
+  consoleLogs: ConsoleEntry[] = [];
+  metadata: { id: string; version: string } | null = null;
+
   onAudioTrigger: AudioCallback = () => {};
+  onStateChange: StateChangeCallback = () => {};
+  onLog: LogCallback = () => {};
 
   private readString(ptr: number, len: number): string {
     return decoder.decode(new Uint8Array(this.memory.buffer, ptr, len));
@@ -55,8 +72,8 @@ export class WasmHost {
         log: (ptr: number, len: number) => {
           console.log('[wasm]', this.readString(ptr, len));
         },
-        fmod: (a: number, b: number) => a % b || (a - Math.trunc(a / b) * b),
-        fmodf: (a: number, b: number) => a % b || (a - Math.trunc(a / b) * b),
+        fmod: (a: number, b: number) => a - Math.trunc(a / b) * b,
+        fmodf: (a: number, b: number) => a - Math.trunc(a / b) * b,
         sinf: (a: number) => Math.sin(a),
         floor: (a: number) => Math.floor(a),
         fabs: (a: number) => Math.abs(a),
@@ -111,6 +128,49 @@ export class WasmHost {
         get_clip_connected: (index: number) => fakeResolume.getClipConnected(index),
         get_bpm: () => fakeResolume.getBpm(),
         load_thumbnail: (_clipIndex: number) => -1,
+      },
+      state: {
+        set_metadata: (idPtr: number, idLen: number, versionPacked: number) => {
+          const id = this.readString(idPtr, idLen);
+          const major = (versionPacked >> 16) & 0xFF;
+          const minor = (versionPacked >> 8) & 0xFF;
+          const patch = versionPacked & 0xFF;
+          this.metadata = { id, version: `${major}.${minor}.${patch}` };
+        },
+        console_log: (level: number, msgPtr: number, msgLen: number) => {
+          const message = this.readString(msgPtr, msgLen);
+          const entry: ConsoleEntry = {
+            timestamp: this.frameState.elapsedTime,
+            level: LEVELS[level] ?? 'log',
+            message,
+          };
+          this.consoleLogs.push(entry);
+          if (this.consoleLogs.length > 200) {
+            this.consoleLogs = this.consoleLogs.slice(-100);
+          }
+          this.onLog(entry);
+        },
+        set: (pathPtr: number, pathLen: number, jsonPtr: number, jsonLen: number) => {
+          const jsonStr = this.readString(jsonPtr, jsonLen);
+          try {
+            const value = JSON.parse(jsonStr);
+            if (pathLen === 0) {
+              this.pluginState = value;
+            } else {
+              const path = this.readString(pathPtr, pathLen);
+              // Simple path setter for top-level keys
+              const keys = path.replace(/^\//, '').split('/');
+              let obj = this.pluginState;
+              for (let i = 0; i < keys.length - 1; i++) {
+                if (!(keys[i] in obj)) obj[keys[i]] = {};
+                obj = obj[keys[i]];
+              }
+              obj[keys[keys.length - 1]] = value;
+            }
+            this.onStateChange(this.pluginState);
+          } catch { /* ignore invalid JSON */ }
+        },
+        read: () => 0, // Not needed in web harness (modules can use set/get directly)
       },
     };
 

@@ -144,7 +144,9 @@ json StateDocument::document() const {
 
 json StateDocument::get_at(const std::string& path) const {
   std::lock_guard lock(mutex_);
-  const auto* val = json_patch::resolve_pointer(doc_, path);
+  // Treat "/" as root (same as "")
+  std::string resolved = (path == "/") ? "" : path;
+  const auto* val = json_patch::resolve_pointer(doc_, resolved);
   return val ? *val : json();
 }
 

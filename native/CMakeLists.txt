@@ -124,7 +124,7 @@ add_library(wasm_host STATIC
   src/wasm/host_functions.cpp
 )
 target_include_directories(wasm_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(wasm_host PUBLIC param_cache vmlib)
+target_link_libraries(wasm_host PUBLIC param_cache vmlib state_system)
 
 # --- Resolume WS Client library ---
 add_library(resolume_client STATIC
@@ -152,6 +152,7 @@ target_link_libraries(bridge_server PRIVATE
   resolume_client
   bridge_ws_server
   wasm_host
+  state_system
   nlohmann_json::nlohmann_json
 )
 
@@ -228,6 +229,10 @@ catch_discover_tests(test_observer_registry)
 add_executable(test_state_document tests/test_state_document.cpp)
 target_link_libraries(test_state_document PRIVATE state_system Catch2::Catch2WithMain)
 catch_discover_tests(test_state_document)
+
+add_executable(test_state_integration tests/test_state_integration.cpp)
+target_link_libraries(test_state_integration PRIVATE bridge_server ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_state_integration PROPERTIES LABELS "integration")
 
 add_executable(test_draw_list tests/test_draw_list.cpp)
 target_include_directories(test_draw_list PRIVATE ${CMAKE_SOURCE_DIR}/src)

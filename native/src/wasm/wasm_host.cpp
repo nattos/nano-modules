@@ -209,6 +209,11 @@ void WasmHost::set_audio_callback(int32_t module_id, AudioTriggerCallback cb, vo
   }
 }
 
+void WasmHost::set_state_doc(int32_t module_id, bridge::StateDocument* doc) {
+  auto* m = find_module(module_id);
+  if (m) m->context.state_doc = doc;
+}
+
 void WasmHost::log(const std::string& msg) {
   if (log_callback_) {
     log_callback_(msg);

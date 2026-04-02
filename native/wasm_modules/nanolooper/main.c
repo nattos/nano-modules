@@ -47,6 +47,16 @@ extern double host_get_param(int index);
 __attribute__((import_module("host"), import_name("trigger_audio")))
 extern void host_trigger_audio(int channel);
 
+/* state module */
+__attribute__((import_module("state"), import_name("set_metadata")))
+extern void state_set_metadata(const char* id, int id_len, int version_packed);
+
+__attribute__((import_module("state"), import_name("console_log")))
+extern void state_console_log(int level, const char* msg, int msg_len);
+
+__attribute__((import_module("state"), import_name("set")))
+extern void state_set(const char* path, int path_len, const char* json, int json_len);
+
 /* resolume module */
 __attribute__((import_module("resolume"), import_name("trigger_clip")))
 extern void resolume_trigger_clip(long long clip_id, int on);
@@ -135,6 +145,69 @@ static void text(const char* s, float x, float y, float size,
   canvas_draw_text(s, str_len(s), x, y, size, r, g, b, a);
 }
 
+/* Log levels */
+#define LOG_INFO  0
+#define LOG_WARN  1
+#define LOG_ERROR 2
+
+static void log_msg(int level, const char* msg) {
+  state_console_log(level, msg, str_len(msg));
+}
+
+/* Publish the current sequencer grid state as JSON */
+static void publish_state(void) {
+  /* Build a JSON string representing the grid and playback state.
+   * Format: {"phase":N,"recording":B,"grid":[[steps],[steps],[steps],[steps]]}
+   * Keep it compact since this runs every tick. */
+  static char buf[512];
+  int pos = 0;
+
+  /* Macro for safe append */
+  #define APPEND(s) do { \
+    const char* _s = (s); \
+    while (*_s && pos < (int)sizeof(buf) - 1) buf[pos++] = *_s++; \
+  } while(0)
+  #define APPEND_INT(n) do { \
+    char _tmp[16]; int _v = (n), _i = 0; \
+    if (_v < 0) { buf[pos++] = '-'; _v = -_v; } \
+    if (_v == 0) { buf[pos++] = '0'; } else { \
+      while (_v > 0) { _tmp[_i++] = '0' + _v % 10; _v /= 10; } \
+      while (_i > 0) buf[pos++] = _tmp[--_i]; \
+    } \
+  } while(0)
+
+  APPEND("{\"phase\":");
+  APPEND_INT((int)phase);
+  APPEND(",\"recording\":");
+  APPEND(record_held ? "true" : "false");
+  APPEND(",\"event_count\":");
+  APPEND_INT(looper.event_count);
+  APPEND(",\"grid\":[");
+
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    if (ch > 0) APPEND(",");
+    APPEND("[");
+    int first = 1;
+    for (int s = 0; s < NUM_STEPS; s++) {
+      if (looper_has_event(&looper, ch, s)) {
+        if (!first) APPEND(",");
+        APPEND_INT(s);
+        first = 0;
+      }
+    }
+    APPEND("]");
+  }
+  APPEND("]}");
+  buf[pos] = 0;
+
+  #undef APPEND
+  #undef APPEND_INT
+
+  /* Set the entire state document */
+  static const char path[] = "";
+  state_set(path, 0, buf, pos);
+}
+
 static void gate_on(int ch) {
   gate_down[ch] = 1;
   gate_timer[ch] = 0.25f;
@@ -201,6 +274,12 @@ void init(void) {
   last_action_was_clear = 0;
   mute_held = 0;
   record_held = 0;
+
+  /* Register plugin metadata */
+  static const char id[] = "com.nattos.nanolooper";
+  state_set_metadata(id, sizeof(id) - 1, (1 << 16) | (0 << 8) | 0); /* v1.0.0 */
+  log_msg(LOG_INFO, "NanoLooper initialized");
+  publish_state();
 }
 
 __attribute__((export_name("tick")))
@@ -234,6 +313,8 @@ void tick(double dt) {
     if (flash[ch] > 0)
       flash[ch] -= (float)dt;
   }
+
+  publish_state();
 }
 
 __attribute__((export_name("on_param_change")))
@@ -252,12 +333,16 @@ void on_param_change(int index, double value) {
         delete_acted = 1;
         last_action_was_clear = 0;
         gate_off(ch);
+        log_msg(LOG_INFO, ch == 0 ? "Clear channel 1" : ch == 1 ? "Clear channel 2" :
+                          ch == 2 ? "Clear channel 3" : "Clear channel 4");
       } else if (mute_held) {
         gate_off(ch);
       } else {
         last_action_was_clear = 0;
         looper_trigger(&looper, ch, phase);
         gate_on(ch);
+        log_msg(LOG_INFO, ch == 0 ? "Trigger ch1" : ch == 1 ? "Trigger ch2" :
+                          ch == 2 ? "Trigger ch3" : "Trigger ch4");
       }
     } else if (!pressed && was) {
       /* Falling edge */
@@ -274,9 +359,11 @@ void on_param_change(int index, double value) {
           /* Double-tap delete = undo */
           looper_undo(&looper);
           last_action_was_clear = 0;
+          log_msg(LOG_INFO, "Undo (double-tap delete)");
         } else {
           looper_clear_all(&looper);
           last_action_was_clear = 1;
+          log_msg(LOG_INFO, "Clear all");
         }
         for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
       }
@@ -289,19 +376,23 @@ void on_param_change(int index, double value) {
       looper_undo(&looper);
       last_action_was_clear = 0;
       for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+      log_msg(LOG_INFO, "Undo");
     }
   } else if (index == PID_REDO) {
     if (pressed) {
       looper_redo(&looper);
       last_action_was_clear = 0;
       for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+      log_msg(LOG_INFO, "Redo");
     }
   } else if (index == PID_RECORD) {
     if (pressed && !record_held) {
       last_action_was_clear = 0;
       looper_begin_destructive_record(&looper);
+      log_msg(LOG_WARN, "Record mode ON");
     } else if (!pressed && record_held) {
       looper_end_destructive_record(&looper);
+      log_msg(LOG_INFO, "Record mode OFF");
     }
     record_held = pressed;
   } else if (index == PID_SHOW_OVERLAY) {
