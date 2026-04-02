@@ -216,6 +216,44 @@ body {
   accent-color: var(--app-hi-color2);
 }
 
+#module-select {
+  width: 100%;
+  background: rgba(0,0,0,0.3);
+  color: var(--app-text-color1);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.resolume-param-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 10px;
+}
+.resolume-param-label {
+  min-width: 100px;
+  color: var(--app-text-color2);
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.resolume-param-slider {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--app-hi-color3);
+}
+.resolume-param-value {
+  min-width: 32px;
+  text-align: right;
+  color: var(--app-text-color2);
+  font-size: 9px;
+}
+
 #metadata-content {
   font-size: 11px;
   color: var(--app-text-color2);

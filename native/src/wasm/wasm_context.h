@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace canvas {
 struct DrawList;
@@ -39,6 +40,9 @@ struct WasmContext {
   // State system
   bridge::StateDocument* state_doc = nullptr;
   std::string plugin_key;
+
+  // Resolume param subscriptions (path queries, supports * wildcard)
+  std::vector<std::string> subscribe_queries;
 };
 
 } // namespace wasm

@@ -273,6 +273,40 @@ static int32_t resolume_load_thumbnail(wasm_exec_env_t env, int32_t clip_index) 
   return -1;
 }
 
+static void resolume_subscribe_query(wasm_exec_env_t env,
+    int32_t query_ptr, int32_t query_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, query_ptr, query_len)) return;
+  char* q = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, query_ptr));
+  if (!q) return;
+
+  std::string query(q, query_len);
+  // Store subscription queries on the context for the host to match against
+  // "/*" or "*" subscribes to everything
+  ctx->subscribe_queries.push_back(query);
+}
+
+static int32_t resolume_get_param_path(wasm_exec_env_t env,
+    int64_t param_id, int32_t buf_ptr, int32_t buf_len) {
+  // TODO: look up path from composition cache or param_paths_ map
+  // For now, return a placeholder path based on the ID
+  auto* ctx = get_ctx(env);
+  if (!ctx) return 0;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, buf_ptr, buf_len)) return 0;
+  char* buf = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, buf_ptr));
+  if (!buf) return 0;
+
+  std::string path = "param/" + std::to_string(param_id);
+  int32_t copy_len = std::min((int32_t)path.size(), buf_len);
+  memcpy(buf, path.data(), copy_len);
+  return copy_len;
+}
+
 static NativeSymbol resolume_symbols[] = {
     {"get_param", reinterpret_cast<void*>(resolume_get_param), "(I)F", nullptr},
     {"set_param", reinterpret_cast<void*>(resolume_set_param), "(IF)", nullptr},
@@ -285,6 +319,8 @@ static NativeSymbol resolume_symbols[] = {
     {"get_clip_connected", reinterpret_cast<void*>(resolume_get_clip_connected), "(i)i", nullptr},
     {"get_bpm", reinterpret_cast<void*>(resolume_get_bpm), "()F", nullptr},
     {"load_thumbnail", reinterpret_cast<void*>(resolume_load_thumbnail), "(i)i", nullptr},
+    {"subscribe_query", reinterpret_cast<void*>(resolume_subscribe_query), "(ii)", nullptr},
+    {"get_param_path", reinterpret_cast<void*>(resolume_get_param_path), "(Iii)i", nullptr},
 };
 
 // ========================================================================

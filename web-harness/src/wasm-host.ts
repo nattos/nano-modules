@@ -17,6 +17,7 @@ export interface WasmModule {
   render(vpW: number, vpH: number): void;
   onParamChange(index: number, value: number): void;
   onStateChanged(): void;
+  onResolumeParam?(paramId: bigint, value: number): void;
 }
 
 export interface ConsoleEntry {
@@ -55,6 +56,18 @@ export class WasmHost {
   consoleLogs: ConsoleEntry[] = [];
   metadata: { id: string; version: string } | null = null;
   params: ParamDecl[] = [];
+
+  // Resolume param subscriptions
+  subscribeQueries: string[] = [];
+  paramPaths: Map<bigint, string> = new Map();
+
+  registerParamPath(id: bigint, path: string) {
+    this.paramPaths.set(id, path);
+  }
+
+  resolveParamPath(id: bigint): string {
+    return this.paramPaths.get(id) ?? `param/${id}`;
+  }
 
   onAudioTrigger: AudioCallback = () => {};
   onStateChange: StateChangeCallback = () => {};
@@ -128,6 +141,14 @@ export class WasmHost {
         set_param: (_id: bigint, _value: number) => {},
         trigger_clip: (_clipId: bigint, _on: number) => {},
         subscribe_param: (_id: bigint) => {},
+        subscribe_query: (queryPtr: number, queryLen: number) => {
+          const query = this.readString(queryPtr, queryLen);
+          this.subscribeQueries.push(query);
+        },
+        get_param_path: (paramId: bigint, bufPtr: number, bufLen: number): number => {
+          const path = this.resolveParamPath(paramId);
+          return this.writeString(bufPtr, bufLen, path);
+        },
         get_clip_count: () => fakeResolume.getClipCount(),
         get_clip_id: (index: number) => fakeResolume.getClipId(index),
         get_clip_channel: (index: number) => fakeResolume.getClipChannel(index),
@@ -310,6 +331,7 @@ export class WasmHost {
       render: exports.render as (vpW: number, vpH: number) => void,
       onParamChange: exports.on_param_change as (index: number, value: number) => void,
       onStateChanged: exports.on_state_changed as () => void,
+      onResolumeParam: exports.on_resolume_param as ((paramId: bigint, value: number) => void) | undefined,
     };
   }
 }
