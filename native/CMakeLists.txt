@@ -88,6 +88,14 @@ if(APPLE)
   )
 endif()
 
+# --- JSON utilities (Patch + Doc) ---
+add_library(json_utils STATIC
+  src/json/json_patch.cpp
+  src/json/json_doc.cpp
+)
+target_include_directories(json_utils PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(json_utils PUBLIC nlohmann_json::nlohmann_json)
+
 # --- Param Cache library ---
 add_library(param_cache STATIC
   src/bridge/param_cache.cpp
@@ -196,6 +204,14 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
   )
   catch_discover_tests(test_nanolooper_wasm)
 endif()
+
+add_executable(test_json_patch tests/test_json_patch.cpp)
+target_link_libraries(test_json_patch PRIVATE json_utils Catch2::Catch2WithMain)
+catch_discover_tests(test_json_patch)
+
+add_executable(test_json_doc tests/test_json_doc.cpp)
+target_link_libraries(test_json_doc PRIVATE json_utils Catch2::Catch2WithMain)
+catch_discover_tests(test_json_doc)
 
 add_executable(test_draw_list tests/test_draw_list.cpp)
 target_include_directories(test_draw_list PRIVATE ${CMAKE_SOURCE_DIR}/src)
