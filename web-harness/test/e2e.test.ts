@@ -87,6 +87,101 @@ describe('NanoLooper Web Harness E2E', () => {
     expect(status).toContain('FPS');
   });
 
+  it('state document reflects triggered events', async () => {
+    // Trigger channel 1 and wait for state to update
+    await page.keyboard.down('1');
+    await new Promise(r => setTimeout(r, 100));
+    await page.keyboard.up('1');
+    await new Promise(r => setTimeout(r, 500));
+
+    const state = await page.evaluate(() => (window as any).__host?.pluginState);
+    expect(state).toBeDefined();
+    expect(state.grid).toBeDefined();
+    expect(state.event_count).toBeGreaterThan(0);
+    // Channel 0 should have at least one step
+    expect(state.grid[0].length).toBeGreaterThan(0);
+  });
+
+  it('state edit via on_state_changed round-trips correctly', async () => {
+    // Set a known grid state via the state document
+    const newState = {
+      phase: 0, recording: false, event_count: 4,
+      grid: [[1, 5], [3, 7], [], []]
+    };
+
+    await page.evaluate((s) => {
+      const host = (window as any).__host;
+      const wasm = (window as any).__wasm;
+      host.pluginState = s;
+      wasm.onStateChanged();
+    }, newState);
+
+    // Wait for a tick to publish the updated internal state
+    await new Promise(r => setTimeout(r, 200));
+
+    // Read back the state — should reflect what we set
+    const state = await page.evaluate(() => (window as any).__host?.pluginState);
+    expect(state.event_count).toBe(4);
+    expect(state.grid[0]).toEqual([1, 5]);
+    expect(state.grid[1]).toEqual([3, 7]);
+    expect(state.grid[2]).toEqual([]);
+    expect(state.grid[3]).toEqual([]);
+  });
+
+  it('editing one channel preserves other channels', async () => {
+    // Set all 4 channels with events
+    await page.evaluate(() => {
+      const host = (window as any).__host;
+      const wasm = (window as any).__wasm;
+      host.pluginState = {
+        phase: 0, recording: false, event_count: 4,
+        grid: [[2], [4], [6], [8]]
+      };
+      wasm.onStateChanged();
+    });
+    await new Promise(r => setTimeout(r, 200));
+
+    // Verify all 4 loaded
+    let state = await page.evaluate(() => (window as any).__host?.pluginState);
+    expect(state.grid).toEqual([[2], [4], [6], [8]]);
+
+    // Now edit: remove only channel 0
+    await page.evaluate(() => {
+      const host = (window as any).__host;
+      const wasm = (window as any).__wasm;
+      host.pluginState = {
+        phase: 0, recording: false, event_count: 3,
+        grid: [[], [4], [6], [8]]
+      };
+      wasm.onStateChanged();
+    });
+    await new Promise(r => setTimeout(r, 200));
+
+    // Channels 1-3 must still have their events
+    state = await page.evaluate(() => (window as any).__host?.pluginState);
+    expect(state.event_count).toBe(3);
+    expect(state.grid[0]).toEqual([]);
+    expect(state.grid[1]).toEqual([4]);
+    expect(state.grid[2]).toEqual([6]);
+    expect(state.grid[3]).toEqual([8]);
+  });
+
+  it('console logs appear from WASM module', async () => {
+    const logs = await page.evaluate(() => (window as any).__host?.consoleLogs);
+    expect(logs).toBeDefined();
+    expect(logs.length).toBeGreaterThan(0);
+    // Should have "NanoLooper initialized" from init()
+    const initLog = logs.find((l: any) => l.message.includes('initialized'));
+    expect(initLog).toBeDefined();
+  });
+
+  it('plugin metadata is reported', async () => {
+    const meta = await page.evaluate(() => (window as any).__host?.metadata);
+    expect(meta).toBeDefined();
+    expect(meta.id).toBe('com.nattos.nanolooper');
+    expect(meta.version).toBe('1.0.0');
+  });
+
   it('frame count increases over time', async () => {
     const getStep = async () => {
       const status = await page.$eval('#status', el => el.textContent);
