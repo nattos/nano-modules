@@ -26,6 +26,13 @@ export interface ConsoleEntry {
   data?: any;  // structured data (from console_log_structured)
 }
 
+export interface ParamDecl {
+  index: number;
+  name: string;
+  type: number;  // 0=boolean, 10=standard(float 0-1)
+  defaultValue: number;
+}
+
 export type AudioCallback = (channel: number) => void;
 export type StateChangeCallback = (state: any) => void;
 export type LogCallback = (entry: ConsoleEntry) => void;
@@ -47,6 +54,7 @@ export class WasmHost {
   pluginState: any = {};
   consoleLogs: ConsoleEntry[] = [];
   metadata: { id: string; version: string } | null = null;
+  params: ParamDecl[] = [];
 
   onAudioTrigger: AudioCallback = () => {};
   onStateChange: StateChangeCallback = () => {};
@@ -132,6 +140,11 @@ export class WasmHost {
         load_thumbnail: (_clipIndex: number) => -1,
       },
       state: {
+        declare_param: (index: number, namePtr: number, nameLen: number,
+                        type: number, defaultValue: number) => {
+          const name = this.readString(namePtr, nameLen);
+          this.params.push({ index, name, type, defaultValue });
+        },
         get_key: (bufPtr: number, bufLen: number): number => {
           const key = this.metadata?.id
             ? `${this.metadata.id}@0`

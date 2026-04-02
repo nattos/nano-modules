@@ -1,23 +1,12 @@
 import { GPURenderer } from './gpu-renderer';
-import { WasmHost, WasmModule, ConsoleEntry } from './wasm-host';
+import { WasmHost, WasmModule, ConsoleEntry, ParamDecl } from './wasm-host';
 
-const FREQUENCIES = [523.25, 659.26, 783.99, 1046.50]; // C5 E5 G5 C6
-
-const PID_TRIGGER_1 = 0, PID_TRIGGER_4 = 3;
-const PID_DELETE = 4, PID_MUTE = 5, PID_UNDO = 6, PID_REDO = 7;
-const PID_RECORD = 8, PID_SHOW_OVERLAY = 9, PID_SYNTH = 10;
-
-const KEY_MAP: Record<string, number> = {
-  '1': 0, '2': 1, '3': 2, '4': 3,
-  'd': PID_DELETE, 'm': PID_MUTE,
-  'z': PID_UNDO, 'x': PID_REDO, 'r': PID_RECORD,
-};
+const FREQUENCIES = [523.25, 659.26, 783.99, 1046.50];
 
 let audioCtx: AudioContext | null = null;
-let synthEnabled = false;
 
 function triggerAudio(channel: number) {
-  if (!synthEnabled || !audioCtx) return;
+  if (!audioCtx) return;
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
   osc.type = 'sine';
@@ -30,12 +19,13 @@ function triggerAudio(channel: number) {
 }
 
 // --- Side Panel ---
-
 const metadataEl = document.getElementById('metadata-content')!;
 const stateContentEl = document.getElementById('state-content')!;
 const stateEditorEl = document.getElementById('state-editor')!;
 const stateTextarea = document.getElementById('state-textarea') as HTMLTextAreaElement;
 const consoleEl = document.getElementById('console-content')!;
+const paramsEl = document.getElementById('params-content')!;
+const legendEl = document.getElementById('legend')!;
 const stateEditBtn = document.getElementById('state-edit-btn')!;
 const stateApplyBtn = document.getElementById('state-apply-btn')!;
 const stateCancelBtn = document.getElementById('state-cancel-btn')!;
@@ -57,7 +47,6 @@ function updateStateDisplay(state: any) {
 function addLogEntry(entry: ConsoleEntry) {
   const div = document.createElement('div');
   div.className = `log-entry log-${entry.level}`;
-
   let html = `<span class="log-time">${entry.timestamp.toFixed(1)}s</span>`;
   html += `<span class="log-msg">${escapeHtml(entry.message)}`;
   if (entry.data !== undefined) {
@@ -65,20 +54,102 @@ function addLogEntry(entry: ConsoleEntry) {
   }
   html += `</span>`;
   div.innerHTML = html;
-
   consoleEl.appendChild(div);
   consoleEl.scrollTop = consoleEl.scrollHeight;
-  while (consoleEl.children.length > 200) {
-    consoleEl.removeChild(consoleEl.firstChild!);
-  }
+  while (consoleEl.children.length > 200) consoleEl.removeChild(consoleEl.firstChild!);
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// --- Main ---
+// --- Build parameter controls ---
+function buildParamUI(
+  params: ParamDecl[],
+  host: WasmHost,
+  wasmModule: WasmModule,
+) {
+  paramsEl.innerHTML = '';
+  legendEl.innerHTML = '';
 
+  for (const param of params) {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+
+    const label = document.createElement('span');
+    label.className = 'param-label';
+    label.textContent = param.name;
+    row.appendChild(label);
+
+    const control = document.createElement('div');
+    control.className = 'param-control';
+
+    if (param.type === 0) {
+      // BOOLEAN — momentary button (press/release)
+      const btn = document.createElement('button');
+      btn.className = 'param-btn';
+      btn.textContent = param.name;
+      btn.setAttribute('data-param', String(param.index));
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        host.frameState.params[param.index] = 1.0;
+        wasmModule.onParamChange(param.index, 1.0);
+        btn.classList.add('active');
+      });
+      btn.addEventListener('mouseup', () => {
+        host.frameState.params[param.index] = 0.0;
+        wasmModule.onParamChange(param.index, 0.0);
+        btn.classList.remove('active');
+      });
+      btn.addEventListener('mouseleave', () => {
+        if (host.frameState.params[param.index] > 0.5) {
+          host.frameState.params[param.index] = 0.0;
+          wasmModule.onParamChange(param.index, 0.0);
+          btn.classList.remove('active');
+        }
+      });
+      control.appendChild(btn);
+    } else if (param.type === 10) {
+      // STANDARD — slider 0-1
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.className = 'param-slider';
+      slider.min = '0';
+      slider.max = '1';
+      slider.step = '0.01';
+      slider.value = String(param.defaultValue);
+      host.frameState.params[param.index] = param.defaultValue;
+      slider.addEventListener('input', () => {
+        const val = parseFloat(slider.value);
+        host.frameState.params[param.index] = val;
+        wasmModule.onParamChange(param.index, val);
+      });
+      control.appendChild(slider);
+    }
+
+    row.appendChild(control);
+    paramsEl.appendChild(row);
+  }
+
+  // Build compact keyboard legend from params
+  const keyBindings: Record<number, string> = {};
+  // Auto-assign keyboard shortcuts for the first few boolean params
+  const keys = ['1','2','3','4','d','m','z','x','r','o','s'];
+  let keyIdx = 0;
+  for (const param of params) {
+    if (param.type === 0 && keyIdx < keys.length) {
+      keyBindings[param.index] = keys[keyIdx];
+      const span = document.createElement('span');
+      span.innerHTML = `<b>${keys[keyIdx].toUpperCase()}</b> ${escapeHtml(param.name)}`;
+      legendEl.appendChild(span);
+      keyIdx++;
+    }
+  }
+
+  return keyBindings;
+}
+
+// --- Main ---
 async function main() {
   const statusEl = document.getElementById('status')!;
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -116,6 +187,15 @@ async function main() {
   (window as any).__host = host;
   (window as any).__wasm = wasmModule;
 
+  // Build parameter UI from module declarations
+  const keyBindings = buildParamUI(host.params, host, wasmModule);
+
+  // Invert: key → param index
+  const keyToParam: Record<string, number> = {};
+  for (const [idx, key] of Object.entries(keyBindings)) {
+    keyToParam[key] = parseInt(idx);
+  }
+
   // State editor
   stateEditBtn.addEventListener('click', () => {
     stateEditing = true;
@@ -128,19 +208,9 @@ async function main() {
   stateApplyBtn.addEventListener('click', () => {
     try {
       const newState = JSON.parse(stateTextarea.value);
-
-      // Update the canonical state (what state.read will see)
       host.pluginState = newState;
-
-      // Notify the WASM module that state has changed
-      // The module will call state.read to pull the updated grid
       wasmModule.onStateChanged();
-
-      addLogEntry({
-        timestamp: host.frameState.elapsedTime,
-        level: 'log',
-        message: 'State patch applied externally',
-      });
+      addLogEntry({ timestamp: host.frameState.elapsedTime, level: 'log', message: 'State patch applied externally' });
     } catch (e) {
       addLogEntry({ timestamp: host.frameState.elapsedTime, level: 'error', message: `Invalid JSON: ${e}` });
     }
@@ -159,36 +229,34 @@ async function main() {
   const initAudio = () => {
     if (!audioCtx) audioCtx = new AudioContext();
     document.removeEventListener('keydown', initAudio);
+    document.removeEventListener('mousedown', initAudio);
   };
   document.addEventListener('keydown', initAudio);
+  document.addEventListener('mousedown', initAudio);
 
-  // Keyboard
+  // Keyboard shortcuts (auto-assigned from param declarations)
   document.addEventListener('keydown', (e) => {
-    if (e.repeat) return;
-    // Don't capture keys when editing state
-    if (stateEditing) return;
+    if (e.repeat || stateEditing) return;
     const key = e.key.toLowerCase();
-
-    if (key === 's') {
-      synthEnabled = !synthEnabled;
-      wasmModule.onParamChange(PID_SYNTH, synthEnabled ? 1.0 : 0.0);
-      return;
-    }
-
-    const pid = KEY_MAP[key];
-    if (pid !== undefined) {
-      host.frameState.params[pid] = 1.0;
-      wasmModule.onParamChange(pid, 1.0);
+    const paramIdx = keyToParam[key];
+    if (paramIdx !== undefined) {
+      host.frameState.params[paramIdx] = 1.0;
+      wasmModule.onParamChange(paramIdx, 1.0);
+      // Highlight the matching button
+      const btn = paramsEl.querySelector(`[data-param="${paramIdx}"]`);
+      if (btn) btn.classList.add('active');
     }
   });
 
   document.addEventListener('keyup', (e) => {
     if (stateEditing) return;
     const key = e.key.toLowerCase();
-    const pid = KEY_MAP[key];
-    if (pid !== undefined) {
-      host.frameState.params[pid] = 0.0;
-      wasmModule.onParamChange(pid, 0.0);
+    const paramIdx = keyToParam[key];
+    if (paramIdx !== undefined) {
+      host.frameState.params[paramIdx] = 0.0;
+      wasmModule.onParamChange(paramIdx, 0.0);
+      const btn = paramsEl.querySelector(`[data-param="${paramIdx}"]`);
+      if (btn) btn.classList.remove('active');
     }
   });
 
@@ -208,11 +276,7 @@ async function main() {
 
     frameCount++;
     fpsTime += dt;
-    if (fpsTime >= 1.0) {
-      fps = frameCount;
-      frameCount = 0;
-      fpsTime = 0;
-    }
+    if (fpsTime >= 1.0) { fps = frameCount; frameCount = 0; fpsTime = 0; }
 
     const dpr = window.devicePixelRatio || 1;
     const displayW = Math.floor(canvas.clientWidth * dpr);
@@ -224,7 +288,6 @@ async function main() {
 
     const vpW = canvas.width;
     const vpH = canvas.height;
-
     const barPhase = (elapsed * bpm / 60 / 4) % 1.0;
     host.frameState.elapsedTime = elapsed;
     host.frameState.deltaTime = dt;

@@ -11,15 +11,7 @@
     <div id="canvas-container">
       <canvas id="canvas"></canvas>
       <div id="status">Loading...</div>
-      <div id="legend">
-        <span><b>1-4</b> Trigger</span>
-        <span><b>D</b> Delete</span>
-        <span><b>M</b> Mute</span>
-        <span><b>Z</b> Undo</span>
-        <span><b>X</b> Redo</span>
-        <span><b>R</b> Record</span>
-        <span><b>S</b> Synth</span>
-      </div>
+      <div id="legend"></div>
     </div>
     <div id="side-panel">
       <div id="panel-metadata" class="panel-section">
@@ -39,6 +31,10 @@
             <button id="state-cancel-btn" class="panel-btn">Cancel</button>
           </div>
         </div>
+      </div>
+      <div id="panel-params" class="panel-section">
+        <div class="panel-header">Parameters</div>
+        <div id="params-content" class="panel-body panel-scroll" style="max-height:260px"></div>
       </div>
       <div id="panel-console" class="panel-section panel-grow">
         <div class="panel-header">Console</div>

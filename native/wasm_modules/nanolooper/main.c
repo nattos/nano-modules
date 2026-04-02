@@ -55,6 +55,9 @@ extern void state_set_metadata(const char* id, int id_len, int version_packed);
 __attribute__((import_module("state"), import_name("console_log")))
 extern void state_console_log(int level, const char* msg, int msg_len);
 
+__attribute__((import_module("state"), import_name("declare_param")))
+extern void state_declare_param(int index, const char* name, int name_len, int type, float default_value);
+
 __attribute__((import_module("state"), import_name("get_key")))
 extern int state_get_key(char* buf, int buf_len);
 
@@ -130,8 +133,14 @@ static const float CH_R[4] = {1.0f, 0.33f, 1.0f, 0.33f};
 static const float CH_G[4] = {0.33f, 1.0f, 1.0f, 1.0f};
 static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 
+/* Parameter types (matching FFGL / state_document.h ParamType) */
+#define PARAM_BOOLEAN  0
+#define PARAM_STANDARD 10
+
 /* Param IDs (must match LooperParamID enum) */
 #define PID_TRIGGER_1    0
+#define PID_TRIGGER_2    1
+#define PID_TRIGGER_3    2
 #define PID_TRIGGER_4    3
 #define PID_DELETE       4
 #define PID_MUTE         5
@@ -164,6 +173,10 @@ static void text(const char* s, float x, float y, float size,
 
 static void log_msg(int level, const char* msg) {
   state_console_log(level, msg, str_len(msg));
+}
+
+static void decl_param(int index, const char* name, int type, float def) {
+  state_declare_param(index, name, str_len(name), type, def);
 }
 
 static void log_structured(int level, const char* msg, const char* json) {
@@ -304,9 +317,22 @@ void init(void) {
   mute_held = 0;
   record_held = 0;
 
-  /* Register plugin metadata and log assigned key */
+  /* Register plugin metadata and declare parameters */
   static const char id[] = "com.nattos.nanolooper";
   state_set_metadata(id, sizeof(id) - 1, (1 << 16) | (0 << 8) | 0); /* v1.0.0 */
+
+  decl_param(PID_TRIGGER_1,    "Trigger 1",    PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_TRIGGER_2,    "Trigger 2",    PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_TRIGGER_3,    "Trigger 3",    PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_TRIGGER_4,    "Trigger 4",    PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_DELETE,       "Delete",       PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_MUTE,         "Mute",         PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_UNDO,         "Undo",         PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_REDO,         "Redo",         PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_RECORD,       "Record",       PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_SHOW_OVERLAY, "Show Overlay", PARAM_BOOLEAN,  1.0f);
+  decl_param(PID_SYNTH,        "Synth",        PARAM_BOOLEAN,  0.0f);
+  decl_param(PID_SYNTH_GAIN,   "Synth Gain",   PARAM_STANDARD, 0.5f);
 
   char key_buf[64];
   int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);

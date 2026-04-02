@@ -310,6 +310,26 @@ static void state_set_metadata(wasm_exec_env_t env,
   ctx->plugin_key = ctx->state_doc->register_plugin(meta);
 }
 
+static void state_declare_param(wasm_exec_env_t env,
+    int32_t index, int32_t name_ptr, int32_t name_len,
+    int32_t type, float default_value) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, name_ptr, name_len)) return;
+  char* name = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, name_ptr));
+  if (!name) return;
+
+  bridge::ParamDecl param;
+  param.index = index;
+  param.name = std::string(name, name_len);
+  param.type = static_cast<bridge::ParamType>(type);
+  param.default_value = default_value;
+
+  ctx->state_doc->declare_param(ctx->plugin_key, param);
+}
+
 static int32_t state_get_key(wasm_exec_env_t env, int32_t buf_ptr, int32_t buf_len) {
   auto* ctx = get_ctx(env);
   if (!ctx) return 0;
@@ -443,6 +463,7 @@ static void state_console_log_structured(wasm_exec_env_t env,
 
 static NativeSymbol state_symbols[] = {
     {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
+    {"declare_param", reinterpret_cast<void*>(state_declare_param), "(iiiif)", nullptr},
     {"get_key", reinterpret_cast<void*>(state_get_key), "(ii)i", nullptr},
     {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
     {"console_log_structured", reinterpret_cast<void*>(state_console_log_structured), "(iiiii)", nullptr},

@@ -179,6 +179,43 @@ body {
   margin-top: 6px;
 }
 
+/* Parameter controls */
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+.param-label {
+  min-width: 80px;
+  color: var(--app-text-color2);
+  flex-shrink: 0;
+}
+.param-control { flex: 1; min-width: 0; }
+.param-btn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--app-text-color1);
+  font-size: 10px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  width: 100%;
+  text-align: center;
+  user-select: none;
+}
+.param-btn:active, .param-btn.active {
+  background: var(--app-hi-color2);
+  border-color: var(--app-hi-color2);
+}
+.param-slider {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--app-hi-color2);
+}
+
 #metadata-content {
   font-size: 11px;
   color: var(--app-text-color2);

@@ -33,6 +33,7 @@ std::string StateDocument::register_plugin(const PluginMetadata& meta) {
       {"id", meta.id},
       {"version", {{"major", meta.major}, {"minor", meta.minor}, {"patch", meta.patch}}},
     }},
+    {"params", json::array()},
   };
   doc_["global"]["plugins"].push_back(entry);
   emit("add", "/global/plugins/-", entry);
@@ -45,6 +46,26 @@ std::string StateDocument::register_plugin(const PluginMetadata& meta) {
   emit("add", "/plugins/" + key, doc_["plugins"][key]);
 
   return key;
+}
+
+void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl& param) {
+  std::lock_guard lock(mutex_);
+
+  // Find the plugin in the global listing
+  auto& plugins = doc_["global"]["plugins"];
+  for (size_t i = 0; i < plugins.size(); i++) {
+    if (plugins[i]["key"] == plugin_key) {
+      json p = {
+        {"index", param.index},
+        {"name", param.name},
+        {"type", param.type},
+        {"default", param.default_value},
+      };
+      plugins[i]["params"].push_back(p);
+      emit("add", "/global/plugins/" + std::to_string(i) + "/params/-", p);
+      return;
+    }
+  }
 }
 
 void StateDocument::unregister_plugin(const std::string& key) {

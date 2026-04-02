@@ -18,6 +18,23 @@ struct PluginMetadata {
   int patch = 0;
 };
 
+// FFGL-modeled parameter types
+enum ParamType : int {
+  PARAM_BOOLEAN  = 0,
+  PARAM_EVENT    = 1,
+  PARAM_STANDARD = 10,  // float 0-1
+  PARAM_OPTION   = 11,
+  PARAM_INTEGER  = 13,
+  PARAM_TEXT     = 100,
+};
+
+struct ParamDecl {
+  int index;
+  std::string name;
+  ParamType type;
+  float default_value;
+};
+
 struct ConsoleEntry {
   double timestamp = 0;
   std::string level;   // "log", "warn", "error"
@@ -35,6 +52,9 @@ public:
   /// Register a plugin. Returns its key (e.g. "com.nattos.nanolooper@0").
   /// Keys are allocated per plugin type with an incrementing suffix.
   std::string register_plugin(const PluginMetadata& meta);
+
+  /// Declare a parameter on a plugin.
+  void declare_param(const std::string& plugin_key, const ParamDecl& param);
 
   /// Unregister a plugin by key.
   void unregister_plugin(const std::string& key);

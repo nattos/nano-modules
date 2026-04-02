@@ -103,6 +103,8 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       load_thumbnail: (_index: number) => -1,
     },
     state: {
+      declare_param: (_index: number, _namePtr: number, _nameLen: number,
+                      _type: number, _defaultValue: number) => {},
       get_key: (bufPtr: number, bufLen: number): number => {
         const key = 'com.nattos.nanolooper@0';
         const enc = new TextEncoder().encode(key);
