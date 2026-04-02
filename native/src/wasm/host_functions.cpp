@@ -307,7 +307,22 @@ static void state_set_metadata(wasm_exec_env_t env,
   meta.minor = (version_packed >> 8) & 0xFF;
   meta.patch = version_packed & 0xFF;
 
-  ctx->plugin_key = ctx->state_doc->register_plugin(0, meta);
+  ctx->plugin_key = ctx->state_doc->register_plugin(meta);
+}
+
+static int32_t state_get_key(wasm_exec_env_t env, int32_t buf_ptr, int32_t buf_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return 0;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, buf_ptr, buf_len)) return 0;
+  char* buf = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, buf_ptr));
+  if (!buf) return 0;
+
+  const auto& key = ctx->plugin_key;
+  int32_t copy_len = std::min((int32_t)key.size(), buf_len);
+  memcpy(buf, key.data(), copy_len);
+  return copy_len;
 }
 
 static void state_console_log(wasm_exec_env_t env,
@@ -428,6 +443,7 @@ static void state_console_log_structured(wasm_exec_env_t env,
 
 static NativeSymbol state_symbols[] = {
     {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
+    {"get_key", reinterpret_cast<void*>(state_get_key), "(ii)i", nullptr},
     {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
     {"console_log_structured", reinterpret_cast<void*>(state_console_log_structured), "(iiiii)", nullptr},
     {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},

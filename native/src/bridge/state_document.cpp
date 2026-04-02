@@ -20,10 +20,11 @@ void StateDocument::emit(const std::string& op, const std::string& path,
   pending_.push_back(std::move(p));
 }
 
-std::string StateDocument::register_plugin(int32_t module_id, const PluginMetadata& meta) {
+std::string StateDocument::register_plugin(const PluginMetadata& meta) {
   std::lock_guard lock(mutex_);
 
-  std::string key = "module_" + std::to_string(module_id);
+  int instance = next_instance_[meta.id]++;
+  std::string key = meta.id + "@" + std::to_string(instance);
 
   // Add to global plugin listing
   json entry = {

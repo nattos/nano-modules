@@ -132,6 +132,12 @@ export class WasmHost {
         load_thumbnail: (_clipIndex: number) => -1,
       },
       state: {
+        get_key: (bufPtr: number, bufLen: number): number => {
+          const key = this.metadata?.id
+            ? `${this.metadata.id}@0`
+            : 'unknown@0';
+          return this.writeString(bufPtr, bufLen, key);
+        },
         set_metadata: (idPtr: number, idLen: number, versionPacked: number) => {
           const id = this.readString(idPtr, idLen);
           const major = (versionPacked >> 16) & 0xFF;

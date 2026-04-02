@@ -32,8 +32,9 @@ public:
 
   StateDocument();
 
-  /// Register a plugin. Returns its key (e.g. "module_0").
-  std::string register_plugin(int32_t module_id, const PluginMetadata& meta);
+  /// Register a plugin. Returns its key (e.g. "com.nattos.nanolooper@0").
+  /// Keys are allocated per plugin type with an incrementing suffix.
+  std::string register_plugin(const PluginMetadata& meta);
 
   /// Unregister a plugin by key.
   void unregister_plugin(const std::string& key);
@@ -66,6 +67,7 @@ private:
   mutable std::mutex mutex_;
   nlohmann::json doc_;
   std::vector<json_patch::PatchOp> pending_;
+  std::unordered_map<std::string, int> next_instance_; // per plugin-id counter
 
   void emit(const std::string& op, const std::string& path,
             const nlohmann::json& value = {});

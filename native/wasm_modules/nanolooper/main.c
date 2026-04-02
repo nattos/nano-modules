@@ -55,6 +55,9 @@ extern void state_set_metadata(const char* id, int id_len, int version_packed);
 __attribute__((import_module("state"), import_name("console_log")))
 extern void state_console_log(int level, const char* msg, int msg_len);
 
+__attribute__((import_module("state"), import_name("get_key")))
+extern int state_get_key(char* buf, int buf_len);
+
 __attribute__((import_module("state"), import_name("set")))
 extern void state_set(const char* path, int path_len, const char* json, int json_len);
 
@@ -301,10 +304,23 @@ void init(void) {
   mute_held = 0;
   record_held = 0;
 
-  /* Register plugin metadata */
+  /* Register plugin metadata and log assigned key */
   static const char id[] = "com.nattos.nanolooper";
   state_set_metadata(id, sizeof(id) - 1, (1 << 16) | (0 << 8) | 0); /* v1.0.0 */
-  log_msg(LOG_INFO, "NanoLooper initialized");
+
+  char key_buf[64];
+  int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
+  key_buf[key_len] = 0;
+
+  /* Build: "NanoLooper initialized as <key>" */
+  static char init_msg[128];
+  int p = 0;
+  const char* prefix = "NanoLooper initialized as ";
+  while (*prefix) init_msg[p++] = *prefix++;
+  for (int i = 0; i < key_len && p < 127; i++) init_msg[p++] = key_buf[i];
+  init_msg[p] = 0;
+
+  log_msg(LOG_INFO, init_msg);
   publish_state();
 }
 
