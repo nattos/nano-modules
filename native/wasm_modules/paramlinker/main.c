@@ -5,6 +5,8 @@
  * to discover which parameters to link by observing changes.
  */
 
+#include "../../src/json/json_doc_client.h"
+
 #define floor(x) __builtin_floor(x)
 #define sinf(x) __builtin_sinf(x)
 #define fabs(x) __builtin_fabs(x)
@@ -174,6 +176,64 @@ static void get_top_two(int* first, int* second) {
   }
 }
 
+/* Publish full state as JSON for editors */
+static void publish_state(void) {
+  static char buf[4096];
+  int p = 0;
+
+  #define A(s) do { const char* _s = (s); while (*_s && p < 4090) buf[p++] = *_s++; } while(0)
+  #define AI(n) do { \
+    char _t[20]; int _v = (n), _i = 0; \
+    if (_v < 0) { buf[p++] = '-'; _v = -_v; } \
+    if (_v == 0) buf[p++] = '0'; \
+    else { while (_v > 0) { _t[_i++] = '0' + _v % 10; _v /= 10; } while (_i > 0) buf[p++] = _t[--_i]; } \
+  } while(0)
+  /* i64 as decimal */
+  #define AI64(n) do { \
+    char _t[20]; long long _v = (n); int _i = 0; \
+    if (_v < 0) { buf[p++] = '-'; _v = -_v; } \
+    if (_v == 0) buf[p++] = '0'; \
+    else { while (_v > 0) { _t[_i++] = '0' + (int)(_v % 10); _v /= 10; } while (_i > 0) buf[p++] = _t[--_i]; } \
+  } while(0)
+  #define ASTR(s, len) do { \
+    buf[p++] = '"'; \
+    for (int _j = 0; _j < (len) && p < 4080; _j++) { \
+      char _c = (s)[_j]; \
+      if (_c == '"' || _c == '\\') buf[p++] = '\\'; \
+      buf[p++] = _c; \
+    } \
+    buf[p++] = '"'; \
+  } while(0)
+
+  A("{\"learning\":"); A(learning ? "true" : "false");
+  A(",\"settled\":"); A(settled ? "true" : "false");
+  A(",\"active\":"); A(active ? "true" : "false");
+  A(",\"input_id\":"); AI64(input_id);
+  A(",\"output_id\":"); AI64(output_id);
+  A(",\"input_path\":"); ASTR(input_path, input_path_len);
+  A(",\"output_path\":"); ASTR(output_path, output_path_len);
+  A(",\"seen\":[");
+
+  for (int i = 0; i < seen_count && p < 3900; i++) {
+    if (i > 0) A(",");
+    A("{\"id\":"); AI64(seen[i].param_id);
+    A(",\"path\":"); ASTR(seen[i].path, seen[i].path_len);
+    A(",\"ignored\":"); A(seen[i].ignored ? "true" : "false");
+    A(",\"order\":"); AI(seen[i].order);
+    A("}");
+  }
+  A("]}");
+  buf[p] = 0;
+
+  #undef A
+  #undef AI
+  #undef AI64
+  #undef ASTR
+
+  static const char path[] = "";
+  state_set(path, 0, buf, p);
+}
+
 /* ======================================================================
  * Exports
  * ====================================================================== */
@@ -211,6 +271,7 @@ void init(void) {
   for (int i = 0; i < key_len && p < 127; i++) init_msg[p++] = key_buf[i];
   init_msg[p] = 0;
   log_msg(LOG_INFO, init_msg);
+  publish_state();
 }
 
 __attribute__((export_name("tick")))
@@ -239,6 +300,8 @@ void tick(double dt) {
       resolume_set_param(output_id, val);
     }
   }
+
+  publish_state();
 }
 
 __attribute__((export_name("on_param_change")))
@@ -322,7 +385,46 @@ void on_resolume_param(long long param_id, double value) {
 
 __attribute__((export_name("on_state_changed")))
 void on_state_changed(void) {
-  /* No external state editing for now */
+  /* Read input_id and output_id from canonical state (may be set by editor) */
+  static const char assign_paths[] =
+    "/input_id\0"   /* offset 0, len 9 */
+    "/output_id\0"; /* offset 10, len 10 */
+
+  struct { double input_id_f; double output_id_f; } abuf;
+  JDocField alayout[2] = {
+    { 0, 9,  JDOC_TYPE_F64, 0, 0 },
+    { 10, 10, JDOC_TYPE_F64, 8, 0 },
+  };
+  JDocResult aresults[2];
+
+  state_read((const char*)alayout, 2, assign_paths,
+             (char*)&abuf, (int)sizeof(abuf), (char*)aresults);
+
+  if (aresults[0].found && aresults[1].found) {
+    long long new_input = (long long)abuf.input_id_f;
+    long long new_output = (long long)abuf.output_id_f;
+
+    if (new_input != input_id || new_output != output_id) {
+      input_id = new_input;
+      output_id = new_output;
+
+      /* Look up paths */
+      if (input_id >= 0) {
+        input_path_len = resolume_get_param_path(input_id, input_path, sizeof(input_path) - 1);
+        input_path[input_path_len] = 0;
+        input_value = resolume_get_param(input_id);
+      }
+      if (output_id >= 0) {
+        output_path_len = resolume_get_param_path(output_id, output_path, sizeof(output_path) - 1);
+        output_path[output_path_len] = 0;
+        output_value = resolume_get_param(output_id);
+      }
+
+      if (input_id >= 0 && output_id >= 0) {
+        log_msg(LOG_INFO, "Assignment updated from editor");
+      }
+    }
+  }
 }
 
 __attribute__((export_name("render")))

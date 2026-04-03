@@ -1,6 +1,11 @@
 import { GPURenderer } from './gpu-renderer';
 import { WasmHost, WasmModule, ConsoleEntry, ParamDecl } from './wasm-host';
 import { FAKE_PARAMS, FakeParam } from './fake-resolume-params';
+import { ModuleClient } from './module-client';
+import { editorRegistry } from './editor-registry';
+
+// Import editor registrations
+import './editors/paramlinker-editor';
 
 const FREQUENCIES = [523.25, 659.26, 783.99, 1046.50];
 
@@ -26,6 +31,8 @@ const stateEditorEl = document.getElementById('state-editor')!;
 const stateTextarea = document.getElementById('state-textarea') as HTMLTextAreaElement;
 const consoleEl = document.getElementById('console-content')!;
 const paramsEl = document.getElementById('params-content')!;
+const editorPanelEl = document.getElementById('panel-editor')!;
+const editorContentEl = document.getElementById('editor-content')!;
 const resolumePanelEl = document.getElementById('panel-resolume')!;
 const resolumeContentEl = document.getElementById('resolume-content')!;
 const legendEl = document.getElementById('legend')!;
@@ -293,6 +300,23 @@ async function main() {
     resolumePanelEl.style.display = '';
     buildResolumePanel(host, wasmModule);
 
+    // Mount editor if one is registered for this module type
+    let moduleClient: ModuleClient | null = null;
+    let editorEl: HTMLElement | null = null;
+    editorContentEl.innerHTML = '';
+    editorPanelEl.style.display = 'none';
+
+    if (host.metadata) {
+      const factory = editorRegistry.getFactory(host.metadata.id);
+      if (factory) {
+        const pluginKey = `${host.metadata.id}@0`;
+        moduleClient = new ModuleClient(pluginKey, host, wasmModule);
+        editorEl = factory.create(pluginKey, moduleClient);
+        editorContentEl.appendChild(editorEl);
+        editorPanelEl.style.display = '';
+      }
+    }
+
     // State editor
     stateEditBtn.onclick = () => {
       stateEditing = true;
@@ -414,6 +438,14 @@ async function main() {
       running = false;
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
+      if (moduleClient) { moduleClient.dispose(); moduleClient = null; }
+      if (editorEl) {
+        const factory = host.metadata ? editorRegistry.getFactory(host.metadata.id) : undefined;
+        if (factory) factory.destroy(editorEl);
+        editorContentEl.innerHTML = '';
+        editorPanelEl.style.display = 'none';
+        editorEl = null;
+      }
     };
   }
 

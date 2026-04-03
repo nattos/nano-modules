@@ -5,6 +5,8 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noImplicitAny": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
     "esModuleInterop": true,
     "sourceMap": true,
     "outDir": "dist",
