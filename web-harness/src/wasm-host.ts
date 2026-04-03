@@ -57,9 +57,11 @@ export class WasmHost {
   metadata: { id: string; version: string } | null = null;
   params: ParamDecl[] = [];
 
-  // Resolume param subscriptions
+  // Resolume param subscriptions and value store
   subscribeQueries: string[] = [];
   paramPaths: Map<bigint, string> = new Map();
+  resolumeParamValues: Map<bigint, number> = new Map();
+  onResolumeParamSet: ((id: bigint, value: number) => void) | null = null;
 
   registerParamPath(id: bigint, path: string) {
     this.paramPaths.set(id, path);
@@ -67,6 +69,10 @@ export class WasmHost {
 
   resolveParamPath(id: bigint): string {
     return this.paramPaths.get(id) ?? `param/${id}`;
+  }
+
+  setResolumeParamValue(id: bigint, value: number) {
+    this.resolumeParamValues.set(id, value);
   }
 
   onAudioTrigger: AudioCallback = () => {};
@@ -90,8 +96,11 @@ export class WasmHost {
 
     const importObject: WebAssembly.Imports = {
       env: {
-        resolume_get_param: (_id: bigint) => 0,
-        resolume_set_param: (_id: bigint, _value: number) => {},
+        resolume_get_param: (id: bigint) => this.resolumeParamValues.get(id) ?? 0,
+        resolume_set_param: (id: bigint, value: number) => {
+          this.resolumeParamValues.set(id, value);
+          if (this.onResolumeParamSet) this.onResolumeParamSet(id, value);
+        },
         log: (ptr: number, len: number) => {
           console.log('[wasm]', this.readString(ptr, len));
         },
@@ -137,8 +146,11 @@ export class WasmHost {
         },
       },
       resolume: {
-        get_param: (_id: bigint) => 0,
-        set_param: (_id: bigint, _value: number) => {},
+        get_param: (id: bigint) => this.resolumeParamValues.get(id) ?? 0,
+        set_param: (id: bigint, value: number) => {
+          this.resolumeParamValues.set(id, value);
+          if (this.onResolumeParamSet) this.onResolumeParamSet(id, value);
+        },
         trigger_clip: (_clipId: bigint, _on: number) => {},
         subscribe_param: (_id: bigint) => {},
         subscribe_query: (queryPtr: number, queryLen: number) => {

@@ -148,12 +148,14 @@ function buildParamUI(params: ParamDecl[], host: WasmHost, wasmModule: WasmModul
 function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
   resolumeContentEl.innerHTML = '';
 
-  // Register all fake param paths
+  // Register all fake param paths and seed values
   for (const fp of FAKE_PARAMS) {
     host.registerParamPath(fp.id, fp.path);
-    // Also seed the param cache so get_param works
-    host.pluginState[`_rparam_${fp.id}`] = fp.value;
+    host.setResolumeParamValue(fp.id, fp.value);
   }
+
+  // Map param IDs to their slider/checkbox elements for write-back
+  const paramElements = new Map<bigint, { slider?: HTMLInputElement, checkbox?: HTMLInputElement, valueEl: HTMLElement }>();
 
   for (const fp of FAKE_PARAMS) {
     const row = document.createElement('div');
@@ -182,10 +184,12 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
       slider.addEventListener('input', () => {
         const val = parseFloat(slider.value);
         fp.value = val;
+        host.setResolumeParamValue(fp.id, val);
         valueEl.textContent = val.toFixed(2);
         fireResolumeParam(host, wasmModule, fp.id, val);
       });
       row.appendChild(slider);
+      paramElements.set(fp.id, { slider, valueEl });
     } else {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
@@ -193,16 +197,34 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
       cb.addEventListener('change', () => {
         const val = cb.checked ? 1.0 : 0.0;
         fp.value = val;
+        host.setResolumeParamValue(fp.id, val);
         valueEl.textContent = val.toFixed(0);
         fireResolumeParam(host, wasmModule, fp.id, val);
       });
       valueEl.textContent = fp.value.toFixed(0);
       row.appendChild(cb);
+      paramElements.set(fp.id, { checkbox: cb, valueEl });
     }
 
     row.appendChild(valueEl);
     resolumeContentEl.appendChild(row);
   }
+
+  // Handle write-back from WASM module (resolume.set_param)
+  host.onResolumeParamSet = (id: bigint, value: number) => {
+    const el = paramElements.get(id);
+    if (!el) return;
+    if (el.slider) {
+      el.slider.value = String(value);
+      el.valueEl.textContent = value.toFixed(2);
+    } else if (el.checkbox) {
+      el.checkbox.checked = value > 0.5;
+      el.valueEl.textContent = value.toFixed(0);
+    }
+    // Update the fake param data too
+    const fp = FAKE_PARAMS.find(p => p.id === id);
+    if (fp) fp.value = value;
+  };
 }
 
 function fireResolumeParam(host: WasmHost, wasmModule: WasmModule, paramId: bigint, value: number) {
