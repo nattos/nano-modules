@@ -1,4 +1,5 @@
 import type { DrawCmd } from './gpu-renderer';
+import type { GPUHost } from './gpu-host';
 import * as fakeResolume from './fake-resolume';
 
 export interface FrameState {
@@ -74,6 +75,8 @@ export class WasmHost {
   setResolumeParamValue(id: bigint, value: number) {
     this.resolumeParamValues.set(id, value);
   }
+
+  gpuHost: GPUHost | null = null;
 
   onAudioTrigger: AudioCallback = () => {};
   onStateChange: StateChangeCallback = () => {};
@@ -330,6 +333,36 @@ export class WasmHost {
           return overflowCount;
         },
       },
+      gpu: this.gpuHost
+        ? this.gpuHost.buildImports(
+            (ptr, len) => new Uint8Array(this.memory.buffer).slice(ptr, ptr + len),
+            (ptr, len) => decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
+          )
+        : {
+            // Stubs if no GPU host
+            get_backend: () => -1,
+            create_shader_module: () => -1,
+            create_buffer: () => -1,
+            create_texture: () => -1,
+            create_compute_pso: () => -1,
+            create_render_pso: () => -1,
+            write_buffer: () => {},
+            begin_compute_pass: () => -1,
+            compute_set_pso: () => {},
+            compute_set_buffer: () => {},
+            compute_dispatch: () => {},
+            end_compute_pass: () => {},
+            begin_render_pass: () => -1,
+            render_set_pso: () => {},
+            render_set_vertex_buffer: () => {},
+            render_draw: () => {},
+            end_render_pass: () => {},
+            submit: () => {},
+            get_render_target: () => -1,
+            get_render_target_width: () => 0,
+            get_render_target_height: () => 0,
+            release: () => {},
+          },
     };
 
     const result = await WebAssembly.instantiate(bytes, importObject);

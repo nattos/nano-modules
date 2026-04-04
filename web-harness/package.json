@@ -9,19 +9,23 @@
     "test:e2e": "jest"
   },
   "devDependencies": {
-    "typescript": "^5.2.2",
-    "vite": "^7.1.9",
-    "vitest": "^4.0.9",
-    "lit": "^2.8.0",
-    "mobx": "^6.15.0",
+    "@babel/preset-env": "^7.28.5",
+    "@babel/preset-typescript": "^7.28.5",
+    "@types/expect-puppeteer": "^5.0.0",
+    "@types/jest": "^29.5.0",
     "@webgpu/types": "^0.1.60",
     "jest": "^29.7.0",
     "jest-puppeteer": "^10.0.1",
+    "lit": "^2.8.0",
+    "mobx": "^6.15.0",
     "puppeteer": "^22.10.0",
     "ts-jest": "^29.4.5",
-    "@babel/preset-env": "^7.28.5",
-    "@babel/preset-typescript": "^7.28.5",
-    "@types/jest": "^29.5.0",
-    "@types/expect-puppeteer": "^5.0.0"
+    "typescript": "^5.2.2",
+    "vite": "^7.1.9",
+    "vitest": "^4.0.9"
+  },
+  "dependencies": {
+    "naga-wasm": "^1.0.0",
+    "wasm-naga": "^0.3.2"
   }
 }

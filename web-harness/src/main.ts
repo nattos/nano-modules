@@ -1,4 +1,5 @@
 import { GPURenderer } from './gpu-renderer';
+import { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, ConsoleEntry, ParamDecl } from './wasm-host';
 import { FAKE_PARAMS, FakeParam } from './fake-resolume-params';
 import { ModuleClient } from './module-client';
@@ -269,6 +270,7 @@ async function main() {
     resolumeContentEl.innerHTML = '';
 
     const host = new WasmHost();
+    host.gpuHost = new GPUHost(renderer.device, renderer.format);
     host.onAudioTrigger = triggerAudio;
     host.onStateChange = (state) => updateStateDisplay(state);
     host.onLog = (entry) => addLogEntry(entry);
@@ -418,15 +420,26 @@ async function main() {
       host.frameState.viewportH = vpH;
 
       wasmModule.tick(dt);
+
+      // Set GPU surface each frame (module may or may not use it)
+      if (host.gpuHost) {
+        const surfaceTex = renderer.context.getCurrentTexture();
+        host.gpuHost.setSurface(surfaceTex, vpW, vpH);
+      }
+
       host.drawList = [];
       wasmModule.render(vpW, vpH);
 
-      renderer.beginFrame(vpW, vpH);
-      renderer.execute(host.drawList);
-      renderer.endFrame();
+      // If draw list has commands, render via canvas path
+      // If empty, module used gpu.* calls directly (GPU mode)
+      if (host.drawList.length > 0) {
+        renderer.beginFrame(vpW, vpH);
+        renderer.execute(host.drawList);
+        renderer.endFrame();
+      }
 
       const step = Math.floor(barPhase * 16);
-      statusEl.textContent = `${fps} FPS | ${bpm} BPM | Step ${step + 1}/16 | ${host.drawList.length} cmds`;
+      statusEl.textContent = `${fps} FPS | ${bpm} BPM | Step ${step + 1}/16`;
 
       requestAnimationFrame(frame);
     }

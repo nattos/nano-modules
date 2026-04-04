@@ -16,9 +16,9 @@ const QUAD_STRIDE = 24; // 6 floats
 const TEXT_STRIDE = 32; // 8 floats
 
 export class GPURenderer {
-  private device!: GPUDevice;
-  private context!: GPUCanvasContext;
-  private format!: GPUTextureFormat;
+  device!: GPUDevice;
+  context!: GPUCanvasContext;
+  format!: GPUTextureFormat;
 
   // Quad pipeline
   private quadPipeline!: GPURenderPipeline;
