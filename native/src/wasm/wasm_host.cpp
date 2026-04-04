@@ -214,6 +214,11 @@ void WasmHost::set_state_doc(int32_t module_id, bridge::StateDocument* doc) {
   if (m) m->context.state_doc = doc;
 }
 
+void WasmHost::set_gpu_backend(int32_t module_id, gpu::GPUBackend* backend) {
+  auto* m = find_module(module_id);
+  if (m) m->context.gpu_backend = backend;
+}
+
 void WasmHost::log(const std::string& msg) {
   if (log_callback_) {
     log_callback_(msg);

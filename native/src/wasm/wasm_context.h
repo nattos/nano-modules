@@ -12,6 +12,10 @@ namespace bridge {
 class StateDocument;
 }
 
+namespace gpu {
+class GPUBackend;
+}
+
 namespace wasm {
 
 class WasmHost;
@@ -43,6 +47,9 @@ struct WasmContext {
 
   // Resolume param subscriptions (path queries, supports * wildcard)
   std::vector<std::string> subscribe_queries;
+
+  // GPU backend
+  gpu::GPUBackend* gpu_backend = nullptr;
 };
 
 } // namespace wasm

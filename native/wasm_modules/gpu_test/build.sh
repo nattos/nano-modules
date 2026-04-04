@@ -4,26 +4,30 @@ cd "$(dirname "$0")"
 OUT_DIR="${1:-../../build}"
 mkdir -p "$OUT_DIR"
 
-echo "=== Compiling shaders (HLSL → SPIR-V → WGSL) ==="
+echo "=== Compiling shaders (HLSL → SPIR-V → WGSL + MSL) ==="
 glslc -fshader-stage=compute -x hlsl compute.hlsl -o "$OUT_DIR/gpu_test_compute.spv"
 glslc -fshader-stage=vertex -x hlsl vertex.hlsl -o "$OUT_DIR/gpu_test_vertex.spv"
 glslc -fshader-stage=fragment -x hlsl fragment.hlsl -o "$OUT_DIR/gpu_test_fragment.spv"
 
-naga "$OUT_DIR/gpu_test_compute.spv" "$OUT_DIR/gpu_test_compute.wgsl"
-naga "$OUT_DIR/gpu_test_vertex.spv" "$OUT_DIR/gpu_test_vertex.wgsl"
-naga "$OUT_DIR/gpu_test_fragment.spv" "$OUT_DIR/gpu_test_fragment.wgsl"
-echo "  Shaders compiled"
+for name in compute vertex fragment; do
+  naga "$OUT_DIR/gpu_test_${name}.spv" "$OUT_DIR/gpu_test_${name}.wgsl"
+  naga "$OUT_DIR/gpu_test_${name}.spv" "$OUT_DIR/gpu_test_${name}.metal"
+done
+echo "  Shaders compiled (WGSL + MSL)"
 
-# Generate C header
+# Generate C header with both WGSL and MSL
 {
-  echo '/* Auto-generated. Do not edit. */'
+  echo '/* Auto-generated fat shader header. Do not edit. */'
   echo '#ifndef GPU_TEST_SHADERS_H'
   echo '#define GPU_TEST_SHADERS_H'
   for name in compute vertex fragment; do
-    varname=$(echo "${name}_WGSL" | tr '[:lower:]' '[:upper:]')
-    echo "static const char ${varname}[] ="
-    sed 's/\\/\\\\/g; s/"/\\"/g; s/^/  "/; s/$/\\n"/' "$OUT_DIR/gpu_test_${name}.wgsl"
-    echo '  ;'
+    for lang in wgsl metal; do
+      if [ "$lang" = "wgsl" ]; then suffix="WGSL"; else suffix="MSL"; fi
+      varname=$(echo "${name}_${suffix}" | tr '[:lower:]' '[:upper:]')
+      echo "static const char ${varname}[] ="
+      sed 's/\\/\\\\/g; s/"/\\"/g; s/^/  "/; s/$/\\n"/' "$OUT_DIR/gpu_test_${name}.${lang}"
+      echo '  ;'
+    done
   done
   echo '#endif'
 } > "$OUT_DIR/gpu_test_shaders.h"

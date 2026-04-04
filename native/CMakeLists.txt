@@ -118,6 +118,18 @@ add_library(resolume_protocol STATIC
 target_include_directories(resolume_protocol PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(resolume_protocol PUBLIC nlohmann_json::nlohmann_json)
 
+# --- GPU Backend library ---
+if(APPLE)
+  add_library(gpu_backend STATIC
+    src/gpu/metal_backend.mm
+  )
+  target_include_directories(gpu_backend PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(gpu_backend PUBLIC
+    "-framework Metal"
+    "-framework Foundation"
+  )
+endif()
+
 # --- WASM Host library ---
 add_library(wasm_host STATIC
   src/wasm/wasm_host.cpp
@@ -125,6 +137,9 @@ add_library(wasm_host STATIC
 )
 target_include_directories(wasm_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(wasm_host PUBLIC param_cache vmlib state_system)
+if(APPLE)
+  target_link_libraries(wasm_host PUBLIC gpu_backend)
+endif()
 
 # --- Resolume WS Client library ---
 add_library(resolume_client STATIC
@@ -212,6 +227,19 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
     NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/build/nanolooper.wasm"
   )
   catch_discover_tests(test_nanolooper_wasm)
+endif()
+
+# Metal GPU pipeline test
+if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/build/gpu_test.wasm")
+  add_executable(test_gpu_metal tests/test_gpu_metal.mm)
+  target_link_libraries(test_gpu_metal PRIVATE
+    wasm_host gpu_backend Catch2::Catch2WithMain
+    "-framework Metal" "-framework Foundation"
+  )
+  target_compile_definitions(test_gpu_metal PRIVATE
+    GPU_TEST_WASM_PATH="${CMAKE_SOURCE_DIR}/build/gpu_test.wasm"
+  )
+  catch_discover_tests(test_gpu_metal)
 endif()
 
 add_executable(test_json_patch tests/test_json_patch.cpp)

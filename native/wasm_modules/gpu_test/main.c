@@ -76,21 +76,31 @@ void init(void) {
   static const char id[] = "com.nattos.gpu_test";
   state_set_metadata(id, sizeof(id) - 1, (1 << 16));
 
-  if (gpu_get_backend() < 0) return;
+  int backend = gpu_get_backend();
+  if (backend < 0) return;
 
-  int h_cs = gpu_create_shader_module(COMPUTE_WGSL, str_len(COMPUTE_WGSL));
-  int h_vs = gpu_create_shader_module(VERTEX_WGSL, str_len(VERTEX_WGSL));
-  int h_fs = gpu_create_shader_module(FRAGMENT_WGSL, str_len(FRAGMENT_WGSL));
+  /* Select shader source based on backend: 0=Metal(MSL), 1=WebGPU(WGSL) */
+  const char *cs_src, *vs_src, *fs_src;
+  const char *cs_entry_name, *vs_entry_name, *fs_entry_name;
+  if (backend == 0) {
+    /* Metal: use MSL, naga generates "main_" prefixed entry points */
+    cs_src = COMPUTE_MSL; vs_src = VERTEX_MSL; fs_src = FRAGMENT_MSL;
+    cs_entry_name = "main_"; vs_entry_name = "main_"; fs_entry_name = "main_";
+  } else {
+    /* WebGPU: use WGSL */
+    cs_src = COMPUTE_WGSL; vs_src = VERTEX_WGSL; fs_src = FRAGMENT_WGSL;
+    cs_entry_name = "main"; vs_entry_name = "main"; fs_entry_name = "main";
+  }
+
+  int h_cs = gpu_create_shader_module(cs_src, str_len(cs_src));
+  int h_vs = gpu_create_shader_module(vs_src, str_len(vs_src));
+  int h_fs = gpu_create_shader_module(fs_src, str_len(fs_src));
   if (h_cs < 0 || h_vs < 0 || h_fs < 0) return;
 
-  static const char cs_entry[] = "main";
-  static const char vs_entry[] = "main";
-  static const char fs_entry[] = "main";
-
-  h_compute_pso = gpu_create_compute_pso(h_cs, cs_entry, sizeof(cs_entry) - 1);
+  h_compute_pso = gpu_create_compute_pso(h_cs, cs_entry_name, str_len(cs_entry_name));
   h_render_pso = gpu_create_render_pso(
-      h_vs, vs_entry, sizeof(vs_entry) - 1,
-      h_fs, fs_entry, sizeof(fs_entry) - 1, 2);
+      h_vs, vs_entry_name, str_len(vs_entry_name),
+      h_fs, fs_entry_name, str_len(fs_entry_name), 2);
 
   h_uniform_buf = gpu_create_buffer(16, 2); /* uniform */
   h_vertex_buf = gpu_create_buffer(6 * 24, 1); /* storage: 6 verts × 24 bytes */

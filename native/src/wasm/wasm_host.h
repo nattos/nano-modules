@@ -75,6 +75,9 @@ public:
   /// Set the StateDocument for state host functions.
   void set_state_doc(int32_t module_id, bridge::StateDocument* doc);
 
+  /// Set the GPU backend for gpu.* host functions.
+  void set_gpu_backend(int32_t module_id, gpu::GPUBackend* backend);
+
 private:
   struct LoadedModule {
     std::vector<uint8_t> bytecode;
