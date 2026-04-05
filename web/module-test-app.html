@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WASM Plugin Harness</title>
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <div id="main-layout">
+    <div id="canvas-container">
+      <canvas id="canvas"></canvas>
+      <div id="status">Loading...</div>
+      <div id="legend"></div>
+    </div>
+    <div id="side-panel">
+      <div id="panel-module" class="panel-section">
+        <div class="panel-header">Module</div>
+        <div class="panel-body">
+          <select id="module-select">
+            <option value="nanolooper">NanoLooper</option>
+            <option value="paramlinker">ParamLinker</option>
+            <option value="spinningtris">SpinningTris (GPU)</option>
+          </select>
+        </div>
+      </div>
+      <div id="panel-metadata" class="panel-section">
+        <div class="panel-header">Plugin</div>
+        <div id="metadata-content" class="panel-body">--</div>
+      </div>
+      <div id="panel-params" class="panel-section">
+        <div class="panel-header">Parameters</div>
+        <div id="params-content" class="panel-body panel-scroll" style="max-height:220px"></div>
+      </div>
+      <div id="panel-editor" class="panel-section" style="display:none">
+        <div class="panel-header">Editor</div>
+        <div id="editor-content"></div>
+      </div>
+      <div id="panel-resolume" class="panel-section" style="display:none">
+        <div class="panel-header">Resolume Params</div>
+        <div id="resolume-content" class="panel-body panel-scroll" style="max-height:220px"></div>
+      </div>
+      <div id="panel-state" class="panel-section">
+        <div class="panel-header">
+          State
+          <button id="state-edit-btn" class="panel-btn">Edit</button>
+        </div>
+        <pre id="state-content" class="panel-body panel-json" style="max-height:120px">{ }</pre>
+        <div id="state-editor" class="panel-body" style="display:none">
+          <textarea id="state-textarea" spellcheck="false"></textarea>
+          <div class="editor-actions">
+            <button id="state-apply-btn" class="panel-btn">Apply</button>
+            <button id="state-cancel-btn" class="panel-btn">Cancel</button>
+          </div>
+        </div>
+      </div>
+      <div id="panel-console" class="panel-section panel-grow">
+        <div class="panel-header">Console</div>
+        <div id="console-content" class="panel-body panel-scroll"></div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="src/module-test-app.ts"></script>
+</body>
+</html>

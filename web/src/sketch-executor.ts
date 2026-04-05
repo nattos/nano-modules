@@ -57,7 +57,7 @@ export class SketchExecutor {
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
 
-    const module = await host.load(`wasm/${entry.module_type.split('.').pop()}.wasm`);
+    const module = await host.load(`/wasm/${entry.module_type.split('.').pop()}.wasm`);
     module.init();
 
     loaded = { host, module };

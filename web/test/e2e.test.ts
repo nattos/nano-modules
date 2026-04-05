@@ -6,7 +6,7 @@ describe('NanoLooper Web Harness E2E', () => {
   jest.setTimeout(15000);
 
   beforeAll(async () => {
-    await page.goto('http://localhost:5174', { waitUntil: 'networkidle0' });
+    await page.goto('http://localhost:5174/module-test-app.html', { waitUntil: 'networkidle0' });
   });
 
   it('page loads without errors', async () => {

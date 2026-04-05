@@ -100,7 +100,7 @@ export class BridgeCore {
   private scratchPtr: number = 0;
 
   async init(): Promise<void> {
-    const response = await fetch('wasm/bridge_core.wasm');
+    const response = await fetch('/wasm/bridge_core.wasm');
     const bytes = await response.arrayBuffer();
 
     let memoryRef: WebAssembly.Memory;

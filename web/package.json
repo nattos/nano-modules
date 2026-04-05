@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "dev": "vite --port 5174",
+    "dev": "vite",
     "build": "vite build",
     "test": "vitest --run",
     "test:e2e": "jest"

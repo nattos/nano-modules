@@ -3,63 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WASM Plugin Harness</title>
+  <title>Nano Modules</title>
   <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
-  <div id="main-layout">
-    <div id="canvas-container">
-      <canvas id="canvas"></canvas>
-      <div id="status">Loading...</div>
-      <div id="legend"></div>
+  <div id="app" class="app-layout">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="create">Create</button>
+      <button class="tab-btn" data-tab="organize">Organize</button>
+      <button class="tab-btn" data-tab="edit">Edit</button>
+      <div class="tab-status" id="tab-status"></div>
     </div>
-    <div id="side-panel">
-      <div id="panel-module" class="panel-section">
-        <div class="panel-header">Module</div>
-        <div class="panel-body">
-          <select id="module-select">
-            <option value="nanolooper">NanoLooper</option>
-            <option value="paramlinker">ParamLinker</option>
-            <option value="spinningtris">SpinningTris (GPU)</option>
-          </select>
+    <div class="app-content">
+      <div class="main-area" id="main-area"></div>
+      <div class="right-panel" id="right-panel">
+        <div class="right-content" id="right-content"></div>
+        <div class="preview-area">
+          <canvas id="preview-canvas"></canvas>
         </div>
-      </div>
-      <div id="panel-metadata" class="panel-section">
-        <div class="panel-header">Plugin</div>
-        <div id="metadata-content" class="panel-body">--</div>
-      </div>
-      <div id="panel-params" class="panel-section">
-        <div class="panel-header">Parameters</div>
-        <div id="params-content" class="panel-body panel-scroll" style="max-height:220px"></div>
-      </div>
-      <div id="panel-editor" class="panel-section" style="display:none">
-        <div class="panel-header">Editor</div>
-        <div id="editor-content"></div>
-      </div>
-      <div id="panel-resolume" class="panel-section" style="display:none">
-        <div class="panel-header">Resolume Params</div>
-        <div id="resolume-content" class="panel-body panel-scroll" style="max-height:220px"></div>
-      </div>
-      <div id="panel-state" class="panel-section">
-        <div class="panel-header">
-          State
-          <button id="state-edit-btn" class="panel-btn">Edit</button>
-        </div>
-        <pre id="state-content" class="panel-body panel-json" style="max-height:120px">{ }</pre>
-        <div id="state-editor" class="panel-body" style="display:none">
-          <textarea id="state-textarea" spellcheck="false"></textarea>
-          <div class="editor-actions">
-            <button id="state-apply-btn" class="panel-btn">Apply</button>
-            <button id="state-cancel-btn" class="panel-btn">Cancel</button>
-          </div>
-        </div>
-      </div>
-      <div id="panel-console" class="panel-section panel-grow">
-        <div class="panel-header">Console</div>
-        <div id="console-content" class="panel-body panel-scroll"></div>
       </div>
     </div>
   </div>
-  <script type="module" src="src/main.ts"></script>
+  <script type="module" src="src/app.ts"></script>
 </body>
 </html>
