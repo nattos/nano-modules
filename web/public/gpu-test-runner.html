@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head><title>GPU Test Runner</title></head>
+<body>
+<pre id="result">Waiting for test config...</pre>
+<script type="module">
+import { GPUHost } from '/src/gpu-host.ts';
+import { WasmHost } from '/src/wasm-host.ts';
+
+/*
+ * Generic GPU module test runner.
+ *
+ * The test config is passed via window.__gpuTestConfig before this script runs,
+ * or via URL search params as a fallback.
+ *
+ * Config shape:
+ * {
+ *   module: "gpu_test.wasm",       // Module filename (wasm/ prefix added automatically)
+ *   width: 64, height: 64,        // Render target size
+ *   params: [[0, 0.5], [1, 1.0]], // [index, value] pairs to set before render
+ *   ticks: 1,                     // Number of tick(0.016) calls before render
+ *   samplePoints: [[32,32], [0,0]], // [x,y] pixels to sample
+ * }
+ *
+ * Output (JSON in #result):
+ * {
+ *   success: true,
+ *   samples: [{ x, y, r, g, b, a }, ...],
+ *   consoleLog: ["..."],
+ *   pluginState: { ... },
+ *   error?: "..."
+ * }
+ */
+
+async function run() {
+  const resultEl = document.getElementById('result');
+
+  // Get config from window or URL
+  const config = window.__gpuTestConfig || (() => {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      module: p.get('module') || 'gpu_test.wasm',
+      width: parseInt(p.get('width') || '64'),
+      height: parseInt(p.get('height') || '64'),
+      params: JSON.parse(p.get('params') || '[]'),
+      ticks: parseInt(p.get('ticks') || '0'),
+      samplePoints: JSON.parse(p.get('samples') || '[]'),
+    };
+  })();
+
+  const W = config.width || 64;
+  const H = config.height || 64;
+
+  // Normalize module path: add wasm/ prefix if not present
+  let modulePath = config.module;
+  if (!modulePath.startsWith('wasm/')) {
+    modulePath = 'wasm/' + modulePath;
+  }
+
+  try {
+    // Init WebGPU
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error('No GPU adapter');
+    const device = await adapter.requestDevice();
+    const format = 'rgba8unorm';
+
+    // Create offscreen render target
+    const renderTarget = device.createTexture({
+      size: [W, H],
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+    });
+
+    const gpuHost = new GPUHost(device, format);
+    gpuHost.setSurface(renderTarget, W, H);
+
+    const wasmHost = new WasmHost();
+    wasmHost.gpuHost = gpuHost;
+
+    // Load module
+    const wasmModule = await wasmHost.load(modulePath);
+    wasmModule.init();
+
+    // Set parameters
+    if (config.params) {
+      for (const [index, value] of config.params) {
+        wasmHost.frameState.params[index] = value;
+        wasmModule.onParamChange(index, value);
+      }
+    }
+
+    // Set frame state
+    wasmHost.frameState.viewportW = W;
+    wasmHost.frameState.viewportH = H;
+    wasmHost.frameState.bpm = 120;
+
+    // Tick
+    const tickCount = config.ticks || 0;
+    for (let i = 0; i < tickCount; i++) {
+      wasmHost.frameState.elapsedTime = (i + 1) * 0.016;
+      wasmHost.frameState.deltaTime = 0.016;
+      wasmHost.frameState.barPhase = ((i + 1) * 0.016 * 120 / 60 / 4) % 1.0;
+      wasmModule.tick(0.016);
+    }
+
+    // Render
+    wasmModule.render(W, H);
+
+    // Readback pixels
+    const pixels = await gpuHost.readbackTexture(gpuHost.getSurfaceTexture(), W, H);
+
+    // Sample requested points (default: center + corners)
+    const points = (config.samplePoints && config.samplePoints.length > 0)
+      ? config.samplePoints
+      : [[W/2, H/2], [0, 0], [W-1, 0], [0, H-1], [W-1, H-1]];
+
+    const samples = points.map(([x, y]) => {
+      x = Math.floor(x);
+      y = Math.floor(y);
+      const o = (y * W + x) * 4;
+      return { x, y, r: pixels[o], g: pixels[o+1], b: pixels[o+2], a: pixels[o+3] };
+    });
+
+    // Encode raw RGBA pixels as base64 for PNG dumping
+    let pixelsBase64 = '';
+    if (config.dumpPixels !== false) {
+      const chunks = [];
+      for (let i = 0; i < pixels.length; i += 8192) {
+        chunks.push(String.fromCharCode.apply(null, pixels.subarray(i, Math.min(i + 8192, pixels.length))));
+      }
+      pixelsBase64 = btoa(chunks.join(''));
+    }
+
+    const output = {
+      success: true,
+      width: W,
+      height: H,
+      pixelCount: pixels.length / 4,
+      samples,
+      pixelsBase64,
+      consoleLog: wasmHost.consoleLogs.map(l => l.message),
+      pluginState: wasmHost.pluginState,
+      metadata: wasmHost.metadata,
+      params: wasmHost.params,
+    };
+
+    resultEl.textContent = JSON.stringify(output, null, 2);
+  } catch (e) {
+    resultEl.textContent = JSON.stringify({ success: false, error: String(e), stack: e.stack }, null, 2);
+  }
+}
+
+// Allow external config injection, then run
+window.__gpuTestRun = run;
+if (window.__gpuTestConfig) {
+  run();
+} else {
+  // Auto-run if URL params are present
+  if (new URLSearchParams(window.location.search).has('module')) {
+    run();
+  }
+}
+</script>
+</body>
+</html>
