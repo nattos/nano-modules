@@ -1,12 +1,12 @@
 #pragma once
 
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "bridge/platform/mutex.h"
 #include "json/json_patch.h"
 
 namespace bridge {
@@ -84,7 +84,7 @@ public:
   std::vector<json_patch::PatchOp> drain_patches();
 
 private:
-  mutable std::mutex mutex_;
+  mutable platform::Mutex mutex_;
   nlohmann::json doc_;
   std::vector<json_patch::PatchOp> pending_;
   std::unordered_map<std::string, int> next_instance_; // per plugin-id counter

@@ -3,7 +3,6 @@
 #include "bridge/ws_server.h"
 #include "resolume/ws_client.h"
 #include "wasm/wasm_host.h"
-#include "json/json_patch.h"
 
 #include <nlohmann/json.hpp>
 
@@ -37,7 +36,7 @@ void BridgeServer::init_subsystems() {
   std::lock_guard lock(tick_mutex_);
   if (subsystems_initialized_) return;
 
-  wasm_host_ = std::make_unique<wasm::WasmHost>(param_cache_);
+  wasm_host_ = std::make_unique<wasm::WasmHost>(core_.param_cache());
   wasm_host_->init();
 
   resolume_client_ = std::make_unique<resolume::WsClient>();
@@ -45,12 +44,19 @@ void BridgeServer::init_subsystems() {
 
   ws_server_ = std::make_unique<WsServer>();
   ws_server_->set_message_callback([this](int client_id, const std::string& msg) {
-    handle_ws_message(client_id, msg);
+    std::lock_guard lock(tick_mutex_);
+    core_.handle_message(client_id, msg);
   });
   ws_server_->set_disconnect_callback([this](int client_id) {
     std::lock_guard lock(tick_mutex_);
-    observers_.remove_client(client_id);
+    core_.remove_client(client_id);
   });
+
+  // Wire up BridgeCore's send callback to the WS server
+  core_.set_send_callback([this](int client_id, const std::string& msg) {
+    ws_server_->send_to(client_id, msg);
+  });
+
   ws_server_->start(8081);
 
   subsystems_initialized_ = true;
@@ -74,7 +80,7 @@ void BridgeServer::tick() {
   if (!subsystems_initialized_) return;
   process_resolume_messages();
   flush_outbox();
-  broadcast_state_patches();
+  core_.broadcast_state_patches();
 }
 
 void BridgeServer::process_resolume_messages() {
@@ -84,100 +90,35 @@ void BridgeServer::process_resolume_messages() {
   for (auto& msg : messages) {
     if (auto* cs = std::get_if<resolume::CompositionState>(&msg)) {
       auto comp = resolume::parse_composition(cs->data);
-      composition_cache_.rebuild(comp);
+      core_.composition_cache().rebuild(comp);
       if (cs->data.contains("tempocontroller") &&
           cs->data["tempocontroller"].contains("tempo")) {
         auto& tempo = cs->data["tempocontroller"]["tempo"];
         if (tempo.contains("value") && tempo["value"].is_number()) {
-          composition_cache_.set_bpm(tempo["value"].get<double>());
+          core_.composition_cache().set_bpm(tempo["value"].get<double>());
         }
       }
     } else if (auto* ps = std::get_if<resolume::ParameterSubscribed>(&msg)) {
-      if (ps->value.is_number()) param_cache_.set(ps->id, ps->value.get<double>());
-      param_paths_[ps->id] = ps->path;
+      if (ps->value.is_number()) core_.param_cache().set(ps->id, ps->value.get<double>());
+      core_.set_param_path(ps->id, ps->path);
     } else if (auto* pu = std::get_if<resolume::ParameterUpdate>(&msg)) {
-      if (pu->value.is_number()) param_cache_.set(pu->id, pu->value.get<double>());
+      if (pu->value.is_number()) core_.param_cache().set(pu->id, pu->value.get<double>());
     }
   }
 }
 
 void BridgeServer::flush_outbox() {
   if (!resolume_client_) return;
-  auto writes = param_cache_.drain_outbox();
+  auto writes = core_.param_cache().drain_outbox();
   for (auto& [param_id, value] : writes) {
-    auto it = param_paths_.find(param_id);
-    if (it != param_paths_.end()) {
-      resolume_client_->set(it->second, param_id, value);
+    auto path = core_.get_param_path(param_id);
+    if (!path.empty()) {
+      resolume_client_->set(path, param_id, value);
     }
   }
 }
 
-void BridgeServer::broadcast_state_patches() {
-  auto patches = state_doc_.drain_patches();
-  if (patches.empty() || !ws_server_) return;
-
-  auto filtered = observers_.filter_patches(patches);
-  for (auto& [client_id, client_patches] : filtered) {
-    auto msg = nlohmann::json{
-      {"type", "patch"},
-      {"ops", json_patch::serialize_patch(client_patches)},
-    };
-    ws_server_->send_to(client_id, msg.dump());
-  }
-}
-
-void BridgeServer::handle_ws_message(int client_id, const std::string& msg) {
-  // Parse incoming JSON message (may be called from WS thread)
-  nlohmann::json j;
-  try { j = nlohmann::json::parse(msg); } catch (...) { return; }
-
-  if (!j.contains("action") || !j["action"].is_string()) return;
-  std::string action = j["action"].get<std::string>();
-
-  if (action == "observe") {
-    if (!j.contains("path") || !j["path"].is_string()) return;
-    std::lock_guard lock(tick_mutex_);
-    observers_.observe(client_id, j["path"].get<std::string>());
-  }
-  else if (action == "unobserve") {
-    if (!j.contains("path") || !j["path"].is_string()) return;
-    std::lock_guard lock(tick_mutex_);
-    observers_.unobserve(client_id, j["path"].get<std::string>());
-  }
-  else if (action == "get") {
-    std::string path = j.contains("path") ? j["path"].get<std::string>() : "";
-    nlohmann::json data;
-    {
-      std::lock_guard lock(tick_mutex_);
-      data = state_doc_.get_at(path);
-    }
-    auto response = nlohmann::json{
-      {"type", "snapshot"},
-      {"path", path},
-      {"data", data},
-    };
-    ws_server_->send_to(client_id, response.dump());
-  }
-  else if (action == "patch") {
-    if (!j.contains("target") || !j.contains("ops")) return;
-    std::string target = j["target"].get<std::string>();
-    auto ops = json_patch::parse_patch(j["ops"]);
-
-    // Extract plugin key from target path: /plugins/<key>/state
-    // Target must be like "/plugins/module_0/state"
-    if (target.find("/plugins/") != 0) return;
-    auto slash1 = target.find('/', 9); // after "/plugins/"
-    if (slash1 == std::string::npos) return;
-    std::string plugin_key = target.substr(9, slash1 - 9);
-    std::string suffix = target.substr(slash1); // e.g. "/state"
-    if (suffix != "/state") return;
-
-    std::lock_guard lock(tick_mutex_);
-    state_doc_.apply_client_patch(plugin_key, ops);
-  }
-}
-
-// --- WASM module management (unchanged) ---
+// --- WASM module management ---
 
 int32_t BridgeServer::load_wasm(const uint8_t* bytecode, uint32_t len) {
   std::lock_guard lock(tick_mutex_);
@@ -186,8 +127,7 @@ int32_t BridgeServer::load_wasm(const uint8_t* bytecode, uint32_t len) {
   if (id >= 0) {
     draw_lists_[id] = {};
     frame_states_[id] = {};
-    // Set state document pointer on the WASM context
-    wasm_host_->set_state_doc(id, &state_doc_);
+    wasm_host_->set_state_doc(id, &core_.state_document());
   }
   return id;
 }

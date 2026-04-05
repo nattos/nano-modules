@@ -6,10 +6,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "bridge/param_cache.h"
-#include "bridge/composition_cache.h"
-#include "bridge/state_document.h"
-#include "bridge/observer_registry.h"
+#include "bridge/bridge_core.h"
 #include "canvas/draw_list.h"
 #include "wasm/wasm_context.h"
 
@@ -32,9 +29,10 @@ public:
   void acquire();
   void release();
 
-  ParamCache& param_cache() { return param_cache_; }
-  CompositionCache& composition_cache() { return composition_cache_; }
-  StateDocument& state_document() { return state_doc_; }
+  BridgeCore& core() { return core_; }
+  ParamCache& param_cache() { return core_.param_cache(); }
+  CompositionCache& composition_cache() { return core_.composition_cache(); }
+  StateDocument& state_document() { return core_.state_document(); }
 
   void tick();
 
@@ -63,13 +61,8 @@ private:
   void shutdown_subsystems();
   void process_resolume_messages();
   void flush_outbox();
-  void broadcast_state_patches();
-  void handle_ws_message(int client_id, const std::string& msg);
 
-  ParamCache param_cache_;
-  CompositionCache composition_cache_;
-  StateDocument state_doc_;
-  ObserverRegistry observers_;
+  BridgeCore core_;
 
   std::atomic<int> ref_count_{0};
   std::mutex tick_mutex_;
@@ -79,7 +72,6 @@ private:
   std::unique_ptr<WsServer> ws_server_;
   std::unique_ptr<wasm::WasmHost> wasm_host_;
 
-  std::unordered_map<int64_t, std::string> param_paths_;
   std::unordered_map<int32_t, canvas::DrawList> draw_lists_;
   std::unordered_map<int32_t, wasm::FrameState> frame_states_;
 };

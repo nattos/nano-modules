@@ -1,9 +1,10 @@
 #pragma once
 
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <vector>
+
+#include "bridge/platform/mutex.h"
 
 #include "resolume/composition.h"
 
@@ -34,7 +35,7 @@ public:
   void set_bpm(double bpm);
 
 private:
-  mutable std::mutex mutex_;
+  mutable platform::Mutex mutex_;
   std::vector<CachedClip> clips_;
   double bpm_ = 120.0;
 

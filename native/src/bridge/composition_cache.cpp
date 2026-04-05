@@ -70,29 +70,29 @@ void CompositionCache::rebuild(const resolume::Composition& comp) {
     }
   }
 
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   clips_ = std::move(new_clips);
 }
 
 int CompositionCache::clip_count() const {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   return static_cast<int>(clips_.size());
 }
 
 CachedClip CompositionCache::get_clip(int index) const {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   if (index < 0 || index >= static_cast<int>(clips_.size()))
     return {};
   return clips_[index];
 }
 
 double CompositionCache::bpm() const {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   return bpm_;
 }
 
 void CompositionCache::set_bpm(double bpm) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   bpm_ = bpm;
 }
 

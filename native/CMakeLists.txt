@@ -155,19 +155,26 @@ add_library(bridge_ws_server STATIC
 target_include_directories(bridge_ws_server PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(bridge_ws_server PUBLIC ixwebsocket)
 
+# --- Bridge Core (platform-agnostic protocol engine) ---
+add_library(bridge_core STATIC
+  src/bridge/bridge_core.cpp
+  src/bridge/bridge_core_api.cpp
+)
+target_include_directories(bridge_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(bridge_core PUBLIC state_system param_cache resolume_protocol nlohmann_json::nlohmann_json)
+
 # --- Bridge Server shared library (dylib) ---
 add_library(bridge_server SHARED
   src/bridge/bridge_server.cpp
   src/bridge/bridge_api.cpp
-  src/bridge/param_cache.cpp
   src/bridge/composition_cache.cpp
 )
 target_include_directories(bridge_server PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(bridge_server PRIVATE
+  bridge_core
   resolume_client
   bridge_ws_server
   wasm_host
-  state_system
   nlohmann_json::nlohmann_json
 )
 

@@ -21,7 +21,7 @@ void StateDocument::emit(const std::string& op, const std::string& path,
 }
 
 std::string StateDocument::register_plugin(const PluginMetadata& meta) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
 
   int instance = next_instance_[meta.id]++;
   std::string key = meta.id + "@" + std::to_string(instance);
@@ -49,7 +49,7 @@ std::string StateDocument::register_plugin(const PluginMetadata& meta) {
 }
 
 void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl& param) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
 
   // Find the plugin in the global listing
   auto& plugins = doc_["global"]["plugins"];
@@ -69,7 +69,7 @@ void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl
 }
 
 void StateDocument::unregister_plugin(const std::string& key) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
 
   // Remove from global listing
   auto& plugins = doc_["global"]["plugins"];
@@ -89,7 +89,7 @@ void StateDocument::unregister_plugin(const std::string& key) {
 }
 
 void StateDocument::log(const std::string& plugin_key, const ConsoleEntry& entry) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
 
   auto* plugin = json_patch::resolve_pointer(doc_, "/plugins/" + plugin_key);
   if (!plugin || !plugin->contains("console")) return;
@@ -113,14 +113,14 @@ void StateDocument::log(const std::string& plugin_key, const ConsoleEntry& entry
 }
 
 json StateDocument::get_plugin_state(const std::string& key) const {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   auto* state = json_patch::resolve_pointer(doc_, "/plugins/" + key + "/state");
   if (!state) return json::object();
   return *state;
 }
 
 void StateDocument::set_plugin_state(const std::string& key, const json& state) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   std::string path = "/plugins/" + key + "/state";
   auto* target = json_patch::resolve_pointer(doc_, path);
   if (!target) return;
@@ -138,7 +138,7 @@ void StateDocument::set_plugin_state(const std::string& key, const json& state) 
 std::vector<json_patch::PatchOp> StateDocument::apply_client_patch(
     const std::string& plugin_key,
     const std::vector<json_patch::PatchOp>& ops) {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
 
   std::string state_path = "/plugins/" + plugin_key + "/state";
   auto* state = json_patch::resolve_pointer(doc_, state_path);
@@ -160,12 +160,12 @@ std::vector<json_patch::PatchOp> StateDocument::apply_client_patch(
 }
 
 json StateDocument::document() const {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   return doc_;
 }
 
 json StateDocument::get_at(const std::string& path) const {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   // Treat "/" as root (same as "")
   std::string resolved = (path == "/") ? "" : path;
   const auto* val = json_patch::resolve_pointer(doc_, resolved);
@@ -173,7 +173,7 @@ json StateDocument::get_at(const std::string& path) const {
 }
 
 std::vector<json_patch::PatchOp> StateDocument::drain_patches() {
-  std::lock_guard lock(mutex_);
+  platform::LockGuard<platform::Mutex> lock(mutex_);
   std::vector<json_patch::PatchOp> result;
   result.swap(pending_);
   return result;

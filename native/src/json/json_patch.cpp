@@ -1,8 +1,21 @@
 #include "json/json_patch.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 
 using json = nlohmann::json;
+
+// Safe string-to-size_t that doesn't throw.
+static bool safe_stoul(const std::string& s, size_t& out) {
+  if (s.empty()) return false;
+  char* end = nullptr;
+  errno = 0;
+  unsigned long val = std::strtoul(s.c_str(), &end, 10);
+  if (errno != 0 || end != s.c_str() + s.size()) return false;
+  out = static_cast<size_t>(val);
+  return true;
+}
 
 namespace json_patch {
 
@@ -66,11 +79,9 @@ json* resolve_pointer(json& doc, const std::string& path) {
       current = &(*it);
     } else if (current->is_array()) {
       if (token == "-") return nullptr; // can't resolve "past the end"
-      try {
-        size_t idx = std::stoul(token);
-        if (idx >= current->size()) return nullptr;
-        current = &(*current)[idx];
-      } catch (...) { return nullptr; }
+      size_t idx;
+      if (!safe_stoul(token, idx) || idx >= current->size()) return nullptr;
+      current = &(*current)[idx];
     } else {
       return nullptr;
     }
@@ -114,12 +125,10 @@ bool apply_op(json& doc, const PatchOp& op) {
         parent->push_back(op.value);
         return true;
       }
-      try {
-        size_t idx = std::stoul(key);
-        if (idx > parent->size()) return false;
-        parent->insert(parent->begin() + idx, op.value);
-        return true;
-      } catch (...) { return false; }
+      size_t idx;
+      if (!safe_stoul(key, idx) || idx > parent->size()) return false;
+      parent->insert(parent->begin() + idx, op.value);
+      return true;
     }
     return false;
   }
@@ -137,12 +146,10 @@ bool apply_op(json& doc, const PatchOp& op) {
       return true;
     }
     if (parent->is_array()) {
-      try {
-        size_t idx = std::stoul(key);
-        if (idx >= parent->size()) return false;
-        parent->erase(parent->begin() + idx);
-        return true;
-      } catch (...) { return false; }
+      size_t idx;
+      if (!safe_stoul(key, idx) || idx >= parent->size()) return false;
+      parent->erase(parent->begin() + idx);
+      return true;
     }
     return false;
   }

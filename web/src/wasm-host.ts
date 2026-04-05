@@ -1,5 +1,6 @@
 import type { DrawCmd } from './gpu-renderer';
 import type { GPUHost } from './gpu-host';
+import type { BridgeCore } from './bridge-core';
 import { createWasiShim } from './wasi-shim';
 import * as fakeResolume from './fake-resolume';
 
@@ -53,29 +54,19 @@ export class WasmHost {
     viewportW: 0, viewportH: 0, params: new Array(16).fill(0),
   };
 
-  // State system
+  // Bridge core (shared protocol engine)
+  bridgeCore: BridgeCore | null = null;
+  pluginKey: string = '';
+
+  // Legacy direct state (used when no bridge core is available)
   pluginState: any = {};
   consoleLogs: ConsoleEntry[] = [];
   metadata: { id: string; version: string } | null = null;
   params: ParamDecl[] = [];
 
-  // Resolume param subscriptions and value store
+  // Resolume param subscriptions
   subscribeQueries: string[] = [];
-  paramPaths: Map<bigint, string> = new Map();
-  resolumeParamValues: Map<bigint, number> = new Map();
   onResolumeParamSet: ((id: bigint, value: number) => void) | null = null;
-
-  registerParamPath(id: bigint, path: string) {
-    this.paramPaths.set(id, path);
-  }
-
-  resolveParamPath(id: bigint): string {
-    return this.paramPaths.get(id) ?? `param/${id}`;
-  }
-
-  setResolumeParamValue(id: bigint, value: number) {
-    this.resolumeParamValues.set(id, value);
-  }
 
   gpuHost: GPUHost | null = null;
 
@@ -94,16 +85,25 @@ export class WasmHost {
     return len;
   }
 
+  private get useBridgeCore(): boolean {
+    return this.bridgeCore !== null;
+  }
+
   async load(wasmUrl: string): Promise<WasmModule> {
     const response = await fetch(wasmUrl);
     const bytes = await response.arrayBuffer();
+    const bc = this.bridgeCore;
 
     const importObject: WebAssembly.Imports = {
       wasi_snapshot_preview1: createWasiShim(() => this.memory),
       env: {
-        resolume_get_param: (id: bigint) => this.resolumeParamValues.get(id) ?? 0,
+        resolume_get_param: (id: bigint) =>
+          bc ? bc.getParam(id) : 0,
         resolume_set_param: (id: bigint, value: number) => {
-          this.resolumeParamValues.set(id, value);
+          if (bc) {
+            bc.setParam(id, value);
+            bc.queueParamWrite(id, value);
+          }
           if (this.onResolumeParamSet) this.onResolumeParamSet(id, value);
         },
         log: (ptr: number, len: number) => {
@@ -151,9 +151,13 @@ export class WasmHost {
         },
       },
       resolume: {
-        get_param: (id: bigint) => this.resolumeParamValues.get(id) ?? 0,
+        get_param: (id: bigint) =>
+          bc ? bc.getParam(id) : 0,
         set_param: (id: bigint, value: number) => {
-          this.resolumeParamValues.set(id, value);
+          if (bc) {
+            bc.setParam(id, value);
+            bc.queueParamWrite(id, value);
+          }
           if (this.onResolumeParamSet) this.onResolumeParamSet(id, value);
         },
         trigger_clip: (_clipId: bigint, _on: number) => {},
@@ -163,7 +167,7 @@ export class WasmHost {
           this.subscribeQueries.push(query);
         },
         get_param_path: (paramId: bigint, bufPtr: number, bufLen: number): number => {
-          const path = this.resolveParamPath(paramId);
+          const path = bc ? bc.getParamPath(paramId) : `param/${paramId}`;
           return this.writeString(bufPtr, bufLen, path);
         },
         get_clip_count: () => fakeResolume.getClipCount(),
@@ -182,11 +186,14 @@ export class WasmHost {
                         type: number, defaultValue: number) => {
           const name = this.readString(namePtr, nameLen);
           this.params.push({ index, name, type, defaultValue });
+          if (bc && this.pluginKey) {
+            bc.declareParam(this.pluginKey, index, name, type, defaultValue);
+          }
         },
         get_key: (bufPtr: number, bufLen: number): number => {
-          const key = this.metadata?.id
+          const key = this.pluginKey || (this.metadata?.id
             ? `${this.metadata.id}@0`
-            : 'unknown@0';
+            : 'unknown@0');
           return this.writeString(bufPtr, bufLen, key);
         },
         set_metadata: (idPtr: number, idLen: number, versionPacked: number) => {
@@ -195,6 +202,9 @@ export class WasmHost {
           const minor = (versionPacked >> 8) & 0xFF;
           const patch = versionPacked & 0xFF;
           this.metadata = { id, version: `${major}.${minor}.${patch}` };
+          if (bc) {
+            this.pluginKey = bc.registerPlugin(id, major, minor, patch);
+          }
         },
         console_log: (level: number, msgPtr: number, msgLen: number) => {
           const message = this.readString(msgPtr, msgLen);
@@ -208,15 +218,19 @@ export class WasmHost {
             this.consoleLogs = this.consoleLogs.slice(-100);
           }
           this.onLog(entry);
+          if (bc && this.pluginKey) {
+            bc.log(this.pluginKey, entry.timestamp, level, message);
+          }
         },
         console_log_structured: (level: number, msgPtr: number, msgLen: number,
                                   jsonPtr: number, jsonLen: number) => {
           const message = this.readString(msgPtr, msgLen);
+          const jsonStr = this.readString(jsonPtr, jsonLen);
           let data: any;
           try {
-            data = JSON.parse(this.readString(jsonPtr, jsonLen));
+            data = JSON.parse(jsonStr);
           } catch {
-            data = this.readString(jsonPtr, jsonLen);
+            data = jsonStr;
           }
           const entry: ConsoleEntry = {
             timestamp: this.frameState.elapsedTime,
@@ -229,37 +243,63 @@ export class WasmHost {
             this.consoleLogs = this.consoleLogs.slice(-100);
           }
           this.onLog(entry);
+          if (bc && this.pluginKey) {
+            bc.logStructured(this.pluginKey, entry.timestamp, level, message, jsonStr);
+          }
         },
         set: (pathPtr: number, pathLen: number, jsonPtr: number, jsonLen: number) => {
           const jsonStr = this.readString(jsonPtr, jsonLen);
           try {
             const value = JSON.parse(jsonStr);
-            if (pathLen === 0) {
-              this.pluginState = value;
-            } else {
-              const path = this.readString(pathPtr, pathLen);
-              // Simple path setter for top-level keys
-              const keys = path.replace(/^\//, '').split('/');
-              let obj = this.pluginState;
-              for (let i = 0; i < keys.length - 1; i++) {
-                if (!(keys[i] in obj)) obj[keys[i]] = {};
-                obj = obj[keys[i]];
+            if (bc && this.pluginKey) {
+              // Delegate to bridge core — it will diff and emit patches
+              if (pathLen === 0) {
+                bc.setPluginState(this.pluginKey, value);
+              } else {
+                // For sub-path sets, get current state, apply change, set whole state
+                const path = this.readString(pathPtr, pathLen);
+                const current = bc.getPluginState(this.pluginKey);
+                const keys = path.replace(/^\//, '').split('/');
+                let obj = current;
+                for (let i = 0; i < keys.length - 1; i++) {
+                  if (!(keys[i] in obj)) obj[keys[i]] = {};
+                  obj = obj[keys[i]];
+                }
+                obj[keys[keys.length - 1]] = value;
+                bc.setPluginState(this.pluginKey, current);
               }
-              obj[keys[keys.length - 1]] = value;
+              // Update local cache for backward compatibility
+              this.pluginState = bc.getPluginState(this.pluginKey);
+            } else {
+              // Legacy: direct state management
+              if (pathLen === 0) {
+                this.pluginState = value;
+              } else {
+                const path = this.readString(pathPtr, pathLen);
+                const keys = path.replace(/^\//, '').split('/');
+                let obj = this.pluginState;
+                for (let i = 0; i < keys.length - 1; i++) {
+                  if (!(keys[i] in obj)) obj[keys[i]] = {};
+                  obj = obj[keys[i]];
+                }
+                obj[keys[keys.length - 1]] = value;
+              }
             }
             this.onStateChange(this.pluginState);
           } catch { /* ignore invalid JSON */ }
         },
         read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
                outputPtr: number, outputSize: number, resultsPtr: number): number => {
-          // Implement json-doc read: fill output buffer from pluginState
+          // Read state from bridge core if available, else use local
+          const stateSource = (bc && this.pluginKey)
+            ? bc.getPluginState(this.pluginKey)
+            : this.pluginState;
+
           const mem = new DataView(this.memory.buffer);
           const bytes = new Uint8Array(this.memory.buffer);
           let overflowCount = 0;
 
-          // Field struct: 5 x i32 = 20 bytes each
           const FIELD_SIZE = 20;
-          // Result struct: u8 found, u8 overflowed, [2 pad], i32 actual_size = 8 bytes
           const RESULT_SIZE = 8;
 
           for (let i = 0; i < fieldCount; i++) {
@@ -272,11 +312,9 @@ export class WasmHost {
 
             const rOff = resultsPtr + i * RESULT_SIZE;
 
-            // Read path string from WASM memory
             const pathStr = decoder.decode(bytes.slice(pathsPtr + pathOffset, pathsPtr + pathOffset + pathLen));
 
-            // Resolve path in pluginState (JSON Pointer)
-            let val: any = this.pluginState;
+            let val: any = stateSource;
             if (pathStr.length > 0) {
               const tokens = pathStr.split('/').filter(t => t !== '');
               for (const token of tokens) {
@@ -293,7 +331,6 @@ export class WasmHost {
             }
 
             bytes[rOff] = 1;
-
             const absOff = outputPtr + bufOffset;
 
             if (type === 0) { // JDOC_F64

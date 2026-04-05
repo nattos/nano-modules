@@ -1,5 +1,6 @@
 import { observable, action, makeObservable, runInAction } from 'mobx';
 import type { WasmHost, WasmModule, ConsoleEntry, ParamDecl } from './wasm-host';
+import type { BridgeCoreClient } from './bridge-core';
 
 /**
  * Observable store for a module's state. Editors bind to this reactively.
@@ -38,8 +39,8 @@ export class ObservableModuleState {
 
 /**
  * Client interface for an editor to interact with a module's state.
- * Wraps the WasmHost and WasmModule, presenting an async-friendly API
- * that mirrors what a real WebSocket client would look like.
+ * When a BridgeCoreClient is available, uses the JSON patch protocol.
+ * Otherwise falls back to direct host state access.
  */
 export class ModuleClient {
   readonly store: ObservableModuleState;
@@ -47,13 +48,16 @@ export class ModuleClient {
 
   private host: WasmHost;
   private wasmModule: WasmModule;
+  private bridgeClient: BridgeCoreClient | null;
   private prevOnStateChange: ((state: any) => void) | null = null;
   private prevOnLog: ((entry: ConsoleEntry) => void) | null = null;
 
-  constructor(pluginKey: string, host: WasmHost, wasmModule: WasmModule) {
+  constructor(pluginKey: string, host: WasmHost, wasmModule: WasmModule,
+              bridgeClient?: BridgeCoreClient) {
     this.pluginKey = pluginKey;
     this.host = host;
     this.wasmModule = wasmModule;
+    this.bridgeClient = bridgeClient ?? null;
     this.store = new ObservableModuleState();
 
     // Seed from current host state
@@ -66,7 +70,21 @@ export class ModuleClient {
       }
     });
 
-    // Hook into state changes
+    if (this.bridgeClient) {
+      // Observe state and console via the patch protocol
+      this.bridgeClient.observe(`/plugins/${pluginKey}/state`);
+      this.bridgeClient.observe(`/plugins/${pluginKey}/console`);
+
+      this.bridgeClient.onPatch((ops) => {
+        // When patches arrive, refresh state from bridge core
+        const newState = host.bridgeCore?.getPluginState(pluginKey) ?? host.pluginState;
+        runInAction(() => {
+          this.store.updateState(newState);
+        });
+      });
+    }
+
+    // Hook into state changes (for both bridge core and legacy paths)
     this.prevOnStateChange = host.onStateChange;
     host.onStateChange = (state) => {
       this.store.updateState(state);
@@ -82,13 +100,30 @@ export class ModuleClient {
 
   /** Get current state snapshot */
   getState(): any {
+    if (this.host.bridgeCore) {
+      return this.host.bridgeCore.getPluginState(this.pluginKey);
+    }
     return this.host.pluginState;
   }
 
   /** Write to the module's state (triggers on_state_changed) */
   patchState(partialState: Record<string, any>) {
-    const current = this.host.pluginState;
-    this.host.pluginState = { ...current, ...partialState };
+    if (this.bridgeClient && this.host.bridgeCore) {
+      // Use the JSON patch protocol
+      const ops = Object.entries(partialState).map(([key, value]) => ({
+        op: 'replace',
+        path: `/${key}`,
+        value,
+      }));
+      this.bridgeClient.patch(`/plugins/${this.pluginKey}/state`, ops);
+      // Tick to process the patch
+      this.host.bridgeCore.tick();
+      // Update local cache
+      this.host.pluginState = this.host.bridgeCore.getPluginState(this.pluginKey);
+    } else {
+      const current = this.host.pluginState;
+      this.host.pluginState = { ...current, ...partialState };
+    }
     this.wasmModule.onStateChanged();
   }
 
@@ -105,7 +140,16 @@ export class ModuleClient {
     queueMicrotask(() => this.setParam(index, 0.0));
   }
 
+  /** Drain messages from the bridge core client (call each frame). */
+  drainMessages(): void {
+    this.bridgeClient?.drain();
+  }
+
   dispose() {
+    if (this.bridgeClient) {
+      this.bridgeClient.dispose();
+      this.bridgeClient = null;
+    }
     if (this.prevOnStateChange) {
       this.host.onStateChange = this.prevOnStateChange;
     }

@@ -1,10 +1,11 @@
 #pragma once
 
 #include <cstdint>
-#include <shared_mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "bridge/platform/mutex.h"
 
 namespace bridge {
 
@@ -29,10 +30,10 @@ public:
   std::vector<std::pair<int64_t, double>> drain_outbox();
 
 private:
-  mutable std::shared_mutex mutex_;
+  mutable platform::SharedMutex mutex_;
   std::unordered_map<int64_t, double> values_;
 
-  std::mutex outbox_mutex_;
+  platform::Mutex outbox_mutex_;
   std::vector<std::pair<int64_t, double>> outbox_;
 };
 

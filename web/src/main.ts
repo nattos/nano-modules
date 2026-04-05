@@ -1,6 +1,7 @@
 import { GPURenderer } from './gpu-renderer';
 import { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, ConsoleEntry, ParamDecl } from './wasm-host';
+import { BridgeCore, BridgeCoreClient } from './bridge-core';
 import { FAKE_PARAMS, FakeParam } from './fake-resolume-params';
 import { ModuleClient } from './module-client';
 import { editorRegistry } from './editor-registry';
@@ -155,11 +156,14 @@ function buildParamUI(params: ParamDecl[], host: WasmHost, wasmModule: WasmModul
 // --- Build Resolume fake param panel ---
 function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
   resolumeContentEl.innerHTML = '';
+  const bc = host.bridgeCore;
 
   // Register all fake param paths and seed values
   for (const fp of FAKE_PARAMS) {
-    host.registerParamPath(fp.id, fp.path);
-    host.setResolumeParamValue(fp.id, fp.value);
+    if (bc) {
+      bc.setParamPath(fp.id, fp.path);
+      bc.setParam(fp.id, fp.value);
+    }
   }
 
   // Map param IDs to their slider/checkbox elements for write-back
@@ -192,7 +196,7 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
       slider.addEventListener('input', () => {
         const val = parseFloat(slider.value);
         fp.value = val;
-        host.setResolumeParamValue(fp.id, val);
+        if (bc) bc.setParam(fp.id, val);
         valueEl.textContent = val.toFixed(2);
         fireResolumeParam(host, wasmModule, fp.id, val);
       });
@@ -205,7 +209,7 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
       cb.addEventListener('change', () => {
         const val = cb.checked ? 1.0 : 0.0;
         fp.value = val;
-        host.setResolumeParamValue(fp.id, val);
+        if (bc) bc.setParam(fp.id, val);
         valueEl.textContent = val.toFixed(0);
         fireResolumeParam(host, wasmModule, fp.id, val);
       });
@@ -259,6 +263,11 @@ async function main() {
     return;
   }
 
+  // Load the shared bridge core
+  statusEl.textContent = 'Loading bridge core...';
+  const bridgeCore = new BridgeCore();
+  await bridgeCore.init();
+
   // Determine module from URL or selector
   const urlParams = new URLSearchParams(window.location.search);
   const initialModule = urlParams.get('module') || 'nanolooper';
@@ -270,6 +279,7 @@ async function main() {
     resolumeContentEl.innerHTML = '';
 
     const host = new WasmHost();
+    host.bridgeCore = bridgeCore;
     host.gpuHost = new GPUHost(renderer.device, renderer.format);
     host.onAudioTrigger = triggerAudio;
     host.onStateChange = (state) => updateStateDisplay(state);
@@ -290,6 +300,7 @@ async function main() {
     // Expose for debugging
     (window as any).__host = host;
     (window as any).__wasm = wasmModule;
+    (window as any).__bridgeCore = bridgeCore;
 
     // Build parameter UI
     const keyBindings = buildParamUI(host.params, host, wasmModule);
@@ -311,8 +322,9 @@ async function main() {
     if (host.metadata) {
       const factory = editorRegistry.getFactory(host.metadata.id);
       if (factory) {
-        const pluginKey = `${host.metadata.id}@0`;
-        moduleClient = new ModuleClient(pluginKey, host, wasmModule);
+        const pluginKey = host.pluginKey || `${host.metadata.id}@0`;
+        const editorClient = new BridgeCoreClient(bridgeCore);
+        moduleClient = new ModuleClient(pluginKey, host, wasmModule, editorClient);
         editorEl = factory.create(pluginKey, moduleClient);
         editorContentEl.appendChild(editorEl);
         editorPanelEl.style.display = '';
@@ -322,7 +334,10 @@ async function main() {
     // State editor
     stateEditBtn.onclick = () => {
       stateEditing = true;
-      stateTextarea.value = JSON.stringify(host.pluginState, null, 2);
+      const currentState = host.bridgeCore && host.pluginKey
+        ? host.bridgeCore.getPluginState(host.pluginKey)
+        : host.pluginState;
+      stateTextarea.value = JSON.stringify(currentState, null, 2);
       stateContentEl.style.display = 'none';
       stateEditorEl.style.display = 'block';
       stateTextarea.focus();
@@ -330,7 +345,12 @@ async function main() {
     stateApplyBtn.onclick = () => {
       try {
         const newState = JSON.parse(stateTextarea.value);
-        host.pluginState = newState;
+        if (host.bridgeCore && host.pluginKey) {
+          host.bridgeCore.setPluginState(host.pluginKey, newState);
+          host.pluginState = newState;
+        } else {
+          host.pluginState = newState;
+        }
         wasmModule.onStateChanged();
         addLogEntry({ timestamp: host.frameState.elapsedTime, level: 'log', message: 'State patch applied externally' });
       } catch (e) {
@@ -420,6 +440,12 @@ async function main() {
       host.frameState.viewportH = vpH;
 
       wasmModule.tick(dt);
+
+      // Tick bridge core to broadcast state patches
+      bridgeCore.tick();
+
+      // Drain messages for any active editor client
+      if (moduleClient) moduleClient.drainMessages();
 
       // Set GPU surface each frame (module may or may not use it)
       if (host.gpuHost) {
