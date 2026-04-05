@@ -33,7 +33,7 @@ xcodebuild -downloadComponent MetalToolchain
 ### Node.js (for web test harness)
 
 ```bash
-cd web-harness && npm install
+cd web && npm install
 ```
 
 ## Architecture Overview
@@ -227,13 +227,13 @@ native/wasm_modules/spinningtris/build.sh
 native/wasm_modules/gpu_test/build.sh
 
 # Copy to web harness
-cp native/build/*.wasm web-harness/public/
+cp native/build/*.wasm web/public/
 ```
 
 ### Web Test Harness
 
 ```bash
-cd web-harness
+cd web
 
 # Install dependencies
 npm install
@@ -257,11 +257,11 @@ native/wasm_modules/nanolooper/build.sh
 native/wasm_modules/paramlinker/build.sh
 native/wasm_modules/spinningtris/build.sh
 native/wasm_modules/gpu_test/build.sh
-cp native/build/*.wasm web-harness/public/
+cp native/build/*.wasm web/public/
 cmake -B native/build -S native -DCMAKE_BUILD_TYPE=Debug
 cmake --build native/build
 cd native/build && ctest --output-on-failure
-cd ../../web-harness && npm test
+cd ../../web && npm test
 ```
 
 ## Test Summary

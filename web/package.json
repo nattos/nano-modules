@@ -1,5 +1,5 @@
 {
-  "name": "nano-repatch-web-harness",
+  "name": "nano-modules-web",
   "private": true,
   "version": "1.0.0",
   "scripts": {
