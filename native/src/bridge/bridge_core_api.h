@@ -72,6 +72,13 @@ void bridge_core_apply_client_patch(BridgeCoreHandle h,
                                      const char* plugin_key, int plugin_key_len,
                                      const char* patch_json, int patch_len);
 
+// --- I/O port declarations ---
+void bridge_core_declare_io(BridgeCoreHandle h,
+                             const char* plugin_key, int plugin_key_len,
+                             int index,
+                             const char* name, int name_len,
+                             int kind, int role);
+
 // --- Resolume param cache ---
 double bridge_core_get_param(BridgeCoreHandle h, int64_t param_id);
 void bridge_core_set_param(BridgeCoreHandle h, int64_t param_id, double value);

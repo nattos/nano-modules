@@ -60,6 +60,12 @@ interface BridgeCoreExports {
     pluginKey: number, pluginKeyLen: number,
     patchJson: number, patchLen: number): void;
 
+  bridge_core_declare_io(h: number,
+    pluginKey: number, pluginKeyLen: number,
+    index: number,
+    name: number, nameLen: number,
+    kind: number, role: number): void;
+
   bridge_core_get_param(h: number, paramId: bigint): number;
   bridge_core_set_param(h: number, paramId: bigint, value: number): void;
   bridge_core_queue_param_write(h: number, paramId: bigint, value: number): void;
@@ -206,6 +212,14 @@ export class BridgeCore {
     this.withStrings([pluginKey, name], ([[pkPtr, pkLen], [nPtr, nLen]]) => {
       this.exports.bridge_core_declare_param(
         this.handle, pkPtr, pkLen, index, nPtr, nLen, type, defaultValue);
+    });
+  }
+
+  declareIO(pluginKey: string, index: number, name: string,
+            kind: number, role: number): void {
+    this.withStrings([pluginKey, name], ([[pkPtr, pkLen], [nPtr, nLen]]) => {
+      this.exports.bridge_core_declare_io(
+        this.handle, pkPtr, pkLen, index, nPtr, nLen, kind, role);
     });
   }
 

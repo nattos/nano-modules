@@ -509,6 +509,52 @@ static NativeSymbol state_symbols[] = {
 };
 
 // ========================================================================
+// Module "io" — I/O port declarations
+// ========================================================================
+
+static void io_declare_texture_input(wasm_exec_env_t env, int index,
+    const char* name, int name_len, int role) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+  bridge::IODecl decl;
+  decl.index = index;
+  decl.name = std::string(name, name_len);
+  decl.kind = bridge::IO_TEXTURE_INPUT;
+  decl.role = static_cast<bridge::IORole>(role);
+  ctx->state_doc->declare_io(ctx->plugin_key, decl);
+}
+
+static void io_declare_texture_output(wasm_exec_env_t env, int index,
+    const char* name, int name_len, int role) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+  bridge::IODecl decl;
+  decl.index = index;
+  decl.name = std::string(name, name_len);
+  decl.kind = bridge::IO_TEXTURE_OUTPUT;
+  decl.role = static_cast<bridge::IORole>(role);
+  ctx->state_doc->declare_io(ctx->plugin_key, decl);
+}
+
+static void io_declare_data_output(wasm_exec_env_t env, int index,
+    const char* name, int name_len, int role) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+  bridge::IODecl decl;
+  decl.index = index;
+  decl.name = std::string(name, name_len);
+  decl.kind = bridge::IO_DATA_OUTPUT;
+  decl.role = static_cast<bridge::IORole>(role);
+  ctx->state_doc->declare_io(ctx->plugin_key, decl);
+}
+
+static NativeSymbol io_symbols[] = {
+    {"declare_texture_input", reinterpret_cast<void*>(io_declare_texture_input), "(iiii)", nullptr},
+    {"declare_texture_output", reinterpret_cast<void*>(io_declare_texture_output), "(iiii)", nullptr},
+    {"declare_data_output", reinterpret_cast<void*>(io_declare_data_output), "(iiii)", nullptr},
+};
+
+// ========================================================================
 // Module "gpu" — GPU compute and rendering
 // ========================================================================
 
@@ -583,6 +629,18 @@ static void gpu_compute_set_pso(wasm_exec_env_t env, int32_t pass, int32_t pso) 
 static void gpu_compute_set_buffer(wasm_exec_env_t env, int32_t pass, int32_t buf, int32_t offset, int32_t slot) {
   auto* g = get_gpu(env); if (g) g->computeSetBuffer(pass, buf, offset, slot);
 }
+static void gpu_compute_set_texture(wasm_exec_env_t env, int32_t pass, int32_t tex, int32_t slot, int32_t access) {
+  auto* g = get_gpu(env); if (g) g->computeSetTexture(pass, tex, slot, access);
+}
+static int32_t gpu_get_input_texture(wasm_exec_env_t env, int32_t index) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || index < 0 || index >= static_cast<int32_t>(ctx->input_texture_handles.size())) return -1;
+  return ctx->input_texture_handles[index];
+}
+static int32_t gpu_get_input_texture_count(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  return ctx ? static_cast<int32_t>(ctx->input_texture_handles.size()) : 0;
+}
 static void gpu_compute_dispatch(wasm_exec_env_t env, int32_t pass, int32_t x, int32_t y, int32_t z) {
   auto* g = get_gpu(env); if (g) g->computeDispatch(pass, x, y, z);
 }
@@ -633,6 +691,7 @@ static NativeSymbol gpu_symbols[] = {
     {"begin_compute_pass", reinterpret_cast<void*>(gpu_begin_compute_pass), "()i", nullptr},
     {"compute_set_pso", reinterpret_cast<void*>(gpu_compute_set_pso), "(ii)", nullptr},
     {"compute_set_buffer", reinterpret_cast<void*>(gpu_compute_set_buffer), "(iiii)", nullptr},
+    {"compute_set_texture", reinterpret_cast<void*>(gpu_compute_set_texture), "(iiii)", nullptr},
     {"compute_dispatch", reinterpret_cast<void*>(gpu_compute_dispatch), "(iiii)", nullptr},
     {"end_compute_pass", reinterpret_cast<void*>(gpu_end_compute_pass), "(i)", nullptr},
     {"begin_render_pass", reinterpret_cast<void*>(gpu_begin_render_pass), "(iffff)i", nullptr},
@@ -645,6 +704,8 @@ static NativeSymbol gpu_symbols[] = {
     {"get_render_target_width", reinterpret_cast<void*>(gpu_get_render_target_width), "()i", nullptr},
     {"get_render_target_height", reinterpret_cast<void*>(gpu_get_render_target_height), "()i", nullptr},
     {"release", reinterpret_cast<void*>(gpu_release), "(i)", nullptr},
+    {"get_input_texture", reinterpret_cast<void*>(gpu_get_input_texture), "(i)i", nullptr},
+    {"get_input_texture_count", reinterpret_cast<void*>(gpu_get_input_texture_count), "()i", nullptr},
 };
 
 // ========================================================================
@@ -673,6 +734,10 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "state", state_symbols,
       sizeof(state_symbols) / sizeof(NativeSymbol));
+
+  ok = ok && wasm_runtime_register_natives(
+      "io", io_symbols,
+      sizeof(io_symbols) / sizeof(NativeSymbol));
 
   ok = ok && wasm_runtime_register_natives(
       "gpu", gpu_symbols,

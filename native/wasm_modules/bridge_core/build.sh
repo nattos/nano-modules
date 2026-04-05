@@ -32,6 +32,7 @@ WASM_EXPORTS=(
   -Wl,--export=bridge_core_poll_outgoing
   -Wl,--export=bridge_core_register_plugin
   -Wl,--export=bridge_core_declare_param
+  -Wl,--export=bridge_core_declare_io
   -Wl,--export=bridge_core_log
   -Wl,--export=bridge_core_log_structured
   -Wl,--export=bridge_core_set_plugin_state

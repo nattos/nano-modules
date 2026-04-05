@@ -157,6 +157,12 @@ public:
     if (b && computeEncoder_) [computeEncoder_ setBuffer:b offset:offset atIndex:slot];
   }
 
+  void computeSetTexture(int32_t pass, int32_t textureHandle, int32_t slot, int32_t access) override {
+    (void)pass; (void)access;
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (tex && computeEncoder_) [computeEncoder_ setTexture:tex atIndex:slot];
+  }
+
   void computeDispatch(int32_t pass, uint32_t x, uint32_t y, uint32_t z) override {
     (void)pass;
     if (!computeEncoder_ || !currentComputePSO_) return;

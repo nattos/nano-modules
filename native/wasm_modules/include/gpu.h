@@ -44,6 +44,8 @@ extern "C" {
   void gpu_compute_set_pso(int pass, int pso);
   __attribute__((import_module("gpu"), import_name("compute_set_buffer")))
   void gpu_compute_set_buffer(int pass, int buf, int offset, int slot);
+  __attribute__((import_module("gpu"), import_name("compute_set_texture")))
+  void gpu_compute_set_texture(int pass, int texture, int slot, int access);
   __attribute__((import_module("gpu"), import_name("compute_dispatch")))
   void gpu_compute_dispatch(int pass, int x, int y, int z);
   __attribute__((import_module("gpu"), import_name("end_compute_pass")))
@@ -68,6 +70,10 @@ extern "C" {
   int gpu_get_render_target_height(void);
   __attribute__((import_module("gpu"), import_name("release")))
   void gpu_release(int handle);
+  __attribute__((import_module("gpu"), import_name("get_input_texture")))
+  int gpu_get_input_texture(int index);
+  __attribute__((import_module("gpu"), import_name("get_input_texture_count")))
+  int gpu_get_input_texture_count(void);
 }
 
 namespace gpu {
@@ -145,6 +151,11 @@ struct ComputePass {
     gpu_compute_set_buffer(id, buf.id, offset, slot);
   }
 
+  // access: 0=read, 1=write, 2=read_write
+  void setTexture(Texture tex, int slot, int access = 0) {
+    gpu_compute_set_texture(id, tex.id, slot, access);
+  }
+
   void dispatch(int x, int y = 1, int z = 1) {
     gpu_compute_dispatch(id, x, y, z);
   }
@@ -203,6 +214,9 @@ struct Device {
         fs.id, fsEntry, std::strlen(fsEntry),
         static_cast<int>(format)));
   }
+
+  static Texture inputTexture(int index) { return Texture(gpu_get_input_texture(index)); }
+  static int inputTextureCount() { return gpu_get_input_texture_count(); }
 
   static Texture renderTarget() { return Texture(gpu_get_render_target()); }
   static int renderTargetWidth() { return gpu_get_render_target_width(); }

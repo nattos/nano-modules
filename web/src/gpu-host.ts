@@ -92,7 +92,7 @@ export class GPUHost {
     const texture = this.device.createTexture({
       size: [width, height],
       format: fmt,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     return this.alloc('texture', texture);
   }
@@ -165,12 +165,14 @@ export class GPUHost {
   private computePassEncoder: GPUComputePassEncoder | null = null;
   private computePassPipeline: GPUComputePipeline | null = null;
   private computePassBuffers: Map<number, GPUBuffer> = new Map();
+  private computePassTextures: Map<number, { texture: GPUTexture; access: number }> = new Map();
 
   beginComputePass(): number {
     const encoder = this.ensureEncoder();
     this.computePassEncoder = encoder.beginComputePass();
     this.computePassPipeline = null;
     this.computePassBuffers.clear();
+    this.computePassTextures.clear();
     return 1; // pass handle (only one at a time)
   }
 
@@ -187,12 +189,21 @@ export class GPUHost {
     this.computePassBuffers.set(slot, buffer);
   }
 
+  computeSetTexture(_pass: number, texHandle: number, slot: number, access: number) {
+    const texture = this.get(texHandle) as GPUTexture;
+    if (!texture) return;
+    this.computePassTextures.set(slot, { texture, access });
+  }
+
   computeDispatch(_pass: number, x: number, y: number, z: number) {
     if (!this.computePassEncoder || !this.computePassPipeline) return;
-    // Create bind group with all collected buffers just before dispatch
+    // Create bind group with all collected buffers and textures just before dispatch
     const entries: GPUBindGroupEntry[] = [];
     for (const [binding, buffer] of this.computePassBuffers) {
       entries.push({ binding, resource: { buffer } });
+    }
+    for (const [binding, { texture }] of this.computePassTextures) {
+      entries.push({ binding, resource: texture.createView() });
     }
     if (entries.length > 0) {
       const bindGroup = this.device.createBindGroup({
@@ -210,6 +221,7 @@ export class GPUHost {
       this.computePassEncoder = null;
       this.computePassPipeline = null;
       this.computePassBuffers.clear();
+      this.computePassTextures.clear();
     }
   }
 
@@ -318,6 +330,11 @@ export class GPUHost {
 
   // --- Build import object for WASM ---
 
+  /** Inject an externally-owned texture into the handle space (for chaining). */
+  injectTexture(texture: GPUTexture): number {
+    return this.alloc('texture', texture);
+  }
+
   buildImports(readMemory: (ptr: number, len: number) => Uint8Array,
                readString: (ptr: number, len: number) => string): Record<string, Function> {
     return {
@@ -341,6 +358,8 @@ export class GPUHost {
         this.computeSetPipeline(pass, pipeline),
       compute_set_buffer: (pass: number, buf: number, offset: number, slot: number) =>
         this.computeSetBuffer(pass, buf, offset, slot),
+      compute_set_texture: (pass: number, tex: number, slot: number, access: number) =>
+        this.computeSetTexture(pass, tex, slot, access),
       compute_dispatch: (pass: number, x: number, y: number, z: number) =>
         this.computeDispatch(pass, x, y, z),
       end_compute_pass: (pass: number) => this.endComputePass(pass),

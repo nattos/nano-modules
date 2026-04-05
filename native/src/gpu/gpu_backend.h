@@ -30,6 +30,7 @@ public:
   virtual int32_t beginComputePass() = 0;
   virtual void computeSetPSO(int32_t pass, int32_t pso) = 0;
   virtual void computeSetBuffer(int32_t pass, int32_t buf, uint32_t offset, int32_t slot) = 0;
+  virtual void computeSetTexture(int32_t pass, int32_t textureHandle, int32_t slot, int32_t access) = 0;
   virtual void computeDispatch(int32_t pass, uint32_t x, uint32_t y, uint32_t z) = 0;
   virtual void endComputePass(int32_t pass) = 0;
 

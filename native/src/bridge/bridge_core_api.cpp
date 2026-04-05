@@ -186,6 +186,23 @@ void bridge_core_apply_client_patch(BridgeCoreHandle h,
   }
 }
 
+// --- I/O port declarations ---
+
+void bridge_core_declare_io(BridgeCoreHandle h,
+                             const char* plugin_key, int plugin_key_len,
+                             int index,
+                             const char* name, int name_len,
+                             int kind, int role) {
+  bridge::IODecl decl;
+  decl.index = index;
+  decl.name = std::string(name, name_len);
+  decl.kind = static_cast<bridge::IOKind>(kind);
+  decl.role = static_cast<bridge::IORole>(role);
+
+  as(h)->core.state_document().declare_io(
+      std::string(plugin_key, plugin_key_len), decl);
+}
+
 // --- Resolume param cache ---
 
 double bridge_core_get_param(BridgeCoreHandle h, int64_t param_id) {

@@ -50,6 +50,9 @@ struct WasmContext {
 
   // GPU backend
   gpu::GPUBackend* gpu_backend = nullptr;
+
+  // Input textures (injected by sketch executor for chaining)
+  std::vector<int32_t> input_texture_handles;
 };
 
 } // namespace wasm

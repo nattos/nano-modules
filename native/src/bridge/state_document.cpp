@@ -8,6 +8,7 @@ StateDocument::StateDocument() {
   doc_ = {
     {"global", {{"plugins", json::array()}}},
     {"plugins", json::object()},
+    {"sketches", json::object()},
   };
 }
 
@@ -63,6 +64,29 @@ void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl
       };
       plugins[i]["params"].push_back(p);
       emit("add", "/global/plugins/" + std::to_string(i) + "/params/-", p);
+      return;
+    }
+  }
+}
+
+void StateDocument::declare_io(const std::string& plugin_key, const IODecl& io) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+
+  auto& plugins = doc_["global"]["plugins"];
+  for (size_t i = 0; i < plugins.size(); i++) {
+    if (plugins[i]["key"] == plugin_key) {
+      if (!plugins[i].contains("io")) {
+        plugins[i]["io"] = json::array();
+        emit("add", "/global/plugins/" + std::to_string(i) + "/io", json::array());
+      }
+      json decl = {
+        {"index", io.index},
+        {"name", io.name},
+        {"kind", io.kind},
+        {"role", io.role},
+      };
+      plugins[i]["io"].push_back(decl);
+      emit("add", "/global/plugins/" + std::to_string(i) + "/io/-", decl);
       return;
     }
   }

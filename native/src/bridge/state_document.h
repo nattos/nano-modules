@@ -35,6 +35,25 @@ struct ParamDecl {
   float default_value;
 };
 
+// I/O port declarations (texture inputs/outputs, data outputs)
+enum IOKind : int {
+  IO_TEXTURE_INPUT  = 0,
+  IO_TEXTURE_OUTPUT = 1,
+  IO_DATA_OUTPUT    = 2,
+};
+
+enum IORole : int {
+  IO_PRIMARY   = 0,
+  IO_SECONDARY = 1,
+};
+
+struct IODecl {
+  int index;
+  std::string name;
+  IOKind kind;
+  IORole role;
+};
+
 struct ConsoleEntry {
   double timestamp = 0;
   std::string level;   // "log", "warn", "error"
@@ -55,6 +74,9 @@ public:
 
   /// Declare a parameter on a plugin.
   void declare_param(const std::string& plugin_key, const ParamDecl& param);
+
+  /// Declare an I/O port on a plugin.
+  void declare_io(const std::string& plugin_key, const IODecl& io);
 
   /// Unregister a plugin by key.
   void unregister_plugin(const std::string& key);

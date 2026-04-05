@@ -58,11 +58,17 @@ export class WasmHost {
   bridgeCore: BridgeCore | null = null;
   pluginKey: string = '';
 
+  // I/O declarations
+  ioDecls: { index: number; name: string; kind: number; role: number }[] = [];
+
   // Legacy direct state (used when no bridge core is available)
   pluginState: any = {};
   consoleLogs: ConsoleEntry[] = [];
   metadata: { id: string; version: string } | null = null;
   params: ParamDecl[] = [];
+
+  // Input textures (injected by sketch executor for chaining)
+  inputTextureHandles: number[] = [];
 
   // Resolume param subscriptions
   subscribeQueries: string[] = [];
@@ -372,36 +378,60 @@ export class WasmHost {
           return overflowCount;
         },
       },
-      gpu: this.gpuHost
-        ? this.gpuHost.buildImports(
-            (ptr, len) => new Uint8Array(this.memory.buffer).slice(ptr, ptr + len),
-            (ptr, len) => decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
-          )
-        : {
-            // Stubs if no GPU host
-            get_backend: () => -1,
-            create_shader_module: () => -1,
-            create_buffer: () => -1,
-            create_texture: () => -1,
-            create_compute_pso: () => -1,
-            create_render_pso: () => -1,
-            write_buffer: () => {},
-            begin_compute_pass: () => -1,
-            compute_set_pso: () => {},
-            compute_set_buffer: () => {},
-            compute_dispatch: () => {},
-            end_compute_pass: () => {},
-            begin_render_pass: () => -1,
-            render_set_pso: () => {},
-            render_set_vertex_buffer: () => {},
-            render_draw: () => {},
-            end_render_pass: () => {},
-            submit: () => {},
-            get_render_target: () => -1,
-            get_render_target_width: () => 0,
-            get_render_target_height: () => 0,
-            release: () => {},
-          },
+      io: {
+        declare_texture_input: (index: number, namePtr: number, nameLen: number, role: number) => {
+          const name = this.readString(namePtr, nameLen);
+          this.ioDecls.push({ index, name, kind: 0, role }); // IO_TEXTURE_INPUT = 0
+          if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 0, role);
+        },
+        declare_texture_output: (index: number, namePtr: number, nameLen: number, role: number) => {
+          const name = this.readString(namePtr, nameLen);
+          this.ioDecls.push({ index, name, kind: 1, role }); // IO_TEXTURE_OUTPUT = 1
+          if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 1, role);
+        },
+        declare_data_output: (index: number, namePtr: number, nameLen: number, role: number) => {
+          const name = this.readString(namePtr, nameLen);
+          this.ioDecls.push({ index, name, kind: 2, role }); // IO_DATA_OUTPUT = 2
+          if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 2, role);
+        },
+      },
+      gpu: {
+        ...(this.gpuHost
+          ? this.gpuHost.buildImports(
+              (ptr, len) => new Uint8Array(this.memory.buffer).slice(ptr, ptr + len),
+              (ptr, len) => decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
+            )
+          : {
+              // Stubs if no GPU host
+              get_backend: () => -1,
+              create_shader_module: () => -1,
+              create_buffer: () => -1,
+              create_texture: () => -1,
+              create_compute_pso: () => -1,
+              create_render_pso: () => -1,
+              write_buffer: () => {},
+              begin_compute_pass: () => -1,
+              compute_set_pso: () => {},
+              compute_set_buffer: () => {},
+              compute_set_texture: () => {},
+              compute_dispatch: () => {},
+              end_compute_pass: () => {},
+              begin_render_pass: () => -1,
+              render_set_pso: () => {},
+              render_set_vertex_buffer: () => {},
+              render_draw: () => {},
+              end_render_pass: () => {},
+              submit: () => {},
+              get_render_target: () => -1,
+              get_render_target_width: () => 0,
+              get_render_target_height: () => 0,
+              release: () => {},
+            }),
+        // Input texture API (for chaining modules)
+        get_input_texture: (index: number) =>
+          (index >= 0 && index < this.inputTextureHandles.length) ? this.inputTextureHandles[index] : -1,
+        get_input_texture_count: () => this.inputTextureHandles.length,
+      },
     };
 
     const result = await WebAssembly.instantiate(bytes, importObject);
