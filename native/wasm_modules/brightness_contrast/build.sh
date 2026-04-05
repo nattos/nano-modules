@@ -9,6 +9,11 @@ MODULE_NAME=brightness_contrast
 echo "=== Compiling shader (HLSL → SPIR-V → WGSL + MSL) ==="
 glslc -fshader-stage=compute -x hlsl compute.hlsl -o "$TMP_DIR/bc_compute.spv"
 naga "$TMP_DIR/bc_compute.spv" "$TMP_DIR/bc_compute.wgsl"
+# Fix storage texture format and access mode for WebGPU compatibility:
+# - naga defaults to rgba32float, but we use rgba8unorm textures
+# - WebGPU doesn't support read_write storage textures without extensions
+sed -i '' 's/rgba32float,read_write/rgba8unorm,write/g' "$TMP_DIR/bc_compute.wgsl"
+sed -i '' 's/rgba32float/rgba8unorm/g' "$TMP_DIR/bc_compute.wgsl"
 naga --metal-version 2.0 "$TMP_DIR/bc_compute.spv" "$TMP_DIR/bc_compute.metal"
 echo "  Shader compiled"
 

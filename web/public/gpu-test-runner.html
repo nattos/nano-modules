@@ -10,32 +10,35 @@ import { WasmHost } from '/src/wasm-host.ts';
 /*
  * Generic GPU module test runner.
  *
- * The test config is passed via window.__gpuTestConfig before this script runs,
- * or via URL search params as a fallback.
- *
- * Config shape:
+ * Config shape (single module):
  * {
- *   module: "gpu_test.wasm",       // Module filename (wasm/ prefix added automatically)
- *   width: 64, height: 64,        // Render target size
- *   params: [[0, 0.5], [1, 1.0]], // [index, value] pairs to set before render
- *   ticks: 1,                     // Number of tick(0.016) calls before render
- *   samplePoints: [[32,32], [0,0]], // [x,y] pixels to sample
+ *   module: "gpu_test.wasm",
+ *   width: 64, height: 64,
+ *   params: [[0, 0.5], [1, 1.0]],
+ *   ticks: 1,
+ *   samplePoints: [[32,32]],
+ *   inputColor: [r, g, b, a],  // optional: create solid input texture
  * }
  *
- * Output (JSON in #result):
+ * Config shape (chain):
  * {
- *   success: true,
- *   samples: [{ x, y, r, g, b, a }, ...],
- *   consoleLog: ["..."],
- *   pluginState: { ... },
- *   error?: "..."
+ *   chain: [
+ *     { module: "spinningtris.wasm", params: [[0, 0.5]], ticks: 5 },
+ *     { module: "brightness_contrast.wasm", params: [[1, 0.25]] },
+ *   ],
+ *   width: 64, height: 64,
+ *   samplePoints: [[32,32]],
  * }
  */
 
+function normalizePath(mod) {
+  return mod.startsWith('wasm/') ? mod : 'wasm/' + mod;
+}
+
 async function run() {
   const resultEl = document.getElementById('result');
+  resultEl.textContent = 'Running...';
 
-  // Get config from window or URL
   const config = window.__gpuTestConfig || (() => {
     const p = new URLSearchParams(window.location.search);
     return {
@@ -51,77 +54,113 @@ async function run() {
   const W = config.width || 64;
   const H = config.height || 64;
 
-  // Normalize module path: add wasm/ prefix if not present
-  let modulePath = config.module;
-  if (!modulePath.startsWith('wasm/')) {
-    modulePath = 'wasm/' + modulePath;
-  }
-
   try {
-    // Init WebGPU
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) throw new Error('No GPU adapter');
     const device = await adapter.requestDevice();
     const format = 'rgba8unorm';
-
-    // Create offscreen render target
-    const renderTarget = device.createTexture({
-      size: [W, H],
-      format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
+    const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+                   | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
+                   | GPUTextureUsage.COPY_DST;
 
     const gpuHost = new GPUHost(device, format);
-    gpuHost.setSurface(renderTarget, W, H);
 
-    const wasmHost = new WasmHost();
-    wasmHost.gpuHost = gpuHost;
+    // Build chain: either explicit chain config, or single module
+    const steps = config.chain || [{
+      module: config.module,
+      params: config.params,
+      ticks: config.ticks,
+    }];
 
-    // Load module
-    const wasmModule = await wasmHost.load(modulePath);
-    wasmModule.init();
+    // Create textures for ping-pong between steps
+    const texA = device.createTexture({ size: [W, H], format, usage: texUsage });
+    const texB = device.createTexture({ size: [W, H], format, usage: texUsage });
+    let currentOutput = texA;
+    let nextOutput = texB;
 
-    // Set parameters
-    if (config.params) {
-      for (const [index, value] of config.params) {
-        wasmHost.frameState.params[index] = value;
-        wasmModule.onParamChange(index, value);
+    // If inputColor is provided, fill the first texture with that color
+    if (config.inputColor) {
+      const [r, g, b, a] = config.inputColor;
+      const pixelData = new Uint8Array(W * H * 4);
+      for (let i = 0; i < W * H; i++) {
+        pixelData[i * 4 + 0] = Math.round(r * 255);
+        pixelData[i * 4 + 1] = Math.round(g * 255);
+        pixelData[i * 4 + 2] = Math.round(b * 255);
+        pixelData[i * 4 + 3] = Math.round((a !== undefined ? a : 1) * 255);
       }
+      device.queue.writeTexture(
+        { texture: currentOutput },
+        pixelData,
+        { bytesPerRow: W * 4 },
+        { width: W, height: H },
+      );
     }
 
-    // Set frame state
-    wasmHost.frameState.viewportW = W;
-    wasmHost.frameState.viewportH = H;
-    wasmHost.frameState.bpm = 120;
+    let lastHost = null;
+    let allConsoleLogs = [];
 
-    // Tick
-    const tickCount = config.ticks || 0;
-    for (let i = 0; i < tickCount; i++) {
-      wasmHost.frameState.elapsedTime = (i + 1) * 0.016;
-      wasmHost.frameState.deltaTime = 0.016;
-      wasmHost.frameState.barPhase = ((i + 1) * 0.016 * 120 / 60 / 4) % 1.0;
-      wasmModule.tick(0.016);
+    for (let si = 0; si < steps.length; si++) {
+      const step = steps[si];
+
+      // Set up surface for this step's output
+      gpuHost.setSurface(nextOutput, W, H);
+
+      const wasmHost = new WasmHost();
+      wasmHost.gpuHost = gpuHost;
+
+      // If this is NOT the first step (or inputColor is set), inject previous output as input
+      if (si > 0 || config.inputColor) {
+        const inputHandle = gpuHost.injectTexture(currentOutput);
+        wasmHost.inputTextureHandles = [inputHandle];
+      }
+
+      const wasmModule = await wasmHost.load(normalizePath(step.module));
+      wasmModule.init();
+
+      // Set parameters
+      if (step.params) {
+        for (const [index, value] of step.params) {
+          wasmHost.frameState.params[index] = value;
+          wasmModule.onParamChange(index, value);
+        }
+      }
+
+      wasmHost.frameState.viewportW = W;
+      wasmHost.frameState.viewportH = H;
+      wasmHost.frameState.bpm = 120;
+
+      const tickCount = step.ticks || 0;
+      for (let i = 0; i < tickCount; i++) {
+        wasmHost.frameState.elapsedTime = (i + 1) * 0.016;
+        wasmHost.frameState.deltaTime = 0.016;
+        wasmHost.frameState.barPhase = ((i + 1) * 0.016 * 120 / 60 / 4) % 1.0;
+        wasmModule.tick(0.016);
+      }
+
+      wasmModule.render(W, H);
+      allConsoleLogs.push(...wasmHost.consoleLogs.map(l => l.message));
+      lastHost = wasmHost;
+
+      // Swap: this step's output becomes next step's input
+      const tmp = currentOutput;
+      currentOutput = nextOutput;
+      nextOutput = tmp;
     }
 
-    // Render
-    wasmModule.render(W, H);
+    // currentOutput has the final result
+    const finalHandle = gpuHost.injectTexture(currentOutput);
+    const pixels = await gpuHost.readbackTexture(finalHandle, W, H);
 
-    // Readback pixels
-    const pixels = await gpuHost.readbackTexture(gpuHost.getSurfaceTexture(), W, H);
-
-    // Sample requested points (default: center + corners)
     const points = (config.samplePoints && config.samplePoints.length > 0)
       ? config.samplePoints
       : [[W/2, H/2], [0, 0], [W-1, 0], [0, H-1], [W-1, H-1]];
 
     const samples = points.map(([x, y]) => {
-      x = Math.floor(x);
-      y = Math.floor(y);
+      x = Math.floor(x); y = Math.floor(y);
       const o = (y * W + x) * 4;
       return { x, y, r: pixels[o], g: pixels[o+1], b: pixels[o+2], a: pixels[o+3] };
     });
 
-    // Encode raw RGBA pixels as base64 for PNG dumping
     let pixelsBase64 = '';
     if (config.dumpPixels !== false) {
       const chunks = [];
@@ -131,34 +170,26 @@ async function run() {
       pixelsBase64 = btoa(chunks.join(''));
     }
 
-    const output = {
+    resultEl.textContent = JSON.stringify({
       success: true,
-      width: W,
-      height: H,
+      width: W, height: H,
       pixelCount: pixels.length / 4,
-      samples,
-      pixelsBase64,
-      consoleLog: wasmHost.consoleLogs.map(l => l.message),
-      pluginState: wasmHost.pluginState,
-      metadata: wasmHost.metadata,
-      params: wasmHost.params,
-    };
-
-    resultEl.textContent = JSON.stringify(output, null, 2);
+      samples, pixelsBase64,
+      consoleLog: allConsoleLogs,
+      pluginState: lastHost?.pluginState ?? {},
+      metadata: lastHost?.metadata ?? null,
+      params: lastHost?.params ?? [],
+    }, null, 2);
   } catch (e) {
     resultEl.textContent = JSON.stringify({ success: false, error: String(e), stack: e.stack }, null, 2);
   }
 }
 
-// Allow external config injection, then run
 window.__gpuTestRun = run;
 if (window.__gpuTestConfig) {
   run();
-} else {
-  // Auto-run if URL params are present
-  if (new URLSearchParams(window.location.search).has('module')) {
-    run();
-  }
+} else if (new URLSearchParams(window.location.search).has('module')) {
+  run();
 }
 </script>
 </body>

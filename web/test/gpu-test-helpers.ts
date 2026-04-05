@@ -32,6 +32,28 @@ export interface GpuTestConfig {
   dumpName?: string;
 }
 
+/** Config for an effect test: single module with a solid-color input texture. */
+export interface GpuEffectTestConfig {
+  module: string;
+  width?: number;
+  height?: number;
+  params?: [number, number][];
+  ticks?: number;
+  /** RGBA color (0-1 floats) to fill the input texture with. */
+  inputColor: [number, number, number, number];
+  samplePoints?: [number, number][];
+  dumpName?: string;
+}
+
+/** Config for a chain test: multiple modules executed in sequence. */
+export interface GpuChainTestConfig {
+  chain: { module: string; params?: [number, number][]; ticks?: number }[];
+  width?: number;
+  height?: number;
+  samplePoints?: [number, number][];
+  dumpName?: string;
+}
+
 export interface RGBA { r: number; g: number; b: number; a: number; }
 
 // --- PNG encoder ---
@@ -269,4 +291,69 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
   }
 
   return new Frame(raw, pixels, dumpPath);
+}
+
+// --- Internal: run a raw config against the test runner ---
+
+async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
+  await page.goto('http://localhost:5174/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+
+  await page.evaluate((c: any) => {
+    (window as any).__gpuTestConfig = c;
+    (window as any).__gpuTestRun();
+  }, { ...cfg, dumpPixels: true });
+
+  await page.waitForFunction(
+    () => {
+      const el = document.getElementById('result');
+      return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
+    },
+    { timeout: 15000 },
+  );
+
+  const text = await page.$eval('#result', (el: any) => el.textContent);
+  const raw = JSON.parse(text!);
+  const pixels = raw.pixelsBase64 ? new Uint8Array(Buffer.from(raw.pixelsBase64, 'base64')) : new Uint8Array(0);
+
+  let dumpPath: string | undefined;
+  if (raw.success && pixels.length > 0 && dumpName) {
+    try {
+      fs.mkdirSync(DUMP_DIR, { recursive: true });
+      dumpPath = path.join(DUMP_DIR, `${dumpName}.png`);
+      fs.writeFileSync(dumpPath, encodePNG(pixels, raw.width, raw.height));
+    } catch (e) {
+      console.warn('PNG dump failed:', e);
+    }
+  }
+
+  return new Frame(raw, pixels, dumpPath);
+}
+
+/**
+ * Run an effect module test with a solid-color input texture.
+ * The effect receives the solid color as its input and processes it.
+ */
+export async function runGpuEffectTest(config: GpuEffectTestConfig): Promise<Frame> {
+  return runRawConfig({
+    module: config.module,
+    width: config.width || 64,
+    height: config.height || 64,
+    params: config.params || [],
+    ticks: config.ticks || 0,
+    samplePoints: config.samplePoints || [],
+    inputColor: config.inputColor,
+  }, config.dumpName || `effect_${config.module.replace('.wasm', '')}_${testCounter++}`);
+}
+
+/**
+ * Run a chain of modules. The output of each module becomes the input of the next.
+ * The first module in the chain is a generator (no input texture).
+ */
+export async function runGpuChainTest(config: GpuChainTestConfig): Promise<Frame> {
+  return runRawConfig({
+    chain: config.chain,
+    width: config.width || 64,
+    height: config.height || 64,
+    samplePoints: config.samplePoints || [],
+  }, config.dumpName || `chain_${testCounter++}`);
 }
