@@ -21,4 +21,4 @@ dist
 tmp/
 
 */build/
-*/public/
+/build/

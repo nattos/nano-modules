@@ -277,7 +277,7 @@ async function main() {
 
     let wasmModule: WasmModule;
     try {
-      wasmModule = await host.load(`${moduleName}.wasm`);
+      wasmModule = await host.load(`wasm/${moduleName}.wasm`);
     } catch (e) {
       statusEl.textContent = `WASM load failed: ${e}`;
       return;

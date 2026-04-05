@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
 
-const WASM_PATH = resolve(__dirname, '../public/nanolooper.wasm');
+const WASM_PATH = resolve(__dirname, '../public/wasm/nanolooper.wasm');
 
 // Helper: load WASM module directly from bytes (bypassing fetch)
 async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<ReturnType<WasmHost['load']>>> }> {

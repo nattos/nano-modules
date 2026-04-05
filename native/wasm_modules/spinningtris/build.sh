@@ -1,18 +1,19 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
-OUT_DIR="${1:-../../build}"
-mkdir -p "$OUT_DIR"
+OUT_DIR="${1:-../../../build/wasm}"
+TMP_DIR="${2:-../../build/tmp}"
+mkdir -p "$OUT_DIR" "$TMP_DIR"
 MODULE_NAME=spinningtris
 
 echo "=== Compiling shaders (HLSL → SPIR-V → WGSL/MSL) ==="
-glslc -fshader-stage=compute -x hlsl compute.hlsl -o "$OUT_DIR/compute.spv"
-glslc -fshader-stage=vertex -x hlsl vertex.hlsl -o "$OUT_DIR/vertex.spv"
-glslc -fshader-stage=fragment -x hlsl fragment.hlsl -o "$OUT_DIR/fragment.spv"
+glslc -fshader-stage=compute -x hlsl compute.hlsl -o "$TMP_DIR/compute.spv"
+glslc -fshader-stage=vertex -x hlsl vertex.hlsl -o "$TMP_DIR/vertex.spv"
+glslc -fshader-stage=fragment -x hlsl fragment.hlsl -o "$TMP_DIR/fragment.spv"
 
 for name in compute vertex fragment; do
-  naga "$OUT_DIR/${name}.spv" "$OUT_DIR/${name}.wgsl"
-  naga "$OUT_DIR/${name}.spv" "$OUT_DIR/${name}.metal"
+  naga "$TMP_DIR/${name}.spv" "$TMP_DIR/${name}.wgsl"
+  naga "$TMP_DIR/${name}.spv" "$TMP_DIR/${name}.metal"
 done
 echo "  Shaders compiled"
 
@@ -25,16 +26,16 @@ echo "  Shaders compiled"
       if [ "$lang" = "wgsl" ]; then suffix="WGSL"; else suffix="MSL"; fi
       varname=$(echo "${name}_${suffix}" | tr '[:lower:]' '[:upper:]')
       echo "static const char ${varname}[] ="
-      sed 's/\\/\\\\/g; s/"/\\"/g; s/^/  "/; s/$/\\n"/' "$OUT_DIR/${name}.${lang}"
+      sed 's/\\/\\\\/g; s/"/\\"/g; s/^/  "/; s/$/\\n"/' "$TMP_DIR/${name}.${lang}"
       echo '  ;'
     done
   done
-} > "$OUT_DIR/spinningtris_shaders.h"
+} > "$TMP_DIR/spinningtris_shaders.h"
 
 echo "=== Building WASM ==="
 source ../wasm_build_env.sh
 
 WASM_EXPORTS=()
 
-wasm_build -I"$OUT_DIR" -I../include main.cpp
+wasm_build -I"$TMP_DIR" -I../include main.cpp
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

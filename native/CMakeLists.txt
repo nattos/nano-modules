@@ -220,24 +220,24 @@ target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)
 
 # NanoLooper WASM module integration test (requires nanolooper.wasm to be built)
-if(EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
+if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
   add_executable(test_nanolooper_wasm tests/test_nanolooper_wasm.cpp)
   target_link_libraries(test_nanolooper_wasm PRIVATE wasm_host Catch2::Catch2WithMain)
   target_compile_definitions(test_nanolooper_wasm PRIVATE
-    NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/build/nanolooper.wasm"
+    NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm"
   )
   catch_discover_tests(test_nanolooper_wasm)
 endif()
 
 # Metal GPU pipeline test
-if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/build/gpu_test.wasm")
+if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/gpu_test.wasm")
   add_executable(test_gpu_metal tests/test_gpu_metal.mm)
   target_link_libraries(test_gpu_metal PRIVATE
     wasm_host gpu_backend Catch2::Catch2WithMain
     "-framework Metal" "-framework Foundation"
   )
   target_compile_definitions(test_gpu_metal PRIVATE
-    GPU_TEST_WASM_PATH="${CMAKE_SOURCE_DIR}/build/gpu_test.wasm"
+    GPU_TEST_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/gpu_test.wasm"
   )
   catch_discover_tests(test_gpu_metal)
 endif()
@@ -326,7 +326,7 @@ target_compile_definitions(bridge_harness PRIVATE
 )
 
 # --- GL Harness (macOS visual test with WASM module) ---
-if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
+if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
   add_executable(looper_harness tools/harness/main.mm)
   target_include_directories(looper_harness PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(looper_harness PRIVATE
@@ -341,6 +341,6 @@ if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/build/nanolooper.wasm")
   target_sources(looper_harness PRIVATE src/plugin/synth.mm)
   target_compile_definitions(looper_harness PRIVATE
     BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
-    NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/build/nanolooper.wasm"
+    NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm"
   )
 endif()
