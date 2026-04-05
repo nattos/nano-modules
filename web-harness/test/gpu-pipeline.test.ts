@@ -1,69 +1,115 @@
-// GPU Pipeline Integration Test
-//
-// Tests the full shader build pipeline end-to-end:
-// HLSL → SPIR-V → WGSL → WebGPU compute + render → pixel readback
-//
-// Loads a minimal WASM module that fills the screen with a known color
-// (R=0, G=0.5, B=1.0) via compute shader → render pass, then reads
-// back pixels and asserts they match.
-//
-// Requires dev server on port 5174.
+import { runGpuTest } from './gpu-test-helpers';
 
 describe('GPU Pipeline E2E', () => {
   jest.setTimeout(30000);
 
-  it('full pipeline: HLSL shaders → compute → render → correct pixels', async () => {
-    await page.goto('http://localhost:5174/gpu-test.html', { waitUntil: 'networkidle0' });
+  describe('gpu_test module (solid color fill)', () => {
+    it('fills entire frame with compute-generated color', async () => {
+      const frame = await runGpuTest({
+        module: 'gpu_test.wasm',
+        dumpName: 'gpu_test_solid',
+      });
 
-    // Wait for the test to complete (result element gets populated)
-    await page.waitForFunction(
-      () => {
-        const el = document.getElementById('result');
-        return el && !el.textContent!.includes('Running');
-      },
-      { timeout: 10000 },
-    );
+      expect(frame.success).toBe(true);
+      expect(frame.consoleLog).toContain('gpu_test: initialized');
 
-    const resultText = await page.$eval('#result', el => el.textContent);
-    const result = JSON.parse(resultText!);
+      // Compute shader sets R=0.0, G=0.5, B=1.0 → (0, 128, 255, 255)
+      frame.expectPixelAt(32, 32, { r: 0, g: 128, b: 255, a: 255 });
+      frame.expectUniformColor({ r: 0, g: 128, b: 255, a: 255 });
+    });
 
-    // Basic success
-    expect(result.success).toBe(true);
-    expect(result.pixelCount).toBe(64 * 64);
+    it('corners match center', async () => {
+      const frame = await runGpuTest({
+        module: 'gpu_test.wasm',
+        dumpName: 'gpu_test_corners',
+      });
 
-    // Module initialized
-    expect(result.consoleLog).toContain('gpu_test: initialized');
-
-    // Center pixel should be approximately (0, 128, 255, 255)
-    // The compute shader sets R=0.0, G=0.5, B=1.0, A=1.0
-    const cp = result.centerPixel;
-    expect(cp.r).toBeLessThanOrEqual(5);        // R ≈ 0
-    expect(cp.g).toBeGreaterThanOrEqual(120);    // G ≈ 128
-    expect(cp.g).toBeLessThanOrEqual(136);
-    expect(cp.b).toBeGreaterThanOrEqual(250);    // B ≈ 255
-    expect(cp.a).toBeGreaterThanOrEqual(250);    // A ≈ 255
-
-    expect(result.centerCorrect).toBe(true);
+      const center = frame.pixelAt(32, 32);
+      frame.expectPixelAt(0, 0, center);
+      frame.expectPixelAt(63, 0, center);
+      frame.expectPixelAt(0, 63, center);
+      frame.expectPixelAt(63, 63, center);
+    });
   });
 
-  it('all sampled pixels have uniform color', async () => {
-    // Re-use the same page from previous test (or reload)
-    const resultText = await page.$eval('#result', el => el.textContent);
-    const result = JSON.parse(resultText!);
+  describe('spinningtris module', () => {
+    it('renders colored triangles', async () => {
+      const frame = await runGpuTest({
+        module: 'spinningtris.wasm',
+        width: 128,
+        height: 128,
+        params: [[0, 0.5]], // ~500 triangles
+        ticks: 10,
+        dumpName: 'spinningtris_render',
+      });
 
-    if (!result.success) {
-      console.log('Skipping: GPU test failed', result.error);
-      return;
-    }
+      expect(frame.success).toBe(true);
+      expect(frame.consoleLog).toContain('SpinningTris: GPU initialized');
 
-    // All sampled pixels should be approximately the same color
-    const tolerance = 10;
-    for (const sample of result.samples) {
-      expect(sample.r).toBeLessThanOrEqual(tolerance);
-      expect(sample.g).toBeGreaterThanOrEqual(128 - tolerance);
-      expect(sample.g).toBeLessThanOrEqual(128 + tolerance);
-      expect(sample.b).toBeGreaterThanOrEqual(255 - tolerance);
-      expect(sample.a).toBeGreaterThanOrEqual(255 - tolerance);
-    }
+      // Should have some non-background pixels (triangles)
+      const bg = { r: 13, g: 13, b: 20 };
+      frame.expectNotSolidColor(bg);
+
+      // Coverage: at least 5% of pixels should be non-background
+      frame.expectCoverage(
+        c => c.r > 25 || c.g > 25 || c.b > 30,
+        { min: 0.05 },
+      );
+    });
+
+    it('more triangles = more coverage', async () => {
+      const few = await runGpuTest({
+        module: 'spinningtris.wasm',
+        width: 128, height: 128,
+        params: [[0, 0.01]], // ~10 triangles
+        ticks: 5,
+        dumpName: 'spinningtris_few',
+      });
+
+      const many = await runGpuTest({
+        module: 'spinningtris.wasm',
+        width: 128, height: 128,
+        params: [[0, 1.0]], // 1000 triangles
+        ticks: 5,
+        dumpName: 'spinningtris_many',
+      });
+
+      const isColored = (c) => c.r > 25 || c.g > 25 || c.b > 30;
+      expect(many.coverage(isColored)).toBeGreaterThan(few.coverage(isColored));
+    });
+
+    it('animation changes frame over time', async () => {
+      const t0 = await runGpuTest({
+        module: 'spinningtris.wasm',
+        width: 64, height: 64,
+        params: [[0, 0.5]],
+        ticks: 1,
+        dumpName: 'spinningtris_t0',
+      });
+
+      const t60 = await runGpuTest({
+        module: 'spinningtris.wasm',
+        width: 64, height: 64,
+        params: [[0, 0.5]],
+        ticks: 60,
+        dumpName: 'spinningtris_t60',
+      });
+
+      // Frames at different times should look different (triangles rotate)
+      t60.expectDifferentFrom(t0, 50);
+    });
+
+    it('declares expected parameters', async () => {
+      const frame = await runGpuTest({
+        module: 'spinningtris.wasm',
+        dumpName: 'spinningtris_params',
+      });
+
+      expect(frame.success).toBe(true);
+      expect(frame.params.length).toBe(2);
+      expect(frame.params[0].name).toBe('Triangles');
+      expect(frame.params[1].name).toBe('Speed');
+      expect(frame.metadata?.id).toBe('com.nattos.spinningtris');
+    });
   });
 });

@@ -7,9 +7,8 @@
 
 #include "../../src/json/json_doc_client.h"
 
-#define floor(x) __builtin_floor(x)
-#define sinf(x) __builtin_sinf(x)
-#define fabs(x) __builtin_fabs(x)
+#include <cmath>
+#include <cstring>
 
 /* ======================================================================
  * Host function imports

@@ -8,9 +8,8 @@
 #include "core.h"
 #include "../../src/json/json_doc_client.h"
 
-/* Use compiler builtins instead of libc math */
-#define floor(x) __builtin_floor(x)
-#define sinf(x) __builtin_sinf(x)
+#include <cmath>
+#include <cstring>
 
 /* ======================================================================
  * Host function imports
@@ -621,7 +620,7 @@ void render(int vp_w, int vp_h) {
       }
 
       /* Clip name */
-      char* name = channel_names[i];
+      const char* name = channel_names[i];
       if (name[0] == 0) name = "(empty)";
       float name_y = y + thumb_h + 2*scale;
       float name_size = font_size * 0.7f;
@@ -663,7 +662,7 @@ void render(int vp_w, int vp_h) {
     int is_muted = mute_held && trigger_held[ch];
     float cr = CH_R[ch], cg = CH_G[ch], cb = CH_B[ch];
 
-    char label[2] = { '1' + ch, 0 };
+    char label[2] = { char('1' + ch), 0 };
     text(label, margin, y, font_size,
          is_muted ? cr*0.3f : cr, is_muted ? cg*0.3f : cg, is_muted ? cb*0.3f : cb, 1.0f);
 
@@ -703,7 +702,7 @@ void render(int vp_w, int vp_h) {
   for (int i = 0; i < NUM_CHANNELS; i++) {
     float x = margin + i * gw * 3;
     float alpha = flash[i] > 0 ? 1.0f : 0.3f;
-    char label[2] = { '1' + i, 0 };
+    char label[2] = { char('1' + i), 0 };
     text(label, x, y, font_size, CH_R[i], CH_G[i], CH_B[i], alpha);
   }
   float mod_x = margin + NUM_CHANNELS * gw * 3 + gw * 2;

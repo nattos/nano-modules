@@ -8,6 +8,8 @@
 
 #include "gpu_test_shaders.h"
 
+#include <cstring>
+
 /* gpu imports */
 __attribute__((import_module("gpu"), import_name("get_backend")))
 extern int gpu_get_backend(void);

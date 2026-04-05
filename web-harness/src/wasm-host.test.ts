@@ -16,10 +16,15 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
     : undefined;
 
   // We need to instantiate manually since fetch() doesn't work in Node
-  const result = await WebAssembly.instantiate(bytes, buildImports(host));
+  const imports = buildImports(host);
+  const result = await WebAssembly.instantiate(bytes, imports);
   const instance = result.instance;
   (host as any).instance = instance;
   (host as any).memory = instance.exports.memory as WebAssembly.Memory;
+
+  // Initialize WASI runtime (static constructors)
+  const _initialize = instance.exports._initialize as (() => void) | undefined;
+  if (_initialize) _initialize();
 
   const exports = instance.exports;
   const wasmModule = {
@@ -37,10 +42,30 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
 function buildImports(host: WasmHost): WebAssembly.Imports {
   const decoder = new TextDecoder();
   const getMemory = () => (host as any).memory as WebAssembly.Memory;
+
+  // WASI stubs
+  const wasi_snapshot_preview1: Record<string, Function> = {
+    args_get: () => 0,
+    args_sizes_get: (cp: number, sp: number) => {
+      const v = new DataView(getMemory().buffer);
+      v.setUint32(cp, 0, true); v.setUint32(sp, 0, true); return 0;
+    },
+    fd_close: () => 0,
+    fd_seek: () => 0,
+    fd_write: () => 0,
+    proc_exit: () => {},
+    environ_get: () => 0,
+    environ_sizes_get: (cp: number, sp: number) => {
+      const v = new DataView(getMemory().buffer);
+      v.setUint32(cp, 0, true); v.setUint32(sp, 0, true); return 0;
+    },
+    clock_time_get: () => 0,
+  };
   const readString = (ptr: number, len: number) =>
     decoder.decode(new Uint8Array(getMemory().buffer, ptr, len));
 
   return {
+    wasi_snapshot_preview1,
     env: {
       resolume_get_param: (_id: bigint) => 0,
       resolume_set_param: (_id: bigint, _value: number) => {},

@@ -1,5 +1,6 @@
 import type { DrawCmd } from './gpu-renderer';
 import type { GPUHost } from './gpu-host';
+import { createWasiShim } from './wasi-shim';
 import * as fakeResolume from './fake-resolume';
 
 export interface FrameState {
@@ -98,6 +99,7 @@ export class WasmHost {
     const bytes = await response.arrayBuffer();
 
     const importObject: WebAssembly.Imports = {
+      wasi_snapshot_preview1: createWasiShim(() => this.memory),
       env: {
         resolume_get_param: (id: bigint) => this.resolumeParamValues.get(id) ?? 0,
         resolume_set_param: (id: bigint, value: number) => {
@@ -368,6 +370,10 @@ export class WasmHost {
     const result = await WebAssembly.instantiate(bytes, importObject);
     this.instance = result.instance;
     this.memory = this.instance.exports.memory as WebAssembly.Memory;
+
+    // Initialize WASI runtime (C++ static constructors, etc.)
+    const _initialize = this.instance.exports._initialize as (() => void) | undefined;
+    if (_initialize) _initialize();
 
     const exports = this.instance.exports;
     return {

@@ -7,7 +7,7 @@ This document describes the WASM module system, the host APIs, the shader pipeli
 ### macOS Dependencies (Homebrew)
 
 ```bash
-brew install llvm        # WASM-capable clang (--target=wasm32)
+brew install llvm        # WASM-capable clang++ (--target=wasm32-wasip1)
 brew install lld          # wasm-ld linker
 brew install shaderc      # glslc (HLSL/GLSL → SPIR-V compiler)
 brew install spirv-tools  # spirv-val, spirv-dis (validation/disassembly)
@@ -19,6 +19,10 @@ brew install spirv-tools  # spirv-val, spirv-dis (validation/disassembly)
 rustup update stable
 cargo install naga-cli    # SPIR-V → WGSL/MSL transpiler
 ```
+
+### WASI SDK (for C++ standard library in WASM)
+
+The build system expects a WASI sysroot with libc++ at the path detected by `wasm_build_env.sh` (typically under Homebrew's LLVM installation or a standalone WASI SDK). The sysroot provides `<cmath>`, `<cstring>`, and other C++17 headers for `wasm32-wasip1`.
 
 ### Metal Toolchain (for native GPU backend)
 
@@ -37,9 +41,8 @@ cd web-harness && npm install
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    WASM Module (.wasm)                    │
-│  Written in plain C, compiled with clang --target=wasm32 │
-│  Imports host functions from: canvas, host, resolume,    │
-│  state, gpu modules                                      │
+│  C++17 with WASI libc++, --target=wasm32-wasip1          │
+│  Imports: canvas, host, resolume, state, gpu, wasi       │
 │  Exports: init, tick, render, on_param_change,           │
 │           on_state_changed                                │
 └─────────────┬───────────────────────────┬───────────────┘
@@ -49,7 +52,8 @@ cd web-harness && npm install
     │   (C++/ObjC++)    │     │   (TypeScript)       │
     │                   │     │                       │
     │ • WAMR runtime    │     │ • WebAssembly API     │
-    │ • Metal GPU       │     │ • WebGPU backend      │
+    │ • WASI support    │     │ • WebGPU backend      │
+    │ • Metal GPU       │     │ • WASI shim           │
     │ • FFGL plugin     │     │ • Lit + MobX editors  │
     │ • Resolume WS     │     │ • Fake Resolume       │
     │ • WS server       │     │ • Puppeteer E2E       │
@@ -134,6 +138,32 @@ HLSL (authored)
 
 Modules are "fat" — they embed both WGSL and MSL and select at runtime via `gpu.get_backend()`.
 
+## Shared Build Environment
+
+All WASM modules source `native/wasm_modules/wasm_build_env.sh`, which provides:
+
+- **Compiler**: Homebrew LLVM `clang++` with `--target=wasm32-wasip1`
+- **C++ standard**: C++17 (`-std=c++17 -fno-exceptions -fno-rtti`)
+- **Sysroot**: WASI libc + libc++ + libc++abi
+- **Common exports**: `init`, `tick`, `render`, `on_param_change`, `on_state_changed`
+- **Helper function**: `wasm_build()` compiles sources and links into `.wasm`
+
+## C++ Wrapper Headers
+
+Shared headers in `native/wasm_modules/include/` provide type-safe wrappers over the raw C host imports:
+
+### `gpu.h` — D3D12-style GPU API
+- Typed handles: `ShaderModule`, `Buffer`, `Texture`, `ComputePSO`, `RenderPSO`
+- Command encoders: `ComputePass`, `RenderPass` with method chaining
+- `Device` factory with static methods for resource creation and submit
+- `Buffer::write<T>(data, count)` for arrays, `Buffer::writeOne<T>(value)` for single values
+
+### `host.h` — Host, Canvas, State, Resolume APIs
+- `namespace host` — timing, parameters, viewport, audio triggers
+- `namespace canvas` — 2D drawing (fillRect, drawImage, drawText)
+- `namespace state` — metadata, parameter declaration, logging, state read/write
+- `namespace resolume` — composition queries, parameter control, clip triggers
+
 ## WASM Modules
 
 ### NanoLooper (`com.nattos.nanolooper`)
@@ -214,7 +244,7 @@ npm run dev
 # Unit tests (24 tests, vitest)
 npm test
 
-# E2E tests (14 tests, puppeteer — requires dev server running)
+# E2E tests (18 tests, puppeteer — requires dev server running)
 npm run dev &
 npm run test:e2e
 ```
@@ -257,9 +287,9 @@ cd ../../web-harness && npm test
 | **Native Total** | | **143** | |
 | Font/Resolume/Host | Vitest | 24 | Font atlas, fake Resolume, WASM loading |
 | Harness E2E | Puppeteer | 12 | Browser WASM, state patching, keyboard |
-| GPU Pipeline E2E | Puppeteer | 2 | HLSL→SPIR-V→WGSL→WebGPU→pixels |
-| **Web Total** | | **38** | |
-| **Grand Total** | | **181** | |
+| GPU Pipeline E2E | Puppeteer | 6 | HLSL→SPIR-V→WGSL→WebGPU→pixel assertions |
+| **Web Total** | | **42** | |
+| **Grand Total** | | **185** | |
 
 ## Native Build Artifacts
 
@@ -281,7 +311,7 @@ http://localhost:5174/?module=spinningtris
 
 ## Key Design Decisions
 
-- **Plain C for WASM modules**: No C++ runtime, no libc beyond builtins. Modules target eventual direct bytecode generation from nano-repatch's IR.
+- **C++17 with WASI libc++**: Modules compile with `--target=wasm32-wasip1` using WASI sysroot for full C++ STL support (`<cmath>`, `<cstring>`, etc.) with `-fno-exceptions -fno-rtti` to minimize binary size. Modules target eventual direct bytecode generation from nano-repatch's IR.
 - **HLSL as shader authoring language**: Better compute support, cleaner syntax, forward-compatible with Slang. Agents produce better HLSL than WGSL.
 - **SPIR-V as canonical shader IR**: Required format. WGSL and MSL generated at build time via naga.
 - **Fat modules**: Ship both WGSL + MSL, select at runtime via `gpu.get_backend()`.
@@ -289,3 +319,5 @@ http://localhost:5174/?module=spinningtris
 - **JSON Patch (RFC 6902)**: State changes streamed to editors via standard protocol.
 - **json-doc**: Fixed-buffer state reader for WASM — no dynamic allocation needed.
 - **`id@N` plugin keys**: `com.nattos.nanolooper@0`, `com.nattos.nanolooper@1` for multi-instance.
+- **WASI shim for browser**: Minimal stubs (`wasi-shim.ts`) implement `wasi_snapshot_preview1` syscalls (args, fd, environ, clock) so WASI-compiled modules run in the browser. Native side uses WAMR's built-in WASI support.
+- **GPU E2E pixel assertions**: `Frame` class reads back full pixel buffers and provides `expectPixelAt`, `expectUniformColor`, `expectCoverage`, `expectDifferentFrom`, etc. Automatic PNG dumps to `/tmp/gpu-test-dumps/`.
