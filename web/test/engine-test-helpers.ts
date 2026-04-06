@@ -4,13 +4,6 @@
  * Boots the engine worker in a real browser (via Puppeteer),
  * sends commands (load modules, create sketches, set params, set trace points),
  * waits for frames, and reads back traced pixels for assertions.
- *
- * Usage:
- *   const result = await runEngineTest({
- *     modules: ['com.nattos.spinningtris'],
- *     tracePoints: [{ id: 'out', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } }],
- *   });
- *   result.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 });
  */
 
 import * as fs from 'fs';
@@ -37,17 +30,40 @@ export interface EngineTestConfig {
   dumpName?: string;
 }
 
+/** Multi-phase test: each phase sends commands, waits, and captures independently. */
+export interface EnginePhaseConfig {
+  commands?: any[];
+  waitFrames?: number;
+  captureTraceIds?: string[];
+}
+
+export interface EngineMultiPhaseTestConfig {
+  width?: number;
+  height?: number;
+  /** Module types to load in the first phase. */
+  modules?: string[];
+  /** Phases to execute sequentially. */
+  phases: EnginePhaseConfig[];
+  dumpName?: string;
+}
+
 export interface EngineTestResult {
   success: boolean;
   error?: string;
   state: any;
   tracedFrames: Record<string, Frame | null>;
-
-  /** Get a traced frame by ID, asserting it exists. */
   trace(id: string): Frame;
 }
 
-// PNG encoder (reuse from gpu-test-helpers)
+export interface EngineMultiPhaseResult {
+  success: boolean;
+  error?: string;
+  state: any;
+  phases: { tracedFrames: Record<string, Frame | null>; trace(id: string): Frame }[];
+}
+
+// --- PNG encoder ---
+
 function crc32(buf: Buffer) {
   let c = 0xFFFFFFFF;
   for (let i = 0; i < buf.length; i++) {
@@ -82,109 +98,108 @@ function encodePNG(rgba: Uint8Array, width: number, height: number) {
 
 let testCounter = 0;
 
-export async function runEngineTest(config: EngineTestConfig): Promise<EngineTestResult> {
-  const W = config.width || 64;
-  const H = config.height || 64;
-
-  // Build the command sequence
-  const commands: any[] = [];
-
-  // Load modules first
-  for (const moduleType of (config.modules || [])) {
-    commands.push({ type: 'loadModule', moduleType });
+function decodeTracedFrames(rawFrames: Record<string, any>, baseName: string, phaseSuffix: string): Record<string, Frame | null> {
+  const tracedFrames: Record<string, Frame | null> = {};
+  for (const [traceId, data] of Object.entries(rawFrames)) {
+    if (!data) { tracedFrames[traceId] = null; continue; }
+    const pixels = new Uint8Array(Buffer.from(data.pixelsBase64, 'base64'));
+    const frameRaw = {
+      success: true, width: data.width, height: data.height,
+      pixelCount: data.width * data.height,
+      samples: [], consoleLog: [], pluginState: {}, metadata: null, params: [],
+    };
+    let dumpPath: string | undefined;
+    try {
+      fs.mkdirSync(DUMP_DIR, { recursive: true });
+      dumpPath = path.join(DUMP_DIR, `${baseName}${phaseSuffix}_${traceId}.png`);
+      fs.writeFileSync(dumpPath, encodePNG(pixels, data.width, data.height));
+    } catch (e) { console.warn('PNG dump failed:', e); }
+    tracedFrames[traceId] = new Frame(frameRaw, pixels, dumpPath);
   }
+  return tracedFrames;
+}
 
-  // Set trace points
-  if (config.tracePoints && config.tracePoints.length > 0) {
-    commands.push({ type: 'setTracePoints', tracePoints: config.tracePoints });
-  }
-
-  // Extra commands
-  commands.push(...(config.commands || []));
-
-  const runnerConfig = {
-    width: W,
-    height: H,
-    commands,
-    waitFrames: config.waitFrames ?? 15,
-    captureTraceIds: config.captureTraceIds,
+function makeTraceAccessor(tracedFrames: Record<string, Frame | null>) {
+  return (id: string): Frame => {
+    const f = tracedFrames[id];
+    if (!f) throw new Error(`Trace '${id}' not found. Available: ${Object.keys(tracedFrames).join(', ')}`);
+    return f;
   };
+}
 
-  // Navigate to engine test runner and execute
+// --- Run test against engine-test-runner.html ---
+
+async function runRawEngineTest(runnerConfig: any): Promise<any> {
   await page.goto('http://localhost:5174/engine-test-runner.html', { waitUntil: 'networkidle0' });
-
   await page.evaluate((cfg: any) => {
     (window as any).__engineTestConfig = cfg;
     (window as any).__engineTestRun();
   }, runnerConfig);
-
   await page.waitForFunction(
     () => {
       const el = document.getElementById('result');
       return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
     },
-    { timeout: 20000 },
+    { timeout: 25000 },
   );
-
   const text = await page.$eval('#result', (el) => el.textContent);
-  const raw = JSON.parse(text!);
+  return JSON.parse(text!);
+}
+
+// --- Single-phase test ---
+
+export async function runEngineTest(config: EngineTestConfig): Promise<EngineTestResult> {
+  const W = config.width || 64;
+  const H = config.height || 64;
+  const commands: any[] = [];
+
+  for (const m of (config.modules || [])) commands.push({ type: 'loadModule', moduleType: m });
+  if (config.tracePoints?.length) commands.push({ type: 'setTracePoints', tracePoints: config.tracePoints });
+  commands.push(...(config.commands || []));
+
+  const raw = await runRawEngineTest({
+    width: W, height: H, commands,
+    waitFrames: config.waitFrames ?? 15,
+    captureTraceIds: config.captureTraceIds,
+  });
 
   if (!raw.success) {
-    return {
-      success: false,
-      error: raw.error,
-      state: null,
-      tracedFrames: {},
-      trace(id: string): Frame {
-        throw new Error(`Test failed: ${raw.error}`);
-      },
-    };
+    return { success: false, error: raw.error, state: null, tracedFrames: {},
+      trace() { throw new Error(`Test failed: ${raw.error}`); } };
   }
 
-  // Decode traced frames into Frame objects
-  const tracedFrames: Record<string, Frame | null> = {};
   const baseName = config.dumpName || `engine_${testCounter++}`;
+  const tracedFrames = decodeTracedFrames(raw.tracedFrames || {}, baseName, '');
 
-  for (const [traceId, data] of Object.entries(raw.tracedFrames as Record<string, any>)) {
-    if (!data) {
-      tracedFrames[traceId] = null;
-      continue;
+  return { success: true, state: raw.state, tracedFrames, trace: makeTraceAccessor(tracedFrames) };
+}
+
+// --- Multi-phase test ---
+
+export async function runEngineMultiPhaseTest(config: EngineMultiPhaseTestConfig): Promise<EngineMultiPhaseResult> {
+  const W = config.width || 64;
+  const H = config.height || 64;
+
+  // Build phases: first phase includes module loading
+  const phases = config.phases.map((p, i) => {
+    const cmds = [...(p.commands || [])];
+    if (i === 0 && config.modules) {
+      cmds.unshift(...config.modules.map(m => ({ type: 'loadModule', moduleType: m })));
     }
+    return { commands: cmds, waitFrames: p.waitFrames || 15, captureTraceIds: p.captureTraceIds };
+  });
 
-    const pixels = new Uint8Array(Buffer.from(data.pixelsBase64, 'base64'));
-    const frameRaw = {
-      success: true,
-      width: data.width,
-      height: data.height,
-      pixelCount: (data.width * data.height),
-      samples: [],
-      consoleLog: [],
-      pluginState: {},
-      metadata: null,
-      params: [],
-    };
+  const raw = await runRawEngineTest({ width: W, height: H, phases });
 
-    // Dump PNG
-    let dumpPath: string | undefined;
-    try {
-      fs.mkdirSync(DUMP_DIR, { recursive: true });
-      dumpPath = path.join(DUMP_DIR, `${baseName}_${traceId}.png`);
-      fs.writeFileSync(dumpPath, encodePNG(pixels, data.width, data.height));
-    } catch (e) {
-      console.warn('PNG dump failed:', e);
-    }
-
-    tracedFrames[traceId] = new Frame(frameRaw, pixels, dumpPath);
+  if (!raw.success) {
+    return { success: false, error: raw.error, state: null, phases: [] };
   }
 
-  return {
-    success: true,
-    state: raw.state,
-    tracedFrames,
-    trace(id: string): Frame {
-      const f = tracedFrames[id];
-      if (!f) throw new Error(`Trace '${id}' not found. Available: ${Object.keys(tracedFrames).join(', ')}`);
-      return f;
-    },
-  };
+  const baseName = config.dumpName || `engine_mp_${testCounter++}`;
+  const phaseResults = (raw.phases || []).map((p: any, i: number) => {
+    const traced = decodeTracedFrames(p.tracedFrames || {}, baseName, `_p${i}`);
+    return { tracedFrames: traced, trace: makeTraceAccessor(traced) };
+  });
+
+  return { success: true, state: raw.state, phases: phaseResults };
 }

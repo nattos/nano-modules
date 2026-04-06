@@ -13,6 +13,7 @@ import { BridgeCore } from './bridge-core';
 import { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
+import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint } from './engine-types';
 import type { Sketch } from './sketch-types';
 
@@ -24,6 +25,7 @@ let gpuDevice: GPUDevice | null = null;
 let canvas: OffscreenCanvas | null = null;
 let gpuContext: GPUCanvasContext | null = null;
 let sketchExecutor: SketchExecutor | null = null;
+let traceCapture: TraceCapture | null = null;
 
 // Real module instances
 const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
@@ -134,6 +136,7 @@ async function init(width: number, height: number) {
 
   gpuHost = new GPUHost(gpuDevice, format);
   sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format);
+  traceCapture = new TraceCapture(gpuDevice, format);
 
   post({ type: 'ready' });
   markDirty();
@@ -167,7 +170,7 @@ async function frame() {
   if (bridgeCore) bridgeCore.tick();
 
   await simulateTick(dt);
-  await captureAndSendFrame();
+  captureAndSendFrame();
 
   if (stateGeneration !== lastBroadcastGeneration) {
     broadcastState();
@@ -264,19 +267,16 @@ async function simulateTick(dt: number) {
 const traceHandles = new Map<string, number>();
 
 /**
- * Capture each trace point by reading back its texture and creating an ImageBitmap.
+ * Capture each trace point by blitting its texture to an OffscreenCanvas
+ * and calling transferToImageBitmap(). Fully GPU-resident — no CPU readback.
  */
-async function captureAndSendFrame() {
-  if (!canvas || !gpuHost) return;
-  const w = canvas.width;
-  const h = canvas.height;
-  if (w <= 0 || h <= 0) return;
+function captureAndSendFrame() {
+  if (!gpuHost || !traceCapture) return;
 
   const tracedFrames: Record<string, ImageBitmap> = {};
   const transfers: Transferable[] = [];
 
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    // No trace points — send empty frame with just FPS
     post({ type: 'frame', fps, tracedFrames }, []);
     return;
   }
@@ -285,16 +285,15 @@ async function captureAndSendFrame() {
     const handle = traceHandles.get(tp.id) ?? -1;
     if (handle < 0) continue;
 
+    const srcTex = gpuHost.getTextureByHandle(handle);
+    if (!srcTex) continue;
+
     try {
-      // Read back raw RGBA pixels from the GPU texture
-      const pixels = await gpuHost.readbackTexture(handle, w, h);
-      // Create ImageBitmap from raw pixel data
-      const imageData = new ImageData(new Uint8ClampedArray(pixels.buffer), w, h);
-      const bitmap = await createImageBitmap(imageData);
+      const bitmap = traceCapture.capture(tp.id, srcTex);
       tracedFrames[tp.id] = bitmap;
       transfers.push(bitmap);
     } catch (e) {
-      console.warn(`[trace ${tp.id}] readback failed:`, e);
+      console.warn(`[trace ${tp.id}] capture failed:`, e);
     }
   }
 

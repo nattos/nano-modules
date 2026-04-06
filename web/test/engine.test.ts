@@ -1,4 +1,4 @@
-import { runEngineTest } from './engine-test-helpers';
+import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 
 describe('Engine Worker E2E', () => {
   jest.setTimeout(30000);
@@ -181,6 +181,88 @@ describe('Engine Worker E2E', () => {
       expect(result.success).toBe(true);
       const frame = result.trace('out');
       frame.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+    });
+  });
+
+  describe('trace point switching', () => {
+    it('switching trace between two sketches shows correct output', async () => {
+      // Repro: create sketch on spinningtris, trace it. Then create sketch on
+      // gpu_test, trace that. Then switch trace back to spinningtris sketch.
+      // Bug: switching back shows the gpu_test output instead of spinningtris.
+
+      const trisSketch = {
+        anchor: 'com.nattos.spinningtris@0',
+        columns: [{ name: 'main', chain: [
+          { type: 'texture_input', id: 'in' },
+          { type: 'texture_output', id: 'out' },
+        ]}],
+      };
+
+      const blueSketch = {
+        anchor: 'com.nattos.gpu_test@0',
+        columns: [{ name: 'main', chain: [
+          { type: 'texture_input', id: 'in' },
+          { type: 'texture_output', id: 'out' },
+        ]}],
+      };
+
+      const result = await runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.spinningtris', 'com.nattos.gpu_test'],
+        dumpName: 'engine_trace_switch',
+        phases: [
+          // Phase 0: Create both sketches, trace the spinningtris sketch
+          {
+            commands: [
+              { type: 'createSketch', sketchId: 'sk_tris', sketch: trisSketch },
+              { type: 'createSketch', sketchId: 'sk_blue', sketch: blueSketch },
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'preview', target: { type: 'sketch_output', sketchId: 'sk_tris' } },
+              ]},
+            ],
+            waitFrames: 15,
+            captureTraceIds: ['preview'],
+          },
+          // Phase 1: Switch trace to gpu_test sketch
+          {
+            commands: [
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'preview', target: { type: 'sketch_output', sketchId: 'sk_blue' } },
+              ]},
+            ],
+            waitFrames: 10,
+            captureTraceIds: ['preview'],
+          },
+          // Phase 2: Switch trace BACK to spinningtris sketch
+          {
+            commands: [
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'preview', target: { type: 'sketch_output', sketchId: 'sk_tris' } },
+              ]},
+            ],
+            waitFrames: 10,
+            captureTraceIds: ['preview'],
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.phases.length).toBe(3);
+
+      const phase0 = result.phases[0].trace('preview'); // should be spinningtris
+      const phase1 = result.phases[1].trace('preview'); // should be gpu_test (blue)
+      const phase2 = result.phases[2].trace('preview'); // should be spinningtris again
+
+      // Phase 1 should be solid blue (gpu_test)
+      phase1.expectPixelAt(32, 32, { r: 0, g: 128, b: 255 }, 10);
+
+      // Phase 0 should NOT be solid blue (it's spinningtris)
+      phase0.expectNotSolidColor({ r: 0, g: 128, b: 255 });
+
+      // Phase 2 should match phase 0 (spinningtris), NOT phase 1 (blue)
+      // The bug would cause phase 2 to look like phase 1
+      phase2.expectNotSolidColor({ r: 0, g: 128, b: 255 });
+      phase2.expectDifferentFrom(phase1, 50);
     });
   });
 });
