@@ -319,8 +319,7 @@ void on_resolume_param(long long param_id, double value) {
   sp->path[sp->path_len] = 0;
 }
 
-__attribute__((export_name("on_state_changed")))
-void on_state_changed(void) {
+static void reload_assignment_from_state() {
   /* Read input_id and output_id from canonical state (may be set by editor) */
   static const char assign_paths[] =
     "/input_id\0"   /* offset 0, len 9 */
@@ -366,6 +365,7 @@ void on_state_changed(void) {
 __attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   (void)n; (void)pb; (void)off; (void)len; (void)ops;
+  reload_assignment_from_state();
 }
 
 __attribute__((export_name("render")))

@@ -10,7 +10,6 @@ source ../wasm_build_env.sh
 
 WASM_EXPORTS=(
   -Wl,--export=on_resolume_param
-  -Wl,--export=on_state_changed
 )
 
 echo "Building $MODULE_NAME.wasm..."
