@@ -1,22 +1,21 @@
 /**
- * Data model for sketches — virtual module chains anchored to real instances.
+ * Data model for sketches — virtual module chains with sideband rail routing.
  *
  * Stored in the state document at /sketches/{sketch_id}.
- * Read/written via the standard get_at / apply_client_patch mechanism.
  */
 
 /** A sketch is a processing graph anchored to a real FFGL instance. */
 export interface Sketch {
-  /** Key of the real instance this sketch is anchored to, or null for standalone. */
   anchor: string | null;
-  /** Processing columns (currently only the first "main" column is executed). */
   columns: SketchColumn[];
 }
 
-/** A column is a linear chain of processing steps. */
+/** A column is a linear chain of processing steps with sideband rails. */
 export interface SketchColumn {
   name: string;
   chain: ChainEntry[];
+  /** Sideband rails available within this column. */
+  rails?: Rail[];
 }
 
 /** A single entry in a processing chain. */
@@ -34,16 +33,32 @@ export interface TextureInputEntry {
 /** A virtual module instance in the chain. */
 export interface ModuleEntry {
   type: 'module';
-  /** Module type ID, e.g. "com.nattos.brightness_contrast". */
   module_type: string;
-  /** Unique key for this virtual instance, e.g. "virtual_bc@0". */
   instance_key: string;
-  /** Parameter values keyed by param name or index. */
   params: Record<string, number>;
+  /** Rail connections for this module instance. */
+  taps?: Tap[];
 }
 
 /** Marks a texture output point in the chain. */
 export interface TextureOutputEntry {
   type: 'texture_output';
   id: string;
+}
+
+// --- Sideband Rails ---
+
+/** A named data channel within a column. */
+export interface Rail {
+  id: string;
+  name?: string;
+  dataType: 'float' | 'texture';
+}
+
+/** Connects a module's field to a rail. */
+export interface Tap {
+  railId: string;
+  /** Field path in instance state (e.g. "params/0", "output", "texture_out/0"). */
+  fieldPath: string;
+  direction: 'read' | 'write';
 }

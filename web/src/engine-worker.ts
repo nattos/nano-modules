@@ -320,7 +320,9 @@ function captureAndSendFrame() {
 async function loadModule(moduleType: string) {
   if (!bridgeCore || !gpuHost) return;
 
-  const moduleName = moduleType.split('.').pop() ?? moduleType;
+  // Derive WASM filename from module type.
+  // Strip "com.nattos." prefix, replace remaining dots with underscores.
+  const moduleName = moduleType.replace(/^com\.nattos\./, '').replace(/\./g, '_');
   const host = new WasmHost();
   host.bridgeCore = bridgeCore;
   host.gpuHost = gpuHost;
@@ -339,17 +341,6 @@ async function loadModule(moduleType: string) {
 // ========================================================================
 // State broadcast
 // ========================================================================
-
-function paramMinMax(type: number): { min: number; max: number } {
-  switch (type) {
-    case 0: return { min: 0, max: 1 };
-    case 1: return { min: 0, max: 1 };
-    case 10: return { min: 0, max: 1 };
-    case 11: return { min: 0, max: 1 };
-    case 13: return { min: 0, max: 100 };
-    default: return { min: 0, max: 1 };
-  }
-}
 
 function broadcastState() {
   if (!bridgeCore) return;
@@ -370,7 +361,8 @@ function broadcastState() {
           name: p.name,
           type: p.type,
           defaultValue: p.default ?? p.defaultValue ?? 0,
-          ...paramMinMax(p.type),
+          min: p.min ?? 0,
+          max: p.max ?? 1,
         })),
         io: entry.io ?? [],
       });

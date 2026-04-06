@@ -61,6 +61,13 @@ describe('Engine Worker E2E', () => {
       expect(st.params.length).toBe(2);
       expect(st.params[0].name).toBe('Triangles');
       expect(st.params[1].name).toBe('Speed');
+
+      // I/O declarations
+      expect(st.io.length).toBeGreaterThanOrEqual(1);
+      const texOut = st.io.find((io: any) => io.kind === 1); // IO_TEXTURE_OUTPUT
+      expect(texOut).toBeTruthy();
+      expect(texOut.name).toBe('Output');
+      expect(texOut.role).toBe(0); // IO_PRIMARY
     });
   });
 

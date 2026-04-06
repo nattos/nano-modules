@@ -52,6 +52,13 @@ std::string StateDocument::register_plugin(const PluginMetadata& meta) {
 void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl& param) {
   platform::LockGuard<platform::Mutex> lock(mutex_);
 
+  // Determine min/max from type
+  float min_val = 0.0f, max_val = 1.0f;
+  switch (param.type) {
+    case PARAM_INTEGER: min_val = 0; max_val = 100; break;
+    default: min_val = 0; max_val = 1; break;
+  }
+
   // Find the plugin in the global listing
   auto& plugins = doc_["global"]["plugins"];
   for (size_t i = 0; i < plugins.size(); i++) {
@@ -61,9 +68,24 @@ void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl
         {"name", param.name},
         {"type", param.type},
         {"default", param.default_value},
+        {"min", min_val},
+        {"max", max_val},
       };
       plugins[i]["params"].push_back(p);
       emit("add", "/global/plugins/" + std::to_string(i) + "/params/-", p);
+
+      // Also initialize the default value in instance state
+      std::string state_path = "/plugins/" + plugin_key + "/state";
+      auto* state = json_patch::resolve_pointer(doc_, state_path);
+      if (state) {
+        std::string param_key = std::to_string(param.index);
+        if (!state->contains("params")) {
+          (*state)["params"] = json::object();
+          emit("add", state_path + "/params", json::object());
+        }
+        (*state)["params"][param_key] = param.default_value;
+        emit("add", state_path + "/params/" + param_key, param.default_value);
+      }
       return;
     }
   }

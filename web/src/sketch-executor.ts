@@ -1,19 +1,22 @@
 /**
- * Sketch executor — walks a chain of virtual module instances,
- * piping texture outputs from one module into the next.
- *
- * Manages virtual module lifecycle, intermediate render targets,
- * and parameter injection.
+ * Sketch executor — walks chains of virtual module instances,
+ * piping textures and data between modules via sideband rails.
  */
 
 import type { BridgeCore } from './bridge-core';
 import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
-import type { ChainEntry, ModuleEntry, Sketch } from './sketch-types';
+import type { ChainEntry, ModuleEntry, Sketch, SketchColumn, Rail, Tap } from './sketch-types';
 
 interface LoadedModule {
   host: WasmHost;
   module: WasmModule;
+}
+
+/** Runtime value on a rail during a single frame's execution. */
+interface RailValue {
+  data?: number;
+  texture?: number;  // GPU texture handle
 }
 
 export class SketchExecutor {
@@ -22,10 +25,7 @@ export class SketchExecutor {
   private device: GPUDevice;
   private format: GPUTextureFormat;
 
-  /** Loaded virtual module instances by instance key. */
   private instances = new Map<string, LoadedModule>();
-
-  /** Per-sketch intermediate render target textures. Keyed by sketchId. */
   private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
 
   constructor(bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat) {
@@ -35,7 +35,6 @@ export class SketchExecutor {
     this.format = format;
   }
 
-  /** Get or create a virtual module instance by its instance key. */
   async ensureInstance(entry: ModuleEntry): Promise<LoadedModule> {
     let loaded = this.instances.get(entry.instance_key);
     if (loaded) return loaded;
@@ -44,7 +43,7 @@ export class SketchExecutor {
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
 
-    const moduleName = entry.module_type.split('.').pop() ?? entry.module_type;
+    const moduleName = entry.module_type.replace(/^com\.nattos\./, '').replace(/\./g, '_');
     const mod = await host.load(`/wasm/${moduleName}.wasm`);
     mod.init();
 
@@ -53,18 +52,17 @@ export class SketchExecutor {
     return loaded;
   }
 
-  /** Get a loaded instance (if already loaded). */
   getInstance(instanceKey: string): LoadedModule | undefined {
     return this.instances.get(instanceKey);
   }
 
   /**
-   * Ensure a sketch has enough intermediate textures for its chain.
-   * Each sketch gets its own pair (ping-pong) so they don't overwrite each other.
+   * Ensure we have enough intermediate textures for a chain.
+   * With sideband rails, each module needs its own output texture
+   * (earlier outputs must remain valid for later rail reads).
    */
-  private ensureIntermediates(sketchId: string, width: number, height: number): { textures: GPUTexture[]; handles: number[] } {
+  private ensureIntermediates(sketchId: string, needed: number, width: number, height: number): { textures: GPUTexture[]; handles: number[] } {
     let entry = this.sketchIntermediates.get(sketchId);
-    const needed = 2;
     const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
                    | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC;
 
@@ -73,12 +71,14 @@ export class SketchExecutor {
       this.sketchIntermediates.set(sketchId, entry);
     }
 
+    // Grow if needed
     while (entry.textures.length < needed) {
       const tex = this.device.createTexture({ size: [width, height], format: this.format, usage: texUsage });
       entry.textures.push(tex);
       entry.handles.push(this.gpuHost.injectTexture(tex));
     }
 
+    // Resize if dimensions changed
     for (let i = 0; i < needed; i++) {
       const tex = entry.textures[i];
       if (tex.width !== width || tex.height !== height) {
@@ -93,14 +93,7 @@ export class SketchExecutor {
   }
 
   /**
-   * Execute a sketch's chain. Returns the GPU texture handle of the final output.
-   *
-   * @param sketch The sketch to execute
-   * @param colIdx Which column to execute (usually 0)
-   * @param inputTextureHandle Handle to the input texture (from anchor module's output), or -1
-   * @param frameState Current frame timing state
-   * @param width Viewport width
-   * @param height Viewport height
+   * Execute a sketch column's chain with sideband rail routing.
    */
   async executeSketch(
     sketchId: string,
@@ -114,10 +107,15 @@ export class SketchExecutor {
     const column = sketch.columns[colIdx];
     if (!column) return inputTextureHandle;
 
-    const intermediates = this.ensureIntermediates(sketchId, width, height);
+    // Count module entries to allocate enough intermediates
+    const moduleCount = column.chain.filter(e => e.type === 'module').length;
+    const intermediates = this.ensureIntermediates(sketchId, Math.max(moduleCount, 2), width, height);
+
+    // Rail values for this column's execution (scoped to this frame)
+    const railValues = new Map<string, RailValue>();
 
     let currentInputHandle = inputTextureHandle;
-    let pingPong = 0;
+    let nextSlot = 0;
 
     for (const entry of column.chain) {
       if (entry.type === 'texture_input') {
@@ -131,6 +129,7 @@ export class SketchExecutor {
       if (entry.type === 'module') {
         const loaded = await this.ensureInstance(entry);
 
+        // --- Apply params from chain entry ---
         for (const [key, value] of Object.entries(entry.params)) {
           const paramIndex = parseInt(key, 10);
           if (!isNaN(paramIndex)) {
@@ -139,8 +138,40 @@ export class SketchExecutor {
           }
         }
 
-        loaded.host.inputTextureHandles = currentInputHandle >= 0 ? [currentInputHandle] : [];
+        // --- Apply read taps (before tick/render) ---
+        const inputTextures: number[] = currentInputHandle >= 0 ? [currentInputHandle] : [];
 
+        if (entry.taps) {
+          for (const tap of entry.taps) {
+            if (tap.direction !== 'read') continue;
+            const rv = railValues.get(tap.railId);
+            if (!rv) continue;
+
+            const rail = column.rails?.find(r => r.id === tap.railId);
+
+            if (rail?.dataType === 'float' && rv.data !== undefined) {
+              // Data tap read: write rail value into module params
+              const paramIndex = parseInt(tap.fieldPath, 10);
+              if (!isNaN(paramIndex)) {
+                loaded.host.frameState.params[paramIndex] = rv.data;
+                loaded.module.onParamChange(paramIndex, rv.data);
+              }
+              // Also store in entry.params for consistency
+              entry.params[tap.fieldPath] = rv.data;
+            } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
+              // Texture tap read: add to input texture handles
+              const texIndex = parseInt(tap.fieldPath, 10);
+              if (!isNaN(texIndex)) {
+                while (inputTextures.length <= texIndex) inputTextures.push(-1);
+                inputTextures[texIndex] = rv.texture;
+              }
+            }
+          }
+        }
+
+        loaded.host.inputTextureHandles = inputTextures;
+
+        // --- Set frame state ---
         loaded.host.frameState.elapsedTime = frameState.elapsedTime;
         loaded.host.frameState.deltaTime = frameState.deltaTime;
         loaded.host.frameState.barPhase = frameState.barPhase;
@@ -148,22 +179,66 @@ export class SketchExecutor {
         loaded.host.frameState.viewportW = width;
         loaded.host.frameState.viewportH = height;
 
-        const outputHandle = intermediates.handles[pingPong];
-        const outputTex = intermediates.textures[pingPong];
+        // --- Set render target (each module gets its own slot) ---
+        const outputHandle = intermediates.handles[nextSlot];
+        const outputTex = intermediates.textures[nextSlot];
         this.gpuHost.setSurface(outputTex, width, height);
 
+        // --- Tick and render ---
         loaded.host.drawList = [];
+        loaded.module.tick(frameState.deltaTime);
         loaded.module.render(width, height);
 
+        // --- Apply write taps (after tick/render) ---
+        if (entry.taps) {
+          for (const tap of entry.taps) {
+            if (tap.direction !== 'write') continue;
+
+            const rail = column.rails?.find(r => r.id === tap.railId);
+
+            if (rail?.dataType === 'float') {
+              // Data tap write: read from module's plugin state
+              const value = this.readFieldFromState(loaded.host, tap.fieldPath);
+              if (value !== undefined) {
+                const existing = railValues.get(tap.railId) ?? {};
+                existing.data = value;
+                railValues.set(tap.railId, existing);
+              }
+            } else if (rail?.dataType === 'texture') {
+              // Texture tap write: the module's output texture goes onto the rail
+              const existing = railValues.get(tap.railId) ?? {};
+              existing.texture = outputHandle;
+              railValues.set(tap.railId, existing);
+            }
+          }
+        }
+
+        // --- Advance chain ---
         currentInputHandle = outputHandle;
-        pingPong = 1 - pingPong;
+        nextSlot++;
       }
     }
 
     return currentInputHandle;
   }
 
-  /** Clean up all loaded virtual instances and textures. */
+  /**
+   * Read a field value from a module's plugin state.
+   * Supports paths like "output", "params/0", etc.
+   */
+  private readFieldFromState(host: WasmHost, fieldPath: string): number | undefined {
+    let obj = host.pluginState;
+    if (!obj) return undefined;
+
+    const tokens = fieldPath.split('/').filter(t => t !== '');
+    for (const token of tokens) {
+      if (obj == null) return undefined;
+      obj = obj[token];
+    }
+
+    return typeof obj === 'number' ? obj : undefined;
+  }
+
   dispose() {
     this.instances.clear();
     for (const entry of this.sketchIntermediates.values()) {

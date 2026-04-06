@@ -273,12 +273,12 @@ export class ParamLinkerEditor extends MobxLitElement {
 
 // Register the editor factory
 editorRegistry.register('com.nattos.paramlinker', {
-  create(pluginKey: string, client: ModuleClient): HTMLElement {
-    const editor = document.createElement('paramlinker-editor') as ParamLinkerEditor;
-    editor.client = client;
-    return editor;
-  },
-  destroy(element: HTMLElement) {
-    // Lit handles cleanup in disconnectedCallback
+  editor: {
+    create(pluginKey: string, client: ModuleClient): HTMLElement {
+      const editor = document.createElement('paramlinker-editor') as ParamLinkerEditor;
+      editor.client = client;
+      return editor;
+    },
+    destroy(_element: HTMLElement) {},
   },
 });

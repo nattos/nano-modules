@@ -7,6 +7,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <io.h>
 #include "spinningtris_shaders.h"
 
 #include <cmath>
@@ -63,6 +64,7 @@ void init() {
   state::setMetadata("com.nattos.spinningtris", {1, 0, 0});
   state::declareParam(0, "Triangles", state::ParamType::Standard, 0.1f);
   state::declareParam(1, "Speed", state::ParamType::Standard, 0.5f);
+  io::declareTextureOutput(0, "Output", io::Role::Primary);
   state::log("SpinningTris: init");
 
   if (gpu::Device::backend() == gpu::Backend::None) {
