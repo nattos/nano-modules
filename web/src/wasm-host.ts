@@ -260,7 +260,12 @@ export class WasmHost {
           }
 
           if (bc) {
-            this.pluginKey = bc.registerWithSchema(id, major, minor, patch, schemaStr);
+            try {
+              this.pluginKey = bc.registerWithSchema(id, major, minor, patch, schemaStr);
+            } catch (e) {
+              console.warn('[wasm-host] registerWithSchema failed, falling back to registerPlugin:', e);
+              this.pluginKey = bc.registerPlugin(id, major, minor, patch);
+            }
           }
         },
         console_log: (level: number, msgPtr: number, msgLen: number) => {

@@ -11,7 +11,6 @@
 
 #include <gpu.h>
 #include <host.h>
-#include <io.h>
 #include "solid_color_shaders.h"
 
 struct Uniforms {
@@ -30,11 +29,13 @@ void init() {
   s_r = 0.5f; s_g = 0.5f; s_b = 0.5f;
   s_initialized = false;
 
-  state::setMetadata("com.nattos.solid_color", {1, 0, 0});
-  state::declareParam(0, "Red", state::ParamType::Standard, 0.5f);
-  state::declareParam(1, "Green", state::ParamType::Standard, 0.5f);
-  state::declareParam(2, "Blue", state::ParamType::Standard, 0.5f);
-  io::declareTextureOutput(0, "Output", io::Role::Primary);
+  state::init("com.nattos.solid_color", {1, 0, 0},
+    state::Schema()
+      .floatField("red", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("green", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("blue", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+  );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 

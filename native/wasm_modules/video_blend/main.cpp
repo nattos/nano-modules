@@ -14,7 +14,6 @@
 
 #include <gpu.h>
 #include <host.h>
-#include <io.h>
 #include "video_blend_shaders.h"
 
 struct Uniforms {
@@ -34,11 +33,13 @@ void init() {
   s_opacity = 0.5f;
   s_initialized = false;
 
-  state::setMetadata("com.nattos.video_blend", {1, 0, 0});
-  state::declareParam(0, "Opacity", state::ParamType::Standard, 0.5f);
-  io::declareTextureInput(0, "A", io::Role::Primary);
-  io::declareTextureInput(1, "B", io::Role::Primary);
-  io::declareTextureOutput(0, "Output", io::Role::Primary);
+  state::init("com.nattos.video_blend", {1, 0, 0},
+    state::Schema()
+      .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .textureField("tex_a", state::PrimaryInput)
+      .textureField("tex_b", state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+  );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 

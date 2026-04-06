@@ -1,5 +1,7 @@
 #include "bridge/state_document.h"
 
+#include <algorithm>
+
 using json = nlohmann::json;
 
 namespace bridge {
@@ -59,26 +61,31 @@ std::string StateDocument::register_plugin_with_schema(const PluginMetadata& met
   auto schema = json::parse(schema_json, nullptr, false);
   if (schema.is_discarded()) schema = json::object();
 
-  // Build initial state from schema field defaults
-  json initial_state = json::object();
+  // Collect and sort schema fields by "order" (then by name as tiebreaker)
+  struct FieldEntry { std::string name; json def; int order; };
+  std::vector<FieldEntry> sorted_fields;
   if (schema.contains("fields") && schema["fields"].is_object()) {
     for (auto& [field_name, field_def] : schema["fields"].items()) {
       if (!field_def.is_object()) continue;
-      std::string type = field_def.value("type", "");
-      if (type == "float") {
-        initial_state[field_name] = field_def.value("default", 0.0);
-      } else if (type == "int") {
-        initial_state[field_name] = field_def.value("default", 0);
-      } else if (type == "bool") {
-        initial_state[field_name] = field_def.value("default", false);
-      } else if (type == "string") {
-        initial_state[field_name] = field_def.value("default", "");
-      } else if (type == "texture") {
-        initial_state[field_name] = 0; // placeholder
-      } else if (type == "event") {
-        initial_state[field_name] = 0.0;
-      }
+      int order = field_def.value("order", 1000); // default high so unordered fields go last
+      sorted_fields.push_back({field_name, field_def, order});
     }
+    std::sort(sorted_fields.begin(), sorted_fields.end(), [](const FieldEntry& a, const FieldEntry& b) {
+      if (a.order != b.order) return a.order < b.order;
+      return a.name < b.name;
+    });
+  }
+
+  // Build initial state from schema field defaults
+  json initial_state = json::object();
+  for (auto& f : sorted_fields) {
+    std::string type = f.def.value("type", "");
+    if (type == "float")        initial_state[f.name] = f.def.value("default", 0.0);
+    else if (type == "int")     initial_state[f.name] = f.def.value("default", 0);
+    else if (type == "bool")    initial_state[f.name] = f.def.value("default", false);
+    else if (type == "string")  initial_state[f.name] = f.def.value("default", "");
+    else if (type == "texture") initial_state[f.name] = 0;
+    else if (type == "event")   initial_state[f.name] = 0.0;
   }
 
   // Add to global plugin listing with schema
@@ -89,37 +96,33 @@ std::string StateDocument::register_plugin_with_schema(const PluginMetadata& met
       {"version", {{"major", meta.major}, {"minor", meta.minor}, {"patch", meta.patch}}},
     }},
     {"schema", schema.contains("fields") ? schema["fields"] : json::object()},
-    // Legacy compat: also emit params/io arrays derived from schema
     {"params", json::array()},
   };
 
-  // Derive legacy params array from schema for backward compat
-  if (schema.contains("fields") && schema["fields"].is_object()) {
-    int param_index = 0;
-    for (auto& [field_name, field_def] : schema["fields"].items()) {
-      if (!field_def.is_object()) continue;
-      std::string type = field_def.value("type", "");
-      int io_flags = field_def.value("io", 0);
-      if (type == "texture") continue; // textures aren't params
+  // Derive legacy params array from sorted schema fields
+  int param_index = 0;
+  for (auto& f : sorted_fields) {
+    std::string type = f.def.value("type", "");
+    int io_flags = f.def.value("io", 0);
+    if (type == "texture") continue;
 
-      int param_type = 10; // default Standard
-      if (type == "bool") param_type = 0;
-      else if (type == "event") param_type = 1;
-      else if (type == "int") param_type = 13;
-      else if (type == "string") param_type = 100;
+    int param_type = 10;
+    if (type == "bool") param_type = 0;
+    else if (type == "event") param_type = 1;
+    else if (type == "int") param_type = 13;
+    else if (type == "string") param_type = 100;
 
-      json p = {
-        {"index", param_index},
-        {"name", field_name},
-        {"type", param_type},
-        {"default", field_def.value("default", 0.0)},
-        {"min", field_def.value("min", 0.0)},
-        {"max", field_def.value("max", 1.0)},
-        {"io", io_flags},
-      };
-      entry["params"].push_back(p);
-      param_index++;
-    }
+    json p = {
+      {"index", param_index},
+      {"name", f.name},
+      {"type", param_type},
+      {"default", f.def.value("default", 0.0)},
+      {"min", f.def.value("min", 0.0)},
+      {"max", f.def.value("max", 1.0)},
+      {"io", io_flags},
+    };
+    entry["params"].push_back(p);
+    param_index++;
   }
 
   doc_["global"]["plugins"].push_back(entry);

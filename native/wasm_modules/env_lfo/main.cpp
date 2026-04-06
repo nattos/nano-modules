@@ -13,7 +13,6 @@
  */
 
 #include <host.h>
-#include <io.h>
 #include <cmath>
 
 #ifndef M_PI
@@ -61,10 +60,12 @@ void init() {
   s_rate = 0.5f;
   s_amplitude = 1.0f;
 
-  state::setMetadata("com.nattos.env_lfo", {1, 0, 0});
-  state::declareParam(0, "Rate", state::ParamType::Standard, 0.5f);
-  state::declareParam(1, "Amplitude", state::ParamType::Standard, 1.0f);
-  io::declareDataOutput(0, "Output", io::Role::Primary);
+  state::init("com.nattos.env_lfo", {1, 0, 0},
+    state::Schema()
+      .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput)
+  );
   state::log("LFO: init");
 }
 

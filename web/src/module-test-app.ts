@@ -97,7 +97,7 @@ function buildParamUI(params: ParamDecl[], host: WasmHost, wasmModule: WasmModul
     const control = document.createElement('div');
     control.className = 'param-control';
 
-    if (param.type === 0) {
+    if (param.type === 0 || param.type === 1) {  // boolean or event → button
       const btn = document.createElement('button');
       btn.className = 'param-btn';
       btn.textContent = param.name;

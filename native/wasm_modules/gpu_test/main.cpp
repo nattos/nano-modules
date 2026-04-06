@@ -51,15 +51,14 @@ extern int gpu_get_render_target(void);
 __attribute__((import_module("gpu"), import_name("release")))
 extern void gpu_release(int handle);
 
-/* state imports (minimal) */
-__attribute__((import_module("state"), import_name("set_metadata")))
-extern void state_set_metadata(const char* id, int id_len, int version_packed);
+/* state imports */
+__attribute__((import_module("state"), import_name("set_schema")))
+extern void state_set_schema(const char* id, int id_len, int version_packed,
+                              const char* schema, int schema_len);
 __attribute__((import_module("state"), import_name("get_key")))
 extern int state_get_key(char* buf, int buf_len);
 __attribute__((import_module("state"), import_name("console_log")))
 extern void state_console_log(int level, const char* msg, int msg_len);
-__attribute__((import_module("io"), import_name("declare_texture_output")))
-extern void io_declare_texture_output(int index, const char* name, int name_len, int role);
 
 static int str_len(const char* s) { int n = 0; while (s[n]) n++; return n; }
 
@@ -78,9 +77,8 @@ void init(void) {
   initialized = 0;
 
   static const char id[] = "com.nattos.gpu_test";
-  state_set_metadata(id, sizeof(id) - 1, (1 << 16));
-  static const char out_name[] = "Output";
-  io_declare_texture_output(0, out_name, sizeof(out_name) - 1, 0 /* primary */);
+  static const char schema[] = "{\"fields\":{\"tex_out\":{\"type\":\"texture\",\"io\":6}}}";
+  state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 
   int backend = gpu_get_backend();
   if (backend < 0) return;

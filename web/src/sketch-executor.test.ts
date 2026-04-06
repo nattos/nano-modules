@@ -39,9 +39,9 @@ describe('Brightness/Contrast module', () => {
     expect(host.metadata).not.toBeNull();
     expect(host.metadata!.id).toBe('com.nattos.brightness_contrast');
     expect(host.params.length).toBe(2);
-    expect(host.params[0].name).toBe('Brightness');
+    expect(host.params[0].name).toBe('brightness');
     expect(host.params[0].defaultValue).toBeCloseTo(0.5);
-    expect(host.params[1].name).toBe('Contrast');
+    expect(host.params[1].name).toBe('contrast');
     expect(host.params[1].defaultValue).toBeCloseTo(0.5);
   });
 
@@ -63,12 +63,12 @@ describe('Brightness/Contrast module', () => {
 
     const texIn = host.ioDecls.find(d => d.kind === 0); // IO_TEXTURE_INPUT
     expect(texIn).toBeDefined();
-    expect(texIn!.name).toBe('Input');
+    expect(texIn!.name).toBe('tex_in');
     expect(texIn!.role).toBe(0); // IO_PRIMARY
 
     const texOut = host.ioDecls.find(d => d.kind === 1); // IO_TEXTURE_OUTPUT
     expect(texOut).toBeDefined();
-    expect(texOut!.name).toBe('Output');
+    expect(texOut!.name).toBe('tex_out');
     expect(texOut!.role).toBe(0); // IO_PRIMARY
   });
 

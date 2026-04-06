@@ -51,11 +51,9 @@ __attribute__((import_module("resolume"), import_name("get_param_path")))
 extern int resolume_get_param_path(long long param_id, char* buf, int buf_len);
 
 /* state module */
-__attribute__((import_module("state"), import_name("set_metadata")))
-extern void state_set_metadata(const char* id, int id_len, int version_packed);
-
-__attribute__((import_module("state"), import_name("declare_param")))
-extern void state_declare_param(int index, const char* name, int name_len, int type, float default_value);
+__attribute__((import_module("state"), import_name("set_schema")))
+extern void state_set_schema(const char* id, int id_len, int version_packed,
+                              const char* schema, int schema_len);
 
 __attribute__((import_module("state"), import_name("get_key")))
 extern int state_get_key(char* buf, int buf_len);
@@ -142,9 +140,7 @@ static void log_msg(int level, const char* msg) {
   state_console_log(level, msg, str_len(msg));
 }
 
-static void decl_param(int index, const char* name, int type, float def) {
-  state_declare_param(index, name, str_len(name), type, def);
-}
+// Removed: decl_param — using schema-based declaration now
 
 /* Find a seen param by ID, returns index or -1 */
 static int find_seen(long long param_id) {
@@ -254,10 +250,12 @@ void init(void) {
   elapsed = 0;
 
   static const char id[] = "com.nattos.paramlinker";
-  state_set_metadata(id, sizeof(id) - 1, (1 << 16) | (0 << 8) | 0);
-
-  decl_param(PID_LEARN,  "Learn",  PARAM_BOOLEAN, 0.0f);
-  decl_param(PID_ACTIVE, "Active", PARAM_BOOLEAN, 1.0f);
+  static const char schema[] =
+    "{\"fields\":{"
+    "\"learn\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":0},"
+    "\"active\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":1}"
+    "}}";
+  state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 
   char key_buf[64];
   int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);

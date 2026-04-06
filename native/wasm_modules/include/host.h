@@ -165,6 +165,7 @@ public:
     appendFloat(max);
     appendRaw(",\"io\":");
     appendInt(io);
+    appendOrder();
     appendRaw("}");
     return *this;
   }
@@ -179,6 +180,7 @@ public:
     appendInt(max);
     appendRaw(",\"io\":");
     appendInt(io);
+    appendOrder();
     appendRaw("}");
     return *this;
   }
@@ -189,6 +191,7 @@ public:
     appendRaw(def ? "true" : "false");
     appendRaw(",\"io\":");
     appendInt(io);
+    appendOrder();
     appendRaw("}");
     return *this;
   }
@@ -197,6 +200,7 @@ public:
     beginField(name);
     appendRaw("\"type\":\"event\",\"io\":");
     appendInt(io);
+    appendOrder();
     appendRaw("}");
     return *this;
   }
@@ -205,6 +209,7 @@ public:
     beginField(name);
     appendRaw("\"type\":\"texture\",\"io\":");
     appendInt(io);
+    appendOrder();
     appendRaw("}");
     return *this;
   }
@@ -215,6 +220,7 @@ public:
     appendRaw(def);
     appendRaw("\",\"io\":");
     appendInt(io);
+    appendOrder();
     appendRaw("}");
     return *this;
   }
@@ -244,6 +250,12 @@ private:
     appendRaw(name);
     appendRaw("\":{");
     fieldCount_++;
+  }
+
+  // Append the "order" field based on declaration order
+  void appendOrder() {
+    appendRaw(",\"order\":");
+    appendInt(fieldCount_ - 1); // 0-based, set after fieldCount_ was incremented in beginField
   }
 
   void appendRaw(const char* s) {

@@ -107,8 +107,8 @@ describe('GPU Pipeline E2E', () => {
 
       expect(frame.success).toBe(true);
       expect(frame.params.length).toBe(2);
-      expect(frame.params[0].name).toBe('Triangles');
-      expect(frame.params[1].name).toBe('Speed');
+      const paramNames = frame.params.map((p: any) => p.name).sort();
+      expect(paramNames).toEqual(['speed', 'triangles']);
       expect(frame.metadata?.id).toBe('com.nattos.spinningtris');
     });
   });

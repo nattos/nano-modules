@@ -48,14 +48,12 @@ __attribute__((import_module("host"), import_name("trigger_audio")))
 extern void host_trigger_audio(int channel);
 
 /* state module */
-__attribute__((import_module("state"), import_name("set_metadata")))
-extern void state_set_metadata(const char* id, int id_len, int version_packed);
+__attribute__((import_module("state"), import_name("set_schema")))
+extern void state_set_schema(const char* id, int id_len, int version_packed,
+                              const char* schema, int schema_len);
 
 __attribute__((import_module("state"), import_name("console_log")))
 extern void state_console_log(int level, const char* msg, int msg_len);
-
-__attribute__((import_module("state"), import_name("declare_param")))
-extern void state_declare_param(int index, const char* name, int name_len, int type, float default_value);
 
 __attribute__((import_module("state"), import_name("get_key")))
 extern int state_get_key(char* buf, int buf_len);
@@ -174,9 +172,7 @@ static void log_msg(int level, const char* msg) {
   state_console_log(level, msg, str_len(msg));
 }
 
-static void decl_param(int index, const char* name, int type, float def) {
-  state_declare_param(index, name, str_len(name), type, def);
-}
+// Removed: decl_param — using schema-based declaration now
 
 static void log_structured(int level, const char* msg, const char* json) {
   state_console_log_structured(level, msg, str_len(msg), json, str_len(json));
@@ -316,22 +312,24 @@ void init(void) {
   mute_held = 0;
   record_held = 0;
 
-  /* Register plugin metadata and declare parameters */
+  /* Register plugin with schema */
   static const char id[] = "com.nattos.nanolooper";
-  state_set_metadata(id, sizeof(id) - 1, (1 << 16) | (0 << 8) | 0); /* v1.0.0 */
-
-  decl_param(PID_TRIGGER_1,    "Trigger 1",    PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_TRIGGER_2,    "Trigger 2",    PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_TRIGGER_3,    "Trigger 3",    PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_TRIGGER_4,    "Trigger 4",    PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_DELETE,       "Delete",       PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_MUTE,         "Mute",         PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_UNDO,         "Undo",         PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_REDO,         "Redo",         PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_RECORD,       "Record",       PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_SHOW_OVERLAY, "Show Overlay", PARAM_BOOLEAN,  1.0f);
-  decl_param(PID_SYNTH,        "Synth",        PARAM_BOOLEAN,  0.0f);
-  decl_param(PID_SYNTH_GAIN,   "Synth Gain",   PARAM_STANDARD, 0.5f);
+  static const char schema[] =
+    "{\"fields\":{"
+    "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"
+    "\"trigger_2\":{\"type\":\"event\",\"io\":5,\"order\":1},"
+    "\"trigger_3\":{\"type\":\"event\",\"io\":5,\"order\":2},"
+    "\"trigger_4\":{\"type\":\"event\",\"io\":5,\"order\":3},"
+    "\"delete\":{\"type\":\"event\",\"io\":5,\"order\":4},"
+    "\"mute\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":5},"
+    "\"undo\":{\"type\":\"event\",\"io\":5,\"order\":6},"
+    "\"redo\":{\"type\":\"event\",\"io\":5,\"order\":7},"
+    "\"record\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":8},"
+    "\"show_overlay\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":9},"
+    "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
+    "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11}"
+    "}}";
+  state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 
   char key_buf[64];
   int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
