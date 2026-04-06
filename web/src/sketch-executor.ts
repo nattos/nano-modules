@@ -93,9 +93,36 @@ export class SketchExecutor {
   }
 
   /**
-   * Execute a sketch column's chain with sideband rail routing.
+   * Execute all columns of a sketch left-to-right, with cross-cutting rails.
+   * Returns the output handle of the last column that produced output.
    */
-  async executeSketch(
+  async executeAllColumns(
+    sketchId: string,
+    sketch: Sketch,
+    inputTextureHandle: number,
+    frameState: FrameState,
+    width: number,
+    height: number,
+  ): Promise<number> {
+    // Cross-cutting rail values persist across all columns
+    const crossRailValues = new Map<string, RailValue>();
+    // Shared slot counter so each module across all columns gets a unique intermediate
+    const slotCounter = { value: 0 };
+
+    let lastOutput = inputTextureHandle;
+    for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
+      lastOutput = await this.executeColumn(
+        sketchId, sketch, colIdx, inputTextureHandle,
+        frameState, width, height, crossRailValues, slotCounter);
+    }
+    return lastOutput;
+  }
+
+  /**
+   * Execute a single column's chain with sideband rail routing.
+   * Cross-cutting rail values are shared across columns via crossRailValues.
+   */
+  async executeColumn(
     sketchId: string,
     sketch: Sketch,
     colIdx: number,
@@ -103,19 +130,21 @@ export class SketchExecutor {
     frameState: FrameState,
     width: number,
     height: number,
+    crossRailValues: Map<string, RailValue>,
+    slotCounter: { value: number },
   ): Promise<number> {
     const column = sketch.columns[colIdx];
     if (!column) return inputTextureHandle;
 
-    // Count module entries to allocate enough intermediates
-    const moduleCount = column.chain.filter(e => e.type === 'module').length;
-    const intermediates = this.ensureIntermediates(sketchId, Math.max(moduleCount, 2), width, height);
+    // Count total module entries across all columns for intermediates
+    const totalModules = sketch.columns.reduce((sum, c) => sum + c.chain.filter(e => e.type === 'module').length, 0);
+    const intermediates = this.ensureIntermediates(sketchId, Math.max(totalModules, 2), width, height);
 
-    // Rail values for this column's execution (scoped to this frame)
-    const railValues = new Map<string, RailValue>();
+    // Column-local rail values (scoped to this column's execution)
+    const columnRailValues = new Map<string, RailValue>();
 
     let currentInputHandle = inputTextureHandle;
-    let nextSlot = 0;
+    // nextSlot managed via shared slotCounter
 
     for (const entry of column.chain) {
       if (entry.type === 'texture_input') {
@@ -151,10 +180,13 @@ export class SketchExecutor {
         if (entry.taps) {
           for (const tap of entry.taps) {
             if (tap.direction !== 'read') continue;
-            const rv = railValues.get(tap.railId);
+            // Look up rail value from column-local rails first, then cross-cutting
+            const rv = columnRailValues.get(tap.railId) ?? crossRailValues.get(tap.railId);
             if (!rv) continue;
 
-            const rail = column.rails?.find(r => r.id === tap.railId);
+            // Look up rail definition from column, then sketch
+            const rail = column.rails?.find(r => r.id === tap.railId)
+                      ?? sketch.rails?.find(r => r.id === tap.railId);
 
             if (rail?.dataType === 'float' && rv.data !== undefined) {
               // Data tap read: write rail value into module params
@@ -201,8 +233,8 @@ export class SketchExecutor {
         loaded.host.frameState.viewportH = height;
 
         // --- Set render target (each module gets its own slot) ---
-        const outputHandle = intermediates.handles[nextSlot];
-        const outputTex = intermediates.textures[nextSlot];
+        const outputHandle = intermediates.handles[slotCounter.value];
+        const outputTex = intermediates.textures[slotCounter.value];
         this.gpuHost.setSurface(outputTex, width, height);
         loaded.host.textureFields.set('tex_out', outputHandle);
 
@@ -216,28 +248,32 @@ export class SketchExecutor {
           for (const tap of entry.taps) {
             if (tap.direction !== 'write') continue;
 
-            const rail = column.rails?.find(r => r.id === tap.railId);
+            // Look up rail definition from column, then sketch
+            const rail = column.rails?.find(r => r.id === tap.railId)
+                      ?? sketch.rails?.find(r => r.id === tap.railId);
+            // Determine which rail value map to write to
+            const isColumnRail = !!column.rails?.find(r => r.id === tap.railId);
+            const targetRailValues = isColumnRail ? columnRailValues : crossRailValues;
 
             if (rail?.dataType === 'float') {
-              // Data tap write: read from module's plugin state
               const value = this.readFieldFromState(loaded.host, tap.fieldPath);
               if (value !== undefined) {
-                const existing = railValues.get(tap.railId) ?? {};
+                const existing = targetRailValues.get(tap.railId) ?? {};
                 existing.data = value;
-                railValues.set(tap.railId, existing);
+                targetRailValues.set(tap.railId, existing);
               }
             } else if (rail?.dataType === 'texture') {
               // Texture tap write: the module's output texture goes onto the rail
-              const existing = railValues.get(tap.railId) ?? {};
+              const existing = targetRailValues.get(tap.railId) ?? {};
               existing.texture = outputHandle;
-              railValues.set(tap.railId, existing);
+              targetRailValues.set(tap.railId, existing);
             }
           }
         }
 
         // --- Advance chain ---
         currentInputHandle = outputHandle;
-        nextSlot++;
+        slotCounter.value++;
       }
     }
 

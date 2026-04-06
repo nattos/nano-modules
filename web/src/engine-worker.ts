@@ -257,8 +257,8 @@ async function simulateTick(dt: number) {
     }
 
     try {
-      const outputHandle = await sketchExecutor.executeSketch(
-        sketchId, sketch, 0, inputHandle, frameState, w, h);
+      const outputHandle = await sketchExecutor.executeAllColumns(
+        sketchId, sketch, inputHandle, frameState, w, h);
       if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} inputHandle=${inputHandle} → outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {

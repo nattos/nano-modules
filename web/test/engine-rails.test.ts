@@ -199,4 +199,87 @@ describe('Sideband Rail Routing E2E', () => {
       frame.expectPixelAt(32, 32, { r: 128, g: 0, b: 128 }, 15);
     });
   });
+
+  describe('cross-cutting texture rails across columns', () => {
+    it('blends red (col 1) and blue (col 2) via sketch-scoped rails', async () => {
+      // Red solid color in column 0, writes to sketch-scoped "tex_a" rail.
+      // Blue solid color in column 1, writes to sketch-scoped "tex_b" rail.
+      // Blend in column 1 (after blue), reads both rails.
+      // Columns execute left-to-right, so red is available when blend runs.
+      const sketch: Sketch = {
+        anchor: null,
+        rails: [
+          { id: 'tex_a', dataType: 'texture' },
+          { id: 'tex_b', dataType: 'texture' },
+        ],
+        columns: [
+          {
+            name: 'col_red',
+            chain: [
+              { type: 'texture_input', id: 'in' },
+              {
+                type: 'module',
+                module_type: 'com.nattos.solid_color',
+                instance_key: 'red_cross@0',
+                params: { red: 1.0, green: 0.0, blue: 0.0 },
+                taps: [
+                  { railId: 'tex_a', fieldPath: 'texture_out/0', direction: 'write' },
+                ],
+              },
+              { type: 'texture_output', id: 'out' },
+            ],
+          },
+          {
+            name: 'col_blue_blend',
+            chain: [
+              { type: 'texture_input', id: 'in' },
+              {
+                type: 'module',
+                module_type: 'com.nattos.solid_color',
+                instance_key: 'blue_cross@0',
+                params: { red: 0.0, green: 0.0, blue: 1.0 },
+                taps: [
+                  { railId: 'tex_b', fieldPath: 'texture_out/0', direction: 'write' },
+                ],
+              },
+              {
+                type: 'module',
+                module_type: 'com.nattos.video_blend',
+                instance_key: 'blend_cross@0',
+                params: { opacity: 0.5 },
+                taps: [
+                  { railId: 'tex_a', fieldPath: '0', direction: 'read' },
+                  { railId: 'tex_b', fieldPath: '1', direction: 'read' },
+                ],
+              },
+              { type: 'texture_output', id: 'out' },
+            ],
+          },
+        ],
+      };
+
+      const result = await runEngineTest({
+        width: 64, height: 64,
+        modules: [
+          'com.nattos.solid_color',
+          'com.nattos.video_blend',
+        ],
+        tracePoints: [
+          { id: 'blend_out', target: { type: 'sketch_output', sketchId: 'cross_sketch' } },
+        ],
+        commands: [
+          { type: 'createSketch', sketchId: 'cross_sketch', sketch },
+        ],
+        captureTraceIds: ['blend_out'],
+        waitFrames: 20,
+        dumpName: 'rail_cross_blend',
+      });
+
+      expect(result.success).toBe(true);
+      const frame = result.trace('blend_out');
+
+      // 50% blend of red (255,0,0) and blue (0,0,255) should be purple (128,0,128)
+      frame.expectPixelAt(32, 32, { r: 128, g: 0, b: 128 }, 15);
+    });
+  });
 });

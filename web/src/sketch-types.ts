@@ -8,6 +8,8 @@
 export interface Sketch {
   anchor: string | null;
   columns: SketchColumn[];
+  /** Cross-cutting rails shared across all columns (sketch-scoped). */
+  rails?: Rail[];
 }
 
 /** A column is a linear chain of processing steps with sideband rails. */
