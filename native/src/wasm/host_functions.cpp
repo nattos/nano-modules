@@ -579,6 +579,174 @@ static NativeSymbol io_symbols[] = {
 };
 
 // ========================================================================
+// Module "val" — Handle-based JSON value container
+// ========================================================================
+
+static int32_t val_null(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  return ctx ? ctx->alloc_val(nlohmann::json(nullptr)) : 0;
+}
+static int32_t val_bool(wasm_exec_env_t env, int32_t v) {
+  auto* ctx = get_ctx(env);
+  return ctx ? ctx->alloc_val(v != 0) : 0;
+}
+static int32_t val_number(wasm_exec_env_t env, double v) {
+  auto* ctx = get_ctx(env);
+  return ctx ? ctx->alloc_val(v) : 0;
+}
+static int32_t val_string(wasm_exec_env_t env, int32_t str_ptr, int32_t str_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, str_ptr, str_len)) return 0;
+  char* s = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, str_ptr));
+  return s ? ctx->alloc_val(std::string(s, str_len)) : 0;
+}
+static int32_t val_array(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  return ctx ? ctx->alloc_val(nlohmann::json::array()) : 0;
+}
+static int32_t val_object(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  return ctx ? ctx->alloc_val(nlohmann::json::object()) : 0;
+}
+
+static int32_t val_type_of(wasm_exec_env_t env, int32_t h) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  if (!v) return 0;
+  if (v->is_null()) return 0;
+  if (v->is_boolean()) return 1;
+  if (v->is_number()) return 2;
+  if (v->is_string()) return 3;
+  if (v->is_array()) return 4;
+  if (v->is_object()) return 5;
+  return 0;
+}
+static double val_as_number(wasm_exec_env_t env, int32_t h) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  return (v && v->is_number()) ? v->get<double>() : 0.0;
+}
+static int32_t val_as_bool(wasm_exec_env_t env, int32_t h) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  return (v && v->is_boolean() && v->get<bool>()) ? 1 : 0;
+}
+static int32_t val_as_string(wasm_exec_env_t env, int32_t h, int32_t buf_ptr, int32_t buf_len) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  if (!v || !v->is_string()) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, buf_ptr, buf_len)) return 0;
+  char* buf = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, buf_ptr));
+  auto& s = v->get_ref<const std::string&>();
+  int len = std::min(static_cast<int>(s.size()), buf_len);
+  if (buf && len > 0) std::memcpy(buf, s.data(), len);
+  return len;
+}
+
+static int32_t val_get(wasm_exec_env_t env, int32_t obj_h, int32_t key_ptr, int32_t key_len) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(obj_h) : nullptr;
+  if (!v || !v->is_object()) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, key_ptr, key_len)) return 0;
+  char* key = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, key_ptr));
+  std::string k(key, key_len);
+  if (!v->contains(k)) return 0;
+  return ctx->alloc_val((*v)[k]);
+}
+static void val_set(wasm_exec_env_t env, int32_t obj_h, int32_t key_ptr, int32_t key_len, int32_t value_h) {
+  auto* ctx = get_ctx(env);
+  auto* obj = ctx ? ctx->get_val(obj_h) : nullptr;
+  auto* val = ctx ? ctx->get_val(value_h) : nullptr;
+  if (!obj || !obj->is_object() || !val) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, key_ptr, key_len)) return;
+  char* key = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, key_ptr));
+  (*obj)[std::string(key, key_len)] = *val;
+}
+static int32_t val_keys_count(wasm_exec_env_t env, int32_t h) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  return (v && v->is_object()) ? static_cast<int32_t>(v->size()) : 0;
+}
+static int32_t val_key_at(wasm_exec_env_t env, int32_t h, int32_t index, int32_t buf_ptr, int32_t buf_len) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  if (!v || !v->is_object() || index < 0 || index >= static_cast<int32_t>(v->size())) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, buf_ptr, buf_len)) return 0;
+  char* buf = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, buf_ptr));
+  auto it = v->begin();
+  std::advance(it, index);
+  const auto& key = it.key();
+  int len = std::min(static_cast<int>(key.size()), buf_len);
+  if (buf && len > 0) std::memcpy(buf, key.data(), len);
+  return len;
+}
+
+static int32_t val_get_index(wasm_exec_env_t env, int32_t arr_h, int32_t index) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(arr_h) : nullptr;
+  if (!v || !v->is_array() || index < 0 || index >= static_cast<int32_t>(v->size())) return 0;
+  return ctx->alloc_val((*v)[index]);
+}
+static void val_push(wasm_exec_env_t env, int32_t arr_h, int32_t value_h) {
+  auto* ctx = get_ctx(env);
+  auto* arr = ctx ? ctx->get_val(arr_h) : nullptr;
+  auto* val = ctx ? ctx->get_val(value_h) : nullptr;
+  if (!arr || !arr->is_array() || !val) return;
+  arr->push_back(*val);
+}
+static int32_t val_length(wasm_exec_env_t env, int32_t h) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  return (v && v->is_array()) ? static_cast<int32_t>(v->size()) : 0;
+}
+
+static void val_release(wasm_exec_env_t env, int32_t h) {
+  auto* ctx = get_ctx(env);
+  if (ctx) ctx->release_val(h);
+}
+
+static int32_t val_to_json(wasm_exec_env_t env, int32_t h, int32_t buf_ptr, int32_t buf_len) {
+  auto* ctx = get_ctx(env);
+  auto* v = ctx ? ctx->get_val(h) : nullptr;
+  if (!v) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, buf_ptr, buf_len)) return 0;
+  char* buf = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, buf_ptr));
+  std::string json = v->dump();
+  int len = std::min(static_cast<int>(json.size()), buf_len);
+  if (buf && len > 0) std::memcpy(buf, json.data(), len);
+  return len;
+}
+
+static NativeSymbol val_symbols[] = {
+    {"null", reinterpret_cast<void*>(val_null), "()i", nullptr},
+    {"bool", reinterpret_cast<void*>(val_bool), "(i)i", nullptr},
+    {"number", reinterpret_cast<void*>(val_number), "(F)i", nullptr},
+    {"string", reinterpret_cast<void*>(val_string), "(ii)i", nullptr},
+    {"array", reinterpret_cast<void*>(val_array), "()i", nullptr},
+    {"object", reinterpret_cast<void*>(val_object), "()i", nullptr},
+    {"type_of", reinterpret_cast<void*>(val_type_of), "(i)i", nullptr},
+    {"as_number", reinterpret_cast<void*>(val_as_number), "(i)F", nullptr},
+    {"as_bool", reinterpret_cast<void*>(val_as_bool), "(i)i", nullptr},
+    {"as_string", reinterpret_cast<void*>(val_as_string), "(iii)i", nullptr},
+    {"get", reinterpret_cast<void*>(val_get), "(iii)i", nullptr},
+    {"set", reinterpret_cast<void*>(val_set), "(iiii)", nullptr},
+    {"keys_count", reinterpret_cast<void*>(val_keys_count), "(i)i", nullptr},
+    {"key_at", reinterpret_cast<void*>(val_key_at), "(iiii)i", nullptr},
+    {"get_index", reinterpret_cast<void*>(val_get_index), "(ii)i", nullptr},
+    {"push", reinterpret_cast<void*>(val_push), "(ii)", nullptr},
+    {"length", reinterpret_cast<void*>(val_length), "(i)i", nullptr},
+    {"release", reinterpret_cast<void*>(val_release), "(i)", nullptr},
+    {"to_json", reinterpret_cast<void*>(val_to_json), "(iii)i", nullptr},
+};
+
+// ========================================================================
 // Module "gpu" — GPU compute and rendering
 // ========================================================================
 
@@ -774,6 +942,10 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "io", io_symbols,
       sizeof(io_symbols) / sizeof(NativeSymbol));
+
+  ok = ok && wasm_runtime_register_natives(
+      "val", val_symbols,
+      sizeof(val_symbols) / sizeof(NativeSymbol));
 
   ok = ok && wasm_runtime_register_natives(
       "gpu", gpu_symbols,

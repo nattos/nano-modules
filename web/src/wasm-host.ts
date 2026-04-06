@@ -451,6 +451,80 @@ export class WasmHost {
           if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 2, role);
         },
       },
+      val: (() => {
+        // Handle-based value container. Host owns data, WASM holds integer handles.
+        const values = new Map<number, any>();
+        let nextHandle = 1;
+        const alloc = (v: any): number => { const h = nextHandle++; values.set(h, v); return h; };
+        const getVal = (h: number): any => values.get(h);
+        return {
+          null: () => alloc(null),
+          bool: (v: number) => alloc(v !== 0),
+          number: (v: number) => alloc(v),
+          string: (ptr: number, len: number) => alloc(this.readString(ptr, len)),
+          array: () => alloc([]),
+          object: () => alloc({}),
+          type_of: (h: number) => {
+            const v = getVal(h);
+            if (v === null || v === undefined) return 0;
+            if (typeof v === 'boolean') return 1;
+            if (typeof v === 'number') return 2;
+            if (typeof v === 'string') return 3;
+            if (Array.isArray(v)) return 4;
+            if (typeof v === 'object') return 5;
+            return 0;
+          },
+          as_number: (h: number) => { const v = getVal(h); return typeof v === 'number' ? v : 0; },
+          as_bool: (h: number) => { const v = getVal(h); return v ? 1 : 0; },
+          as_string: (h: number, bufPtr: number, bufLen: number) => {
+            const v = getVal(h);
+            return typeof v === 'string' ? this.writeString(bufPtr, bufLen, v) : 0;
+          },
+          get: (objH: number, keyPtr: number, keyLen: number) => {
+            const obj = getVal(objH);
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return 0;
+            const key = this.readString(keyPtr, keyLen);
+            return key in obj ? alloc(obj[key]) : 0;
+          },
+          set: (objH: number, keyPtr: number, keyLen: number, valH: number) => {
+            const obj = getVal(objH);
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+            const key = this.readString(keyPtr, keyLen);
+            obj[key] = getVal(valH);
+          },
+          keys_count: (h: number) => {
+            const v = getVal(h);
+            return (v && typeof v === 'object' && !Array.isArray(v)) ? Object.keys(v).length : 0;
+          },
+          key_at: (h: number, index: number, bufPtr: number, bufLen: number) => {
+            const v = getVal(h);
+            if (!v || typeof v !== 'object' || Array.isArray(v)) return 0;
+            const keys = Object.keys(v);
+            if (index < 0 || index >= keys.length) return 0;
+            return this.writeString(bufPtr, bufLen, keys[index]);
+          },
+          get_index: (arrH: number, index: number) => {
+            const arr = getVal(arrH);
+            if (!Array.isArray(arr) || index < 0 || index >= arr.length) return 0;
+            return alloc(arr[index]);
+          },
+          push: (arrH: number, valH: number) => {
+            const arr = getVal(arrH);
+            if (!Array.isArray(arr)) return;
+            arr.push(getVal(valH));
+          },
+          length: (h: number) => {
+            const v = getVal(h);
+            return Array.isArray(v) ? v.length : 0;
+          },
+          release: (h: number) => { values.delete(h); },
+          to_json: (h: number, bufPtr: number, bufLen: number) => {
+            const v = getVal(h);
+            if (v === undefined) return 0;
+            return this.writeString(bufPtr, bufLen, JSON.stringify(v));
+          },
+        };
+      })(),
       gpu: {
         ...(this.gpuHost
           ? this.gpuHost.buildImports(

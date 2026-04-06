@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace canvas {
 struct DrawList;
 }
@@ -56,8 +58,22 @@ struct WasmContext {
   std::vector<int32_t> input_texture_handles;
 
   // Named texture fields (populated by sketch executor from schema)
-  // Maps field path (e.g. "tex_in", "tex_out") → GPU texture handle
   std::unordered_map<std::string, int32_t> texture_fields;
+
+  // Val handle system — maps handle IDs to JSON values owned by the host
+  int32_t next_val_handle = 1;
+  std::unordered_map<int32_t, nlohmann::json> val_handles;
+
+  int32_t alloc_val(const nlohmann::json& v) {
+    int32_t h = next_val_handle++;
+    val_handles[h] = v;
+    return h;
+  }
+  nlohmann::json* get_val(int32_t h) {
+    auto it = val_handles.find(h);
+    return it != val_handles.end() ? &it->second : nullptr;
+  }
+  void release_val(int32_t h) { val_handles.erase(h); }
 };
 
 } // namespace wasm
