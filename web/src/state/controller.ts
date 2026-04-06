@@ -211,6 +211,12 @@ export class AppController {
     runInAction(() => { appState.local.engine.error = error; });
   }
 
+  setEngineFrame(bitmap: ImageBitmap) {
+    // Close the previous bitmap to free GPU memory
+    appState.local.engine.lastFrame?.close();
+    runInAction(() => { appState.local.engine.lastFrame = bitmap; });
+  }
+
   // ========================================================================
   // Engine sync
   // ========================================================================

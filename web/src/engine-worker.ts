@@ -1,6 +1,9 @@
 /**
  * Engine worker — runs bridge core, WASM modules, and GPU rendering
  * off the main thread.
+ *
+ * Renders to its own OffscreenCanvas and posts ImageBitmap frames
+ * back to the main thread for display.
  */
 
 import { BridgeCore } from './bridge-core';
@@ -33,7 +36,7 @@ let fps = 0;
 let stateGeneration = 0;
 let lastBroadcastGeneration = -1;
 
-// Command queue — ensures commands execute sequentially after init
+// Command queue
 const pendingCommands: WorkerCommand[] = [];
 let processing = false;
 
@@ -59,7 +62,13 @@ async function processQueue() {
 async function handleCommand(cmd: WorkerCommand) {
   switch (cmd.type) {
     case 'init':
-      await init(cmd.canvas);
+      await init(cmd.width, cmd.height);
+      break;
+    case 'resize':
+      if (canvas) {
+        canvas.width = cmd.width;
+        canvas.height = cmd.height;
+      }
       break;
     case 'loadModule':
       await loadModule(cmd.moduleType);
@@ -73,13 +82,13 @@ async function handleCommand(cmd: WorkerCommand) {
       markDirty();
       break;
     case 'setParam':
-      // TODO: find the virtual instance and update param
       break;
   }
 }
 
-async function init(offscreenCanvas: OffscreenCanvas) {
-  canvas = offscreenCanvas;
+async function init(width: number, height: number) {
+  // Create our own OffscreenCanvas (not transferred from main thread)
+  canvas = new OffscreenCanvas(width, height);
 
   // Init bridge core
   bridgeCore = new BridgeCore();
@@ -92,7 +101,7 @@ async function init(offscreenCanvas: OffscreenCanvas) {
     return;
   }
   gpuDevice = await adapter.requestDevice();
-  const format = navigator.gpu.getPreferredCanvasFormat();
+  const format = 'rgba8unorm';
 
   gpuContext = canvas.getContext('webgpu') as GPUCanvasContext;
   gpuContext.configure({ device: gpuDevice, format, alphaMode: 'premultiplied' });
@@ -118,12 +127,6 @@ function frame() {
 
   frameCount++;
   fpsTime += dt;
-  if (fpsTime >= 1.0) {
-    fps = frameCount;
-    frameCount = 0;
-    fpsTime = 0;
-    post({ type: 'frame', fps });
-  }
 
   // Tick bridge core
   if (bridgeCore) bridgeCore.tick();
@@ -139,17 +142,29 @@ function frame() {
     mod.tick(dt);
   }
 
-  // Render to canvas
+  // Render to offscreen canvas
   if (gpuContext && gpuHost && canvas && canvas.width > 0 && canvas.height > 0) {
     const surfaceTex = gpuContext.getCurrentTexture();
     gpuHost.setSurface(surfaceTex, canvas.width, canvas.height);
 
-    // Render the first loaded module
     for (const [_key, { host, module: mod }] of loadedModules) {
       host.drawList = [];
       mod.render(canvas.width, canvas.height);
       break;
     }
+  }
+
+  // Send frame bitmap + FPS at ~1Hz
+  if (fpsTime >= 1.0) {
+    fps = frameCount;
+    frameCount = 0;
+    fpsTime = 0;
+  }
+
+  // Post bitmap every frame
+  if (canvas && canvas.width > 0 && canvas.height > 0) {
+    const bitmap = canvas.transferToImageBitmap();
+    post({ type: 'frame', fps, bitmap }, [bitmap]);
   }
 
   // Broadcast state if dirty
@@ -184,7 +199,6 @@ async function loadModule(moduleType: string) {
 function broadcastState() {
   if (!bridgeCore) return;
 
-  // Read plugin list from bridge core state document
   const globalData = bridgeCore.getAt('/global');
   const plugins: PluginInfo[] = [];
 
@@ -207,7 +221,6 @@ function broadcastState() {
     }
   }
 
-  // Convert sketches map to record
   const sketchRecord: Record<string, Sketch> = {};
   for (const [id, sketch] of sketches) {
     sketchRecord[id] = sketch;

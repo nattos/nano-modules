@@ -1,6 +1,6 @@
 /**
  * <sketch-app> — Root application shell.
- * Tab bar + content area. Owns the offscreen preview canvas.
+ * Tab bar + content area.
  */
 
 import { html, css } from 'lit';
@@ -12,10 +12,6 @@ import { appController } from '../state/controller';
 import './create-tab';
 import './organize-tab';
 import './edit-tab';
-
-/** Resolves when the component's canvas is ready for OffscreenCanvas transfer. */
-let resolveCanvasReady: (canvas: HTMLCanvasElement) => void;
-export const canvasReady: Promise<HTMLCanvasElement> = new Promise(r => { resolveCanvasReady = r; });
 
 @customElement('sketch-app')
 export class SketchApp extends MobxLitElement {
@@ -68,28 +64,11 @@ export class SketchApp extends MobxLitElement {
       flex: 1;
       min-height: 0;
     }
-    .offscreen-canvas {
-      position: absolute;
-      width: 0;
-      height: 0;
-      pointer-events: none;
-      opacity: 0;
-    }
   `;
-
-  protected firstUpdated() {
-    const canvas = this.renderRoot.querySelector('#engine-canvas') as HTMLCanvasElement;
-    if (canvas) {
-      canvas.width = 320;
-      canvas.height = 180;
-      resolveCanvasReady(canvas);
-    }
-  }
 
   render() {
     const tab = appState.local.activeTab;
     return html`
-      <canvas id="engine-canvas" class="offscreen-canvas"></canvas>
       <div class="tab-bar">
         <button class="tab-btn" ?active=${tab === 'create'}
           @click=${() => appController.setActiveTab('create')}>Create</button>

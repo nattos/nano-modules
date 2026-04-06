@@ -1,6 +1,6 @@
 /**
  * Engine proxy — main-thread wrapper around the engine worker.
- * Provides a clean API for the UI to interact with the engine.
+ * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
 import type { WorkerCommand, WorkerEvent, EngineState } from './engine-types';
@@ -12,9 +12,10 @@ export class EngineProxy {
 
   onStateUpdate: ((state: EngineState) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
+  onFrame: ((bitmap: ImageBitmap) => void) | null = null;
   onError: ((message: string) => void) | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(width: number, height: number) {
     this.worker = new Worker(
       new URL('./engine-worker.ts', import.meta.url),
       { type: 'module' },
@@ -31,6 +32,7 @@ export class EngineProxy {
           break;
         case 'frame':
           this.onFps?.(event.fps);
+          this.onFrame?.(event.bitmap);
           break;
         case 'error':
           this.onError?.(event.message);
@@ -39,9 +41,7 @@ export class EngineProxy {
       }
     };
 
-    // Transfer the OffscreenCanvas to the worker
-    const offscreen = canvas.transferControlToOffscreen();
-    this.send({ type: 'init', canvas: offscreen }, [offscreen]);
+    this.send({ type: 'init', width, height });
   }
 
   get ready() { return this._ready; }
@@ -49,6 +49,10 @@ export class EngineProxy {
   private send(cmd: WorkerCommand, transfer?: Transferable[]) {
     if (transfer) this.worker.postMessage(cmd, transfer);
     else this.worker.postMessage(cmd);
+  }
+
+  resize(width: number, height: number) {
+    this.send({ type: 'resize', width, height });
   }
 
   loadModule(moduleType: string) {

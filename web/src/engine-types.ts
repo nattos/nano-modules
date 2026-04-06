@@ -38,7 +38,8 @@ export interface EngineState {
 // --- Worker commands (main → worker) ---
 
 export type WorkerCommand =
-  | { type: 'init'; canvas: OffscreenCanvas }
+  | { type: 'init'; width: number; height: number }
+  | { type: 'resize'; width: number; height: number }
   | { type: 'loadModule'; moduleType: string }
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
@@ -49,5 +50,5 @@ export type WorkerCommand =
 export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
-  | { type: 'frame'; fps: number }
+  | { type: 'frame'; fps: number; bitmap: ImageBitmap }
   | { type: 'error'; message: string };

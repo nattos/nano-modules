@@ -6,25 +6,24 @@
 
 import { appController } from './state/controller';
 import { EngineProxy } from './engine-proxy';
-import { canvasReady } from './views/sketch-app';
+
+// Import the root component (self-registering)
+import './views/sketch-app';
 
 async function main() {
-  // Wait for <sketch-app> to render and provide its canvas
-  const canvas = await canvasReady;
-
-  const engine = new EngineProxy(canvas);
+  const engine = new EngineProxy(320, 180);
   appController.setEngine(engine);
 
   engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
   engine.onFps = (fps) => appController.setEngineFps(fps);
+  engine.onFrame = (bitmap) => appController.setEngineFrame(bitmap);
   engine.onError = (msg) => appController.setEngineError(msg);
 
-  // Load default modules
+  // Load default generators
   appController.loadModule('com.nattos.spinningtris');
-  appController.loadModule('com.nattos.nanolooper');
   appController.loadModule('com.nattos.gpu_test');
+  appController.loadModule('com.nattos.nanolooper');
   appController.loadModule('com.nattos.brightness_contrast');
-  appController.loadModule('com.nattos.paramlinker');
 }
 
 main();

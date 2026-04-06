@@ -4,6 +4,7 @@
 
 import { html, css, nothing } from 'lit';
 import { customElement } from 'lit/decorators.js';
+import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
@@ -13,6 +14,28 @@ function shortName(id: string) { return id.split('.').pop() ?? id; }
 
 @customElement('edit-tab')
 export class EditTab extends MobxLitElement {
+  private previewDisposer: IReactionDisposer | null = null;
+
+  connectedCallback() {
+    super.connectedCallback();
+    // React to new frames and blit to the preview canvas
+    this.previewDisposer = autorun(() => {
+      const bitmap = appState.local.engine.lastFrame;
+      if (!bitmap) return;
+      const canvas = this.renderRoot.querySelector('#preview-canvas') as HTMLCanvasElement | null;
+      if (!canvas) return;
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.drawImage(bitmap, 0, 0);
+    });
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.previewDisposer?.();
+    this.previewDisposer = null;
+  }
   static styles = css`
     :host {
       display: flex;

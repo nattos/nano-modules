@@ -47,6 +47,7 @@ export interface StagingInstance {
 export interface EngineStatus {
   fps: number;
   error: string | null;
+  lastFrame: ImageBitmap | null;
 }
 
 export interface LocalState {
