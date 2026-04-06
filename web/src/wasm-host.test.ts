@@ -32,7 +32,7 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
     tick: exports.tick as (dt: number) => void,
     render: exports.render as (vpW: number, vpH: number) => void,
     onParamChange: exports.on_param_change as (index: number, value: number) => void,
-    onStateChanged: exports.on_state_changed as () => void,
+    onStateChanged: exports.on_state_changed as (() => void) | undefined,
   };
 
   return { host, module: wasmModule };
@@ -272,7 +272,7 @@ describe('WasmHost', () => {
     };
 
     // Notify the module — it should read the grid via state.read
-    module.onStateChanged();
+    module.onStateChanged?.();
 
     // Tick to publish updated state — the module should now reflect the edited grid
     host.frameState.viewportW = 1920;
@@ -298,7 +298,7 @@ describe('WasmHost', () => {
       phase: 0, recording: false, event_count: 4,
       grid: [[1], [3], [5], [7]]
     };
-    module.onStateChanged();
+    module.onStateChanged?.();
     module.tick(0.016);
 
     // Verify all 4 channels loaded
@@ -310,7 +310,7 @@ describe('WasmHost', () => {
       phase: 0, recording: false, event_count: 3,
       grid: [[], [3], [5], [7]]
     };
-    module.onStateChanged();
+    module.onStateChanged?.();
     module.tick(0.016);
 
     // Channels 1-3 must still have their events

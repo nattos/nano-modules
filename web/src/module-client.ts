@@ -124,7 +124,7 @@ export class ModuleClient {
       const current = this.host.pluginState;
       this.host.pluginState = { ...current, ...partialState };
     }
-    this.wasmModule.onStateChanged();
+    this.wasmModule.onStateChanged?.();
   }
 
   /** Set a plugin parameter (like pressing a button) */

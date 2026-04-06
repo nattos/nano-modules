@@ -8,7 +8,9 @@ MODULE_NAME=nanolooper
 
 source ../wasm_build_env.sh
 
-WASM_EXPORTS=()
+WASM_EXPORTS=(
+  -Wl,--export=on_state_changed
+)
 
 echo "Building $MODULE_NAME.wasm..."
 wasm_build -I../../src -I../include main.cpp core.cpp

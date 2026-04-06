@@ -25,7 +25,7 @@ export interface WasmModule {
   tick(dt: number): void;
   render(vpW: number, vpH: number): void;
   onParamChange(index: number, value: number): void;
-  onStateChanged(): void;
+  onStateChanged?(): void;
   /** Enhanced state change notification with patch details. May not exist on older modules. */
   onStatePatched?: (patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void;
   onResolumeParam?(paramId: bigint, value: number): void;
@@ -607,7 +607,7 @@ export class WasmHost {
       tick: exports.tick as (dt: number) => void,
       render: exports.render as (vpW: number, vpH: number) => void,
       onParamChange: exports.on_param_change as (index: number, value: number) => void,
-      onStateChanged: exports.on_state_changed as () => void,
+      onStateChanged: exports.on_state_changed as (() => void) | undefined,
       onStatePatched: exports.on_state_patched as
         ((patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void) | undefined,
       onResolumeParam: exports.on_resolume_param as ((paramId: bigint, value: number) => void) | undefined,
@@ -621,7 +621,7 @@ export class WasmHost {
    */
   notifyStatePatched(module: WasmModule, patches: PatchOp[]) {
     if (!module.onStatePatched || patches.length === 0) {
-      module.onStateChanged();
+      module.onStateChanged?.();
       return;
     }
 
@@ -639,7 +639,7 @@ export class WasmHost {
 
     if (!malloc || !free) {
       // No malloc available — fall back to bare callback
-      module.onStateChanged();
+      module.onStateChanged?.();
       this.pendingPatches = [];
       return;
     }

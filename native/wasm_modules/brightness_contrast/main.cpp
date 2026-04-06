@@ -74,39 +74,6 @@ void on_param_change(int index, double value) {
   else if (index == 1) s_contrast = static_cast<float>(value);
 }
 
-__attribute__((export_name("on_state_changed")))
-void on_state_changed() {}
-
-__attribute__((export_name("on_state_patched")))
-void on_state_patched(int patch_count,
-                       const char* paths_buf,
-                       const int* offsets,
-                       const int* lengths,
-                       const int* ops) {
-  for (int i = 0; i < patch_count; i++) {
-    const char* path = paths_buf + offsets[i];
-    int path_len = lengths[i];
-    int op = ops[i];
-
-    if (op != state::PatchReplace) continue;
-
-    // Fetch the patch value via the val system
-    int patch_h = state::getPatch(i);
-    if (patch_h <= 0) continue;
-
-    int value_h = val::get(patch_h, "value");
-    double new_val = val::asNumber(value_h);
-    val::release(value_h);
-    val::release(patch_h);
-
-    // Match field paths
-    if (path_len == 10 && path[0] == 'b') { // "brightness"
-      s_brightness = static_cast<float>(new_val);
-    } else if (path_len == 8 && path[0] == 'c') { // "contrast"
-      s_contrast = static_cast<float>(new_val);
-    }
-  }
-}
 
 __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
