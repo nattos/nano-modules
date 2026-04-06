@@ -17,8 +17,10 @@ export interface PluginInfo {
 export interface ParamInfo {
   index: number;
   name: string;
-  type: number;
+  type: number;       // 0=bool, 1=event, 10=standard, 11=option, 13=integer, 100=text
   defaultValue: number;
+  min: number;
+  max: number;
 }
 
 export interface IOInfo {
@@ -47,7 +49,8 @@ export interface StagingInstance {
 export interface EngineStatus {
   fps: number;
   error: string | null;
-  lastFrame: ImageBitmap | null;
+  /** Traced output frames keyed by trace point ID. */
+  tracedFrames: Record<string, ImageBitmap | null>;
 }
 
 export interface LocalState {

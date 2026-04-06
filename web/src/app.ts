@@ -16,7 +16,7 @@ async function main() {
 
   engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
   engine.onFps = (fps) => appController.setEngineFps(fps);
-  engine.onFrame = (bitmap) => appController.setEngineFrame(bitmap);
+  engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
   engine.onError = (msg) => appController.setEngineError(msg);
 
   // Load default generators

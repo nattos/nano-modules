@@ -17,8 +17,10 @@ export interface PluginInfo {
 export interface ParamInfo {
   index: number;
   name: string;
-  type: number;
+  type: number;       // 0=bool, 1=event, 10=standard, 11=option, 13=integer, 100=text
   defaultValue: number;
+  min: number;
+  max: number;
 }
 
 export interface IOInfo {
@@ -35,6 +37,16 @@ export interface EngineState {
   sketches: Record<string, Sketch>;
 }
 
+// --- Trace points ---
+
+export interface TracePoint {
+  id: string;
+  target:
+    | { type: 'sketch_output'; sketchId: string }
+    | { type: 'plugin_output'; pluginKey: string }
+    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: 'input' | 'output' };
+}
+
 // --- Worker commands (main → worker) ---
 
 export type WorkerCommand =
@@ -43,12 +55,13 @@ export type WorkerCommand =
   | { type: 'loadModule'; moduleType: string }
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
-  | { type: 'setParam'; sketchId: string; instanceKey: string; index: number; value: number };
+  | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramIndex: number; value: number }
+  | { type: 'setTracePoints'; tracePoints: TracePoint[] };
 
 // --- Worker events (worker → main) ---
 
 export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
-  | { type: 'frame'; fps: number; bitmap: ImageBitmap }
+  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap> }
   | { type: 'error'; message: string };

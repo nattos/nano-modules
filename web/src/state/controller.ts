@@ -12,7 +12,7 @@ import { appState } from './app-state';
 import { HistoryManager } from './history';
 import type { DatabaseState, StagingInstance, PluginInfo } from './types';
 import type { EngineProxy } from '../engine-proxy';
-import type { EngineState } from '../engine-types';
+import type { EngineState, TracePoint } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
 
 export class AppController {
@@ -35,7 +35,6 @@ export class AppController {
   /** Generic mutation bottleneck. All sketch changes go through here. */
   mutate(description: string, recipe: (draft: DatabaseState) => void) {
     this.history.record(description, recipe);
-    // Sync to engine worker
     this.syncSketchesToEngine();
   }
 
@@ -89,14 +88,11 @@ export class AppController {
   addEffectToChain(sketchId: string, colIdx: number, insertIdx: number, moduleType: string) {
     const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
 
-    // Look up default param values from loaded plugins
     const plugin = appState.local.plugins.find(p => p.id === moduleType);
     const defaultParams: Record<string, number> = {};
     if (plugin) {
       for (const p of plugin.params) {
-        if (p.type === 10) { // Standard float
-          defaultParams[String(p.index)] = p.defaultValue;
-        }
+        defaultParams[String(p.index)] = p.defaultValue;
       }
     }
 
@@ -130,6 +126,8 @@ export class AppController {
         entry.params[paramKey] = value;
       }
     });
+    // Also send immediate param update to the engine for live preview
+    this.engine?.setParam(sketchId, colIdx, chainIdx, parseInt(paramKey), value);
   }
 
   undo() { this.history.undo(); this.syncSketchesToEngine(); }
@@ -201,6 +199,12 @@ export class AppController {
 
   editSketch(id: string | null) {
     runInAction(() => { appState.local.editingSketchId = id; });
+    // Set trace point for the sketch being edited
+    if (id) {
+      this.setTracePoints([{ id: 'edit_preview', target: { type: 'sketch_output', sketchId: id } }]);
+    } else {
+      this.setTracePoints([]);
+    }
   }
 
   setEngineFps(fps: number) {
@@ -211,10 +215,14 @@ export class AppController {
     runInAction(() => { appState.local.engine.error = error; });
   }
 
-  setEngineFrame(bitmap: ImageBitmap) {
-    // Close the previous bitmap to free GPU memory
-    appState.local.engine.lastFrame?.close();
-    runInAction(() => { appState.local.engine.lastFrame = bitmap; });
+  setTracedFrames(frames: Record<string, ImageBitmap>) {
+    runInAction(() => {
+      // Close old bitmaps
+      for (const old of Object.values(appState.local.engine.tracedFrames)) {
+        old?.close();
+      }
+      appState.local.engine.tracedFrames = frames;
+    });
   }
 
   // ========================================================================
@@ -225,9 +233,12 @@ export class AppController {
     this.engine?.loadModule(moduleType);
   }
 
+  setTracePoints(tracePoints: TracePoint[]) {
+    this.engine?.setTracePoints(tracePoints);
+  }
+
   private syncSketchesToEngine() {
     if (!this.engine) return;
-    // Send current sketch state to engine
     for (const [id, sketch] of Object.entries(appState.database.sketches)) {
       this.engine.updateSketch(id, toJS(sketch));
     }

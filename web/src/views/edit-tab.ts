@@ -18,9 +18,9 @@ export class EditTab extends MobxLitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    // React to new frames and blit to the preview canvas
+    // React to new traced frames and blit the edit preview to the canvas
     this.previewDisposer = autorun(() => {
-      const bitmap = appState.local.engine.lastFrame;
+      const bitmap = appState.local.engine.tracedFrames['edit_preview'];
       if (!bitmap) return;
       const canvas = this.renderRoot.querySelector('#preview-canvas') as HTMLCanvasElement | null;
       if (!canvas) return;
@@ -219,24 +219,52 @@ export class EditTab extends MobxLitElement {
 
   private renderParams(sketchId: string, entry: any, chainIdx: number) {
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-    if (!plugin) return nothing;
+    if (!plugin || plugin.params.length === 0) return nothing;
 
-    const sliderParams = plugin.params.filter(p => p.type === 10);
-    if (sliderParams.length === 0) return nothing;
-
-    return sliderParams.map(p => {
+    return plugin.params.map(p => {
       const key = String(p.index);
       const value = entry.params[key] ?? p.defaultValue;
+
+      if (p.type === 0) {
+        // Boolean — toggle button
+        return html`
+          <div class="effect-param">
+            <span class="effect-param-label">${p.name}</span>
+            <button class="btn" style="flex:1;font-size:9px"
+              @click=${() => {
+                const newVal = value > 0.5 ? 0 : 1;
+                appController.setEffectParam(sketchId, 0, chainIdx, key, newVal);
+              }}>${value > 0.5 ? 'ON' : 'OFF'}</button>
+          </div>
+        `;
+      }
+
+      if (p.type === 1) {
+        // Event — momentary button
+        return html`
+          <div class="effect-param">
+            <span class="effect-param-label">${p.name}</span>
+            <button class="btn" style="flex:1;font-size:9px"
+              @mousedown=${() => appController.setEffectParam(sketchId, 0, chainIdx, key, 1)}
+              @mouseup=${() => appController.setEffectParam(sketchId, 0, chainIdx, key, 0)}
+              @mouseleave=${() => appController.setEffectParam(sketchId, 0, chainIdx, key, 0)}>Trigger</button>
+          </div>
+        `;
+      }
+
+      // Standard (10), Integer (13), etc. — slider
+      const step = p.type === 13 ? '1' : '0.01';
       return html`
         <div class="effect-param">
           <span class="effect-param-label">${p.name}</span>
-          <input type="range" class="effect-param-slider" min="0" max="1" step="0.01"
+          <input type="range" class="effect-param-slider"
+                 min="${p.min}" max="${p.max}" step="${step}"
                  .value=${String(value)}
                  @input=${(e: Event) => {
                    const v = parseFloat((e.target as HTMLInputElement).value);
                    appController.setEffectParam(sketchId, 0, chainIdx, key, v);
                  }}>
-          <span class="effect-param-value">${value.toFixed(2)}</span>
+          <span class="effect-param-value">${p.type === 13 ? Math.round(value) : value.toFixed(2)}</span>
         </div>
       `;
     });

@@ -3,7 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
-import type { WorkerCommand, WorkerEvent, EngineState } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, TracePoint } from './engine-types';
 import type { Sketch } from './sketch-types';
 
 export class EngineProxy {
@@ -12,7 +12,7 @@ export class EngineProxy {
 
   onStateUpdate: ((state: EngineState) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
-  onFrame: ((bitmap: ImageBitmap) => void) | null = null;
+  onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onError: ((message: string) => void) | null = null;
 
   constructor(width: number, height: number) {
@@ -32,7 +32,7 @@ export class EngineProxy {
           break;
         case 'frame':
           this.onFps?.(event.fps);
-          this.onFrame?.(event.bitmap);
+          this.onTracedFrames?.(event.tracedFrames);
           break;
         case 'error':
           this.onError?.(event.message);
@@ -67,8 +67,12 @@ export class EngineProxy {
     this.send({ type: 'updateSketch', sketchId, sketch });
   }
 
-  setParam(sketchId: string, instanceKey: string, index: number, value: number) {
-    this.send({ type: 'setParam', sketchId, instanceKey, index, value });
+  setParam(sketchId: string, colIdx: number, chainIdx: number, paramIndex: number, value: number) {
+    this.send({ type: 'setParam', sketchId, colIdx, chainIdx, paramIndex, value });
+  }
+
+  setTracePoints(tracePoints: TracePoint[]) {
+    this.send({ type: 'setTracePoints', tracePoints });
   }
 
   destroy() {
