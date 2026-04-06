@@ -25,6 +25,7 @@
     "vitest": "^4.0.9"
   },
   "dependencies": {
+    "immer": "^11.1.4",
     "naga-wasm": "^1.0.0",
     "wasm-naga": "^0.3.2"
   }

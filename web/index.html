@@ -7,23 +7,7 @@
   <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
-  <div id="app" class="app-layout">
-    <div class="tab-bar">
-      <button class="tab-btn active" data-tab="create">Create</button>
-      <button class="tab-btn" data-tab="organize">Organize</button>
-      <button class="tab-btn" data-tab="edit">Edit</button>
-      <div class="tab-status" id="tab-status"></div>
-    </div>
-    <div class="app-content">
-      <div class="main-area" id="main-area"></div>
-      <div class="right-panel" id="right-panel">
-        <div class="right-content" id="right-content"></div>
-        <div class="preview-area">
-          <canvas id="preview-canvas"></canvas>
-        </div>
-      </div>
-    </div>
-  </div>
+  <sketch-app></sketch-app>
   <script type="module" src="src/app.ts"></script>
 </body>
 </html>
