@@ -105,6 +105,12 @@ async function handleCommand(cmd: WorkerCommand) {
             if (loaded) {
               loaded.host.frameState.params[cmd.paramIndex] = cmd.value;
               loaded.module.onParamChange(cmd.paramIndex, cmd.value);
+              // Find field name from params keys
+              const fieldName = Object.keys(entry.params).find(
+                (_, idx) => idx === cmd.paramIndex) ?? String(cmd.paramIndex);
+              loaded.host.notifyStatePatched(loaded.module, [
+                { op: 'replace', path: fieldName, value: cmd.value },
+              ]);
             }
           }
         }

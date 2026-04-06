@@ -130,12 +130,19 @@ export class SketchExecutor {
         const loaded = await this.ensureInstance(entry);
 
         // --- Apply params from chain entry ---
+        const paramPatches: import('./wasm-host').PatchOp[] = [];
+        let paramIndex = 0;
         for (const [key, value] of Object.entries(entry.params)) {
-          const paramIndex = parseInt(key, 10);
-          if (!isNaN(paramIndex)) {
-            loaded.host.frameState.params[paramIndex] = value;
-            loaded.module.onParamChange(paramIndex, value);
-          }
+          // Set frameState.params by position for legacy host::param(index) reads
+          loaded.host.frameState.params[paramIndex] = value;
+          // Also call legacy onParamChange for modules that haven't migrated
+          loaded.module.onParamChange(paramIndex, value);
+          // Build patch for the new on_state_patched path
+          paramPatches.push({ op: 'replace', path: key, value });
+          paramIndex++;
+        }
+        if (paramPatches.length > 0) {
+          loaded.host.notifyStatePatched(loaded.module, paramPatches);
         }
 
         // --- Apply read taps (before tick/render) ---
@@ -151,13 +158,15 @@ export class SketchExecutor {
 
             if (rail?.dataType === 'float' && rv.data !== undefined) {
               // Data tap read: write rail value into module params
-              const paramIndex = parseInt(tap.fieldPath, 10);
-              if (!isNaN(paramIndex)) {
-                loaded.host.frameState.params[paramIndex] = rv.data;
-                loaded.module.onParamChange(paramIndex, rv.data);
+              const paramIdx = parseInt(tap.fieldPath, 10);
+              if (!isNaN(paramIdx)) {
+                loaded.host.frameState.params[paramIdx] = rv.data;
+                loaded.module.onParamChange(paramIdx, rv.data);
               }
-              // Also store in entry.params for consistency
               entry.params[tap.fieldPath] = rv.data;
+              loaded.host.notifyStatePatched(loaded.module, [
+                { op: 'replace', path: tap.fieldPath, value: rv.data },
+              ]);
             } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
               // Texture tap read: add to input texture handles
               const texIndex = parseInt(tap.fieldPath, 10);

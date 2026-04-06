@@ -543,6 +543,12 @@ void on_state_changed(void) {
   load_grid_from_state();
 }
 
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  (void)n; (void)pb; (void)off; (void)len; (void)ops;
+  /* TODO: migrate nanolooper to use patches instead of on_param_change */
+}
+
 __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!show_overlay) return;

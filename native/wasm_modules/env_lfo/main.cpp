@@ -13,6 +13,7 @@
  */
 
 #include <host.h>
+#include <val.h>
 #include <cmath>
 
 #ifndef M_PI
@@ -94,6 +95,20 @@ void on_param_change(int index, double value) {
 
 __attribute__((export_name("on_state_changed")))
 void on_state_changed() {}
+
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    int ph = state::getPatch(i); if (ph <= 0) continue;
+    int vh = val::get(ph, "value"); double v = val::asNumber(vh);
+    val::release(vh); val::release(ph);
+    if (len[i] >= 1) {
+      if (pb[off[i]] == 'r') s_rate = (float)v;       // "rate"
+      else if (pb[off[i]] == 'a') s_amplitude = (float)v; // "amplitude"
+    }
+  }
+}
 
 __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {

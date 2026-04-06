@@ -92,7 +92,8 @@ export class AppController {
     const defaultParams: Record<string, number> = {};
     if (plugin) {
       for (const p of plugin.params) {
-        defaultParams[String(p.index)] = p.defaultValue;
+        // Use field name as key (matches schema field paths)
+        defaultParams[p.name] = p.defaultValue;
       }
     }
 

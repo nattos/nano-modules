@@ -62,7 +62,7 @@ describe('Sideband Rail Routing E2E', () => {
               type: 'module',
               module_type: 'com.nattos.env_lfo',
               instance_key: 'lfo@0',
-              params: { '0': 0.5, '1': 1.0 }, // rate=0.5, amplitude=1.0
+              params: { rate: 0.5, amplitude: 1.0 },
               taps: [
                 { railId: 'lfo_out', fieldPath: 'output', direction: 'write' },
               ],
@@ -71,7 +71,7 @@ describe('Sideband Rail Routing E2E', () => {
               type: 'module',
               module_type: 'com.nattos.solid_color',
               instance_key: 'color@0',
-              params: { '0': 0.0, '1': 0.0, '2': 0.0 }, // start black
+              params: { red: 0.0, green: 0.0, blue: 0.0 },
               taps: [
                 { railId: 'lfo_out', fieldPath: '0', direction: 'read' }, // LFO → Red param
               ],
@@ -144,7 +144,7 @@ describe('Sideband Rail Routing E2E', () => {
               type: 'module',
               module_type: 'com.nattos.solid_color',
               instance_key: 'red@0',
-              params: { '0': 1.0, '1': 0.0, '2': 0.0 }, // pure red
+              params: { red: 1.0, green: 0.0, blue: 0.0 }, // pure red
               taps: [
                 { railId: 'tex_a', fieldPath: 'texture_out/0', direction: 'write' },
               ],
@@ -154,7 +154,7 @@ describe('Sideband Rail Routing E2E', () => {
               type: 'module',
               module_type: 'com.nattos.solid_color',
               instance_key: 'blue@0',
-              params: { '0': 0.0, '1': 0.0, '2': 1.0 }, // pure blue
+              params: { red: 0.0, green: 0.0, blue: 1.0 }, // pure blue
               taps: [
                 { railId: 'tex_b', fieldPath: 'texture_out/0', direction: 'write' },
               ],
@@ -164,7 +164,7 @@ describe('Sideband Rail Routing E2E', () => {
               type: 'module',
               module_type: 'com.nattos.video_blend',
               instance_key: 'blend@0',
-              params: { '0': 0.5 }, // 50% opacity blend
+              params: { opacity: 0.5 }, // 50% opacity blend
               taps: [
                 { railId: 'tex_a', fieldPath: '0', direction: 'read' }, // input texture 0
                 { railId: 'tex_b', fieldPath: '1', direction: 'read' }, // input texture 1

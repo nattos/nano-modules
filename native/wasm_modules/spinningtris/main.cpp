@@ -7,6 +7,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <val.h>
 #include "spinningtris_shaders.h"
 
 #include <cmath>
@@ -118,6 +119,7 @@ void tick(double dt) {
 
 __attribute__((export_name("on_param_change")))
 void on_param_change(int index, double value) {
+  // Legacy — kept for backward compat
   if (index == 0) {
     tri_count = 1 + int(value * 999.0);
     if (tri_count > MAX_TRIANGLES) tri_count = MAX_TRIANGLES;
@@ -129,6 +131,29 @@ void on_param_change(int index, double value) {
 
 __attribute__((export_name("on_state_changed")))
 void on_state_changed() {}
+
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int patch_count, const char* paths_buf,
+                       const int* offsets, const int* lengths, const int* ops) {
+  for (int i = 0; i < patch_count; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    int ph = state::getPatch(i);
+    if (ph <= 0) continue;
+    int vh = val::get(ph, "value");
+    double v = val::asNumber(vh);
+    val::release(vh);
+    val::release(ph);
+
+    const char* p = paths_buf + offsets[i];
+    if (lengths[i] >= 1 && p[0] == 't') { // "triangles"
+      tri_count = 1 + int(v * 999.0);
+      if (tri_count > MAX_TRIANGLES) tri_count = MAX_TRIANGLES;
+      if (tri_count < 1) tri_count = 1;
+    } else if (lengths[i] >= 1 && p[0] == 's') { // "speed"
+      speed = float(v) * 4.0f;
+    }
+  }
+}
 
 __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {

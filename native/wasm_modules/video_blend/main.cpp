@@ -14,6 +14,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <val.h>
 #include "video_blend_shaders.h"
 
 struct Uniforms {
@@ -63,6 +64,17 @@ void on_param_change(int index, double value) {
 
 __attribute__((export_name("on_state_changed")))
 void on_state_changed() {}
+
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    int ph = state::getPatch(i); if (ph <= 0) continue;
+    int vh = val::get(ph, "value"); double v = val::asNumber(vh);
+    val::release(vh); val::release(ph);
+    if (len[i] >= 1 && pb[off[i]] == 'o') s_opacity = (float)v; // "opacity"
+  }
+}
 
 __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {

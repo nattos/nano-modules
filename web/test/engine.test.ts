@@ -116,7 +116,7 @@ describe('Engine Worker E2E', () => {
                     type: 'module',
                     module_type: 'com.nattos.brightness_contrast',
                     instance_key: 'virtual_bc@0',
-                    params: { '0': 0.5, '1': 0.25 },  // neutral brightness, half contrast
+                    params: { brightness: 0.5, contrast: 0.25 },  // neutral brightness, half contrast
                   },
                   { type: 'texture_output', id: 'primary_out' },
                 ],
@@ -165,7 +165,7 @@ describe('Engine Worker E2E', () => {
                     type: 'module',
                     module_type: 'com.nattos.brightness_contrast',
                     instance_key: 'virtual_bc_black@0',
-                    params: { '0': 0.5, '1': 0.0 },  // contrast=0 → black
+                    params: { brightness: 0.5, contrast: 0.0 },  // contrast=0 → black
                   },
                   { type: 'texture_output', id: 'primary_out' },
                 ],

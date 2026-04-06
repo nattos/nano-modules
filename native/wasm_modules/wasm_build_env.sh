@@ -39,6 +39,8 @@ WASM_COMMON_EXPORTS=(
   -Wl,--export=on_param_change
   -Wl,--export=on_state_changed
   -Wl,--export=on_state_patched
+  -Wl,--export=malloc
+  -Wl,--export=free
 )
 
 wasm_build() {

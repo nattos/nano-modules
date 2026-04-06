@@ -126,6 +126,11 @@ void on_param_change(int index, double value) { (void)index; (void)value; }
 __attribute__((export_name("on_state_changed")))
 void on_state_changed(void) {}
 
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  (void)n; (void)pb; (void)off; (void)len; (void)ops;
+}
+
 __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!initialized) return;
