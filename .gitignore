@@ -14,6 +14,7 @@ Build/Windows/x64/Release/
 /run/
 
 .jj
+.vite
 
 node_modules/
 dist

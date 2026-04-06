@@ -67,6 +67,12 @@ export class WasmHost {
   metadata: { id: string; version: string } | null = null;
   params: ParamDecl[] = [];
 
+  // Schema (populated by set_schema)
+  schema: Record<string, any> = {};
+
+  // Named texture fields (populated by sketch executor from schema)
+  textureFields: Map<string, number> = new Map();
+
   // Input textures (injected by sketch executor for chaining)
   inputTextureHandles: number[] = [];
 
@@ -210,6 +216,51 @@ export class WasmHost {
           this.metadata = { id, version: `${major}.${minor}.${patch}` };
           if (bc) {
             this.pluginKey = bc.registerPlugin(id, major, minor, patch);
+          }
+        },
+        set_schema: (idPtr: number, idLen: number, versionPacked: number,
+                      schemaPtr: number, schemaLen: number) => {
+          const id = this.readString(idPtr, idLen);
+          const major = (versionPacked >> 16) & 0xFF;
+          const minor = (versionPacked >> 8) & 0xFF;
+          const patch = versionPacked & 0xFF;
+          this.metadata = { id, version: `${major}.${minor}.${patch}` };
+
+          const schemaStr = this.readString(schemaPtr, schemaLen);
+          try {
+            const schemaJson = JSON.parse(schemaStr);
+            this.schema = schemaJson.fields ?? {};
+
+            // Derive params and ioDecls from schema for backward compat
+            this.params = [];
+            this.ioDecls = [];
+            let paramIdx = 0;
+            for (const [name, field] of Object.entries(this.schema) as [string, any][]) {
+              const ioFlags = field.io ?? 0;
+              if (field.type === 'texture') {
+                const dir = (ioFlags & 1) ? 0 : 1; // Input=0, Output=1
+                const role = (ioFlags & 4) ? 0 : 1; // Primary=0, Secondary=1
+                this.ioDecls.push({ index: this.ioDecls.length, name, kind: dir, role });
+              } else {
+                let type = 10; // Standard
+                if (field.type === 'bool') type = 0;
+                else if (field.type === 'event') type = 1;
+                else if (field.type === 'int') type = 13;
+                else if (field.type === 'string') type = 100;
+                this.params.push({
+                  index: paramIdx++,
+                  name,
+                  type,
+                  defaultValue: field.default ?? 0,
+                });
+              }
+            }
+          } catch {
+            this.schema = {};
+          }
+
+          if (bc) {
+            this.pluginKey = bc.registerWithSchema(id, major, minor, patch, schemaStr);
           }
         },
         console_log: (level: number, msgPtr: number, msgLen: number) => {
@@ -431,6 +482,11 @@ export class WasmHost {
         get_input_texture: (index: number) =>
           (index >= 0 && index < this.inputTextureHandles.length) ? this.inputTextureHandles[index] : -1,
         get_input_texture_count: () => this.inputTextureHandles.length,
+        // Unified texture access by field path
+        texture_for_field: (pathPtr: number, pathLen: number) => {
+          const path = this.readString(pathPtr, pathLen);
+          return this.textureFields.get(path) ?? -1;
+        },
       },
     };
 

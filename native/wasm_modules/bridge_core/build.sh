@@ -31,6 +31,7 @@ WASM_EXPORTS=(
   -Wl,--export=bridge_core_receive_message
   -Wl,--export=bridge_core_poll_outgoing
   -Wl,--export=bridge_core_register_plugin
+  -Wl,--export=bridge_core_register_with_schema
   -Wl,--export=bridge_core_declare_param
   -Wl,--export=bridge_core_declare_io
   -Wl,--export=bridge_core_log

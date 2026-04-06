@@ -49,6 +49,92 @@ std::string StateDocument::register_plugin(const PluginMetadata& meta) {
   return key;
 }
 
+std::string StateDocument::register_plugin_with_schema(const PluginMetadata& meta, const std::string& schema_json) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+
+  int instance = next_instance_[meta.id]++;
+  std::string key = meta.id + "@" + std::to_string(instance);
+
+  // Parse the schema
+  auto schema = json::parse(schema_json, nullptr, false);
+  if (schema.is_discarded()) schema = json::object();
+
+  // Build initial state from schema field defaults
+  json initial_state = json::object();
+  if (schema.contains("fields") && schema["fields"].is_object()) {
+    for (auto& [field_name, field_def] : schema["fields"].items()) {
+      if (!field_def.is_object()) continue;
+      std::string type = field_def.value("type", "");
+      if (type == "float") {
+        initial_state[field_name] = field_def.value("default", 0.0);
+      } else if (type == "int") {
+        initial_state[field_name] = field_def.value("default", 0);
+      } else if (type == "bool") {
+        initial_state[field_name] = field_def.value("default", false);
+      } else if (type == "string") {
+        initial_state[field_name] = field_def.value("default", "");
+      } else if (type == "texture") {
+        initial_state[field_name] = 0; // placeholder
+      } else if (type == "event") {
+        initial_state[field_name] = 0.0;
+      }
+    }
+  }
+
+  // Add to global plugin listing with schema
+  json entry = {
+    {"key", key},
+    {"metadata", {
+      {"id", meta.id},
+      {"version", {{"major", meta.major}, {"minor", meta.minor}, {"patch", meta.patch}}},
+    }},
+    {"schema", schema.contains("fields") ? schema["fields"] : json::object()},
+    // Legacy compat: also emit params/io arrays derived from schema
+    {"params", json::array()},
+  };
+
+  // Derive legacy params array from schema for backward compat
+  if (schema.contains("fields") && schema["fields"].is_object()) {
+    int param_index = 0;
+    for (auto& [field_name, field_def] : schema["fields"].items()) {
+      if (!field_def.is_object()) continue;
+      std::string type = field_def.value("type", "");
+      int io_flags = field_def.value("io", 0);
+      if (type == "texture") continue; // textures aren't params
+
+      int param_type = 10; // default Standard
+      if (type == "bool") param_type = 0;
+      else if (type == "event") param_type = 1;
+      else if (type == "int") param_type = 13;
+      else if (type == "string") param_type = 100;
+
+      json p = {
+        {"index", param_index},
+        {"name", field_name},
+        {"type", param_type},
+        {"default", field_def.value("default", 0.0)},
+        {"min", field_def.value("min", 0.0)},
+        {"max", field_def.value("max", 1.0)},
+        {"io", io_flags},
+      };
+      entry["params"].push_back(p);
+      param_index++;
+    }
+  }
+
+  doc_["global"]["plugins"].push_back(entry);
+  emit("add", "/global/plugins/-", entry);
+
+  // Create plugin instance state with defaults from schema
+  doc_["plugins"][key] = {
+    {"console", json::array()},
+    {"state", initial_state},
+  };
+  emit("add", "/plugins/" + key, doc_["plugins"][key]);
+
+  return key;
+}
+
 void StateDocument::declare_param(const std::string& plugin_key, const ParamDecl& param) {
   platform::LockGuard<platform::Mutex> lock(mutex_);
 

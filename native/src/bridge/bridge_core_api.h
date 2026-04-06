@@ -40,6 +40,13 @@ int bridge_core_register_plugin(BridgeCoreHandle h,
                                  int ver_major, int ver_minor, int ver_patch,
                                  char* key_buf, int key_buf_len);
 
+// Register with a full schema JSON. Returns key length written to key_buf.
+int bridge_core_register_with_schema(BridgeCoreHandle h,
+                                      const char* id, int id_len,
+                                      int ver_major, int ver_minor, int ver_patch,
+                                      const char* schema_json, int schema_json_len,
+                                      char* key_buf, int key_buf_len);
+
 void bridge_core_declare_param(BridgeCoreHandle h,
                                 const char* plugin_key, int plugin_key_len,
                                 int index,

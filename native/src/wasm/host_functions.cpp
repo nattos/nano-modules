@@ -347,6 +347,29 @@ static void state_set_metadata(wasm_exec_env_t env,
   ctx->plugin_key = ctx->state_doc->register_plugin(meta);
 }
 
+static void state_set_schema(wasm_exec_env_t env,
+    int32_t id_ptr, int32_t id_len, int32_t version_packed,
+    int32_t schema_ptr, int32_t schema_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->state_doc) return;
+
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, id_ptr, id_len)) return;
+  if (!wasm_runtime_validate_app_addr(inst, schema_ptr, schema_len)) return;
+  char* id_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, id_ptr));
+  char* schema_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, schema_ptr));
+  if (!id_str || !schema_str) return;
+
+  bridge::PluginMetadata meta;
+  meta.id = std::string(id_str, id_len);
+  meta.major = (version_packed >> 16) & 0xFF;
+  meta.minor = (version_packed >> 8) & 0xFF;
+  meta.patch = version_packed & 0xFF;
+
+  std::string schema_json(schema_str, schema_len);
+  ctx->plugin_key = ctx->state_doc->register_plugin_with_schema(meta, schema_json);
+}
+
 static void state_declare_param(wasm_exec_env_t env,
     int32_t index, int32_t name_ptr, int32_t name_len,
     int32_t type, float default_value) {
@@ -500,6 +523,7 @@ static void state_console_log_structured(wasm_exec_env_t env,
 
 static NativeSymbol state_symbols[] = {
     {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
+    {"set_schema", reinterpret_cast<void*>(state_set_schema), "(iiiii)", nullptr},
     {"declare_param", reinterpret_cast<void*>(state_declare_param), "(iiiif)", nullptr},
     {"get_key", reinterpret_cast<void*>(state_get_key), "(ii)i", nullptr},
     {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
@@ -641,6 +665,17 @@ static int32_t gpu_get_input_texture_count(wasm_exec_env_t env) {
   auto* ctx = get_ctx(env);
   return ctx ? static_cast<int32_t>(ctx->input_texture_handles.size()) : 0;
 }
+static int32_t gpu_texture_for_field(wasm_exec_env_t env, int32_t path_ptr, int32_t path_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return -1;
+  char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  if (!path) return -1;
+  std::string field_path(path, path_len);
+  auto it = ctx->texture_fields.find(field_path);
+  return it != ctx->texture_fields.end() ? it->second : -1;
+}
 static void gpu_compute_dispatch(wasm_exec_env_t env, int32_t pass, int32_t x, int32_t y, int32_t z) {
   auto* g = get_gpu(env); if (g) g->computeDispatch(pass, x, y, z);
 }
@@ -706,6 +741,7 @@ static NativeSymbol gpu_symbols[] = {
     {"release", reinterpret_cast<void*>(gpu_release), "(i)", nullptr},
     {"get_input_texture", reinterpret_cast<void*>(gpu_get_input_texture), "(i)i", nullptr},
     {"get_input_texture_count", reinterpret_cast<void*>(gpu_get_input_texture_count), "()i", nullptr},
+    {"texture_for_field", reinterpret_cast<void*>(gpu_texture_for_field), "(ii)i", nullptr},
 };
 
 // ========================================================================

@@ -72,10 +72,15 @@ public:
   /// Keys are allocated per plugin type with an incrementing suffix.
   std::string register_plugin(const PluginMetadata& meta);
 
-  /// Declare a parameter on a plugin.
+  /// Register a plugin with a full schema JSON. Returns the plugin key.
+  /// The schema defines all fields, their types, defaults, and I/O mappings.
+  /// Replaces the separate declare_param/declare_io calls.
+  std::string register_plugin_with_schema(const PluginMetadata& meta, const std::string& schema_json);
+
+  /// Declare a parameter on a plugin (legacy — use register_plugin_with_schema).
   void declare_param(const std::string& plugin_key, const ParamDecl& param);
 
-  /// Declare an I/O port on a plugin.
+  /// Declare an I/O port on a plugin (legacy — use register_plugin_with_schema).
   void declare_io(const std::string& plugin_key, const IODecl& io);
 
   /// Unregister a plugin by key.

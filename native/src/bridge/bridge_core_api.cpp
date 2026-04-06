@@ -104,6 +104,22 @@ int bridge_core_register_plugin(BridgeCoreHandle h,
   return write_to_buf(key, key_buf, key_buf_len);
 }
 
+int bridge_core_register_with_schema(BridgeCoreHandle h,
+                                      const char* id, int id_len,
+                                      int ver_major, int ver_minor, int ver_patch,
+                                      const char* schema_json, int schema_json_len,
+                                      char* key_buf, int key_buf_len) {
+  PluginMetadata meta;
+  meta.id = std::string(id, id_len);
+  meta.major = ver_major;
+  meta.minor = ver_minor;
+  meta.patch = ver_patch;
+
+  std::string key = as(h)->core.state_document().register_plugin_with_schema(
+      meta, std::string(schema_json, schema_json_len));
+  return write_to_buf(key, key_buf, key_buf_len);
+}
+
 void bridge_core_declare_param(BridgeCoreHandle h,
                                 const char* plugin_key, int plugin_key_len,
                                 int index,

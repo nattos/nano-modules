@@ -171,6 +171,18 @@ export class SketchExecutor {
 
         loaded.host.inputTextureHandles = inputTextures;
 
+        // --- Populate textureFields for unified texture access ---
+        loaded.host.textureFields.clear();
+        // Map input textures by their position names (legacy: "tex_in" for slot 0)
+        if (inputTextures.length > 0 && inputTextures[0] >= 0) {
+          loaded.host.textureFields.set('tex_in', inputTextures[0]);
+        }
+        for (let ti = 0; ti < inputTextures.length; ti++) {
+          if (inputTextures[ti] >= 0) {
+            loaded.host.textureFields.set(`tex_in_${ti}`, inputTextures[ti]);
+          }
+        }
+
         // --- Set frame state ---
         loaded.host.frameState.elapsedTime = frameState.elapsedTime;
         loaded.host.frameState.deltaTime = frameState.deltaTime;
@@ -183,6 +195,7 @@ export class SketchExecutor {
         const outputHandle = intermediates.handles[nextSlot];
         const outputTex = intermediates.textures[nextSlot];
         this.gpuHost.setSurface(outputTex, width, height);
+        loaded.host.textureFields.set('tex_out', outputHandle);
 
         // --- Tick and render ---
         loaded.host.drawList = [];

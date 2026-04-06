@@ -74,6 +74,8 @@ extern "C" {
   int gpu_get_input_texture(int index);
   __attribute__((import_module("gpu"), import_name("get_input_texture_count")))
   int gpu_get_input_texture_count(void);
+  __attribute__((import_module("gpu"), import_name("texture_for_field")))
+  int gpu_texture_for_field(const char* path, int path_len);
 }
 
 namespace gpu {
@@ -215,9 +217,14 @@ struct Device {
         static_cast<int>(format)));
   }
 
+  /// Get texture handle for a named field path (unified texture access).
+  static Texture textureForField(const char* fieldPath) {
+    return Texture(gpu_texture_for_field(fieldPath, std::strlen(fieldPath)));
+  }
+
+  // Legacy — kept during migration
   static Texture inputTexture(int index) { return Texture(gpu_get_input_texture(index)); }
   static int inputTextureCount() { return gpu_get_input_texture_count(); }
-
   static Texture renderTarget() { return Texture(gpu_get_render_target()); }
   static int renderTargetWidth() { return gpu_get_render_target_width(); }
   static int renderTargetHeight() { return gpu_get_render_target_height(); }

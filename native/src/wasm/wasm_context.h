@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace canvas {
@@ -53,6 +54,10 @@ struct WasmContext {
 
   // Input textures (injected by sketch executor for chaining)
   std::vector<int32_t> input_texture_handles;
+
+  // Named texture fields (populated by sketch executor from schema)
+  // Maps field path (e.g. "tex_in", "tex_out") → GPU texture handle
+  std::unordered_map<std::string, int32_t> texture_fields;
 };
 
 } // namespace wasm

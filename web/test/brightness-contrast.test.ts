@@ -14,8 +14,8 @@ describe('Brightness/Contrast Effect E2E', () => {
       expect(frame.success).toBe(true);
       expect(frame.metadata?.id).toBe('com.nattos.brightness_contrast');
       expect(frame.params.length).toBe(2);
-      expect(frame.params[0].name).toBe('Brightness');
-      expect(frame.params[1].name).toBe('Contrast');
+      expect(frame.params[0].name).toBe('brightness');
+      expect(frame.params[1].name).toBe('contrast');
     });
 
     it('neutral settings pass through color unchanged', async () => {

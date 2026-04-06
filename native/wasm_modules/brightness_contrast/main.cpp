@@ -2,16 +2,11 @@
  * Brightness/Contrast — GPU compute effect module.
  *
  * Takes a texture input, applies brightness and contrast adjustments,
- * outputs to the render target.
- *
- * Parameters:
- *   0: Brightness (float 0-1, default 0.5 = neutral)
- *   1: Contrast   (float 0-1, default 0.5 = neutral / 1x)
+ * outputs to render target.
  */
 
 #include <gpu.h>
 #include <host.h>
-#include <io.h>
 #include "brightness_contrast_shaders.h"
 
 #include <cmath>
@@ -22,16 +17,12 @@ struct Uniforms {
   float _pad[2];
 };
 
-// --- State ---
-
 static float s_brightness = 0.5f;
 static float s_contrast = 0.5f;
 static bool s_initialized = false;
 
 static gpu::ComputePSO s_compute_pso;
 static gpu::Buffer s_uniform_buf;
-
-// --- Exports ---
 
 extern "C" {
 
@@ -41,12 +32,13 @@ void init() {
   s_contrast = 0.5f;
   s_initialized = false;
 
-  state::setMetadata("com.nattos.brightness_contrast", {1, 0, 0});
-  state::declareParam(0, "Brightness", state::ParamType::Standard, 0.5f);
-  state::declareParam(1, "Contrast", state::ParamType::Standard, 0.5f);
-
-  io::declareTextureInput(0, "Input", io::Role::Primary);
-  io::declareTextureOutput(0, "Output", io::Role::Primary);
+  state::init("com.nattos.brightness_contrast", {1, 0, 0},
+    state::Schema()
+      .floatField("brightness", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("contrast", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .textureField("tex_in", state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+  );
 
   if (gpu::Device::backend() == gpu::Backend::None) {
     state::log(state::LogLevel::Error, "BrightnessContrast: no GPU backend");
@@ -88,24 +80,24 @@ __attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 
-  // Get input texture (injected by sketch executor)
-  auto input = gpu::Device::inputTexture(0);
-  auto output = gpu::Device::renderTarget();
+  auto input = gpu::Device::textureForField("tex_in");
+  auto output = gpu::Device::textureForField("tex_out");
 
-  if (!input.valid()) {
-    // No input texture — nothing to process
-    return;
+  if (!input.valid()) return;
+  if (!output.valid()) {
+    // Fallback to legacy API
+    output = gpu::Device::renderTarget();
+    input = gpu::Device::inputTexture(0);
+    if (!input.valid()) return;
   }
 
-  // Write uniforms
   Uniforms u = { s_brightness, s_contrast, {0, 0} };
   s_uniform_buf.writeOne(u);
 
-  // Compute pass: read input, write output
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_compute_pso);
-  cp.setTexture(input, 0, 0);   // slot 0, read
-  cp.setTexture(output, 1, 1);  // slot 1, write
+  cp.setTexture(input, 0, 0);
+  cp.setTexture(output, 1, 1);
   cp.setBuffer(s_uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();

@@ -31,6 +31,12 @@ interface BridgeCoreExports {
     major: number, minor: number, patch: number,
     keyBuf: number, keyBufLen: number): number;
 
+  bridge_core_register_with_schema(h: number,
+    id: number, idLen: number,
+    major: number, minor: number, patch: number,
+    schemaJson: number, schemaJsonLen: number,
+    keyBuf: number, keyBufLen: number): number;
+
   bridge_core_declare_param(h: number,
     pluginKey: number, pluginKeyLen: number,
     index: number,
@@ -203,6 +209,15 @@ export class BridgeCore {
       const keyLen = this.exports.bridge_core_register_plugin(
         this.handle, idPtr, idLen, major, minor, patch,
         this.scratchPtr, SCRATCH_SIZE);
+      return this.readScratch(keyLen);
+    });
+  }
+
+  registerWithSchema(id: string, major: number, minor: number, patch: number, schemaJson: string): string {
+    return this.withStrings([id, schemaJson], ([[idPtr, idLen], [sPtr, sLen]]) => {
+      const keyLen = this.exports.bridge_core_register_with_schema(
+        this.handle, idPtr, idLen, major, minor, patch,
+        sPtr, sLen, this.scratchPtr, SCRATCH_SIZE);
       return this.readScratch(keyLen);
     });
   }

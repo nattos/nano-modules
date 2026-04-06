@@ -112,7 +112,12 @@ async function run() {
       if (si > 0 || config.inputColor) {
         const inputHandle = gpuHost.injectTexture(currentOutput);
         wasmHost.inputTextureHandles = [inputHandle];
+        // Populate textureFields for unified texture access
+        wasmHost.textureFields.set('tex_in', inputHandle);
       }
+      // Set output texture field
+      const outputHandle = gpuHost.injectTexture(nextOutput);
+      wasmHost.textureFields.set('tex_out', outputHandle);
 
       const wasmModule = await wasmHost.load(normalizePath(step.module));
       wasmModule.init();
