@@ -38,7 +38,7 @@ export class AppState {
       staging: [],
       selectedSketchId: null,
       editingSketchId: null,
-      engine: { fps: 0, error: null, tracedFrames: {} },
+      engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0 },
     });
   }
 }

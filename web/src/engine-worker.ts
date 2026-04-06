@@ -113,6 +113,10 @@ async function handleCommand(cmd: WorkerCommand) {
     }
     case 'setTracePoints':
       tracePoints = cmd.tracePoints;
+      console.log('[worker] setTracePoints:', JSON.stringify(cmd.tracePoints.map(tp => ({ id: tp.id, target: tp.target }))));
+      console.log('[worker] current realOutputs:', Object.fromEntries(realModules.keys() ? [...realModules.keys()].map(k => [k, moduleRenderTargets.get(k)?.handle ?? 'none']) : []));
+      console.log('[worker] current sketchOutputs:', Object.fromEntries(sketchOutputs));
+      console.log('[worker] current sketches:', [...sketches.entries()].map(([id, s]) => `${id} anchor=${s.anchor}`).join(', '));
       break;
   }
 }
@@ -231,6 +235,8 @@ async function simulateTick(dt: number) {
     gpuHost.setSurface(rt.tex, w, h);
     host.drawList = [];
     mod.render(w, h);
+    // Store the per-module render target handle (NOT the surface handle,
+    // which gets overwritten by subsequent setSurface calls).
     realOutputs.set(key, rt.handle);
   }
 
@@ -240,11 +246,14 @@ async function simulateTick(dt: number) {
     let inputHandle = -1;
     if (sketch.anchor && realOutputs.has(sketch.anchor)) {
       inputHandle = realOutputs.get(sketch.anchor)!;
+    } else if (sketch.anchor) {
+      console.warn(`[worker] sketch ${sketchId} anchor '${sketch.anchor}' not found in realOutputs. Keys:`, [...realOutputs.keys()]);
     }
 
     try {
       const outputHandle = await sketchExecutor.executeSketch(
-        sketch, 0, inputHandle, frameState, w, h);
+        sketchId, sketch, 0, inputHandle, frameState, w, h);
+      if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} inputHandle=${inputHandle} → outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {
       console.error(`[sketch ${sketchId}]`, err);
@@ -258,6 +267,10 @@ async function simulateTick(dt: number) {
       handle = sketchOutputs.get(tp.target.sketchId) ?? -1;
     } else if (tp.target.type === 'plugin_output') {
       handle = realOutputs.get(tp.target.pluginKey) ?? -1;
+    }
+    const prevHandle = traceHandles.get(tp.id);
+    if (prevHandle !== handle) {
+      console.log(`[worker] trace '${tp.id}' handle changed: ${prevHandle} → ${handle} (target: ${JSON.stringify(tp.target)})`);
     }
     traceHandles.set(tp.id, handle);
   }

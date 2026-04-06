@@ -198,9 +198,11 @@ export class AppController {
   }
 
   editSketch(id: string | null) {
+    console.log('[controller] editSketch:', id);
     runInAction(() => { appState.local.editingSketchId = id; });
     // Set trace point for the sketch being edited
     if (id) {
+      console.log('[controller] setTracePoints for sketch_output:', id);
       this.setTracePoints([{ id: 'edit_preview', target: { type: 'sketch_output', sketchId: id } }]);
     } else {
       this.setTracePoints([]);
@@ -222,6 +224,7 @@ export class AppController {
         old?.close();
       }
       appState.local.engine.tracedFrames = frames;
+      appState.local.engine.frameGeneration++;
     });
   }
 

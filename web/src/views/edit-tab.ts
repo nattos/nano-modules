@@ -18,8 +18,11 @@ export class EditTab extends MobxLitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    // React to new traced frames and blit the edit preview to the canvas
+    // React to new traced frames and blit the edit preview to the canvas.
+    // Read frameGeneration to ensure MobX always detects the change
+    // (tracedFrames values are opaque ImageBitmaps that MobX can't compare).
     this.previewDisposer = autorun(() => {
+      const _gen = appState.local.engine.frameGeneration; // force dependency
       const bitmap = appState.local.engine.tracedFrames['edit_preview'];
       if (!bitmap) return;
       const canvas = this.renderRoot.querySelector('#preview-canvas') as HTMLCanvasElement | null;

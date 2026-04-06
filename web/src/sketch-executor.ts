@@ -25,9 +25,8 @@ export class SketchExecutor {
   /** Loaded virtual module instances by instance key. */
   private instances = new Map<string, LoadedModule>();
 
-  /** Intermediate render target textures (recycled across frames). */
-  private intermediateTextures: GPUTexture[] = [];
-  private intermediateHandles: number[] = [];
+  /** Per-sketch intermediate render target textures. Keyed by sketchId. */
+  private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
 
   constructor(bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat) {
     this.bridgeCore = bridgeCore;
@@ -60,40 +59,37 @@ export class SketchExecutor {
   }
 
   /**
-   * Ensure we have enough intermediate textures for the chain.
-   * We ping-pong between two textures.
+   * Ensure a sketch has enough intermediate textures for its chain.
+   * Each sketch gets its own pair (ping-pong) so they don't overwrite each other.
    */
-  private ensureIntermediates(width: number, height: number) {
-    // We need at most 2 intermediates for ping-pong
+  private ensureIntermediates(sketchId: string, width: number, height: number): { textures: GPUTexture[]; handles: number[] } {
+    let entry = this.sketchIntermediates.get(sketchId);
     const needed = 2;
-    while (this.intermediateTextures.length < needed) {
-      const tex = this.device.createTexture({
-        size: [width, height],
-        format: this.format,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-             | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-      });
-      const handle = this.gpuHost.injectTexture(tex);
-      this.intermediateTextures.push(tex);
-      this.intermediateHandles.push(handle);
+    const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+                   | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC;
+
+    if (!entry) {
+      entry = { textures: [], handles: [] };
+      this.sketchIntermediates.set(sketchId, entry);
     }
 
-    // Resize if dimensions changed
+    while (entry.textures.length < needed) {
+      const tex = this.device.createTexture({ size: [width, height], format: this.format, usage: texUsage });
+      entry.textures.push(tex);
+      entry.handles.push(this.gpuHost.injectTexture(tex));
+    }
+
     for (let i = 0; i < needed; i++) {
-      const tex = this.intermediateTextures[i];
+      const tex = entry.textures[i];
       if (tex.width !== width || tex.height !== height) {
         tex.destroy();
-        const newTex = this.device.createTexture({
-          size: [width, height],
-          format: this.format,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-               | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-        });
-        // Re-inject into the same handle slot
-        this.intermediateHandles[i] = this.gpuHost.injectTexture(newTex);
-        this.intermediateTextures[i] = newTex;
+        const newTex = this.device.createTexture({ size: [width, height], format: this.format, usage: texUsage });
+        entry.textures[i] = newTex;
+        entry.handles[i] = this.gpuHost.injectTexture(newTex);
       }
     }
+
+    return entry;
   }
 
   /**
@@ -107,6 +103,7 @@ export class SketchExecutor {
    * @param height Viewport height
    */
   async executeSketch(
+    sketchId: string,
     sketch: Sketch,
     colIdx: number,
     inputTextureHandle: number,
@@ -117,26 +114,23 @@ export class SketchExecutor {
     const column = sketch.columns[colIdx];
     if (!column) return inputTextureHandle;
 
-    this.ensureIntermediates(width, height);
+    const intermediates = this.ensureIntermediates(sketchId, width, height);
 
     let currentInputHandle = inputTextureHandle;
-    let pingPong = 0; // alternates between 0 and 1
+    let pingPong = 0;
 
     for (const entry of column.chain) {
       if (entry.type === 'texture_input') {
-        // Input marker — currentInputHandle is already set
         continue;
       }
 
       if (entry.type === 'texture_output') {
-        // Output marker — we're done
         break;
       }
 
       if (entry.type === 'module') {
         const loaded = await this.ensureInstance(entry);
 
-        // Set parameters from the chain entry
         for (const [key, value] of Object.entries(entry.params)) {
           const paramIndex = parseInt(key, 10);
           if (!isNaN(paramIndex)) {
@@ -145,10 +139,8 @@ export class SketchExecutor {
           }
         }
 
-        // Inject input texture
         loaded.host.inputTextureHandles = currentInputHandle >= 0 ? [currentInputHandle] : [];
 
-        // Copy frame timing
         loaded.host.frameState.elapsedTime = frameState.elapsedTime;
         loaded.host.frameState.deltaTime = frameState.deltaTime;
         loaded.host.frameState.barPhase = frameState.barPhase;
@@ -156,16 +148,13 @@ export class SketchExecutor {
         loaded.host.frameState.viewportW = width;
         loaded.host.frameState.viewportH = height;
 
-        // Set the intermediate texture as the render target
-        const outputHandle = this.intermediateHandles[pingPong];
-        const outputTex = this.intermediateTextures[pingPong];
+        const outputHandle = intermediates.handles[pingPong];
+        const outputTex = intermediates.textures[pingPong];
         this.gpuHost.setSurface(outputTex, width, height);
 
-        // Render
         loaded.host.drawList = [];
         loaded.module.render(width, height);
 
-        // This step's output becomes next step's input
         currentInputHandle = outputHandle;
         pingPong = 1 - pingPong;
       }
@@ -177,10 +166,9 @@ export class SketchExecutor {
   /** Clean up all loaded virtual instances and textures. */
   dispose() {
     this.instances.clear();
-    for (const tex of this.intermediateTextures) {
-      tex.destroy();
+    for (const entry of this.sketchIntermediates.values()) {
+      for (const tex of entry.textures) tex.destroy();
     }
-    this.intermediateTextures = [];
-    this.intermediateHandles = [];
+    this.sketchIntermediates.clear();
   }
 }

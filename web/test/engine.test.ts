@@ -185,6 +185,57 @@ describe('Engine Worker E2E', () => {
   });
 
   describe('trace point switching', () => {
+    it('switching trace between two plugin outputs shows correct output', async () => {
+      // Simpler version: just trace plugin outputs directly (no sketches)
+      const result = await runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.spinningtris', 'com.nattos.gpu_test'],
+        dumpName: 'engine_plugin_switch',
+        phases: [
+          {
+            commands: [
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
+              ]},
+            ],
+            waitFrames: 10,
+            captureTraceIds: ['preview'],
+          },
+          {
+            commands: [
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'com.nattos.gpu_test@0' } },
+              ]},
+            ],
+            waitFrames: 10,
+            captureTraceIds: ['preview'],
+          },
+          {
+            commands: [
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
+              ]},
+            ],
+            waitFrames: 10,
+            captureTraceIds: ['preview'],
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      const p0 = result.phases[0].trace('preview'); // spinningtris
+      const p1 = result.phases[1].trace('preview'); // gpu_test blue
+      const p2 = result.phases[2].trace('preview'); // spinningtris again
+
+      // Phase 1 should be solid blue
+      p1.expectPixelAt(32, 32, { r: 0, g: 128, b: 255 }, 10);
+      // Phase 0 should NOT be solid blue
+      p0.expectNotSolidColor({ r: 0, g: 128, b: 255 });
+      // Phase 2 should NOT be solid blue (should be spinningtris again)
+      p2.expectNotSolidColor({ r: 0, g: 128, b: 255 });
+      p2.expectDifferentFrom(p1, 50);
+    });
+
     it('switching trace between two sketches shows correct output', async () => {
       // Repro: create sketch on spinningtris, trace it. Then create sketch on
       // gpu_test, trace that. Then switch trace back to spinningtris sketch.

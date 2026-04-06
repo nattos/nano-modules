@@ -51,6 +51,8 @@ export interface EngineStatus {
   error: string | null;
   /** Traced output frames keyed by trace point ID. */
   tracedFrames: Record<string, ImageBitmap | null>;
+  /** Incremented every time tracedFrames is updated, to force MobX reactivity. */
+  frameGeneration: number;
 }
 
 export interface LocalState {
