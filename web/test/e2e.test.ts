@@ -98,8 +98,7 @@ describe('NanoLooper Web Harness E2E', () => {
     expect(state.grid[0].length).toBeGreaterThan(0);
   });
 
-  it('state edit via on_state_changed round-trips correctly', async () => {
-    // Set a known grid state via the state document
+  it('state edit via notifyStatePatched round-trips correctly', async () => {
     const newState = {
       phase: 0, recording: false, event_count: 4,
       grid: [[1, 5], [3, 7], [], []]
@@ -108,14 +107,16 @@ describe('NanoLooper Web Harness E2E', () => {
     await page.evaluate((s) => {
       const host = (window as any).__host;
       const wasm = (window as any).__wasm;
+      // Update both bridge core state and local cache
+      if (host.bridgeCore && host.pluginKey) {
+        host.bridgeCore.setPluginState(host.pluginKey, s);
+      }
       host.pluginState = s;
-      wasm.onStateChanged();
+      host.notifyStatePatched(wasm, [{ op: 'replace', path: '/grid', value: s.grid }]);
     }, newState);
 
-    // Wait for a tick to publish the updated internal state
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 500));
 
-    // Read back the state — should reflect what we set
     const state = await page.evaluate(() => (window as any).__host?.pluginState);
     expect(state.event_count).toBe(4);
     expect(state.grid[0]).toEqual([1, 5]);
@@ -125,35 +126,42 @@ describe('NanoLooper Web Harness E2E', () => {
   });
 
   it('editing one channel preserves other channels', async () => {
-    // Set all 4 channels with events
-    await page.evaluate(() => {
+    const initialState = {
+      phase: 0, recording: false, event_count: 4,
+      grid: [[2], [4], [6], [8]]
+    };
+
+    await page.evaluate((s) => {
       const host = (window as any).__host;
       const wasm = (window as any).__wasm;
-      host.pluginState = {
-        phase: 0, recording: false, event_count: 4,
-        grid: [[2], [4], [6], [8]]
-      };
-      wasm.onStateChanged();
-    });
-    await new Promise(r => setTimeout(r, 200));
+      if (host.bridgeCore && host.pluginKey) {
+        host.bridgeCore.setPluginState(host.pluginKey, s);
+      }
+      host.pluginState = s;
+      host.notifyStatePatched(wasm, [{ op: 'replace', path: '/grid', value: s.grid }]);
+    }, initialState);
+    await new Promise(r => setTimeout(r, 500));
 
-    // Verify all 4 loaded
     let state = await page.evaluate(() => (window as any).__host?.pluginState);
     expect(state.grid).toEqual([[2], [4], [6], [8]]);
 
-    // Now edit: remove only channel 0
-    await page.evaluate(() => {
+    // Edit: remove only channel 0
+    const editedState = {
+      phase: 0, recording: false, event_count: 3,
+      grid: [[], [4], [6], [8]]
+    };
+
+    await page.evaluate((s) => {
       const host = (window as any).__host;
       const wasm = (window as any).__wasm;
-      host.pluginState = {
-        phase: 0, recording: false, event_count: 3,
-        grid: [[], [4], [6], [8]]
-      };
-      wasm.onStateChanged();
-    });
-    await new Promise(r => setTimeout(r, 200));
+      if (host.bridgeCore && host.pluginKey) {
+        host.bridgeCore.setPluginState(host.pluginKey, s);
+      }
+      host.pluginState = s;
+      host.notifyStatePatched(wasm, [{ op: 'replace', path: '/grid', value: s.grid }]);
+    }, editedState);
+    await new Promise(r => setTimeout(r, 500));
 
-    // Channels 1-3 must still have their events
     state = await page.evaluate(() => (window as any).__host?.pluginState);
     expect(state.event_count).toBe(3);
     expect(state.grid[0]).toEqual([]);
