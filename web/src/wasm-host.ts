@@ -14,12 +14,20 @@ export interface FrameState {
   params: number[];
 }
 
+export interface PatchOp {
+  op: string;
+  path: string;
+  value?: any;
+}
+
 export interface WasmModule {
   init(): void;
   tick(dt: number): void;
   render(vpW: number, vpH: number): void;
   onParamChange(index: number, value: number): void;
   onStateChanged(): void;
+  /** Enhanced state change notification with patch details. May not exist on older modules. */
+  onStatePatched?: (patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void;
   onResolumeParam?(paramId: bigint, value: number): void;
 }
 
@@ -69,6 +77,18 @@ export class WasmHost {
 
   // Schema (populated by set_schema)
   schema: Record<string, any> = {};
+
+  // Pending patches for the current on_state_patched call
+  pendingPatches: PatchOp[] = [];
+
+  // Val handle store (shared between val imports and state.get_patch)
+  _valStore = {
+    values: new Map<number, any>(),
+    nextHandle: 1,
+    alloc(v: any): number { const h = this.nextHandle++; this.values.set(h, v); return h; },
+    get(h: number): any { return this.values.get(h); },
+    release(h: number) { this.values.delete(h); },
+  };
 
   // Named texture fields (populated by sketch executor from schema)
   textureFields: Map<string, number> = new Map();
@@ -433,6 +453,10 @@ export class WasmHost {
           }
           return overflowCount;
         },
+        get_patch: (index: number) => {
+          if (index < 0 || index >= this.pendingPatches.length) return 0;
+          return this._valStore.alloc(this.pendingPatches[index]);
+        },
       },
       io: {
         declare_texture_input: (index: number, namePtr: number, nameLen: number, role: number) => {
@@ -453,10 +477,10 @@ export class WasmHost {
       },
       val: (() => {
         // Handle-based value container. Host owns data, WASM holds integer handles.
-        const values = new Map<number, any>();
-        let nextHandle = 1;
-        const alloc = (v: any): number => { const h = nextHandle++; values.set(h, v); return h; };
-        const getVal = (h: number): any => values.get(h);
+        // Store on the host instance so state.get_patch can access it.
+        const valStore = this._valStore;
+        const alloc = valStore.alloc.bind(valStore);
+        const getVal = valStore.get.bind(valStore);
         return {
           null: () => alloc(null),
           bool: (v: number) => alloc(v !== 0),
@@ -517,7 +541,7 @@ export class WasmHost {
             const v = getVal(h);
             return Array.isArray(v) ? v.length : 0;
           },
-          release: (h: number) => { values.delete(h); },
+          release: (h: number) => { valStore.release(h); },
           to_json: (h: number, bufPtr: number, bufLen: number) => {
             const v = getVal(h);
             if (v === undefined) return 0;
@@ -584,7 +608,77 @@ export class WasmHost {
       render: exports.render as (vpW: number, vpH: number) => void,
       onParamChange: exports.on_param_change as (index: number, value: number) => void,
       onStateChanged: exports.on_state_changed as () => void,
+      onStatePatched: exports.on_state_patched as
+        ((patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void) | undefined,
       onResolumeParam: exports.on_resolume_param as ((paramId: bigint, value: number) => void) | undefined,
     };
+  }
+
+  /**
+   * Notify the module of state changes with full patch details.
+   * If the module exports on_state_patched, marshals patch data into WASM memory.
+   * Otherwise falls back to the bare on_state_changed().
+   */
+  notifyStatePatched(module: WasmModule, patches: PatchOp[]) {
+    if (!module.onStatePatched || patches.length === 0) {
+      module.onStateChanged();
+      return;
+    }
+
+    // Store patches for state.get_patch() access
+    this.pendingPatches = patches;
+
+    // Marshal patch paths and ops into WASM memory
+    const encoder = new TextEncoder();
+    const pathStrings = patches.map(p => encoder.encode(p.path));
+    const totalPathBytes = pathStrings.reduce((sum, s) => sum + s.length, 0);
+
+    // Allocate WASM memory for: paths_buf + offsets + lengths + ops
+    const malloc = this.instance.exports.malloc as ((size: number) => number) | undefined;
+    const free = this.instance.exports.free as ((ptr: number) => void) | undefined;
+
+    if (!malloc || !free) {
+      // No malloc available — fall back to bare callback
+      module.onStateChanged();
+      this.pendingPatches = [];
+      return;
+    }
+
+    const n = patches.length;
+    const pathsBufPtr = malloc(totalPathBytes);
+    const offsetsPtr = malloc(n * 4);
+    const lengthsPtr = malloc(n * 4);
+    const opsPtr = malloc(n * 4);
+
+    const mem = new Uint8Array(this.memory.buffer);
+    const view = new DataView(this.memory.buffer);
+
+    let pathOffset = 0;
+    for (let i = 0; i < n; i++) {
+      mem.set(pathStrings[i], pathsBufPtr + pathOffset);
+      view.setInt32(offsetsPtr + i * 4, pathOffset, true);
+      view.setInt32(lengthsPtr + i * 4, pathStrings[i].length, true);
+
+      // Map op string to int
+      let opCode = 2; // replace
+      const op = patches[i].op;
+      if (op === 'add') opCode = 0;
+      else if (op === 'remove') opCode = 1;
+      else if (op === 'replace') opCode = 2;
+      else if (op === 'move') opCode = 3;
+      else if (op === 'copy') opCode = 4;
+      view.setInt32(opsPtr + i * 4, opCode, true);
+
+      pathOffset += pathStrings[i].length;
+    }
+
+    module.onStatePatched(n, pathsBufPtr, offsetsPtr, lengthsPtr, opsPtr);
+
+    free(pathsBufPtr);
+    free(offsetsPtr);
+    free(lengthsPtr);
+    free(opsPtr);
+
+    this.pendingPatches = [];
   }
 }

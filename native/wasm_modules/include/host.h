@@ -56,6 +56,8 @@ extern "C" {
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
+  __attribute__((import_module("state"), import_name("get_patch")))
+  int state_get_patch(int index);
 
   // resolume
   __attribute__((import_module("resolume"), import_name("get_param")))
@@ -313,6 +315,21 @@ inline void declareParam(int index, const char* name, ParamType type, float defa
 inline int getKey(char* buf, int bufLen) {
   return state_get_key(buf, bufLen);
 }
+
+// --- Patch access (during on_state_patched callback) ---
+
+/// Get the Nth patch in the current transaction as a val handle.
+/// Returns a val::Handle to an object with {op, path, value}.
+inline int getPatch(int index) { return state_get_patch(index); }
+
+// Patch op type constants
+enum PatchOp : int {
+  PatchAdd     = 0,
+  PatchRemove  = 1,
+  PatchReplace = 2,
+  PatchMove    = 3,
+  PatchCopy    = 4,
+};
 
 // --- Logging ---
 

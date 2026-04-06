@@ -38,6 +38,7 @@ WASM_COMMON_EXPORTS=(
   -Wl,--export=render
   -Wl,--export=on_param_change
   -Wl,--export=on_state_changed
+  -Wl,--export=on_state_patched
 )
 
 wasm_build() {

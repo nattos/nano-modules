@@ -60,6 +60,9 @@ struct WasmContext {
   // Named texture fields (populated by sketch executor from schema)
   std::unordered_map<std::string, int32_t> texture_fields;
 
+  // Pending patches for the current on_state_patched call
+  std::vector<nlohmann::json> pending_patches;
+
   // Val handle system — maps handle IDs to JSON values owned by the host
   int32_t next_val_handle = 1;
   std::unordered_map<int32_t, nlohmann::json> val_handles;

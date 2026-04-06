@@ -530,6 +530,11 @@ static NativeSymbol state_symbols[] = {
     {"console_log_structured", reinterpret_cast<void*>(state_console_log_structured), "(iiiii)", nullptr},
     {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},
     {"read", reinterpret_cast<void*>(state_read), "(iiiiii)i", nullptr},
+    {"get_patch", reinterpret_cast<void*>(+[](wasm_exec_env_t env, int32_t index) -> int32_t {
+      auto* ctx = get_ctx(env);
+      if (!ctx || index < 0 || index >= static_cast<int32_t>(ctx->pending_patches.size())) return 0;
+      return ctx->alloc_val(ctx->pending_patches[index]);
+    }), "(i)i", nullptr},
 };
 
 // ========================================================================
