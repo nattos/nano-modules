@@ -49,6 +49,13 @@ export class GPUHost {
     return this.handles.get(handle)?.resource;
   }
 
+  /** Get the underlying GPUTexture for a handle (for external blit operations). */
+  getTextureByHandle(handle: number): GPUTexture | null {
+    const entry = this.handles.get(handle);
+    if (entry?.type === 'texture') return entry.resource as GPUTexture;
+    return null;
+  }
+
   // --- Surface management ---
 
   setSurface(texture: GPUTexture, width: number, height: number) {

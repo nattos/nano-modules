@@ -4,8 +4,9 @@
  *
  * simulateTick() runs the full composition each frame:
  * 1. Tick all real plugin instances
- * 2. Execute sketch chains (virtual instances with texture routing)
- * 3. Capture trace point outputs as ImageBitmaps
+ * 2. Render real modules
+ * 3. Execute sketch chains (virtual instances with texture routing)
+ * 4. Capture trace point outputs as ImageBitmaps
  */
 
 import { BridgeCore } from './bridge-core';
@@ -24,20 +25,24 @@ let canvas: OffscreenCanvas | null = null;
 let gpuContext: GPUCanvasContext | null = null;
 let sketchExecutor: SketchExecutor | null = null;
 
-// Real module instances (loaded via loadModule command)
+// Real module instances
 const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
 
-// Sketches (managed locally in worker)
+// Sketches
 const sketches = new Map<string, Sketch>();
 
-// Trace points (set by main thread)
+// Trace points
 let tracePoints: TracePoint[] = [];
 
-// Per-sketch output texture handles (from last frame's execution)
+// Per-module render targets (one per real module instance)
+const moduleRenderTargets = new Map<string, { tex: GPUTexture; handle: number }>();
+
+// Per-sketch output texture handles (from current frame)
 const sketchOutputs = new Map<string, number>();
 
 // Render loop state
 let running = false;
+let frameInFlight = false;
 let lastTime = 0;
 let elapsed = 0;
 let frameCount = 0;
@@ -87,24 +92,18 @@ async function handleCommand(cmd: WorkerCommand) {
       markDirty();
       break;
     case 'setParam': {
-      // Update the sketch data
       const sketch = sketches.get(cmd.sketchId);
       if (sketch) {
         const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
         if (entry?.type === 'module') {
           entry.params[String(cmd.paramIndex)] = cmd.value;
-        }
-      }
-      // Also update the live virtual instance immediately
-      if (sketchExecutor) {
-        // Find the instance key from the sketch
-        const sk = sketches.get(cmd.sketchId);
-        const entry = sk?.columns[cmd.colIdx]?.chain[cmd.chainIdx];
-        if (entry?.type === 'module') {
-          const loaded = sketchExecutor.getInstance(entry.instance_key);
-          if (loaded) {
-            loaded.host.frameState.params[cmd.paramIndex] = cmd.value;
-            loaded.module.onParamChange(cmd.paramIndex, cmd.value);
+          // Update live instance immediately
+          if (sketchExecutor) {
+            const loaded = sketchExecutor.getInstance(entry.instance_key);
+            if (loaded) {
+              loaded.host.frameState.params[cmd.paramIndex] = cmd.value;
+              loaded.module.onParamChange(cmd.paramIndex, cmd.value);
+            }
           }
         }
       }
@@ -148,8 +147,9 @@ async function init(width: number, height: number) {
 // Frame loop
 // ========================================================================
 
-function frame() {
-  if (!running) return;
+async function frame() {
+  if (!running || frameInFlight) return;
+  frameInFlight = true;
 
   const now = performance.now() / 1000;
   const dt = now - lastTime;
@@ -166,27 +166,22 @@ function frame() {
 
   if (bridgeCore) bridgeCore.tick();
 
-  simulateTick(dt);
+  await simulateTick(dt);
+  await captureAndSendFrame();
 
-  // Capture trace points and send frame
-  captureAndSendFrame();
-
-  // Broadcast state if dirty
   if (stateGeneration !== lastBroadcastGeneration) {
     broadcastState();
     lastBroadcastGeneration = stateGeneration;
   }
 
+  frameInFlight = false;
   requestAnimationFrame(frame);
 }
 
 /**
- * Simulate one frame of the entire composition:
- * 1. Tick all real modules
- * 2. Render real modules to the composition surface
- * 3. Execute sketch chains (virtual modules with texture routing)
+ * Simulate one frame of the entire composition.
  */
-function simulateTick(dt: number) {
+async function simulateTick(dt: number) {
   if (!gpuHost || !gpuContext || !canvas || !sketchExecutor) return;
   const w = canvas.width;
   const h = canvas.height;
@@ -213,78 +208,93 @@ function simulateTick(dt: number) {
     mod.tick(dt);
   }
 
-  // 2. Render real modules to the main surface
-  const surfaceTex = gpuContext.getCurrentTexture();
-  gpuHost.setSurface(surfaceTex, w, h);
-
-  // Render first real module to the main surface (composition output)
-  let mainOutputHandle = -1;
+  // 2. Render each real module to its own texture
+  const realOutputs = new Map<string, number>();
   for (const [key, { host, module: mod }] of realModules) {
+    // Get or create a per-module render target
+    let rt = moduleRenderTargets.get(key);
+    if (!rt || rt.tex.width !== w || rt.tex.height !== h) {
+      rt?.tex.destroy();
+      const tex = gpuDevice!.createTexture({
+        size: [w, h],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+             | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      const handle = gpuHost.injectTexture(tex);
+      rt = { tex, handle };
+      moduleRenderTargets.set(key, rt);
+    }
+    gpuHost.setSurface(rt.tex, w, h);
     host.drawList = [];
     mod.render(w, h);
-    mainOutputHandle = gpuHost.getSurfaceTexture();
-    break; // just the first for now
+    realOutputs.set(key, rt.handle);
   }
 
   // 3. Execute sketch chains
+  sketchOutputs.clear();
   for (const [sketchId, sketch] of sketches) {
-    // The sketch's anchor module provides the input texture
     let inputHandle = -1;
-    if (sketch.anchor) {
-      const anchorModule = realModules.get(sketch.anchor);
-      if (anchorModule) {
-        // The anchor module already rendered to the main surface
-        // Use the surface texture as the input
-        inputHandle = mainOutputHandle;
-      }
+    if (sketch.anchor && realOutputs.has(sketch.anchor)) {
+      inputHandle = realOutputs.get(sketch.anchor)!;
     }
 
-    // Execute the chain (async, but we fire-and-forget for now)
-    sketchExecutor.executeSketch(sketch, 0, inputHandle, frameState, w, h)
-      .then(outputHandle => {
-        sketchOutputs.set(sketchId, outputHandle);
-      })
-      .catch(err => {
-        console.error(`[sketch ${sketchId}]`, err);
-      });
+    try {
+      const outputHandle = await sketchExecutor.executeSketch(
+        sketch, 0, inputHandle, frameState, w, h);
+      sketchOutputs.set(sketchId, outputHandle);
+    } catch (err) {
+      console.error(`[sketch ${sketchId}]`, err);
+    }
+  }
+
+  // 4. Resolve trace point handles
+  for (const tp of tracePoints) {
+    let handle = -1;
+    if (tp.target.type === 'sketch_output') {
+      handle = sketchOutputs.get(tp.target.sketchId) ?? -1;
+    } else if (tp.target.type === 'plugin_output') {
+      handle = realOutputs.get(tp.target.pluginKey) ?? -1;
+    }
+    traceHandles.set(tp.id, handle);
   }
 }
 
+/** Resolved texture handles for each trace point (populated by simulateTick). */
+const traceHandles = new Map<string, number>();
+
 /**
- * Capture trace point outputs and send as ImageBitmaps.
+ * Capture each trace point by reading back its texture and creating an ImageBitmap.
  */
-function captureAndSendFrame() {
+async function captureAndSendFrame() {
   if (!canvas || !gpuHost) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w <= 0 || h <= 0) return;
 
   const tracedFrames: Record<string, ImageBitmap> = {};
   const transfers: Transferable[] = [];
 
-  // For each trace point, get the appropriate texture and create a bitmap
-  for (const tp of tracePoints) {
-    if (tp.target.type === 'sketch_output') {
-      const outputHandle = sketchOutputs.get(tp.target.sketchId);
-      if (outputHandle !== undefined && outputHandle >= 0) {
-        // Read back the sketch output texture to a bitmap
-        // For now, we render the sketch output to the main canvas and capture that
-        // TODO: direct texture readback without going through the main canvas
-      }
-    }
+  if (tracePoints.length === 0 || traceHandles.size === 0) {
+    // No trace points — send empty frame with just FPS
+    post({ type: 'frame', fps, tracedFrames }, []);
+    return;
   }
 
-  // Always send the main canvas as a bitmap (the composition output)
-  if (canvas.width > 0 && canvas.height > 0) {
-    const bitmap = canvas.transferToImageBitmap();
-    // If there's an 'edit_preview' trace point, use the main canvas for now
-    for (const tp of tracePoints) {
-      if (tp.id === 'edit_preview') {
-        tracedFrames[tp.id] = bitmap;
-        transfers.push(bitmap);
-      }
-    }
-    // If no trace point claimed the bitmap, still send it for the default view
-    if (transfers.length === 0) {
-      tracedFrames['_main'] = bitmap;
+  for (const tp of tracePoints) {
+    const handle = traceHandles.get(tp.id) ?? -1;
+    if (handle < 0) continue;
+
+    try {
+      // Read back raw RGBA pixels from the GPU texture
+      const pixels = await gpuHost.readbackTexture(handle, w, h);
+      // Create ImageBitmap from raw pixel data
+      const imageData = new ImageData(new Uint8ClampedArray(pixels.buffer), w, h);
+      const bitmap = await createImageBitmap(imageData);
+      tracedFrames[tp.id] = bitmap;
       transfers.push(bitmap);
+    } catch (e) {
+      console.warn(`[trace ${tp.id}] readback failed:`, e);
     }
   }
 
@@ -320,11 +330,11 @@ async function loadModule(moduleType: string) {
 
 function paramMinMax(type: number): { min: number; max: number } {
   switch (type) {
-    case 0: return { min: 0, max: 1 };   // boolean
-    case 1: return { min: 0, max: 1 };   // event
-    case 10: return { min: 0, max: 1 };  // standard float
-    case 11: return { min: 0, max: 1 };  // option
-    case 13: return { min: 0, max: 100 }; // integer (default range)
+    case 0: return { min: 0, max: 1 };
+    case 1: return { min: 0, max: 1 };
+    case 10: return { min: 0, max: 1 };
+    case 11: return { min: 0, max: 1 };
+    case 13: return { min: 0, max: 100 };
     default: return { min: 0, max: 1 };
   }
 }

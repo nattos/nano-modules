@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head><title>Engine Test Runner</title></head>
+<body>
+<pre id="result">Waiting for test config...</pre>
+<script type="module">
+import { EngineProxy } from '/src/engine-proxy.ts';
+
+/*
+ * Engine E2E test runner.
+ *
+ * Boots the engine worker, executes a sequence of commands,
+ * ticks for a specified number of frames, and captures traced frame bitmaps.
+ *
+ * Config shape:
+ * {
+ *   width: 64, height: 64,
+ *   commands: [
+ *     { type: 'loadModule', moduleType: 'com.nattos.spinningtris' },
+ *     { type: 'createSketch', sketchId: 'sk0', sketch: {...} },
+ *     { type: 'setTracePoints', tracePoints: [...] },
+ *     { type: 'setParam', sketchId: 'sk0', colIdx: 0, chainIdx: 1, paramIndex: 0, value: 0.5 },
+ *   ],
+ *   waitFrames: 10,        // frames to wait after commands before capturing
+ *   captureTraceIds: ['edit_preview', 'plugin_a'],  // which trace IDs to capture
+ * }
+ *
+ * Output (JSON in #result):
+ * {
+ *   success: true,
+ *   tracedFrames: {
+ *     'edit_preview': { width, height, pixelsBase64 },
+ *     'plugin_a': { ... },
+ *   },
+ *   state: { plugins: [...], sketches: {...} },
+ * }
+ */
+
+async function run() {
+  const resultEl = document.getElementById('result');
+  resultEl.textContent = 'Running...';
+
+  const config = window.__engineTestConfig;
+  if (!config) {
+    resultEl.textContent = JSON.stringify({ success: false, error: 'No config' });
+    return;
+  }
+
+  const W = config.width || 64;
+  const H = config.height || 64;
+
+  try {
+    const engine = new EngineProxy(W, H);
+
+    // Start capturing state immediately
+    let lastState = null;
+    let lastTracedFrames = null;
+    let framesReceived = 0;
+    engine.onStateUpdate = (state) => { lastState = state; };
+    engine.onTracedFrames = (frames) => { lastTracedFrames = frames; framesReceived++; };
+
+    // Wait for worker to be ready
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Engine init timeout')), 10000);
+      engine.onError = (msg) => { clearTimeout(timeout); reject(new Error(msg)); };
+      const check = setInterval(() => {
+        if (engine.ready) { clearInterval(check); clearTimeout(timeout); resolve(undefined); }
+      }, 50);
+    });
+
+    // Send all commands
+    for (const cmd of (config.commands || [])) {
+      switch (cmd.type) {
+        case 'loadModule':
+          engine.loadModule(cmd.moduleType);
+          break;
+        case 'createSketch':
+          engine.createSketch(cmd.sketchId, cmd.sketch);
+          break;
+        case 'updateSketch':
+          engine.updateSketch(cmd.sketchId, cmd.sketch);
+          break;
+        case 'setParam':
+          engine.setParam(cmd.sketchId, cmd.colIdx, cmd.chainIdx, cmd.paramIndex, cmd.value);
+          break;
+        case 'setTracePoints':
+          engine.setTracePoints(cmd.tracePoints);
+          break;
+      }
+      // Small delay between commands to let worker process
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    // Wait for enough frames to render
+    const waitFrames = config.waitFrames || 10;
+    // Reset frame counter (commands may have caused some frames already)
+    framesReceived = 0;
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`Timeout waiting for ${waitFrames} frames (got ${framesReceived})`)), 15000);
+      const origOnFrames = engine.onTracedFrames;
+      engine.onTracedFrames = (frames) => {
+        lastTracedFrames = frames;
+        framesReceived++;
+        if (framesReceived >= waitFrames) {
+          clearTimeout(timeout);
+          engine.onTracedFrames = origOnFrames;
+          resolve(undefined);
+        }
+      };
+    });
+
+    // Capture the requested trace IDs from the last frame
+    const captureIds = config.captureTraceIds || Object.keys(lastTracedFrames || {});
+    const tracedOutput = {};
+
+    for (const traceId of captureIds) {
+      const bitmap = lastTracedFrames?.[traceId];
+      if (!bitmap) {
+        tracedOutput[traceId] = null;
+        continue;
+      }
+
+      // Read back pixels from ImageBitmap via a temporary canvas
+      const tmpCanvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx2d = tmpCanvas.getContext('2d');
+      ctx2d.drawImage(bitmap, 0, 0);
+      const imageData = ctx2d.getImageData(0, 0, bitmap.width, bitmap.height);
+      const pixels = imageData.data; // Uint8ClampedArray (RGBA)
+
+      // Encode as base64
+      const chunks = [];
+      for (let i = 0; i < pixels.length; i += 8192) {
+        chunks.push(String.fromCharCode.apply(null, pixels.subarray(i, Math.min(i + 8192, pixels.length))));
+      }
+      const pixelsBase64 = btoa(chunks.join(''));
+
+      tracedOutput[traceId] = {
+        width: bitmap.width,
+        height: bitmap.height,
+        pixelsBase64,
+      };
+      bitmap.close();
+    }
+
+    engine.destroy();
+
+    resultEl.textContent = JSON.stringify({
+      success: true,
+      tracedFrames: tracedOutput,
+      state: lastState,
+    });
+
+  } catch (e) {
+    resultEl.textContent = JSON.stringify({ success: false, error: String(e), stack: e.stack });
+  }
+}
+
+window.__engineTestRun = run;
+</script>
+</body>
+</html>
