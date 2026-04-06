@@ -23,37 +23,6 @@
 static float s_rate = 0.5f;
 static float s_amplitude = 1.0f;
 
-// Scratch buffer for JSON output
-static char s_json_buf[64];
-
-static int float_to_json(char* buf, int max_len, float value) {
-  // Simple float-to-string for JSON (limited precision but avoids snprintf)
-  int neg = value < 0;
-  if (neg) value = -value;
-  int whole = static_cast<int>(value);
-  int frac = static_cast<int>((value - whole) * 10000 + 0.5f);
-  int len = 0;
-  if (neg && len < max_len) buf[len++] = '-';
-  // whole part
-  if (whole == 0 && len < max_len) {
-    buf[len++] = '0';
-  } else {
-    char tmp[16]; int tl = 0;
-    while (whole > 0 && tl < 16) { tmp[tl++] = '0' + (whole % 10); whole /= 10; }
-    for (int i = tl - 1; i >= 0 && len < max_len; i--) buf[len++] = tmp[i];
-  }
-  if (len < max_len) buf[len++] = '.';
-  // 4 decimal digits
-  char fd[4] = {
-    static_cast<char>('0' + (frac / 1000) % 10),
-    static_cast<char>('0' + (frac / 100) % 10),
-    static_cast<char>('0' + (frac / 10) % 10),
-    static_cast<char>('0' + frac % 10),
-  };
-  for (int i = 0; i < 4 && len < max_len; i++) buf[len++] = fd[i];
-  return len;
-}
-
 extern "C" {
 
 __attribute__((export_name("init")))
@@ -83,8 +52,9 @@ void tick(double dt) {
   if (value > 1.0f) value = 1.0f;
 
   // Write to instance state at /output
-  int len = float_to_json(s_json_buf, sizeof(s_json_buf), value);
-  state_set("output", 6, s_json_buf, len);
+  auto vh = val::number(value);
+  state::setValPath("output", vh);
+  val::release(vh);
 }
 
 __attribute__((export_name("on_param_change")))

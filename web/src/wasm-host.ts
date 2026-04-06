@@ -369,6 +369,41 @@ export class WasmHost {
             this.onStateChange(this.pluginState);
           } catch { /* ignore invalid JSON */ }
         },
+        set_val: (pathPtr: number, pathLen: number, valHandle: number) => {
+          const value = this._valStore.get(valHandle);
+          if (value === undefined) return;
+          if (bc && this.pluginKey) {
+            if (pathLen === 0) {
+              bc.setPluginState(this.pluginKey, value);
+            } else {
+              const path = this.readString(pathPtr, pathLen);
+              const current = bc.getPluginState(this.pluginKey);
+              const keys = path.replace(/^\//, '').split('/');
+              let obj = current;
+              for (let i = 0; i < keys.length - 1; i++) {
+                if (!(keys[i] in obj)) obj[keys[i]] = {};
+                obj = obj[keys[i]];
+              }
+              obj[keys[keys.length - 1]] = value;
+              bc.setPluginState(this.pluginKey, current);
+            }
+            this.pluginState = bc.getPluginState(this.pluginKey);
+          } else {
+            if (pathLen === 0) {
+              this.pluginState = value;
+            } else {
+              const path = this.readString(pathPtr, pathLen);
+              const keys = path.replace(/^\//, '').split('/');
+              let obj = this.pluginState;
+              for (let i = 0; i < keys.length - 1; i++) {
+                if (!(keys[i] in obj)) obj[keys[i]] = {};
+                obj = obj[keys[i]];
+              }
+              obj[keys[keys.length - 1]] = value;
+            }
+          }
+          this.onStateChange(this.pluginState);
+        },
         read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
                outputPtr: number, outputSize: number, resultsPtr: number): number => {
           // Read state from bridge core if available, else use local

@@ -6,6 +6,7 @@
  */
 
 #include <host.h>
+#include <val.h>
 #include "core.h"
 #include "../../src/json/json_doc_client.h"
 
@@ -104,53 +105,25 @@ static void publish_state(void) {
   /* Build a JSON string representing the grid and playback state.
    * Format: {"phase":N,"recording":B,"grid":[[steps],[steps],[steps],[steps]]}
    * Keep it compact since this runs every tick. */
-  static char buf[512];
-  int pos = 0;
+  auto state = val::object();
+  val::set(state, "phase", val::number(phase));
+  val::set(state, "recording", val::boolean(record_held != 0));
+  val::set(state, "event_count", val::number(looper.event_count));
 
-  /* Macro for safe append */
-  #define APPEND(s) do { \
-    const char* _s = (s); \
-    while (*_s && pos < (int)sizeof(buf) - 1) buf[pos++] = *_s++; \
-  } while(0)
-  #define APPEND_INT(n) do { \
-    char _tmp[16]; int _v = (n), _i = 0; \
-    if (_v < 0) { buf[pos++] = '-'; _v = -_v; } \
-    if (_v == 0) { buf[pos++] = '0'; } else { \
-      while (_v > 0) { _tmp[_i++] = '0' + _v % 10; _v /= 10; } \
-      while (_i > 0) buf[pos++] = _tmp[--_i]; \
-    } \
-  } while(0)
-
-  APPEND("{\"phase\":");
-  APPEND_INT((int)phase);
-  APPEND(",\"recording\":");
-  APPEND(record_held ? "true" : "false");
-  APPEND(",\"event_count\":");
-  APPEND_INT(looper.event_count);
-  APPEND(",\"grid\":[");
-
+  auto grid = val::array();
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    if (ch > 0) APPEND(",");
-    APPEND("[");
-    int first = 1;
+    auto channel = val::array();
     for (int s = 0; s < NUM_STEPS; s++) {
       if (looper_has_event(&looper, ch, s)) {
-        if (!first) APPEND(",");
-        APPEND_INT(s);
-        first = 0;
+        val::push(channel, val::number(s));
       }
     }
-    APPEND("]");
+    val::push(grid, channel);
   }
-  APPEND("]}");
-  buf[pos] = 0;
+  val::set(state, "grid", grid);
 
-  #undef APPEND
-  #undef APPEND_INT
-
-  /* Set the entire state document */
-  static const char path[] = "";
-  state_set(path, 0, buf, pos);
+  state::setVal(state);
+  val::release(state);
 }
 
 /* Quick JSON snippet builder for structured logs */

@@ -64,6 +64,21 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
   };
   const readString = (ptr: number, len: number) =>
     decoder.decode(new Uint8Array(getMemory().buffer, ptr, len));
+  const writeString = (ptr: number, maxLen: number, str: string): number => {
+    const encoded = new TextEncoder().encode(str);
+    const len = Math.min(encoded.length, maxLen);
+    new Uint8Array(getMemory().buffer, ptr, len).set(encoded.subarray(0, len));
+    return len;
+  };
+
+  // Val store for test
+  const valStore = {
+    values: new Map<number, any>(),
+    nextHandle: 1,
+    alloc(v: any): number { const h = this.nextHandle++; this.values.set(h, v); return h; },
+    get(h: number): any { return this.values.get(h); },
+    release(h: number) { this.values.delete(h); },
+  };
 
   return {
     wasi_snapshot_preview1,
@@ -150,6 +165,24 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
             new Uint8Array(getMemory().buffer, _jsonPtr, _jsonLen)));
         } catch {}
       },
+      set_val: (_pathPtr: number, _pathLen: number, valHandle: number) => {
+        const v = valStore.get(valHandle);
+        if (v !== undefined) {
+          if (_pathLen === 0) {
+            host.pluginState = v;
+          } else {
+            const path = readString(_pathPtr, _pathLen);
+            const keys = path.replace(/^\//, '').split('/');
+            let obj = host.pluginState;
+            for (let i = 0; i < keys.length - 1; i++) {
+              if (!(keys[i] in obj)) obj[keys[i]] = {};
+              obj = obj[keys[i]];
+            }
+            obj[keys[keys.length - 1]] = v;
+          }
+        }
+      },
+      get_patch: (_index: number) => 0,
       read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
              outputPtr: number, outputSize: number, resultsPtr: number): number => {
         const mem = new DataView(getMemory().buffer);
@@ -191,6 +224,27 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
         }
         return overflowCount;
       },
+    },
+    val: {
+      null: () => valStore.alloc(null),
+      bool: (v: number) => valStore.alloc(v !== 0),
+      number: (v: number) => valStore.alloc(v),
+      string: (ptr: number, len: number) => valStore.alloc(readString(ptr, len)),
+      array: () => valStore.alloc([]),
+      object: () => valStore.alloc({}),
+      type_of: (h: number) => { const v = valStore.get(h); if (v === null || v === undefined) return 0; if (typeof v === 'boolean') return 1; if (typeof v === 'number') return 2; if (typeof v === 'string') return 3; if (Array.isArray(v)) return 4; return 5; },
+      as_number: (h: number) => { const v = valStore.get(h); return typeof v === 'number' ? v : 0; },
+      as_bool: (h: number) => valStore.get(h) ? 1 : 0,
+      as_string: (h: number, bufPtr: number, bufLen: number) => { const v = valStore.get(h); return typeof v === 'string' ? writeString(bufPtr, bufLen, v) : 0; },
+      get: (objH: number, keyPtr: number, keyLen: number) => { const obj = valStore.get(objH); if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return 0; const key = readString(keyPtr, keyLen); return key in obj ? valStore.alloc(obj[key]) : 0; },
+      set: (objH: number, keyPtr: number, keyLen: number, valH: number) => { const obj = valStore.get(objH); if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return; obj[readString(keyPtr, keyLen)] = valStore.get(valH); },
+      keys_count: (h: number) => { const v = valStore.get(h); return (v && typeof v === 'object' && !Array.isArray(v)) ? Object.keys(v).length : 0; },
+      key_at: (h: number, index: number, bufPtr: number, bufLen: number) => { const v = valStore.get(h); if (!v || typeof v !== 'object') return 0; const keys = Object.keys(v); return index >= 0 && index < keys.length ? writeString(bufPtr, bufLen, keys[index]) : 0; },
+      get_index: (arrH: number, index: number) => { const arr = valStore.get(arrH); if (!Array.isArray(arr) || index < 0 || index >= arr.length) return 0; return valStore.alloc(arr[index]); },
+      push: (arrH: number, valH: number) => { const arr = valStore.get(arrH); if (Array.isArray(arr)) arr.push(valStore.get(valH)); },
+      length: (h: number) => { const v = valStore.get(h); return Array.isArray(v) ? v.length : 0; },
+      release: (h: number) => valStore.release(h),
+      to_json: (h: number, bufPtr: number, bufLen: number) => { const v = valStore.get(h); return v === undefined ? 0 : writeString(bufPtr, bufLen, JSON.stringify(v)); },
     },
   };
 }

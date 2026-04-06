@@ -53,6 +53,8 @@ extern "C" {
                                      const char* json, int json_len);
   __attribute__((import_module("state"), import_name("set")))
   void state_set(const char* path, int path_len, const char* json, int json_len);
+  __attribute__((import_module("state"), import_name("set_val")))
+  void state_set_val(const char* path, int path_len, int val_handle);
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
@@ -351,6 +353,14 @@ inline void set(const char* json, int jsonLen) {
 }
 inline void setPath(const char* path, const char* json) {
   state_set(path, std::strlen(path), json, std::strlen(json));
+}
+
+/// Publish a val handle as the module's state (or at a sub-path).
+inline void setVal(int valHandle) {
+  state_set_val("", 0, valHandle);
+}
+inline void setValPath(const char* path, int valHandle) {
+  state_set_val(path, std::strlen(path), valHandle);
 }
 
 } // namespace state

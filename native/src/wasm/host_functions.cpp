@@ -529,6 +529,30 @@ static NativeSymbol state_symbols[] = {
     {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
     {"console_log_structured", reinterpret_cast<void*>(state_console_log_structured), "(iiiii)", nullptr},
     {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},
+    {"set_val", reinterpret_cast<void*>(+[](wasm_exec_env_t env, int32_t path_ptr, int32_t path_len, int32_t val_h) {
+      auto* ctx = get_ctx(env);
+      if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+      auto* v = ctx->get_val(val_h);
+      if (!v) return;
+      wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+      if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
+      char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+      std::string json = v->dump();
+      if (path_len == 0) {
+        ctx->state_doc->set_plugin_state(ctx->plugin_key, *v);
+      } else {
+        // Use the JSON string path for sub-path sets
+        std::string p(path, path_len);
+        auto state = ctx->state_doc->get_plugin_state(ctx->plugin_key);
+        auto tokens = p;
+        // Simple path setter
+        auto* target = &state;
+        auto keys_str = p;
+        if (!keys_str.empty() && keys_str[0] == '/') keys_str = keys_str.substr(1);
+        (*target)[keys_str] = *v;
+        ctx->state_doc->set_plugin_state(ctx->plugin_key, state);
+      }
+    }), "(iii)", nullptr},
     {"read", reinterpret_cast<void*>(state_read), "(iiiiii)i", nullptr},
     {"get_patch", reinterpret_cast<void*>(+[](wasm_exec_env_t env, int32_t index) -> int32_t {
       auto* ctx = get_ctx(env);

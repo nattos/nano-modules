@@ -6,6 +6,7 @@
  */
 
 #include <host.h>
+#include <val.h>
 #include "../../src/json/json_doc_client.h"
 
 #include <cmath>
@@ -110,62 +111,30 @@ static void get_top_two(int* first, int* second) {
   }
 }
 
-/* Publish full state as JSON for editors */
+/* Publish full state via val handles */
 static void publish_state(void) {
-  static char buf[4096];
-  int p = 0;
+  auto state = val::object();
+  val::set(state, "learning", val::boolean(learning != 0));
+  val::set(state, "settled", val::boolean(settled != 0));
+  val::set(state, "active", val::boolean(active != 0));
+  val::set(state, "input_id", val::number(static_cast<double>(input_id)));
+  val::set(state, "output_id", val::number(static_cast<double>(output_id)));
+  val::set(state, "input_path", val::string(input_path, input_path_len));
+  val::set(state, "output_path", val::string(output_path, output_path_len));
 
-  #define A(s) do { const char* _s = (s); while (*_s && p < 4090) buf[p++] = *_s++; } while(0)
-  #define AI(n) do { \
-    char _t[20]; int _v = (n), _i = 0; \
-    if (_v < 0) { buf[p++] = '-'; _v = -_v; } \
-    if (_v == 0) buf[p++] = '0'; \
-    else { while (_v > 0) { _t[_i++] = '0' + _v % 10; _v /= 10; } while (_i > 0) buf[p++] = _t[--_i]; } \
-  } while(0)
-  /* i64 as decimal */
-  #define AI64(n) do { \
-    char _t[20]; long long _v = (n); int _i = 0; \
-    if (_v < 0) { buf[p++] = '-'; _v = -_v; } \
-    if (_v == 0) buf[p++] = '0'; \
-    else { while (_v > 0) { _t[_i++] = '0' + (int)(_v % 10); _v /= 10; } while (_i > 0) buf[p++] = _t[--_i]; } \
-  } while(0)
-  #define ASTR(s, len) do { \
-    buf[p++] = '"'; \
-    for (int _j = 0; _j < (len) && p < 4080; _j++) { \
-      char _c = (s)[_j]; \
-      if (_c == '"' || _c == '\\') buf[p++] = '\\'; \
-      buf[p++] = _c; \
-    } \
-    buf[p++] = '"'; \
-  } while(0)
-
-  A("{\"learning\":"); A(learning ? "true" : "false");
-  A(",\"settled\":"); A(settled ? "true" : "false");
-  A(",\"active\":"); A(active ? "true" : "false");
-  A(",\"input_id\":"); AI64(input_id);
-  A(",\"output_id\":"); AI64(output_id);
-  A(",\"input_path\":"); ASTR(input_path, input_path_len);
-  A(",\"output_path\":"); ASTR(output_path, output_path_len);
-  A(",\"seen\":[");
-
-  for (int i = 0; i < seen_count && p < 3900; i++) {
-    if (i > 0) A(",");
-    A("{\"id\":"); AI64(seen[i].param_id);
-    A(",\"path\":"); ASTR(seen[i].path, seen[i].path_len);
-    A(",\"ignored\":"); A(seen[i].ignored ? "true" : "false");
-    A(",\"order\":"); AI(seen[i].order);
-    A("}");
+  auto seen_arr = val::array();
+  for (int i = 0; i < seen_count; i++) {
+    auto entry = val::object();
+    val::set(entry, "id", val::number(static_cast<double>(seen[i].param_id)));
+    val::set(entry, "path", val::string(seen[i].path, seen[i].path_len));
+    val::set(entry, "ignored", val::boolean(seen[i].ignored != 0));
+    val::set(entry, "order", val::number(seen[i].order));
+    val::push(seen_arr, entry);
   }
-  A("]}");
-  buf[p] = 0;
+  val::set(state, "seen", seen_arr);
 
-  #undef A
-  #undef AI
-  #undef AI64
-  #undef ASTR
-
-  static const char path[] = "";
-  state_set(path, 0, buf, p);
+  state::setVal(state);
+  val::release(state);
 }
 
 /* ======================================================================
