@@ -5,72 +5,11 @@
  * to discover which parameters to link by observing changes.
  */
 
+#include <host.h>
 #include "../../src/json/json_doc_client.h"
 
 #include <cmath>
 #include <cstring>
-
-/* ======================================================================
- * Host function imports
- * ====================================================================== */
-
-/* canvas module */
-__attribute__((import_module("canvas"), import_name("fill_rect")))
-extern void canvas_fill_rect(float x, float y, float w, float h,
-                              float r, float g, float b, float a);
-
-__attribute__((import_module("canvas"), import_name("draw_text")))
-extern void canvas_draw_text(const char* text, int len,
-                              float x, float y, float size,
-                              float r, float g, float b, float a);
-
-/* host module */
-__attribute__((import_module("host"), import_name("get_time")))
-extern double host_get_time(void);
-
-__attribute__((import_module("host"), import_name("get_delta_time")))
-extern double host_get_delta_time(void);
-
-__attribute__((import_module("host"), import_name("get_viewport_w")))
-extern int host_get_viewport_w(void);
-
-__attribute__((import_module("host"), import_name("get_viewport_h")))
-extern int host_get_viewport_h(void);
-
-/* resolume module */
-__attribute__((import_module("resolume"), import_name("get_param")))
-extern double resolume_get_param(long long param_id);
-
-__attribute__((import_module("resolume"), import_name("set_param")))
-extern void resolume_set_param(long long param_id, double value);
-
-__attribute__((import_module("resolume"), import_name("subscribe_query")))
-extern void resolume_subscribe_query(const char* query, int query_len);
-
-__attribute__((import_module("resolume"), import_name("get_param_path")))
-extern int resolume_get_param_path(long long param_id, char* buf, int buf_len);
-
-/* state module */
-__attribute__((import_module("state"), import_name("set_schema")))
-extern void state_set_schema(const char* id, int id_len, int version_packed,
-                              const char* schema, int schema_len);
-
-__attribute__((import_module("state"), import_name("get_key")))
-extern int state_get_key(char* buf, int buf_len);
-
-__attribute__((import_module("state"), import_name("console_log")))
-extern void state_console_log(int level, const char* msg, int msg_len);
-
-__attribute__((import_module("state"), import_name("console_log_structured")))
-extern void state_console_log_structured(int level, const char* msg, int msg_len,
-                                          const char* json, int json_len);
-
-__attribute__((import_module("state"), import_name("set")))
-extern void state_set(const char* path, int path_len, const char* json, int json_len);
-
-__attribute__((import_module("state"), import_name("read")))
-extern int state_read(const char* layout, int field_count, const char* paths,
-                      char* output, int output_size, char* results);
 
 /* ======================================================================
  * Constants

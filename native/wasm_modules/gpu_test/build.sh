@@ -37,5 +37,5 @@ source ../wasm_build_env.sh
 
 WASM_EXPORTS=()
 
-wasm_build -I"$TMP_DIR" main.cpp
+wasm_build -I"$TMP_DIR" -I../include main.cpp
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

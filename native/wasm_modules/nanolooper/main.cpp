@@ -2,94 +2,15 @@
  * NanoLooper WASM Module
  *
  * A 4-channel, 16-step looper sequencer with visual overlay.
- * Imports from "canvas", "host", and "resolume" host modules.
+ * Uses shared host API headers for all host function imports.
  */
 
+#include <host.h>
 #include "core.h"
 #include "../../src/json/json_doc_client.h"
 
 #include <cmath>
 #include <cstring>
-
-/* ======================================================================
- * Host function imports
- * ====================================================================== */
-
-/* canvas module */
-__attribute__((import_module("canvas"), import_name("fill_rect")))
-extern void canvas_fill_rect(float x, float y, float w, float h,
-                              float r, float g, float b, float a);
-
-__attribute__((import_module("canvas"), import_name("draw_image")))
-extern void canvas_draw_image(int tex_id, float x, float y, float w, float h);
-
-__attribute__((import_module("canvas"), import_name("draw_text")))
-extern void canvas_draw_text(const char* text, int len,
-                              float x, float y, float size,
-                              float r, float g, float b, float a);
-
-/* host module */
-__attribute__((import_module("host"), import_name("get_time")))
-extern double host_get_time(void);
-
-__attribute__((import_module("host"), import_name("get_delta_time")))
-extern double host_get_delta_time(void);
-
-__attribute__((import_module("host"), import_name("get_bar_phase")))
-extern double host_get_bar_phase(void);
-
-__attribute__((import_module("host"), import_name("get_bpm")))
-extern double host_get_bpm(void);
-
-__attribute__((import_module("host"), import_name("get_param")))
-extern double host_get_param(int index);
-
-__attribute__((import_module("host"), import_name("trigger_audio")))
-extern void host_trigger_audio(int channel);
-
-/* state module */
-__attribute__((import_module("state"), import_name("set_schema")))
-extern void state_set_schema(const char* id, int id_len, int version_packed,
-                              const char* schema, int schema_len);
-
-__attribute__((import_module("state"), import_name("console_log")))
-extern void state_console_log(int level, const char* msg, int msg_len);
-
-__attribute__((import_module("state"), import_name("get_key")))
-extern int state_get_key(char* buf, int buf_len);
-
-__attribute__((import_module("state"), import_name("set")))
-extern void state_set(const char* path, int path_len, const char* json, int json_len);
-
-__attribute__((import_module("state"), import_name("console_log_structured")))
-extern void state_console_log_structured(int level, const char* msg, int msg_len,
-                                          const char* json, int json_len);
-
-__attribute__((import_module("state"), import_name("read")))
-extern int state_read(const char* layout, int field_count, const char* paths,
-                      char* output, int output_size, char* results);
-
-/* resolume module */
-__attribute__((import_module("resolume"), import_name("trigger_clip")))
-extern void resolume_trigger_clip(long long clip_id, int on);
-
-__attribute__((import_module("resolume"), import_name("get_clip_count")))
-extern int resolume_get_clip_count(void);
-
-__attribute__((import_module("resolume"), import_name("get_clip_channel")))
-extern int resolume_get_clip_channel(int index);
-
-__attribute__((import_module("resolume"), import_name("get_clip_id")))
-extern long long resolume_get_clip_id(int index);
-
-__attribute__((import_module("resolume"), import_name("get_clip_connected")))
-extern int resolume_get_clip_connected(int index);
-
-__attribute__((import_module("resolume"), import_name("get_clip_name")))
-extern int resolume_get_clip_name(int index, char* buf, int buf_len);
-
-__attribute__((import_module("resolume"), import_name("load_thumbnail")))
-extern int resolume_load_thumbnail(int clip_index);
 
 /* ======================================================================
  * State
