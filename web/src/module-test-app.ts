@@ -351,7 +351,7 @@ async function main() {
         } else {
           host.pluginState = newState;
         }
-        wasmModule.onStateChanged?.();
+        host.notifyStatePatched(wasmModule, [{ op: 'replace', path: '/', value: newState }]);
         addLogEntry({ timestamp: host.frameState.elapsedTime, level: 'log', message: 'State patch applied externally' });
       } catch (e) {
         addLogEntry({ timestamp: host.frameState.elapsedTime, level: 'error', message: `Invalid JSON: ${e}` });

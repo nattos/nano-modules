@@ -106,25 +106,22 @@ export class ModuleClient {
     return this.host.pluginState;
   }
 
-  /** Write to the module's state (triggers on_state_changed) */
+  /** Write to the module's state (notifies via on_state_patched) */
   patchState(partialState: Record<string, any>) {
+    const patches = Object.entries(partialState).map(([key, value]) => ({
+      op: 'replace' as const,
+      path: `/${key}`,
+      value,
+    }));
     if (this.bridgeClient && this.host.bridgeCore) {
-      // Use the JSON patch protocol
-      const ops = Object.entries(partialState).map(([key, value]) => ({
-        op: 'replace',
-        path: `/${key}`,
-        value,
-      }));
-      this.bridgeClient.patch(`/plugins/${this.pluginKey}/state`, ops);
-      // Tick to process the patch
+      this.bridgeClient.patch(`/plugins/${this.pluginKey}/state`, patches);
       this.host.bridgeCore.tick();
-      // Update local cache
       this.host.pluginState = this.host.bridgeCore.getPluginState(this.pluginKey);
     } else {
       const current = this.host.pluginState;
       this.host.pluginState = { ...current, ...partialState };
     }
-    this.wasmModule.onStateChanged?.();
+    this.host.notifyStatePatched(this.wasmModule, patches);
   }
 
   /** Set a plugin parameter (like pressing a button) */

@@ -25,7 +25,6 @@ export interface WasmModule {
   tick(dt: number): void;
   render(vpW: number, vpH: number): void;
   onParamChange(index: number, value: number): void;
-  onStateChanged?(): void;
   /** Enhanced state change notification with patch details. May not exist on older modules. */
   onStatePatched?: (patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void;
   onResolumeParam?(paramId: bigint, value: number): void;
@@ -607,7 +606,6 @@ export class WasmHost {
       tick: exports.tick as (dt: number) => void,
       render: exports.render as (vpW: number, vpH: number) => void,
       onParamChange: exports.on_param_change as (index: number, value: number) => void,
-      onStateChanged: exports.on_state_changed as (() => void) | undefined,
       onStatePatched: exports.on_state_patched as
         ((patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void) | undefined,
       onResolumeParam: exports.on_resolume_param as ((paramId: bigint, value: number) => void) | undefined,
@@ -617,11 +615,10 @@ export class WasmHost {
   /**
    * Notify the module of state changes with full patch details.
    * If the module exports on_state_patched, marshals patch data into WASM memory.
-   * Otherwise falls back to the bare on_state_changed().
+   * Falls back to no-op if module doesn't export on_state_patched.
    */
   notifyStatePatched(module: WasmModule, patches: PatchOp[]) {
     if (!module.onStatePatched || patches.length === 0) {
-      module.onStateChanged?.();
       return;
     }
 
@@ -638,8 +635,6 @@ export class WasmHost {
     const free = this.instance.exports.free as ((ptr: number) => void) | undefined;
 
     if (!malloc || !free) {
-      // No malloc available — fall back to bare callback
-      module.onStateChanged?.();
       this.pendingPatches = [];
       return;
     }

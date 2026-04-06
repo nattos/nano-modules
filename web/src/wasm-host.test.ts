@@ -32,7 +32,8 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
     tick: exports.tick as (dt: number) => void,
     render: exports.render as (vpW: number, vpH: number) => void,
     onParamChange: exports.on_param_change as (index: number, value: number) => void,
-    onStateChanged: exports.on_state_changed as (() => void) | undefined,
+    onStatePatched: exports.on_state_patched as
+      ((n: number, pb: number, off: number, len: number, ops: number) => void) | undefined,
   };
 
   return { host, module: wasmModule };
@@ -253,7 +254,7 @@ describe('WasmHost', () => {
     expect(texts).toContain('Connecting...');
   });
 
-  it('on_state_changed reads grid from canonical state', async () => {
+  it('on_state_patched reads grid from canonical state', async () => {
     const { host, module } = await loadHost();
     module.init();
     host.frameState.barPhase = 0.1;
@@ -271,8 +272,8 @@ describe('WasmHost', () => {
       grid: [[0, 4], [8], [], []]
     };
 
-    // Notify the module — it should read the grid via state.read
-    module.onStateChanged?.();
+    // Notify the module via state patches
+    host.notifyStatePatched(module as any, [{ op: 'replace', path: '/grid', value: host.pluginState.grid }]);
 
     // Tick to publish updated state — the module should now reflect the edited grid
     host.frameState.viewportW = 1920;
@@ -288,7 +289,7 @@ describe('WasmHost', () => {
     expect(host.pluginState.grid[3]).toEqual([]);
   });
 
-  it('on_state_changed preserves all channels when editing one', async () => {
+  it('on_state_patched preserves all channels when editing one', async () => {
     const { host, module } = await loadHost();
     module.init();
     host.frameState.barPhase = 0.0;
@@ -298,7 +299,7 @@ describe('WasmHost', () => {
       phase: 0, recording: false, event_count: 4,
       grid: [[1], [3], [5], [7]]
     };
-    module.onStateChanged?.();
+    host.notifyStatePatched(module as any, [{ op: 'replace', path: '/grid', value: host.pluginState.grid }]);
     module.tick(0.016);
 
     // Verify all 4 channels loaded
@@ -310,7 +311,7 @@ describe('WasmHost', () => {
       phase: 0, recording: false, event_count: 3,
       grid: [[], [3], [5], [7]]
     };
-    module.onStateChanged?.();
+    host.notifyStatePatched(module as any, [{ op: 'replace', path: '/grid', value: host.pluginState.grid }]);
     module.tick(0.016);
 
     // Channels 1-3 must still have their events
