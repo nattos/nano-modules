@@ -240,14 +240,10 @@ export class WasmHost {
         load_thumbnail: (_clipIndex: number) => -1,
       },
       state: {
-        declare_param: (index: number, namePtr: number, nameLen: number,
-                        type: number, defaultValue: number) => {
-          const name = this.readString(namePtr, nameLen);
-          this.params.push({ index, name, type, defaultValue });
-          if (bc && this.pluginKey) {
-            bc.declareParam(this.pluginKey, index, name, type, defaultValue);
-          }
-        },
+        // Legacy: no module uses this anymore (all use set_schema), but the import
+        // must exist so old WASM modules don't fail to instantiate.
+        declare_param: (_index: number, _namePtr: number, _nameLen: number,
+                        _type: number, _defaultValue: number) => {},
         get_key: (bufPtr: number, bufLen: number): number => {
           const key = this.pluginKey || (this.metadata?.id
             ? `${this.metadata.id}@0`
@@ -355,47 +351,9 @@ export class WasmHost {
             bc.logStructured(this.pluginKey, entry.timestamp, level, message, jsonStr);
           }
         },
-        set: (pathPtr: number, pathLen: number, jsonPtr: number, jsonLen: number) => {
-          const jsonStr = this.readString(jsonPtr, jsonLen);
-          try {
-            const value = JSON.parse(jsonStr);
-            if (bc && this.pluginKey) {
-              // Delegate to bridge core — it will diff and emit patches
-              if (pathLen === 0) {
-                bc.setPluginState(this.pluginKey, value);
-              } else {
-                // For sub-path sets, get current state, apply change, set whole state
-                const path = this.readString(pathPtr, pathLen);
-                const current = bc.getPluginState(this.pluginKey);
-                const keys = path.replace(/^\//, '').split('/');
-                let obj = current;
-                for (let i = 0; i < keys.length - 1; i++) {
-                  if (!(keys[i] in obj)) obj[keys[i]] = {};
-                  obj = obj[keys[i]];
-                }
-                obj[keys[keys.length - 1]] = value;
-                bc.setPluginState(this.pluginKey, current);
-              }
-              // Update local cache for backward compatibility
-              this.pluginState = bc.getPluginState(this.pluginKey);
-            } else {
-              // Legacy: direct state management
-              if (pathLen === 0) {
-                this.pluginState = value;
-              } else {
-                const path = this.readString(pathPtr, pathLen);
-                const keys = path.replace(/^\//, '').split('/');
-                let obj = this.pluginState;
-                for (let i = 0; i < keys.length - 1; i++) {
-                  if (!(keys[i] in obj)) obj[keys[i]] = {};
-                  obj = obj[keys[i]];
-                }
-                obj[keys[keys.length - 1]] = value;
-              }
-            }
-            this.onStateChange(this.pluginState);
-          } catch { /* ignore invalid JSON */ }
-        },
+        // Legacy: no module uses state::set() anymore (all use set_val).
+        // Import must exist so old WASM modules don't fail to instantiate.
+        set: (_pathPtr: number, _pathLen: number, _jsonPtr: number, _jsonLen: number) => {},
         set_val: (pathPtr: number, pathLen: number, valHandle: number) => {
           if (bc && this.pluginKey) {
             // Direct commit — no JSON serialization round-trip
@@ -531,22 +489,12 @@ export class WasmHost {
           return this._valStore.alloc(patch);
         },
       },
+      // Legacy: no module uses io.declare_*() anymore (all use set_schema).
+      // Imports must exist so old WASM modules don't fail to instantiate.
       io: {
-        declare_texture_input: (index: number, namePtr: number, nameLen: number, role: number) => {
-          const name = this.readString(namePtr, nameLen);
-          this.ioDecls.push({ index, name, kind: 0, role }); // IO_TEXTURE_INPUT = 0
-          if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 0, role);
-        },
-        declare_texture_output: (index: number, namePtr: number, nameLen: number, role: number) => {
-          const name = this.readString(namePtr, nameLen);
-          this.ioDecls.push({ index, name, kind: 1, role }); // IO_TEXTURE_OUTPUT = 1
-          if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 1, role);
-        },
-        declare_data_output: (index: number, namePtr: number, nameLen: number, role: number) => {
-          const name = this.readString(namePtr, nameLen);
-          this.ioDecls.push({ index, name, kind: 2, role }); // IO_DATA_OUTPUT = 2
-          if (bc && this.pluginKey) bc.declareIO(this.pluginKey, index, name, 2, role);
-        },
+        declare_texture_input: () => {},
+        declare_texture_output: () => {},
+        declare_data_output: () => {},
       },
       val: (() => {
         // Handle-based value container. When bridge core is available, val handles

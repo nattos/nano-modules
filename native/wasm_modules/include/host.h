@@ -42,6 +42,7 @@ extern "C" {
   __attribute__((import_module("state"), import_name("set_schema")))
   void state_set_schema(const char* id, int id_len, int version_packed,
                         const char* schema_json, int schema_json_len);
+  // Legacy stub — no-op on the host side, but import must exist for old modules
   __attribute__((import_module("state"), import_name("declare_param")))
   void state_declare_param(int index, const char* name, int name_len, int type, float default_value);
   __attribute__((import_module("state"), import_name("get_key")))
@@ -51,6 +52,7 @@ extern "C" {
   __attribute__((import_module("state"), import_name("console_log_structured")))
   void state_console_log_structured(int level, const char* msg, int msg_len,
                                      const char* json, int json_len);
+  // Legacy stub — no-op on the host side
   __attribute__((import_module("state"), import_name("set")))
   void state_set(const char* path, int path_len, const char* json, int json_len);
   __attribute__((import_module("state"), import_name("set_val")))
@@ -302,18 +304,6 @@ inline void init(const char* id, Version version, const Schema& schema) {
   schema.apply(id, version);
 }
 
-// ========================================================================
-// Legacy API (kept during migration, will be removed)
-// ========================================================================
-
-inline void setMetadata(const char* id, Version version) {
-  state_set_metadata(id, std::strlen(id), version.packed());
-}
-
-inline void declareParam(int index, const char* name, ParamType type, float defaultValue = 0.0f) {
-  state_declare_param(index, name, std::strlen(name), static_cast<int>(type), defaultValue);
-}
-
 inline int getKey(char* buf, int bufLen) {
   return state_get_key(buf, bufLen);
 }
@@ -347,13 +337,6 @@ inline void logStructured(LogLevel level, const char* msg, const char* json) {
 }
 
 // --- State publishing ---
-
-inline void set(const char* json, int jsonLen) {
-  state_set("", 0, json, jsonLen);
-}
-inline void setPath(const char* path, const char* json) {
-  state_set(path, std::strlen(path), json, std::strlen(json));
-}
 
 /// Publish a val handle as the module's state (or at a sub-path).
 inline void setVal(int valHandle) {
