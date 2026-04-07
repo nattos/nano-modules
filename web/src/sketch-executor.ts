@@ -200,9 +200,6 @@ export class SketchExecutor {
         for (const [key, value] of Object.entries(entry.params)) {
           // Set frameState.params by position for legacy host::param(index) reads
           loaded.host.frameState.params[paramIndex] = value;
-          // Also call legacy onParamChange for modules that haven't migrated
-          loaded.module.onParamChange(paramIndex, value);
-          // Build patch for the new on_state_patched path
           paramPatches.push({ op: 'replace', path: key, value });
           paramIndex++;
         }
@@ -227,11 +224,9 @@ export class SketchExecutor {
             if (rail?.dataType === 'float' && rv.data !== undefined) {
               // Data tap read: write rail value into module params
               entry.params[tap.fieldPath] = rv.data;
-              // Find numeric index for legacy onParamChange
               const paramIdx = Object.keys(entry.params).indexOf(tap.fieldPath);
               if (paramIdx >= 0) {
                 loaded.host.frameState.params[paramIdx] = rv.data;
-                loaded.module.onParamChange(paramIdx, rv.data);
               }
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: tap.fieldPath, value: rv.data },

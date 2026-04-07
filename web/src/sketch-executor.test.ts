@@ -85,8 +85,10 @@ describe('Brightness/Contrast module', () => {
     const module = await loadModuleFromBytes(host, bytes);
 
     module.init();
-    module.onParamChange(0, 0.7); // brightness
-    module.onParamChange(1, 0.3); // contrast
+    host.notifyStatePatched(module, [
+      { op: 'replace', path: 'brightness', value: 0.7 },
+      { op: 'replace', path: 'contrast', value: 0.3 },
+    ]);
   });
 
   it('render without GPU host does not crash', async () => {

@@ -58,9 +58,17 @@ void tick(double dt) {
 }
 
 __attribute__((export_name("on_param_change")))
-void on_param_change(int index, double value) {
-  if (index == 0) s_rate = static_cast<float>(value);
-  else if (index == 1) s_amplitude = static_cast<float>(value);
+void on_param_change(int, double) {}
+
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "rate"))
+      s_rate = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "amplitude"))
+      s_amplitude = state::patchFloat(i);
+  }
 }
 
 

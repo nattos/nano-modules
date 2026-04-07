@@ -112,7 +112,7 @@ describe('NanoLooper Web Harness E2E', () => {
         host.bridgeCore.setPluginState(host.pluginKey, s);
       }
       host.pluginState = s;
-      host.notifyStatePatched(wasm, [{ op: 'replace', path: '/grid', value: s.grid }]);
+      host.notifyStatePatched(wasm, [{ op: 'replace', path: 'grid', value: s.grid }]);
     }, newState);
 
     await new Promise(r => setTimeout(r, 500));
@@ -138,7 +138,7 @@ describe('NanoLooper Web Harness E2E', () => {
         host.bridgeCore.setPluginState(host.pluginKey, s);
       }
       host.pluginState = s;
-      host.notifyStatePatched(wasm, [{ op: 'replace', path: '/grid', value: s.grid }]);
+      host.notifyStatePatched(wasm, [{ op: 'replace', path: 'grid', value: s.grid }]);
     }, initialState);
     await new Promise(r => setTimeout(r, 500));
 
@@ -158,7 +158,7 @@ describe('NanoLooper Web Harness E2E', () => {
         host.bridgeCore.setPluginState(host.pluginKey, s);
       }
       host.pluginState = s;
-      host.notifyStatePatched(wasm, [{ op: 'replace', path: '/grid', value: s.grid }]);
+      host.notifyStatePatched(wasm, [{ op: 'replace', path: 'grid', value: s.grid }]);
     }, editedState);
     await new Promise(r => setTimeout(r, 500));
 

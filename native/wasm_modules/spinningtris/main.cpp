@@ -118,14 +118,20 @@ void tick(double dt) {
 }
 
 __attribute__((export_name("on_param_change")))
-void on_param_change(int index, double value) {
-  // Legacy — kept for backward compat
-  if (index == 0) {
-    tri_count = 1 + int(value * 999.0);
-    if (tri_count > MAX_TRIANGLES) tri_count = MAX_TRIANGLES;
-    if (tri_count < 1) tri_count = 1;
-  } else if (index == 1) {
-    speed = float(value) * 4.0f;
+void on_param_change(int, double) {}
+
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "triangles")) {
+      float v = state::patchFloat(i);
+      tri_count = 1 + int(v * 999.0f);
+      if (tri_count > MAX_TRIANGLES) tri_count = MAX_TRIANGLES;
+      if (tri_count < 1) tri_count = 1;
+    } else if (state::pathIs(pb + off[i], len[i], "speed")) {
+      speed = state::patchFloat(i) * 4.0f;
+    }
   }
 }
 

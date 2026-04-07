@@ -127,7 +127,11 @@ export class ModuleClient {
   /** Set a plugin parameter (like pressing a button) */
   setParam(index: number, value: number) {
     this.host.frameState.params[index] = value;
-    this.wasmModule.onParamChange(index, value);
+    const param = this.host.params.find(p => p.index === index);
+    const fieldName = param?.name ?? String(index);
+    this.host.notifyStatePatched(this.wasmModule, [
+      { op: 'replace', path: fieldName, value },
+    ]);
   }
 
   /** Pulse a boolean parameter (press then release) */

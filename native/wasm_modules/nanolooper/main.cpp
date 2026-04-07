@@ -432,10 +432,34 @@ static void load_grid_from_state(void) {
   log_msg(LOG_INFO, "Grid loaded from state");
 }
 
+static int field_to_pid(const char* path, int pathLen) {
+  struct { const char* name; int pid; } map[] = {
+    {"trigger_1", PID_TRIGGER_1}, {"trigger_2", PID_TRIGGER_2},
+    {"trigger_3", PID_TRIGGER_3}, {"trigger_4", PID_TRIGGER_4},
+    {"delete", PID_DELETE}, {"mute", PID_MUTE},
+    {"undo", PID_UNDO}, {"redo", PID_REDO},
+    {"record", PID_RECORD}, {"show_overlay", PID_SHOW_OVERLAY},
+  };
+  for (auto& m : map) {
+    int mlen = std::strlen(m.name);
+    if (pathLen == mlen && std::memcmp(path, m.name, mlen) == 0) return m.pid;
+  }
+  return -1;
+}
+
 __attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
-  (void)n; (void)pb; (void)off; (void)len; (void)ops;
-  load_grid_from_state();
+  bool grid_changed = false;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    int pid = field_to_pid(pb + off[i], len[i]);
+    if (pid >= 0) {
+      on_param_change(pid, state::patchFloat(i));
+    } else if (state::pathIs(pb + off[i], len[i], "grid")) {
+      grid_changed = true;
+    }
+  }
+  if (grid_changed) load_grid_from_state();
 }
 
 __attribute__((export_name("render")))

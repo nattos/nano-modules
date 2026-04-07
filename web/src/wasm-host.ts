@@ -24,9 +24,8 @@ export interface WasmModule {
   init(): void;
   tick(dt: number): void;
   render(vpW: number, vpH: number): void;
-  onParamChange(index: number, value: number): void;
-  /** Enhanced state change notification with patch details. May not exist on older modules. */
-  onStatePatched?: (patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void;
+  /** State change notification with patch details. All modules implement this. */
+  onStatePatched(patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number): void;
   onResolumeParam?(paramId: bigint, value: number): void;
 }
 
@@ -665,9 +664,8 @@ export class WasmHost {
       init: exports.init as () => void,
       tick: exports.tick as (dt: number) => void,
       render: exports.render as (vpW: number, vpH: number) => void,
-      onParamChange: exports.on_param_change as (index: number, value: number) => void,
       onStatePatched: exports.on_state_patched as
-        ((patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void) | undefined,
+        (patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void,
       onResolumeParam: exports.on_resolume_param as ((paramId: bigint, value: number) => void) | undefined,
     };
   }
@@ -678,9 +676,7 @@ export class WasmHost {
    * Falls back to no-op if module doesn't export on_state_patched.
    */
   notifyStatePatched(module: WasmModule, patches: PatchOp[]) {
-    if (!module.onStatePatched || patches.length === 0) {
-      return;
-    }
+    if (patches.length === 0) return;
 
     // Store patches for state.get_patch() access
     this.pendingPatches = patches;

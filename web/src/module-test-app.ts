@@ -76,6 +76,14 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function setParam(host: WasmHost, wasmModule: WasmModule, index: number, value: number) {
+  host.frameState.params[index] = value;
+  const param = host.params.find(p => p.index === index);
+  host.notifyStatePatched(wasmModule, [
+    { op: 'replace', path: param?.name ?? String(index), value },
+  ]);
+}
+
 // --- Build parameter controls ---
 function buildParamUI(params: ParamDecl[], host: WasmHost, wasmModule: WasmModule) {
   paramsEl.innerHTML = '';
@@ -104,19 +112,16 @@ function buildParamUI(params: ParamDecl[], host: WasmHost, wasmModule: WasmModul
       btn.setAttribute('data-param', String(param.index));
       btn.addEventListener('mousedown', (e) => {
         e.preventDefault();
-        host.frameState.params[param.index] = 1.0;
-        wasmModule.onParamChange(param.index, 1.0);
+        setParam(host, wasmModule, param.index, 1.0);
         btn.classList.add('active');
       });
       btn.addEventListener('mouseup', () => {
-        host.frameState.params[param.index] = 0.0;
-        wasmModule.onParamChange(param.index, 0.0);
+        setParam(host, wasmModule, param.index, 0.0);
         btn.classList.remove('active');
       });
       btn.addEventListener('mouseleave', () => {
         if (host.frameState.params[param.index] > 0.5) {
-          host.frameState.params[param.index] = 0.0;
-          wasmModule.onParamChange(param.index, 0.0);
+          setParam(host, wasmModule, param.index, 0.0);
           btn.classList.remove('active');
         }
       });
@@ -140,8 +145,7 @@ function buildParamUI(params: ParamDecl[], host: WasmHost, wasmModule: WasmModul
       host.frameState.params[param.index] = param.defaultValue;
       slider.addEventListener('input', () => {
         const val = parseFloat(slider.value);
-        host.frameState.params[param.index] = val;
-        wasmModule.onParamChange(param.index, val);
+        setParam(host, wasmModule, param.index, val);
       });
       control.appendChild(slider);
     }
@@ -381,8 +385,7 @@ async function main() {
       const key = e.key.toLowerCase();
       const paramIdx = keyToParam[key];
       if (paramIdx !== undefined) {
-        host.frameState.params[paramIdx] = 1.0;
-        wasmModule.onParamChange(paramIdx, 1.0);
+        setParam(host, wasmModule, paramIdx, 1.0);
         const btn = paramsEl.querySelector(`[data-param="${paramIdx}"]`);
         if (btn) btn.classList.add('active');
       }
@@ -392,8 +395,7 @@ async function main() {
       const key = e.key.toLowerCase();
       const paramIdx = keyToParam[key];
       if (paramIdx !== undefined) {
-        host.frameState.params[paramIdx] = 0.0;
-        wasmModule.onParamChange(paramIdx, 0.0);
+        setParam(host, wasmModule, paramIdx, 0.0);
         const btn = paramsEl.querySelector(`[data-param="${paramIdx}"]`);
         if (btn) btn.classList.remove('active');
       }

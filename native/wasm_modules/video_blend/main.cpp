@@ -58,8 +58,15 @@ __attribute__((export_name("tick")))
 void tick(double dt) { (void)dt; }
 
 __attribute__((export_name("on_param_change")))
-void on_param_change(int index, double value) {
-  if (index == 0) s_opacity = static_cast<float>(value);
+void on_param_change(int, double) {}
+
+__attribute__((export_name("on_state_patched")))
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "opacity"))
+      s_opacity = state::patchFloat(i);
+  }
 }
 
 

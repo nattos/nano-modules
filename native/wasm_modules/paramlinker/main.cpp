@@ -333,7 +333,14 @@ static void reload_assignment_from_state() {
 
 __attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
-  (void)n; (void)pb; (void)off; (void)len; (void)ops;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    float v = state::patchFloat(i);
+    if (state::pathIs(pb + off[i], len[i], "learn"))
+      on_param_change(PID_LEARN, v);
+    else if (state::pathIs(pb + off[i], len[i], "active"))
+      on_param_change(PID_ACTIVE, v);
+  }
   reload_assignment_from_state();
 }
 

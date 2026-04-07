@@ -31,9 +31,8 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
     init: exports.init as () => void,
     tick: exports.tick as (dt: number) => void,
     render: exports.render as (vpW: number, vpH: number) => void,
-    onParamChange: exports.on_param_change as (index: number, value: number) => void,
     onStatePatched: exports.on_state_patched as
-      ((n: number, pb: number, off: number, len: number, ops: number) => void) | undefined,
+      (n: number, pb: number, off: number, len: number, ops: number) => void,
   };
 
   return { host, module: wasmModule };
@@ -71,14 +70,8 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
     return len;
   };
 
-  // Val store for test
-  const valStore = {
-    values: new Map<number, any>(),
-    nextHandle: 1,
-    alloc(v: any): number { const h = this.nextHandle++; this.values.set(h, v); return h; },
-    get(h: number): any { return this.values.get(h); },
-    release(h: number) { this.values.delete(h); },
-  };
+  // Share the host's val store so get_patch and val.* use the same handles
+  const valStore = (host as any)._valStore;
 
   return {
     wasi_snapshot_preview1,
@@ -182,7 +175,10 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
           }
         }
       },
-      get_patch: (_index: number) => 0,
+      get_patch: (index: number) => {
+        if (index < 0 || index >= host.pendingPatches.length) return 0;
+        return valStore.alloc(host.pendingPatches[index]);
+      },
       read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
              outputPtr: number, outputSize: number, resultsPtr: number): number => {
         const mem = new DataView(getMemory().buffer);
@@ -288,7 +284,7 @@ describe('WasmHost', () => {
     let triggeredChannel = -1;
     host.onAudioTrigger = (ch) => { triggeredChannel = ch; };
 
-    module.onParamChange(0, 1.0);
+    host.notifyStatePatched(module, [{ op: 'replace', path: 'trigger_1', value: 1.0 }]);
     expect(triggeredChannel).toBe(0);
   });
 
@@ -314,8 +310,8 @@ describe('WasmHost', () => {
     host.frameState.barPhase = 0.1;
 
     // Trigger some events normally
-    module.onParamChange(0, 1.0);
-    module.onParamChange(0, 0.0);
+    host.notifyStatePatched(module, [{ op: 'replace', path: 'trigger_1', value: 1.0 }]);
+    host.notifyStatePatched(module, [{ op: 'replace', path: 'trigger_1', value: 0.0 }]);
     module.tick(0.016);
 
     // Now externally modify the canonical state (simulating a client edit)
@@ -327,7 +323,7 @@ describe('WasmHost', () => {
     };
 
     // Notify the module via state patches
-    host.notifyStatePatched(module as any, [{ op: 'replace', path: '/grid', value: host.pluginState.grid }]);
+    host.notifyStatePatched(module as any, [{ op: 'replace', path: 'grid', value: host.pluginState.grid }]);
 
     // Tick to publish updated state — the module should now reflect the edited grid
     host.frameState.viewportW = 1920;
@@ -353,7 +349,7 @@ describe('WasmHost', () => {
       phase: 0, recording: false, event_count: 4,
       grid: [[1], [3], [5], [7]]
     };
-    host.notifyStatePatched(module as any, [{ op: 'replace', path: '/grid', value: host.pluginState.grid }]);
+    host.notifyStatePatched(module as any, [{ op: 'replace', path: 'grid', value: host.pluginState.grid }]);
     module.tick(0.016);
 
     // Verify all 4 channels loaded
@@ -365,7 +361,7 @@ describe('WasmHost', () => {
       phase: 0, recording: false, event_count: 3,
       grid: [[], [3], [5], [7]]
     };
-    host.notifyStatePatched(module as any, [{ op: 'replace', path: '/grid', value: host.pluginState.grid }]);
+    host.notifyStatePatched(module as any, [{ op: 'replace', path: 'grid', value: host.pluginState.grid }]);
     module.tick(0.016);
 
     // Channels 1-3 must still have their events

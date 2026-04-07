@@ -8,6 +8,8 @@
 #include <cstring>
 #include <cstdint>
 
+#include "val.h"
+
 // --- Raw C imports ---
 extern "C" {
   // canvas
@@ -322,6 +324,20 @@ enum PatchOp : int {
   PatchMove    = 3,
   PatchCopy    = 4,
 };
+
+/// Check if a patch path matches a field name.
+/// Usage in on_state_patched: if (state::pathIs(pb + off[i], len[i], "brightness")) { ... }
+inline bool pathIs(const char* path, int pathLen, const char* field) {
+  int flen = std::strlen(field);
+  return pathLen == flen && std::memcmp(path, field, flen) == 0;
+}
+
+/// Read a float value from the Nth patch in the current transaction.
+inline float patchFloat(int index) {
+  auto patch = val::Value(state::getPatch(index));
+  auto v = val::Value(val::get(patch.h, "value"));
+  return static_cast<float>(val::asNumber(v.h));
+}
 
 // --- Logging ---
 

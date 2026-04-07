@@ -103,11 +103,9 @@ async function handleCommand(cmd: WorkerCommand) {
           if (sketchExecutor) {
             const loaded = sketchExecutor.getInstance(entry.instance_key);
             if (loaded) {
-              // Find numeric index for legacy onParamChange
               const paramIndex = Object.keys(entry.params).indexOf(cmd.paramKey);
               if (paramIndex >= 0) {
                 loaded.host.frameState.params[paramIndex] = cmd.value;
-                loaded.module.onParamChange(paramIndex, cmd.value);
               }
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: cmd.paramKey, value: cmd.value },

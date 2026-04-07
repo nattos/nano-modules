@@ -126,7 +126,10 @@ async function run() {
       if (step.params) {
         for (const [index, value] of step.params) {
           wasmHost.frameState.params[index] = value;
-          wasmModule.onParamChange(index, value);
+          const param = wasmHost.params.find(p => p.index === index);
+          wasmHost.notifyStatePatched(wasmModule, [
+            { op: 'replace', path: param?.name ?? String(index), value },
+          ]);
         }
       }
 

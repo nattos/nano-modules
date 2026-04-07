@@ -73,7 +73,7 @@ describe('Sideband Rail Routing E2E', () => {
               instance_key: 'color@0',
               params: { red: 0.0, green: 0.0, blue: 0.0 },
               taps: [
-                { railId: 'lfo_out', fieldPath: '0', direction: 'read' }, // LFO → Red param
+                { railId: 'lfo_out', fieldPath: 'red', direction: 'read' }, // LFO → Red param
               ],
             },
             { type: 'texture_output', id: 'out' },
