@@ -11,6 +11,7 @@ StateDocument::StateDocument() {
     {"global", {{"plugins", json::array()}}},
     {"plugins", json::object()},
     {"sketches", json::object()},
+    {"sketch_state", json::object()},
   };
 }
 
@@ -305,6 +306,52 @@ json StateDocument::get_at(const std::string& path) const {
   std::string resolved = (path == "/") ? "" : path;
   const auto* val = json_patch::resolve_pointer(doc_, resolved);
   return val ? *val : json();
+}
+
+void StateDocument::set_at(const std::string& path, const json& value) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+  if (path.empty() || path == "/") {
+    // Can't replace root
+    return;
+  }
+
+  // Find or create the parent path
+  auto* target = json_patch::resolve_pointer(doc_, path);
+  if (target) {
+    // Path exists — diff and emit patches
+    auto ops = json_patch::diff(*target, value);
+    for (auto& op : ops) {
+      op.path = path + op.path;
+      pending_.push_back(op);
+    }
+    *target = value;
+  } else {
+    // Path doesn't exist — create via add
+    // Split into parent + key
+    auto last_slash = path.rfind('/');
+    if (last_slash == std::string::npos) return;
+    std::string parent_path = path.substr(0, last_slash);
+    std::string key = path.substr(last_slash + 1);
+
+    // Ensure parent exists (create as objects)
+    auto* parent = json_patch::resolve_pointer(doc_, parent_path);
+    if (!parent) {
+      // Create parent chain — walk from root
+      auto tokens = parent_path;
+      // Simple: set the entire path with a single add
+      // This works because json_patch::apply_op handles nested creation
+      json_patch::PatchOp add_op;
+      add_op.op = "add";
+      add_op.path = path;
+      add_op.value = value;
+      json_patch::apply_op(doc_, add_op);
+      pending_.push_back(add_op);
+      return;
+    }
+
+    (*parent)[key] = value;
+    emit("add", path, value);
+  }
 }
 
 std::vector<json_patch::PatchOp> StateDocument::drain_patches() {

@@ -107,6 +107,9 @@ public:
   /// Get a subtree by JSON Pointer path.
   nlohmann::json get_at(const std::string& path) const;
 
+  /// Set a value at an arbitrary path (creates intermediates as needed).
+  void set_at(const std::string& path, const nlohmann::json& value);
+
   /// Drain all pending patches since last call.
   std::vector<json_patch::PatchOp> drain_patches();
 

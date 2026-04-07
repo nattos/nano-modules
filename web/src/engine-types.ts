@@ -35,6 +35,7 @@ export interface IOInfo {
 export interface EngineState {
   plugins: PluginInfo[];
   sketches: Record<string, Sketch>;
+  sketchState: Record<string, any>;
 }
 
 // --- Trace points ---

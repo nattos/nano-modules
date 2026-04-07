@@ -281,5 +281,76 @@ describe('Sideband Rail Routing E2E', () => {
       // 50% blend of red (255,0,0) and blue (0,0,255) should be purple (128,0,128)
       frame.expectPixelAt(32, 32, { r: 128, g: 0, b: 128 }, 15);
     });
+
+    it('publishes rail values to /sketch_state for observation', async () => {
+      const sketch: Sketch = {
+        anchor: null,
+        rails: [
+          { id: 'tex_a', dataType: 'texture' },
+        ],
+        columns: [{
+          name: 'main',
+          rails: [
+            { id: 'local_data', dataType: 'float' },
+          ],
+          chain: [
+            { type: 'texture_input', id: 'in' },
+            {
+              type: 'module',
+              module_type: 'com.nattos.env_lfo',
+              instance_key: 'lfo_obs@0',
+              params: { rate: 0.5, amplitude: 1.0 },
+              taps: [
+                { railId: 'local_data', fieldPath: 'output', direction: 'write' },
+              ],
+            },
+            {
+              type: 'module',
+              module_type: 'com.nattos.solid_color',
+              instance_key: 'color_obs@0',
+              params: { red: 0.5, green: 0.5, blue: 0.5 },
+              taps: [
+                { railId: 'tex_a', fieldPath: 'texture_out/0', direction: 'write' },
+              ],
+            },
+            { type: 'texture_output', id: 'out' },
+          ],
+        }],
+      };
+
+      const result = await runEngineTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.env_lfo', 'com.nattos.solid_color'],
+        tracePoints: [],
+        commands: [
+          { type: 'createSketch', sketchId: 'obs_sketch', sketch },
+        ],
+        waitFrames: 15,
+        dumpName: 'rail_observe',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.state).toBeTruthy();
+
+      // Verify sketch_state was populated
+      const ss = result.state.sketchState;
+      expect(ss).toBeTruthy();
+      expect(ss.obs_sketch).toBeTruthy();
+
+      // Column-local rail: LFO output should be a float between 0 and 1
+      const colState = ss.obs_sketch['columns/0'];
+      expect(colState).toBeTruthy();
+      expect(colState.local_data).toBeTruthy();
+      expect(typeof colState.local_data.value).toBe('number');
+      expect(colState.local_data.value).toBeGreaterThanOrEqual(0);
+      expect(colState.local_data.value).toBeLessThanOrEqual(1);
+
+      // Cross-cutting rail: texture should have a handle
+      const railsState = ss.obs_sketch.rails;
+      expect(railsState).toBeTruthy();
+      expect(railsState.tex_a).toBeTruthy();
+      expect(railsState.tex_a.hasTexture).toBe(true);
+      expect(typeof railsState.tex_a.value).toBe('number');
+    });
   });
 });

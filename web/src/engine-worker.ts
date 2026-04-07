@@ -380,7 +380,8 @@ function broadcastState() {
     sketchRecord[id] = sketch;
   }
 
-  post({ type: 'state', state: { plugins, sketches: sketchRecord } });
+  const sketchState = bridgeCore.getAt('/sketch_state') ?? {};
+  post({ type: 'state', state: { plugins, sketches: sketchRecord, sketchState } });
 }
 
 // ========================================================================

@@ -44,6 +44,7 @@ WASM_EXPORTS=(
   -Wl,--export=bridge_core_queue_param_write
   -Wl,--export=bridge_core_set_param_path
   -Wl,--export=bridge_core_get_param_path
+  -Wl,--export=bridge_core_set_at
   -Wl,--export=bridge_core_get_at
   -Wl,--export=bridge_core_get_plugin_key
   -Wl,--export=malloc

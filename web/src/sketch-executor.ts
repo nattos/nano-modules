@@ -109,12 +109,34 @@ export class SketchExecutor {
     // Shared slot counter so each module across all columns gets a unique intermediate
     const slotCounter = { value: 0 };
 
+    // Collect column-local rail values for publishing
+    const allColumnRails: Map<string, RailValue>[] = [];
+
     let lastOutput = inputTextureHandle;
     for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
+      const colRails = new Map<string, RailValue>();
       lastOutput = await this.executeColumn(
         sketchId, sketch, colIdx, inputTextureHandle,
-        frameState, width, height, crossRailValues, slotCounter);
+        frameState, width, height, crossRailValues, slotCounter, colRails);
+      allColumnRails.push(colRails);
     }
+
+    // Publish all rail values to /sketch_state/{sketchId} as one write
+    const sketchRailState: Record<string, any> = {};
+    // Column-local rails
+    for (let i = 0; i < allColumnRails.length; i++) {
+      if (allColumnRails[i].size > 0) {
+        sketchRailState[`columns/${i}`] = this.railValuesToJson(allColumnRails[i]);
+      }
+    }
+    // Cross-cutting rails
+    if (crossRailValues.size > 0) {
+      sketchRailState.rails = this.railValuesToJson(crossRailValues);
+    }
+    if (Object.keys(sketchRailState).length > 0) {
+      this.bridgeCore.setAt(`/sketch_state/${sketchId}`, sketchRailState);
+    }
+
     return lastOutput;
   }
 
@@ -132,6 +154,7 @@ export class SketchExecutor {
     height: number,
     crossRailValues: Map<string, RailValue>,
     slotCounter: { value: number },
+    outColumnRails?: Map<string, RailValue>,
   ): Promise<number> {
     const column = sketch.columns[colIdx];
     if (!column) return inputTextureHandle;
@@ -277,7 +300,24 @@ export class SketchExecutor {
       }
     }
 
+    // Copy column rail values to output param for publishing
+    if (outColumnRails) {
+      for (const [k, v] of columnRailValues) outColumnRails.set(k, v);
+    }
+
     return currentInputHandle;
+  }
+
+  private railValuesToJson(railValues: Map<string, RailValue>): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [railId, rv] of railValues) {
+      if (rv.data !== undefined) {
+        result[railId] = { value: rv.data };
+      } else if (rv.texture !== undefined) {
+        result[railId] = { value: rv.texture, hasTexture: true };
+      }
+    }
+    return result;
   }
 
   /**

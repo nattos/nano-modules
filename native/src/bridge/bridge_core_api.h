@@ -103,6 +103,11 @@ int bridge_core_get_at(BridgeCoreHandle h,
                         const char* path, int path_len,
                         char* buf, int buf_len);
 
+// Set a value at an arbitrary path in the state document.
+void bridge_core_set_at(BridgeCoreHandle h,
+                         const char* path, int path_len,
+                         const char* json_value, int json_len);
+
 // Get the plugin key for a registered plugin by its ID (e.g. "com.nattos.nanolooper").
 // Returns key length, or 0 if not found.
 int bridge_core_get_plugin_key(BridgeCoreHandle h,

@@ -248,6 +248,15 @@ int bridge_core_get_param_path(BridgeCoreHandle h, int64_t param_id,
 
 // --- State document queries ---
 
+void bridge_core_set_at(BridgeCoreHandle h,
+                         const char* path, int path_len,
+                         const char* json_value, int json_len) {
+  auto value = nlohmann::json::parse(std::string(json_value, json_len), nullptr, false);
+  if (!value.is_discarded()) {
+    as(h)->core.state_document().set_at(std::string(path, path_len), value);
+  }
+}
+
 int bridge_core_get_at(BridgeCoreHandle h,
                         const char* path, int path_len,
                         char* buf, int buf_len) {

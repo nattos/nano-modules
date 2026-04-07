@@ -81,6 +81,10 @@ interface BridgeCoreExports {
   bridge_core_get_param_path(h: number, paramId: bigint,
     buf: number, bufLen: number): number;
 
+  bridge_core_set_at(h: number,
+    path: number, pathLen: number,
+    jsonValue: number, jsonLen: number): void;
+
   bridge_core_get_at(h: number,
     path: number, pathLen: number,
     buf: number, bufLen: number): number;
@@ -309,6 +313,13 @@ export class BridgeCore {
   }
 
   // --- State queries ---
+
+  setAt(path: string, value: any): void {
+    const json = JSON.stringify(value);
+    this.withStrings([path, json], ([[pPtr, pLen], [vPtr, vLen]]) => {
+      this.exports.bridge_core_set_at(this.handle, pPtr, pLen, vPtr, vLen);
+    });
+  }
 
   getAt(path: string): any {
     return this.withString(path, (ptr, len) => {
