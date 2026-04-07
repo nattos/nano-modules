@@ -56,6 +56,13 @@ export class SketchExecutor {
     return this.instances.get(instanceKey);
   }
 
+  /** Register an externally-loaded module so the executor reuses it instead of loading a duplicate. */
+  registerInstance(instanceKey: string, host: WasmHost, module: WasmModule) {
+    if (!this.instances.has(instanceKey)) {
+      this.instances.set(instanceKey, { host, module });
+    }
+  }
+
   /**
    * Ensure we have enough intermediate textures for a chain.
    * With sideband rails, each module needs its own output texture
@@ -114,11 +121,17 @@ export class SketchExecutor {
 
     let lastOutput = inputTextureHandle;
     for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
+      const column = sketch.columns[colIdx];
       const colRails = new Map<string, RailValue>();
-      lastOutput = await this.executeColumn(
+      const colOutput = await this.executeColumn(
         sketchId, sketch, colIdx, inputTextureHandle,
         frameState, width, height, crossRailValues, slotCounter, colRails);
       allColumnRails.push(colRails);
+      // Only update output if this column actually contains modules
+      const hasModules = column.chain.some(e => e.type === 'module');
+      if (hasModules) {
+        lastOutput = colOutput;
+      }
     }
 
     // Publish all rail values to /sketch_state/{sketchId} as one write

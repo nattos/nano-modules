@@ -125,6 +125,33 @@ async function handleCommand(cmd: WorkerCommand) {
       console.log('[worker] current sketchOutputs:', Object.fromEntries(sketchOutputs));
       console.log('[worker] current sketches:', [...sketches.entries()].map(([id, s]) => `${id} anchor=${s.anchor}`).join(', '));
       break;
+    case 'debugDump': {
+      const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
+      const sketchRecord: Record<string, any> = {};
+      for (const [id, sketch] of sketches) sketchRecord[id] = sketch;
+
+      const instanceInfo: Record<string, any> = {};
+      if (sketchExecutor) {
+        for (const [id, sketch] of sketches) {
+          for (const col of sketch.columns) {
+            for (const entry of col.chain) {
+              if (entry.type === 'module') {
+                const loaded = sketchExecutor.getInstance(entry.instance_key);
+                instanceInfo[entry.instance_key] = {
+                  exists: !!loaded,
+                  params: entry.params,
+                  frameParams: loaded ? [...loaded.host.frameState.params] : null,
+                  pluginState: loaded ? loaded.host.pluginState : null,
+                };
+              }
+            }
+          }
+        }
+      }
+
+      post({ type: 'debugDump', data: { bridgeState, sketches: sketchRecord, instances: instanceInfo } });
+      break;
+    }
   }
 }
 
@@ -211,8 +238,38 @@ async function simulateTick(dt: number) {
     params: new Array(16).fill(0),
   };
 
-  // 1. Tick all real modules
-  for (const [_key, { host, module: mod }] of realModules) {
+  // 1. Collect instance keys used by sketch chains so we don't double-render them
+  const sketchInstanceKeys = new Set<string>();
+  for (const [, sketch] of sketches) {
+    for (const col of sketch.columns) {
+      for (const entry of col.chain) {
+        if (entry.type === 'module') {
+          sketchInstanceKeys.add(entry.instance_key);
+        }
+      }
+    }
+  }
+
+  // 2. Register real modules into the sketch executor so it reuses them
+  for (const [key, { host, module: mod }] of realModules) {
+    if (sketchInstanceKeys.has(key)) {
+      sketchExecutor.registerInstance(key, host, mod);
+    }
+  }
+
+  // 3. Tick + render anchor modules that aren't already in a sketch chain,
+  //    so their output can feed as input to the chain.
+  const realOutputs = new Map<string, number>();
+  const anchorKeys = new Set<string>();
+  for (const [, sketch] of sketches) {
+    if (sketch.anchor) anchorKeys.add(sketch.anchor);
+  }
+  for (const key of anchorKeys) {
+    if (sketchInstanceKeys.has(key)) continue; // Will be rendered by the executor
+    const real = realModules.get(key);
+    if (!real) continue;
+
+    const { host, module: mod } = real;
     host.frameState.elapsedTime = frameState.elapsedTime;
     host.frameState.deltaTime = frameState.deltaTime;
     host.frameState.barPhase = frameState.barPhase;
@@ -220,54 +277,52 @@ async function simulateTick(dt: number) {
     host.frameState.viewportW = w;
     host.frameState.viewportH = h;
     mod.tick(dt);
-  }
 
-  // 2. Render each real module to its own texture
-  const realOutputs = new Map<string, number>();
-  for (const [key, { host, module: mod }] of realModules) {
-    // Get or create a per-module render target
-    let rt = moduleRenderTargets.get(key);
-    if (!rt || rt.tex.width !== w || rt.tex.height !== h) {
-      rt?.tex.destroy();
-      const tex = gpuDevice!.createTexture({
-        size: [w, h],
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-             | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-      });
-      const handle = gpuHost.injectTexture(tex);
-      rt = { tex, handle };
-      moduleRenderTargets.set(key, rt);
-    }
+    const rt = ensureRenderTarget(key, w, h);
     gpuHost.setSurface(rt.tex, w, h);
     host.drawList = [];
     mod.render(w, h);
-    // Store the per-module render target handle (NOT the surface handle,
-    // which gets overwritten by subsequent setSurface calls).
     realOutputs.set(key, rt.handle);
   }
 
-  // 3. Execute sketch chains
+  // 4. Execute sketch chains (modules in chains are ticked + rendered by the executor)
   sketchOutputs.clear();
   for (const [sketchId, sketch] of sketches) {
     let inputHandle = -1;
     if (sketch.anchor && realOutputs.has(sketch.anchor)) {
       inputHandle = realOutputs.get(sketch.anchor)!;
-    } else if (sketch.anchor) {
-      console.warn(`[worker] sketch ${sketchId} anchor '${sketch.anchor}' not found in realOutputs. Keys:`, [...realOutputs.keys()]);
     }
 
     try {
       const outputHandle = await sketchExecutor.executeAllColumns(
         sketchId, sketch, inputHandle, frameState, w, h);
-      if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} inputHandle=${inputHandle} → outputHandle=${outputHandle}`);
+      if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {
       console.error(`[sketch ${sketchId}]`, err);
     }
   }
 
-  // 4. Resolve trace point handles
+  // 5. Tick and render remaining real modules not used by any sketch or anchor
+  for (const [key, { host, module: mod }] of realModules) {
+    if (sketchInstanceKeys.has(key) || anchorKeys.has(key)) continue;
+
+    host.frameState.elapsedTime = frameState.elapsedTime;
+    host.frameState.deltaTime = frameState.deltaTime;
+    host.frameState.barPhase = frameState.barPhase;
+    host.frameState.bpm = frameState.bpm;
+    host.frameState.viewportW = w;
+    host.frameState.viewportH = h;
+    mod.tick(dt);
+
+    const rt = ensureRenderTarget(key, w, h);
+    gpuHost.setSurface(rt.tex, w, h);
+    host.drawList = [];
+    mod.render(w, h);
+    realOutputs.set(key, rt.handle);
+  }
+
+  // 5. Resolve trace point handles
   for (const tp of tracePoints) {
     let handle = -1;
     if (tp.target.type === 'sketch_output') {
@@ -281,6 +336,23 @@ async function simulateTick(dt: number) {
     }
     traceHandles.set(tp.id, handle);
   }
+}
+
+function ensureRenderTarget(key: string, w: number, h: number): { tex: GPUTexture; handle: number } {
+  let rt = moduleRenderTargets.get(key);
+  if (!rt || rt.tex.width !== w || rt.tex.height !== h) {
+    rt?.tex.destroy();
+    const tex = gpuDevice!.createTexture({
+      size: [w, h],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+           | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+    });
+    const handle = gpuHost!.injectTexture(tex);
+    rt = { tex, handle };
+    moduleRenderTargets.set(key, rt);
+  }
+  return rt;
 }
 
 /** Resolved texture handles for each trace point (populated by simulateTick). */

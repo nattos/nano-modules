@@ -404,6 +404,56 @@ describe('Engine Worker E2E', () => {
       p2.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
     });
 
+    it('empty trailing column does not override module output', async () => {
+      // Repro for the actual bug: module in column 0, empty column 1.
+      // The sketch output should come from column 0 (has module), not column 1 (empty passthrough).
+      const result = await runEngineTest({
+        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_trailing' } },
+        ],
+        commands: [
+          {
+            type: 'createSketch',
+            sketchId: 'sk_trailing',
+            sketch: {
+              anchor: 'com.nattos.spinningtris@0',
+              columns: [
+                {
+                  name: 'col0',
+                  chain: [
+                    { type: 'texture_input', id: 'in' },
+                    {
+                      type: 'module',
+                      module_type: 'com.nattos.brightness_contrast',
+                      instance_key: 'bc_trail@0',
+                      params: { brightness: 0.5, contrast: 0.0 },
+                    },
+                    { type: 'texture_output', id: 'out' },
+                  ],
+                },
+                {
+                  name: 'col1',
+                  chain: [
+                    { type: 'texture_input', id: 'in' },
+                    { type: 'texture_output', id: 'out' },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        captureTraceIds: ['out'],
+        waitFrames: 20,
+        dumpName: 'engine_trailing_col',
+      });
+
+      expect(result.success).toBe(true);
+      const frame = result.trace('out');
+      // Should be black (contrast=0 from column 0), NOT the anchor's colorful output
+      frame.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+    });
+
     it('params set via setParam persist after column move', async () => {
       // Simulates the real UI flow:
       // 1. Create sketch with empty params (like createSketch does)

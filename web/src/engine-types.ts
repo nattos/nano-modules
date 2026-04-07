@@ -57,7 +57,8 @@ export type WorkerCommand =
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
   | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: number }
-  | { type: 'setTracePoints'; tracePoints: TracePoint[] };
+  | { type: 'setTracePoints'; tracePoints: TracePoint[] }
+  | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---
 
@@ -65,4 +66,5 @@ export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
   | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap> }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'debugDump'; data: any };

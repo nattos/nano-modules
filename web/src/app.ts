@@ -24,6 +24,13 @@ async function main() {
   const engine = new EngineProxy(320, 180);
   appController.setEngine(engine);
 
+  // Debug: dump engine worker's internal state (bridge core, sketches, instances)
+  (window as any).debugDumpEngineState = async () => {
+    const data = await engine.debugDump();
+    console.log(JSON.stringify(data, undefined, 2));
+    return data;
+  };
+
   engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
   engine.onFps = (fps) => appController.setEngineFps(fps);
   engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);

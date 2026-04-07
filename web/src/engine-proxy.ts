@@ -14,6 +14,7 @@ export class EngineProxy {
   onFps: ((fps: number) => void) | null = null;
   onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onError: ((message: string) => void) | null = null;
+  private debugDumpResolve: ((data: any) => void) | null = null;
 
   constructor(width: number, height: number) {
     this.worker = new Worker(
@@ -37,6 +38,10 @@ export class EngineProxy {
         case 'error':
           this.onError?.(event.message);
           console.error('[engine]', event.message);
+          break;
+        case 'debugDump':
+          this.debugDumpResolve?.(event.data);
+          this.debugDumpResolve = null;
           break;
       }
     };
@@ -73,6 +78,13 @@ export class EngineProxy {
 
   setTracePoints(tracePoints: TracePoint[]) {
     this.send({ type: 'setTracePoints', tracePoints });
+  }
+
+  debugDump(): Promise<any> {
+    return new Promise(resolve => {
+      this.debugDumpResolve = resolve;
+      this.send({ type: 'debugDump' });
+    });
   }
 
   destroy() {
