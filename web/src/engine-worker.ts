@@ -238,6 +238,11 @@ async function simulateTick(dt: number) {
     params: new Array(16).fill(0),
   };
 
+  // NOTE: A real module instance appearing in multiple sketches will only be
+  // ticked/rendered once (by whichever sketch chain processes it first). The
+  // second sketch will see stale output. Resolume handles this by cloning the
+  // instance per-composition — we'll need to do the same eventually.
+
   // 1. Collect instance keys used by sketch chains so we don't double-render them
   const sketchInstanceKeys = new Set<string>();
   for (const [, sketch] of sketches) {
