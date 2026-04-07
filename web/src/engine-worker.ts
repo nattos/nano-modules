@@ -98,18 +98,19 @@ async function handleCommand(cmd: WorkerCommand) {
       if (sketch) {
         const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
         if (entry?.type === 'module') {
-          entry.params[String(cmd.paramIndex)] = cmd.value;
+          entry.params[cmd.paramKey] = cmd.value;
           // Update live instance immediately
           if (sketchExecutor) {
             const loaded = sketchExecutor.getInstance(entry.instance_key);
             if (loaded) {
-              loaded.host.frameState.params[cmd.paramIndex] = cmd.value;
-              loaded.module.onParamChange(cmd.paramIndex, cmd.value);
-              // Find field name from params keys
-              const fieldName = Object.keys(entry.params).find(
-                (_, idx) => idx === cmd.paramIndex) ?? String(cmd.paramIndex);
+              // Find numeric index for legacy onParamChange
+              const paramIndex = Object.keys(entry.params).indexOf(cmd.paramKey);
+              if (paramIndex >= 0) {
+                loaded.host.frameState.params[paramIndex] = cmd.value;
+                loaded.module.onParamChange(paramIndex, cmd.value);
+              }
               loaded.host.notifyStatePatched(loaded.module, [
-                { op: 'replace', path: fieldName, value: cmd.value },
+                { op: 'replace', path: cmd.paramKey, value: cmd.value },
               ]);
             }
           }

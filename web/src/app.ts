@@ -4,11 +4,21 @@
  * Sets up the engine worker, wires state updates, and mounts <sketch-app>.
  */
 
+import { toJS } from 'mobx';
+import { appState } from './state/app-state';
 import { appController } from './state/controller';
 import { EngineProxy } from './engine-proxy';
 
 // Import the root component (self-registering)
 import './views/sketch-app';
+
+// Debug: expose state for inspection
+(window as any).debugDumpState = () => {
+  return toJS(appState);
+};
+(window as any).debugPrintState = () => {
+  console.log(JSON.stringify(toJS(appState), undefined, 2));
+};
 
 async function main() {
   const engine = new EngineProxy(320, 180);

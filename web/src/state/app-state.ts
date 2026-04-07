@@ -6,7 +6,7 @@
  * - `local`: Ephemeral UI state (selection, active tab, staging)
  */
 
-import { observable, configure } from 'mobx';
+import { observable, configure, makeObservable } from 'mobx';
 import { enableMapSet, setAutoFreeze, enablePatches } from 'immer';
 import type { DatabaseState, LocalState } from './types';
 
@@ -24,22 +24,22 @@ configure({
 });
 
 export class AppState {
-  public database: DatabaseState;
-  public local: LocalState;
+  @observable
+  public database: DatabaseState = {
+    sketches: {},
+  };
+  @observable
+  public local: LocalState = {
+    activeTab: 'create',
+    plugins: [],
+    staging: [],
+    selectedSketchId: null,
+    editingSketchId: null,
+    engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0 },
+  };
 
   constructor() {
-    this.database = observable({
-      sketches: {},
-    });
-
-    this.local = observable({
-      activeTab: 'create',
-      plugins: [],
-      staging: [],
-      selectedSketchId: null,
-      editingSketchId: null,
-      engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0 },
-    });
+    makeObservable(this);
   }
 }
 

@@ -33,6 +33,7 @@ export class CreateTab extends MobxLitElement {
       overflow-y: auto;
       padding: 16px;
       min-width: 0;
+      width: 0;
     }
     .right-panel {
       width: 340px;
@@ -108,8 +109,8 @@ export class CreateTab extends MobxLitElement {
     return html`
       <div class="main-area">
         ${plugins.length === 0
-          ? html`<div class="empty-state">No modules loaded.<br>Loading...</div>`
-          : html`
+        ? html`<div class="empty-state">No modules loaded.<br>Loading...</div>`
+        : html`
             <div class="plugin-list">
               ${plugins.map((p, i) => html`
                 <div class="plugin-card">
@@ -126,8 +127,8 @@ export class CreateTab extends MobxLitElement {
       <div class="right-panel">
         <div class="section-header">New Sketch</div>
         ${staging.length === 0
-          ? html`<div class="empty-state" style="padding:16px 0">Add instances from the left panel</div>`
-          : html`
+        ? html`<div class="empty-state" style="padding:16px 0">Add instances from the left panel</div>`
+        : html`
             <div class="staging-list">
               ${staging.map((s, i) => html`
                 <div class="instance-row">

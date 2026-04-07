@@ -42,7 +42,7 @@ async function sendCommands(engine, commands) {
       case 'loadModule': engine.loadModule(cmd.moduleType); break;
       case 'createSketch': engine.createSketch(cmd.sketchId, cmd.sketch); break;
       case 'updateSketch': engine.updateSketch(cmd.sketchId, cmd.sketch); break;
-      case 'setParam': engine.setParam(cmd.sketchId, cmd.colIdx, cmd.chainIdx, cmd.paramIndex, cmd.value); break;
+      case 'setParam': engine.setParam(cmd.sketchId, cmd.colIdx, cmd.chainIdx, cmd.paramKey, cmd.value); break;
       case 'setTracePoints': engine.setTracePoints(cmd.tracePoints); break;
     }
     await new Promise(r => setTimeout(r, 50));

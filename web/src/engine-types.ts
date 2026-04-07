@@ -56,7 +56,7 @@ export type WorkerCommand =
   | { type: 'loadModule'; moduleType: string }
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
-  | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramIndex: number; value: number }
+  | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: number }
   | { type: 'setTracePoints'; tracePoints: TracePoint[] };
 
 // --- Worker events (worker → main) ---

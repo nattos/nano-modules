@@ -128,7 +128,7 @@ export class AppController {
       }
     });
     // Also send immediate param update to the engine for live preview
-    this.engine?.setParam(sketchId, colIdx, chainIdx, parseInt(paramKey), value);
+    this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
   }
 
   undo() { this.history.undo(); this.syncSketchesToEngine(); }

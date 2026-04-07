@@ -67,8 +67,8 @@ export class EngineProxy {
     this.send({ type: 'updateSketch', sketchId, sketch });
   }
 
-  setParam(sketchId: string, colIdx: number, chainIdx: number, paramIndex: number, value: number) {
-    this.send({ type: 'setParam', sketchId, colIdx, chainIdx, paramIndex, value });
+  setParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+    this.send({ type: 'setParam', sketchId, colIdx, chainIdx, paramKey, value });
   }
 
   setTracePoints(tracePoints: TracePoint[]) {

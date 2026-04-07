@@ -21,6 +21,7 @@ export class OrganizeTab extends MobxLitElement {
       overflow-y: auto;
       padding: 16px;
       min-width: 0;
+      width: 0;
     }
     .right-panel {
       width: 340px;
@@ -71,12 +72,12 @@ export class OrganizeTab extends MobxLitElement {
     return html`
       <div class="main-area">
         ${ids.length === 0
-          ? html`<div class="empty-state">No sketches yet.<br>Go to Create to make one.</div>`
-          : html`
+        ? html`<div class="empty-state">No sketches yet.<br>Go to Create to make one.</div>`
+        : html`
             <div class="sketch-list">
               ${ids.map(id => {
-                const s = sketches[id];
-                return html`
+          const s = sketches[id];
+          return html`
                   <div class="sketch-card" ?selected=${id === selectedId}
                     @click=${() => appController.selectSketch(id)}>
                     <div class="sketch-card-name">${id}</div>
@@ -86,13 +87,13 @@ export class OrganizeTab extends MobxLitElement {
                     </div>
                   </div>
                 `;
-              })}
+        })}
             </div>
           `}
       </div>
       <div class="right-panel">
         ${selected && selectedId
-          ? html`
+        ? html`
             <div class="section-header">Sketch: ${selectedId}</div>
             <div class="summary">
               <div>Anchor: ${selected.anchor ?? 'none'}</div>
@@ -100,11 +101,11 @@ export class OrganizeTab extends MobxLitElement {
               <div>Chain entries: ${selected.columns.reduce((s, c) => s + c.chain.length, 0)}</div>
             </div>
             <button class="btn" @click=${() => {
-              appController.editSketch(selectedId);
-              appController.setActiveTab('edit');
-            }}>Edit</button>
+            appController.editSketch(selectedId);
+            appController.setActiveTab('edit');
+          }}>Edit</button>
           `
-          : html`<div class="empty-state" style="padding:16px 0">Select a sketch to see details</div>`}
+        : html`<div class="empty-state" style="padding:16px 0">Select a sketch to see details</div>`}
       </div>
     `;
   }

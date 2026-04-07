@@ -81,6 +81,7 @@ export class EditTab extends MobxLitElement {
       overflow: auto;
       padding: 16px;
       min-width: 0;
+      width: 0;
     }
     .right-panel {
       width: 340px;
@@ -256,12 +257,12 @@ export class EditTab extends MobxLitElement {
       <div class="main-area">
         <div class="columns-container">
           ${Array.from({ length: totalCols }, (_, colIdx) => {
-            if (colIdx < sketch.columns.length) {
-              return this.renderColumn(sketchId, sketch, colIdx);
-            } else {
-              return this.renderPlaceholderColumn(colIdx);
-            }
-          })}
+      if (colIdx < sketch.columns.length) {
+        return this.renderColumn(sketchId, sketch, colIdx);
+      } else {
+        return this.renderPlaceholderColumn(colIdx);
+      }
+    })}
         </div>
       </div>
       <div class="right-panel">
@@ -371,7 +372,7 @@ export class EditTab extends MobxLitElement {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
         return entry.params[fieldPath]
-          ?? plugin?.params.find(p => String(p.index) === fieldPath)?.defaultValue
+          ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
           ?? 0;
       },
       setValue: (fieldPath: string, value: any) => {
@@ -397,7 +398,7 @@ export class EditTab extends MobxLitElement {
     if (!plugin || plugin.params.length === 0) return nothing;
 
     return plugin.params.map(p => {
-      const fieldPath = String(p.index);
+      const fieldPath = p.name;
 
       if (p.type === 0) {
         return html`<field-toggle

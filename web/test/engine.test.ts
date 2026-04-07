@@ -316,4 +316,205 @@ describe('Engine Worker E2E', () => {
       phase2.expectDifferentFrom(phase1, 50);
     });
   });
+
+  describe('column move preserves params', () => {
+    it('contrast=0 stays black after moving module between columns', async () => {
+      // Repro for bug: moving a module to a different column via updateSketch
+      // causes it to render with default params instead of the ones in the sketch.
+
+      const makeSketch = (colIdx: number) => ({
+        anchor: 'com.nattos.spinningtris@0',
+        columns: colIdx === 0
+          ? [{
+              name: 'col0',
+              chain: [
+                { type: 'texture_input', id: 'in' },
+                {
+                  type: 'module',
+                  module_type: 'com.nattos.brightness_contrast',
+                  instance_key: 'bc_move@0',
+                  params: { brightness: 0.5, contrast: 0.0 },
+                },
+                { type: 'texture_output', id: 'out' },
+              ],
+            }]
+          : [
+              { name: 'col0', chain: [
+                { type: 'texture_input', id: 'in' },
+                { type: 'texture_output', id: 'out' },
+              ]},
+              { name: 'col1', chain: [
+                { type: 'texture_input', id: 'in' },
+                {
+                  type: 'module',
+                  module_type: 'com.nattos.brightness_contrast',
+                  instance_key: 'bc_move@0',
+                  params: { brightness: 0.5, contrast: 0.0 },
+                },
+                { type: 'texture_output', id: 'out' },
+              ]},
+            ],
+      });
+
+      const result = await runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        dumpName: 'engine_column_move',
+        phases: [
+          // Phase 0: contrast=0 in column 0 → should be black
+          {
+            commands: [
+              { type: 'createSketch', sketchId: 'sk_move', sketch: makeSketch(0) },
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_move' } },
+              ]},
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+          // Phase 1: move to column 1 → should still be black
+          {
+            commands: [
+              { type: 'updateSketch', sketchId: 'sk_move', sketch: makeSketch(1) },
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+          // Phase 2: move back to column 0 → should still be black
+          {
+            commands: [
+              { type: 'updateSketch', sketchId: 'sk_move', sketch: makeSketch(0) },
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.phases.length).toBe(3);
+
+      const p0 = result.phases[0].trace('out');
+      const p1 = result.phases[1].trace('out');
+      const p2 = result.phases[2].trace('out');
+
+      // All three phases should be black (contrast=0)
+      p0.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+      p1.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+      p2.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+    });
+
+    it('params set via setParam persist after column move', async () => {
+      // Simulates the real UI flow:
+      // 1. Create sketch with empty params (like createSketch does)
+      // 2. Set a param via setParam (like setEffectParam does)
+      // 3. Move module to column 1 via updateSketch
+      // 4. Move back to column 0 via updateSketch
+      // Verify output reflects the param change throughout.
+
+      const sketchInCol0Empty = {
+        anchor: 'com.nattos.spinningtris@0',
+        columns: [{
+          name: 'col0',
+          chain: [
+            { type: 'texture_input', id: 'in' },
+            {
+              type: 'module',
+              module_type: 'com.nattos.brightness_contrast',
+              instance_key: 'bc_setparam@0',
+              params: {},  // Empty, like createSketch
+            },
+            { type: 'texture_output', id: 'out' },
+          ],
+        }],
+      };
+
+      const sketchInCol0WithParams = {
+        anchor: 'com.nattos.spinningtris@0',
+        columns: [{
+          name: 'col0',
+          chain: [
+            { type: 'texture_input', id: 'in' },
+            {
+              type: 'module',
+              module_type: 'com.nattos.brightness_contrast',
+              instance_key: 'bc_setparam@0',
+              params: { brightness: 0.5, contrast: 0.0 },
+            },
+            { type: 'texture_output', id: 'out' },
+          ],
+        }],
+      };
+
+      const sketchInCol1WithParams = {
+        anchor: 'com.nattos.spinningtris@0',
+        columns: [
+          { name: 'col0', chain: [
+            { type: 'texture_input', id: 'in' },
+            { type: 'texture_output', id: 'out' },
+          ]},
+          { name: 'col1', chain: [
+            { type: 'texture_input', id: 'in' },
+            {
+              type: 'module',
+              module_type: 'com.nattos.brightness_contrast',
+              instance_key: 'bc_setparam@0',
+              params: { brightness: 0.5, contrast: 0.0 },
+            },
+            { type: 'texture_output', id: 'out' },
+          ]},
+        ],
+      };
+
+      const result = await runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        dumpName: 'engine_setparam_move',
+        phases: [
+          // Phase 0: Create sketch with empty params, then set contrast=0
+          {
+            commands: [
+              { type: 'createSketch', sketchId: 'sk_sp', sketch: sketchInCol0Empty },
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_sp' } },
+              ]},
+              // Simulate setEffectParam: mutate → updateSketch, then setParam
+              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol0WithParams },
+              { type: 'setParam', sketchId: 'sk_sp', colIdx: 0, chainIdx: 1, paramKey: 'contrast', value: 0.0 },
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+          // Phase 1: Move to column 1 (full sketch update like syncSketchesToEngine)
+          {
+            commands: [
+              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol1WithParams },
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+          // Phase 2: Move back to column 0
+          {
+            commands: [
+              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol0WithParams },
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.phases.length).toBe(3);
+
+      const p0 = result.phases[0].trace('out');
+      const p1 = result.phases[1].trace('out');
+      const p2 = result.phases[2].trace('out');
+
+      // All phases should be black (contrast=0)
+      p0.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+      p1.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+      p2.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+    });
+  });
 });
