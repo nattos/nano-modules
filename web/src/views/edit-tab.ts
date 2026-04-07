@@ -8,6 +8,10 @@
  *
  * Tapping mode allows connecting field editors to sideband rails via taps.
  * A gutter strip to the right of each column visualizes tap connections.
+ *
+ * IMPORTANT: Field editors and custom inspectors have NO knowledge of tapping,
+ * selection, or layout tracking. The edit-tab renders overlay layers on top of
+ * effect cards, using bounding boxes from the FieldLayoutManager.
  */
 
 import { html, css, nothing, TemplateResult } from 'lit';
@@ -16,14 +20,14 @@ import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { ParamInfo } from '../state/types';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Rail, Tap } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Rail } from '../sketch-types';
 
 // Register field widgets and inspectors
 import '../widgets/field-slider';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
-import type { FieldBinding } from '../widgets/field-editor';
+import type { FieldBinding, FieldEditorElement } from '../widgets/field-editor';
+import { isFieldEditor } from '../widgets/field-editor';
 import { FieldLayoutManager } from '../widgets/field-layout-manager';
 import { editorRegistry } from '../editor-registry';
 
@@ -32,7 +36,6 @@ import '../editors/brightness-contrast-inspector';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
-// Number of extra placeholder columns to show
 const EXTRA_COLUMNS = 2;
 
 @customElement('edit-tab')
@@ -68,8 +71,7 @@ export class EditTab extends MobxLitElement {
     this.previewDisposer?.();
     this.previewDisposer = null;
     this.layoutManager.dispose();
-    // Clean up cached inspectors
-    for (const [key, el] of this.inspectorCache) {
+    for (const [, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(
         (el as any).moduleType ?? '');
       factory?.destroy(el);
@@ -78,10 +80,8 @@ export class EditTab extends MobxLitElement {
   }
 
   updated() {
-    // Attach ResizeObserver to columns container for layout tracking
     const container = this.renderRoot.querySelector('.columns-container') as HTMLElement | null;
     if (container) this.layoutManager.observeContainer(container);
-    // Re-scan field editors after each render
     this.scanAndRegisterFields();
   }
 
@@ -209,9 +209,7 @@ export class EditTab extends MobxLitElement {
       border-radius: 4px;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .effect-card[dragging] {
-      opacity: 0.4;
-    }
+    .effect-card[dragging] { opacity: 0.4; }
     .effect-card-header {
       display: flex;
       align-items: center;
@@ -223,7 +221,7 @@ export class EditTab extends MobxLitElement {
     }
     .effect-card-header:active { cursor: grabbing; }
     .effect-card-name { font-size: 11px; color: var(--app-text-color1); }
-    .effect-card-body { padding: 6px 10px; }
+    .effect-card-body { padding: 6px 10px; position: relative; }
     .remove-btn {
       background: none; border: none;
       color: var(--app-text-color2); cursor: pointer;
@@ -269,6 +267,30 @@ export class EditTab extends MobxLitElement {
     .empty-state {
       color: var(--app-text-color2); font-size: 12px;
       text-align: center; padding: 32px 16px;
+    }
+
+    /* --- Tap overlay (rendered by edit-tab over effect card body) --- */
+    .tap-overlay-container {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .tap-overlay-hit {
+      position: absolute;
+      background: rgba(65, 105, 225, 0.12);
+      border: 1px solid rgba(65, 105, 225, 0.3);
+      border-radius: 2px;
+      cursor: pointer;
+      pointer-events: all;
+    }
+    .tap-overlay-hit:hover {
+      background: rgba(65, 105, 225, 0.25);
+    }
+    .tap-overlay-hit[selected] {
+      outline: 1px solid var(--app-hi-color2, #4169E1);
+      outline-offset: 1px;
+      background: rgba(65, 105, 225, 0.2);
     }
 
     /* --- Tap visualization --- */
@@ -344,14 +366,12 @@ export class EditTab extends MobxLitElement {
 
     const sketch = appState.database.sketches[sketchId];
     const totalCols = sketch.columns.length + EXTRA_COLUMNS;
-    const tappingMode = appState.local.tappingMode;
 
     // Touch the layout manager generation to react to position changes
     const _layoutGen = this.layoutManager.generation;
 
     return html`
-      <div class="main-area"
-        @field-tap-select=${this.onFieldTapSelect}>
+      <div class="main-area">
         <div class="columns-container">
           ${Array.from({ length: totalCols }, (_, colIdx) => {
       if (colIdx < sketch.columns.length) {
@@ -414,7 +434,7 @@ export class EditTab extends MobxLitElement {
 
     return html`
       <div class="section-header">Taps for "${fieldPath}"</div>
-      ${taps.length > 0 ? taps.map((tap, i) => {
+      ${taps.length > 0 ? taps.map((tap) => {
         const tapIdx = (entry.taps ?? []).indexOf(tap);
         const rail = allRails.find(r => r.id === tap.railId);
         return html`
@@ -460,21 +480,6 @@ export class EditTab extends MobxLitElement {
     appController.addTap(sketchId, colIdx, chainIdx, railId, fieldPath, 'write');
   }
 
-  private onFieldTapSelect = (e: CustomEvent) => {
-    const sketchId = appState.local.editingSketchId;
-    if (!sketchId) return;
-    // Walk up from the event target to find the effect card and extract indices
-    const detail = e.detail as { fieldPath: string };
-    // Find the effect card element
-    const path = e.composedPath();
-    for (const el of path) {
-      if (el instanceof HTMLElement && el.dataset.fieldKey) {
-        appController.selectField(`${el.dataset.fieldKey}/${detail.fieldPath}`);
-        return;
-      }
-    }
-  };
-
   // ========================================================================
   // Column rendering
   // ========================================================================
@@ -500,8 +505,8 @@ export class EditTab extends MobxLitElement {
         <div class="column">
           <div class="column-header">Column ${colIdx + 1}</div>
           <div class="column-placeholder"
-            @dragover=${(e: DragEvent) => { e.preventDefault(); e.currentTarget?.classList.add('drag-over'); }}
-            @dragleave=${(e: DragEvent) => { e.currentTarget?.classList.remove('drag-over'); }}
+            @dragover=${(e: DragEvent) => { e.preventDefault(); (e.currentTarget as HTMLElement).classList.add('drag-over'); }}
+            @dragleave=${(e: DragEvent) => { (e.currentTarget as HTMLElement).classList.remove('drag-over'); }}
             @drop=${(e: DragEvent) => this.onDropToNewColumn(e, colIdx)}>
             Drop effects here
           </div>
@@ -543,7 +548,8 @@ export class EditTab extends MobxLitElement {
 
   private renderGutterTaps(sketchId: string, sketch: Sketch, column: SketchColumn, colIdx: number) {
     const indicators: TemplateResult[] = [];
-    const gutterSelector = `.column-gutter[data-col="${colIdx}"]`;
+    const gutterEl = this.renderRoot.querySelector(`.column-gutter[data-col="${colIdx}"]`) as HTMLElement | null;
+    if (!gutterEl) return indicators;
 
     for (let i = 0; i < column.chain.length; i++) {
       const entry = column.chain[i];
@@ -551,10 +557,7 @@ export class EditTab extends MobxLitElement {
 
       for (const tap of entry.taps) {
         const fieldKey = `${sketchId}/${colIdx}/${i}/${tap.fieldPath}`;
-        const rect = this.layoutManager.getRelativeRect(
-          fieldKey,
-          this.renderRoot.querySelector(gutterSelector) as HTMLElement ?? this,
-        );
+        const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
         if (!rect) continue;
 
         const yCenter = rect.top + rect.height / 2;
@@ -573,9 +576,9 @@ export class EditTab extends MobxLitElement {
   // ========================================================================
 
   private renderEffectCard(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
+    const tappingMode = appState.local.tappingMode;
     return html`
       <div class="effect-card"
-        data-field-key="${sketchId}/${colIdx}/${chainIdx}"
         draggable="true"
         @dragstart=${(e: DragEvent) => this.onDragStart(e, sketchId, colIdx, chainIdx)}
         @dragend=${this.onDragEnd}>
@@ -584,25 +587,54 @@ export class EditTab extends MobxLitElement {
           <button class="remove-btn"
             @click=${() => appController.removeEffectFromChain(sketchId, colIdx, chainIdx)}>×</button>
         </div>
-        <div class="effect-card-body">
+        <div class="effect-card-body" data-card-key="${sketchId}/${colIdx}/${chainIdx}">
           ${this.renderFieldWidgets(sketchId, colIdx, chainIdx, entry)}
+          ${tappingMode ? this.renderTapOverlay(sketchId, colIdx, chainIdx, entry) : nothing}
         </div>
       </div>
     `;
   }
 
   /**
+   * Render a transparent overlay layer over the effect card body.
+   * Each field editor gets a clickable hit target positioned using the layout manager.
+   */
+  private renderTapOverlay(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
+    const selectedPath = appState.local.selectedFieldPath;
+    const cardBody = this.renderRoot.querySelector(
+      `[data-card-key="${sketchId}/${colIdx}/${chainIdx}"]`
+    ) as HTMLElement | null;
+
+    if (!cardBody) return html`<div class="tap-overlay-container"></div>`;
+
+    const hits: TemplateResult[] = [];
+
+    // Find all field editors registered for this card
+    const keyPrefix = `${sketchId}/${colIdx}/${chainIdx}/`;
+    for (const [key, entry_] of this.layoutManager.entries) {
+      if (!key.startsWith(keyPrefix)) continue;
+
+      const rect = this.layoutManager.getRelativeRect(key, cardBody);
+      if (!rect) continue;
+
+      const isSelected = selectedPath === key;
+      hits.push(html`
+        <div class="tap-overlay-hit" ?selected=${isSelected}
+          style="top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px"
+          @click=${() => appController.selectField(key)}></div>
+      `);
+    }
+
+    return html`<div class="tap-overlay-container">${hits}</div>`;
+  }
+
+  /**
    * Render the body of an effect card.
-   *
-   * If the module has a registered custom inspector, use it.
-   * Otherwise, auto-generate field editor widgets from param declarations.
+   * Field editors receive ONLY their FieldBinding — no tapping/layout knowledge.
    */
   private renderFieldWidgets(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-    const tappingMode = appState.local.tappingMode;
-    const selectedPath = appState.local.selectedFieldPath;
 
-    // Create a FieldBinding that reads/writes through the controller
     const binding: FieldBinding = {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
@@ -623,7 +655,6 @@ export class EditTab extends MobxLitElement {
         el = inspectorFactory.create(entry.instance_key, binding);
         this.inspectorCache.set(entry.instance_key, el);
       } else {
-        // Update binding on existing element
         (el as any).binding = binding;
       }
       return html`${el}`;
@@ -633,76 +664,52 @@ export class EditTab extends MobxLitElement {
     if (!plugin || plugin.params.length === 0) return nothing;
 
     return plugin.params.map(p => {
-      const fieldPath = p.name;
-      const fieldKey = `${sketchId}/${colIdx}/${chainIdx}/${fieldPath}`;
-      const isSelected = selectedPath === fieldKey;
-
       if (p.type === 0) {
         return html`<field-toggle
-          .fieldPath=${fieldPath} .label=${p.name}
+          .fieldPath=${p.name} .label=${p.name}
           .defaultValue=${p.defaultValue}
-          .binding=${binding}
-          .tappingMode=${tappingMode}
-          .selected=${isSelected}
-          .layoutManager=${this.layoutManager}
-          data-layout-key=${fieldKey}
-          ${this.registerFieldRef(fieldKey)}></field-toggle>`;
+          .binding=${binding}></field-toggle>`;
       }
 
       if (p.type === 1) {
         return html`<field-trigger
-          .fieldPath=${fieldPath} .label=${p.name}
+          .fieldPath=${p.name} .label=${p.name}
           .defaultValue=${p.defaultValue}
-          .binding=${binding}
-          .tappingMode=${tappingMode}
-          .selected=${isSelected}
-          .layoutManager=${this.layoutManager}
-          data-layout-key=${fieldKey}
-          ${this.registerFieldRef(fieldKey)}></field-trigger>`;
+          .binding=${binding}></field-trigger>`;
       }
 
       return html`<field-slider
-        .fieldPath=${fieldPath} .label=${p.name}
+        .fieldPath=${p.name} .label=${p.name}
         .min=${p.min} .max=${p.max}
         .step=${p.type === 13 ? 1 : 0.01}
         .defaultValue=${p.defaultValue}
-        .binding=${binding}
-        .tappingMode=${tappingMode}
-        .selected=${isSelected}
-        .layoutManager=${this.layoutManager}
-        data-layout-key=${fieldKey}
-        ${this.registerFieldRef(fieldKey)}></field-slider>`;
+        .binding=${binding}></field-slider>`;
     });
   }
 
-  /**
-   * Returns a Lit directive-like ref callback that registers the field element
-   * with the layout manager after it's rendered.
-   */
-  private registerFieldRef(key: string) {
-    // We'll register in updated() by scanning data-layout-key attributes instead
-    return nothing;
-  }
+  // ========================================================================
+  // Layout manager field scanning
+  // ========================================================================
 
   /**
-   * After each render, scan for field editors and register them with the layout manager.
+   * Scan the DOM for field editors and register them with the layout manager.
+   * Recursively searches shadow roots to find editors inside custom inspectors.
+   * Field editors are identified by implementing FieldEditorElement (via isFieldEditor).
    */
-  protected firstUpdated() {
-    this.scanAndRegisterFields();
-  }
-
   private scanAndRegisterFields() {
-    // Deferred to next frame to ensure field editors have rendered
     requestAnimationFrame(() => {
-      const editors = this.renderRoot.querySelectorAll('[data-layout-key]');
+      const sketchId = appState.local.editingSketchId;
+      if (!sketchId) return;
+
       const seenKeys = new Set<string>();
-      for (const el of editors) {
-        const key = (el as HTMLElement).dataset.layoutKey;
-        if (key && 'getControlElements' in el) {
-          this.layoutManager.register(key, el as any);
-          seenKeys.add(key);
-        }
+
+      // For each effect card body, find field editors inside it
+      const cardBodies = this.renderRoot.querySelectorAll('[data-card-key]');
+      for (const body of cardBodies) {
+        const cardKey = (body as HTMLElement).dataset.cardKey!;
+        this.scanFieldEditorsIn(body, cardKey, seenKeys);
       }
+
       // Unregister stale entries
       for (const key of this.layoutManager.entries.keys()) {
         if (!seenKeys.has(key)) {
@@ -710,6 +717,27 @@ export class EditTab extends MobxLitElement {
         }
       }
     });
+  }
+
+  private scanFieldEditorsIn(root: ParentNode, cardKey: string, seenKeys: Set<string>) {
+    for (const child of root.children) {
+      if (isFieldEditor(child)) {
+        const fieldEditor = child as FieldEditorElement;
+        for (const fieldPath of fieldEditor.controlledFields) {
+          const key = `${cardKey}/${fieldPath}`;
+          this.layoutManager.register(key, fieldEditor);
+          seenKeys.add(key);
+        }
+      }
+      // Recurse into shadow roots (for custom inspectors)
+      if ((child as Element).shadowRoot) {
+        this.scanFieldEditorsIn((child as Element).shadowRoot!, cardKey, seenKeys);
+      }
+      // Also recurse into light DOM children
+      if (child.children.length > 0) {
+        this.scanFieldEditorsIn(child, cardKey, seenKeys);
+      }
+    }
   }
 
   // ========================================================================
@@ -737,7 +765,6 @@ export class EditTab extends MobxLitElement {
     this.dragSourceCol = colIdx;
     this.dragSourceIdx = chainIdx;
     e.dataTransfer!.effectAllowed = 'move';
-    // Mark the dragged card visually
     (e.currentTarget as HTMLElement).setAttribute('dragging', '');
   }
 
@@ -746,7 +773,6 @@ export class EditTab extends MobxLitElement {
     this.dragSketchId = null;
     this.dragSourceCol = -1;
     this.dragSourceIdx = -1;
-    // Clear all drag-over highlights
     this.renderRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
   };
 
@@ -755,7 +781,7 @@ export class EditTab extends MobxLitElement {
     (e.currentTarget as HTMLElement).classList.remove('drag-over');
 
     if (!this.dragSketchId || this.dragSourceCol < 0 || this.dragSourceIdx < 0) return;
-    if (this.dragSketchId !== targetSketchId) return; // cross-sketch drag not supported yet
+    if (this.dragSketchId !== targetSketchId) return;
 
     const sketch = appState.database.sketches[targetSketchId];
     if (!sketch) return;
@@ -769,16 +795,13 @@ export class EditTab extends MobxLitElement {
       const srcCol = sk.columns[this.dragSourceCol];
       const dstCol = sk.columns[targetColIdx] ?? srcCol;
 
-      // Remove from source
       const [removed] = srcCol.chain.splice(this.dragSourceIdx, 1);
 
-      // Adjust insert index if moving within the same column and after the source
       let adjustedIdx = targetInsertIdx;
       if (this.dragSourceCol === targetColIdx && targetInsertIdx > this.dragSourceIdx) {
         adjustedIdx--;
       }
 
-      // Insert at target
       dstCol.chain.splice(adjustedIdx, 0, removed);
     });
   }
@@ -799,10 +822,8 @@ export class EditTab extends MobxLitElement {
     appController.mutate('Move to new column', draft => {
       const sk = draft.sketches[sketchId];
 
-      // Remove from source column
       const [removed] = sk.columns[this.dragSourceCol].chain.splice(this.dragSourceIdx, 1);
 
-      // Create new column with the moved effect
       while (sk.columns.length <= colIdx) {
         sk.columns.push({
           name: `Column ${sk.columns.length + 1}`,
@@ -813,7 +834,6 @@ export class EditTab extends MobxLitElement {
         });
       }
 
-      // Insert before the texture_output
       const targetChain = sk.columns[colIdx].chain;
       const outIdx = targetChain.findIndex(e => e.type === 'texture_output');
       targetChain.splice(outIdx >= 0 ? outIdx : targetChain.length, 0, removed);

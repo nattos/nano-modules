@@ -2,16 +2,19 @@
  * FieldLayoutManager — centralized bounding box tracking for field editors.
  *
  * All consumers of field element positions (tap overlays, tap line visualization,
- * future rail lines) go through this single source. The manager tracks both
- * local (relative to host element) and viewport-relative bounding boxes,
- * batching recalculation via requestAnimationFrame.
+ * future rail lines) go through this single source. Field editors themselves have
+ * NO knowledge of this manager — the edit-tab discovers and registers them
+ * by scanning the DOM.
+ *
+ * The manager tracks viewport-relative bounding boxes, batching recalculation
+ * via requestAnimationFrame. A ResizeObserver on the columns container detects
+ * layout shifts.
  */
 
 import { observable, runInAction, makeObservable } from 'mobx';
-import type { FieldEditorElement, FieldLayoutManager as IFieldLayoutManager } from './field-editor';
+import type { FieldEditorElement } from './field-editor';
 
 export interface FieldRect {
-  /** Y center relative to a reference element (set during getRelativeRect). */
   top: number;
   left: number;
   width: number;
@@ -25,7 +28,7 @@ export interface FieldLayoutEntry {
   viewportRect: DOMRect | null;
 }
 
-export class FieldLayoutManager implements IFieldLayoutManager {
+export class FieldLayoutManager {
   @observable.shallow entries = new Map<string, FieldLayoutEntry>();
 
   /** Monotonically increasing generation counter — bumped on every recalculate. */
@@ -33,7 +36,6 @@ export class FieldLayoutManager implements IFieldLayoutManager {
 
   private pendingRecalc = false;
   private resizeObserver: ResizeObserver | null = null;
-  private observedContainer: HTMLElement | null = null;
 
   constructor() {
     makeObservable(this);
@@ -55,6 +57,7 @@ export class FieldLayoutManager implements IFieldLayoutManager {
     });
   }
 
+  /** Schedule a recalculation. Can be called externally when layout may have shifted. */
   notifyLayoutChanged() {
     this.scheduleRecalculate();
   }
@@ -99,7 +102,6 @@ export class FieldLayoutManager implements IFieldLayoutManager {
   /** Attach a ResizeObserver to auto-recalculate on layout shifts. */
   observeContainer(container: HTMLElement) {
     this.unobserveContainer();
-    this.observedContainer = container;
     this.resizeObserver = new ResizeObserver(() => {
       this.scheduleRecalculate();
     });
@@ -111,7 +113,6 @@ export class FieldLayoutManager implements IFieldLayoutManager {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
     }
-    this.observedContainer = null;
   }
 
   dispose() {

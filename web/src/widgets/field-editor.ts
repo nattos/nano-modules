@@ -12,6 +12,9 @@
  *
  * The framework calls bindInstance() after the element is created to wire
  * it to a specific module instance's state.
+ *
+ * Field editors have NO knowledge of tapping, selection, or layout tracking.
+ * Those concerns are handled externally by the edit-tab overlay system.
  */
 
 /** Binding context provided by the framework. */
@@ -45,20 +48,6 @@ export interface FieldEditorElement extends HTMLElement {
 
   /** Returns the interactive control element(s) for bounding box queries. */
   getControlElements(): HTMLElement[];
-
-  /** Whether tap configuration mode is active. */
-  tappingMode: boolean;
-
-  /** Whether this field is currently selected for tap configuration. */
-  selected: boolean;
-
-  /** Layout manager for centralized bounding box tracking. */
-  layoutManager: FieldLayoutManager | null;
-}
-
-// Forward reference — avoid circular import. Concrete class in field-layout-manager.ts.
-export interface FieldLayoutManager {
-  notifyLayoutChanged(): void;
 }
 
 /** Type guard for FieldEditorElement. */

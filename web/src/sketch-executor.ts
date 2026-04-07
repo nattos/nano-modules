@@ -226,12 +226,13 @@ export class SketchExecutor {
 
             if (rail?.dataType === 'float' && rv.data !== undefined) {
               // Data tap read: write rail value into module params
-              const paramIdx = parseInt(tap.fieldPath, 10);
-              if (!isNaN(paramIdx)) {
+              entry.params[tap.fieldPath] = rv.data;
+              // Find numeric index for legacy onParamChange
+              const paramIdx = Object.keys(entry.params).indexOf(tap.fieldPath);
+              if (paramIdx >= 0) {
                 loaded.host.frameState.params[paramIdx] = rv.data;
                 loaded.module.onParamChange(paramIdx, rv.data);
               }
-              entry.params[tap.fieldPath] = rv.data;
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: tap.fieldPath, value: rv.data },
               ]);
@@ -292,7 +293,10 @@ export class SketchExecutor {
             const targetRailValues = isColumnRail ? columnRailValues : crossRailValues;
 
             if (rail?.dataType === 'float') {
-              const value = this.readFieldFromState(loaded.host, tap.fieldPath);
+              // Try pluginState first (modules that publish via state::set),
+              // fall back to the chain entry's params (set by the executor above).
+              const value = this.readFieldFromState(loaded.host, tap.fieldPath)
+                         ?? entry.params[tap.fieldPath];
               if (value !== undefined) {
                 const existing = targetRailValues.get(tap.railId) ?? {};
                 existing.data = value;

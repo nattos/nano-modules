@@ -34,10 +34,10 @@ export class BrightnessContrastInspector extends MobxLitElement {
     if (!this.binding) return html``;
     return html`
       <div class="section">Color Adjust</div>
-      <field-slider .fieldPath=${'0'} .label=${'Brightness'}
+      <field-slider .fieldPath=${'brightness'} .label=${'Brightness'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5}
         .binding=${this.binding}></field-slider>
-      <field-slider .fieldPath=${'1'} .label=${'Contrast'}
+      <field-slider .fieldPath=${'contrast'} .label=${'Contrast'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5}
         .binding=${this.binding}></field-slider>
     `;
