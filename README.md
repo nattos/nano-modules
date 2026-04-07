@@ -1,323 +1,278 @@
-# nano-repatch Module System
+# Nano Modules
 
-This document describes the WASM module system, the host APIs, the shader pipeline, and how to build and test everything.
+A WASM-based visual effects module system with GPU compute rendering, sideband rail routing, and a web-based sketch editor. Modules compile to WebAssembly and run in both native (WAMR + Metal) and browser (WebGPU) environments.
+
+## Architecture Overview
+
+```
+                    WASM Module (.wasm)
+                    C++17, WASI libc++
+     Imports: host, state, val, gpu, canvas, resolume
+     Exports: init, tick, render, on_state_patched
+
+        Native Host (C++/ObjC++)          Web App (TypeScript)
+        WAMR runtime, Metal GPU           WebAssembly API, WebGPU
+        FFGL plugin, Resolume WS          Web Worker engine
+        Bridge server (dylib)             Lit + MobX sketch editor
+```
+
+### Key Concepts
+
+- **Modules** are self-contained WASM plugins (effects, generators, mixers, controls)
+- **Sketches** define processing chains of virtual module instances with texture and data routing
+- **Rails** are named data channels for routing values and textures between modules within and across columns
+- **Schema** declares a module's full state tree, I/O ports, and parameter metadata in one call
+- **Val** is a handle-based JSON value container — zero-allocation on the WASM side
+- **Bridge Core** is the shared protocol engine (state document, observers, JSON patches), compiled to WASM for the browser
 
 ## Prerequisites
 
-### macOS Dependencies (Homebrew)
+### macOS (Homebrew)
 
 ```bash
-brew install llvm        # WASM-capable clang++ (--target=wasm32-wasip1)
+brew install llvm        # WASM-capable clang++
 brew install lld          # wasm-ld linker
-brew install shaderc      # glslc (HLSL/GLSL → SPIR-V compiler)
-brew install spirv-tools  # spirv-val, spirv-dis (validation/disassembly)
+brew install shaderc      # glslc (HLSL → SPIR-V)
+brew install spirv-tools  # spirv-val, spirv-dis
 ```
 
-### Rust (for naga shader transpiler)
+### Rust (shader transpiler)
 
 ```bash
 rustup update stable
-cargo install naga-cli    # SPIR-V → WGSL/MSL transpiler
+cargo install naga-cli    # SPIR-V → WGSL/MSL
 ```
 
-### WASI SDK (for C++ standard library in WASM)
-
-The build system expects a WASI sysroot with libc++ at the path detected by `wasm_build_env.sh` (typically under Homebrew's LLVM installation or a standalone WASI SDK). The sysroot provides `<cmath>`, `<cstring>`, and other C++17 headers for `wasm32-wasip1`.
-
-### Metal Toolchain (for native GPU backend)
-
-```bash
-xcodebuild -downloadComponent MetalToolchain
-```
-
-### Node.js (for web test harness)
+### Node.js
 
 ```bash
 cd web && npm install
 ```
 
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    WASM Module (.wasm)                    │
-│  C++17 with WASI libc++, --target=wasm32-wasip1          │
-│  Imports: canvas, host, resolume, state, gpu, wasi       │
-│  Exports: init, tick, render, on_param_change,           │
-│           on_state_changed                                │
-└─────────────┬───────────────────────────┬───────────────┘
-              │                           │
-    ┌─────────▼─────────┐     ┌──────────▼──────────┐
-    │   Native Host     │     │   Web Test Harness   │
-    │   (C++/ObjC++)    │     │   (TypeScript)       │
-    │                   │     │                       │
-    │ • WAMR runtime    │     │ • WebAssembly API     │
-    │ • WASI support    │     │ • WebGPU backend      │
-    │ • Metal GPU       │     │ • WASI shim           │
-    │ • FFGL plugin     │     │ • Lit + MobX editors  │
-    │ • Resolume WS     │     │ • Fake Resolume       │
-    │ • WS server       │     │ • Puppeteer E2E       │
-    └───────────────────┘     └───────────────────────┘
-```
-
-## Host API Modules
-
-WASM modules import functions from these host modules:
-
-### `canvas` — 2D Drawing (immediate mode)
-| Function | Description |
-|----------|-------------|
-| `fill_rect(x,y,w,h,r,g,b,a)` | Filled rectangle |
-| `draw_image(tex,x,y,w,h)` | Textured quad |
-| `draw_text(ptr,len,x,y,size,r,g,b,a)` | Bitmap text |
-
-### `host` — Timing and Parameters
-| Function | Description |
-|----------|-------------|
-| `get_time() → f64` | Elapsed seconds |
-| `get_delta_time() → f64` | Frame delta |
-| `get_bar_phase() → f64` | FFGL bar phase [0,1) |
-| `get_bpm() → f64` | Host BPM |
-| `get_param(index) → f64` | FFGL parameter value |
-| `get_viewport_w/h() → i32` | Viewport dimensions |
-| `trigger_audio(channel)` | Fire synth voice |
-| `log(ptr, len)` | Debug log |
-
-### `resolume` — Composition Queries
-| Function | Description |
-|----------|-------------|
-| `get_param(id:i64) → f64` | Read cached parameter |
-| `set_param(id:i64, value:f64)` | Write parameter |
-| `subscribe_query(ptr, len)` | Subscribe with path pattern (supports `*`) |
-| `get_param_path(id:i64, buf, len) → i32` | Get param path string |
-| `get_clip_count/id/channel/name/connected` | Composition queries |
-| `trigger_clip(id:i64, on)` | Trigger clip on/off |
-
-### `state` — Plugin State & Logging
-| Function | Description |
-|----------|-------------|
-| `set_metadata(id_ptr, id_len, version)` | Register plugin |
-| `declare_param(index, name, name_len, type, default)` | Declare FFGL parameter |
-| `get_key(buf, len) → i32` | Get assigned plugin key |
-| `console_log(level, ptr, len)` | Log message |
-| `console_log_structured(level, msg_ptr, msg_len, json_ptr, json_len)` | Log with structured data |
-| `set(path_ptr, path_len, json_ptr, json_len)` | Publish state |
-| `read(layout, count, paths, output, size, results) → i32` | Read state (json-doc) |
-
-### `gpu` — GPU Compute & Rendering (D3D12-style)
-| Function | Description |
-|----------|-------------|
-| `get_backend() → i32` | 0=Metal, 1=WebGPU, -1=none |
-| `create_shader_module(src, len) → i32` | Compile shader source |
-| `create_buffer(size, usage) → i32` | Create GPU buffer |
-| `create_texture(w, h, format) → i32` | Create texture |
-| `create_compute_pso(shader, entry, len) → i32` | Compute Pipeline State Object |
-| `create_render_pso(vs, vs_entry, vs_len, fs, fs_entry, fs_len, fmt) → i32` | Render PSO |
-| `write_buffer(buf, offset, data_ptr, data_len)` | Upload data |
-| `begin_compute_pass() → i32` | Begin compute encoding |
-| `compute_set_pso/set_buffer/dispatch/end` | Compute commands |
-| `begin_render_pass(tex, cr, cg, cb, ca) → i32` | Begin render encoding |
-| `render_set_pso/set_vertex_buffer/draw/end` | Render commands |
-| `submit()` | Submit command buffer |
-| `get_render_target() → i32` | Current output texture |
-| `release(handle)` | Free resource |
-
-## Shader Pipeline
-
-Shaders are authored in **HLSL** and compiled through a multi-stage pipeline:
-
-```
-HLSL (authored)
-  │
-  ├── glslc ──→ SPIR-V (canonical intermediate, required)
-  │
-  ├── naga ───→ WGSL (for WebGPU, embedded in WASM module)
-  │
-  └── naga ───→ MSL (for native Metal, embedded in WASM module)
-```
-
-Modules are "fat" — they embed both WGSL and MSL and select at runtime via `gpu.get_backend()`.
-
-## Shared Build Environment
-
-All WASM modules source `native/wasm_modules/wasm_build_env.sh`, which provides:
-
-- **Compiler**: Homebrew LLVM `clang++` with `--target=wasm32-wasip1`
-- **C++ standard**: C++17 (`-std=c++17 -fno-exceptions -fno-rtti`)
-- **Sysroot**: WASI libc + libc++ + libc++abi
-- **Common exports**: `init`, `tick`, `render`, `on_param_change`, `on_state_changed`
-- **Helper function**: `wasm_build()` compiles sources and links into `.wasm`
-
-## C++ Wrapper Headers
-
-Shared headers in `native/wasm_modules/include/` provide type-safe wrappers over the raw C host imports:
-
-### `gpu.h` — D3D12-style GPU API
-- Typed handles: `ShaderModule`, `Buffer`, `Texture`, `ComputePSO`, `RenderPSO`
-- Command encoders: `ComputePass`, `RenderPass` with method chaining
-- `Device` factory with static methods for resource creation and submit
-- `Buffer::write<T>(data, count)` for arrays, `Buffer::writeOne<T>(value)` for single values
-
-### `host.h` — Host, Canvas, State, Resolume APIs
-- `namespace host` — timing, parameters, viewport, audio triggers
-- `namespace canvas` — 2D drawing (fillRect, drawImage, drawText)
-- `namespace state` — metadata, parameter declaration, logging, state read/write
-- `namespace resolume` — composition queries, parameter control, clip triggers
-
-## WASM Modules
-
-### NanoLooper (`com.nattos.nanolooper`)
-4-channel, 16-step looper sequencer with visual overlay.
-- **Parameters**: 12 (Trigger 1-4, Delete, Mute, Undo, Redo, Record, Show Overlay, Synth, Synth Gain)
-- **Rendering**: Canvas 2D (bitmap font text, colored quads)
-- **State**: Publishes grid, phase, recording status. Accepts external grid edits via `on_state_changed`.
-- **Size**: ~15KB
-
-### ParamLinker (`com.nattos.paramlinker`)
-Links two Resolume parameters together via a "learn" mechanism.
-- **Parameters**: Learn (toggle), Active (toggle)
-- **Learn mode**: Subscribes to `/*`, tracks parameter changes, ignores automation after 1s settle
-- **State**: Publishes seen params list, input/output assignment
-- **Editor**: Interactive Lit+MobX web component with click-to-assign
-- **Size**: ~10KB
-
-### SpinningTris (`com.nattos.spinningtris`)
-GPU compute + render demo. N spinning triangles with random colors.
-- **Parameters**: Triangles (1-1000), Speed
-- **Shaders**: HLSL compute (vertex generation) + vertex/fragment (rasterization)
-- **Pipeline**: Compute dispatch → render pass → submit
-- **Size**: ~7KB
-
-### GPU Test (`com.nattos.gpu_test`)
-Minimal test module for GPU pipeline validation.
-- Fills screen with known color (R=0, G=0.5, B=1.0) via compute + render
-- Used by both native (Metal) and web (WebGPU) E2E tests
-- **Size**: ~9KB (fat module with WGSL + MSL)
-
-## Build Commands
-
-### Native (C++ / macOS)
+## Quick Start
 
 ```bash
-# Configure CMake
-cmake -B native/build -S native -DCMAKE_BUILD_TYPE=Debug
-
-# Build all native targets
+# Build native C++ (bridge server, tests)
+cmake -B native/build -S native
 cmake --build native/build
 
-# Run all native tests (143 tests)
+# Build all WASM modules
+for m in native/wasm_modules/*/build.sh; do bash "$m"; done
+
+# Run native tests (141 tests)
 cd native/build && ctest --output-on-failure
-```
 
-### WASM Modules
+# Run web unit tests (61 tests)
+cd web && npm test
 
-Each module has its own `build.sh`:
-
-```bash
-# NanoLooper
-native/wasm_modules/nanolooper/build.sh
-
-# ParamLinker
-native/wasm_modules/paramlinker/build.sh
-
-# SpinningTris (includes HLSL → SPIR-V → WGSL/MSL shader pipeline)
-native/wasm_modules/spinningtris/build.sh
-
-# GPU Test (fat module with WGSL + MSL)
-native/wasm_modules/gpu_test/build.sh
-
-# Copy to web harness
-cp native/build/*.wasm web/public/
-```
-
-### Web Test Harness
-
-```bash
-cd web
-
-# Install dependencies
-npm install
-
-# Dev server (http://localhost:5174)
-npm run dev
-
-# Unit tests (24 tests, vitest)
-npm test
-
-# E2E tests (18 tests, puppeteer — requires dev server running)
+# Run web E2E tests (39 tests, requires dev server)
 npm run dev &
 npm run test:e2e
 ```
 
-### Full Pipeline
+## Host API
 
-```bash
-# Build everything from scratch
-native/wasm_modules/nanolooper/build.sh
-native/wasm_modules/paramlinker/build.sh
-native/wasm_modules/spinningtris/build.sh
-native/wasm_modules/gpu_test/build.sh
-cp native/build/*.wasm web/public/
-cmake -B native/build -S native -DCMAKE_BUILD_TYPE=Debug
-cmake --build native/build
-cd native/build && ctest --output-on-failure
-cd ../../web && npm test
+WASM modules import from these host modules:
+
+### `state` — Schema, State, Patches
+
+| Function | Description |
+|----------|-------------|
+| `set_schema(id, ver, schema_json)` | Register module with full schema |
+| `set(path, json)` | Publish state as JSON string |
+| `set_val(path, val_handle)` | Publish state via val handle (no JSON serialization) |
+| `read(layout, count, paths, output, size, results)` | Structured state reader (json-doc) |
+| `get_key(buf, len)` | Get assigned plugin key |
+| `get_patch(index)` | Get Nth patch as val handle (during `on_state_patched`) |
+| `console_log(level, msg)` | Log message |
+
+### `val` — Handle-Based Value Container
+
+| Function | Description |
+|----------|-------------|
+| `null/bool/number/string/array/object()` | Construct values |
+| `type_of/as_number/as_bool/as_string(h)` | Read values |
+| `get/set(obj, key)` | Object access |
+| `get_index/push/length(arr)` | Array access |
+| `release(h)` | Free host-side data |
+| `to_json(h, buf, len)` | Serialize to JSON string |
+
+### `gpu` — D3D12-Style GPU Compute & Rendering
+
+| Function | Description |
+|----------|-------------|
+| `get_backend()` | 0=Metal, 1=WebGPU, -1=none |
+| `create_shader_module/buffer/texture/compute_pso/render_pso` | Resource creation |
+| `begin_compute_pass` → `set_pso/set_buffer/set_texture/dispatch` → `end` | Compute encoding |
+| `begin_render_pass` → `set_pso/set_vertex_buffer/draw` → `end` | Render encoding |
+| `texture_for_field(path)` | Unified texture access by schema field name |
+| `submit()` | Execute GPU commands |
+
+### `host` — Timing & Audio
+
+| Function | Description |
+|----------|-------------|
+| `get_time/delta_time/bar_phase/bpm()` | Frame timing |
+| `get_param(index)` | Legacy parameter read |
+| `get_viewport_w/h()` | Viewport dimensions |
+| `trigger_audio(channel)` | Fire synth voice |
+
+### `canvas` — 2D Drawing
+
+| Function | Description |
+|----------|-------------|
+| `fill_rect(x,y,w,h,r,g,b,a)` | Filled rectangle |
+| `draw_text(ptr,len,x,y,size,r,g,b,a)` | Bitmap text |
+
+## Module Schema
+
+Modules declare their identity, state fields, I/O, and parameters in a single `state::init()` call:
+
+```cpp
+#include <host.h>
+#include <gpu.h>
+#include <val.h>
+
+void init() {
+  state::init("com.nattos.brightness_contrast", {1, 0, 0},
+    state::Schema()
+      .floatField("brightness", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("contrast", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .textureField("tex_in", state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+  );
+}
+
+void render(int w, int h) {
+  auto input = gpu::Device::textureForField("tex_in");
+  auto output = gpu::Device::textureForField("tex_out");
+  // ... GPU compute pass
+}
 ```
+
+### Schema Field Types
+
+| Type | C++ Method | I/O Flags |
+|------|-----------|-----------|
+| `float` | `.floatField(name, default, min, max, io)` | PrimaryInput, PrimaryOutput, etc. |
+| `int` | `.intField(name, default, min, max, io)` | |
+| `bool` | `.boolField(name, default, io)` | |
+| `event` | `.eventField(name, io)` | |
+| `texture` | `.textureField(name, io)` | |
+| `string` | `.textField(name, default, io)` | |
+
+### State Change Notifications
+
+Modules receive state changes via `on_state_patched` with patch details:
+
+```cpp
+void on_state_patched(int patch_count,
+    const char* paths_buf, const int* offsets,
+    const int* lengths, const int* ops) {
+  for (int i = 0; i < patch_count; i++) {
+    if (ops[i] == state::PatchReplace) {
+      auto patch = state::getPatch(i);      // val handle
+      double v = val::asNumber(val::get(patch, "value"));
+      val::release(patch);
+      // ... react to change
+    }
+  }
+}
+```
+
+## Sketches & Rails
+
+Sketches define processing chains with sideband data routing:
+
+```typescript
+const sketch: Sketch = {
+  anchor: 'com.nattos.spinningtris@0',
+  rails: [                              // Cross-cutting (sketch-scoped)
+    { id: 'lfo_out', dataType: 'float' },
+  ],
+  columns: [{
+    name: 'main',
+    rails: [                            // Column-local
+      { id: 'tex_a', dataType: 'texture' },
+    ],
+    chain: [
+      { type: 'texture_input', id: 'in' },
+      { type: 'module', module_type: 'com.nattos.env_lfo', instance_key: 'lfo@0',
+        params: { rate: 0.5 },
+        taps: [{ railId: 'lfo_out', fieldPath: 'output', direction: 'write' }] },
+      { type: 'module', module_type: 'com.nattos.solid_color', instance_key: 'color@0',
+        params: { red: 0.0 },
+        taps: [{ railId: 'lfo_out', fieldPath: 'red', direction: 'read' }] },
+      { type: 'texture_output', id: 'out' },
+    ],
+  }],
+};
+```
+
+### Rail State Observation
+
+Rail values are published to the state document for external observation:
+
+```
+/sketch_state/{sketchId}/columns/{colIdx}/{railId}/value   — column-local rails
+/sketch_state/{sketchId}/rails/{railId}/value               — cross-cutting rails
+```
+
+## WASM Modules
+
+| Module | Type | Description |
+|--------|------|-------------|
+| `brightness_contrast` | Effect | Brightness/contrast adjustment via compute shader |
+| `spinningtris` | Generator | GPU compute + render demo with animated triangles |
+| `gpu_test` | Generator | Solid color fill for GPU pipeline testing |
+| `solid_color` | Generator | Fills render target with uniform RGB color |
+| `env_lfo` | Data | Sine wave LFO, outputs float to state |
+| `video_blend` | Mixer | Blends two texture inputs with opacity |
+| `nanolooper` | Control | 4-channel 16-step looper sequencer |
+| `paramlinker` | Control | Links Resolume parameters via learn mechanism |
+
+## Shader Pipeline
+
+```
+HLSL (authored)  →  glslc  →  SPIR-V  →  naga  →  WGSL (WebGPU)
+                                       →  naga  →  MSL  (Metal)
+```
+
+Modules are "fat" — embed both WGSL and MSL, select at runtime via `gpu::Device::backend()`.
+
+## Web App
+
+The sketch editor (`web/index.html`) runs all WASM/GPU execution in a Web Worker:
+
+- **Create tab**: Browse composition plugins, stage instances, create sketches
+- **Organize tab**: List and select sketches
+- **Edit tab**: Multi-column chain editor with drag-drop, field editor widgets, live GPU preview
+- **State management**: MobX + Immer with undo/redo via patches
+- **Field widgets**: `<field-slider>`, `<field-toggle>`, `<field-trigger>` — standard editors bound via `FieldBinding`
+- **Inspector system**: Modules can register custom column-width inspector views for effect cards
 
 ## Test Summary
 
 | Suite | Framework | Tests | What's Tested |
 |-------|-----------|-------|---------------|
-| ParamCache | Catch2 | 7 | Thread-safe parameter cache |
-| Resolume Protocol | Catch2 | 9 | WebSocket message serialization |
-| Bridge API | Catch2 | 7 | C API singleton lifecycle |
-| Bridge Loader | Catch2 | 5 | dlopen/dlsym function pointer resolution |
-| WASM Host | Catch2 | 12 | Module loading, host function calls |
-| Canvas Host | Catch2 | 3 | WASM → DrawList via canvas.* |
-| Composition Cache | Catch2 | 7 | Resolume state parsing |
-| JSON Patch | Catch2 | 30 | RFC 6902 apply/diff/serialize |
-| json-doc | Catch2 | 14 | Fixed-buffer state reader |
-| Observer Registry | Catch2 | 11 | Path-based subscriptions |
-| State Document | Catch2 | 17 | Plugin state tree + patches |
-| DrawList | Catch2 | 6 | Command buffer |
-| NanoLooper WASM | Catch2 | 5 | Full WASM module lifecycle |
-| State Integration | Catch2 | 4 | WebSocket state round-trip |
-| Metal GPU | Catch2 | 2 | Metal compute + render + pixel readback |
-| WS Server | Catch2 | 5 | WebSocket server (integration) |
-| **Native Total** | | **143** | |
-| Font/Resolume/Host | Vitest | 24 | Font atlas, fake Resolume, WASM loading |
-| Harness E2E | Puppeteer | 12 | Browser WASM, state patching, keyboard |
-| GPU Pipeline E2E | Puppeteer | 6 | HLSL→SPIR-V→WGSL→WebGPU→pixel assertions |
-| **Web Total** | | **42** | |
-| **Grand Total** | | **185** | |
-
-## Native Build Artifacts
-
-| Artifact | Description |
-|----------|-------------|
-| `libbridge_server.dylib` | Singleton bridge with all subsystems |
-| `NanoRepatch.bundle` | Generic FFGL plugin (loads bridge dylib) |
-| `NanoLooper.bundle` | Looper FFGL plugin with synth + canvas renderer |
-| `looper_harness` | macOS GUI harness for NanoLooper |
-| `bridge_harness` | CLI harness for bridge testing |
-
-## Web Harness URL Parameters
-
-```
-http://localhost:5174/?module=nanolooper    # Default
-http://localhost:5174/?module=paramlinker
-http://localhost:5174/?module=spinningtris
-```
+| Native C++ | Catch2 | 141 | Bridge, WASM host, JSON patch, state, GPU |
+| Val unit tests | Vitest | 32 | Handle-based value container |
+| WASM module tests | Vitest | 29 | Module loading, state, rendering |
+| GPU pipeline E2E | Puppeteer | 6 | HLSL → SPIR-V → WGSL → WebGPU → pixel |
+| Brightness/contrast E2E | Puppeteer | 8 | Effect chain, solid color input, params |
+| Engine E2E | Puppeteer | 8 | Multi-plugin, sketch chains, trace switching |
+| Rail routing E2E | Puppeteer | 5 | Data rails, texture rails, cross-cutting |
+| NanoLooper E2E | Puppeteer | 12 | Browser WASM, state patching, keyboard |
+| **Total** | | **241** | |
 
 ## Key Design Decisions
 
-- **C++17 with WASI libc++**: Modules compile with `--target=wasm32-wasip1` using WASI sysroot for full C++ STL support (`<cmath>`, `<cstring>`, etc.) with `-fno-exceptions -fno-rtti` to minimize binary size. Modules target eventual direct bytecode generation from nano-repatch's IR.
-- **HLSL as shader authoring language**: Better compute support, cleaner syntax, forward-compatible with Slang. Agents produce better HLSL than WGSL.
-- **SPIR-V as canonical shader IR**: Required format. WGSL and MSL generated at build time via naga.
-- **Fat modules**: Ship both WGSL + MSL, select at runtime via `gpu.get_backend()`.
-- **D3D12-style GPU API**: Pipeline State Objects, render targets, explicit submit. Maps cleanly to both Metal and WebGPU.
-- **JSON Patch (RFC 6902)**: State changes streamed to editors via standard protocol.
-- **json-doc**: Fixed-buffer state reader for WASM — no dynamic allocation needed.
-- **`id@N` plugin keys**: `com.nattos.nanolooper@0`, `com.nattos.nanolooper@1` for multi-instance.
-- **WASI shim for browser**: Minimal stubs (`wasi-shim.ts`) implement `wasi_snapshot_preview1` syscalls (args, fd, environ, clock) so WASI-compiled modules run in the browser. Native side uses WAMR's built-in WASI support.
-- **GPU E2E pixel assertions**: `Frame` class reads back full pixel buffers and provides `expectPixelAt`, `expectUniformColor`, `expectCoverage`, `expectDifferentFrom`, etc. Automatic PNG dumps to `/tmp/gpu-test-dumps/`.
+- **C++17 with WASI libc++**: Modules compile with `--target=wasm32-wasip1`, `-fno-exceptions -fno-rtti`
+- **Unified schema**: Single `state::init()` call declares identity, fields, types, I/O, min/max, defaults, ordering
+- **Handle-based val**: Host owns all JSON data; WASM holds integer handles. Zero allocation in modules.
+- **on_state_patched**: Replaces `on_param_change` and `on_state_changed`. Receives patch paths + ops inline; modules call `state::getPatch()` to fetch values via val handles.
+- **HLSL shaders**: Authored in HLSL, compiled to SPIR-V, transpiled to WGSL + MSL. Fat modules embed both.
+- **D3D12-style GPU API**: PSOs, explicit submit, unified texture access via `textureForField`.
+- **Sideband rails**: Named data channels within columns (column-local) and across columns (sketch-scoped). Values published to `/sketch_state/` for observation.
+- **Web Worker engine**: All WASM/GPU runs off the main thread. State updates via `postMessage`, GPU preview via `ImageBitmap` transfer.
+- **Trace points**: Configurable texture capture points for live preview of any sketch output.
