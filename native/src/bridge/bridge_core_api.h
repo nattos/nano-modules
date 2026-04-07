@@ -114,6 +114,42 @@ int bridge_core_get_plugin_key(BridgeCoreHandle h,
                                 const char* id, int id_len,
                                 char* key_buf, int key_buf_len);
 
+// --- Val handle store ---
+// Handle-based JSON value container. Bridge core owns the data;
+// callers hold integer handles. Used by WASM modules via host functions.
+int bridge_core_val_null(BridgeCoreHandle h);
+int bridge_core_val_bool(BridgeCoreHandle h, int v);
+int bridge_core_val_number(BridgeCoreHandle h, double v);
+int bridge_core_val_string(BridgeCoreHandle h, const char* s, int len);
+int bridge_core_val_array(BridgeCoreHandle h);
+int bridge_core_val_object(BridgeCoreHandle h);
+
+int bridge_core_val_type_of(BridgeCoreHandle h, int val_h);
+double bridge_core_val_as_number(BridgeCoreHandle h, int val_h);
+int bridge_core_val_as_bool(BridgeCoreHandle h, int val_h);
+int bridge_core_val_as_string(BridgeCoreHandle h, int val_h, char* buf, int buf_len);
+
+int bridge_core_val_get(BridgeCoreHandle h, int obj_h, const char* key, int key_len);
+void bridge_core_val_set(BridgeCoreHandle h, int obj_h, const char* key, int key_len, int val_h);
+int bridge_core_val_keys_count(BridgeCoreHandle h, int obj_h);
+int bridge_core_val_key_at(BridgeCoreHandle h, int obj_h, int index, char* buf, int buf_len);
+
+int bridge_core_val_get_index(BridgeCoreHandle h, int arr_h, int index);
+void bridge_core_val_push(BridgeCoreHandle h, int arr_h, int val_h);
+int bridge_core_val_length(BridgeCoreHandle h, int arr_h);
+
+void bridge_core_val_release(BridgeCoreHandle h, int val_h);
+int bridge_core_val_to_json(BridgeCoreHandle h, int val_h, char* buf, int buf_len);
+
+// --- Direct state commit via val handle (no JSON serialization) ---
+// Writes a val handle's value directly into a plugin's state document.
+// If path is empty, replaces the entire plugin state.
+// If path is provided (e.g. "field_name"), sets that field within the state.
+void bridge_core_commit_val(BridgeCoreHandle h,
+                             const char* plugin_key, int plugin_key_len,
+                             const char* path, int path_len,
+                             int val_h);
+
 #ifdef __cplusplus
 }
 #endif

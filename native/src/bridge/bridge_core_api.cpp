@@ -21,6 +21,21 @@ struct BridgeCoreInstance {
   int next_client_id = 1;
   std::unordered_map<int, std::deque<std::string>> outbox;
 
+  // Val handle store (shared across all plugins using this bridge core)
+  std::unordered_map<int32_t, nlohmann::json> val_handles;
+  int32_t next_val_handle = 1;
+
+  int32_t alloc_val(nlohmann::json v) {
+    int32_t h = next_val_handle++;
+    val_handles[h] = std::move(v);
+    return h;
+  }
+  nlohmann::json* get_val(int32_t h) {
+    auto it = val_handles.find(h);
+    return it != val_handles.end() ? &it->second : nullptr;
+  }
+  void release_val(int32_t h) { val_handles.erase(h); }
+
   BridgeCoreInstance() {
     core.set_send_callback([this](int client_id, const std::string& msg) {
       outbox[client_id].push_back(msg);
@@ -282,4 +297,159 @@ int bridge_core_get_plugin_key(BridgeCoreHandle h,
     }
   }
   return 0;
+}
+
+// --- Val handle store ---
+
+int bridge_core_val_null(BridgeCoreHandle h) {
+  return as(h)->alloc_val(nullptr);
+}
+
+int bridge_core_val_bool(BridgeCoreHandle h, int v) {
+  return as(h)->alloc_val(v != 0);
+}
+
+int bridge_core_val_number(BridgeCoreHandle h, double v) {
+  return as(h)->alloc_val(v);
+}
+
+int bridge_core_val_string(BridgeCoreHandle h, const char* s, int len) {
+  return as(h)->alloc_val(std::string(s, len));
+}
+
+int bridge_core_val_array(BridgeCoreHandle h) {
+  return as(h)->alloc_val(nlohmann::json::array());
+}
+
+int bridge_core_val_object(BridgeCoreHandle h) {
+  return as(h)->alloc_val(nlohmann::json::object());
+}
+
+int bridge_core_val_type_of(BridgeCoreHandle h, int val_h) {
+  auto* v = as(h)->get_val(val_h);
+  if (!v || v->is_null()) return 0;
+  if (v->is_boolean()) return 1;
+  if (v->is_number()) return 2;
+  if (v->is_string()) return 3;
+  if (v->is_array()) return 4;
+  if (v->is_object()) return 5;
+  return 0;
+}
+
+double bridge_core_val_as_number(BridgeCoreHandle h, int val_h) {
+  auto* v = as(h)->get_val(val_h);
+  return (v && v->is_number()) ? v->get<double>() : 0.0;
+}
+
+int bridge_core_val_as_bool(BridgeCoreHandle h, int val_h) {
+  auto* v = as(h)->get_val(val_h);
+  if (!v) return 0;
+  if (v->is_boolean()) return v->get<bool>() ? 1 : 0;
+  if (v->is_number()) return v->get<double>() != 0.0 ? 1 : 0;
+  return 0;
+}
+
+int bridge_core_val_as_string(BridgeCoreHandle h, int val_h, char* buf, int buf_len) {
+  auto* v = as(h)->get_val(val_h);
+  if (!v || !v->is_string()) return 0;
+  return write_to_buf(v->get<std::string>(), buf, buf_len);
+}
+
+int bridge_core_val_get(BridgeCoreHandle h, int obj_h, const char* key, int key_len) {
+  auto* obj = as(h)->get_val(obj_h);
+  if (!obj || !obj->is_object()) return 0;
+  std::string k(key, key_len);
+  if (!obj->contains(k)) return 0;
+  return as(h)->alloc_val((*obj)[k]);
+}
+
+void bridge_core_val_set(BridgeCoreHandle h, int obj_h, const char* key, int key_len, int val_h) {
+  auto* obj = as(h)->get_val(obj_h);
+  auto* val = as(h)->get_val(val_h);
+  if (!obj || !obj->is_object() || !val) return;
+  (*obj)[std::string(key, key_len)] = *val;
+}
+
+int bridge_core_val_keys_count(BridgeCoreHandle h, int obj_h) {
+  auto* v = as(h)->get_val(obj_h);
+  return (v && v->is_object()) ? static_cast<int>(v->size()) : 0;
+}
+
+int bridge_core_val_key_at(BridgeCoreHandle h, int obj_h, int index, char* buf, int buf_len) {
+  auto* v = as(h)->get_val(obj_h);
+  if (!v || !v->is_object() || index < 0 || index >= static_cast<int>(v->size())) return 0;
+  auto it = v->begin();
+  std::advance(it, index);
+  return write_to_buf(it.key(), buf, buf_len);
+}
+
+int bridge_core_val_get_index(BridgeCoreHandle h, int arr_h, int index) {
+  auto* arr = as(h)->get_val(arr_h);
+  if (!arr || !arr->is_array() || index < 0 || index >= static_cast<int>(arr->size())) return 0;
+  return as(h)->alloc_val((*arr)[index]);
+}
+
+void bridge_core_val_push(BridgeCoreHandle h, int arr_h, int val_h) {
+  auto* arr = as(h)->get_val(arr_h);
+  auto* val = as(h)->get_val(val_h);
+  if (!arr || !arr->is_array() || !val) return;
+  arr->push_back(*val);
+}
+
+int bridge_core_val_length(BridgeCoreHandle h, int arr_h) {
+  auto* v = as(h)->get_val(arr_h);
+  return (v && v->is_array()) ? static_cast<int>(v->size()) : 0;
+}
+
+void bridge_core_val_release(BridgeCoreHandle h, int val_h) {
+  as(h)->release_val(val_h);
+}
+
+int bridge_core_val_to_json(BridgeCoreHandle h, int val_h, char* buf, int buf_len) {
+  auto* v = as(h)->get_val(val_h);
+  if (!v) return 0;
+  std::string json = v->dump();
+  return write_to_buf(json, buf, buf_len);
+}
+
+// --- Direct state commit ---
+
+void bridge_core_commit_val(BridgeCoreHandle h,
+                             const char* plugin_key, int plugin_key_len,
+                             const char* path, int path_len,
+                             int val_h) {
+  auto* inst = as(h);
+  auto* val = inst->get_val(val_h);
+  if (!val) return;
+
+  std::string key(plugin_key, plugin_key_len);
+
+  if (path_len == 0) {
+    // Replace entire plugin state
+    inst->core.state_document().set_plugin_state(key, *val);
+  } else {
+    // Set a field within plugin state
+    std::string p(path, path_len);
+    auto state = inst->core.state_document().get_plugin_state(key);
+    // Navigate path (split on '/') and set the value
+    auto* target = &state;
+    std::string token;
+    size_t start = 0;
+    while (start < p.size()) {
+      auto pos = p.find('/', start);
+      if (pos == std::string::npos) {
+        token = p.substr(start);
+        start = p.size();
+      } else {
+        token = p.substr(start, pos - start);
+        start = pos + 1;
+      }
+      if (token.empty()) continue;
+      // Navigate into the object, creating intermediates as needed
+      if (!target->is_object()) *target = nlohmann::json::object();
+      target = &(*target)[token];
+    }
+    *target = *val;
+    inst->core.state_document().set_plugin_state(key, state);
+  }
 }

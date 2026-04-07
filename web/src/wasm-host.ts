@@ -120,6 +120,33 @@ export class WasmHost {
     return this.bridgeCore !== null;
   }
 
+  /** Convert a JS value to a bridge core val handle (recursive). */
+  private jsValueToBcVal(bc: BridgeCore, value: any): number {
+    if (value === null || value === undefined) return bc.valNull();
+    if (typeof value === 'boolean') return bc.valBool(value);
+    if (typeof value === 'number') return bc.valNumber(value);
+    if (typeof value === 'string') return bc.valString(value);
+    if (Array.isArray(value)) {
+      const arr = bc.valArray();
+      for (const item of value) {
+        const itemH = this.jsValueToBcVal(bc, item);
+        bc.valPush(arr, itemH);
+        bc.valRelease(itemH);
+      }
+      return arr;
+    }
+    if (typeof value === 'object') {
+      const obj = bc.valObject();
+      for (const [k, v] of Object.entries(value)) {
+        const valH = this.jsValueToBcVal(bc, v);
+        bc.valSet(obj, k, valH);
+        bc.valRelease(valH);
+      }
+      return obj;
+    }
+    return bc.valNull();
+  }
+
   async load(wasmUrl: string): Promise<WasmModule> {
     const response = await fetch(wasmUrl);
     const bytes = await response.arrayBuffer();
@@ -370,25 +397,14 @@ export class WasmHost {
           } catch { /* ignore invalid JSON */ }
         },
         set_val: (pathPtr: number, pathLen: number, valHandle: number) => {
-          const value = this._valStore.get(valHandle);
-          if (value === undefined) return;
           if (bc && this.pluginKey) {
-            if (pathLen === 0) {
-              bc.setPluginState(this.pluginKey, value);
-            } else {
-              const path = this.readString(pathPtr, pathLen);
-              const current = bc.getPluginState(this.pluginKey);
-              const keys = path.replace(/^\//, '').split('/');
-              let obj = current;
-              for (let i = 0; i < keys.length - 1; i++) {
-                if (!(keys[i] in obj)) obj[keys[i]] = {};
-                obj = obj[keys[i]];
-              }
-              obj[keys[keys.length - 1]] = value;
-              bc.setPluginState(this.pluginKey, current);
-            }
+            // Direct commit — no JSON serialization round-trip
+            const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+            bc.commitVal(this.pluginKey, path, valHandle);
             this.pluginState = bc.getPluginState(this.pluginKey);
           } else {
+            const value = this._valStore.get(valHandle);
+            if (value === undefined) return;
             if (pathLen === 0) {
               this.pluginState = value;
             } else {
@@ -489,7 +505,30 @@ export class WasmHost {
         },
         get_patch: (index: number) => {
           if (index < 0 || index >= this.pendingPatches.length) return 0;
-          return this._valStore.alloc(this.pendingPatches[index]);
+          const patch = this.pendingPatches[index];
+          if (bc) {
+            // Build patch object as bridge core val handles
+            const obj = bc.valObject();
+            const opH = bc.valString(patch.op);
+            bc.valSet(obj, 'op', opH);
+            bc.valRelease(opH);
+            const pathH = bc.valString(patch.path);
+            bc.valSet(obj, 'path', pathH);
+            bc.valRelease(pathH);
+            if (patch.value !== undefined) {
+              // Serialize value through JSON for complex types
+              const valJson = JSON.stringify(patch.value);
+              const valStr = bc.valString(valJson);
+              // Parse it back — we need the actual value, not a string
+              // Use a simpler approach: allocate based on type
+              bc.valRelease(valStr);
+              const valH = this.jsValueToBcVal(bc, patch.value);
+              bc.valSet(obj, 'value', valH);
+              bc.valRelease(valH);
+            }
+            return obj;
+          }
+          return this._valStore.alloc(patch);
         },
       },
       io: {
@@ -510,8 +549,46 @@ export class WasmHost {
         },
       },
       val: (() => {
-        // Handle-based value container. Host owns data, WASM holds integer handles.
-        // Store on the host instance so state.get_patch can access it.
+        // Handle-based value container. When bridge core is available, val handles
+        // live in bridge core's WASM memory (nlohmann::json). Otherwise, fall back
+        // to the local JS _valStore.
+        if (bc) {
+          return {
+            null: () => bc.valNull(),
+            bool: (v: number) => bc.valBool(v !== 0),
+            number: (v: number) => bc.valNumber(v),
+            string: (ptr: number, len: number) => bc.valString(this.readString(ptr, len)),
+            array: () => bc.valArray(),
+            object: () => bc.valObject(),
+            type_of: (h: number) => bc.valTypeOf(h),
+            as_number: (h: number) => bc.valAsNumber(h),
+            as_bool: (h: number) => bc.valAsBool(h) ? 1 : 0,
+            as_string: (h: number, bufPtr: number, bufLen: number) => {
+              const s = bc.valAsString(h);
+              return s.length > 0 ? this.writeString(bufPtr, bufLen, s) : 0;
+            },
+            get: (objH: number, keyPtr: number, keyLen: number) => {
+              return bc.valGet(objH, this.readString(keyPtr, keyLen));
+            },
+            set: (objH: number, keyPtr: number, keyLen: number, valH: number) => {
+              bc.valSet(objH, this.readString(keyPtr, keyLen), valH);
+            },
+            keys_count: (h: number) => bc.valKeysCount(h),
+            key_at: (h: number, index: number, bufPtr: number, bufLen: number) => {
+              const key = bc.valKeyAt(h, index);
+              return key.length > 0 ? this.writeString(bufPtr, bufLen, key) : 0;
+            },
+            get_index: (arrH: number, index: number) => bc.valGetIndex(arrH, index),
+            push: (arrH: number, valH: number) => { bc.valPush(arrH, valH); },
+            length: (h: number) => bc.valLength(h),
+            release: (h: number) => { bc.valRelease(h); },
+            to_json: (h: number, bufPtr: number, bufLen: number) => {
+              const json = bc.valToJson(h);
+              return json.length > 0 ? this.writeString(bufPtr, bufLen, json) : 0;
+            },
+          };
+        }
+        // Fallback: local JS val store (no bridge core)
         const valStore = this._valStore;
         const alloc = valStore.alloc.bind(valStore);
         const getVal = valStore.get.bind(valStore);

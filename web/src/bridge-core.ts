@@ -92,6 +92,36 @@ interface BridgeCoreExports {
   bridge_core_get_plugin_key(h: number,
     id: number, idLen: number,
     keyBuf: number, keyBufLen: number): number;
+
+  // Val handle store
+  bridge_core_val_null(h: number): number;
+  bridge_core_val_bool(h: number, v: number): number;
+  bridge_core_val_number(h: number, v: number): number;
+  bridge_core_val_string(h: number, s: number, len: number): number;
+  bridge_core_val_array(h: number): number;
+  bridge_core_val_object(h: number): number;
+
+  bridge_core_val_type_of(h: number, valH: number): number;
+  bridge_core_val_as_number(h: number, valH: number): number;
+  bridge_core_val_as_bool(h: number, valH: number): number;
+  bridge_core_val_as_string(h: number, valH: number, buf: number, bufLen: number): number;
+
+  bridge_core_val_get(h: number, objH: number, key: number, keyLen: number): number;
+  bridge_core_val_set(h: number, objH: number, key: number, keyLen: number, valH: number): void;
+  bridge_core_val_keys_count(h: number, objH: number): number;
+  bridge_core_val_key_at(h: number, objH: number, index: number, buf: number, bufLen: number): number;
+
+  bridge_core_val_get_index(h: number, arrH: number, index: number): number;
+  bridge_core_val_push(h: number, arrH: number, valH: number): void;
+  bridge_core_val_length(h: number, arrH: number): number;
+
+  bridge_core_val_release(h: number, valH: number): void;
+  bridge_core_val_to_json(h: number, valH: number, buf: number, bufLen: number): number;
+
+  bridge_core_commit_val(h: number,
+    pluginKey: number, pluginKeyLen: number,
+    path: number, pathLen: number,
+    valH: number): void;
 }
 
 const encoder = new TextEncoder();
@@ -336,6 +366,58 @@ export class BridgeCore {
         this.handle, ptr, len, this.scratchPtr, SCRATCH_SIZE);
       if (keyLen === 0) return null;
       return this.readScratch(keyLen);
+    });
+  }
+
+  // --- Val handle store ---
+
+  valNull(): number { return this.exports.bridge_core_val_null(this.handle); }
+  valBool(v: boolean): number { return this.exports.bridge_core_val_bool(this.handle, v ? 1 : 0); }
+  valNumber(v: number): number { return this.exports.bridge_core_val_number(this.handle, v); }
+  valString(s: string): number {
+    return this.withString(s, (ptr, len) =>
+      this.exports.bridge_core_val_string(this.handle, ptr, len));
+  }
+  valArray(): number { return this.exports.bridge_core_val_array(this.handle); }
+  valObject(): number { return this.exports.bridge_core_val_object(this.handle); }
+
+  valTypeOf(valH: number): number { return this.exports.bridge_core_val_type_of(this.handle, valH); }
+  valAsNumber(valH: number): number { return this.exports.bridge_core_val_as_number(this.handle, valH); }
+  valAsBool(valH: number): boolean { return this.exports.bridge_core_val_as_bool(this.handle, valH) !== 0; }
+  valAsString(valH: number): string {
+    const len = this.exports.bridge_core_val_as_string(this.handle, valH, this.scratchPtr, SCRATCH_SIZE);
+    return len > 0 ? this.readScratch(len) : '';
+  }
+
+  valGet(objH: number, key: string): number {
+    return this.withString(key, (ptr, len) =>
+      this.exports.bridge_core_val_get(this.handle, objH, ptr, len));
+  }
+  valSet(objH: number, key: string, valH: number): void {
+    this.withString(key, (ptr, len) => {
+      this.exports.bridge_core_val_set(this.handle, objH, ptr, len, valH);
+    });
+  }
+  valKeysCount(objH: number): number { return this.exports.bridge_core_val_keys_count(this.handle, objH); }
+  valKeyAt(objH: number, index: number): string {
+    const len = this.exports.bridge_core_val_key_at(this.handle, objH, index, this.scratchPtr, SCRATCH_SIZE);
+    return len > 0 ? this.readScratch(len) : '';
+  }
+
+  valGetIndex(arrH: number, index: number): number { return this.exports.bridge_core_val_get_index(this.handle, arrH, index); }
+  valPush(arrH: number, valH: number): void { this.exports.bridge_core_val_push(this.handle, arrH, valH); }
+  valLength(arrH: number): number { return this.exports.bridge_core_val_length(this.handle, arrH); }
+
+  valRelease(valH: number): void { this.exports.bridge_core_val_release(this.handle, valH); }
+  valToJson(valH: number): string {
+    const len = this.exports.bridge_core_val_to_json(this.handle, valH, this.scratchPtr, SCRATCH_SIZE);
+    return len > 0 ? this.readScratch(len) : '';
+  }
+
+  /** Write a val handle's value directly into a plugin's state document. */
+  commitVal(pluginKey: string, path: string, valH: number): void {
+    this.withStrings([pluginKey, path], ([[pkPtr, pkLen], [pPtr, pLen]]) => {
+      this.exports.bridge_core_commit_val(this.handle, pkPtr, pkLen, pPtr, pLen, valH);
     });
   }
 }
