@@ -1,9 +1,13 @@
 /**
- * <edit-tab> — Multi-column sketch editor with drag-drop and field widgets.
+ * <edit-tab> — Multi-column sketch editor with drag-drop, field widgets,
+ * and configurable rail/tap routing.
  *
  * Shows the sketch's columns side by side, plus placeholder columns.
  * Effect cards can be dragged between columns and reordered within columns.
  * Each effect card renders field editor widgets for its parameters.
+ *
+ * Tapping mode allows connecting field editors to sideband rails via taps.
+ * A gutter strip to the right of each column visualizes tap connections.
  */
 
 import { html, css, nothing, TemplateResult } from 'lit';
@@ -13,13 +17,14 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { ParamInfo } from '../state/types';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Rail, Tap } from '../sketch-types';
 
 // Register field widgets and inspectors
 import '../widgets/field-slider';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
 import type { FieldBinding } from '../widgets/field-editor';
+import { FieldLayoutManager } from '../widgets/field-layout-manager';
 import { editorRegistry } from '../editor-registry';
 
 // Import inspector registrations (self-registering)
@@ -33,6 +38,7 @@ const EXTRA_COLUMNS = 2;
 @customElement('edit-tab')
 export class EditTab extends MobxLitElement {
   private previewDisposer: IReactionDisposer | null = null;
+  private layoutManager = new FieldLayoutManager();
 
   // Cached inspector elements by instance key
   private inspectorCache = new Map<string, HTMLElement>();
@@ -61,6 +67,7 @@ export class EditTab extends MobxLitElement {
     super.disconnectedCallback();
     this.previewDisposer?.();
     this.previewDisposer = null;
+    this.layoutManager.dispose();
     // Clean up cached inspectors
     for (const [key, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(
@@ -68,6 +75,14 @@ export class EditTab extends MobxLitElement {
       factory?.destroy(el);
     }
     this.inspectorCache.clear();
+  }
+
+  updated() {
+    // Attach ResizeObserver to columns container for layout tracking
+    const container = this.renderRoot.querySelector('.columns-container') as HTMLElement | null;
+    if (container) this.layoutManager.observeContainer(container);
+    // Re-scan field editors after each render
+    this.scanAndRegisterFields();
   }
 
   static styles = css`
@@ -109,14 +124,27 @@ export class EditTab extends MobxLitElement {
       gap: 16px;
       align-items: flex-start;
     }
+    .column-group {
+      display: flex;
+      gap: 0;
+      min-width: 264px;
+      max-width: 344px;
+      flex: 1;
+      align-items: stretch;
+    }
     .column {
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 0;
-      min-width: 240px;
-      max-width: 320px;
       flex: 1;
+      min-width: 0;
+    }
+    .column-gutter {
+      width: 24px;
+      flex-shrink: 0;
+      position: relative;
+      border-left: 1px solid rgba(255,255,255,0.04);
     }
     .column-header {
       font-size: 10px;
@@ -229,6 +257,11 @@ export class EditTab extends MobxLitElement {
     .btn:disabled { opacity: 0.4; cursor: default; }
     .btn-row { display: flex; gap: 6px; padding: 0 0 8px; }
     .btn-row .btn { flex: 1; text-align: center; padding: 6px; }
+    .btn[active] {
+      background: var(--app-hi-color2);
+      border-color: var(--app-hi-color2);
+      color: #fff;
+    }
     .section-header {
       font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2); margin-bottom: 8px;
@@ -236,6 +269,65 @@ export class EditTab extends MobxLitElement {
     .empty-state {
       color: var(--app-text-color2); font-size: 12px;
       text-align: center; padding: 32px 16px;
+    }
+
+    /* --- Tap visualization --- */
+    .tap-indicator {
+      position: absolute;
+      right: 4px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      transform: translateY(-50%);
+      z-index: 2;
+    }
+    .tap-indicator.write { background: var(--app-hi-color2, #4169E1); }
+    .tap-indicator.read { background: var(--app-hi-color1, #E16941); }
+    .tap-indicator-line {
+      position: absolute;
+      right: 12px;
+      height: 2px;
+      width: 12px;
+      transform: translateY(-50%);
+      z-index: 1;
+    }
+    .tap-indicator-line.write { background: var(--app-hi-color2, #4169E1); opacity: 0.5; }
+    .tap-indicator-line.read { background: var(--app-hi-color1, #E16941); opacity: 0.5; }
+
+    /* --- Right panel tap config --- */
+    .rail-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .rail-item {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 8px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .rail-item:hover { background: rgba(255,255,255,0.08); }
+    .tap-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 8px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 4px;
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .tap-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dir-btn {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: var(--app-text-color2);
+      font-size: 9px; padding: 2px 6px;
+      border-radius: 3px; cursor: pointer;
+      font-family: inherit; text-transform: uppercase;
+    }
+    .dir-btn[active] {
+      background: var(--app-hi-color2);
+      border-color: var(--app-hi-color2);
+      color: #fff;
     }
   `;
 
@@ -252,9 +344,14 @@ export class EditTab extends MobxLitElement {
 
     const sketch = appState.database.sketches[sketchId];
     const totalCols = sketch.columns.length + EXTRA_COLUMNS;
+    const tappingMode = appState.local.tappingMode;
+
+    // Touch the layout manager generation to react to position changes
+    const _layoutGen = this.layoutManager.generation;
 
     return html`
-      <div class="main-area">
+      <div class="main-area"
+        @field-tap-select=${this.onFieldTapSelect}>
         <div class="columns-container">
           ${Array.from({ length: totalCols }, (_, colIdx) => {
       if (colIdx < sketch.columns.length) {
@@ -265,15 +362,35 @@ export class EditTab extends MobxLitElement {
     })}
         </div>
       </div>
+      ${this.renderRightPanel(sketchId, sketch)}
+    `;
+  }
+
+  // ========================================================================
+  // Right panel
+  // ========================================================================
+
+  private renderRightPanel(sketchId: string, sketch: Sketch) {
+    const tappingMode = appState.local.tappingMode;
+    const selectedPath = appState.local.selectedFieldPath;
+
+    return html`
       <div class="right-panel">
         <div class="right-content">
-          <div class="section-header">Preview</div>
+          <div class="section-header">Tools</div>
           <div class="btn-row">
+            <button class="btn" ?active=${tappingMode}
+              @click=${() => appController.setTappingMode(!tappingMode)}>Taps</button>
             <button class="btn" ?disabled=${!appController.history.canUndo}
               @click=${() => appController.undo()}>Undo</button>
             <button class="btn" ?disabled=${!appController.history.canRedo}
               @click=${() => appController.redo()}>Redo</button>
           </div>
+          ${tappingMode && selectedPath
+            ? this.renderTapConfig(sketchId, sketch, selectedPath)
+            : tappingMode
+              ? html`<div class="empty-state" style="padding:16px 0">Click a field to configure taps</div>`
+              : nothing}
         </div>
         <div class="preview-area">
           <canvas id="preview-canvas" width="320" height="180"></canvas>
@@ -282,6 +399,82 @@ export class EditTab extends MobxLitElement {
     `;
   }
 
+  private renderTapConfig(sketchId: string, sketch: Sketch, selectedPath: string) {
+    const parts = selectedPath.split('/');
+    if (parts.length < 4) return nothing;
+    const [_sid, colStr, chainStr, ...fieldParts] = parts;
+    const colIdx = parseInt(colStr);
+    const chainIdx = parseInt(chainStr);
+    const fieldPath = fieldParts.join('/');
+    const entry = sketch.columns[colIdx]?.chain[chainIdx];
+    if (!entry || entry.type !== 'module') return nothing;
+
+    const taps = (entry.taps ?? []).filter(t => t.fieldPath === fieldPath);
+    const allRails = this.collectRails(sketch, colIdx);
+
+    return html`
+      <div class="section-header">Taps for "${fieldPath}"</div>
+      ${taps.length > 0 ? taps.map((tap, i) => {
+        const tapIdx = (entry.taps ?? []).indexOf(tap);
+        const rail = allRails.find(r => r.id === tap.railId);
+        return html`
+          <div class="tap-row">
+            <span class="tap-row-name">${rail?.name ?? tap.railId}</span>
+            <button class="dir-btn" ?active=${tap.direction === 'read'}
+              @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'read')}>R</button>
+            <button class="dir-btn" ?active=${tap.direction === 'write'}
+              @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'write')}>W</button>
+            <button class="remove-btn"
+              @click=${() => appController.removeTap(sketchId, colIdx, chainIdx, tapIdx)}>×</button>
+          </div>
+        `;
+      }) : html`<div style="font-size:11px;color:var(--app-text-color2);margin-bottom:8px">No taps connected</div>`}
+
+      <div class="section-header" style="margin-top:12px">Connect to Rail</div>
+      <div class="rail-list">
+        ${allRails.map(rail => html`
+          <div class="rail-item"
+            @click=${() => appController.addTap(sketchId, colIdx, chainIdx, rail.id, fieldPath, 'read')}>
+            ${rail.name ?? rail.id} <span style="color:var(--app-text-color2);font-size:9px;margin-left:auto">${rail.dataType}</span>
+          </div>
+        `)}
+        <button class="btn" style="width:100%;text-align:center;padding:6px"
+          @click=${() => this.createRailAndTap(sketchId, colIdx, chainIdx, fieldPath)}>+ New Rail</button>
+      </div>
+    `;
+  }
+
+  private collectRails(sketch: Sketch, colIdx: number): Rail[] {
+    const rails: Rail[] = [];
+    if (sketch.rails) rails.push(...sketch.rails);
+    const col = sketch.columns[colIdx];
+    if (col?.rails) rails.push(...col.rails);
+    return rails;
+  }
+
+  private createRailAndTap(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string) {
+    const sketch = appState.database.sketches[sketchId];
+    const existingCount = (sketch?.columns[colIdx]?.rails?.length ?? 0) + (sketch?.rails?.length ?? 0);
+    const name = `Rail ${existingCount + 1}`;
+    const railId = appController.addRail(sketchId, colIdx, name, 'float');
+    appController.addTap(sketchId, colIdx, chainIdx, railId, fieldPath, 'write');
+  }
+
+  private onFieldTapSelect = (e: CustomEvent) => {
+    const sketchId = appState.local.editingSketchId;
+    if (!sketchId) return;
+    // Walk up from the event target to find the effect card and extract indices
+    const detail = e.detail as { fieldPath: string };
+    // Find the effect card element
+    const path = e.composedPath();
+    for (const el of path) {
+      if (el instanceof HTMLElement && el.dataset.fieldKey) {
+        appController.selectField(`${el.dataset.fieldKey}/${detail.fieldPath}`);
+        return;
+      }
+    }
+  };
+
   // ========================================================================
   // Column rendering
   // ========================================================================
@@ -289,28 +482,36 @@ export class EditTab extends MobxLitElement {
   private renderColumn(sketchId: string, sketch: Sketch, colIdx: number) {
     const column = sketch.columns[colIdx];
     return html`
-      <div class="column">
-        <div class="column-header">${column.name}</div>
-        ${this.renderChain(sketchId, column, colIdx)}
+      <div class="column-group">
+        <div class="column">
+          <div class="column-header">${column.name}</div>
+          ${this.renderChain(sketchId, sketch, column, colIdx)}
+        </div>
+        <div class="column-gutter" data-col=${colIdx}>
+          ${this.renderGutterTaps(sketchId, sketch, column, colIdx)}
+        </div>
       </div>
     `;
   }
 
   private renderPlaceholderColumn(colIdx: number) {
     return html`
-      <div class="column">
-        <div class="column-header">Column ${colIdx + 1}</div>
-        <div class="column-placeholder"
-          @dragover=${(e: DragEvent) => { e.preventDefault(); e.currentTarget?.classList.add('drag-over'); }}
-          @dragleave=${(e: DragEvent) => { e.currentTarget?.classList.remove('drag-over'); }}
-          @drop=${(e: DragEvent) => this.onDropToNewColumn(e, colIdx)}>
-          Drop effects here
+      <div class="column-group">
+        <div class="column">
+          <div class="column-header">Column ${colIdx + 1}</div>
+          <div class="column-placeholder"
+            @dragover=${(e: DragEvent) => { e.preventDefault(); e.currentTarget?.classList.add('drag-over'); }}
+            @dragleave=${(e: DragEvent) => { e.currentTarget?.classList.remove('drag-over'); }}
+            @drop=${(e: DragEvent) => this.onDropToNewColumn(e, colIdx)}>
+            Drop effects here
+          </div>
         </div>
+        <div class="column-gutter"></div>
       </div>
     `;
   }
 
-  private renderChain(sketchId: string, column: SketchColumn, colIdx: number) {
+  private renderChain(sketchId: string, sketch: Sketch, column: SketchColumn, colIdx: number) {
     const items: TemplateResult[] = [];
 
     for (let i = 0; i < column.chain.length; i++) {
@@ -337,12 +538,44 @@ export class EditTab extends MobxLitElement {
   }
 
   // ========================================================================
+  // Gutter tap visualization
+  // ========================================================================
+
+  private renderGutterTaps(sketchId: string, sketch: Sketch, column: SketchColumn, colIdx: number) {
+    const indicators: TemplateResult[] = [];
+    const gutterSelector = `.column-gutter[data-col="${colIdx}"]`;
+
+    for (let i = 0; i < column.chain.length; i++) {
+      const entry = column.chain[i];
+      if (entry.type !== 'module' || !entry.taps?.length) continue;
+
+      for (const tap of entry.taps) {
+        const fieldKey = `${sketchId}/${colIdx}/${i}/${tap.fieldPath}`;
+        const rect = this.layoutManager.getRelativeRect(
+          fieldKey,
+          this.renderRoot.querySelector(gutterSelector) as HTMLElement ?? this,
+        );
+        if (!rect) continue;
+
+        const yCenter = rect.top + rect.height / 2;
+        indicators.push(html`
+          <div class="tap-indicator ${tap.direction}" style="top:${yCenter}px"></div>
+          <div class="tap-indicator-line ${tap.direction}" style="top:${yCenter}px"></div>
+        `);
+      }
+    }
+
+    return indicators;
+  }
+
+  // ========================================================================
   // Effect cards
   // ========================================================================
 
   private renderEffectCard(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
     return html`
       <div class="effect-card"
+        data-field-key="${sketchId}/${colIdx}/${chainIdx}"
         draggable="true"
         @dragstart=${(e: DragEvent) => this.onDragStart(e, sketchId, colIdx, chainIdx)}
         @dragend=${this.onDragEnd}>
@@ -366,6 +599,8 @@ export class EditTab extends MobxLitElement {
    */
   private renderFieldWidgets(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const tappingMode = appState.local.tappingMode;
+    const selectedPath = appState.local.selectedFieldPath;
 
     // Create a FieldBinding that reads/writes through the controller
     const binding: FieldBinding = {
@@ -399,19 +634,31 @@ export class EditTab extends MobxLitElement {
 
     return plugin.params.map(p => {
       const fieldPath = p.name;
+      const fieldKey = `${sketchId}/${colIdx}/${chainIdx}/${fieldPath}`;
+      const isSelected = selectedPath === fieldKey;
 
       if (p.type === 0) {
         return html`<field-toggle
           .fieldPath=${fieldPath} .label=${p.name}
           .defaultValue=${p.defaultValue}
-          .binding=${binding}></field-toggle>`;
+          .binding=${binding}
+          .tappingMode=${tappingMode}
+          .selected=${isSelected}
+          .layoutManager=${this.layoutManager}
+          data-layout-key=${fieldKey}
+          ${this.registerFieldRef(fieldKey)}></field-toggle>`;
       }
 
       if (p.type === 1) {
         return html`<field-trigger
           .fieldPath=${fieldPath} .label=${p.name}
           .defaultValue=${p.defaultValue}
-          .binding=${binding}></field-trigger>`;
+          .binding=${binding}
+          .tappingMode=${tappingMode}
+          .selected=${isSelected}
+          .layoutManager=${this.layoutManager}
+          data-layout-key=${fieldKey}
+          ${this.registerFieldRef(fieldKey)}></field-trigger>`;
       }
 
       return html`<field-slider
@@ -419,7 +666,49 @@ export class EditTab extends MobxLitElement {
         .min=${p.min} .max=${p.max}
         .step=${p.type === 13 ? 1 : 0.01}
         .defaultValue=${p.defaultValue}
-        .binding=${binding}></field-slider>`;
+        .binding=${binding}
+        .tappingMode=${tappingMode}
+        .selected=${isSelected}
+        .layoutManager=${this.layoutManager}
+        data-layout-key=${fieldKey}
+        ${this.registerFieldRef(fieldKey)}></field-slider>`;
+    });
+  }
+
+  /**
+   * Returns a Lit directive-like ref callback that registers the field element
+   * with the layout manager after it's rendered.
+   */
+  private registerFieldRef(key: string) {
+    // We'll register in updated() by scanning data-layout-key attributes instead
+    return nothing;
+  }
+
+  /**
+   * After each render, scan for field editors and register them with the layout manager.
+   */
+  protected firstUpdated() {
+    this.scanAndRegisterFields();
+  }
+
+  private scanAndRegisterFields() {
+    // Deferred to next frame to ensure field editors have rendered
+    requestAnimationFrame(() => {
+      const editors = this.renderRoot.querySelectorAll('[data-layout-key]');
+      const seenKeys = new Set<string>();
+      for (const el of editors) {
+        const key = (el as HTMLElement).dataset.layoutKey;
+        if (key && 'getControlElements' in el) {
+          this.layoutManager.register(key, el as any);
+          seenKeys.add(key);
+        }
+      }
+      // Unregister stale entries
+      for (const key of this.layoutManager.entries.keys()) {
+        if (!seenKeys.has(key)) {
+          this.layoutManager.unregister(key);
+        }
+      }
     });
   }
 

@@ -36,6 +36,8 @@ export class AppState {
     selectedSketchId: null,
     editingSketchId: null,
     engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0 },
+    tappingMode: false,
+    selectedFieldPath: null,
   };
 
   constructor() {

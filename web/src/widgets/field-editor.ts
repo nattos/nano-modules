@@ -29,6 +29,9 @@ export interface FieldBinding {
 /** Interface that all field editor elements must implement. */
 export interface FieldEditorElement extends HTMLElement {
   /** The field path this editor controls, e.g. 'brightness' or 'params/0'. */
+  // TODO: Delete. This is just a convention used by our "single-field" field editors.
+  // Editor widgets that control multiple fields will not have this. Use controlledFields
+  // instead.
   fieldPath: string;
 
   /** Human-readable label. */
@@ -39,9 +42,26 @@ export interface FieldEditorElement extends HTMLElement {
 
   /** The field paths this editor reads/writes (for framework introspection). */
   readonly controlledFields: string[];
+
+  /** Returns the interactive control element(s) for bounding box queries. */
+  getControlElements(): HTMLElement[];
+
+  /** Whether tap configuration mode is active. */
+  tappingMode: boolean;
+
+  /** Whether this field is currently selected for tap configuration. */
+  selected: boolean;
+
+  /** Layout manager for centralized bounding box tracking. */
+  layoutManager: FieldLayoutManager | null;
+}
+
+// Forward reference — avoid circular import. Concrete class in field-layout-manager.ts.
+export interface FieldLayoutManager {
+  notifyLayoutChanged(): void;
 }
 
 /** Type guard for FieldEditorElement. */
 export function isFieldEditor(el: any): el is FieldEditorElement {
-  return el && typeof el.bindInstance === 'function' && 'fieldPath' in el;
+  return el && typeof el.bindInstance === 'function' && 'fieldPath' in el && typeof el.getControlElements === 'function';
 }

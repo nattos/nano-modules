@@ -62,4 +62,8 @@ export interface LocalState {
   selectedSketchId: string | null;
   editingSketchId: string | null;
   engine: EngineStatus;
+  /** Whether tap configuration mode is active. */
+  tappingMode: boolean;
+  /** Currently selected field path for tap configuration, e.g. "sketch_0/0/2/brightness". */
+  selectedFieldPath: string | null;
 }

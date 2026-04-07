@@ -194,6 +194,94 @@ export class AppController {
     runInAction(() => { appState.local.staging = []; });
   }
 
+  // --- Tapping mode & field selection ---
+
+  setTappingMode(on: boolean) {
+    runInAction(() => {
+      appState.local.tappingMode = on;
+      if (!on) appState.local.selectedFieldPath = null;
+    });
+  }
+
+  selectField(path: string | null) {
+    runInAction(() => { appState.local.selectedFieldPath = path; });
+  }
+
+  // --- Rail CRUD ---
+
+  private nextRailId = 0;
+
+  addRail(sketchId: string, scope: 'sketch' | number, name: string, dataType: 'float' | 'texture'): string {
+    const railId = `rail_${this.nextRailId++}`;
+    this.mutate(`Add rail ${name}`, draft => {
+      const sketch = draft.sketches[sketchId];
+      if (!sketch) return;
+      const rail = { id: railId, name, dataType };
+      if (scope === 'sketch') {
+        sketch.rails = sketch.rails ?? [];
+        sketch.rails.push(rail);
+      } else {
+        const col = sketch.columns[scope];
+        if (!col) return;
+        col.rails = col.rails ?? [];
+        col.rails.push(rail);
+      }
+    });
+    return railId;
+  }
+
+  removeRail(sketchId: string, scope: 'sketch' | number, railId: string) {
+    this.mutate(`Remove rail`, draft => {
+      const sketch = draft.sketches[sketchId];
+      if (!sketch) return;
+      // Remove the rail definition
+      if (scope === 'sketch') {
+        sketch.rails = (sketch.rails ?? []).filter(r => r.id !== railId);
+      } else {
+        const col = sketch.columns[scope];
+        if (col) col.rails = (col.rails ?? []).filter(r => r.id !== railId);
+      }
+      // Remove all taps referencing this rail from all modules
+      for (const col of sketch.columns) {
+        for (const entry of col.chain) {
+          if (entry.type === 'module' && entry.taps) {
+            entry.taps = entry.taps.filter(t => t.railId !== railId);
+          }
+        }
+      }
+    });
+  }
+
+  // --- Tap CRUD ---
+
+  addTap(sketchId: string, colIdx: number, chainIdx: number, railId: string, fieldPath: string, direction: 'read' | 'write') {
+    this.mutate(`Add tap`, draft => {
+      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      if (entry?.type === 'module') {
+        entry.taps = entry.taps ?? [];
+        entry.taps.push({ railId, fieldPath, direction });
+      }
+    });
+  }
+
+  removeTap(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number) {
+    this.mutate(`Remove tap`, draft => {
+      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      if (entry?.type === 'module' && entry.taps) {
+        entry.taps.splice(tapIndex, 1);
+      }
+    });
+  }
+
+  setTapDirection(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number, direction: 'read' | 'write') {
+    this.mutate(`Set tap direction`, draft => {
+      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      if (entry?.type === 'module' && entry.taps?.[tapIndex]) {
+        entry.taps[tapIndex].direction = direction;
+      }
+    });
+  }
+
   selectSketch(id: string | null) {
     runInAction(() => { appState.local.selectedSketchId = id; });
   }
