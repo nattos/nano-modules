@@ -2,16 +2,13 @@
  * <edit-tab> — Multi-column sketch editor with drag-drop, field widgets,
  * and configurable rail/tap routing.
  *
- * Shows the sketch's columns side by side, plus placeholder columns.
- * Effect cards can be dragged between columns and reordered within columns.
- * Each effect card renders field editor widgets for its parameters.
- *
- * Tapping mode allows connecting field editors to sideband rails via taps.
- * A gutter strip to the right of each column visualizes tap connections.
+ * Uses <columns-view> for virtualized column management. Each column is a
+ * <column-group> custom element; columns outside the viewport are detached
+ * from the DOM (pausing MobX reactions and trace registrations).
  *
  * IMPORTANT: Field editors and custom inspectors have NO knowledge of tapping,
- * selection, or layout tracking. The edit-tab renders overlay layers on top of
- * effect cards, using bounding boxes from the FieldLayoutManager.
+ * selection, or layout tracking. The column-group renders overlay layers on
+ * top of effect cards, using bounding boxes from the FieldLayoutManager.
  */
 
 import { html, css, nothing, TemplateResult } from 'lit';
@@ -20,29 +17,29 @@ import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Rail } from '../sketch-types';
+import type { Sketch, Rail } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
-// Register field widgets and inspectors
-import '../widgets/field-slider';
-import '../widgets/field-toggle';
-import '../widgets/field-trigger';
-import type { FieldBinding, FieldEditorElement } from '../widgets/field-editor';
-import { isFieldEditor } from '../widgets/field-editor';
-import { FieldLayoutManager } from '../widgets/field-layout-manager';
+import type { FieldBinding } from '../widgets/field-editor';
+import type { ColumnHost } from '../widgets/columns-view';
+import type { ColumnGroupCallbacks } from '../widgets/column-group';
+import '../widgets/columns-view';
+import '../widgets/column-group';
+import '../widgets/texture-monitor';
+import '../widgets/spark-chart';
 import { editorRegistry } from '../editor-registry';
 
 // Import inspector registrations (self-registering)
 import '../editors/brightness-contrast-inspector';
 
-function shortName(id: string) { return id.split('.').pop() ?? id; }
-
 const EXTRA_COLUMNS = 2;
 
 @customElement('edit-tab')
-export class EditTab extends MobxLitElement {
+export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
   private previewDisposer: IReactionDisposer | null = null;
-  private layoutManager = new FieldLayoutManager();
+
+  // Cached column-group elements by column index
+  private columnCache = new Map<number, HTMLElement>();
 
   // Cached inspector elements by instance key
   private inspectorCache = new Map<string, HTMLElement>();
@@ -55,6 +52,14 @@ export class EditTab extends MobxLitElement {
   private dragOp: PointerDragOp | null = null;
   private dragHoverTarget: { type: 'zone'; colIdx: number; insertIdx: number }
     | { type: 'placeholder'; colIdx: number } | null = null;
+
+  get columnCount(): number {
+    const sketchId = appState.local.editingSketchId;
+    if (!sketchId) return 0;
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return 0;
+    return sketch.columns.length + EXTRA_COLUMNS;
+  }
 
   connectedCallback() {
     super.connectedCallback();
@@ -75,19 +80,13 @@ export class EditTab extends MobxLitElement {
     super.disconnectedCallback();
     this.previewDisposer?.();
     this.previewDisposer = null;
-    this.layoutManager.dispose();
     for (const [, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(
         (el as any).moduleType ?? '');
       factory?.destroy(el);
     }
     this.inspectorCache.clear();
-  }
-
-  updated() {
-    const container = this.renderRoot.querySelector('.columns-container') as HTMLElement | null;
-    if (container) this.layoutManager.observeContainer(container);
-    this.scanAndRegisterFields();
+    this.columnCache.clear();
   }
 
   static styles = css`
@@ -95,13 +94,6 @@ export class EditTab extends MobxLitElement {
       display: flex;
       flex: 1;
       min-height: 0;
-    }
-    .main-area {
-      flex: 1;
-      overflow: auto;
-      padding: 16px;
-      min-width: 0;
-      width: 0;
     }
     .right-panel {
       width: 340px;
@@ -121,130 +113,6 @@ export class EditTab extends MobxLitElement {
     .preview-area canvas {
       width: 100%; aspect-ratio: 16/9;
       background: #000; border-radius: 4px; display: block;
-    }
-
-    /* --- Multi-column layout --- */
-    .columns-container {
-      display: flex;
-      gap: 16px;
-      align-items: flex-start;
-    }
-    .column-group {
-      display: flex;
-      gap: 0;
-      min-width: 264px;
-      max-width: 344px;
-      flex: 1;
-      align-items: stretch;
-    }
-    .column {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0;
-      flex: 1;
-      min-width: 0;
-    }
-    .column-gutter {
-      width: 24px;
-      flex-shrink: 0;
-      position: relative;
-      border-left: 1px solid rgba(255,255,255,0.04);
-    }
-    .column-header {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--app-text-color2);
-      margin-bottom: 8px;
-      width: 100%;
-    }
-    .column-placeholder {
-      border: 1px dashed rgba(255,255,255,0.08);
-      border-radius: 4px;
-      min-height: 100px;
-      width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--app-text-color2);
-      font-size: 11px;
-      opacity: 0.5;
-    }
-
-    /* --- Chain elements --- */
-    .chain-marker {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--app-text-color2);
-      padding: 6px 16px;
-      background: rgba(255,255,255,0.03);
-      border: 1px dashed rgba(255,255,255,0.12);
-      border-radius: 4px;
-      text-align: center;
-      width: 100%;
-    }
-    .chain-wire { width: 2px; height: 12px; background: rgba(255,255,255,0.12); }
-    .add-btn {
-      background: rgba(255,255,255,0.04);
-      border: 1px dashed rgba(255,255,255,0.15);
-      color: var(--app-text-color2);
-      font-size: 16px;
-      width: 100%;
-      padding: 4px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: inherit;
-      text-align: center;
-      transition: background 0.15s, border-color 0.15s;
-    }
-    .add-btn:hover {
-      background: rgba(65,105,225,0.1);
-      border-color: var(--app-hi-color2);
-      color: var(--app-text-color1);
-    }
-
-    /* --- Effect cards --- */
-    .effect-card {
-      width: 100%;
-      padding: 0;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 4px;
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-    .effect-card[dragging] { opacity: 0.4; }
-    .effect-card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 6px 10px;
-      cursor: grab;
-      user-select: none;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-    }
-    .effect-card-header:active { cursor: grabbing; }
-    .effect-card-name { font-size: 11px; color: var(--app-text-color1); }
-    .effect-card-body { padding: 6px 10px; position: relative; }
-    .remove-btn {
-      background: none; border: none;
-      color: var(--app-text-color2); cursor: pointer;
-      font-size: 14px; padding: 0 4px; line-height: 1;
-    }
-    .remove-btn:hover { color: var(--app-hi-color1); }
-
-    /* --- Drop zones --- */
-    .drop-zone {
-      width: 100%;
-      min-height: 4px;
-      transition: min-height 0.15s, background 0.15s;
-      border-radius: 2px;
-    }
-    .drop-zone.drag-over {
-      min-height: 24px;
-      background: rgba(65,105,225,0.15);
-      border: 1px dashed var(--app-hi-color2);
     }
 
     /* --- Buttons --- */
@@ -273,53 +141,6 @@ export class EditTab extends MobxLitElement {
       color: var(--app-text-color2); font-size: 12px;
       text-align: center; padding: 32px 16px;
     }
-
-    /* --- Tap overlay (rendered by edit-tab over effect card body) --- */
-    .tap-overlay-container {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      z-index: 10;
-    }
-    .tap-overlay-hit {
-      position: absolute;
-      background: rgba(65, 105, 225, 0.12);
-      border: 1px solid rgba(65, 105, 225, 0.3);
-      border-radius: 2px;
-      cursor: pointer;
-      pointer-events: all;
-    }
-    .tap-overlay-hit:hover {
-      background: rgba(65, 105, 225, 0.25);
-    }
-    .tap-overlay-hit[selected] {
-      outline: 1px solid var(--app-hi-color2, #4169E1);
-      outline-offset: 1px;
-      background: rgba(65, 105, 225, 0.2);
-    }
-
-    /* --- Tap visualization --- */
-    .tap-indicator {
-      position: absolute;
-      right: 4px;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      transform: translateY(-50%);
-      z-index: 2;
-    }
-    .tap-indicator.write { background: var(--app-hi-color2, #4169E1); }
-    .tap-indicator.read { background: var(--app-hi-color1, #E16941); }
-    .tap-indicator-line {
-      position: absolute;
-      right: 12px;
-      height: 2px;
-      width: 12px;
-      transform: translateY(-50%);
-      z-index: 1;
-    }
-    .tap-indicator-line.write { background: var(--app-hi-color2, #4169E1); opacity: 0.5; }
-    .tap-indicator-line.read { background: var(--app-hi-color1, #E16941); opacity: 0.5; }
 
     /* --- Right panel tap config --- */
     .rail-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
@@ -362,7 +183,7 @@ export class EditTab extends MobxLitElement {
     const sketchId = appState.local.editingSketchId;
     if (!sketchId || !appState.database.sketches[sketchId]) {
       return html`
-        <div class="main-area">
+        <div style="flex:1;display:flex;align-items:center;justify-content:center">
           <div class="empty-state">No sketch selected for editing.<br>Go to Organize and pick one.</div>
         </div>
         <div class="right-panel"></div>
@@ -370,25 +191,89 @@ export class EditTab extends MobxLitElement {
     }
 
     const sketch = appState.database.sketches[sketchId];
-    const totalCols = sketch.columns.length + EXTRA_COLUMNS;
-
-    // Touch the layout manager generation to react to position changes
-    const _layoutGen = this.layoutManager.generation;
 
     return html`
-      <div class="main-area">
-        <div class="columns-container">
-          ${Array.from({ length: totalCols }, (_, colIdx) => {
-      if (colIdx < sketch.columns.length) {
-        return this.renderColumn(sketchId, sketch, colIdx);
-      } else {
-        return this.renderPlaceholderColumn(colIdx);
-      }
-    })}
-        </div>
-      </div>
+      <columns-view .host=${this as ColumnHost}></columns-view>
       ${this.renderRightPanel(sketchId, sketch)}
     `;
+  }
+
+  // ========================================================================
+  // ColumnHost implementation
+  // ========================================================================
+
+  getColumnElement(index: number): HTMLElement {
+    const cached = this.columnCache.get(index);
+    if (cached) return cached;
+
+    const sketchId = appState.local.editingSketchId ?? '';
+    const sketch = appState.database.sketches[sketchId];
+    const isPlaceholder = !sketch || index >= sketch.columns.length;
+
+    const colGroup = document.createElement('column-group') as any;
+    colGroup.colIdx = index;
+    colGroup.sketchId = sketchId;
+    colGroup.isPlaceholder = isPlaceholder;
+    colGroup.callbacks = this;
+    this.columnCache.set(index, colGroup as HTMLElement);
+    return colGroup as HTMLElement;
+  }
+
+  columnAttached(_index: number, _element: HTMLElement): void {
+    // Column-group's connectedCallback handles MobX setup
+  }
+
+  columnDetached(_index: number, _element: HTMLElement): void {
+    // Column-group's disconnectedCallback handles cleanup
+  }
+
+  // ========================================================================
+  // ColumnGroupCallbacks implementation
+  // ========================================================================
+
+  onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number): void {
+    if (e.button !== 0) return;
+
+    const header = e.currentTarget as HTMLElement;
+    const card = header.closest('.effect-card') as HTMLElement | null;
+    if (!card) return;
+
+    this.dragSketchId = sketchId;
+    this.dragSourceCol = colIdx;
+    this.dragSourceIdx = chainIdx;
+    this.dragCardEl = card;
+
+    this.dragOp = new PointerDragOp(e, header, {
+      threshold: 5,
+
+      move: (me) => {
+        card.setAttribute('dragging', '');
+        this.updateDragHover(me.clientX, me.clientY);
+      },
+
+      accept: () => {
+        this.commitDrop();
+        this.cleanupDrag();
+      },
+
+      cancel: () => {
+        this.cleanupDrag();
+      },
+    });
+  }
+
+  getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null {
+    const inspectorFactory = editorRegistry.getInspectorFactory(moduleType);
+    if (!inspectorFactory) return null;
+
+    let el = this.inspectorCache.get(instanceKey);
+    if (!el) {
+      el = inspectorFactory.create(instanceKey, binding);
+      this.inspectorCache.set(instanceKey, el);
+    } else {
+      (el as any).binding = binding;
+    }
+    return el;
   }
 
   // ========================================================================
@@ -439,21 +324,60 @@ export class EditTab extends MobxLitElement {
 
     return html`
       <div class="section-header">Taps for "${fieldPath}"</div>
-      ${taps.length > 0 ? taps.map((tap) => {
-        const tapIdx = (entry.taps ?? []).indexOf(tap);
-        const rail = allRails.find(r => r.id === tap.railId);
-        return html`
-          <div class="tap-row">
-            <span class="tap-row-name">${rail?.name ?? tap.railId}</span>
-            <button class="dir-btn" ?active=${tap.direction === 'read'}
-              @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'read')}>R</button>
-            <button class="dir-btn" ?active=${tap.direction === 'write'}
-              @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'write')}>W</button>
-            <button class="remove-btn"
-              @click=${() => appController.removeTap(sketchId, colIdx, chainIdx, tapIdx)}>×</button>
-          </div>
-        `;
-      }) : html`<div style="font-size:11px;color:var(--app-text-color2);margin-bottom:8px">No taps connected</div>`}
+      ${taps.length > 0 ? html`
+        ${taps.map((tap) => {
+          const tapIdx = (entry.taps ?? []).indexOf(tap);
+          const rail = allRails.find(r => r.id === tap.railId);
+          return html`
+            <div class="tap-row">
+              <span class="tap-row-name">${rail?.name ?? tap.railId}</span>
+              <button class="dir-btn" ?active=${tap.direction === 'read'}
+                @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'read')}>R</button>
+              <button class="dir-btn" ?active=${tap.direction === 'write'}
+                @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'write')}>W</button>
+              <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1;"
+                @click=${() => appController.removeTap(sketchId, colIdx, chainIdx, tapIdx)}>×</button>
+            </div>
+          `;
+        })}
+        <!-- Show trace cards for connected rails -->
+        <div class="section-header" style="margin-top:12px">Rail Values</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
+          ${taps.map((tap) => {
+            const rail = allRails.find(r => r.id === tap.railId);
+            if (!rail) return nothing;
+            if (rail.dataType === 'texture') {
+              const traceId = `rail_${sketchId}/${colIdx}/${tap.railId}`;
+              // Rail texture traces would need to be registered — for now show placeholder
+              return html`
+                <texture-monitor
+                  .traceId=${traceId}
+                  .traceTarget=${null}
+                  .width=${96}
+                  .height=${54}
+                ></texture-monitor>
+              `;
+            }
+            // Float rails: show a spark chart (read from sketch state)
+            return html`
+              <spark-chart
+                .fieldPath=${tap.railId}
+                .binding=${{
+                  instanceKey: `rail_${tap.railId}`,
+                  getValue: () => {
+                    // Rail float values are published to sketch_state
+                    const state = appState.local.engine as any;
+                    return state?.sketchState?.[sketchId]?.[`columns/${colIdx}`]?.[tap.railId]?.value ?? 0;
+                  },
+                  setValue: () => {},
+                }}
+                .width=${96}
+                .height=${32}
+              ></spark-chart>
+            `;
+          })}
+        </div>
+      ` : html`<div style="font-size:11px;color:var(--app-text-color2);margin-bottom:8px">No taps connected</div>`}
 
       <div class="section-header" style="margin-top:12px">Connect to Rail</div>
       <div class="rail-list">
@@ -486,340 +410,45 @@ export class EditTab extends MobxLitElement {
   }
 
   // ========================================================================
-  // Column rendering
-  // ========================================================================
-
-  private renderColumn(sketchId: string, sketch: Sketch, colIdx: number) {
-    const column = sketch.columns[colIdx];
-    return html`
-      <div class="column-group">
-        <div class="column">
-          <div class="column-header">${column.name}</div>
-          ${this.renderChain(sketchId, sketch, column, colIdx)}
-        </div>
-        <div class="column-gutter" data-col=${colIdx}>
-          ${this.renderGutterTaps(sketchId, sketch, column, colIdx)}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderPlaceholderColumn(colIdx: number) {
-    return html`
-      <div class="column-group">
-        <div class="column">
-          <div class="column-header">Column ${colIdx + 1}</div>
-          <div class="column-placeholder" data-placeholder-col=${colIdx}>
-            Drop effects here
-          </div>
-        </div>
-        <div class="column-gutter"></div>
-      </div>
-    `;
-  }
-
-  private renderChain(sketchId: string, sketch: Sketch, column: SketchColumn, colIdx: number) {
-    const items: TemplateResult[] = [];
-
-    for (let i = 0; i < column.chain.length; i++) {
-      const entry = column.chain[i];
-
-      if (entry.type === 'texture_input') {
-        items.push(html`<div class="chain-marker">Input</div>`);
-        items.push(html`<div class="chain-wire"></div>`);
-        items.push(this.renderDropZone(sketchId, colIdx, i + 1));
-        items.push(html`<div class="chain-wire"></div>`);
-      } else if (entry.type === 'texture_output') {
-        items.push(html`<div class="chain-marker">Output</div>`);
-      } else if (entry.type === 'module') {
-        items.push(this.renderEffectCard(sketchId, colIdx, i, entry));
-        items.push(html`<div class="chain-wire"></div>`);
-        if (i + 1 < column.chain.length) {
-          items.push(this.renderDropZone(sketchId, colIdx, i + 1));
-          items.push(html`<div class="chain-wire"></div>`);
-        }
-      }
-    }
-
-    return items;
-  }
-
-  // ========================================================================
-  // Gutter tap visualization
-  // ========================================================================
-
-  private renderGutterTaps(sketchId: string, sketch: Sketch, column: SketchColumn, colIdx: number) {
-    const indicators: TemplateResult[] = [];
-    const gutterEl = this.renderRoot.querySelector(`.column-gutter[data-col="${colIdx}"]`) as HTMLElement | null;
-    if (!gutterEl) return indicators;
-
-    for (let i = 0; i < column.chain.length; i++) {
-      const entry = column.chain[i];
-      if (entry.type !== 'module' || !entry.taps?.length) continue;
-
-      for (const tap of entry.taps) {
-        const fieldKey = `${sketchId}/${colIdx}/${i}/${tap.fieldPath}`;
-        const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
-        if (!rect) continue;
-
-        const yCenter = rect.top + rect.height / 2;
-        indicators.push(html`
-          <div class="tap-indicator ${tap.direction}" style="top:${yCenter}px"></div>
-          <div class="tap-indicator-line ${tap.direction}" style="top:${yCenter}px"></div>
-        `);
-      }
-    }
-
-    return indicators;
-  }
-
-  // ========================================================================
-  // Effect cards
-  // ========================================================================
-
-  private renderEffectCard(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
-    const tappingMode = appState.local.tappingMode;
-    return html`
-      <div class="effect-card">
-        <div class="effect-card-header"
-          @pointerdown=${(e: PointerEvent) => this.onCardPointerDown(e, sketchId, colIdx, chainIdx)}>
-          <span class="effect-card-name">${shortName(entry.module_type)}</span>
-          <button class="remove-btn"
-            @pointerdown=${(e: Event) => e.stopPropagation()}
-            @click=${() => appController.removeEffectFromChain(sketchId, colIdx, chainIdx)}>×</button>
-        </div>
-        <div class="effect-card-body" data-card-key="${sketchId}/${colIdx}/${chainIdx}">
-          ${this.renderFieldWidgets(sketchId, colIdx, chainIdx, entry)}
-          ${tappingMode ? this.renderTapOverlay(sketchId, colIdx, chainIdx, entry) : nothing}
-        </div>
-      </div>
-    `;
-  }
-
-  /**
-   * Render a transparent overlay layer over the effect card body.
-   * Each field editor gets a clickable hit target positioned using the layout manager.
-   */
-  private renderTapOverlay(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
-    const selectedPath = appState.local.selectedFieldPath;
-    const cardBody = this.renderRoot.querySelector(
-      `[data-card-key="${sketchId}/${colIdx}/${chainIdx}"]`
-    ) as HTMLElement | null;
-
-    if (!cardBody) return html`<div class="tap-overlay-container"></div>`;
-
-    const hits: TemplateResult[] = [];
-
-    // Find all field editors registered for this card
-    const keyPrefix = `${sketchId}/${colIdx}/${chainIdx}/`;
-    for (const [key, entry_] of this.layoutManager.entries) {
-      if (!key.startsWith(keyPrefix)) continue;
-
-      const rect = this.layoutManager.getRelativeRect(key, cardBody);
-      if (!rect) continue;
-
-      const isSelected = selectedPath === key;
-      hits.push(html`
-        <div class="tap-overlay-hit" ?selected=${isSelected}
-          style="top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px"
-          @click=${() => appController.selectField(key)}></div>
-      `);
-    }
-
-    return html`<div class="tap-overlay-container">${hits}</div>`;
-  }
-
-  /**
-   * Render the body of an effect card.
-   * Field editors receive ONLY their FieldBinding — no tapping/layout knowledge.
-   */
-  private renderFieldWidgets(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-
-    const binding: FieldBinding = {
-      instanceKey: entry.instance_key,
-      getValue: (fieldPath: string) => {
-        return entry.params[fieldPath]
-          ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
-          ?? 0;
-      },
-      setValue: (fieldPath: string, value: any) => {
-        appController.setEffectParam(sketchId, colIdx, chainIdx, fieldPath, value);
-      },
-    };
-
-    // Check for a custom inspector
-    const inspectorFactory = editorRegistry.getInspectorFactory(entry.module_type);
-    if (inspectorFactory) {
-      let el = this.inspectorCache.get(entry.instance_key);
-      if (!el) {
-        el = inspectorFactory.create(entry.instance_key, binding);
-        this.inspectorCache.set(entry.instance_key, el);
-      } else {
-        (el as any).binding = binding;
-      }
-      return html`${el}`;
-    }
-
-    // Fallback: auto-generate from param declarations
-    if (!plugin || plugin.params.length === 0) return nothing;
-
-    return plugin.params.map(p => {
-      if (p.type === 0) {
-        return html`<field-toggle
-          .fieldPath=${p.name} .label=${p.name}
-          .defaultValue=${p.defaultValue}
-          .binding=${binding}></field-toggle>`;
-      }
-
-      if (p.type === 1) {
-        return html`<field-trigger
-          .fieldPath=${p.name} .label=${p.name}
-          .defaultValue=${p.defaultValue}
-          .binding=${binding}></field-trigger>`;
-      }
-
-      return html`<field-slider
-        .fieldPath=${p.name} .label=${p.name}
-        .min=${p.min} .max=${p.max}
-        .step=${p.type === 13 ? 1 : 0.01}
-        .defaultValue=${p.defaultValue}
-        .binding=${binding}></field-slider>`;
-    });
-  }
-
-  // ========================================================================
-  // Layout manager field scanning
-  // ========================================================================
-
-  /**
-   * Scan the DOM for field editors and register them with the layout manager.
-   * Recursively searches shadow roots to find editors inside custom inspectors.
-   * Field editors are identified by implementing FieldEditorElement (via isFieldEditor).
-   */
-  private scanAndRegisterFields() {
-    requestAnimationFrame(() => {
-      const sketchId = appState.local.editingSketchId;
-      if (!sketchId) return;
-
-      const seenKeys = new Set<string>();
-
-      // For each effect card body, find field editors inside it
-      const cardBodies = this.renderRoot.querySelectorAll('[data-card-key]');
-      for (const body of cardBodies) {
-        const cardKey = (body as HTMLElement).dataset.cardKey!;
-        this.scanFieldEditorsIn(body, cardKey, seenKeys);
-      }
-
-      // Unregister stale entries
-      for (const key of this.layoutManager.entries.keys()) {
-        if (!seenKeys.has(key)) {
-          this.layoutManager.unregister(key);
-        }
-      }
-    });
-  }
-
-  private scanFieldEditorsIn(root: ParentNode, cardKey: string, seenKeys: Set<string>) {
-    for (const child of root.children) {
-      if (isFieldEditor(child)) {
-        const fieldEditor = child as FieldEditorElement;
-        for (const fieldPath of fieldEditor.controlledFields) {
-          const key = `${cardKey}/${fieldPath}`;
-          this.layoutManager.register(key, fieldEditor);
-          seenKeys.add(key);
-        }
-      }
-      // Recurse into shadow roots (for custom inspectors)
-      if ((child as Element).shadowRoot) {
-        this.scanFieldEditorsIn((child as Element).shadowRoot!, cardKey, seenKeys);
-      }
-      // Also recurse into light DOM children
-      if (child.children.length > 0) {
-        this.scanFieldEditorsIn(child, cardKey, seenKeys);
-      }
-    }
-  }
-
-  // ========================================================================
-  // Drop zones & add buttons
-  // ========================================================================
-
-  private renderDropZone(sketchId: string, colIdx: number, insertIdx: number) {
-    return html`
-      <div class="drop-zone" data-drop-col=${colIdx} data-drop-idx=${insertIdx}></div>
-      <button class="add-btn"
-        @click=${() => appController.addEffectToChain(sketchId, colIdx, insertIdx, 'com.nattos.brightness_contrast')}>+</button>
-    `;
-  }
-
-  // ========================================================================
   // Drag & Drop (PointerDragOp-based)
   // ========================================================================
 
-  private onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number) {
-    if (e.button !== 0) return;
-
-    // Find the .effect-card ancestor
-    const header = e.currentTarget as HTMLElement;
-    const card = header.closest('.effect-card') as HTMLElement | null;
-    if (!card) return;
-
-    this.dragSketchId = sketchId;
-    this.dragSourceCol = colIdx;
-    this.dragSourceIdx = chainIdx;
-    this.dragCardEl = card;
-
-    this.dragOp = new PointerDragOp(e, header, {
-      threshold: 5,
-
-      move: (me) => {
-        card.setAttribute('dragging', '');
-        this.updateDragHover(me.clientX, me.clientY);
-      },
-
-      accept: () => {
-        this.commitDrop();
-        this.cleanupDrag();
-      },
-
-      cancel: () => {
-        this.cleanupDrag();
-      },
-    });
-  }
-
   /** Hit-test drop zones and placeholder columns under the pointer. */
   private updateDragHover(x: number, y: number) {
-    // Clear previous highlight
-    this.renderRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    // Clear previous highlights across all column-group shadow roots
+    for (const [, el] of this.columnCache) {
+      el.shadowRoot?.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    }
     this.dragHoverTarget = null;
 
-    // Check drop zones
-    const zones = this.renderRoot.querySelectorAll('.drop-zone');
-    for (const zone of zones) {
-      const rect = zone.getBoundingClientRect();
-      // Expand hit area vertically for easier targeting
-      const expandY = 12;
-      if (x >= rect.left && x <= rect.right &&
-          y >= rect.top - expandY && y <= rect.bottom + expandY) {
-        zone.classList.add('drag-over');
-        const colIdx = parseInt((zone as HTMLElement).dataset.dropCol!);
-        const insertIdx = parseInt((zone as HTMLElement).dataset.dropIdx!);
-        this.dragHoverTarget = { type: 'zone', colIdx, insertIdx };
-        return;
+    // Check drop zones in all attached column-groups
+    for (const [, el] of this.columnCache) {
+      const zones = el.shadowRoot?.querySelectorAll('.drop-zone') ?? [];
+      for (const zone of zones) {
+        const rect = zone.getBoundingClientRect();
+        const expandY = 12;
+        if (x >= rect.left && x <= rect.right &&
+            y >= rect.top - expandY && y <= rect.bottom + expandY) {
+          zone.classList.add('drag-over');
+          const colIdx = parseInt((zone as HTMLElement).dataset.dropCol!);
+          const insertIdx = parseInt((zone as HTMLElement).dataset.dropIdx!);
+          this.dragHoverTarget = { type: 'zone', colIdx, insertIdx };
+          return;
+        }
       }
     }
 
     // Check placeholder columns
-    const placeholders = this.renderRoot.querySelectorAll('.column-placeholder');
-    for (const ph of placeholders) {
-      const rect = ph.getBoundingClientRect();
-      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-        ph.classList.add('drag-over');
-        const colIdx = parseInt((ph as HTMLElement).dataset.placeholderCol!);
-        this.dragHoverTarget = { type: 'placeholder', colIdx };
-        return;
+    for (const [, el] of this.columnCache) {
+      const placeholders = el.shadowRoot?.querySelectorAll('.column-placeholder') ?? [];
+      for (const ph of placeholders) {
+        const rect = ph.getBoundingClientRect();
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+          ph.classList.add('drag-over');
+          const colIdx = parseInt((ph as HTMLElement).dataset.placeholderCol!);
+          this.dragHoverTarget = { type: 'placeholder', colIdx };
+          return;
+        }
       }
     }
   }
@@ -875,11 +504,18 @@ export class EditTab extends MobxLitElement {
         targetChain.splice(outIdx >= 0 ? outIdx : targetChain.length, 0, removed);
       });
     }
+
+    // Invalidate column cache since structure changed
+    this.columnCache.clear();
+    const columnsView = this.renderRoot.querySelector('columns-view') as any;
+    columnsView?.notifyColumnCountChanged?.();
   }
 
   private cleanupDrag() {
     this.dragCardEl?.removeAttribute('dragging');
-    this.renderRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    for (const [, el] of this.columnCache) {
+      el.shadowRoot?.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    }
     this.dragSketchId = null;
     this.dragSourceCol = -1;
     this.dragSourceIdx = -1;

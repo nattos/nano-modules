@@ -46,6 +46,8 @@ export interface TracePoint {
     | { type: 'sketch_output'; sketchId: string }
     | { type: 'plugin_output'; pluginKey: string }
     | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: 'input' | 'output' };
+  /** Optional capture size override. If omitted, captures at source texture resolution. */
+  size?: { width: number; height: number };
 }
 
 // --- Worker commands (main → worker) ---

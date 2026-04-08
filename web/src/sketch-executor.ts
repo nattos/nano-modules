@@ -28,6 +28,13 @@ export class SketchExecutor {
   private instances = new Map<string, LoadedModule>();
   private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
 
+  /**
+   * Per-chain-entry texture handles from the most recent frame.
+   * Keyed by `${sketchId}/${colIdx}/${chainIdx}`.
+   * Populated during executeColumn(), consumed by engine-worker for chain_entry trace points.
+   */
+  public chainEntryHandles = new Map<string, { input: number; output: number }>();
+
   constructor(bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat) {
     this.bridgeCore = bridgeCore;
     this.gpuHost = gpuHost;
@@ -182,7 +189,8 @@ export class SketchExecutor {
     let currentInputHandle = inputTextureHandle;
     // nextSlot managed via shared slotCounter
 
-    for (const entry of column.chain) {
+    for (let chainIdx = 0; chainIdx < column.chain.length; chainIdx++) {
+      const entry = column.chain[chainIdx];
       if (entry.type === 'texture_input') {
         continue;
       }
@@ -305,6 +313,12 @@ export class SketchExecutor {
             }
           }
         }
+
+        // --- Record chain entry handles for trace resolution ---
+        this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+          input: currentInputHandle,
+          output: outputHandle,
+        });
 
         // --- Advance chain ---
         currentInputHandle = outputHandle;

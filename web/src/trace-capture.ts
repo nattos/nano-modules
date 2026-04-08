@@ -81,11 +81,14 @@ export class TraceCapture {
    *
    * Renders the source texture to a dedicated OffscreenCanvas via a blit pass,
    * then calls transferToImageBitmap().
+   *
+   * @param overrideSize If provided, the capture canvas is sized to these dimensions
+   *   instead of matching the source texture. Useful for low-res thumbnails.
    */
-  capture(id: string, srcTexture: GPUTexture): ImageBitmap {
+  capture(id: string, srcTexture: GPUTexture, overrideSize?: { width: number; height: number }): ImageBitmap {
     this.ensurePipeline();
-    const w = srcTexture.width;
-    const h = srcTexture.height;
+    const w = overrideSize?.width ?? srcTexture.width;
+    const h = overrideSize?.height ?? srcTexture.height;
     const slot = this.ensureSlot(id, w, h);
 
     const targetTex = slot.context.getCurrentTexture();

@@ -236,6 +236,9 @@ async function simulateTick(dt: number) {
     params: new Array(16).fill(0),
   };
 
+  // Clear per-frame chain entry handles before executing sketches
+  sketchExecutor.chainEntryHandles.clear();
+
   // NOTE: A real module instance appearing in multiple sketches will only be
   // ticked/rendered once (by whichever sketch chain processes it first). The
   // second sketch will see stale output. Resolume handles this by cloning the
@@ -332,6 +335,12 @@ async function simulateTick(dt: number) {
       handle = sketchOutputs.get(tp.target.sketchId) ?? -1;
     } else if (tp.target.type === 'plugin_output') {
       handle = realOutputs.get(tp.target.pluginKey) ?? -1;
+    } else if (tp.target.type === 'chain_entry') {
+      const key = `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`;
+      const entry = sketchExecutor.chainEntryHandles.get(key);
+      if (entry) {
+        handle = tp.target.side === 'input' ? entry.input : entry.output;
+      }
     }
     const prevHandle = traceHandles.get(tp.id);
     if (prevHandle !== handle) {
@@ -384,7 +393,7 @@ function captureAndSendFrame() {
     if (!srcTex) continue;
 
     try {
-      const bitmap = traceCapture.capture(tp.id, srcTex);
+      const bitmap = traceCapture.capture(tp.id, srcTex, tp.size);
       tracedFrames[tp.id] = bitmap;
       transfers.push(bitmap);
     } catch (e) {

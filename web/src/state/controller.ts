@@ -10,6 +10,7 @@
 import { runInAction, toJS } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager } from './history';
+import { traceController } from './trace-controller';
 import type { DatabaseState, StagingInstance, PluginInfo } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, TracePoint } from '../engine-types';
@@ -22,6 +23,8 @@ export class AppController {
 
   constructor() {
     this.history = new HistoryManager(appState);
+    // Wire the trace controller to push trace points through the engine
+    traceController.onFlush = (tracePoints) => this.setTracePoints(tracePoints);
   }
 
   setEngine(engine: EngineProxy) {
@@ -282,6 +285,63 @@ export class AppController {
     });
   }
 
+  // --- Auto-tap helpers ---
+
+  /**
+   * Auto-create a read tap for an input field.
+   * Finds the last rail with matching data type and connects to it.
+   */
+  autoCreateTapForInput(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string, dataType: 'float' | 'texture') {
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return;
+
+    const allRails = this.collectRails(sketch, colIdx);
+    // Find the last rail with matching data type (reverse search)
+    let matchingRail: import('../sketch-types').Rail | undefined;
+    for (let i = allRails.length - 1; i >= 0; i--) {
+      if (allRails[i].dataType === dataType) { matchingRail = allRails[i]; break; }
+    }
+    if (matchingRail) {
+      // Check if tap already exists
+      const entry = sketch.columns[colIdx]?.chain[chainIdx];
+      if (entry?.type === 'module') {
+        const existing = (entry.taps ?? []).find(t => t.fieldPath === fieldPath && t.railId === matchingRail.id);
+        if (!existing) {
+          this.addTap(sketchId, colIdx, chainIdx, matchingRail.id, fieldPath, 'read');
+        }
+      }
+    }
+  }
+
+  /**
+   * Auto-create a write tap for an output field.
+   * Creates a new rail and connects the output to it.
+   */
+  autoCreateTapForOutput(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string, dataType: 'float' | 'texture') {
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return;
+
+    // Check if tap already exists for this field
+    const entry = sketch.columns[colIdx]?.chain[chainIdx];
+    if (entry?.type === 'module') {
+      const existing = (entry.taps ?? []).find(t => t.fieldPath === fieldPath && t.direction === 'write');
+      if (existing) return; // Already has a write tap
+    }
+
+    const existingCount = (sketch.columns[colIdx]?.rails?.length ?? 0) + (sketch.rails?.length ?? 0);
+    const name = `Rail ${existingCount + 1}`;
+    const railId = this.addRail(sketchId, colIdx, name, dataType);
+    this.addTap(sketchId, colIdx, chainIdx, railId, fieldPath, 'write');
+  }
+
+  private collectRails(sketch: Sketch, colIdx: number): import('../sketch-types').Rail[] {
+    const rails: import('../sketch-types').Rail[] = [];
+    if (sketch.rails) rails.push(...sketch.rails);
+    const col = sketch.columns[colIdx];
+    if (col?.rails) rails.push(...col.rails);
+    return rails;
+  }
+
   selectSketch(id: string | null) {
     runInAction(() => { appState.local.selectedSketchId = id; });
   }
@@ -289,12 +349,16 @@ export class AppController {
   editSketch(id: string | null) {
     console.log('[controller] editSketch:', id);
     runInAction(() => { appState.local.editingSketchId = id; });
-    // Set trace point for the sketch being edited
+    // Register/unregister the edit preview trace point via the trace controller
     if (id) {
-      console.log('[controller] setTracePoints for sketch_output:', id);
-      this.setTracePoints([{ id: 'edit_preview', target: { type: 'sketch_output', sketchId: id } }]);
+      console.log('[controller] register edit_preview trace for sketch_output:', id);
+      traceController.register({
+        id: 'edit_preview',
+        target: { type: 'sketch_output', sketchId: id },
+        resolution: 'high',
+      });
     } else {
-      this.setTracePoints([]);
+      traceController.unregister('edit_preview');
     }
   }
 
