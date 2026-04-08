@@ -21,6 +21,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Rail } from '../sketch-types';
+import { PointerDragOp } from '../utils/pointer-drag-op';
 
 // Register field widgets and inspectors
 import '../widgets/field-slider';
@@ -50,6 +51,10 @@ export class EditTab extends MobxLitElement {
   private dragSketchId: string | null = null;
   private dragSourceCol = -1;
   private dragSourceIdx = -1;
+  private dragCardEl: HTMLElement | null = null;
+  private dragOp: PointerDragOp | null = null;
+  private dragHoverTarget: { type: 'zone'; colIdx: number; insertIdx: number }
+    | { type: 'placeholder'; colIdx: number } | null = null;
 
   connectedCallback() {
     super.connectedCallback();
@@ -504,10 +509,7 @@ export class EditTab extends MobxLitElement {
       <div class="column-group">
         <div class="column">
           <div class="column-header">Column ${colIdx + 1}</div>
-          <div class="column-placeholder"
-            @dragover=${(e: DragEvent) => { e.preventDefault(); (e.currentTarget as HTMLElement).classList.add('drag-over'); }}
-            @dragleave=${(e: DragEvent) => { (e.currentTarget as HTMLElement).classList.remove('drag-over'); }}
-            @drop=${(e: DragEvent) => this.onDropToNewColumn(e, colIdx)}>
+          <div class="column-placeholder" data-placeholder-col=${colIdx}>
             Drop effects here
           </div>
         </div>
@@ -578,13 +580,12 @@ export class EditTab extends MobxLitElement {
   private renderEffectCard(sketchId: string, colIdx: number, chainIdx: number, entry: ModuleEntry) {
     const tappingMode = appState.local.tappingMode;
     return html`
-      <div class="effect-card"
-        draggable="true"
-        @dragstart=${(e: DragEvent) => this.onDragStart(e, sketchId, colIdx, chainIdx)}
-        @dragend=${this.onDragEnd}>
-        <div class="effect-card-header">
+      <div class="effect-card">
+        <div class="effect-card-header"
+          @pointerdown=${(e: PointerEvent) => this.onCardPointerDown(e, sketchId, colIdx, chainIdx)}>
           <span class="effect-card-name">${shortName(entry.module_type)}</span>
           <button class="remove-btn"
+            @pointerdown=${(e: Event) => e.stopPropagation()}
             @click=${() => appController.removeEffectFromChain(sketchId, colIdx, chainIdx)}>×</button>
         </div>
         <div class="effect-card-body" data-card-key="${sketchId}/${colIdx}/${chainIdx}">
@@ -746,71 +747,86 @@ export class EditTab extends MobxLitElement {
 
   private renderDropZone(sketchId: string, colIdx: number, insertIdx: number) {
     return html`
-      <div class="drop-zone"
-        @dragover=${(e: DragEvent) => { e.preventDefault(); (e.currentTarget as HTMLElement).classList.add('drag-over'); }}
-        @dragleave=${(e: DragEvent) => { (e.currentTarget as HTMLElement).classList.remove('drag-over'); }}
-        @drop=${(e: DragEvent) => this.onDrop(e, sketchId, colIdx, insertIdx)}>
-      </div>
+      <div class="drop-zone" data-drop-col=${colIdx} data-drop-idx=${insertIdx}></div>
       <button class="add-btn"
         @click=${() => appController.addEffectToChain(sketchId, colIdx, insertIdx, 'com.nattos.brightness_contrast')}>+</button>
     `;
   }
 
   // ========================================================================
-  // Drag & Drop
+  // Drag & Drop (PointerDragOp-based)
   // ========================================================================
 
-  private onDragStart(e: DragEvent, sketchId: string, colIdx: number, chainIdx: number) {
+  private onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number) {
+    if (e.button !== 0) return;
+
+    // Find the .effect-card ancestor
+    const header = e.currentTarget as HTMLElement;
+    const card = header.closest('.effect-card') as HTMLElement | null;
+    if (!card) return;
+
     this.dragSketchId = sketchId;
     this.dragSourceCol = colIdx;
     this.dragSourceIdx = chainIdx;
-    e.dataTransfer!.effectAllowed = 'move';
-    (e.currentTarget as HTMLElement).setAttribute('dragging', '');
-  }
+    this.dragCardEl = card;
 
-  private onDragEnd = (e: DragEvent) => {
-    (e.currentTarget as HTMLElement).removeAttribute('dragging');
-    this.dragSketchId = null;
-    this.dragSourceCol = -1;
-    this.dragSourceIdx = -1;
-    this.renderRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-  };
+    this.dragOp = new PointerDragOp(e, header, {
+      threshold: 5,
 
-  private onDrop(e: DragEvent, targetSketchId: string, targetColIdx: number, targetInsertIdx: number) {
-    e.preventDefault();
-    (e.currentTarget as HTMLElement).classList.remove('drag-over');
+      move: (me) => {
+        card.setAttribute('dragging', '');
+        this.updateDragHover(me.clientX, me.clientY);
+      },
 
-    if (!this.dragSketchId || this.dragSourceCol < 0 || this.dragSourceIdx < 0) return;
-    if (this.dragSketchId !== targetSketchId) return;
+      accept: () => {
+        this.commitDrop();
+        this.cleanupDrag();
+      },
 
-    const sketch = appState.database.sketches[targetSketchId];
-    if (!sketch) return;
-
-    const sourceCol = sketch.columns[this.dragSourceCol];
-    const sourceEntry = sourceCol?.chain[this.dragSourceIdx];
-    if (!sourceEntry || sourceEntry.type !== 'module') return;
-
-    appController.mutate('Move effect', draft => {
-      const sk = draft.sketches[targetSketchId];
-      const srcCol = sk.columns[this.dragSourceCol];
-      const dstCol = sk.columns[targetColIdx] ?? srcCol;
-
-      const [removed] = srcCol.chain.splice(this.dragSourceIdx, 1);
-
-      let adjustedIdx = targetInsertIdx;
-      if (this.dragSourceCol === targetColIdx && targetInsertIdx > this.dragSourceIdx) {
-        adjustedIdx--;
-      }
-
-      dstCol.chain.splice(adjustedIdx, 0, removed);
+      cancel: () => {
+        this.cleanupDrag();
+      },
     });
   }
 
-  private onDropToNewColumn(e: DragEvent, colIdx: number) {
-    e.preventDefault();
-    (e.currentTarget as HTMLElement).classList.remove('drag-over');
+  /** Hit-test drop zones and placeholder columns under the pointer. */
+  private updateDragHover(x: number, y: number) {
+    // Clear previous highlight
+    this.renderRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    this.dragHoverTarget = null;
 
-    if (!this.dragSketchId || this.dragSourceCol < 0 || this.dragSourceIdx < 0) return;
+    // Check drop zones
+    const zones = this.renderRoot.querySelectorAll('.drop-zone');
+    for (const zone of zones) {
+      const rect = zone.getBoundingClientRect();
+      // Expand hit area vertically for easier targeting
+      const expandY = 12;
+      if (x >= rect.left && x <= rect.right &&
+          y >= rect.top - expandY && y <= rect.bottom + expandY) {
+        zone.classList.add('drag-over');
+        const colIdx = parseInt((zone as HTMLElement).dataset.dropCol!);
+        const insertIdx = parseInt((zone as HTMLElement).dataset.dropIdx!);
+        this.dragHoverTarget = { type: 'zone', colIdx, insertIdx };
+        return;
+      }
+    }
+
+    // Check placeholder columns
+    const placeholders = this.renderRoot.querySelectorAll('.column-placeholder');
+    for (const ph of placeholders) {
+      const rect = ph.getBoundingClientRect();
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        ph.classList.add('drag-over');
+        const colIdx = parseInt((ph as HTMLElement).dataset.placeholderCol!);
+        this.dragHoverTarget = { type: 'placeholder', colIdx };
+        return;
+      }
+    }
+  }
+
+  /** Commit the drop to the currently hovered target. */
+  private commitDrop() {
+    if (!this.dragSketchId || !this.dragHoverTarget) return;
 
     const sketchId = this.dragSketchId;
     const sketch = appState.database.sketches[sketchId];
@@ -819,24 +835,56 @@ export class EditTab extends MobxLitElement {
     const sourceEntry = sketch.columns[this.dragSourceCol]?.chain[this.dragSourceIdx];
     if (!sourceEntry || sourceEntry.type !== 'module') return;
 
-    appController.mutate('Move to new column', draft => {
-      const sk = draft.sketches[sketchId];
+    if (this.dragHoverTarget.type === 'zone') {
+      const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = this.dragHoverTarget;
 
-      const [removed] = sk.columns[this.dragSourceCol].chain.splice(this.dragSourceIdx, 1);
+      appController.mutate('Move effect', draft => {
+        const sk = draft.sketches[sketchId];
+        const srcCol = sk.columns[this.dragSourceCol];
+        const dstCol = sk.columns[targetColIdx] ?? srcCol;
 
-      while (sk.columns.length <= colIdx) {
-        sk.columns.push({
-          name: `Column ${sk.columns.length + 1}`,
-          chain: [
-            { type: 'texture_input', id: `in_${sk.columns.length}` },
-            { type: 'texture_output', id: `out_${sk.columns.length}` },
-          ],
-        });
-      }
+        const [removed] = srcCol.chain.splice(this.dragSourceIdx, 1);
 
-      const targetChain = sk.columns[colIdx].chain;
-      const outIdx = targetChain.findIndex(e => e.type === 'texture_output');
-      targetChain.splice(outIdx >= 0 ? outIdx : targetChain.length, 0, removed);
-    });
+        let adjustedIdx = targetInsertIdx;
+        if (this.dragSourceCol === targetColIdx && targetInsertIdx > this.dragSourceIdx) {
+          adjustedIdx--;
+        }
+
+        dstCol.chain.splice(adjustedIdx, 0, removed);
+      });
+
+    } else if (this.dragHoverTarget.type === 'placeholder') {
+      const colIdx = this.dragHoverTarget.colIdx;
+
+      appController.mutate('Move to new column', draft => {
+        const sk = draft.sketches[sketchId];
+        const [removed] = sk.columns[this.dragSourceCol].chain.splice(this.dragSourceIdx, 1);
+
+        while (sk.columns.length <= colIdx) {
+          sk.columns.push({
+            name: `Column ${sk.columns.length + 1}`,
+            chain: [
+              { type: 'texture_input', id: `in_${sk.columns.length}` },
+              { type: 'texture_output', id: `out_${sk.columns.length}` },
+            ],
+          });
+        }
+
+        const targetChain = sk.columns[colIdx].chain;
+        const outIdx = targetChain.findIndex(e => e.type === 'texture_output');
+        targetChain.splice(outIdx >= 0 ? outIdx : targetChain.length, 0, removed);
+      });
+    }
+  }
+
+  private cleanupDrag() {
+    this.dragCardEl?.removeAttribute('dragging');
+    this.renderRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    this.dragSketchId = null;
+    this.dragSourceCol = -1;
+    this.dragSourceIdx = -1;
+    this.dragCardEl = null;
+    this.dragOp = null;
+    this.dragHoverTarget = null;
   }
 }
