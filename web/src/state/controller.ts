@@ -301,14 +301,22 @@ export class AppController {
     for (let i = allRails.length - 1; i >= 0; i--) {
       if (allRails[i].dataType === dataType) { matchingRail = allRails[i]; break; }
     }
-    if (matchingRail) {
-      // Check if tap already exists
-      const entry = sketch.columns[colIdx]?.chain[chainIdx];
-      if (entry?.type === 'module') {
-        const existing = (entry.taps ?? []).find(t => t.fieldPath === fieldPath && t.railId === matchingRail.id);
-        if (!existing) {
-          this.addTap(sketchId, colIdx, chainIdx, matchingRail.id, fieldPath, 'read');
-        }
+    // If no matching rail, create one first
+    if (!matchingRail) {
+      const existingCount = (sketch.columns[colIdx]?.rails?.length ?? 0) + (sketch.rails?.length ?? 0);
+      const name = `Rail ${existingCount + 1}`;
+      const railId = this.addRail(sketchId, colIdx, name, dataType);
+      this.addTap(sketchId, colIdx, chainIdx, railId, fieldPath, 'read');
+      return;
+    }
+
+    // Check if tap already exists
+    const entry = sketch.columns[colIdx]?.chain[chainIdx];
+    if (entry?.type === 'module') {
+      const existingRailId = matchingRail.id;
+      const existing = (entry.taps ?? []).find(t => t.fieldPath === fieldPath && t.railId === existingRailId);
+      if (!existing) {
+        this.addTap(sketchId, colIdx, chainIdx, existingRailId, fieldPath, 'read');
       }
     }
   }
@@ -347,11 +355,9 @@ export class AppController {
   }
 
   editSketch(id: string | null) {
-    console.log('[controller] editSketch:', id);
     runInAction(() => { appState.local.editingSketchId = id; });
     // Register/unregister the edit preview trace point via the trace controller
     if (id) {
-      console.log('[controller] register edit_preview trace for sketch_output:', id);
       traceController.register({
         id: 'edit_preview',
         target: { type: 'sketch_output', sketchId: id },
@@ -368,6 +374,12 @@ export class AppController {
 
   setEngineError(error: string | null) {
     runInAction(() => { appState.local.engine.error = error; });
+  }
+
+  setSketchState(sketchState: Record<string, any>) {
+    runInAction(() => {
+      appState.local.engine.sketchState = sketchState;
+    });
   }
 
   setTracedFrames(frames: Record<string, ImageBitmap>) {

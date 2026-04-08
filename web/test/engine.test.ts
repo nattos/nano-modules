@@ -317,6 +317,269 @@ describe('Engine Worker E2E', () => {
     });
   });
 
+  describe('env_lfo output and rail routing', () => {
+    it('env_lfo reports output as data_output in plugin io', async () => {
+      const result = await runEngineTest({
+        modules: ['com.nattos.env_lfo'],
+        tracePoints: [],
+        waitFrames: 5,
+        dumpName: 'engine_lfo_io',
+      });
+
+      expect(result.success).toBe(true);
+      const lfo = result.state.plugins.find((p: any) => p.id === 'com.nattos.env_lfo');
+      expect(lfo).toBeTruthy();
+
+      // "output" should appear in io with kind=2 (data_output)
+      const dataOut = lfo.io.find((io: any) => io.name === 'output' && io.kind === 2);
+      expect(dataOut).toBeTruthy();
+
+      // "output" should also be in params (it's a schema field)
+      const outParam = lfo.params.find((p: any) => p.name === 'output');
+      expect(outParam).toBeTruthy();
+
+      // "rate" and "amplitude" should NOT be in io as data_output
+      const rateIo = lfo.io.find((io: any) => io.name === 'rate' && io.kind === 2);
+      expect(rateIo).toBeUndefined();
+    });
+
+    it('LFO write tap publishes rail value to sketchState', async () => {
+      const result = await runEngineTest({
+        modules: ['com.nattos.env_lfo'],
+        commands: [
+          {
+            type: 'createSketch',
+            sketchId: 'sk_lfo',
+            sketch: {
+              anchor: null,
+              columns: [{
+                name: 'main',
+                chain: [
+                  { type: 'texture_input', id: 'in' },
+                  {
+                    type: 'module',
+                    module_type: 'com.nattos.env_lfo',
+                    instance_key: 'lfo@0',
+                    params: { rate: 0.5, amplitude: 1.0 },
+                    taps: [
+                      { railId: 'lfo_out', fieldPath: 'output', direction: 'write' },
+                    ],
+                  },
+                  { type: 'texture_output', id: 'out' },
+                ],
+                rails: [{ id: 'lfo_out', name: 'LFO Out', dataType: 'float' }],
+              }],
+            },
+          },
+        ],
+        tracePoints: [],
+        waitFrames: 20,
+        dumpName: 'engine_lfo_rail',
+      });
+
+      expect(result.success).toBe(true);
+
+      // The rail value should appear in sketchState
+      const ss = result.sketchState;
+      expect(ss).toBeTruthy();
+      const colRails = ss?.sk_lfo?.['columns/0'];
+      expect(colRails).toBeTruthy();
+      expect(colRails.lfo_out).toBeTruthy();
+      // The LFO output is a sine wave between 0 and 1 — value should be a number
+      expect(typeof colRails.lfo_out.value).toBe('number');
+    });
+
+    it('LFO modulates brightness_contrast via rail read tap', async () => {
+      // LFO writes to rail, BC reads contrast from rail.
+      // With LFO amplitude=1, contrast swings between 0 and 1.
+      // After enough frames, the output should differ from static contrast=1.
+      const result = await runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast', 'com.nattos.env_lfo'],
+        dumpName: 'engine_lfo_modulate',
+        phases: [
+          // Phase 0: Static contrast=1 (no modulation) for reference
+          {
+            commands: [
+              {
+                type: 'createSketch',
+                sketchId: 'sk_mod',
+                sketch: {
+                  anchor: 'com.nattos.spinningtris@0',
+                  columns: [{
+                    name: 'main',
+                    chain: [
+                      { type: 'texture_input', id: 'in' },
+                      {
+                        type: 'module',
+                        module_type: 'com.nattos.brightness_contrast',
+                        instance_key: 'bc@0',
+                        params: { brightness: 0.5, contrast: 1.0 },
+                      },
+                      { type: 'texture_output', id: 'out' },
+                    ],
+                  }],
+                },
+              },
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_mod' } },
+              ]},
+            ],
+            waitFrames: 15,
+            captureTraceIds: ['out'],
+          },
+          // Phase 1: Add LFO modulating contrast via rail
+          {
+            commands: [
+              {
+                type: 'updateSketch',
+                sketchId: 'sk_mod',
+                sketch: {
+                  anchor: 'com.nattos.spinningtris@0',
+                  columns: [{
+                    name: 'main',
+                    chain: [
+                      { type: 'texture_input', id: 'in' },
+                      {
+                        type: 'module',
+                        module_type: 'com.nattos.env_lfo',
+                        instance_key: 'lfo@0',
+                        params: { rate: 0.5, amplitude: 1.0 },
+                        taps: [
+                          { railId: 'mod_rail', fieldPath: 'output', direction: 'write' },
+                        ],
+                      },
+                      {
+                        type: 'module',
+                        module_type: 'com.nattos.brightness_contrast',
+                        instance_key: 'bc@0',
+                        params: { brightness: 0.5, contrast: 1.0 },
+                        taps: [
+                          { railId: 'mod_rail', fieldPath: 'contrast', direction: 'read' },
+                        ],
+                      },
+                      { type: 'texture_output', id: 'out' },
+                    ],
+                    rails: [{ id: 'mod_rail', name: 'Mod', dataType: 'float' }],
+                  }],
+                },
+              },
+            ],
+            waitFrames: 20,
+            captureTraceIds: ['out'],
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+
+      // The modulated phase should have the rail value set
+      const ss = result.phases[1].sketchState;
+      const colRails = ss?.sk_mod?.['columns/0'];
+      expect(colRails?.mod_rail).toBeTruthy();
+      expect(typeof colRails?.mod_rail?.value).toBe('number');
+    });
+  });
+
+  describe('chain_entry trace points', () => {
+    it('resolves chain_entry trace to module output texture', async () => {
+      const result = await runEngineTest({
+        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        tracePoints: [
+          // Trace the BC module's output (chainIdx=1 in the chain)
+          { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_ce', colIdx: 0, chainIdx: 1, side: 'output' } },
+          { id: 'sketch_out', target: { type: 'sketch_output', sketchId: 'sk_ce' } },
+        ],
+        commands: [
+          {
+            type: 'createSketch',
+            sketchId: 'sk_ce',
+            sketch: {
+              anchor: 'com.nattos.spinningtris@0',
+              columns: [{
+                name: 'main',
+                chain: [
+                  { type: 'texture_input', id: 'in' },
+                  {
+                    type: 'module',
+                    module_type: 'com.nattos.brightness_contrast',
+                    instance_key: 'bc_ce@0',
+                    params: { brightness: 0.5, contrast: 0.0 },
+                  },
+                  { type: 'texture_output', id: 'out' },
+                ],
+              }],
+            },
+          },
+        ],
+        captureTraceIds: ['bc_out', 'sketch_out'],
+        waitFrames: 20,
+        dumpName: 'engine_chain_entry',
+      });
+
+      expect(result.success).toBe(true);
+
+      const bcOut = result.trace('bc_out');
+      const sketchOut = result.trace('sketch_out');
+
+      // Both should be black (contrast=0)
+      bcOut.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+      sketchOut.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+
+      // They should be the same image
+      bcOut.expectSameAs(sketchOut, 1);
+    });
+
+    it('chain_entry input differs from output when module applies effect', async () => {
+      const result = await runEngineTest({
+        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        tracePoints: [
+          { id: 'bc_in', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 1, side: 'input' } },
+          { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 1, side: 'output' } },
+        ],
+        commands: [
+          {
+            type: 'createSketch',
+            sketchId: 'sk_io',
+            sketch: {
+              anchor: 'com.nattos.spinningtris@0',
+              columns: [{
+                name: 'main',
+                chain: [
+                  { type: 'texture_input', id: 'in' },
+                  {
+                    type: 'module',
+                    module_type: 'com.nattos.brightness_contrast',
+                    instance_key: 'bc_io@0',
+                    params: { brightness: 0.5, contrast: 0.0 },
+                  },
+                  { type: 'texture_output', id: 'out' },
+                ],
+              }],
+            },
+          },
+        ],
+        captureTraceIds: ['bc_in', 'bc_out'],
+        waitFrames: 20,
+        dumpName: 'engine_chain_entry_io',
+      });
+
+      expect(result.success).toBe(true);
+
+      const bcIn = result.trace('bc_in');
+      const bcOut = result.trace('bc_out');
+
+      // Input should be the spinningtris output (colorful)
+      bcIn.expectNotSolidColor({ r: 0, g: 0, b: 0 });
+
+      // Output should be black (contrast=0)
+      bcOut.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
+
+      // They should be different
+      bcIn.expectDifferentFrom(bcOut, 50);
+    });
+  });
+
   describe('column move preserves params', () => {
     it('contrast=0 stays black after moving module between columns', async () => {
       // Repro for bug: moving a module to a different column via updateSketch

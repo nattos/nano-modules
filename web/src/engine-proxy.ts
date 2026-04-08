@@ -13,6 +13,7 @@ export class EngineProxy {
   onStateUpdate: ((state: EngineState) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
   onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
+  onSketchState: ((sketchState: Record<string, any>) => void) | null = null;
   onError: ((message: string) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
 
@@ -34,6 +35,7 @@ export class EngineProxy {
         case 'frame':
           this.onFps?.(event.fps);
           this.onTracedFrames?.(event.tracedFrames);
+          this.onSketchState?.(event.sketchState);
           break;
         case 'error':
           this.onError?.(event.message);

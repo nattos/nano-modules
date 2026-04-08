@@ -53,6 +53,8 @@ export interface EngineStatus {
   tracedFrames: Record<string, ImageBitmap | null>;
   /** Incremented every time tracedFrames is updated, to force MobX reactivity. */
   frameGeneration: number;
+  /** Per-sketch rail values from the executor, keyed by sketch ID. */
+  sketchState: Record<string, any>;
 }
 
 export interface LocalState {

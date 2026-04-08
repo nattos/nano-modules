@@ -16,14 +16,24 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { CancelReason, PointerDragOp } from '../utils/pointer-drag-op';
+import type { FieldBinding, FieldEditorElement } from './field-editor';
 
 @customElement('scalar-slider')
-export class ScalarSlider extends LitElement {
+export class ScalarSlider extends LitElement implements FieldEditorElement {
+  @property() fieldPath = '';
+  @property() label = '';
   @property({ type: Number }) value = 0;
   @property({ type: Number }) min = 0;
   @property({ type: Number }) max = 1;
   @property({ type: Number }) step = 0.01;
   @property({ type: Number }) defaultValue = 0;
+  @property({ attribute: false }) binding: FieldBinding | null = null;
+
+  get controlledFields() { return [this.fieldPath]; }
+
+  getControlElements(): HTMLElement[] { return [this]; }
+
+  bindInstance(binding: FieldBinding) { this.binding = binding; }
 
   @state() private isDragging = false;
   @state() private isEditing = false;
@@ -135,6 +145,23 @@ export class ScalarSlider extends LitElement {
     this.dragOp?.dispose();
   }
 
+  /** When a binding is present, read the current value from it. */
+  private get effectiveValue(): number {
+    if (this.binding && this.fieldPath) {
+      const v = this.binding.getValue(this.fieldPath);
+      return typeof v === 'number' ? v : this.defaultValue;
+    }
+    return this.value;
+  }
+
+  /** Write a value — updates the binding if present, otherwise just sets .value. */
+  private setValue(v: number) {
+    this.value = v;
+    if (this.binding && this.fieldPath) {
+      this.binding.setValue(this.fieldPath, v);
+    }
+  }
+
   render() {
     if (this.isEditing) {
       return html`
@@ -148,9 +175,10 @@ export class ScalarSlider extends LitElement {
       `;
     }
 
+    const val = this.effectiveValue;
     let barWidth = 0;
     if (Number.isFinite(this.min) && Number.isFinite(this.max) && this.max > this.min) {
-      const clamped = Math.max(this.min, Math.min(this.max, this.value));
+      const clamped = Math.max(this.min, Math.min(this.max, val));
       barWidth = ((clamped - this.min) / (this.max - this.min)) * 100;
     }
 
@@ -161,7 +189,7 @@ export class ScalarSlider extends LitElement {
         @pointerdown=${this.handlePointerDown}
         @dblclick=${this.handleDoubleClick}
       >
-        ${this.formatValue(this.value)}
+        ${this.formatValue(val)}
       </div>
     `;
   }
@@ -177,7 +205,7 @@ export class ScalarSlider extends LitElement {
     if (e.button !== 0) return;
     if (e.detail === 2) { this.handleDoubleClick(); return; }
 
-    this.startValue = this.value;
+    this.startValue = this.effectiveValue;
     this.rect = this.getBoundingClientRect();
     this.isDragging = false;
 
@@ -192,15 +220,15 @@ export class ScalarSlider extends LitElement {
       },
       accept: () => {
         if (this.isDragging) {
-          this.dispatchEvent(new CustomEvent('change', { detail: this.value }));
+          this.dispatchEvent(new CustomEvent('change', { detail: this.effectiveValue }));
         }
         this.cleanupDrag();
         this.focus();
       },
       cancel: (reason) => {
         if (reason === CancelReason.UserAction || reason === CancelReason.Programmatic) {
-          this.value = this.startValue;
-          this.dispatchEvent(new CustomEvent('change', { detail: this.value }));
+          this.setValue(this.startValue);
+          this.dispatchEvent(new CustomEvent('change', { detail: this.startValue }));
         }
         this.cleanupDrag();
       }
@@ -237,9 +265,9 @@ export class ScalarSlider extends LitElement {
       newValue = Math.max(this.min, Math.min(this.max, newValue));
     }
 
-    if (newValue !== this.value) {
-      this.value = newValue;
-      this.dispatchEvent(new CustomEvent('input', { detail: this.value }));
+    if (newValue !== this.effectiveValue) {
+      this.setValue(newValue);
+      this.dispatchEvent(new CustomEvent('input', { detail: newValue }));
     }
   }
 
@@ -255,7 +283,7 @@ export class ScalarSlider extends LitElement {
 
     if (/^[0-9.\-]$/.test(e.key) || e.key === 'Enter') {
       this.isEditing = true;
-      this.tempValue = e.key === 'Enter' ? this.value.toString() : e.key;
+      this.tempValue = e.key === 'Enter' ? this.effectiveValue.toString() : e.key;
       e.preventDefault();
 
       await this.updateComplete;
@@ -269,15 +297,15 @@ export class ScalarSlider extends LitElement {
         }
       }
     } else if (e.key === 'Backspace' || e.key === 'Delete') {
-      this.value = this.defaultValue;
-      this.dispatchEvent(new CustomEvent('change', { detail: this.value }));
+      this.setValue(this.defaultValue);
+      this.dispatchEvent(new CustomEvent('change', { detail: this.defaultValue }));
     }
   };
 
   private async handleDoubleClick(e?: Event) {
     e?.stopPropagation();
     this.isEditing = true;
-    this.tempValue = this.value.toString();
+    this.tempValue = this.effectiveValue.toString();
 
     await this.updateComplete;
     const input = this.shadowRoot?.querySelector('input');
@@ -303,13 +331,13 @@ export class ScalarSlider extends LitElement {
 
   private commitEdit() {
     if (this.tempValue.trim() === '') {
-      this.value = this.defaultValue;
-      this.dispatchEvent(new CustomEvent('change', { detail: this.value }));
+      this.setValue(this.defaultValue);
+      this.dispatchEvent(new CustomEvent('change', { detail: this.defaultValue }));
     } else {
       const num = parseFloat(this.tempValue);
       if (!isNaN(num)) {
-        this.value = num;
-        this.dispatchEvent(new CustomEvent('change', { detail: this.value }));
+        this.setValue(num);
+        this.dispatchEvent(new CustomEvent('change', { detail: num }));
       }
     }
     this.isEditing = false;

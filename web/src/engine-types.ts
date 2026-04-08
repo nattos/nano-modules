@@ -67,6 +67,6 @@ export type WorkerCommand =
 export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
-  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap> }
+  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchState: Record<string, any> }
   | { type: 'error'; message: string }
   | { type: 'debugDump'; data: any };

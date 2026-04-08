@@ -42,19 +42,23 @@ export class ColumnsView extends LitElement {
   private contentEl: HTMLElement | null = null;
   private scrollEl: HTMLElement | null = null;
   private resizeObs: ResizeObserver | null = null;
+  /** Observes column element heights so we can size the content container for Y scroll. */
+  private columnResizeObs: ResizeObserver | null = null;
   private resizeOp: PointerDragOp | null = null;
 
   static styles = css`
     :host {
-      display: block;
+      display: flex;
       flex: 1;
       min-width: 0;
       min-height: 0;
+      overflow: hidden;
     }
     .scroll-container {
+      flex: 1;
+      min-width: 0;
+      width: 0;
       overflow: auto;
-      width: 100%;
-      height: 100%;
       padding: 16px;
       box-sizing: border-box;
     }
@@ -89,12 +93,15 @@ export class ColumnsView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.resizeObs = new ResizeObserver(() => this.updateVisibleRange());
+    this.columnResizeObs = new ResizeObserver(() => this.updateContentHeight());
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this.resizeObs?.disconnect();
     this.resizeObs = null;
+    this.columnResizeObs?.disconnect();
+    this.columnResizeObs = null;
     // Detach all on disconnect
     for (const [idx, el] of this.attachedColumns) {
       el.remove();
@@ -121,8 +128,17 @@ export class ColumnsView extends LitElement {
     }
   }
 
-  /** Notify that the column count has changed. Call this from the host when data changes. */
+  /** Notify that the column count or data has changed. Detaches all, re-attaches visible. */
   notifyColumnCountChanged() {
+    // Detach all currently attached columns so updateVisibleRange
+    // will re-fetch from the host (which may have new elements).
+    for (const [idx, el] of this.attachedColumns) {
+      this.columnResizeObs?.unobserve(el);
+      el.remove();
+      this.host?.columnDetached?.(idx, el);
+    }
+    this.attachedColumns.clear();
+
     this.recalcLayout();
     this.updateVisibleRange();
   }
@@ -178,6 +194,16 @@ export class ColumnsView extends LitElement {
     }
   }
 
+  /** Set content height to the tallest attached column so Y scrolling works. */
+  private updateContentHeight() {
+    if (!this.contentEl) return;
+    let maxH = 100; // minimum
+    for (const [, el] of this.attachedColumns) {
+      maxH = Math.max(maxH, el.scrollHeight);
+    }
+    this.contentEl.style.height = `${maxH}px`;
+  }
+
   private updateVisibleRange() {
     if (!this.scrollEl || !this.contentEl || !this.host) return;
 
@@ -217,6 +243,7 @@ export class ColumnsView extends LitElement {
     // Detach columns that left the viewport
     for (const [idx, el] of this.attachedColumns) {
       if (idx < visibleStart || idx > visibleEnd) {
+        this.columnResizeObs?.unobserve(el);
         el.remove();
         this.host.columnDetached?.(idx, el);
         this.attachedColumns.delete(idx);
@@ -233,6 +260,7 @@ export class ColumnsView extends LitElement {
         el.style.width = `${this.getColumnTotalWidth(i)}px`;
         this.contentEl.appendChild(el);
         this.attachedColumns.set(i, el);
+        this.columnResizeObs?.observe(el);
         this.host.columnAttached?.(i, el);
       } else {
         // Update position in case widths changed
@@ -241,6 +269,8 @@ export class ColumnsView extends LitElement {
         el.style.width = `${this.getColumnTotalWidth(i)}px`;
       }
     }
+
+    this.updateContentHeight();
 
     // Update resize handles
     this.updateResizeHandles(count);

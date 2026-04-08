@@ -20,7 +20,9 @@ import type { FieldBinding, FieldEditorElement } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
 import { editorRegistry } from '../editor-registry';
+import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
 import type { TracePoint } from '../engine-types';
+import type { ParamInfo } from '../engine-types';
 
 // Import field widget elements
 import './field-slider';
@@ -30,6 +32,28 @@ import './texture-monitor';
 import './spark-chart';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
+
+/** Map an engine ParamInfo to a generic inspector field definition. */
+function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
+  switch (p.type) {
+    case 0: // bool
+      return { type: 'boolean', label: p.name, path: p.name, default: p.defaultValue > 0.5 };
+    case 1: // event
+      return { type: 'button', label: p.name, path: p.name, text: p.name };
+    case 100: // text
+      return { type: 'string', label: p.name, path: p.name };
+    default: // 10=standard, 11=option, 13=integer
+      return {
+        type: 'slider',
+        label: p.name,
+        path: p.name,
+        min: p.min,
+        max: p.max,
+        step: p.type === 13 ? 1 : 0.01,
+        default: p.defaultValue,
+      };
+  }
+}
 
 /** Callbacks from edit-tab for column-level interactions. */
 export interface ColumnGroupCallbacks {
@@ -143,17 +167,28 @@ export class ColumnGroup extends MobxLitElement {
       box-sizing: border-box;
     }
 
-    /* --- Drop zones --- */
+    /* --- Drop zones (invisible spacing, no visual change on hover) --- */
     .drop-zone {
       width: 100%;
       min-height: 4px;
-      transition: min-height 0.15s, background 0.15s;
       border-radius: 2px;
     }
-    .drop-zone.drag-over {
-      min-height: 24px;
-      background: rgba(65,105,225,0.15);
-      border: 1px dashed var(--app-hi-color2);
+
+    /* --- Drag insertion marker (absolutely positioned, no layout shift) --- */
+    .drag-insert-marker {
+      position: absolute;
+      left: 0;
+      right: 24px; /* leave room for gutter */
+      height: 3px;
+      background: var(--app-hi-color2, #4169E1);
+      border-radius: 2px;
+      pointer-events: none;
+      z-index: 20;
+      display: none;
+      box-shadow: 0 0 6px rgba(65, 105, 225, 0.5);
+    }
+    .drag-insert-marker.visible {
+      display: block;
     }
     .add-btn {
       background: rgba(255,255,255,0.04);
@@ -277,14 +312,71 @@ export class ColumnGroup extends MobxLitElement {
     this.layoutManager.dispose();
   }
 
+  /**
+   * Return all possible insertion points with their viewport-relative positions.
+   * Used by edit-tab to find the globally closest insertion target.
+   */
+  getInsertionPoints(): { colIdx: number; insertIdx: number; x: number; y: number; isPlaceholder: boolean }[] {
+    const results: { colIdx: number; insertIdx: number; x: number; y: number; isPlaceholder: boolean }[] = [];
+    const colEl = this.renderRoot.querySelector('.column') as HTMLElement | null;
+    if (!colEl) return results;
+    const colRect = colEl.getBoundingClientRect();
+    const centerX = colRect.left + colRect.width / 2;
+
+    if (this.isPlaceholder) {
+      // Placeholder column: single insertion point at vertical center
+      results.push({
+        colIdx: this.colIdx,
+        insertIdx: 1, // after texture_input
+        x: centerX,
+        y: colRect.top + colRect.height / 2,
+        isPlaceholder: true,
+      });
+      return results;
+    }
+
+    // Real column: each drop zone is an insertion point
+    const zones = this.renderRoot.querySelectorAll('.drop-zone');
+    for (const zone of zones) {
+      const zoneRect = zone.getBoundingClientRect();
+      const dropCol = parseInt((zone as HTMLElement).dataset.dropCol!);
+      const dropIdx = parseInt((zone as HTMLElement).dataset.dropIdx!);
+      results.push({
+        colIdx: dropCol,
+        insertIdx: dropIdx,
+        x: centerX,
+        y: zoneRect.top + zoneRect.height / 2,
+        isPlaceholder: false,
+      });
+    }
+
+    return results;
+  }
+
+  /** Show the drag insertion marker at the given Y offset (relative to this element). */
+  showInsertMarker(y: number) {
+    const marker = this.renderRoot.querySelector('.drag-insert-marker') as HTMLElement | null;
+    if (marker) {
+      marker.classList.add('visible');
+      marker.style.top = `${y}px`;
+    }
+  }
+
+  /** Hide the drag insertion marker. */
+  hideInsertMarker() {
+    const marker = this.renderRoot.querySelector('.drag-insert-marker') as HTMLElement | null;
+    marker?.classList.remove('visible');
+  }
+
   render() {
     if (this.isPlaceholder) {
       return html`
-        <div class="column">
+        <div class="column" style="position:relative">
           <div class="column-header">Column ${this.colIdx + 1}</div>
           <div class="column-placeholder" data-placeholder-col=${this.colIdx}>
             Drop effects here
           </div>
+          <div class="drag-insert-marker"></div>
         </div>
         <div class="column-gutter"></div>
       `;
@@ -301,9 +393,10 @@ export class ColumnGroup extends MobxLitElement {
     const _layoutGen = this.layoutManager.generation;
 
     return html`
-      <div class="column">
+      <div class="column" style="position:relative">
         <div class="column-header">${column.name}</div>
         ${this.renderChain(sketch, column)}
+        <div class="drag-insert-marker"></div>
       </div>
       <div class="column-gutter" data-col=${this.colIdx}>
         ${this.renderGutterTaps(sketch, column)}
@@ -443,6 +536,21 @@ export class ColumnGroup extends MobxLitElement {
     `;
   }
 
+  /** Build the set of field names that are outputs for a given module entry. */
+  private getOutputFieldNames(entry: ModuleEntry): Set<string> {
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const names = new Set<string>();
+    // io-declared data outputs
+    for (const io of plugin?.io ?? []) {
+      if (io.kind === 2) names.add(io.name);
+    }
+    // Fields that already have write taps
+    for (const tap of entry.taps ?? []) {
+      if (tap.direction === 'write') names.add(tap.fieldPath);
+    }
+    return names;
+  }
+
   private renderTapOverlay(chainIdx: number, entry: ModuleEntry) {
     const selectedPath = appState.local.selectedFieldPath;
     const cardBody = this.renderRoot.querySelector(
@@ -451,11 +559,7 @@ export class ColumnGroup extends MobxLitElement {
 
     if (!cardBody) return html`<div class="tap-overlay-container"></div>`;
 
-    // Determine which fields are outputs
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-    const outputFieldNames = new Set(
-      (plugin?.io.filter(io => io.kind === 2) ?? []).map(io => io.name)
-    );
+    const outputFieldNames = this.getOutputFieldNames(entry);
 
     const hits: TemplateResult[] = [];
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
@@ -493,10 +597,22 @@ export class ColumnGroup extends MobxLitElement {
 
   private renderFieldWidgets(chainIdx: number, entry: ModuleEntry) {
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const outputFieldNames = this.getOutputFieldNames(entry);
 
     const binding: FieldBinding = {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
+        // If a read tap exists for this field, return the modulated rail value
+        const readTap = (entry.taps ?? []).find(t => t.fieldPath === fieldPath && t.direction === 'read');
+        if (readTap) {
+          const ss = appState.local.engine.sketchState;
+          const sketchSt = ss?.[this.sketchId];
+          if (sketchSt) {
+            const colRails = sketchSt[`columns/${this.colIdx}`];
+            const railVal = colRails?.[readTap.railId]?.value ?? sketchSt.rails?.[readTap.railId]?.value;
+            if (railVal !== undefined) return railVal;
+          }
+        }
         return entry.params[fieldPath]
           ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
           ?? 0;
@@ -506,51 +622,71 @@ export class ColumnGroup extends MobxLitElement {
       },
     };
 
-    // Check for a custom inspector
+    // Check for a custom inspector registered via the editor registry
     const el = this.callbacks?.getInspectorElement(entry.instance_key, entry.module_type, binding);
     if (el) {
-      return html`${el}${this.renderOutputFields(plugin)}`;
+      return html`${el}${this.renderOutputFields(plugin, entry, binding, outputFieldNames)}`;
     }
 
-    const inputFields = (plugin?.params ?? []).map(p => {
-      if (p.type === 0) {
-        return html`<field-toggle
-          .fieldPath=${p.name} .label=${p.name}
-          .defaultValue=${p.defaultValue}
-          .binding=${binding}></field-toggle>`;
-      }
+    // Use the generic inspector to render input fields (excluding outputs)
+    const inputParams = (plugin?.params ?? []).filter(p => !outputFieldNames.has(p.name));
 
-      if (p.type === 1) {
-        return html`<field-trigger
-          .fieldPath=${p.name} .label=${p.name}
-          .defaultValue=${p.defaultValue}
-          .binding=${binding}></field-trigger>`;
-      }
+    let inputSection = nothing as typeof nothing | TemplateResult;
+    if (inputParams.length > 0) {
+      const fields = inputParams.map((p): InspectorFieldDef => paramToFieldDef(p));
+      const inspector = createGenericInspector(fields);
+      inputSection = inspector(binding);
+    }
 
-      return html`<field-slider
-        .fieldPath=${p.name} .label=${p.name}
-        .min=${p.min} .max=${p.max}
-        .step=${p.type === 13 ? 1 : 0.01}
-        .defaultValue=${p.defaultValue}
-        .binding=${binding}></field-slider>`;
-    });
-
-    return html`${inputFields}${this.renderOutputFields(plugin)}`;
+    return html`${inputSection}${this.renderOutputFields(plugin, entry, binding, outputFieldNames)}`;
   }
 
-  /** Render read-only output fields (data outputs from plugin io). */
-  private renderOutputFields(plugin: typeof appState.local.plugins[0] | undefined) {
+  /**
+   * Render output fields as read-only scalar-sliders.
+   * These implement FieldEditorElement so they're scanned by the field layout
+   * manager and get tap overlay hit targets.
+   */
+  private renderOutputFields(
+    plugin: typeof appState.local.plugins[0] | undefined,
+    entry: ModuleEntry,
+    binding: FieldBinding,
+    outputFieldNames: Set<string>,
+  ) {
     if (!plugin) return nothing;
-    const dataOutputs = plugin.io.filter(io => io.kind === 2);
-    if (dataOutputs.length === 0) return nothing;
+
+    // Collect all output field names: from io (kind===2), from write taps,
+    // and also params that match io outputs
+    const outputParams = plugin.params.filter(p => outputFieldNames.has(p.name));
+    // io-only outputs (declared in io but not as params)
+    const ioOnlyOutputs = plugin.io.filter(
+      io => io.kind === 2 && !plugin.params.some(p => p.name === io.name)
+    );
+
+    if (outputParams.length === 0 && ioOnlyOutputs.length === 0) return nothing;
 
     return html`
       <div class="output-separator">outputs</div>
-      ${dataOutputs.map(io => html`
-        <div class="output-field" data-output-field=${io.name}>
-          <span class="output-field-label">${io.name}</span>
-          <span class="output-field-value">--</span>
-        </div>
+      ${outputParams.map(p => html`
+        <scalar-slider style="width: 100%;"
+          .fieldPath=${p.name}
+          .label=${p.name}
+          .min=${p.min}
+          .max=${p.max}
+          .step=${p.type === 13 ? 1 : 0.01}
+          .defaultValue=${p.defaultValue}
+          .binding=${binding}
+        ></scalar-slider>
+      `)}
+      ${ioOnlyOutputs.map(io => html`
+        <scalar-slider style="width: 100%;"
+          .fieldPath=${io.name}
+          .label=${io.name}
+          .min=${0}
+          .max=${1}
+          .step=${0.01}
+          .defaultValue=${0}
+          .binding=${binding}
+        ></scalar-slider>
       `)}
     `;
   }

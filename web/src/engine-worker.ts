@@ -118,10 +118,6 @@ async function handleCommand(cmd: WorkerCommand) {
     }
     case 'setTracePoints':
       tracePoints = cmd.tracePoints;
-      console.log('[worker] setTracePoints:', JSON.stringify(cmd.tracePoints.map(tp => ({ id: tp.id, target: tp.target }))));
-      console.log('[worker] current realOutputs:', Object.fromEntries(realModules.keys() ? [...realModules.keys()].map(k => [k, moduleRenderTargets.get(k)?.handle ?? 'none']) : []));
-      console.log('[worker] current sketchOutputs:', Object.fromEntries(sketchOutputs));
-      console.log('[worker] current sketches:', [...sketches.entries()].map(([id, s]) => `${id} anchor=${s.anchor}`).join(', '));
       break;
     case 'debugDump': {
       const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
@@ -302,7 +298,7 @@ async function simulateTick(dt: number) {
     try {
       const outputHandle = await sketchExecutor.executeAllColumns(
         sketchId, sketch, inputHandle, frameState, w, h);
-      if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
+      // (debug) if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {
       console.error(`[sketch ${sketchId}]`, err);
@@ -344,7 +340,7 @@ async function simulateTick(dt: number) {
     }
     const prevHandle = traceHandles.get(tp.id);
     if (prevHandle !== handle) {
-      console.log(`[worker] trace '${tp.id}' handle changed: ${prevHandle} → ${handle} (target: ${JSON.stringify(tp.target)})`);
+      // (debug) console.log(`[worker] trace '${tp.id}' handle changed: ${prevHandle} → ${handle} (target: ${JSON.stringify(tp.target)})`);
     }
     traceHandles.set(tp.id, handle);
   }
@@ -380,8 +376,10 @@ function captureAndSendFrame() {
   const tracedFrames: Record<string, ImageBitmap> = {};
   const transfers: Transferable[] = [];
 
+  const sketchState = bridgeCore?.getAt('/sketch_state') ?? {};
+
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, tracedFrames }, []);
+    post({ type: 'frame', fps, tracedFrames, sketchState }, []);
     return;
   }
 
@@ -401,7 +399,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, tracedFrames }, transfers);
+  post({ type: 'frame', fps, tracedFrames, sketchState }, transfers);
 }
 
 // ========================================================================
@@ -441,6 +439,21 @@ function broadcastState() {
 
   if (globalData?.plugins) {
     for (const entry of globalData.plugins) {
+      // BridgeCore's native parser may not emit data_output io entries for
+      // float fields with the Output flag. Merge ioDecls from the WasmHost
+      // which correctly parses the schema on the JS side.
+      let io: any[] = entry.io ?? [];
+      const real = realModules.get(entry.key);
+      if (real) {
+        const hostDecls = real.host.ioDecls;
+        // Add any host-side io declarations not already present
+        for (const decl of hostDecls) {
+          if (!io.some((e: any) => e.name === decl.name && e.kind === decl.kind)) {
+            io.push(decl);
+          }
+        }
+      }
+
       plugins.push({
         key: entry.key,
         id: entry.metadata?.id ?? '',
@@ -455,7 +468,7 @@ function broadcastState() {
           min: p.min ?? 0,
           max: p.max ?? 1,
         })),
-        io: entry.io ?? [],
+        io,
       });
     }
   }

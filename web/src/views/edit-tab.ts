@@ -23,6 +23,7 @@ import { PointerDragOp } from '../utils/pointer-drag-op';
 import type { FieldBinding } from '../widgets/field-editor';
 import type { ColumnHost } from '../widgets/columns-view';
 import type { ColumnGroupCallbacks } from '../widgets/column-group';
+import type { ColumnGroup } from '../widgets/column-group';
 import '../widgets/columns-view';
 import '../widgets/column-group';
 import '../widgets/texture-monitor';
@@ -253,7 +254,6 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
       accept: () => {
         this.commitDrop();
-        this.cleanupDrag();
       },
 
       cancel: () => {
@@ -365,9 +365,10 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
                 .binding=${{
                   instanceKey: `rail_${tap.railId}`,
                   getValue: () => {
-                    // Rail float values are published to sketch_state
-                    const state = appState.local.engine as any;
-                    return state?.sketchState?.[sketchId]?.[`columns/${colIdx}`]?.[tap.railId]?.value ?? 0;
+                    const ss = appState.local.engine.sketchState;
+                    const sketchSt = ss?.[sketchId];
+                    const colRails = sketchSt?.[`columns/${colIdx}`];
+                    return colRails?.[tap.railId]?.value ?? sketchSt?.rails?.[tap.railId]?.value ?? 0;
                   },
                   setValue: () => {},
                 }}
@@ -413,81 +414,109 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   // Drag & Drop (PointerDragOp-based)
   // ========================================================================
 
-  /** Hit-test drop zones and placeholder columns under the pointer. */
-  private updateDragHover(x: number, y: number) {
-    // Clear previous highlights across all column-group shadow roots
+  /**
+   * Find the globally closest insertion point to the pointer and show the marker.
+   * Always selects a target — no proximity threshold.
+   */
+  private updateDragHover(px: number, py: number) {
+    // Hide all previous markers
     for (const [, el] of this.columnCache) {
-      el.shadowRoot?.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+      (el as ColumnGroup).hideInsertMarker?.();
     }
     this.dragHoverTarget = null;
 
-    // Check drop zones in all attached column-groups
+    // Collect all insertion points from all cached column-groups
+    let bestDist = Infinity;
+    let bestPoint: { colIdx: number; insertIdx: number; x: number; y: number; isPlaceholder: boolean; element: HTMLElement } | null = null;
+
     for (const [, el] of this.columnCache) {
-      const zones = el.shadowRoot?.querySelectorAll('.drop-zone') ?? [];
-      for (const zone of zones) {
-        const rect = zone.getBoundingClientRect();
-        const expandY = 12;
-        if (x >= rect.left && x <= rect.right &&
-            y >= rect.top - expandY && y <= rect.bottom + expandY) {
-          zone.classList.add('drag-over');
-          const colIdx = parseInt((zone as HTMLElement).dataset.dropCol!);
-          const insertIdx = parseInt((zone as HTMLElement).dataset.dropIdx!);
-          this.dragHoverTarget = { type: 'zone', colIdx, insertIdx };
-          return;
+      const colGroup = el as ColumnGroup;
+      if (!colGroup.getInsertionPoints) continue;
+      const points = colGroup.getInsertionPoints();
+      for (const pt of points) {
+        const dx = px - pt.x;
+        const dy = py - pt.y;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestPoint = { ...pt, element: el };
         }
       }
     }
 
-    // Check placeholder columns
-    for (const [, el] of this.columnCache) {
-      const placeholders = el.shadowRoot?.querySelectorAll('.column-placeholder') ?? [];
-      for (const ph of placeholders) {
-        const rect = ph.getBoundingClientRect();
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-          ph.classList.add('drag-over');
-          const colIdx = parseInt((ph as HTMLElement).dataset.placeholderCol!);
-          this.dragHoverTarget = { type: 'placeholder', colIdx };
-          return;
-        }
-      }
+    if (!bestPoint) return;
+
+    // Set the hover target
+    if (bestPoint.isPlaceholder) {
+      this.dragHoverTarget = { type: 'placeholder', colIdx: bestPoint.colIdx };
+    } else {
+      this.dragHoverTarget = { type: 'zone', colIdx: bestPoint.colIdx, insertIdx: bestPoint.insertIdx };
+    }
+
+    // Show insertion marker at the correct Y position in the target column
+    const colGroup = bestPoint.element as ColumnGroup;
+    const colEl = colGroup.renderRoot?.querySelector('.column') as HTMLElement | null;
+    if (colEl) {
+      const colRect = colEl.getBoundingClientRect();
+      const relativeY = bestPoint.y - colRect.top;
+      colGroup.showInsertMarker(relativeY);
     }
   }
 
   /** Commit the drop to the currently hovered target. */
   private commitDrop() {
-    if (!this.dragSketchId || !this.dragHoverTarget) return;
+    if (!this.dragSketchId || !this.dragHoverTarget) {
+      this.cleanupDrag();
+      return;
+    }
 
     const sketchId = this.dragSketchId;
     const sketch = appState.database.sketches[sketchId];
-    if (!sketch) return;
+    if (!sketch) {
+      this.cleanupDrag();
+      return;
+    }
 
     const sourceEntry = sketch.columns[this.dragSourceCol]?.chain[this.dragSourceIdx];
-    if (!sourceEntry || sourceEntry.type !== 'module') return;
+    if (!sourceEntry || sourceEntry.type !== 'module') {
+      this.cleanupDrag();
+      return;
+    }
 
-    if (this.dragHoverTarget.type === 'zone') {
-      const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = this.dragHoverTarget;
+    // Capture all drag state before cleanup clears it
+    const hoverTarget = this.dragHoverTarget;
+    const sourceCol = this.dragSourceCol;
+    const sourceIdx = this.dragSourceIdx;
+    const prevColumnCount = sketch.columns.length;
+
+    // Clean up drag visual state first (markers, dragging attribute)
+    this.cleanupDrag();
+
+    // Now perform the mutation — MobX will re-render affected column-groups
+    if (hoverTarget.type === 'zone') {
+      const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = hoverTarget;
 
       appController.mutate('Move effect', draft => {
         const sk = draft.sketches[sketchId];
-        const srcCol = sk.columns[this.dragSourceCol];
+        const srcCol = sk.columns[sourceCol];
         const dstCol = sk.columns[targetColIdx] ?? srcCol;
 
-        const [removed] = srcCol.chain.splice(this.dragSourceIdx, 1);
+        const [removed] = srcCol.chain.splice(sourceIdx, 1);
 
         let adjustedIdx = targetInsertIdx;
-        if (this.dragSourceCol === targetColIdx && targetInsertIdx > this.dragSourceIdx) {
+        if (sourceCol === targetColIdx && targetInsertIdx > sourceIdx) {
           adjustedIdx--;
         }
 
         dstCol.chain.splice(adjustedIdx, 0, removed);
       });
 
-    } else if (this.dragHoverTarget.type === 'placeholder') {
-      const colIdx = this.dragHoverTarget.colIdx;
+    } else if (hoverTarget.type === 'placeholder') {
+      const colIdx = hoverTarget.colIdx;
 
       appController.mutate('Move to new column', draft => {
         const sk = draft.sketches[sketchId];
-        const [removed] = sk.columns[this.dragSourceCol].chain.splice(this.dragSourceIdx, 1);
+        const [removed] = sk.columns[sourceCol].chain.splice(sourceIdx, 1);
 
         while (sk.columns.length <= colIdx) {
           sk.columns.push({
@@ -505,16 +534,22 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       });
     }
 
-    // Invalidate column cache since structure changed
-    this.columnCache.clear();
-    const columnsView = this.renderRoot.querySelector('columns-view') as any;
-    columnsView?.notifyColumnCountChanged?.();
+    // If the column count changed (placeholder drop created columns),
+    // invalidate cache for the new indices and notify columns-view
+    const newSketch = appState.database.sketches[sketchId];
+    if (newSketch && newSketch.columns.length !== prevColumnCount) {
+      // Invalidate all cached columns since indices may have shifted
+      this.columnCache.clear();
+      const columnsView = this.renderRoot.querySelector('columns-view') as any;
+      columnsView?.notifyColumnCountChanged?.();
+    }
   }
 
   private cleanupDrag() {
     this.dragCardEl?.removeAttribute('dragging');
+    // Hide all insertion markers
     for (const [, el] of this.columnCache) {
-      el.shadowRoot?.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+      (el as ColumnGroup).hideInsertMarker?.();
     }
     this.dragSketchId = null;
     this.dragSourceCol = -1;

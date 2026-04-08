@@ -294,6 +294,11 @@ export class WasmHost {
                   type,
                   defaultValue: field.default ?? 0,
                 });
+                // Non-texture fields with Output flag → data_output io declaration
+                if (ioFlags & 2) { // Output bit
+                  const role = (ioFlags & 4) ? 0 : 1; // Primary=0, Secondary=1
+                  this.ioDecls.push({ index: this.ioDecls.length, name, kind: 2, role });
+                }
               }
             }
           } catch {

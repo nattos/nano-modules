@@ -34,6 +34,7 @@ async function main() {
   engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
   engine.onFps = (fps) => appController.setEngineFps(fps);
   engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
+  engine.onSketchState = (state) => appController.setSketchState(state);
   engine.onError = (msg) => appController.setEngineError(msg);
 
   // Load default generators
@@ -41,6 +42,7 @@ async function main() {
   appController.loadModule('com.nattos.gpu_test');
   appController.loadModule('com.nattos.nanolooper');
   appController.loadModule('com.nattos.brightness_contrast');
+  appController.loadModule('com.nattos.env_lfo');
 }
 
 main();

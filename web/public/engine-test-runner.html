@@ -49,9 +49,10 @@ async function sendCommands(engine, commands) {
   }
 }
 
-async function waitForFrames(engine, count, stateRef) {
+async function waitForFrames(engine, count) {
   let received = 0;
   let lastFrames = null;
+  let lastSketchState = null;
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Timeout waiting for ${count} frames`)), 15000);
     engine.onTracedFrames = (frames) => {
@@ -59,8 +60,9 @@ async function waitForFrames(engine, count, stateRef) {
       received++;
       if (received >= count) { clearTimeout(timeout); resolve(undefined); }
     };
+    engine.onSketchState = (state) => { lastSketchState = state; };
   });
-  return lastFrames;
+  return { lastFrames, lastSketchState };
 }
 
 async function captureFrames(lastTracedFrames, captureIds) {
@@ -123,9 +125,9 @@ async function run() {
     const phaseResults = [];
     for (const phase of phases) {
       await sendCommands(engine, phase.commands || []);
-      const lastFrames = await waitForFrames(engine, phase.waitFrames || 10);
+      const { lastFrames, lastSketchState } = await waitForFrames(engine, phase.waitFrames || 10);
       const traced = await captureFrames(lastFrames, phase.captureTraceIds);
-      phaseResults.push({ tracedFrames: traced });
+      phaseResults.push({ tracedFrames: traced, sketchState: lastSketchState });
     }
 
     engine.destroy();
@@ -135,6 +137,7 @@ async function run() {
       output.phases = phaseResults;
     } else {
       output.tracedFrames = phaseResults[0]?.tracedFrames || {};
+      output.sketchState = phaseResults[0]?.sketchState || {};
     }
 
     resultEl.textContent = JSON.stringify(output);

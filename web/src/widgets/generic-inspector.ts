@@ -4,6 +4,9 @@
  * Ported from nano-repatch. Renders field editor widgets based on
  * declarative field definitions, wired to a FieldBinding.
  *
+ * Uses <scalar-slider> for numeric/slider fields — it implements
+ * FieldEditorElement so the tap overlay system picks it up.
+ *
  * Usage:
  *   const inspector = createGenericInspector([
  *     { type: 'slider', label: 'Brightness', path: 'brightness', min: 0, max: 1 },
@@ -53,15 +56,16 @@ const renderStringField = (binding: FieldBinding, field: Extract<InspectorFieldD
 const renderNumberField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'number' }>) => html`
   <div style=${FIELD_STYLE}>
     <label style=${LABEL_STYLE}>${field.label}</label>
-    <input
-      type="number"
+    <scalar-slider style="flex: 1; min-width: 0;"
+      .fieldPath=${field.path}
+      .label=${field.label}
       .value=${getValue(binding, field.path, field.default ?? 0)}
-      min=${field.min}
-      max=${field.max}
-      step=${field.step}
-      @input=${(e: Event) => binding.setValue(field.path, parseFloat((e.target as HTMLInputElement).value))}
-      style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: var(--app-text-color1); border-radius: 2px; padding: 2px 4px; width: 60px; font-size: 10px; font-family: inherit;"
-    />
+      .min=${field.min ?? 0}
+      .max=${field.max ?? 1}
+      .step=${field.step || 0.01}
+      .defaultValue=${field.default ?? 0}
+      .binding=${binding}
+    ></scalar-slider>
   </div>
 `;
 
@@ -69,13 +73,14 @@ const renderSliderField = (binding: FieldBinding, field: Extract<InspectorFieldD
   <div style=${FIELD_STYLE}>
     <label style=${LABEL_STYLE}>${field.label}</label>
     <scalar-slider style="flex: 1; min-width: 0;"
+      .fieldPath=${field.path}
+      .label=${field.label}
       .value=${getValue(binding, field.path, field.default ?? field.min)}
       .min=${field.min}
       .max=${field.max}
       .step=${field.step || 0.01}
       .defaultValue=${field.default ?? field.min}
-      @input=${(e: CustomEvent) => binding.setValue(field.path, e.detail)}
-      @change=${(e: CustomEvent) => binding.setValue(field.path, e.detail)}
+      .binding=${binding}
     ></scalar-slider>
   </div>
 `;

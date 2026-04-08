@@ -52,6 +52,8 @@ export interface EngineTestResult {
   error?: string;
   state: any;
   tracedFrames: Record<string, Frame | null>;
+  /** Per-sketch rail values from the last frame. */
+  sketchState: Record<string, any>;
   trace(id: string): Frame;
 }
 
@@ -59,7 +61,7 @@ export interface EngineMultiPhaseResult {
   success: boolean;
   error?: string;
   state: any;
-  phases: { tracedFrames: Record<string, Frame | null>; trace(id: string): Frame }[];
+  phases: { tracedFrames: Record<string, Frame | null>; sketchState: Record<string, any>; trace(id: string): Frame }[];
 }
 
 // --- PNG encoder ---
@@ -171,7 +173,7 @@ export async function runEngineTest(config: EngineTestConfig): Promise<EngineTes
   const baseName = config.dumpName || `engine_${testCounter++}`;
   const tracedFrames = decodeTracedFrames(raw.tracedFrames || {}, baseName, '');
 
-  return { success: true, state: raw.state, tracedFrames, trace: makeTraceAccessor(tracedFrames) };
+  return { success: true, state: raw.state, tracedFrames, sketchState: raw.sketchState ?? {}, trace: makeTraceAccessor(tracedFrames) };
 }
 
 // --- Multi-phase test ---
@@ -198,7 +200,7 @@ export async function runEngineMultiPhaseTest(config: EngineMultiPhaseTestConfig
   const baseName = config.dumpName || `engine_mp_${testCounter++}`;
   const phaseResults = (raw.phases || []).map((p: any, i: number) => {
     const traced = decodeTracedFrames(p.tracedFrames || {}, baseName, `_p${i}`);
-    return { tracedFrames: traced, trace: makeTraceAccessor(traced) };
+    return { tracedFrames: traced, sketchState: p.sketchState ?? {}, trace: makeTraceAccessor(traced) };
   });
 
   return { success: true, state: raw.state, phases: phaseResults };
