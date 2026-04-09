@@ -46,24 +46,27 @@ export class AppController {
     const outInstances = staging.filter(s => s.textureOut);
     const inInstances = staging.filter(s => s.textureIn);
 
+    const instances: Record<string, import('../sketch-types').InstanceState> = {};
+
     const columns = outInstances.map(out => {
       const chain: ChainEntry[] = [
         { type: 'texture_input', id: 'primary_in' },
       ];
       if (inInstances.length > 0) {
+        const inKey = inInstances[0].pluginKey;
         chain.push({
           type: 'module',
           module_type: inInstances[0].moduleType,
-          instance_key: inInstances[0].pluginKey,
-          params: {},
+          instance_key: inKey,
         });
+        instances[inKey] = { module_type: inInstances[0].moduleType, state: {} };
       }
       chain.push({
         type: 'module',
         module_type: out.moduleType,
         instance_key: out.pluginKey,
-        params: {},
       });
+      instances[out.pluginKey] = { module_type: out.moduleType, state: {} };
       chain.push({ type: 'texture_output', id: 'primary_out' });
       return { name: shortName(out.moduleType), chain };
     });
@@ -79,7 +82,7 @@ export class AppController {
     }
 
     const anchor = outInstances[0]?.pluginKey ?? inInstances[0]?.pluginKey ?? null;
-    const sketch: Sketch = { anchor, columns };
+    const sketch: Sketch = { anchor, columns, instances };
 
     this.mutate(`Create sketch ${sketchId}`, draft => {
       draft.sketches[sketchId] = sketch;
@@ -92,42 +95,60 @@ export class AppController {
     const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
 
     const plugin = appState.local.plugins.find(p => p.id === moduleType);
-    const defaultParams: Record<string, number> = {};
+    const defaultState: Record<string, any> = {};
     if (plugin) {
       for (const p of plugin.params) {
-        // Use field name as key (matches schema field paths)
-        defaultParams[p.name] = p.defaultValue;
+        defaultState[p.name] = p.defaultValue;
       }
     }
 
     this.mutate(`Add ${shortName(moduleType)}`, draft => {
-      const column = draft.sketches[sketchId]?.columns[colIdx];
+      const sketch = draft.sketches[sketchId];
+      if (!sketch) return;
+      const column = sketch.columns[colIdx];
       if (!column) return;
       column.chain.splice(insertIdx, 0, {
         type: 'module',
         module_type: moduleType,
         instance_key: instanceKey,
-        params: defaultParams,
       });
+      // Create instance state in the sketch
+      sketch.instances = sketch.instances ?? {};
+      sketch.instances[instanceKey] = { module_type: moduleType, state: defaultState };
     });
   }
 
   removeEffectFromChain(sketchId: string, colIdx: number, chainIdx: number) {
     this.mutate('Remove effect', draft => {
-      const column = draft.sketches[sketchId]?.columns[colIdx];
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const column = sk.columns[colIdx];
       if (!column) return;
       const entry = column.chain[chainIdx];
       if (entry?.type === 'module') {
         column.chain.splice(chainIdx, 1);
+        // Clean up instance state
+        if (sk.instances) {
+          delete sk.instances[entry.instance_key];
+        }
       }
     });
   }
 
   setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+    // Find the instance key for this chain entry
+    const sketch = appState.database.sketches[sketchId];
+    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    if (!entry || entry.type !== 'module') return;
+
     this.mutate(`Set param ${paramKey}`, draft => {
-      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
-      if (entry?.type === 'module') {
-        entry.params[paramKey] = value;
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      // Write to the instance state (canonical source)
+      sk.instances = sk.instances ?? {};
+      const inst = sk.instances[entry.instance_key];
+      if (inst) {
+        inst.state[paramKey] = value;
       }
     });
     // Also send immediate param update to the engine for live preview

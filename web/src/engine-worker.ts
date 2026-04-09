@@ -15,7 +15,7 @@ import { WasmHost, WasmModule } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
 import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint } from './engine-types';
-import type { Sketch } from './sketch-types';
+import { BUCKET_SKETCH_ID, type Sketch } from './sketch-types';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -32,6 +32,7 @@ const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
 
 // Sketches
 const sketches = new Map<string, Sketch>();
+
 
 // Trace points
 let tracePoints: TracePoint[] = [];
@@ -87,10 +88,12 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     case 'createSketch':
       sketches.set(cmd.sketchId, cmd.sketch);
+      removeInstancesFromBucket(cmd.sketch);
       markDirty();
       break;
     case 'updateSketch':
       sketches.set(cmd.sketchId, cmd.sketch);
+      removeInstancesFromBucket(cmd.sketch);
       markDirty();
       break;
     case 'setParam': {
@@ -98,15 +101,14 @@ async function handleCommand(cmd: WorkerCommand) {
       if (sketch) {
         const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
         if (entry?.type === 'module') {
-          entry.params[cmd.paramKey] = cmd.value;
-          // Update live instance immediately
+          // Update the instance state in the sketch (if instances map exists)
+          if (sketch.instances?.[entry.instance_key]) {
+            sketch.instances[entry.instance_key].state[cmd.paramKey] = cmd.value;
+          }
+          // Update live instance immediately via pluginState
           if (sketchExecutor) {
             const loaded = sketchExecutor.getInstance(entry.instance_key);
             if (loaded) {
-              const paramIndex = Object.keys(entry.params).indexOf(cmd.paramKey);
-              if (paramIndex >= 0) {
-                loaded.host.frameState.params[paramIndex] = cmd.value;
-              }
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: cmd.paramKey, value: cmd.value },
               ]);
@@ -431,9 +433,58 @@ async function loadModule(moduleType: string) {
     mod.init();
     const key = host.pluginKey || `${moduleType}@0`;
     realModules.set(key, { host, module: mod });
+
+    // Ensure the unassigned bucket sketch exists
+    if (!sketches.has(BUCKET_SKETCH_ID)) {
+      sketches.set(BUCKET_SKETCH_ID, {
+        anchor: null,
+        columns: [],
+        instances: {},
+      });
+    }
+
+    // Add instance to the bucket sketch (if not already in a real sketch)
+    const bucket = sketches.get(BUCKET_SKETCH_ID)!;
+    if (!isInstanceInAnySketch(key)) {
+      bucket.instances = bucket.instances ?? {};
+      bucket.instances[key] = {
+        module_type: moduleType,
+        state: { ...host.pluginState },
+      };
+    }
+
     markDirty();
   } catch (e) {
     post({ type: 'error', message: `Failed to load ${moduleType}: ${e}` });
+  }
+}
+
+/** Check if an instance key exists in any sketch's instances map. */
+function isInstanceInAnySketch(instanceKey: string): boolean {
+  for (const [, sketch] of sketches) {
+    if (sketch.instances?.[instanceKey]) return true;
+  }
+  return false;
+}
+
+/** Remove instances that appear in a real sketch from the unassigned bucket. */
+function removeInstancesFromBucket(sketch: Sketch) {
+  const bucket = sketches.get(BUCKET_SKETCH_ID);
+  if (!bucket?.instances) return;
+
+  // Remove any instance that's referenced in this sketch's chain entries
+  for (const col of sketch.columns) {
+    for (const entry of col.chain) {
+      if (entry.type === 'module') {
+        delete bucket.instances[entry.instance_key];
+      }
+    }
+  }
+  // Also remove any instance in this sketch's instances map
+  if (sketch.instances) {
+    for (const key of Object.keys(sketch.instances)) {
+      delete bucket.instances[key];
+    }
   }
 }
 

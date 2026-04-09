@@ -136,7 +136,7 @@ describe('Sketch data model', () => {
     expect(moduleEntry.type).toBe('module');
     if (moduleEntry.type === 'module') {
       expect(moduleEntry.module_type).toBe('com.nattos.brightness_contrast');
-      expect(moduleEntry.params['1']).toBe(0.25);
+      expect(moduleEntry.params?.['1']).toBe(0.25);
     }
   });
 });

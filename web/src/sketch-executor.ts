@@ -213,10 +213,12 @@ export class SketchExecutor {
       if (entry.type === 'module') {
         const loaded = await this.ensureInstance(entry);
 
-        // --- Apply params from chain entry ---
+        // --- Apply initial state from sketch instances (or legacy entry.params) ---
+        const instanceState = sketch.instances?.[entry.instance_key]?.state ?? entry.params ?? {};
         const paramPatches: import('./wasm-host').PatchOp[] = [];
         let paramIndex = 0;
-        for (const [key, value] of Object.entries(entry.params)) {
+        for (const [key, value] of Object.entries(instanceState)) {
+          if (typeof value !== 'number') continue; // Only push numeric params
           // Set frameState.params by position for legacy host::param(index) reads
           loaded.host.frameState.params[paramIndex] = value;
           paramPatches.push({ op: 'replace', path: key, value });
@@ -241,12 +243,7 @@ export class SketchExecutor {
                       ?? sketch.rails?.find(r => r.id === tap.railId);
 
             if (rail?.dataType === 'float' && rv.data !== undefined) {
-              // Data tap read: write rail value into module params
-              entry.params[tap.fieldPath] = rv.data;
-              const paramIdx = Object.keys(entry.params).indexOf(tap.fieldPath);
-              if (paramIdx >= 0) {
-                loaded.host.frameState.params[paramIdx] = rv.data;
-              }
+              // Data tap read: push modulated value directly to the module
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: tap.fieldPath, value: rv.data },
               ]);
@@ -307,10 +304,10 @@ export class SketchExecutor {
             const targetRailValues = isColumnRail ? columnRailValues : crossRailValues;
 
             if (rail?.dataType === 'float') {
-              // Try pluginState first (modules that publish via state::set),
-              // fall back to the chain entry's params (set by the executor above).
+              // Read from pluginState (canonical source).
+              // Falls back to instance state if module hasn't published yet.
               const value = this.readFieldFromState(loaded.host, tap.fieldPath)
-                         ?? entry.params[tap.fieldPath];
+                         ?? instanceState[tap.fieldPath];
               if (value !== undefined) {
                 const existing = targetRailValues.get(tap.railId) ?? {};
                 existing.data = value;

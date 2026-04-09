@@ -484,7 +484,7 @@ export class ColumnGroup extends MobxLitElement {
         getValue: (fieldPath: string) => {
           const ps = appState.local.engine.pluginStates[entry.instance_key];
           if (ps && fieldPath in ps) return ps[fieldPath];
-          return entry.params[fieldPath]
+          return entry.params?.[fieldPath]
             ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
             ?? 0;
         },
@@ -609,8 +609,11 @@ export class ColumnGroup extends MobxLitElement {
         // and module-produced outputs (e.g. LFO output).
         const ps = appState.local.engine.pluginStates[entry.instance_key];
         if (ps && fieldPath in ps) return ps[fieldPath];
-        // Fallback to static params or plugin defaults (before first frame arrives)
-        return entry.params[fieldPath]
+        // Fallback to sketch instance state or plugin defaults (before first frame arrives)
+        const sketch = appState.database.sketches[this.sketchId];
+        const instState = sketch?.instances?.[entry.instance_key]?.state;
+        return instState?.[fieldPath]
+          ?? entry.params?.[fieldPath]
           ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
           ?? 0;
       },
