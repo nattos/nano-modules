@@ -35,6 +35,7 @@ async function main() {
   engine.onFps = (fps) => appController.setEngineFps(fps);
   engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
   engine.onSketchState = (state) => appController.setSketchState(state);
+  engine.onPluginStates = (states) => appController.setPluginStates(states);
   engine.onError = (msg) => appController.setEngineError(msg);
 
   // Load default generators

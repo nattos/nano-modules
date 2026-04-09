@@ -55,6 +55,8 @@ export interface EngineStatus {
   frameGeneration: number;
   /** Per-sketch rail values from the executor, keyed by sketch ID. */
   sketchState: Record<string, any>;
+  /** Live plugin state per instance, keyed by instance key. Updated per-frame from the worker. */
+  pluginStates: Record<string, any>;
 }
 
 export interface LocalState {

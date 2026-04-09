@@ -378,8 +378,18 @@ function captureAndSendFrame() {
 
   const sketchState = bridgeCore?.getAt('/sketch_state') ?? {};
 
+  // Collect live pluginState for all instances (sketch executor + real modules)
+  const pluginStates: Record<string, any> = sketchExecutor
+    ? sketchExecutor.getPluginStates()
+    : {};
+  for (const [key, { host }] of realModules) {
+    if (!(key in pluginStates) && host.pluginState && Object.keys(host.pluginState).length > 0) {
+      pluginStates[key] = host.pluginState;
+    }
+  }
+
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, tracedFrames, sketchState }, []);
+    post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates }, []);
     return;
   }
 
@@ -399,7 +409,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, tracedFrames, sketchState }, transfers);
+  post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates }, transfers);
 }
 
 // ========================================================================

@@ -382,6 +382,12 @@ export class AppController {
     });
   }
 
+  setPluginStates(pluginStates: Record<string, any>) {
+    runInAction(() => {
+      appState.local.engine.pluginStates = pluginStates;
+    });
+  }
+
   setTracedFrames(frames: Record<string, ImageBitmap>) {
     runInAction(() => {
       // Close old bitmaps

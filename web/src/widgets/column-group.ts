@@ -482,6 +482,8 @@ export class ColumnGroup extends MobxLitElement {
       const binding: FieldBinding = {
         instanceKey: entry.instance_key,
         getValue: (fieldPath: string) => {
+          const ps = appState.local.engine.pluginStates[entry.instance_key];
+          if (ps && fieldPath in ps) return ps[fieldPath];
           return entry.params[fieldPath]
             ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
             ?? 0;
@@ -602,17 +604,12 @@ export class ColumnGroup extends MobxLitElement {
     const binding: FieldBinding = {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
-        // If a read tap exists for this field, return the modulated rail value
-        const readTap = (entry.taps ?? []).find(t => t.fieldPath === fieldPath && t.direction === 'read');
-        if (readTap) {
-          const ss = appState.local.engine.sketchState;
-          const sketchSt = ss?.[this.sketchId];
-          if (sketchSt) {
-            const colRails = sketchSt[`columns/${this.colIdx}`];
-            const railVal = colRails?.[readTap.railId]?.value ?? sketchSt.rails?.[readTap.railId]?.value;
-            if (railVal !== undefined) return railVal;
-          }
-        }
+        // Read from the live plugin state (canonical source of truth).
+        // This reflects user-set values, modulated values from read taps,
+        // and module-produced outputs (e.g. LFO output).
+        const ps = appState.local.engine.pluginStates[entry.instance_key];
+        if (ps && fieldPath in ps) return ps[fieldPath];
+        // Fallback to static params or plugin defaults (before first frame arrives)
         return entry.params[fieldPath]
           ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
           ?? 0;

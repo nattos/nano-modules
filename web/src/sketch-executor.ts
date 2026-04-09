@@ -35,6 +35,17 @@ export class SketchExecutor {
    */
   public chainEntryHandles = new Map<string, { input: number; output: number }>();
 
+  /** Collect pluginState snapshots for all loaded instances. */
+  getPluginStates(): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, { host }] of this.instances) {
+      if (host.pluginState && Object.keys(host.pluginState).length > 0) {
+        result[key] = host.pluginState;
+      }
+    }
+    return result;
+  }
+
   constructor(bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat) {
     this.bridgeCore = bridgeCore;
     this.gpuHost = gpuHost;
