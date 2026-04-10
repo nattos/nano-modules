@@ -40,9 +40,9 @@ async function main() {
 
   // When effects are discovered, instantiate them all
   engine.onEffectsDiscovered = (effects) => {
-    for (const effect of effects) {
-      appController.instantiateEffect(effect.id);
-    }
+    appController.instantiateEffect('com.nattos.spinningtris');
+    appController.instantiateEffect('com.nattos.solid_color');
+    appController.instantiateEffect('com.nattos.gpu_test');
   };
 
   // Load the combined module (discovers all available effects)
