@@ -30,6 +30,16 @@ export interface IOInfo {
   role: number;   // 0=primary, 1=secondary
 }
 
+// --- Available effects (from module registration) ---
+
+export interface AvailableEffect {
+  id: string;           // "com.nattos.brightness_contrast"
+  name: string;         // "Brightness/Contrast"
+  description: string;
+  category: string;
+  keywords: string[];
+}
+
 // --- Database state (persisted, undo/redo-able) ---
 
 export interface DatabaseState {
@@ -62,6 +72,7 @@ export interface EngineStatus {
 export interface LocalState {
   activeTab: 'create' | 'organize' | 'edit';
   plugins: PluginInfo[];
+  availableEffects: AvailableEffect[];
   staging: StagingInstance[];
   selectedSketchId: string | null;
   editingSketchId: string | null;

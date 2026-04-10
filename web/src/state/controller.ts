@@ -9,11 +9,11 @@
 
 import { runInAction, toJS } from 'mobx';
 import { appState } from './app-state';
-import { HistoryManager } from './history';
+import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, StagingInstance, PluginInfo } from './types';
+import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect } from './types';
 import type { EngineProxy } from '../engine-proxy';
-import type { EngineState, TracePoint } from '../engine-types';
+import type { EngineState, EffectInfo, TracePoint } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
 
 export class AppController {
@@ -118,6 +118,68 @@ export class AppController {
     });
   }
 
+  /** Change the module type of an existing effect in a chain. */
+  changeEffectType(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {
+    this.mutate(`Change to ${shortName(newModuleType)}`, draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const entry = sk.columns[colIdx]?.chain[chainIdx];
+      if (!entry || entry.type !== 'module') return;
+
+      const oldKey = entry.instance_key;
+      entry.module_type = newModuleType;
+
+      // Update instance state
+      sk.instances = sk.instances ?? {};
+      if (sk.instances[oldKey]) {
+        sk.instances[oldKey].module_type = newModuleType;
+        sk.instances[oldKey].state = {};
+      }
+    });
+  }
+
+  /**
+   * Begin a continuous (long) edit for changing effect type.
+   * Updates are previewed live without creating undo points.
+   * Call longEdit.accept() to commit, longEdit.cancel() to revert.
+   */
+  beginChangeEffectType(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string): LongEdit {
+    const recipe = (draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const entry = sk.columns[colIdx]?.chain[chainIdx];
+      if (!entry || entry.type !== 'module') return;
+      const oldKey = entry.instance_key;
+      entry.module_type = newModuleType;
+      sk.instances = sk.instances ?? {};
+      if (sk.instances[oldKey]) {
+        sk.instances[oldKey].module_type = newModuleType;
+        sk.instances[oldKey].state = {};
+      }
+    };
+    const edit = this.history.beginLongEdit(`Change to ${shortName(newModuleType)}`, recipe);
+    this.syncSketchesToEngine();
+    return edit;
+  }
+
+  /** Update a continuous effect type change (preview only, no undo point). */
+  updateChangeEffectType(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {
+    edit.update((draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const entry = sk.columns[colIdx]?.chain[chainIdx];
+      if (!entry || entry.type !== 'module') return;
+      const oldKey = entry.instance_key;
+      entry.module_type = newModuleType;
+      sk.instances = sk.instances ?? {};
+      if (sk.instances[oldKey]) {
+        sk.instances[oldKey].module_type = newModuleType;
+        sk.instances[oldKey].state = {};
+      }
+    });
+    this.syncSketchesToEngine();
+  }
+
   removeEffectFromChain(sketchId: string, colIdx: number, chainIdx: number) {
     this.mutate('Remove effect', draft => {
       const sk = draft.sketches[sketchId];
@@ -164,6 +226,18 @@ export class AppController {
 
   setActiveTab(tab: 'create' | 'organize' | 'edit') {
     runInAction(() => { appState.local.activeTab = tab; });
+  }
+
+  /** Store discovered effects from a loaded WASM module. */
+  setAvailableEffects(effects: EffectInfo[]) {
+    runInAction(() => {
+      const existing = appState.local.availableEffects;
+      for (const e of effects) {
+        if (!existing.some(x => x.id === e.id)) {
+          existing.push({ id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords });
+        }
+      }
+    });
   }
 
   /** Sync state from the engine worker. Updates plugins and adopts new remote sketches. */

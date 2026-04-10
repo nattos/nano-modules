@@ -32,6 +32,7 @@ export class AppState {
   public local: LocalState = {
     activeTab: 'create',
     plugins: [],
+    availableEffects: [],
     staging: [],
     selectedSketchId: null,
     editingSketchId: null,

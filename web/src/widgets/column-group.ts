@@ -30,6 +30,9 @@ import './field-toggle';
 import './field-trigger';
 import './texture-monitor';
 import './spark-chart';
+import './smart-input';
+
+import type { LongEdit } from '../state/history';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -70,6 +73,11 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Each column-group owns its own layout manager for field position tracking. */
   public readonly layoutManager = new FieldLayoutManager();
+
+  /** Which chain entry index is currently being type-edited (smart-input open), or -1 for none. */
+  private editingTypeChainIdx = -1;
+  /** The active LongEdit for type preview (null when not previewing). */
+  private typeLongEdit: LongEdit | null = null;
 
   static styles = css`
     :host {
@@ -148,7 +156,16 @@ export class ColumnGroup extends MobxLitElement {
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
     .effect-card-header:active { cursor: grabbing; }
-    .effect-card-name { font-size: 11px; color: var(--app-text-color1); }
+    .effect-card-name {
+      font-size: 11px;
+      color: var(--app-text-color1);
+      cursor: default;
+    }
+    .effect-card-name-wrapper {
+      flex: 1;
+      min-width: 0;
+      position: relative;
+    }
     .effect-card-body { padding: 6px 10px; position: relative; }
     .remove-btn {
       background: none; border: none;
@@ -520,12 +537,30 @@ export class ColumnGroup extends MobxLitElement {
 
   private renderEffectCard(chainIdx: number, entry: ModuleEntry) {
     const tappingMode = appState.local.tappingMode;
+    const isEditingType = this.editingTypeChainIdx === chainIdx;
+
     return html`
       <div class="effect-card">
         <div class="effect-card-header"
-          @pointerdown=${(e: PointerEvent) =>
-            this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx)}>
-          <span class="effect-card-name">${shortName(entry.module_type)}</span>
+          @pointerdown=${(e: PointerEvent) => {
+            if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
+          }}>
+          <div class="effect-card-name-wrapper">
+            ${isEditingType ? html`
+              <smart-input
+                .effects=${appState.local.availableEffects}
+                .initialValue=${shortName(entry.module_type)}
+                .autoSelect=${true}
+                @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
+                @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
+                @cancel=${() => this.handleTypeCancel()}
+              ></smart-input>
+            ` : html`
+              <span class="effect-card-name"
+                @dblclick=${(e: Event) => { e.stopPropagation(); this.beginEditType(chainIdx); }}
+              >${shortName(entry.module_type)}</span>
+            `}
+          </div>
           <button class="remove-btn"
             @pointerdown=${(e: Event) => e.stopPropagation()}
             @click=${() => appController.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx)}>×</button>
@@ -536,6 +571,50 @@ export class ColumnGroup extends MobxLitElement {
         </div>
       </div>
     `;
+  }
+
+  // ========================================================================
+  // Smart type editing
+  // ========================================================================
+
+  /** Open the smart-input for a chain entry. */
+  beginEditType(chainIdx: number) {
+    this.editingTypeChainIdx = chainIdx;
+    this.requestUpdate();
+  }
+
+  private handleTypePreview(chainIdx: number, effectId: string) {
+    if (!this.typeLongEdit) {
+      this.typeLongEdit = appController.beginChangeEffectType(
+        this.sketchId, this.colIdx, chainIdx, effectId);
+    } else {
+      appController.updateChangeEffectType(
+        this.typeLongEdit, this.sketchId, this.colIdx, chainIdx, effectId);
+    }
+  }
+
+  private handleTypeCommit(chainIdx: number, effectId: string) {
+    if (this.typeLongEdit) {
+      // Update to final value, then accept (creates single undo point)
+      appController.updateChangeEffectType(
+        this.typeLongEdit, this.sketchId, this.colIdx, chainIdx, effectId);
+      this.typeLongEdit.accept();
+      this.typeLongEdit = null;
+    } else {
+      // No preview happened — direct change
+      appController.changeEffectType(this.sketchId, this.colIdx, chainIdx, effectId);
+    }
+    this.editingTypeChainIdx = -1;
+    this.requestUpdate();
+  }
+
+  private handleTypeCancel() {
+    if (this.typeLongEdit) {
+      this.typeLongEdit.cancel();
+      this.typeLongEdit = null;
+    }
+    this.editingTypeChainIdx = -1;
+    this.requestUpdate();
   }
 
   /** Build the set of field names that are outputs for a given module entry. */
@@ -728,8 +807,19 @@ export class ColumnGroup extends MobxLitElement {
     return html`
       <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
       <button class="add-btn"
-        @click=${() => appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'com.nattos.brightness_contrast')}>+</button>
+        @click=${() => this.addEffectAndBeginEdit(insertIdx)}>+</button>
     `;
+  }
+
+  /** Insert a placeholder effect and immediately open smart-input to choose the type. */
+  private addEffectAndBeginEdit(insertIdx: number) {
+    appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'com.nattos.brightness_contrast');
+    // The new entry is at insertIdx in the chain. Open the type editor for it.
+    // Use requestUpdate + microtask to ensure the DOM has rendered the new card.
+    this.requestUpdate();
+    requestAnimationFrame(() => {
+      this.beginEditType(insertIdx);
+    });
   }
 
   // ========================================================================

@@ -38,8 +38,9 @@ async function main() {
   engine.onPluginStates = (states) => appController.setPluginStates(states);
   engine.onError = (msg) => appController.setEngineError(msg);
 
-  // When effects are discovered, instantiate them all
+  // When effects are discovered, store them and instantiate defaults
   engine.onEffectsDiscovered = (effects) => {
+    appController.setAvailableEffects(effects);
     appController.instantiateEffect('com.nattos.spinningtris');
     appController.instantiateEffect('com.nattos.solid_color');
     appController.instantiateEffect('com.nattos.gpu_test');
