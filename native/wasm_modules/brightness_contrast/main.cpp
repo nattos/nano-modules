@@ -12,6 +12,8 @@
 
 #include <cmath>
 
+namespace brightness_contrast {
+
 struct Uniforms {
   float brightness;
   float contrast;
@@ -25,9 +27,6 @@ static bool s_initialized = false;
 static gpu::ComputePSO s_compute_pso;
 static gpu::Buffer s_uniform_buf;
 
-extern "C" {
-
-__attribute__((export_name("init")))
 void init() {
   s_brightness = 0.5f;
   s_contrast = 0.5f;
@@ -63,15 +62,12 @@ void init() {
   state::log("BrightnessContrast: initialized");
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) {
   (void)dt;
 }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int, double) {}
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -83,7 +79,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
 }
 
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 
@@ -112,4 +107,4 @@ void render(int vp_w, int vp_h) {
   gpu::Device::submit();
 }
 
-} // extern "C"
+} // namespace brightness_contrast

@@ -291,13 +291,16 @@ async function main() {
 
     let wasmModule: WasmModule;
     try {
-      wasmModule = await host.load(`wasm/${moduleName}.wasm`);
+      await host.load(`wasm/${moduleName}.wasm`);
+      // Activate the first registered effect (or find by module name)
+      const effectId = host.registeredEffects.length > 0
+        ? host.registeredEffects[0].id
+        : `com.nattos.${moduleName}`;
+      wasmModule = host.activateEffect(effectId);
     } catch (e) {
       statusEl.textContent = `WASM load failed: ${e}`;
       return;
     }
-
-    wasmModule.init();
     updateMetadata(host);
     statusEl.textContent = 'Running';
 

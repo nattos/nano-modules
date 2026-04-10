@@ -3,17 +3,21 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
 
-const WASM_PATH = resolve(__dirname, '../public/wasm/nanolooper.wasm');
+// Try combined module first, fall back to standalone
+const NANO_EFFECTS_PATH = resolve(__dirname, '../public/wasm/nano_effects.wasm');
+const NANOLOOPER_PATH = resolve(__dirname, '../public/wasm/nanolooper.wasm');
+
+function getWasmBytes(): Buffer | null {
+  try { return readFileSync(NANO_EFFECTS_PATH); } catch {}
+  try { return readFileSync(NANOLOOPER_PATH); } catch {}
+  return null;
+}
 
 // Helper: load WASM module directly from bytes (bypassing fetch)
-async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<ReturnType<WasmHost['load']>>> }> {
+async function loadHost(): Promise<{ host: WasmHost; module: import('./wasm-host').WasmModule }> {
   const host = new WasmHost();
-  const bytes = readFileSync(WASM_PATH);
-
-  // Patch the load method to use bytes directly instead of fetch
-  const importObject = (host as any).buildImportObject
-    ? (host as any).buildImportObject()
-    : undefined;
+  const bytes = getWasmBytes();
+  if (!bytes) throw new Error('No WASM file found');
 
   // We need to instantiate manually since fetch() doesn't work in Node
   const imports = buildImports(host);
@@ -26,6 +30,15 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
   const _initialize = instance.exports._initialize as (() => void) | undefined;
   if (_initialize) _initialize();
 
+  // Call nano_module_main to discover effects, then activate nanolooper
+  const nanoMain = instance.exports.nano_module_main as (() => void) | undefined;
+  if (nanoMain) {
+    nanoMain();
+    const wasmModule = host.activateEffect('com.nattos.nanolooper');
+    return { host, module: wasmModule };
+  }
+
+  // Legacy fallback: directly access exports
   const exports = instance.exports;
   const wasmModule = {
     init: exports.init as () => void,
@@ -34,6 +47,7 @@ async function loadHost(): Promise<{ host: WasmHost; module: ReturnType<Awaited<
     onStatePatched: exports.on_state_patched as
       (n: number, pb: number, off: number, len: number, ops: number) => void,
   };
+  wasmModule.init();
 
   return { host, module: wasmModule };
 }
@@ -121,6 +135,8 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       set_param: (_id: bigint, _value: number) => {},
       trigger_clip: (_clipId: bigint, _on: number) => {},
       subscribe_param: (_id: bigint) => {},
+      subscribe_query: (_queryPtr: number, _queryLen: number) => {},
+      get_param_path: (_paramId: bigint, _bufPtr: number, _bufLen: number) => 0,
       get_clip_count: () => 4,
       get_clip_id: (index: number) => BigInt(100 + index),
       get_clip_channel: (index: number) => index < 4 ? index : -1,
@@ -219,6 +235,66 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
           }
         }
         return overflowCount;
+      },
+    },
+    io: {
+      declare_texture_input: () => {},
+      declare_texture_output: () => {},
+      declare_data_output: () => {},
+    },
+    gpu: {
+      get_backend: () => -1,
+      create_shader_module: () => -1,
+      create_buffer: () => -1,
+      create_texture: () => -1,
+      create_compute_pso: () => -1,
+      create_render_pso: () => -1,
+      write_buffer: () => {},
+      begin_compute_pass: () => -1,
+      compute_set_pso: () => {},
+      compute_set_buffer: () => {},
+      compute_set_texture: () => {},
+      compute_dispatch: () => {},
+      end_compute_pass: () => {},
+      begin_render_pass: () => -1,
+      render_set_pso: () => {},
+      render_set_vertex_buffer: () => {},
+      render_draw: () => {},
+      end_render_pass: () => {},
+      submit: () => {},
+      get_render_target: () => -1,
+      get_render_target_width: () => 0,
+      get_render_target_height: () => 0,
+      release: () => {},
+      get_input_texture: () => -1,
+      get_input_texture_count: () => 0,
+      texture_for_field: () => -1,
+    },
+    module: {
+      register_effect: (descPtr: number) => {
+        const mem = new DataView(getMemory().buffer);
+        const memBytes = new Uint8Array(getMemory().buffer);
+        const version = mem.getInt32(descPtr, true);
+        if (version !== 1) return;
+
+        const readCStr = (ptr: number) => {
+          let end = ptr;
+          while (memBytes[end] !== 0) end++;
+          return new TextDecoder().decode(memBytes.slice(ptr, end));
+        };
+
+        host.registeredEffects.push({
+          id: readCStr(mem.getUint32(descPtr + 4, true)),
+          name: readCStr(mem.getUint32(descPtr + 8, true)),
+          description: readCStr(mem.getUint32(descPtr + 12, true)),
+          category: readCStr(mem.getUint32(descPtr + 16, true)),
+          keywords: readCStr(mem.getUint32(descPtr + 20, true)).split(',').filter((k: string) => k.length > 0),
+          _initIdx: mem.getUint32(descPtr + 24, true),
+          _tickIdx: mem.getUint32(descPtr + 28, true),
+          _renderIdx: mem.getUint32(descPtr + 32, true),
+          _onStatePatchedIdx: mem.getUint32(descPtr + 36, true),
+          _onResolumeParamIdx: mem.getUint32(descPtr + 40, true),
+        });
       },
     },
     val: {

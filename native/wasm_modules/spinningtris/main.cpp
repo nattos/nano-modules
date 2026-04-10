@@ -12,6 +12,8 @@
 
 #include <cmath>
 
+namespace spinningtris {
+
 // --- Data types ---
 
 struct TriSeed {
@@ -50,11 +52,6 @@ static float randf() {
   return float((rng_state >> 16) & 0x7FFF) / 32767.0f;
 }
 
-// --- Exports ---
-
-extern "C" {
-
-__attribute__((export_name("init")))
 void init() {
   elapsed = 0;
   tri_count = 100;
@@ -112,15 +109,12 @@ void init() {
   state::log("SpinningTris: GPU initialized");
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) {
   elapsed += float(dt);
 }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int, double) {}
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -136,7 +130,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
 }
 
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!initialized) return;
 
@@ -163,4 +156,4 @@ void render(int vp_w, int vp_h) {
   gpu::Device::submit();
 }
 
-} // extern "C"
+} // namespace spinningtris

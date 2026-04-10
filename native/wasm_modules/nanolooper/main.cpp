@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstring>
 
+namespace nanolooper {
+
 /* ======================================================================
  * State
  * ====================================================================== */
@@ -181,7 +183,6 @@ static void refresh_channels(void) {
  * Exports
  * ====================================================================== */
 
-__attribute__((export_name("init")))
 void init(void) {
   looper_init(&looper, (double)NUM_STEPS);
   phase = 0;
@@ -241,7 +242,6 @@ void init(void) {
   publish_state();
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) {
   elapsed += dt;
 
@@ -276,7 +276,6 @@ void tick(double dt) {
   publish_state();
 }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int index, double value) {
   int pressed = (value >= 0.5);
 
@@ -447,7 +446,6 @@ static int field_to_pid(const char* path, int pathLen) {
   return -1;
 }
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   bool grid_changed = false;
   for (int i = 0; i < n; i++) {
@@ -462,7 +460,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
   if (grid_changed) load_grid_from_state();
 }
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!show_overlay) return;
 
@@ -635,3 +632,5 @@ void render(int vp_w, int vp_h) {
   /* TODO: For proper z-ordering, the host would need a "begin layer" / "end layer" concept.
      For now, the background is drawn on top which is acceptable for the prototype. */
 }
+
+} // namespace nanolooper

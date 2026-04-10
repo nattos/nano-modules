@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstring>
 
+namespace paramlinker {
+
 /* ======================================================================
  * Constants
  * ====================================================================== */
@@ -141,7 +143,6 @@ static void publish_state(void) {
  * Exports
  * ====================================================================== */
 
-__attribute__((export_name("init")))
 void init(void) {
   seen_count = 0;
   next_order = 0;
@@ -179,7 +180,6 @@ void init(void) {
   publish_state();
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) {
   elapsed += dt;
 
@@ -209,7 +209,6 @@ void tick(double dt) {
   publish_state();
 }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int index, double value) {
   if (index == PID_LEARN) {
     /* Toggle on rising edge only */
@@ -265,7 +264,6 @@ void on_param_change(int index, double value) {
   }
 }
 
-__attribute__((export_name("on_resolume_param")))
 void on_resolume_param(long long param_id, double value) {
   if (!learning) return;
 
@@ -331,7 +329,6 @@ static void reload_assignment_from_state() {
   }
 }
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -344,7 +341,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
   reload_assignment_from_state();
 }
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   float scale = (float)vp_h / 1080.0f;
   float gw = 24.0f * scale;
@@ -437,3 +433,5 @@ void render(int vp_w, int vp_h) {
     text("Press Learn to start", margin, y + lh, small_font, 0.4f, 0.4f, 0.4f, 0.4f);
   }
 }
+
+} // namespace paramlinker

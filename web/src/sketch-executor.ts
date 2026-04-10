@@ -24,6 +24,7 @@ export class SketchExecutor {
   private gpuHost: GPUHost;
   private device: GPUDevice;
   private format: GPUTextureFormat;
+  private findModule: (effectId: string) => WebAssembly.Module | null;
 
   private instances = new Map<string, LoadedModule>();
   private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
@@ -46,11 +47,15 @@ export class SketchExecutor {
     return result;
   }
 
-  constructor(bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat) {
+  constructor(
+    bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat,
+    findModule: (effectId: string) => WebAssembly.Module | null,
+  ) {
     this.bridgeCore = bridgeCore;
     this.gpuHost = gpuHost;
     this.device = device;
     this.format = format;
+    this.findModule = findModule;
   }
 
   async ensureInstance(entry: ModuleEntry): Promise<LoadedModule> {
@@ -61,11 +66,20 @@ export class SketchExecutor {
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
 
-    const moduleName = entry.module_type.replace(/^com\.nattos\./, '').replace(/\./g, '_');
-    const mod = await host.load(`/wasm/${moduleName}.wasm`);
-    mod.init();
+    // Try to use a pre-compiled module from the registry
+    const compiled = this.findModule(entry.module_type);
+    if (compiled) {
+      await host.load(compiled);
+      const mod = host.activateEffect(entry.module_type);
+      loaded = { host, module: mod };
+    } else {
+      // Fallback: load from URL (legacy single-effect modules)
+      const moduleName = entry.module_type.replace(/^com\.nattos\./, '').replace(/\./g, '_');
+      await host.load(`/wasm/${moduleName}.wasm`);
+      const mod = host.activateEffect(entry.module_type);
+      loaded = { host, module: mod };
+    }
 
-    loaded = { host, module: mod };
     this.instances.set(entry.instance_key, loaded);
     return loaded;
   }

@@ -10,6 +10,8 @@
 #include <host.h>
 #include "gpu_test_shaders.h"
 
+namespace gpu_test {
+
 struct Uniforms { float r, g, b, _pad; };
 
 static gpu::ComputePSO s_compute_pso;
@@ -18,9 +20,6 @@ static gpu::Buffer s_uniform_buf;
 static gpu::Buffer s_vertex_buf;
 static bool s_initialized = false;
 
-extern "C" {
-
-__attribute__((export_name("init")))
 void init() {
   s_initialized = false;
 
@@ -54,16 +53,12 @@ void init() {
   state::log("gpu_test: initialized");
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) { (void)dt; }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int, double) {}
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int, const char*, const int*, const int*, const int*) {}
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!s_initialized) return;
   (void)vp_w; (void)vp_h;
@@ -84,4 +79,4 @@ void render(int vp_w, int vp_h) {
   gpu::Device::submit();
 }
 
-} // extern "C"
+} // namespace gpu_test

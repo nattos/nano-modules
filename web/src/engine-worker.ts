@@ -11,7 +11,7 @@
 
 import { BridgeCore } from './bridge-core';
 import { GPUHost } from './gpu-host';
-import { WasmHost, WasmModule } from './wasm-host';
+import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
 import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint } from './engine-types';
@@ -29,6 +29,13 @@ let traceCapture: TraceCapture | null = null;
 
 // Real module instances
 const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
+
+// Registry of compiled WASM modules and their available effects
+interface LoadedWasmModule {
+  compiled: WebAssembly.Module;
+  effects: EffectInfo[];
+}
+const moduleRegistry = new Map<string, LoadedWasmModule>();
 
 // Sketches
 const sketches = new Map<string, Sketch>();
@@ -85,6 +92,9 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     case 'loadModule':
       await loadModule(cmd.moduleType);
+      break;
+    case 'instantiateEffect':
+      await instantiateEffect(cmd.effectId);
       break;
     case 'createSketch':
       sketches.set(cmd.sketchId, cmd.sketch);
@@ -169,7 +179,7 @@ async function init(width: number, height: number) {
   gpuContext.configure({ device: gpuDevice, format, alphaMode: 'premultiplied' });
 
   gpuHost = new GPUHost(gpuDevice, format);
-  sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format);
+  sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
   traceCapture = new TraceCapture(gpuDevice, format);
 
   post({ type: 'ready' });
@@ -418,20 +428,81 @@ function captureAndSendFrame() {
 // Module loading
 // ========================================================================
 
+/** Find the compiled WebAssembly.Module that contains a given effect ID. */
+function findCompiledModule(effectId: string): WebAssembly.Module | null {
+  for (const entry of moduleRegistry.values()) {
+    if (entry.effects.some(e => e.id === effectId)) return entry.compiled;
+  }
+  return null;
+}
+
+/**
+ * Load a WASM module and discover its available effects.
+ * Does NOT instantiate any effects — call instantiateEffect() separately.
+ */
 async function loadModule(moduleType: string) {
   if (!bridgeCore || !gpuHost) return;
 
   // Derive WASM filename from module type.
-  // Strip "com.nattos." prefix, replace remaining dots with underscores.
   const moduleName = moduleType.replace(/^com\.nattos\./, '').replace(/\./g, '_');
+  const wasmUrl = `/wasm/${moduleName}.wasm`;
+
+  // Don't reload if already registered
+  if (moduleRegistry.has(wasmUrl)) {
+    const existing = moduleRegistry.get(wasmUrl)!;
+    post({ type: 'effectsDiscovered', effects: existing.effects.map(e => ({
+      id: e.id, name: e.name, description: e.description,
+      category: e.category, keywords: e.keywords,
+    })) });
+    return;
+  }
+
   const host = new WasmHost();
   host.bridgeCore = bridgeCore;
   host.gpuHost = gpuHost;
 
   try {
-    const mod = await host.load(`/wasm/${moduleName}.wasm`);
-    mod.init();
-    const key = host.pluginKey || `${moduleType}@0`;
+    await host.load(wasmUrl);
+
+    moduleRegistry.set(wasmUrl, {
+      compiled: host.compiledModule!,
+      effects: host.registeredEffects.map(e => ({ ...e })),
+    });
+
+    // Broadcast discovered effects to the main thread
+    post({ type: 'effectsDiscovered', effects: host.registeredEffects.map(e => ({
+      id: e.id, name: e.name, description: e.description,
+      category: e.category, keywords: e.keywords,
+    })) });
+
+    markDirty();
+  } catch (e) {
+    post({ type: 'error', message: `Failed to load ${moduleType}: ${e}` });
+  }
+}
+
+/**
+ * Instantiate a specific effect and add it to the unassigned bucket sketch.
+ * The effect's WASM module must already be loaded via loadModule().
+ */
+async function instantiateEffect(effectId: string) {
+  if (!bridgeCore || !gpuHost) return;
+
+  const compiled = findCompiledModule(effectId);
+  if (!compiled) {
+    post({ type: 'error', message: `Effect "${effectId}" not found in any loaded module` });
+    return;
+  }
+
+  const host = new WasmHost();
+  host.bridgeCore = bridgeCore;
+  host.gpuHost = gpuHost;
+
+  try {
+    await host.load(compiled);
+    const mod = host.activateEffect(effectId);
+
+    const key = host.pluginKey || `${effectId}@0`;
     realModules.set(key, { host, module: mod });
 
     // Ensure the unassigned bucket sketch exists
@@ -448,14 +519,14 @@ async function loadModule(moduleType: string) {
     if (!isInstanceInAnySketch(key)) {
       bucket.instances = bucket.instances ?? {};
       bucket.instances[key] = {
-        module_type: moduleType,
+        module_type: effectId,
         state: { ...host.pluginState },
       };
     }
 
     markDirty();
   } catch (e) {
-    post({ type: 'error', message: `Failed to load ${moduleType}: ${e}` });
+    post({ type: 'error', message: `Failed to instantiate ${effectId}: ${e}` });
   }
 }
 

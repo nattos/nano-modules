@@ -23,9 +23,8 @@
 static float s_rate = 0.5f;
 static float s_amplitude = 1.0f;
 
-extern "C" {
+namespace env_lfo {
 
-__attribute__((export_name("init")))
 void init() {
   s_rate = 0.5f;
   s_amplitude = 1.0f;
@@ -39,7 +38,6 @@ void init() {
   state::log("LFO: init");
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) {
   (void)dt;
   double t = host::time();
@@ -57,10 +55,8 @@ void tick(double dt) {
   val::release(vh);
 }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int, double) {}
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -72,10 +68,9 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
 }
 
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   (void)vp_w; (void)vp_h;
   // No rendering — pure data module
 }
 
-} // extern "C"
+} // namespace env_lfo

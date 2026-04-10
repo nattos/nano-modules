@@ -29,6 +29,21 @@ export interface WasmModule {
   onResolumeParam?(paramId: bigint, value: number): void;
 }
 
+/** Metadata for an effect discovered via nano_module_main registration. */
+export interface EffectInfo {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  keywords: string[];
+  /** @internal function table indices */
+  _initIdx: number;
+  _tickIdx: number;
+  _renderIdx: number;
+  _onStatePatchedIdx: number;
+  _onResolumeParamIdx: number; // 0 = not supported
+}
+
 export interface ConsoleEntry {
   timestamp: number;
   level: string;
@@ -53,6 +68,12 @@ const LEVELS = ['log', 'warn', 'error'];
 export class WasmHost {
   private instance!: WebAssembly.Instance;
   private memory!: WebAssembly.Memory;
+
+  /** Effects registered by the module during nano_module_main. */
+  registeredEffects: EffectInfo[] = [];
+
+  /** The compiled WebAssembly.Module (for reuse across instances). */
+  compiledModule: WebAssembly.Module | null = null;
 
   drawList: DrawCmd[] = [];
   frameState: FrameState = {
@@ -108,6 +129,14 @@ export class WasmHost {
     return decoder.decode(new Uint8Array(this.memory.buffer, ptr, len));
   }
 
+  /** Read a null-terminated C string from WASM memory. */
+  private readCString(ptr: number): string {
+    const mem = new Uint8Array(this.memory.buffer);
+    let end = ptr;
+    while (mem[end] !== 0) end++;
+    return decoder.decode(mem.slice(ptr, end));
+  }
+
   private writeString(ptr: number, maxLen: number, str: string): number {
     const encoded = new TextEncoder().encode(str);
     const len = Math.min(encoded.length, maxLen);
@@ -146,9 +175,17 @@ export class WasmHost {
     return bc.valNull();
   }
 
-  async load(wasmUrl: string): Promise<WasmModule> {
-    const response = await fetch(wasmUrl);
-    const bytes = await response.arrayBuffer();
+  async load(source: string | WebAssembly.Module): Promise<void> {
+    let compiled: WebAssembly.Module;
+    if (typeof source === 'string') {
+      const response = await fetch(source);
+      const bytes = await response.arrayBuffer();
+      compiled = await WebAssembly.compile(bytes);
+    } else {
+      compiled = source;
+    }
+    this.compiledModule = compiled;
+    this.registeredEffects = [];
     const bc = this.bridgeCore;
 
     const importObject: WebAssembly.Imports = {
@@ -654,24 +691,85 @@ export class WasmHost {
           return this.textureFields.get(path) ?? -1;
         },
       },
+      module: {
+        register_effect: (descPtr: number) => {
+          const mem = new DataView(this.memory.buffer);
+          const version = mem.getInt32(descPtr, true);
+          if (version !== 1) return; // Unknown version, skip
+
+          const idPtr = mem.getUint32(descPtr + 4, true);
+          const namePtr = mem.getUint32(descPtr + 8, true);
+          const descriptionPtr = mem.getUint32(descPtr + 12, true);
+          const categoryPtr = mem.getUint32(descPtr + 16, true);
+          const keywordsPtr = mem.getUint32(descPtr + 20, true);
+
+          const initIdx = mem.getUint32(descPtr + 24, true);
+          const tickIdx = mem.getUint32(descPtr + 28, true);
+          const renderIdx = mem.getUint32(descPtr + 32, true);
+          const onStatePatchedIdx = mem.getUint32(descPtr + 36, true);
+          const onResolumeParamIdx = mem.getUint32(descPtr + 40, true);
+
+          this.registeredEffects.push({
+            id: this.readCString(idPtr),
+            name: this.readCString(namePtr),
+            description: this.readCString(descriptionPtr),
+            category: this.readCString(categoryPtr),
+            keywords: this.readCString(keywordsPtr).split(',').filter(k => k.length > 0),
+            _initIdx: initIdx,
+            _tickIdx: tickIdx,
+            _renderIdx: renderIdx,
+            _onStatePatchedIdx: onStatePatchedIdx,
+            _onResolumeParamIdx: onResolumeParamIdx,
+          });
+        },
+      },
     };
 
-    const result = await WebAssembly.instantiate(bytes, importObject);
-    this.instance = result.instance;
+    this.instance = await WebAssembly.instantiate(compiled, importObject);
     this.memory = this.instance.exports.memory as WebAssembly.Memory;
 
     // Initialize WASI runtime (C++ static constructors, etc.)
     const _initialize = this.instance.exports._initialize as (() => void) | undefined;
     if (_initialize) _initialize();
 
-    const exports = this.instance.exports;
+    // Call nano_module_main to discover registered effects
+    const nanoMain = this.instance.exports.nano_module_main as (() => void) | undefined;
+    if (nanoMain) {
+      nanoMain();
+    }
+  }
+
+  /**
+   * Activate a specific effect from those registered during load().
+   * Calls the effect's init() via the function table and returns a
+   * WasmModule interface that dispatches through the table.
+   */
+  activateEffect(effectId: string): WasmModule {
+    const effect = this.registeredEffects.find(e => e.id === effectId);
+    if (!effect) {
+      throw new Error(`Effect "${effectId}" not found. Available: ${this.registeredEffects.map(e => e.id).join(', ')}`);
+    }
+
+    const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
+
+    const initFn = table.get(effect._initIdx) as () => void;
+    const tickFn = table.get(effect._tickIdx) as (dt: number) => void;
+    const renderFn = table.get(effect._renderIdx) as (vpW: number, vpH: number) => void;
+    const onStatePatchedFn = table.get(effect._onStatePatchedIdx) as
+      (n: number, pb: number, off: number, len: number, ops: number) => void;
+    const onResolumeParamFn = effect._onResolumeParamIdx !== 0
+      ? table.get(effect._onResolumeParamIdx) as (paramId: bigint, value: number) => void
+      : undefined;
+
+    // Call init immediately
+    initFn();
+
     return {
-      init: exports.init as () => void,
-      tick: exports.tick as (dt: number) => void,
-      render: exports.render as (vpW: number, vpH: number) => void,
-      onStatePatched: exports.on_state_patched as
-        (patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number) => void,
-      onResolumeParam: exports.on_resolume_param as ((paramId: bigint, value: number) => void) | undefined,
+      init: () => {}, // Already called
+      tick: tickFn,
+      render: renderFn,
+      onStatePatched: onStatePatchedFn,
+      onResolumeParam: onResolumeParamFn,
     };
   }
 

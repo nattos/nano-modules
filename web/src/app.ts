@@ -38,12 +38,15 @@ async function main() {
   engine.onPluginStates = (states) => appController.setPluginStates(states);
   engine.onError = (msg) => appController.setEngineError(msg);
 
-  // Load default generators
-  appController.loadModule('com.nattos.spinningtris');
-  appController.loadModule('com.nattos.gpu_test');
-  appController.loadModule('com.nattos.nanolooper');
-  appController.loadModule('com.nattos.brightness_contrast');
-  appController.loadModule('com.nattos.env_lfo');
+  // When effects are discovered, instantiate them all
+  engine.onEffectsDiscovered = (effects) => {
+    for (const effect of effects) {
+      appController.instantiateEffect(effect.id);
+    }
+  };
+
+  // Load the combined module (discovers all available effects)
+  appController.loadModule('com.nattos.nano_effects');
 }
 
 main();

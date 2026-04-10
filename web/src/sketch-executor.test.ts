@@ -4,10 +4,12 @@ import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
 import type { Sketch, ChainEntry } from './sketch-types';
 
+const NANO_EFFECTS_WASM_PATH = resolve(__dirname, '../public/wasm/nano_effects.wasm');
+// Fallback to individual module for backward compat
 const BC_WASM_PATH = resolve(__dirname, '../public/wasm/brightness_contrast.wasm');
 
-// Helper: load a WASM module from bytes (bypassing fetch)
-async function loadModuleFromBytes(host: WasmHost, bytes: Buffer) {
+// Helper: load a WASM module from bytes, discover effects, and activate one
+async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'com.nattos.brightness_contrast') {
   // Patch fetch to return our bytes
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => ({
@@ -15,26 +17,28 @@ async function loadModuleFromBytes(host: WasmHost, bytes: Buffer) {
   })) as any;
 
   try {
-    return await host.load('test.wasm');
+    await host.load('test.wasm');
+    return host.activateEffect(effectId);
   } finally {
     globalThis.fetch = originalFetch;
   }
 }
 
+function getWasmBytes(): Buffer | null {
+  try {
+    return readFileSync(NANO_EFFECTS_WASM_PATH);
+  } catch {
+    try { return readFileSync(BC_WASM_PATH); } catch { return null; }
+  }
+}
+
 describe('Brightness/Contrast module', () => {
   it('loads and declares correct metadata', async () => {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(BC_WASM_PATH);
-    } catch {
-      console.warn('brightness_contrast.wasm not found, skipping test');
-      return;
-    }
+    const bytes = getWasmBytes();
+    if (!bytes) { console.warn('WASM not found, skipping test'); return; }
 
     const host = new WasmHost();
     const module = await loadModuleFromBytes(host, bytes);
-
-    module.init();
 
     expect(host.metadata).not.toBeNull();
     expect(host.metadata!.id).toBe('com.nattos.brightness_contrast');
@@ -46,18 +50,11 @@ describe('Brightness/Contrast module', () => {
   });
 
   it('declares I/O ports', async () => {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(BC_WASM_PATH);
-    } catch {
-      console.warn('brightness_contrast.wasm not found, skipping test');
-      return;
-    }
+    const bytes = getWasmBytes();
+    if (!bytes) { console.warn('WASM not found, skipping test'); return; }
 
     const host = new WasmHost();
     const module = await loadModuleFromBytes(host, bytes);
-
-    module.init();
 
     expect(host.ioDecls.length).toBe(2);
 
@@ -73,18 +70,12 @@ describe('Brightness/Contrast module', () => {
   });
 
   it('on_param_change does not crash', async () => {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(BC_WASM_PATH);
-    } catch {
-      console.warn('brightness_contrast.wasm not found, skipping test');
-      return;
-    }
+    const bytes = getWasmBytes();
+    if (!bytes) { console.warn('WASM not found, skipping test'); return; }
 
     const host = new WasmHost();
     const module = await loadModuleFromBytes(host, bytes);
 
-    module.init();
     host.notifyStatePatched(module, [
       { op: 'replace', path: 'brightness', value: 0.7 },
       { op: 'replace', path: 'contrast', value: 0.3 },
@@ -92,18 +83,12 @@ describe('Brightness/Contrast module', () => {
   });
 
   it('render without GPU host does not crash', async () => {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(BC_WASM_PATH);
-    } catch {
-      console.warn('brightness_contrast.wasm not found, skipping test');
-      return;
-    }
+    const bytes = getWasmBytes();
+    if (!bytes) { console.warn('WASM not found, skipping test'); return; }
 
     const host = new WasmHost();
     const module = await loadModuleFromBytes(host, bytes);
 
-    module.init();
     // render without GPU — should not crash (GPU backend returns None/-1)
     module.render(640, 480);
   });

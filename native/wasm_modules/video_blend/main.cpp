@@ -17,6 +17,8 @@
 #include <val.h>
 #include "video_blend_shaders.h"
 
+namespace video_blend {
+
 struct Uniforms {
   float opacity;
   float _pad0, _pad1, _pad2;
@@ -27,9 +29,6 @@ static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
 
-extern "C" {
-
-__attribute__((export_name("init")))
 void init() {
   s_opacity = 0.5f;
   s_initialized = false;
@@ -54,13 +53,10 @@ void init() {
   state::log("blend: init");
 }
 
-__attribute__((export_name("tick")))
 void tick(double dt) { (void)dt; }
 
-__attribute__((export_name("on_param_change")))
 void on_param_change(int, double) {}
 
-__attribute__((export_name("on_state_patched")))
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -70,7 +66,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
 }
 
 
-__attribute__((export_name("render")))
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 
@@ -95,4 +90,4 @@ void render(int vp_w, int vp_h) {
   gpu::Device::submit();
 }
 
-} // extern "C"
+} // namespace video_blend

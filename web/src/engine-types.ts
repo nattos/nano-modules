@@ -4,6 +4,16 @@
 
 import type { Sketch } from './sketch-types';
 
+// --- Effect info (from module registration) ---
+
+export interface EffectInfo {
+  id: string;           // "com.nattos.spinningtris"
+  name: string;         // "Spinning Triangles"
+  description: string;
+  category: string;
+  keywords: string[];
+}
+
 // --- Plugin info (read-only snapshot for UI) ---
 
 export interface PluginInfo {
@@ -56,6 +66,7 @@ export type WorkerCommand =
   | { type: 'init'; width: number; height: number }
   | { type: 'resize'; width: number; height: number }
   | { type: 'loadModule'; moduleType: string }
+  | { type: 'instantiateEffect'; effectId: string }
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
   | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: number }
@@ -67,6 +78,7 @@ export type WorkerCommand =
 export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
+  | { type: 'effectsDiscovered'; effects: EffectInfo[] }
   | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchState: Record<string, any>; pluginStates: Record<string, any> }
   | { type: 'error'; message: string }
   | { type: 'debugDump'; data: any };

@@ -3,7 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
-import type { WorkerCommand, WorkerEvent, EngineState, TracePoint } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint } from './engine-types';
 import type { Sketch } from './sketch-types';
 
 export class EngineProxy {
@@ -11,6 +11,7 @@ export class EngineProxy {
   private _ready = false;
 
   onStateUpdate: ((state: EngineState) => void) | null = null;
+  onEffectsDiscovered: ((effects: EffectInfo[]) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
   onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onSketchState: ((sketchState: Record<string, any>) => void) | null = null;
@@ -32,6 +33,9 @@ export class EngineProxy {
           break;
         case 'state':
           this.onStateUpdate?.(event.state);
+          break;
+        case 'effectsDiscovered':
+          this.onEffectsDiscovered?.(event.effects);
           break;
         case 'frame':
           this.onFps?.(event.fps);
@@ -66,6 +70,10 @@ export class EngineProxy {
 
   loadModule(moduleType: string) {
     this.send({ type: 'loadModule', moduleType });
+  }
+
+  instantiateEffect(effectId: string) {
+    this.send({ type: 'instantiateEffect', effectId });
   }
 
   createSketch(sketchId: string, sketch: Sketch) {

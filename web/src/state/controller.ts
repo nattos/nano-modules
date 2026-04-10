@@ -424,8 +424,20 @@ export class AppController {
   // Engine sync
   // ========================================================================
 
+  /**
+   * Load a WASM module and discover its available effects.
+   * Does NOT create any instances — call instantiateEffect() for that.
+   */
   loadModule(moduleType: string) {
     this.engine?.loadModule(moduleType);
+  }
+
+  /**
+   * Instantiate a specific effect into the unassigned bucket sketch.
+   * The effect's WASM module must already be loaded via loadModule().
+   */
+  instantiateEffect(effectId: string) {
+    this.engine?.instantiateEffect(effectId);
   }
 
   setTracePoints(tracePoints: TracePoint[]) {
