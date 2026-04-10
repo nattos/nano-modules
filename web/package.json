@@ -25,6 +25,11 @@
     "vitest": "^4.0.9"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.1",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.41.0",
+    "codemirror": "^6.0.2",
     "immer": "^11.1.4",
     "naga-wasm": "^1.0.0",
     "wasm-naga": "^0.3.2"
