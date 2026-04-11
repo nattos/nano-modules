@@ -253,6 +253,18 @@ export class SketchExecutor {
         }
         if (paramPatches.length > 0) {
           loaded.host.notifyStatePatched(loaded.module, paramPatches);
+          // Also commit to bridge core so pluginState stays in sync.
+          // Without this, getPluginState() returns stale defaults for
+          // input params, causing the UI to snap sliders back.
+          const bc = loaded.host.bridgeCore;
+          const pk = loaded.host.pluginKey;
+          if (bc && pk) {
+            for (const patch of paramPatches) {
+              const vh = bc.valNumber(patch.value as number);
+              bc.commitVal(pk, patch.path, vh);
+              bc.valRelease(vh);
+            }
+          }
         }
 
         // --- Apply read taps (before tick/render) ---

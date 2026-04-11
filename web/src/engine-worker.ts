@@ -153,13 +153,21 @@ async function handleCommand(cmd: WorkerCommand) {
           if (sketch.instances?.[entry.instance_key]) {
             sketch.instances[entry.instance_key].state[cmd.paramKey] = cmd.value;
           }
-          // Update live instance immediately via pluginState
+          // Update live instance immediately
           if (sketchExecutor) {
             const loaded = sketchExecutor.getInstance(entry.instance_key);
             if (loaded) {
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: cmd.paramKey, value: cmd.value },
               ]);
+              // Commit to bridge core so pluginState stays in sync
+              const bc = loaded.host.bridgeCore;
+              const pk = loaded.host.pluginKey;
+              if (bc && pk) {
+                const vh = bc.valNumber(cmd.value);
+                bc.commitVal(pk, cmd.paramKey, vh);
+                bc.valRelease(vh);
+              }
             }
           }
         }

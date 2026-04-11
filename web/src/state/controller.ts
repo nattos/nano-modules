@@ -193,14 +193,45 @@ export class AppController {
     this.mutate(`Set param ${paramKey}`, draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
-      // Write to the instance state (canonical source)
       sk.instances = sk.instances ?? {};
       const inst = sk.instances[entry.instance_key];
       if (inst) {
         inst.state[paramKey] = value;
       }
     });
-    // Also send immediate param update to the engine for live preview
+    this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
+  }
+
+  /** Recipe for setting a param value (shared by continuous edit methods). */
+  private setParamRecipe(sketchId: string, instanceKey: string, paramKey: string, value: number) {
+    return (draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      sk.instances = sk.instances ?? {};
+      const inst = sk.instances[instanceKey];
+      if (inst) { inst.state[paramKey] = value; }
+    };
+  }
+
+  /** Begin a continuous param edit (slider drag). No undo points during drag. */
+  beginSetEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number): LongEdit {
+    const sketch = appState.database.sketches[sketchId];
+    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
+    const edit = this.history.beginLongEdit(
+      `Set ${paramKey}`,
+      this.setParamRecipe(sketchId, instanceKey, paramKey, value),
+    );
+    this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
+    return edit;
+  }
+
+  /** Update a continuous param edit (slider drag in progress). */
+  updateSetEffectParam(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+    const sketch = appState.database.sketches[sketchId];
+    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
+    edit.update(this.setParamRecipe(sketchId, instanceKey, paramKey, value));
     this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
   }
 

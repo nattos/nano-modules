@@ -25,8 +25,24 @@ export interface FieldBinding {
   /** Read the current value of a field path from instance state. */
   getValue(fieldPath: string): any;
 
-  /** Write a value to a field path in instance state. */
+  /** Write a value to a field path in instance state (one-shot, creates undo point). */
   setValue(fieldPath: string, value: any): void;
+
+  /**
+   * Begin a continuous edit (e.g., slider drag). Updates are previewed live
+   * without creating undo points. Returns a handle for updating / finishing.
+   */
+  beginContinuousEdit(fieldPath: string, value: any): ContinuousEditHandle;
+}
+
+/** Handle for an in-progress continuous edit (slider drag, etc.). */
+export interface ContinuousEditHandle {
+  /** Update the value during the drag (no undo point). */
+  update(value: any): void;
+  /** Commit the final value as a single undo point. */
+  accept(): void;
+  /** Cancel and revert to the pre-drag value. */
+  cancel(): void;
 }
 
 /** Interface that all field editor elements must implement. */

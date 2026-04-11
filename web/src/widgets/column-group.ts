@@ -16,7 +16,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
-import type { FieldBinding, FieldEditorElement } from './field-editor';
+import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
 import { editorRegistry } from '../editor-registry';
@@ -506,6 +506,7 @@ export class ColumnGroup extends MobxLitElement {
             ?? 0;
         },
         setValue: () => {},  // read-only for trace
+        beginContinuousEdit: () => ({ update: () => {}, accept: () => {}, cancel: () => {} }),
       };
 
       return html`
@@ -698,6 +699,18 @@ export class ColumnGroup extends MobxLitElement {
       },
       setValue: (fieldPath: string, value: any) => {
         appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+      },
+      beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
+        const edit = appController.beginSetEffectParam(
+          this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+        return {
+          update: (v: any) => {
+            appController.updateSetEffectParam(
+              edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v);
+          },
+          accept: () => { edit.accept(); },
+          cancel: () => { edit.cancel(); },
+        };
       },
     };
 

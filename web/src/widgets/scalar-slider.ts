@@ -16,7 +16,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { CancelReason, PointerDragOp } from '../utils/pointer-drag-op';
-import type { FieldBinding, FieldEditorElement } from './field-editor';
+import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 
 @customElement('scalar-slider')
 export class ScalarSlider extends LitElement implements FieldEditorElement {
@@ -42,6 +42,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
   private startValue = 0;
   private rect: DOMRect | null = null;
   private dragOp: PointerDragOp | null = null;
+  private activeEdit: ContinuousEditHandle | null = null;
 
   static styles = css`
     :host {
@@ -154,10 +155,14 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     return this.value;
   }
 
-  /** Write a value — updates the binding if present, otherwise just sets .value. */
+  /** Write a value — routes through continuous edit if active, else one-shot. */
   private setValue(v: number) {
     this.value = v;
-    if (this.binding && this.fieldPath) {
+    if (!this.binding || !this.fieldPath) return;
+
+    if (this.activeEdit) {
+      this.activeEdit.update(v);
+    } else {
       this.binding.setValue(this.fieldPath, v);
     }
   }
@@ -212,22 +217,34 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     this.dragOp = new PointerDragOp(e, this, {
       threshold: 0,
       move: (e, delta) => {
-        this.updateValueFromDelta(e, delta[0]);
+        // Begin continuous edit on first movement
         if (!this.isDragging) {
           this.isDragging = true;
           this.setAttribute('dragging', '');
+          if (this.binding?.beginContinuousEdit && this.fieldPath) {
+            this.activeEdit = this.binding.beginContinuousEdit(this.fieldPath, this.startValue);
+          }
         }
+        this.updateValueFromDelta(e, delta[0]);
       },
       accept: () => {
         if (this.isDragging) {
           this.dispatchEvent(new CustomEvent('change', { detail: this.effectiveValue }));
         }
+        if (this.activeEdit) {
+          this.activeEdit.accept();
+          this.activeEdit = null;
+        }
         this.cleanupDrag();
         this.focus();
       },
       cancel: (reason) => {
+        if (this.activeEdit) {
+          this.activeEdit.cancel();
+          this.activeEdit = null;
+        }
         if (reason === CancelReason.UserAction || reason === CancelReason.Programmatic) {
-          this.setValue(this.startValue);
+          this.value = this.startValue;
           this.dispatchEvent(new CustomEvent('change', { detail: this.startValue }));
         }
         this.cleanupDrag();

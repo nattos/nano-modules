@@ -8,7 +8,7 @@
 import { html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
-import type { FieldBinding, FieldEditorElement } from './field-editor';
+import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 
 @customElement('field-slider')
 export class FieldSlider extends MobxLitElement implements FieldEditorElement {
@@ -19,6 +19,8 @@ export class FieldSlider extends MobxLitElement implements FieldEditorElement {
   @property({ type: Number }) step = 0.01;
   @property({ type: Number }) defaultValue = 0;
   @property({ attribute: false }) binding: FieldBinding | null = null;
+
+  private activeEdit: ContinuousEditHandle | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
 
@@ -39,9 +41,25 @@ export class FieldSlider extends MobxLitElement implements FieldEditorElement {
     return this.defaultValue;
   }
 
+  /** Dragging — start or update continuous edit (no undo points). */
   private onInput(e: Event) {
     const v = parseFloat((e.target as HTMLInputElement).value);
-    this.binding?.setValue(this.fieldPath, v);
+    if (!this.activeEdit && this.binding?.beginContinuousEdit) {
+      this.activeEdit = this.binding.beginContinuousEdit(this.fieldPath, v);
+    } else if (this.activeEdit) {
+      this.activeEdit.update(v);
+    } else {
+      // Fallback for bindings that don't support continuous edit
+      this.binding?.setValue(this.fieldPath, v);
+    }
+  }
+
+  /** Mouse release — commit the drag as a single undo point. */
+  private onChange() {
+    if (this.activeEdit) {
+      this.activeEdit.accept();
+      this.activeEdit = null;
+    }
   }
 
   static styles = css`
@@ -81,7 +99,8 @@ export class FieldSlider extends MobxLitElement implements FieldEditorElement {
       <span class="label">${this.label}</span>
       <input type="range" .min=${String(this.min)} .max=${String(this.max)}
              .step=${String(this.step)} .value=${String(v)}
-             @input=${this.onInput}>
+             @input=${this.onInput}
+             @change=${this.onChange}>
       <span class="value">${display}</span>
     `;
   }
