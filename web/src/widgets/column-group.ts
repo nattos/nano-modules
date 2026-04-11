@@ -12,6 +12,7 @@
 
 import { html, css, nothing, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import { reaction, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
@@ -76,10 +77,38 @@ export class ColumnGroup extends MobxLitElement {
   /** Each column-group owns its own layout manager for field position tracking. */
   public readonly layoutManager = new FieldLayoutManager();
 
+  /** Width per rail slot in the gutter. */
+  static readonly RAIL_SLOT_WIDTH = 16;
+  /** Base gutter width (with zero rails). */
+  static readonly GUTTER_BASE_WIDTH = 8;
+  /** Number of rails per quantized gutter block. */
+  static readonly RAILS_PER_BLOCK = 4;
+  /** Width of one quantized block. */
+  static readonly GUTTER_BLOCK_WIDTH = ColumnGroup.RAILS_PER_BLOCK * ColumnGroup.RAIL_SLOT_WIDTH;
+
+  /** Compute the number of rails in this column (column-scoped + sketch-scoped). */
+  getRailCount(): number {
+    const sketch = appState.database.sketches[this.sketchId];
+    if (!sketch || this.colIdx < 0 || this.colIdx >= sketch.columns.length) return 0;
+    const colRails = sketch.columns[this.colIdx]?.rails?.length ?? 0;
+    const sketchRails = sketch.rails?.length ?? 0;
+    return colRails + sketchRails;
+  }
+
+  /** Compute gutter width, growing in quantized jumps per RAILS_PER_BLOCK. */
+  getGutterWidth(): number {
+    const railCount = this.getRailCount();
+    if (railCount === 0) return ColumnGroup.GUTTER_BASE_WIDTH;
+    const blocks = Math.ceil(railCount / ColumnGroup.RAILS_PER_BLOCK);
+    return ColumnGroup.GUTTER_BASE_WIDTH + blocks * ColumnGroup.GUTTER_BLOCK_WIDTH;
+  }
+
   /** Which chain entry index is currently being type-edited (smart-input open), or -1 for none. */
   private editingTypeChainIdx = -1;
   /** The active LongEdit for type preview (null when not previewing). */
   private typeLongEdit: LongEdit | null = null;
+  /** Disposes the reaction that syncs rail positions. */
+  private railReactionDisposer: IReactionDisposer | null = null;
 
   static styles = css`
     :host {
@@ -96,7 +125,7 @@ export class ColumnGroup extends MobxLitElement {
       min-width: 0;
     }
     .column-gutter {
-      width: 24px;
+      width: var(--gutter-width, 8px);
       flex-shrink: 0;
       position: relative;
       border-left: 1px solid rgba(255,255,255,0.04);
@@ -210,7 +239,7 @@ export class ColumnGroup extends MobxLitElement {
     .drag-insert-marker {
       position: absolute;
       left: 0;
-      right: 24px; /* leave room for gutter */
+      right: var(--gutter-width, 8px); /* leave room for gutter */
       height: 3px;
       background: var(--app-hi-color2, #4169E1);
       border-radius: 2px;
@@ -312,25 +341,36 @@ export class ColumnGroup extends MobxLitElement {
     /* --- Tap visualization --- */
     .tap-indicator {
       position: absolute;
-      right: 4px;
-      width: 8px;
-      height: 8px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
-      transform: translateY(-50%);
+      transform: translate(-50%, -50%);
       z-index: 2;
     }
     .tap-indicator.write { background: var(--app-hi-color2, #4169E1); }
     .tap-indicator.read { background: var(--app-hi-color1, #E16941); }
     .tap-indicator-line {
       position: absolute;
-      right: 12px;
       height: 2px;
-      width: 12px;
       transform: translateY(-50%);
       z-index: 1;
     }
     .tap-indicator-line.write { background: var(--app-hi-color2, #4169E1); opacity: 0.5; }
     .tap-indicator-line.read { background: var(--app-hi-color1, #E16941); opacity: 0.5; }
+
+    /* --- Rail vertical lines --- */
+    .rail-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      transform: translateX(-50%);
+      background: rgba(255,255,255,0.08);
+      z-index: 0;
+    }
+    .rail-line:hover {
+      background: rgba(255,255,255,0.2);
+    }
 
     /* --- Inspector content (rendered into the right panel via Selectable) --- */
     .section-header {
@@ -352,6 +392,30 @@ export class ColumnGroup extends MobxLitElement {
     }
   `;
 
+  connectedCallback() {
+    super.connectedCallback();
+    // React to rail changes and recompute positions outside of render.
+    this.railReactionDisposer = reaction(
+      () => {
+        const sketch = appState.database.sketches[this.sketchId];
+        if (!sketch || this.colIdx < 0 || this.colIdx >= sketch.columns.length) return null;
+        const colRails = sketch.columns[this.colIdx]?.rails ?? [];
+        const sketchRails = sketch.rails ?? [];
+        return [...colRails.map(r => r.id), ...sketchRails.map(r => r.id)];
+      },
+      (railIds) => {
+        if (railIds) {
+          this.layoutManager.updateRailPositions(railIds, this.getGutterWidth());
+        }
+      },
+      { fireImmediately: true, equals: (a, b) => {
+        if (a === b) return true;
+        if (!a || !b || a.length !== b.length) return false;
+        return a.every((id, i) => id === b[i]);
+      }},
+    );
+  }
+
   updated() {
     const column = this.renderRoot.querySelector('.column') as HTMLElement | null;
     if (column) this.layoutManager.observeContainer(column);
@@ -360,6 +424,8 @@ export class ColumnGroup extends MobxLitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.railReactionDisposer?.();
+    this.railReactionDisposer = null;
     this.layoutManager.dispose();
   }
 
@@ -449,7 +515,9 @@ export class ColumnGroup extends MobxLitElement {
         ${this.renderChain(sketch, column)}
         <div class="drag-insert-marker"></div>
       </div>
-      <div class="column-gutter" data-col=${this.colIdx}>
+      <div class="column-gutter" data-col=${this.colIdx}
+        style="--gutter-width:${this.getGutterWidth()}px">
+        ${this.renderRailLines(sketch, column)}
         ${this.renderGutterTaps(sketch, column)}
       </div>
     `;
@@ -843,6 +911,25 @@ export class ColumnGroup extends MobxLitElement {
   // Gutter tap visualization
   // ========================================================================
 
+  /** Render vertical rail lines in the gutter. */
+  private renderRailLines(sketch: Sketch, column: SketchColumn) {
+    const allRails = [
+      ...(column.rails ?? []),
+      ...(sketch.rails ?? []),
+    ];
+    if (allRails.length === 0) return nothing;
+
+    return allRails.map(rail => {
+      const x = this.layoutManager.getRailX(rail.id);
+      if (x === null) return nothing;
+      return html`
+        <div class="rail-line"
+          style="left:${x}px"
+          title="${rail.name ?? rail.id} (${rail.dataType})"></div>
+      `;
+    });
+  }
+
   private renderGutterTaps(sketch: Sketch, column: SketchColumn) {
     const indicators: TemplateResult[] = [];
     const gutterEl = this.renderRoot.querySelector(`.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
@@ -857,10 +944,21 @@ export class ColumnGroup extends MobxLitElement {
         const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
         if (!rect) continue;
 
+        const railX = this.layoutManager.getRailX(tap.railId);
+        if (railX === null) continue;
+
         const yCenter = rect.top + rect.height / 2;
+
+        // Dot at the rail X position
         indicators.push(html`
-          <div class="tap-indicator ${tap.direction}" style="top:${yCenter}px"></div>
-          <div class="tap-indicator-line ${tap.direction}" style="top:${yCenter}px"></div>
+          <div class="tap-indicator ${tap.direction}"
+            style="left:${railX}px;top:${yCenter}px"></div>
+        `);
+
+        // Horizontal line from gutter left edge (0) to the rail dot
+        indicators.push(html`
+          <div class="tap-indicator-line ${tap.direction}"
+            style="left:0;width:${railX - 3}px;top:${yCenter}px"></div>
         `);
       }
     }

@@ -30,7 +30,7 @@ export class ColumnsView extends LitElement {
   @property({ type: Number }) columnMinWidth = 264;
   @property({ type: Number }) columnMaxWidth = 344;
   @property({ type: Number }) gap = 16;
-  @property({ type: Number }) gutterWidth = 24;
+  @property({ type: Number }) defaultGutterWidth = 8;
 
   /** Per-column widths. Lazily initialized to default width. */
   private columnWidths: number[] = [];
@@ -167,8 +167,15 @@ export class ColumnsView extends LitElement {
     return Math.min(this.columnMaxWidth, Math.max(this.columnMinWidth, 300));
   }
 
+  private getGutterWidth(idx: number): number {
+    // Query the column-group element for its dynamic gutter width
+    const el = this.attachedColumns.get(idx) as any;
+    if (el?.getGutterWidth) return el.getGutterWidth();
+    return this.defaultGutterWidth;
+  }
+
   private getColumnTotalWidth(idx: number): number {
-    return (this.columnWidths[idx] ?? this.getDefaultWidth()) + this.gutterWidth;
+    return (this.columnWidths[idx] ?? this.getDefaultWidth()) + this.getGutterWidth(idx);
   }
 
   private recalcLayout() {

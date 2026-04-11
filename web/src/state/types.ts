@@ -107,6 +107,4 @@ export interface LocalState {
    * When a component calls defineSelectable() with this path, the selection activates.
    */
   queuedSelectionPath: string | null;
-  /** Registry of all currently-mounted selectables, keyed by path. */
-  selectableRegistry: Map<string, Selectable>;
 }

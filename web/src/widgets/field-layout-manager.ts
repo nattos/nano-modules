@@ -11,7 +11,7 @@
  * layout shifts.
  */
 
-import { observable, runInAction, makeObservable } from 'mobx';
+import { observable, runInAction, action, makeObservable } from 'mobx';
 import type { FieldEditorElement } from './field-editor';
 
 export interface FieldRect {
@@ -28,11 +28,21 @@ export interface FieldLayoutEntry {
   viewportRect: DOMRect | null;
 }
 
+/** Position of a rail within the gutter. */
+export interface RailPosition {
+  railId: string;
+  /** X offset within the gutter element (px from left edge of gutter). */
+  x: number;
+}
+
 export class FieldLayoutManager {
   @observable.shallow entries = new Map<string, FieldLayoutEntry>();
 
   /** Monotonically increasing generation counter — bumped on every recalculate. */
   @observable generation = 0;
+
+  /** Allocated rail positions within the gutter, keyed by rail ID. */
+  @observable.shallow railPositions = new Map<string, RailPosition>();
 
   private pendingRecalc = false;
   private resizeObserver: ResizeObserver | null = null;
@@ -97,6 +107,30 @@ export class FieldLayoutManager {
   /** Get viewport-relative rect (uses cached value from last recalculate). */
   getViewportRect(key: string): DOMRect | null {
     return this.entries.get(key)?.viewportRect ?? null;
+  }
+
+  /**
+   * Update rail positions within the gutter.
+   * Rails are spaced evenly within the gutter, starting from the left.
+   * @param railIds Ordered list of rail IDs (column-scoped first, then sketch-scoped).
+   * @param gutterWidth Total gutter width in px.
+   * @param baseOffset Left padding before first rail (px).
+   */
+  @action
+  updateRailPositions(railIds: string[], gutterWidth: number, baseOffset = 8) {
+    this.railPositions.clear();
+    const slotWidth = 16; // px per rail
+    for (let i = 0; i < railIds.length; i++) {
+      this.railPositions.set(railIds[i], {
+        railId: railIds[i],
+        x: baseOffset + i * slotWidth + slotWidth / 2,
+      });
+    }
+  }
+
+  /** Get the X position for a rail within the gutter. */
+  getRailX(railId: string): number | null {
+    return this.railPositions.get(railId)?.x ?? null;
   }
 
   /** Attach a ResizeObserver to auto-recalculate on layout shifts. */

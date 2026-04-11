@@ -21,6 +21,12 @@ export class AppController {
   private engine: EngineProxy | null = null;
   private nextSketchId = 0;
 
+  /**
+   * Plain (non-observable) registry of all mounted selectables.
+   * Lives outside MobX so mutations during render don't trigger reactions.
+   */
+  private readonly selectableRegistry = new Map<string, Selectable>();
+
   constructor() {
     this.history = new HistoryManager(appState);
     // Wire the trace controller to push trace points through the engine
@@ -331,27 +337,21 @@ export class AppController {
    * Call this from component render/updated methods.
    */
   defineSelectable(selectable: Selectable) {
-    runInAction(() => {
-      appState.local.selectableRegistry.set(selectable.path, selectable);
+    // Plain Map — not observable, safe to mutate during render.
+    this.selectableRegistry.set(selectable.path, selectable);
 
-      // Promote queued selection
-      if (appState.local.queuedSelectionPath === selectable.path) {
+    // Promote queued selection (fires once, not every render).
+    if (appState.local.queuedSelectionPath === selectable.path) {
+      runInAction(() => {
         appState.local.selection = selectable;
         appState.local.queuedSelectionPath = null;
-      }
-
-      // Update in-place if already selected (component re-rendered)
-      if (appState.local.selection?.path === selectable.path) {
-        appState.local.selection = selectable;
-      }
-    });
+      });
+    }
   }
 
   /** Unregister a selectable (component disconnected). */
   undefineSelectable(path: string) {
-    runInAction(() => {
-      appState.local.selectableRegistry.delete(path);
-    });
+    this.selectableRegistry.delete(path);
   }
 
   /** Select a path. If the selectable is registered, activates immediately. Otherwise queues. */
@@ -362,16 +362,20 @@ export class AppController {
         appState.local.queuedSelectionPath = null;
         return;
       }
-      const selectable = appState.local.selectableRegistry.get(path);
+      const selectable = this.selectableRegistry.get(path);
       if (selectable) {
         appState.local.selection = selectable;
         appState.local.queuedSelectionPath = null;
       } else {
-        // Queue it — will activate when defineSelectable is called with this path
         appState.local.queuedSelectionPath = path;
         appState.local.selection = null;
       }
     });
+  }
+
+  /** Look up a selectable by path (for reading fresh renderInspectorContent). */
+  getSelectable(path: string): Selectable | undefined {
+    return this.selectableRegistry.get(path);
   }
 
   /** Check if a path is currently selected. */

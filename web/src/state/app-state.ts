@@ -41,7 +41,6 @@ export class AppState {
     selectedFieldPath: null,
     selection: null,
     queuedSelectionPath: null,
-    selectableRegistry: new Map(),
   };
 
   constructor() {

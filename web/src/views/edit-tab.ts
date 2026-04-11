@@ -334,14 +334,19 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
   private renderRightPanel(sketchId: string, sketch: Sketch) {
     const selection = appState.local.selection;
-    const inspectorContent = selection?.renderInspectorContent?.();
+    // Read renderInspectorContent from the registry (always fresh),
+    // not from the stored selection (which is only set once on select/queue-promote).
+    const registryEntry = selection
+      ? appController.getSelectable(selection.path)
+      : null;
+    const inspectorContent = registryEntry?.renderInspectorContent?.();
 
     return html`
       <div class="right-panel">
         <div class="right-content">
           ${inspectorContent
             ? html`
-              <div class="section-header">${selection!.label}</div>
+              <div class="section-header">${registryEntry!.label}</div>
               ${inspectorContent}
             `
             : this.renderDefaultInspector(sketchId, sketch)
