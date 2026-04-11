@@ -40,6 +40,23 @@ export interface AvailableEffect {
   keywords: string[];
 }
 
+// --- Selectable system ---
+
+import type { TemplateResult } from 'lit';
+
+/**
+ * Anything the user can click to inspect. Each selectable has a unique path
+ * and an optional function to render its inspector content.
+ */
+export interface Selectable {
+  /** Unique identifier, e.g. "effect/sketch_0/0/2" or "column/sketch_0/1". */
+  path: string;
+  /** Human-readable label shown in the inspector header. */
+  label: string;
+  /** Render the inspector panel content for this selection. */
+  renderInspectorContent?(): TemplateResult | undefined;
+}
+
 // --- Database state (persisted, undo/redo-able) ---
 
 export interface DatabaseState {
@@ -81,4 +98,15 @@ export interface LocalState {
   tappingMode: boolean;
   /** Currently selected field path for tap configuration, e.g. "sketch_0/0/2/brightness". */
   selectedFieldPath: string | null;
+
+  // --- Selection / Inspector ---
+  /** Currently selected item (drives the inspector panel). */
+  selection: Selectable | null;
+  /**
+   * Path queued for selection before the component has registered its Selectable.
+   * When a component calls defineSelectable() with this path, the selection activates.
+   */
+  queuedSelectionPath: string | null;
+  /** Registry of all currently-mounted selectables, keyed by path. */
+  selectableRegistry: Map<string, Selectable>;
 }

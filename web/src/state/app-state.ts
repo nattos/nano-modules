@@ -39,6 +39,9 @@ export class AppState {
     engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {} },
     tappingMode: false,
     selectedFieldPath: null,
+    selection: null,
+    queuedSelectionPath: null,
+    selectableRegistry: new Map(),
   };
 
   constructor() {

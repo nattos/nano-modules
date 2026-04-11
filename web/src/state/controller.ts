@@ -11,7 +11,7 @@ import { runInAction, toJS } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect } from './types';
+import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
@@ -321,6 +321,62 @@ export class AppController {
 
   selectField(path: string | null) {
     runInAction(() => { appState.local.selectedFieldPath = path; });
+  }
+
+  // --- Selection / Inspector ---
+
+  /**
+   * Register a selectable element. If this path was queued for selection
+   * (user clicked before the component rendered), the selection activates.
+   * Call this from component render/updated methods.
+   */
+  defineSelectable(selectable: Selectable) {
+    runInAction(() => {
+      appState.local.selectableRegistry.set(selectable.path, selectable);
+
+      // Promote queued selection
+      if (appState.local.queuedSelectionPath === selectable.path) {
+        appState.local.selection = selectable;
+        appState.local.queuedSelectionPath = null;
+      }
+
+      // Update in-place if already selected (component re-rendered)
+      if (appState.local.selection?.path === selectable.path) {
+        appState.local.selection = selectable;
+      }
+    });
+  }
+
+  /** Unregister a selectable (component disconnected). */
+  undefineSelectable(path: string) {
+    runInAction(() => {
+      appState.local.selectableRegistry.delete(path);
+    });
+  }
+
+  /** Select a path. If the selectable is registered, activates immediately. Otherwise queues. */
+  select(path: string | null) {
+    runInAction(() => {
+      if (path === null) {
+        appState.local.selection = null;
+        appState.local.queuedSelectionPath = null;
+        return;
+      }
+      const selectable = appState.local.selectableRegistry.get(path);
+      if (selectable) {
+        appState.local.selection = selectable;
+        appState.local.queuedSelectionPath = null;
+      } else {
+        // Queue it — will activate when defineSelectable is called with this path
+        appState.local.queuedSelectionPath = path;
+        appState.local.selection = null;
+      }
+    });
+  }
+
+  /** Check if a path is currently selected. */
+  isSelected(path: string): boolean {
+    return appState.local.selection?.path === path;
   }
 
   // --- Rail CRUD ---

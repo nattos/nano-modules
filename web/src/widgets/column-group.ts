@@ -31,8 +31,10 @@ import './field-trigger';
 import './texture-monitor';
 import './spark-chart';
 import './smart-input';
+import './scalar-slider';
 
 import type { LongEdit } from '../state/history';
+import type { Selectable } from '../state/types';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -146,6 +148,19 @@ export class ColumnGroup extends MobxLitElement {
       box-sizing: border-box;
     }
     .effect-card[dragging] { opacity: 0.4; }
+    .effect-card[selected] {
+      border-color: var(--app-hi-color2, #4169E1);
+      box-shadow: 0 0 0 1px var(--app-hi-color2, #4169E1);
+    }
+    .chain-marker[selected] {
+      border-color: var(--app-hi-color2, #4169E1);
+      box-shadow: 0 0 0 1px var(--app-hi-color2, #4169E1);
+    }
+    .trace-card-row[selected] {
+      outline: 1px solid var(--app-hi-color2, #4169E1);
+      outline-offset: 1px;
+      border-radius: 2px;
+    }
     .effect-card-header {
       display: flex;
       align-items: center;
@@ -316,6 +331,25 @@ export class ColumnGroup extends MobxLitElement {
     }
     .tap-indicator-line.write { background: var(--app-hi-color2, #4169E1); opacity: 0.5; }
     .tap-indicator-line.read { background: var(--app-hi-color1, #E16941); opacity: 0.5; }
+
+    /* --- Inspector content (rendered into the right panel via Selectable) --- */
+    .section-header {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--app-text-color2); margin-bottom: 8px;
+    }
+    .inspector-field {
+      display: flex; align-items: center; gap: 6px; padding: 4px 0;
+    }
+    .inspector-field-label {
+      min-width: 70px; color: var(--app-text-color2); font-size: 10px; flex-shrink: 0;
+    }
+    .inspector-field-value {
+      flex: 1; min-width: 0; color: var(--app-text-color1); font-size: 10px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .inspector-separator {
+      height: 1px; background: rgba(255,255,255,0.06); margin: 8px 0;
+    }
   `;
 
   updated() {
@@ -432,14 +466,21 @@ export class ColumnGroup extends MobxLitElement {
       const entry = column.chain[i];
 
       if (entry.type === 'texture_input') {
-        items.push(html`<div class="chain-marker">Input</div>`);
-        // Trace row for the texture input
+        const inputPath = `input/${this.sketchId}/${this.colIdx}/${i}`;
+        const inputSelected = appController.isSelected(inputPath);
+        items.push(html`<div class="chain-marker" ?selected=${inputSelected}
+          @click=${(e: Event) => { e.stopPropagation(); appController.select(inputPath); }}>Input</div>`);
+        this.registerChainMarkerSelectable(inputPath, 'Texture Input', i, entry);
         items.push(this.renderTraceCardRow(i, entry));
         items.push(html`<div class="chain-wire"></div>`);
         items.push(this.renderDropZone(i + 1));
         items.push(html`<div class="chain-wire"></div>`);
       } else if (entry.type === 'texture_output') {
-        items.push(html`<div class="chain-marker">Output</div>`);
+        const outputPath = `output/${this.sketchId}/${this.colIdx}/${i}`;
+        const outputSelected = appController.isSelected(outputPath);
+        items.push(html`<div class="chain-marker" ?selected=${outputSelected}
+          @click=${(e: Event) => { e.stopPropagation(); appController.select(outputPath); }}>Output</div>`);
+        this.registerChainMarkerSelectable(outputPath, 'Texture Output', i, entry);
       } else if (entry.type === 'module') {
         items.push(this.renderEffectCard(i, entry));
         // Trace row for this module's outputs
@@ -461,7 +502,8 @@ export class ColumnGroup extends MobxLitElement {
 
   private renderTraceCardRow(chainIdx: number, entry: ChainEntry) {
     if (entry.type === 'texture_input') {
-      // Show texture thumbnail for the chain input
+      const tracePath = `trace/${this.sketchId}/${this.colIdx}/${chainIdx}/input`;
+      const traceSelected = appController.isSelected(tracePath);
       const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/input`;
       const target: TracePoint['target'] = {
         type: 'chain_entry',
@@ -471,7 +513,8 @@ export class ColumnGroup extends MobxLitElement {
         side: 'input',
       };
       return html`
-        <div class="trace-card-row">
+        <div class="trace-card-row" ?selected=${traceSelected}
+          @click=${(e: Event) => { e.stopPropagation(); appController.select(tracePath); }}>
           <texture-monitor
             .traceId=${traceId}
             .traceTarget=${target}
@@ -483,6 +526,8 @@ export class ColumnGroup extends MobxLitElement {
     }
 
     if (entry.type === 'module') {
+      const tracePath2 = `trace/${this.sketchId}/${this.colIdx}/${chainIdx}/output`;
+      const traceSelected2 = appController.isSelected(tracePath2);
       const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/output`;
       const target: TracePoint['target'] = {
         type: 'chain_entry',
@@ -510,7 +555,8 @@ export class ColumnGroup extends MobxLitElement {
       };
 
       return html`
-        <div class="trace-card-row">
+        <div class="trace-card-row" ?selected=${traceSelected2}
+          @click=${(e: Event) => { e.stopPropagation(); appController.select(tracePath2); }}>
           <texture-monitor
             .traceId=${traceId}
             .traceTarget=${target}
@@ -539,9 +585,19 @@ export class ColumnGroup extends MobxLitElement {
   private renderEffectCard(chainIdx: number, entry: ModuleEntry) {
     const tappingMode = appState.local.tappingMode;
     const isEditingType = this.editingTypeChainIdx === chainIdx;
+    const effectPath = `effect/${this.sketchId}/${this.colIdx}/${chainIdx}`;
+    const isSelected = appController.isSelected(effectPath);
+
+    // Register as selectable with inspector content
+    this.registerEffectSelectable(effectPath, chainIdx, entry);
 
     return html`
-      <div class="effect-card">
+      <div class="effect-card" ?selected=${isSelected}
+        @click=${(e: Event) => {
+          // Don't select if clicking remove button or smart-input
+          if ((e.target as HTMLElement).closest('.remove-btn, smart-input')) return;
+          appController.select(effectPath);
+        }}>
         <div class="effect-card-header"
           @pointerdown=${(e: PointerEvent) => {
             if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
@@ -875,5 +931,129 @@ export class ColumnGroup extends MobxLitElement {
         this.scanFieldEditorsIn(child, cardKey, seenKeys);
       }
     }
+  }
+
+  // ========================================================================
+  // Selectable registration
+  // ========================================================================
+
+  /** Register an effect card as a selectable with full inspector content. */
+  private registerEffectSelectable(path: string, chainIdx: number, entry: ModuleEntry) {
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const availEffect = appState.local.availableEffects.find(e => e.id === entry.module_type);
+
+    appController.defineSelectable({
+      path,
+      label: availEffect?.name ?? shortName(entry.module_type),
+      renderInspectorContent: () => {
+        const binding: FieldBinding = {
+          instanceKey: entry.instance_key,
+          getValue: (fieldPath: string) => {
+            const ps = appState.local.engine.pluginStates[entry.instance_key];
+            if (ps && fieldPath in ps) return ps[fieldPath];
+            const sketch = appState.database.sketches[this.sketchId];
+            const instState = sketch?.instances?.[entry.instance_key]?.state;
+            return instState?.[fieldPath]
+              ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
+          },
+          setValue: (fieldPath: string, value: any) => {
+            appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+          },
+          beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
+            const edit = appController.beginSetEffectParam(
+              this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+            return {
+              update: (v: any) => appController.updateSetEffectParam(
+                edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
+              accept: () => edit.accept(),
+              cancel: () => edit.cancel(),
+            };
+          },
+        };
+
+        const outputFieldNames = this.getOutputFieldNames(entry);
+        const inputParams = (plugin?.params ?? []).filter(p => !outputFieldNames.has(p.name));
+        const outputParams = (plugin?.params ?? []).filter(p => outputFieldNames.has(p.name));
+
+        return html`
+          <div class="inspector-field">
+            <span class="inspector-field-label">Type</span>
+            <span class="inspector-field-value">${entry.module_type}</span>
+          </div>
+          <div class="inspector-field">
+            <span class="inspector-field-label">Instance</span>
+            <span class="inspector-field-value">${entry.instance_key}</span>
+          </div>
+          ${availEffect?.description ? html`
+            <div style="font-size:10px;color:var(--app-text-color2);padding:4px 0 8px">
+              ${availEffect.description}
+            </div>
+          ` : nothing}
+          <div class="inspector-separator"></div>
+          ${inputParams.length > 0 ? html`
+            <div class="section-header">Parameters</div>
+            ${inputParams.map(p => html`
+              <scalar-slider style="width:100%"
+                .fieldPath=${p.name}
+                .label=${p.name}
+                .min=${p.min} .max=${p.max}
+                .step=${p.type === 13 ? 1 : 0.01}
+                .defaultValue=${p.defaultValue}
+                .binding=${binding}
+              ></scalar-slider>
+            `)}
+          ` : nothing}
+          ${outputParams.length > 0 ? html`
+            <div class="section-header" style="margin-top:8px">Outputs</div>
+            ${outputParams.map(p => html`
+              <scalar-slider style="width:100%"
+                .fieldPath=${p.name}
+                .label=${p.name}
+                .min=${p.min} .max=${p.max}
+                .step=${p.type === 13 ? 1 : 0.01}
+                .defaultValue=${p.defaultValue}
+                .binding=${binding}
+              ></scalar-slider>
+            `)}
+          ` : nothing}
+        `;
+      },
+    });
+  }
+
+  /** Register a chain marker (texture input/output) as a selectable. */
+  private registerChainMarkerSelectable(path: string, label: string, chainIdx: number, entry: ChainEntry) {
+    const side = entry.type === 'texture_input' ? 'input' : 'output';
+    const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/${side}`;
+    const target: TracePoint['target'] = {
+      type: 'chain_entry',
+      sketchId: this.sketchId,
+      colIdx: this.colIdx,
+      chainIdx,
+      side: side as 'input' | 'output',
+    };
+
+    appController.defineSelectable({
+      path,
+      label,
+      renderInspectorContent: () => html`
+        <div class="inspector-field">
+          <span class="inspector-field-label">Type</span>
+          <span class="inspector-field-value">${entry.type}</span>
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Column</span>
+          <span class="inspector-field-value">${this.colIdx}</span>
+        </div>
+        <div class="inspector-separator"></div>
+        <div class="section-header">Preview</div>
+        <texture-monitor
+          .traceId=${traceId}
+          .traceTarget=${target}
+          .width=${280}
+          .height=${158}
+        ></texture-monitor>
+      `,
+    });
   }
 }

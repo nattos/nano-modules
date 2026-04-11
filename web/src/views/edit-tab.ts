@@ -105,7 +105,25 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       flex-direction: column;
       overflow: hidden;
     }
-    .right-content { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; }
+    .right-content { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; font-size: 11px; }
+    .inspector-field {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 0;
+    }
+    .inspector-field-label {
+      min-width: 70px; color: var(--app-text-color2);
+      font-size: 10px; flex-shrink: 0;
+    }
+    .inspector-field-value {
+      flex: 1; min-width: 0;
+      color: var(--app-text-color1);
+      font-size: 10px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .inspector-separator {
+      height: 1px; background: rgba(255,255,255,0.06);
+      margin: 8px 0;
+    }
     .preview-area {
       border-top: 1px solid rgba(255,255,255,0.08);
       padding: 8px;
@@ -193,8 +211,42 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     const sketch = appState.database.sketches[sketchId];
 
+    // Register preview monitor as selectable
+    const previewPath = `preview/${sketchId}`;
+    appController.defineSelectable({
+      path: previewPath,
+      label: 'Sketch Preview',
+      renderInspectorContent: () => html`
+        <div class="inspector-field">
+          <span class="inspector-field-label">Sketch</span>
+          <span class="inspector-field-value">${sketchId}</span>
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Columns</span>
+          <span class="inspector-field-value">${sketch.columns.length}</span>
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Anchor</span>
+          <span class="inspector-field-value">${sketch.anchor ?? 'none'}</span>
+        </div>
+        <div class="inspector-separator"></div>
+        <div class="section-header">Full Preview</div>
+        <texture-monitor
+          .traceId=${'edit_preview'}
+          .traceTarget=${{ type: 'sketch_output', sketchId } as any}
+          .width=${300}
+          .height=${169}
+        ></texture-monitor>
+      `,
+    });
+
     return html`
-      <columns-view .host=${this as ColumnHost}></columns-view>
+      <columns-view .host=${this as ColumnHost}
+        @click=${(e: Event) => {
+          // Deselect when clicking on empty space (not handled by a child)
+          if (e.target === e.currentTarget) appController.select(null);
+        }}
+      ></columns-view>
       ${this.renderRightPanel(sketchId, sketch)}
     `;
   }
@@ -281,31 +333,48 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   // ========================================================================
 
   private renderRightPanel(sketchId: string, sketch: Sketch) {
-    const tappingMode = appState.local.tappingMode;
-    const selectedPath = appState.local.selectedFieldPath;
+    const selection = appState.local.selection;
+    const inspectorContent = selection?.renderInspectorContent?.();
 
     return html`
       <div class="right-panel">
         <div class="right-content">
-          <div class="section-header">Tools</div>
-          <div class="btn-row">
-            <button class="btn" ?active=${tappingMode}
-              @click=${() => appController.setTappingMode(!tappingMode)}>Taps</button>
-            <button class="btn" ?disabled=${!appController.history.canUndo}
-              @click=${() => appController.undo()}>Undo</button>
-            <button class="btn" ?disabled=${!appController.history.canRedo}
-              @click=${() => appController.redo()}>Redo</button>
-          </div>
-          ${tappingMode && selectedPath
-            ? this.renderTapConfig(sketchId, sketch, selectedPath)
-            : tappingMode
-              ? html`<div class="empty-state" style="padding:16px 0">Click a field to configure taps</div>`
-              : nothing}
+          ${inspectorContent
+            ? html`
+              <div class="section-header">${selection!.label}</div>
+              ${inspectorContent}
+            `
+            : this.renderDefaultInspector(sketchId, sketch)
+          }
         </div>
-        <div class="preview-area">
+        <div class="preview-area"
+          @click=${() => appController.select(`preview/${sketchId}`)}>
           <canvas id="preview-canvas" width="320" height="180"></canvas>
         </div>
       </div>
+    `;
+  }
+
+  /** Default inspector content when nothing specific is selected. */
+  private renderDefaultInspector(sketchId: string, sketch: Sketch) {
+    const tappingMode = appState.local.tappingMode;
+    const selectedPath = appState.local.selectedFieldPath;
+
+    return html`
+      <div class="section-header">Tools</div>
+      <div class="btn-row">
+        <button class="btn" ?active=${tappingMode}
+          @click=${() => appController.setTappingMode(!tappingMode)}>Taps</button>
+        <button class="btn" ?disabled=${!appController.history.canUndo}
+          @click=${() => appController.undo()}>Undo</button>
+        <button class="btn" ?disabled=${!appController.history.canRedo}
+          @click=${() => appController.redo()}>Redo</button>
+      </div>
+      ${tappingMode && selectedPath
+        ? this.renderTapConfig(sketchId, sketch, selectedPath)
+        : tappingMode
+          ? html`<div class="empty-state" style="padding:16px 0">Click a field to configure taps</div>`
+          : nothing}
     `;
   }
 
