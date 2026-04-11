@@ -41,9 +41,9 @@ async function main() {
   // When effects are discovered, store them and instantiate defaults
   engine.onEffectsDiscovered = (effects) => {
     appController.setAvailableEffects(effects);
-    appController.instantiateEffect('com.nattos.spinningtris');
-    appController.instantiateEffect('com.nattos.solid_color');
-    appController.instantiateEffect('com.nattos.gpu_test');
+    appController.instantiateEffect('generator.spinningtris');
+    appController.instantiateEffect('generator.solid_color');
+    appController.instantiateEffect('debug.gpu_test');
   };
 
   // Load the combined module (discovers all available effects)

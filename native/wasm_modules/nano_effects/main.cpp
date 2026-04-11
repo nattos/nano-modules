@@ -74,10 +74,10 @@ __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     nano::registerEffect({
         1, // struct_version
-        "com.nattos.brightness_contrast",
+        "video.brightness_contrast",
         "Brightness/Contrast",
         "Adjusts brightness and contrast of a texture input",
-        "Video",
+        "video",
         "color,adjust,filter",
         brightness_contrast::init,
         brightness_contrast::tick,
@@ -88,11 +88,11 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.solid_color",
+        "generator.solid_color",
         "Solid Color",
         "Fills the render target with a uniform RGB color",
-        "Source",
-        "color,generate,fill",
+        "generator",
+        "color,fill",
         solid_color::init,
         solid_color::tick,
         solid_color::render,
@@ -102,11 +102,11 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.env_lfo",
+        "data.lfo",
         "LFO",
         "Low frequency oscillator outputting a sine wave",
-        "Data",
-        "oscillator,modulation,automation,lfo",
+        "data",
+        "oscillator,modulation,automation",
         env_lfo::init,
         env_lfo::tick,
         env_lfo::render,
@@ -116,10 +116,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.video_blend",
+        "video.blend",
         "Video Blend",
         "Blends two texture inputs with opacity control",
-        "Video",
+        "video",
         "blend,mix,composite,opacity",
         video_blend::init,
         video_blend::tick,
@@ -130,10 +130,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.gpu_test",
+        "debug.gpu_test",
         "GPU Test",
         "GPU pipeline test rendering a solid color",
-        "Debug",
+        "debug",
         "test,gpu,pipeline",
         gpu_test::init,
         gpu_test::tick,
@@ -144,10 +144,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.spinningtris",
+        "generator.spinningtris",
         "Spinning Triangles",
         "Animated spinning triangles GPU demo",
-        "Source",
+        "generator",
         "demo,triangles,animation,generative",
         spinningtris::init,
         spinningtris::tick,
@@ -158,10 +158,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.paramlinker",
+        "utility.paramlinker",
         "Param Linker",
         "Links two Resolume parameters together via learn mechanism",
-        "Utility",
+        "utility",
         "resolume,parameter,link,automation",
         paramlinker::init,
         paramlinker::tick,
@@ -172,11 +172,11 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "com.nattos.nanolooper",
+        "sequencer.nanolooper",
         "Nano Looper",
         "4-channel 16-step looper sequencer with visual overlay",
-        "Sequencer",
-        "loop,trigger,beat,sequencer,midi",
+        "sequencer",
+        "loop,trigger,beat,midi",
         nanolooper::init,
         nanolooper::tick,
         nanolooper::render,

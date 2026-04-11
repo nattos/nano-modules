@@ -45,7 +45,7 @@ export class BrightnessContrastInspector extends MobxLitElement {
 }
 
 // Register the inspector
-editorRegistry.register('com.nattos.brightness_contrast', {
+editorRegistry.register('video.brightness_contrast', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('bc-inspector') as BrightnessContrastInspector;

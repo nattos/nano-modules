@@ -32,7 +32,7 @@ void init() {
   s_contrast = 0.5f;
   s_initialized = false;
 
-  state::init("com.nattos.brightness_contrast", {1, 0, 0},
+  state::init("video.brightness_contrast", {1, 0, 0},
     state::Schema()
       .floatField("brightness", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("contrast", 0.5f, 0.f, 1.f, state::PrimaryInput)

@@ -33,7 +33,7 @@ export interface IOInfo {
 // --- Available effects (from module registration) ---
 
 export interface AvailableEffect {
-  id: string;           // "com.nattos.brightness_contrast"
+  id: string;           // "video.brightness_contrast" (module-relative semantic ID)
   name: string;         // "Brightness/Contrast"
   description: string;
   category: string;

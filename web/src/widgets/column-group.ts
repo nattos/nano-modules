@@ -813,7 +813,7 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Insert a placeholder effect and immediately open smart-input to choose the type. */
   private addEffectAndBeginEdit(insertIdx: number) {
-    appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'com.nattos.brightness_contrast');
+    appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'video.brightness_contrast');
     // The new entry is at insertIdx in the chain. Open the type editor for it.
     // Use requestUpdate + microtask to ensure the DOM has rendered the new card.
     this.requestUpdate();

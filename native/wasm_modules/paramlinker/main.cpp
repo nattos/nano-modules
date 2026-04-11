@@ -158,7 +158,7 @@ void init(void) {
   active = 1;
   elapsed = 0;
 
-  static const char id[] = "com.nattos.paramlinker";
+  static const char id[] = "utility.paramlinker";
   static const char schema[] =
     "{\"fields\":{"
     "\"learn\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":0},"

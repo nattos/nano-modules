@@ -33,7 +33,7 @@ void init() {
   s_opacity = 0.5f;
   s_initialized = false;
 
-  state::init("com.nattos.video_blend", {1, 0, 0},
+  state::init("video.blend", {1, 0, 0},
     state::Schema()
       .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .textureField("tex_a", state::PrimaryInput)

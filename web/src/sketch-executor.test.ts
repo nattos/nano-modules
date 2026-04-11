@@ -9,7 +9,7 @@ const NANO_EFFECTS_WASM_PATH = resolve(__dirname, '../public/wasm/nano_effects.w
 const BC_WASM_PATH = resolve(__dirname, '../public/wasm/brightness_contrast.wasm');
 
 // Helper: load a WASM module from bytes, discover effects, and activate one
-async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'com.nattos.brightness_contrast') {
+async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'video.brightness_contrast') {
   // Patch fetch to return our bytes
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => ({
@@ -41,7 +41,7 @@ describe('Brightness/Contrast module', () => {
     const module = await loadModuleFromBytes(host, bytes);
 
     expect(host.metadata).not.toBeNull();
-    expect(host.metadata!.id).toBe('com.nattos.brightness_contrast');
+    expect(host.metadata!.id).toBe('video.brightness_contrast');
     expect(host.params.length).toBe(2);
     expect(host.params[0].name).toBe('brightness');
     expect(host.params[0].defaultValue).toBeCloseTo(0.5);
@@ -97,14 +97,14 @@ describe('Brightness/Contrast module', () => {
 describe('Sketch data model', () => {
   it('creates a valid sketch structure', () => {
     const sketch: Sketch = {
-      anchor: 'com.nattos.spinningtris@0',
+      anchor: 'generator.spinningtris@0',
       columns: [{
         name: 'main',
         chain: [
           { type: 'texture_input', id: 'primary_in' },
           {
             type: 'module',
-            module_type: 'com.nattos.brightness_contrast',
+            module_type: 'video.brightness_contrast',
             instance_key: 'virtual_bc@0',
             params: { '0': 0.5, '1': 0.25 },
           },
@@ -113,14 +113,14 @@ describe('Sketch data model', () => {
       }],
     };
 
-    expect(sketch.anchor).toBe('com.nattos.spinningtris@0');
+    expect(sketch.anchor).toBe('generator.spinningtris@0');
     expect(sketch.columns).toHaveLength(1);
     expect(sketch.columns[0].chain).toHaveLength(3);
 
     const moduleEntry = sketch.columns[0].chain[1];
     expect(moduleEntry.type).toBe('module');
     if (moduleEntry.type === 'module') {
-      expect(moduleEntry.module_type).toBe('com.nattos.brightness_contrast');
+      expect(moduleEntry.module_type).toBe('video.brightness_contrast');
       expect(moduleEntry.params?.['1']).toBe(0.25);
     }
   });

@@ -7,7 +7,7 @@ import type { Sketch } from './sketch-types';
 // --- Effect info (from module registration) ---
 
 export interface EffectInfo {
-  id: string;           // "com.nattos.spinningtris"
+  id: string;           // "generator.spinningtris" (module-relative semantic ID)
   name: string;         // "Spinning Triangles"
   description: string;
   category: string;

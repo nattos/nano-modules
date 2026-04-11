@@ -208,7 +208,7 @@ void init(void) {
   record_held = 0;
 
   /* Register plugin with schema */
-  static const char id[] = "com.nattos.nanolooper";
+  static const char id[] = "sequencer.nanolooper";
   static const char schema[] =
     "{\"fields\":{"
     "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"

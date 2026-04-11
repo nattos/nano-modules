@@ -143,6 +143,10 @@ export class SmartInput extends LitElement {
       text-decoration: none !important;
       color: var(--app-hi-color2, #4169E1) !important;
     }
+    /* Namespace entries get a subtle folder-like appearance */
+    .cm-tooltip-autocomplete > ul > li .cm-completionLabel {
+      font-weight: 400;
+    }
   `;
 
   protected firstUpdated() {
@@ -232,6 +236,7 @@ export class SmartInput extends LitElement {
         override: [this.completionSource.bind(this)],
         icons: false,
         defaultKeymap: false,
+        optionClass: (opt) => opt.type === 'namespace' ? 'namespace-option' : '',
       }),
     ];
 
@@ -275,29 +280,92 @@ export class SmartInput extends LitElement {
   }
 
   private completionSource(context: CompletionContext): CompletionResult | null {
-    const query = context.state.doc.toString();
-    const results = searchEffects(this.effects, query);
+    const query = context.state.doc.toString().trim();
 
-    if (results.length === 0) {
+    // Collect unique namespace prefixes from effect IDs
+    const allNamespaces = new Set<string>();
+    for (const e of this.effects) {
+      const dotIdx = e.id.indexOf('.');
+      if (dotIdx > 0) allNamespaces.add(e.id.slice(0, dotIdx));
+    }
+
+    // Check if the query is a namespace prefix (e.g., "video." or "video")
+    const dotIdx = query.indexOf('.');
+    const queryNamespace = dotIdx > 0 ? query.slice(0, dotIdx) : null;
+    const queryAfterDot = dotIdx > 0 ? query.slice(dotIdx + 1) : null;
+
+    // If query matches a namespace prefix exactly (e.g., "video." or "video.b"),
+    // show only effects within that namespace
+    if (queryNamespace && allNamespaces.has(queryNamespace)) {
+      const nsEffects = this.effects.filter(e => e.id.startsWith(queryNamespace + '.'));
+      const subQuery = queryAfterDot ?? '';
+      const filtered = subQuery.length > 0
+        ? nsEffects.filter(e => {
+            const local = e.id.slice(queryNamespace.length + 1);
+            return fuzzyMatch(subQuery.toLowerCase(), local.toLowerCase())
+              || fuzzyMatch(subQuery.toLowerCase(), e.name.toLowerCase());
+          })
+        : nsEffects;
+
+      if (filtered.length === 0) {
+        return { from: 0, options: [{ label: 'No matching effects', type: 'text', apply: '' }], filter: false };
+      }
+
       return {
         from: 0,
-        options: [{ label: 'No matching effects', type: 'text', apply: '' }],
+        options: filtered.map((effect, i) => ({
+          label: effect.name,
+          detail: effect.id,
+          apply: () => { this.dispatchCommit(effect.id, true); },
+          boost: filtered.length - i,
+        })),
         filter: false,
       };
     }
 
-    return {
-      from: 0,
-      options: results.map((effect, i) => ({
-        label: effect.name,
-        detail: effect.category,
-        apply: (_view: EditorView, _completion: any, from: number, to: number) => {
-          this.dispatchCommit(effect.id, true);
+    // Root level: show namespace categories first, then all matching effects
+    const options: any[] = [];
+
+    // Add namespace drill-down options
+    const matchingNamespaces = query.length > 0
+      ? [...allNamespaces].filter(ns => ns.startsWith(query.toLowerCase()) || fuzzyMatch(query.toLowerCase(), ns))
+      : [...allNamespaces];
+
+    for (const ns of matchingNamespaces.sort()) {
+      const count = this.effects.filter(e => e.id.startsWith(ns + '.')).length;
+      options.push({
+        label: `${ns}/`,
+        detail: `${count} effect${count !== 1 ? 's' : ''}`,
+        type: 'namespace',
+        apply: (view: EditorView, _completion: any, from: number, to: number) => {
+          // Drill down: replace text with "namespace." and re-trigger completion
+          view.dispatch({
+            changes: { from, to, insert: ns + '.' },
+            selection: { anchor: ns.length + 1 },
+          });
+          setTimeout(() => startCompletion(view), 0);
         },
+        boost: 1000 + (ns.startsWith(query.toLowerCase()) ? 100 : 0),
+      });
+    }
+
+    // Add matching effects
+    const results = searchEffects(this.effects, query);
+    for (let i = 0; i < results.length; i++) {
+      const effect = results[i];
+      options.push({
+        label: effect.name,
+        detail: effect.id,
+        apply: () => { this.dispatchCommit(effect.id, true); },
         boost: results.length - i,
-      })),
-      filter: false,
-    };
+      });
+    }
+
+    if (options.length === 0) {
+      return { from: 0, options: [{ label: 'No matching effects', type: 'text', apply: '' }], filter: false };
+    }
+
+    return { from: 0, options, filter: false };
   }
 
   private dispatchCommit(value: string, explicit = false) {

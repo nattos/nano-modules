@@ -32,10 +32,30 @@ const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
 
 // Registry of compiled WASM modules and their available effects
 interface LoadedWasmModule {
+  moduleId: string;    // e.g. "com.nattos.nano_effects"
   compiled: WebAssembly.Module;
   effects: EffectInfo[];
 }
 const moduleRegistry = new Map<string, LoadedWasmModule>();
+
+// Flattened effect registry: module-relative ID → { compiled, effect }
+// "Last wins" — later registrations override earlier ones.
+const effectRegistry = new Map<string, { compiled: WebAssembly.Module; effect: EffectInfo }>();
+
+/** Resolve an effect ID that may be module-qualified or module-relative. */
+function resolveEffectId(id: string): string {
+  // If it's already in the registry as-is, it's module-relative
+  if (effectRegistry.has(id)) return id;
+  // Try stripping known module prefixes (e.g. "com.nattos.nano_effects.video.blend" → "video.blend")
+  for (const entry of moduleRegistry.values()) {
+    const prefix = entry.moduleId + '.';
+    if (id.startsWith(prefix)) {
+      const relative = id.slice(prefix.length);
+      if (effectRegistry.has(relative)) return relative;
+    }
+  }
+  return id; // return as-is, caller handles "not found"
+}
 
 // Sketches
 const sketches = new Map<string, Sketch>();
@@ -428,12 +448,11 @@ function captureAndSendFrame() {
 // Module loading
 // ========================================================================
 
-/** Find the compiled WebAssembly.Module that contains a given effect ID. */
+/** Find the compiled WebAssembly.Module that contains a given effect ID (module-relative or qualified). */
 function findCompiledModule(effectId: string): WebAssembly.Module | null {
-  for (const entry of moduleRegistry.values()) {
-    if (entry.effects.some(e => e.id === effectId)) return entry.compiled;
-  }
-  return null;
+  const resolved = resolveEffectId(effectId);
+  const entry = effectRegistry.get(resolved);
+  return entry?.compiled ?? null;
 }
 
 /**
@@ -464,13 +483,18 @@ async function loadModule(moduleType: string) {
   try {
     await host.load(wasmUrl);
 
-    moduleRegistry.set(wasmUrl, {
-      compiled: host.compiledModule!,
-      effects: host.registeredEffects.map(e => ({ ...e })),
-    });
+    const compiled = host.compiledModule!;
+    const effects = host.registeredEffects.map(e => ({ ...e }));
+
+    moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
+
+    // Populate the flat effect registry (last wins for override support)
+    for (const effect of effects) {
+      effectRegistry.set(effect.id, { compiled, effect });
+    }
 
     // Broadcast discovered effects to the main thread
-    post({ type: 'effectsDiscovered', effects: host.registeredEffects.map(e => ({
+    post({ type: 'effectsDiscovered', effects: effects.map(e => ({
       id: e.id, name: e.name, description: e.description,
       category: e.category, keywords: e.keywords,
     })) });
@@ -488,7 +512,9 @@ async function loadModule(moduleType: string) {
 async function instantiateEffect(effectId: string) {
   if (!bridgeCore || !gpuHost) return;
 
-  const compiled = findCompiledModule(effectId);
+  // Resolve module-qualified or module-relative ID
+  const resolvedId = resolveEffectId(effectId);
+  const compiled = findCompiledModule(resolvedId);
   if (!compiled) {
     post({ type: 'error', message: `Effect "${effectId}" not found in any loaded module` });
     return;
@@ -500,9 +526,9 @@ async function instantiateEffect(effectId: string) {
 
   try {
     await host.load(compiled);
-    const mod = host.activateEffect(effectId);
+    const mod = host.activateEffect(resolvedId);
 
-    const key = host.pluginKey || `${effectId}@0`;
+    const key = host.pluginKey || `${resolvedId}@0`;
     realModules.set(key, { host, module: mod });
 
     // Ensure the unassigned bucket sketch exists
@@ -515,11 +541,12 @@ async function instantiateEffect(effectId: string) {
     }
 
     // Add instance to the bucket sketch (if not already in a real sketch)
+    // Always store the module-relative ID in the data
     const bucket = sketches.get(BUCKET_SKETCH_ID)!;
     if (!isInstanceInAnySketch(key)) {
       bucket.instances = bucket.instances ?? {};
       bucket.instances[key] = {
-        module_type: effectId,
+        module_type: resolvedId,
         state: { ...host.pluginState },
       };
     }

@@ -29,7 +29,7 @@ void init() {
   s_rate = 0.5f;
   s_amplitude = 1.0f;
 
-  state::init("com.nattos.env_lfo", {1, 0, 0},
+  state::init("data.lfo", {1, 0, 0},
     state::Schema()
       .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)

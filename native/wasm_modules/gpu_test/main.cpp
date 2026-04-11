@@ -23,7 +23,7 @@ static bool s_initialized = false;
 void init() {
   s_initialized = false;
 
-  state::init("com.nattos.gpu_test", {1, 0, 0},
+  state::init("debug.gpu_test", {1, 0, 0},
     state::Schema()
       .textureField("tex_out", state::PrimaryOutput)
   );

@@ -29,7 +29,7 @@ void init() {
   s_r = 0.5f; s_g = 0.5f; s_b = 0.5f;
   s_initialized = false;
 
-  state::init("com.nattos.solid_color", {1, 0, 0},
+  state::init("generator.solid_color", {1, 0, 0},
     state::Schema()
       .floatField("red", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("green", 0.5f, 0.f, 1.f, state::PrimaryInput)

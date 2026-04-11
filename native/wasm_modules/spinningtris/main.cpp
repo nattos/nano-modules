@@ -58,7 +58,7 @@ void init() {
   speed = 1.0f;
   initialized = false;
 
-  state::init("com.nattos.spinningtris", {1, 0, 0},
+  state::init("generator.spinningtris", {1, 0, 0},
     state::Schema()
       .floatField("triangles", 0.1f, 0.f, 1.f, state::PrimaryInput)
       .floatField("speed", 0.5f, 0.f, 1.f, state::PrimaryInput)
