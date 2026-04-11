@@ -60,7 +60,15 @@ export class SketchExecutor {
 
   async ensureInstance(entry: ModuleEntry): Promise<LoadedModule> {
     let loaded = this.instances.get(entry.instance_key);
-    if (loaded) return loaded;
+    if (loaded) {
+      // If the module type changed (e.g., via smart-input), discard and reload
+      if (loaded.host.metadata?.id !== entry.module_type) {
+        this.instances.delete(entry.instance_key);
+        loaded = undefined;
+      } else {
+        return loaded;
+      }
+    }
 
     const host = new WasmHost();
     host.bridgeCore = this.bridgeCore;
@@ -86,6 +94,11 @@ export class SketchExecutor {
 
   getInstance(instanceKey: string): LoadedModule | undefined {
     return this.instances.get(instanceKey);
+  }
+
+  /** Drop a cached instance so it will be recreated with the current module_type on next frame. */
+  invalidateInstance(instanceKey: string) {
+    this.instances.delete(instanceKey);
   }
 
   /** Register an externally-loaded module so the executor reuses it instead of loading a duplicate. */

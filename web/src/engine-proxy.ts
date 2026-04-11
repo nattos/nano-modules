@@ -76,6 +76,10 @@ export class EngineProxy {
     this.send({ type: 'instantiateEffect', effectId });
   }
 
+  changeInstanceType(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {
+    this.send({ type: 'changeInstanceType', sketchId, colIdx, chainIdx, newModuleType });
+  }
+
   createSketch(sketchId: string, sketch: Sketch) {
     this.send({ type: 'createSketch', sketchId, sketch });
   }

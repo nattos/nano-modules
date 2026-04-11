@@ -125,59 +125,46 @@ export class AppController {
       if (!sk) return;
       const entry = sk.columns[colIdx]?.chain[chainIdx];
       if (!entry || entry.type !== 'module') return;
-
-      const oldKey = entry.instance_key;
       entry.module_type = newModuleType;
-
-      // Update instance state
       sk.instances = sk.instances ?? {};
-      if (sk.instances[oldKey]) {
-        sk.instances[oldKey].module_type = newModuleType;
-        sk.instances[oldKey].state = {};
-      }
+      const inst = sk.instances[entry.instance_key];
+      if (inst) { inst.module_type = newModuleType; inst.state = {}; }
     });
+    // Tell the engine worker to swap the instance directly
+    this.engine?.changeInstanceType(sketchId, colIdx, chainIdx, newModuleType);
+  }
+
+  /** Recipe for changing an effect type (shared by long edit methods). */
+  private changeTypeRecipe(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {
+    return (draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const entry = sk.columns[colIdx]?.chain[chainIdx];
+      if (!entry || entry.type !== 'module') return;
+      entry.module_type = newModuleType;
+      sk.instances = sk.instances ?? {};
+      const inst = sk.instances[entry.instance_key];
+      if (inst) { inst.module_type = newModuleType; inst.state = {}; }
+    };
   }
 
   /**
    * Begin a continuous (long) edit for changing effect type.
    * Updates are previewed live without creating undo points.
-   * Call longEdit.accept() to commit, longEdit.cancel() to revert.
    */
   beginChangeEffectType(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string): LongEdit {
-    const recipe = (draft: DatabaseState) => {
-      const sk = draft.sketches[sketchId];
-      if (!sk) return;
-      const entry = sk.columns[colIdx]?.chain[chainIdx];
-      if (!entry || entry.type !== 'module') return;
-      const oldKey = entry.instance_key;
-      entry.module_type = newModuleType;
-      sk.instances = sk.instances ?? {};
-      if (sk.instances[oldKey]) {
-        sk.instances[oldKey].module_type = newModuleType;
-        sk.instances[oldKey].state = {};
-      }
-    };
-    const edit = this.history.beginLongEdit(`Change to ${shortName(newModuleType)}`, recipe);
-    this.syncSketchesToEngine();
+    const edit = this.history.beginLongEdit(
+      `Change to ${shortName(newModuleType)}`,
+      this.changeTypeRecipe(sketchId, colIdx, chainIdx, newModuleType),
+    );
+    this.engine?.changeInstanceType(sketchId, colIdx, chainIdx, newModuleType);
     return edit;
   }
 
   /** Update a continuous effect type change (preview only, no undo point). */
   updateChangeEffectType(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {
-    edit.update((draft: DatabaseState) => {
-      const sk = draft.sketches[sketchId];
-      if (!sk) return;
-      const entry = sk.columns[colIdx]?.chain[chainIdx];
-      if (!entry || entry.type !== 'module') return;
-      const oldKey = entry.instance_key;
-      entry.module_type = newModuleType;
-      sk.instances = sk.instances ?? {};
-      if (sk.instances[oldKey]) {
-        sk.instances[oldKey].module_type = newModuleType;
-        sk.instances[oldKey].state = {};
-      }
-    });
-    this.syncSketchesToEngine();
+    edit.update(this.changeTypeRecipe(sketchId, colIdx, chainIdx, newModuleType));
+    this.engine?.changeInstanceType(sketchId, colIdx, chainIdx, newModuleType);
   }
 
   removeEffectFromChain(sketchId: string, colIdx: number, chainIdx: number) {

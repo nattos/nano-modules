@@ -116,6 +116,24 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'instantiateEffect':
       await instantiateEffect(cmd.effectId);
       break;
+    case 'changeInstanceType': {
+      const sketch = sketches.get(cmd.sketchId);
+      if (sketch && sketchExecutor) {
+        const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
+        if (entry?.type === 'module') {
+          // Update sketch data
+          entry.module_type = cmd.newModuleType;
+          if (sketch.instances?.[entry.instance_key]) {
+            sketch.instances[entry.instance_key].module_type = cmd.newModuleType;
+            sketch.instances[entry.instance_key].state = {};
+          }
+          // Invalidate the executor's cached instance so it reloads with the new type
+          sketchExecutor.invalidateInstance(entry.instance_key);
+          markDirty();
+        }
+      }
+      break;
+    }
     case 'createSketch':
       sketches.set(cmd.sketchId, cmd.sketch);
       removeInstancesFromBucket(cmd.sketch);
