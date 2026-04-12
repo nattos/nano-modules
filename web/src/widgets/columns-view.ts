@@ -24,6 +24,11 @@ export interface ColumnHost {
   columnDetached?(index: number, element: HTMLElement): void;
 }
 
+/** Interface for column elements that provide dynamic gutter width. */
+export interface DynamicGutterColumn {
+  getGutterWidth(): number;
+}
+
 @customElement('columns-view')
 export class ColumnsView extends LitElement {
   @property({ attribute: false }) host: ColumnHost | null = null;
@@ -126,6 +131,12 @@ export class ColumnsView extends LitElement {
       this.recalcLayout();
       this.updateVisibleRange();
     }
+  }
+
+  /** Notify that a column's gutter width changed. Recalculates layout without detaching. */
+  notifyGutterWidthChanged() {
+    this.recalcLayout();
+    this.updateVisibleRange();
   }
 
   /** Notify that the column count or data has changed. Detaches all, re-attaches visible. */
@@ -264,16 +275,17 @@ export class ColumnsView extends LitElement {
         el.style.position = 'absolute';
         el.style.left = `${this.columnLeftEdges[i]}px`;
         el.style.top = '0';
-        el.style.width = `${this.getColumnTotalWidth(i)}px`;
+        // Set column content width as a property — the element sizes itself via CSS.
+        (el as any).columnWidth = this.columnWidths[i] ?? this.getDefaultWidth();
         this.contentEl.appendChild(el);
         this.attachedColumns.set(i, el);
         this.columnResizeObs?.observe(el);
         this.host.columnAttached?.(i, el);
       } else {
-        // Update position in case widths changed
+        // Update position and width property in case they changed
         const el = this.attachedColumns.get(i)!;
         el.style.left = `${this.columnLeftEdges[i]}px`;
-        el.style.width = `${this.getColumnTotalWidth(i)}px`;
+        (el as any).columnWidth = this.columnWidths[i] ?? this.getDefaultWidth();
       }
     }
 

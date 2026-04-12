@@ -314,6 +314,11 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     });
   }
 
+  onGutterWidthChanged(): void {
+    const columnsView = this.renderRoot.querySelector('columns-view') as any;
+    columnsView?.notifyGutterWidthChanged?.();
+  }
+
   getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null {
     const inspectorFactory = editorRegistry.getInspectorFactory(moduleType);
     if (!inspectorFactory) return null;

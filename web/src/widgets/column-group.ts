@@ -65,6 +65,7 @@ function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
 export interface ColumnGroupCallbacks {
   onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number): void;
   getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null;
+  onGutterWidthChanged?(): void;
 }
 
 @customElement('column-group')
@@ -72,6 +73,7 @@ export class ColumnGroup extends MobxLitElement {
   @property({ type: Number }) colIdx = -1;
   @property() sketchId = '';
   @property({ type: Boolean }) isPlaceholder = false;
+  @property({ type: Number }) columnWidth = 300;
   @property({ attribute: false }) callbacks: ColumnGroupCallbacks | null = null;
 
   /** Each column-group owns its own layout manager for field position tracking. */
@@ -121,11 +123,11 @@ export class ColumnGroup extends MobxLitElement {
       flex-direction: column;
       align-items: center;
       gap: 0;
-      flex: 1;
-      min-width: 0;
+      width: var(--column-width);
+      flex-shrink: 0;
     }
     .column-gutter {
-      width: var(--gutter-width, 8px);
+      width: var(--gutter-width);
       flex-shrink: 0;
       position: relative;
       border-left: 1px solid rgba(255,255,255,0.04);
@@ -406,6 +408,8 @@ export class ColumnGroup extends MobxLitElement {
       (railIds) => {
         if (railIds) {
           this.layoutManager.updateRailPositions(railIds, this.getGutterWidth());
+          // Notify parent to recalculate layout (gutter width changed)
+          this.callbacks?.onGutterWidthChanged?.();
         }
       },
       { fireImmediately: true, equals: (a, b) => {
@@ -417,6 +421,10 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   updated() {
+    // Set explicit widths via CSS custom properties on the host element.
+    this.style.setProperty('--column-width', `${this.columnWidth}px`);
+    this.style.setProperty('--gutter-width', `${this.getGutterWidth()}px`);
+
     const column = this.renderRoot.querySelector('.column') as HTMLElement | null;
     if (column) this.layoutManager.observeContainer(column);
     this.scanAndRegisterFields();
@@ -515,8 +523,7 @@ export class ColumnGroup extends MobxLitElement {
         ${this.renderChain(sketch, column)}
         <div class="drag-insert-marker"></div>
       </div>
-      <div class="column-gutter" data-col=${this.colIdx}
-        style="--gutter-width:${this.getGutterWidth()}px">
+      <div class="column-gutter" data-col=${this.colIdx}>
         ${this.renderRailLines(sketch, column)}
         ${this.renderGutterTaps(sketch, column)}
       </div>
