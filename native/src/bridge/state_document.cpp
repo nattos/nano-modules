@@ -65,6 +65,17 @@ json StateDocument::build_initial_state(const json& fields) {
     else if (type == "string")  out[name] = def.value("default", "");
     else if (type == "texture") out[name] = 0;
     else if (type == "event")   out[name] = 0.0;
+    else if (type == "float2" || type == "float3" || type == "float4") {
+      // Vector primitives are stored as flat JSON arrays of N floats.
+      int n = (type == "float2") ? 2 : (type == "float3") ? 3 : 4;
+      if (def.contains("default") && def["default"].is_array()) {
+        out[name] = def["default"];
+      } else {
+        json arr = json::array();
+        for (int i = 0; i < n; i++) arr.push_back(0.0);
+        out[name] = arr;
+      }
+    }
     else if (type == "object") {
       out[name] = build_initial_state(def.value("fields", json::object()));
     } else if (type == "array") {
@@ -99,8 +110,10 @@ void StateDocument::collect_legacy_params(const json& fields, json& params_out) 
   for (auto& f : sorted_fields) {
     std::string type = f.def.value("type", "");
     int io_flags = f.def.value("io", 0);
-    // Skip non-scalar types (textures, objects, arrays — including GPU arrays).
-    if (type == "texture" || type == "object" || type == "array") continue;
+    // Skip non-scalar types (textures, objects, arrays — including GPU arrays,
+    // and vector primitives which don't fit the FFGL-style legacy param model).
+    if (type == "texture" || type == "object" || type == "array"
+        || type == "float2" || type == "float3" || type == "float4") continue;
 
     int param_type = 10;
     if (type == "bool") param_type = 0;

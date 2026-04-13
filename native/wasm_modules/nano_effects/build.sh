@@ -140,6 +140,8 @@ wasm_build \
   ../spinningtris/main.cpp \
   ../paramlinker/main.cpp \
   ../nanolooper/main.cpp \
-  ../nanolooper/core.cpp
+  ../nanolooper/core.cpp \
+  ../particles_emitter/main.cpp \
+  ../particles_renderer/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

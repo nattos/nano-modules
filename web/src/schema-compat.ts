@@ -53,6 +53,9 @@ function nodeCompatible(
     case 'string':
     case 'event':
     case 'texture':
+    case 'float2':
+    case 'float3':
+    case 'float4':
       return null;
     case 'array': {
       if (!!writer.gpu !== !!reader.gpu) {

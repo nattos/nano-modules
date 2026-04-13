@@ -68,6 +68,20 @@ namespace nanolooper {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace particles_emitter {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace particles_renderer {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -168,6 +182,34 @@ void nano_module_main() {
         paramlinker::render,
         paramlinker::on_state_patched,
         paramlinker::on_resolume_param,
+    });
+
+    nano::registerEffect({
+        1,
+        "data.particles_emitter",
+        "Particles Emitter",
+        "Emits a stream of 2D particles into a GPU storage buffer",
+        "data",
+        "particles,gpu,emit,physics",
+        particles_emitter::init,
+        particles_emitter::tick,
+        particles_emitter::render,
+        particles_emitter::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.particles_renderer",
+        "Particles Renderer",
+        "Renders quads for each particle in an input GPU buffer",
+        "video",
+        "particles,gpu,quads,instanced",
+        particles_renderer::init,
+        particles_renderer::tick,
+        particles_renderer::render,
+        particles_renderer::on_state_patched,
+        nullptr,
     });
 
     nano::registerEffect({

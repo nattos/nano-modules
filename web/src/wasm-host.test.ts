@@ -195,6 +195,8 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
         if (index < 0 || index >= host.pendingPatches.length) return 0;
         return valStore.alloc(host.pendingPatches[index]);
       },
+      mark_gpu_dirty: (_pathPtr: number, _pathLen: number) => {},
+      set_gpu_buffer: (_pathPtr: number, _pathLen: number, _handle: number) => {},
       read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
              outputPtr: number, outputSize: number, resultsPtr: number): number => {
         const mem = new DataView(getMemory().buffer);
@@ -269,6 +271,9 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       get_input_texture: () => -1,
       get_input_texture_count: () => 0,
       texture_for_field: () => -1,
+      buffer_for_field: () => 0,
+      create_instanced_render_pso: () => -1,
+      render_set_buffer: () => {},
     },
     module: {
       register_effect: (descPtr: number) => {

@@ -46,7 +46,7 @@ export class SketchExecutor {
   private gpuHost: GPUHost;
   private device: GPUDevice;
   private format: GPUTextureFormat;
-  private findModule: (effectId: string) => WebAssembly.Module | null;
+  private findModule: (effectId: string) => { compiled: WebAssembly.Module; resolvedId: string } | null;
 
   private instances = new Map<string, LoadedModule>();
   private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
@@ -71,7 +71,7 @@ export class SketchExecutor {
 
   constructor(
     bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat,
-    findModule: (effectId: string) => WebAssembly.Module | null,
+    findModule: (effectId: string) => { compiled: WebAssembly.Module; resolvedId: string } | null,
   ) {
     this.bridgeCore = bridgeCore;
     this.gpuHost = gpuHost;
@@ -81,10 +81,18 @@ export class SketchExecutor {
   }
 
   async ensureInstance(entry: ModuleEntry): Promise<LoadedModule> {
+    // Resolve the module type early so identity comparisons are stable even
+    // when entry.module_type is a fully-qualified bundle ID (e.g.
+    // "com.nattos.nano_effects.data.particles_emitter") whose registered
+    // effect id is just "data.particles_emitter".
+    const found = this.findModule(entry.module_type);
+    const resolvedId = found?.resolvedId ?? entry.module_type;
+
     let loaded = this.instances.get(entry.instance_key);
     if (loaded) {
-      // If the module type changed (e.g., via smart-input), discard and reload
-      if (loaded.host.metadata?.id !== entry.module_type) {
+      const currentId = loaded.host.metadata?.id ?? '';
+      if (currentId !== resolvedId && currentId !== entry.module_type) {
+        // Module type genuinely changed (e.g., via smart-input).
         this.instances.delete(entry.instance_key);
         loaded = undefined;
       } else {
@@ -96,11 +104,9 @@ export class SketchExecutor {
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
 
-    // Try to use a pre-compiled module from the registry
-    const compiled = this.findModule(entry.module_type);
-    if (compiled) {
-      await host.load(compiled);
-      const mod = host.activateEffect(entry.module_type);
+    if (found) {
+      await host.load(found.compiled);
+      const mod = host.activateEffect(found.resolvedId);
       loaded = { host, module: mod };
     } else {
       // Fallback: load from URL (legacy single-effect modules)
@@ -274,11 +280,17 @@ export class SketchExecutor {
         const paramPatches: import('./wasm-host').PatchOp[] = [];
         let paramIndex = 0;
         for (const [key, value] of Object.entries(instanceState)) {
-          if (typeof value !== 'number') continue; // Only push numeric params
-          // Set frameState.params by position for legacy host::param(index) reads
-          loaded.host.frameState.params[paramIndex] = value;
-          paramPatches.push({ op: 'replace', path: key, value });
-          paramIndex++;
+          if (typeof value === 'number') {
+            // Set frameState.params by position for legacy host::param(index) reads
+            loaded.host.frameState.params[paramIndex] = value;
+            paramPatches.push({ op: 'replace', path: key, value });
+            paramIndex++;
+          } else if (Array.isArray(value)
+                     && value.every(v => typeof v === 'number')) {
+            // Vec2/3/4 (and other plain numeric arrays): deliver as a
+            // patch but skip frameState.params (which is positional float).
+            paramPatches.push({ op: 'replace', path: key, value });
+          }
         }
         if (paramPatches.length > 0) {
           loaded.host.notifyStatePatched(loaded.module, paramPatches);
@@ -289,6 +301,7 @@ export class SketchExecutor {
           const pk = loaded.host.pluginKey;
           if (bc && pk) {
             for (const patch of paramPatches) {
+              if (typeof patch.value !== 'number') continue;
               const vh = bc.valNumber(patch.value as number);
               bc.commitVal(pk, patch.path, vh);
               bc.valRelease(vh);
@@ -530,16 +543,21 @@ export class SketchExecutor {
     schema: Record<string, any>,
   ): void {
     const patches: import('./wasm-host').PatchOp[] = [];
+    // Field-map keys (textureFields/gpuBufferFields) are stored with no
+    // leading slash to match the reader convention used by texture_for_field
+    // / buffer_for_field. Patches go through notifyStatePatched which is
+    // path-as-given.
     const install = (value: any, def: any, path: string) => {
       if (!def) return;
+      const fieldKey = stripLeadingSlash(path);
       if (def.type === 'array' && def.gpu) {
         const handle = typeof value === 'number' ? value : 0;
-        host.gpuBufferFields.set(path, handle);
+        host.gpuBufferFields.set(fieldKey, handle);
         return;
       }
       if (def.type === 'texture') {
         const handle = typeof value === 'number' ? value : -1;
-        if (handle >= 0) host.textureFields.set(path, handle);
+        if (handle >= 0) host.textureFields.set(fieldKey, handle);
         return;
       }
       if (def.type === 'object') {
@@ -550,7 +568,7 @@ export class SketchExecutor {
         return;
       }
       // Scalar leaves ride along as a replace patch into the reader's state.
-      patches.push({ op: 'replace', path: stripLeadingSlash(`${path}`), value });
+      patches.push({ op: 'replace', path: fieldKey, value });
     };
     // Walk starting from the top-level struct schema node.
     const nodeForTop = schema;

@@ -219,6 +219,11 @@ async function init(width: number, height: number) {
     return;
   }
   gpuDevice = await adapter.requestDevice();
+  // Surface WebGPU validation errors to the console so E2E tests can
+  // catch silent shader / bind-group breakage.
+  gpuDevice.onuncapturederror = (e: any) => {
+    console.error('[webgpu]', e.error?.message ?? e);
+  };
   const format = 'rgba8unorm';
 
   gpuContext = canvas.getContext('webgpu') as GPUCanvasContext;
@@ -475,10 +480,11 @@ function captureAndSendFrame() {
 // ========================================================================
 
 /** Find the compiled WebAssembly.Module that contains a given effect ID (module-relative or qualified). */
-function findCompiledModule(effectId: string): WebAssembly.Module | null {
+function findCompiledModule(effectId: string): { compiled: WebAssembly.Module; resolvedId: string } | null {
   const resolved = resolveEffectId(effectId);
   const entry = effectRegistry.get(resolved);
-  return entry?.compiled ?? null;
+  if (!entry) return null;
+  return { compiled: entry.compiled, resolvedId: resolved };
 }
 
 /**
@@ -510,7 +516,23 @@ async function loadModule(moduleType: string) {
     await host.load(wasmUrl);
 
     const compiled = host.compiledModule!;
-    const effects = host.registeredEffects.map(e => ({ ...e }));
+    let effects = host.registeredEffects.map(e => ({ ...e }));
+
+    // Legacy path: single-effect WASM modules that don't register through
+    // nano_module_main export init/tick/render/on_state_patched directly.
+    // Synthesize an EffectInfo so sketches can reference them by module_type.
+    const isLegacy = effects.length === 0;
+    if (isLegacy) {
+      effects = [{
+        id: moduleType,
+        name: moduleType,
+        description: '',
+        category: '',
+        keywords: [],
+        _initIdx: 0, _tickIdx: 0, _renderIdx: 0,
+        _onStatePatchedIdx: 0, _onResolumeParamIdx: 0,
+      }];
+    }
 
     moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
 
@@ -524,6 +546,13 @@ async function loadModule(moduleType: string) {
       id: e.id, name: e.name, description: e.description,
       category: e.category, keywords: e.keywords,
     })) });
+
+    // Legacy convenience: single-effect modules used to be auto-instantiated
+    // by loadModule. Tests rely on the resulting `<moduleType>@0` real
+    // instance existing without a separate instantiateEffect call.
+    if (isLegacy) {
+      await instantiateEffect(moduleType);
+    }
 
     markDirty();
   } catch (e) {
@@ -540,8 +569,8 @@ async function instantiateEffect(effectId: string) {
 
   // Resolve module-qualified or module-relative ID
   const resolvedId = resolveEffectId(effectId);
-  const compiled = findCompiledModule(resolvedId);
-  if (!compiled) {
+  const found = findCompiledModule(resolvedId);
+  if (!found) {
     post({ type: 'error', message: `Effect "${effectId}" not found in any loaded module` });
     return;
   }
@@ -551,8 +580,8 @@ async function instantiateEffect(effectId: string) {
   host.gpuHost = gpuHost;
 
   try {
-    await host.load(compiled);
-    const mod = host.activateEffect(resolvedId);
+    await host.load(found.compiled);
+    const mod = host.activateEffect(found.resolvedId);
 
     const key = host.pluginKey || `${resolvedId}@0`;
     realModules.set(key, { host, module: mod });

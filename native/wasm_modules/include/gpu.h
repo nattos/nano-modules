@@ -60,6 +60,11 @@ extern "C" {
   void gpu_render_draw(int pass, int vertex_count, int instance_count);
   __attribute__((import_module("gpu"), import_name("end_render_pass")))
   void gpu_end_render_pass(int pass);
+  __attribute__((import_module("gpu"), import_name("create_instanced_render_pso")))
+  int gpu_create_instanced_render_pso(int vs_shader, const char* vs, int vs_len,
+                                       int fs_shader, const char* fs, int fs_len, int format);
+  __attribute__((import_module("gpu"), import_name("render_set_buffer")))
+  void gpu_render_set_buffer(int pass, int buf, int slot);
   __attribute__((import_module("gpu"), import_name("submit")))
   void gpu_submit(void);
   __attribute__((import_module("gpu"), import_name("get_render_target")))
@@ -182,6 +187,13 @@ struct RenderPass {
     gpu_render_set_vertex_buffer(id, buf.id, offset, slot);
   }
 
+  /// Bind a buffer (storage or uniform) to the render pipeline's bind
+  /// group at `slot`. Supports vertex-shader instancing via storage
+  /// buffer reads (no vertex buffer required).
+  void setBuffer(Buffer buf, int slot) {
+    gpu_render_set_buffer(id, buf.id, slot);
+  }
+
   void draw(int vertexCount, int instanceCount = 1) {
     gpu_render_draw(id, vertexCount, instanceCount);
   }
@@ -214,6 +226,20 @@ struct Device {
                                     ShaderModule fs, const char* fsEntry,
                                     TextureFormat format = TextureFormat::Surface) {
     return RenderPSO(gpu_create_render_pso(
+        vs.id, vsEntry, std::strlen(vsEntry),
+        fs.id, fsEntry, std::strlen(fsEntry),
+        static_cast<int>(format)));
+  }
+
+  /// Create a render pipeline with no vertex buffer — vertex shader uses
+  /// vertex_index/instance_index plus storage buffers bound via
+  /// RenderPass::setBuffer. Useful for instanced rendering of GPU-array
+  /// data (e.g. particle quads where positions live in a storage buffer).
+  static RenderPSO createInstancedRenderPSO(
+      ShaderModule vs, const char* vsEntry,
+      ShaderModule fs, const char* fsEntry,
+      TextureFormat format = TextureFormat::Surface) {
+    return RenderPSO(gpu_create_instanced_render_pso(
         vs.id, vsEntry, std::strlen(vsEntry),
         fs.id, fsEntry, std::strlen(fsEntry),
         static_cast<int>(format)));

@@ -349,6 +349,15 @@ export class WasmHost {
                 const dir = (ioFlags & 1) ? 0 : 1; // Input=0, Output=1
                 const role = (ioFlags & 4) ? 0 : 1; // Primary=0, Secondary=1
                 this.ioDecls.push({ index: this.ioDecls.length, name, kind: dir, role });
+              } else if (field.type === 'object' || field.type === 'array'
+                         || field.type === 'float2' || field.type === 'float3'
+                         || field.type === 'float4') {
+                // Non-scalar fields: still surface as data outputs when the
+                // schema marks them Output, but skip the legacy params row.
+                if (ioFlags & 2) {
+                  const role = (ioFlags & 4) ? 0 : 1;
+                  this.ioDecls.push({ index: this.ioDecls.length, name, kind: 2, role });
+                }
               } else {
                 let type = 10; // Standard
                 if (field.type === 'bool') type = 0;
@@ -379,6 +388,13 @@ export class WasmHost {
               console.warn('[wasm-host] registerWithSchema failed, falling back to registerPlugin:', e);
               this.pluginKey = bc.registerPlugin(id, major, minor, patch);
             }
+            // Seed local pluginState with the schema-derived defaults so
+            // downstream consumers (struct rail snapshot, inspector, etc.)
+            // can read scalar fields without waiting for the module to
+            // call set_val explicitly.
+            if (this.pluginKey) {
+              try { this.pluginState = bc.getPluginState(this.pluginKey); } catch {}
+            }
           }
         },
         console_log: (level: number, msgPtr: number, msgLen: number) => {
@@ -392,6 +408,12 @@ export class WasmHost {
           if (this.consoleLogs.length > 200) {
             this.consoleLogs = this.consoleLogs.slice(-100);
           }
+          // Also surface to the browser/devtools console so E2E test
+          // logging can see what the WASM module emitted.
+          const tag = `[wasm:${this.metadata?.id ?? this.pluginKey ?? '?'}]`;
+          if (level === 1) console.warn(tag, message);
+          else if (level === 2) console.error(tag, message);
+          else console.log(tag, message);
           this.onLog(entry);
           if (bc && this.pluginKey) {
             bc.log(this.pluginKey, entry.timestamp, level, message);
@@ -708,6 +730,8 @@ export class WasmHost {
               create_texture: () => -1,
               create_compute_pso: () => -1,
               create_render_pso: () => -1,
+              create_instanced_render_pso: () => -1,
+              render_set_buffer: () => {},
               write_buffer: () => {},
               begin_compute_pass: () => -1,
               compute_set_pso: () => {},
@@ -797,19 +821,48 @@ export class WasmHost {
    */
   activateEffect(effectId: string): WasmModule {
     const effect = this.registeredEffects.find(e => e.id === effectId);
-    if (!effect) {
-      throw new Error(`Effect "${effectId}" not found. Available: ${this.registeredEffects.map(e => e.id).join(', ')}`);
+
+    // Legacy path: single-effect WASM modules predate nano_module_main
+    // and export init/tick/render/on_state_patched as top-level exports.
+    // Fall back to those exports either when no registration is found
+    // at all or when the effect was synthesized by the engine worker
+    // (all function-table indices zero).
+    const isLegacy = !effect
+      || (effect._initIdx === 0 && effect._tickIdx === 0
+          && effect._renderIdx === 0 && effect._onStatePatchedIdx === 0);
+    if (isLegacy) {
+      const exports = this.instance.exports as any;
+      const init = exports.init as (() => void) | undefined;
+      const tick = exports.tick as ((dt: number) => void) | undefined;
+      const render = exports.render as ((vpW: number, vpH: number) => void) | undefined;
+      const onStatePatched = exports.on_state_patched as
+        ((n: number, pb: number, off: number, len: number, ops: number) => void) | undefined;
+      if (init && tick && render && onStatePatched) {
+        init();
+        const onResolumeParam = exports.on_resolume_param as
+          ((paramId: bigint, value: number) => void) | undefined;
+        return {
+          init: () => {},
+          tick, render, onStatePatched, onResolumeParam,
+        };
+      }
+      if (!effect) {
+        throw new Error(`Effect "${effectId}" not found. Available: ${this.registeredEffects.map(e => e.id).join(', ')}`);
+      }
     }
+
+    // From here on `effect` is non-null (not legacy).
+    const effectEntry = effect!;
 
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
 
-    const initFn = table.get(effect._initIdx) as () => void;
-    const tickFn = table.get(effect._tickIdx) as (dt: number) => void;
-    const renderFn = table.get(effect._renderIdx) as (vpW: number, vpH: number) => void;
-    const onStatePatchedFn = table.get(effect._onStatePatchedIdx) as
+    const initFn = table.get(effectEntry._initIdx) as () => void;
+    const tickFn = table.get(effectEntry._tickIdx) as (dt: number) => void;
+    const renderFn = table.get(effectEntry._renderIdx) as (vpW: number, vpH: number) => void;
+    const onStatePatchedFn = table.get(effectEntry._onStatePatchedIdx) as
       (n: number, pb: number, off: number, len: number, ops: number) => void;
-    const onResolumeParamFn = effect._onResolumeParamIdx !== 0
-      ? table.get(effect._onResolumeParamIdx) as (paramId: bigint, value: number) => void
+    const onResolumeParamFn = effectEntry._onResolumeParamIdx !== 0
+      ? table.get(effectEntry._onResolumeParamIdx) as (paramId: bigint, value: number) => void
       : undefined;
 
     // Call init immediately

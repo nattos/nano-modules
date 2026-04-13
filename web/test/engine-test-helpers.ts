@@ -132,20 +132,58 @@ function makeTraceAccessor(tracedFrames: Record<string, Frame | null>) {
 // --- Run test against engine-test-runner.html ---
 
 async function runRawEngineTest(runnerConfig: any): Promise<any> {
-  await page.goto('http://localhost:5174/engine-test-runner.html', { waitUntil: 'networkidle0' });
-  await page.evaluate((cfg: any) => {
-    (window as any).__engineTestConfig = cfg;
-    (window as any).__engineTestRun();
-  }, runnerConfig);
-  await page.waitForFunction(
-    () => {
-      const el = document.getElementById('result');
-      return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
-    },
-    { timeout: 25000 },
-  );
-  const text = await page.$eval('#result', (el) => el.textContent);
-  return JSON.parse(text!);
+  const logs: string[] = [];
+  const onConsole = async (msg: any) => {
+    let body = msg.text();
+    try {
+      const args = await Promise.all(msg.args().map(async (a: any) => {
+        try {
+          return await a.evaluate((v: any) => {
+            if (v && typeof v === 'object' && 'stack' in v) return String(v.stack);
+            if (v && typeof v === 'object') {
+              try { return JSON.stringify(v); } catch { return String(v); }
+            }
+            return String(v);
+          });
+        } catch { return null; }
+      }));
+      const joined = args.filter((s: any) => s !== null).join(' ').trim();
+      if (joined.length > 0) body = joined;
+    } catch {}
+    logs.push(`[${msg.type()}] ${body}`);
+  };
+  const onPageError = (err: Error) => logs.push(`[pageerror] ${err.message}`);
+  const onResponse = (res: any) => {
+    if (!res.ok() && res.status() >= 400) logs.push(`[http ${res.status()}] ${res.url()}`);
+  };
+  page.on('console', onConsole);
+  page.on('pageerror', onPageError);
+  page.on('response', onResponse);
+
+  try {
+    await page.goto('http://localhost:5174/engine-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.evaluate((cfg: any) => {
+      (window as any).__engineTestConfig = cfg;
+      (window as any).__engineTestRun();
+    }, runnerConfig);
+    await page.waitForFunction(
+      () => {
+        const el = document.getElementById('result');
+        return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
+      },
+      { timeout: 25000 },
+    );
+    const text = await page.$eval('#result', (el) => el.textContent);
+    const result = JSON.parse(text!);
+    if (!result.success || process.env.DEBUG_E2E) {
+      console.error('--- browser logs ---\n' + logs.join('\n') + '\n--- end logs ---');
+    }
+    return result;
+  } finally {
+    page.off('console', onConsole);
+    page.off('pageerror', onPageError);
+    page.off('response', onResponse);
+  }
 }
 
 // --- Single-phase test ---

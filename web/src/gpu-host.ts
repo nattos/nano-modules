@@ -128,6 +128,37 @@ export class GPUHost {
     return this.alloc('compute_pipeline', pipeline);
   }
 
+  /**
+   * Create a render pipeline with no vertex buffer — the vertex shader
+   * is expected to read per-instance data from a storage buffer bound
+   * via RenderPass.setBuffer (and to compute position from vertex_index
+   * + instance_index). Bind groups are derived automatically.
+   */
+  createInstancedRenderPipeline(vsShaderHandle: number, vsEntry: string,
+                                 fsShaderHandle: number, fsEntry: string, format: number): number {
+    const vsModule = this.get(vsShaderHandle) as GPUShaderModule;
+    const fsModule = this.get(fsShaderHandle) as GPUShaderModule;
+    if (!vsModule || !fsModule) return -1;
+
+    const fmt: GPUTextureFormat = format === 0 ? 'bgra8unorm' :
+                                   format === 1 ? 'rgba8unorm' : this.surfaceFormat;
+
+    const pipeline = this.device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: vsModule, entryPoint: vsEntry, buffers: [] },
+      fragment: {
+        module: fsModule,
+        entryPoint: fsEntry,
+        targets: [{ format: fmt, blend: {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        }}],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+    return this.alloc('render_pipeline', pipeline);
+  }
+
   createRenderPipeline(vsShaderHandle: number, vsEntry: string,
                        fsShaderHandle: number, fsEntry: string, format: number): number {
     const vsModule = this.get(vsShaderHandle) as GPUShaderModule;
@@ -246,6 +277,8 @@ export class GPUHost {
 
   // Render pass state
   private renderPassEncoder: GPURenderPassEncoder | null = null;
+  private renderPassPipeline: GPURenderPipeline | null = null;
+  private renderPassBuffers: Map<number, GPUBuffer> = new Map();
 
   beginRenderPass(textureHandle: number, clearR: number, clearG: number, clearB: number, clearA: number): number {
     const texture = this.get(textureHandle) as GPUTexture;
@@ -260,6 +293,8 @@ export class GPUHost {
         storeOp: 'store',
       }],
     });
+    this.renderPassPipeline = null;
+    this.renderPassBuffers.clear();
     return 1;
   }
 
@@ -267,6 +302,7 @@ export class GPUHost {
     const pipeline = this.get(pipelineHandle) as GPURenderPipeline;
     if (!pipeline || !this.renderPassEncoder) return;
     this.renderPassEncoder.setPipeline(pipeline);
+    this.renderPassPipeline = pipeline;
   }
 
   renderSetVertexBuffer(_pass: number, bufHandle: number, offset: number, slot: number) {
@@ -275,8 +311,26 @@ export class GPUHost {
     this.renderPassEncoder.setVertexBuffer(slot, buffer, offset);
   }
 
+  /** Bind a storage/uniform buffer to the active render pipeline. */
+  renderSetBuffer(_pass: number, bufHandle: number, slot: number) {
+    const buffer = this.get(bufHandle) as GPUBuffer;
+    if (!buffer) return;
+    this.renderPassBuffers.set(slot, buffer);
+  }
+
   renderDraw(_pass: number, vertexCount: number, instanceCount: number) {
     if (!this.renderPassEncoder) return;
+    if (this.renderPassPipeline && this.renderPassBuffers.size > 0) {
+      const entries: GPUBindGroupEntry[] = [];
+      for (const [binding, buffer] of this.renderPassBuffers) {
+        entries.push({ binding, resource: { buffer } });
+      }
+      const bindGroup = this.device.createBindGroup({
+        layout: this.renderPassPipeline.getBindGroupLayout(0),
+        entries,
+      });
+      this.renderPassEncoder.setBindGroup(0, bindGroup);
+    }
     this.renderPassEncoder.draw(vertexCount, instanceCount);
   }
 
@@ -284,6 +338,8 @@ export class GPUHost {
     if (this.renderPassEncoder) {
       this.renderPassEncoder.end();
       this.renderPassEncoder = null;
+      this.renderPassPipeline = null;
+      this.renderPassBuffers.clear();
     }
   }
 
@@ -370,6 +426,10 @@ export class GPUHost {
                            fsShader: number, fsPtr: number, fsLen: number, format: number) =>
         this.createRenderPipeline(vsShader, readString(vsPtr, vsLen),
                                   fsShader, readString(fsPtr, fsLen), format),
+      create_instanced_render_pso: (vsShader: number, vsPtr: number, vsLen: number,
+                                     fsShader: number, fsPtr: number, fsLen: number, format: number) =>
+        this.createInstancedRenderPipeline(vsShader, readString(vsPtr, vsLen),
+                                            fsShader, readString(fsPtr, fsLen), format),
       write_buffer: (buf: number, offset: number, dataPtr: number, dataLen: number) =>
         this.writeBuffer(buf, offset, readMemory(dataPtr, dataLen)),
       begin_compute_pass: () => this.beginComputePass(),
@@ -388,6 +448,8 @@ export class GPUHost {
         this.renderSetPipeline(pass, pipeline),
       render_set_vertex_buffer: (pass: number, buf: number, offset: number, slot: number) =>
         this.renderSetVertexBuffer(pass, buf, offset, slot),
+      render_set_buffer: (pass: number, buf: number, slot: number) =>
+        this.renderSetBuffer(pass, buf, slot),
       render_draw: (pass: number, vertexCount: number, instanceCount: number) =>
         this.renderDraw(pass, vertexCount, instanceCount),
       end_render_pass: (pass: number) => this.endRenderPass(pass),

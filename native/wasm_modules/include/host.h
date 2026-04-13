@@ -226,6 +226,56 @@ public:
     return *this;
   }
 
+  /// Vec2/3/4 leaf with explicit component defaults. Stored as a flat
+  /// JSON array of N floats.
+  Schema& vec2Field(const char* name, float x = 0.f, float y = 0.f, int io = None) {
+    return vecField(name, "float2", io, 2, x, y, 0.f, 0.f);
+  }
+  Schema& vec3Field(const char* name, float x = 0.f, float y = 0.f, float z = 0.f, int io = None) {
+    return vecField(name, "float3", io, 3, x, y, z, 0.f);
+  }
+  Schema& vec4Field(const char* name, float x = 0.f, float y = 0.f, float z = 0.f, float w = 0.f, int io = None) {
+    return vecField(name, "float4", io, 4, x, y, z, w);
+  }
+
+  /// GPU-resident array. Backed by a GPUBuffer; the JSON state holds
+  /// only the buffer handle. Producers must call state::setGpuBuffer
+  /// once per allocation and state::markGpuDirty each frame the contents
+  /// change. `elementType` is a leaf type name like "float", "int",
+  /// "float2", "float4".
+  Schema& gpuArrayField(const char* name, const char* elementType, int io = None) {
+    beginField(name);
+    appendRaw("\"type\":\"array\",\"gpu\":true,\"elementType\":{\"type\":\"");
+    appendRaw(elementType);
+    appendRaw("\"},\"io\":");
+    appendInt(io);
+    appendOrder();
+    appendRaw("}");
+    return *this;
+  }
+
+  /// Open a nested object subtree. Returns a child Schema-builder-like
+  /// handle. End the subtree with endObject(). When `io` is non-zero
+  /// the whole subtree is exposed as a single structural port of that
+  /// direction.
+  Schema& beginObject(const char* name, int io = None) {
+    beginField(name);
+    appendRaw("\"type\":\"object\",\"io\":");
+    appendInt(io);
+    appendOrder();
+    appendRaw(",\"fields\":{");
+    objectDepth_++;
+    objectFieldCounts_[objectDepth_] = 0;
+    return *this;
+  }
+
+  /// Close the most recent beginObject().
+  Schema& endObject() {
+    appendRaw("}}");
+    if (objectDepth_ > 0) objectDepth_--;
+    return *this;
+  }
+
   Schema& textField(const char* name, const char* def = "", int io = None) {
     beginField(name);
     appendRaw("\"type\":\"string\",\"default\":\"");
@@ -254,20 +304,44 @@ public:
 private:
   char buf_[4096];
   int len_ = 0;
+  // Per-depth field count: index 0 = top-level fields, 1+ = nested objects.
+  int objectFieldCounts_[8] = {0,0,0,0,0,0,0,0};
+  int objectDepth_ = 0;
+  // Convenience alias preserved for reference; no longer load-bearing.
   int fieldCount_ = 0;
 
   void beginField(const char* name) {
-    if (fieldCount_ > 0) appendRaw(",");
+    int& cnt = objectFieldCounts_[objectDepth_];
+    if (cnt > 0) appendRaw(",");
     appendRaw("\"");
     appendRaw(name);
     appendRaw("\":{");
-    fieldCount_++;
+    cnt++;
+    fieldCount_ = objectFieldCounts_[0];
   }
 
-  // Append the "order" field based on declaration order
+  // Append the "order" field based on declaration order at the current depth.
   void appendOrder() {
     appendRaw(",\"order\":");
-    appendInt(fieldCount_ - 1); // 0-based, set after fieldCount_ was incremented in beginField
+    appendInt(objectFieldCounts_[objectDepth_] - 1);
+  }
+
+  Schema& vecField(const char* name, const char* type, int io,
+                    int n, float a, float b, float c, float d) {
+    beginField(name);
+    appendRaw("\"type\":\"");
+    appendRaw(type);
+    appendRaw("\",\"default\":[");
+    float v[4] = {a, b, c, d};
+    for (int i = 0; i < n; i++) {
+      if (i > 0) appendRaw(",");
+      appendFloat(v[i]);
+    }
+    appendRaw("],\"io\":");
+    appendInt(io);
+    appendOrder();
+    appendRaw("}");
+    return *this;
   }
 
   void appendRaw(const char* s) {

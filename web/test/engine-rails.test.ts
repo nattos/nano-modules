@@ -8,12 +8,7 @@ describe('Sideband Rail Routing E2E', () => {
     it('renders a solid red color', async () => {
       const result = await runEngineTest({
         modules: ['com.nattos.solid_color'],
-        tracePoints: [
-          { id: 'out', target: { type: 'plugin_output', pluginKey: 'com.nattos.solid_color@0' } },
-        ],
         commands: [
-          // Set red=1, green=0, blue=0 via sketch with taps... actually just use
-          // a sketch that sets params directly
           {
             type: 'createSketch',
             sketchId: 'sc_test',

@@ -119,8 +119,12 @@ async function run() {
       const outputHandle = gpuHost.injectTexture(nextOutput);
       wasmHost.textureFields.set('tex_out', outputHandle);
 
-      const wasmModule = await wasmHost.load(normalizePath(step.module));
-      wasmModule.init();
+      await wasmHost.load(normalizePath(step.module));
+      // Pick the registered effect ID if the module went through
+      // nano_module_main; otherwise activateEffect() falls back to
+      // direct init/tick/render exports for legacy single-effect WASMs.
+      const effectId = wasmHost.registeredEffects[0]?.id ?? step.module;
+      const wasmModule = wasmHost.activateEffect(effectId);
 
       // Set parameters
       if (step.params) {
