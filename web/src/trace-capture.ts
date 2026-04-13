@@ -7,19 +7,26 @@
  */
 
 const BLIT_SHADER = /* wgsl */`
-  @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  struct VsOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+  }
+
+  @vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut {
     // Full-screen triangle (covers [-1,1] with 3 vertices)
     let x = f32(i32(i) / 2) * 4.0 - 1.0;
     let y = f32(i32(i) % 2) * 4.0 - 1.0;
-    return vec4f(x, y, 0.0, 1.0);
+    var out: VsOut;
+    out.pos = vec4f(x, y, 0.0, 1.0);
+    // UV: flip Y since framebuffer origin is top-left but clip-space Y is up.
+    out.uv = vec2f((x + 1.0) * 0.5, 1.0 - (y + 1.0) * 0.5);
+    return out;
   }
 
   @group(0) @binding(0) var src: texture_2d<f32>;
   @group(0) @binding(1) var samp: sampler;
 
-  @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let dims = vec2f(textureDimensions(src));
-    let uv = pos.xy / dims;
+  @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
     return textureSample(src, samp, uv);
   }
 `;
@@ -56,7 +63,7 @@ export class TraceCapture {
         targets: [{ format: this.format }],
       },
     });
-    this.sampler = this.device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+    this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   }
 
   private ensureSlot(id: string, width: number, height: number): CaptureSlot {
