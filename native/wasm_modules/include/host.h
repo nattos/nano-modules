@@ -59,6 +59,10 @@ extern "C" {
   void state_set(const char* path, int path_len, const char* json, int json_len);
   __attribute__((import_module("state"), import_name("set_val")))
   void state_set_val(const char* path, int path_len, int val_handle);
+  __attribute__((import_module("state"), import_name("mark_gpu_dirty")))
+  void state_mark_gpu_dirty(const char* path, int path_len);
+  __attribute__((import_module("state"), import_name("set_gpu_buffer")))
+  void state_set_gpu_buffer(const char* path, int path_len, int buffer_handle);
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
@@ -360,6 +364,24 @@ inline void setVal(int valHandle) {
 }
 inline void setValPath(const char* path, int valHandle) {
   state_set_val(path, std::strlen(path), valHandle);
+}
+
+// --- GPU array fields ---
+
+/// Signal that the GPU array at `path` has been updated in-place.
+/// Observers receive a "dirty" patch but no value, so they can do
+/// lazy reader work without re-resolving the buffer handle.
+/// Call this every frame a GPU-resident array is refreshed, even if
+/// the underlying buffer is being reused.
+inline void markGpuDirty(const char* path) {
+  state_mark_gpu_dirty(path, std::strlen(path));
+}
+
+/// Assign a GPU buffer handle to the field at `path`. Only call when
+/// the producer (re)allocates the buffer — buffer reuse across frames
+/// should elide this call and use markGpuDirty alone.
+inline void setGpuBuffer(const char* path, int bufferHandle) {
+  state_set_gpu_buffer(path, std::strlen(path), bufferHandle);
 }
 
 } // namespace state

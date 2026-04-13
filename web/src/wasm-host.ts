@@ -65,6 +65,28 @@ export type LogCallback = (entry: ConsoleEntry) => void;
 const decoder = new TextDecoder();
 const LEVELS = ['log', 'warn', 'error'];
 
+/**
+ * Recursively strip GPU-resident array leaves from `state`, based on a
+ * schema shape of `{ [name]: { type, gpu?, fields?, ... } }`. GPU leaves
+ * become 0 so serialized/transported snapshots never carry stale
+ * in-process buffer handles.
+ */
+export function stripGpuFields(state: any, schema: Record<string, any>): any {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return state;
+  if (!schema || typeof schema !== 'object') return state;
+  const out: any = Array.isArray(state) ? state.slice() : { ...state };
+  for (const [name, def] of Object.entries(schema) as [string, any][]) {
+    if (!def || typeof def !== 'object') continue;
+    if (!(name in out)) continue;
+    if (def.type === 'array' && def.gpu) {
+      out[name] = 0;
+    } else if (def.type === 'object' && def.fields) {
+      out[name] = stripGpuFields(out[name], def.fields);
+    }
+  }
+  return out;
+}
+
 export class WasmHost {
   private instance!: WebAssembly.Instance;
   private memory!: WebAssembly.Memory;
@@ -111,6 +133,14 @@ export class WasmHost {
 
   // Named texture fields (populated by sketch executor from schema)
   textureFields: Map<string, number> = new Map();
+
+  // GPU buffer fields — path -> GPU buffer handle (allocated by GPUHost).
+  // Populated by state::setGpuBuffer and read by gpu::bufferForField.
+  gpuBufferFields: Map<string, number> = new Map();
+
+  // Paths pending a "dirty" notification. Drained by the sketch executor
+  // and fed back into notifyStatePatched as dirty-op patches.
+  pendingDirtyPaths: string[] = [];
 
   // Input textures (injected by sketch executor for chaining)
   inputTextureHandles: number[] = [];
@@ -419,6 +449,21 @@ export class WasmHost {
           }
           this.onStateChange(this.pluginState);
         },
+        mark_gpu_dirty: (pathPtr: number, pathLen: number) => {
+          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+          this.pendingDirtyPaths.push(path);
+        },
+        set_gpu_buffer: (pathPtr: number, pathLen: number, bufferHandle: number) => {
+          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+          const prev = this.gpuBufferFields.get(path) ?? 0;
+          if (prev !== bufferHandle) {
+            this.gpuBufferFields.set(path, bufferHandle);
+          }
+          // Dirty fires every call — producer convention is to elide this
+          // call on frames where the buffer is reused, so reaching here
+          // means the consumer should re-resolve.
+          this.pendingDirtyPaths.push(path);
+        },
         read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
                outputPtr: number, outputSize: number, resultsPtr: number): number => {
           // Read state from bridge core if available, else use local
@@ -690,6 +735,12 @@ export class WasmHost {
           const path = this.readString(pathPtr, pathLen);
           return this.textureFields.get(path) ?? -1;
         },
+        // GPU buffer access by field path — mirrors texture_for_field.
+        // Returns 0 when unassigned (convention for gpu::Buffer::valid()).
+        buffer_for_field: (pathPtr: number, pathLen: number) => {
+          const path = this.readString(pathPtr, pathLen);
+          return this.gpuBufferFields.get(path) ?? 0;
+        },
       },
       module: {
         register_effect: (descPtr: number) => {
@@ -774,6 +825,36 @@ export class WasmHost {
   }
 
   /**
+   * Drain any GPU "dirty" notifications buffered since the last call.
+   * Each returned entry is a path whose owner called state::markGpuDirty
+   * or state::setGpuBuffer. Callers should merge these into the patch
+   * stream as {op: "dirty", path, value: {}} entries before invoking
+   * notifyStatePatched, so downstream modules observe them.
+   */
+  drainDirtyPatches(): PatchOp[] {
+    if (this.pendingDirtyPaths.length === 0) return [];
+    const seen = new Set<string>();
+    const out: PatchOp[] = [];
+    for (const p of this.pendingDirtyPaths) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      out.push({ op: 'dirty', path: p, value: {} });
+    }
+    this.pendingDirtyPaths = [];
+    return out;
+  }
+
+  /**
+   * Produce a copy of `state` with GPU-array leaves stripped (set to 0),
+   * based on the module's schema. Used when serializing state across a
+   * boundary where GPU handles are meaningless (worker postMessage,
+   * persistence, etc.).
+   */
+  stripGpuFieldsForSerialization(state: any): any {
+    return stripGpuFields(state, this.schema);
+  }
+
+  /**
    * Notify the module of state changes with full patch details.
    * If the module exports on_state_patched, marshals patch data into WASM memory.
    * Falls back to no-op if module doesn't export on_state_patched.
@@ -821,6 +902,7 @@ export class WasmHost {
       else if (op === 'replace') opCode = 2;
       else if (op === 'move') opCode = 3;
       else if (op === 'copy') opCode = 4;
+      else if (op === 'dirty') opCode = 5;
       view.setInt32(opsPtr + i * 4, opCode, true);
 
       pathOffset += pathStrings[i].length;

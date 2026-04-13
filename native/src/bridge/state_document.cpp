@@ -1,6 +1,7 @@
 #include "bridge/state_document.h"
 
 #include <algorithm>
+#include <functional>
 
 using json = nlohmann::json;
 
@@ -52,60 +53,54 @@ std::string StateDocument::register_plugin(const PluginMetadata& meta) {
   return key;
 }
 
-std::string StateDocument::register_plugin_with_schema(const PluginMetadata& meta, const std::string& schema_json) {
-  platform::LockGuard<platform::Mutex> lock(mutex_);
+json StateDocument::build_initial_state(const json& fields) {
+  json out = json::object();
+  if (!fields.is_object()) return out;
+  for (auto& [name, def] : fields.items()) {
+    if (!def.is_object()) continue;
+    std::string type = def.value("type", "");
+    if (type == "float")        out[name] = def.value("default", 0.0);
+    else if (type == "int")     out[name] = def.value("default", 0);
+    else if (type == "bool")    out[name] = def.value("default", false);
+    else if (type == "string")  out[name] = def.value("default", "");
+    else if (type == "texture") out[name] = 0;
+    else if (type == "event")   out[name] = 0.0;
+    else if (type == "object") {
+      out[name] = build_initial_state(def.value("fields", json::object()));
+    } else if (type == "array") {
+      if (def.value("gpu", false)) {
+        // GPU arrays hold only an integer handle; 0 = unassigned.
+        out[name] = 0;
+      } else {
+        out[name] = def.value("default", json::array());
+      }
+    }
+  }
+  return out;
+}
 
-  int instance = next_instance_[meta.id]++;
-  std::string key = meta.id + "@" + std::to_string(instance);
+void StateDocument::collect_legacy_params(const json& fields, json& params_out) {
+  // Legacy params are only derived from top-level scalar leaves.
+  if (!fields.is_object()) return;
 
-  // Parse the schema
-  auto schema = json::parse(schema_json, nullptr, false);
-  if (schema.is_discarded()) schema = json::object();
-
-  // Collect and sort schema fields by "order" (then by name as tiebreaker)
   struct FieldEntry { std::string name; json def; int order; };
   std::vector<FieldEntry> sorted_fields;
-  if (schema.contains("fields") && schema["fields"].is_object()) {
-    for (auto& [field_name, field_def] : schema["fields"].items()) {
-      if (!field_def.is_object()) continue;
-      int order = field_def.value("order", 1000); // default high so unordered fields go last
-      sorted_fields.push_back({field_name, field_def, order});
-    }
-    std::sort(sorted_fields.begin(), sorted_fields.end(), [](const FieldEntry& a, const FieldEntry& b) {
-      if (a.order != b.order) return a.order < b.order;
-      return a.name < b.name;
-    });
+  for (auto& [name, def] : fields.items()) {
+    if (!def.is_object()) continue;
+    int order = def.value("order", 1000);
+    sorted_fields.push_back({name, def, order});
   }
+  std::sort(sorted_fields.begin(), sorted_fields.end(), [](const FieldEntry& a, const FieldEntry& b) {
+    if (a.order != b.order) return a.order < b.order;
+    return a.name < b.name;
+  });
 
-  // Build initial state from schema field defaults
-  json initial_state = json::object();
-  for (auto& f : sorted_fields) {
-    std::string type = f.def.value("type", "");
-    if (type == "float")        initial_state[f.name] = f.def.value("default", 0.0);
-    else if (type == "int")     initial_state[f.name] = f.def.value("default", 0);
-    else if (type == "bool")    initial_state[f.name] = f.def.value("default", false);
-    else if (type == "string")  initial_state[f.name] = f.def.value("default", "");
-    else if (type == "texture") initial_state[f.name] = 0;
-    else if (type == "event")   initial_state[f.name] = 0.0;
-  }
-
-  // Add to global plugin listing with schema
-  json entry = {
-    {"key", key},
-    {"metadata", {
-      {"id", meta.id},
-      {"version", {{"major", meta.major}, {"minor", meta.minor}, {"patch", meta.patch}}},
-    }},
-    {"schema", schema.contains("fields") ? schema["fields"] : json::object()},
-    {"params", json::array()},
-  };
-
-  // Derive legacy params array from sorted schema fields
   int param_index = 0;
   for (auto& f : sorted_fields) {
     std::string type = f.def.value("type", "");
     int io_flags = f.def.value("io", 0);
-    if (type == "texture") continue;
+    // Skip non-scalar types (textures, objects, arrays — including GPU arrays).
+    if (type == "texture" || type == "object" || type == "array") continue;
 
     int param_type = 10;
     if (type == "bool") param_type = 0;
@@ -122,9 +117,59 @@ std::string StateDocument::register_plugin_with_schema(const PluginMetadata& met
       {"max", f.def.value("max", 1.0)},
       {"io", io_flags},
     };
-    entry["params"].push_back(p);
+    params_out.push_back(p);
     param_index++;
   }
+}
+
+json StateDocument::strip_gpu_fields(const json& state, const json& schema_fields) const {
+  if (!schema_fields.is_object() || !state.is_object()) return state;
+  json out = state;
+  for (auto& [name, def] : schema_fields.items()) {
+    if (!def.is_object() || !out.contains(name)) continue;
+    std::string type = def.value("type", "");
+    if (type == "array" && def.value("gpu", false)) {
+      // Serialize GPU arrays as 0 (unassigned); real handles only live in-process.
+      out[name] = 0;
+    } else if (type == "object") {
+      out[name] = strip_gpu_fields(out[name], def.value("fields", json::object()));
+    }
+  }
+  return out;
+}
+
+std::string StateDocument::register_plugin_with_schema(const PluginMetadata& meta, const std::string& schema_json) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+
+  int instance = next_instance_[meta.id]++;
+  std::string key = meta.id + "@" + std::to_string(instance);
+
+  // Parse the schema
+  auto schema = json::parse(schema_json, nullptr, false);
+  if (schema.is_discarded()) schema = json::object();
+  json fields = schema.contains("fields") && schema["fields"].is_object()
+                  ? schema["fields"]
+                  : json::object();
+
+  // Remember the schema so we can strip GPU leaves during serialization.
+  plugin_schemas_[key] = fields;
+
+  // Build initial state recursively from schema defaults.
+  json initial_state = build_initial_state(fields);
+
+  // Add to global plugin listing with schema
+  json entry = {
+    {"key", key},
+    {"metadata", {
+      {"id", meta.id},
+      {"version", {{"major", meta.major}, {"minor", meta.minor}, {"patch", meta.patch}}},
+    }},
+    {"schema", fields},
+    {"params", json::array()},
+  };
+
+  // Derive legacy params array from top-level scalar fields.
+  collect_legacy_params(fields, entry["params"]);
 
   doc_["global"]["plugins"].push_back(entry);
   emit("add", "/global/plugins/-", entry);
@@ -222,6 +267,8 @@ void StateDocument::unregister_plugin(const std::string& key) {
     doc_["plugins"].erase(key);
     emit("remove", "/plugins/" + key);
   }
+
+  plugin_schemas_.erase(key);
 }
 
 void StateDocument::log(const std::string& plugin_key, const ConsoleEntry& entry) {
@@ -252,7 +299,9 @@ json StateDocument::get_plugin_state(const std::string& key) const {
   platform::LockGuard<platform::Mutex> lock(mutex_);
   auto* state = json_patch::resolve_pointer(doc_, "/plugins/" + key + "/state");
   if (!state) return json::object();
-  return *state;
+  auto schema_it = plugin_schemas_.find(key);
+  if (schema_it == plugin_schemas_.end()) return *state;
+  return strip_gpu_fields(*state, schema_it->second);
 }
 
 void StateDocument::set_plugin_state(const std::string& key, const json& state) {
@@ -261,14 +310,77 @@ void StateDocument::set_plugin_state(const std::string& key, const json& state) 
   auto* target = json_patch::resolve_pointer(doc_, path);
   if (!target) return;
 
-  // Diff the old and new state to produce fine-grained patches
-  auto ops = json_patch::diff(*target, state);
+  // Strip GPU-array leaves from both sides before diffing, so that
+  // transient handle changes don't produce spurious patches.
+  auto schema_it = plugin_schemas_.find(key);
+  json before = schema_it != plugin_schemas_.end()
+                  ? strip_gpu_fields(*target, schema_it->second)
+                  : *target;
+  json after  = schema_it != plugin_schemas_.end()
+                  ? strip_gpu_fields(state, schema_it->second)
+                  : state;
+
+  auto ops = json_patch::diff(before, after);
   for (auto& op : ops) {
     op.path = path + op.path;
     pending_.push_back(op);
   }
 
-  *target = state;
+  // Commit: preserve GPU handles currently live in the document so a
+  // client-driven "replace state" doesn't wipe them.
+  if (schema_it != plugin_schemas_.end()) {
+    json merged = state;
+    // Copy GPU handles from *target into merged at the same paths.
+    std::function<void(json&, const json&, const json&)> restore_gpu =
+      [&](json& dst, const json& src, const json& fields) {
+        if (!fields.is_object() || !src.is_object() || !dst.is_object()) return;
+        for (auto& [name, def] : fields.items()) {
+          if (!def.is_object()) continue;
+          std::string type = def.value("type", "");
+          if (type == "array" && def.value("gpu", false)) {
+            if (src.contains(name)) dst[name] = src[name];
+          } else if (type == "object" && src.contains(name) && dst.contains(name)) {
+            restore_gpu(dst[name], src[name], def.value("fields", json::object()));
+          }
+        }
+      };
+    restore_gpu(merged, *target, schema_it->second);
+    *target = merged;
+  } else {
+    *target = state;
+  }
+}
+
+void StateDocument::mark_dirty(const std::string& path) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+  // "dirty" is a no-op with respect to the document, but observers receive
+  // it in the patch stream and can do lazy work.
+  emit("dirty", path, json::object());
+}
+
+void StateDocument::set_gpu_buffer(const std::string& path, int handle) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+  auto* target = json_patch::resolve_pointer(doc_, path);
+  if (!target) {
+    // Path doesn't exist yet — create it as a scalar.
+    json_patch::PatchOp add_op;
+    add_op.op = "add";
+    add_op.path = path;
+    add_op.value = handle;
+    json_patch::apply_op(doc_, add_op);
+    // Emit only a dirty notification — we don't want the scalar value
+    // to be observed as a meaningful state transition.
+    emit("dirty", path, json::object());
+    return;
+  }
+  bool changed = !target->is_number_integer() || target->get<int>() != handle;
+  *target = handle;
+  if (changed) {
+    // Handle genuinely changed (buffer reallocated): emit as dirty too —
+    // readers should re-resolve, but not interpret this as a value-change
+    // in user space.
+    emit("dirty", path, json::object());
+  }
 }
 
 std::vector<json_patch::PatchOp> StateDocument::apply_client_patch(

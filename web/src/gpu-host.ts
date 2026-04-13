@@ -56,6 +56,18 @@ export class GPUHost {
     return null;
   }
 
+  /** Get the underlying GPUBuffer for a handle (for external copy/readback). */
+  getBufferByHandle(handle: number): GPUBuffer | null {
+    const entry = this.handles.get(handle);
+    if (entry?.type === 'buffer') return entry.resource as GPUBuffer;
+    return null;
+  }
+
+  /** Inject an externally-owned buffer into the handle space (for chaining). */
+  injectBuffer(buffer: GPUBuffer): number {
+    return this.alloc('buffer', buffer);
+  }
+
   // --- Surface management ---
 
   setSurface(texture: GPUTexture, width: number, height: number) {

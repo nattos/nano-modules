@@ -63,11 +63,22 @@ export interface TextureOutputEntry {
 
 // --- Sideband Rails ---
 
+/**
+ * Rail payload type. Scalar shorthands are preserved for backward compat;
+ * structured payloads carry the writer's schema so readers can validate
+ * assignability at tap-binding time and so struct handoff knows which
+ * leaves are textures or GPU buffers.
+ */
+export type RailDataType =
+  | 'float'
+  | 'texture'
+  | { kind: 'struct'; schema: Record<string, any> };
+
 /** A named data channel within a column. */
 export interface Rail {
   id: string;
   name?: string;
-  dataType: 'float' | 'texture';
+  dataType: RailDataType;
 }
 
 /** Connects a module's field to a rail. */

@@ -76,6 +76,8 @@ extern "C" {
   int gpu_get_input_texture_count(void);
   __attribute__((import_module("gpu"), import_name("texture_for_field")))
   int gpu_texture_for_field(const char* path, int path_len);
+  __attribute__((import_module("gpu"), import_name("buffer_for_field")))
+  int gpu_buffer_for_field(const char* path, int path_len);
 }
 
 namespace gpu {
@@ -220,6 +222,13 @@ struct Device {
   /// Get texture handle for a named field path (unified texture access).
   static Texture textureForField(const char* fieldPath) {
     return Texture(gpu_texture_for_field(fieldPath, std::strlen(fieldPath)));
+  }
+
+  /// Resolve a GPU buffer handle stored in state at `fieldPath`. Returns
+  /// an invalid Buffer if the field is unassigned (handle == 0).
+  /// Counterpart to state::setGpuBuffer on the producer side.
+  static Buffer bufferForField(const char* fieldPath) {
+    return Buffer(gpu_buffer_for_field(fieldPath, std::strlen(fieldPath)));
   }
 
   // Legacy — kept during migration

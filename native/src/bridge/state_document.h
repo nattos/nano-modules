@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -113,14 +114,37 @@ public:
   /// Drain all pending patches since last call.
   std::vector<json_patch::PatchOp> drain_patches();
 
+  /// Emit a "dirty" patch notification at `path` without modifying the document.
+  /// Used to signal that a GPU array (or other opaque resource) has been
+  /// updated in-place and observers should do any lazy reader work.
+  void mark_dirty(const std::string& path);
+
+  /// Write a GPU buffer handle (integer) into the state at `path`.
+  /// Emits a replace patch only when the handle actually changes.
+  /// GPU array fields hold only this handle; their underlying data is not
+  /// part of the JSON document.
+  void set_gpu_buffer(const std::string& path, int handle);
+
 private:
   mutable platform::Mutex mutex_;
   nlohmann::json doc_;
   std::vector<json_patch::PatchOp> pending_;
   std::unordered_map<std::string, int> next_instance_; // per plugin-id counter
+  // plugin_key -> schema JSON (stored object from "fields") — used to
+  // strip GPU-resident fields when serializing/diffing plugin state.
+  std::unordered_map<std::string, nlohmann::json> plugin_schemas_;
 
   void emit(const std::string& op, const std::string& path,
             const nlohmann::json& value = {});
+
+  // Build initial state by walking the schema recursively.
+  nlohmann::json build_initial_state(const nlohmann::json& fields);
+  // Collect legacy param declarations from the top-level schema fields.
+  void collect_legacy_params(const nlohmann::json& fields, nlohmann::json& params_out);
+  // Produce a copy of `state` with GPU array leaves replaced by 0 (for
+  // serialization / diffing). `schema_fields` is the object part.
+  nlohmann::json strip_gpu_fields(const nlohmann::json& state,
+                                   const nlohmann::json& schema_fields) const;
 };
 
 } // namespace bridge

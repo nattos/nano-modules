@@ -626,13 +626,19 @@ function broadcastState() {
     for (const entry of globalData.plugins) {
       // BridgeCore's native parser may not emit data_output io entries for
       // float fields with the Output flag. Merge ioDecls from the WasmHost
-      // which correctly parses the schema on the JS side.
+      // which correctly parses the schema on the JS side. Hosts may live in
+      // either realModules (effects instantiated directly) or inside the
+      // sketchExecutor (effects created via type-change or sketch load), so
+      // match by pluginKey across both sources.
       let io: any[] = entry.io ?? [];
-      const real = realModules.get(entry.key);
-      if (real) {
-        const hostDecls = real.host.ioDecls;
-        // Add any host-side io declarations not already present
-        for (const decl of hostDecls) {
+      let matchedHost = realModules.get(entry.key)?.host ?? null;
+      if (!matchedHost && sketchExecutor) {
+        for (const host of sketchExecutor.allHosts()) {
+          if (host.pluginKey === entry.key) { matchedHost = host; break; }
+        }
+      }
+      if (matchedHost) {
+        for (const decl of matchedHost.ioDecls) {
           if (!io.some((e: any) => e.name === decl.name && e.kind === decl.kind)) {
             io.push(decl);
           }

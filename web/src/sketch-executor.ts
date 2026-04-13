@@ -13,10 +13,32 @@ interface LoadedModule {
   module: WasmModule;
 }
 
+function deepClone<T>(v: T): T {
+  if (v === null || typeof v !== 'object') return v;
+  return JSON.parse(JSON.stringify(v));
+}
+
+function stripLeadingSlash(p: string): string {
+  return p.startsWith('/') ? p.slice(1) : p;
+}
+
 /** Runtime value on a rail during a single frame's execution. */
 interface RailValue {
   data?: number;
   texture?: number;  // GPU texture handle
+  /**
+   * Structural payload for struct rails. Captured from the writer's
+   * state subtree at write-tap time. Leaves that are textures or GPU
+   * arrays carry integer handles, not resource objects, exactly like
+   * scalar texture rails do today.
+   */
+  struct?: any;
+  /**
+   * True when the writer announced a dirty GPU subtree (markGpuDirty /
+   * setGpuBuffer) during this frame. The read tap forwards this as a
+   * "dirty" patch to the downstream module instead of a "replace".
+   */
+  dirty?: boolean;
 }
 
 export class SketchExecutor {
@@ -94,6 +116,13 @@ export class SketchExecutor {
 
   getInstance(instanceKey: string): LoadedModule | undefined {
     return this.instances.get(instanceKey);
+  }
+
+  /** Iterate all loaded module hosts (for schema/io lookup). */
+  allHosts(): Iterable<WasmHost> {
+    const hosts: WasmHost[] = [];
+    for (const { host } of this.instances.values()) hosts.push(host);
+    return hosts;
   }
 
   /** Drop a cached instance so it will be recreated with the current module_type on next frame. */
@@ -293,6 +322,16 @@ export class SketchExecutor {
                 while (inputTextures.length <= texIndex) inputTextures.push(-1);
                 inputTextures[texIndex] = rv.texture;
               }
+            } else if (
+              typeof rail?.dataType === 'object' &&
+              rail.dataType.kind === 'struct' &&
+              rv.struct !== undefined
+            ) {
+              // Structured tap read: splice the writer's subtree into the
+              // reader's state at `fieldPath`. Hoist any GPU buffer or
+              // texture leaves from the struct into the reader's lookup
+              // maps so bufferForField / textureForField resolve locally.
+              this.applyStructRead(loaded.host, loaded.module, tap.fieldPath, rv, rail.dataType.schema);
             }
           }
         }
@@ -357,6 +396,21 @@ export class SketchExecutor {
               const existing = targetRailValues.get(tap.railId) ?? {};
               existing.texture = outputHandle;
               targetRailValues.set(tap.railId, existing);
+            } else if (
+              typeof rail?.dataType === 'object' &&
+              rail.dataType.kind === 'struct'
+            ) {
+              // Structured tap write: snapshot the writer's subtree at
+              // `fieldPath`, capturing current GPU buffer handles alongside
+              // scalar leaves. Mark the rail dirty if the writer emitted
+              // any dirty notifications this frame under this subtree.
+              const snapshot = this.snapshotStruct(
+                loaded.host, tap.fieldPath, rail.dataType.schema,
+              );
+              const existing = targetRailValues.get(tap.railId) ?? {};
+              existing.struct = snapshot.value;
+              if (snapshot.dirty) existing.dirty = true;
+              targetRailValues.set(tap.railId, existing);
             }
           }
         }
@@ -408,6 +462,116 @@ export class SketchExecutor {
     }
 
     return typeof obj === 'number' ? obj : undefined;
+  }
+
+  /**
+   * Capture the writer's state subtree at `fieldPath` for a struct rail.
+   * Returns the JSON-like value (deep-copied leaves) and a dirty flag
+   * set when the writer's pendingDirtyPaths include any path under
+   * `fieldPath` this frame. GPU buffer handles are pulled from the
+   * writer's gpuBufferFields map rather than pluginState so that
+   * handles are guaranteed to be current.
+   */
+  private snapshotStruct(
+    host: WasmHost, fieldPath: string, schema: Record<string, any>,
+  ): { value: any; dirty: boolean } {
+    const base = this.readSubtree(host.pluginState, fieldPath);
+    const value = this.materializeStructSnapshot(base, schema, host, fieldPath);
+
+    const prefix = fieldPath.startsWith('/') ? fieldPath : '/' + fieldPath;
+    let dirty = false;
+    for (const p of host.pendingDirtyPaths) {
+      const np = p.startsWith('/') ? p : '/' + p;
+      if (np === prefix || np.startsWith(prefix + '/')) { dirty = true; break; }
+    }
+    return { value, dirty };
+  }
+
+  private materializeStructSnapshot(
+    src: any, schema: Record<string, any>, host: WasmHost, pathPrefix: string,
+  ): any {
+    if (!schema || typeof schema !== 'object') return src;
+    // `schema` here is the node itself (with .type, .fields, .gpu, etc.)
+    // when invoked for an object. For a non-object top-level subtree,
+    // fall through and return src directly.
+    const type = (schema as any).type;
+    if (type === 'object') {
+      const fields = (schema as any).fields ?? {};
+      const out: any = {};
+      for (const [name, def] of Object.entries(fields) as [string, any][]) {
+        const childPath = `${pathPrefix}/${name}`;
+        const childSrc = src?.[name];
+        if (def?.type === 'array' && def.gpu) {
+          out[name] = host.gpuBufferFields.get(childPath) ?? 0;
+        } else if (def?.type === 'object') {
+          out[name] = this.materializeStructSnapshot(childSrc, def, host, childPath);
+        } else {
+          // leaf — clone to decouple from the writer's pluginState.
+          out[name] = deepClone(childSrc);
+        }
+      }
+      return out;
+    }
+    if (type === 'array' && (schema as any).gpu) {
+      return host.gpuBufferFields.get(pathPrefix) ?? 0;
+    }
+    return deepClone(src);
+  }
+
+  /**
+   * Splice a struct rail value into the reader's state at `destPath`.
+   * Non-GPU leaves go through a replace patch (so module observers see
+   * them). GPU buffer leaves are installed into gpuBufferFields at the
+   * destination path; a dirty patch is emitted for the subtree root so
+   * the reader can do lazy work without reading the subtree contents.
+   */
+  private applyStructRead(
+    host: WasmHost, module: WasmModule, destPath: string, rv: RailValue,
+    schema: Record<string, any>,
+  ): void {
+    const patches: import('./wasm-host').PatchOp[] = [];
+    const install = (value: any, def: any, path: string) => {
+      if (!def) return;
+      if (def.type === 'array' && def.gpu) {
+        const handle = typeof value === 'number' ? value : 0;
+        host.gpuBufferFields.set(path, handle);
+        return;
+      }
+      if (def.type === 'texture') {
+        const handle = typeof value === 'number' ? value : -1;
+        if (handle >= 0) host.textureFields.set(path, handle);
+        return;
+      }
+      if (def.type === 'object') {
+        const fields = def.fields ?? {};
+        for (const [name, childDef] of Object.entries(fields) as [string, any][]) {
+          install(value?.[name], childDef, `${path}/${name}`);
+        }
+        return;
+      }
+      // Scalar leaves ride along as a replace patch into the reader's state.
+      patches.push({ op: 'replace', path: stripLeadingSlash(`${path}`), value });
+    };
+    // Walk starting from the top-level struct schema node.
+    const nodeForTop = schema;
+    install(rv.struct, nodeForTop, destPath.startsWith('/') ? destPath : '/' + destPath);
+
+    // Emit a single dirty at the subtree root to trigger lazy reader work.
+    patches.push({ op: 'dirty', path: destPath, value: {} });
+    if (patches.length > 0) {
+      host.notifyStatePatched(module, patches);
+    }
+  }
+
+  private readSubtree(state: any, fieldPath: string): any {
+    if (!state) return undefined;
+    const tokens = fieldPath.split('/').filter(t => t !== '');
+    let obj = state;
+    for (const token of tokens) {
+      if (obj == null) return undefined;
+      obj = obj[token];
+    }
+    return obj;
   }
 
   dispose() {
