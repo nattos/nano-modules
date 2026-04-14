@@ -666,6 +666,7 @@ function broadcastState() {
           max: p.max ?? 1,
         })),
         io,
+        schema: entry.schema ?? matchedHost?.schema ?? {},
       });
     }
   }

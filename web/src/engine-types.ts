@@ -22,6 +22,12 @@ export interface PluginInfo {
   version: string;
   params: ParamInfo[];
   io: IOInfo[];
+  /**
+   * Raw schema fields object `{ [name]: { type, io?, default?, fields?, ... } }`.
+   * Lets the UI render structured / GPU / vector ports that don't fit the
+   * scalar ParamInfo model.
+   */
+  schema?: Record<string, any>;
 }
 
 export interface ParamInfo {

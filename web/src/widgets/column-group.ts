@@ -29,6 +29,9 @@ import type { ParamInfo } from '../engine-types';
 import './field-slider';
 import './field-toggle';
 import './field-trigger';
+import './field-text';
+import './field-select';
+import './field-placeholder';
 import './texture-monitor';
 import './spark-chart';
 import './smart-input';
@@ -59,6 +62,36 @@ function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
         default: p.defaultValue,
       };
   }
+}
+
+/**
+ * Derive the human-readable type chip for a schema field — used by
+ * the placeholder widget to let the user see that a port carries
+ * structured, vector, GPU-buffer or texture data.
+ */
+function schemaFieldKindLabel(def: any): string {
+  if (!def || typeof def !== 'object') return 'unknown';
+  switch (def.type) {
+    case 'object':  return 'struct';
+    case 'array':   return def.gpu ? 'gpu buffer' : 'array';
+    case 'texture': return 'texture';
+    case 'float2':  return 'vec2';
+    case 'float3':  return 'vec3';
+    case 'float4':  return 'vec4';
+    default:        return String(def.type ?? 'unknown');
+  }
+}
+
+/**
+ * True when a schema field is a "simple" scalar port that fits the
+ * existing ParamInfo slider/toggle/etc model. Everything else needs
+ * a placeholder.
+ */
+function isScalarSchemaField(def: any): boolean {
+  if (!def || typeof def !== 'object') return false;
+  const t = def.type;
+  return t === 'float' || t === 'int' || t === 'bool'
+      || t === 'string' || t === 'event';
 }
 
 /** Callbacks from edit-tab for column-level interactions. */
@@ -851,17 +884,73 @@ export class ColumnGroup extends MobxLitElement {
       return html`${el}${this.renderOutputFields(plugin, entry, binding, outputFieldNames)}`;
     }
 
-    // Use the generic inspector to render input fields (excluding outputs)
-    const inputParams = (plugin?.params ?? []).filter(p => !outputFieldNames.has(p.name));
+    // Build input fields from the schema (when available) so we can
+    // render placeholders for structured / GPU / vector ports that
+    // don't fit the scalar ParamInfo model. Falls back to plugin.params
+    // for modules without a schema block.
+    const inputFields = this.buildInputFieldDefs(plugin, outputFieldNames);
 
     let inputSection = nothing as typeof nothing | TemplateResult;
-    if (inputParams.length > 0) {
-      const fields = inputParams.map((p): InspectorFieldDef => paramToFieldDef(p));
-      const inspector = createGenericInspector(fields);
+    if (inputFields.length > 0) {
+      const inspector = createGenericInspector(inputFields);
       inputSection = inspector(binding);
     }
 
     return html`${inputSection}${this.renderOutputFields(plugin, entry, binding, outputFieldNames)}`;
+  }
+
+  private buildInputFieldDefs(
+    plugin: typeof appState.local.plugins[0] | undefined,
+    outputFieldNames: Set<string>,
+  ): InspectorFieldDef[] {
+    if (!plugin) return [];
+
+    const schema = plugin.schema;
+    if (!schema || Object.keys(schema).length === 0) {
+      // Legacy fallback — no schema available; go off plugin.params.
+      return plugin.params
+        .filter(p => !outputFieldNames.has(p.name))
+        .map(paramToFieldDef);
+    }
+
+    // Sort by order, then name, to match declaration order.
+    const entries = Object.entries(schema)
+      .filter(([name]) => !outputFieldNames.has(name))
+      .sort(([an, ad], [bn, bd]) => {
+        const ao = (ad as any)?.order ?? 1000;
+        const bo = (bd as any)?.order ?? 1000;
+        if (ao !== bo) return ao - bo;
+        return an.localeCompare(bn);
+      });
+
+    const fields: InspectorFieldDef[] = [];
+    for (const [name, def] of entries) {
+      const d: any = def;
+      const io = d?.io ?? 0;
+      const isInput = !!(io & 1);
+      const isOutput = !!(io & 2);
+      // Textures declared as outputs are rendered separately by
+      // renderOutputFields / the chain arrow system. Texture inputs
+      // are populated by rail taps — show a placeholder so the user
+      // can still tap them.
+      if (!isInput && !isOutput) continue;
+      if (!isInput) continue; // pure outputs handled elsewhere
+      if (d.type === 'texture') {
+        fields.push({ type: 'placeholder', label: name, path: name,
+          kind: 'texture', direction: 'input' });
+        continue;
+      }
+      if (isScalarSchemaField(d)) {
+        const param = plugin.params.find(p => p.name === name);
+        if (param) { fields.push(paramToFieldDef(param)); continue; }
+        // No legacy param row (shouldn't happen for scalars) — fall through.
+      }
+      fields.push({
+        type: 'placeholder', label: name, path: name,
+        kind: schemaFieldKindLabel(d), direction: 'input',
+      });
+    }
+    return fields;
   }
 
   /**
@@ -877,40 +966,92 @@ export class ColumnGroup extends MobxLitElement {
   ) {
     if (!plugin) return nothing;
 
-    // Collect all output field names: from io (kind===2), from write taps,
-    // and also params that match io outputs
-    const outputParams = plugin.params.filter(p => outputFieldNames.has(p.name));
-    // io-only outputs (declared in io but not as params)
-    const ioOnlyOutputs = plugin.io.filter(
-      io => io.kind === 2 && !plugin.params.some(p => p.name === io.name)
-    );
+    // Collect output field names in a stable order (schema order if available).
+    const schema = plugin.schema ?? {};
+    const hasSchema = Object.keys(schema).length > 0;
 
-    if (outputParams.length === 0 && ioOnlyOutputs.length === 0) return nothing;
+    interface OutputRow {
+      name: string;
+      scalar: boolean;
+      param?: ParamInfo;
+      kind: string;
+    }
+    const rows: OutputRow[] = [];
+    const seen = new Set<string>();
+
+    if (hasSchema) {
+      const entries = Object.entries(schema).sort(([an, ad], [bn, bd]) => {
+        const ao = (ad as any)?.order ?? 1000;
+        const bo = (bd as any)?.order ?? 1000;
+        if (ao !== bo) return ao - bo;
+        return an.localeCompare(bn);
+      });
+      for (const [name, def] of entries) {
+        const d: any = def;
+        const io = d?.io ?? 0;
+        const declaredOutput = !!(io & 2);
+        const tappedOutput = outputFieldNames.has(name);
+        if (!declaredOutput && !tappedOutput) continue;
+        // Texture outputs are surfaced by the chain arrow, not the inspector.
+        if (d.type === 'texture') continue;
+        seen.add(name);
+        if (isScalarSchemaField(d)) {
+          const param = plugin.params.find(p => p.name === name);
+          rows.push({ name, scalar: true, param, kind: schemaFieldKindLabel(d) });
+        } else {
+          rows.push({ name, scalar: false, kind: schemaFieldKindLabel(d) });
+        }
+      }
+    }
+
+    // Legacy fallback / write-tap-only outputs: also surface params and
+    // io decls not already covered by the schema pass above.
+    for (const p of plugin.params) {
+      if (seen.has(p.name)) continue;
+      if (!outputFieldNames.has(p.name)) continue;
+      rows.push({ name: p.name, scalar: true, param: p, kind: 'float' });
+      seen.add(p.name);
+    }
+    for (const io of plugin.io) {
+      if (io.kind !== 2) continue;
+      if (seen.has(io.name)) continue;
+      rows.push({ name: io.name, scalar: true, kind: 'float' });
+      seen.add(io.name);
+    }
+
+    if (rows.length === 0) return nothing;
 
     return html`
       <div class="output-separator">outputs</div>
-      ${outputParams.map(p => html`
-        <scalar-slider style="width: 100%;"
-          .fieldPath=${p.name}
-          .label=${p.name}
-          .min=${p.min}
-          .max=${p.max}
-          .step=${p.type === 13 ? 1 : 0.01}
-          .defaultValue=${p.defaultValue}
-          .binding=${binding}
-        ></scalar-slider>
-      `)}
-      ${ioOnlyOutputs.map(io => html`
-        <scalar-slider style="width: 100%;"
-          .fieldPath=${io.name}
-          .label=${io.name}
-          .min=${0}
-          .max=${1}
-          .step=${0.01}
-          .defaultValue=${0}
-          .binding=${binding}
-        ></scalar-slider>
-      `)}
+      ${rows.map(r => {
+        if (r.scalar) {
+          const min = r.param?.min ?? 0;
+          const max = r.param?.max ?? 1;
+          const step = r.param?.type === 13 ? 1 : 0.01;
+          const def = r.param?.defaultValue ?? 0;
+          return html`
+            <scalar-slider style="width: 100%;"
+              .fieldPath=${r.name}
+              .label=${r.name}
+              .min=${min}
+              .max=${max}
+              .step=${step}
+              .defaultValue=${def}
+              .binding=${binding}
+            ></scalar-slider>
+          `;
+        }
+        // Structured output — real FieldEditorElement so tap overlays register.
+        return html`
+          <field-placeholder
+            .fieldPath=${r.name}
+            .label=${r.name}
+            .kind=${r.kind}
+            .direction=${'output'}
+            .binding=${binding}
+          ></field-placeholder>
+        `;
+      })}
     `;
   }
 

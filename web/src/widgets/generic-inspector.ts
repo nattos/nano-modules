@@ -1,24 +1,29 @@
 /**
  * Generic inspector field renderers.
  *
- * Ported from nano-repatch. Renders field editor widgets based on
- * declarative field definitions, wired to a FieldBinding.
- *
- * Uses <scalar-slider> for numeric/slider fields — it implements
- * FieldEditorElement so the tap overlay system picks it up.
+ * Every field variant renders a real FieldEditorElement custom element
+ * (scalar-slider / field-toggle / field-trigger / field-text / field-select /
+ * field-placeholder). The layout manager scans the DOM for these elements
+ * to build tap-overlay hit boxes and rail attachment points, so inline
+ * raw HTML would break tap alignment.
  *
  * Usage:
  *   const inspector = createGenericInspector([
  *     { type: 'slider', label: 'Brightness', path: 'brightness', min: 0, max: 1 },
- *     { type: 'slider', label: 'Contrast', path: 'contrast', min: 0, max: 1 },
+ *     { type: 'placeholder', label: 'particles_in', path: 'particles_in',
+ *       kind: 'gpu buffer', direction: 'input' },
  *   ]);
- *   // In render():
- *   inspector(binding)
+ *   inspector(binding)  // inside render()
  */
 
 import { html, TemplateResult, nothing } from 'lit';
 import type { FieldBinding } from './field-editor';
 import './scalar-slider';
+import './field-toggle';
+import './field-trigger';
+import './field-text';
+import './field-select';
+import './field-placeholder';
 
 // --- Field definitions ---
 
@@ -28,97 +33,85 @@ export type InspectorFieldDef =
   | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number }
   | { type: 'boolean'; label: string; path: string; default?: boolean }
   | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any }
-  | { type: 'button'; label: string; path: string; text?: string };
+  | { type: 'button'; label: string; path: string; text?: string }
+  /**
+   * Placeholder for field kinds the inspector can't edit inline — e.g.
+   * structured objects, GPU arrays, textures, vector primitives. Rendered
+   * as <field-placeholder> so the tap/layout system still registers it.
+   */
+  | { type: 'placeholder'; label: string; path: string; kind: string; direction: 'input' | 'output' };
 
 // --- Field renderers ---
 
-const getValue = (binding: FieldBinding, path: string, fallback: any) => {
-  const val = binding.getValue(path);
-  return val !== undefined ? val : fallback;
-};
-
-const FIELD_STYLE = `display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0;`;
-const LABEL_STYLE = `color: var(--app-text-color2, #b0b0b0); font-size: 10px; min-width: 60px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
-
-const renderStringField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'string' }>) => html`
-  <div style=${FIELD_STYLE}>
-    <label style=${LABEL_STYLE}>${field.label}</label>
-    <input
-      type="text"
-      .value=${getValue(binding, field.path, field.default ?? '')}
-      placeholder=${field.placeholder || ''}
-      @input=${(e: Event) => binding.setValue(field.path, (e.target as HTMLInputElement).value)}
-      style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: var(--app-text-color1); border-radius: 2px; padding: 2px 4px; flex: 1; min-width: 0; font-size: 10px; font-family: inherit;"
-    />
-  </div>
+const renderString = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'string' }>) => html`
+  <field-text
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .placeholder=${f.placeholder ?? ''}
+    .defaultValue=${f.default ?? ''}
+    .binding=${binding}
+  ></field-text>
 `;
 
-const renderNumberField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'number' }>) => html`
-  <div style=${FIELD_STYLE}>
-    <label style=${LABEL_STYLE}>${field.label}</label>
-    <scalar-slider style="flex: 1; min-width: 0;"
-      .fieldPath=${field.path}
-      .label=${field.label}
-      .value=${getValue(binding, field.path, field.default ?? 0)}
-      .min=${field.min ?? 0}
-      .max=${field.max ?? 1}
-      .step=${field.step || 0.01}
-      .defaultValue=${field.default ?? 0}
-      .binding=${binding}
-    ></scalar-slider>
-  </div>
+const renderNumber = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'number' }>) => html`
+  <scalar-slider style="width: 100%;"
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .min=${f.min ?? 0}
+    .max=${f.max ?? 1}
+    .step=${f.step ?? 0.01}
+    .defaultValue=${f.default ?? 0}
+    .binding=${binding}
+  ></scalar-slider>
 `;
 
-const renderSliderField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'slider' }>) => html`
-  <div style=${FIELD_STYLE}>
-    <label style=${LABEL_STYLE}>${field.label}</label>
-    <scalar-slider style="flex: 1; min-width: 0;"
-      .fieldPath=${field.path}
-      .label=${field.label}
-      .value=${getValue(binding, field.path, field.default ?? field.min)}
-      .min=${field.min}
-      .max=${field.max}
-      .step=${field.step || 0.01}
-      .defaultValue=${field.default ?? field.min}
-      .binding=${binding}
-    ></scalar-slider>
-  </div>
+const renderSlider = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'slider' }>) => html`
+  <scalar-slider style="width: 100%;"
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .min=${f.min}
+    .max=${f.max}
+    .step=${f.step ?? 0.01}
+    .defaultValue=${f.default ?? f.min}
+    .binding=${binding}
+  ></scalar-slider>
 `;
 
-const renderBooleanField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'boolean' }>) => html`
-  <div style=${FIELD_STYLE}>
-    <label style=${LABEL_STYLE}>${field.label}</label>
-    <input
-      type="checkbox"
-      .checked=${getValue(binding, field.path, field.default ?? false) > 0.5}
-      @change=${(e: Event) => binding.setValue(field.path, (e.target as HTMLInputElement).checked ? 1 : 0)}
-    />
-  </div>
+const renderBoolean = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'boolean' }>) => html`
+  <field-toggle
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .defaultValue=${(f.default ?? false) ? 1 : 0}
+    .binding=${binding}
+  ></field-toggle>
 `;
 
-const renderSelectField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'select' }>) => html`
-  <div style=${FIELD_STYLE}>
-    <label style=${LABEL_STYLE}>${field.label}</label>
-    <select
-      .value=${getValue(binding, field.path, field.default ?? field.options[0]?.value)}
-      @change=${(e: Event) => binding.setValue(field.path, (e.target as HTMLSelectElement).value)}
-      style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: var(--app-text-color1); border-radius: 2px; padding: 2px 4px; font-size: 10px; font-family: inherit;"
-    >
-      ${field.options.map(opt => html`<option value=${opt.value}>${opt.label}</option>`)}
-    </select>
-  </div>
+const renderSelect = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'select' }>) => html`
+  <field-select
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .options=${f.options}
+    .defaultValue=${f.default ?? f.options[0]?.value}
+    .binding=${binding}
+  ></field-select>
 `;
 
-const renderButtonField = (binding: FieldBinding, field: Extract<InspectorFieldDef, { type: 'button' }>) => html`
-  <div style=${FIELD_STYLE}>
-    <label style=${LABEL_STYLE}>${field.label}</label>
-    <button
-      @pointerdown=${() => binding.setValue(field.path, 1)}
-      @pointerup=${() => binding.setValue(field.path, 0)}
-      @pointerleave=${() => binding.setValue(field.path, 0)}
-      style="background: rgba(255,255,255,0.06); color: var(--app-text-color1); border: 1px solid rgba(255,255,255,0.12); border-radius: 3px; padding: 3px 8px; cursor: pointer; font-size: 10px; font-family: inherit; min-width: 50px; text-align: center;"
-    >${field.text || 'Trigger'}</button>
-  </div>
+const renderButton = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'button' }>) => html`
+  <field-trigger
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .binding=${binding}
+  ></field-trigger>
+`;
+
+const renderPlaceholder = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'placeholder' }>) => html`
+  <field-placeholder
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .kind=${f.kind}
+    .direction=${f.direction}
+    .binding=${binding}
+  ></field-placeholder>
 `;
 
 // --- Factory ---
@@ -128,16 +121,17 @@ export const createGenericInspector = (fields: InspectorFieldDef[]) => {
     return html`
       <div style="display: flex; flex-direction: column;">
         ${fields.map(field => {
-      switch (field.type) {
-        case 'string': return renderStringField(binding, field);
-        case 'number': return renderNumberField(binding, field);
-        case 'slider': return renderSliderField(binding, field);
-        case 'boolean': return renderBooleanField(binding, field);
-        case 'select': return renderSelectField(binding, field);
-        case 'button': return renderButtonField(binding, field);
-        default: return nothing;
-      }
-    })}
+          switch (field.type) {
+            case 'string':      return renderString(binding, field);
+            case 'number':      return renderNumber(binding, field);
+            case 'slider':      return renderSlider(binding, field);
+            case 'boolean':     return renderBoolean(binding, field);
+            case 'select':      return renderSelect(binding, field);
+            case 'button':      return renderButton(binding, field);
+            case 'placeholder': return renderPlaceholder(binding, field);
+            default:            return nothing;
+          }
+        })}
       </div>
     `;
   };

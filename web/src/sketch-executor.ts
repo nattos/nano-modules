@@ -296,11 +296,26 @@ export class SketchExecutor {
           const pk = loaded.host.pluginKey;
           if (bc && pk) {
             for (const patch of paramPatches) {
-              if (typeof patch.value !== 'number') continue;
-              const vh = bc.valNumber(patch.value as number);
-              bc.commitVal(pk, patch.path, vh);
-              bc.valRelease(vh);
+              if (typeof patch.value === 'number') {
+                const vh = bc.valNumber(patch.value as number);
+                bc.commitVal(pk, patch.path, vh);
+                bc.valRelease(vh);
+              } else if (Array.isArray(patch.value)
+                         && patch.value.every(v => typeof v === 'number')) {
+                const arr = bc.valArray();
+                for (const item of patch.value) {
+                  const itemH = bc.valNumber(item);
+                  bc.valPush(arr, itemH);
+                  bc.valRelease(itemH);
+                }
+                bc.commitVal(pk, patch.path, arr);
+                bc.valRelease(arr);
+              }
             }
+            // Pull the committed state back into host.pluginState so the UI
+            // (which reads live pluginStates broadcast each frame) reflects
+            // user edits instead of stale schema defaults.
+            loaded.host.pluginState = bc.getPluginState(pk);
           }
         }
 
