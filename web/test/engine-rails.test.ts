@@ -7,13 +7,13 @@ describe('Sideband Rail Routing E2E', () => {
   describe('solid_color module', () => {
     it('renders a solid red color', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.solid_color'],
+        modules: ['generator.solid_color'],
         commands: [
           {
             type: 'createSketch',
             sketchId: 'sc_test',
             sketch: {
-              anchor: 'com.nattos.solid_color@0',
+              anchor: 'generator.solid_color@0',
               columns: [{
                 name: 'main',
                 chain: [
@@ -24,7 +24,7 @@ describe('Sideband Rail Routing E2E', () => {
             } as Sketch,
           },
           { type: 'setTracePoints', tracePoints: [
-            { id: 'out', target: { type: 'plugin_output', pluginKey: 'com.nattos.solid_color@0' } },
+            { id: 'out', target: { type: 'plugin_output', pluginKey: 'generator.solid_color@0' } },
           ]},
         ],
         waitFrames: 15,
@@ -55,7 +55,7 @@ describe('Sideband Rail Routing E2E', () => {
             { type: 'texture_input', id: 'in' },
             {
               type: 'module',
-              module_type: 'com.nattos.env_lfo',
+              module_type: 'data.lfo',
               instance_key: 'lfo@0',
               params: { rate: 0.5, amplitude: 1.0 },
               taps: [
@@ -64,7 +64,7 @@ describe('Sideband Rail Routing E2E', () => {
             },
             {
               type: 'module',
-              module_type: 'com.nattos.solid_color',
+              module_type: 'generator.solid_color',
               instance_key: 'color@0',
               params: { red: 0.0, green: 0.0, blue: 0.0 },
               taps: [
@@ -79,7 +79,7 @@ describe('Sideband Rail Routing E2E', () => {
       // Capture at two different times to see modulation
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['com.nattos.env_lfo', 'com.nattos.solid_color'],
+        modules: ['data.lfo', 'generator.solid_color'],
         dumpName: 'rail_lfo_color',
         phases: [
           {
@@ -137,7 +137,7 @@ describe('Sideband Rail Routing E2E', () => {
             // Red solid color → writes texture to rail "tex_a"
             {
               type: 'module',
-              module_type: 'com.nattos.solid_color',
+              module_type: 'generator.solid_color',
               instance_key: 'red@0',
               params: { red: 1.0, green: 0.0, blue: 0.0 }, // pure red
               taps: [
@@ -147,7 +147,7 @@ describe('Sideband Rail Routing E2E', () => {
             // Blue solid color → writes texture to rail "tex_b"
             {
               type: 'module',
-              module_type: 'com.nattos.solid_color',
+              module_type: 'generator.solid_color',
               instance_key: 'blue@0',
               params: { red: 0.0, green: 0.0, blue: 1.0 }, // pure blue
               taps: [
@@ -157,7 +157,7 @@ describe('Sideband Rail Routing E2E', () => {
             // Blend reads both texture rails
             {
               type: 'module',
-              module_type: 'com.nattos.video_blend',
+              module_type: 'video.blend',
               instance_key: 'blend@0',
               params: { opacity: 0.5 }, // 50% opacity blend
               taps: [
@@ -173,8 +173,8 @@ describe('Sideband Rail Routing E2E', () => {
       const result = await runEngineTest({
         width: 64, height: 64,
         modules: [
-          'com.nattos.solid_color',
-          'com.nattos.video_blend',
+          'generator.solid_color',
+          'video.blend',
         ],
         tracePoints: [
           { id: 'blend_out', target: { type: 'sketch_output', sketchId: 'blend_sketch' } },
@@ -214,7 +214,7 @@ describe('Sideband Rail Routing E2E', () => {
               { type: 'texture_input', id: 'in' },
               {
                 type: 'module',
-                module_type: 'com.nattos.solid_color',
+                module_type: 'generator.solid_color',
                 instance_key: 'red_cross@0',
                 params: { red: 1.0, green: 0.0, blue: 0.0 },
                 taps: [
@@ -230,7 +230,7 @@ describe('Sideband Rail Routing E2E', () => {
               { type: 'texture_input', id: 'in' },
               {
                 type: 'module',
-                module_type: 'com.nattos.solid_color',
+                module_type: 'generator.solid_color',
                 instance_key: 'blue_cross@0',
                 params: { red: 0.0, green: 0.0, blue: 1.0 },
                 taps: [
@@ -239,7 +239,7 @@ describe('Sideband Rail Routing E2E', () => {
               },
               {
                 type: 'module',
-                module_type: 'com.nattos.video_blend',
+                module_type: 'video.blend',
                 instance_key: 'blend_cross@0',
                 params: { opacity: 0.5 },
                 taps: [
@@ -256,8 +256,8 @@ describe('Sideband Rail Routing E2E', () => {
       const result = await runEngineTest({
         width: 64, height: 64,
         modules: [
-          'com.nattos.solid_color',
-          'com.nattos.video_blend',
+          'generator.solid_color',
+          'video.blend',
         ],
         tracePoints: [
           { id: 'blend_out', target: { type: 'sketch_output', sketchId: 'cross_sketch' } },
@@ -292,7 +292,7 @@ describe('Sideband Rail Routing E2E', () => {
             { type: 'texture_input', id: 'in' },
             {
               type: 'module',
-              module_type: 'com.nattos.env_lfo',
+              module_type: 'data.lfo',
               instance_key: 'lfo_obs@0',
               params: { rate: 0.5, amplitude: 1.0 },
               taps: [
@@ -301,7 +301,7 @@ describe('Sideband Rail Routing E2E', () => {
             },
             {
               type: 'module',
-              module_type: 'com.nattos.solid_color',
+              module_type: 'generator.solid_color',
               instance_key: 'color_obs@0',
               params: { red: 0.5, green: 0.5, blue: 0.5 },
               taps: [
@@ -315,7 +315,7 @@ describe('Sideband Rail Routing E2E', () => {
 
       const result = await runEngineTest({
         width: 64, height: 64,
-        modules: ['com.nattos.env_lfo', 'com.nattos.solid_color'],
+        modules: ['data.lfo', 'generator.solid_color'],
         tracePoints: [],
         commands: [
           { type: 'createSketch', sketchId: 'obs_sketch', sketch },

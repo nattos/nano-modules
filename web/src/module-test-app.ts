@@ -277,8 +277,21 @@ async function main() {
   const initialModule = urlParams.get('module') || 'nanolooper';
   moduleSelect.value = initialModule;
 
+  // Map a selector value (legacy standalone module name) to its effect ID
+  // inside the bundled nano_effects.wasm.
+  const MODULE_NAME_TO_EFFECT_ID: Record<string, string> = {
+    nanolooper: 'sequencer.nanolooper',
+    brightness_contrast: 'video.brightness_contrast',
+    env_lfo: 'data.lfo',
+    gpu_test: 'debug.gpu_test',
+    paramlinker: 'utility.paramlinker',
+    solid_color: 'generator.solid_color',
+    spinningtris: 'generator.spinningtris',
+    video_blend: 'video.blend',
+  };
+
   async function loadModule(moduleName: string) {
-    statusEl.textContent = `Loading ${moduleName}.wasm...`;
+    statusEl.textContent = `Loading ${moduleName}...`;
     consoleEl.innerHTML = '';
     resolumeContentEl.innerHTML = '';
 
@@ -289,13 +302,11 @@ async function main() {
     host.onStateChange = (state) => updateStateDisplay(state);
     host.onLog = (entry) => addLogEntry(entry);
 
+    const effectId = MODULE_NAME_TO_EFFECT_ID[moduleName] ?? moduleName;
+
     let wasmModule: WasmModule;
     try {
-      await host.load(`wasm/${moduleName}.wasm`);
-      // Activate the first registered effect (or find by module name)
-      const effectId = host.registeredEffects.length > 0
-        ? host.registeredEffects[0].id
-        : `com.nattos.${moduleName}`;
+      await host.load('wasm/nano_effects.wasm');
       wasmModule = host.activateEffect(effectId);
     } catch (e) {
       statusEl.textContent = `WASM load failed: ${e}`;

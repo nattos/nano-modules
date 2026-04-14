@@ -821,48 +821,19 @@ export class WasmHost {
    */
   activateEffect(effectId: string): WasmModule {
     const effect = this.registeredEffects.find(e => e.id === effectId);
-
-    // Legacy path: single-effect WASM modules predate nano_module_main
-    // and export init/tick/render/on_state_patched as top-level exports.
-    // Fall back to those exports either when no registration is found
-    // at all or when the effect was synthesized by the engine worker
-    // (all function-table indices zero).
-    const isLegacy = !effect
-      || (effect._initIdx === 0 && effect._tickIdx === 0
-          && effect._renderIdx === 0 && effect._onStatePatchedIdx === 0);
-    if (isLegacy) {
-      const exports = this.instance.exports as any;
-      const init = exports.init as (() => void) | undefined;
-      const tick = exports.tick as ((dt: number) => void) | undefined;
-      const render = exports.render as ((vpW: number, vpH: number) => void) | undefined;
-      const onStatePatched = exports.on_state_patched as
-        ((n: number, pb: number, off: number, len: number, ops: number) => void) | undefined;
-      if (init && tick && render && onStatePatched) {
-        init();
-        const onResolumeParam = exports.on_resolume_param as
-          ((paramId: bigint, value: number) => void) | undefined;
-        return {
-          init: () => {},
-          tick, render, onStatePatched, onResolumeParam,
-        };
-      }
-      if (!effect) {
-        throw new Error(`Effect "${effectId}" not found. Available: ${this.registeredEffects.map(e => e.id).join(', ')}`);
-      }
+    if (!effect) {
+      throw new Error(`Effect "${effectId}" not found. Available: ${this.registeredEffects.map(e => e.id).join(', ')}`);
     }
-
-    // From here on `effect` is non-null (not legacy).
-    const effectEntry = effect!;
 
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
 
-    const initFn = table.get(effectEntry._initIdx) as () => void;
-    const tickFn = table.get(effectEntry._tickIdx) as (dt: number) => void;
-    const renderFn = table.get(effectEntry._renderIdx) as (vpW: number, vpH: number) => void;
-    const onStatePatchedFn = table.get(effectEntry._onStatePatchedIdx) as
+    const initFn = table.get(effect._initIdx) as () => void;
+    const tickFn = table.get(effect._tickIdx) as (dt: number) => void;
+    const renderFn = table.get(effect._renderIdx) as (vpW: number, vpH: number) => void;
+    const onStatePatchedFn = table.get(effect._onStatePatchedIdx) as
       (n: number, pb: number, off: number, len: number, ops: number) => void;
-    const onResolumeParamFn = effectEntry._onResolumeParamIdx !== 0
-      ? table.get(effectEntry._onResolumeParamIdx) as (paramId: bigint, value: number) => void
+    const onResolumeParamFn = effect._onResolumeParamIdx !== 0
+      ? table.get(effect._onResolumeParamIdx) as (paramId: bigint, value: number) => void
       : undefined;
 
     // Call init immediately

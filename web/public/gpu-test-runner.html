@@ -31,8 +31,29 @@ import { WasmHost } from '/src/wasm-host.ts';
  * }
  */
 
-function normalizePath(mod) {
-  return mod.startsWith('wasm/') ? mod : 'wasm/' + mod;
+// All effects now live in the bundled nano_effects.wasm. Tests still
+// name modules by the old standalone .wasm filename (e.g. "gpu_test.wasm");
+// translate those to the corresponding registered effect ID inside the
+// bundle.
+const EFFECT_ID_BY_FILENAME = {
+  'gpu_test.wasm': 'debug.gpu_test',
+  'spinningtris.wasm': 'generator.spinningtris',
+  'brightness_contrast.wasm': 'video.brightness_contrast',
+  'solid_color.wasm': 'generator.solid_color',
+  'video_blend.wasm': 'video.blend',
+  'env_lfo.wasm': 'data.lfo',
+  'nanolooper.wasm': 'sequencer.nanolooper',
+  'paramlinker.wasm': 'utility.paramlinker',
+};
+
+function resolveEffectId(moduleName) {
+  // Accept either an effect ID (e.g. "debug.gpu_test") or a legacy filename.
+  if (EFFECT_ID_BY_FILENAME[moduleName]) return EFFECT_ID_BY_FILENAME[moduleName];
+  if (moduleName.endsWith('.wasm')) {
+    const bare = moduleName.replace(/\.wasm$/, '');
+    return EFFECT_ID_BY_FILENAME[bare + '.wasm'] ?? bare;
+  }
+  return moduleName;
 }
 
 async function run() {
@@ -119,11 +140,8 @@ async function run() {
       const outputHandle = gpuHost.injectTexture(nextOutput);
       wasmHost.textureFields.set('tex_out', outputHandle);
 
-      await wasmHost.load(normalizePath(step.module));
-      // Pick the registered effect ID if the module went through
-      // nano_module_main; otherwise activateEffect() falls back to
-      // direct init/tick/render exports for legacy single-effect WASMs.
-      const effectId = wasmHost.registeredEffects[0]?.id ?? step.module;
+      await wasmHost.load('wasm/nano_effects.wasm');
+      const effectId = resolveEffectId(step.module);
       const wasmModule = wasmHost.activateEffect(effectId);
 
       // Set parameters

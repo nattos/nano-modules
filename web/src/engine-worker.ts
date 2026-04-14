@@ -516,23 +516,7 @@ async function loadModule(moduleType: string) {
     await host.load(wasmUrl);
 
     const compiled = host.compiledModule!;
-    let effects = host.registeredEffects.map(e => ({ ...e }));
-
-    // Legacy path: single-effect WASM modules that don't register through
-    // nano_module_main export init/tick/render/on_state_patched directly.
-    // Synthesize an EffectInfo so sketches can reference them by module_type.
-    const isLegacy = effects.length === 0;
-    if (isLegacy) {
-      effects = [{
-        id: moduleType,
-        name: moduleType,
-        description: '',
-        category: '',
-        keywords: [],
-        _initIdx: 0, _tickIdx: 0, _renderIdx: 0,
-        _onStatePatchedIdx: 0, _onResolumeParamIdx: 0,
-      }];
-    }
+    const effects = host.registeredEffects.map(e => ({ ...e }));
 
     moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
 
@@ -546,13 +530,6 @@ async function loadModule(moduleType: string) {
       id: e.id, name: e.name, description: e.description,
       category: e.category, keywords: e.keywords,
     })) });
-
-    // Legacy convenience: single-effect modules used to be auto-instantiated
-    // by loadModule. Tests rely on the resulting `<moduleType>@0` real
-    // instance existing without a separate instantiateEffect call.
-    if (isLegacy) {
-      await instantiateEffect(moduleType);
-    }
 
     markDirty();
   } catch (e) {

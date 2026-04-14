@@ -188,12 +188,56 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
 
 // --- Single-phase test ---
 
+/**
+ * All built-in effects are bundled into com.nattos.nano_effects. Tests still
+ * list the logical module_type (e.g. 'com.nattos.spinningtris'); expand
+ * those into a loadModule(bundle) + instantiateEffect(<registered id>).
+ */
+const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
+  'com.nattos.spinningtris': 'generator.spinningtris',
+  'com.nattos.gpu_test': 'debug.gpu_test',
+  'com.nattos.brightness_contrast': 'video.brightness_contrast',
+  'com.nattos.solid_color': 'generator.solid_color',
+  'com.nattos.env_lfo': 'data.lfo',
+  'com.nattos.video_blend': 'video.blend',
+  'com.nattos.nanolooper': 'sequencer.nanolooper',
+  'com.nattos.paramlinker': 'utility.paramlinker',
+  // Also accept the effect IDs themselves so new-style tests work.
+  'generator.spinningtris': 'generator.spinningtris',
+  'debug.gpu_test': 'debug.gpu_test',
+  'video.brightness_contrast': 'video.brightness_contrast',
+  'generator.solid_color': 'generator.solid_color',
+  'data.lfo': 'data.lfo',
+  'video.blend': 'video.blend',
+  'sequencer.nanolooper': 'sequencer.nanolooper',
+  'utility.paramlinker': 'utility.paramlinker',
+};
+const BUNDLE_MODULE_TYPE = 'com.nattos.nano_effects';
+
+function expandModulesList(modules: string[]): any[] {
+  const cmds: any[] = [];
+  const seenBundle = new Set<string>();
+  for (const m of modules) {
+    const effectId = LEGACY_MODULE_TO_EFFECT_ID[m];
+    if (effectId) {
+      if (!seenBundle.has(BUNDLE_MODULE_TYPE)) {
+        cmds.push({ type: 'loadModule', moduleType: BUNDLE_MODULE_TYPE });
+        seenBundle.add(BUNDLE_MODULE_TYPE);
+      }
+      cmds.push({ type: 'instantiateEffect', effectId });
+    } else {
+      cmds.push({ type: 'loadModule', moduleType: m });
+    }
+  }
+  return cmds;
+}
+
 export async function runEngineTest(config: EngineTestConfig): Promise<EngineTestResult> {
   const W = config.width || 64;
   const H = config.height || 64;
   const commands: any[] = [];
 
-  for (const m of (config.modules || [])) commands.push({ type: 'loadModule', moduleType: m });
+  commands.push(...expandModulesList(config.modules || []));
   if (config.tracePoints?.length) commands.push({ type: 'setTracePoints', tracePoints: config.tracePoints });
   commands.push(...(config.commands || []));
 
@@ -224,7 +268,7 @@ export async function runEngineMultiPhaseTest(config: EngineMultiPhaseTestConfig
   const phases = config.phases.map((p, i) => {
     const cmds = [...(p.commands || [])];
     if (i === 0 && config.modules) {
-      cmds.unshift(...config.modules.map(m => ({ type: 'loadModule', moduleType: m })));
+      cmds.unshift(...expandModulesList(config.modules));
     }
     return { commands: cmds, waitFrames: p.waitFrames || 15, captureTraceIds: p.captureTraceIds };
   });

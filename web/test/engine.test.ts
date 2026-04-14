@@ -6,9 +6,9 @@ describe('Engine Worker E2E', () => {
   describe('single real plugin', () => {
     it('ticks and traces output from spinningtris', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris'],
+        modules: ['generator.spinningtris'],
         tracePoints: [
-          { id: 'main', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
+          { id: 'main', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
         ],
         captureTraceIds: ['main'],
         dumpName: 'engine_spinningtris',
@@ -28,9 +28,9 @@ describe('Engine Worker E2E', () => {
 
     it('ticks and traces output from gpu_test (solid blue)', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.gpu_test'],
+        modules: ['debug.gpu_test'],
         tracePoints: [
-          { id: 'main', target: { type: 'plugin_output', pluginKey: 'com.nattos.gpu_test@0' } },
+          { id: 'main', target: { type: 'plugin_output', pluginKey: 'debug.gpu_test@0' } },
         ],
         captureTraceIds: ['main'],
         dumpName: 'engine_gpu_test',
@@ -45,7 +45,7 @@ describe('Engine Worker E2E', () => {
 
     it('reports correct plugin metadata in state', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris'],
+        modules: ['generator.spinningtris'],
         tracePoints: [],
         waitFrames: 5,
         dumpName: 'engine_metadata',
@@ -55,9 +55,9 @@ describe('Engine Worker E2E', () => {
       expect(result.state).toBeTruthy();
       expect(result.state.plugins.length).toBeGreaterThanOrEqual(1);
 
-      const st = result.state.plugins.find((p: any) => p.id === 'com.nattos.spinningtris');
+      const st = result.state.plugins.find((p: any) => p.id === 'generator.spinningtris');
       expect(st).toBeTruthy();
-      expect(st.key).toBe('com.nattos.spinningtris@0');
+      expect(st.key).toBe('generator.spinningtris@0');
       expect(st.params.length).toBe(2);
       const paramNames = st.params.map((p: any) => p.name).sort();
       expect(paramNames).toEqual(['speed', 'triangles']);
@@ -67,10 +67,10 @@ describe('Engine Worker E2E', () => {
   describe('multiple real plugins', () => {
     it('traces different outputs from different plugins', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris', 'com.nattos.gpu_test'],
+        modules: ['generator.spinningtris', 'debug.gpu_test'],
         tracePoints: [
-          { id: 'tris', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
-          { id: 'blue', target: { type: 'plugin_output', pluginKey: 'com.nattos.gpu_test@0' } },
+          { id: 'tris', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
+          { id: 'blue', target: { type: 'plugin_output', pluginKey: 'debug.gpu_test@0' } },
         ],
         captureTraceIds: ['tris', 'blue'],
         waitFrames: 15,
@@ -97,9 +97,9 @@ describe('Engine Worker E2E', () => {
   describe('sketch with brightness_contrast', () => {
     it('applies contrast reduction to spinningtris', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
-          { id: 'raw', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
+          { id: 'raw', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
           { id: 'processed', target: { type: 'sketch_output', sketchId: 'test_sketch' } },
         ],
         commands: [
@@ -107,14 +107,14 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'test_sketch',
             sketch: {
-              anchor: 'com.nattos.spinningtris@0',
+              anchor: 'generator.spinningtris@0',
               columns: [{
                 name: 'main',
                 chain: [
                   { type: 'texture_input', id: 'primary_in' },
                   {
                     type: 'module',
-                    module_type: 'com.nattos.brightness_contrast',
+                    module_type: 'video.brightness_contrast',
                     instance_key: 'virtual_bc@0',
                     params: { brightness: 0.5, contrast: 0.25 },  // neutral brightness, half contrast
                   },
@@ -147,7 +147,7 @@ describe('Engine Worker E2E', () => {
 
     it('contrast=0 produces black', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'black_sketch' } },
         ],
@@ -156,14 +156,14 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'black_sketch',
             sketch: {
-              anchor: 'com.nattos.spinningtris@0',
+              anchor: 'generator.spinningtris@0',
               columns: [{
                 name: 'main',
                 chain: [
                   { type: 'texture_input', id: 'primary_in' },
                   {
                     type: 'module',
-                    module_type: 'com.nattos.brightness_contrast',
+                    module_type: 'video.brightness_contrast',
                     instance_key: 'virtual_bc_black@0',
                     params: { brightness: 0.5, contrast: 0.0 },  // contrast=0 → black
                   },
@@ -189,13 +189,13 @@ describe('Engine Worker E2E', () => {
       // Simpler version: just trace plugin outputs directly (no sketches)
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['com.nattos.spinningtris', 'com.nattos.gpu_test'],
+        modules: ['generator.spinningtris', 'debug.gpu_test'],
         dumpName: 'engine_plugin_switch',
         phases: [
           {
             commands: [
               { type: 'setTracePoints', tracePoints: [
-                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
               ]},
             ],
             waitFrames: 10,
@@ -204,7 +204,7 @@ describe('Engine Worker E2E', () => {
           {
             commands: [
               { type: 'setTracePoints', tracePoints: [
-                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'com.nattos.gpu_test@0' } },
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'debug.gpu_test@0' } },
               ]},
             ],
             waitFrames: 10,
@@ -213,7 +213,7 @@ describe('Engine Worker E2E', () => {
           {
             commands: [
               { type: 'setTracePoints', tracePoints: [
-                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'com.nattos.spinningtris@0' } },
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
               ]},
             ],
             waitFrames: 10,
@@ -242,7 +242,7 @@ describe('Engine Worker E2E', () => {
       // Bug: switching back shows the gpu_test output instead of spinningtris.
 
       const trisSketch = {
-        anchor: 'com.nattos.spinningtris@0',
+        anchor: 'generator.spinningtris@0',
         columns: [{ name: 'main', chain: [
           { type: 'texture_input', id: 'in' },
           { type: 'texture_output', id: 'out' },
@@ -250,7 +250,7 @@ describe('Engine Worker E2E', () => {
       };
 
       const blueSketch = {
-        anchor: 'com.nattos.gpu_test@0',
+        anchor: 'debug.gpu_test@0',
         columns: [{ name: 'main', chain: [
           { type: 'texture_input', id: 'in' },
           { type: 'texture_output', id: 'out' },
@@ -259,7 +259,7 @@ describe('Engine Worker E2E', () => {
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['com.nattos.spinningtris', 'com.nattos.gpu_test'],
+        modules: ['generator.spinningtris', 'debug.gpu_test'],
         dumpName: 'engine_trace_switch',
         phases: [
           // Phase 0: Create both sketches, trace the spinningtris sketch
@@ -320,14 +320,14 @@ describe('Engine Worker E2E', () => {
   describe('env_lfo output and rail routing', () => {
     it('env_lfo reports output as data_output in plugin io', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.env_lfo'],
+        modules: ['data.lfo'],
         tracePoints: [],
         waitFrames: 5,
         dumpName: 'engine_lfo_io',
       });
 
       expect(result.success).toBe(true);
-      const lfo = result.state.plugins.find((p: any) => p.id === 'com.nattos.env_lfo');
+      const lfo = result.state.plugins.find((p: any) => p.id === 'data.lfo');
       expect(lfo).toBeTruthy();
 
       // "output" should appear in io with kind=2 (data_output)
@@ -345,7 +345,7 @@ describe('Engine Worker E2E', () => {
 
     it('LFO write tap publishes rail value to sketchState', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.env_lfo'],
+        modules: ['data.lfo'],
         commands: [
           {
             type: 'createSketch',
@@ -358,7 +358,7 @@ describe('Engine Worker E2E', () => {
                   { type: 'texture_input', id: 'in' },
                   {
                     type: 'module',
-                    module_type: 'com.nattos.env_lfo',
+                    module_type: 'data.lfo',
                     instance_key: 'lfo@0',
                     params: { rate: 0.5, amplitude: 1.0 },
                     taps: [
@@ -395,7 +395,7 @@ describe('Engine Worker E2E', () => {
       // After enough frames, the output should differ from static contrast=1.
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast', 'com.nattos.env_lfo'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast', 'data.lfo'],
         dumpName: 'engine_lfo_modulate',
         phases: [
           // Phase 0: Static contrast=1 (no modulation) for reference
@@ -405,14 +405,14 @@ describe('Engine Worker E2E', () => {
                 type: 'createSketch',
                 sketchId: 'sk_mod',
                 sketch: {
-                  anchor: 'com.nattos.spinningtris@0',
+                  anchor: 'generator.spinningtris@0',
                   columns: [{
                     name: 'main',
                     chain: [
                       { type: 'texture_input', id: 'in' },
                       {
                         type: 'module',
-                        module_type: 'com.nattos.brightness_contrast',
+                        module_type: 'video.brightness_contrast',
                         instance_key: 'bc@0',
                         params: { brightness: 0.5, contrast: 1.0 },
                       },
@@ -435,14 +435,14 @@ describe('Engine Worker E2E', () => {
                 type: 'updateSketch',
                 sketchId: 'sk_mod',
                 sketch: {
-                  anchor: 'com.nattos.spinningtris@0',
+                  anchor: 'generator.spinningtris@0',
                   columns: [{
                     name: 'main',
                     chain: [
                       { type: 'texture_input', id: 'in' },
                       {
                         type: 'module',
-                        module_type: 'com.nattos.env_lfo',
+                        module_type: 'data.lfo',
                         instance_key: 'lfo@0',
                         params: { rate: 0.5, amplitude: 1.0 },
                         taps: [
@@ -451,7 +451,7 @@ describe('Engine Worker E2E', () => {
                       },
                       {
                         type: 'module',
-                        module_type: 'com.nattos.brightness_contrast',
+                        module_type: 'video.brightness_contrast',
                         instance_key: 'bc@0',
                         params: { brightness: 0.5, contrast: 1.0 },
                         taps: [
@@ -484,7 +484,7 @@ describe('Engine Worker E2E', () => {
   describe('chain_entry trace points', () => {
     it('resolves chain_entry trace to module output texture', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
           // Trace the BC module's output (chainIdx=1 in the chain)
           { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_ce', colIdx: 0, chainIdx: 1, side: 'output' } },
@@ -495,14 +495,14 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'sk_ce',
             sketch: {
-              anchor: 'com.nattos.spinningtris@0',
+              anchor: 'generator.spinningtris@0',
               columns: [{
                 name: 'main',
                 chain: [
                   { type: 'texture_input', id: 'in' },
                   {
                     type: 'module',
-                    module_type: 'com.nattos.brightness_contrast',
+                    module_type: 'video.brightness_contrast',
                     instance_key: 'bc_ce@0',
                     params: { brightness: 0.5, contrast: 0.0 },
                   },
@@ -532,7 +532,7 @@ describe('Engine Worker E2E', () => {
 
     it('chain_entry input differs from output when module applies effect', async () => {
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
           { id: 'bc_in', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 1, side: 'input' } },
           { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 1, side: 'output' } },
@@ -542,14 +542,14 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'sk_io',
             sketch: {
-              anchor: 'com.nattos.spinningtris@0',
+              anchor: 'generator.spinningtris@0',
               columns: [{
                 name: 'main',
                 chain: [
                   { type: 'texture_input', id: 'in' },
                   {
                     type: 'module',
-                    module_type: 'com.nattos.brightness_contrast',
+                    module_type: 'video.brightness_contrast',
                     instance_key: 'bc_io@0',
                     params: { brightness: 0.5, contrast: 0.0 },
                   },
@@ -586,7 +586,7 @@ describe('Engine Worker E2E', () => {
       // causes it to render with default params instead of the ones in the sketch.
 
       const makeSketch = (colIdx: number) => ({
-        anchor: 'com.nattos.spinningtris@0',
+        anchor: 'generator.spinningtris@0',
         columns: colIdx === 0
           ? [{
               name: 'col0',
@@ -594,7 +594,7 @@ describe('Engine Worker E2E', () => {
                 { type: 'texture_input', id: 'in' },
                 {
                   type: 'module',
-                  module_type: 'com.nattos.brightness_contrast',
+                  module_type: 'video.brightness_contrast',
                   instance_key: 'bc_move@0',
                   params: { brightness: 0.5, contrast: 0.0 },
                 },
@@ -610,7 +610,7 @@ describe('Engine Worker E2E', () => {
                 { type: 'texture_input', id: 'in' },
                 {
                   type: 'module',
-                  module_type: 'com.nattos.brightness_contrast',
+                  module_type: 'video.brightness_contrast',
                   instance_key: 'bc_move@0',
                   params: { brightness: 0.5, contrast: 0.0 },
                 },
@@ -621,7 +621,7 @@ describe('Engine Worker E2E', () => {
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         dumpName: 'engine_column_move',
         phases: [
           // Phase 0: contrast=0 in column 0 → should be black
@@ -671,7 +671,7 @@ describe('Engine Worker E2E', () => {
       // Repro for the actual bug: module in column 0, empty column 1.
       // The sketch output should come from column 0 (has module), not column 1 (empty passthrough).
       const result = await runEngineTest({
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_trailing' } },
         ],
@@ -680,7 +680,7 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'sk_trailing',
             sketch: {
-              anchor: 'com.nattos.spinningtris@0',
+              anchor: 'generator.spinningtris@0',
               columns: [
                 {
                   name: 'col0',
@@ -688,7 +688,7 @@ describe('Engine Worker E2E', () => {
                     { type: 'texture_input', id: 'in' },
                     {
                       type: 'module',
-                      module_type: 'com.nattos.brightness_contrast',
+                      module_type: 'video.brightness_contrast',
                       instance_key: 'bc_trail@0',
                       params: { brightness: 0.5, contrast: 0.0 },
                     },
@@ -726,14 +726,14 @@ describe('Engine Worker E2E', () => {
       // Verify output reflects the param change throughout.
 
       const sketchInCol0Empty = {
-        anchor: 'com.nattos.spinningtris@0',
+        anchor: 'generator.spinningtris@0',
         columns: [{
           name: 'col0',
           chain: [
             { type: 'texture_input', id: 'in' },
             {
               type: 'module',
-              module_type: 'com.nattos.brightness_contrast',
+              module_type: 'video.brightness_contrast',
               instance_key: 'bc_setparam@0',
               params: {},  // Empty, like createSketch
             },
@@ -743,14 +743,14 @@ describe('Engine Worker E2E', () => {
       };
 
       const sketchInCol0WithParams = {
-        anchor: 'com.nattos.spinningtris@0',
+        anchor: 'generator.spinningtris@0',
         columns: [{
           name: 'col0',
           chain: [
             { type: 'texture_input', id: 'in' },
             {
               type: 'module',
-              module_type: 'com.nattos.brightness_contrast',
+              module_type: 'video.brightness_contrast',
               instance_key: 'bc_setparam@0',
               params: { brightness: 0.5, contrast: 0.0 },
             },
@@ -760,7 +760,7 @@ describe('Engine Worker E2E', () => {
       };
 
       const sketchInCol1WithParams = {
-        anchor: 'com.nattos.spinningtris@0',
+        anchor: 'generator.spinningtris@0',
         columns: [
           { name: 'col0', chain: [
             { type: 'texture_input', id: 'in' },
@@ -770,7 +770,7 @@ describe('Engine Worker E2E', () => {
             { type: 'texture_input', id: 'in' },
             {
               type: 'module',
-              module_type: 'com.nattos.brightness_contrast',
+              module_type: 'video.brightness_contrast',
               instance_key: 'bc_setparam@0',
               params: { brightness: 0.5, contrast: 0.0 },
             },
@@ -781,7 +781,7 @@ describe('Engine Worker E2E', () => {
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['com.nattos.spinningtris', 'com.nattos.brightness_contrast'],
+        modules: ['generator.spinningtris', 'video.brightness_contrast'],
         dumpName: 'engine_setparam_move',
         phases: [
           // Phase 0: Create sketch with empty params, then set contrast=0

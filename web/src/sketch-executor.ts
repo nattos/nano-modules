@@ -104,17 +104,12 @@ export class SketchExecutor {
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
 
-    if (found) {
-      await host.load(found.compiled);
-      const mod = host.activateEffect(found.resolvedId);
-      loaded = { host, module: mod };
-    } else {
-      // Fallback: load from URL (legacy single-effect modules)
-      const moduleName = entry.module_type.replace(/^com\.nattos\./, '').replace(/\./g, '_');
-      await host.load(`/wasm/${moduleName}.wasm`);
-      const mod = host.activateEffect(entry.module_type);
-      loaded = { host, module: mod };
+    if (!found) {
+      throw new Error(`Module "${entry.module_type}" not registered. Load the containing bundle first.`);
     }
+    await host.load(found.compiled);
+    const mod = host.activateEffect(found.resolvedId);
+    loaded = { host, module: mod };
 
     this.instances.set(entry.instance_key, loaded);
     return loaded;

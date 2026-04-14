@@ -5,8 +5,6 @@ import { WasmHost } from './wasm-host';
 import type { Sketch, ChainEntry } from './sketch-types';
 
 const NANO_EFFECTS_WASM_PATH = resolve(__dirname, '../public/wasm/nano_effects.wasm');
-// Fallback to individual module for backward compat
-const BC_WASM_PATH = resolve(__dirname, '../public/wasm/brightness_contrast.wasm');
 
 // Helper: load a WASM module from bytes, discover effects, and activate one
 async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'video.brightness_contrast') {
@@ -25,11 +23,7 @@ async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'vi
 }
 
 function getWasmBytes(): Buffer | null {
-  try {
-    return readFileSync(NANO_EFFECTS_WASM_PATH);
-  } catch {
-    try { return readFileSync(BC_WASM_PATH); } catch { return null; }
-  }
+  try { return readFileSync(NANO_EFFECTS_WASM_PATH); } catch { return null; }
 }
 
 describe('Brightness/Contrast module', () => {

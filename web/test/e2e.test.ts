@@ -182,7 +182,7 @@ describe('NanoLooper Web Harness E2E', () => {
   it('plugin metadata is reported', async () => {
     const meta = await page.evaluate(() => (window as any).__host?.metadata);
     expect(meta).toBeDefined();
-    expect(meta.id).toBe('com.nattos.nanolooper');
+    expect(meta.id).toBe('sequencer.nanolooper');
     expect(meta.version).toBe('1.0.0');
   });
 
