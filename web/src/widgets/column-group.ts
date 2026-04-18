@@ -36,6 +36,7 @@ import './texture-monitor';
 import './spark-chart';
 import './smart-input';
 import './scalar-slider';
+import './output-trace-card';
 
 import type { LongEdit } from '../state/history';
 import type { Selectable } from '../state/types';
@@ -80,6 +81,25 @@ function schemaFieldKindLabel(def: any): string {
     case 'float4':  return 'vec4';
     default:        return String(def.type ?? 'unknown');
   }
+}
+
+/** The raw schema type tag (used by trace cards to pick a rendering mode). */
+function schemaFieldKindTag(def: any): string {
+  if (!def || typeof def !== 'object') return 'unknown';
+  return String(def.type ?? 'unknown');
+}
+
+/** Prefer an explicit display name from the schema when present. */
+function schemaFieldDisplayName(def: any, fallback: string): string {
+  if (def && typeof def.name === 'string' && def.name.length > 0) return def.name;
+  return fallback;
+}
+
+/** True for structured / GPU / vector fields that need layout-based auto-tap. */
+function isStructuredSchemaType(def: any): boolean {
+  if (!def || typeof def !== 'object') return false;
+  const t = def.type;
+  return t === 'object' || t === 'array' || t === 'float2' || t === 'float3' || t === 'float4';
 }
 
 /**
@@ -435,7 +455,8 @@ export class ColumnGroup extends MobxLitElement {
       display: block;
     }
 
-    /* --- Tap overlay --- */
+    /* --- Tap overlay — spans the entire card inner (inputs body + output
+     * trace-card row) so users can click to create taps on ANY field. --- */
     .tap-overlay-container {
       position: absolute;
       inset: 0;
@@ -471,39 +492,6 @@ export class ColumnGroup extends MobxLitElement {
       outline-color: var(--app-hi-color1, #ff4500);
       background: rgba(255, 69, 0, 0.22);
     }
-    /* Read-only output field display */
-    .output-field {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      padding: 2px 0;
-    }
-    .output-field-label {
-      color: var(--app-text-color2);
-      font-size: 10px;
-      min-width: 60px;
-      flex-shrink: 0;
-    }
-    .output-field-value {
-      color: var(--app-hi-color1, #ff4500);
-      font-size: 10px;
-      text-align: right;
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .output-separator {
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--app-text-color2);
-      opacity: 0.5;
-      padding: 4px 0 2px;
-    }
-
     /* --- Tap visualization (writes=red, reads=blue) --- */
     .tap-indicator {
       position: absolute;
@@ -803,56 +791,78 @@ export class ColumnGroup extends MobxLitElement {
     }
 
     if (entry.type === 'module') {
-      const tracePath2 = `trace/${this.sketchId}/${this.colIdx}/${chainIdx}/output`;
-      const traceSelected2 = appController.isSelected(tracePath2);
-      const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/output`;
-      const target: TracePoint['target'] = {
-        type: 'chain_entry',
-        sketchId: this.sketchId,
-        colIdx: this.colIdx,
-        chainIdx,
-        side: 'output',
-      };
-
-      // Check for data outputs from plugin io
-      const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-      const dataOutputs = plugin?.io.filter(io => io.kind === 2) ?? [];
-
-      const binding: FieldBinding = {
-        instanceKey: entry.instance_key,
-        getValue: (fieldPath: string) => {
-          const ps = appState.local.engine.pluginStates[entry.instance_key];
-          if (ps && fieldPath in ps) return ps[fieldPath];
-          return entry.params?.[fieldPath]
-            ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
-            ?? 0;
-        },
-        setValue: () => {},  // read-only for trace
-        beginContinuousEdit: () => ({ update: () => {}, accept: () => {}, cancel: () => {} }),
-      };
-
-      return html`
-        <div class="trace-card-row" ?selected=${traceSelected2}
-          @click=${(e: Event) => { e.stopPropagation(); appController.select(tracePath2); }}>
-          <texture-monitor
-            .traceId=${traceId}
-            .traceTarget=${target}
-            .width=${64}
-            .height=${36}
-          ></texture-monitor>
-          ${dataOutputs.map(io => html`
-            <spark-chart
-              .fieldPath=${io.name}
-              .binding=${binding}
-              .width=${64}
-              .height=${24}
-            ></spark-chart>
-          `)}
-        </div>
-      `;
+      return this.renderModuleOutputRow(chainIdx, entry);
     }
 
     return nothing;
+  }
+
+  /**
+   * Bottom-of-card row with one trace card per output. Each card is a
+   * FieldEditorElement so the gutter tap indicators and tap overlays line up
+   * with the output rather than a hidden slider inside the body.
+   */
+  private renderModuleOutputRow(chainIdx: number, entry: ModuleEntry) {
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const outputs = this.collectModuleOutputs(entry);
+    const tappingMode = appState.local.tappingMode;
+    const cardKey = `${this.sketchId}/${this.colIdx}/${chainIdx}`;
+    const binding = this.buildFieldBinding(chainIdx, entry, plugin);
+
+    // Show an empty row if there are no outputs — still keeps a data-card-key
+    // anchor so gutter positions can resolve if a user force-writes a tap.
+    if (outputs.length === 0) return nothing;
+
+    return html`
+      <div class="trace-card-row" data-card-key="${cardKey}">
+        ${outputs.map(o => {
+          const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/output/${o.fieldPath}`;
+          const target: TracePoint['target'] | null = o.isTexture
+            ? {
+                type: 'chain_entry',
+                sketchId: this.sketchId,
+                colIdx: this.colIdx,
+                chainIdx,
+                side: 'output',
+              }
+            : null;
+          return html`
+            <output-trace-card
+              .fieldPath=${o.fieldPath}
+              .label=${o.displayName}
+              .kind=${o.isTexture ? 'texture' : o.kindTag}
+              .traceId=${traceId}
+              .traceTarget=${target}
+              .binding=${binding}
+              @click=${(e: Event) => this.onOutputCardClick(e, chainIdx, o.fieldPath, o.schemaDef, tappingMode)}
+              title="${tappingMode ? 'Click to create write tap' : o.displayName}"
+            ></output-trace-card>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  /**
+   * Click on an output trace card:
+   *  - tap mode → create a write tap for this output (struct-typed outputs
+   *    get a struct rail carrying the output's schema, scalar/texture outputs
+   *    get the appropriate scalar rail).
+   *  - otherwise → no-op (selection of individual outputs isn't plumbed yet).
+   */
+  private onOutputCardClick(
+    e: Event,
+    chainIdx: number,
+    fieldPath: string,
+    schemaDef: any | null,
+    tappingMode: boolean,
+  ) {
+    e.stopPropagation();
+    if (!tappingMode) return;
+    const key = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
+    appController.autoCreateTapForOutputField(
+      this.sketchId, this.colIdx, chainIdx, fieldPath, schemaDef);
+    appController.selectField(key);
   }
 
   // ========================================================================
@@ -909,9 +919,9 @@ export class ColumnGroup extends MobxLitElement {
           <div class="effect-card-divider"></div>
           <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}">
             ${this.renderFieldWidgets(chainIdx, entry)}
-            ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
           </div>
           ${this.renderTraceCardRow(chainIdx, entry)}
+          ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
         </div>
         ${this.renderDeviceTab('bottom', chainIdx + 1)}
       </div>
@@ -978,30 +988,112 @@ export class ColumnGroup extends MobxLitElement {
     this.requestUpdate();
   }
 
-  /** Build the set of field names that are outputs for a given module entry. */
+  /**
+   * Build the set of field names that are SCHEMA-declared outputs for this
+   * module. Write taps on a field no longer promote it to an output — input
+   * params stay inputs regardless of how they're tapped.
+   */
   private getOutputFieldNames(entry: ModuleEntry): Set<string> {
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
     const names = new Set<string>();
-    // io-declared data outputs
-    for (const io of plugin?.io ?? []) {
-      if (io.kind === 2) names.add(io.name);
+    // Schema io-declared outputs (io bit 2).
+    const schema = plugin?.schema ?? {};
+    for (const [name, def] of Object.entries(schema)) {
+      const io = (def as any)?.io ?? 0;
+      if (io & 2) names.add(name);
     }
-    // Fields that already have write taps
-    for (const tap of entry.taps ?? []) {
-      if (tap.direction === 'write') names.add(tap.fieldPath);
+    // Legacy io declarations (kind=2 data outputs, kind=1 texture outputs).
+    for (const io of plugin?.io ?? []) {
+      if (io.kind === 2 || io.kind === 1) names.add(io.name);
     }
     return names;
   }
 
+  /**
+   * Collect output rows for this module, ordered (schema order first, then
+   * legacy io-declared fallbacks). Used by the trace-card row.
+   */
+  private collectModuleOutputs(entry: ModuleEntry): Array<{
+    fieldPath: string;
+    displayName: string;
+    kindLabel: string;
+    kindTag: string;
+    isTexture: boolean;
+    schemaDef: any | null;
+  }> {
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const rows: Array<{
+      fieldPath: string;
+      displayName: string;
+      kindLabel: string;
+      kindTag: string;
+      isTexture: boolean;
+      schemaDef: any | null;
+    }> = [];
+    const seen = new Set<string>();
+
+    const schema = plugin?.schema ?? {};
+    const entries = Object.entries(schema).sort(([an, ad], [bn, bd]) => {
+      const ao = (ad as any)?.order ?? 1000;
+      const bo = (bd as any)?.order ?? 1000;
+      if (ao !== bo) return ao - bo;
+      return an.localeCompare(bn);
+    });
+    for (const [name, def] of entries) {
+      const d: any = def;
+      const io = d?.io ?? 0;
+      if (!(io & 2)) continue;
+      seen.add(name);
+      rows.push({
+        fieldPath: name,
+        displayName: schemaFieldDisplayName(d, name),
+        kindLabel: schemaFieldKindLabel(d),
+        kindTag: schemaFieldKindTag(d),
+        isTexture: d.type === 'texture',
+        schemaDef: d,
+      });
+    }
+
+    // Legacy modules without a matching schema entry: fall back to plugin.io.
+    for (const io of plugin?.io ?? []) {
+      if (seen.has(io.name)) continue;
+      if (io.kind === 1) {
+        rows.push({
+          fieldPath: io.name,
+          displayName: io.name,
+          kindLabel: 'texture',
+          kindTag: 'texture',
+          isTexture: true,
+          schemaDef: null,
+        });
+        seen.add(io.name);
+      } else if (io.kind === 2) {
+        rows.push({
+          fieldPath: io.name,
+          displayName: io.name,
+          kindLabel: 'float',
+          kindTag: 'float',
+          isTexture: false,
+          schemaDef: null,
+        });
+        seen.add(io.name);
+      }
+    }
+    return rows;
+  }
+
   private renderTapOverlay(chainIdx: number, entry: ModuleEntry) {
     const selectedPath = appState.local.selectedFieldPath;
-    const cardBody = this.renderRoot.querySelector(
+    // Anchor the overlay to the effect-card-inner so it can span both the
+    // inputs body and the output trace-card row.
+    const innerEl = this.renderRoot.querySelector(
       `[data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"]`
-    ) as HTMLElement | null;
+    )?.closest('.effect-card-inner') as HTMLElement | null;
 
-    if (!cardBody) return html`<div class="tap-overlay-container"></div>`;
+    if (!innerEl) return html`<div class="tap-overlay-container"></div>`;
 
     const outputFieldNames = this.getOutputFieldNames(entry);
+    const schema = appState.local.plugins.find(p => p.id === entry.module_type)?.schema ?? {};
 
     const hits: TemplateResult[] = [];
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
@@ -1009,47 +1101,71 @@ export class ColumnGroup extends MobxLitElement {
     for (const [key] of this.layoutManager.entries) {
       if (!key.startsWith(keyPrefix)) continue;
 
-      const rect = this.layoutManager.getRelativeRect(key, cardBody);
+      const rect = this.layoutManager.getRelativeRect(key, innerEl);
       if (!rect) continue;
 
       const fieldPath = key.slice(keyPrefix.length);
       const isOutput = outputFieldNames.has(fieldPath);
       const isSelected = selectedPath === key;
+      const schemaDef = (schema as any)[fieldPath] ?? null;
 
       hits.push(html`
         <div class="tap-overlay-hit ${isOutput ? 'output' : ''}" ?selected=${isSelected}
           style="top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px"
-          @click=${() => this.onTapOverlayClick(key, fieldPath, isOutput, chainIdx)}></div>
+          @click=${() => this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx)}></div>
       `);
     }
 
     return html`<div class="tap-overlay-container">${hits}</div>`;
   }
 
-  private onTapOverlayClick(key: string, fieldPath: string, isOutput: boolean, chainIdx: number) {
+  private onTapOverlayClick(
+    key: string,
+    fieldPath: string,
+    isOutput: boolean,
+    schemaDef: any | null,
+    chainIdx: number,
+  ) {
     if (isOutput) {
-      // Auto-create write tap with new rail
-      appController.autoCreateTapForOutput(this.sketchId, this.colIdx, chainIdx, fieldPath, 'float');
+      appController.autoCreateTapForOutputField(
+        this.sketchId, this.colIdx, chainIdx, fieldPath, schemaDef);
     } else {
-      // Auto-create read tap with last matching rail
-      appController.autoCreateTapForInput(this.sketchId, this.colIdx, chainIdx, fieldPath, 'float');
+      appController.autoCreateTapForInputField(
+        this.sketchId, this.colIdx, chainIdx, fieldPath, schemaDef);
     }
     appController.selectField(key);
   }
 
   private renderFieldWidgets(chainIdx: number, entry: ModuleEntry) {
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-    const outputFieldNames = this.getOutputFieldNames(entry);
 
-    const binding: FieldBinding = {
+    const binding = this.buildFieldBinding(chainIdx, entry, plugin);
+
+    // Check for a custom inspector registered via the editor registry
+    const el = this.callbacks?.getInspectorElement(entry.instance_key, entry.module_type, binding);
+    if (el) return html`${el}`;
+
+    // Build input fields from the schema (when available) so we can
+    // render placeholders for structured / GPU / vector ports that
+    // don't fit the scalar ParamInfo model. Falls back to plugin.params
+    // for modules without a schema block.
+    const inputFields = this.buildInputFieldDefs(plugin);
+    if (inputFields.length === 0) return nothing;
+    const inspector = createGenericInspector(inputFields);
+    return inspector(binding);
+  }
+
+  /** Shared FieldBinding builder — used by both the inputs body and the output trace cards. */
+  private buildFieldBinding(
+    chainIdx: number,
+    entry: ModuleEntry,
+    plugin: typeof appState.local.plugins[0] | undefined,
+  ): FieldBinding {
+    return {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
-        // Read from the live plugin state (canonical source of truth).
-        // This reflects user-set values, modulated values from read taps,
-        // and module-produced outputs (e.g. LFO output).
         const ps = appState.local.engine.pluginStates[entry.instance_key];
         if (ps && fieldPath in ps) return ps[fieldPath];
-        // Fallback to sketch instance state or plugin defaults (before first frame arrives)
         const sketch = appState.database.sketches[this.sketchId];
         const instState = sketch?.instances?.[entry.instance_key]?.state;
         return instState?.[fieldPath]
@@ -1064,54 +1180,28 @@ export class ColumnGroup extends MobxLitElement {
         const edit = appController.beginSetEffectParam(
           this.sketchId, this.colIdx, chainIdx, fieldPath, value);
         return {
-          update: (v: any) => {
-            appController.updateSetEffectParam(
-              edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v);
-          },
-          accept: () => { edit.accept(); },
-          cancel: () => { edit.cancel(); },
+          update: (v: any) => appController.updateSetEffectParam(
+            edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
+          accept: () => edit.accept(),
+          cancel: () => edit.cancel(),
         };
       },
     };
-
-    // Check for a custom inspector registered via the editor registry
-    const el = this.callbacks?.getInspectorElement(entry.instance_key, entry.module_type, binding);
-    if (el) {
-      return html`${el}${this.renderOutputFields(plugin, entry, binding, outputFieldNames)}`;
-    }
-
-    // Build input fields from the schema (when available) so we can
-    // render placeholders for structured / GPU / vector ports that
-    // don't fit the scalar ParamInfo model. Falls back to plugin.params
-    // for modules without a schema block.
-    const inputFields = this.buildInputFieldDefs(plugin, outputFieldNames);
-
-    let inputSection = nothing as typeof nothing | TemplateResult;
-    if (inputFields.length > 0) {
-      const inspector = createGenericInspector(inputFields);
-      inputSection = inspector(binding);
-    }
-
-    return html`${inputSection}${this.renderOutputFields(plugin, entry, binding, outputFieldNames)}`;
   }
 
   private buildInputFieldDefs(
     plugin: typeof appState.local.plugins[0] | undefined,
-    outputFieldNames: Set<string>,
   ): InspectorFieldDef[] {
     if (!plugin) return [];
 
     const schema = plugin.schema;
     if (!schema || Object.keys(schema).length === 0) {
       // Legacy fallback — no schema available; go off plugin.params.
-      return plugin.params
-        .filter(p => !outputFieldNames.has(p.name))
-        .map(paramToFieldDef);
+      return plugin.params.map(paramToFieldDef);
     }
 
     // Sort by order, then name, to match declaration order.
     const entries = Object.entries(schema)
-      .filter(([name]) => !outputFieldNames.has(name))
       .sort(([an, ad], [bn, bd]) => {
         const ao = (ad as any)?.order ?? 1000;
         const bo = (bd as any)?.order ?? 1000;
@@ -1124,132 +1214,31 @@ export class ColumnGroup extends MobxLitElement {
       const d: any = def;
       const io = d?.io ?? 0;
       const isInput = !!(io & 1);
-      const isOutput = !!(io & 2);
-      // Textures declared as outputs are rendered separately by
-      // renderOutputFields / the chain arrow system. Texture inputs
-      // are populated by rail taps — show a placeholder so the user
-      // can still tap them.
-      if (!isInput && !isOutput) continue;
-      if (!isInput) continue; // pure outputs handled elsewhere
+      if (!isInput) continue; // pure outputs handled by the trace-card row
+      const label = schemaFieldDisplayName(d, name);
       if (d.type === 'texture') {
-        fields.push({ type: 'placeholder', label: name, path: name,
+        fields.push({ type: 'placeholder', label, path: name,
           kind: 'texture', direction: 'input' });
         continue;
       }
       if (isScalarSchemaField(d)) {
         const param = plugin.params.find(p => p.name === name);
-        if (param) { fields.push(paramToFieldDef(param)); continue; }
+        if (param) {
+          const fieldDef = paramToFieldDef(param);
+          fieldDef.label = label;
+          fields.push(fieldDef);
+          continue;
+        }
         // No legacy param row (shouldn't happen for scalars) — fall through.
       }
       fields.push({
-        type: 'placeholder', label: name, path: name,
+        type: 'placeholder', label, path: name,
         kind: schemaFieldKindLabel(d), direction: 'input',
       });
     }
     return fields;
   }
 
-  /**
-   * Render output fields as read-only scalar-sliders.
-   * These implement FieldEditorElement so they're scanned by the field layout
-   * manager and get tap overlay hit targets.
-   */
-  private renderOutputFields(
-    plugin: typeof appState.local.plugins[0] | undefined,
-    entry: ModuleEntry,
-    binding: FieldBinding,
-    outputFieldNames: Set<string>,
-  ) {
-    if (!plugin) return nothing;
-
-    // Collect output field names in a stable order (schema order if available).
-    const schema = plugin.schema ?? {};
-    const hasSchema = Object.keys(schema).length > 0;
-
-    interface OutputRow {
-      name: string;
-      scalar: boolean;
-      param?: ParamInfo;
-      kind: string;
-    }
-    const rows: OutputRow[] = [];
-    const seen = new Set<string>();
-
-    if (hasSchema) {
-      const entries = Object.entries(schema).sort(([an, ad], [bn, bd]) => {
-        const ao = (ad as any)?.order ?? 1000;
-        const bo = (bd as any)?.order ?? 1000;
-        if (ao !== bo) return ao - bo;
-        return an.localeCompare(bn);
-      });
-      for (const [name, def] of entries) {
-        const d: any = def;
-        const io = d?.io ?? 0;
-        const declaredOutput = !!(io & 2);
-        const tappedOutput = outputFieldNames.has(name);
-        if (!declaredOutput && !tappedOutput) continue;
-        // Texture outputs are surfaced by the chain arrow, not the inspector.
-        if (d.type === 'texture') continue;
-        seen.add(name);
-        if (isScalarSchemaField(d)) {
-          const param = plugin.params.find(p => p.name === name);
-          rows.push({ name, scalar: true, param, kind: schemaFieldKindLabel(d) });
-        } else {
-          rows.push({ name, scalar: false, kind: schemaFieldKindLabel(d) });
-        }
-      }
-    }
-
-    // Legacy fallback / write-tap-only outputs: also surface params and
-    // io decls not already covered by the schema pass above.
-    for (const p of plugin.params) {
-      if (seen.has(p.name)) continue;
-      if (!outputFieldNames.has(p.name)) continue;
-      rows.push({ name: p.name, scalar: true, param: p, kind: 'float' });
-      seen.add(p.name);
-    }
-    for (const io of plugin.io) {
-      if (io.kind !== 2) continue;
-      if (seen.has(io.name)) continue;
-      rows.push({ name: io.name, scalar: true, kind: 'float' });
-      seen.add(io.name);
-    }
-
-    if (rows.length === 0) return nothing;
-
-    return html`
-      <div class="output-separator">outputs</div>
-      ${rows.map(r => {
-        if (r.scalar) {
-          const min = r.param?.min ?? 0;
-          const max = r.param?.max ?? 1;
-          const step = r.param?.type === 13 ? 1 : 0.01;
-          const def = r.param?.defaultValue ?? 0;
-          return html`
-            <scalar-slider style="width: 100%;"
-              .fieldPath=${r.name}
-              .label=${r.name}
-              .min=${min}
-              .max=${max}
-              .step=${step}
-              .defaultValue=${def}
-              .binding=${binding}
-            ></scalar-slider>
-          `;
-        }
-        // Structured output — real FieldEditorElement so tap overlays register.
-        return html`
-          <field-placeholder
-            .fieldPath=${r.name}
-            .label=${r.name}
-            .kind=${r.kind}
-            .direction=${'output'}
-            .binding=${binding}
-          ></field-placeholder>
-        `;
-      })}
-    `;
-  }
 
   // ========================================================================
   // Gutter tap visualization

@@ -604,9 +604,13 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     // Clean up drag visual state first (markers, dragging attribute)
     this.cleanupDrag();
 
+    // Track target column(s) so we can auto-wire struct inputs post-mutation.
+    const affectedCols = new Set<number>([sourceCol]);
+
     // Now perform the mutation — MobX will re-render affected column-groups
     if (hoverTarget.type === 'zone') {
       const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = hoverTarget;
+      affectedCols.add(targetColIdx);
 
       appController.mutate('Move effect', draft => {
         const sk = draft.sketches[sketchId];
@@ -625,6 +629,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     } else if (hoverTarget.type === 'placeholder') {
       const colIdx = hoverTarget.colIdx;
+      affectedCols.add(colIdx);
 
       appController.mutate('Move to new column', draft => {
         const sk = draft.sketches[sketchId];
@@ -644,6 +649,10 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
         const outIdx = targetChain.findIndex(e => e.type === 'texture_output');
         targetChain.splice(outIdx >= 0 ? outIdx : targetChain.length, 0, removed);
       });
+    }
+
+    for (const col of affectedCols) {
+      appController.ensureAutoStructTapsInColumn(sketchId, col);
     }
 
     // If the column count changed (placeholder drop created columns),
