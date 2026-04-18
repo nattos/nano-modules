@@ -75,12 +75,14 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.drawImage(bitmap, 0, 0);
     });
+    document.addEventListener('keydown', this.handleGlobalKeyDown);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this.previewDisposer?.();
     this.previewDisposer = null;
+    document.removeEventListener('keydown', this.handleGlobalKeyDown);
     for (const [, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(
         (el as any).moduleType ?? '');
@@ -88,6 +90,37 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     }
     this.inspectorCache.clear();
     this.columnCache.clear();
+  }
+
+  /**
+   * Delete/Backspace on a selected effect card removes the effect. Ignored when
+   * focus is in an editable element (so typing in inputs still works).
+   */
+  private handleGlobalKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (!this.isConnected) return;
+    if (this.isTypingInEditable(e.target)) return;
+    const selection = appState.local.selection;
+    if (!selection) return;
+    const parts = selection.path.split('/');
+    if (parts[0] !== 'effect' || parts.length < 4) return;
+    const sketchId = parts[1];
+    const colIdx = parseInt(parts[2]);
+    const chainIdx = parseInt(parts[3]);
+    if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
+    e.preventDefault();
+    appController.select(null);
+    appController.removeEffectFromChain(sketchId, colIdx, chainIdx);
+  };
+
+  private isTypingInEditable(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    const tag = target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (target.isContentEditable) return true;
+    // CodeMirror content editable
+    if (target.closest('.cm-content')) return true;
+    return false;
   }
 
   static styles = css`

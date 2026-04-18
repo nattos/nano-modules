@@ -154,7 +154,7 @@ export class ColumnGroup extends MobxLitElement {
     .column {
       display: flex;
       flex-direction: column;
-      align-items: center;
+      align-items: stretch;
       gap: 0;
       width: var(--column-width);
       flex-shrink: 0;
@@ -170,8 +170,23 @@ export class ColumnGroup extends MobxLitElement {
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--app-text-color2);
-      margin-bottom: 8px;
+      padding: 6px 10px;
       width: 100%;
+      box-sizing: border-box;
+    }
+    /* The body is the recessed "rack" that devices slot into. */
+    .column-body {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+      padding: 4px 0;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 4px;
+      box-shadow: inset 0 1px 0 rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.25);
+      box-sizing: border-box;
     }
     .column-placeholder {
       border: 1px dashed rgba(255,255,255,0.08);
@@ -186,53 +201,83 @@ export class ColumnGroup extends MobxLitElement {
       opacity: 0.5;
     }
 
-    /* --- Chain elements --- */
-    .chain-marker {
+    /* ------------------------------------------------------------------
+     * Devices (cards and markers) share a T-shape: body + top-tab (going
+     * up) + bottom-tab (going down). Tabs are narrower than the body and
+     * protrude above/below. A continuous 1px border traces the whole
+     * shape — tabs overlap the body's top/bottom border by 1px so the
+     * border visually joins in a single outline.
+     * ---------------------------------------------------------------- */
+
+    /* Colors used consistently across cards and markers. */
+    :host {
+      --device-bg: rgba(255,255,255,0.07);
+      --device-border: rgba(255,255,255,0.22);
+      --device-sel-bg: rgba(65, 105, 225, 0.22);
+      --device-sel-border: var(--app-hi-color2, #4169E1);
+    }
+
+    .effect-card, .chain-marker {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      box-sizing: border-box;
+      cursor: default;
+      position: relative;
+    }
+    /* Each device overlaps the previous one so the top-tab U-shape straddles
+     * the bottom tab coming down from above (circuit-edge-connector look).
+     * The first child of column-body doesn't need this. */
+    .effect-card, .chain-marker {
+      margin-top: -7px;
+    }
+    .column-body > :first-child {
+      margin-top: 0;
+    }
+    .effect-card[dragging] { opacity: 0.4; }
+
+    /* Inner body of a device — solid rectangle with full border. */
+    .effect-card-inner, .chain-marker-inner {
+      width: 100%;
+      background: var(--device-bg);
+      border: 1px solid var(--device-border);
+      box-sizing: border-box;
+      position: relative;
+      z-index: 0;
+    }
+    .chain-marker-inner {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      padding: 0;
+      cursor: default;
+    }
+    .chain-marker-label {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--app-text-color2);
-      padding: 6px 16px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 4px;
+      padding: 8px 10px;
       text-align: center;
-      width: 100%;
-      box-sizing: border-box;
+      cursor: pointer;
     }
-    .chain-wire { width: 2px; height: 12px; background: rgba(255,255,255,0.12); }
-
-    /* --- Effect cards (unified with chain-marker styling) --- */
-    .effect-card {
-      width: 100%;
-      padding: 0;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 4px;
-      box-sizing: border-box;
-    }
-    .effect-card[dragging] { opacity: 0.4; }
-    .effect-card[selected] {
-      border-color: var(--app-hi-color2, #4169E1);
-      box-shadow: 0 0 0 1px var(--app-hi-color2, #4169E1);
-    }
-    .chain-marker[selected] {
-      border-color: var(--app-hi-color2, #4169E1);
-      box-shadow: 0 0 0 1px var(--app-hi-color2, #4169E1);
+    .effect-card[selected] .effect-card-inner,
+    .chain-marker[selected] .chain-marker-inner {
+      background: var(--device-sel-bg);
+      border-color: var(--device-sel-border);
     }
     .trace-card-row[selected] {
-      outline: 1px solid var(--app-hi-color2, #4169E1);
-      outline-offset: 1px;
-      border-radius: 2px;
+      outline: 1px solid var(--device-sel-border);
+      outline-offset: -1px;
     }
+
     .effect-card-header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
       padding: 6px 10px;
       cursor: grab;
       user-select: none;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
     }
     .effect-card-header:active { cursor: grabbing; }
     .effect-card-name {
@@ -245,29 +290,132 @@ export class ColumnGroup extends MobxLitElement {
       min-width: 0;
       position: relative;
     }
-    .effect-card-body { padding: 6px 10px; position: relative; }
-    .remove-btn {
-      background: none; border: none;
-      color: var(--app-text-color2); cursor: pointer;
-      font-size: 14px; padding: 0 4px; line-height: 1;
+    /* Horizontal divider under the card header. */
+    .effect-card-divider {
+      height: 1px;
+      background: var(--device-border);
+      width: 100%;
     }
-    .remove-btn:hover { color: var(--app-hi-color1); }
+    .effect-card[selected] .effect-card-divider {
+      background: var(--device-sel-border);
+      opacity: 0.5;
+    }
+    .effect-card-body {
+      padding: 6px 10px 8px;
+      position: relative;
+    }
 
-    /* --- Trace card row --- */
+    /* --- Trace card row (lives INSIDE a device body) --- */
     .trace-card-row {
       display: flex;
       flex-wrap: wrap;
       gap: 4px;
       width: 100%;
-      padding: 4px 0;
+      padding: 6px 10px 8px;
       box-sizing: border-box;
+      border-top: 1px solid var(--device-border);
+    }
+    .effect-card[selected] .trace-card-row,
+    .chain-marker[selected] .trace-card-row {
+      border-top-color: var(--device-sel-border);
+      opacity: 0.9;
     }
 
-    /* --- Drop zones (invisible spacing, no visual change on hover) --- */
-    .drop-zone {
+    /* --- Device tabs — circuit-style "tab + slot" connectors. ---
+     *
+     * Bottom tab (plain narrow rectangle, protrudes below the body).
+     * Top tab (wider U-shape SVG with a slot cut into its top — the slot
+     * straddles the narrower bottom tab of the card above, so the two
+     * elements visually interlock like a card-edge connector).
+     *
+     * The device box overlaps the previous one by 7px (see margin-top on
+     * .effect-card/.chain-marker) so both tabs occupy the same seam region
+     * in absolute Y. The bottom tab's z-index > top tab's z-index so the
+     * bottom tab visibly sits IN FRONT OF the slot while the posts
+     * straddle it. Horizontal widths are chosen so the bottom tab fits
+     * inside the slot opening with a small visible clearance gap.
+     * ---------------------------------------------------------------- */
+
+    /* Bottom tab (narrow protrusion going down from this card's body). */
+    .device-tab.bottom {
+      width: 24%;
+      align-self: center;
+      height: 7px;
+      background: var(--device-bg);
+      border: 1px solid var(--device-border);
+      border-top: none;
+      border-radius: 0 0 3px 3px;
+      margin-top: -1px;          /* overlap body's bottom border by 1px */
+      box-sizing: border-box;
+      position: relative;
+      z-index: 3;                /* in front of the top tab below */
+      cursor: pointer;
+    }
+    .device-tab.bottom:hover {
+      background: rgba(65, 105, 225, 0.3);
+      border-color: var(--device-sel-border);
+    }
+    .device-tab.bottom[selected] {
+      background: var(--device-sel-bg);
+      border-color: var(--device-sel-border);
+      box-shadow: inset 0 0 0 1px var(--device-sel-border);
+    }
+
+    /* Top tab (U-shape SVG). 56% wide, with slot carved from its top. */
+    .device-tab.top {
+      width: 56%;
+      align-self: center;
+      height: 10px;
+      display: block;
+      line-height: 0;
+      margin-bottom: -1px;       /* overlap body's top border by 1px */
+      position: relative;
+      z-index: 1;
+      cursor: pointer;
+      overflow: visible;
+    }
+    .device-tab.top svg {
       width: 100%;
-      min-height: 4px;
-      border-radius: 2px;
+      height: 100%;
+      display: block;
+      overflow: visible;
+    }
+    .device-tab.top .tab-fill {
+      fill: var(--device-bg);
+    }
+    .device-tab.top .tab-stroke {
+      fill: none;
+      stroke: var(--device-border);
+      stroke-width: 1;
+      vector-effect: non-scaling-stroke;
+    }
+    .device-tab.top:hover .tab-fill {
+      fill: rgba(65, 105, 225, 0.3);
+    }
+    .device-tab.top:hover .tab-stroke {
+      stroke: var(--device-sel-border);
+    }
+    .device-tab.top[selected] .tab-fill {
+      fill: var(--device-sel-bg);
+    }
+    .device-tab.top[selected] .tab-stroke {
+      stroke: var(--device-sel-border);
+      stroke-width: 1.5;
+    }
+    .effect-card[selected] > .device-tab.top .tab-stroke,
+    .chain-marker[selected] > .device-tab.top .tab-stroke {
+      stroke: var(--device-sel-border);
+    }
+    .effect-card[selected] > .device-tab.bottom,
+    .chain-marker[selected] > .device-tab.bottom {
+      border-color: var(--device-sel-border);
+    }
+
+    /* --- Drop zones (invisible hit regions inside tabs, used for drag-drop target discovery) --- */
+    .drop-zone {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
     }
 
     /* --- Drag insertion marker (absolutely positioned, no layout shift) --- */
@@ -286,24 +434,6 @@ export class ColumnGroup extends MobxLitElement {
     .drag-insert-marker.visible {
       display: block;
     }
-    .add-btn {
-      background: rgba(255,255,255,0.04);
-      border: 1px dashed rgba(255,255,255,0.15);
-      color: var(--app-text-color2);
-      font-size: 16px;
-      width: 100%;
-      padding: 4px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: inherit;
-      text-align: center;
-      transition: background 0.15s, border-color 0.15s;
-    }
-    .add-btn:hover {
-      background: rgba(65,105,225,0.1);
-      border-color: var(--app-hi-color2);
-      color: var(--app-text-color1);
-    }
 
     /* --- Tap overlay --- */
     .tap-overlay-container {
@@ -312,6 +442,7 @@ export class ColumnGroup extends MobxLitElement {
       pointer-events: none;
       z-index: 10;
     }
+    /* Inputs (reads) — blue. */
     .tap-overlay-hit {
       position: absolute;
       background: rgba(65, 105, 225, 0.12);
@@ -328,17 +459,17 @@ export class ColumnGroup extends MobxLitElement {
       outline-offset: 1px;
       background: rgba(65, 105, 225, 0.2);
     }
-    /* Output field overlay uses a different color */
+    /* Output field overlay — writes are red. */
     .tap-overlay-hit.output {
-      background: rgba(225, 105, 65, 0.12);
-      border: 1px solid rgba(225, 105, 65, 0.3);
+      background: rgba(255, 69, 0, 0.14);
+      border: 1px solid rgba(255, 69, 0, 0.35);
     }
     .tap-overlay-hit.output:hover {
-      background: rgba(225, 105, 65, 0.25);
+      background: rgba(255, 69, 0, 0.28);
     }
     .tap-overlay-hit.output[selected] {
-      outline-color: var(--app-hi-color1, #E16941);
-      background: rgba(225, 105, 65, 0.2);
+      outline-color: var(--app-hi-color1, #ff4500);
+      background: rgba(255, 69, 0, 0.22);
     }
     /* Read-only output field display */
     .output-field {
@@ -355,7 +486,7 @@ export class ColumnGroup extends MobxLitElement {
       flex-shrink: 0;
     }
     .output-field-value {
-      color: var(--app-hi-color1, #E16941);
+      color: var(--app-hi-color1, #ff4500);
       font-size: 10px;
       text-align: right;
       flex: 1;
@@ -373,25 +504,40 @@ export class ColumnGroup extends MobxLitElement {
       padding: 4px 0 2px;
     }
 
-    /* --- Tap visualization --- */
+    /* --- Tap visualization (writes=red, reads=blue) --- */
     .tap-indicator {
       position: absolute;
-      width: 6px;
-      height: 6px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
       transform: translate(-50%, -50%);
       z-index: 2;
+      cursor: pointer;
     }
-    .tap-indicator.write { background: var(--app-hi-color2, #4169E1); }
-    .tap-indicator.read { background: var(--app-hi-color1, #E16941); }
+    .tap-indicator.write { background: var(--app-hi-color1, #ff4500); }
+    .tap-indicator.read  { background: var(--app-hi-color2, #4169E1); }
+    .tap-indicator:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
+    .tap-indicator[selected] {
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.8);
+    }
     .tap-indicator-line {
       position: absolute;
       height: 2px;
       transform: translateY(-50%);
       z-index: 1;
+      cursor: pointer;
     }
-    .tap-indicator-line.write { background: var(--app-hi-color2, #4169E1); opacity: 0.5; }
-    .tap-indicator-line.read { background: var(--app-hi-color1, #E16941); opacity: 0.5; }
+    /* Invisible padding strip to enlarge the click hitbox above/below the 2px line. */
+    .tap-indicator-line::before {
+      content: '';
+      position: absolute;
+      left: 0; right: 0;
+      top: -5px; bottom: -5px;
+    }
+    .tap-indicator-line.write { background: var(--app-hi-color1, #ff4500); opacity: 0.6; }
+    .tap-indicator-line.read  { background: var(--app-hi-color2, #4169E1); opacity: 0.6; }
+    .tap-indicator-line:hover { opacity: 0.9; }
+    .tap-indicator-line[selected] { opacity: 1; }
 
     /* --- Rail vertical lines --- */
     .rail-line {
@@ -403,8 +549,15 @@ export class ColumnGroup extends MobxLitElement {
       background: rgba(255,255,255,0.08);
       z-index: 0;
     }
+    .rail-line.has-writer {
+      background: var(--app-hi-color2, #4169E1);
+      opacity: 0.55;
+    }
     .rail-line:hover {
       background: rgba(255,255,255,0.2);
+    }
+    .rail-line.has-writer:hover {
+      opacity: 0.9;
     }
 
     /* --- Inspector content (rendered into the right panel via Selectable) --- */
@@ -553,7 +706,9 @@ export class ColumnGroup extends MobxLitElement {
     return html`
       <div class="column" style="position:relative">
         <div class="column-header">${column.name}</div>
-        ${this.renderChain(sketch, column)}
+        <div class="column-body">
+          ${this.renderChain(sketch, column)}
+        </div>
         <div class="drag-insert-marker"></div>
       </div>
       <div class="column-gutter" data-col=${this.colIdx}>
@@ -574,34 +729,48 @@ export class ColumnGroup extends MobxLitElement {
       const entry = column.chain[i];
 
       if (entry.type === 'texture_input') {
-        const inputPath = `input/${this.sketchId}/${this.colIdx}/${i}`;
-        const inputSelected = appController.isSelected(inputPath);
-        items.push(html`<div class="chain-marker" ?selected=${inputSelected}
-          @click=${(e: Event) => { e.stopPropagation(); appController.select(inputPath); }}>Input</div>`);
-        this.registerChainMarkerSelectable(inputPath, 'Texture Input', i, entry);
-        items.push(this.renderTraceCardRow(i, entry));
-        items.push(html`<div class="chain-wire"></div>`);
-        items.push(this.renderDropZone(i + 1));
-        items.push(html`<div class="chain-wire"></div>`);
+        items.push(this.renderInputMarker(i, entry));
       } else if (entry.type === 'texture_output') {
-        const outputPath = `output/${this.sketchId}/${this.colIdx}/${i}`;
-        const outputSelected = appController.isSelected(outputPath);
-        items.push(html`<div class="chain-marker" ?selected=${outputSelected}
-          @click=${(e: Event) => { e.stopPropagation(); appController.select(outputPath); }}>Output</div>`);
-        this.registerChainMarkerSelectable(outputPath, 'Texture Output', i, entry);
+        items.push(this.renderOutputMarker(i, entry));
       } else if (entry.type === 'module') {
         items.push(this.renderEffectCard(i, entry));
-        // Trace row for this module's outputs
-        items.push(this.renderTraceCardRow(i, entry));
-        items.push(html`<div class="chain-wire"></div>`);
-        if (i + 1 < column.chain.length) {
-          items.push(this.renderDropZone(i + 1));
-          items.push(html`<div class="chain-wire"></div>`);
-        }
       }
     }
 
     return items;
+  }
+
+  /** Render the texture_input marker with a bottom tab (insert-after-input). */
+  private renderInputMarker(chainIdx: number, entry: ChainEntry) {
+    const path = `input/${this.sketchId}/${this.colIdx}/${chainIdx}`;
+    const isSelected = appController.isSelected(path);
+    this.registerChainMarkerSelectable(path, 'Texture Input', chainIdx, entry);
+    const selectMarker = (e: Event) => { e.stopPropagation(); appController.select(path); };
+    return html`
+      <div class="chain-marker" ?selected=${isSelected}>
+        <div class="chain-marker-inner">
+          <div class="chain-marker-label" @click=${selectMarker}>Input</div>
+          ${this.renderTraceCardRow(chainIdx, entry)}
+        </div>
+        ${this.renderDeviceTab('bottom', chainIdx + 1)}
+      </div>
+    `;
+  }
+
+  /** Render the texture_output marker with a top tab (insert-before-output). */
+  private renderOutputMarker(chainIdx: number, entry: ChainEntry) {
+    const path = `output/${this.sketchId}/${this.colIdx}/${chainIdx}`;
+    const isSelected = appController.isSelected(path);
+    this.registerChainMarkerSelectable(path, 'Texture Output', chainIdx, entry);
+    const selectMarker = (e: Event) => { e.stopPropagation(); appController.select(path); };
+    return html`
+      <div class="chain-marker" ?selected=${isSelected}>
+        ${this.renderDeviceTab('top', chainIdx)}
+        <div class="chain-marker-inner">
+          <div class="chain-marker-label" @click=${selectMarker}>Output</div>
+        </div>
+      </div>
+    `;
   }
 
   // ========================================================================
@@ -699,41 +868,52 @@ export class ColumnGroup extends MobxLitElement {
     // Register as selectable with inspector content
     this.registerEffectSelectable(effectPath, chainIdx, entry);
 
+    // Select on pointerdown — happens before drag threshold is reached, so
+    // the card is selected whether the user intended to click or drag.
+    const selectOnPointerDown = (e: PointerEvent) => {
+      if ((e.target as HTMLElement).closest('smart-input')) return;
+      appController.select(effectPath);
+    };
+
     return html`
       <div class="effect-card" ?selected=${isSelected}
         @click=${(e: Event) => {
-          // Don't select if clicking remove button or smart-input
-          if ((e.target as HTMLElement).closest('.remove-btn, smart-input')) return;
+          if ((e.target as HTMLElement).closest('smart-input, .device-tab')) return;
           appController.select(effectPath);
         }}>
-        <div class="effect-card-header"
-          @pointerdown=${(e: PointerEvent) => {
-            if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
-          }}>
-          <div class="effect-card-name-wrapper">
-            ${isEditingType ? html`
-              <smart-input
-                .effects=${appState.local.availableEffects}
-                .initialValue=${shortName(entry.module_type)}
-                .autoSelect=${true}
-                @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
-                @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
-                @cancel=${() => this.handleTypeCancel()}
-              ></smart-input>
-            ` : html`
-              <span class="effect-card-name"
-                @dblclick=${(e: Event) => { e.stopPropagation(); this.beginEditType(chainIdx); }}
-              >${shortName(entry.module_type)}</span>
-            `}
+        ${this.renderDeviceTab('top', chainIdx)}
+        <div class="effect-card-inner">
+          <div class="effect-card-header"
+            @pointerdown=${(e: PointerEvent) => {
+              selectOnPointerDown(e);
+              if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
+            }}>
+            <div class="effect-card-name-wrapper">
+              ${isEditingType ? html`
+                <smart-input
+                  .effects=${appState.local.availableEffects}
+                  .initialValue=${shortName(entry.module_type)}
+                  .autoSelect=${true}
+                  @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
+                  @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
+                  @delete-request=${() => this.handleTypeDeleteRequest(chainIdx)}
+                  @cancel=${() => this.handleTypeCancel()}
+                ></smart-input>
+              ` : html`
+                <span class="effect-card-name"
+                  @dblclick=${(e: Event) => { e.stopPropagation(); this.beginEditType(chainIdx); }}
+                >${shortName(entry.module_type)}</span>
+              `}
+            </div>
           </div>
-          <button class="remove-btn"
-            @pointerdown=${(e: Event) => e.stopPropagation()}
-            @click=${() => appController.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx)}>×</button>
+          <div class="effect-card-divider"></div>
+          <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}">
+            ${this.renderFieldWidgets(chainIdx, entry)}
+            ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
+          </div>
+          ${this.renderTraceCardRow(chainIdx, entry)}
         </div>
-        <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}">
-          ${this.renderFieldWidgets(chainIdx, entry)}
-          ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
-        </div>
+        ${this.renderDeviceTab('bottom', chainIdx + 1)}
       </div>
     `;
   }
@@ -779,6 +959,22 @@ export class ColumnGroup extends MobxLitElement {
       this.typeLongEdit = null;
     }
     this.editingTypeChainIdx = -1;
+    this.requestUpdate();
+  }
+
+  /**
+   * User cleared the type text field and accepted — interpret as "delete this effect".
+   * Any in-progress type preview is cancelled first so we don't leave a preview in the
+   * undo stack.
+   */
+  private handleTypeDeleteRequest(chainIdx: number) {
+    if (this.typeLongEdit) {
+      this.typeLongEdit.cancel();
+      this.typeLongEdit = null;
+    }
+    this.editingTypeChainIdx = -1;
+    appController.select(null);
+    appController.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx);
     this.requestUpdate();
   }
 
@@ -1059,7 +1255,7 @@ export class ColumnGroup extends MobxLitElement {
   // Gutter tap visualization
   // ========================================================================
 
-  /** Render vertical rail lines in the gutter. */
+  /** Render vertical rail lines in the gutter. Rails with any write tap highlight. */
   private renderRailLines(sketch: Sketch, column: SketchColumn) {
     const allRails = [
       ...(column.rails ?? []),
@@ -1067,11 +1263,23 @@ export class ColumnGroup extends MobxLitElement {
     ];
     if (allRails.length === 0) return nothing;
 
+    // Collect all rail IDs that have at least one writer across the sketch.
+    const writerRailIds = new Set<string>();
+    for (const col of sketch.columns) {
+      for (const e of col.chain) {
+        if (e.type !== 'module') continue;
+        for (const tap of e.taps ?? []) {
+          if (tap.direction === 'write') writerRailIds.add(tap.railId);
+        }
+      }
+    }
+
     return allRails.map(rail => {
       const x = this.layoutManager.getRailX(rail.id);
       if (x === null) return nothing;
+      const hasWriter = writerRailIds.has(rail.id);
       return html`
-        <div class="rail-line"
+        <div class="rail-line ${hasWriter ? 'has-writer' : ''}"
           style="left:${x}px"
           title="${rail.name ?? rail.id} (${rail.dataType})"></div>
       `;
@@ -1087,7 +1295,8 @@ export class ColumnGroup extends MobxLitElement {
       const entry = column.chain[i];
       if (entry.type !== 'module' || !entry.taps?.length) continue;
 
-      for (const tap of entry.taps) {
+      for (let tapIdx = 0; tapIdx < entry.taps.length; tapIdx++) {
+        const tap = entry.taps[tapIdx];
         const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${tap.fieldPath}`;
         const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
         if (!rect) continue;
@@ -1096,17 +1305,28 @@ export class ColumnGroup extends MobxLitElement {
         if (railX === null) continue;
 
         const yCenter = rect.top + rect.height / 2;
+        const tapPath = `gtap/${this.sketchId}/${this.colIdx}/${i}/${tapIdx}`;
+        const isSelected = appController.isSelected(tapPath);
+        this.registerGutterTapSelectable(tapPath, i, tapIdx);
+
+        const onClick = (e: Event) => {
+          e.stopPropagation();
+          appController.select(tapPath);
+        };
 
         // Dot at the rail X position
         indicators.push(html`
-          <div class="tap-indicator ${tap.direction}"
-            style="left:${railX}px;top:${yCenter}px"></div>
+          <div class="tap-indicator ${tap.direction}" ?selected=${isSelected}
+            style="left:${railX}px;top:${yCenter}px"
+            title="${tap.direction === 'write' ? 'Write' : 'Read'} tap → ${tap.fieldPath}"
+            @click=${onClick}></div>
         `);
 
         // Horizontal line from gutter left edge (0) to the rail dot
         indicators.push(html`
-          <div class="tap-indicator-line ${tap.direction}"
-            style="left:0;width:${railX - 3}px;top:${yCenter}px"></div>
+          <div class="tap-indicator-line ${tap.direction}" ?selected=${isSelected}
+            style="left:0;width:${railX - 3}px;top:${yCenter}px"
+            @click=${onClick}></div>
         `);
       }
     }
@@ -1114,15 +1334,94 @@ export class ColumnGroup extends MobxLitElement {
     return indicators;
   }
 
+  /** Register a gutter tap (visual wire connector) as a selectable. */
+  private registerGutterTapSelectable(path: string, chainIdx: number, tapIdx: number) {
+    const sketchId = this.sketchId;
+    const colIdx = this.colIdx;
+    appController.defineSelectable({
+      path,
+      label: 'Tap',
+      renderInspectorContent: () => {
+        const sketch = appState.database.sketches[sketchId];
+        const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+        if (!entry || entry.type !== 'module') return undefined;
+        const tap = entry.taps?.[tapIdx];
+        if (!tap) return undefined;
+        const allRails = [
+          ...(sketch!.rails ?? []),
+          ...(sketch!.columns[colIdx]?.rails ?? []),
+        ];
+        const rail = allRails.find(r => r.id === tap.railId);
+        return html`
+          <div class="inspector-field">
+            <span class="inspector-field-label">Direction</span>
+            <span class="inspector-field-value">${tap.direction}</span>
+          </div>
+          <div class="inspector-field">
+            <span class="inspector-field-label">Field</span>
+            <span class="inspector-field-value">${tap.fieldPath}</span>
+          </div>
+          <div class="inspector-field">
+            <span class="inspector-field-label">Rail</span>
+            <span class="inspector-field-value">${rail?.name ?? tap.railId}</span>
+          </div>
+          <div class="inspector-separator"></div>
+          <button class="btn" style="width:100%;padding:6px"
+            @click=${() => {
+              appController.removeTap(sketchId, colIdx, chainIdx, tapIdx);
+              appController.select(null);
+            }}>Remove Tap</button>
+        `;
+      },
+    });
+  }
+
   // ========================================================================
   // Drop zones
   // ========================================================================
 
-  private renderDropZone(insertIdx: number) {
+  /**
+   * Render one tab of a device's circuit-edge shape.
+   * - 'bottom' is a narrow rectangle protruding below the body (the "card
+   *   edge" that plugs in).
+   * - 'top' is a wider U-shape SVG with a slot cut into its top. The slot
+   *   opening straddles the bottom tab of the device above, so stacked
+   *   cards read as tab-meets-slot.
+   *
+   * Both tabs are clickable (selects the insert-point) and dbl-clickable
+   * (inserts a new effect). Either tab also serves as a drag-drop target.
+   */
+  private renderDeviceTab(position: 'top' | 'bottom', insertIdx: number) {
+    const tabPath = `tab/${this.sketchId}/${this.colIdx}/${insertIdx}`;
+    const isSelected = appController.isSelected(tabPath);
+    this.registerTabSelectable(tabPath, insertIdx);
+    const onClick = (e: Event) => { e.stopPropagation(); appController.select(tabPath); };
+    const onDblClick = (e: Event) => { e.stopPropagation(); this.addEffectAndBeginEdit(insertIdx); };
+
+    if (position === 'top') {
+      // U-shape: the slot opens upward (Y=0 to Y=7 of viewBox, X=22 to X=78).
+      // The bottom edge (Y=10) is the connection to the body and carries
+      // NO stroke so it merges cleanly with the body's top border.
+      return html`
+        <div class="device-tab top" ?selected=${isSelected}
+          @click=${onClick} @dblclick=${onDblClick}
+          title="Double-click to insert effect">
+          <svg viewBox="0 0 100 10" preserveAspectRatio="none">
+            <path class="tab-fill"
+              d="M 0 10 L 0 0 L 22 0 L 22 7 L 78 7 L 78 0 L 100 0 L 100 10 Z"></path>
+            <path class="tab-stroke"
+              d="M 0 10 L 0 0 L 22 0 L 22 7 L 78 7 L 78 0 L 100 0 L 100 10"></path>
+          </svg>
+          <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
+        </div>
+      `;
+    }
     return html`
-      <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
-      <button class="add-btn"
-        @click=${() => this.addEffectAndBeginEdit(insertIdx)}>+</button>
+      <div class="device-tab bottom" ?selected=${isSelected}
+        @click=${onClick} @dblclick=${onDblClick}
+        title="Double-click to insert effect">
+        <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
+      </div>
     `;
   }
 
@@ -1134,6 +1433,28 @@ export class ColumnGroup extends MobxLitElement {
     this.requestUpdate();
     requestAnimationFrame(() => {
       this.beginEditType(insertIdx);
+    });
+  }
+
+  /** Register a tab (insert hotspot) as a selectable. */
+  private registerTabSelectable(path: string, insertIdx: number) {
+    appController.defineSelectable({
+      path,
+      label: 'Insert Point',
+      renderInspectorContent: () => html`
+        <div class="inspector-field">
+          <span class="inspector-field-label">Column</span>
+          <span class="inspector-field-value">${this.colIdx}</span>
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Position</span>
+          <span class="inspector-field-value">${insertIdx}</span>
+        </div>
+        <div class="inspector-separator"></div>
+        <div style="font-size:10px;color:var(--app-text-color2);padding:4px 0 8px">
+          Double-click the tab to insert a new effect here.
+        </div>
+      `,
     });
   }
 

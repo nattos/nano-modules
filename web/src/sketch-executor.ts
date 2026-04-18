@@ -319,6 +319,12 @@ export class SketchExecutor {
           }
         }
 
+        // --- Reset inactive struct inputs (before read taps run) ---
+        // Without this, a module that previously received data via a tap
+        // keeps its cached scalar state and GPU buffer handle forever.
+        // Deleting the tap should make the input appear empty / zeroed.
+        this.resetInactiveStructInputs(loaded.host, loaded.module, entry);
+
         // --- Apply read taps (before tick/render) ---
         const inputTextures: number[] = currentInputHandle >= 0 ? [currentInputHandle] : [];
 
@@ -600,6 +606,108 @@ export class SketchExecutor {
       obj = obj[token];
     }
     return obj;
+  }
+
+  /**
+   * Reset every struct-kind input port on `entry` that has no active read
+   * tap this frame. Walks the module's schema: for each top-level field
+   * marked Input whose type is object / array(gpu) / texture / vec, if no
+   * tap's fieldPath matches, emit reset patches for scalar leaves to
+   * their schema defaults, clear installed GPU buffer handles, clear
+   * texture handles, and fire a dirty patch at the subtree root so the
+   * module can react to the absence.
+   *
+   * Scalar input fields are not reset (they're owned by the UI, not the
+   * rail), nor are structured outputs (which are written by the module).
+   */
+  private resetInactiveStructInputs(host: WasmHost, module: WasmModule, entry: ModuleEntry): void {
+    const schema = host.schema ?? {};
+    if (!schema || Object.keys(schema).length === 0) return;
+
+    const tappedReads = new Set<string>();
+    for (const tap of entry.taps ?? []) {
+      if (tap.direction === 'read') tappedReads.add(tap.fieldPath);
+    }
+
+    // Only reset fields whose contents are normally supplied by a rail
+    // (structured objects, GPU arrays). Scalar primitives and vector
+    // primitives at the top level are user-edited params; clearing them
+    // on every frame with no tap would wipe user input. Textures are
+    // handled separately (the textureFields map is rebuilt per frame).
+    const patches: import('./wasm-host').PatchOp[] = [];
+    for (const [name, def] of Object.entries(schema) as [string, any][]) {
+      if (!def || typeof def !== 'object') continue;
+      const io = def.io ?? 0;
+      if (!(io & 1)) continue; // not an input port
+      if (def.type !== 'object' && !(def.type === 'array' && def.gpu)) continue;
+      if (tappedReads.has(name)) continue; // still receiving data
+      this.resetInputSubtree(host, name, def, patches);
+    }
+
+    if (patches.length > 0) {
+      host.notifyStatePatched(module, patches);
+      const bc = host.bridgeCore;
+      const pk = host.pluginKey;
+      if (bc && pk) {
+        for (const p of patches) {
+          if (p.op !== 'replace') continue;
+          if (typeof p.value === 'number') {
+            const vh = bc.valNumber(p.value);
+            bc.commitVal(pk, p.path, vh);
+            bc.valRelease(vh);
+          } else if (Array.isArray(p.value) && p.value.every(v => typeof v === 'number')) {
+            const arr = bc.valArray();
+            for (const item of p.value) {
+              const itemH = bc.valNumber(item);
+              bc.valPush(arr, itemH);
+              bc.valRelease(itemH);
+            }
+            bc.commitVal(pk, p.path, arr);
+            bc.valRelease(arr);
+          }
+        }
+        host.pluginState = bc.getPluginState(pk);
+      }
+    }
+  }
+
+  private resetInputSubtree(
+    host: WasmHost, path: string, def: any,
+    patches: import('./wasm-host').PatchOp[],
+  ): void {
+    if (!def || typeof def !== 'object') return;
+    const type = def.type;
+    if (type === 'array' && def.gpu) {
+      host.gpuBufferFields.delete(path);
+      // Notify the module so it can drop any cached derived state.
+      patches.push({ op: 'dirty', path, value: {} });
+      return;
+    }
+    if (type === 'texture') {
+      host.textureFields.delete(path);
+      patches.push({ op: 'dirty', path, value: {} });
+      return;
+    }
+    if (type === 'float2' || type === 'float3' || type === 'float4') {
+      const n = type === 'float2' ? 2 : type === 'float3' ? 3 : 4;
+      const zeros = new Array<number>(n).fill(0);
+      patches.push({ op: 'replace', path, value: zeros });
+      return;
+    }
+    if (type === 'object') {
+      const fields = def.fields ?? {};
+      for (const [childName, childDef] of Object.entries(fields) as [string, any][]) {
+        this.resetInputSubtree(host, `${path}/${childName}`, childDef, patches);
+      }
+      patches.push({ op: 'dirty', path, value: {} });
+      return;
+    }
+    // Scalar leaf inside a struct — reset to schema default.
+    let def0: any = 0;
+    if (type === 'bool') def0 = false;
+    else if (type === 'string') def0 = '';
+    else if ('default' in def) def0 = def.default;
+    patches.push({ op: 'replace', path, value: def0 });
   }
 
   dispose() {

@@ -188,7 +188,12 @@ export class SmartInput extends LitElement {
           key: 'Tab',
           run: (view) => {
             if (acceptCompletion(view)) return true;
-            self.dispatchCommit(view.state.doc.toString());
+            const val = view.state.doc.toString();
+            if (val.length === 0) {
+              self.dispatchEvent(new CustomEvent('delete-request'));
+              return true;
+            }
+            self.dispatchCommit(val);
             return true;
           },
         },
@@ -196,7 +201,12 @@ export class SmartInput extends LitElement {
           key: 'Enter',
           run: (view) => {
             if (acceptCompletion(view)) return true;
-            self.dispatchCommit(view.state.doc.toString());
+            const val = view.state.doc.toString();
+            if (val.length === 0) {
+              self.dispatchEvent(new CustomEvent('delete-request'));
+              return true;
+            }
+            self.dispatchCommit(val);
             return true;
           },
         },
@@ -220,6 +230,16 @@ export class SmartInput extends LitElement {
         if (!isUserEvent) return;
 
         const value = update.state.doc.toString();
+
+        // An explicitly emptied input means the user is asking to delete the
+        // effect on commit — clear the pending preview so dispatchCommit can
+        // route into the delete path rather than falling back to a guess.
+        if (value.length === 0) {
+          self.lastPreviewedId = null;
+          startCompletion(self.editorView!);
+          return;
+        }
+
         const results = searchEffects(self.effects, value);
 
         if (results.length > 0) {
@@ -375,7 +395,10 @@ export class SmartInput extends LitElement {
 
     if (!explicit) {
       // Implicit commit (Enter without accepting, blur):
-      // Use last valid preview, or fall back to initial value
+      // Use last valid preview, or fall back to initial value.
+      // Note: explicit empty-then-Enter is routed to 'delete-request' by the
+      // Enter/Tab key handlers before reaching here, so an empty value here
+      // means the user blurred without typing anything.
       if (this.lastPreviewedId) {
         value = this.lastPreviewedId;
       } else {
