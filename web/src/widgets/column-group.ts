@@ -16,6 +16,7 @@ import { reaction, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
+import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -24,6 +25,31 @@ import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
 import type { TracePoint } from '../engine-types';
 import type { ParamInfo } from '../engine-types';
+import { PointerDragOp } from '../utils/pointer-drag-op';
+
+/**
+ * Pierce nested shadow roots looking for the topmost element at (x, y).
+ * elementFromPoint at document level returns the shadow host; descending
+ * into each shadowRoot gives us the actual pointer target inside.
+ */
+function deepElementFromPoint(x: number, y: number): Element | null {
+  let el: Element | null = document.elementFromPoint(x, y);
+  while (el) {
+    const sr = (el as unknown as { shadowRoot: ShadowRoot | null }).shadowRoot;
+    if (!sr) break;
+    const inner = sr.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  return el;
+}
+
+/** Find the tap-overlay-hit under the given viewport coordinates, if any. */
+function findTapOverlayHitAt(x: number, y: number): HTMLElement | null {
+  const leaf = deepElementFromPoint(x, y);
+  if (!leaf) return null;
+  return (leaf.closest?.('.tap-overlay-hit') as HTMLElement | null) ?? null;
+}
 
 // Import field widget elements
 import './field-slider';
@@ -492,6 +518,21 @@ export class ColumnGroup extends MobxLitElement {
       outline-color: var(--app-hi-color1, #ff4500);
       background: rgba(255, 69, 0, 0.22);
     }
+    /* Drag-to-connect visuals. Source is dashed-outlined; current target
+     * pulses brighter. Both are layered on top of normal hover styles. */
+    .tap-overlay-hit[tap-dragging] {
+      outline: 2px dashed var(--app-hi-color2, #4169E1);
+      outline-offset: 1px;
+    }
+    .tap-overlay-hit[tap-drop-target] {
+      outline: 2px solid var(--app-hi-color2, #4169E1);
+      outline-offset: 1px;
+      background: rgba(65, 105, 225, 0.35);
+    }
+    .tap-overlay-hit.output[tap-drop-target] {
+      outline-color: var(--app-hi-color1, #ff4500);
+      background: rgba(255, 69, 0, 0.35);
+    }
     /* --- Tap visualization (writes=red, reads=blue) --- */
     .tap-indicator {
       position: absolute;
@@ -527,7 +568,11 @@ export class ColumnGroup extends MobxLitElement {
     .tap-indicator-line:hover { opacity: 0.9; }
     .tap-indicator-line[selected] { opacity: 1; }
 
-    /* --- Rail vertical lines --- */
+    /* --- Rail vertical lines ---
+     * A rail is drawn as a dim full-height backbone with a bright blue
+     * overlay covering just the "active" segment: from the first write
+     * tap's Y down to the last read tap's Y. The overlay is only rendered
+     * when the rail has at least one writer AND one reader. --- */
     .rail-line {
       position: absolute;
       top: 0;
@@ -537,15 +582,17 @@ export class ColumnGroup extends MobxLitElement {
       background: rgba(255,255,255,0.08);
       z-index: 0;
     }
-    .rail-line.has-writer {
-      background: var(--app-hi-color2, #4169E1);
-      opacity: 0.55;
-    }
     .rail-line:hover {
       background: rgba(255,255,255,0.2);
     }
-    .rail-line.has-writer:hover {
-      opacity: 0.9;
+    .rail-line-active {
+      position: absolute;
+      width: 2px;
+      transform: translateX(-50%);
+      background: var(--app-hi-color2, #4169E1);
+      opacity: 0.85;
+      z-index: 1;
+      pointer-events: none;
     }
 
     /* --- Inspector content (rendered into the right panel via Selectable) --- */
@@ -1111,12 +1158,117 @@ export class ColumnGroup extends MobxLitElement {
 
       hits.push(html`
         <div class="tap-overlay-hit ${isOutput ? 'output' : ''}" ?selected=${isSelected}
+          data-sketch-id=${this.sketchId}
+          data-col-idx=${this.colIdx}
+          data-chain-idx=${chainIdx}
+          data-field-path=${fieldPath}
+          data-is-output=${isOutput ? 'true' : 'false'}
           style="top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px"
+          @pointerdown=${(e: PointerEvent) => this.onTapHitPointerDown(
+            e, key, fieldPath, isOutput, schemaDef, chainIdx)}
           @click=${() => this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx)}></div>
       `);
     }
 
     return html`<div class="tap-overlay-container">${hits}</div>`;
+  }
+
+  /** Active drag-to-connect state (null when not dragging). */
+  private tapDragState: {
+    sourceInfo: FieldConnectInfo;
+    sourceEl: HTMLElement;
+    currentTargetEl: HTMLElement | null;
+  } | null = null;
+
+  /**
+   * Start a potential drag-to-connect from a tap overlay hit. If the user
+   * moves past the threshold, we resolve the drop target on pointerup and
+   * ask the controller to create the tap connection. Short drags fall
+   * through to the normal click handler (single-field auto-tap).
+   */
+  private onTapHitPointerDown(
+    e: PointerEvent,
+    _key: string,
+    fieldPath: string,
+    isOutput: boolean,
+    schemaDef: any | null,
+    chainIdx: number,
+  ) {
+    if (e.button !== 0) return;
+    const sourceEl = e.currentTarget as HTMLElement;
+    const rect = sourceEl.getBoundingClientRect();
+    const sourceInfo: FieldConnectInfo = {
+      sketchId: this.sketchId,
+      colIdx: this.colIdx,
+      chainIdx,
+      fieldPath,
+      isOutput,
+      viewportY: rect.top + rect.height / 2,
+      schemaDef,
+    };
+
+    new PointerDragOp(e, sourceEl, {
+      threshold: 5,
+      move: (me) => {
+        if (!this.tapDragState) {
+          sourceEl.setAttribute('tap-dragging', '');
+          this.tapDragState = { sourceInfo, sourceEl, currentTargetEl: null };
+        }
+        this.updateTapDragHover(me.clientX, me.clientY);
+      },
+      accept: (me) => {
+        const target = this.findTapDragTarget(me.clientX, me.clientY);
+        if (target && this.tapDragState) {
+          appController.connectFields(sourceInfo, target);
+        }
+        this.endTapDrag();
+      },
+      cancel: () => { this.endTapDrag(); },
+    });
+  }
+
+  private updateTapDragHover(x: number, y: number) {
+    if (!this.tapDragState) return;
+    const hitEl = findTapOverlayHitAt(x, y);
+    // Don't self-target the source.
+    const same = hitEl === this.tapDragState.sourceEl;
+    const newTarget = same ? null : hitEl;
+    if (this.tapDragState.currentTargetEl === newTarget) return;
+    this.tapDragState.currentTargetEl?.removeAttribute('tap-drop-target');
+    newTarget?.setAttribute('tap-drop-target', '');
+    this.tapDragState.currentTargetEl = newTarget;
+  }
+
+  private findTapDragTarget(x: number, y: number): FieldConnectInfo | null {
+    const hitEl = findTapOverlayHitAt(x, y);
+    if (!hitEl) return null;
+    if (this.tapDragState && hitEl === this.tapDragState.sourceEl) return null;
+
+    const sketchId = hitEl.dataset.sketchId ?? '';
+    const colIdx = parseInt(hitEl.dataset.colIdx ?? '-1');
+    const chainIdx = parseInt(hitEl.dataset.chainIdx ?? '-1');
+    const fieldPath = hitEl.dataset.fieldPath ?? '';
+    const isOutput = hitEl.dataset.isOutput === 'true';
+    if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
+
+    const sketch = appState.database.sketches[sketchId];
+    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    if (!entry || entry.type !== 'module') return null;
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const schemaDef = plugin?.schema?.[fieldPath] ?? null;
+    const rect = hitEl.getBoundingClientRect();
+    return {
+      sketchId, colIdx, chainIdx, fieldPath, isOutput,
+      viewportY: rect.top + rect.height / 2,
+      schemaDef,
+    };
+  }
+
+  private endTapDrag() {
+    if (!this.tapDragState) return;
+    this.tapDragState.sourceEl.removeAttribute('tap-dragging');
+    this.tapDragState.currentTargetEl?.removeAttribute('tap-drop-target');
+    this.tapDragState = null;
   }
 
   private onTapOverlayClick(
@@ -1244,7 +1396,13 @@ export class ColumnGroup extends MobxLitElement {
   // Gutter tap visualization
   // ========================================================================
 
-  /** Render vertical rail lines in the gutter. Rails with any write tap highlight. */
+  /**
+   * Render vertical rail lines in the gutter, plus a blue "active segment"
+   * overlay covering the range from the first write tap's Y down to the
+   * last read tap's Y. Only rails with both a writer AND a reader (in
+   * THIS column — rails can be multi-column but tap Y is per-column)
+   * get an active overlay.
+   */
   private renderRailLines(sketch: Sketch, column: SketchColumn) {
     const allRails = [
       ...(column.rails ?? []),
@@ -1252,13 +1410,36 @@ export class ColumnGroup extends MobxLitElement {
     ];
     if (allRails.length === 0) return nothing;
 
-    // Collect all rail IDs that have at least one writer across the sketch.
-    const writerRailIds = new Set<string>();
-    for (const col of sketch.columns) {
-      for (const e of col.chain) {
-        if (e.type !== 'module') continue;
-        for (const tap of e.taps ?? []) {
-          if (tap.direction === 'write') writerRailIds.add(tap.railId);
+    const gutterEl = this.renderRoot.querySelector(
+      `.column-gutter[data-col="${this.colIdx}"]`
+    ) as HTMLElement | null;
+
+    // Compute first-write / last-read Y for each rail. Iterate ONCE over
+    // the column's chain so large columns stay cheap.
+    const railActive = new Map<string, { firstWriteY: number; lastReadY: number }>();
+    if (gutterEl) {
+      const ensure = (id: string) => {
+        let e = railActive.get(id);
+        if (!e) {
+          e = { firstWriteY: Infinity, lastReadY: -Infinity };
+          railActive.set(id, e);
+        }
+        return e;
+      };
+      for (let i = 0; i < column.chain.length; i++) {
+        const entry = column.chain[i];
+        if (entry.type !== 'module' || !entry.taps?.length) continue;
+        for (const tap of entry.taps) {
+          const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${tap.fieldPath}`;
+          const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
+          if (!rect) continue;
+          const y = rect.top + rect.height / 2;
+          const a = ensure(tap.railId);
+          if (tap.direction === 'write') {
+            if (y < a.firstWriteY) a.firstWriteY = y;
+          } else {
+            if (y > a.lastReadY) a.lastReadY = y;
+          }
         }
       }
     }
@@ -1266,11 +1447,17 @@ export class ColumnGroup extends MobxLitElement {
     return allRails.map(rail => {
       const x = this.layoutManager.getRailX(rail.id);
       if (x === null) return nothing;
-      const hasWriter = writerRailIds.has(rail.id);
+      const seg = railActive.get(rail.id);
+      const hasActive = seg && seg.firstWriteY !== Infinity && seg.lastReadY !== -Infinity
+        && seg.firstWriteY < seg.lastReadY;
       return html`
-        <div class="rail-line ${hasWriter ? 'has-writer' : ''}"
+        <div class="rail-line"
           style="left:${x}px"
-          title="${rail.name ?? rail.id} (${rail.dataType})"></div>
+          title="${rail.name ?? rail.id}"></div>
+        ${hasActive ? html`
+          <div class="rail-line-active"
+            style="left:${x}px;top:${seg!.firstWriteY}px;height:${seg!.lastReadY - seg!.firstWriteY}px"></div>
+        ` : nothing}
       `;
     });
   }

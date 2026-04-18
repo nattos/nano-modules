@@ -17,6 +17,19 @@ import type { EngineState, EffectInfo, TracePoint } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
 import { isRailCompatible } from '../schema-compat';
 
+/** Identifies one end of a drag-to-connect operation. */
+export interface FieldConnectInfo {
+  sketchId: string;
+  colIdx: number;
+  chainIdx: number;
+  fieldPath: string;
+  isOutput: boolean;
+  /** Viewport Y used to decide writer vs reader when both fields are same direction. */
+  viewportY: number;
+  /** Schema definition for this field (null if legacy / no schema). Used to pick rail type. */
+  schemaDef: any | null;
+}
+
 /** True for schema fields that need struct-rail transport (not scalar/texture). */
 function isStructuredSchemaTypeDef(def: any): boolean {
   if (!def || typeof def !== 'object') return false;
@@ -539,6 +552,95 @@ export class AppController {
     const col = sketch.columns[colIdx];
     if (col?.rails) rails.push(...col.rails);
     return rails;
+  }
+
+  // --- Drag-to-connect ---
+
+  /**
+   * Connect two fields by creating/reusing a rail and wiring taps. Rules:
+   *   - If exactly one field is an output, it's the writer and the other is the reader.
+   *   - If both are the same direction, the upper (smaller Y) is the writer.
+   *   - Writer ensures it has a write tap (reuses existing rail if any, else creates one).
+   *   - Reader's read tap on this fieldPath is OVERWRITTEN to point at the writer's rail.
+   * Cross-sketch or self connections are ignored.
+   */
+  connectFields(a: FieldConnectInfo, b: FieldConnectInfo) {
+    if (a.sketchId !== b.sketchId) return;
+    if (a.colIdx === b.colIdx && a.chainIdx === b.chainIdx && a.fieldPath === b.fieldPath) return;
+
+    let writer: FieldConnectInfo;
+    let reader: FieldConnectInfo;
+    if (a.isOutput !== b.isOutput) {
+      writer = a.isOutput ? a : b;
+      reader = a.isOutput ? b : a;
+    } else {
+      writer = a.viewportY <= b.viewportY ? a : b;
+      reader = a.viewportY <= b.viewportY ? b : a;
+    }
+
+    const sketchId = writer.sketchId;
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return;
+
+    const writerEntry = sketch.columns[writer.colIdx]?.chain[writer.chainIdx];
+    const readerEntry = sketch.columns[reader.colIdx]?.chain[reader.chainIdx];
+    if (writerEntry?.type !== 'module' || readerEntry?.type !== 'module') return;
+
+    const existingWriteRail = (writerEntry.taps ?? []).find(
+      t => t.fieldPath === writer.fieldPath && t.direction === 'write'
+    )?.railId;
+
+    // Plan a new rail id/type if we'll need one.
+    let newRailInfo: { id: string; name: string; dataType: import('../sketch-types').RailDataType; scope: 'sketch' | number } | null = null;
+    if (!existingWriteRail) {
+      const id = `rail_${this.nextRailId++}`;
+      const name = `Rail ${(sketch.columns[writer.colIdx]?.rails?.length ?? 0) + (sketch.rails?.length ?? 0) + 1}`;
+      const dataType = railDataTypeFromSchema(writer.schemaDef);
+      // If writer & reader are in different columns, put the rail at
+      // sketch scope so both columns can see it; otherwise column-local.
+      const scope: 'sketch' | number = (writer.colIdx !== reader.colIdx) ? 'sketch' : writer.colIdx;
+      newRailInfo = { id, name, dataType, scope };
+    }
+
+    const railId = existingWriteRail ?? newRailInfo!.id;
+
+    this.mutate('Connect fields', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+
+      if (newRailInfo) {
+        const rail = { id: newRailInfo.id, name: newRailInfo.name, dataType: newRailInfo.dataType };
+        if (newRailInfo.scope === 'sketch') {
+          sk.rails = sk.rails ?? [];
+          sk.rails.push(rail);
+        } else {
+          const col = sk.columns[newRailInfo.scope];
+          if (col) {
+            col.rails = col.rails ?? [];
+            col.rails.push(rail);
+          }
+        }
+      }
+
+      // Writer: ensure a write tap for this field/rail.
+      const w = sk.columns[writer.colIdx]?.chain[writer.chainIdx];
+      if (w?.type === 'module') {
+        w.taps = w.taps ?? [];
+        const has = w.taps.some(t =>
+          t.fieldPath === writer.fieldPath && t.direction === 'write' && t.railId === railId);
+        if (!has) {
+          w.taps.push({ railId, fieldPath: writer.fieldPath, direction: 'write' });
+        }
+      }
+
+      // Reader: overwrite any existing read tap for this fieldPath.
+      const r = sk.columns[reader.colIdx]?.chain[reader.chainIdx];
+      if (r?.type === 'module') {
+        r.taps = r.taps ?? [];
+        r.taps = r.taps.filter(t => !(t.fieldPath === reader.fieldPath && t.direction === 'read'));
+        r.taps.push({ railId, fieldPath: reader.fieldPath, direction: 'read' });
+      }
+    });
   }
 
   // --- Schema-aware auto-tap helpers ---
