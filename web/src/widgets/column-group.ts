@@ -272,22 +272,18 @@ export class ColumnGroup extends MobxLitElement {
       cursor: default;
       position: relative;
     }
-    /* Each device overlaps the previous one so the top-tab U-shape straddles
-     * the bottom tab coming down from above (circuit-edge-connector look).
-     * The first child of column-body doesn't need this. */
-    .effect-card, .chain-marker {
-      margin-top: -7px;
-    }
-    .column-body > :first-child {
-      margin-top: 0;
-    }
     .effect-card[dragging] { opacity: 0.4; }
 
-    /* Inner body of a device — solid rectangle with full border. */
+    /* Inner body of a device — border only on the LEFT and RIGHT so the
+     * outline of the whole shape (body + corner tabs) reads as one
+     * continuous path. Top/bottom borders are drawn by the middle-edge
+     * strips inside each .tab-area. */
     .effect-card-inner, .chain-marker-inner {
       width: 100%;
       background: var(--device-bg);
-      border: 1px solid var(--device-border);
+      border: none;
+      border-left: 1px solid var(--device-border);
+      border-right: 1px solid var(--device-border);
       box-sizing: border-box;
       position: relative;
       z-index: 0;
@@ -311,7 +307,8 @@ export class ColumnGroup extends MobxLitElement {
     .effect-card[selected] .effect-card-inner,
     .chain-marker[selected] .chain-marker-inner {
       background: var(--device-sel-bg);
-      border-color: var(--device-sel-border);
+      border-left-color: var(--device-sel-border);
+      border-right-color: var(--device-sel-border);
     }
     .trace-card-row[selected] {
       outline: 1px solid var(--device-sel-border);
@@ -367,94 +364,87 @@ export class ColumnGroup extends MobxLitElement {
       opacity: 0.9;
     }
 
-    /* --- Device tabs — circuit-style "tab + slot" connectors. ---
-     *
-     * Bottom tab (plain narrow rectangle, protrudes below the body).
-     * Top tab (wider U-shape SVG with a slot cut into its top — the slot
-     * straddles the narrower bottom tab of the card above, so the two
-     * elements visually interlock like a card-edge connector).
-     *
-     * The device box overlaps the previous one by 7px (see margin-top on
-     * .effect-card/.chain-marker) so both tabs occupy the same seam region
-     * in absolute Y. The bottom tab's z-index > top tab's z-index so the
-     * bottom tab visibly sits IN FRONT OF the slot while the posts
-     * straddle it. Horizontal widths are chosen so the bottom tab fits
-     * inside the slot opening with a small visible clearance gap.
+    /* --- Device tabs — left & right corner tabs that span the full card
+     * width. Each tab-area is a strip above or below the body that holds
+     * two 48px corner rectangles and a 1px middle-edge line tracing the
+     * body's top/bottom border between them. Together with the body's
+     * left/right borders this produces a single continuous outline around
+     * the whole card with no interior seams.
      * ---------------------------------------------------------------- */
-
-    /* Bottom tab (narrow protrusion going down from this card's body). */
-    .device-tab.bottom {
-      width: 24%;
-      align-self: center;
-      height: 7px;
-      background: var(--device-bg);
-      border: 1px solid var(--device-border);
-      border-top: none;
-      border-radius: 0 0 3px 3px;
-      margin-top: -1px;          /* overlap body's bottom border by 1px */
-      box-sizing: border-box;
+    .tab-area {
       position: relative;
-      z-index: 3;                /* in front of the top tab below */
-      cursor: pointer;
-    }
-    .device-tab.bottom:hover {
-      background: rgba(65, 105, 225, 0.3);
-      border-color: var(--device-sel-border);
-    }
-    .device-tab.bottom[selected] {
-      background: var(--device-sel-bg);
-      border-color: var(--device-sel-border);
-      box-shadow: inset 0 0 0 1px var(--device-sel-border);
-    }
-
-    /* Top tab (U-shape SVG). 56% wide, with slot carved from its top. */
-    .device-tab.top {
-      width: 56%;
-      align-self: center;
-      height: 10px;
-      display: block;
-      line-height: 0;
-      margin-bottom: -1px;       /* overlap body's top border by 1px */
-      position: relative;
-      z-index: 1;
-      cursor: pointer;
-      overflow: visible;
-    }
-    .device-tab.top svg {
       width: 100%;
-      height: 100%;
-      display: block;
-      overflow: visible;
+      height: 8px;
+      flex-shrink: 0;
+      cursor: pointer;
     }
-    .device-tab.top .tab-fill {
-      fill: var(--device-bg);
+    .corner-tab {
+      position: absolute;
+      top: 0;
+      width: 48px;
+      height: 8px;
+      background: var(--device-bg);
+      box-sizing: border-box;
     }
-    .device-tab.top .tab-stroke {
-      fill: none;
-      stroke: var(--device-border);
-      stroke-width: 1;
-      vector-effect: non-scaling-stroke;
+    .corner-tab.left  { left: 0; }
+    .corner-tab.right { right: 0; }
+
+    /* Top tab-area: tab top/sides are stroked; the middle-edge draws the
+     * body's top border between the two corner tabs. */
+    .tab-area.top .corner-tab {
+      border-top: 1px solid var(--device-border);
+      border-bottom: none;
     }
-    .device-tab.top:hover .tab-fill {
-      fill: rgba(65, 105, 225, 0.3);
+    .tab-area.top .corner-tab.left  { border-left:  1px solid var(--device-border); border-right: none; }
+    .tab-area.top .corner-tab.right { border-right: 1px solid var(--device-border); border-left:  none; }
+    .tab-area.top .middle-edge {
+      position: absolute;
+      left: 48px;
+      right: 48px;
+      bottom: 0;
+      height: 1px;
+      background: var(--device-border);
     }
-    .device-tab.top:hover .tab-stroke {
-      stroke: var(--device-sel-border);
+
+    /* Bottom tab-area is mirrored. */
+    .tab-area.bottom .corner-tab {
+      border-bottom: 1px solid var(--device-border);
+      border-top: none;
     }
-    .device-tab.top[selected] .tab-fill {
-      fill: var(--device-sel-bg);
+    .tab-area.bottom .corner-tab.left  { border-left:  1px solid var(--device-border); border-right: none; }
+    .tab-area.bottom .corner-tab.right { border-right: 1px solid var(--device-border); border-left:  none; }
+    .tab-area.bottom .middle-edge {
+      position: absolute;
+      left: 48px;
+      right: 48px;
+      top: 0;
+      height: 1px;
+      background: var(--device-border);
     }
-    .device-tab.top[selected] .tab-stroke {
-      stroke: var(--device-sel-border);
-      stroke-width: 1.5;
-    }
-    .effect-card[selected] > .device-tab.top .tab-stroke,
-    .chain-marker[selected] > .device-tab.top .tab-stroke {
-      stroke: var(--device-sel-border);
-    }
-    .effect-card[selected] > .device-tab.bottom,
-    .chain-marker[selected] > .device-tab.bottom {
+
+    /* Hover / selection for tabs. */
+    .tab-area:hover .corner-tab {
       border-color: var(--device-sel-border);
+      background: rgba(65, 105, 225, 0.25);
+    }
+    .tab-area:hover .middle-edge {
+      background: var(--device-sel-border);
+    }
+    .tab-area[selected] .corner-tab {
+      border-color: var(--device-sel-border);
+      background: var(--device-sel-bg);
+    }
+    .tab-area[selected] .middle-edge {
+      background: var(--device-sel-border);
+    }
+    /* When the whole card is selected, its tabs follow the same blue. */
+    .effect-card[selected] > .tab-area .corner-tab,
+    .chain-marker[selected] > .tab-area .corner-tab {
+      border-color: var(--device-sel-border);
+    }
+    .effect-card[selected] > .tab-area .middle-edge,
+    .chain-marker[selected] > .tab-area .middle-edge {
+      background: var(--device-sel-border);
     }
 
     /* --- Drop zones (invisible hit regions inside tabs, used for drag-drop target discovery) --- */
@@ -935,7 +925,11 @@ export class ColumnGroup extends MobxLitElement {
     return html`
       <div class="effect-card" ?selected=${isSelected}
         @click=${(e: Event) => {
-          if ((e.target as HTMLElement).closest('smart-input, .device-tab')) return;
+          if ((e.target as HTMLElement).closest('smart-input, .tab-area')) return;
+          // Stop propagation so the columns-view empty-space handler (which
+          // sees a retargeted event and thinks the click was on itself)
+          // doesn't immediately deselect us.
+          e.stopPropagation();
           appController.select(effectPath);
         }}>
         ${this.renderDeviceTab('top', chainIdx)}
@@ -1557,15 +1551,15 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
 
   /**
-   * Render one tab of a device's circuit-edge shape.
-   * - 'bottom' is a narrow rectangle protruding below the body (the "card
-   *   edge" that plugs in).
-   * - 'top' is a wider U-shape SVG with a slot cut into its top. The slot
-   *   opening straddles the bottom tab of the device above, so stacked
-   *   cards read as tab-meets-slot.
+   * Render a tab strip above or below a device. The strip spans the full
+   * card width with two 48px corner tabs at the left and right edges and
+   * a 1px "middle-edge" between them tracing the body's top/bottom
+   * border. Top and bottom strips of adjacent cards sit flush against
+   * each other with no vertical gap.
    *
-   * Both tabs are clickable (selects the insert-point) and dbl-clickable
-   * (inserts a new effect). Either tab also serves as a drag-drop target.
+   * The whole strip is one insert-point: click to select, double-click
+   * to insert a new effect at `insertIdx`. Drop-zone covers the whole
+   * strip for drag-to-move targets.
    */
   private renderDeviceTab(position: 'top' | 'bottom', insertIdx: number) {
     const tabPath = `tab/${this.sketchId}/${this.colIdx}/${insertIdx}`;
@@ -1573,29 +1567,13 @@ export class ColumnGroup extends MobxLitElement {
     this.registerTabSelectable(tabPath, insertIdx);
     const onClick = (e: Event) => { e.stopPropagation(); appController.select(tabPath); };
     const onDblClick = (e: Event) => { e.stopPropagation(); this.addEffectAndBeginEdit(insertIdx); };
-
-    if (position === 'top') {
-      // U-shape: the slot opens upward (Y=0 to Y=7 of viewBox, X=22 to X=78).
-      // The bottom edge (Y=10) is the connection to the body and carries
-      // NO stroke so it merges cleanly with the body's top border.
-      return html`
-        <div class="device-tab top" ?selected=${isSelected}
-          @click=${onClick} @dblclick=${onDblClick}
-          title="Double-click to insert effect">
-          <svg viewBox="0 0 100 10" preserveAspectRatio="none">
-            <path class="tab-fill"
-              d="M 0 10 L 0 0 L 22 0 L 22 7 L 78 7 L 78 0 L 100 0 L 100 10 Z"></path>
-            <path class="tab-stroke"
-              d="M 0 10 L 0 0 L 22 0 L 22 7 L 78 7 L 78 0 L 100 0 L 100 10"></path>
-          </svg>
-          <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
-        </div>
-      `;
-    }
     return html`
-      <div class="device-tab bottom" ?selected=${isSelected}
+      <div class="tab-area ${position}" ?selected=${isSelected}
         @click=${onClick} @dblclick=${onDblClick}
         title="Double-click to insert effect">
+        <div class="corner-tab left"></div>
+        <div class="middle-edge"></div>
+        <div class="corner-tab right"></div>
         <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
       </div>
     `;

@@ -651,9 +651,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       });
     }
 
-    for (const col of affectedCols) {
-      appController.ensureAutoStructTapsInColumn(sketchId, col);
-    }
+    void affectedCols; // implicit struct auto-connect is computed at sync time
 
     // If the column count changed (placeholder drop created columns),
     // invalidate cache for the new indices and notify columns-view

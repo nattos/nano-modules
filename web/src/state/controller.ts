@@ -41,7 +41,12 @@ function isStructuredSchemaTypeDef(def: any): boolean {
 function railDataTypeFromSchema(def: any | null): import('../sketch-types').RailDataType {
   if (!def || typeof def !== 'object') return 'float';
   if (def.type === 'texture') return 'texture';
-  if (isStructuredSchemaTypeDef(def)) return { kind: 'struct', schema: def };
+  if (isStructuredSchemaTypeDef(def)) {
+    // Deep-clone the schema: `def` frequently points into the MobX-proxied
+    // plugins list, and proxies can't cross `postMessage` to the worker.
+    // Storing a plain clone in the rail keeps the sketch structured-clonable.
+    return { kind: 'struct', schema: JSON.parse(JSON.stringify(def)) };
+  }
   return 'float';
 }
 
@@ -151,7 +156,6 @@ export class AppController {
       sketch.instances = sketch.instances ?? {};
       sketch.instances[instanceKey] = { module_type: moduleType, state: defaultState };
     });
-    this.ensureAutoStructTapsInColumn(sketchId, colIdx);
   }
 
   /** Change the module type of an existing effect in a chain. */
@@ -168,7 +172,6 @@ export class AppController {
     });
     // Tell the engine worker to swap the instance directly
     this.engine?.changeInstanceType(sketchId, colIdx, chainIdx, newModuleType);
-    this.ensureAutoStructTapsInColumn(sketchId, colIdx);
   }
 
   /** Recipe for changing an effect type (shared by long edit methods). */
@@ -710,149 +713,6 @@ export class AppController {
     this.addTap(sketchId, colIdx, chainIdx, railId, fieldPath, 'read');
   }
 
-  /**
-   * Scan a column and auto-connect struct / gpu / vector inputs to matching
-   * outputs of prior effects. Never overwrites an existing read tap. Does
-   * nothing for scalar or texture inputs — those already have their own
-   * manual-tap flows.
-   *
-   * Executes as ONE undo transaction so that a single user action (add
-   * effect, change type, drag-drop) produces at most one auto-connect entry
-   * in the undo stack.
-   */
-  ensureAutoStructTapsInColumn(sketchId: string, colIdx: number) {
-    const sketch = appState.database.sketches[sketchId];
-    if (!sketch) return;
-    const column = sketch.columns[colIdx];
-    if (!column) return;
-
-    // Plan all changes up-front from the current snapshot — we apply the
-    // collected operations atomically inside one mutate() call so the
-    // auto-connect shows up as a single undo step.
-    type Op =
-      | { kind: 'addRail'; railId: string; name: string; dataType: import('../sketch-types').RailDataType }
-      | { kind: 'addTap'; chainIdx: number; railId: string; fieldPath: string; direction: 'read' | 'write' };
-    const ops: Op[] = [];
-
-    // Track rails that will exist after our planned ops.
-    const newRails: Array<{ id: string; dataType: import('../sketch-types').RailDataType }> = [];
-    const allRails = this.collectRails(sketch, colIdx);
-
-    // Also track which producers (chainIdx, fieldPath) will have a write tap
-    // after our ops, so downstream consumers can share.
-    interface ProducedRail { railId: string; dataType: import('../sketch-types').RailDataType; }
-    const writeTapAfter = new Map<string, ProducedRail>(); // key: `${chainIdx}/${fieldPath}`
-    for (let i = 0; i < column.chain.length; i++) {
-      const e = column.chain[i];
-      if (e.type !== 'module') continue;
-      for (const t of e.taps ?? []) {
-        if (t.direction !== 'write') continue;
-        const rail = allRails.find(r => r.id === t.railId);
-        if (!rail) continue;
-        writeTapAfter.set(`${i}/${t.fieldPath}`, { railId: rail.id, dataType: rail.dataType });
-      }
-    }
-
-    const getRailDataType = (railId: string): import('../sketch-types').RailDataType | null => {
-      const existing = allRails.find(r => r.id === railId);
-      if (existing) return existing.dataType;
-      const planned = newRails.find(r => r.id === railId);
-      return planned?.dataType ?? null;
-    };
-
-    let nextRailId = this.nextRailId;
-    const provisionRailId = () => `rail_${nextRailId++}`;
-
-    for (let i = 0; i < column.chain.length; i++) {
-      const entry = column.chain[i];
-      if (entry.type !== 'module') continue;
-      const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-      const schema = plugin?.schema;
-      if (!schema) continue;
-
-      for (const [fieldName, def] of Object.entries(schema)) {
-        const d: any = def;
-        const io = d?.io ?? 0;
-        if (!(io & 1)) continue;               // inputs only
-        if (!isStructuredSchemaTypeDef(d)) continue;  // struct/array/vec only
-
-        // Skip if the consumer already has a read tap for this field.
-        const hasRead = (entry.taps ?? []).some(
-          t => t.fieldPath === fieldName && t.direction === 'read');
-        if (hasRead) continue;
-
-        // Find an earlier module in the column with a compatible output.
-        let producerChainIdx = -1;
-        let producerFieldPath = '';
-        let producerSchema: any = null;
-        outer: for (let j = 0; j < i; j++) {
-          const pe = column.chain[j];
-          if (pe.type !== 'module') continue;
-          const pplug = appState.local.plugins.find(p => p.id === pe.module_type);
-          const pschema = pplug?.schema ?? {};
-          for (const [pname, pdef] of Object.entries(pschema)) {
-            const pd: any = pdef;
-            if (!((pd?.io ?? 0) & 2)) continue;    // outputs only
-            if (!isStructuredSchemaTypeDef(pd)) continue;
-            if (!isRailCompatible(pd, d)) continue;
-            producerChainIdx = j;
-            producerFieldPath = pname;
-            producerSchema = pd;
-            break outer;
-          }
-        }
-        if (producerChainIdx < 0) continue;
-
-        // Find or plan a write tap on the producer.
-        const producerKey = `${producerChainIdx}/${producerFieldPath}`;
-        let produced = writeTapAfter.get(producerKey);
-        if (!produced) {
-          const railId = provisionRailId();
-          const dataType: import('../sketch-types').RailDataType = {
-            kind: 'struct',
-            schema: producerSchema,
-          };
-          ops.push({ kind: 'addRail', railId, name: `Rail ${allRails.length + newRails.length + 1}`, dataType });
-          newRails.push({ id: railId, dataType });
-          ops.push({ kind: 'addTap', chainIdx: producerChainIdx, railId, fieldPath: producerFieldPath, direction: 'write' });
-          produced = { railId, dataType };
-          writeTapAfter.set(producerKey, produced);
-        }
-
-        // Verify the producer rail is still compatible with the consumer
-        // schema (it always will be for freshly-created rails; may not be
-        // for pre-existing ones if the producer schema drifted).
-        const producedDataType = getRailDataType(produced.railId) ?? produced.dataType;
-        if (typeof producedDataType === 'string') continue;
-        if (!isRailCompatible((producedDataType as any).schema, d)) continue;
-
-        ops.push({ kind: 'addTap', chainIdx: i, railId: produced.railId, fieldPath: fieldName, direction: 'read' });
-      }
-    }
-
-    if (ops.length === 0) return;
-
-    this.mutate('Auto-connect struct inputs', draft => {
-      const sk = draft.sketches[sketchId];
-      if (!sk) return;
-      const col = sk.columns[colIdx];
-      if (!col) return;
-      for (const op of ops) {
-        if (op.kind === 'addRail') {
-          col.rails = col.rails ?? [];
-          col.rails.push({ id: op.railId, name: op.name, dataType: op.dataType });
-        } else {
-          const e = col.chain[op.chainIdx];
-          if (e?.type === 'module') {
-            e.taps = e.taps ?? [];
-            e.taps.push({ railId: op.railId, fieldPath: op.fieldPath, direction: op.direction });
-          }
-        }
-      }
-    });
-    this.nextRailId = nextRailId;
-  }
-
   selectSketch(id: string | null) {
     runInAction(() => { appState.local.selectedSketchId = id; });
   }
@@ -928,8 +788,139 @@ export class AppController {
 
   private syncSketchesToEngine() {
     if (!this.engine) return;
+    const plugins = appState.local.plugins;
     for (const [id, sketch] of Object.entries(appState.database.sketches)) {
-      this.engine.updateSketch(id, toJS(sketch));
+      const augmented = augmentSketchWithImplicitConnections(toJS(sketch), plugins);
+      this.engine.updateSketch(id, augmented);
+    }
+  }
+}
+
+/**
+ * Produce a copy of `sketch` with implicit struct/gpu/vec auto-connections
+ * added, without touching the caller's sketch. Scans each column for
+ * structured inputs lacking a read tap and, for each, finds an earlier
+ * module with a compatible structured output. If such a producer exists,
+ * a synthesized rail (deterministic ID so repeated syncs stay stable) +
+ * write tap + read tap are inserted into the returned sketch. The input
+ * sketch is left unmodified, and these synthetic entries never land in
+ * the user's schema or the UI.
+ */
+export function augmentSketchWithImplicitConnections(
+  sketch: Sketch,
+  plugins: PluginInfo[],
+): Sketch {
+  // Deep clone so we can mutate freely without touching MobX-proxy state.
+  const clone: Sketch = JSON.parse(JSON.stringify(sketch));
+
+  for (let colIdx = 0; colIdx < clone.columns.length; colIdx++) {
+    augmentColumn(clone, colIdx, plugins);
+  }
+  return clone;
+}
+
+function augmentColumn(sketch: Sketch, colIdx: number, plugins: PluginInfo[]) {
+  const column = sketch.columns[colIdx];
+  if (!column) return;
+
+  // Deterministic implicit rail ID, so repeated syncs for the same
+  // producer emit the same rail. The key uniquely identifies "this
+  // producer's output feeds a compatible struct rail in this column".
+  const implicitRailId = (producerChainIdx: number, producerFieldPath: string) =>
+    `__implicit__/${colIdx}/${producerChainIdx}/${producerFieldPath}`;
+
+  const allRails = [
+    ...(column.rails ?? []),
+    ...(sketch.rails ?? []),
+  ];
+
+  // Existing explicit write taps in this column — consumers can reuse
+  // whatever rail a producer is already writing to.
+  const writeTapByProducer = new Map<string, { railId: string; dataType: import('../sketch-types').RailDataType }>();
+  for (let i = 0; i < column.chain.length; i++) {
+    const e = column.chain[i];
+    if (e.type !== 'module') continue;
+    for (const t of e.taps ?? []) {
+      if (t.direction !== 'write') continue;
+      const rail = allRails.find(r => r.id === t.railId);
+      if (!rail) continue;
+      writeTapByProducer.set(`${i}/${t.fieldPath}`, { railId: rail.id, dataType: rail.dataType });
+    }
+  }
+
+  for (let i = 0; i < column.chain.length; i++) {
+    const entry = column.chain[i];
+    if (entry.type !== 'module') continue;
+    const plugin = plugins.find(p => p.id === entry.module_type);
+    const schema = plugin?.schema;
+    if (!schema) continue;
+
+    for (const [fieldName, def] of Object.entries(schema)) {
+      const d: any = def;
+      const io = d?.io ?? 0;
+      if (!(io & 1)) continue;
+      if (!isStructuredSchemaTypeDef(d)) continue;
+
+      // User explicitly wired this input already? Leave it alone.
+      const hasRead = (entry.taps ?? []).some(
+        t => t.fieldPath === fieldName && t.direction === 'read');
+      if (hasRead) continue;
+
+      // Find the nearest earlier module with a compatible structured output.
+      let producerChainIdx = -1;
+      let producerFieldPath = '';
+      let producerSchema: any = null;
+      outer: for (let j = i - 1; j >= 0; j--) {
+        const pe = column.chain[j];
+        if (pe.type !== 'module') continue;
+        const pplug = plugins.find(p => p.id === pe.module_type);
+        const pschema = pplug?.schema ?? {};
+        for (const [pname, pdef] of Object.entries(pschema)) {
+          const pd: any = pdef;
+          if (!((pd?.io ?? 0) & 2)) continue;
+          if (!isStructuredSchemaTypeDef(pd)) continue;
+          if (!isRailCompatible(pd, d)) continue;
+          producerChainIdx = j;
+          producerFieldPath = pname;
+          producerSchema = pd;
+          break outer;
+        }
+      }
+      if (producerChainIdx < 0) continue;
+
+      // Prefer an existing explicit write tap (user-authored) on the
+      // producer — reuse its rail so behaviour stays consistent with
+      // manual routing. Otherwise synthesize a deterministic implicit
+      // rail and write tap pair.
+      const producerKey = `${producerChainIdx}/${producerFieldPath}`;
+      let produced = writeTapByProducer.get(producerKey);
+      if (!produced) {
+        const railId = implicitRailId(producerChainIdx, producerFieldPath);
+        // Deep-clone the schema: producerSchema points into the MobX-proxied
+        // plugins list, and structured-clone (postMessage) chokes on proxies.
+        const dataType: import('../sketch-types').RailDataType = {
+          kind: 'struct',
+          schema: JSON.parse(JSON.stringify(producerSchema)),
+        };
+        column.rails = column.rails ?? [];
+        column.rails.push({ id: railId, name: railId, dataType });
+        const producerEntry = column.chain[producerChainIdx];
+        if (producerEntry.type === 'module') {
+          producerEntry.taps = producerEntry.taps ?? [];
+          producerEntry.taps.push({ railId, fieldPath: producerFieldPath, direction: 'write' });
+        }
+        produced = { railId, dataType };
+        writeTapByProducer.set(producerKey, produced);
+      }
+
+      // Sanity: if the producer's existing rail isn't structurally
+      // compatible anymore (e.g. user reused it for something else),
+      // skip this consumer rather than create a broken tap.
+      if (typeof produced.dataType === 'string') continue;
+      if (!isRailCompatible((produced.dataType as any).schema, d)) continue;
+
+      entry.taps = entry.taps ?? [];
+      entry.taps.push({ railId: produced.railId, fieldPath: fieldName, direction: 'read' });
     }
   }
 }
