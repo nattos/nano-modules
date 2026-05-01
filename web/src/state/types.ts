@@ -64,6 +64,25 @@ export interface DatabaseState {
   sketches: Record<string, Sketch>;
 }
 
+// --- User settings (persisted to IndexedDB, never in undo history) ---
+
+/**
+ * Per-user UI preferences. Lives in `appState.local.userSettings`. Auto-saved
+ * via a debounced autorun. Never modified through `appController.mutate`.
+ */
+export interface UserSettings {
+  /** Width in pixels of the IDE's left details panel. */
+  ideLeftPanelWidth: number;
+  /** Currently active left tab in the IDE. */
+  ideLeftTab: 'explorer' | 'project_editor';
+  /** Currently selected project id (`default:<effectId>` or `user:<uuid>`). */
+  selectedProjectId: string | null;
+  /** Scroll positions keyed by an arbitrary scope id. */
+  scrollPositions: Record<string, number>;
+  /** Whether the engine is paused. */
+  paused: boolean;
+}
+
 // --- Local state (ephemeral, not in undo history) ---
 
 export interface StagingInstance {
@@ -108,4 +127,8 @@ export interface LocalState {
    * When a component calls defineSelectable() with this path, the selection activates.
    */
   queuedSelectionPath: string | null;
+
+  // --- Effect IDE / cross-cutting persisted preferences ---
+  /** UI preferences persisted to IndexedDB (never undo/redo-able). */
+  userSettings: UserSettings;
 }

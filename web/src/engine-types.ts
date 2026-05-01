@@ -78,6 +78,10 @@ export type WorkerCommand =
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
   | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: number }
   | { type: 'setTracePoints'; tracePoints: TracePoint[] }
+  | { type: 'setPaused'; paused: boolean }
+  | { type: 'restart' }
+  | { type: 'setSketchInput'; sketchId: string; bitmap: ImageBitmap | null }
+  | { type: 'reloadWasm'; wasmUrl: string }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---

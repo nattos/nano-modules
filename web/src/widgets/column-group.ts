@@ -63,6 +63,7 @@ import './spark-chart';
 import './smart-input';
 import './scalar-slider';
 import './output-trace-card';
+import './texture-drop-zone';
 
 import type { LongEdit } from '../state/history';
 import type { Selectable } from '../state/types';
@@ -777,6 +778,7 @@ export class ColumnGroup extends MobxLitElement {
           <div class="chain-marker-label" @click=${selectMarker}>Input</div>
           ${this.renderTraceCardRow(chainIdx, entry)}
         </div>
+        <texture-drop-zone .sketchId=${this.sketchId}></texture-drop-zone>
         ${this.renderDeviceTab('bottom', chainIdx + 1)}
       </div>
     `;

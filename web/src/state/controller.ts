@@ -11,11 +11,17 @@ import { runInAction, toJS } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable } from './types';
+import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
 import { isRailCompatible } from '../schema-compat';
+import {
+  isDefaultProjectId,
+  isUserProjectId,
+  effectIdFromDefaultProjectId,
+  synthesizeDefaultProject,
+} from './default-projects';
 
 /** Identifies one end of a drag-to-connect operation. */
 export interface FieldConnectInfo {
@@ -77,7 +83,15 @@ export class AppController {
 
   /** Generic mutation bottleneck. All sketch changes go through here. */
   mutate(description: string, recipe: (draft: DatabaseState) => void) {
-    this.history.record(description, recipe);
+    const sel = appState.local.userSettings.selectedProjectId;
+    this.history.record(description, draft => {
+      recipe(draft);
+      // First real edit on a template user: project — promote it to "real"
+      // so the autosave starts persisting it and the explorer reveals it.
+      if (sel && isUserProjectId(sel) && draft.sketches[sel]?.isTemplate) {
+        draft.sketches[sel].isTemplate = false;
+      }
+    });
     this.syncSketchesToEngine();
   }
 
@@ -286,6 +300,36 @@ export class AppController {
     runInAction(() => { appState.local.activeTab = tab; });
   }
 
+  /**
+   * Update one user-setting field. Goes through `runInAction` only — never
+   * recorded in undo history (splitter drags etc. must not pollute the stack).
+   */
+  setUserSetting<K extends keyof UserSettings>(key: K, value: UserSettings[K]) {
+    runInAction(() => { appState.local.userSettings[key] = value; });
+  }
+
+  /**
+   * Boot-time replacement of user settings (e.g. after IndexedDB load).
+   * Bypasses history — these are not undo/redo-able.
+   */
+  loadInitialUserSettings(settings: UserSettings) {
+    runInAction(() => { appState.local.userSettings = settings; });
+  }
+
+  /**
+   * Boot-time merge of sketches loaded from IndexedDB into the database.
+   * Bypasses history — loading is not an undo-able action. Engine receives
+   * each sketch via the existing sync mechanism.
+   */
+  loadInitialSketches(sketches: Record<string, Sketch>) {
+    runInAction(() => {
+      for (const [id, sk] of Object.entries(sketches)) {
+        appState.database.sketches[id] = sk;
+      }
+    });
+    this.syncSketchesToEngine();
+  }
+
   /** Store discovered effects from a loaded WASM module. */
   setAvailableEffects(effects: EffectInfo[]) {
     runInAction(() => {
@@ -296,6 +340,89 @@ export class AppController {
         }
       }
     });
+    // If a default project was selected before its effect was discovered
+    // (typical at boot — settings load completes before WASM does), retry
+    // materialization now that the effect list has grown.
+    const sel = appState.local.userSettings.selectedProjectId;
+    if (sel && isDefaultProjectId(sel)) {
+      this.selectProject(sel);
+    }
+  }
+
+  /**
+   * Select a project for the IDE.
+   *
+   * Default projects (`default:<effectId>`) are immediately materialized into
+   * a `user:<uuid>` copy with `isTemplate: true`. The autosave skips
+   * isTemplate sketches, so browsing-without-editing never accumulates saved
+   * projects; only the first real edit promotes a template to a saved
+   * project (see `mutate()`).
+   *
+   * If a fresh template for the same effect already exists, it is reused
+   * (no duplicates from repeated clicks).
+   */
+  selectProject(id: string | null) {
+    if (!id) {
+      runInAction(() => { appState.local.userSettings.selectedProjectId = null; });
+      return;
+    }
+    if (isDefaultProjectId(id)) {
+      const effectId = effectIdFromDefaultProjectId(id);
+      const reused = this.findReusableTemplateForEffect(effectId);
+      if (reused) {
+        runInAction(() => { appState.local.userSettings.selectedProjectId = reused; });
+        return;
+      }
+      const sketch = synthesizeDefaultProject(effectId, appState.local.availableEffects);
+      if (!sketch) {
+        // Effects not yet discovered — store the default id; setAvailableEffects
+        // will retry materialization once they arrive.
+        runInAction(() => { appState.local.userSettings.selectedProjectId = id; });
+        return;
+      }
+      const userId = `user:${cryptoRandomId()}`;
+      runInAction(() => {
+        appState.database.sketches[userId] = { ...sketch, isTemplate: true };
+        appState.local.userSettings.selectedProjectId = userId;
+      });
+      this.syncSketchesToEngine();
+      return;
+    }
+    runInAction(() => { appState.local.userSettings.selectedProjectId = id; });
+  }
+
+  /**
+   * Find an existing template (`isTemplate: true`) user project derived from
+   * `effectId`, so repeat-selecting the same default doesn't fork duplicates.
+   * Returns the user id if found.
+   */
+  private findReusableTemplateForEffect(effectId: string): string | null {
+    for (const [id, sk] of Object.entries(appState.database.sketches)) {
+      if (!isUserProjectId(id)) continue;
+      if (!sk?.isTemplate) continue;
+      const moduleEntry = sk.columns?.[0]?.chain?.find(e => e.type === 'module');
+      if (moduleEntry?.type === 'module' && moduleEntry.module_type === effectId) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Delete a user-materialized project. Goes through history so undo restores
+   * it. The autosave autorun picks up the deletion from IndexedDB on the next
+   * debounce tick.
+   */
+  deleteProject(id: string) {
+    if (!isUserProjectId(id)) return;
+    this.mutate(`Delete project`, draft => {
+      delete draft.sketches[id];
+    });
+    if (appState.local.userSettings.selectedProjectId === id) {
+      runInAction(() => {
+        appState.local.userSettings.selectedProjectId = null;
+      });
+    }
   }
 
   /** Sync state from the engine worker. Updates plugins and adopts new remote sketches. */
@@ -786,6 +913,31 @@ export class AppController {
     this.engine?.setTracePoints(tracePoints);
   }
 
+  /** Pause/resume the engine. Stored in user settings so it persists. */
+  setPaused(paused: boolean) {
+    runInAction(() => { appState.local.userSettings.paused = paused; });
+    this.engine?.setPaused(paused);
+  }
+
+  /** Reset elapsed time and force a redraw. */
+  restartEngine() {
+    this.engine?.restart();
+  }
+
+  /** Inject a frame source for a sketch's `texture_input`. Pass null to clear. */
+  setSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
+    this.engine?.setSketchInput(sketchId, bitmap);
+  }
+
+  /**
+   * Trigger a WASM module reload (from the dev-time HMR plugin). The worker
+   * waits for the in-flight frame to complete, then re-fetches and
+   * re-instantiates affected effects.
+   */
+  reloadWasm(wasmUrl: string) {
+    this.engine?.reloadWasm(wasmUrl);
+  }
+
   private syncSketchesToEngine() {
     if (!this.engine) return;
     const plugins = appState.local.plugins;
@@ -927,6 +1079,18 @@ function augmentColumn(sketch: Sketch, colIdx: number, plugins: PluginInfo[]) {
 
 function shortName(moduleId: string): string {
   return moduleId.split('.').pop() ?? moduleId;
+}
+
+/**
+ * Generate a short, sufficiently-unique id. Falls back to Math.random when
+ * `crypto.randomUUID` is unavailable (older browsers / unsecured contexts).
+ */
+function cryptoRandomId(): string {
+  const c = (globalThis as any).crypto;
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export const appController = new AppController();

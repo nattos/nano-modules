@@ -80,6 +80,7 @@ let fpsTime = 0;
 let fps = 0;
 let stateGeneration = 0;
 let lastBroadcastGeneration = -1;
+let paused = false;
 
 // Command queue
 const pendingCommands: WorkerCommand[] = [];
@@ -177,6 +178,25 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'setTracePoints':
       tracePoints = cmd.tracePoints;
       break;
+    case 'setPaused':
+      paused = cmd.paused;
+      // On resume, reset lastTime so the next frame's dt isn't a giant
+      // catch-up jump that breaks animation smoothness.
+      if (!paused) lastTime = performance.now() / 1000;
+      break;
+    case 'restart':
+      elapsed = 0;
+      lastTime = performance.now() / 1000;
+      markDirty();
+      break;
+    case 'setSketchInput':
+      // Phase 7 wires this to the GPU; for now we just stash the bitmap so
+      // it's available when that phase lands.
+      handleSetSketchInput(cmd.sketchId, cmd.bitmap);
+      break;
+    case 'reloadWasm':
+      await reloadWasmModule(cmd.wasmUrl);
+      break;
     case 'debugDump': {
       const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
       const sketchRecord: Record<string, any> = {};
@@ -249,6 +269,21 @@ async function frame() {
   if (!running || frameInFlight) return;
   frameInFlight = true;
 
+  if (paused) {
+    // Keep the loop alive but skip simulation. Posting fps=0 keeps the UI's
+    // pause indicator reactive (consumers re-render as expected).
+    post({
+      type: 'frame',
+      fps: 0,
+      tracedFrames: {},
+      sketchState: {},
+      pluginStates: {},
+    });
+    frameInFlight = false;
+    requestAnimationFrame(frame);
+    return;
+  }
+
   const now = performance.now() / 1000;
   const dt = now - lastTime;
   lastTime = now;
@@ -274,6 +309,47 @@ async function frame() {
 
   frameInFlight = false;
   requestAnimationFrame(frame);
+}
+
+// ---- Sketch input frame source ----
+
+/**
+ * Per-sketch GPU input texture. Allocated lazily on first drop, reallocated
+ * when the bitmap dimensions change. The bitmap itself is consumed (closed)
+ * immediately after upload — repeat drops by the user re-decode + re-upload.
+ */
+const sketchInputTextures = new Map<string, { handle: number; width: number; height: number }>();
+
+function handleSetSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
+  if (!bitmap) {
+    sketchInputTextures.delete(sketchId);
+    markDirty();
+    return;
+  }
+  if (!gpuHost || !gpuDevice) {
+    bitmap.close();
+    return;
+  }
+  const w = bitmap.width;
+  const h = bitmap.height;
+  let entry = sketchInputTextures.get(sketchId);
+  if (!entry || entry.width !== w || entry.height !== h) {
+    // (Re)allocate. We don't try to release the old handle; gpuHost owns the
+    // pool. Future cleanup can reclaim them if memory matters.
+    const handle = gpuHost.createTexture(w, h, 1); // 1 = rgba8unorm
+    entry = { handle, width: w, height: h };
+    sketchInputTextures.set(sketchId, entry);
+  }
+  const tex = gpuHost.getTextureByHandle(entry.handle);
+  if (tex) {
+    gpuDevice.queue.copyExternalImageToTexture(
+      { source: bitmap, flipY: false },
+      { texture: tex },
+      { width: w, height: h },
+    );
+  }
+  bitmap.close();
+  markDirty();
 }
 
 /**
@@ -357,6 +433,9 @@ async function simulateTick(dt: number) {
     if (sketch.anchor && realOutputs.has(sketch.anchor)) {
       inputHandle = realOutputs.get(sketch.anchor)!;
     }
+    // User-injected input bitmap (drag-drop) takes priority over anchor.
+    const userInput = sketchInputTextures.get(sketchId);
+    if (userInput) inputHandle = userInput.handle;
 
     try {
       const outputHandle = await sketchExecutor.executeAllColumns(
@@ -485,6 +564,86 @@ function findCompiledModule(effectId: string): { compiled: WebAssembly.Module; r
   const entry = effectRegistry.get(resolved);
   if (!entry) return null;
   return { compiled: entry.compiled, resolvedId: resolved };
+}
+
+/**
+ * HMR-driven module swap. Waits for the current frame to complete, evicts
+ * the cached module + its registered effects, invalidates any live sketch
+ * instances using those effects, then re-fetches and re-registers.
+ *
+ * Cache-busts the URL so the browser HTTP cache doesn't serve a stale .wasm.
+ */
+async function reloadWasmModule(wasmUrl: string) {
+  if (!bridgeCore || !gpuHost) return;
+
+  // Wait for the in-flight frame to drain so we don't yank the rug from
+  // under simulateTick. Bound the wait so a stuck frame doesn't deadlock.
+  const deadline = performance.now() + 1000;
+  while (frameInFlight && performance.now() < deadline) {
+    await new Promise(r => setTimeout(r, 4));
+  }
+  if (frameInFlight) {
+    console.warn('[engine] reloadWasm: frame still in flight after 1s; swapping anyway');
+  }
+
+  const loaded = moduleRegistry.get(wasmUrl);
+  if (!loaded) {
+    // The module wasn't loaded yet — nothing to swap.
+    return;
+  }
+  const moduleType = loaded.moduleId;
+  const oldEffects = loaded.effects;
+  const oldCompiled = loaded.compiled;
+  const effectIds = new Set(oldEffects.map(e => e.id));
+
+  // Evict from registries.
+  moduleRegistry.delete(wasmUrl);
+  for (const e of oldEffects) {
+    const reg = effectRegistry.get(e.id);
+    if (reg && reg.compiled === oldCompiled) {
+      effectRegistry.delete(e.id);
+    }
+  }
+
+  // Invalidate live sketch instances of this module's effects so the
+  // executor reloads them on the next frame with the new compiled module.
+  if (sketchExecutor) {
+    for (const [, sketch] of sketches) {
+      for (const col of sketch.columns) {
+        for (const entry of col.chain) {
+          if (entry.type === 'module' && effectIds.has(entry.module_type)) {
+            sketchExecutor.invalidateInstance(entry.instance_key);
+          }
+        }
+      }
+    }
+  }
+
+  // Re-fetch and re-register. Cache-bust to defeat the HTTP cache.
+  const cacheBustedUrl = `${wasmUrl}?t=${Date.now()}`;
+  const host = new WasmHost();
+  host.bridgeCore = bridgeCore;
+  host.gpuHost = gpuHost;
+  try {
+    await host.load(cacheBustedUrl);
+    const compiled = host.compiledModule!;
+    const effects = host.registeredEffects.map(e => ({ ...e }));
+    moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
+    for (const effect of effects) {
+      effectRegistry.set(effect.id, { compiled, effect });
+    }
+    post({
+      type: 'effectsDiscovered',
+      effects: effects.map(e => ({
+        id: e.id, name: e.name, description: e.description,
+        category: e.category, keywords: e.keywords,
+      })),
+    });
+    markDirty();
+    console.log(`[engine] reloaded WASM ${wasmUrl} (${effects.length} effects)`);
+  } catch (e) {
+    post({ type: 'error', message: `Failed to reload ${wasmUrl}: ${e}` });
+  }
 }
 
 /**

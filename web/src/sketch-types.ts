@@ -15,6 +15,13 @@ export interface Sketch {
   rails?: Rail[];
   /** Per-instance state, keyed by instance_key. Canonical source of truth for all field values. */
   instances?: Record<string, InstanceState>;
+  /**
+   * Effect-IDE-only marker: this `user:` sketch was just materialized from a
+   * default template and has not been edited yet. Hidden from explorer lists
+   * and skipped by the project-store autosave. Cleared inside `mutate()` on
+   * the first real edit.
+   */
+  isTemplate?: boolean;
 }
 
 /** Serialized state for a single module instance within a sketch. */

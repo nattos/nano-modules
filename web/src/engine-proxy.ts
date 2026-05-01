@@ -96,6 +96,32 @@ export class EngineProxy {
     this.send({ type: 'setTracePoints', tracePoints });
   }
 
+  setPaused(paused: boolean) {
+    this.send({ type: 'setPaused', paused });
+  }
+
+  restart() {
+    this.send({ type: 'restart' });
+  }
+
+  /**
+   * Inject a frame source for a sketch's `texture_input` chain entry.
+   * Pass `null` to clear. The bitmap is transferred (consumed on the main
+   * thread); the caller is responsible for re-decoding if it needs to
+   * push another frame.
+   */
+  setSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
+    if (bitmap) {
+      this.send({ type: 'setSketchInput', sketchId, bitmap }, [bitmap]);
+    } else {
+      this.send({ type: 'setSketchInput', sketchId, bitmap: null });
+    }
+  }
+
+  reloadWasm(wasmUrl: string) {
+    this.send({ type: 'reloadWasm', wasmUrl });
+  }
+
   debugDump(): Promise<any> {
     return new Promise(resolve => {
       this.debugDumpResolve = resolve;

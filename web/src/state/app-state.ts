@@ -9,6 +9,7 @@
 import { observable, configure, makeObservable } from 'mobx';
 import { enableMapSet, setAutoFreeze, enablePatches } from 'immer';
 import type { DatabaseState, LocalState } from './types';
+import { defaultUserSettings } from './user-settings';
 
 // Immer setup
 enableMapSet();
@@ -41,6 +42,7 @@ export class AppState {
     selectedFieldPath: null,
     selection: null,
     queuedSelectionPath: null,
+    userSettings: defaultUserSettings(),
   };
 
   constructor() {

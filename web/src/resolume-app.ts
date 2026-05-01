@@ -1,48 +1,27 @@
 /**
- * Sketch Editor — entry point.
+ * Resolume sketch editor entry point. Mounted at /resolume/.
  *
- * Sets up the engine worker, wires state updates, and mounts <sketch-app>.
+ * Boots the shared engine, layers in resolume-specific defaults (auto-instantiate
+ * a few effects + a debug particles sketch), and mounts the <sketch-app> shell.
  */
 
-import { toJS } from 'mobx';
-import { appState } from './state/app-state';
+import { boot } from './boot';
 import { appController } from './state/controller';
-import { EngineProxy } from './engine-proxy';
 import type { Sketch } from './sketch-types';
 
 // Import the root component (self-registering)
 import './views/sketch-app';
 
-// Debug: expose state for inspection
-(window as any).debugDumpState = () => {
-  return toJS(appState);
-};
-(window as any).debugPrintState = () => {
-  console.log(JSON.stringify(toJS(appState), undefined, 2));
-};
+// Dev-only WASM HMR listener (no-op in production).
+import './wasm-hmr-client';
 
 async function main() {
-  const engine = new EngineProxy(320, 180);
-  appController.setEngine(engine);
+  const { engine } = await boot();
 
-  // Debug: dump engine worker's internal state (bridge core, sketches, instances)
-  (window as any).debugDumpEngineState = async () => {
-    const data = await engine.debugDump();
-    console.log(JSON.stringify(data, undefined, 2));
-    return data;
-  };
-
-  engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
-  engine.onFps = (fps) => appController.setEngineFps(fps);
-  engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
-  engine.onSketchState = (state) => appController.setSketchState(state);
-  engine.onPluginStates = (states) => appController.setPluginStates(states);
-  engine.onError = (msg) => appController.setEngineError(msg);
-
-  // When effects are discovered, store them and instantiate defaults
   let debugSketchCreated = false;
+  const baseHandler = engine.onEffectsDiscovered;
   engine.onEffectsDiscovered = (effects) => {
-    appController.setAvailableEffects(effects);
+    baseHandler?.(effects);
     appController.instantiateEffect('generator.spinningtris');
     appController.instantiateEffect('generator.solid_color');
     appController.instantiateEffect('debug.gpu_test');
@@ -53,7 +32,6 @@ async function main() {
     }
   };
 
-  // Load the combined module (discovers all available effects)
   appController.loadModule('com.nattos.nano_effects');
 }
 
