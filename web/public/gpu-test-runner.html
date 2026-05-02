@@ -61,6 +61,13 @@ const EFFECT_ID_BY_FILENAME = {
   'gradient.wasm': 'generator.gradient',
   'grid.wasm': 'generator.grid',
   'noise.wasm': 'generator.noise',
+  // Platform-feature smoke effects (testonly bundle only).
+  'hdr_test.wasm': 'debug.hdr_test',
+  'atomic_test.wasm': 'debug.atomic_test',
+  'rw_storage_test.wasm': 'debug.rw_storage_test',
+  'clear_copy_test.wasm': 'debug.clear_copy_test',
+  'mrt_test.wasm': 'debug.mrt_test',
+  'lut3d_test.wasm': 'debug.lut3d_test',
 };
 
 function resolveEffectId(moduleName) {
@@ -96,6 +103,11 @@ async function run() {
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) throw new Error('No GPU adapter');
     const device = await adapter.requestDevice();
+    const captured = [];
+    device.addEventListener?.('uncapturederror', e => {
+      captured.push(String(e.error?.message || e.error));
+    });
+    window.__gpuTestErrors = captured;
     const format = 'rgba8unorm';
     const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
                    | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
@@ -223,6 +235,7 @@ async function run() {
       pixelCount: pixels.length / 4,
       samples, pixelsBase64,
       consoleLog: allConsoleLogs,
+      gpuErrors: captured,
       pluginState: lastHost?.pluginState ?? {},
       metadata: lastHost?.metadata ?? null,
       params: lastHost?.params ?? [],

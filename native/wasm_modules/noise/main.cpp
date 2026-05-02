@@ -19,6 +19,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "noise_shaders.h"
 
 namespace noise {
@@ -79,7 +80,7 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().storageTex2d(0, gpu::TextureFormat::RGBA8).uniform(1));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
@@ -113,11 +114,7 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!output.valid()) return;
 
-  float vw = static_cast<float>(vp_w);
-  float vh = static_cast<float>(vp_h);
-  float side = vw > vh ? vw : vh;
-  float ax = side / (2.0f * vw);
-  float ay = side / (2.0f * vh);
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
 
   Uniforms u = {};
   u.algorithm = s_algorithm;

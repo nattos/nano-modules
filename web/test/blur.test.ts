@@ -1,6 +1,11 @@
 import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.blur` against `core`.
+// Per-effect tests for `video.blur` against `core`. The blur is a two-pass
+// separable Gaussian with a CPU-driven kernel: tap LOCATIONS depend only
+// on `quality` (so smooth radius modulation doesn't shimmer), tap COUNT
+// and weights are recomputed from sigma per-frame.
+//
+// Param indices: 0 = radius, 1 = quality.
 
 describe('Blur Effect E2E', () => {
   jest.setTimeout(30000);
@@ -14,41 +19,44 @@ describe('Blur Effect E2E', () => {
     });
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('video.blur');
-    expect(frame.params.length).toBe(1);
-    expect(frame.params[0].name).toBe('radius');
+    const names = frame.params.map(p => p.name).sort();
+    expect(names).toEqual(['quality', 'radius']);
   });
 
-  it('uniform input stays uniform regardless of radius', async () => {
+  it('uniform input stays uniform across the (radius, quality) plane', async () => {
+    const cases: [number, number][][] = [
+      [[0, 0.0], [1, 1.0]],
+      [[0, 1.0], [1, 1.0]],
+      [[0, 1.0], [1, 0.1]],
+    ];
+    for (let i = 0; i < cases.length; i++) {
+      const frame = await runGpuEffectTest({
+        module: 'blur.wasm',
+        bundle: 'core',
+        inputColor: [0.4, 0.6, 0.2, 1.0],
+        params: cases[i],
+        dumpName: `blur_uniform_${i}`,
+      });
+      expect(frame.success).toBe(true);
+      frame.expectUniformColor({ r: 102, g: 153, b: 51, a: 255 }, 4);
+    }
+  });
+
+  it('radius=0 passes through unchanged at any quality', async () => {
     const frame = await runGpuEffectTest({
       module: 'blur.wasm',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.2, 1.0],
-      params: [[0, 1.0]],
-      dumpName: 'blur_uniform',
-    });
-    expect(frame.success).toBe(true);
-    frame.expectUniformColor({ r: 102, g: 153, b: 51, a: 255 }, 4);
-  });
-
-  it('radius=0 passes through unchanged', async () => {
-    const frame = await runGpuEffectTest({
-      module: 'blur.wasm',
-      bundle: 'core',
-      inputColor: [0.4, 0.6, 0.2, 1.0],
-      params: [[0, 0.0]],
-      dumpName: 'blur_zero',
+      params: [[0, 0.0], [1, 0.5]],
+      dumpName: 'blur_zero_radius',
     });
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 102, g: 153, b: 51, a: 255 }, 2);
   });
 
-  it('blurring a grid reduces high-frequency variance', async () => {
-    // Use the grid generator (also in core) as a high-frequency source.
-    // Run grid alone, then grid → blur, and compare luminance variance.
+  it('high-radius blur softens a grid (variance drops)', async () => {
     const sharp = await runGpuChainTest({
-      chain: [
-        { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },  // small cells, mid line width
-      ],
+      chain: [{ module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] }],
       bundle: 'core',
       width: 64, height: 64,
       dumpName: 'blur_chain_sharp',
@@ -56,7 +64,7 @@ describe('Blur Effect E2E', () => {
     const blurred = await runGpuChainTest({
       chain: [
         { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'blur.wasm', params: [[0, 1.0]] },
+        { module: 'blur.wasm', params: [[0, 1.0], [1, 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -72,5 +80,39 @@ describe('Blur Effect E2E', () => {
       return Math.sqrt(v);
     };
     expect(std(blurred)).toBeLessThan(std(sharp));
+  });
+
+  it('smooth-modulation: a tiny radius bump produces a tiny output diff', async () => {
+    // The whole point of the fixed-tap-locations design: nudging radius by
+    // a small amount at a stable quality should produce only a small,
+    // uniform pixel change — no jumpy "tap pop-in" should add visible
+    // jitter across the frame.
+    const grid = (extra: any[]) => runGpuChainTest({
+      chain: [
+        { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },
+        ...extra,
+      ],
+      bundle: 'core',
+      width: 64, height: 64,
+    });
+    const a = await grid([{ module: 'blur.wasm', params: [[0, 0.50], [1, 1.0]] }]);
+    const b = await grid([{ module: 'blur.wasm', params: [[0, 0.51], [1, 1.0]] }]);
+    expect(a.success && b.success).toBe(true);
+
+    const ap = a.region(0, 0, a.width, a.height);
+    const bp = b.region(0, 0, b.width, b.height);
+    let sum = 0;
+    let maxDiff = 0;
+    for (let i = 0; i < ap.length; i++) {
+      const dr = Math.abs(ap[i].r - bp[i].r);
+      const dg = Math.abs(ap[i].g - bp[i].g);
+      const db = Math.abs(ap[i].b - bp[i].b);
+      sum += dr + dg + db;
+      maxDiff = Math.max(maxDiff, dr, dg, db);
+    }
+    const meanAbsDiff = sum / (ap.length * 3);
+    // A 0.01 nudge in radius at quality=1 should be near-imperceptible.
+    expect(meanAbsDiff).toBeLessThan(4);
+    expect(maxDiff).toBeLessThan(20);
   });
 });

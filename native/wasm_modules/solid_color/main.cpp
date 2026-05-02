@@ -43,7 +43,7 @@ void init() {
   auto mod = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!mod) return;
 
-  s_pso = gpu::Device::createComputePSO(mod, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(mod, metal ? "main_" : "main", gpu::Bindings().storageTex2d(0, gpu::TextureFormat::RGBA8).uniform(1));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }

@@ -1,5 +1,7 @@
 // generator.grid — Tiled grid in cover-square coordinates with anti-aliased lines.
 
+#include "nano_coords.hlsl"
+
 RWTexture2D<float4> outputTex : register(u0);
 
 cbuffer Uniforms : register(b1) {
@@ -28,8 +30,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= w || gid.y >= h) return;
 
   // Pixel → cover-square coordinates.
-  float2 uv = (float2(gid.xy) + 0.5) / float2(w, h);
-  float2 sq = (uv - 0.5) / float2(aspect_x, aspect_y);
+  float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h), float2(aspect_x, aspect_y));
 
   // Shift then tile.
   float2 shifted = sq + float2(offset_x, offset_y);

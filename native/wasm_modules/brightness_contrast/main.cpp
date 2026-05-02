@@ -55,7 +55,7 @@ void init() {
     return;
   }
 
-  s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry);
+  s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
   s_initialized = true;

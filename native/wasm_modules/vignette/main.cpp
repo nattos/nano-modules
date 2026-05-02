@@ -17,6 +17,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "vignette_shaders.h"
 
 namespace vignette {
@@ -68,7 +69,7 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
@@ -98,11 +99,7 @@ void render(int vp_w, int vp_h) {
 
   // Cover-square half-extents in viewport-normalized [0,1] uv space.
   // square_side = max(W, H); half-extent in uv along each axis = square_side / (2 * vp_dim).
-  float vw = static_cast<float>(vp_w);
-  float vh = static_cast<float>(vp_h);
-  float side = vw > vh ? vw : vh;
-  float ax = side / (2.0f * vw);
-  float ay = side / (2.0f * vh);
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
 
   Uniforms u = {
     s_amount,

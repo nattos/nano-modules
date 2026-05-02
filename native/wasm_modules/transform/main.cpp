@@ -16,6 +16,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "transform_shaders.h"
 
 #include <cmath>
@@ -71,7 +72,7 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).sampler(2).uniform(3));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   // Bilinear filter, clamp-to-edge addressing. Wrap-mode logic still happens
   // in the shader before sampling so the address mode here is just a fallback.
@@ -106,11 +107,7 @@ void render(int vp_w, int vp_h) {
   if (!input.valid() || !output.valid()) return;
 
   // Cover-square half-extents in viewport-uv units.
-  float vw = static_cast<float>(vp_w);
-  float vh = static_cast<float>(vp_h);
-  float side = vw > vh ? vw : vh;
-  float ax = side / (2.0f * vw);
-  float ay = side / (2.0f * vh);
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
 
   // Exponential scale: -1 → 1/4, 0 → 1, +1 → 4.
   float base_scale = std::pow(4.0f, s_scale);

@@ -1,23 +1,22 @@
 // video.blur — One axis of a separable Gaussian.
 //
-// Run twice (horizontal, then vertical) for a full 2D blur. 13 taps with
-// σ ≈ 2.0 weights. Edge taps clamp to the input edge.
+// CPU-side computes the per-tap weights and the active half-count and
+// uploads them via a structured buffer; this shader just does the sum.
+// Run twice (horizontal, then vertical) for a full 2D blur.
 
 Texture2D<float4>   inputTex  : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
 cbuffer Uniforms : register(b2) {
-  float dir_x;        // 1 horizontal, 0 vertical
-  float dir_y;        // 0 horizontal, 1 vertical
-  float spacing_px;   // per-tap distance in pixels
-  float _pad;
+  float dir_x;        // 1 horizontal pass, 0 vertical pass
+  float dir_y;        // 0 horizontal pass, 1 vertical pass
+  float spacing_px;   // per-tap distance in pixels (driven by quality only)
+  int   half_count;   // number of taps on each side of centre (>=0)
 };
 
-// 13-tap normalized Gaussian (σ ≈ 2.0).
-static const float W[13] = {
-  0.002216, 0.008764, 0.026995, 0.064759, 0.120985, 0.176033, 0.199471,
-  0.176033, 0.120985, 0.064759, 0.026995, 0.008764, 0.002216
-};
+// weights[0] = centre weight; weights[i] = symmetric outer-tap weight.
+// Length == MAX_HALF_COUNT + 1 on the host side; shader reads up to half_count.
+StructuredBuffer<float> weights : register(t3);
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -25,13 +24,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   outputTex.GetDimensions(w, h);
   if (gid.x >= w || gid.y >= h) return;
 
-  float4 acc = float4(0, 0, 0, 0);
-  for (int i = -6; i <= 6; i++) {
-    float ox = i * spacing_px * dir_x;
-    float oy = i * spacing_px * dir_y;
-    int sx = clamp((int)gid.x + (int)round(ox), 0, (int)w - 1);
-    int sy = clamp((int)gid.y + (int)round(oy), 0, (int)h - 1);
-    acc += inputTex[uint2(sx, sy)] * W[i + 6];
+  float4 acc = inputTex[gid.xy] * weights[0];
+  // The loop bound is dynamic but capped by the host (≤ MAX_HALF_COUNT).
+  for (int i = 1; i <= half_count; i++) {
+    float ox = float(i) * spacing_px * dir_x;
+    float oy = float(i) * spacing_px * dir_y;
+    int dx = int(round(ox));
+    int dy = int(round(oy));
+    int sx_p = clamp((int)gid.x + dx, 0, (int)w - 1);
+    int sy_p = clamp((int)gid.y + dy, 0, (int)h - 1);
+    int sx_n = clamp((int)gid.x - dx, 0, (int)w - 1);
+    int sy_n = clamp((int)gid.y - dy, 0, (int)h - 1);
+    acc += weights[i] * (inputTex[uint2(sx_p, sy_p)] + inputTex[uint2(sx_n, sy_n)]);
   }
   outputTex[gid.xy] = acc;
 }

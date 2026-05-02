@@ -4,6 +4,62 @@ Conventions for authoring nano-modules effects. The goal is *playability* — ev
 
 This is a living document. When in doubt, prefer the option that makes a parameter sweep feel good live.
 
+## 0. Shared helpers — use them
+
+Cross-effect patterns live in two places. Reach for these before writing your own.
+
+**C++ small helpers** (`#include <effect_utils.h>`):
+
+| Helper                                        | Purpose                                                      |
+|-----------------------------------------------|--------------------------------------------------------------|
+| `fx::signedSliderToExp(slider)`               | `[-1, +1]` slider → `pow(2, ±3)` exponent (8↔1↔1/8 by default) |
+| `fx::stops(slider, maxStops = 3.0)`           | Multiplicative gain in stops (`2^stops`)                     |
+| `fx::coverSquare(vp_w, vp_h)`                 | Cover-square half-extents in viewport-uv (style guide §1.5)  |
+
+**C++ kernels** — heavier-weight utilities. Each owns its own PSO + scratch resources; instantiate one per effect that needs it.
+
+| Header              | Class               | What it gives you                                                                 |
+|---------------------|---------------------|-----------------------------------------------------------------------------------|
+| `<effect_blur.h>`   | `fx::GaussianBlur`  | Two-pass separable Gaussian. `applyWithRadius(in, out, w, h, radius, quality)` does the whole thing. Tap locations are stable as `radius` modulates — no shimmer. **Use this for bloom, glow, depth-of-field, soft shadows, AO, energy diffusion, oil-paint stylizations, etc.** Bundle's `build.sh` must list `compile_shaders_compute blur`. |
+
+**HLSL** (`#include "nano_<name>.hlsl"` — search path is `wasm_modules/shaders_common/`):
+
+| File              | Functions                                                                           |
+|-------------------|--------------------------------------------------------------------------------------|
+| `nano_coords.hlsl`| `nano_pixel_to_uv`, `nano_uv_to_cover_square`, `nano_cover_square_to_uv`, `nano_pixel_to_cover_square` |
+| `nano_curves.hlsl`| `nano_signed_slider_exp`, `nano_apply_curve` (scalar + float3)                       |
+| `nano_color.hlsl` | `nano_luminance`, `nano_rgb_to_hsl` / `nano_hsl_to_rgb`, `nano_rgb_to_hsv` / `nano_hsv_to_rgb` |
+| `nano_hash.hlsl`  | `nano_hash21`, `nano_hash31`, `nano_value_noise2`, `nano_fbm2`                       |
+
+When you find yourself writing the same five lines in three effects, that's the cue — extract into a shared helper and update this table.
+
+**Bind groups: declare layouts explicitly (required)**
+
+Every PSO declares its bindings up front:
+
+```cpp
+auto pso = gpu::Device::createComputePSO(cs_mod, "main", gpu::Bindings()
+  .tex2d(0)
+  .storageTex2d(1, gpu::TextureFormat::RGBA8)
+  .uniform(2)
+  .storage(3));
+```
+
+Why: WebGPU's auto-derived layout matches whatever the *shader* currently declares. The moment you start using `#ifdef`s in HLSL, naga prunes "unused" bindings, or you reuse one shader source from two PSOs that bind different subsets, the host's bind group disagrees with the auto-derived layout and the dispatch is silently invalid. With explicit layouts, the host honours what *you bind* — extra slots the shader doesn't read are fine, and conditional shaders never desync.
+
+`gpu::Bindings()` builder methods: `uniform(slot)`, `storage(slot)` (read), `storageRW(slot)` (read-write), `sampler(slot)`, `tex2d(slot)`, `tex3d(slot)`, `tex2dArray(slot)`, `storageTex2d(slot, fmt)` (write), `storageTex2dRW(slot, fmt)` (read-write — formats r32float / r32sint / r32uint), and `storageTex3d` / `storageTex3dRW` for 3D. Pass an empty `Bindings()` for shaders that read no bind group resources (e.g. vertex-buffer-only render PSOs).
+
+**GPU platform features** — what the host actually supports. Reach for the right tool instead of working around what you assume isn't there.
+
+| Capability                              | API                                                                                          | When it's the right answer                                                            |
+|-----------------------------------------|----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| HDR float textures (`rgba16f`, `r32f`, `rgba32f`) | `gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F)`                              | Bloom, glow, motion-trail accumulators, energy fields — anything where values exceed 1.0 or you need sub-LSB precision. Default to `RGBA16F`; reach for `R32F`/`RGBA32F` only when half-precision isn't enough. |
+| Atomic ops on storage buffers           | HLSL `RWStructuredBuffer<int>` + `InterlockedAdd` (round-trips through naga as `atomic<i32>` + `atomicAdd`) | Histograms (auto-exposure, auto-WB, color stats), point splatting, OIT counters, particle counters. |
+| Read-write storage textures (`r32float`, `r32sint`, `r32uint`) | Hand-author WGSL `texture_storage_2d<r32float, read_write>` and bind via `cp.setTexture(tex, slot, 2)` (access=2) | In-place RMW: reaction-diffusion fields, energy decay accumulators, single-pass mutation that would otherwise need ping-pong textures. |
+| Texture clear / texture copy            | `gpu::Device::clear(tex, r, g, b, a)`, `gpu::Device::copy(src, dst)`                        | Resetting an accumulator, ping-pong rebroadcast, freeze-frame snapshots. Clear works only on renderable formats (`rgba8/16f`, `bgra8`); for non-renderable formats run a fill compute pass. |
+| Multi-render-target (MRT)               | `gpu::Device::createInstancedRenderPSOMRT({fmtA, fmtB, …})` + `gpu::RenderPass::beginMRT({{texA, ...}, {texB, ...}, …})` | G-buffer style effects: emit color + normal/depth/ID in one fragment pass, drive deferred stylization (toon, edge-aware, light propagation). |
+| 3D textures                             | `gpu::Device::createTexture3D(w, h, d, fmt)` — bind as `texture_3d<f32>` (sample) or `texture_storage_3d<...>` (write) | Color LUTs (16³–32³ rgba8 cube), particle/density volumes, anything with three-axis lookup. |
+
 ---
 
 ## 1. Parameter design
@@ -60,15 +116,10 @@ For *transform-style* parameters (scale center, rotation pivot, polar origin, le
 
 This means a fixed `pivot = (0.3, 0.0)` looks "30% right of centre" in any aspect ratio — exactly what a designer expects. Going past `(±1, ±1)` into the corners is *intentional* off-screen territory.
 
-Conversion (HLSL/WGSL flavour):
+Use the **shared helpers** rather than rolling your own:
 
-```wgsl
-fn pivot_to_uv(pivot: vec2<f32>, vp: vec2<f32>) -> vec2<f32> {
-  let s = max(vp.x, vp.y) * 0.5;     // half side of the cover square
-  let center = vp * 0.5;
-  return (center + pivot * s) / vp;  // viewport-normalized [0,1] uv
-}
-```
+- C++: `auto [ax, ay] = fx::coverSquare(vp_w, vp_h);` from `<effect_utils.h>` — pass `ax`/`ay` to the shader as uniforms.
+- HLSL: `#include "nano_coords.hlsl"` then `nano_pixel_to_cover_square(pixel, vp, aspect)`. There's also `nano_uv_to_cover_square` and `nano_cover_square_to_uv` for the inverse.
 
 Use this for *every* effect that scales, rotates, or warps around a point. Even simple "kaleidoscope center" knobs benefit.
 

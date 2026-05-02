@@ -86,8 +86,14 @@ void init() {
     return;
   }
 
-  compute_pso = gpu::Device::createComputePSO(cs_mod, entry);
-  render_pso = gpu::Device::createRenderPSO(vs_mod, entry, fs_mod, entry);
+  compute_pso = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings()
+      .uniform(0)
+      .storage(1)        // seeds (read)
+      .storageRW(2));    // verts (write — generated each frame)
+  // Render uses the standard vertex-buffer (float2 pos + float4 color)
+  // and reads no bind group resources.
+  render_pso = gpu::Device::createRenderPSO(
+      vs_mod, entry, fs_mod, entry, gpu::TextureFormat::Surface, gpu::Bindings());
 
   uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   seed_buf = gpu::Device::createBuffer(MAX_TRIANGLES * sizeof(TriSeed), gpu::BufferUsage::Storage);

@@ -1,5 +1,7 @@
 // generator.gradient — Linear gradient between two colours.
 
+#include "nano_coords.hlsl"
+
 RWTexture2D<float4> outputTex : register(u0);
 
 cbuffer Uniforms : register(b1) {
@@ -23,8 +25,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   outputTex.GetDimensions(w, h);
   if (gid.x >= w || gid.y >= h) return;
 
-  float2 uv = (float2(gid.xy) + 0.5) / float2(w, h);
-  float2 sq = (uv - 0.5) / float2(aspect_x, aspect_y);
+  float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h), float2(aspect_x, aspect_y));
 
   // Project onto direction. The cover-square's diagonal is √2 ≈ 1.414, so we
   // scale by 1/√2 to keep the gradient parameter ≈ 0..1 across the visible

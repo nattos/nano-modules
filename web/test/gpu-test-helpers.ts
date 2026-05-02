@@ -109,6 +109,7 @@ export class Frame {
   readonly pixels: Uint8Array;
   readonly pixelCount: number;
   readonly consoleLog: string[];
+  readonly gpuErrors: string[];
   readonly pluginState: any;
   readonly metadata: { id: string; version: string } | null;
   readonly params: any[];
@@ -123,6 +124,7 @@ export class Frame {
     this.pixels = pixels;
     this.pixelCount = raw.pixelCount;
     this.consoleLog = raw.consoleLog;
+    this.gpuErrors = raw.gpuErrors ?? [];
     this.pluginState = raw.pluginState;
     this.metadata = raw.metadata;
     this.params = raw.params;

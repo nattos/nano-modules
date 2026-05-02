@@ -1,5 +1,7 @@
 // video.vibrance — Saturation boost weighted by (1 - current_saturation).
 
+#include "nano_color.hlsl"
+
 Texture2D<float4> inputTex : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
@@ -24,7 +26,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float strength = amount * weight;
 
   // Apply by lerping the channels around the per-pixel luminance.
-  float lum = dot(rgb, float3(0.299, 0.587, 0.114));
+  float lum = nano_luminance(rgb);
   rgb = lerp(float3(lum, lum, lum), rgb, 1.0 + strength);
 
   outputTex[gid.xy] = float4(saturate(rgb), c.a);

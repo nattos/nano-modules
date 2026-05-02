@@ -1,5 +1,7 @@
 // video.edges — Sobel edge detection over input luminance.
 
+#include "nano_color.hlsl"
+
 Texture2D<float4> inputTex : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
@@ -17,11 +19,11 @@ cbuffer Uniforms : register(b2) {
   float2 _pad;
 };
 
-float lum(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+// (luminance helper provided by nano_color.hlsl)
 
 float lum_at(int x, int y, int w, int h) {
   uint2 p = uint2(clamp(x, 0, w - 1), clamp(y, 0, h - 1));
-  return lum(inputTex[p].rgb);
+  return nano_luminance(inputTex[p].rgb);
 }
 
 [numthreads(8, 8, 1)]

@@ -16,9 +16,8 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "levels_shaders.h"
-
-#include <cmath>
 
 namespace levels {
 
@@ -60,7 +59,7 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
@@ -90,7 +89,7 @@ void render(int vp_w, int vp_h) {
   Uniforms u = {};
   u.in_low = s_in_low;
   u.in_high = s_in_high;
-  u.gamma_exp = std::pow(2.0f, -s_gamma * 3.0f);  // -1 → 8, 0 → 1, +1 → 1/8
+  u.gamma_exp = fx::signedSliderToExp(s_gamma);  // -1 → 8, 0 → 1, +1 → 1/8
   u.out_low = s_out_low;
   u.out_high = s_out_high;
   s_uniform_buf.writeOne(u);

@@ -101,7 +101,9 @@ void init() {
   if (!vs_mod || !fs_mod) return;
 
   s_render_pso = gpu::Device::createInstancedRenderPSO(
-      vs_mod, "main", fs_mod, "main", gpu::TextureFormat::Surface);
+      vs_mod, "main", fs_mod, "main", gpu::TextureFormat::Surface, gpu::Bindings()
+          .uniform(0)
+          .storage(1));  // particle positions (read)
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
   s_initialized = true;

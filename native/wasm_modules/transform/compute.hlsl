@@ -8,6 +8,8 @@
 // Wrap mode: 0 = clamp to edge, 1 = transparent outside,
 //            2 = repeat, 3 = mirror.
 
+#include "nano_coords.hlsl"
+
 Texture2D<float4>   inputTex  : register(t0);
 SamplerState        samp      : register(s2);
 RWTexture2D<float4> outputTex : register(u1);
@@ -43,8 +45,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= w || gid.y >= h) return;
 
   // Output uv → cover-square coords.
-  float2 uv = (float2(gid.xy) + 0.5) / float2(w, h);
-  float2 sq = (uv - 0.5) / float2(aspect_x, aspect_y);
+  float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h), float2(aspect_x, aspect_y));
 
   // Inverse: subtract translate, then move into pivot frame, undo rotate, undo scale, return to global.
   float2 t = sq - float2(translate_x, translate_y);

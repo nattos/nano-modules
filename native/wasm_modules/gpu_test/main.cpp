@@ -41,8 +41,11 @@ void init() {
   auto fs_mod = gpu::Device::createShaderModule(fs);
   if (!cs_mod || !vs_mod || !fs_mod) return;
 
-  s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry);
-  s_render_pso = gpu::Device::createRenderPSO(vs_mod, entry, fs_mod, entry);
+  s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings()
+      .uniform(0)
+      .storageRW(1));  // verts written by compute, read as VB by render
+  s_render_pso = gpu::Device::createRenderPSO(
+      vs_mod, entry, fs_mod, entry, gpu::TextureFormat::Surface, gpu::Bindings());
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_vertex_buf = gpu::Device::createBuffer(6 * 24, gpu::BufferUsage::Storage);
 

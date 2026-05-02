@@ -79,6 +79,52 @@ namespace particles_renderer {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+// Platform-feature smoke effects — each one exercises a single GPU-host
+// capability so the integration tests can detect regressions in the
+// platform layer (texture formats, atomics, RW textures, MRT, copy/clear,
+// 3D textures). Not user-facing.
+namespace hdr_test {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace atomic_test {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace rw_storage_test {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace clear_copy_test {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace mrt_test {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace lut3d_test {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -197,6 +243,92 @@ void nano_module_main() {
         particles_renderer::tick,
         particles_renderer::render,
         particles_renderer::on_state_patched,
+        nullptr,
+    });
+
+    // --- Platform-feature smoke effects ---
+
+    nano::registerEffect({
+        1,
+        "debug.hdr_test",
+        "HDR Round-Trip",
+        "Verifies rgba16float storage textures via a 4x → 0.25x round trip",
+        "debug",
+        "test,hdr,float,texture-format",
+        hdr_test::init,
+        hdr_test::tick,
+        hdr_test::render,
+        hdr_test::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.atomic_test",
+        "Atomic Histogram",
+        "Verifies atomic InterlockedAdd into a storage buffer via per-pixel histogram",
+        "debug",
+        "test,atomic,storage-buffer,histogram",
+        atomic_test::init,
+        atomic_test::tick,
+        atomic_test::render,
+        atomic_test::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.rw_storage_test",
+        "RW Storage Texture",
+        "Verifies read_write access on r32float storage textures via in-place RMW",
+        "debug",
+        "test,rw,storage-texture,r32float",
+        rw_storage_test::init,
+        rw_storage_test::tick,
+        rw_storage_test::render,
+        rw_storage_test::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.clear_copy_test",
+        "Texture Clear + Copy",
+        "Verifies gpu::Device::clear and gpu::Device::copy via clear-then-copy round trip",
+        "debug",
+        "test,clear,copy,texture",
+        clear_copy_test::init,
+        clear_copy_test::tick,
+        clear_copy_test::render,
+        clear_copy_test::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.mrt_test",
+        "Multi-Render-Target",
+        "Verifies multi-target render passes via fragment shader writing two color attachments",
+        "debug",
+        "test,mrt,render-target,fragment",
+        mrt_test::init,
+        mrt_test::tick,
+        mrt_test::render,
+        mrt_test::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.lut3d_test",
+        "3D LUT Identity",
+        "Verifies 3D textures via an identity 16x16x16 color LUT",
+        "debug",
+        "test,3d,lut,texture-3d",
+        lut3d_test::init,
+        lut3d_test::tick,
+        lut3d_test::render,
+        lut3d_test::on_state_patched,
         nullptr,
     });
 }

@@ -1,6 +1,8 @@
 // video.crop — Box mask in cover-square coordinates with soft feather.
 // Pixels inside the box pass through; outside fades to fill colour.
 
+#include "nano_coords.hlsl"
+
 Texture2D<float4> inputTex : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
@@ -26,8 +28,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= w || gid.y >= h) return;
 
   // Pixel → cover-square coords.
-  float2 uv = (float2(gid.xy) + 0.5) / float2(w, h);
-  float2 sq = (uv - 0.5) / float2(aspect_x, aspect_y);
+  float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h), float2(aspect_x, aspect_y));
   float2 d  = abs(sq - float2(center_x, center_y));
 
   // Distance outside the box edges, per axis. Negative inside, positive outside.

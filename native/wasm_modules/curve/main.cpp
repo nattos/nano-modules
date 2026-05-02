@@ -15,9 +15,8 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "curve_shaders.h"
-
-#include <cmath>
 
 namespace curve {
 
@@ -33,10 +32,7 @@ static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
 
-static float curve_to_exp(float c) {
-  // pow(8, -c): c=-1 → 8, c=0 → 1, c=+1 → 1/8.
-  return std::pow(2.0f, -c * 3.0f);  // 2^3 == 8
-}
+// curve_to_exp = fx::signedSliderToExp (kept as a local alias for clarity).
 
 void init() {
   s_rgb_curve = 0.0f;
@@ -56,7 +52,7 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
@@ -82,8 +78,8 @@ void render(int vp_w, int vp_h) {
   if (!input.valid() || !output.valid()) return;
 
   Uniforms u = {
-    curve_to_exp(s_rgb_curve),
-    curve_to_exp(s_alpha_curve),
+    fx::signedSliderToExp(s_rgb_curve),
+    fx::signedSliderToExp(s_alpha_curve),
     {0, 0},
   };
   s_uniform_buf.writeOne(u);

@@ -20,6 +20,7 @@
  */
 
 #include <cstring>
+#include <initializer_list>
 
 // Raw C imports (defined in each module's source, or via a shared import header)
 extern "C" {
@@ -31,13 +32,21 @@ extern "C" {
   int gpu_create_buffer(int size, int usage);
   __attribute__((import_module("gpu"), import_name("create_texture")))
   int gpu_create_texture(int w, int h, int format);
+  __attribute__((import_module("gpu"), import_name("create_texture_3d")))
+  int gpu_create_texture_3d(int w, int h, int d, int format);
   __attribute__((import_module("gpu"), import_name("create_sampler")))
   int gpu_create_sampler(int filter_mode, int address_mode);
-  __attribute__((import_module("gpu"), import_name("create_compute_pso")))
-  int gpu_create_compute_pso(int shader, const char* entry, int entry_len);
-  __attribute__((import_module("gpu"), import_name("create_render_pso")))
-  int gpu_create_render_pso(int vs_shader, const char* vs, int vs_len,
-                             int fs_shader, const char* fs, int fs_len, int format);
+  __attribute__((import_module("gpu"), import_name("create_compute_pso_layout")))
+  int gpu_create_compute_pso_layout(int shader, const char* entry, int entry_len,
+                                     int binding_count, const int* bindings);
+  __attribute__((import_module("gpu"), import_name("create_render_pso_layout")))
+  int gpu_create_render_pso_layout(int vs_shader, const char* vs, int vs_len,
+                                    int fs_shader, const char* fs, int fs_len, int format,
+                                    int binding_count, const int* bindings);
+  __attribute__((import_module("gpu"), import_name("create_instanced_render_pso_layout")))
+  int gpu_create_instanced_render_pso_layout(int vs_shader, const char* vs, int vs_len,
+                                              int fs_shader, const char* fs, int fs_len, int format,
+                                              int binding_count, const int* bindings);
   __attribute__((import_module("gpu"), import_name("write_buffer")))
   void gpu_write_buffer(int buf, int offset, const void* data, int data_len);
   __attribute__((import_module("gpu"), import_name("begin_compute_pass")))
@@ -87,6 +96,18 @@ extern "C" {
   int gpu_texture_for_field(const char* path, int path_len);
   __attribute__((import_module("gpu"), import_name("buffer_for_field")))
   int gpu_buffer_for_field(const char* path, int path_len);
+  __attribute__((import_module("gpu"), import_name("clear_texture")))
+  void gpu_clear_texture(int tex, float r, float g, float b, float a);
+  __attribute__((import_module("gpu"), import_name("copy_texture")))
+  void gpu_copy_texture(int src, int dst);
+  __attribute__((import_module("gpu"), import_name("create_instanced_render_pso_mrt_layout")))
+  int gpu_create_instanced_render_pso_mrt_layout(
+      int vs_shader, const char* vs, int vs_len,
+      int fs_shader, const char* fs, int fs_len,
+      int target_count, const int* target_formats,
+      int binding_count, const int* bindings);
+  __attribute__((import_module("gpu"), import_name("begin_render_pass_mrt")))
+  int gpu_begin_render_pass_mrt(int count, const int* tex_handles, const float* clear_values);
 }
 
 namespace gpu {
@@ -97,11 +118,123 @@ enum class Backend : int { Metal = 0, WebGPU = 1, None = -1 };
 
 enum class BufferUsage : int { Vertex = 0, Storage = 1, Uniform = 2 };
 
-enum class TextureFormat : int { BGRA8 = 0, RGBA8 = 1, Surface = 2 };
+/// Texture pixel format. The first three are the historical defaults;
+/// the float formats unlock HDR / extended-precision intermediates
+/// (bloom, glow, energy fields, accumulators — anything that needs
+/// values >1.0 or sub-LSB precision). All float formats listed here are
+/// usable as STORAGE textures from compute shaders in core WebGPU.
+enum class TextureFormat : int {
+  BGRA8   = 0,
+  RGBA8   = 1,
+  Surface = 2,
+  RGBA16F = 3,  ///< 16-bit half-float per channel — recommended HDR format
+  R32F    = 4,  ///< 32-bit float, single channel — high-precision data
+  RGBA32F = 5,  ///< 32-bit float per channel — only when R16F isn't enough
+};
 
 enum class FilterMode : int { Nearest = 0, Linear = 1 };
 
 enum class AddressMode : int { ClampToEdge = 0, Repeat = 1, Mirror = 2 };
+
+// --- Explicit bind group layouts ---
+//
+// By default the host derives bind group layouts from the shader via
+// WebGPU's 'auto' layout. That works for one-shot effects with no
+// conditional compilation, but it forces the C++ side to bind exactly
+// the slots the shader currently parses — and silently breaks when
+// they diverge (e.g. shader uses `#ifdef` to omit a binding the host
+// still wants to provide; or naga prunes an unused binding the host
+// still plans to bind).
+//
+// The fix: declare bindings up front in C++. The host builds an
+// explicit layout matching the declaration, the pipeline is stamped
+// with it, and bind groups at dispatch time are constructed against
+// the same declaration in order. WebGPU only requires the shader's
+// bindings to be a subset of the layout, so extras (slots reserved for
+// future use, or slots elided by current `#ifdef` settings) are fine.
+//
+// Usage:
+//
+//   auto pso = gpu::Device::createComputePSO(cs_mod, "main", gpu::Bindings()
+//     .tex2d(0)
+//     .storageTex2d(1, gpu::TextureFormat::RGBA8)
+//     .uniform(2)
+//     .storage(3));
+
+enum class BindingKind : int {
+  Uniform           = 0,  // var<uniform>             — read-only constant buffer
+  StorageRO         = 1,  // var<storage, read>       — read-only storage buffer
+  StorageRW         = 2,  // var<storage, read_write> — writable storage buffer
+  Sampler           = 3,
+  Texture2D         = 4,  // texture_2d<f32>
+  Texture3D         = 5,  // texture_3d<f32>
+  Texture2DArray    = 6,  // texture_2d_array<f32>
+  StorageTexture2D  = 7,  // texture_storage_2d<format, access>
+  StorageTexture3D  = 8,  // texture_storage_3d<format, access>
+};
+
+struct BindingEntry {
+  int slot;
+  BindingKind kind;
+  int format = 0;   // TextureFormat (storage textures only); ignored otherwise
+  int access = 1;   // 0=read, 1=write, 2=read_write (storage textures only)
+};
+
+class Bindings {
+public:
+  static constexpr int MAX_ENTRIES = 16;
+
+  Bindings& uniform(int slot)    { return push({slot, BindingKind::Uniform, 0, 0}); }
+  Bindings& storage(int slot)    { return push({slot, BindingKind::StorageRO, 0, 0}); }
+  Bindings& storageRW(int slot)  { return push({slot, BindingKind::StorageRW, 0, 0}); }
+  Bindings& sampler(int slot)    { return push({slot, BindingKind::Sampler, 0, 0}); }
+  Bindings& tex2d(int slot)      { return push({slot, BindingKind::Texture2D, 0, 0}); }
+  Bindings& tex3d(int slot)      { return push({slot, BindingKind::Texture3D, 0, 0}); }
+  Bindings& tex2dArray(int slot) { return push({slot, BindingKind::Texture2DArray, 0, 0}); }
+
+  /// Storage texture, write-only (the common case — output target).
+  Bindings& storageTex2d(int slot, TextureFormat fmt = TextureFormat::RGBA8) {
+    return push({slot, BindingKind::StorageTexture2D, static_cast<int>(fmt), 1});
+  }
+  /// Storage texture, read-write (in-place RMW). Format must support
+  /// read-write access in WebGPU core (r32float / r32sint / r32uint).
+  Bindings& storageTex2dRW(int slot, TextureFormat fmt = TextureFormat::R32F) {
+    return push({slot, BindingKind::StorageTexture2D, static_cast<int>(fmt), 2});
+  }
+  Bindings& storageTex3d(int slot, TextureFormat fmt = TextureFormat::RGBA8) {
+    return push({slot, BindingKind::StorageTexture3D, static_cast<int>(fmt), 1});
+  }
+  Bindings& storageTex3dRW(int slot, TextureFormat fmt = TextureFormat::R32F) {
+    return push({slot, BindingKind::StorageTexture3D, static_cast<int>(fmt), 2});
+  }
+
+  int count() const { return m_count; }
+  const BindingEntry* data() const { return m_entries; }
+
+private:
+  Bindings& push(const BindingEntry& e) {
+    if (m_count < MAX_ENTRIES) m_entries[m_count++] = e;
+    return *this;
+  }
+  BindingEntry m_entries[MAX_ENTRIES];
+  int m_count = 0;
+};
+
+namespace detail {
+  /// Pack a Bindings into the wire format the host expects: one
+  /// `int[4]` per entry — (slot, kind, format, access).
+  inline int packBindings(const Bindings& b, int* out /* [Bindings::MAX_ENTRIES * 4] */) {
+    int n = b.count();
+    for (int i = 0; i < n; i++) {
+      const auto& e = b.data()[i];
+      out[i * 4 + 0] = e.slot;
+      out[i * 4 + 1] = static_cast<int>(e.kind);
+      out[i * 4 + 2] = e.format;
+      out[i * 4 + 3] = e.access;
+    }
+    return n;
+  }
+}
 
 // --- Handle base ---
 
@@ -190,11 +323,40 @@ struct ComputePass {
 
 // --- Render pass ---
 
+/// One color-attachment binding for a multi-render-target render pass.
+struct ColorAttachment {
+  Texture texture;
+  float r = 0;
+  float g = 0;
+  float b = 0;
+  float a = 1;
+};
+
 struct RenderPass {
   int id;
 
   static RenderPass begin(Texture target, float r = 0, float g = 0, float b = 0, float a = 1) {
     return { gpu_begin_render_pass(target.id, r, g, b, a) };
+  }
+
+  /// Begin a render pass with multiple color attachments (MRT). The
+  /// matching pipeline must have been created via `Device::createInstancedRenderPSOMRT`
+  /// with the same number/order of target formats. Up to 8 attachments
+  /// (the WebGPU spec maxColorAttachments minimum guarantee).
+  static RenderPass beginMRT(std::initializer_list<ColorAttachment> atts) {
+    int n = static_cast<int>(atts.size());
+    int tex[8];
+    float clears[8 * 4];
+    int i = 0;
+    for (const auto& a : atts) {
+      tex[i] = a.texture.id;
+      clears[i * 4 + 0] = a.r;
+      clears[i * 4 + 1] = a.g;
+      clears[i * 4 + 2] = a.b;
+      clears[i * 4 + 3] = a.a;
+      i++;
+    }
+    return { gpu_begin_render_pass_mrt(n, tex, clears) };
   }
 
   void setPSO(RenderPSO pso) { gpu_render_set_pso(id, pso.id); }
@@ -234,36 +396,88 @@ struct Device {
     return Texture(gpu_create_texture(w, h, static_cast<int>(format)));
   }
 
+  /// 3D texture (texture_3d / texture_storage_3d in WGSL). Useful for
+  /// color LUTs (16³–32³ rgba8 cube), particle/density volumes, anything
+  /// with three-axis sampling. The format choices match createTexture.
+  static Texture createTexture3D(int w, int h, int d,
+                                  TextureFormat format = TextureFormat::RGBA8) {
+    return Texture(gpu_create_texture_3d(w, h, d, static_cast<int>(format)));
+  }
+
   static Sampler createSampler(FilterMode filter = FilterMode::Linear,
                                 AddressMode address = AddressMode::ClampToEdge) {
     return Sampler(gpu_create_sampler(static_cast<int>(filter), static_cast<int>(address)));
   }
 
-  static ComputePSO createComputePSO(ShaderModule shader, const char* entryPoint) {
-    return ComputePSO(gpu_create_compute_pso(shader.id, entryPoint, std::strlen(entryPoint)));
+  /// Compute PSO with an explicit bind group layout. The `bindings`
+  /// describe what the host *binds* — not what the shader currently
+  /// declares — so this stays correct under `#ifdef`s, naga pruning
+  /// unused bindings, and shaders shared between PSOs that bind
+  /// different subsets. WebGPU only requires the shader's actual
+  /// bindings to be a subset of the layout, so extras are fine.
+  ///
+  /// Pass an empty `Bindings()` for shaders that take no bind group
+  /// (rare for compute, but valid).
+  static ComputePSO createComputePSO(ShaderModule shader, const char* entryPoint,
+                                      const Bindings& bindings) {
+    int packed[Bindings::MAX_ENTRIES * 4];
+    int n = detail::packBindings(bindings, packed);
+    return ComputePSO(gpu_create_compute_pso_layout(
+        shader.id, entryPoint, std::strlen(entryPoint), n, packed));
   }
 
+  /// Render pipeline with the standard float2-pos + float4-color
+  /// vertex buffer layout. Bindings (visible to vertex+fragment) are
+  /// declared explicitly — pass `Bindings()` for shaders that read
+  /// nothing from a bind group (vertex-buffer-only effects).
   static RenderPSO createRenderPSO(ShaderModule vs, const char* vsEntry,
                                     ShaderModule fs, const char* fsEntry,
-                                    TextureFormat format = TextureFormat::Surface) {
-    return RenderPSO(gpu_create_render_pso(
+                                    TextureFormat format,
+                                    const Bindings& bindings) {
+    int packed[Bindings::MAX_ENTRIES * 4];
+    int n = detail::packBindings(bindings, packed);
+    return RenderPSO(gpu_create_render_pso_layout(
         vs.id, vsEntry, std::strlen(vsEntry),
         fs.id, fsEntry, std::strlen(fsEntry),
-        static_cast<int>(format)));
+        static_cast<int>(format), n, packed));
   }
 
-  /// Create a render pipeline with no vertex buffer — vertex shader uses
-  /// vertex_index/instance_index plus storage buffers bound via
-  /// RenderPass::setBuffer. Useful for instanced rendering of GPU-array
-  /// data (e.g. particle quads where positions live in a storage buffer).
+  /// Vertex-buffer-free render pipeline (the vertex shader uses
+  /// vertex_index / instance_index, possibly with a storage buffer of
+  /// per-instance data bound via a slot in `bindings`). Bindings are
+  /// declared explicitly for vertex+fragment visibility.
   static RenderPSO createInstancedRenderPSO(
       ShaderModule vs, const char* vsEntry,
       ShaderModule fs, const char* fsEntry,
-      TextureFormat format = TextureFormat::Surface) {
-    return RenderPSO(gpu_create_instanced_render_pso(
+      TextureFormat format,
+      const Bindings& bindings) {
+    int packed[Bindings::MAX_ENTRIES * 4];
+    int n = detail::packBindings(bindings, packed);
+    return RenderPSO(gpu_create_instanced_render_pso_layout(
         vs.id, vsEntry, std::strlen(vsEntry),
         fs.id, fsEntry, std::strlen(fsEntry),
-        static_cast<int>(format)));
+        static_cast<int>(format), n, packed));
+  }
+
+  /// Multi-render-target render pipeline. Fragment outputs at
+  /// `@location(i)` write to target i; `formats` declares each target
+  /// format. Bindings (visible to vertex+fragment) are explicit; pass
+  /// `Bindings()` for MRT shaders with no bind group.
+  static RenderPSO createInstancedRenderPSOMRT(
+      ShaderModule vs, const char* vsEntry,
+      ShaderModule fs, const char* fsEntry,
+      std::initializer_list<TextureFormat> formats,
+      const Bindings& bindings) {
+    int n = static_cast<int>(formats.size());
+    int fmts[8];
+    int i = 0;
+    for (auto f : formats) fmts[i++] = static_cast<int>(f);
+    int packed[Bindings::MAX_ENTRIES * 4];
+    int bn = detail::packBindings(bindings, packed);
+    return RenderPSO(gpu_create_instanced_render_pso_mrt_layout(
+        vs.id, vsEntry, std::strlen(vsEntry),
+        fs.id, fsEntry, std::strlen(fsEntry),
+        n, fmts, bn, packed));
   }
 
   /// Get texture handle for a named field path (unified texture access).
@@ -286,6 +500,23 @@ struct Device {
   static int renderTargetHeight() { return gpu_get_render_target_height(); }
 
   static void submit() { gpu_submit(); }
+
+  /// Clear a texture to a constant color. Implemented as a 1-pixel render
+  /// pass with `loadOp: clear`, so `texture` must be a renderable format
+  /// (rgba8unorm / bgra8unorm / rgba16float). For r32float / rgba32float,
+  /// dispatch a compute shader that writes the constant — there is no
+  /// portable WebGPU clear for non-renderable formats.
+  static void clear(Texture texture, float r, float g, float b, float a = 1.0f) {
+    gpu_clear_texture(texture.id, r, g, b, a);
+  }
+
+  /// 1:1 copy between two textures of identical format and size. Both
+  /// textures must have COPY_SRC and COPY_DST usage (the default for
+  /// textures created via `createTexture`). Useful for ping-pong setups
+  /// without re-running a compute shader to "rebroadcast" data.
+  static void copy(Texture src, Texture dst) {
+    gpu_copy_texture(src.id, dst.id);
+  }
 };
 
 } // namespace gpu

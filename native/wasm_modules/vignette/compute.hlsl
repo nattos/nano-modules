@@ -5,6 +5,8 @@
 // metric toward the viewport's actual aspect ratio for a rectangular
 // look.
 
+#include "nano_coords.hlsl"
+
 Texture2D<float4> inputTex : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
@@ -25,11 +27,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
   outputTex.GetDimensions(w, h);
   if (gid.x >= w || gid.y >= h) return;
 
-  // Convert the dispatch's pixel coords to cover-square units.
-  // uv ∈ [0, 1] → square coord = (uv - 0.5) / aspect, so uv=0.5 → 0
-  // and the screen edge maps to ±aspect / aspect = ±1 along the long axis.
-  float2 uv = (float2(gid.xy) + 0.5) / float2(w, h);
-  float2 sq = (uv - 0.5) / float2(aspect_x, aspect_y);
+  float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h),
+                                          float2(aspect_x, aspect_y));
   float2 d  = sq - float2(center_x, center_y);
 
   // shape = 0: pure cover-square distance (circular in screen-space when 1:1).

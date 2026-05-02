@@ -17,9 +17,8 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "exposure_shaders.h"
-
-#include <cmath>
 
 namespace exposure {
 
@@ -55,7 +54,7 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
@@ -82,8 +81,8 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  // exposure: gain = 2^(amount * 3 stops)
-  float gain = std::pow(2.0f, s_amount * 3.0f);
+  // exposure: ±3 stops via the shared helper.
+  float gain = fx::stops(s_amount);
   // tint: simple R/B push, biased by warmth in [-1, +1].
   // warmth = +1 → boost R, cut B. warmth = -1 → boost B, cut R. Centred at 0.
   float wr = 1.0f + s_tint_warmth * s_tint_amount * 0.5f;

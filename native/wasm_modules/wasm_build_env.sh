@@ -84,15 +84,43 @@ _emit_shader_header() {
   } > "$header"
 }
 
-# compile_shaders_compute <effect> — for effects with a single compute.hlsl.
-# Applies the rgba32float→rgba8unorm WGSL fixup the existing pipeline relies on.
+# Shared HLSL include directory. Effects can `#include "nano_coords.hlsl"`
+# (etc.) — see wasm_modules/shaders_common/.
+SHADERS_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/shaders_common" && pwd)"
+
+# compile_shaders_compute_var <effect> <variant_name> <wgsl_storage_format>
+# [<access>] [<source_basename>]
+#
+#   Compile <effect>/<source_basename>.hlsl (default: "compute") to a
+#   single named variant. The WGSL output's storage-texture format is
+#   replaced with <wgsl_storage_format> (e.g. "rgba8unorm",
+#   "rgba16float", "r32float"). Optional <access> is "write" (default)
+#   or "read_write" — the latter is for in-place read-write storage
+#   textures.
+#
+#   Emits files <TMP_DIR>/<effect>_<variant_name>.wgsl / .metal but does
+#   NOT emit the header. Call `_emit_shader_header <effect> <variants...>`
+#   once you've compiled all the variants you need.
+compile_shaders_compute_var() {
+  local effect="$1"
+  local variant="$2"
+  local fmt="$3"
+  local access="${4:-write}"
+  local src="${5:-compute}"
+  glslc -fshader-stage=compute -x hlsl \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/${src}.hlsl" -o "$TMP_DIR/${effect}_${variant}.spv"
+  naga "$TMP_DIR/${effect}_${variant}.spv" "$TMP_DIR/${effect}_${variant}.wgsl"
+  sed -i '' "s/rgba32float,read_write/${fmt},${access}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
+  sed -i '' "s/rgba32float/${fmt}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
+  naga --metal-version 2.0 "$TMP_DIR/${effect}_${variant}.spv" "$TMP_DIR/${effect}_${variant}.metal"
+}
+
+# compile_shaders_compute <effect> — for effects with a single compute.hlsl
+# emitting an rgba8unorm storage texture (the common case).
 compile_shaders_compute() {
   local effect="$1"
-  glslc -fshader-stage=compute -x hlsl "../${effect}/compute.hlsl" -o "$TMP_DIR/${effect}_compute.spv"
-  naga "$TMP_DIR/${effect}_compute.spv" "$TMP_DIR/${effect}_compute.wgsl"
-  sed -i '' 's/rgba32float,read_write/rgba8unorm,write/g' "$TMP_DIR/${effect}_compute.wgsl"
-  sed -i '' 's/rgba32float/rgba8unorm/g' "$TMP_DIR/${effect}_compute.wgsl"
-  naga --metal-version 2.0 "$TMP_DIR/${effect}_compute.spv" "$TMP_DIR/${effect}_compute.metal"
+  compile_shaders_compute_var "$effect" compute rgba8unorm
   _emit_shader_header "$effect" compute
   echo "  ${effect} shaders compiled (compute)"
 }
@@ -101,9 +129,21 @@ compile_shaders_compute() {
 compile_shaders_full() {
   local effect="$1"
   for stage in compute vertex fragment; do
-    glslc -fshader-stage=${stage} -x hlsl "../${effect}/${stage}.hlsl" -o "$TMP_DIR/${effect}_${stage}.spv"
+    glslc -fshader-stage=${stage} -x hlsl \
+      -I "$SHADERS_COMMON_DIR" \
+      "../${effect}/${stage}.hlsl" -o "$TMP_DIR/${effect}_${stage}.spv"
     naga "$TMP_DIR/${effect}_${stage}.spv" "$TMP_DIR/${effect}_${stage}.wgsl"
-    naga "$TMP_DIR/${effect}_${stage}.spv" "$TMP_DIR/${effect}_${stage}.metal"
+    # Same storage-texture format fixup compile_shaders_compute applies.
+    # naga emits rgba32float,read_write for HLSL `RWTexture2D<float4>`,
+    # but our textures are bound as rgba8unorm and the shader only writes —
+    # downgrade to write-only rgba8unorm.
+    if [ "$stage" = "compute" ]; then
+      sed -i '' 's/rgba32float,read_write/rgba8unorm,write/g' "$TMP_DIR/${effect}_${stage}.wgsl"
+      sed -i '' 's/rgba32float/rgba8unorm/g' "$TMP_DIR/${effect}_${stage}.wgsl"
+    fi
+    # MSL 2.0 enables read-write storage textures (and other modern features
+    # that naga's MSL output relies on for storage-texture access).
+    naga --metal-version 2.0 "$TMP_DIR/${effect}_${stage}.spv" "$TMP_DIR/${effect}_${stage}.metal"
   done
   _emit_shader_header "$effect" compute vertex fragment
   echo "  ${effect} shaders compiled (compute+vertex+fragment)"
