@@ -1,17 +1,18 @@
-// video.transform — Affine resample (scale, rotate, translate around a pivot).
+// video.transform — Affine resample with bilinear sampling.
 //
 // Per output pixel:
 //   1. Convert dispatch coord → cover-square coord.
 //   2. Inverse-transform around pivot: undo translate, undo rotate, undo scale.
-//   3. Convert back to viewport uv and read the input pixel (nearest neighbour).
+//   3. Convert back to viewport uv and bilinear-sample the input.
 //
 // Wrap mode: 0 = clamp to edge, 1 = transparent outside,
 //            2 = repeat, 3 = mirror.
 
-Texture2D<float4> inputTex : register(t0);
+Texture2D<float4>   inputTex  : register(t0);
+SamplerState        samp      : register(s2);
 RWTexture2D<float4> outputTex : register(u1);
 
-cbuffer Uniforms : register(b2) {
+cbuffer Uniforms : register(b3) {
   float scale_x;
   float scale_y;
   float cos_r;
@@ -48,7 +49,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Inverse: subtract translate, then move into pivot frame, undo rotate, undo scale, return to global.
   float2 t = sq - float2(translate_x, translate_y);
   float2 p = t - float2(pivot_x, pivot_y);
-  // Inverse rotate by +angle uses cos/-sin transposed.
   float2 rp = float2( cos_r * p.x + sin_r * p.y,
                      -sin_r * p.x + cos_r * p.y);
   float2 sp = rp / float2(scale_x, scale_y);
@@ -57,9 +57,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Cover-square → uv.
   float2 src_uv = src_sq * float2(aspect_x, aspect_y) + 0.5;
 
-  // Apply wrap mode.
   if (wrap_mode > 0.5 && wrap_mode < 1.5) {
-    // Transparent outside.
     if (src_uv.x < 0.0 || src_uv.x > 1.0 || src_uv.y < 0.0 || src_uv.y > 1.0) {
       outputTex[gid.xy] = float4(0, 0, 0, 0);
       return;
@@ -69,10 +67,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
     src_uv.y = wrap_uv(src_uv.y, wrap_mode);
   }
 
-  // Nearest-neighbour read. (Bilinear via samplers is a follow-up.)
-  uint sw, sh;
-  inputTex.GetDimensions(sw, sh);
-  uint sx = (uint)clamp((int)floor(src_uv.x * (float)sw), 0, (int)sw - 1);
-  uint sy = (uint)clamp((int)floor(src_uv.y * (float)sh), 0, (int)sh - 1);
-  outputTex[gid.xy] = inputTex[uint2(sx, sy)];
+  // Bilinear sample via the bound sampler at mip 0.
+  outputTex[gid.xy] = inputTex.SampleLevel(samp, src_uv, 0.0);
 }

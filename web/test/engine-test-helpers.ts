@@ -161,7 +161,7 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
   page.on('response', onResponse);
 
   try {
-    await page.goto('http://localhost:5174/engine-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto('http://localhost:5173/engine-test-runner.html', { waitUntil: 'networkidle0' });
     await page.evaluate((cfg: any) => {
       (window as any).__engineTestConfig = cfg;
       (window as any).__engineTestRun();

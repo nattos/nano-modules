@@ -41,6 +41,7 @@ static float s_wrap_mode = 0.0f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+static gpu::Sampler s_sampler;
 
 void init() {
   s_scale = 0.0f;
@@ -72,6 +73,10 @@ void init() {
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  // Bilinear filter, clamp-to-edge addressing. Wrap-mode logic still happens
+  // in the shader before sampling so the address mode here is just a fallback.
+  s_sampler = gpu::Device::createSampler(gpu::FilterMode::Linear,
+                                          gpu::AddressMode::ClampToEdge);
   s_initialized = true;
 }
 
@@ -136,7 +141,8 @@ void render(int vp_w, int vp_h) {
   cp.setPSO(s_pso);
   cp.setTexture(input, 0, 0);
   cp.setTexture(output, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setSampler(s_sampler, 2);
+  cp.setBuffer(s_uniform_buf, 3);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

@@ -267,7 +267,7 @@ export class Frame {
 let testCounter = 0;
 
 export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
-  await page.goto('http://localhost:5174/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
 
   await page.evaluate((cfg) => {
     (window as any).__gpuTestConfig = cfg;
@@ -307,7 +307,7 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
 // --- Internal: run a raw config against the test runner ---
 
 async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
-  await page.goto('http://localhost:5174/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
 
   await page.evaluate((c: any) => {
     (window as any).__gpuTestConfig = c;

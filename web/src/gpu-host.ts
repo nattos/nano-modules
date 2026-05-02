@@ -10,7 +10,7 @@ const USAGE_VERTEX = 0;
 const USAGE_STORAGE = 1;
 const USAGE_UNIFORM = 2;
 
-type HandleType = 'buffer' | 'texture' | 'shader' | 'compute_pipeline' | 'render_pipeline';
+type HandleType = 'buffer' | 'texture' | 'sampler' | 'shader' | 'compute_pipeline' | 'render_pipeline';
 
 interface HandleEntry {
   type: HandleType;
@@ -66,6 +66,31 @@ export class GPUHost {
   /** Inject an externally-owned buffer into the handle space (for chaining). */
   injectBuffer(buffer: GPUBuffer): number {
     return this.alloc('buffer', buffer);
+  }
+
+  // --- Sampler creation ---
+
+  /**
+   * Create a sampler resource for use in compute / render passes.
+   * `filterMode`: 0 = nearest, 1 = linear. `addressMode`: 0 = clamp-to-edge,
+   * 1 = repeat, 2 = mirror-repeat. Mip filtering follows the magnification
+   * filter mode.
+   */
+  createSampler(filterMode: number, addressMode: number): number {
+    const filter: GPUFilterMode = filterMode === 1 ? 'linear' : 'nearest';
+    const addr: GPUAddressMode =
+      addressMode === 1 ? 'repeat'
+      : addressMode === 2 ? 'mirror-repeat'
+      : 'clamp-to-edge';
+    const sampler = this.device.createSampler({
+      magFilter: filter,
+      minFilter: filter,
+      mipmapFilter: filter,
+      addressModeU: addr,
+      addressModeV: addr,
+      addressModeW: addr,
+    });
+    return this.alloc('sampler', sampler);
   }
 
   // --- Surface management ---
@@ -224,6 +249,7 @@ export class GPUHost {
   private computePassPipeline: GPUComputePipeline | null = null;
   private computePassBuffers: Map<number, GPUBuffer> = new Map();
   private computePassTextures: Map<number, { texture: GPUTexture; access: number }> = new Map();
+  private computePassSamplers: Map<number, GPUSampler> = new Map();
 
   beginComputePass(): number {
     const encoder = this.ensureEncoder();
@@ -231,6 +257,7 @@ export class GPUHost {
     this.computePassPipeline = null;
     this.computePassBuffers.clear();
     this.computePassTextures.clear();
+    this.computePassSamplers.clear();
     return 1; // pass handle (only one at a time)
   }
 
@@ -253,6 +280,12 @@ export class GPUHost {
     this.computePassTextures.set(slot, { texture, access });
   }
 
+  computeSetSampler(_pass: number, samplerHandle: number, slot: number) {
+    const sampler = this.get(samplerHandle) as GPUSampler;
+    if (!sampler) return;
+    this.computePassSamplers.set(slot, sampler);
+  }
+
   computeDispatch(_pass: number, x: number, y: number, z: number) {
     if (!this.computePassEncoder || !this.computePassPipeline) return;
     // Create bind group with all collected buffers and textures just before dispatch
@@ -262,6 +295,9 @@ export class GPUHost {
     }
     for (const [binding, { texture }] of this.computePassTextures) {
       entries.push({ binding, resource: texture.createView() });
+    }
+    for (const [binding, sampler] of this.computePassSamplers) {
+      entries.push({ binding, resource: sampler });
     }
     if (entries.length > 0) {
       const bindGroup = this.device.createBindGroup({
@@ -280,6 +316,7 @@ export class GPUHost {
       this.computePassPipeline = null;
       this.computePassBuffers.clear();
       this.computePassTextures.clear();
+      this.computePassSamplers.clear();
     }
   }
 
@@ -428,6 +465,8 @@ export class GPUHost {
         this.createBuffer(size, usage),
       create_texture: (w: number, h: number, format: number) =>
         this.createTexture(w, h, format),
+      create_sampler: (filterMode: number, addressMode: number) =>
+        this.createSampler(filterMode, addressMode),
       create_compute_pso: (shader: number, entryPtr: number, entryLen: number) =>
         this.createComputePipeline(shader, readString(entryPtr, entryLen)),
       create_render_pso: (vsShader: number, vsPtr: number, vsLen: number,
@@ -447,6 +486,8 @@ export class GPUHost {
         this.computeSetBuffer(pass, buf, offset, slot),
       compute_set_texture: (pass: number, tex: number, slot: number, access: number) =>
         this.computeSetTexture(pass, tex, slot, access),
+      compute_set_sampler: (pass: number, sampler: number, slot: number) =>
+        this.computeSetSampler(pass, sampler, slot),
       compute_dispatch: (pass: number, x: number, y: number, z: number) =>
         this.computeDispatch(pass, x, y, z),
       end_compute_pass: (pass: number) => this.endComputePass(pass),

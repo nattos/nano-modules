@@ -1,16 +1,14 @@
 /*
- * video.blur — Single-pass Gaussian-weighted blur.
+ * video.blur — Two-pass separable Gaussian blur.
  *
- * The shader takes a fixed 5×5 = 25 taps with Gaussian weights; the
- * `radius` slider scales the tap spacing in pixels so the slider
- * smoothly controls the visible blur amount:
+ *   Pass 1: input  → scratch, 13-tap horizontal Gaussian.
+ *   Pass 2: scratch → output, 13-tap vertical Gaussian.
  *
- *   radius = 0.0  →  spacing 0px  (passthrough)
- *   radius = 1.0  →  spacing scaled to ~5% of the viewport's smaller dim
+ * Per-tap spacing scales with `radius`, in viewport-min-dim fractions, so
+ * the blur reads as a constant visual size regardless of viewport shape.
  *
- * For higher-quality blurs we'll move to a separable two-pass with
- * scratch texture allocation; v1 is intentionally one pass to keep the
- * surface area small.
+ * The scratch texture is allocated lazily and reallocated when the
+ * viewport size changes.
  */
 
 #include <gpu.h>
@@ -20,19 +18,28 @@
 namespace blur {
 
 struct Uniforms {
-  float offset_x;     // pixels per tap step (after radius scaling)
-  float offset_y;     // same — separate from x in case we add anisotropic blur
-  float _pad[2];
+  float dir_x;       // 1 horizontal pass, 0 vertical pass
+  float dir_y;       // 0 horizontal pass, 1 vertical pass
+  float spacing_px;  // per-tap spacing in pixels
+  float _pad;
 };
 
 static float s_radius = 0.25f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
-static gpu::Buffer s_uniform_buf;
+static gpu::Buffer s_uniform_buf_h;
+static gpu::Buffer s_uniform_buf_v;
+
+// Scratch texture for the inter-pass storage. Reallocated on viewport change.
+static gpu::Texture s_scratch;
+static int s_scratch_w = 0;
+static int s_scratch_h = 0;
 
 void init() {
   s_radius = 0.25f;
   s_initialized = false;
+  s_scratch_w = 0;
+  s_scratch_h = 0;
 
   state::init("video.blur", {1, 0, 0},
     state::Schema()
@@ -47,7 +54,8 @@ void init() {
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main");
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf_h = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf_v = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
 
@@ -62,6 +70,14 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
   }
 }
 
+static void ensure_scratch(int vp_w, int vp_h) {
+  if (s_scratch.valid() && s_scratch_w == vp_w && s_scratch_h == vp_h) return;
+  // Note: we don't release the old handle on resize — small one-time leak.
+  s_scratch = gpu::Device::createTexture(vp_w, vp_h);
+  s_scratch_w = vp_w;
+  s_scratch_h = vp_h;
+}
+
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 
@@ -69,23 +85,39 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  // Aspect-aware kernel: spacing measured in viewport-min-dim fraction so the
-  // blur reads as a constant visual size regardless of viewport shape. The
-  // kernel covers ±2 taps, so per-tap spacing is (radius * max_blur) / 2.
+  ensure_scratch(vp_w, vp_h);
+  if (!s_scratch.valid()) return;
+
+  // Per-tap spacing in pixels. Each pass covers ±6 taps.
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
   float max_blur_px = static_cast<float>(min_dim) * 0.05f;  // 5% of min dim at radius=1
-  float spacing = (s_radius * max_blur_px) / 2.0f;
+  float spacing = (s_radius * max_blur_px) / 6.0f;
 
-  Uniforms u = { spacing, spacing, {0, 0} };
-  s_uniform_buf.writeOne(u);
+  Uniforms uh = { 1.0f, 0.0f, spacing, 0.0f };
+  s_uniform_buf_h.writeOne(uh);
+  Uniforms uv = { 0.0f, 1.0f, spacing, 0.0f };
+  s_uniform_buf_v.writeOne(uv);
 
-  auto cp = gpu::ComputePass::begin();
-  cp.setPSO(s_pso);
-  cp.setTexture(input, 0, 0);
-  cp.setTexture(output, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
-  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-  cp.end();
+  // Pass 1: horizontal — input → scratch.
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso);
+    cp.setTexture(input, 0, 0);
+    cp.setTexture(s_scratch, 1, 1);
+    cp.setBuffer(s_uniform_buf_h, 2);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
+  // Pass 2: vertical — scratch → output.
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso);
+    cp.setTexture(s_scratch, 0, 0);
+    cp.setTexture(output, 1, 1);
+    cp.setBuffer(s_uniform_buf_v, 2);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
 
   gpu::Device::submit();
 }

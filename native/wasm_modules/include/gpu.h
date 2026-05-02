@@ -31,6 +31,8 @@ extern "C" {
   int gpu_create_buffer(int size, int usage);
   __attribute__((import_module("gpu"), import_name("create_texture")))
   int gpu_create_texture(int w, int h, int format);
+  __attribute__((import_module("gpu"), import_name("create_sampler")))
+  int gpu_create_sampler(int filter_mode, int address_mode);
   __attribute__((import_module("gpu"), import_name("create_compute_pso")))
   int gpu_create_compute_pso(int shader, const char* entry, int entry_len);
   __attribute__((import_module("gpu"), import_name("create_render_pso")))
@@ -46,6 +48,8 @@ extern "C" {
   void gpu_compute_set_buffer(int pass, int buf, int offset, int slot);
   __attribute__((import_module("gpu"), import_name("compute_set_texture")))
   void gpu_compute_set_texture(int pass, int texture, int slot, int access);
+  __attribute__((import_module("gpu"), import_name("compute_set_sampler")))
+  void gpu_compute_set_sampler(int pass, int sampler, int slot);
   __attribute__((import_module("gpu"), import_name("compute_dispatch")))
   void gpu_compute_dispatch(int pass, int x, int y, int z);
   __attribute__((import_module("gpu"), import_name("end_compute_pass")))
@@ -95,6 +99,10 @@ enum class BufferUsage : int { Vertex = 0, Storage = 1, Uniform = 2 };
 
 enum class TextureFormat : int { BGRA8 = 0, RGBA8 = 1, Surface = 2 };
 
+enum class FilterMode : int { Nearest = 0, Linear = 1 };
+
+enum class AddressMode : int { ClampToEdge = 0, Repeat = 1, Mirror = 2 };
+
 // --- Handle base ---
 
 struct Handle {
@@ -139,6 +147,10 @@ struct Texture : Handle {
   using Handle::Handle;
 };
 
+struct Sampler : Handle {
+  using Handle::Handle;
+};
+
 struct ComputePSO : Handle {
   using Handle::Handle;
 };
@@ -163,6 +175,10 @@ struct ComputePass {
   // access: 0=read, 1=write, 2=read_write
   void setTexture(Texture tex, int slot, int access = 0) {
     gpu_compute_set_texture(id, tex.id, slot, access);
+  }
+
+  void setSampler(Sampler s, int slot) {
+    gpu_compute_set_sampler(id, s.id, slot);
   }
 
   void dispatch(int x, int y = 1, int z = 1) {
@@ -216,6 +232,11 @@ struct Device {
 
   static Texture createTexture(int w, int h, TextureFormat format = TextureFormat::RGBA8) {
     return Texture(gpu_create_texture(w, h, static_cast<int>(format)));
+  }
+
+  static Sampler createSampler(FilterMode filter = FilterMode::Linear,
+                                AddressMode address = AddressMode::ClampToEdge) {
+    return Sampler(gpu_create_sampler(static_cast<int>(filter), static_cast<int>(address)));
   }
 
   static ComputePSO createComputePSO(ShaderModule shader, const char* entryPoint) {
