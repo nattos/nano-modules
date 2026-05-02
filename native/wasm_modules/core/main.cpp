@@ -105,6 +105,62 @@ namespace vignette {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace blur {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace sharpen {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace edges {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace crop {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace transform {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace gradient {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace grid {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace noise {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -288,6 +344,118 @@ void nano_module_main() {
         vignette::tick,
         vignette::render,
         vignette::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.blur",
+        "Blur",
+        "Single-pass Gaussian blur with adjustable radius",
+        "video",
+        "blur,gaussian,defocus,soften",
+        blur::init,
+        blur::tick,
+        blur::render,
+        blur::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.sharpen",
+        "Sharpen",
+        "Discrete Laplacian sharpen with adjustable radius",
+        "video",
+        "sharpen,detail,laplacian",
+        sharpen::init,
+        sharpen::tick,
+        sharpen::render,
+        sharpen::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.edges",
+        "Edge Detection",
+        "Sobel edges with adjustable threshold and overlay colours",
+        "video",
+        "edge,sobel,outline,detect",
+        edges::init,
+        edges::tick,
+        edges::render,
+        edges::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.crop",
+        "Crop",
+        "Soft-edged rectangular crop in cover-square coordinates",
+        "video",
+        "crop,mask,frame,window",
+        crop::init,
+        crop::tick,
+        crop::render,
+        crop::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.transform",
+        "Transform",
+        "2D affine resample (scale, rotate, translate around a pivot)",
+        "video",
+        "transform,scale,rotate,translate,affine",
+        transform::init,
+        transform::tick,
+        transform::render,
+        transform::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "generator.gradient",
+        "Gradient",
+        "Two-colour linear gradient with adjustable angle, offset, and softness",
+        "generator",
+        "gradient,ramp,linear",
+        gradient::init,
+        gradient::tick,
+        gradient::render,
+        gradient::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "generator.grid",
+        "Grid",
+        "Tiled grid pattern with adjustable cell size, line width, and softness",
+        "generator",
+        "grid,pattern,tile,lines",
+        grid::init,
+        grid::tick,
+        grid::render,
+        grid::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "generator.noise",
+        "Noise",
+        "Procedural noise: white, value, fbm, or animated static",
+        "generator",
+        "noise,perlin,static,grain,procedural",
+        noise::init,
+        noise::tick,
+        noise::render,
+        noise::on_state_patched,
         nullptr,
     });
 }

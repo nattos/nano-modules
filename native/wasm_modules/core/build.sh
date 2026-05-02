@@ -20,6 +20,14 @@ compile_shaders_compute levels
 compile_shaders_compute hsl
 compile_shaders_compute vibrance
 compile_shaders_compute vignette
+compile_shaders_compute blur
+compile_shaders_compute sharpen
+compile_shaders_compute edges
+compile_shaders_compute crop
+compile_shaders_compute transform
+compile_shaders_compute gradient
+compile_shaders_compute grid
+compile_shaders_compute noise
 
 echo "=== Building WASM (core) ==="
 
@@ -47,6 +55,14 @@ wasm_build \
   ../levels/main.cpp \
   ../hsl/main.cpp \
   ../vibrance/main.cpp \
-  ../vignette/main.cpp
+  ../vignette/main.cpp \
+  ../blur/main.cpp \
+  ../sharpen/main.cpp \
+  ../edges/main.cpp \
+  ../crop/main.cpp \
+  ../transform/main.cpp \
+  ../gradient/main.cpp \
+  ../grid/main.cpp \
+  ../noise/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
