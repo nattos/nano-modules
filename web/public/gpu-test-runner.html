@@ -139,7 +139,7 @@ async function run() {
       const outputHandle = gpuHost.injectTexture(nextOutput);
       wasmHost.textureFields.set('tex_out', outputHandle);
 
-      await wasmHost.load('wasm/testonly.wasm');
+      await wasmHost.load(`wasm/${config.bundle || 'testonly'}.wasm`);
       const effectId = resolveEffectId(step.module);
       const wasmModule = wasmHost.activateEffect(effectId);
 

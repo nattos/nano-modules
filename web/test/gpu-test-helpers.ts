@@ -22,8 +22,17 @@ const DUMP_DIR = '/tmp/gpu-test-dumps';
 
 // --- Config & raw result types ---
 
+/**
+ * Which WASM bundle the test loads. Per-effect tests for shipping effects
+ * should pass `'core'` or `'nano'` so they exercise the bundle they ship in;
+ * common test infrastructure can stick with `'testonly'` (default) for
+ * pixel-stable assertions.
+ */
+export type WasmBundle = 'core' | 'nano' | 'testonly';
+
 export interface GpuTestConfig {
   module: string;
+  bundle?: WasmBundle;
   width?: number;
   height?: number;
   params?: [number, number][];
@@ -35,6 +44,7 @@ export interface GpuTestConfig {
 /** Config for an effect test: single module with a solid-color input texture. */
 export interface GpuEffectTestConfig {
   module: string;
+  bundle?: WasmBundle;
   width?: number;
   height?: number;
   params?: [number, number][];
@@ -48,6 +58,7 @@ export interface GpuEffectTestConfig {
 /** Config for a chain test: multiple modules executed in sequence. */
 export interface GpuChainTestConfig {
   chain: { module: string; params?: [number, number][]; ticks?: number }[];
+  bundle?: WasmBundle;
   width?: number;
   height?: number;
   samplePoints?: [number, number][];
@@ -261,7 +272,7 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
   await page.evaluate((cfg) => {
     (window as any).__gpuTestConfig = cfg;
     (window as any).__gpuTestRun();
-  }, { ...config, dumpPixels: true });
+  }, { ...config, bundle: config.bundle ?? 'testonly', dumpPixels: true });
 
   await page.waitForFunction(
     () => {
@@ -301,7 +312,7 @@ async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
   await page.evaluate((c: any) => {
     (window as any).__gpuTestConfig = c;
     (window as any).__gpuTestRun();
-  }, { ...cfg, dumpPixels: true });
+  }, { ...cfg, bundle: cfg.bundle ?? 'testonly', dumpPixels: true });
 
   await page.waitForFunction(
     () => {
@@ -336,6 +347,7 @@ async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
 export async function runGpuEffectTest(config: GpuEffectTestConfig): Promise<Frame> {
   return runRawConfig({
     module: config.module,
+    bundle: config.bundle,
     width: config.width || 64,
     height: config.height || 64,
     params: config.params || [],
@@ -352,6 +364,7 @@ export async function runGpuEffectTest(config: GpuEffectTestConfig): Promise<Fra
 export async function runGpuChainTest(config: GpuChainTestConfig): Promise<Frame> {
   return runRawConfig({
     chain: config.chain,
+    bundle: config.bundle,
     width: config.width || 64,
     height: config.height || 64,
     samplePoints: config.samplePoints || [],

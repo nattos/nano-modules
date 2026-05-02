@@ -1,5 +1,10 @@
 import { runGpuEffectTest, runGpuChainTest, runGpuTest } from './gpu-test-helpers';
 
+// Per-effect tests for brightness_contrast — load the actual `core` bundle so
+// changes to the shipping implementation are caught here. Chains with
+// spinningtris use `testonly` (where spinningtris lives) since chain tests
+// can mix bundles only by step.
+
 describe('Brightness/Contrast Effect E2E', () => {
   jest.setTimeout(30000);
 
@@ -7,6 +12,7 @@ describe('Brightness/Contrast Effect E2E', () => {
     it('declares metadata and I/O', async () => {
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
+        bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         dumpName: 'bc_metadata',
       });
@@ -22,6 +28,7 @@ describe('Brightness/Contrast Effect E2E', () => {
       // brightness=0.5 (neutral), contrast=0.5 (1x) should pass through
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
+        bundle: 'core',
         inputColor: [0.5, 0.25, 0.75, 1.0],
         params: [[0, 0.5], [1, 0.5]],
         dumpName: 'bc_neutral',
@@ -36,6 +43,7 @@ describe('Brightness/Contrast Effect E2E', () => {
       // contrast=0 means multiply by 0 → all black
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
+        bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         params: [[0, 0.5], [1, 0.0]],
         dumpName: 'bc_contrast_zero',
@@ -50,6 +58,7 @@ describe('Brightness/Contrast Effect E2E', () => {
       // Input: 0.25 → 0.25 * 2.0 = 0.5 → 128
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
+        bundle: 'core',
         inputColor: [0.25, 0.25, 0.25, 1.0],
         params: [[0, 0.5], [1, 1.0]],
         dumpName: 'bc_contrast_double',
@@ -64,6 +73,7 @@ describe('Brightness/Contrast Effect E2E', () => {
       // Input 0.0 + 1.0 = 1.0 → saturated white
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
+        bundle: 'core',
         inputColor: [0.0, 0.0, 0.0, 1.0],
         params: [[0, 1.0], [1, 0.5]],
         dumpName: 'bc_brightness_max',
@@ -78,6 +88,7 @@ describe('Brightness/Contrast Effect E2E', () => {
       // Input 0.5 + (-1.0) = -0.5 → saturated to 0
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
+        bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         params: [[0, 0.0], [1, 0.5]],
         dumpName: 'bc_brightness_min',
@@ -89,6 +100,9 @@ describe('Brightness/Contrast Effect E2E', () => {
   });
 
   describe('chain (spinningtris → brightness_contrast)', () => {
+    // The chain runner loads a single bundle, so we use `testonly` here —
+    // both spinningtris (test-only) and brightness_contrast (also present
+    // in testonly as a duplicate) live there.
     it('reduces contrast when applied after spinningtris', async () => {
       // Render spinningtris alone
       const before = await runGpuTest({
