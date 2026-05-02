@@ -42,6 +42,69 @@ namespace paramlinker {
     void on_resolume_param(long long param_id, double value);
 }
 
+namespace bake_alpha {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace curve {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace exposure {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace invert {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace posterize {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace levels {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace hsl {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace vibrance {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace vignette {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -100,6 +163,132 @@ void nano_module_main() {
         paramlinker::render,
         paramlinker::on_state_patched,
         paramlinker::on_resolume_param,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.bake_alpha",
+        "Bake Alpha",
+        "Premultiplies RGB by alpha (mixable amount)",
+        "video",
+        "alpha,premultiply,composite",
+        bake_alpha::init,
+        bake_alpha::tick,
+        bake_alpha::render,
+        bake_alpha::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.curve",
+        "Curve",
+        "Power curve applied to RGB and alpha (-1 squashes down, +1 lifts up)",
+        "video",
+        "curve,gamma,tonemap",
+        curve::init,
+        curve::tick,
+        curve::render,
+        curve::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.exposure",
+        "Exposure",
+        "Multiplicative gain measured in stops, with an optional warmth tint",
+        "video",
+        "exposure,gain,brightness,stops",
+        exposure::init,
+        exposure::tick,
+        exposure::render,
+        exposure::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.invert",
+        "Invert",
+        "Mixable color inversion with optional alpha invert",
+        "video",
+        "invert,negative,color",
+        invert::init,
+        invert::tick,
+        invert::render,
+        invert::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.posterize",
+        "Posterize",
+        "Quantizes RGB (and optionally alpha) to a small number of levels",
+        "video",
+        "posterize,quantize,bitcrush",
+        posterize::init,
+        posterize::tick,
+        posterize::render,
+        posterize::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.levels",
+        "Levels",
+        "Photoshop-style input/output remap with a gamma midtone control",
+        "video",
+        "levels,gamma,contrast,remap",
+        levels::init,
+        levels::tick,
+        levels::render,
+        levels::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.hsl",
+        "HSL",
+        "Hue rotation, saturation pull, and bipolar lightness in HSL space",
+        "video",
+        "hue,saturation,lightness,color",
+        hsl::init,
+        hsl::tick,
+        hsl::render,
+        hsl::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.vibrance",
+        "Vibrance",
+        "Saturation boost biased toward already-unsaturated pixels",
+        "video",
+        "vibrance,saturation,color",
+        vibrance::init,
+        vibrance::tick,
+        vibrance::render,
+        vibrance::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.vignette",
+        "Vignette",
+        "Radial darken/lighten around a cover-square anchor with soft falloff",
+        "video",
+        "vignette,edge,fade,corner",
+        vignette::init,
+        vignette::tick,
+        vignette::render,
+        vignette::on_state_patched,
+        nullptr,
     });
 }
 
