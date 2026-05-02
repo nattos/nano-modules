@@ -2,11 +2,17 @@
  * <ide-explorer> — Project list panel.
  *
  * Two sections:
- *   - "Defaults" — one row per discovered effect (virtual `default:<effectId>`).
- *   - "User Projects" — rows for `user:<uuid>` sketches loaded from IndexedDB.
+ *   - "Defaults" — one row per discovered effect, with the canonical id
+ *     `default:<effectId>`. The row appears regardless of whether the
+ *     project has been saved to IndexedDB yet; selecting it lazily
+ *     synthesizes the in-memory entry. First edit promotes the entry to
+ *     "saved" (see `mutate` in controller.ts).
+ *   - "User Projects" — `user:<uuid>` projects (legacy data from the
+ *     prior model, or future manually-created projects). Hidden while
+ *     empty.
  *
  * Click a row to select it. Selection lives in `userSettings.selectedProjectId`.
- * The "×" button on a user row deletes it (via undoable mutate).
+ * The "×" button on a user row deletes it.
  */
 
 import { html, css, nothing } from 'lit';
@@ -18,6 +24,8 @@ import {
   defaultProjectIdForEffect,
   isUserProjectId,
 } from '../../state/default-projects';
+
+import '../../widgets/ui-icon';
 
 @customElement('ide-explorer')
 export class IdeExplorer extends MobxLitElement {
@@ -76,9 +84,8 @@ export class IdeExplorer extends MobxLitElement {
       background: transparent;
       border: none;
       color: var(--app-text-color2);
-      font-size: 14px;
-      width: 18px;
-      height: 18px;
+      width: 20px;
+      height: 20px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -86,6 +93,8 @@ export class IdeExplorer extends MobxLitElement {
       border-radius: 3px;
       opacity: 0;
       transition: opacity 0.15s, color 0.15s, background 0.15s;
+      padding: 0;
+      --icon-size: 14px;
     }
     .row:hover .row-delete { opacity: 1; }
     .row-delete:hover {
@@ -104,8 +113,8 @@ export class IdeExplorer extends MobxLitElement {
     const selectedId = appState.local.userSettings.selectedProjectId;
     const effects = appState.local.availableEffects;
     const sketches = appState.database.sketches;
-    // Hide template (un-edited) user copies — they show up only after the
-    // first real edit promotes them to "real" projects.
+    // Templates are virtual, browse-only entries — keep them out of the
+    // User Projects list.
     const userIds = Object.keys(sketches)
       .filter(id => isUserProjectId(id) && !sketches[id]?.isTemplate)
       .sort();
@@ -118,35 +127,42 @@ export class IdeExplorer extends MobxLitElement {
             const id = defaultProjectIdForEffect(e.id);
             return html`
               <div class="row" ?selected=${selectedId === id}
-                @click=${() => appController.selectProject(id)}>
+                @click=${() => this.openProject(id)}>
                 <div class="row-name">${e.name}</div>
                 <div class="row-id">${e.id}</div>
               </div>
             `;
           })}
 
-      <div class="section-header">User Projects</div>
-      ${userIds.length === 0
-        ? html`<div class="empty">No user projects yet. Edit a default to create one.</div>`
-        : userIds.map(id => {
-            const sk = sketches[id];
-            const name = sk?.columns?.[0]?.name ?? id;
-            return html`
-              <div class="row" ?selected=${selectedId === id}
-                @click=${() => appController.selectProject(id)}>
-                <div class="row-name">${name}</div>
-                <div class="row-id">${id}</div>
-                <button class="row-delete" title="Delete project"
-                  @click=${(ev: Event) => this.onDelete(ev, id)}>×</button>
-              </div>
-            `;
-          })}
-      ${nothing}
+      ${userIds.length === 0 ? nothing : html`
+        <div class="section-header">User Projects</div>
+        ${userIds.map(id => {
+          const sk = sketches[id];
+          const name = sk?.columns?.[0]?.name ?? id;
+          return html`
+            <div class="row" ?selected=${selectedId === id}
+              @click=${() => this.openProject(id)}>
+              <div class="row-name">${name}</div>
+              <div class="row-id">${id}</div>
+              <button class="row-delete" title="Delete project"
+                @click=${(ev: Event) => this.onDelete(ev, id)}>
+                <ui-icon icon="la-times"></ui-icon>
+              </button>
+            </div>
+          `;
+        })}
+      `}
     `;
   }
 
   private onDelete(ev: Event, id: string) {
     ev.stopPropagation();
     appController.deleteProject(id);
+  }
+
+  /** Picking a project from the explorer also focuses the project editor tab. */
+  private openProject(id: string) {
+    appController.selectProject(id);
+    appController.setUserSetting('ideLeftTab', 'project_editor');
   }
 }

@@ -29,6 +29,7 @@ import '../widgets/column-group';
 import '../widgets/texture-monitor';
 import '../widgets/spark-chart';
 import { editorRegistry } from '../editor-registry';
+import { isTypingInEditable } from '../utils/keyboard';
 
 // Import inspector registrations (self-registering)
 import '../editors/brightness-contrast-inspector';
@@ -99,7 +100,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   private handleGlobalKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
     if (!this.isConnected) return;
-    if (this.isTypingInEditable(e.target)) return;
+    if (isTypingInEditable(e)) return;
     const selection = appState.local.selection;
     if (!selection) return;
     const parts = selection.path.split('/');
@@ -112,16 +113,6 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     appController.select(null);
     appController.removeEffectFromChain(sketchId, colIdx, chainIdx);
   };
-
-  private isTypingInEditable(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-    if (target.isContentEditable) return true;
-    // CodeMirror content editable
-    if (target.closest('.cm-content')) return true;
-    return false;
-  }
 
   static styles = css`
     :host {

@@ -20,10 +20,12 @@ import { customElement } from 'lit/decorators.js';
 import { keyed } from 'lit/directives/keyed.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
+import { appController } from '../../state/controller';
 import type { ColumnHost } from '../../widgets/columns-view';
 import type { ColumnGroupCallbacks } from '../../widgets/column-group';
 import type { FieldBinding } from '../../widgets/field-editor';
 import { editorRegistry } from '../../editor-registry';
+import { isTypingInEditable } from '../../utils/keyboard';
 
 import '../../widgets/columns-view';
 import '../../widgets/column-group';
@@ -126,11 +128,38 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     }
   }
 
+  connectedCallback(): void {
+    super.connectedCallback();
+    document.addEventListener('keydown', this.onGlobalKeyDown);
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    document.removeEventListener('keydown', this.onGlobalKeyDown);
     this.disposeColumnElements();
     this.disposeInspectors();
   }
+
+  /**
+   * Delete/Backspace removes the selected effect card. Mirrors the resolume
+   * editor's handler — same behavior, same guards (no-op while typing).
+   */
+  private onGlobalKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (!this.isConnected) return;
+    if (isTypingInEditable(e)) return;
+    const selection = appState.local.selection;
+    if (!selection) return;
+    const parts = selection.path.split('/');
+    if (parts[0] !== 'effect' || parts.length < 4) return;
+    const sketchId = parts[1];
+    const colIdx = parseInt(parts[2], 10);
+    const chainIdx = parseInt(parts[3], 10);
+    if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
+    e.preventDefault();
+    appController.select(null);
+    appController.removeEffectFromChain(sketchId, colIdx, chainIdx);
+  };
 
   private disposeColumnElements(): void {
     this.columnCache.clear();

@@ -145,6 +145,15 @@ async function handleCommand(cmd: WorkerCommand) {
       removeInstancesFromBucket(cmd.sketch);
       markDirty();
       break;
+    case 'deleteSketch': {
+      sketches.delete(cmd.sketchId);
+      // Free any user-injected input texture; the GPU pool reclaims memory.
+      sketchInputTextures.delete(cmd.sketchId);
+      // Trace points referencing this sketch are unregistered by the UI
+      // (texture-monitor.disconnectedCallback) and don't need cleanup here.
+      markDirty();
+      break;
+    }
     case 'setParam': {
       const sketch = sketches.get(cmd.sketchId);
       if (sketch) {

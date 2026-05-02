@@ -2,8 +2,8 @@
  * <ide-icon-bar> — VSCode-style vertical icon column on the left edge of the IDE.
  *
  * Reads the active tab from `appState.local.userSettings.ideLeftTab` and
- * dispatches `setUserSetting` on click. Icons are placeholder text labels for
- * now — replace with SVGs when we have a real icon set.
+ * dispatches `setUserSetting` on click. Icons come from Line Awesome via
+ * the shared `<ui-icon>` widget.
  */
 
 import { html, css } from 'lit';
@@ -13,15 +13,17 @@ import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 import type { UserSettings } from '../../state/types';
 
+import '../../widgets/ui-icon';
+
 interface IconTabDef {
   id: UserSettings['ideLeftTab'];
-  label: string;
+  icon: string;
   title: string;
 }
 
 const TABS: IconTabDef[] = [
-  { id: 'explorer',       label: 'Ex', title: 'Explorer' },
-  { id: 'project_editor', label: 'Pr', title: 'Project Editor' },
+  { id: 'explorer',       icon: 'la-folder',         title: 'Explorer' },
+  { id: 'project_editor', icon: 'la-stream',         title: 'Project Editor' },
 ];
 
 @customElement('ide-icon-bar')
@@ -45,11 +47,9 @@ export class IdeIconBar extends MobxLitElement {
       border: none;
       border-left: 2px solid transparent;
       color: var(--app-text-color2);
-      font-family: inherit;
-      font-size: 12px;
-      letter-spacing: 0.06em;
       cursor: pointer;
       transition: color 0.15s, border-color 0.15s;
+      padding: 0;
     }
     .icon-btn:hover {
       color: var(--app-text-color1);
@@ -57,6 +57,9 @@ export class IdeIconBar extends MobxLitElement {
     .icon-btn[active] {
       color: var(--app-text-color1);
       border-left-color: var(--app-hi-color2);
+    }
+    ui-icon {
+      --icon-size: 22px;
     }
   `;
 
@@ -68,7 +71,7 @@ export class IdeIconBar extends MobxLitElement {
           ?active=${active === t.id}
           title=${t.title}
           @click=${() => appController.setUserSetting('ideLeftTab', t.id)}>
-          ${t.label}
+          <ui-icon .icon=${t.icon}></ui-icon>
         </button>
       `)}
     `;

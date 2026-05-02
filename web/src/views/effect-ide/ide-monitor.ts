@@ -16,6 +16,7 @@ import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 
 import '../../widgets/texture-monitor';
+import '../../widgets/ui-button';
 
 @customElement('ide-monitor')
 export class IdeMonitor extends MobxLitElement {
@@ -59,24 +60,6 @@ export class IdeMonitor extends MobxLitElement {
       border-top: 1px solid rgba(255,255,255,0.08);
       flex-shrink: 0;
     }
-    .btn {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
-      color: var(--app-text-color1);
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      padding: 6px 14px;
-      border-radius: 3px;
-      cursor: pointer;
-      font-family: inherit;
-      text-transform: uppercase;
-    }
-    .btn:hover { background: rgba(255,255,255,0.15); }
-    .btn[active] {
-      background: var(--app-hi-color2);
-      border-color: var(--app-hi-color2);
-      color: #fff;
-    }
     .stat {
       margin-left: auto;
       font-size: 10px;
@@ -98,20 +81,21 @@ export class IdeMonitor extends MobxLitElement {
               .traceTarget=${{ type: 'sketch_output', sketchId: sel } as any}
               .width=${640}
               .height=${360}
+              resolution="high"
             ></texture-monitor>`
           : html`<div class="empty">No project selected.<br>Pick one in the explorer to begin.</div>`}
       </div>
       <div class="transport">
-        <button class="btn" ?active=${paused}
+        <ui-button
+          .icon=${paused ? 'la-play' : 'la-pause'}
           title=${paused ? 'Resume engine' : 'Pause engine'}
           @click=${this.onTogglePause}>
-          ${paused ? 'Resume' : 'Pause'}
-        </button>
-        <button class="btn"
+        </ui-button>
+        <ui-button
+          icon="la-redo"
           title="Reset elapsed time"
           @click=${this.onRestart}>
-          Restart
-        </button>
+        </ui-button>
         <span class="stat">
           ${error ? `Error: ${error}` : `${fps} FPS`}
         </span>

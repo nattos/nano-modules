@@ -21,6 +21,16 @@ export function isUserProjectId(id: string): boolean {
   return id.startsWith(USER_PROJECT_PREFIX);
 }
 
+/**
+ * True for any id that the IDE persists in IndexedDB — `default:<effectId>`
+ * (saved defaults) or `user:<uuid>` (legacy / future user-created projects).
+ * Sketches keyed under other prefixes (e.g. resolume's `sketch_N`) are
+ * managed separately and aren't touched by the project autosave.
+ */
+export function isPersistableProjectId(id: string): boolean {
+  return isDefaultProjectId(id) || isUserProjectId(id);
+}
+
 export function effectIdFromDefaultProjectId(id: string): string {
   return id.slice(DEFAULT_PROJECT_PREFIX.length);
 }

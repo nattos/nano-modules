@@ -2,15 +2,16 @@
  * Project CRUD on top of `idb-store`.
  *
  * Projects are `Sketch` objects keyed by `user:<uuid>`. Default projects
- * (`default:<effectId>`) are virtual and never stored.
+ * (`default:<effectId>`) are virtual and never stored. Template user copies
+ * (`isTemplate: true`) are also skipped — they're transient previews of
+ * defaults that the user is browsing without editing.
  *
- * Auto-save: an autorun watches `appState.database.sketches`, debounces,
- * then writes any user: sketch whose serialization has changed since the
- * last save. Deletes are detected as keys that disappear from the map.
+ * Save scheduling is the controller's job: `mutate()` calls
+ * `requestProjectsSave()` after committing, which debounces a flush. We
+ * never use a MobX reaction for persistence.
  */
 
-import { autorun, toJS } from 'mobx';
-import { appState } from './app-state';
+import { toJS } from 'mobx';
 import type { Sketch } from '../sketch-types';
 import { idbGetAll, idbPut, idbDelete, STORE_PROJECTS } from './idb-store';
 
@@ -39,64 +40,4 @@ export async function saveProject(id: string, sketch: Sketch): Promise<void> {
 
 export async function deleteProject(id: string): Promise<void> {
   await idbDelete(STORE_PROJECTS, id);
-}
-
-/**
- * Subscribe a debounced autorun that writes any user: sketch to IDB whenever
- * its serialized form changes, and deletes any user: sketch whose key is
- * removed from `appState.database.sketches`.
- *
- * Returns a dispose function.
- */
-export function subscribeProjectsAutosave(debounceMs = 300): () => void {
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  const lastSaved = new Map<string, string>();
-
-  const dispose = autorun(() => {
-    // Read the sketches map — toJS deeply touches every observable so the
-    // autorun re-fires on any nested change.
-    const sketches = toJS(appState.database.sketches);
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      saveTimer = null;
-      // Skip user: sketches still flagged as templates — these are virtual
-      // copies of defaults that the user is browsing without editing.
-      const userIds = new Set(
-        Object.keys(sketches).filter(k =>
-          k.startsWith('user:') && !sketches[k]?.isTemplate
-        )
-      );
-
-      for (const id of userIds) {
-        const json = JSON.stringify(sketches[id]);
-        if (lastSaved.get(id) === json) continue;
-        try {
-          await saveProject(id, sketches[id]);
-          lastSaved.set(id, json);
-        } catch (err) {
-          console.warn('[project-store] save failed', id, err);
-        }
-      }
-
-      // Detect deletions (previously saved, now missing).
-      for (const id of Array.from(lastSaved.keys())) {
-        if (!userIds.has(id)) {
-          try {
-            await deleteProject(id);
-            lastSaved.delete(id);
-          } catch (err) {
-            console.warn('[project-store] delete failed', id, err);
-          }
-        }
-      }
-    }, debounceMs);
-  });
-
-  return () => {
-    dispose();
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-  };
 }

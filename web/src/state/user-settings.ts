@@ -2,16 +2,16 @@
  * User settings — small singleton persisted to IndexedDB.
  *
  * Lives in `appState.local.userSettings` and is NOT touched by
- * `appController.mutate`. Changes are persisted via a debounced autorun.
+ * `appController.mutate`. Saves are scheduled explicitly from the controller
+ * methods that mutate the settings — never via a MobX reaction.
  *
- * Why split from `database`? Splitter drags, scroll positions, last-tab
- * selections must not pollute the undo history.
+ * This module exposes the pure load/save primitives. The debouncing and
+ * change-detection live in the controller.
  */
 
-import { autorun, toJS } from 'mobx';
-import { appState } from './app-state';
-import { idbGet, idbPut, STORE_SETTINGS } from './idb-store';
+import { toJS } from 'mobx';
 import type { UserSettings } from './types';
+import { idbGet, idbPut, STORE_SETTINGS } from './idb-store';
 
 export function defaultUserSettings(): UserSettings {
   return {
@@ -43,27 +43,7 @@ export async function loadUserSettings(): Promise<UserSettings> {
   }
 }
 
-/**
- * Subscribe a debounced autorun that writes user settings to IDB.
- * Returns a dispose function.
- */
-export function subscribeUserSettingsAutosave(debounceMs = 300): () => void {
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  const dispose = autorun(() => {
-    // toJS subscribes to every nested observable.
-    const snapshot = toJS(appState.local.userSettings);
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      idbPut(STORE_SETTINGS, { id: SETTINGS_KEY, settings: snapshot } satisfies SettingsRecord)
-        .catch(err => console.warn('[user-settings] save failed', err));
-    }, debounceMs);
-  });
-  return () => {
-    dispose();
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-  };
+export async function saveUserSettings(settings: UserSettings): Promise<void> {
+  const safe = toJS(settings);
+  await idbPut(STORE_SETTINGS, { id: SETTINGS_KEY, settings: safe } satisfies SettingsRecord);
 }

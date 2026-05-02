@@ -1,12 +1,13 @@
 /**
- * <texture-drop-zone> — Drag-drop overlay for injecting an image (and later
- * video) frame source into a sketch's `texture_input` chain entry.
+ * <texture-drop-zone> — Drag-drop overlay for the `texture_input` chain
+ * entry. The actual frame-source lifecycle (off-screen video element,
+ * persistence, restoration on reload) lives in the `SketchInputManager`
+ * owned by AppController, so the pump survives tab switches that unmount
+ * the drop-zone.
  *
- * Mounted as an absolutely-positioned child inside the `texture_input` marker
- * element (which is `position: relative`). Stays out of the way until a drag
- * starts, then highlights and accepts a drop.
- *
- * Phase 7a: image only. Video drops are deferred to a follow-up phase.
+ * This widget is purely the drag-drop UI: it shows a hover overlay,
+ * accepts dropped files, and forwards them to
+ * `appController.handleSketchInputDrop`.
  */
 
 import { html, css, LitElement } from 'lit';
@@ -61,7 +62,7 @@ export class TextureDropZone extends LitElement {
         @drop=${this.onDrop}>
       </div>
       ${this.hovering
-        ? html`<div class="overlay"><div class="hint">Drop image</div></div>`
+        ? html`<div class="overlay"><div class="hint">Drop file</div></div>`
         : null}
     `;
   }
@@ -83,22 +84,13 @@ export class TextureDropZone extends LitElement {
     this.hovering = false;
   };
 
-  private onDrop = async (e: DragEvent) => {
+  private onDrop = (e: DragEvent) => {
     e.preventDefault();
     this.hovering = false;
     if (!this.sketchId) return;
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      console.warn('[texture-drop-zone] only images are supported (got', file.type, ')');
-      return;
-    }
-    try {
-      const bitmap = await createImageBitmap(file);
-      appController.setSketchInput(this.sketchId, bitmap);
-    } catch (err) {
-      console.warn('[texture-drop-zone] failed to decode image', err);
-    }
+    void appController.handleSketchInputDrop(this.sketchId, file);
   };
 
   private hasFile(e: DragEvent): boolean {

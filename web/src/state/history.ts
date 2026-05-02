@@ -60,9 +60,29 @@ export class LongEdit {
   _getDescription() { return this.description; }
 }
 
+/**
+ * Hook that runs INSIDE the Immer transaction, just after the user-supplied
+ * recipe. Used to centralize cross-cutting state mutations (e.g. promoting
+ * a still-template sketch to "saved" the moment it's first edited) so they
+ * fire for both `mutate()` and continuous slider/long-edit accepts —
+ * everything goes through `record` eventually.
+ */
+export type InDraftHook = (draft: DatabaseState, description: string) => void;
+
+/**
+ * Hook that runs AFTER a record/undo/redo successfully changes state.
+ * Used for downstream side-effects like syncing to the engine worker and
+ * scheduling IndexedDB persistence — also needs to fire for long-edit
+ * accepts, undo, and redo, not just direct `mutate` calls.
+ */
+export type PostRecordHook = (description: string) => void;
+
 export class HistoryManager {
   @observable.shallow public history: Mutation[] = [];
   @observable.shallow public redoStack: Mutation[] = [];
+
+  /** @internal */ public inDraftHook: InDraftHook | null = null;
+  /** @internal */ public postRecordHook: PostRecordHook | null = null;
 
   constructor(private appState: AppState) {}
 
@@ -72,8 +92,15 @@ export class HistoryManager {
     let patches: Patch[] = [];
     let inversePatches: Patch[] = [];
 
+    // Wrap the recipe so the `inDraftHook` fires inside the same Immer
+    // transaction — atomic with the user's edit.
+    const wrapped = (draft: DatabaseState) => {
+      recipe(draft);
+      this.inDraftHook?.(draft, description);
+    };
+
     // Produce the next immutable state and capture patches
-    const nextState = produce(this.appState.database, recipe, (p, inv) => {
+    const nextState = produce(this.appState.database, wrapped, (p, inv) => {
       patches = p;
       inversePatches = inv;
     });
@@ -97,6 +124,8 @@ export class HistoryManager {
       this.history.push(mutation);
       this.redoStack.length = 0;
     });
+
+    this.postRecordHook?.(description);
   }
 
   @action
@@ -108,6 +137,7 @@ export class HistoryManager {
       this.applyPatchesToObservable(this.appState.database, mutation.inversePatches);
       this.redoStack.push(mutation);
     });
+    this.postRecordHook?.(`undo: ${mutation.description}`);
   }
 
   @action
@@ -119,6 +149,7 @@ export class HistoryManager {
       this.applyPatchesToObservable(this.appState.database, mutation.patches);
       this.history.push(mutation);
     });
+    this.postRecordHook?.(`redo: ${mutation.description}`);
   }
 
   get canUndo() { return this.history.length > 0; }
@@ -154,10 +185,18 @@ export class HistoryManager {
       this.longEditInverse = [];
     }
 
+    // Wrap so the in-draft hook fires for previews too — otherwise the
+    // preview state would re-introduce the original `isTemplate: true`
+    // until the long edit is accepted, racing the autosave.
+    const wrapped = (draft: DatabaseState) => {
+      recipe(draft);
+      this.inDraftHook?.(draft, '<longedit-preview>');
+    };
+
     // Apply new preview (capture inverse patches for later revert)
     let patches: Patch[] = [];
     let inversePatches: Patch[] = [];
-    produce(this.appState.database, recipe, (p, inv) => {
+    produce(this.appState.database, wrapped, (p, inv) => {
       patches = p;
       inversePatches = inv;
     });

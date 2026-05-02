@@ -88,6 +88,10 @@ export class EngineProxy {
     this.send({ type: 'updateSketch', sketchId, sketch });
   }
 
+  deleteSketch(sketchId: string) {
+    this.send({ type: 'deleteSketch', sketchId });
+  }
+
   setParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
     this.send({ type: 'setParam', sketchId, colIdx, chainIdx, paramKey, value });
   }

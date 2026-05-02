@@ -187,12 +187,17 @@ export class SmartInput extends LitElement {
         {
           key: 'Tab',
           run: (view) => {
-            if (acceptCompletion(view)) return true;
+            // Empty text + accept means "delete this effect" — check this
+            // BEFORE acceptCompletion, otherwise the open autocomplete dropdown
+            // (showing all effects when query is empty) would swallow Tab and
+            // pick a namespace/effect instead of routing to delete-request.
             const val = view.state.doc.toString();
             if (val.length === 0) {
+              closeCompletion(view);
               self.dispatchEvent(new CustomEvent('delete-request'));
               return true;
             }
+            if (acceptCompletion(view)) return true;
             self.dispatchCommit(val);
             return true;
           },
@@ -200,12 +205,13 @@ export class SmartInput extends LitElement {
         {
           key: 'Enter',
           run: (view) => {
-            if (acceptCompletion(view)) return true;
             const val = view.state.doc.toString();
             if (val.length === 0) {
+              closeCompletion(view);
               self.dispatchEvent(new CustomEvent('delete-request'));
               return true;
             }
+            if (acceptCompletion(view)) return true;
             self.dispatchCommit(val);
             return true;
           },
@@ -394,15 +400,18 @@ export class SmartInput extends LitElement {
     }
 
     if (!explicit) {
-      // Implicit commit (Enter without accepting, blur):
-      // Use last valid preview, or fall back to initial value.
-      // Note: explicit empty-then-Enter is routed to 'delete-request' by the
-      // Enter/Tab key handlers before reaching here, so an empty value here
-      // means the user blurred without typing anything.
+      // Implicit commit (Enter without accepting, blur). Use last valid
+      // preview if we have one. Falling back to initialValue is unsafe —
+      // it's the human-readable short name, but the consumer
+      // (changeEffectType) needs a full effect id; an unresolved short name
+      // ends up baked into the chain entry as an invalid module_type.
+      // If we have nothing valid, treat it as a cancel so the chain is left
+      // unchanged.
       if (this.lastPreviewedId) {
         value = this.lastPreviewedId;
       } else {
-        value = this.initialValue;
+        this.dispatchEvent(new CustomEvent('cancel'));
+        return;
       }
     }
 

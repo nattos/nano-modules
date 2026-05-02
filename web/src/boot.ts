@@ -5,17 +5,21 @@
  * Steps:
  *   1. Create the engine proxy and wire its callbacks to the controller.
  *   2. Restore user settings + persisted projects from IndexedDB.
- *   3. Subscribe debounced autoruns that write changes back to IndexedDB.
+ *   3. Enable persistence so subsequent mutations save to IndexedDB.
  *   4. Return the proxy so callers can layer extra `onEffectsDiscovered`
  *      handlers and call `loadModule(...)` to begin effect discovery.
+ *
+ * Persistence is driven explicitly from controller methods (no MobX
+ * reactions). See `state/controller.ts` for the debounced save scheduling.
  */
 
 import { toJS } from 'mobx';
 import { appState } from './state/app-state';
 import { appController } from './state/controller';
 import { EngineProxy } from './engine-proxy';
-import { loadUserSettings, subscribeUserSettingsAutosave } from './state/user-settings';
-import { loadAllProjects, subscribeProjectsAutosave } from './state/project-store';
+import { loadUserSettings } from './state/user-settings';
+import { loadAllProjects } from './state/project-store';
+import { idbGetAll, idbGet, STORE_PROJECTS, STORE_SETTINGS, STORE_SKETCH_INPUTS } from './state/idb-store';
 
 export interface BootResult {
   engine: EngineProxy;
@@ -34,6 +38,26 @@ export async function boot(width = 320, height = 180): Promise<BootResult> {
     console.log(JSON.stringify(data, undefined, 2));
     return data;
   };
+  // What's actually persisted in IndexedDB right now? Useful when
+  // diagnosing "I edited my project but it didn't save".
+  (window as any).debugDumpIdb = async () => {
+    const projects = await idbGetAll(STORE_PROJECTS);
+    const settings = await idbGet(STORE_SETTINGS, 'settings');
+    const inputs = await idbGetAll(STORE_SKETCH_INPUTS);
+    const dump = { projects, settings, inputs };
+    console.log('[debugDumpIdb]', dump);
+    return dump;
+  };
+  // Nuclear option — wipe IndexedDB to start over. Reload the page after.
+  (window as any).debugClearIdb = async () => {
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.deleteDatabase('nano-modules');
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+      req.onblocked = () => console.warn('[debugClearIdb] blocked — close other tabs?');
+    });
+    console.log('[debugClearIdb] done — reload to start fresh');
+  };
 
   engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
   engine.onFps = (fps) => appController.setEngineFps(fps);
@@ -44,11 +68,12 @@ export async function boot(width = 320, height = 180): Promise<BootResult> {
   engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
 
   // Restore from IndexedDB before mounting UI so the first paint is correct.
-  // Errors are non-fatal; we fall back to defaults.
+  // Errors are non-fatal; we fall back to defaults. Persistence stays
+  // disabled during this phase so loaded values aren't immediately echoed
+  // back to disk.
   try {
     const settings = await loadUserSettings();
     appController.loadInitialUserSettings(settings);
-    // Push the persisted paused state to the engine so the worker matches the UI.
     if (settings.paused) engine.setPaused(true);
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
@@ -62,9 +87,8 @@ export async function boot(width = 320, height = 180): Promise<BootResult> {
     console.warn('[boot] failed to load projects', err);
   }
 
-  // Auto-save subsequent changes.
-  subscribeUserSettingsAutosave();
-  subscribeProjectsAutosave();
+  // Subsequent mutations from this point on persist explicitly.
+  appController.enablePersistence();
 
   return { engine };
 }

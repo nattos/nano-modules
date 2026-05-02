@@ -9,10 +9,15 @@
  */
 
 const DB_NAME = 'nano-modules';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export const STORE_PROJECTS = 'projects';
 export const STORE_SETTINGS = 'settings';
+/**
+ * Last image/video file dropped onto each sketch's `texture_input`. Keyed by
+ * sketch id. Stores the raw `Blob` plus a `kind` discriminator.
+ */
+export const STORE_SKETCH_INPUTS = 'sketchInputs';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -27,6 +32,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
         db.createObjectStore(STORE_SETTINGS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_SKETCH_INPUTS)) {
+        db.createObjectStore(STORE_SKETCH_INPUTS, { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);

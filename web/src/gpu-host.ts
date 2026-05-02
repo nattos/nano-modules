@@ -111,7 +111,15 @@ export class GPUHost {
     const texture = this.device.createTexture({
       size: [width, height],
       format: fmt,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+      // COPY_DST is needed by `copyExternalImageToTexture` (image/video drag-drop).
+      // Adding it to the default texture usage is harmless for other callers —
+      // it's just an extra permission, not extra memory.
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.TEXTURE_BINDING
+        | GPUTextureUsage.STORAGE_BINDING
+        | GPUTextureUsage.COPY_SRC
+        | GPUTextureUsage.COPY_DST,
     });
     return this.alloc('texture', texture);
   }

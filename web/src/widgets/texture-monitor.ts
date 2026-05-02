@@ -27,6 +27,13 @@ export class TextureMonitor extends MobxLitElement {
   /** Canvas display height in CSS pixels. */
   @property({ type: Number }) height = 36;
 
+  /**
+   * Trace capture resolution. `'low'` snapshots a small thumbnail (128x72);
+   * `'high'` captures at the source's native size — use this for the main
+   * monitor where you want the actual output, not a downsample.
+   */
+  @property() resolution: 'low' | 'high' = 'low';
+
   private frameDisposer: IReactionDisposer | null = null;
 
   static styles = css`
@@ -66,8 +73,8 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('traceId') || changed.has('traceTarget')) {
-      // Re-register if target or ID changed
+    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution')) {
+      // Re-register if target, ID, or resolution changed
       if (changed.has('traceId')) {
         const oldId = changed.get('traceId') as string;
         if (oldId) traceController.unregister(oldId);
@@ -81,7 +88,7 @@ export class TextureMonitor extends MobxLitElement {
     traceController.register({
       id: this.traceId,
       target: this.traceTarget,
-      resolution: 'low',
+      resolution: this.resolution,
     });
   }
 
