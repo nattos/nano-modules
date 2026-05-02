@@ -3,12 +3,14 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
 
-// Try combined module first, fall back to standalone
-const NANO_EFFECTS_PATH = resolve(__dirname, '../public/wasm/nano_effects.wasm');
+// This test exercises nanolooper, which lives in the `nano` bundle. Old
+// standalone nanolooper.wasm is kept as a fallback for environments where
+// only that artefact is available.
+const NANO_BUNDLE_PATH = resolve(__dirname, '../public/wasm/nano.wasm');
 const NANOLOOPER_PATH = resolve(__dirname, '../public/wasm/nanolooper.wasm');
 
 function getWasmBytes(): Buffer | null {
-  try { return readFileSync(NANO_EFFECTS_PATH); } catch {}
+  try { return readFileSync(NANO_BUNDLE_PATH); } catch {}
   try { return readFileSync(NANOLOOPER_PATH); } catch {}
   return null;
 }

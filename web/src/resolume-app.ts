@@ -32,7 +32,11 @@ async function main() {
     }
   };
 
-  appController.loadModule('com.nattos.nano_effects');
+  // Resolume is the developer-facing sketch editor — load all three bundles
+  // so every effect is reachable.
+  appController.loadModule('com.nattos.core');
+  appController.loadModule('com.nattos.nano');
+  appController.loadModule('com.nattos.testonly');
 }
 
 /**

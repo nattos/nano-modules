@@ -83,7 +83,7 @@ export class SketchExecutor {
   async ensureInstance(entry: ModuleEntry): Promise<LoadedModule> {
     // Resolve the module type early so identity comparisons are stable even
     // when entry.module_type is a fully-qualified bundle ID (e.g.
-    // "com.nattos.nano_effects.data.particles_emitter") whose registered
+    // "com.nattos.testonly.data.particles_emitter") whose registered
     // effect id is just "data.particles_emitter".
     const found = this.findModule(entry.module_type);
     const resolvedId = found?.resolvedId ?? entry.module_type;

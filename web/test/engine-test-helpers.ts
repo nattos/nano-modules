@@ -189,9 +189,22 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
 // --- Single-phase test ---
 
 /**
- * All built-in effects are bundled into com.nattos.nano_effects. Tests still
- * list the logical module_type (e.g. 'com.nattos.spinningtris'); expand
- * those into a loadModule(bundle) + instantiateEffect(<registered id>).
+ * Effects are split across three bundles:
+ *   - `core`     — shipping effects (brightness/contrast, blend, etc.)
+ *   - `nano`     — shipping "weirder" effects (currently just nanolooper)
+ *   - `testonly` — effects the integration tests rely on, including
+ *     test-only forks (e.g. LFO) and effects whose pixel output we want
+ *     locked for assertion stability.
+ *
+ * Common-infra integration tests (engine.test, engine-rails.test, etc.)
+ * use the `testonly` bundle so their output stays stable as the shipping
+ * implementations evolve. Per-effect e2e tests should pass the matching
+ * `com.nattos.<bundle>` directly via `modules:` so they run against the
+ * actual shipping code.
+ *
+ * Legacy aliases (`com.nattos.<short>` and bare effect ids) are still
+ * accepted and resolved against `testonly` for backwards compat with the
+ * existing test corpus.
  */
 const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'com.nattos.spinningtris': 'generator.spinningtris',
@@ -212,17 +225,31 @@ const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'sequencer.nanolooper': 'sequencer.nanolooper',
   'utility.paramlinker': 'utility.paramlinker',
 };
-const BUNDLE_MODULE_TYPE = 'com.nattos.nano_effects';
+/** Default bundle for legacy/effect-id entries — locked against testonly. */
+const LEGACY_BUNDLE_MODULE_TYPE = 'com.nattos.testonly';
+const BUNDLE_MODULE_TYPES = new Set([
+  'com.nattos.core',
+  'com.nattos.nano',
+  'com.nattos.testonly',
+]);
 
 function expandModulesList(modules: string[]): any[] {
   const cmds: any[] = [];
   const seenBundle = new Set<string>();
   for (const m of modules) {
+    if (BUNDLE_MODULE_TYPES.has(m)) {
+      // Explicit bundle request from a per-effect test.
+      if (!seenBundle.has(m)) {
+        cmds.push({ type: 'loadModule', moduleType: m });
+        seenBundle.add(m);
+      }
+      continue;
+    }
     const effectId = LEGACY_MODULE_TO_EFFECT_ID[m];
     if (effectId) {
-      if (!seenBundle.has(BUNDLE_MODULE_TYPE)) {
-        cmds.push({ type: 'loadModule', moduleType: BUNDLE_MODULE_TYPE });
-        seenBundle.add(BUNDLE_MODULE_TYPE);
+      if (!seenBundle.has(LEGACY_BUNDLE_MODULE_TYPE)) {
+        cmds.push({ type: 'loadModule', moduleType: LEGACY_BUNDLE_MODULE_TYPE });
+        seenBundle.add(LEGACY_BUNDLE_MODULE_TYPE);
       }
       cmds.push({ type: 'instantiateEffect', effectId });
     } else {

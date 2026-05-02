@@ -32,7 +32,7 @@ const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
 
 // Registry of compiled WASM modules and their available effects
 interface LoadedWasmModule {
-  moduleId: string;    // e.g. "com.nattos.nano_effects"
+  moduleId: string;    // e.g. "com.nattos.core"
   compiled: WebAssembly.Module;
   effects: EffectInfo[];
 }
@@ -46,7 +46,7 @@ const effectRegistry = new Map<string, { compiled: WebAssembly.Module; effect: E
 function resolveEffectId(id: string): string {
   // If it's already in the registry as-is, it's module-relative
   if (effectRegistry.has(id)) return id;
-  // Try stripping known module prefixes (e.g. "com.nattos.nano_effects.video.blend" → "video.blend")
+  // Try stripping known module prefixes (e.g. "com.nattos.core.video.blend" → "video.blend")
   for (const entry of moduleRegistry.values()) {
     const prefix = entry.moduleId + '.';
     if (id.startsWith(prefix)) {

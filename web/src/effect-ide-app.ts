@@ -34,7 +34,10 @@ async function main() {
     (id) => id === appState.local.userSettings.selectedProjectId,
   );
 
-  appController.loadModule('com.nattos.nano_effects');
+  // The IDE loads the shipping effect bundles. `testonly` is intentionally
+  // not loaded here — it's reserved for integration tests.
+  appController.loadModule('com.nattos.core');
+  appController.loadModule('com.nattos.nano');
 }
 
 main();

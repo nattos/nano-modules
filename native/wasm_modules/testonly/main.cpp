@@ -1,15 +1,25 @@
 /*
- * nano_effects — Combined module entry point.
+ * testonly — Effects bundle used by integration tests.
  *
- * Registers all built-in effects via the module registration API.
- * Each effect's implementation lives in its own namespace within its
- * original source file; this file ties them together.
+ * NOT loaded by the Effect IDE. This bundle exists so the test suite has a
+ * single, stable place to load all effects exercised by integration tests
+ * (engine.test.ts, engine-rails.test.ts, particles.test.ts, etc.).
+ *
+ * It can freely duplicate effects that also appear in the `core` or `nano`
+ * bundles. In the future, when test assertions need pixel-stable
+ * implementations that may diverge from the shipping ones, this is the
+ * place to fork (e.g. an `env_lfo` whose math is locked to the values our
+ * golden masters were computed against).
+ *
+ * Per-effect e2e tests should load whichever bundle their effect actually
+ * lives in, not this one — those tests are part of the effect's
+ * implementation, not the common test infrastructure.
  */
 
 #include <module_api.h>
-#include <cstddef>  // nullptr
+#include <cstddef>
 
-// Forward declarations for all effects.
+// ---- Effects that also exist in core (duplicated here for test access) ----
 
 namespace brightness_contrast {
     void init();
@@ -25,14 +35,16 @@ namespace solid_color {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
-namespace env_lfo {
+namespace video_blend {
     void init();
     void tick(double dt);
     void render(int vp_w, int vp_h);
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
-namespace video_blend {
+// ---- Test-only effects (never shipped) ----
+
+namespace env_lfo {
     void init();
     void tick(double dt);
     void render(int vp_w, int vp_h);
@@ -47,21 +59,6 @@ namespace gpu_test {
 }
 
 namespace spinningtris {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
-
-namespace paramlinker {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-    void on_resolume_param(long long param_id, double value);
-}
-
-namespace nanolooper {
     void init();
     void tick(double dt);
     void render(int vp_w, int vp_h);
@@ -86,8 +83,10 @@ extern "C" {
 
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
+    // Duplicates of core effects — same source, registered separately so
+    // tests don't have to load `core` to exercise them.
     nano::registerEffect({
-        1, // struct_version
+        1,
         "video.brightness_contrast",
         "Brightness/Contrast",
         "Adjusts brightness and contrast of a texture input",
@@ -97,7 +96,7 @@ void nano_module_main() {
         brightness_contrast::tick,
         brightness_contrast::render,
         brightness_contrast::on_state_patched,
-        nullptr, // on_resolume_param
+        nullptr,
     });
 
     nano::registerEffect({
@@ -116,20 +115,6 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "data.lfo",
-        "LFO",
-        "Low frequency oscillator outputting a sine wave",
-        "data",
-        "oscillator,modulation,automation",
-        env_lfo::init,
-        env_lfo::tick,
-        env_lfo::render,
-        env_lfo::on_state_patched,
-        nullptr,
-    });
-
-    nano::registerEffect({
-        1,
         "video.blend",
         "Video Blend",
         "Blends two texture inputs with opacity control",
@@ -139,6 +124,23 @@ void nano_module_main() {
         video_blend::tick,
         video_blend::render,
         video_blend::on_state_patched,
+        nullptr,
+    });
+
+    // Test-only effects — these never appear in core/nano. The LFO in
+    // particular will likely diverge from the shipping implementation,
+    // which is why it lives here.
+    nano::registerEffect({
+        1,
+        "data.lfo",
+        "LFO",
+        "Low frequency oscillator outputting a sine wave",
+        "data",
+        "oscillator,modulation,automation",
+        env_lfo::init,
+        env_lfo::tick,
+        env_lfo::render,
+        env_lfo::on_state_patched,
         nullptr,
     });
 
@@ -172,20 +174,6 @@ void nano_module_main() {
 
     nano::registerEffect({
         1,
-        "utility.paramlinker",
-        "Param Linker",
-        "Links two Resolume parameters together via learn mechanism",
-        "utility",
-        "resolume,parameter,link,automation",
-        paramlinker::init,
-        paramlinker::tick,
-        paramlinker::render,
-        paramlinker::on_state_patched,
-        paramlinker::on_resolume_param,
-    });
-
-    nano::registerEffect({
-        1,
         "data.particles_emitter",
         "Particles Emitter",
         "Emits a stream of 2D particles into a GPU storage buffer",
@@ -209,20 +197,6 @@ void nano_module_main() {
         particles_renderer::tick,
         particles_renderer::render,
         particles_renderer::on_state_patched,
-        nullptr,
-    });
-
-    nano::registerEffect({
-        1,
-        "sequencer.nanolooper",
-        "Nano Looper",
-        "4-channel 16-step looper sequencer with visual overlay",
-        "sequencer",
-        "loop,trigger,beat,midi",
-        nanolooper::init,
-        nanolooper::tick,
-        nanolooper::render,
-        nanolooper::on_state_patched,
         nullptr,
     });
 }

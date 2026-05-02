@@ -277,17 +277,18 @@ async function main() {
   const initialModule = urlParams.get('module') || 'nanolooper';
   moduleSelect.value = initialModule;
 
-  // Map a selector value (legacy standalone module name) to its effect ID
-  // inside the bundled nano_effects.wasm.
-  const MODULE_NAME_TO_EFFECT_ID: Record<string, string> = {
-    nanolooper: 'sequencer.nanolooper',
-    brightness_contrast: 'video.brightness_contrast',
-    env_lfo: 'data.lfo',
-    gpu_test: 'debug.gpu_test',
-    paramlinker: 'utility.paramlinker',
-    solid_color: 'generator.solid_color',
-    spinningtris: 'generator.spinningtris',
-    video_blend: 'video.blend',
+  // Map a selector value (legacy standalone module name) to (effectId, bundle).
+  // The harness loads whichever bundle the effect lives in.
+  interface ModuleEntry { effectId: string; bundle: 'core' | 'nano' | 'testonly' }
+  const MODULE_NAME_TO_ENTRY: Record<string, ModuleEntry> = {
+    nanolooper:           { effectId: 'sequencer.nanolooper',     bundle: 'nano' },
+    brightness_contrast:  { effectId: 'video.brightness_contrast', bundle: 'core' },
+    paramlinker:          { effectId: 'utility.paramlinker',      bundle: 'core' },
+    solid_color:          { effectId: 'generator.solid_color',    bundle: 'core' },
+    video_blend:          { effectId: 'video.blend',              bundle: 'core' },
+    env_lfo:              { effectId: 'data.lfo',                 bundle: 'testonly' },
+    gpu_test:             { effectId: 'debug.gpu_test',           bundle: 'testonly' },
+    spinningtris:         { effectId: 'generator.spinningtris',   bundle: 'testonly' },
   };
 
   async function loadModule(moduleName: string) {
@@ -302,11 +303,13 @@ async function main() {
     host.onStateChange = (state) => updateStateDisplay(state);
     host.onLog = (entry) => addLogEntry(entry);
 
-    const effectId = MODULE_NAME_TO_EFFECT_ID[moduleName] ?? moduleName;
+    const entry = MODULE_NAME_TO_ENTRY[moduleName];
+    const effectId = entry?.effectId ?? moduleName;
+    const bundle = entry?.bundle ?? 'testonly';
 
     let wasmModule: WasmModule;
     try {
-      await host.load('wasm/nano_effects.wasm');
+      await host.load(`wasm/${bundle}.wasm`);
       wasmModule = host.activateEffect(effectId);
     } catch (e) {
       statusEl.textContent = `WASM load failed: ${e}`;

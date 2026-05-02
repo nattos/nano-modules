@@ -4,7 +4,9 @@ import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
 import type { Sketch, ChainEntry } from './sketch-types';
 
-const NANO_EFFECTS_WASM_PATH = resolve(__dirname, '../public/wasm/nano_effects.wasm');
+// Common-infra unit tests load the testonly bundle so their assertions stay
+// stable as the shipping core/nano implementations evolve.
+const TESTONLY_WASM_PATH = resolve(__dirname, '../public/wasm/testonly.wasm');
 
 // Helper: load a WASM module from bytes, discover effects, and activate one
 async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'video.brightness_contrast') {
@@ -23,7 +25,7 @@ async function loadModuleFromBytes(host: WasmHost, bytes: Buffer, effectId = 'vi
 }
 
 function getWasmBytes(): Buffer | null {
-  try { return readFileSync(NANO_EFFECTS_WASM_PATH); } catch { return null; }
+  try { return readFileSync(TESTONLY_WASM_PATH); } catch { return null; }
 }
 
 describe('Brightness/Contrast module', () => {

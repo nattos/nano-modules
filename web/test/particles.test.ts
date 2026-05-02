@@ -42,7 +42,7 @@ function buildParticleSketch(opts: {
         { type: 'texture_input', id: 'in' },
         {
           type: 'module',
-          module_type: 'com.nattos.nano_effects.data.particles_emitter',
+          module_type: 'data.particles_emitter',
           instance_key: 'emit@0',
           // Initial state: feed gravity (vec2) and spawn_speed.
           params: { spawn_speed: 0.6, gravity },
@@ -52,7 +52,7 @@ function buildParticleSketch(opts: {
         },
         {
           type: 'module',
-          module_type: 'com.nattos.nano_effects.video.particles_renderer',
+          module_type: 'video.particles_renderer',
           instance_key: 'render@0',
           params: { particle_size: size, tint },
           taps: [
@@ -71,7 +71,7 @@ describe('Particles (struct rail + GPU array) E2E', () => {
   it('renders particles from emitter into renderer output', async () => {
     const result = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.nano_effects'],
+      modules: ['com.nattos.testonly'],
       commands: [
         { type: 'createSketch', sketchId: 'particles_sketch', sketch: buildParticleSketch() },
         { type: 'setTracePoints', tracePoints: [
@@ -99,7 +99,7 @@ describe('Particles (struct rail + GPU array) E2E', () => {
   it('particle motion produces a different frame after more ticks', async () => {
     const result = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.nano_effects'],
+      modules: ['com.nattos.testonly'],
       dumpName: 'particles_motion',
       phases: [
         {
@@ -131,7 +131,7 @@ describe('Particles (struct rail + GPU array) E2E', () => {
   it('respects renderer tint (vec4) param', async () => {
     const result = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.nano_effects'],
+      modules: ['com.nattos.testonly'],
       commands: [
         {
           type: 'createSketch',
