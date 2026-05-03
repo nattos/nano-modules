@@ -28,14 +28,14 @@ function buildBlendSketch(opts: {
           type: 'module',
           module_type: 'generator.solid_color',
           instance_key: `${opts.sketchId}_a`,
-          params: { red: opts.colorA.r, green: opts.colorA.g, blue: opts.colorA.b },
+          params: { color: [opts.colorA.r, opts.colorA.g, opts.colorA.b] },
           taps: [{ railId: 'tex_a', fieldPath: 'texture_out/0', direction: 'write' }],
         },
         {
           type: 'module',
           module_type: 'generator.solid_color',
           instance_key: `${opts.sketchId}_b`,
-          params: { red: opts.colorB.r, green: opts.colorB.g, blue: opts.colorB.b },
+          params: { color: [opts.colorB.r, opts.colorB.g, opts.colorB.b] },
           taps: [{ railId: 'tex_b', fieldPath: 'texture_out/0', direction: 'write' }],
         },
         {

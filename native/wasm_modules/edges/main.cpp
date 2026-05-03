@@ -54,12 +54,8 @@ void init() {
       .floatField("threshold",  0.1f, 0.f, 1.f, state::PrimaryInput)
       .floatField("radius",     0.0f, 0.f, 1.f, state::PrimaryInput)
       .floatField("keep_input", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("line_r",     1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("line_g",     1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("line_b",     1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_r",       0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_g",       0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_b",       0.0f, 0.f, 1.f, state::SecondaryInput)
+      .rgbField("line", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
+      .rgbField("bg",   0.0f, 0.0f, 0.0f, state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -85,12 +81,12 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     else if (state::pathIs(p, l, "threshold"))  s_threshold = state::patchFloat(i);
     else if (state::pathIs(p, l, "radius"))     s_radius = state::patchFloat(i);
     else if (state::pathIs(p, l, "keep_input")) s_keep_input = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_r"))     s_line[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_g"))     s_line[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_b"))     s_line[2] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_r"))       s_bg[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_g"))       s_bg[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_b"))       s_bg[2] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "line")) {
+      auto v = state::patchVec3(i); s_line[0] = v.x; s_line[1] = v.y; s_line[2] = v.z;
+    }
+    else if (state::pathIs(p, l, "bg")) {
+      auto v = state::patchVec3(i); s_bg[0] = v.x; s_bg[1] = v.y; s_bg[2] = v.z;
+    }
   }
 }
 

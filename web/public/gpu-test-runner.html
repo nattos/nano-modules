@@ -173,13 +173,27 @@ async function run() {
       const effectId = resolveEffectId(step.module);
       const wasmModule = wasmHost.activateEffect(effectId);
 
-      // Set parameters
+      // Set parameters. Each entry is `[indexOrName, value]`:
+      //   - number indexOrName  → legacy: look up scalar param by index in
+      //                            wasmHost.params and patch by its name.
+      //   - string indexOrName  → direct schema-field patch by name (use
+      //                            this for vec / color params, which
+      //                            aren't in the legacy params[] list).
+      // value may be a number (scalar) or an array (vec / color).
       if (step.params) {
-        for (const [index, value] of step.params) {
-          wasmHost.frameState.params[index] = value;
-          const param = wasmHost.params.find(p => p.index === index);
+        for (const [indexOrName, value] of step.params) {
+          let path;
+          if (typeof indexOrName === 'string') {
+            path = indexOrName;
+          } else {
+            const param = wasmHost.params.find(p => p.index === indexOrName);
+            path = param?.name ?? String(indexOrName);
+            // Mirror legacy frameState.params[] for back-compat with
+            // anything that reads the indexed array.
+            if (typeof value === 'number') wasmHost.frameState.params[indexOrName] = value;
+          }
           wasmHost.notifyStatePatched(wasmModule, [
-            { op: 'replace', path: param?.name ?? String(index), value },
+            { op: 'replace', path, value },
           ]);
         }
       }

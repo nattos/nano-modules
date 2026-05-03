@@ -39,12 +39,29 @@ export class TextureMonitor extends MobxLitElement {
   static styles = css`
     :host {
       display: inline-block;
+      /* line-height: 0 prevents inline-block descender alignment from
+         adding a sub-pixel of whitespace below the canvas. */
+      line-height: 0;
     }
+    /* Photoshop-style transparency checkerboard. The canvas is drawn
+       with alpha (default 2d context), so transparent pixels in the
+       traced texture reveal this pattern instead of solid black. Two
+       neutral greys keep it readable without competing with the actual
+       output.
+
+       No border / border-radius: the canvas's default background-clip
+       is border-box, so a translucent border would expose a ring of
+       checkerboard around the image and read as a margin. */
     canvas {
       display: block;
-      background: #000;
-      border-radius: 2px;
-      border: 1px solid rgba(255,255,255,0.06);
+      background-color: #999;
+      background-image:
+        linear-gradient(45deg,  #777 25%, transparent 25%),
+        linear-gradient(-45deg, #777 25%, transparent 25%),
+        linear-gradient(45deg,  transparent 75%, #777 75%),
+        linear-gradient(-45deg, transparent 75%, #777 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
     }
   `;
 

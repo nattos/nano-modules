@@ -1,10 +1,11 @@
 /*
- * video.bake_alpha — Premultiply a texture's RGB by its alpha.
+ * video.bake_alpha — Composite the input *over* a chosen background
+ * colour. Practical use case: "remove alpha" by baking a transparent
+ * image onto a solid colour (default opaque black). With a
+ * transparent background the input's own alpha is preserved.
  *
- * Useful when feeding a straight-alpha texture into a downstream effect
- * that assumes premultiplied input. With amount = 1.0 the result is
- * fully premultiplied; with amount = 0.0 the input passes through
- * unchanged.
+ * Parameters:
+ *   color (rgba)  — the background. Default opaque black.
  */
 
 #include <gpu.h>
@@ -14,22 +15,21 @@
 namespace bake_alpha {
 
 struct Uniforms {
-  float amount;
-  float _pad[3];
+  float r, g, b, a;  // 16 bytes — natural alignment for std140.
 };
 
-static float s_amount = 1.0f;
+static float s_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
 
 void init() {
-  s_amount = 1.0f;
+  s_color[0] = 0.0f; s_color[1] = 0.0f; s_color[2] = 0.0f; s_color[3] = 1.0f;
   s_initialized = false;
 
   state::init("video.bake_alpha", {1, 0, 0},
     state::Schema()
-      .floatField("amount", 1.0f, 0.f, 1.f, state::PrimaryInput)
+      .rgbaField("color", 0.0f, 0.0f, 0.0f, 1.0f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -39,7 +39,10 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings()
+      .tex2d(0)
+      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 }
@@ -50,8 +53,10 @@ void on_param_change(int, double) {}
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
-    if (state::pathIs(pb + off[i], len[i], "amount"))
-      s_amount = state::patchFloat(i);
+    if (state::pathIs(pb + off[i], len[i], "color")) {
+      auto v = state::patchVec4(i);
+      s_color[0] = v.x; s_color[1] = v.y; s_color[2] = v.z; s_color[3] = v.w;
+    }
   }
 }
 
@@ -62,7 +67,7 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  Uniforms u = { s_amount, {0, 0, 0} };
+  Uniforms u = { s_color[0], s_color[1], s_color[2], s_color[3] };
   s_uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

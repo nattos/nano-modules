@@ -53,7 +53,7 @@ describe('Gradient Effect E2E', () => {
       width: 64, height: 64,
       params: [
         [0, 0.0], [1, 0.0], [2, 0.001],
-        [3, 1.0], [4, 0.0], [5, 0.0],  // color_a = red
+        ['color_a', [1.0, 0.0, 0.0]],  // red
       ],
       samplePoints: [[5, 32]],
       dumpName: 'gradient_red_to_black',

@@ -43,6 +43,40 @@ const moduleRegistry = new Map<string, LoadedWasmModule>();
 const effectRegistry = new Map<string, { compiled: WebAssembly.Module; effect: EffectInfo }>();
 
 /** Resolve an effect ID that may be module-qualified or module-relative. */
+/**
+ * Build a bridge-core val handle from any of the legal `ParamValue`
+ * runtime types. Bridge core models number / bool / string / array /
+ * object natively; null/undefined map to valNull(). Returns null when
+ * we can't represent the value at all.
+ */
+function makeBridgeVal(bc: BridgeCore, value: any): number | null {
+  if (value === null || value === undefined) return bc.valNull();
+  if (typeof value === 'number')  return bc.valNumber(value);
+  if (typeof value === 'boolean') return bc.valBool(value);
+  if (typeof value === 'string')  return bc.valString(value);
+  if (Array.isArray(value)) {
+    const arr = bc.valArray();
+    for (const item of value) {
+      const ih = makeBridgeVal(bc, item);
+      if (ih == null) continue;
+      bc.valPush(arr, ih);
+      bc.valRelease(ih);
+    }
+    return arr;
+  }
+  if (typeof value === 'object') {
+    const obj = bc.valObject();
+    for (const [k, v] of Object.entries(value)) {
+      const vh = makeBridgeVal(bc, v);
+      if (vh == null) continue;
+      bc.valSet(obj, k, vh);
+      bc.valRelease(vh);
+    }
+    return obj;
+  }
+  return null;
+}
+
 function resolveEffectId(id: string): string {
   // If it's already in the registry as-is, it's module-relative
   if (effectRegistry.has(id)) return id;
@@ -170,13 +204,17 @@ async function handleCommand(cmd: WorkerCommand) {
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: cmd.paramKey, value: cmd.value },
               ]);
-              // Commit to bridge core so pluginState stays in sync
+              // Commit to bridge core so pluginState stays in sync.
+              // Bridge core only models scalars natively; for vec / array
+              // / object payloads we round-trip through JSON.
               const bc = loaded.host.bridgeCore;
               const pk = loaded.host.pluginKey;
               if (bc && pk) {
-                const vh = bc.valNumber(cmd.value);
-                bc.commitVal(pk, cmd.paramKey, vh);
-                bc.valRelease(vh);
+                const vh = makeBridgeVal(bc, cmd.value);
+                if (vh != null) {
+                  bc.commitVal(pk, cmd.paramKey, vh);
+                  bc.valRelease(vh);
+                }
               }
             }
           }
@@ -583,27 +621,37 @@ function findCompiledModule(effectId: string): { compiled: WebAssembly.Module; r
  * Cache-busts the URL so the browser HTTP cache doesn't serve a stale .wasm.
  */
 async function reloadWasmModule(wasmUrl: string) {
-  if (!bridgeCore || !gpuHost) return;
+  const t0 = performance.now();
+  console.log(`[wasm-hmr] worker received reload for ${wasmUrl}`);
+  if (!bridgeCore || !gpuHost) {
+    console.warn('[wasm-hmr] bridgeCore/gpuHost not initialised yet — ignoring reload');
+    return;
+  }
 
   // Wait for the in-flight frame to drain so we don't yank the rug from
   // under simulateTick. Bound the wait so a stuck frame doesn't deadlock.
-  const deadline = performance.now() + 1000;
+  const drainStart = performance.now();
+  const deadline = drainStart + 1000;
   while (frameInFlight && performance.now() < deadline) {
     await new Promise(r => setTimeout(r, 4));
   }
+  const drainMs = (performance.now() - drainStart).toFixed(1);
   if (frameInFlight) {
-    console.warn('[engine] reloadWasm: frame still in flight after 1s; swapping anyway');
+    console.warn(`[wasm-hmr] frame still in flight after ${drainMs}ms; swapping anyway`);
+  } else if (Number(drainMs) > 1) {
+    console.log(`[wasm-hmr] drained in-flight frame in ${drainMs}ms`);
   }
 
   const loaded = moduleRegistry.get(wasmUrl);
   if (!loaded) {
-    // The module wasn't loaded yet — nothing to swap.
+    console.log(`[wasm-hmr] ${wasmUrl} not in moduleRegistry yet (no live consumer) — skipping`);
     return;
   }
   const moduleType = loaded.moduleId;
   const oldEffects = loaded.effects;
   const oldCompiled = loaded.compiled;
   const effectIds = new Set(oldEffects.map(e => e.id));
+  console.log(`[wasm-hmr] swapping ${moduleType} (${oldEffects.length} effects: ${oldEffects.map(e => e.id).join(', ')})`);
 
   // Evict from registries.
   moduleRegistry.delete(wasmUrl);
@@ -616,17 +664,20 @@ async function reloadWasmModule(wasmUrl: string) {
 
   // Invalidate live sketch instances of this module's effects so the
   // executor reloads them on the next frame with the new compiled module.
+  let invalidatedCount = 0;
   if (sketchExecutor) {
     for (const [, sketch] of sketches) {
       for (const col of sketch.columns) {
         for (const entry of col.chain) {
           if (entry.type === 'module' && effectIds.has(entry.module_type)) {
             sketchExecutor.invalidateInstance(entry.instance_key);
+            invalidatedCount++;
           }
         }
       }
     }
   }
+  console.log(`[wasm-hmr] invalidated ${invalidatedCount} live instance(s); they will be recreated on the next frame with persisted state replayed from the sketch`);
 
   // Re-fetch and re-register. Cache-bust to defeat the HTTP cache.
   const cacheBustedUrl = `${wasmUrl}?t=${Date.now()}`;
@@ -634,7 +685,9 @@ async function reloadWasmModule(wasmUrl: string) {
   host.bridgeCore = bridgeCore;
   host.gpuHost = gpuHost;
   try {
+    const fetchStart = performance.now();
     await host.load(cacheBustedUrl);
+    const fetchMs = (performance.now() - fetchStart).toFixed(1);
     const compiled = host.compiledModule!;
     const effects = host.registeredEffects.map(e => ({ ...e }));
     moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
@@ -649,8 +702,10 @@ async function reloadWasmModule(wasmUrl: string) {
       })),
     });
     markDirty();
-    console.log(`[engine] reloaded WASM ${wasmUrl} (${effects.length} effects)`);
+    const totalMs = (performance.now() - t0).toFixed(1);
+    console.log(`[wasm-hmr] ✔ reloaded ${wasmUrl} in ${totalMs}ms (fetch+instantiate ${fetchMs}ms, ${effects.length} effects: ${effects.map(e => e.id).join(', ')})`);
   } catch (e) {
+    console.error(`[wasm-hmr] ✗ reload failed for ${wasmUrl}:`, e);
     post({ type: 'error', message: `Failed to reload ${wasmUrl}: ${e}` });
   }
 }
@@ -797,7 +852,21 @@ function broadcastState() {
   const plugins: PluginInfo[] = [];
 
   if (globalData?.plugins) {
+    // Bridge core assigns a fresh `<id>@N` key on every activation
+    // and never compacts the list, so reloading a module via HMR (and
+    // multiple live instances of the same effect type) leaves
+    // duplicate entries in `globalData.plugins`. The UI keys plugin
+    // metadata by `id`, so we dedup by id here and keep the LAST
+    // entry — which, because registrations append, is the freshest
+    // schema. Without this, the inspector keeps showing the previous
+    // schema after HMR.
+    const byId = new Map<string, any>();
     for (const entry of globalData.plugins) {
+      const id = entry?.metadata?.id ?? entry?.key ?? '';
+      if (!id) continue;
+      byId.set(id, entry);
+    }
+    for (const entry of byId.values()) {
       // BridgeCore's native parser may not emit data_output io entries for
       // float fields with the Output flag. Merge ioDecls from the WasmHost
       // which correctly parses the schema on the JS side. Hosts may live in

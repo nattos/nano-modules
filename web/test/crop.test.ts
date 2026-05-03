@@ -34,7 +34,7 @@ describe('Crop Effect E2E', () => {
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[2, 0.2], [3, 1.0], [4, 0.005]],  // width=0.2, height=1, feather small
+      params: [['width', 0.2], ['height', 1.0], ['feather', 0.005]],
       samplePoints: [[32, 32], [0, 32], [63, 32]],
       dumpName: 'crop_narrow',
     });
@@ -52,8 +52,10 @@ describe('Crop Effect E2E', () => {
       bundle: 'core',
       width: 32, height: 32,
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[2, 0.0], [3, 0.0], [4, 0.0], [5, 1.0], [6, 0.0], [7, 0.0], [8, 1.0]],
-      // width=0, height=0, feather=0, fill_r=1, fill_g=0, fill_b=0, fill_a=1
+      params: [
+        ['width', 0.0], ['height', 0.0], ['feather', 0.0],
+        ['fill', [1.0, 0.0, 0.0, 1.0]],
+      ],
       dumpName: 'crop_fill',
     });
     expect(frame.success).toBe(true);

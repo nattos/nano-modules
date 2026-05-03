@@ -59,16 +59,9 @@ void init() {
       .floatField("cell_size",  0.1f,  0.f, 1.f, state::PrimaryInput)
       .floatField("line_width", 0.04f, 0.f, 1.f, state::PrimaryInput)
       .floatField("softness",   0.1f,  0.f, 1.f, state::PrimaryInput)
-      .floatField("offset_x",   0.0f, -1.f, 1.f, state::SecondaryInput)
-      .floatField("offset_y",   0.0f, -1.f, 1.f, state::SecondaryInput)
-      .floatField("line_r", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("line_g", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("line_b", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("line_a", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_r", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_g", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_b", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("bg_a", 0.0f, 0.f, 1.f, state::SecondaryInput)
+      .vec2Field("offset", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
+      .rgbaField("line", 1.0f, 1.0f, 1.0f, 1.0f, state::SecondaryInput)
+      .rgbaField("bg",   0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
 
@@ -92,16 +85,17 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     if      (state::pathIs(p, l, "cell_size"))  s_cell = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_width")) s_line_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "softness"))   s_softness = state::patchFloat(i);
-    else if (state::pathIs(p, l, "offset_x"))   s_off_x = state::patchFloat(i);
-    else if (state::pathIs(p, l, "offset_y"))   s_off_y = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_r")) s_line[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_g")) s_line[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_b")) s_line[2] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "line_a")) s_line[3] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_r")) s_bg[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_g")) s_bg[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_b")) s_bg[2] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bg_a")) s_bg[3] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "offset")) {
+      auto v = state::patchVec2(i); s_off_x = v.x; s_off_y = v.y;
+    }
+    else if (state::pathIs(p, l, "line")) {
+      auto v = state::patchVec4(i);
+      s_line[0] = v.x; s_line[1] = v.y; s_line[2] = v.z; s_line[3] = v.w;
+    }
+    else if (state::pathIs(p, l, "bg")) {
+      auto v = state::patchVec4(i);
+      s_bg[0] = v.x; s_bg[1] = v.y; s_bg[2] = v.z; s_bg[3] = v.w;
+    }
   }
 }
 

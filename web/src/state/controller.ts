@@ -13,7 +13,7 @@ import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
 import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings } from './types';
 import type { EngineProxy } from '../engine-proxy';
-import type { EngineState, EffectInfo, TracePoint } from '../engine-types';
+import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
 import { isRailCompatible } from '../schema-compat';
 import {
@@ -297,7 +297,7 @@ export class AppController {
     });
   }
 
-  setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+  setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue) {
     // Find the instance key for this chain entry
     const sketch = appState.database.sketches[sketchId];
     const entry = sketch?.columns[colIdx]?.chain[chainIdx];
@@ -316,7 +316,7 @@ export class AppController {
   }
 
   /** Recipe for setting a param value (shared by continuous edit methods). */
-  private setParamRecipe(sketchId: string, instanceKey: string, paramKey: string, value: number) {
+  private setParamRecipe(sketchId: string, instanceKey: string, paramKey: string, value: ParamValue) {
     return (draft: DatabaseState) => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
@@ -327,7 +327,7 @@ export class AppController {
   }
 
   /** Begin a continuous param edit (slider drag). No undo points during drag. */
-  beginSetEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number): LongEdit {
+  beginSetEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): LongEdit {
     const sketch = appState.database.sketches[sketchId];
     const entry = sketch?.columns[colIdx]?.chain[chainIdx];
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
@@ -340,7 +340,7 @@ export class AppController {
   }
 
   /** Update a continuous param edit (slider drag in progress). */
-  updateSetEffectParam(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+  updateSetEffectParam(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue) {
     const sketch = appState.database.sketches[sketchId];
     const entry = sketch?.columns[colIdx]?.chain[chainIdx];
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';

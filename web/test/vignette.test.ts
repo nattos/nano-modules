@@ -4,8 +4,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // input so the centre pixel is well inside the inner radius and the
 // corners are outside, which makes assertions straightforward.
 //
-// Param indices (declaration order):
-//   0=amount, 1=radius, 2=softness, 3=center_x, 4=center_y, 5=shape
+// Schema: amount, radius, softness (primary scalars); center (vec2),
+// shape (secondary). center is a vec2 so tests refer to it by name.
 
 describe('Vignette Effect E2E', () => {
   jest.setTimeout(30000);
@@ -21,7 +21,9 @@ describe('Vignette Effect E2E', () => {
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('video.vignette');
     const names = frame.params.map(p => p.name).sort();
-    expect(names).toEqual(['amount', 'center_x', 'center_y', 'radius', 'shape', 'softness']);
+    // `center` is a vec2 so it doesn't appear in the legacy scalar
+    // params[] list — only scalars do.
+    expect(names).toEqual(['amount', 'radius', 'shape', 'softness']);
   });
 
   it('amount=0 leaves the image unchanged everywhere', async () => {
@@ -90,7 +92,7 @@ describe('Vignette Effect E2E', () => {
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, -1.0], [1, 0.6], [2, 0.4], [3, -1.0]],
+      params: [[0, -1.0], [1, 0.6], [2, 0.4], ['center', [-1.0, 0.0]]],
       samplePoints: [[0, 32], [63, 32]],
       dumpName: 'vignette_offset',
     });

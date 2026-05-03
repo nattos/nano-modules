@@ -112,6 +112,9 @@ export class SketchExecutor {
     loaded = { host, module: mod };
 
     this.instances.set(entry.instance_key, loaded);
+    // Visible only after wasm-hmr invalidation or first-time creation —
+    // every existing instance hits the early `return loaded` above.
+    console.log(`[sketch-executor] created instance ${entry.instance_key} (${resolvedId})`);
     return loaded;
   }
 

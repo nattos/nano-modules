@@ -68,6 +68,9 @@ export interface TracePoint {
 
 // --- Worker commands (main → worker) ---
 
+/// Allowed runtime types for a parameter value crossing the worker boundary.
+export type ParamValue = number | number[] | string | boolean;
+
 export type WorkerCommand =
   | { type: 'init'; width: number; height: number }
   | { type: 'resize'; width: number; height: number }
@@ -77,7 +80,10 @@ export type WorkerCommand =
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
   | { type: 'updateSketch'; sketchId: string; sketch: Sketch }
   | { type: 'deleteSketch'; sketchId: string }
-  | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: number }
+  // value is `number` for scalar fields and `number[]` for vec2/vec3/vec4
+  // / RGB(A) color fields. Bool/event fields use 0/1 numbers; string
+  // fields use a JS string. Anything else is invalid.
+  | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: ParamValue }
   | { type: 'setTracePoints'; tracePoints: TracePoint[] }
   | { type: 'setPaused'; paused: boolean }
   | { type: 'restart' }

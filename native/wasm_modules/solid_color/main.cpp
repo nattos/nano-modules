@@ -4,9 +4,7 @@
  * Fills the render target with a uniform RGB color.
  *
  * Parameters:
- *   0: Red   (Standard, default 0.5)
- *   1: Green (Standard, default 0.5)
- *   2: Blue  (Standard, default 0.5)
+ *   color (rgb, default mid-grey)
  */
 
 #include <gpu.h>
@@ -31,9 +29,7 @@ void init() {
 
   state::init("generator.solid_color", {1, 0, 0},
     state::Schema()
-      .floatField("red", 0.5f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("green", 0.5f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("blue", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .rgbField("color", 0.5f, 0.5f, 0.5f, state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
 
@@ -55,12 +51,10 @@ void on_param_change(int, double) {}
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
-    if (state::pathIs(pb + off[i], len[i], "red"))
-      s_r = state::patchFloat(i);
-    else if (state::pathIs(pb + off[i], len[i], "green"))
-      s_g = state::patchFloat(i);
-    else if (state::pathIs(pb + off[i], len[i], "blue"))
-      s_b = state::patchFloat(i);
+    if (state::pathIs(pb + off[i], len[i], "color")) {
+      auto v = state::patchVec3(i);
+      s_r = v.x; s_g = v.y; s_b = v.z;
+    }
   }
 }
 

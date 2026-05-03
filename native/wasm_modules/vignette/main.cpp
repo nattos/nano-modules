@@ -57,8 +57,7 @@ void init() {
       .floatField("amount",   -0.5f, -1.f, 1.f, state::PrimaryInput)
       .floatField("radius",    0.6f,  0.f, 1.f, state::PrimaryInput)
       .floatField("softness",  0.4f,  0.f, 1.f, state::PrimaryInput)
-      .floatField("center_x",  0.0f, -1.f, 1.f, state::SecondaryInput)
-      .floatField("center_y",  0.0f, -1.f, 1.f, state::SecondaryInput)
+      .vec2Field("center", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
       .floatField("shape",     0.0f,  0.f, 1.f, state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -85,8 +84,9 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     else if (state::pathIs(p, l, "radius"))   s_radius   = state::patchFloat(i);
     else if (state::pathIs(p, l, "softness")) s_softness = state::patchFloat(i);
     else if (state::pathIs(p, l, "shape"))    s_shape    = state::patchFloat(i);
-    else if (state::pathIs(p, l, "center_x")) s_center_x = state::patchFloat(i);
-    else if (state::pathIs(p, l, "center_y")) s_center_y = state::patchFloat(i);
+    else if (state::pathIs(p, l, "center")) {
+      auto v = state::patchVec2(i); s_center_x = v.x; s_center_y = v.y;
+    }
   }
 }
 

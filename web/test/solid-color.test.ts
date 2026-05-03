@@ -1,13 +1,15 @@
 import { runGpuTest } from './gpu-test-helpers';
 
 // Per-effect tests for `generator.solid_color` against the shipping `core`
-// bundle. solid_color is a generator (no texture input), three Standard
-// params (red/green/blue). Param indices: 0=red, 1=green, 2=blue.
+// bundle. solid_color is a generator (no texture input). It exposes one
+// vec3 color field (`color`, hint=color) which the IDE shows as an RGB
+// picker. Tests pass it as a name+array tuple via the test runner's
+// schema-field path.
 
 describe('Solid Color Effect E2E', () => {
   jest.setTimeout(30000);
 
-  it('declares metadata and I/O', async () => {
+  it('declares metadata and a single color input', async () => {
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
@@ -16,14 +18,12 @@ describe('Solid Color Effect E2E', () => {
 
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('generator.solid_color');
-    expect(frame.params.length).toBe(3);
-    expect(frame.params[0].name).toBe('red');
-    expect(frame.params[1].name).toBe('green');
-    expect(frame.params[2].name).toBe('blue');
+    // float3 fields don't appear in the legacy params[] list (only
+    // scalars do). solid_color has no scalar params after the migration.
+    expect(frame.params.length).toBe(0);
   });
 
   it('default params produce mid-grey', async () => {
-    // Defaults: r=g=b=0.5 → ~(128,128,128)
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
@@ -38,7 +38,7 @@ describe('Solid Color Effect E2E', () => {
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
-      params: [[0, 1.0], [1, 0.0], [2, 0.0]],
+      params: [['color', [1.0, 0.0, 0.0]]],
       dumpName: 'sc_red',
     });
 
@@ -50,7 +50,7 @@ describe('Solid Color Effect E2E', () => {
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
-      params: [[0, 0.0], [1, 1.0], [2, 0.0]],
+      params: [['color', [0.0, 1.0, 0.0]]],
       dumpName: 'sc_green',
     });
 
@@ -62,7 +62,7 @@ describe('Solid Color Effect E2E', () => {
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
-      params: [[0, 0.0], [1, 0.0], [2, 1.0]],
+      params: [['color', [0.0, 0.0, 1.0]]],
       dumpName: 'sc_blue',
     });
 
@@ -74,7 +74,7 @@ describe('Solid Color Effect E2E', () => {
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
-      params: [[0, 0.0], [1, 0.0], [2, 0.0]],
+      params: [['color', [0.0, 0.0, 0.0]]],
       dumpName: 'sc_black',
     });
 
@@ -86,7 +86,7 @@ describe('Solid Color Effect E2E', () => {
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
-      params: [[0, 1.0], [1, 1.0], [2, 1.0]],
+      params: [['color', [1.0, 1.0, 1.0]]],
       dumpName: 'sc_white',
     });
 
@@ -95,11 +95,10 @@ describe('Solid Color Effect E2E', () => {
   });
 
   it('mixes channels independently', async () => {
-    // Yellow = R + G, no blue.
     const frame = await runGpuTest({
       module: 'solid_color.wasm',
       bundle: 'core',
-      params: [[0, 1.0], [1, 1.0], [2, 0.0]],
+      params: [['color', [1.0, 1.0, 0.0]]],
       dumpName: 'sc_yellow',
     });
 
@@ -112,13 +111,12 @@ describe('Solid Color Effect E2E', () => {
       module: 'solid_color.wasm',
       bundle: 'core',
       width: 96, height: 96,
-      params: [[0, 0.3], [1, 0.6], [2, 0.9]],
+      params: [['color', [0.3, 0.6, 0.9]]],
       samplePoints: [[0, 0], [95, 0], [0, 95], [95, 95], [48, 48]],
       dumpName: 'sc_uniform',
     });
 
     expect(frame.success).toBe(true);
-    // Every sample point should match within 2 LSBs (rounding).
     frame.expectUniformColor(
       { r: Math.round(0.3 * 255), g: Math.round(0.6 * 255), b: Math.round(0.9 * 255), a: 255 },
       2,

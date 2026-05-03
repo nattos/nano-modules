@@ -3,7 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
-import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue } from './engine-types';
 import type { Sketch } from './sketch-types';
 
 export class EngineProxy {
@@ -92,7 +92,7 @@ export class EngineProxy {
     this.send({ type: 'deleteSketch', sketchId });
   }
 
-  setParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+  setParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue) {
     this.send({ type: 'setParam', sketchId, colIdx, chainIdx, paramKey, value });
   }
 

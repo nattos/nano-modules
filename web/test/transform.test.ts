@@ -32,7 +32,7 @@ describe('Transform Effect E2E', () => {
     const frame = await runGpuChainTest({
       chain: [
         { module: 'grid.wasm', params: [[0, 0.3], [1, 0.2]] },
-        { module: 'transform.wasm', params: [[2, 1.0]] },  // translate_x = 1 (cover-square units)
+        { module: 'transform.wasm', params: [['translate', [1.0, 0.0]]] },
       ],
       bundle: 'core',
       width: 64, height: 64,

@@ -13,7 +13,7 @@
  * - 'change' on commit (pointer up, enter, blur) (detail: number)
  */
 
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { CancelReason, PointerDragOp } from '../utils/pointer-drag-op';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
@@ -46,35 +46,48 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
 
   static styles = css`
     :host {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       user-select: none;
-      cursor: ew-resize;
-      position: relative;
-      min-width: 40px;
-      height: 18px;
-      line-height: 18px;
       font-family: inherit;
       font-size: 10px;
       color: var(--app-text-color1, #eaeaea);
+      box-sizing: border-box;
+      touch-action: none;
+    }
+    /* When the host has no label slot rendered, the control should still
+       fill the available width like the old (label-less) layout did. */
+    .label {
+      min-width: 70px;
+      flex-shrink: 0;
+      color: var(--app-text-color2, #b0b0b0);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: default;
+    }
+    .control {
+      flex: 1;
+      min-width: 40px;
+      height: 18px;
+      line-height: 18px;
+      position: relative;
+      cursor: ew-resize;
       background: rgba(0, 0, 0, 0.2);
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 2px;
-      box-sizing: border-box;
-      touch-action: none;
       overflow: hidden;
     }
-
-    :host(:hover) {
+    .control:hover {
       border-color: var(--app-hi-color2, #4169E1);
       background: rgba(0, 0, 0, 0.3);
     }
-
-    :host([dragging]) {
+    :host([dragging]) .control {
       border-color: var(--app-hi-color2, #4169E1);
       color: var(--app-hi-color2, #4169E1);
     }
-
-    :host(:focus) {
+    :host(:focus) .control {
       border-color: var(--app-hi-color2, #4169E1);
       outline: none;
     }
@@ -168,15 +181,22 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
   }
 
   render() {
+    const labelEl = this.label
+      ? html`<span class="label">${this.label}</span>`
+      : nothing;
+
     if (this.isEditing) {
       return html`
-        <input
-          type="text"
-          .value=${this.tempValue}
-          @input=${this.handleInput}
-          @keydown=${this.handleInputKeyDown}
-          @blur=${this.commitEdit}
-        />
+        ${labelEl}
+        <div class="control">
+          <input
+            type="text"
+            .value=${this.tempValue}
+            @input=${this.handleInput}
+            @keydown=${this.handleInputKeyDown}
+            @blur=${this.commitEdit}
+          />
+        </div>
       `;
     }
 
@@ -188,13 +208,14 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     }
 
     return html`
-      <div class="bar" style="width: ${barWidth}%"></div>
-      <div
-        class="value-display"
-        @pointerdown=${this.handlePointerDown}
-        @dblclick=${this.handleDoubleClick}
-      >
-        ${this.formatValue(val)}
+      ${labelEl}
+      <div class="control"
+           @pointerdown=${this.handlePointerDown}
+           @dblclick=${this.handleDoubleClick}>
+        <div class="bar" style="width: ${barWidth}%"></div>
+        <div class="value-display">
+          ${this.formatValue(val)}
+        </div>
       </div>
     `;
   }
@@ -211,7 +232,11 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     if (e.detail === 2) { this.handleDoubleClick(); return; }
 
     this.startValue = this.effectiveValue;
-    this.rect = this.getBoundingClientRect();
+    // Measure the control div (the bar's container), not the host —
+    // the host now also includes the label, which would skew the
+    // absolute-position drag mapping.
+    const controlEl = (e.currentTarget as HTMLElement) ?? this;
+    this.rect = controlEl.getBoundingClientRect();
     this.isDragging = false;
 
     this.dragOp = new PointerDragOp(e, this, {

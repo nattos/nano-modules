@@ -36,7 +36,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // Combined falloff: max of both axes' outside distances. 0 inside, +ve outside.
   float dist = max(outside.x, outside.y);
-  float t = smoothstep(0.0, max(feather, 1e-4), dist);
+  // feather == 0 → hard step (pixel-perfect staircase, intentional).
+  // feather  > 0 → smoothstep over the feather width.
+  float t = (feather > 0.0)
+      ? smoothstep(0.0, feather, dist)
+      : step(0.0, dist);
 
   float4 src  = inputTex[gid.xy];
   float4 fill = float4(fill_r, fill_g, fill_b, fill_a);

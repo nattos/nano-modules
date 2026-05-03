@@ -54,8 +54,12 @@ export interface ConsoleEntry {
 export interface ParamDecl {
   index: number;
   name: string;
-  type: number;  // 0=boolean, 10=standard(float 0-1)
+  type: number;  // 0=boolean, 10=standard(float 0-1), 13=int, 100=string
   defaultValue: number;
+  /// Slider range. Always populated; defaults to [0, 1] for fields
+  /// without an explicit range (e.g. booleans, events).
+  min: number;
+  max: number;
 }
 
 export type AudioCallback = (channel: number) => void;
@@ -364,11 +368,26 @@ export class WasmHost {
                 else if (field.type === 'event') type = 1;
                 else if (field.type === 'int') type = 13;
                 else if (field.type === 'string') type = 100;
+                // Booleans round-trip as numbers in the param list so
+                // ParamDecl stays uniformly numeric (downstream
+                // widgets compare via `> 0.5`); the typed schema
+                // payload stays bool, this is just the param-row view.
+                let defaultValue: number = 0;
+                const fd = field.default;
+                if (typeof fd === 'number') defaultValue = fd;
+                else if (typeof fd === 'boolean') defaultValue = fd ? 1 : 0;
                 this.params.push({
                   index: paramIdx++,
                   name,
                   type,
-                  defaultValue: field.default ?? 0,
+                  defaultValue,
+                  // Always emit min/max — downstream slider widgets
+                  // disable range mapping when these are undefined.
+                  // [0, 1] is the safe default for unranged fields
+                  // (booleans, events, strings) where the value won't
+                  // be drag-edited anyway.
+                  min: typeof field.min === 'number' ? field.min : 0,
+                  max: typeof field.max === 'number' ? field.max : 1,
                 });
                 // Non-texture fields with Output flag → data_output io declaration
                 if (ioFlags & 2) { // Output bit

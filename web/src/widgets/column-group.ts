@@ -1379,6 +1379,32 @@ export class ColumnGroup extends MobxLitElement {
         }
         // No legacy param row (shouldn't happen for scalars) — fall through.
       }
+      // Vector fields: float2 / float3 / float4 → labeled component
+      // sliders, or RGB(A) color picker when the schema carries
+      // hint="color".
+      const vecCount = d.type === 'float2' ? 2 : d.type === 'float3' ? 3 : d.type === 'float4' ? 4 : 0;
+      if (vecCount > 0) {
+        const def: number[] = Array.isArray(d.default) ? (d.default as number[]) : new Array(vecCount).fill(0);
+        if ((vecCount === 3 || vecCount === 4) && d.hint === 'color') {
+          fields.push({
+            type: 'color', label, path: name,
+            components: vecCount as 3 | 4,
+            default: def,
+          });
+        } else {
+          fields.push({
+            type: 'vec', label, path: name,
+            components: vecCount as 2 | 3 | 4,
+            // Default the slider range to the vec field's natural [0,1]
+            // unless the schema carries explicit min/max in the future.
+            min: typeof d.min === 'number' ? d.min : 0,
+            max: typeof d.max === 'number' ? d.max : 1,
+            step: typeof d.step === 'number' ? d.step : 0.01,
+            default: def,
+          });
+        }
+        continue;
+      }
       fields.push({
         type: 'placeholder', label, path: name,
         kind: schemaFieldKindLabel(d), direction: 'input',

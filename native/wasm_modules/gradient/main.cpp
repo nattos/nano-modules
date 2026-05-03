@@ -55,12 +55,8 @@ void init() {
       .floatField("angle",    0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("offset",   0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("softness", 1.0f,  0.f, 1.f, state::PrimaryInput)
-      .floatField("color_a_r", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("color_a_g", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("color_a_b", 1.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("color_b_r", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("color_b_g", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("color_b_b", 0.0f, 0.f, 1.f, state::SecondaryInput)
+      .rgbField("color_a", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
+      .rgbField("color_b", 0.0f, 0.0f, 0.0f, state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
 
@@ -84,12 +80,12 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     if      (state::pathIs(p, l, "angle"))     s_angle = state::patchFloat(i);
     else if (state::pathIs(p, l, "offset"))    s_offset = state::patchFloat(i);
     else if (state::pathIs(p, l, "softness"))  s_softness = state::patchFloat(i);
-    else if (state::pathIs(p, l, "color_a_r")) s_color_a[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "color_a_g")) s_color_a[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "color_a_b")) s_color_a[2] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "color_b_r")) s_color_b[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "color_b_g")) s_color_b[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "color_b_b")) s_color_b[2] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "color_a")) {
+      auto v = state::patchVec3(i); s_color_a[0] = v.x; s_color_a[1] = v.y; s_color_a[2] = v.z;
+    }
+    else if (state::pathIs(p, l, "color_b")) {
+      auto v = state::patchVec3(i); s_color_b[0] = v.x; s_color_b[1] = v.y; s_color_b[2] = v.z;
+    }
   }
 }
 

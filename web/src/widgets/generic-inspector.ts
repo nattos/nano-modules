@@ -24,6 +24,8 @@ import './field-trigger';
 import './field-text';
 import './field-select';
 import './field-placeholder';
+import './field-vec';
+import './field-color';
 
 // --- Field definitions ---
 
@@ -34,10 +36,16 @@ export type InspectorFieldDef =
   | { type: 'boolean'; label: string; path: string; default?: boolean }
   | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any }
   | { type: 'button'; label: string; path: string; text?: string }
+  /// 2/3/4-component vector — N labeled component sliders.
+  | { type: 'vec'; label: string; path: string; components: 2 | 3 | 4;
+      min?: number; max?: number; step?: number; default?: number[];
+      componentLabels?: string[] }
+  /// RGB(A) color picker — components 3 = rgb, 4 = rgba.
+  | { type: 'color'; label: string; path: string; components: 3 | 4; default?: number[] }
   /**
    * Placeholder for field kinds the inspector can't edit inline — e.g.
-   * structured objects, GPU arrays, textures, vector primitives. Rendered
-   * as <field-placeholder> so the tap/layout system still registers it.
+   * structured objects, GPU arrays, textures. Rendered as
+   * <field-placeholder> so the tap/layout system still registers it.
    */
   | { type: 'placeholder'; label: string; path: string; kind: string; direction: 'input' | 'output' };
 
@@ -114,6 +122,30 @@ const renderPlaceholder = (binding: FieldBinding, f: Extract<InspectorFieldDef, 
   ></field-placeholder>
 `;
 
+const renderVec = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'vec' }>) => html`
+  <field-vec style="width: 100%;"
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .components=${f.components}
+    .min=${f.min ?? 0}
+    .max=${f.max ?? 1}
+    .step=${f.step ?? 0.01}
+    .defaultValue=${f.default ?? new Array(f.components).fill(0)}
+    .componentLabels=${f.componentLabels ?? null}
+    .binding=${binding}
+  ></field-vec>
+`;
+
+const renderColor = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'color' }>) => html`
+  <field-color style="width: 100%;"
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .components=${f.components}
+    .defaultValue=${f.default ?? (f.components === 4 ? [1, 1, 1, 1] : [1, 1, 1])}
+    .binding=${binding}
+  ></field-color>
+`;
+
 // --- Factory ---
 
 export const createGenericInspector = (fields: InspectorFieldDef[]) => {
@@ -128,6 +160,8 @@ export const createGenericInspector = (fields: InspectorFieldDef[]) => {
             case 'boolean':     return renderBoolean(binding, field);
             case 'select':      return renderSelect(binding, field);
             case 'button':      return renderButton(binding, field);
+            case 'vec':         return renderVec(binding, field);
+            case 'color':       return renderColor(binding, field);
             case 'placeholder': return renderPlaceholder(binding, field);
             default:            return nothing;
           }

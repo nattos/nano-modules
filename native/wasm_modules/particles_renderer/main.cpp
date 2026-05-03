@@ -85,7 +85,7 @@ void init() {
   state::init("video.particles_renderer", {1, 0, 0},
     state::Schema()
       .floatField("particle_size", 0.02f, 0.001f, 0.2f, state::PrimaryInput)
-      .vec4Field("tint", 1.0f, 0.7f, 0.2f, 1.0f, state::PrimaryInput)
+      .rgbaField("tint", 1.0f, 0.7f, 0.2f, 1.0f, state::PrimaryInput)
       .beginObject("particles_in", state::PrimaryInput)
         .intField("count", 0, 0, 100000, state::None)
         .gpuArrayField("positions",  "float", state::None)

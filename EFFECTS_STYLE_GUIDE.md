@@ -49,6 +49,28 @@ Why: WebGPU's auto-derived layout matches whatever the *shader* currently declar
 
 `gpu::Bindings()` builder methods: `uniform(slot)`, `storage(slot)` (read), `storageRW(slot)` (read-write), `sampler(slot)`, `tex2d(slot)`, `tex3d(slot)`, `tex2dArray(slot)`, `storageTex2d(slot, fmt)` (write), `storageTex2dRW(slot, fmt)` (read-write — formats r32float / r32sint / r32uint), and `storageTex3d` / `storageTex3dRW` for 3D. Pass an empty `Bindings()` for shaders that read no bind group resources (e.g. vertex-buffer-only render PSOs).
 
+**Vector and color parameters — declare the actual shape**
+
+When a parameter is logically a 2D point or a color, declare it as a vec / RGB / RGBA field rather than splaying it across `_x`/`_y` or `_r`/`_g`/`_b` floats. The IDE renders vec2/3/4 as labeled component sliders and renders RGB(A) fields as a native color picker.
+
+```cpp
+state::Schema()
+  .vec2Field("center",  0.0f, 0.0f, state::PrimaryInput)        // X / Y sliders
+  .rgbField("line",     1.0f, 1.0f, 1.0f, state::SecondaryInput) // color picker
+  .rgbaField("bg",      0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput) // color + alpha
+```
+
+In `on_state_patched` use `state::patchVec2(i)` / `patchVec3(i)` / `patchVec4(i)` to read the array value:
+
+```cpp
+if (state::pathIs(p, l, "center")) { auto v = state::patchVec2(i); cx = v.x; cy = v.y; }
+if (state::pathIs(p, l, "line"))   { auto v = state::patchVec3(i); /* … */ }
+```
+
+`rgbField` / `rgbaField` are aliases for `vec3Field` / `vec4Field` with `hint="color"`. The hint also works on a raw `vec3Field`/`vec4Field` if you want the color picker without the alias.
+
+(FFGL doesn't support vec params, so any FFGL host will need to splay these back out at the boundary — the schema is the source of truth, not the FFGL projection.)
+
 **GPU platform features** — what the host actually supports. Reach for the right tool instead of working around what you assume isn't there.
 
 | Capability                              | API                                                                                          | When it's the right answer                                                            |

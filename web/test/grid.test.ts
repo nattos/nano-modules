@@ -57,10 +57,10 @@ describe('Grid Effect E2E', () => {
       bundle: 'core',
       width: 64, height: 64,
       params: [
-        [0, 0.5], [1, 0.5], [2, 0.5],         // cell_size, line_width, softness
-        [3, 0.0], [4, 0.0],                   // offset
-        [5, 1.0], [6, 0.0], [7, 0.0], [8, 1.0], // line = red
-        [9, 0.0], [10, 0.0], [11, 1.0], [12, 1.0], // bg = blue
+        [0, 0.5], [1, 0.5], [2, 0.5],          // cell_size, line_width, softness
+        ['offset', [0.0, 0.0]],
+        ['line', [1.0, 0.0, 0.0, 1.0]],         // red
+        ['bg',   [0.0, 0.0, 1.0, 1.0]],         // blue
       ],
       dumpName: 'grid_colors',
     });

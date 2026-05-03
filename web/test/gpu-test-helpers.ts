@@ -30,12 +30,19 @@ const DUMP_DIR = '/tmp/gpu-test-dumps';
  */
 export type WasmBundle = 'core' | 'nano' | 'testonly';
 
+/// A single param-set entry. The first element selects the param:
+///   - `number` — legacy: index into the wasm host's scalar params[] list.
+///   - `string` — schema field name (use this for vec / color params,
+///                which don't appear in the legacy params[] list).
+/// The second element is a number for scalars or an array for vecs/colors.
+export type ParamSetEntry = [string | number, number | number[]];
+
 export interface GpuTestConfig {
   module: string;
   bundle?: WasmBundle;
   width?: number;
   height?: number;
-  params?: [number, number][];
+  params?: ParamSetEntry[];
   ticks?: number;
   samplePoints?: [number, number][];
   dumpName?: string;
@@ -47,7 +54,7 @@ export interface GpuEffectTestConfig {
   bundle?: WasmBundle;
   width?: number;
   height?: number;
-  params?: [number, number][];
+  params?: ParamSetEntry[];
   ticks?: number;
   /** RGBA color (0-1 floats) to fill the input texture with. */
   inputColor: [number, number, number, number];

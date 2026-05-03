@@ -4,14 +4,14 @@
  * Standard params:
  *   scale       [-1, +1]  exponential map: -1 → 1/4, 0 → 1, +1 → 4.
  *   rotation    [-1, +1]  ±180°.
- *   translate_x, translate_y  cover-square anchor displacement.
+ *   translate (vec2, [-1, +1]²)  cover-square anchor displacement.
  *
  * Tuning params:
- *   pivot_x, pivot_y        cover-square anchor for the origin of scale/rotation.
- *   scale_aspect [-1, +1]   bias the scale toward x-only (-1) or y-only (+1).
- *                           Default 0 = uniform.
- *   wrap_mode    int        0 = clamp to edge (default), 1 = transparent outside,
- *                           2 = repeat, 3 = mirror.
+ *   pivot (vec2, [-1, +1]²)  cover-square anchor for the origin of scale/rotation.
+ *   scale_aspect [-1, +1]    bias the scale toward x-only (-1) or y-only (+1).
+ *                            Default 0 = uniform.
+ *   wrap_mode    int         0 = clamp to edge (default), 1 = transparent outside,
+ *                            2 = repeat, 3 = mirror.
  */
 
 #include <gpu.h>
@@ -57,10 +57,8 @@ void init() {
     state::Schema()
       .floatField("scale",        0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("rotation",     0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("translate_x",  0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("translate_y",  0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("pivot_x",      0.0f, -1.f, 1.f, state::SecondaryInput)
-      .floatField("pivot_y",      0.0f, -1.f, 1.f, state::SecondaryInput)
+      .vec2Field("translate",     0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f)
+      .vec2Field("pivot",         0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
       .floatField("scale_aspect", 0.0f, -1.f, 1.f, state::SecondaryInput)
       .intField("wrap_mode",      0,    0,  3,    state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)
@@ -90,10 +88,8 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     auto* p = pb + off[i]; int l = len[i];
     if      (state::pathIs(p, l, "scale"))        s_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "rotation"))     s_rotation = state::patchFloat(i);
-    else if (state::pathIs(p, l, "translate_x"))  s_tx = state::patchFloat(i);
-    else if (state::pathIs(p, l, "translate_y"))  s_ty = state::patchFloat(i);
-    else if (state::pathIs(p, l, "pivot_x"))      s_px = state::patchFloat(i);
-    else if (state::pathIs(p, l, "pivot_y"))      s_py = state::patchFloat(i);
+    else if (state::pathIs(p, l, "translate"))    { auto v = state::patchVec2(i); s_tx = v.x; s_ty = v.y; }
+    else if (state::pathIs(p, l, "pivot"))        { auto v = state::patchVec2(i); s_px = v.x; s_py = v.y; }
     else if (state::pathIs(p, l, "scale_aspect")) s_scale_aspect = state::patchFloat(i);
     else if (state::pathIs(p, l, "wrap_mode"))    s_wrap_mode = state::patchFloat(i);
   }

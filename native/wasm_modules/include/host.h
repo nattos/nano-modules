@@ -227,15 +227,39 @@ public:
   }
 
   /// Vec2/3/4 leaf with explicit component defaults. Stored as a flat
-  /// JSON array of N floats.
-  Schema& vec2Field(const char* name, float x = 0.f, float y = 0.f, int io = None) {
-    return vecField(name, "float2", io, 2, x, y, 0.f, 0.f);
+  /// JSON array of N floats. Optional `hint` selects an editor variant
+  /// in the IDE — currently:
+  ///   "color" — float3/float4 → RGB(A) color picker (instead of XYZ sliders).
+  /// Other hints are ignored and the inspector falls back to N labeled
+  /// component sliders.
+  ///
+  /// `min`/`max` apply uniformly to every component. Default range is
+  /// [0, 1] (matches color channels and uv-space points). For
+  /// signed-anchor positions like cover-square coordinates pass
+  /// `min=-1.f, max=1.f`.
+  Schema& vec2Field(const char* name, float x = 0.f, float y = 0.f, int io = None,
+                    float min = 0.f, float max = 1.f, const char* hint = nullptr) {
+    return vecField(name, "float2", io, 2, x, y, 0.f, 0.f, min, max, hint);
   }
-  Schema& vec3Field(const char* name, float x = 0.f, float y = 0.f, float z = 0.f, int io = None) {
-    return vecField(name, "float3", io, 3, x, y, z, 0.f);
+  Schema& vec3Field(const char* name, float x = 0.f, float y = 0.f, float z = 0.f, int io = None,
+                    float min = 0.f, float max = 1.f, const char* hint = nullptr) {
+    return vecField(name, "float3", io, 3, x, y, z, 0.f, min, max, hint);
   }
-  Schema& vec4Field(const char* name, float x = 0.f, float y = 0.f, float z = 0.f, float w = 0.f, int io = None) {
-    return vecField(name, "float4", io, 4, x, y, z, w);
+  Schema& vec4Field(const char* name, float x = 0.f, float y = 0.f, float z = 0.f, float w = 0.f,
+                    int io = None, float min = 0.f, float max = 1.f, const char* hint = nullptr) {
+    return vecField(name, "float4", io, 4, x, y, z, w, min, max, hint);
+  }
+
+  /// RGB color (alias for vec3Field with "color" hint). Component
+  /// defaults are interpreted as (r, g, b) in [0, 1].
+  Schema& rgbField(const char* name, float r = 1.f, float g = 1.f, float b = 1.f,
+                   int io = None) {
+    return vec3Field(name, r, g, b, io, 0.f, 1.f, "color");
+  }
+  /// RGBA color (alias for vec4Field with "color" hint).
+  Schema& rgbaField(const char* name, float r = 1.f, float g = 1.f, float b = 1.f,
+                    float a = 1.f, int io = None) {
+    return vec4Field(name, r, g, b, a, io, 0.f, 1.f, "color");
   }
 
   /// GPU-resident array. Backed by a GPUBuffer; the JSON state holds
@@ -327,7 +351,9 @@ private:
   }
 
   Schema& vecField(const char* name, const char* type, int io,
-                    int n, float a, float b, float c, float d) {
+                    int n, float a, float b, float c, float d,
+                    float min = 0.f, float max = 1.f,
+                    const char* hint = nullptr) {
     beginField(name);
     appendRaw("\"type\":\"");
     appendRaw(type);
@@ -337,8 +363,17 @@ private:
       if (i > 0) appendRaw(",");
       appendFloat(v[i]);
     }
-    appendRaw("],\"io\":");
+    appendRaw("],\"min\":");
+    appendFloat(min);
+    appendRaw(",\"max\":");
+    appendFloat(max);
+    appendRaw(",\"io\":");
     appendInt(io);
+    if (hint) {
+      appendRaw(",\"hint\":\"");
+      appendRaw(hint);
+      appendRaw("\"");
+    }
     appendOrder();
     appendRaw("}");
     return *this;
@@ -415,6 +450,43 @@ inline float patchFloat(int index) {
   auto patch = val::Value(state::getPatch(index));
   auto v = val::Value(val::get(patch.h, "value"));
   return static_cast<float>(val::asNumber(v.h));
+}
+
+/// 2/3/4-component vector results from vec patches.
+struct PatchVec2 { float x, y; };
+struct PatchVec3 { float x, y, z; };
+struct PatchVec4 { float x, y, z, w; };
+
+/// Read a vec2/vec3/vec4 value from the Nth patch. Reads `value[0..N-1]`
+/// as floats; missing elements default to 0.
+inline PatchVec2 patchVec2(int index) {
+  auto patch = val::Value(state::getPatch(index));
+  auto v = val::Value(val::get(patch.h, "value"));
+  PatchVec2 r{0, 0};
+  if (val::length(v.h) >= 1) r.x = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 0)).h));
+  if (val::length(v.h) >= 2) r.y = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 1)).h));
+  return r;
+}
+inline PatchVec3 patchVec3(int index) {
+  auto patch = val::Value(state::getPatch(index));
+  auto v = val::Value(val::get(patch.h, "value"));
+  PatchVec3 r{0, 0, 0};
+  int n = val::length(v.h);
+  if (n >= 1) r.x = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 0)).h));
+  if (n >= 2) r.y = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 1)).h));
+  if (n >= 3) r.z = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 2)).h));
+  return r;
+}
+inline PatchVec4 patchVec4(int index) {
+  auto patch = val::Value(state::getPatch(index));
+  auto v = val::Value(val::get(patch.h, "value"));
+  PatchVec4 r{0, 0, 0, 0};
+  int n = val::length(v.h);
+  if (n >= 1) r.x = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 0)).h));
+  if (n >= 2) r.y = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 1)).h));
+  if (n >= 3) r.z = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 2)).h));
+  if (n >= 4) r.w = static_cast<float>(val::asNumber(val::Value(val::getIndex(v.h, 3)).h));
+  return r;
 }
 
 // --- Logging ---
