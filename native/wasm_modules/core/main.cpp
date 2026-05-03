@@ -112,6 +112,13 @@ namespace blur {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace fast_blur {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 namespace sharpen {
     void init();
     void tick(double dt);
@@ -358,6 +365,20 @@ void nano_module_main() {
         blur::tick,
         blur::render,
         blur::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.fast_blur",
+        "Fast Blur",
+        "Iterative dual-filter blur (CoD/SIGGRAPH 2014). Cheaper than Gaussian for large radii.",
+        "video",
+        "blur,bloom,dual-filter,downsample,upsample,fast",
+        fast_blur::init,
+        fast_blur::tick,
+        fast_blur::render,
+        fast_blur::on_state_patched,
         nullptr,
     });
 

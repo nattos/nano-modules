@@ -32,6 +32,8 @@ extern "C" {
   int gpu_create_buffer(int size, int usage);
   __attribute__((import_module("gpu"), import_name("create_texture")))
   int gpu_create_texture(int w, int h, int format);
+  __attribute__((import_module("gpu"), import_name("create_texture_mips")))
+  int gpu_create_texture_mips(int w, int h, int format, int mip_count);
   __attribute__((import_module("gpu"), import_name("create_texture_3d")))
   int gpu_create_texture_3d(int w, int h, int d, int format);
   __attribute__((import_module("gpu"), import_name("create_sampler")))
@@ -57,6 +59,8 @@ extern "C" {
   void gpu_compute_set_buffer(int pass, int buf, int offset, int slot);
   __attribute__((import_module("gpu"), import_name("compute_set_texture")))
   void gpu_compute_set_texture(int pass, int texture, int slot, int access);
+  __attribute__((import_module("gpu"), import_name("compute_set_texture_mip")))
+  void gpu_compute_set_texture_mip(int pass, int texture, int slot, int access, int mip_level);
   __attribute__((import_module("gpu"), import_name("compute_set_sampler")))
   void gpu_compute_set_sampler(int pass, int sampler, int slot);
   __attribute__((import_module("gpu"), import_name("compute_dispatch")))
@@ -310,6 +314,15 @@ struct ComputePass {
     gpu_compute_set_texture(id, tex.id, slot, access);
   }
 
+  /// Bind a specific mip level of a texture as the storage target at
+  /// `slot`. Required for the destination of any pass that writes a
+  /// single mip of a multi-mip texture (e.g., dual-filter blur). For
+  /// single-mip textures pass `mip_level = 0`. The matching shader
+  /// binding sees a `texture_storage_2d` view of just that mip.
+  void setTextureMip(Texture tex, int slot, int access, int mip_level) {
+    gpu_compute_set_texture_mip(id, tex.id, slot, access, mip_level);
+  }
+
   void setSampler(Sampler s, int slot) {
     gpu_compute_set_sampler(id, s.id, slot);
   }
@@ -394,6 +407,19 @@ struct Device {
 
   static Texture createTexture(int w, int h, TextureFormat format = TextureFormat::RGBA8) {
     return Texture(gpu_create_texture(w, h, static_cast<int>(format)));
+  }
+
+  /// Texture allocated with a mip chain. mip 0 is `(w, h)`; each
+  /// subsequent mip halves both dimensions (clamped to ≥1). Useful
+  /// for dual-filter blur, generated detail levels, anything that
+  /// needs LOD-resolved sampling. Mip data is *not* generated
+  /// automatically — fill each level via compute writes (use
+  /// `ComputePass::setTextureMip` to bind a specific mip as the
+  /// storage write target) and read at any LOD via WGSL
+  /// `textureSampleLevel(tex, samp, uv, lod)`.
+  static Texture createTextureWithMips(int w, int h, int mip_count,
+                                        TextureFormat format = TextureFormat::RGBA8) {
+    return Texture(gpu_create_texture_mips(w, h, static_cast<int>(format), mip_count));
   }
 
   /// 3D texture (texture_3d / texture_storage_3d in WGSL). Useful for

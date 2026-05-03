@@ -792,6 +792,8 @@ export class WasmHost {
               create_buffer: () => -1,
               create_texture: () => -1,
               create_texture_3d: () => -1,
+              create_texture_mips: () => -1,
+              compute_set_texture_mip: () => {},
               create_sampler: () => -1,
               create_compute_pso_layout: () => -1,
               create_render_pso_layout: () => -1,

@@ -206,4 +206,31 @@ describe('Platform features', () => {
       white.expectUniformColor({ r: 255, g: 255, b: 255, a: 255 }, 2);
     });
   });
+
+  describe('mip texture chain + LOD sampling', () => {
+    // video.fast_blur is the canonical exercise of the multi-mip
+    // platform path: it allocates a scratch with a mip chain,
+    // bounces through 4 down + 4 up passes alternating reads of one
+    // mip with writes to another. If the platform binds full-chain
+    // views for sampled reads (the original bug), WebGPU rejects
+    // every dispatch with "writable + read in same sync scope" and
+    // gpuErrors fills up. If anything else is wrong (mip view
+    // dimension, view caching, etc.) the constant-input
+    // round-trip drifts.
+    it('fast_blur exercises the mip chain end-to-end', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'fast_blur.wasm',
+        bundle: 'core',
+        inputColor: [0.4, 0.6, 0.2, 1.0],
+        params: [['iterations', 4]],
+        dumpName: 'mip_chain_fast_blur_constant',
+      });
+      expect(frame.success).toBe(true);
+      // Constant input → constant output (the kernels sum to 1.0,
+      // so averaging a uniform field is exact).
+      frame.expectPixelAt(32, 32, { r: 102, g: 153, b: 51, a: 255 }, 4);
+      // No subresource conflicts in any of the dispatches.
+      expect(frame.gpuErrors).toEqual([]);
+    });
+  });
 });

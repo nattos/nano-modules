@@ -109,6 +109,9 @@ Why this shape:
 | Texture clear / texture copy            | `gpu::Device::clear(tex, r, g, b, a)`, `gpu::Device::copy(src, dst)`                        | Resetting an accumulator, ping-pong rebroadcast, freeze-frame snapshots. Clear works only on renderable formats (`rgba8/16f`, `bgra8`); for non-renderable formats run a fill compute pass. |
 | Multi-render-target (MRT)               | `gpu::Device::createInstancedRenderPSOMRT({fmtA, fmtB, …})` + `gpu::RenderPass::beginMRT({{texA, ...}, {texB, ...}, …})` | G-buffer style effects: emit color + normal/depth/ID in one fragment pass, drive deferred stylization (toon, edge-aware, light propagation). |
 | 3D textures                             | `gpu::Device::createTexture3D(w, h, d, fmt)` — bind as `texture_3d<f32>` (sample) or `texture_storage_3d<...>` (write) | Color LUTs (16³–32³ rgba8 cube), particle/density volumes, anything with three-axis lookup. |
+| Mip chain + LOD sampling                | `gpu::Device::createTextureWithMips(w, h, n, fmt)` allocates an N-mip texture; `cp.setTextureMip(tex, slot, access, mipLevel)` binds *one* mip (single-mip view) for either sampled read or storage write. Sample at level via WGSL `textureSampleLevel(tex, samp, uv, lod)`. | Dual-filter blur, custom mip generation, hierarchical algorithms (DOF, screen-space scattering). **Always bind single-mip views via `setTextureMip` when a pass reads one mip and writes another of the *same* texture** — the default sampled view spans all mips and overlaps the write subresource, which WebGPU rejects. |
+
+`fx::FastBlur` (header utility planned alongside `fx::GaussianBlur`) wraps the dual-filter pattern: bind a multi-mip scratch, alternate `setTextureMip` reads and writes through the down/up chain, sample at LOD 0 of each single-mip view. See `video.fast_blur` for the canonical implementation.
 
 ---
 

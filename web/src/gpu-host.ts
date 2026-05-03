@@ -279,10 +279,18 @@ export class GPUHost {
   }
 
   createTexture(width: number, height: number, format: number): number {
+    return this.createTextureWithMips(width, height, format, 1);
+  }
+
+  /**
+   * Texture with a mip chain. mip 0 is `width × height`; each
+   * subsequent mip halves both dimensions (clamped to ≥1). Mip data
+   * isn't generated automatically — fill levels via compute writes
+   * (`computeSetTextureMip` for the storage write target) and
+   * sample at any LOD via WGSL `textureSampleLevel`.
+   */
+  createTextureWithMips(width: number, height: number, format: number, mipCount: number): number {
     const fmt = format === 2 ? this.surfaceFormat : textureFormatFromCode(format);
-    // RENDER_ATTACHMENT is meaningful for the 8-bit color formats and rgba16f
-    // (all renderable in core WebGPU). For r32float / rgba32float, omit it —
-    // those aren't core renderable formats.
     const renderable = (fmt === 'bgra8unorm' || fmt === 'rgba8unorm' || fmt === 'rgba16float');
     const usage =
       GPUTextureUsage.TEXTURE_BINDING
@@ -294,6 +302,7 @@ export class GPUHost {
       size: [width, height],
       format: fmt,
       usage,
+      mipLevelCount: Math.max(1, mipCount),
     });
     return this.alloc('texture', texture);
   }
@@ -478,7 +487,7 @@ export class GPUHost {
   private computePassEncoder: GPUComputePassEncoder | null = null;
   private computePassEntry: PipelineEntry | null = null;
   private computePassBuffers: Map<number, GPUBuffer> = new Map();
-  private computePassTextures: Map<number, { texture: GPUTexture; access: number }> = new Map();
+  private computePassTextures: Map<number, { texture: GPUTexture; access: number; mip?: number }> = new Map();
   private computePassSamplers: Map<number, GPUSampler> = new Map();
 
   beginComputePass(): number {
@@ -508,6 +517,19 @@ export class GPUHost {
     const texture = this.get(texHandle) as GPUTexture;
     if (!texture) return;
     this.computePassTextures.set(slot, { texture, access });
+  }
+
+  /**
+   * Bind a single mip level of a texture as the storage write target
+   * at `slot`. The bind group entry uses a view with
+   * `baseMipLevel: mip, mipLevelCount: 1` so the shader sees only
+   * that mip. For multi-mip textures (dual-filter blur, custom mip
+   * generation, etc.) this is required for any pass writing one mip.
+   */
+  computeSetTextureMip(_pass: number, texHandle: number, slot: number, access: number, mip: number) {
+    const texture = this.get(texHandle) as GPUTexture;
+    if (!texture) return;
+    this.computePassTextures.set(slot, { texture, access, mip });
   }
 
   computeSetSampler(_pass: number, samplerHandle: number, slot: number) {
@@ -587,8 +609,18 @@ export class GPUHost {
       case BIND_STORAGE_TEXTURE_3D: {
         const tex = this.computePassTextures.get(b.slot);
         if (!tex) throw new Error(`No texture bound at slot ${b.slot}`);
-        // Use a default view — dimension follows the texture's own
-        // dimension, matching what the layout expects.
+        // If a mip level was explicitly set (via setTextureMip),
+        // create a view restricted to that one mip — required for any
+        // pass writing a single mip of a multi-mip texture. Otherwise
+        // the default view spans the texture's full mip chain (so
+        // shaders can sample at any LOD via textureSampleLevel).
+        if (tex.mip !== undefined) {
+          return tex.texture.createView({
+            baseMipLevel: tex.mip,
+            mipLevelCount: 1,
+            dimension: tex.texture.dimension === '3d' ? '3d' : '2d',
+          });
+        }
         return tex.texture.createView();
       }
       default:
@@ -814,6 +846,8 @@ export class GPUHost {
         this.createBuffer(size, usage),
       create_texture: (w: number, h: number, format: number) =>
         this.createTexture(w, h, format),
+      create_texture_mips: (w: number, h: number, format: number, mipCount: number) =>
+        this.createTextureWithMips(w, h, format, mipCount),
       create_texture_3d: (w: number, h: number, d: number, format: number) =>
         this.createTexture3D(w, h, d, format),
       create_sampler: (filterMode: number, addressMode: number) =>
@@ -850,6 +884,8 @@ export class GPUHost {
         this.computeSetBuffer(pass, buf, offset, slot),
       compute_set_texture: (pass: number, tex: number, slot: number, access: number) =>
         this.computeSetTexture(pass, tex, slot, access),
+      compute_set_texture_mip: (pass: number, tex: number, slot: number, access: number, mip: number) =>
+        this.computeSetTextureMip(pass, tex, slot, access, mip),
       compute_set_sampler: (pass: number, sampler: number, slot: number) =>
         this.computeSetSampler(pass, sampler, slot),
       compute_dispatch: (pass: number, x: number, y: number, z: number) =>

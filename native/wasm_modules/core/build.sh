@@ -21,6 +21,10 @@ compile_shaders_compute hsl
 compile_shaders_compute vibrance
 compile_shaders_compute vignette
 compile_shaders_compute blur
+compile_shaders_compute_var fast_blur down rgba8unorm write down
+compile_shaders_compute_var fast_blur up   rgba8unorm write up
+_emit_shader_header fast_blur down up
+echo "  fast_blur shaders compiled (down + up)"
 compile_shaders_compute sharpen
 compile_shaders_compute edges
 compile_shaders_compute crop
@@ -57,6 +61,7 @@ wasm_build \
   ../vibrance/main.cpp \
   ../vignette/main.cpp \
   ../blur/main.cpp \
+  ../fast_blur/main.cpp \
   ../sharpen/main.cpp \
   ../edges/main.cpp \
   ../crop/main.cpp \
