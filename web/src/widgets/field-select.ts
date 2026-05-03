@@ -35,7 +35,15 @@ export class FieldSelect extends MobxLitElement implements FieldEditorElement {
   }
 
   private onChange(e: Event) {
-    this.binding?.setValue(this.fieldPath, (e.target as HTMLSelectElement).value);
+    // <select>.value is always a string — convert back to the typed
+    // option value (numbers, mostly) before writing. Without this we
+    // ship "1" instead of 1, which slips through to bridge core /
+    // C++ state and is silently coerced to 0 (val::asNumber returns 0
+    // for strings), so the effect never sees the real selection.
+    const strValue = (e.target as HTMLSelectElement).value;
+    const option = this.options.find(o => String(o.value) === strValue);
+    const typed = option ? option.value : strValue;
+    this.binding?.setValue(this.fieldPath, typed);
   }
 
   static styles = css`
@@ -66,11 +74,18 @@ export class FieldSelect extends MobxLitElement implements FieldEditorElement {
   `;
 
   render() {
+    // We mark the matching option `selected` declaratively rather than
+    // setting `.value` on the <select>, because lit applies element
+    // properties before child <option>s are appended — the select then
+    // can't resolve the value string to a real option and silently
+    // falls back to displaying the first option. `?selected` on each
+    // option is order-independent and survives re-renders cleanly.
+    const v = String(this.value);
     return html`
       <span class="label">${this.label}</span>
-      <select .value=${String(this.value)} @change=${this.onChange}>
+      <select @change=${this.onChange}>
         ${this.options.map(opt => html`
-          <option value=${opt.value}>${opt.label}</option>
+          <option value=${String(opt.value)} ?selected=${String(opt.value) === v}>${opt.label}</option>
         `)}
       </select>
     `;

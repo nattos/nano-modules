@@ -71,6 +71,34 @@ if (state::pathIs(p, l, "line"))   { auto v = state::patchVec3(i); /* … */ }
 
 (FFGL doesn't support vec params, so any FFGL host will need to splay these back out at the boundary — the schema is the source of truth, not the FFGL projection.)
 
+**Mode-dependent parameters — declare them all, hide the inactive ones**
+
+When an effect has multiple "shapes" controlled by a mode selector (Span vs Inset crop, RGB vs HSV picker, …), register *every* parameter the effect can ever expose in `init()`. Then use `state::setOnStateReady` to register a callback that — fired once after init + the initial state replay — calls `state::setFieldHidden(path, hidden)` to hide whichever fields the active mode doesn't use. In `on_state_patched`, when the mode field changes, re-run the visibility logic.
+
+```cpp
+.selectField("mode", ModeSpan, state::PrimaryInput, {{"Span", 0}, {"Inset", 1}})
+.floatField("width", 1.0f, 0.f, 1.f, state::PrimaryInput)        // span-only
+.floatField("inset_left", 0.0f, 0.f, 1.f, state::PrimaryInput)   // inset-only
+…
+
+void init() {
+  state::init(...);
+  state::setOnStateReady(&on_state_ready);
+}
+static void on_state_ready() { apply_mode_visibility(); }
+void on_state_patched(...) {
+  /* update s_mode etc. */
+  if (mode_changed) apply_mode_visibility();
+}
+```
+
+Why this shape:
+- The schema stays a stable union of *every* field, so serialized state always round-trips — toggling mode doesn't drop or rename any data.
+- `on_state_ready` fires after the executor replays serialized state, so the IDE only ever paints the post-restoration schema. The user never sees a transient "all fields visible" frame.
+- Setting hidden is a pure UI overlay — `notifyStatePatched`, rail routing, and bridge-core state continue to work for hidden fields exactly as if they were visible.
+
+**`selectField`** — single-choice integer with named options. Renders as a dropdown in the inspector. Use this for mode selectors, algorithm pickers, and anything else with a small fixed set of named values. Schema-wise it's `type:int` plus an `options:[{label,value},…]` array.
+
 **GPU platform features** — what the host actually supports. Reach for the right tool instead of working around what you assume isn't there.
 
 | Capability                              | API                                                                                          | When it's the right answer                                                            |

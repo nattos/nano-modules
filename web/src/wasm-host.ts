@@ -146,6 +146,27 @@ export class WasmHost {
   // and fed back into notifyStatePatched as dirty-op patches.
   pendingDirtyPaths: string[] = [];
 
+  // UI-visibility overlay set by `state::setFieldHidden`. The schema
+  // registered with bridge core stays full-fat; broadcastState reads
+  // this set and stamps `hidden:true` on the matching fields before
+  // shipping the schema to the main thread.
+  hiddenFields: Set<string> = new Set();
+
+  // Optional callback fired when the visibility overlay (or any other
+  // schema-affecting state) changes, so the engine worker can mark the
+  // engine state dirty and trigger a broadcast.
+  onSchemaChanged?: () => void;
+
+  // Function-table index registered via `state::setOnStateReady(fn)`.
+  // 0 (the WASM ABI's "no function") means the effect didn't register
+  // a callback — `fireStateReady()` is a no-op in that case.
+  onStateReadyIdx = 0;
+  /// True once `fireStateReady()` has dispatched the registered
+  /// callback (or noticed there's nothing to dispatch). Re-arming
+  /// would require a new instance, since the callback is a one-shot
+  /// "post-restoration" signal.
+  stateReadyFired = false;
+
   // Input textures (injected by sketch executor for chaining)
   inputTextureHandles: number[] = [];
 
@@ -504,6 +525,29 @@ export class WasmHost {
           // call on frames where the buffer is reused, so reaching here
           // means the consumer should re-resolve.
           this.pendingDirtyPaths.push(path);
+        },
+        set_field_hidden: (pathPtr: number, pathLen: number, hidden: number) => {
+          // UI-overlay only: the field's data path keeps working
+          // (notifyStatePatched still routes to it, rails still bind to
+          // it). The IDE inspector skips fields with hidden=true on the
+          // next broadcastState. Effects use this to gate which params
+          // appear under the current "mode" without reshaping their
+          // schema or losing serialized state.
+          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+          const isHidden = hidden !== 0;
+          const wasHidden = this.hiddenFields.has(path);
+          if (isHidden === wasHidden) return;
+          if (isHidden) this.hiddenFields.add(path);
+          else this.hiddenFields.delete(path);
+          // Schema visibility propagates only via broadcastState, which
+          // fires when the engine state is dirty — let the worker know.
+          this.onSchemaChanged?.();
+        },
+        set_on_state_ready: (fnIdx: number) => {
+          // Effect's `init()` registers a callback to be fired once
+          // after init + initial state replay. Stored as a function
+          // table index; dispatched by `fireStateReady()`.
+          this.onStateReadyIdx = fnIdx | 0;
         },
         read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
                outputPtr: number, outputSize: number, resultsPtr: number): number => {
@@ -872,6 +916,22 @@ export class WasmHost {
       onStatePatched: onStatePatchedFn,
       onResolumeParam: onResolumeParamFn,
     };
+  }
+
+  /**
+   * Fire the `on_state_ready` callback the effect registered in its
+   * `init()` (via `state::setOnStateReady`). Callers should invoke
+   * this once per instance, after the initial state replay (or
+   * immediately after `activateEffect` if no state needs replaying).
+   * Idempotent — subsequent calls are no-ops.
+   */
+  fireStateReady() {
+    if (this.stateReadyFired) return;
+    this.stateReadyFired = true;
+    if (!this.onStateReadyIdx) return;
+    const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
+    const fn = table.get(this.onStateReadyIdx) as (() => void) | null;
+    if (fn) fn();
   }
 
   /**

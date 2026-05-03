@@ -69,6 +69,11 @@ export class SketchExecutor {
     return result;
   }
 
+  /// Optional: invoked when an instance's schema visibility (or
+  /// equivalent state-affecting overlay) changes, so the engine
+  /// worker can mark its broadcast generation dirty.
+  onHostSchemaChanged?: () => void;
+
   constructor(
     bridgeCore: BridgeCore, gpuHost: GPUHost, device: GPUDevice, format: GPUTextureFormat,
     findModule: (effectId: string) => { compiled: WebAssembly.Module; resolvedId: string } | null,
@@ -103,6 +108,7 @@ export class SketchExecutor {
     const host = new WasmHost();
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
+    host.onSchemaChanged = this.onHostSchemaChanged;
 
     if (!found) {
       throw new Error(`Module "${entry.module_type}" not registered. Load the containing bundle first.`);
@@ -299,14 +305,22 @@ export class SketchExecutor {
           const pk = loaded.host.pluginKey;
           if (bc && pk) {
             for (const patch of paramPatches) {
-              if (typeof patch.value === 'number') {
-                const vh = bc.valNumber(patch.value as number);
+              const v = patch.value;
+              if (typeof v === 'number') {
+                const vh = bc.valNumber(v);
                 bc.commitVal(pk, patch.path, vh);
                 bc.valRelease(vh);
-              } else if (Array.isArray(patch.value)
-                         && patch.value.every(v => typeof v === 'number')) {
+              } else if (typeof v === 'boolean') {
+                const vh = bc.valBool(v);
+                bc.commitVal(pk, patch.path, vh);
+                bc.valRelease(vh);
+              } else if (typeof v === 'string') {
+                const vh = bc.valString(v);
+                bc.commitVal(pk, patch.path, vh);
+                bc.valRelease(vh);
+              } else if (Array.isArray(v) && v.every(x => typeof x === 'number')) {
                 const arr = bc.valArray();
-                for (const item of patch.value) {
+                for (const item of v) {
                   const itemH = bc.valNumber(item);
                   bc.valPush(arr, itemH);
                   bc.valRelease(itemH);
@@ -314,6 +328,8 @@ export class SketchExecutor {
                 bc.commitVal(pk, patch.path, arr);
                 bc.valRelease(arr);
               }
+              // Anything else (objects, mixed-type arrays) is left for
+              // the effect to handle via notifyStatePatched alone.
             }
             // Pull the committed state back into host.pluginState so the UI
             // (which reads live pluginStates broadcast each frame) reflects
@@ -321,6 +337,15 @@ export class SketchExecutor {
             loaded.host.pluginState = bc.getPluginState(pk);
           }
         }
+
+        // --- Fire the on-state-ready signal exactly once ---
+        // Effects register a callback in init() via state::setOnStateReady;
+        // it runs after init + the initial state replay (whether that
+        // replay was empty or not). Effects use it to set field
+        // visibility based on the restored state, so the IDE only ever
+        // sees the post-restoration schema. Idempotent — repeated calls
+        // are no-ops.
+        loaded.host.fireStateReady();
 
         // --- Reset inactive struct inputs (before read taps run) ---
         // Without this, a module that previously received data via a tap

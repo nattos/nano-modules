@@ -298,6 +298,10 @@ async function init(width: number, height: number) {
 
   gpuHost = new GPUHost(gpuDevice, format);
   sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
+  // Wire host-level schema-overlay changes (state::setFieldHidden) into
+  // the worker's broadcast generation, so visibility edits show up in
+  // the IDE on the next frame.
+  sketchExecutor.onHostSchemaChanged = () => markDirty();
   traceCapture = new TraceCapture(gpuDevice, format);
 
   post({ type: 'ready' });
@@ -888,6 +892,24 @@ function broadcastState() {
         }
       }
 
+      // Apply the host's `hiddenFields` overlay onto the broadcast
+      // schema. The schema in bridge core is full-fat (every field the
+      // effect ever exposes); the host stamps `hidden:true` on the
+      // ones the effect has currently marked hidden via
+      // `state::setFieldHidden`. The IDE inspector skips hidden fields.
+      let schema: any = entry.schema ?? matchedHost?.schema ?? {};
+      if (matchedHost && matchedHost.hiddenFields.size > 0) {
+        const overlaid: Record<string, any> = {};
+        for (const [name, def] of Object.entries(schema)) {
+          if (matchedHost.hiddenFields.has(name)) {
+            overlaid[name] = { ...(def as any), hidden: true };
+          } else {
+            overlaid[name] = def;
+          }
+        }
+        schema = overlaid;
+      }
+
       plugins.push({
         key: entry.key,
         id: entry.metadata?.id ?? '',
@@ -903,7 +925,7 @@ function broadcastState() {
           max: p.max ?? 1,
         })),
         io,
-        schema: entry.schema ?? matchedHost?.schema ?? {},
+        schema,
       });
     }
   }

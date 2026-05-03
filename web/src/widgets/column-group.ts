@@ -1363,6 +1363,11 @@ export class ColumnGroup extends MobxLitElement {
       const io = d?.io ?? 0;
       const isInput = !!(io & 1);
       if (!isInput) continue; // pure outputs handled by the trace-card row
+      // Hidden fields are still in the schema (and still receive
+      // patches / participate in rails) — we just don't render them.
+      // Effects toggle visibility via state::setFieldHidden in
+      // on-state-ready / on_state_patched.
+      if (d.hidden) continue;
       const label = schemaFieldDisplayName(d, name);
       if (d.type === 'texture') {
         fields.push({ type: 'placeholder', label, path: name,
@@ -1370,6 +1375,19 @@ export class ColumnGroup extends MobxLitElement {
         continue;
       }
       if (isScalarSchemaField(d)) {
+        // Int fields carrying an `options` list become dropdown
+        // selects (state::Schema::selectField on the C++ side).
+        if (d.type === 'int' && Array.isArray(d.options) && d.options.length > 0) {
+          fields.push({
+            type: 'select', label, path: name,
+            options: d.options.map((o: any) => ({
+              label: String(o?.label ?? o?.value ?? ''),
+              value: typeof o?.value === 'number' ? o.value : 0,
+            })),
+            default: typeof d.default === 'number' ? d.default : (d.options[0]?.value ?? 0),
+          });
+          continue;
+        }
         const param = plugin.params.find(p => p.name === name);
         if (param) {
           const fieldDef = paramToFieldDef(param);

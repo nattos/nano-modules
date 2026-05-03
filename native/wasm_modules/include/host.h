@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <cstdint>
+#include <initializer_list>
 
 #include "val.h"
 
@@ -63,6 +64,10 @@ extern "C" {
   void state_mark_gpu_dirty(const char* path, int path_len);
   __attribute__((import_module("state"), import_name("set_gpu_buffer")))
   void state_set_gpu_buffer(const char* path, int path_len, int buffer_handle);
+  __attribute__((import_module("state"), import_name("set_field_hidden")))
+  void state_set_field_hidden(const char* path, int path_len, int hidden);
+  __attribute__((import_module("state"), import_name("set_on_state_ready")))
+  void state_set_on_state_ready(void (*fn)(void));
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
@@ -192,6 +197,45 @@ public:
     appendInt(max);
     appendRaw(",\"io\":");
     appendInt(io);
+    appendOrder();
+    appendRaw("}");
+    return *this;
+  }
+
+  /// Single-choice integer with named options. Schema-wise it's still
+  /// `type:int` with `options:[{label,value}, ...]` — the IDE renders
+  /// it as a dropdown when `options` is present. Use this for mode
+  /// selectors, algorithm pickers, and anything else with a small
+  /// fixed set of named values.
+  struct SelectOption { const char* label; int value; };
+  Schema& selectField(const char* name, int def, int io,
+                      std::initializer_list<SelectOption> options) {
+    int lo = def, hi = def;
+    for (const auto& o : options) {
+      if (o.value < lo) lo = o.value;
+      if (o.value > hi) hi = o.value;
+    }
+    beginField(name);
+    appendRaw("\"type\":\"int\",\"default\":");
+    appendInt(def);
+    appendRaw(",\"min\":");
+    appendInt(lo);
+    appendRaw(",\"max\":");
+    appendInt(hi);
+    appendRaw(",\"io\":");
+    appendInt(io);
+    appendRaw(",\"options\":[");
+    bool first = true;
+    for (const auto& o : options) {
+      if (!first) appendRaw(",");
+      first = false;
+      appendRaw("{\"label\":\"");
+      appendRaw(o.label);
+      appendRaw("\",\"value\":");
+      appendInt(o.value);
+      appendRaw("}");
+    }
+    appendRaw("]");
     appendOrder();
     appendRaw("}");
     return *this;
@@ -528,6 +572,42 @@ inline void markGpuDirty(const char* path) {
 /// should elide this call and use markGpuDirty alone.
 inline void setGpuBuffer(const char* path, int bufferHandle) {
   state_set_gpu_buffer(path, std::strlen(path), bufferHandle);
+}
+
+/// Mark a schema field as hidden / visible in the IDE inspector. Hidden
+/// fields keep their values and continue to participate in
+/// notifyStatePatched and rail routing — this is purely a UI overlay.
+///
+/// Usage pattern: register *every* parameter the effect can ever expose
+/// in `init()` (with sensible defaults). Then in the on-state-ready
+/// callback — which fires once after init + the initial state replay
+/// — toggle visibility based on the restored state. In
+/// `on_state_patched()`, when a "mode-selector" field changes,
+/// re-toggle the dependent fields. The IDE picks up visibility changes
+/// on the next broadcast.
+inline void setFieldHidden(const char* path, bool hidden) {
+  state_set_field_hidden(path, std::strlen(path), hidden ? 1 : 0);
+}
+
+/// Register a callback fired once per instance, after `init()` and
+/// after the initial serialized-state replay (or immediately after
+/// init if there's no saved state). Use this to set field visibility
+/// based on the restored state — the IDE inspector renders the
+/// post-callback schema, so the user never sees a transient "all
+/// fields visible" state.
+///
+/// Typically called from inside `init()`:
+///
+///   void init() {
+///     state::init(...);
+///     state::setOnStateReady(&my_state_ready);
+///   }
+///   void my_state_ready() {
+///     state::setFieldHidden("inset_left",  s_mode != Inset);
+///     ...
+///   }
+inline void setOnStateReady(void (*fn)(void)) {
+  state_set_on_state_ready(fn);
 }
 
 } // namespace state
