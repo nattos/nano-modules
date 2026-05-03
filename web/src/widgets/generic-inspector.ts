@@ -23,6 +23,7 @@ import './field-toggle';
 import './field-trigger';
 import './field-text';
 import './field-select';
+import './field-tab-bar';
 import './field-placeholder';
 import './field-vec';
 import './field-color';
@@ -95,13 +96,13 @@ const renderBoolean = (binding: FieldBinding, f: Extract<InspectorFieldDef, { ty
 `;
 
 const renderSelect = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'select' }>) => html`
-  <field-select
+  <field-tab-bar
     .fieldPath=${f.path}
     .label=${f.label}
     .options=${f.options}
     .defaultValue=${f.default ?? f.options[0]?.value}
     .binding=${binding}
-  ></field-select>
+  ></field-tab-bar>
 `;
 
 const renderButton = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'button' }>) => html`

@@ -18,6 +18,8 @@ compile_shaders_compute invert
 compile_shaders_compute posterize
 compile_shaders_compute levels
 compile_shaders_compute hsl
+compile_shaders_compute color_space
+compile_shaders_compute hue_basis
 compile_shaders_compute vibrance
 compile_shaders_compute vignette
 compile_shaders_compute blur
@@ -58,6 +60,8 @@ wasm_build \
   ../posterize/main.cpp \
   ../levels/main.cpp \
   ../hsl/main.cpp \
+  ../color_space/main.cpp \
+  ../hue_basis/main.cpp \
   ../vibrance/main.cpp \
   ../vignette/main.cpp \
   ../blur/main.cpp \

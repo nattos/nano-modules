@@ -107,6 +107,82 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
     expect(r.selectedOptionLabel).toBe('Inset');
   });
 
+  it('field-tab-bar: clicking an option writes the typed value and triggers visibility flip', async () => {
+    // field-tab-bar is the default editor for select-type fields.
+    // Same correctness contract as field-select, but with a single
+    // click on a row of buttons instead of a dropdown menu.
+    page.on('console', (msg) => console.log('[browser]', msg.text()));
+    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+
+    const result = await page.evaluate(`(async () => {
+      const { GPUHost } = await import('/src/gpu-host.ts');
+      const { WasmHost } = await import('/src/wasm-host.ts');
+      await import('/src/widgets/field-tab-bar.ts');
+
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const gpuHost = new GPUHost(device, 'rgba8unorm');
+      const tex = device.createTexture({
+        size: [16, 16], format: 'rgba8unorm',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+             | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+      });
+      gpuHost.setSurface(tex, 16, 16);
+
+      const host = new WasmHost();
+      host.gpuHost = gpuHost;
+      host.textureFields.set('tex_in', gpuHost.injectTexture(tex));
+      host.textureFields.set('tex_out', gpuHost.injectTexture(tex));
+      await host.load('/wasm/core.wasm');
+      const mod = host.activateEffect('video.crop');
+      host.fireStateReady();
+
+      const captured = [];
+      const binding = {
+        instanceKey: 'probe',
+        getValue: () => 0,
+        setValue: (path, value) => {
+          captured.push({ path, value, type: typeof value });
+          host.notifyStatePatched(mod, [{ op: 'replace', path, value }]);
+        },
+      };
+
+      const tb = document.createElement('field-tab-bar');
+      tb.fieldPath = 'mode';
+      tb.label = 'mode';
+      tb.options = [{ label: 'Span', value: 0 }, { label: 'Inset', value: 1 }];
+      tb.defaultValue = 0;
+      tb.binding = binding;
+      document.body.appendChild(tb);
+      await new Promise(r => setTimeout(r, 50));
+
+      // Confirm the default option is highlighted before any click.
+      const buttonsBefore = Array.from(tb.shadowRoot.querySelectorAll('button'));
+      const activeBefore = buttonsBefore.find(b => b.hasAttribute('active')).textContent;
+
+      // Click "Inset".
+      buttonsBefore[1].click();
+      await new Promise(r => setTimeout(r, 50));
+      const buttonsAfter = Array.from(tb.shadowRoot.querySelectorAll('button'));
+      const activeAfter = buttonsAfter.find(b => b.hasAttribute('active'))?.textContent ?? null;
+
+      const hidden = Array.from(host.hiddenFields).sort();
+      tb.remove();
+      return { captured, activeBefore, activeAfter, hidden };
+    })()`);
+
+    const r = result as any;
+    // Default option (Span) was highlighted before any click.
+    expect(r.activeBefore).toBe('Span');
+    // Click sent the typed value (number 1, not the string "1").
+    expect(r.captured).toEqual([{ path: 'mode', value: 1, type: 'number' }]);
+    // After the click, "Inset" is the active button (binding.getValue
+    // returned 1 via the captured patch's effect on host state — the
+    // mock binding here returns 0 statically so we only verify the
+    // visibility flip; see the next test for end-to-end re-render).
+    expect(r.hidden).toEqual(['center', 'height', 'width']);
+  });
+
   it('field-select: dropdown click writes the typed value and triggers visibility flip', async () => {
     // <select>.value is always a string; the widget converts back to
     // the option's typed value before writing. Without this, mode

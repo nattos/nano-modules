@@ -20,7 +20,8 @@ Cross-effect patterns live in two places. Reach for these before writing your ow
 
 | Header              | Class               | What it gives you                                                                 |
 |---------------------|---------------------|-----------------------------------------------------------------------------------|
-| `<effect_blur.h>`   | `fx::GaussianBlur`  | Two-pass separable Gaussian. `applyWithRadius(in, out, w, h, radius, quality)` does the whole thing. Tap locations are stable as `radius` modulates — no shimmer. **Use this for bloom, glow, depth-of-field, soft shadows, AO, energy diffusion, oil-paint stylizations, etc.** Bundle's `build.sh` must list `compile_shaders_compute blur`. |
+| `<effect_blur.h>`      | `fx::GaussianBlur` | Two-pass separable Gaussian. `applyWithRadius(in, out, w, h, radius, quality)` does the whole thing. Tap locations are stable as `radius` modulates — no shimmer. **Use this for small-to-medium radii where you need exact Gaussian shape or smooth no-shimmer modulation.** Bundle's `build.sh` must list `compile_shaders_compute blur`. |
+| `<effect_fast_blur.h>` | `fx::FastBlur`     | Iterative 13-tap downsample + 9-tap tent upsample (Jorge Jimenez, CoD: Advanced Warfare, SIGGRAPH 2014). `apply(in, out, w, h, iterations)`. Each iteration roughly doubles the effective radius for ~4/3 the per-mip cost — far cheaper than Gaussian for large radii. Trades exact shape for speed and uses integer iteration steps. **Use this for bloom downsamples, large-radius glow, soft shadows, anything where the radius is wide and shape doesn't have to be Gaussian-pure.** Bundle's `build.sh` needs three lines (see header for the exact `compile_shaders_compute_var` invocation). |
 
 **HLSL** (`#include "nano_<name>.hlsl"` — search path is `wasm_modules/shaders_common/`):
 
@@ -111,7 +112,7 @@ Why this shape:
 | 3D textures                             | `gpu::Device::createTexture3D(w, h, d, fmt)` — bind as `texture_3d<f32>` (sample) or `texture_storage_3d<...>` (write) | Color LUTs (16³–32³ rgba8 cube), particle/density volumes, anything with three-axis lookup. |
 | Mip chain + LOD sampling                | `gpu::Device::createTextureWithMips(w, h, n, fmt)` allocates an N-mip texture; `cp.setTextureMip(tex, slot, access, mipLevel)` binds *one* mip (single-mip view) for either sampled read or storage write. Sample at level via WGSL `textureSampleLevel(tex, samp, uv, lod)`. | Dual-filter blur, custom mip generation, hierarchical algorithms (DOF, screen-space scattering). **Always bind single-mip views via `setTextureMip` when a pass reads one mip and writes another of the *same* texture** — the default sampled view spans all mips and overlaps the write subresource, which WebGPU rejects. |
 
-`fx::FastBlur` (header utility planned alongside `fx::GaussianBlur`) wraps the dual-filter pattern: bind a multi-mip scratch, alternate `setTextureMip` reads and writes through the down/up chain, sample at LOD 0 of each single-mip view. See `video.fast_blur` for the canonical implementation.
+`fx::FastBlur` in `<effect_fast_blur.h>` packages the whole dual-filter pattern (multi-mip scratch, single-mip view bindings via `setTextureMip`, 13-tap down + 9-tap tent up shaders). `video.fast_blur` is the thin wrapper effect — three-line `init()`, three-line `render()` — and any future bloom/glow/DOF should just instantiate `fx::FastBlur s_blur;` next to its `fx::GaussianBlur` and `fx::FastBlur` siblings.
 
 ---
 

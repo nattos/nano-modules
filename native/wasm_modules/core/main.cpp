@@ -91,6 +91,20 @@ namespace hsl {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace color_space {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace hue_basis {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 namespace vibrance {
     void init();
     void tick(double dt);
@@ -323,6 +337,34 @@ void nano_module_main() {
         hsl::tick,
         hsl::render,
         hsl::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.color_space",
+        "Color Space",
+        "Convert RGB between sRGB and Linear encodings",
+        "video",
+        "color,space,srgb,linear,gamma,encoding",
+        color_space::init,
+        color_space::tick,
+        color_space::render,
+        color_space::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.hue_basis",
+        "Hue Basis",
+        "Channel-mix into a basis defined by three hues; white-preserving forward, NaN-free reverse",
+        "video",
+        "hue,basis,channel-mixer,color,matrix",
+        hue_basis::init,
+        hue_basis::tick,
+        hue_basis::render,
+        hue_basis::on_state_patched,
         nullptr,
     });
 
