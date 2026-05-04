@@ -165,19 +165,70 @@ async function run() {
     let lastHost = null;
     let allConsoleLogs = [];
 
+    // Allocate a dedicated trace texture per traced step so the
+    // intermediate value survives whatever ping-pong / fused dispatch
+    // happens later in the chain. For fused middle stages the
+    // dispatcher writes here directly; for standalone stages or the
+    // last stage of a fused run we copy from the ping-pong target
+    // after the work runs.
+    const traceSteps = config.traceSteps || [];
+    const traceTextures = new Map();   // stepIdx → GPUTexture
+    const traceTextureHandles = new Map(); // stepIdx → injected handle
+    for (const stepIdx of traceSteps) {
+      const tex = device.createTexture({ size: [W, H], format, usage: texUsage });
+      traceTextures.set(stepIdx, tex);
+      traceTextureHandles.set(stepIdx, gpuHost.injectTexture(tex));
+    }
+
     // Accumulator for an in-progress fused run (multi-stage). Stages
     // are appended as we walk the chain; flushed (one combined
     // dispatch) when the next step is non-fusable or the chain ends.
     // Per-stage texture swaps are SKIPPED while accumulating — the
     // dispatcher only ever writes to one output texture per run, so
     // ping-ponging mid-run would alias input and output.
+    //
+    // perStage carries each step's index (so flush can decide which
+    // mid-run stages need a trace-texture binding). The stepIdx of
+    // the LAST stage in a run gets its trace via copyTexture from
+    // nextOutput post-flush, mirroring the standalone path.
     let runAcc = null;
+    const copyToTrace = (srcTex, stepIdx) => {
+      const dst = traceTextures.get(stepIdx);
+      if (!dst) return;
+      const enc = device.createCommandEncoder();
+      enc.copyTextureToTexture(
+        { texture: srcTex }, { texture: dst }, { width: W, height: H });
+      device.queue.submit([enc.finish()]);
+    };
     const flushFusedRun = () => {
       if (!runAcc) return;
-      fusionDispatcher.dispatch(
-        runAcc.stages, runAcc.inputHandle, runAcc.outputHandle, W, H);
+      const acc = runAcc;
       runAcc = null;
+      // Build dispatcher trace handles for any traced NON-LAST stage.
+      let perStageTraceHandles;
+      let anyTraced = false;
+      if (acc.stages.length > 1) {
+        perStageTraceHandles = [];
+        for (let i = 0; i < acc.stages.length - 1; i++) {
+          const stepIdx = acc.perStage[i].stepIdx;
+          if (traceSteps.includes(stepIdx)) {
+            perStageTraceHandles.push(traceTextureHandles.get(stepIdx));
+            anyTraced = true;
+          } else {
+            perStageTraceHandles.push(null);
+          }
+        }
+      }
+      fusionDispatcher.dispatch(
+        acc.stages, acc.inputHandle, acc.outputHandle, W, H,
+        anyTraced ? perStageTraceHandles : undefined);
       // The dispatch wrote to nextOutput (currentOutput pre-swap).
+      // If the run's LAST stage is traced, snapshot from nextOutput
+      // (its trace texture mirrors the run's outputHandle).
+      const lastStepIdx = acc.perStage[acc.perStage.length - 1].stepIdx;
+      if (traceSteps.includes(lastStepIdx)) {
+        copyToTrace(nextOutput, lastStepIdx);
+      }
       // Swap so the following stage reads the dispatched result.
       const tmp = currentOutput;
       currentOutput = nextOutput;
@@ -282,10 +333,16 @@ async function run() {
         if (isStrictOutKind && runAcc) {
           flushFusedRun();
         }
+        const stageRecord = { stepIdx: si };
         if (!runAcc) {
-          runAcc = { stages: [stage], inputHandle, outputHandle };
+          runAcc = {
+            stages: [stage],
+            perStage: [stageRecord],
+            inputHandle, outputHandle,
+          };
         } else {
           runAcc.stages.push(stage);
+          runAcc.perStage.push(stageRecord);
           runAcc.outputHandle = outputHandle;
         }
         // Skip the per-step swap — the dispatcher writes once per run.
@@ -304,6 +361,12 @@ async function run() {
         const outputHandle = gpuHost.injectTexture(nextOutput);
         wasmHost.textureFields.set('tex_out', outputHandle);
         wasmModule.render(W, H);
+        // Snapshot to trace texture if requested. This step ran
+        // standalone, so its post-step pixels are in nextOutput
+        // before the swap.
+        if (traceSteps.includes(si)) {
+          copyToTrace(nextOutput, si);
+        }
         // Swap for this standalone step.
         const tmp = currentOutput;
         currentOutput = nextOutput;
@@ -339,11 +402,27 @@ async function run() {
       pixelsBase64 = btoa(chunks.join(''));
     }
 
+    // Read back any per-step trace textures the test asked for.
+    // These let assertions inspect mid-fused-run pixel values without
+    // breaking the natural ping-pong pattern.
+    const tracePixelsBase64 = {};
+    for (const stepIdx of traceSteps) {
+      const handle = traceTextureHandles.get(stepIdx);
+      if (handle == null) continue;
+      const tracePixels = await gpuHost.readbackTexture(handle, W, H);
+      const chunks = [];
+      for (let i = 0; i < tracePixels.length; i += 8192) {
+        chunks.push(String.fromCharCode.apply(null, tracePixels.subarray(i, Math.min(i + 8192, tracePixels.length))));
+      }
+      tracePixelsBase64[stepIdx] = btoa(chunks.join(''));
+    }
+
     resultEl.textContent = JSON.stringify({
       success: true,
       width: W, height: H,
       pixelCount: pixels.length / 4,
       samples, pixelsBase64,
+      tracePixelsBase64,
       consoleLog: allConsoleLogs,
       gpuErrors: captured,
       pluginState: lastHost?.pluginState ?? {},

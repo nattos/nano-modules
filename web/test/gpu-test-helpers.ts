@@ -85,6 +85,14 @@ export interface GpuChainTestConfig {
   /// Optional solid-color input texture for the first step. Same
   /// shape as the per-effect runner — RGBA in [0, 1].
   inputColor?: [number, number, number, number];
+  /**
+   * Step indices (0-based, into `chain`) whose post-step pixel value
+   * should be captured into a dedicated trace texture and returned
+   * via `Frame.tracePixels`. Used by fusion-trace tests to verify
+   * that the dispatcher's traced shader variant captures the correct
+   * mid-run intermediate value.
+   */
+  traceSteps?: number[];
 }
 
 /**
@@ -183,6 +191,13 @@ export class Frame {
   readonly success: boolean;
   readonly error?: string;
   readonly samples: { x: number; y: number; r: number; g: number; b: number; a: number }[];
+  /**
+   * Per-step intermediate pixel buffers, populated when the test
+   * config sets `traceSteps`. Keyed by step index. Each value is the
+   * full rgba8 pixel buffer captured right after that step's work
+   * (whether standalone or fused).
+   */
+  readonly tracePixels: Record<number, Uint8Array> = {};
 
   constructor(raw: any, pixels: Uint8Array, dumpPath?: string) {
     this.width = raw.width;
@@ -198,6 +213,33 @@ export class Frame {
     this.error = raw.error;
     this.samples = raw.samples;
     this.dumpPath = dumpPath;
+    if (raw.tracePixelsBase64) {
+      for (const [k, b64] of Object.entries(raw.tracePixelsBase64) as [string, string][]) {
+        this.tracePixels[Number(k)] = new Uint8Array(Buffer.from(b64, 'base64'));
+      }
+    }
+  }
+
+  /**
+   * Frame-equivalent that wraps a captured trace buffer so test
+   * assertions (expectUniformColor, pixelAt, etc.) can be reused on
+   * mid-fused-run intermediate values.
+   */
+  traceFrame(stepIdx: number): Frame {
+    const px = this.tracePixels[stepIdx];
+    if (!px) {
+      throw new Error(`No trace captured for step ${stepIdx}. Did you set traceSteps in the test config?`);
+    }
+    return new Frame(
+      {
+        width: this.width, height: this.height,
+        pixelCount: px.length / 4,
+        success: true, error: undefined,
+        samples: [], consoleLog: [], gpuErrors: [],
+        pluginState: {}, metadata: null, params: [],
+      },
+      px,
+    );
   }
 
   /** Get the RGBA color at (x, y). */
@@ -445,5 +487,6 @@ export async function runGpuChainTest(config: GpuChainTestConfig): Promise<Frame
     samplePoints: config.samplePoints || [],
     inputColor: config.inputColor,
     fusionMode: config.fusionMode,
+    traceSteps: config.traceSteps,
   }, config.dumpName || `chain_${testCounter++}`);
 }

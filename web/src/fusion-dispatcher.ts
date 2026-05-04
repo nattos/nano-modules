@@ -35,6 +35,10 @@ interface CachedPipeline {
   pipelineHandle: number;
   /** WGSL source kept for debugging / golden snapshots. */
   composedWgsl: string;
+  /** Stage indices (in run-local order) whose post-fragment value
+   *  gets persisted to a trace texture this variant. Bound at
+   *  consecutive slots starting at 2 + stages.length. */
+  tracedStageIndices: number[];
 }
 
 /**
@@ -59,14 +63,19 @@ export class FusionDispatcher {
 
   /**
    * Cache key for a fused run. Identical sequences of effect IDs +
-   * kinds reuse the compiled pipeline. (We deliberately key on the
-   * effect IDENTITY rather than the fragment text, so the same effect
-   * always hits the same cache entry; HMR invalidation lives one level
-   * up — `invalidate(effectId)` evicts every entry that mentions the
-   * id.)
+   * kinds reuse the compiled pipeline. The trace mask is part of the
+   * key so a "traced" variant gets its own pipeline (it differs from
+   * the base shader by a few extra textureStore calls and trace-
+   * texture bindings — debug-only, recompiled on demand).
+   *
+   * (We deliberately key on the effect IDENTITY rather than the
+   * fragment text, so the same effect always hits the same cache
+   * entry; HMR invalidation lives one level up —
+   * `invalidate(effectId)` evicts every entry that mentions the id.)
    */
-  private cacheKey(stages: FusionStage[]): string {
-    return stages.map(s => `${s.effectId}@${s.fusionKind}`).join('|');
+  private cacheKey(stages: FusionStage[], traceMask: number): string {
+    const seq = stages.map(s => `${s.effectId}@${s.fusionKind}`).join('|');
+    return seq + (traceMask !== 0 ? `|trace=0b${traceMask.toString(2)}` : '');
   }
 
   /** Drop every cached pipeline whose run mentions `effectId`. Called
@@ -83,6 +92,13 @@ export class FusionDispatcher {
    * Dispatch a fused run. `inputTexHandle` may be < 0 when the run's
    * top is a StrictOutput stage — that branch generates pixels
    * itself and the composed shader doesn't bind an input texture.
+   *
+   * `traceTextureHandles[i]` is the texture handle to write stage i's
+   * post-fragment pixel value to. Pass `null` (or omit) for stages
+   * that aren't traced. Has no effect on the LAST stage in the run —
+   * that one always writes to outputTex (so its trace handle, if
+   * any, would just be a duplicate of outputTexHandle and the
+   * caller can read it from there).
    */
   dispatch(
     stages: FusionStage[],
@@ -90,9 +106,11 @@ export class FusionDispatcher {
     outputTexHandle: number,
     vpW: number,
     vpH: number,
+    traceTextureHandles?: (number | null)[],
   ): void {
     if (stages.length === 0 || vpW <= 0 || vpH <= 0) return;
-    const cached = this.ensurePipeline(stages);
+    const traceMask = computeTraceMask(stages.length, traceTextureHandles);
+    const cached = this.ensurePipeline(stages, traceMask);
     if (!cached || cached.pipelineHandle <= 0) return;
     const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
 
@@ -108,6 +126,19 @@ export class FusionDispatcher {
       this.gpuHost.computeSetBuffer(
         COMPUTE_PASS_HANDLE, stages[i].uniformBufferHandle, 0, /*slot*/2 + i);
     }
+    // Trace-texture bindings — packed at consecutive slots after the
+    // uniforms, in the same order tracedStageIndices was built.
+    const traceSlotBase = 2 + stages.length;
+    for (let j = 0; j < cached.tracedStageIndices.length; j++) {
+      const stageIdx = cached.tracedStageIndices[j];
+      const handle = traceTextureHandles?.[stageIdx];
+      if (handle == null || handle <= 0) {
+        console.warn('[fusion-dispatcher] missing trace texture handle for stage', stageIdx);
+        continue;
+      }
+      this.gpuHost.computeSetTexture(
+        COMPUTE_PASS_HANDLE, handle, traceSlotBase + j, ACCESS_WRITE);
+    }
     this.gpuHost.computeDispatch(
       COMPUTE_PASS_HANDLE, Math.ceil(vpW / 8), Math.ceil(vpH / 8), 1);
     this.gpuHost.endComputePass(COMPUTE_PASS_HANDLE);
@@ -118,12 +149,20 @@ export class FusionDispatcher {
     this.gpuHost.flush();
   }
 
-  private ensurePipeline(stages: FusionStage[]): CachedPipeline | null {
-    const key = this.cacheKey(stages);
+  private ensurePipeline(stages: FusionStage[], traceMask: number): CachedPipeline | null {
+    const key = this.cacheKey(stages, traceMask);
     const hit = this.cache.get(key);
     if (hit) return hit;
 
-    const composedWgsl = composeWgsl(stages);
+    // Build the per-stage trace-write list. Only NON-LAST stages get
+    // a trace-texture binding — the last stage already writes to
+    // outputTex, which serves as its trace texture too.
+    const tracedStageIndices: number[] = [];
+    for (let i = 0; i < stages.length - 1; i++) {
+      if (traceMask & (1 << i)) tracedStageIndices.push(i);
+    }
+
+    const composedWgsl = composeWgsl(stages, tracedStageIndices);
     const shader = this.gpuHost.createShaderModule(composedWgsl);
     if (shader <= 0) {
       console.error('[fusion-dispatcher] shader compile failed for', key,
@@ -132,9 +171,11 @@ export class FusionDispatcher {
     }
 
     // Bindings: 0 = inputTex (only when top is mapper),
-    // 1 = outputTex, 2..2+N-1 = per-stage uniforms. WebGPU bind group
-    // layouts allow sparse slot indices — for a strict-output top we
-    // simply omit slot 0 and the shader doesn't reference it.
+    // 1 = outputTex, 2..2+N-1 = per-stage uniforms,
+    // then one storage texture per traced non-final stage. WebGPU
+    // bind group layouts allow sparse slot indices — for a strict-
+    // output top we simply omit slot 0 and the shader doesn't
+    // reference it.
     const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
     const bindings: { slot: number; kind: number; format: number; access: number }[] = [];
     if (!topStrictOut) {
@@ -144,6 +185,15 @@ export class FusionDispatcher {
     for (let i = 0; i < stages.length; i++) {
       bindings.push({ slot: 2 + i, kind: KIND_UNIFORM, format: 0, access: 0 });
     }
+    const traceSlotBase = 2 + stages.length;
+    for (let j = 0; j < tracedStageIndices.length; j++) {
+      bindings.push({
+        slot: traceSlotBase + j,
+        kind: KIND_STORAGE_TEXTURE_2D,
+        format: FORMAT_RGBA8,
+        access: ACCESS_WRITE,
+      });
+    }
 
     const pipelineHandle = this.gpuHost.createComputePipelineWithLayout(
       shader, 'main', bindings);
@@ -152,10 +202,26 @@ export class FusionDispatcher {
         '\n--- composed WGSL ---\n', composedWgsl);
       return null;
     }
-    const entry = { pipelineHandle, composedWgsl };
+    const entry = { pipelineHandle, composedWgsl, tracedStageIndices };
     this.cache.set(key, entry);
     return entry;
   }
+}
+
+function computeTraceMask(
+  stageCount: number,
+  handles: (number | null)[] | undefined,
+): number {
+  if (!handles || handles.length === 0) return 0;
+  let mask = 0;
+  // Only intermediate stages contribute — the last stage writes to
+  // outputTex, so a trace there reuses that handle without recompiling.
+  const limit = Math.min(stageCount - 1, handles.length);
+  for (let i = 0; i < limit; i++) {
+    const h = handles[i];
+    if (h != null && h > 0) mask |= (1 << i);
+  }
+  return mask;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,11 +234,17 @@ export class FusionDispatcher {
  * identifier with `s<i>_`, then the host shader is appended with the
  * input/output texture declarations and a chained main().
  */
-export function composeWgsl(stages: FusionStage[]): string {
+export function composeWgsl(
+  stages: FusionStage[],
+  tracedStageIndices: number[] = [],
+): string {
   const parts: string[] = [];
   const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
   parts.push('// Auto-composed fused compute shader.');
   parts.push('// Effect order: ' + stages.map(s => s.effectId).join(' → '));
+  if (tracedStageIndices.length > 0) {
+    parts.push('// Traced stages: ' + tracedStageIndices.join(', '));
+  }
   parts.push('');
   // inputTex is only declared when the top is a mapper. Strict-output
   // tops generate their own pixel value — no input sampling.
@@ -180,6 +252,13 @@ export function composeWgsl(stages: FusionStage[]): string {
     parts.push('@group(0) @binding(0) var inputTex: texture_2d<f32>;');
   }
   parts.push('@group(0) @binding(1) var outputTex: texture_storage_2d<rgba8unorm, write>;');
+  // Trace-texture declarations — one per non-final stage we need to
+  // capture mid-run pixels for. Bound at slots 2 + stages.length + j,
+  // matching the dispatcher's bind order.
+  const traceSlotBase = 2 + stages.length;
+  for (let j = 0; j < tracedStageIndices.length; j++) {
+    parts.push(`@group(0) @binding(${traceSlotBase + j}) var traceTex_${tracedStageIndices[j]}: texture_storage_2d<rgba8unorm, write>;`);
+  }
   parts.push('');
 
   for (let i = 0; i < stages.length; i++) {
@@ -209,12 +288,24 @@ export function composeWgsl(stages: FusionStage[]): string {
     firstTailIdx = 0;
   }
 
+  // Trace the strict-output top BEFORE any tails, if it's marked.
+  // (firstTailIdx == 1 means stage 0 was already evaluated above; we
+  // emit a textureStore here. Mapper top — c was just read from
+  // inputTex; tracing stage 0 happens after the stage 0 call below.)
+  if (topStrictOut && tracedStageIndices.includes(0)) {
+    parts.push(`  textureStore(traceTex_0, vec2<i32>(gid_in.xy), c);`);
+  }
+
+  const tracedSet = new Set(tracedStageIndices);
   for (let i = firstTailIdx; i < stages.length; i++) {
     // Mapper tail: pass the running `c` through the per-stage
     // fragment. We have to hand it as a writable variable since
     // DXC + naga emits ptr<function, vec4<f32>> for the parameter.
     parts.push(`  var c_arg_${i}: vec4<f32> = c;`);
     parts.push(`  c = s${i}_fuse_transform(&gid_local, &c_arg_${i});`);
+    if (tracedSet.has(i)) {
+      parts.push(`  textureStore(traceTex_${i}, vec2<i32>(gid_in.xy), c);`);
+    }
   }
 
   parts.push('  textureStore(outputTex, vec2<i32>(gid_in.xy), c);');

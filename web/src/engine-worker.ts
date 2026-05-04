@@ -445,6 +445,18 @@ async function simulateTick(dt: number) {
   // Clear per-frame chain entry handles before executing sketches
   sketchExecutor.chainEntryHandles.clear();
 
+  // Refresh the set of traced chain entries from this frame's
+  // tracePoints so the fusion planner knows which intermediate
+  // stages of fused runs need their pixels persisted to a real
+  // texture (rather than collapsed into in-register chaining).
+  sketchExecutor.tracedChainEntries.clear();
+  for (const tp of tracePoints) {
+    if (tp.target.type === 'chain_entry') {
+      sketchExecutor.tracedChainEntries.add(
+        `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`);
+    }
+  }
+
   // NOTE: A real module instance appearing in multiple sketches will only be
   // ticked/rendered once (by whichever sketch chain processes it first). The
   // second sketch will see stale output. Resolume handles this by cloning the

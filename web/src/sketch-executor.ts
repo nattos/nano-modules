@@ -124,6 +124,17 @@ export class SketchExecutor {
    */
   public chainEntryHandles = new Map<string, { input: number; output: number }>();
 
+  /**
+   * Set of `${sketchId}/${colIdx}/${chainIdx}` keys that currently
+   * have an active trace point. Set per-frame by the engine worker
+   * (derived from its `tracePoints` list). The fusion planner reads
+   * this when flushing a fused run to decide which intermediate
+   * stages need their post-pixel value written out to a real
+   * texture (the dispatcher composes a "traced" shader variant when
+   * any non-final stage in the run is traced).
+   */
+  public tracedChainEntries: Set<string> = new Set();
+
   /** Collect pluginState snapshots for all loaded instances. */
   getPluginStates(): Record<string, any> {
     const result: Record<string, any> = {};
@@ -399,18 +410,58 @@ export class SketchExecutor {
     // pass) when the next stage isn't fusable, or when the chain ends.
     // outputHandle is updated each time a stage joins; only the LAST
     // stage's slot receives the dispatch's actual output.
+    //
+    // perStage carries each fused stage's {chain key, input handle,
+    // intermediate output handle} so flush can:
+    //   - check tracedChainEntries for any active mid-run trace,
+    //   - hand the dispatcher the correct trace texture handles,
+    //   - record chainEntryHandles entries for every traced stage
+    //     (so the worker's chain_entry trace resolution finds them).
     let runAcc: {
       stages: FusionStage[];
+      perStage: Array<{ chainKey: string; inputHandle: number; outputHandle: number }>;
       inputHandle: number;
       outputHandle: number;
     } | null = null;
     const flushFusedRun = () => {
       if (!runAcc) return;
-      this.fusionDispatcher.dispatch(
-        runAcc.stages, runAcc.inputHandle, runAcc.outputHandle, width, height);
-      this.debugStats.fusedRuns++;
-      this.debugStats.fusedStages += runAcc.stages.length;
+      const acc = runAcc;
       runAcc = null;
+
+      // Build per-stage trace-texture handles. Only NON-LAST stages
+      // contribute (the last stage already writes to outputHandle —
+      // that handle IS its trace texture). For each non-last stage
+      // marked in `tracedChainEntries`, we point at the same
+      // intermediate slot a standalone dispatch would have written.
+      const traceTextureHandles: (number | null)[] = [];
+      let anyTraced = false;
+      for (let i = 0; i < acc.stages.length - 1; i++) {
+        if (this.tracedChainEntries.has(acc.perStage[i].chainKey)) {
+          traceTextureHandles.push(acc.perStage[i].outputHandle);
+          anyTraced = true;
+        } else {
+          traceTextureHandles.push(null);
+        }
+      }
+
+      this.fusionDispatcher.dispatch(
+        acc.stages, acc.inputHandle, acc.outputHandle, width, height,
+        anyTraced ? traceTextureHandles : undefined);
+      this.debugStats.fusedRuns++;
+      this.debugStats.fusedStages += acc.stages.length;
+
+      // Record chainEntryHandles for traced stages (and the run's
+      // last stage, which always has a real output). The worker's
+      // chain_entry trace resolver reads from this map.
+      for (let i = 0; i < acc.stages.length; i++) {
+        const isLast = (i === acc.stages.length - 1);
+        const traced = this.tracedChainEntries.has(acc.perStage[i].chainKey);
+        if (!isLast && !traced) continue;
+        this.chainEntryHandles.set(acc.perStage[i].chainKey, {
+          input: acc.perStage[i].inputHandle,
+          output: isLast ? acc.outputHandle : acc.perStage[i].outputHandle,
+        });
+      }
     };
 
     for (let chainIdx = 0; chainIdx < column.chain.length; chainIdx++) {
@@ -607,14 +658,22 @@ export class SketchExecutor {
             // fresh.
             flushFusedRun();
           }
+          const chainKey = `${sketchId}/${colIdx}/${chainIdx}`;
+          const stageRecord = {
+            chainKey,
+            inputHandle: currentInputHandle,
+            outputHandle,
+          };
           if (!runAcc) {
             runAcc = {
               stages: [stage],
+              perStage: [stageRecord],
               inputHandle: currentInputHandle,  // ignored if top is strict-output
               outputHandle: outputHandle,
             };
           } else {
             runAcc.stages.push(stage);
+            runAcc.perStage.push(stageRecord);
             runAcc.outputHandle = outputHandle;
           }
         } else {
@@ -673,10 +732,16 @@ export class SketchExecutor {
         }
 
         // --- Record chain entry handles for trace resolution ---
-        this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
-          input: currentInputHandle,
-          output: outputHandle,
-        });
+        // Only standalone stages record here — fused stages set their
+        // entries via flushFusedRun (and only for traced intermediate
+        // stages + the run's last stage, since untraced intermediate
+        // outputs aren't actually written by the fused dispatch).
+        if (!useFused) {
+          this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+            input: currentInputHandle,
+            output: outputHandle,
+          });
+        }
 
         // --- Advance chain ---
         currentInputHandle = outputHandle;
