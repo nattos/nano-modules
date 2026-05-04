@@ -370,6 +370,17 @@ export class AppController {
   setUserSetting<K extends keyof UserSettings>(key: K, value: UserSettings[K]) {
     runInAction(() => { appState.local.userSettings[key] = value; });
     this.requestUserSettingsSave();
+    // Tab-driven engine sync: only the Debug Info tab needs the
+    // worker to broadcast stats/console-logs. Toggle explicitly here
+    // (per the project rule that engine sync flows from the action,
+    // not a MobX reaction).
+    if (key === 'ideLeftTab') {
+      this.engine?.setDebugMode(value === 'debug_info');
+      // Reset the UI buffer when leaving the tab so a re-open starts
+      // clean instead of showing stale entries from earlier in the
+      // session.
+      if (value !== 'debug_info') this.clearDebugConsoleLog();
+    }
   }
 
   /**
@@ -1060,6 +1071,31 @@ export class AppController {
       appState.local.engine.tracedFrames = frames;
       appState.local.engine.frameGeneration++;
     });
+  }
+
+  setDebugStats(stats: import('../engine-types').DebugStats) {
+    runInAction(() => { appState.local.engine.debugStats = stats; });
+  }
+
+  /**
+   * Append a frame's worth of console-log entries from the worker
+   * and trim to the UI-side cap. Capped here independently of the
+   * worker buffer so an off-tab session that re-enables debug mode
+   * doesn't get a wall of stale entries.
+   */
+  appendDebugConsoleLog(entries: import('../engine-types').DebugConsoleEntry[]) {
+    if (entries.length === 0) return;
+    runInAction(() => {
+      const buf = appState.local.engine.debugConsoleLog;
+      const merged = buf.concat(entries);
+      const CAP = 500;
+      appState.local.engine.debugConsoleLog =
+        merged.length > CAP ? merged.slice(merged.length - CAP) : merged;
+    });
+  }
+
+  clearDebugConsoleLog() {
+    runInAction(() => { appState.local.engine.debugConsoleLog = []; });
   }
 
   // ========================================================================

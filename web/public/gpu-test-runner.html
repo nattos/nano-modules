@@ -66,6 +66,9 @@ const EFFECT_ID_BY_FILENAME = {
   'gradient.wasm': 'generator.gradient',
   'grid.wasm': 'generator.grid',
   'noise.wasm': 'generator.noise',
+  // Test-only fusion-aware mappers (testonly bundle only).
+  'fuse_add.wasm': 'debug.fuse_add',
+  'fuse_mul.wasm': 'debug.fuse_mul',
   // Platform-feature smoke effects (testonly bundle only).
   'hdr_test.wasm': 'debug.hdr_test',
   'atomic_test.wasm': 'debug.atomic_test',
@@ -161,6 +164,25 @@ async function run() {
     let lastHost = null;
     let allConsoleLogs = [];
 
+    // Accumulator for an in-progress fused run (multi-stage). Stages
+    // are appended as we walk the chain; flushed (one combined
+    // dispatch) when the next step is non-fusable or the chain ends.
+    // Per-stage texture swaps are SKIPPED while accumulating — the
+    // dispatcher only ever writes to one output texture per run, so
+    // ping-ponging mid-run would alias input and output.
+    let runAcc = null;
+    const flushFusedRun = () => {
+      if (!runAcc) return;
+      fusionDispatcher.dispatch(
+        runAcc.stages, runAcc.inputHandle, runAcc.outputHandle, W, H);
+      runAcc = null;
+      // The dispatch wrote to nextOutput (currentOutput pre-swap).
+      // Swap so the following stage reads the dispatched result.
+      const tmp = currentOutput;
+      currentOutput = nextOutput;
+      nextOutput = tmp;
+    };
+
     for (let si = 0; si < steps.length; si++) {
       const step = steps[si];
 
@@ -170,17 +192,13 @@ async function run() {
       const wasmHost = new WasmHost();
       wasmHost.gpuHost = gpuHost;
 
-      // If this is NOT the first step (or inputColor is set), inject previous output as input
-      let inputHandle = -1;
-      if (si > 0 || config.inputColor) {
-        inputHandle = gpuHost.injectTexture(currentOutput);
-        wasmHost.inputTextureHandles = [inputHandle];
-        // Populate textureFields for unified texture access
-        wasmHost.textureFields.set('tex_in', inputHandle);
-      }
-      // Set output texture field
-      const outputHandle = gpuHost.injectTexture(nextOutput);
-      wasmHost.textureFields.set('tex_out', outputHandle);
+      // Texture binding is deferred until we know whether the stage
+      // is fused or standalone — for a standalone stage that follows
+      // an in-progress fused run, the input/output ping-pong only
+      // settles AFTER flushFusedRun swaps. Injecting before the
+      // decision would point at the pre-flush textures and read stale
+      // input. Each branch below does its own injectTexture +
+      // textureFields.set at the right moment.
 
       await wasmHost.load(`wasm/${config.bundle || 'testonly'}.wasm`);
       const effectId = resolveEffectId(step.module);
@@ -223,36 +241,69 @@ async function run() {
         wasmModule.tick(0.016);
       }
 
-      // Fused vs standalone path. force-on routes every fusion-eligible
-      // stage through the dispatcher (single-stage runs in Phase 2).
-      // force-off and auto take the standalone render() path.
+      // Fused vs standalone branch.
+      //
+      // - 'force-on' / 'auto': fusable stages join an accumulator and
+      //   dispatch as one combined compute pass when the run breaks.
+      //   force-on additionally pushes single-stage runs through the
+      //   dispatcher so per-effect tests verify fused-path parity.
+      // - 'force-off': every step takes the standalone render() path.
+      //
+      // fusionKind/fragmentWgsl/uniformBufferHandle are populated by
+      // the effect's init() when it calls state::registerFusion.
       const stageFusable =
         wasmHost.fusionKind > 0
         && !!wasmHost.fusionFragmentWgsl
         && wasmHost.fusionUniformBufferHandle > 0
-        && inputHandle >= 0;
-      if (fusionMode === 'force-on' && stageFusable) {
+        && (si > 0 || !!config.inputColor);  // need an input texture
+      if (fusionMode !== 'force-off' && stageFusable) {
+        // Inject pre-flush textures: the dispatcher will read from
+        // currentOutput (matches the run's chained input) and write
+        // to nextOutput (the run's destination). Repeated injects
+        // across stages in the same run are harmless — just extra
+        // handles pointing at the same two textures.
+        const inputHandle = gpuHost.injectTexture(currentOutput);
+        const outputHandle = gpuHost.injectTexture(nextOutput);
         wasmHost.firePrepare(W, H);
-        fusionDispatcher.dispatch(
-          [{
-            effectId: resolveEffectId(step.module),
-            fusionKind: wasmHost.fusionKind,
-            fragmentWgsl: wasmHost.fusionFragmentWgsl,
-            uniformBufferHandle: wasmHost.fusionUniformBufferHandle,
-          }],
-          inputHandle, outputHandle, W, H,
-        );
+        const stage = {
+          effectId: resolveEffectId(step.module),
+          fusionKind: wasmHost.fusionKind,
+          fragmentWgsl: wasmHost.fusionFragmentWgsl,
+          uniformBufferHandle: wasmHost.fusionUniformBufferHandle,
+        };
+        if (!runAcc) {
+          runAcc = { stages: [stage], inputHandle, outputHandle };
+        } else {
+          runAcc.stages.push(stage);
+          runAcc.outputHandle = outputHandle;
+        }
+        // Skip the per-step swap — the dispatcher writes once per run.
       } else {
+        // Stage breaks an in-progress fused run — flush first so the
+        // ping-pong textures are in the right state for render(),
+        // then inject post-flush textures so render() reads the
+        // dispatched output.
+        flushFusedRun();
+        let inputHandle = -1;
+        if (si > 0 || config.inputColor) {
+          inputHandle = gpuHost.injectTexture(currentOutput);
+          wasmHost.inputTextureHandles = [inputHandle];
+          wasmHost.textureFields.set('tex_in', inputHandle);
+        }
+        const outputHandle = gpuHost.injectTexture(nextOutput);
+        wasmHost.textureFields.set('tex_out', outputHandle);
         wasmModule.render(W, H);
+        // Swap for this standalone step.
+        const tmp = currentOutput;
+        currentOutput = nextOutput;
+        nextOutput = tmp;
       }
       allConsoleLogs.push(...wasmHost.consoleLogs.map(l => l.message));
       lastHost = wasmHost;
-
-      // Swap: this step's output becomes next step's input
-      const tmp = currentOutput;
-      currentOutput = nextOutput;
-      nextOutput = tmp;
     }
+
+    // Chain end — dispatch any pending fused run so currentOutput is real.
+    flushFusedRun();
 
     // currentOutput has the final result
     const finalHandle = gpuHost.injectTexture(currentOutput);

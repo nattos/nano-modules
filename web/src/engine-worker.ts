@@ -115,6 +115,15 @@ let fps = 0;
 let stateGeneration = 0;
 let lastBroadcastGeneration = -1;
 let paused = false;
+// When on, the next frame event carries DebugStats + recent
+// console-log entries (for the Debug Info sidebar). Off by default —
+// the toggle flips with `setDebugMode`.
+let debugMode = false;
+// Rolling buffer of recent console-log entries from any effect this
+// frame and the last few. Cleared after each broadcast. Capped so a
+// chatty effect can't drown the channel.
+const DEBUG_CONSOLE_CAP = 200;
+const debugConsoleBuffer: import('./engine-types').DebugConsoleEntry[] = [];
 
 // Command queue
 const pendingCommands: WorkerCommand[] = [];
@@ -246,6 +255,14 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     case 'setFusionMode':
       if (sketchExecutor) sketchExecutor.setFusionMode(cmd.mode);
+      break;
+    case 'setDebugMode':
+      debugMode = !!cmd.on;
+      // Clear the console buffer on toggle so the UI doesn't flash
+      // with stale entries from before the user opened the tab.
+      debugConsoleBuffer.length = 0;
+      // Drain any debug stats so the next frame starts clean.
+      sketchExecutor?.consumeDebugStats();
       break;
     case 'debugDump': {
       const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
@@ -520,6 +537,30 @@ async function simulateTick(dt: number) {
     realOutputs.set(key, rt.handle);
   }
 
+  // Drain console-log entries from sketch instances and real
+  // modules into the engine-wide debug buffer. Cap the buffer so a
+  // chatty effect can't blow memory; oldest entries fall off first.
+  if (sketchExecutor) {
+    for (const e of sketchExecutor.drainConsoleLogs()) {
+      debugConsoleBuffer.push(e);
+    }
+  }
+  for (const [key, { host }] of realModules) {
+    if (host.consoleLogs.length === 0) continue;
+    const moduleId = host.metadata?.id ?? key;
+    for (const entry of host.consoleLogs) {
+      debugConsoleBuffer.push({
+        instanceKey: key, moduleId,
+        timestamp: entry.timestamp, level: entry.level,
+        message: entry.message, data: entry.data,
+      });
+    }
+    host.consoleLogs = [];
+  }
+  if (debugConsoleBuffer.length > DEBUG_CONSOLE_CAP) {
+    debugConsoleBuffer.splice(0, debugConsoleBuffer.length - DEBUG_CONSOLE_CAP);
+  }
+
   // 5. Resolve trace point handles
   for (const tp of tracePoints) {
     let handle = -1;
@@ -584,8 +625,20 @@ function captureAndSendFrame() {
     }
   }
 
+  // Drain debug stats every frame so counters reset; only attach
+  // them to the broadcast when the user has the Debug Info tab open.
+  const stats = sketchExecutor?.consumeDebugStats();
+  const debugStats = debugMode ? stats : undefined;
+  // Same for the console buffer — drain unconditionally (so the cap
+  // bounds memory) but only ship when debug mode is on.
+  let debugConsoleLog: import('./engine-types').DebugConsoleEntry[] | undefined;
+  if (debugConsoleBuffer.length > 0) {
+    if (debugMode) debugConsoleLog = debugConsoleBuffer.slice();
+    debugConsoleBuffer.length = 0;
+  }
+
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates }, []);
+    post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates, debugStats, debugConsoleLog }, []);
     return;
   }
 
@@ -605,7 +658,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates }, transfers);
+  post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates, debugStats, debugConsoleLog }, transfers);
 }
 
 // ========================================================================

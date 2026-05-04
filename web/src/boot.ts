@@ -64,6 +64,8 @@ export async function boot(width = 320, height = 180): Promise<BootResult> {
   engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
   engine.onSketchState = (state) => appController.setSketchState(state);
   engine.onPluginStates = (states) => appController.setPluginStates(states);
+  engine.onDebugStats = (stats) => appController.setDebugStats(stats);
+  engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
   engine.onError = (msg) => appController.setEngineError(msg);
   engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
 

@@ -1,0 +1,94 @@
+/*
+ * debug.fuse_add — Test-only fusion-aware mapper. Adds an RGB offset
+ * and clamps to [0, 1]. Exists so multi-stage fusion tests can chain
+ * deterministic mappers and compare standalone vs fused output
+ * byte-for-byte. Not registered in any shipping bundle.
+ */
+
+#include <gpu.h>
+#include <host.h>
+#include "fuse_add_shaders.h"
+
+namespace fuse_add {
+
+struct FuseUniforms {
+  float offset[4];
+};
+
+static float s_offset[4] = { 0.f, 0.f, 0.f, 0.f };
+static bool s_initialized = false;
+static gpu::ComputePSO s_pso;
+static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = {};
+  u.offset[0] = s_offset[0];
+  u.offset[1] = s_offset[1];
+  u.offset[2] = s_offset[2];
+  u.offset[3] = s_offset[3];
+  s_uniform_buf.writeOne(u);
+}
+
+void init() {
+  s_offset[0] = s_offset[1] = s_offset[2] = s_offset[3] = 0.f;
+  s_initialized = false;
+
+  state::init("debug.fuse_add", {1, 0, 0},
+    state::Schema()
+      .vec4Field("offset", 0.f, 0.f, 0.f, 0.f, -1.f, 1.f, state::PrimaryInput)
+      .textureField("tex_in",  state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+  );
+
+  if (gpu::Device::backend() == gpu::Backend::None) return;
+
+  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
+  auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  if (!cs) return;
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings()
+      .tex2d(0)
+      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .uniform(2));
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
+  s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
+}
+
+void tick(double) {}
+
+void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    auto* p = pb + off[i]; int l = len[i];
+    if (state::pathIs(p, l, "offset")) {
+      auto v = state::patchVec4(i);
+      s_offset[0] = v.x; s_offset[1] = v.y; s_offset[2] = v.z; s_offset[3] = v.w;
+    }
+  }
+}
+
+void render(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto in  = gpu::Device::textureForField("tex_in");
+  auto out = gpu::Device::textureForField("tex_out");
+  if (!in.valid() || !out.valid()) return;
+
+  prepare(vp_w, vp_h);
+
+  auto cp = gpu::ComputePass::begin();
+  cp.setPSO(s_pso);
+  cp.setTexture(in, 0, 0);
+  cp.setTexture(out, 1, 1);
+  cp.setBuffer(s_uniform_buf, 2);
+  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+  cp.end();
+
+  gpu::Device::submit();
+}
+
+} // namespace fuse_add

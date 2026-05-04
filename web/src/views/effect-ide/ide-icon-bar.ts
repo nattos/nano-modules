@@ -24,6 +24,7 @@ interface IconTabDef {
 const TABS: IconTabDef[] = [
   { id: 'explorer',       icon: 'la-folder',         title: 'Explorer' },
   { id: 'project_editor', icon: 'la-stream',         title: 'Project Editor' },
+  { id: 'debug_info',     icon: 'la-bug',            title: 'Debug Info' },
 ];
 
 @customElement('ide-icon-bar')

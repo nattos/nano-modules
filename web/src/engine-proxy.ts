@@ -3,7 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
-import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue, DebugStats, DebugConsoleEntry } from './engine-types';
 import type { Sketch } from './sketch-types';
 
 export class EngineProxy {
@@ -16,6 +16,13 @@ export class EngineProxy {
   onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onSketchState: ((sketchState: Record<string, any>) => void) | null = null;
   onPluginStates: ((pluginStates: Record<string, any>) => void) | null = null;
+  /// Per-frame debug counters (effects executed, dispatches, fused
+  /// runs, etc.). Only fires when the worker is in debug mode.
+  onDebugStats: ((stats: DebugStats) => void) | null = null;
+  /// Aggregated console-log batch from this frame's WASM effects.
+  /// Only fires when the worker is in debug mode and the frame
+  /// produced any log output.
+  onDebugConsoleLog: ((entries: DebugConsoleEntry[]) => void) | null = null;
   onError: ((message: string) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
 
@@ -42,6 +49,10 @@ export class EngineProxy {
           this.onTracedFrames?.(event.tracedFrames);
           this.onSketchState?.(event.sketchState);
           this.onPluginStates?.(event.pluginStates);
+          if (event.debugStats) this.onDebugStats?.(event.debugStats);
+          if (event.debugConsoleLog && event.debugConsoleLog.length > 0) {
+            this.onDebugConsoleLog?.(event.debugConsoleLog);
+          }
           break;
         case 'error':
           this.onError?.(event.message);
@@ -135,6 +146,16 @@ export class EngineProxy {
    */
   setFusionMode(mode: 'auto' | 'force-on' | 'force-off') {
     this.send({ type: 'setFusionMode', mode });
+  }
+
+  /**
+   * Toggle debug-stats / console-log broadcasting. The Debug Info
+   * sidebar tab calls `setDebugMode(true)` when it's the active left
+   * tab and `setDebugMode(false)` when it's not — keeping the worker
+   * → main payload empty when nobody's looking.
+   */
+  setDebugMode(on: boolean) {
+    this.send({ type: 'setDebugMode', on });
   }
 
   debugDump(): Promise<any> {

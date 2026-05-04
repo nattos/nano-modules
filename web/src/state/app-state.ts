@@ -37,7 +37,7 @@ export class AppState {
     staging: [],
     selectedSketchId: null,
     editingSketchId: null,
-    engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {} },
+    engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {}, debugConsoleLog: [] },
     tappingMode: false,
     selectedFieldPath: null,
     selection: null,

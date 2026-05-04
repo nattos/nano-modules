@@ -44,6 +44,23 @@ namespace video_blend {
 
 // ---- Test-only effects (never shipped) ----
 
+// Fusion-aware mappers used to verify multi-stage fusion. Predictable
+// math (clamp(rgb + offset), clamp(rgb * scale)) so byte-exact
+// comparisons across standalone and fused paths hold.
+namespace fuse_add {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace fuse_mul {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 namespace env_lfo {
     void init();
     void tick(double dt);
@@ -170,6 +187,36 @@ void nano_module_main() {
         video_blend::tick,
         video_blend::render,
         video_blend::on_state_patched,
+        nullptr,
+    });
+
+    // Test-only fusion mappers (predictable per-pixel math for
+    // multi-stage fusion parity tests).
+    nano::registerEffect({
+        1,
+        "debug.fuse_add",
+        "Fuse Add (test)",
+        "Adds an RGB offset and clamps. Test-only fusion mapper.",
+        "debug",
+        "test,fusion,mapper",
+        fuse_add::init,
+        fuse_add::tick,
+        fuse_add::render,
+        fuse_add::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.fuse_mul",
+        "Fuse Mul (test)",
+        "Multiplies RGB by a uniform scale and clamps. Test-only fusion mapper.",
+        "debug",
+        "test,fusion,mapper",
+        fuse_mul::init,
+        fuse_mul::tick,
+        fuse_mul::render,
+        fuse_mul::on_state_patched,
         nullptr,
     });
 

@@ -23,6 +23,7 @@ import { appController } from '../../state/controller';
 import './ide-icon-bar';
 import './ide-explorer';
 import './ide-project-editor';
+import './ide-debug-info';
 import './ide-monitor';
 import '../../widgets/splitter';
 
@@ -88,6 +89,9 @@ export class EffectIdeApp extends MobxLitElement {
           : nothing}
         ${tab === 'project_editor'
           ? html`<ide-project-editor></ide-project-editor>`
+          : nothing}
+        ${tab === 'debug_info'
+          ? html`<ide-debug-info></ide-debug-info>`
           : nothing}
       </div>
       <ide-splitter

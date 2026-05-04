@@ -38,14 +38,17 @@ interface CachedPipeline {
 }
 
 /**
- * Binding decl shape consumed by GPUHost.createComputePipelineWithLayout.
- * Mirrors the C++ Bindings struct (kind: 1=texture2d, 4=uniform,
- * 7=storage_texture_2d). Keep in sync with `gpu-host.ts`.
+ * Binding kind values — keep in sync with C++ enum BindingKind in
+ * `native/wasm_modules/include/gpu.h` and the BIND_* constants in
+ * `gpu-host.ts`. The pipeline layout decl array threads these to
+ * `bindingDeclToLayoutEntry` via `createComputePipelineWithLayout`.
  */
-const KIND_TEXTURE_2D = 1;
-const KIND_UNIFORM = 4;
+const KIND_UNIFORM = 0;
+const KIND_TEXTURE_2D = 4;
 const KIND_STORAGE_TEXTURE_2D = 7;
-const FORMAT_RGBA8 = 0;
+// Format codes — see textureFormatFromCode in gpu-host.ts:
+//   0 = bgra8unorm, 1 = rgba8unorm, 2 = surfaceFormat, 3 = rgba16float, ...
+const FORMAT_RGBA8 = 1;
 const ACCESS_WRITE = 1;
 
 const COMPUTE_PASS_HANDLE = 1; // GPUHost only supports one compute pass at a time.

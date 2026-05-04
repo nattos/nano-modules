@@ -88,6 +88,36 @@ export class SketchExecutor {
   }
 
   /**
+   * Per-frame debug counters. Always collected (cost is a handful of
+   * integer increments); only broadcast to the main thread when the
+   * worker is in debug mode. Worker reads + resets via
+   * `consumeDebugStats()` once per frame.
+   */
+  private debugStats = {
+    effectsExecuted: 0,
+    standaloneDispatches: 0,
+    fusedRuns: 0,
+    fusedStages: 0,
+  };
+
+  consumeDebugStats(): import('./engine-types').DebugStats {
+    const s = this.debugStats;
+    const out = {
+      effectsExecuted: s.effectsExecuted,
+      standaloneDispatches: s.standaloneDispatches,
+      fusedRuns: s.fusedRuns,
+      fusedStages: s.fusedStages,
+      dispatchesSaved: Math.max(0, s.fusedStages - s.fusedRuns),
+      gpuDispatches: s.standaloneDispatches + s.fusedRuns,
+    };
+    this.debugStats.effectsExecuted = 0;
+    this.debugStats.standaloneDispatches = 0;
+    this.debugStats.fusedRuns = 0;
+    this.debugStats.fusedStages = 0;
+    return out;
+  }
+
+  /**
    * Per-chain-entry texture handles from the most recent frame.
    * Keyed by `${sketchId}/${colIdx}/${chainIdx}`.
    * Populated during executeColumn(), consumed by engine-worker for chain_entry trace points.
@@ -103,6 +133,32 @@ export class SketchExecutor {
       }
     }
     return result;
+  }
+
+  /**
+   * Drain console-log entries emitted this frame from every loaded
+   * instance. Each WasmHost keeps its own rolling buffer; this
+   * captures and clears all of them so the worker can ship a single
+   * aggregated batch with the frame event.
+   */
+  drainConsoleLogs(): import('./engine-types').DebugConsoleEntry[] {
+    const out: import('./engine-types').DebugConsoleEntry[] = [];
+    for (const [instanceKey, { host }] of this.instances) {
+      if (host.consoleLogs.length === 0) continue;
+      const moduleId = host.metadata?.id ?? instanceKey;
+      for (const entry of host.consoleLogs) {
+        out.push({
+          instanceKey,
+          moduleId,
+          timestamp: entry.timestamp,
+          level: entry.level,
+          message: entry.message,
+          data: entry.data,
+        });
+      }
+      host.consoleLogs = [];
+    }
+    return out;
   }
 
   /// Optional: invoked when an instance's schema visibility (or
@@ -133,23 +189,24 @@ export class SketchExecutor {
    * Decide whether `entry` can take the fused path. A stage is fusable
    * when (a) the engine is in a mode that allows fusion, (b) the
    * effect declared a non-Freeform fusion class, (c) it published a
-   * fragment to compose against, and (d) a uniform buffer to bind.
+   * fragment to compose against, (d) a uniform buffer to bind, and
+   * (e) the entry has no taps.
    *
-   * Read-tap inputs that introduce extra textures will force the
-   * planner to split runs once Phase 3 multi-stage fusion lands; for
-   * now, with single-stage runs only, the input is always either the
-   * single chained texture or none (strict-out, future).
+   * Taps disqualify a stage because:
+   *   - read taps with texture rails introduce a second input texture
+   *     binding, which the composer doesn't expose.
+   *   - write taps that publish the stage's `tex_out` to a rail want
+   *     a real intermediate texture; in a fused run the intermediate
+   *     output of any non-final stage exists only in registers.
+   * (Both restrictions are loosened in later phases — write taps
+   * could route to trace textures; multi-input mapper stages would
+   * force a run split in the planner.)
    */
   private canFuseStage(entry: ModuleEntry, host: WasmHost): boolean {
     if (this.fusionMode === 'force-off') return false;
-    if (host.fusionKind === FUSION_KIND_FREEFORM) return false;
-    if (host.fusionKind !== FUSION_KIND_PER_PIXEL_MAPPER
-        && host.fusionKind !== FUSION_KIND_STRICT_OUTPUT) {
-      return false;
-    }
-    if (!host.fusionFragmentWgsl || host.fusionUniformBufferHandle <= 0) return false;
-    // Phase 2: only mapper top is supported in the composer.
     if (host.fusionKind !== FUSION_KIND_PER_PIXEL_MAPPER) return false;
+    if (!host.fusionFragmentWgsl || host.fusionUniformBufferHandle <= 0) return false;
+    if (entry.taps && entry.taps.length > 0) return false;
     return true;
   }
 
@@ -334,6 +391,25 @@ export class SketchExecutor {
     let currentInputHandle = inputTextureHandle;
     // nextSlot managed via shared slotCounter
 
+    // Accumulator for an in-progress fused run. Stages are appended as
+    // we walk the chain; flushed (dispatched as one combined compute
+    // pass) when the next stage isn't fusable, or when the chain ends.
+    // outputHandle is updated each time a stage joins; only the LAST
+    // stage's slot receives the dispatch's actual output.
+    let runAcc: {
+      stages: FusionStage[];
+      inputHandle: number;
+      outputHandle: number;
+    } | null = null;
+    const flushFusedRun = () => {
+      if (!runAcc) return;
+      this.fusionDispatcher.dispatch(
+        runAcc.stages, runAcc.inputHandle, runAcc.outputHandle, width, height);
+      this.debugStats.fusedRuns++;
+      this.debugStats.fusedStages += runAcc.stages.length;
+      runAcc = null;
+    };
+
     for (let chainIdx = 0; chainIdx < column.chain.length; chainIdx++) {
       const entry = column.chain[chainIdx];
       if (entry.type === 'texture_input') {
@@ -341,6 +417,9 @@ export class SketchExecutor {
       }
 
       if (entry.type === 'texture_output') {
+        // Pending fused run must dispatch before we exit so its output
+        // is real before the column's `lastOutput` is sampled.
+        flushFusedRun();
         break;
       }
 
@@ -493,12 +572,15 @@ export class SketchExecutor {
         loaded.host.drawList = [];
         loaded.module.tick(frameState.deltaTime);
 
-        // Fused path: in 'force-on' mode, every fusion-eligible stage
-        // routes through the dispatcher (single-stage runs in Phase 2;
-        // multi-stage runs land in Phase 3). 'auto' currently behaves
-        // exactly like the pre-fusion baseline so production behavior
-        // is unchanged until the planner grows multi-stage support.
-        const useFused = (this.fusionMode === 'force-on')
+        // Fused vs standalone branch.
+        //
+        // 'force-on' and 'auto' both group consecutive fusable mappers
+        // into one fused dispatch. 'force-off' falls through to the
+        // standalone path. Stage-level eligibility is decided by
+        // canFuseStage (kind + tap absence). The accumulator carries
+        // the run across iterations; we flush when a non-fusable
+        // stage breaks the run, or when the chain ends.
+        const useFused = (this.fusionMode !== 'force-off')
                          && this.canFuseStage(entry, loaded.host)
                          && currentInputHandle >= 0;
         if (useFused) {
@@ -509,11 +591,24 @@ export class SketchExecutor {
             fragmentWgsl: loaded.host.fusionFragmentWgsl,
             uniformBufferHandle: loaded.host.fusionUniformBufferHandle,
           };
-          this.fusionDispatcher.dispatch(
-            [stage], currentInputHandle, outputHandle, width, height);
+          if (!runAcc) {
+            runAcc = {
+              stages: [stage],
+              inputHandle: currentInputHandle,
+              outputHandle: outputHandle,
+            };
+          } else {
+            runAcc.stages.push(stage);
+            runAcc.outputHandle = outputHandle;
+          }
         } else {
+          // Stage breaks an in-progress fused run — flush so the
+          // output texture chain is up-to-date before this stage runs.
+          flushFusedRun();
           loaded.module.render(width, height);
+          this.debugStats.standaloneDispatches++;
         }
+        this.debugStats.effectsExecuted++;
 
         // --- Apply write taps (after tick/render) ---
         if (entry.taps) {
@@ -572,6 +667,10 @@ export class SketchExecutor {
         slotCounter.value++;
       }
     }
+
+    // Chain end — dispatch any still-pending fused run so the column's
+    // last output handle is populated before the caller samples it.
+    flushFusedRun();
 
     // Copy column rail values to output param for publishing
     if (outColumnRails) {

@@ -74,7 +74,7 @@ export interface UserSettings {
   /** Width in pixels of the IDE's left details panel. */
   ideLeftPanelWidth: number;
   /** Currently active left tab in the IDE. */
-  ideLeftTab: 'explorer' | 'project_editor';
+  ideLeftTab: 'explorer' | 'project_editor' | 'debug_info';
   /** Currently selected project id (`default:<effectId>` or `user:<uuid>`). */
   selectedProjectId: string | null;
   /** Scroll positions keyed by an arbitrary scope id. */
@@ -104,6 +104,17 @@ export interface EngineStatus {
   sketchState: Record<string, any>;
   /** Live plugin state per instance, keyed by instance key. Updated per-frame from the worker. */
   pluginStates: Record<string, any>;
+  /**
+   * Latest per-frame debug stats. Only populated while the Debug Info
+   * sidebar tab is active (the tab toggles `engine.setDebugMode`).
+   */
+  debugStats?: import('../engine-types').DebugStats;
+  /**
+   * Rolling buffer of recent console-log entries from any WASM
+   * effect. Capped at the worker side; the UI keeps its own cap on
+   * top so an off-tab session can't grow unbounded.
+   */
+  debugConsoleLog: import('../engine-types').DebugConsoleEntry[];
 }
 
 export interface LocalState {

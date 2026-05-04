@@ -54,6 +54,49 @@ export interface EngineState {
   sketchState: Record<string, any>;
 }
 
+// --- Debug stats (frame-scoped instrumentation) ---
+
+/**
+ * Per-frame counters from the sketch executor. Surfaced when the
+ * worker is in debug mode (setDebugMode(true)). Lets the Debug Info
+ * UI quantify the win from stage coalescing — `effectsExecuted` is
+ * the pre-fusion dispatch count, `gpuDispatches` is what actually
+ * went to the GPU, `dispatchesSaved` is the difference.
+ */
+export interface DebugStats {
+  /** Total module entries processed across every sketch+column. */
+  effectsExecuted: number;
+  /** Stages that ran their own dispatch (one render() per stage). */
+  standaloneDispatches: number;
+  /** Number of fused runs (each run is one combined compute pass). */
+  fusedRuns: number;
+  /** Sum of stages folded into fused runs. */
+  fusedStages: number;
+  /** Compute passes saved by fusion (= fusedStages − fusedRuns). */
+  dispatchesSaved: number;
+  /** Total compute passes issued (= standaloneDispatches + fusedRuns). */
+  gpuDispatches: number;
+}
+
+/**
+ * One console-log entry collected from any WASM effect this frame.
+ * Aggregated across all sketches/columns for the Debug Info viewer.
+ */
+export interface DebugConsoleEntry {
+  /** Source effect's instance key (so the UI can group/filter). */
+  instanceKey: string;
+  /** Source effect's module ID (e.g. "video.saturate"). */
+  moduleId: string;
+  /** Engine-relative timestamp (seconds). */
+  timestamp: number;
+  /** "log" | "warn" | "error". */
+  level: string;
+  /** The user-visible message. */
+  message: string;
+  /** Optional structured payload from console_log_structured. */
+  data?: any;
+}
+
 // --- Trace points ---
 
 export interface TracePoint {
@@ -94,6 +137,12 @@ export type WorkerCommand =
   // production defaults ('auto'). Used by per-effect tests to verify
   // byte-identity between the standalone and fused paths.
   | { type: 'setFusionMode'; mode: 'auto' | 'force-on' | 'force-off' }
+  // Toggle debug-stats collection. When on, the worker tracks
+  // per-frame counters (effects executed, dispatches issued, fused
+  // runs, dispatches saved) and ships them on each frame event.
+  // Default off — collection is essentially free, but the broadcast
+  // overhead is paid only when the user opens the Debug Info tab.
+  | { type: 'setDebugMode'; on: boolean }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---
@@ -102,6 +151,6 @@ export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
   | { type: 'effectsDiscovered'; effects: EffectInfo[] }
-  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchState: Record<string, any>; pluginStates: Record<string, any> }
+  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchState: Record<string, any>; pluginStates: Record<string, any>; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
   | { type: 'error'; message: string }
   | { type: 'debugDump'; data: any };

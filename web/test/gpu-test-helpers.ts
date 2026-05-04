@@ -75,13 +75,16 @@ export interface GpuEffectTestConfig {
 
 /** Config for a chain test: multiple modules executed in sequence. */
 export interface GpuChainTestConfig {
-  chain: { module: string; params?: [number, number][]; ticks?: number }[];
+  chain: { module: string; params?: ParamSetEntry[]; ticks?: number }[];
   bundle?: WasmBundle;
   width?: number;
   height?: number;
   samplePoints?: [number, number][];
   dumpName?: string;
   fusionMode?: FusionMode;
+  /// Optional solid-color input texture for the first step. Same
+  /// shape as the per-effect runner — RGBA in [0, 1].
+  inputColor?: [number, number, number, number];
 }
 
 /**
@@ -106,10 +109,16 @@ let _ambientFusionMode: FusionMode = 'auto';
  *
  * Pass `modes` to restrict (e.g. ['force-off'] for effects that
  * declare fusion class Freeform — they have no fused path to verify).
+ *
+ * Defaults to all three modes so per-effect tests cover the
+ * standalone path (force-off), the always-fused path (force-on), and
+ * the production-default planner (auto, which currently behaves like
+ * force-on for fusion-eligible stages but is the mode the engine
+ * actually runs in).
  */
 export function forEachFusionMode(
   body: (mode: FusionMode) => void,
-  modes: FusionMode[] = ['force-off', 'force-on'],
+  modes: FusionMode[] = ['force-off', 'force-on', 'auto'],
 ): void {
   for (const mode of modes) {
     const prev = _ambientFusionMode;
@@ -434,5 +443,7 @@ export async function runGpuChainTest(config: GpuChainTestConfig): Promise<Frame
     width: config.width || 64,
     height: config.height || 64,
     samplePoints: config.samplePoints || [],
+    inputColor: config.inputColor,
+    fusionMode: config.fusionMode,
   }, config.dumpName || `chain_${testCounter++}`);
 }
