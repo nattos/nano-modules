@@ -61,6 +61,13 @@ namespace fuse_mul {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace fuse_solid {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 namespace env_lfo {
     void init();
     void tick(double dt);
@@ -217,6 +224,20 @@ void nano_module_main() {
         fuse_mul::tick,
         fuse_mul::render,
         fuse_mul::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.fuse_solid",
+        "Fuse Solid (test)",
+        "Writes a uniform color to every pixel. Test-only strict-output generator.",
+        "debug",
+        "test,fusion,strict-output,generator",
+        fuse_solid::init,
+        fuse_solid::tick,
+        fuse_solid::render,
+        fuse_solid::on_state_patched,
         nullptr,
     });
 

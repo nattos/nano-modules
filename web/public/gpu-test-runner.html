@@ -66,9 +66,10 @@ const EFFECT_ID_BY_FILENAME = {
   'gradient.wasm': 'generator.gradient',
   'grid.wasm': 'generator.grid',
   'noise.wasm': 'generator.noise',
-  // Test-only fusion-aware mappers (testonly bundle only).
-  'fuse_add.wasm': 'debug.fuse_add',
-  'fuse_mul.wasm': 'debug.fuse_mul',
+  // Test-only fusion-aware mappers + generator (testonly bundle only).
+  'fuse_add.wasm':   'debug.fuse_add',
+  'fuse_mul.wasm':   'debug.fuse_mul',
+  'fuse_solid.wasm': 'debug.fuse_solid',
   // Platform-feature smoke effects (testonly bundle only).
   'hdr_test.wasm': 'debug.hdr_test',
   'atomic_test.wasm': 'debug.atomic_test',
@@ -251,18 +252,23 @@ async function run() {
       //
       // fusionKind/fragmentWgsl/uniformBufferHandle are populated by
       // the effect's init() when it calls state::registerFusion.
+      // Mappers (kind=1) need an upstream input texture; strict-output
+      // generators (kind=2) don't, and they always start a new run.
+      const isMapperKind = wasmHost.fusionKind === 1;
+      const isStrictOutKind = wasmHost.fusionKind === 2;
       const stageFusable =
         wasmHost.fusionKind > 0
         && !!wasmHost.fusionFragmentWgsl
         && wasmHost.fusionUniformBufferHandle > 0
-        && (si > 0 || !!config.inputColor);  // need an input texture
+        && (isStrictOutKind || (isMapperKind && (si > 0 || !!config.inputColor)));
       if (fusionMode !== 'force-off' && stageFusable) {
         // Inject pre-flush textures: the dispatcher will read from
-        // currentOutput (matches the run's chained input) and write
-        // to nextOutput (the run's destination). Repeated injects
-        // across stages in the same run are harmless — just extra
-        // handles pointing at the same two textures.
-        const inputHandle = gpuHost.injectTexture(currentOutput);
+        // currentOutput (matches the run's chained input, when the
+        // top is a mapper) and write to nextOutput (the run's
+        // destination). For strict-output tops the inputHandle is
+        // unused — pass -1 so a missing input doesn't get silently
+        // bound to the wrong texture.
+        const inputHandle = isStrictOutKind ? -1 : gpuHost.injectTexture(currentOutput);
         const outputHandle = gpuHost.injectTexture(nextOutput);
         wasmHost.firePrepare(W, H);
         const stage = {
@@ -271,6 +277,11 @@ async function run() {
           fragmentWgsl: wasmHost.fusionFragmentWgsl,
           uniformBufferHandle: wasmHost.fusionUniformBufferHandle,
         };
+        // Strict-output always starts a new run — flush whatever
+        // was in progress so it ends up the top of its own run.
+        if (isStrictOutKind && runAcc) {
+          flushFusedRun();
+        }
         if (!runAcc) {
           runAcc = { stages: [stage], inputHandle, outputHandle };
         } else {

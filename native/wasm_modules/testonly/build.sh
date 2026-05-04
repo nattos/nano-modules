@@ -11,9 +11,12 @@ source ../wasm_build_env.sh
 compile_shaders_compute brightness_contrast
 compile_shaders_compute solid_color
 compile_shaders_compute video_blend
-# Test-only fusion-aware mappers — back the multi-stage fusion tests.
+# Test-only fusion-aware mappers + generator — back the multi-stage
+# fusion tests (mapper + mapper) and the strict-output top tests
+# (generator + mapper).
 compile_shaders_compute_fused fuse_add
 compile_shaders_compute_fused fuse_mul
+compile_shaders_compute_fused fuse_solid
 compile_shaders_full gpu_test
 compile_shaders_full spinningtris
 
@@ -56,6 +59,7 @@ wasm_build \
   ../video_blend/main.cpp \
   ../fuse_add/main.cpp \
   ../fuse_mul/main.cpp \
+  ../fuse_solid/main.cpp \
   ../env_lfo/main.cpp \
   ../gpu_test/main.cpp \
   ../spinningtris/main.cpp \

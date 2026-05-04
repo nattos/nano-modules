@@ -204,7 +204,10 @@ export class SketchExecutor {
    */
   private canFuseStage(entry: ModuleEntry, host: WasmHost): boolean {
     if (this.fusionMode === 'force-off') return false;
-    if (host.fusionKind !== FUSION_KIND_PER_PIXEL_MAPPER) return false;
+    if (host.fusionKind !== FUSION_KIND_PER_PIXEL_MAPPER
+        && host.fusionKind !== FUSION_KIND_STRICT_OUTPUT) {
+      return false;
+    }
     if (!host.fusionFragmentWgsl || host.fusionUniformBufferHandle <= 0) return false;
     if (entry.taps && entry.taps.length > 0) return false;
     return true;
@@ -574,15 +577,22 @@ export class SketchExecutor {
 
         // Fused vs standalone branch.
         //
-        // 'force-on' and 'auto' both group consecutive fusable mappers
-        // into one fused dispatch. 'force-off' falls through to the
-        // standalone path. Stage-level eligibility is decided by
-        // canFuseStage (kind + tap absence). The accumulator carries
-        // the run across iterations; we flush when a non-fusable
-        // stage breaks the run, or when the chain ends.
+        // 'force-on' and 'auto' group consecutive fusable stages into
+        // one fused dispatch. Mappers append to whatever run is in
+        // progress. StrictOutput stages must be the TOP of a run
+        // (they generate pixels rather than transform them), so we
+        // flush any in-progress run first and start fresh. 'force-off'
+        // and effects whose canFuseStage returns false fall through
+        // to the standalone render() path.
+        //
+        // For mapper top, we need a real input texture
+        // (currentInputHandle >= 0); strict-output doesn't sample
+        // input.
+        const isMapperKind = loaded.host.fusionKind === FUSION_KIND_PER_PIXEL_MAPPER;
+        const isStrictOutKind = loaded.host.fusionKind === FUSION_KIND_STRICT_OUTPUT;
         const useFused = (this.fusionMode !== 'force-off')
                          && this.canFuseStage(entry, loaded.host)
-                         && currentInputHandle >= 0;
+                         && (isStrictOutKind || (isMapperKind && currentInputHandle >= 0));
         if (useFused) {
           loaded.host.firePrepare(width, height);
           const stage: FusionStage = {
@@ -591,10 +601,16 @@ export class SketchExecutor {
             fragmentWgsl: loaded.host.fusionFragmentWgsl,
             uniformBufferHandle: loaded.host.fusionUniformBufferHandle,
           };
+          if (isStrictOutKind && runAcc) {
+            // StrictOutput is always the top of its own run — flush
+            // anything already accumulated so the new run starts
+            // fresh.
+            flushFusedRun();
+          }
           if (!runAcc) {
             runAcc = {
               stages: [stage],
-              inputHandle: currentInputHandle,
+              inputHandle: currentInputHandle,  // ignored if top is strict-output
               outputHandle: outputHandle,
             };
           } else {

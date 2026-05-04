@@ -164,6 +164,17 @@ compile_shaders_compute_fused() {
 
   # 2. Fragment build: wrap pixel.hlsl in a synthetic main, run through
   # DXC + naga, strip the wrapper.
+  #
+  # The wrapper's signature has to match fuse_transform — mappers take
+  # (uint2 gid, float4 c), strict-output takes (uint2 gid, uint2
+  # vp_size). Detect by greping pixel.hlsl for the strict-out shape so
+  # the author doesn't have to pass a separate flag.
+  local second_arg
+  if grep -qE 'fuse_transform\s*\(\s*uint2[^,]*,\s*uint2' "$pixel"; then
+    second_arg='uint2(0, 0)'   # strict-output: vp_size
+  else
+    second_arg='float4(0, 0, 0, 0)'  # mapper: input color
+  fi
   local wrapper="$TMP_DIR/${effect}_pixel_wrapper.hlsl"
   cat > "$wrapper" <<EOF
 // Auto-generated wrapper — gives DXC an entry point so it accepts pixel.hlsl
@@ -173,9 +184,8 @@ compile_shaders_compute_fused() {
 RWTexture2D<float4> _fuse_out : register(u1);
 [numthreads(1, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
-  float4 _zero = float4(0, 0, 0, 0);
   uint2 _g = gid.xy;
-  float4 _r = fuse_transform(_g, _zero);
+  float4 _r = fuse_transform(_g, ${second_arg});
   _fuse_out[uint2(0, 0)] = _r;
 }
 EOF

@@ -79,6 +79,11 @@ export class FusionDispatcher {
     }
   }
 
+  /**
+   * Dispatch a fused run. `inputTexHandle` may be < 0 when the run's
+   * top is a StrictOutput stage — that branch generates pixels
+   * itself and the composed shader doesn't bind an input texture.
+   */
   dispatch(
     stages: FusionStage[],
     inputTexHandle: number,
@@ -89,10 +94,15 @@ export class FusionDispatcher {
     if (stages.length === 0 || vpW <= 0 || vpH <= 0) return;
     const cached = this.ensurePipeline(stages);
     if (!cached || cached.pipelineHandle <= 0) return;
+    const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
 
     this.gpuHost.beginComputePass();
     this.gpuHost.computeSetPipeline(COMPUTE_PASS_HANDLE, cached.pipelineHandle);
-    this.gpuHost.computeSetTexture(COMPUTE_PASS_HANDLE, inputTexHandle, 0, /*access*/0);
+    if (!topStrictOut) {
+      // Mapper top — slot 0 is the input texture. Strict-output top
+      // skips this binding entirely; the pipeline layout omits it.
+      this.gpuHost.computeSetTexture(COMPUTE_PASS_HANDLE, inputTexHandle, 0, /*access*/0);
+    }
     this.gpuHost.computeSetTexture(COMPUTE_PASS_HANDLE, outputTexHandle, 1, ACCESS_WRITE);
     for (let i = 0; i < stages.length; i++) {
       this.gpuHost.computeSetBuffer(
@@ -121,11 +131,16 @@ export class FusionDispatcher {
       return null;
     }
 
-    // Bindings: 0 = inputTex, 1 = outputTex, 2..2+N-1 = per-stage uniforms.
-    const bindings: { slot: number; kind: number; format: number; access: number }[] = [
-      { slot: 0, kind: KIND_TEXTURE_2D,         format: 0,            access: 0 },
-      { slot: 1, kind: KIND_STORAGE_TEXTURE_2D, format: FORMAT_RGBA8, access: ACCESS_WRITE },
-    ];
+    // Bindings: 0 = inputTex (only when top is mapper),
+    // 1 = outputTex, 2..2+N-1 = per-stage uniforms. WebGPU bind group
+    // layouts allow sparse slot indices — for a strict-output top we
+    // simply omit slot 0 and the shader doesn't reference it.
+    const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
+    const bindings: { slot: number; kind: number; format: number; access: number }[] = [];
+    if (!topStrictOut) {
+      bindings.push({ slot: 0, kind: KIND_TEXTURE_2D, format: 0, access: 0 });
+    }
+    bindings.push({ slot: 1, kind: KIND_STORAGE_TEXTURE_2D, format: FORMAT_RGBA8, access: ACCESS_WRITE });
     for (let i = 0; i < stages.length; i++) {
       bindings.push({ slot: 2 + i, kind: KIND_UNIFORM, format: 0, access: 0 });
     }
@@ -155,16 +170,21 @@ export class FusionDispatcher {
  */
 export function composeWgsl(stages: FusionStage[]): string {
   const parts: string[] = [];
+  const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
   parts.push('// Auto-composed fused compute shader.');
   parts.push('// Effect order: ' + stages.map(s => s.effectId).join(' → '));
   parts.push('');
-  parts.push('@group(0) @binding(0) var inputTex: texture_2d<f32>;');
+  // inputTex is only declared when the top is a mapper. Strict-output
+  // tops generate their own pixel value — no input sampling.
+  if (!topStrictOut) {
+    parts.push('@group(0) @binding(0) var inputTex: texture_2d<f32>;');
+  }
   parts.push('@group(0) @binding(1) var outputTex: texture_storage_2d<rgba8unorm, write>;');
   parts.push('');
 
   for (let i = 0; i < stages.length; i++) {
     const namespaced = namespaceFragment(stages[i].fragmentWgsl, i);
-    parts.push(`// === Stage ${i}: ${stages[i].effectId} ===`);
+    parts.push(`// === Stage ${i}: ${stages[i].effectId} (${i === 0 && topStrictOut ? 'strict-output top' : 'mapper'}) ===`);
     parts.push(namespaced);
   }
 
@@ -175,18 +195,24 @@ export function composeWgsl(stages: FusionStage[]): string {
   parts.push('  if (gid_in.x >= dims.x || gid_in.y >= dims.y) { return; }');
   parts.push('  var gid_local: vec2<u32> = gid_in.xy;');
 
-  // Top-of-stack: mapper reads input; strict-out (future phase) would
-  // skip the read and let the top fragment generate the value.
-  const top = stages[0];
-  if (top.fusionKind === FUSION_KIND_PER_PIXEL_MAPPER) {
-    parts.push('  var c: vec4<f32> = textureLoad(inputTex, vec2<i32>(gid_in.xy), 0);');
+  let firstTailIdx: number;
+  if (topStrictOut) {
+    // Strict-output top: call its fuse_transform with (gid, vp_size)
+    // to seed `c`, then mapper tails chain off it.
+    parts.push('  var vp_size_local: vec2<u32> = dims;');
+    parts.push(`  var c: vec4<f32> = s0_fuse_transform(&gid_local, &vp_size_local);`);
+    firstTailIdx = 1;
   } else {
-    // Phase 2 only handles mapper top — this branch is a defensive
-    // default. Strict-output composition lands in Phase 4.
-    parts.push('  var c: vec4<f32> = vec4<f32>(0.0);');
+    // Mapper top: read the input texture, then chain through every
+    // stage starting at index 0.
+    parts.push('  var c: vec4<f32> = textureLoad(inputTex, vec2<i32>(gid_in.xy), 0);');
+    firstTailIdx = 0;
   }
 
-  for (let i = 0; i < stages.length; i++) {
+  for (let i = firstTailIdx; i < stages.length; i++) {
+    // Mapper tail: pass the running `c` through the per-stage
+    // fragment. We have to hand it as a writable variable since
+    // DXC + naga emits ptr<function, vec4<f32>> for the parameter.
     parts.push(`  var c_arg_${i}: vec4<f32> = c;`);
     parts.push(`  c = s${i}_fuse_transform(&gid_local, &c_arg_${i});`);
   }
