@@ -68,6 +68,14 @@ extern "C" {
   void state_set_field_hidden(const char* path, int path_len, int hidden);
   __attribute__((import_module("state"), import_name("set_on_state_ready")))
   void state_set_on_state_ready(void (*fn)(void));
+  // Register fusion metadata. See state::registerFusion below.
+  __attribute__((import_module("state"), import_name("register_fusion")))
+  void state_register_fusion(int kind,
+                              const char* wgsl, int wgsl_len,
+                              const char* msl,  int msl_len,
+                              int uniform_buf_handle,
+                              int uniform_size_bytes,
+                              void (*prepare)(int vp_w, int vp_h));
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
@@ -608,6 +616,63 @@ inline void setFieldHidden(const char* path, bool hidden) {
 ///   }
 inline void setOnStateReady(void (*fn)(void)) {
   state_set_on_state_ready(fn);
+}
+
+// ========================================================================
+// Fusion registration
+// ========================================================================
+
+/// Coalescing class an effect declares so the engine can fuse adjacent
+/// stages within a column. Default for any effect that never calls
+/// registerFusion is Freeform (no fusion).
+enum class FusionKind : int {
+  Freeform        = 0,  // Anything that uses multi-pass, samplers, mip
+                        // chains, render passes, etc. Runs alone.
+  PerPixelMapper  = 1,  // Reads only inputTex[gid.xy], writes only
+                        // outputTex[gid.xy]. The engine can splice the
+                        // per-pixel transform into a fused dispatch.
+  StrictOutput    = 2,  // Writes every output pixel exactly once. Reads
+                        // anything (no input texture, neighbor reads,
+                        // generators, etc.). Can be the top of a fused
+                        // run with mapper tails.
+};
+
+/// Register fusion metadata for the currently-initializing effect. Call
+/// from inside `init()`, after `state::init(...)`. Effects that don't
+/// call this stay `Freeform` — the engine never fuses them.
+///
+/// Parameters:
+///   kind             — fusion class, see FusionKind.
+///   fragment_wgsl    — WGSL fragment defining `fuse_transform` and
+///                      `FuseUniforms` (built by the
+///                      compile_shaders_compute_fused build helper into
+///                      `<effect>_shaders.h` as PIXEL_WGSL[]).
+///   fragment_msl     — MSL counterpart (PIXEL_MSL[]).
+///   uniform_buf_handle — current handle of the effect's uniform
+///                      buffer (typically `s_uniform_buf.handle()`).
+///                      The engine binds this directly into the fused
+///                      dispatch.
+///   uniform_size_bytes — sizeof(Uniforms).
+///   prepare          — callback invoked once per frame for each fused
+///                      stage, instead of `render`. Should write the
+///                      uniform buffer (and only the uniform buffer).
+///                      For non-fused execution `render` runs as today;
+///                      most effects implement `render` as
+///                      `prepare(); dispatch();` so behavior is shared.
+///
+/// Note: WGSL and MSL strings are passed explicitly because every effect
+/// already picks its backend at createShaderModule time. Folding that
+/// into the host is a separate refactor.
+inline void registerFusion(FusionKind kind,
+                           const char* fragment_wgsl,
+                           const char* fragment_msl,
+                           int uniform_buf_handle,
+                           int uniform_size_bytes,
+                           void (*prepare)(int vp_w, int vp_h)) {
+  state_register_fusion(static_cast<int>(kind),
+                        fragment_wgsl, fragment_wgsl ? (int)std::strlen(fragment_wgsl) : 0,
+                        fragment_msl,  fragment_msl  ? (int)std::strlen(fragment_msl)  : 0,
+                        uniform_buf_handle, uniform_size_bytes, prepare);
 }
 
 } // namespace state

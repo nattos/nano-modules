@@ -125,6 +125,75 @@ compile_shaders_compute() {
   echo "  ${effect} shaders compiled (compute)"
 }
 
+# compile_shaders_compute_fused <effect>
+#   For fusion-aware effects. Compiles compute.hlsl as today (standalone),
+#   then ALSO compiles pixel.hlsl as a fragment that the runtime fuser can
+#   splice into a composed compute shader.
+#
+#   pixel.hlsl must declare `[noinline] float4 fuse_transform(uint2, float4)`
+#   (or `(uint2, uint2)` for StrictOutput) plus `ConstantBuffer<FuseUniforms>
+#   u_fuse : register(b0)`. See native/wasm_modules/saturate/pixel.hlsl for a
+#   reference.
+#
+#   The fragment is compiled via DXC (not glslc) — DXC honors [noinline] so
+#   `fuse_transform` survives as a real function instead of being inlined.
+#   We wrap pixel.hlsl with a synthetic no-op main, transpile via naga, then
+#   strip the wrapper via _fragment_strip.py. The result is exactly the
+#   per-pixel kernel: structs, the uniform var, and the (named) functions.
+#
+#   Emits PIXEL_WGSL[] / PIXEL_MSL[] alongside COMPUTE_WGSL/COMPUTE_MSL in
+#   <effect>_shaders.h.
+compile_shaders_compute_fused() {
+  local effect="$1"
+  local effect_dir
+  effect_dir="$(cd ../${effect} && pwd)"
+  local pixel="${effect_dir}/pixel.hlsl"
+  if [ ! -f "$pixel" ]; then
+    echo "ERROR: ${effect}/pixel.hlsl not found (required for fusion build)"
+    return 1
+  fi
+  if ! command -v dxc >/dev/null 2>&1; then
+    echo "ERROR: dxc not found on PATH. Install DirectXShaderCompiler:"
+    echo "  https://github.com/microsoft/DirectXShaderCompiler/releases"
+    echo "  or place the binary at /usr/local/bin/dxc."
+    return 1
+  fi
+
+  # 1. Standalone compute path — unchanged.
+  compile_shaders_compute_var "$effect" compute rgba8unorm
+
+  # 2. Fragment build: wrap pixel.hlsl in a synthetic main, run through
+  # DXC + naga, strip the wrapper.
+  local wrapper="$TMP_DIR/${effect}_pixel_wrapper.hlsl"
+  cat > "$wrapper" <<EOF
+// Auto-generated wrapper — gives DXC an entry point so it accepts pixel.hlsl
+// as a complete compute shader. Stripped after transpilation.
+#include "${pixel}"
+
+RWTexture2D<float4> _fuse_out : register(u1);
+[numthreads(1, 1, 1)]
+void main(uint3 gid : SV_DispatchThreadID) {
+  float4 _zero = float4(0, 0, 0, 0);
+  uint2 _g = gid.xy;
+  float4 _r = fuse_transform(_g, _zero);
+  _fuse_out[uint2(0, 0)] = _r;
+}
+EOF
+  dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    "$wrapper" -Fo "$TMP_DIR/${effect}_pixel.spv"
+  naga "$TMP_DIR/${effect}_pixel.spv" "$TMP_DIR/${effect}_pixel_raw.wgsl"
+  naga --metal-version 2.0 "$TMP_DIR/${effect}_pixel.spv" \
+    "$TMP_DIR/${effect}_pixel_raw.metal"
+
+  python3 "$(dirname "${BASH_SOURCE[0]}")/_fragment_strip.py" \
+    wgsl "$TMP_DIR/${effect}_pixel_raw.wgsl" "$TMP_DIR/${effect}_pixel.wgsl"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/_fragment_strip.py" \
+    msl  "$TMP_DIR/${effect}_pixel_raw.metal" "$TMP_DIR/${effect}_pixel.metal"
+
+  _emit_shader_header "$effect" compute pixel
+  echo "  ${effect} shaders compiled (compute + pixel fragment)"
+}
+
 # compile_shaders_full <effect> — for effects with compute + vertex + fragment.
 compile_shaders_full() {
   local effect="$1"

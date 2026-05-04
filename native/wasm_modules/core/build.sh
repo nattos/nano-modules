@@ -20,7 +20,7 @@ compile_shaders_compute levels
 compile_shaders_compute hsl
 compile_shaders_compute color_space
 compile_shaders_compute hue_basis
-compile_shaders_compute saturate
+compile_shaders_compute_fused saturate
 compile_shaders_compute vibrance
 compile_shaders_compute vignette
 compile_shaders_compute blur

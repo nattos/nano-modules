@@ -167,6 +167,20 @@ export class WasmHost {
   /// "post-restoration" signal.
   stateReadyFired = false;
 
+  // Fusion metadata — populated when an effect calls
+  // `state::registerFusion(...)` during init(). `fusionKind === 0`
+  // (Freeform) means the effect opted out (or never registered) and the
+  // engine will never fuse it.
+  fusionKind: number = 0;
+  fusionFragmentWgsl: string = '';
+  fusionFragmentMsl: string = '';
+  fusionUniformBufferHandle: number = 0;
+  fusionUniformSize: number = 0;
+  /// Function-table index of the `prepare` callback. 0 means none —
+  /// the engine should fall back to the effect's `render()` even when
+  /// fusing.
+  fusionPrepareIdx: number = 0;
+
   // Input textures (injected by sketch executor for chaining)
   inputTextureHandles: number[] = [];
 
@@ -548,6 +562,23 @@ export class WasmHost {
           // after init + initial state replay. Stored as a function
           // table index; dispatched by `fireStateReady()`.
           this.onStateReadyIdx = fnIdx | 0;
+        },
+        register_fusion: (kind: number,
+                          wgslPtr: number, wgslLen: number,
+                          mslPtr: number,  mslLen: number,
+                          uniformBufHandle: number,
+                          uniformSize: number,
+                          prepareIdx: number) => {
+          // Effect's `init()` declares its fusion class + per-pixel
+          // fragment so the executor can splice it into a fused dispatch.
+          // Effects that don't call this stay Freeform (kind=0) and run
+          // on the standalone path. See state::registerFusion in host.h.
+          this.fusionKind = kind | 0;
+          this.fusionFragmentWgsl = wgslLen > 0 ? this.readString(wgslPtr, wgslLen) : '';
+          this.fusionFragmentMsl  = mslLen  > 0 ? this.readString(mslPtr,  mslLen)  : '';
+          this.fusionUniformBufferHandle = uniformBufHandle | 0;
+          this.fusionUniformSize = uniformSize | 0;
+          this.fusionPrepareIdx = prepareIdx | 0;
         },
         read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
                outputPtr: number, outputSize: number, resultsPtr: number): number => {

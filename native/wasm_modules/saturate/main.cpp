@@ -22,7 +22,11 @@
 
 namespace saturate {
 
-struct Uniforms {
+// Layout MUST match `struct FuseUniforms` in pixel.hlsl. Field order
+// and sizes are part of the cbuffer ABI; pixel.hlsl is the single
+// source of truth for the per-pixel kernel and this struct mirrors
+// its uniform block.
+struct FuseUniforms {
   float prescale;
   float asymm;
   float linear_deadzone;
@@ -35,6 +39,16 @@ static float s_deadzone = 0.0f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+// Update the uniform buffer for the current frame. Called from
+// render() (standalone path) and from the engine via the fusion
+// prepare callback (fused path) — both share the same uniform write
+// so output is identical.
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = { s_prescale, s_asymm, s_deadzone, 0.f };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_prescale = 1.0f;
@@ -60,8 +74,17 @@ void init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  // Declare to the engine that this effect is a per-pixel mapper —
+  // the runtime fuser may splice fuse_transform from PIXEL_WGSL/MSL
+  // into a fused dispatch with adjacent mapper stages. `prepare`
+  // updates the uniform buffer; the engine binds the buffer directly.
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double) {}
@@ -83,8 +106,7 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  Uniforms u = { s_prescale, s_asymm, s_deadzone, 0.f };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
