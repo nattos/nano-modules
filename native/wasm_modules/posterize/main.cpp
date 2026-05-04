@@ -19,10 +19,11 @@
 
 namespace posterize {
 
-struct Uniforms {
-  float levels;          // float so the shader doesn't need to convert
-  float quantize_alpha;  // 0 / 1
-  float _pad[2];
+struct FuseUniforms {
+  float levels;
+  float quantize_alpha;
+  float _pad0;
+  float _pad1;
 };
 
 static float s_amount = 0.5f;
@@ -36,6 +37,16 @@ static float amount_to_levels(float amount) {
   amount = std::min(std::max(amount, 0.0f), 1.0f);
   float lv = std::pow(256.0f, 1.0f - amount);
   return std::max(2.0f, std::round(lv));
+}
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = {
+    amount_to_levels(s_amount),
+    s_quantize_alpha ? 1.0f : 0.0f,
+    0.f, 0.f,
+  };
+  s_uniform_buf.writeOne(u);
 }
 
 void init() {
@@ -57,8 +68,13 @@ void init() {
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) { (void)dt; }
@@ -81,12 +97,7 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  Uniforms u = {
-    amount_to_levels(s_amount),
-    s_quantize_alpha ? 1.0f : 0.0f,
-    {0, 0},
-  };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);

@@ -22,7 +22,7 @@
 
 namespace exposure {
 
-struct Uniforms {
+struct FuseUniforms {
   float gain_r, gain_g, gain_b;
   float _pad;
 };
@@ -33,6 +33,19 @@ static float s_tint_amount = 0.0f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  // exposure: ±3 stops via the shared helper.
+  float gain = fx::stops(s_amount);
+  // tint: simple R/B push, biased by warmth in [-1, +1].
+  // warmth = +1 → boost R, cut B. warmth = -1 → boost B, cut R.
+  float wr = 1.0f + s_tint_warmth * s_tint_amount * 0.5f;
+  float wg = 1.0f;
+  float wb = 1.0f - s_tint_warmth * s_tint_amount * 0.5f;
+  FuseUniforms u = { gain * wr, gain * wg, gain * wb, 0.0f };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_amount = 0.0f;
@@ -55,8 +68,13 @@ void init() {
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) { (void)dt; }
@@ -81,16 +99,7 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  // exposure: ±3 stops via the shared helper.
-  float gain = fx::stops(s_amount);
-  // tint: simple R/B push, biased by warmth in [-1, +1].
-  // warmth = +1 → boost R, cut B. warmth = -1 → boost B, cut R. Centred at 0.
-  float wr = 1.0f + s_tint_warmth * s_tint_amount * 0.5f;
-  float wg = 1.0f;  // green stays neutral — leave colour-balance ratio to a real CC effect later
-  float wb = 1.0f - s_tint_warmth * s_tint_amount * 0.5f;
-
-  Uniforms u = { gain * wr, gain * wg, gain * wb, 0.0f };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);

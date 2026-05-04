@@ -190,6 +190,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 }
 EOF
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
     "$wrapper" -Fo "$TMP_DIR/${effect}_pixel.spv"
   naga "$TMP_DIR/${effect}_pixel.spv" "$TMP_DIR/${effect}_pixel_raw.wgsl"
   naga --metal-version 2.0 "$TMP_DIR/${effect}_pixel.spv" \

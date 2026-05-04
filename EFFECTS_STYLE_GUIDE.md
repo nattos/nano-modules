@@ -116,6 +116,187 @@ Why this shape:
 
 ---
 
+## 0.1 Fusion-aware effects — opt in when you can
+
+Per-pixel effects that follow a strict shape can be **coalesced**: the engine collapses runs of adjacent fusion-aware stages in a column into a *single* compute dispatch, eliminating the intermediate texture round-trip between them. A column like `color_space → curve → vignette → saturate` becomes one dispatch instead of four — measurably faster on busy sketches and visible live in the **Debug Info** sidebar (it shows "Dispatches saved by fusion" per frame).
+
+Opt-in is a single `state::registerFusion(...)` call in `init()` plus a small refactor of the per-pixel logic into a `pixel.hlsl` file. **Default is no fusion** — effects that don't call `registerFusion` keep the standalone path verbatim.
+
+### Choosing a `FusionKind`
+
+The engine refuses to fuse anything that doesn't fit one of two strict shapes:
+
+| Kind | What the shader does | Examples |
+|---|---|---|
+| **`PerPixelMapper`** | Reads `inputTex[gid.xy]` exactly once, writes `outputTex[gid.xy]` exactly once. No neighbor sampling, no samplers, no mip chains, no second input. | brightness/contrast, curves, color space, saturate, hue basis, vignette, posterize. |
+| **`StrictOutput`** | Writes every output pixel exactly once but doesn't sample `inputTex`. Generators that produce pixels from uniform parameters / `gid` / `vp_size`. | solid color, gradient, noise. |
+| `Freeform` (default — don't call `registerFusion`) | Anything else: multi-pass, samplers, mip chains, neighbor reads, render passes, secondary inputs, struct-rail outputs. | blur, fast_blur, sharpen, edges, transform, video_blend. |
+
+Fusion rules within a column:
+- A `PerPixelMapper` can be the top of a fused run *and* tail any other mapper or strict-output run.
+- A `StrictOutput` can only be the top of a fused run — the planner forces a run break when it sees one mid-chain.
+- A `Freeform` stage breaks any in-progress fused run and runs alone (current behavior).
+
+### The pattern — three files
+
+For a fusion-aware effect, the per-pixel kernel lives in `pixel.hlsl`; the standalone compute shader (`compute.hlsl`) becomes a thin wrapper that includes it. The build pipeline emits BOTH `COMPUTE_WGSL/MSL` (standalone) and `PIXEL_WGSL/MSL` (a fragment template the runtime fuser splices into composed shaders).
+
+**`pixel.hlsl`** — the per-pixel logic, with a fixed signature:
+
+```hlsl
+struct FuseUniforms {            // EXACT name expected by the build pipeline.
+  float strength;
+  float bias;
+  float _pad0;
+  float _pad1;
+};
+// b2 is the canonical "uniforms" slot — 0/1 are tex_in/tex_out for the
+// standalone wrapper. The fuser renumbers this when composing.
+ConstantBuffer<FuseUniforms> u_fuse : register(b2);
+
+[noinline]                        // REQUIRED — DXC honors this; preserves the
+                                  // function across SPIR-V/naga so the fuser
+                                  // can call it. (glslc ignores the attribute,
+                                  // but the standalone path is fine inlined.)
+float4 fuse_transform(uint2 gid, float4 c) {     // PerPixelMapper signature
+  return float4(c.rgb * u_fuse.strength + u_fuse.bias, c.a);
+}
+```
+
+For `StrictOutput`, the signature differs (no input color):
+
+```hlsl
+[noinline]
+float4 fuse_transform(uint2 gid, uint2 vp_size) { // StrictOutput signature
+  return u_fuse.color;
+}
+```
+
+Helper functions in `pixel.hlsl` are fine — DXC + `[noinline]` keeps `fuse_transform` and any helpers as named functions; the build's strip pass detects them and the runtime composer renames every top-level identifier with a per-stage prefix to avoid collisions.
+
+**`compute.hlsl`** — wrapper for the standalone path:
+
+```hlsl
+#include "pixel.hlsl"
+
+Texture2D<float4>   inputTex  : register(t0);
+RWTexture2D<float4> outputTex : register(u1);
+
+[numthreads(8, 8, 1)]
+void main(uint3 gid : SV_DispatchThreadID) {
+  uint w, h;  outputTex.GetDimensions(w, h);
+  if (gid.x >= w || gid.y >= h) return;
+  outputTex[gid.xy] = fuse_transform(gid.xy, inputTex[gid.xy]);
+}
+```
+
+For `StrictOutput` effects the wrapper omits `inputTex` and passes `uint2(w, h)` as the second arg.
+
+**`main.cpp`** — split `render()` into a uniform-update step + dispatch, then register fusion:
+
+```cpp
+struct FuseUniforms { float strength; float bias; float _pad0; float _pad1; };
+
+static gpu::Buffer s_uniform_buf;
+static gpu::ComputePSO s_pso;
+static bool s_initialized = false;
+static float s_strength = 1.0f, s_bias = 0.0f;
+
+// Updates the uniform buffer for the current frame. Called from
+// render() (standalone path) AND by the engine via the fusion
+// prepare callback (fused path) — both share the same uniform write
+// so the dispatched output is identical.
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = { s_strength, s_bias, 0.f, 0.f };
+  s_uniform_buf.writeOne(u);
+}
+
+void init() {
+  s_strength = 1.0f; s_bias = 0.0f; s_initialized = false;
+
+  state::init("video.example", {1, 0, 0},
+    state::Schema()
+      .floatField("strength", 1.0f, 0.f, 4.f, state::PrimaryInput)
+      .floatField("bias",     0.0f, -1.f, 1.f, state::PrimaryInput)
+      .textureField("tex_in",  state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput));
+
+  if (gpu::Device::backend() == gpu::Backend::None) return;
+  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
+  auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  if (!cs) return;
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main",
+    gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
+  s_initialized = true;
+
+  // Opt in to fusion. Stage type, fragment WGSL/MSL (auto-emitted by
+  // the build), the uniform buffer's runtime handle, its size, and
+  // the prepare callback. No-op for other effects.
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
+}
+
+void render(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto in  = gpu::Device::textureForField("tex_in");
+  auto out = gpu::Device::textureForField("tex_out");
+  if (!in.valid() || !out.valid()) return;
+
+  prepare(vp_w, vp_h);                 // shared uniform write
+  auto cp = gpu::ComputePass::begin();
+  cp.setPSO(s_pso);
+  cp.setTexture(in,  0, 0);
+  cp.setTexture(out, 1, 1);
+  cp.setBuffer(s_uniform_buf, 2);
+  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+  cp.end();
+  gpu::Device::submit();
+}
+```
+
+**`build.sh`** — switch `compile_shaders_compute <effect>` to `compile_shaders_compute_fused <effect>`. The helper auto-detects the strict-output signature by greping `pixel.hlsl`, so the same call works for both kinds.
+
+### Verifying
+
+The per-effect E2E test should run in all three fusion modes (`force-off`, `force-on`, `auto`) and assert the same golden pixel values. Wrap the test body with `forEachFusionMode((mode) => describe(...))` from `gpu-test-helpers.ts`. Output must be byte-identical across modes — that's the parity guarantee the planner has to preserve.
+
+```ts
+forEachFusionMode((mode) => describe(`Example (${mode})`, () => {
+  it('does the thing', async () => {
+    const frame = await runGpuEffectTest({
+      module: 'example.wasm', bundle: 'core',
+      inputColor: [0.5, 0.5, 0.5, 1.0],
+      params: [['strength', 2.0]],
+    });
+    expect(frame.success).toBe(true);
+    frame.expectUniformColor({ r: 255, g: 255, b: 255, a: 255 }, 2);
+  });
+}));
+```
+
+### When NOT to convert
+
+Don't bother (and don't risk it) when the effect:
+- Reads neighbors (`inputTex[gid.xy + offset]`), uses a sampler, or samples mips (`textureSampleLevel`).
+- Has more than one input texture (e.g. `tex_in_1`).
+- Outputs a struct rail or GPU buffer rather than a texture.
+- Has any taps on `entry.taps` — the planner refuses these to keep tap routing semantics intact.
+- Runs multiple PSOs / dispatches per frame (multi-pass — give the standalone path a stable test first; revisit only when there's a reason).
+
+When in doubt the safe default is to leave `registerFusion` off entirely. The standalone path always works.
+
+### Existing examples
+
+- `wasm_modules/saturate/` — `PerPixelMapper`, with helper functions in `pixel.hlsl`.
+- `wasm_modules/fuse_solid/` — `StrictOutput`, no input texture (test-only).
+- `wasm_modules/fuse_add/` and `fuse_mul/` — minimal `PerPixelMapper` references (test-only).
+
+---
+
 ## 1. Parameter design
 
 ### 1.1 Expose lots of parameters

@@ -16,7 +16,7 @@
 
 namespace hsl {
 
-struct Uniforms {
+struct FuseUniforms {
   float hue_shift;   // turns (1.0 == full rotation)
   float saturation;  // [-1, 1]
   float lightness;   // [-1, 1]
@@ -29,6 +29,13 @@ static float s_lit = 0.0f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  // [-1, 1] slider → [-0.5, +0.5] turns (= ±180°)
+  FuseUniforms u = { s_hue * 0.5f, s_sat, s_lit, 0.f };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_hue = 0.0f; s_sat = 0.0f; s_lit = 0.0f;
@@ -49,8 +56,13 @@ void init() {
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) { (void)dt; }
@@ -73,8 +85,7 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  Uniforms u = { s_hue * 0.5f, s_sat, s_lit, 0.0f };  // [-1,1] slider → [-0.5, +0.5] turns (=±180°)
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);

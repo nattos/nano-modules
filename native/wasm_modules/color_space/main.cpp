@@ -15,7 +15,7 @@ namespace color_space {
 
 enum Space : int { SpaceSRGB = 0, SpaceLinear = 1 };
 
-struct Uniforms {
+struct FuseUniforms {
   int in_space;
   int out_space;
   int _pad0;
@@ -27,6 +27,12 @@ static int s_out_space = SpaceLinear;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = { s_in_space, s_out_space, 0, 0 };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_in_space = SpaceSRGB;
@@ -56,8 +62,13 @@ void init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double) {}
@@ -78,8 +89,7 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  Uniforms u = { s_in_space, s_out_space, 0, 0 };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);

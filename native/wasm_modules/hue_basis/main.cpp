@@ -40,7 +40,7 @@ namespace hue_basis {
 
 enum Direction : int { DirForward = 0, DirReverse = 1 };
 
-struct Uniforms {
+struct FuseUniforms {
   float c0[4];   // matrix column 0 in [0..2], pad in [3]
   float c1[4];
   float c2[4];
@@ -51,6 +51,10 @@ static float s_hue[3] = { 0.0f, 1.0f / 3.0f, 2.0f / 3.0f };
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+// Forward decl — body after init() since prepare() uses hue_to_rgb
+// (defined later as a static helper).
+void prepare(int vp_w, int vp_h);
 
 void init() {
   s_direction = DirForward;
@@ -81,8 +85,13 @@ void init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double) {}
@@ -111,39 +120,28 @@ static void hue_to_rgb(float h, float& r, float& g, float& b) {
   else              { r = 1.f;       g = 0.f;        b = 6.f - k; }
 }
 
-void render(int vp_w, int vp_h) {
+void prepare(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
-  auto in  = gpu::Device::textureForField("tex_in");
-  auto out = gpu::Device::textureForField("tex_out");
-  if (!in.valid() || !out.valid()) return;
 
   // Build M with columns b'_i. Each b'_i is a fully-saturated RGB
   // colour with components summing to 1.
-  // Layout: bv[i] = column i, bv[i][j] = component j (row j of M).
   float bv[3][3];
   for (int i = 0; i < 3; i++) {
     hue_to_rgb(s_hue[i], bv[i][0], bv[i][1], bv[i][2]);
     float s = bv[i][0] + bv[i][1] + bv[i][2];
-    if (s <= 1e-6f) s = 1e-6f;       // degenerate hue; avoid div-by-0
+    if (s <= 1e-6f) s = 1e-6f;
     float inv = 1.0f / s;
     bv[i][0] *= inv; bv[i][1] *= inv; bv[i][2] *= inv;
   }
 
-  // Pick the matrix to upload: M for Forward, M^-1 for Reverse.
-  // For Reverse: closed-form 3×3 inverse via cofactors. Falls back
-  // to M (which gives an output close to the original Forward
-  // shape) if M is singular — better to "collapse to forward" than
-  // to NaN.
+  // Pick M for Forward, M^-1 for Reverse (closed-form 3×3 inverse).
+  // Falls back to M if M is singular — collapses cleanly without NaN.
   float upload[3][3];
   if (s_direction == DirForward) {
     upload[0][0] = bv[0][0]; upload[0][1] = bv[0][1]; upload[0][2] = bv[0][2];
     upload[1][0] = bv[1][0]; upload[1][1] = bv[1][1]; upload[1][2] = bv[1][2];
     upload[2][0] = bv[2][0]; upload[2][1] = bv[2][1]; upload[2][2] = bv[2][2];
   } else {
-    // Cross products of M's columns (rows of M^-1 before /det).
-    //   M^-1's rows are: r0 = c1×c2, r1 = c2×c0, r2 = c0×c1   all / det
-    //   M^-1's columns (which is what the shader needs as cols) are
-    //   the transposes of those rows.
     float r0[3] = {
       bv[1][1] * bv[2][2] - bv[1][2] * bv[2][1],
       bv[1][2] * bv[2][0] - bv[1][0] * bv[2][2],
@@ -163,7 +161,6 @@ void render(int vp_w, int vp_h) {
 
     if (std::fabs(det) > 1e-4f) {
       float inv_det = 1.0f / det;
-      // M^-1's column i = (r0[i], r1[i], r2[i]) / det.
       upload[0][0] = r0[0] * inv_det;
       upload[0][1] = r1[0] * inv_det;
       upload[0][2] = r2[0] * inv_det;
@@ -174,20 +171,26 @@ void render(int vp_w, int vp_h) {
       upload[2][1] = r1[2] * inv_det;
       upload[2][2] = r2[2] * inv_det;
     } else {
-      // Singular basis (e.g., all three hues identical). Reverse has
-      // no inverse to give. Upload M's cols so reverse becomes
-      // identical to forward — collapses cleanly without NaN.
       upload[0][0] = bv[0][0]; upload[0][1] = bv[0][1]; upload[0][2] = bv[0][2];
       upload[1][0] = bv[1][0]; upload[1][1] = bv[1][1]; upload[1][2] = bv[1][2];
       upload[2][0] = bv[2][0]; upload[2][1] = bv[2][1]; upload[2][2] = bv[2][2];
     }
   }
 
-  Uniforms u = {};
+  FuseUniforms u = {};
   u.c0[0] = upload[0][0]; u.c0[1] = upload[0][1]; u.c0[2] = upload[0][2];
   u.c1[0] = upload[1][0]; u.c1[1] = upload[1][1]; u.c1[2] = upload[1][2];
   u.c2[0] = upload[2][0]; u.c2[1] = upload[2][1]; u.c2[2] = upload[2][2];
   s_uniform_buf.writeOne(u);
+}
+
+void render(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto in  = gpu::Device::textureForField("tex_in");
+  auto out = gpu::Device::textureForField("tex_out");
+  if (!in.valid() || !out.valid()) return;
+
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);

@@ -8,21 +8,21 @@ MODULE_NAME=core
 
 echo "=== Compiling shaders (core) ==="
 source ../wasm_build_env.sh
-compile_shaders_compute brightness_contrast
-compile_shaders_compute solid_color
+compile_shaders_compute_fused brightness_contrast
+compile_shaders_compute_fused solid_color
 compile_shaders_compute video_blend
-compile_shaders_compute bake_alpha
-compile_shaders_compute curve
-compile_shaders_compute exposure
-compile_shaders_compute invert
-compile_shaders_compute posterize
-compile_shaders_compute levels
-compile_shaders_compute hsl
-compile_shaders_compute color_space
-compile_shaders_compute hue_basis
+compile_shaders_compute_fused bake_alpha
+compile_shaders_compute_fused curve
+compile_shaders_compute_fused exposure
+compile_shaders_compute_fused invert
+compile_shaders_compute_fused posterize
+compile_shaders_compute_fused levels
+compile_shaders_compute_fused hsl
+compile_shaders_compute_fused color_space
+compile_shaders_compute_fused hue_basis
 compile_shaders_compute_fused saturate
-compile_shaders_compute vibrance
-compile_shaders_compute vignette
+compile_shaders_compute_fused vibrance
+compile_shaders_compute_fused vignette
 compile_shaders_compute blur
 compile_shaders_compute_var fast_blur down rgba8unorm write down
 compile_shaders_compute_var fast_blur up   rgba8unorm write up
@@ -32,9 +32,9 @@ compile_shaders_compute sharpen
 compile_shaders_compute edges
 compile_shaders_compute crop
 compile_shaders_compute transform
-compile_shaders_compute gradient
-compile_shaders_compute grid
-compile_shaders_compute noise
+compile_shaders_compute_fused gradient
+compile_shaders_compute_fused grid
+compile_shaders_compute_fused noise
 
 echo "=== Building WASM (core) ==="
 

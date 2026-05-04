@@ -1,8 +1,6 @@
 /*
- * Brightness/Contrast — GPU compute effect module.
- *
- * Takes a texture input, applies brightness and contrast adjustments,
- * outputs to render target.
+ * Brightness/Contrast — fusion-aware GPU compute effect.
+ * Per-pixel logic in pixel.hlsl. See EFFECTS_STYLE_GUIDE.md §0.1.
  */
 
 #include <gpu.h>
@@ -14,10 +12,12 @@
 
 namespace brightness_contrast {
 
-struct Uniforms {
+// Layout MUST match `struct FuseUniforms` in pixel.hlsl.
+struct FuseUniforms {
   float brightness;
   float contrast;
-  float _pad[2];
+  float _pad0;
+  float _pad1;
 };
 
 static float s_brightness = 0.5f;
@@ -26,6 +26,12 @@ static bool s_initialized = false;
 
 static gpu::ComputePSO s_compute_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = { s_brightness, s_contrast, 0.f, 0.f };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_brightness = 0.5f;
@@ -56,10 +62,15 @@ void init() {
   }
 
   s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
 
   s_initialized = true;
   state::log("BrightnessContrast: initialized");
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) {
@@ -93,8 +104,7 @@ void render(int vp_w, int vp_h) {
     if (!input.valid()) return;
   }
 
-  Uniforms u = { s_brightness, s_contrast, {0, 0} };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_compute_pso);

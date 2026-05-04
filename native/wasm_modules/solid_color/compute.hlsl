@@ -1,15 +1,14 @@
-// Solid Color Generator — fills output texture with a uniform color.
+// generator.solid_color — standalone compute wrapper for a strict-output generator.
+// Per-pixel logic in pixel.hlsl.
 
-RWTexture2D<float4> outputTex : register(u0);
+#include "pixel.hlsl"
 
-cbuffer Uniforms : register(b1) {
-  float red;
-  float green;
-  float blue;
-  float _pad;
-};
+RWTexture2D<float4> outputTex : register(u1);
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
-  outputTex[gid.xy] = float4(red, green, blue, 1.0);
+  uint w, h;
+  outputTex.GetDimensions(w, h);
+  if (gid.x >= w || gid.y >= h) return;
+  outputTex[gid.xy] = fuse_transform(gid.xy, uint2(w, h));
 }

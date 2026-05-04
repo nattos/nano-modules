@@ -23,8 +23,8 @@
 
 namespace gradient {
 
-struct Uniforms {
-  float dir_x, dir_y;        // unit direction in cover-square units
+struct FuseUniforms {
+  float dir_x, dir_y;
   float offset;
   float softness;
   float color_a_r, color_a_g, color_a_b;
@@ -41,6 +41,21 @@ static float s_color_b[3] = { 0.0f, 0.0f, 0.0f };
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
+  float angle = s_angle * 3.14159265358979323846f;
+  FuseUniforms u = {};
+  u.dir_x = std::cos(angle);
+  u.dir_y = std::sin(angle);
+  u.offset = s_offset;
+  u.softness = s_softness;
+  u.color_a_r = s_color_a[0]; u.color_a_g = s_color_a[1]; u.color_a_b = s_color_a[2];
+  u.color_b_r = s_color_b[0]; u.color_b_g = s_color_b[1]; u.color_b_b = s_color_b[2];
+  u.aspect_x = ax; u.aspect_y = ay;
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_angle = 0.0f;
@@ -65,9 +80,14 @@ void init() {
   bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().storageTex2d(0, gpu::TextureFormat::RGBA8).uniform(1));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::StrictOutput,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) { (void)dt; }
@@ -95,23 +115,12 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!output.valid()) return;
 
-  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
-
-  float angle = s_angle * 3.14159265358979323846f;
-  Uniforms u = {};
-  u.dir_x = std::cos(angle);
-  u.dir_y = std::sin(angle);
-  u.offset = s_offset;
-  u.softness = s_softness;
-  u.color_a_r = s_color_a[0]; u.color_a_g = s_color_a[1]; u.color_a_b = s_color_a[2];
-  u.color_b_r = s_color_b[0]; u.color_b_g = s_color_b[1]; u.color_b_b = s_color_b[2];
-  u.aspect_x = ax; u.aspect_y = ay;
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
-  cp.setTexture(output, 0, 1);
-  cp.setBuffer(s_uniform_buf, 1);
+  cp.setTexture(output, 1, 1);
+  cp.setBuffer(s_uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

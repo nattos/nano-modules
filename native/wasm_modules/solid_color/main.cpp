@@ -14,7 +14,7 @@
 
 namespace solid_color {
 
-struct Uniforms {
+struct FuseUniforms {
   float r, g, b, _pad;
 };
 
@@ -22,6 +22,12 @@ static float s_r = 0.5f, s_g = 0.5f, s_b = 0.5f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = { s_r, s_g, s_b, 0.f };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_r = 0.5f; s_g = 0.5f; s_b = 0.5f;
@@ -39,9 +45,17 @@ void init() {
   auto mod = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!mod) return;
 
-  s_pso = gpu::Device::createComputePSO(mod, metal ? "main_" : "main", gpu::Bindings().storageTex2d(0, gpu::TextureFormat::RGBA8).uniform(1));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  // Fusion-aware strict-output: bind at slots 1+2 (sparse — slot 0
+  // unused) so the fragment's register(b2) maps cleanly when the
+  // runtime fuser splices fuse_transform in.
+  s_pso = gpu::Device::createComputePSO(mod, metal ? "main_" : "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::StrictOutput,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) { (void)dt; }
@@ -63,13 +77,12 @@ void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto output = gpu::Device::renderTarget();
-  Uniforms u = { s_r, s_g, s_b, 0 };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
-  cp.setTexture(output, 0, 1); // slot 0, write
-  cp.setBuffer(s_uniform_buf, 1);
+  cp.setTexture(output, 1, 1); // slot 1, write (strict-output: slot 0 unused)
+  cp.setBuffer(s_uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

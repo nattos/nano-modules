@@ -22,15 +22,23 @@
 
 namespace vignette {
 
-struct Uniforms {
+// Layout MUST match `struct FuseUniforms` in pixel.hlsl. Includes
+// vp_w/vp_h because the per-pixel mapper signature gives only (gid,
+// c) — we route the viewport size through the uniform so
+// fuse_transform can still compute cover-square coordinates.
+struct FuseUniforms {
   float amount;
   float radius;
   float softness;
   float shape;
   float center_x;
   float center_y;
-  float aspect_x;   // half-extent of the cover square in viewport-normalized x
-  float aspect_y;   // same for y
+  float aspect_x;
+  float aspect_y;
+  float vp_w;
+  float vp_h;
+  float _pad0;
+  float _pad1;
 };
 
 static float s_amount = -0.5f;
@@ -42,6 +50,19 @@ static float s_center_y = 0.0f;
 static bool s_initialized = false;
 static gpu::ComputePSO s_pso;
 static gpu::Buffer s_uniform_buf;
+
+void prepare(int vp_w, int vp_h) {
+  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
+  FuseUniforms u = {
+    s_amount, s_radius, s_softness, s_shape,
+    s_center_x, s_center_y,
+    ax, ay,
+    static_cast<float>(vp_w), static_cast<float>(vp_h),
+    0.f, 0.f,
+  };
+  s_uniform_buf.writeOne(u);
+}
 
 void init() {
   s_amount = -0.5f;
@@ -69,8 +90,13 @@ void init() {
   auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
+
+  state::registerFusion(state::FusionKind::PerPixelMapper,
+                        PIXEL_WGSL, PIXEL_MSL,
+                        s_uniform_buf.id, sizeof(FuseUniforms),
+                        &prepare);
 }
 
 void tick(double dt) { (void)dt; }
@@ -97,21 +123,7 @@ void render(int vp_w, int vp_h) {
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
-  // Cover-square half-extents in viewport-normalized [0,1] uv space.
-  // square_side = max(W, H); half-extent in uv along each axis = square_side / (2 * vp_dim).
-  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
-
-  Uniforms u = {
-    s_amount,
-    s_radius,
-    s_softness,
-    s_shape,
-    s_center_x,
-    s_center_y,
-    ax,
-    ay,
-  };
-  s_uniform_buf.writeOne(u);
+  prepare(vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
