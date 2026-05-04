@@ -184,6 +184,33 @@ export class BridgeCore {
     return decoder.decode(new Uint8Array(this.memory.buffer, this.scratchPtr, len));
   }
 
+  /**
+   * Call the C API with the persistent scratch buffer. If the C side
+   * reports it needed more space than SCRATCH_SIZE, allocate a one-shot
+   * larger buffer and call again. Returns null when the result is
+   * empty (len === 0); otherwise the decoded string.
+   *
+   * `call(buf, bufLen)` MUST return the REQUIRED full size of the
+   * result (write_to_buf in bridge_core_api.cpp returns this).
+   */
+  private readGrowable(call: (buf: number, bufLen: number) => number): string | null {
+    const needed = call(this.scratchPtr, SCRATCH_SIZE);
+    if (needed === 0) return null;
+    if (needed <= SCRATCH_SIZE) return this.readScratch(needed);
+    // Scratch was too small. Alloc a temp buffer and retry.
+    const tmp = this.exports.malloc(needed);
+    try {
+      const got = call(tmp, needed);
+      if (got === 0) return null;
+      // Defensive: if the result somehow grew between calls, clamp to
+      // what we asked for to avoid reading past the buffer.
+      const clamped = Math.min(got, needed);
+      return decoder.decode(new Uint8Array(this.memory.buffer, tmp, clamped));
+    } finally {
+      this.exports.free(tmp);
+    }
+  }
+
   /** Call fn with a temporary string allocation, then free it. */
   private withString<T>(str: string, fn: (ptr: number, len: number) => T): T {
     const [ptr, len] = this.writeString(str);
@@ -220,10 +247,8 @@ export class BridgeCore {
   }
 
   pollOutgoing(clientId: number): string | null {
-    const len = this.exports.bridge_core_poll_outgoing(
-      this.handle, clientId, this.scratchPtr, SCRATCH_SIZE);
-    if (len === 0) return null;
-    return this.readScratch(len);
+    return this.readGrowable((buf, bufLen) =>
+      this.exports.bridge_core_poll_outgoing(this.handle, clientId, buf, bufLen));
   }
 
   /** Drain all pending outgoing messages for a client. */
@@ -240,19 +265,17 @@ export class BridgeCore {
 
   registerPlugin(id: string, major: number, minor: number, patch: number): string {
     return this.withString(id, (idPtr, idLen) => {
-      const keyLen = this.exports.bridge_core_register_plugin(
-        this.handle, idPtr, idLen, major, minor, patch,
-        this.scratchPtr, SCRATCH_SIZE);
-      return this.readScratch(keyLen);
+      return this.readGrowable((buf, bufLen) =>
+        this.exports.bridge_core_register_plugin(
+          this.handle, idPtr, idLen, major, minor, patch, buf, bufLen)) ?? '';
     });
   }
 
   registerWithSchema(id: string, major: number, minor: number, patch: number, schemaJson: string): string {
     return this.withStrings([id, schemaJson], ([[idPtr, idLen], [sPtr, sLen]]) => {
-      const keyLen = this.exports.bridge_core_register_with_schema(
-        this.handle, idPtr, idLen, major, minor, patch,
-        sPtr, sLen, this.scratchPtr, SCRATCH_SIZE);
-      return this.readScratch(keyLen);
+      return this.readGrowable((buf, bufLen) =>
+        this.exports.bridge_core_register_with_schema(
+          this.handle, idPtr, idLen, major, minor, patch, sPtr, sLen, buf, bufLen)) ?? '';
     });
   }
 
@@ -300,10 +323,9 @@ export class BridgeCore {
 
   getPluginState(pluginKey: string): any {
     return this.withString(pluginKey, (pkPtr, pkLen) => {
-      const len = this.exports.bridge_core_get_plugin_state(
-        this.handle, pkPtr, pkLen, this.scratchPtr, SCRATCH_SIZE);
-      if (len === 0) return {};
-      return JSON.parse(this.readScratch(len));
+      const json = this.readGrowable((buf, bufLen) =>
+        this.exports.bridge_core_get_plugin_state(this.handle, pkPtr, pkLen, buf, bufLen));
+      return json === null ? {} : JSON.parse(json);
     });
   }
 
@@ -336,10 +358,9 @@ export class BridgeCore {
   }
 
   getParamPath(paramId: bigint): string {
-    const len = this.exports.bridge_core_get_param_path(
-      this.handle, paramId, this.scratchPtr, SCRATCH_SIZE);
-    if (len === 0) return `param/${paramId}`;
-    return this.readScratch(len);
+    const path = this.readGrowable((buf, bufLen) =>
+      this.exports.bridge_core_get_param_path(this.handle, paramId, buf, bufLen));
+    return path ?? `param/${paramId}`;
   }
 
   // --- State queries ---
@@ -353,20 +374,16 @@ export class BridgeCore {
 
   getAt(path: string): any {
     return this.withString(path, (ptr, len) => {
-      const resultLen = this.exports.bridge_core_get_at(
-        this.handle, ptr, len, this.scratchPtr, SCRATCH_SIZE);
-      if (resultLen === 0) return null;
-      return JSON.parse(this.readScratch(resultLen));
+      const json = this.readGrowable((buf, bufLen) =>
+        this.exports.bridge_core_get_at(this.handle, ptr, len, buf, bufLen));
+      return json === null ? null : JSON.parse(json);
     });
   }
 
   getPluginKey(id: string): string | null {
-    return this.withString(id, (ptr, len) => {
-      const keyLen = this.exports.bridge_core_get_plugin_key(
-        this.handle, ptr, len, this.scratchPtr, SCRATCH_SIZE);
-      if (keyLen === 0) return null;
-      return this.readScratch(keyLen);
-    });
+    return this.withString(id, (ptr, len) =>
+      this.readGrowable((buf, bufLen) =>
+        this.exports.bridge_core_get_plugin_key(this.handle, ptr, len, buf, bufLen)));
   }
 
   // --- Val handle store ---
@@ -385,8 +402,8 @@ export class BridgeCore {
   valAsNumber(valH: number): number { return this.exports.bridge_core_val_as_number(this.handle, valH); }
   valAsBool(valH: number): boolean { return this.exports.bridge_core_val_as_bool(this.handle, valH) !== 0; }
   valAsString(valH: number): string {
-    const len = this.exports.bridge_core_val_as_string(this.handle, valH, this.scratchPtr, SCRATCH_SIZE);
-    return len > 0 ? this.readScratch(len) : '';
+    return this.readGrowable((buf, bufLen) =>
+      this.exports.bridge_core_val_as_string(this.handle, valH, buf, bufLen)) ?? '';
   }
 
   valGet(objH: number, key: string): number {
@@ -400,8 +417,8 @@ export class BridgeCore {
   }
   valKeysCount(objH: number): number { return this.exports.bridge_core_val_keys_count(this.handle, objH); }
   valKeyAt(objH: number, index: number): string {
-    const len = this.exports.bridge_core_val_key_at(this.handle, objH, index, this.scratchPtr, SCRATCH_SIZE);
-    return len > 0 ? this.readScratch(len) : '';
+    return this.readGrowable((buf, bufLen) =>
+      this.exports.bridge_core_val_key_at(this.handle, objH, index, buf, bufLen)) ?? '';
   }
 
   valGetIndex(arrH: number, index: number): number { return this.exports.bridge_core_val_get_index(this.handle, arrH, index); }
@@ -410,8 +427,8 @@ export class BridgeCore {
 
   valRelease(valH: number): void { this.exports.bridge_core_val_release(this.handle, valH); }
   valToJson(valH: number): string {
-    const len = this.exports.bridge_core_val_to_json(this.handle, valH, this.scratchPtr, SCRATCH_SIZE);
-    return len > 0 ? this.readScratch(len) : '';
+    return this.readGrowable((buf, bufLen) =>
+      this.exports.bridge_core_val_to_json(this.handle, valH, buf, bufLen)) ?? '';
   }
 
   /** Write a val handle's value directly into a plugin's state document. */

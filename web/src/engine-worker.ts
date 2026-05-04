@@ -657,7 +657,32 @@ async function reloadWasmModule(wasmUrl: string) {
   const effectIds = new Set(oldEffects.map(e => e.id));
   console.log(`[wasm-hmr] swapping ${moduleType} (${oldEffects.length} effects: ${oldEffects.map(e => e.id).join(', ')})`);
 
-  // Evict from registries.
+  // Re-fetch + instantiate the new module FIRST. The old module stays
+  // registered for the duration of this await, so any frame that runs
+  // mid-load still finds the old effects and executes cleanly. The
+  // registry swap below is synchronous, so there's no window where the
+  // registries are empty.
+  const cacheBustedUrl = `${wasmUrl}?t=${Date.now()}`;
+  const host = new WasmHost();
+  host.bridgeCore = bridgeCore;
+  host.gpuHost = gpuHost;
+  let compiled: WebAssembly.Module;
+  let effects: EffectInfo[];
+  const fetchStart = performance.now();
+  try {
+    await host.load(cacheBustedUrl);
+    compiled = host.compiledModule!;
+    effects = host.registeredEffects.map(e => ({ ...e }));
+  } catch (e) {
+    console.error(`[wasm-hmr] ✗ reload failed for ${wasmUrl}:`, e);
+    post({ type: 'error', message: `Failed to reload ${wasmUrl}: ${e}` });
+    return;
+  }
+  const fetchMs = (performance.now() - fetchStart).toFixed(1);
+
+  // Atomic swap (all synchronous): evict old, install new, then
+  // invalidate live instances so the executor picks them up on the
+  // next frame.
   moduleRegistry.delete(wasmUrl);
   for (const e of oldEffects) {
     const reg = effectRegistry.get(e.id);
@@ -665,9 +690,11 @@ async function reloadWasmModule(wasmUrl: string) {
       effectRegistry.delete(e.id);
     }
   }
+  moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
+  for (const effect of effects) {
+    effectRegistry.set(effect.id, { compiled, effect });
+  }
 
-  // Invalidate live sketch instances of this module's effects so the
-  // executor reloads them on the next frame with the new compiled module.
   let invalidatedCount = 0;
   if (sketchExecutor) {
     for (const [, sketch] of sketches) {
@@ -683,35 +710,16 @@ async function reloadWasmModule(wasmUrl: string) {
   }
   console.log(`[wasm-hmr] invalidated ${invalidatedCount} live instance(s); they will be recreated on the next frame with persisted state replayed from the sketch`);
 
-  // Re-fetch and re-register. Cache-bust to defeat the HTTP cache.
-  const cacheBustedUrl = `${wasmUrl}?t=${Date.now()}`;
-  const host = new WasmHost();
-  host.bridgeCore = bridgeCore;
-  host.gpuHost = gpuHost;
-  try {
-    const fetchStart = performance.now();
-    await host.load(cacheBustedUrl);
-    const fetchMs = (performance.now() - fetchStart).toFixed(1);
-    const compiled = host.compiledModule!;
-    const effects = host.registeredEffects.map(e => ({ ...e }));
-    moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
-    for (const effect of effects) {
-      effectRegistry.set(effect.id, { compiled, effect });
-    }
-    post({
-      type: 'effectsDiscovered',
-      effects: effects.map(e => ({
-        id: e.id, name: e.name, description: e.description,
-        category: e.category, keywords: e.keywords,
-      })),
-    });
-    markDirty();
-    const totalMs = (performance.now() - t0).toFixed(1);
-    console.log(`[wasm-hmr] ✔ reloaded ${wasmUrl} in ${totalMs}ms (fetch+instantiate ${fetchMs}ms, ${effects.length} effects: ${effects.map(e => e.id).join(', ')})`);
-  } catch (e) {
-    console.error(`[wasm-hmr] ✗ reload failed for ${wasmUrl}:`, e);
-    post({ type: 'error', message: `Failed to reload ${wasmUrl}: ${e}` });
-  }
+  post({
+    type: 'effectsDiscovered',
+    effects: effects.map(e => ({
+      id: e.id, name: e.name, description: e.description,
+      category: e.category, keywords: e.keywords,
+    })),
+  });
+  markDirty();
+  const totalMs = (performance.now() - t0).toFixed(1);
+  console.log(`[wasm-hmr] ✔ reloaded ${wasmUrl} in ${totalMs}ms (fetch+instantiate ${fetchMs}ms, ${effects.length} effects: ${effects.map(e => e.id).join(', ')})`);
 }
 
 /**

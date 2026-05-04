@@ -1,22 +1,32 @@
 /*
  * video.hue_basis — Channel-mix into a basis defined by three hues.
  *
- * Each of the three hue parameters identifies a fully-saturated RGB
- * basis vector (HSV at S=V=1). The basis is normalized per-vector
- * so each component-sum equals 1, which guarantees the FORWARD pass
- * (M^T · in) maps white to white — handy for "tinted channel mixer"
- * effects where you want to project the image into a new
- * non-orthogonal basis without crushing the highlights.
+ * Each hue identifies a fully-saturated RGB basis vector (HSV at
+ * S=V=1), normalized per-vector so its three components sum to 1.
+ * The matrix M with these vectors as COLUMNS has the property that
+ * its column-sums equal 1, so M^T · (1,1,1) = (1,1,1) — i.e., the
+ * Forward direction always preserves white.
  *
  * Direction:
- *   Forward (default) — out = M^T · in. Per-channel sums of M's
- *                       columns are 1, so white survives intact.
- *   Reverse           — out = M · in. The "inverse" without ever
- *                       computing M^-1: exact for an orthogonal
- *                       basis, otherwise lossy but NaN-free.
+ *   Forward (default) — uploads M's columns. Shader computes
+ *                       M^T · in (dot products of the three basis
+ *                       vectors with the input).
+ *   Reverse           — uploads M^-1's columns (closed-form 3×3
+ *                       inverse). Shader still does the same
+ *                       dot-products, so the result is M^-T · in,
+ *                       which is the EXACT inverse of Forward.
+ *                       Round-tripping Forward → Reverse with the
+ *                       same hues is identity for any non-singular
+ *                       basis.
  *
- * With the default basis (red, green, blue at hues 0, 1/3, 2/3) M
- * is the identity matrix and both directions are pass-through.
+ *                       For singular bases (all hues collapsed to
+ *                       the same value, det≈0) we fall back to
+ *                       uploading M's columns again, so the round-
+ *                       trip gracefully collapses without producing
+ *                       NaNs.
+ *
+ * Default basis is (R, G, B) at hues 0, 1/3, 2/3 → M = identity.
+ * Both directions pass through unchanged.
  */
 
 #include <gpu.h>
@@ -31,11 +41,9 @@ namespace hue_basis {
 enum Direction : int { DirForward = 0, DirReverse = 1 };
 
 struct Uniforms {
-  float c0[4];   // b'_0 in [0..2], pad in [3]
+  float c0[4];   // matrix column 0 in [0..2], pad in [3]
   float c1[4];
   float c2[4];
-  int direction;
-  int _pad0, _pad1, _pad2;
 };
 
 static int   s_direction = DirForward;
@@ -109,22 +117,76 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // Build the normalized basis. Each b_i is a fully-saturated RGB
-  // colour; normalize so its three components sum to 1.
+  // Build M with columns b'_i. Each b'_i is a fully-saturated RGB
+  // colour with components summing to 1.
+  // Layout: bv[i] = column i, bv[i][j] = component j (row j of M).
   float bv[3][3];
   for (int i = 0; i < 3; i++) {
     hue_to_rgb(s_hue[i], bv[i][0], bv[i][1], bv[i][2]);
     float s = bv[i][0] + bv[i][1] + bv[i][2];
-    if (s <= 1e-6f) s = 1e-6f;       // pathological; avoid div-by-0
+    if (s <= 1e-6f) s = 1e-6f;       // degenerate hue; avoid div-by-0
     float inv = 1.0f / s;
     bv[i][0] *= inv; bv[i][1] *= inv; bv[i][2] *= inv;
   }
 
+  // Pick the matrix to upload: M for Forward, M^-1 for Reverse.
+  // For Reverse: closed-form 3×3 inverse via cofactors. Falls back
+  // to M (which gives an output close to the original Forward
+  // shape) if M is singular — better to "collapse to forward" than
+  // to NaN.
+  float upload[3][3];
+  if (s_direction == DirForward) {
+    upload[0][0] = bv[0][0]; upload[0][1] = bv[0][1]; upload[0][2] = bv[0][2];
+    upload[1][0] = bv[1][0]; upload[1][1] = bv[1][1]; upload[1][2] = bv[1][2];
+    upload[2][0] = bv[2][0]; upload[2][1] = bv[2][1]; upload[2][2] = bv[2][2];
+  } else {
+    // Cross products of M's columns (rows of M^-1 before /det).
+    //   M^-1's rows are: r0 = c1×c2, r1 = c2×c0, r2 = c0×c1   all / det
+    //   M^-1's columns (which is what the shader needs as cols) are
+    //   the transposes of those rows.
+    float r0[3] = {
+      bv[1][1] * bv[2][2] - bv[1][2] * bv[2][1],
+      bv[1][2] * bv[2][0] - bv[1][0] * bv[2][2],
+      bv[1][0] * bv[2][1] - bv[1][1] * bv[2][0],
+    };
+    float r1[3] = {
+      bv[2][1] * bv[0][2] - bv[2][2] * bv[0][1],
+      bv[2][2] * bv[0][0] - bv[2][0] * bv[0][2],
+      bv[2][0] * bv[0][1] - bv[2][1] * bv[0][0],
+    };
+    float r2[3] = {
+      bv[0][1] * bv[1][2] - bv[0][2] * bv[1][1],
+      bv[0][2] * bv[1][0] - bv[0][0] * bv[1][2],
+      bv[0][0] * bv[1][1] - bv[0][1] * bv[1][0],
+    };
+    float det = bv[0][0] * r0[0] + bv[0][1] * r0[1] + bv[0][2] * r0[2];
+
+    if (std::fabs(det) > 1e-4f) {
+      float inv_det = 1.0f / det;
+      // M^-1's column i = (r0[i], r1[i], r2[i]) / det.
+      upload[0][0] = r0[0] * inv_det;
+      upload[0][1] = r1[0] * inv_det;
+      upload[0][2] = r2[0] * inv_det;
+      upload[1][0] = r0[1] * inv_det;
+      upload[1][1] = r1[1] * inv_det;
+      upload[1][2] = r2[1] * inv_det;
+      upload[2][0] = r0[2] * inv_det;
+      upload[2][1] = r1[2] * inv_det;
+      upload[2][2] = r2[2] * inv_det;
+    } else {
+      // Singular basis (e.g., all three hues identical). Reverse has
+      // no inverse to give. Upload M's cols so reverse becomes
+      // identical to forward — collapses cleanly without NaN.
+      upload[0][0] = bv[0][0]; upload[0][1] = bv[0][1]; upload[0][2] = bv[0][2];
+      upload[1][0] = bv[1][0]; upload[1][1] = bv[1][1]; upload[1][2] = bv[1][2];
+      upload[2][0] = bv[2][0]; upload[2][1] = bv[2][1]; upload[2][2] = bv[2][2];
+    }
+  }
+
   Uniforms u = {};
-  u.c0[0] = bv[0][0]; u.c0[1] = bv[0][1]; u.c0[2] = bv[0][2];
-  u.c1[0] = bv[1][0]; u.c1[1] = bv[1][1]; u.c1[2] = bv[1][2];
-  u.c2[0] = bv[2][0]; u.c2[1] = bv[2][1]; u.c2[2] = bv[2][2];
-  u.direction = s_direction;
+  u.c0[0] = upload[0][0]; u.c0[1] = upload[0][1]; u.c0[2] = upload[0][2];
+  u.c1[0] = upload[1][0]; u.c1[1] = upload[1][1]; u.c1[2] = upload[1][2];
+  u.c2[0] = upload[2][0]; u.c2[1] = upload[2][1]; u.c2[2] = upload[2][2];
   s_uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

@@ -47,10 +47,15 @@ static BridgeCoreInstance* as(BridgeCoreHandle h) {
   return static_cast<BridgeCoreInstance*>(h);
 }
 
+// Returns the REQUIRED size for src (its full length). Callers detect
+// truncation by comparing the return value to buf_len: if returned >
+// buf_len, the buffer was too small and the caller must retry with a
+// larger one. Always copies as much as fits.
 static int write_to_buf(const std::string& src, char* buf, int buf_len) {
-  int len = std::min(static_cast<int>(src.size()), buf_len);
-  if (len > 0) std::memcpy(buf, src.data(), len);
-  return len;
+  int needed = static_cast<int>(src.size());
+  int copy_len = std::min(needed, buf_len);
+  if (copy_len > 0) std::memcpy(buf, src.data(), copy_len);
+  return needed;
 }
 
 // --- Lifecycle ---

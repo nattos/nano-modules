@@ -149,13 +149,14 @@ describe('Hue Basis Effect E2E', () => {
     expect(frame.gpuErrors).toEqual([]);
   });
 
-  it('reverse on a degenerate basis collapses to a single channel (no NaN)', async () => {
-    // The reverse side has no white-preserving guarantee — for a
-    // degenerate basis it cleanly collapses. With all hues = 0 the
-    // matrix has columns (1,0,0); reverse = M·in =
-    // (in.r + in.g + in.b, 0, 0). For grey input (0.4, 0.4, 0.4)
-    // that's (1.2, 0, 0) → clipped to (255, 0, 0). The contract
-    // is "graceful collapse, no NaN".
+  it('reverse on a degenerate basis falls back gracefully (no NaN)', async () => {
+    // With all hues = 0 the matrix is rank-1 and has no inverse.
+    // Reverse can't reconstruct the input — instead of
+    // NaNing, the C++ side detects the singularity (|det| ≤ 1e-4)
+    // and falls back to uploading M's columns again. Effect of
+    // reverse becomes identical to forward, which on a degenerate
+    // (all-red) basis maps each output channel to the input's red.
+    // For grey (0.4, 0.4, 0.4) → (0.4, 0.4, 0.4) → (102, 102, 102).
     const frame = await runGpuEffectTest({
       module: 'hue_basis.wasm',
       bundle: 'core',
@@ -167,7 +168,47 @@ describe('Hue Basis Effect E2E', () => {
       dumpName: 'hue_basis_degenerate_reverse',
     });
     expect(frame.success).toBe(true);
-    frame.expectUniformColor({ r: 255, g: 0, b: 0, a: 255 }, 4);
+    frame.expectUniformColor({ r: 102, g: 102, b: 102, a: 255 }, 4);
     expect(frame.gpuErrors).toEqual([]);
+  });
+
+  it('forward → reverse round-trip is identity for a non-orthogonal basis', async () => {
+    // Pick a deliberately non-orthogonal basis (CMY) and run the
+    // input through the chain: solid_color → hue_basis(forward) →
+    // hue_basis(reverse). Output should equal the original solid
+    // colour within 8-bit rounding.
+    //
+    // We can't easily express a 3-stage chain through the runner's
+    // ping-pong setup without separate hosts, so emulate by
+    // computing what forward(input) is on the CPU side, then
+    // running reverse on that.
+    //
+    // Forward on CMY basis (hues 0.5, 0.833, 0.166) of (1, 0.5, 0):
+    //   b'_0 = (0, 0.5, 0.5), b'_1 = (0.5, 0, 0.5), b'_2 = (0.5, 0.5, 0)
+    //   out.r = dot(b'_0, in) = 0*1 + 0.5*0.5 + 0.5*0   = 0.25
+    //   out.g = dot(b'_1, in) = 0.5*1 + 0*0.5 + 0.5*0   = 0.5
+    //   out.b = dot(b'_2, in) = 0.5*1 + 0.5*0.5 + 0*0   = 0.75
+    // → forward output = (64, 128, 191) when stored as rgba8.
+    //
+    // Now reverse-on-(64, 128, 191)/255 ≈ (0.251, 0.502, 0.749)
+    // with the same basis should give back (255, 128, 0) ≈ the
+    // original quantized to 8 bits.
+    const fwdQuant: [number, number, number, number] = [64 / 255, 128 / 255, 191 / 255, 1.0];
+    const reversed = await runGpuEffectTest({
+      module: 'hue_basis.wasm',
+      bundle: 'core',
+      inputColor: fwdQuant,
+      params: [
+        ['direction', 1],         // Reverse
+        ['hue_a', 0.5],
+        ['hue_b', 0.833333],
+        ['hue_c', 0.166666],
+      ],
+      dumpName: 'hue_basis_round_trip',
+    });
+    expect(reversed.success).toBe(true);
+    // Original input was (1, 0.5, 0); allow ~1 LSB of rounding
+    // through the 8-bit quantization in the intermediate.
+    reversed.expectUniformColor({ r: 255, g: 128, b: 0, a: 255 }, 3);
   });
 });

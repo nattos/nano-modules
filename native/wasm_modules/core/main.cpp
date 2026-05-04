@@ -105,6 +105,13 @@ namespace hue_basis {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace saturate {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 namespace vibrance {
     void init();
     void tick(double dt);
@@ -365,6 +372,20 @@ void nano_module_main() {
         hue_basis::tick,
         hue_basis::render,
         hue_basis::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.saturate",
+        "Saturate",
+        "Per-channel tanh soft-clip with linear deadzone and asymmetric drive",
+        "video",
+        "saturate,softclip,tanh,waveshaper,compressor,rolloff",
+        saturate::init,
+        saturate::tick,
+        saturate::render,
+        saturate::on_state_patched,
         nullptr,
     });
 
