@@ -244,6 +244,9 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'reloadWasm':
       await reloadWasmModule(cmd.wasmUrl);
       break;
+    case 'setFusionMode':
+      if (sketchExecutor) sketchExecutor.setFusionMode(cmd.mode);
+      break;
     case 'debugDump': {
       const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
       const sketchRecord: Record<string, any> = {};

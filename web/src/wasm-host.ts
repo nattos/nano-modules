@@ -968,6 +968,22 @@ export class WasmHost {
   }
 
   /**
+   * Invoke the `prepare(vp_w, vp_h)` callback the effect registered via
+   * `state::registerFusion`. Used by the fusion dispatcher in place of
+   * the effect's `render()` — `prepare` updates the uniform buffer
+   * without dispatching, then the fused dispatch encodes one combined
+   * compute pass over all the run's stages.
+   *
+   * No-op when the effect didn't register a fusion class. Idempotent.
+   */
+  firePrepare(vpW: number, vpH: number) {
+    if (!this.fusionPrepareIdx) return;
+    const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
+    const fn = table.get(this.fusionPrepareIdx) as ((w: number, h: number) => void) | null;
+    if (fn) fn(vpW, vpH);
+  }
+
+  /**
    * Drain any GPU "dirty" notifications buffered since the last call.
    * Each returned entry is a path whose owner called state::markGpuDirty
    * or state::setGpuBuffer. Callers should merge these into the patch

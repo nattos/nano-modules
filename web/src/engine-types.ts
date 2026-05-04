@@ -89,6 +89,11 @@ export type WorkerCommand =
   | { type: 'restart' }
   | { type: 'setSketchInput'; sketchId: string; bitmap: ImageBitmap | null }
   | { type: 'reloadWasm'; wasmUrl: string }
+  // Test-only: route fusion-eligible stages through the dispatcher
+  // ('force-on'), back to the standalone path ('force-off'), or use
+  // production defaults ('auto'). Used by per-effect tests to verify
+  // byte-identity between the standalone and fused paths.
+  | { type: 'setFusionMode'; mode: 'auto' | 'force-on' | 'force-off' }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---

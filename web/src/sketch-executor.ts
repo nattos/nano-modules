@@ -7,6 +7,31 @@ import type { BridgeCore } from './bridge-core';
 import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
 import type { ChainEntry, ModuleEntry, Sketch, SketchColumn, Rail, Tap } from './sketch-types';
+import {
+  FusionDispatcher,
+  FUSION_KIND_FREEFORM,
+  FUSION_KIND_PER_PIXEL_MAPPER,
+  FUSION_KIND_STRICT_OUTPUT,
+  type FusionStage,
+} from './fusion-dispatcher';
+
+/**
+ * Engine-wide fusion mode, settable by tests via the worker's
+ * `setFusionMode` command.
+ *
+ *   - 'auto'      — production default; the planner fuses any run of
+ *                   two-or-more eligible mappers (single-stage runs
+ *                   stay on the standalone path so non-fused effects
+ *                   are unaffected).
+ *   - 'force-on'  — every fusion-eligible stage is routed through the
+ *                   dispatcher, including length-1 runs. Used by the
+ *                   per-effect parametric tests to verify byte-identity
+ *                   between the standalone and fused paths.
+ *   - 'force-off' — disables fusion entirely; every stage takes the
+ *                   standalone path. Lets tests pin behavior to the
+ *                   pre-fusion baseline regardless of effect class.
+ */
+export type FusionMode = 'auto' | 'force-on' | 'force-off';
 
 interface LoadedModule {
   host: WasmHost;
@@ -51,6 +76,17 @@ export class SketchExecutor {
   private instances = new Map<string, LoadedModule>();
   private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
 
+  /// Owns the WGSL composition + pipeline cache for fused runs.
+  private fusionDispatcher: FusionDispatcher;
+  private fusionMode: FusionMode = 'auto';
+
+  setFusionMode(mode: FusionMode): void {
+    this.fusionMode = mode;
+  }
+  getFusionMode(): FusionMode {
+    return this.fusionMode;
+  }
+
   /**
    * Per-chain-entry texture handles from the most recent frame.
    * Keyed by `${sketchId}/${colIdx}/${chainIdx}`.
@@ -83,6 +119,38 @@ export class SketchExecutor {
     this.device = device;
     this.format = format;
     this.findModule = findModule;
+    this.fusionDispatcher = new FusionDispatcher(gpuHost);
+  }
+
+  /** Drop cached fused pipelines that include `effectId`. Called from
+   *  the engine worker on HMR reload so the recompiled effect's new
+   *  fragment is picked up on the next dispatch. */
+  invalidateFusionCacheFor(effectId: string): void {
+    this.fusionDispatcher.invalidate(effectId);
+  }
+
+  /**
+   * Decide whether `entry` can take the fused path. A stage is fusable
+   * when (a) the engine is in a mode that allows fusion, (b) the
+   * effect declared a non-Freeform fusion class, (c) it published a
+   * fragment to compose against, and (d) a uniform buffer to bind.
+   *
+   * Read-tap inputs that introduce extra textures will force the
+   * planner to split runs once Phase 3 multi-stage fusion lands; for
+   * now, with single-stage runs only, the input is always either the
+   * single chained texture or none (strict-out, future).
+   */
+  private canFuseStage(entry: ModuleEntry, host: WasmHost): boolean {
+    if (this.fusionMode === 'force-off') return false;
+    if (host.fusionKind === FUSION_KIND_FREEFORM) return false;
+    if (host.fusionKind !== FUSION_KIND_PER_PIXEL_MAPPER
+        && host.fusionKind !== FUSION_KIND_STRICT_OUTPUT) {
+      return false;
+    }
+    if (!host.fusionFragmentWgsl || host.fusionUniformBufferHandle <= 0) return false;
+    // Phase 2: only mapper top is supported in the composer.
+    if (host.fusionKind !== FUSION_KIND_PER_PIXEL_MAPPER) return false;
+    return true;
   }
 
   async ensureInstance(entry: ModuleEntry): Promise<LoadedModule> {
@@ -424,7 +492,28 @@ export class SketchExecutor {
         // --- Tick and render ---
         loaded.host.drawList = [];
         loaded.module.tick(frameState.deltaTime);
-        loaded.module.render(width, height);
+
+        // Fused path: in 'force-on' mode, every fusion-eligible stage
+        // routes through the dispatcher (single-stage runs in Phase 2;
+        // multi-stage runs land in Phase 3). 'auto' currently behaves
+        // exactly like the pre-fusion baseline so production behavior
+        // is unchanged until the planner grows multi-stage support.
+        const useFused = (this.fusionMode === 'force-on')
+                         && this.canFuseStage(entry, loaded.host)
+                         && currentInputHandle >= 0;
+        if (useFused) {
+          loaded.host.firePrepare(width, height);
+          const stage: FusionStage = {
+            effectId: entry.module_type,
+            fusionKind: loaded.host.fusionKind,
+            fragmentWgsl: loaded.host.fusionFragmentWgsl,
+            uniformBufferHandle: loaded.host.fusionUniformBufferHandle,
+          };
+          this.fusionDispatcher.dispatch(
+            [stage], currentInputHandle, outputHandle, width, height);
+        } else {
+          loaded.module.render(width, height);
+        }
 
         // --- Apply write taps (after tick/render) ---
         if (entry.taps) {

@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachFusionMode } from './gpu-test-helpers';
 
 // Per-effect tests for `video.saturate` against `core`. The effect is
 // a per-channel waveshaper that scales from BLACK (not mid-grey):
@@ -6,8 +6,13 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 //   y <= dz       :  z = y                    (linear pass-through)
 //   y >  dz       :  z = dz + (1 - dz) * tanh((y - dz) / (1 - dz) * 2^asymm)
 //   out = z
+//
+// Each test runs in BOTH 'force-off' (standalone path) and 'force-on'
+// (single-stage fused dispatch) modes — output must be byte-identical
+// across both. forEachFusionMode wraps the describe block; tests
+// inside don't need to thread fusionMode through their configs.
 
-describe('Saturate Effect E2E', () => {
+forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and three scalar inputs', async () => {
@@ -169,4 +174,4 @@ describe('Saturate Effect E2E', () => {
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ a: 128 }, 2);
   });
-});
+}));

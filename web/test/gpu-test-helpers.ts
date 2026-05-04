@@ -37,6 +37,15 @@ export type WasmBundle = 'core' | 'nano' | 'testonly';
 /// The second element is a number for scalars or an array for vecs/colors.
 export type ParamSetEntry = [string | number, number | number[]];
 
+/**
+ * Fusion mode used by the test runner page. 'auto' is the production
+ * default; 'force-on' routes every fusion-eligible stage through the
+ * dispatcher (length-1 fused runs included) so per-effect tests can
+ * verify byte-identity between standalone and fused paths; 'force-off'
+ * pins behavior to the standalone path.
+ */
+export type FusionMode = 'auto' | 'force-on' | 'force-off';
+
 export interface GpuTestConfig {
   module: string;
   bundle?: WasmBundle;
@@ -46,6 +55,7 @@ export interface GpuTestConfig {
   ticks?: number;
   samplePoints?: [number, number][];
   dumpName?: string;
+  fusionMode?: FusionMode;
 }
 
 /** Config for an effect test: single module with a solid-color input texture. */
@@ -60,6 +70,7 @@ export interface GpuEffectTestConfig {
   inputColor: [number, number, number, number];
   samplePoints?: [number, number][];
   dumpName?: string;
+  fusionMode?: FusionMode;
 }
 
 /** Config for a chain test: multiple modules executed in sequence. */
@@ -70,6 +81,45 @@ export interface GpuChainTestConfig {
   height?: number;
   samplePoints?: [number, number][];
   dumpName?: string;
+  fusionMode?: FusionMode;
+}
+
+/**
+ * Active fusion mode for the current `describe` block, set by
+ * `forEachFusionMode`. Picked up by `runGpuEffectTest` (and friends)
+ * so per-effect tests don't have to pass `fusionMode` on every call.
+ */
+let _ambientFusionMode: FusionMode = 'auto';
+
+/**
+ * Wrap a `describe`-style test body so it runs once per fusion mode.
+ * Each iteration sets the ambient fusion mode read by the runner
+ * helpers — tests inside the body don't need to thread the mode
+ * through their config objects.
+ *
+ * Usage:
+ *   forEachFusionMode((mode) => {
+ *     describe(`Saturate (${mode})`, () => {
+ *       it('...', async () => { const f = await runGpuEffectTest({...}); ... });
+ *     });
+ *   });
+ *
+ * Pass `modes` to restrict (e.g. ['force-off'] for effects that
+ * declare fusion class Freeform — they have no fused path to verify).
+ */
+export function forEachFusionMode(
+  body: (mode: FusionMode) => void,
+  modes: FusionMode[] = ['force-off', 'force-on'],
+): void {
+  for (const mode of modes) {
+    const prev = _ambientFusionMode;
+    _ambientFusionMode = mode;
+    try {
+      body(mode);
+    } finally {
+      _ambientFusionMode = prev;
+    }
+  }
 }
 
 export interface RGBA { r: number; g: number; b: number; a: number; }
@@ -278,10 +328,12 @@ let testCounter = 0;
 export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
   await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
 
+  const effectiveMode = config.fusionMode ?? _ambientFusionMode;
+
   await page.evaluate((cfg) => {
     (window as any).__gpuTestConfig = cfg;
     (window as any).__gpuTestRun();
-  }, { ...config, bundle: config.bundle ?? 'testonly', dumpPixels: true });
+  }, { ...config, bundle: config.bundle ?? 'testonly', dumpPixels: true, fusionMode: effectiveMode });
 
   await page.waitForFunction(
     () => {
@@ -318,10 +370,15 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
 async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
   await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
 
+  // Explicit `fusionMode` on the cfg wins; otherwise inherit the
+  // ambient mode from the enclosing forEachFusionMode block (or
+  // 'auto' when the test isn't wrapped).
+  const effectiveMode = cfg.fusionMode ?? _ambientFusionMode;
+
   await page.evaluate((c: any) => {
     (window as any).__gpuTestConfig = c;
     (window as any).__gpuTestRun();
-  }, { ...cfg, bundle: cfg.bundle ?? 'testonly', dumpPixels: true });
+  }, { ...cfg, bundle: cfg.bundle ?? 'testonly', dumpPixels: true, fusionMode: effectiveMode });
 
   await page.waitForFunction(
     () => {

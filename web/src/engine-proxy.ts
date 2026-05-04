@@ -126,6 +126,17 @@ export class EngineProxy {
     this.send({ type: 'reloadWasm', wasmUrl });
   }
 
+  /**
+   * Test-only knob — switches the engine's fusion planner between auto
+   * (production), force-on (every fusion-eligible stage takes the
+   * dispatcher path, even single-stage runs), and force-off (no
+   * fusion). Used by per-effect E2E tests to verify the standalone and
+   * fused paths produce identical pixels.
+   */
+  setFusionMode(mode: 'auto' | 'force-on' | 'force-off') {
+    this.send({ type: 'setFusionMode', mode });
+  }
+
   debugDump(): Promise<any> {
     return new Promise(resolve => {
       this.debugDumpResolve = resolve;

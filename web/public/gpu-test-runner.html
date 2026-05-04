@@ -6,6 +6,7 @@
 <script type="module">
 import { GPUHost } from '/src/gpu-host.ts';
 import { WasmHost } from '/src/wasm-host.ts';
+import { FusionDispatcher } from '/src/fusion-dispatcher.ts';
 
 /*
  * Generic GPU module test runner.
@@ -119,6 +120,13 @@ async function run() {
 
     const gpuHost = new GPUHost(device, format);
 
+    // Fusion dispatcher used when the test config requests
+    // force-on fusion mode — every per-step dispatch goes through the
+    // composer so per-effect tests can verify byte-identity between
+    // the standalone and fused paths.
+    const fusionDispatcher = new FusionDispatcher(gpuHost);
+    const fusionMode = config.fusionMode || 'auto';
+
     // Build chain: either explicit chain config, or single module
     const steps = config.chain || [{
       module: config.module,
@@ -163,8 +171,9 @@ async function run() {
       wasmHost.gpuHost = gpuHost;
 
       // If this is NOT the first step (or inputColor is set), inject previous output as input
+      let inputHandle = -1;
       if (si > 0 || config.inputColor) {
-        const inputHandle = gpuHost.injectTexture(currentOutput);
+        inputHandle = gpuHost.injectTexture(currentOutput);
         wasmHost.inputTextureHandles = [inputHandle];
         // Populate textureFields for unified texture access
         wasmHost.textureFields.set('tex_in', inputHandle);
@@ -214,7 +223,28 @@ async function run() {
         wasmModule.tick(0.016);
       }
 
-      wasmModule.render(W, H);
+      // Fused vs standalone path. force-on routes every fusion-eligible
+      // stage through the dispatcher (single-stage runs in Phase 2).
+      // force-off and auto take the standalone render() path.
+      const stageFusable =
+        wasmHost.fusionKind > 0
+        && !!wasmHost.fusionFragmentWgsl
+        && wasmHost.fusionUniformBufferHandle > 0
+        && inputHandle >= 0;
+      if (fusionMode === 'force-on' && stageFusable) {
+        wasmHost.firePrepare(W, H);
+        fusionDispatcher.dispatch(
+          [{
+            effectId: resolveEffectId(step.module),
+            fusionKind: wasmHost.fusionKind,
+            fragmentWgsl: wasmHost.fusionFragmentWgsl,
+            uniformBufferHandle: wasmHost.fusionUniformBufferHandle,
+          }],
+          inputHandle, outputHandle, W, H,
+        );
+      } else {
+        wasmModule.render(W, H);
+      }
       allConsoleLogs.push(...wasmHost.consoleLogs.map(l => l.message));
       lastHost = wasmHost;
 
