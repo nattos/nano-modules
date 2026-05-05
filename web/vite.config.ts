@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import { wasmHmrPlugin } from './src/vite-plugins/wasm-hmr';
 import { udpBridgePlugin } from './src/vite-plugins/udp-bridge';
+import { nagaBridgePlugin } from './src/vite-plugins/naga-bridge';
 
 export default defineConfig({
   root: '.',
@@ -9,6 +10,9 @@ export default defineConfig({
   server: { port: 5173 },
   plugins: [
     wasmHmrPlugin(),
+    // SPIR-V → WGSL on demand. Effects bundle SPV; runtime POSTs to
+    // /__naga/wgsl to translate. See plugin file for details.
+    nagaBridgePlugin(),
     // UDP / non-browser protocol bridge — currently a no-op stub. See the
     // plugin file for the intended design.
     udpBridgePlugin(),

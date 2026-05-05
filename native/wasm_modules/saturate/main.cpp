@@ -67,24 +67,32 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  // Register SPIR-V blobs by name. Host translates SPV → platform
+  // shader source (WGSL/MSL) on demand via naga; effects don't carry
+  // per-platform text anymore.
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("pixel",   PIXEL_SPV,   PIXEL_SPV_SIZE);
+
+  auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings()
+  // Entry point name is always "main" now — naga's WGSL output
+  // preserves it; MSL gets renamed to "main_" by the host on Metal
+  // backends if we ever wire that path.
+  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 
-  // Declare to the engine that this effect is a per-pixel mapper —
-  // the runtime fuser may splice fuse_transform from PIXEL_WGSL/MSL
-  // into a fused dispatch with adjacent mapper stages. `prepare`
-  // updates the uniform buffer; the engine binds the buffer directly.
-  state::registerFusion(state::FusionKind::PerPixelMapper,
-                        PIXEL_WGSL, PIXEL_MSL,
-                        s_uniform_buf.id, sizeof(FuseUniforms),
-                        &prepare);
+  // PerPixelMapper fusion: the dispatcher splices fuse_transform
+  // from the registered "pixel" SPV into composed shaders. The
+  // name-based variant defers SPV → WGSL → strip until the dispatcher
+  // first composes a shader that needs it.
+  state::registerFusionByName(state::FusionKind::PerPixelMapper,
+                              "pixel",
+                              s_uniform_buf.id, sizeof(FuseUniforms),
+                              &prepare);
 }
 
 void tick(double) {}

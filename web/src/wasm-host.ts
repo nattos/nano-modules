@@ -70,6 +70,79 @@ const decoder = new TextDecoder();
 const LEVELS = ['log', 'warn', 'error'];
 
 /**
+ * Strip the synthetic wrapper main from a transpiled fusion fragment
+ * WGSL. Mirrors the build-time `_fragment_strip.py` so the runtime
+ * can do the extraction itself when the build only ships SPV.
+ *
+ *   - var<private> global: vec3<u32>;          (synthetic builtin shim)
+ *   - var _fuse_out: texture_storage_2d<...>;  (synthetic output)
+ *   - fn main_1() { ... }                       (wrapper body)
+ *   - @compute @workgroup_size(...) fn main(...) { ... }
+ *
+ * What's left is exactly the per-pixel fragment: struct definitions,
+ * the cbuffer's uniform var, helper functions, and fuse_transform.
+ *
+ * The runtime caller is expected to verify the output still contains
+ * `fuse_transform` (otherwise the dispatcher will produce a broken
+ * shader). We log a warning here but don't throw, so the fusion
+ * dispatcher can fall back to the standalone path if needed.
+ */
+function stripFragmentMain(text: string): string {
+  // Drop standalone `var<private> global:` and `var _fuse_out:` lines.
+  text = text.replace(/^\s*var<private>\s+global\s*:[^\n]*\n/gm, '');
+  text = text.replace(/^\s*var\s+_fuse_out\s*:[^\n]*\n/gm, '');
+  // Orphaned binding annotations (the line above _fuse_out) — only
+  // remove when the next line is blank, to avoid clobbering the
+  // u_fuse binding which is followed by `var<uniform>`.
+  text = text.replace(
+    /@group\(\d+\)\s*@binding\(\d+\)\s*\n(?=\s*\n)/g,
+    '',
+  );
+  text = stripBalancedBlock(text, /\bfn\s+main_1\s*\(\s*\)/);
+  text = stripBalancedBlock(text, /@compute[^{]*?\bfn\s+main\s*\([^)]*\)/);
+  if (!text.includes('fuse_transform')) {
+    console.warn('[wasm-host] fragment strip lost fuse_transform — fusion will likely fail to compile');
+  }
+  return text;
+}
+
+/**
+ * Find the first match of `headerPattern`, locate the `{` that
+ * follows it on the same line or the next nonblank, then drop the
+ * brace-balanced block (including its closing `}` and any trailing
+ * `;` or whitespace + newline). Returns the stripped string.
+ */
+function stripBalancedBlock(text: string, headerPattern: RegExp): string {
+  const m = headerPattern.exec(text);
+  if (!m) return text;
+  const headStart = m.index;
+  const headEnd = m.index + m[0].length;
+  const braceStart = text.indexOf('{', headEnd - 1);
+  if (braceStart < 0) {
+    // No body — drop to end of line.
+    const eol = text.indexOf('\n', headEnd);
+    return text.slice(0, headStart) + text.slice(eol < 0 ? text.length : eol + 1);
+  }
+  let depth = 0;
+  let k = braceStart;
+  while (k < text.length) {
+    const ch = text[k];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) { k++; break; }
+    }
+    k++;
+  }
+  // Eat optional trailing whitespace + `;` + newline.
+  while (k < text.length && (text[k] === ' ' || text[k] === '\t')) k++;
+  if (text[k] === ';') k++;
+  while (k < text.length && (text[k] === ' ' || text[k] === '\t')) k++;
+  if (text[k] === '\n') k++;
+  return text.slice(0, headStart) + text.slice(k);
+}
+
+/**
  * Recursively strip GPU-resident array leaves from `state`, based on a
  * schema shape of `{ [name]: { type, gpu?, fields?, ... } }`. GPU leaves
  * become 0 so serialized/transported snapshots never carry stale
@@ -167,13 +240,35 @@ export class WasmHost {
   /// "post-restoration" signal.
   stateReadyFired = false;
 
+  // SPIR-V shader registry, populated via state::registerShaderSPV.
+  // Each effect registers its shaders by name during init(); the
+  // host translates SPIR-V → WGSL on demand when the effect calls
+  // gpu::Device::createShaderModuleByName(name). Bytes are kept so a
+  // re-translation request (e.g. after HMR) doesn't need a re-upload.
+  shaderSPV: Map<string, Uint8Array> = new Map();
+  // Cached compiled WGSL keyed by name. Re-create-shader-module from
+  // the same name is rare in practice, but keeping the WGSL avoids a
+  // second naga round-trip if it does happen.
+  private shaderWgslCache: Map<string, string> = new Map();
+
   // Fusion metadata — populated when an effect calls
   // `state::registerFusion(...)` during init(). `fusionKind === 0`
   // (Freeform) means the effect opted out (or never registered) and the
   // engine will never fuse it.
+  //
+  // Two registration paths:
+  //   1. Legacy: registerFusion(kind, wgsl, msl, ...) — fragment text
+  //      passed inline. fusionFragmentWgsl is the WGSL string.
+  //   2. New (post SPV-only build): registerFusionByName(kind, name, ...)
+  //      — name resolves to a SPV blob (registered via
+  //      state::registerShaderSPV). The runtime fetches WGSL via the
+  //      naga endpoint and runs the strip pass on demand. Lazily
+  //      cached in fusionFragmentWgslCached.
   fusionKind: number = 0;
   fusionFragmentWgsl: string = '';
   fusionFragmentMsl: string = '';
+  fusionFragmentName: string = '';
+  private fusionFragmentWgslCached: string | null = null;
   fusionUniformBufferHandle: number = 0;
   fusionUniformSize: number = 0;
   /// Function-table index of the `prepare` callback. 0 means none —
@@ -563,6 +658,33 @@ export class WasmHost {
           // table index; dispatched by `fireStateReady()`.
           this.onStateReadyIdx = fnIdx | 0;
         },
+        register_shader_spv: (namePtr: number, nameLen: number,
+                               spvPtr: number, spvLen: number) => {
+          // Snapshot the SPV bytes — the WASM linear memory will be
+          // reused for other allocations and we want the registry to
+          // outlive the call. Slice copies into a fresh buffer.
+          const name = this.readString(namePtr, nameLen);
+          const src = new Uint8Array(this.memory.buffer, spvPtr, spvLen);
+          this.shaderSPV.set(name, new Uint8Array(src)); // copy
+        },
+        register_fusion_by_name: (kind: number,
+                                   namePtr: number, nameLen: number,
+                                   uniformBufHandle: number,
+                                   uniformSize: number,
+                                   prepareIdx: number) => {
+          // Name-based variant — the fragment SPV must already live
+          // in `shaderSPV` under this name (registered earlier via
+          // state::registerShaderSPV). WGSL is fetched lazily from
+          // the naga endpoint by getFusionFragmentWgsl().
+          this.fusionKind = kind | 0;
+          this.fusionFragmentName = nameLen > 0 ? this.readString(namePtr, nameLen) : '';
+          this.fusionFragmentWgsl = '';
+          this.fusionFragmentMsl  = '';
+          this.fusionFragmentWgslCached = null;
+          this.fusionUniformBufferHandle = uniformBufHandle | 0;
+          this.fusionUniformSize = uniformSize | 0;
+          this.fusionPrepareIdx = prepareIdx | 0;
+        },
         register_fusion: (kind: number,
                           wgslPtr: number, wgslLen: number,
                           mslPtr: number,  mslLen: number,
@@ -812,14 +934,24 @@ export class WasmHost {
       })(),
       gpu: {
         ...(this.gpuHost
-          ? this.gpuHost.buildImports(
-              (ptr, len) => new Uint8Array(this.memory.buffer).slice(ptr, ptr + len),
-              (ptr, len) => decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
-            )
+          ? {
+              ...this.gpuHost.buildImports(
+                (ptr, len) => new Uint8Array(this.memory.buffer).slice(ptr, ptr + len),
+                (ptr, len) => decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
+              ),
+              // Override the gpu-host's stub for this import: the
+              // SPV → WGSL plumbing lives on the WasmHost since the
+              // shaderSPV registry is per-WasmHost.
+              create_shader_module_named: (namePtr: number, nameLen: number) => {
+                const name = this.readString(namePtr, nameLen);
+                return this.createShaderModuleByName(name);
+              },
+            }
           : {
               // Stubs if no GPU host
               get_backend: () => -1,
               create_shader_module: () => -1,
+              create_shader_module_named: () => -1,
               create_buffer: () => -1,
               create_texture: () => -1,
               create_texture_3d: () => -1,
@@ -965,6 +1097,89 @@ export class WasmHost {
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
     const fn = table.get(this.onStateReadyIdx) as (() => void) | null;
     if (fn) fn();
+  }
+
+  /**
+   * Get the WGSL form of a registered shader by name. Synchronous —
+   * uses an XHR with async=false. Caches per-name. The optional
+   * `mode` selects the naga post-process: 'compute' returns the
+   * shader as-is (with rgba8unorm,write storage texture fixup);
+   * 'pixel' additionally runs the fragment strip pass so the result
+   * contains only the named functions + uniform struct (no synthetic
+   * main, no _fuse_out binding) — what the fusion dispatcher needs
+   * to splice into a composed shader.
+   */
+  fetchShaderWgsl(name: string, mode: 'compute' | 'pixel' = 'compute'): string | null {
+    const spv = this.shaderSPV.get(name);
+    if (!spv) {
+      console.error(`[wasm-host] shader '${name}' not registered (state::registerShaderSPV missing?)`);
+      return null;
+    }
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/__naga/wgsl?storageFormat=rgba8unorm&storageAccess=write', /*async=*/false);
+      // Note: synchronous XHR forbids setting responseType from a
+      // document context (Workers tolerate it, but we run in tests
+      // from a regular page). Default text behavior is fine — we
+      // read xhr.responseText below.
+      xhr.send(spv);
+      if (xhr.status !== 200) {
+        console.error(`[wasm-host] naga bridge returned ${xhr.status} for shader '${name}': ${xhr.responseText}`);
+        return null;
+      }
+      let wgsl = xhr.responseText;
+      if (mode === 'pixel') wgsl = stripFragmentMain(wgsl);
+      return wgsl;
+    } catch (err) {
+      console.error(`[wasm-host] naga bridge fetch failed for shader '${name}':`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a name registered via `state::registerShaderSPV` to a real
+   * WebGPU shader module: fetches WGSL from the dev-server's naga
+   * endpoint (`/__naga/wgsl`) using a synchronous XHR (workers and
+   * test pages tolerate it; the call is one-shot per shader name and
+   * happens during `init`, not in the hot loop), then hands the WGSL
+   * to the gpu-host to compile. Returns the gpu-host handle, or -1
+   * if the registry doesn't have the name.
+   *
+   * Caches WGSL per-name so a second createShaderModuleByName call
+   * with the same name skips the fetch entirely.
+   */
+  createShaderModuleByName(name: string): number {
+    if (!this.gpuHost) return -1;
+    let wgsl = this.shaderWgslCache.get(name);
+    if (!wgsl) {
+      const fetched = this.fetchShaderWgsl(name, 'compute');
+      if (!fetched) return -1;
+      wgsl = fetched;
+      this.shaderWgslCache.set(name, wgsl);
+    }
+    return this.gpuHost.createShaderModule(wgsl);
+  }
+
+  /**
+   * Resolve the fusion fragment WGSL for this host. Used by the
+   * fusion dispatcher when composing a fused shader. Handles both
+   * legacy (registerFusion stored an inline WGSL string) and new
+   * (registerFusionByName stored a SPV name) registration paths.
+   * Lazily caches the result of the new path.
+   */
+  getFusionFragmentWgsl(): string {
+    if (this.fusionFragmentWgslCached !== null) return this.fusionFragmentWgslCached;
+    if (this.fusionFragmentWgsl) {
+      // Legacy: WGSL is already the stripped fragment.
+      this.fusionFragmentWgslCached = this.fusionFragmentWgsl;
+      return this.fusionFragmentWgslCached;
+    }
+    if (this.fusionFragmentName) {
+      const wgsl = this.fetchShaderWgsl(this.fusionFragmentName, 'pixel');
+      this.fusionFragmentWgslCached = wgsl ?? '';
+      return this.fusionFragmentWgslCached;
+    }
+    return '';
   }
 
   /**

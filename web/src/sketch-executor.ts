@@ -219,7 +219,11 @@ export class SketchExecutor {
         && host.fusionKind !== FUSION_KIND_STRICT_OUTPUT) {
       return false;
     }
-    if (!host.fusionFragmentWgsl || host.fusionUniformBufferHandle <= 0) return false;
+    // Either an inline WGSL string (legacy registerFusion) or a name
+    // pointing to a registered SPV (new registerFusionByName). Either
+    // way the host knows how to resolve to fragment WGSL.
+    if (!host.fusionFragmentWgsl && !host.fusionFragmentName) return false;
+    if (host.fusionUniformBufferHandle <= 0) return false;
     if (entry.taps && entry.taps.length > 0) return false;
     return true;
   }
@@ -649,7 +653,7 @@ export class SketchExecutor {
           const stage: FusionStage = {
             effectId: entry.module_type,
             fusionKind: loaded.host.fusionKind,
-            fragmentWgsl: loaded.host.fusionFragmentWgsl,
+            fragmentWgsl: loaded.host.getFusionFragmentWgsl(),
             uniformBufferHandle: loaded.host.fusionUniformBufferHandle,
           };
           if (isStrictOutKind && runAcc) {

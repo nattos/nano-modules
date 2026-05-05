@@ -26,8 +26,26 @@ const BLIT_SHADER = /* wgsl */`
   @group(0) @binding(0) var src: texture_2d<f32>;
   @group(0) @binding(1) var samp: sampler;
 
+  // Composite the source texture (assumed straight-alpha) over a
+  // light/dark checkerboard so transparent regions show through as
+  // the conventional "this is empty" pattern. Output alpha is always
+  // 1.0 — the canvas is configured opaque, so alpha would be
+  // discarded anyway, and the composite gives the IDE monitor a
+  // self-contained image to display.
   @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
-    return textureSample(src, samp, uv);
+    let c = textureSample(src, samp, uv);
+    let dims = vec2f(textureDimensions(src));
+    // 8-px cells in source-texture space. Two grays (0.55 / 0.75)
+    // give enough contrast to read on either bright or dark images
+    // without dominating the foreground.
+    let cell = floor(uv * dims / 8.0);
+    let parity = u32(cell.x + cell.y) & 1u;
+    let bg = select(0.55, 0.75, parity == 0u);
+    let bg_rgb = vec3f(bg);
+    // Source-over with straight alpha:
+    //   out.rgb = src.rgb * src.a + bg.rgb * (1 - src.a)
+    let composited = c.rgb * c.a + bg_rgb * (1.0 - c.a);
+    return vec4f(composited, 1.0);
   }
 `;
 

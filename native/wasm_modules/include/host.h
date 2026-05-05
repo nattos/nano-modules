@@ -68,6 +68,13 @@ extern "C" {
   void state_set_field_hidden(const char* path, int path_len, int hidden);
   __attribute__((import_module("state"), import_name("set_on_state_ready")))
   void state_set_on_state_ready(void (*fn)(void));
+  // Register a SPIR-V shader blob under a name. The host translates
+  // it to the platform-native shader source (WGSL on the web via
+  // naga, MSL on Metal natives) the first time it's referenced via
+  // `gpu::Device::createShaderModule(name)`. See state::registerShaderSPV.
+  __attribute__((import_module("state"), import_name("register_shader_spv")))
+  void state_register_shader_spv(const char* name, int name_len,
+                                  const unsigned char* spv, int spv_len);
   // Register fusion metadata. See state::registerFusion below.
   __attribute__((import_module("state"), import_name("register_fusion")))
   void state_register_fusion(int kind,
@@ -76,6 +83,16 @@ extern "C" {
                               int uniform_buf_handle,
                               int uniform_size_bytes,
                               void (*prepare)(int vp_w, int vp_h));
+  // Register fusion metadata, with the per-pixel kernel sourced by
+  // NAME (registered earlier via state::registerShaderSPV) instead
+  // of inline WGSL/MSL text. The runtime fetches SPV → WGSL via the
+  // dev server's naga endpoint and runs the strip pass on demand.
+  __attribute__((import_module("state"), import_name("register_fusion_by_name")))
+  void state_register_fusion_by_name(int kind,
+                                      const char* fragment_name, int fragment_name_len,
+                                      int uniform_buf_handle,
+                                      int uniform_size_bytes,
+                                      void (*prepare)(int vp_w, int vp_h));
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
@@ -619,6 +636,26 @@ inline void setOnStateReady(void (*fn)(void)) {
 }
 
 // ========================================================================
+// Shader registration (platform-agnostic)
+// ========================================================================
+
+/// Register a SPIR-V blob under `name`. The host stores the bytes
+/// and converts them to the platform-native shader source (WGSL on
+/// the web via the dev-server's naga endpoint; MSL on native Metal)
+/// the first time `gpu::Device::createShaderModule(name)` references
+/// the same name. Effects no longer carry per-platform shader text —
+/// just the universal SPIR-V the build pipeline emitted via DXC.
+///
+/// Typical usage in `init()`:
+///
+///   state::registerShaderSPV("compute", COMPUTE_SPV, sizeof(COMPUTE_SPV));
+///   auto cs = gpu::Device::createShaderModule("compute");
+inline void registerShaderSPV(const char* name, const void* spv, int spv_size) {
+  state_register_shader_spv(name, std::strlen(name),
+                             static_cast<const unsigned char*>(spv), spv_size);
+}
+
+// ========================================================================
 // Fusion registration
 // ========================================================================
 
@@ -673,6 +710,20 @@ inline void registerFusion(FusionKind kind,
                         fragment_wgsl, fragment_wgsl ? (int)std::strlen(fragment_wgsl) : 0,
                         fragment_msl,  fragment_msl  ? (int)std::strlen(fragment_msl)  : 0,
                         uniform_buf_handle, uniform_size_bytes, prepare);
+}
+
+/// Newer, name-based variant. The fragment SPV must have been
+/// registered earlier via `state::registerShaderSPV(fragment_name, ...)`.
+/// The runtime translates SPV → WGSL via naga and strips the
+/// synthetic wrapper main automatically.
+inline void registerFusionByName(FusionKind kind,
+                                 const char* fragment_name,
+                                 int uniform_buf_handle,
+                                 int uniform_size_bytes,
+                                 void (*prepare)(int vp_w, int vp_h)) {
+  state_register_fusion_by_name(static_cast<int>(kind),
+                                 fragment_name, (int)std::strlen(fragment_name),
+                                 uniform_buf_handle, uniform_size_bytes, prepare);
 }
 
 } // namespace state

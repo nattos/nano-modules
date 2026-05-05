@@ -309,7 +309,7 @@ async function run() {
       const isStrictOutKind = wasmHost.fusionKind === 2;
       const stageFusable =
         wasmHost.fusionKind > 0
-        && !!wasmHost.fusionFragmentWgsl
+        && (!!wasmHost.fusionFragmentWgsl || !!wasmHost.fusionFragmentName)
         && wasmHost.fusionUniformBufferHandle > 0
         && (isStrictOutKind || (isMapperKind && (si > 0 || !!config.inputColor)));
       if (fusionMode !== 'force-off' && stageFusable) {
@@ -325,7 +325,7 @@ async function run() {
         const stage = {
           effectId: resolveEffectId(step.module),
           fusionKind: wasmHost.fusionKind,
-          fragmentWgsl: wasmHost.fusionFragmentWgsl,
+          fragmentWgsl: wasmHost.getFusionFragmentWgsl(),
           uniformBufferHandle: wasmHost.fusionUniformBufferHandle,
         };
         // Strict-output always starts a new run — flush whatever

@@ -125,6 +125,92 @@ compile_shaders_compute() {
   echo "  ${effect} shaders compiled (compute)"
 }
 
+# compile_shaders_compute_spv <effect> [<src_basename>=compute]
+#
+#   Emit ONLY the SPIR-V form of a compute shader. The runtime
+#   translates SPV → WGSL via the dev-server's naga endpoint at load
+#   time, so effects no longer carry per-platform shader text. Bundle
+#   shrinks (no WGSL/MSL strings) and effect main.cpp loses its
+#   `metal ? COMPUTE_MSL : COMPUTE_WGSL` boilerplate.
+#
+#   Effect main.cpp consumes the bundled bytes via:
+#     state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+#     auto cs = gpu::Device::createShaderModuleByName("compute");
+compile_shaders_compute_spv() {
+  local effect="$1"
+  local src="${2:-compute}"
+  if ! command -v dxc >/dev/null 2>&1; then
+    echo "ERROR: dxc not found. See compile_shaders_compute_fused for install hints."
+    return 1
+  fi
+  dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${src}.spv"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+    "$TMP_DIR/${effect}_shaders.h" \
+    "${src}=${TMP_DIR}/${effect}_${src}.spv"
+  echo "  ${effect} shaders compiled (SPV)"
+}
+
+# compile_shaders_compute_fused_spv <effect>
+#
+#   SPV-only counterpart to compile_shaders_compute_fused — compiles
+#   compute.hlsl AND pixel.hlsl (via the same wrapper trick that
+#   preserves [noinline] fuse_transform), bundling both as SPV bytes
+#   under names "compute" and "pixel". Runtime owns the fragment-
+#   extraction + composition step (see Phase 5 plan), so we don't
+#   strip anything at build time.
+compile_shaders_compute_fused_spv() {
+  local effect="$1"
+  local effect_dir
+  effect_dir="$(cd ../${effect} && pwd)"
+  local pixel="${effect_dir}/pixel.hlsl"
+  if [ ! -f "$pixel" ]; then
+    echo "ERROR: ${effect}/pixel.hlsl not found (required for fusion build)"
+    return 1
+  fi
+  if ! command -v dxc >/dev/null 2>&1; then
+    echo "ERROR: dxc not found"
+    return 1
+  fi
+
+  # 1. Standalone compute shader.
+  dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/compute.hlsl" -Fo "$TMP_DIR/${effect}_compute.spv"
+
+  # 2. Fragment SPV — synthetic wrapper around pixel.hlsl (same trick
+  # as compile_shaders_compute_fused: gives DXC a main() to hang the
+  # entry point on, so [noinline] survives and naga later emits real
+  # functions instead of inlined main).
+  local second_arg
+  if grep -qE 'fuse_transform\s*\(\s*uint2[^,]*,\s*uint2' "$pixel"; then
+    second_arg='uint2(0, 0)'
+  else
+    second_arg='float4(0, 0, 0, 0)'
+  fi
+  local wrapper="$TMP_DIR/${effect}_pixel_wrapper.hlsl"
+  cat > "$wrapper" <<EOF
+#include "${pixel}"
+RWTexture2D<float4> _fuse_out : register(u1);
+[numthreads(1, 1, 1)]
+void main(uint3 gid : SV_DispatchThreadID) {
+  uint2 _g = gid.xy;
+  float4 _r = fuse_transform(_g, ${second_arg});
+  _fuse_out[uint2(0, 0)] = _r;
+}
+EOF
+  dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "$wrapper" -Fo "$TMP_DIR/${effect}_pixel.spv"
+
+  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+    "$TMP_DIR/${effect}_shaders.h" \
+    "compute=${TMP_DIR}/${effect}_compute.spv" \
+    "pixel=${TMP_DIR}/${effect}_pixel.spv"
+  echo "  ${effect} shaders compiled (SPV: compute + pixel)"
+}
+
 # compile_shaders_compute_fused <effect>
 #   For fusion-aware effects. Compiles compute.hlsl as today (standalone),
 #   then ALSO compiles pixel.hlsl as a fragment that the runtime fuser can

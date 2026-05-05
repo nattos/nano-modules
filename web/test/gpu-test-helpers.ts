@@ -381,6 +381,17 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
 
   const effectiveMode = config.fusionMode ?? _ambientFusionMode;
 
+  // Capture browser console messages — appended to the result's
+  // consoleLog so warning/error output from wasm-host (e.g. naga
+  // bridge failures) shows up in failing tests.
+  const browserConsole: string[] = [];
+  page.removeAllListeners('console');
+  page.on('console', (msg) => {
+    const text = msg.text();
+    if (text.includes('Synchronous XMLHttpRequest')) return; // expected; deprecated-API noise
+    browserConsole.push(`[${msg.type()}] ${text}`);
+  });
+
   await page.evaluate((cfg) => {
     (window as any).__gpuTestConfig = cfg;
     (window as any).__gpuTestRun();
@@ -396,6 +407,10 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
 
   const text = await page.$eval('#result', (el) => el.textContent);
   const raw = JSON.parse(text!);
+  // Surface browser-side console output in tests by mixing into consoleLog.
+  if (browserConsole.length) {
+    raw.consoleLog = (raw.consoleLog || []).concat(browserConsole);
+  }
 
   // Decode pixels
   const pixels = raw.pixelsBase64 ? new Uint8Array(Buffer.from(raw.pixelsBase64, 'base64')) : new Uint8Array(0);
@@ -471,6 +486,7 @@ export async function runGpuEffectTest(config: GpuEffectTestConfig): Promise<Fra
     ticks: config.ticks || 0,
     samplePoints: config.samplePoints || [],
     inputColor: config.inputColor,
+    fusionMode: config.fusionMode,
   }, config.dumpName || `effect_${config.module.replace('.wasm', '')}_${testCounter++}`);
 }
 
