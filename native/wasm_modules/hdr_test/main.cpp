@@ -40,19 +40,23 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto cs_to   = gpu::Device::createShaderModule(metal ? OUT16F_MSL : OUT16F_WGSL);
-  auto cs_from = gpu::Device::createShaderModule(metal ? OUT8_MSL   : OUT8_WGSL);
+  // Two compiled variants of the same shader, differing only in the
+  // storage-texture format the host binds. We thread the format hint
+  // through registerShaderSPV so naga emits the right
+  // `texture_storage_2d<...>` declaration in the WGSL output.
+  state::registerShaderSPV("out16f", OUT16F_SPV, OUT16F_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("out8",   OUT8_SPV,   OUT8_SPV_SIZE,   "rgba8unorm",  "write");
+  auto cs_to   = gpu::Device::createShaderModuleByName("out16f");
+  auto cs_from = gpu::Device::createShaderModuleByName("out8");
   if (!cs_to || !cs_from) return;
 
-  const char* entry = metal ? "main_" : "main";
   // Both passes have the same shape: sampled input, storage output,
   // gain uniform — only the output format differs.
-  s_pso_to_hdr = gpu::Device::createComputePSO(cs_to, entry, gpu::Bindings()
+  s_pso_to_hdr = gpu::Device::createComputePSO(cs_to, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
       .uniform(2));
-  s_pso_from_hdr = gpu::Device::createComputePSO(cs_from, entry, gpu::Bindings()
+  s_pso_from_hdr = gpu::Device::createComputePSO(cs_from, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));

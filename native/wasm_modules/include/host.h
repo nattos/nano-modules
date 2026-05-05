@@ -72,9 +72,17 @@ extern "C" {
   // it to the platform-native shader source (WGSL on the web via
   // naga, MSL on Metal natives) the first time it's referenced via
   // `gpu::Device::createShaderModule(name)`. See state::registerShaderSPV.
+  //
+  // Optional `format` / `access` args control the storage-texture
+  // format/access naga emits for `RWTexture2D<float4>` declarations
+  // — naga's default is `rgba32float,read_write`, which we substitute
+  // for the format the C++ side actually binds. Pass empty strings
+  // to use the default `rgba8unorm,write` (covers every basic effect).
   __attribute__((import_module("state"), import_name("register_shader_spv")))
   void state_register_shader_spv(const char* name, int name_len,
-                                  const unsigned char* spv, int spv_len);
+                                  const unsigned char* spv, int spv_len,
+                                  const char* format, int format_len,
+                                  const char* access, int access_len);
   // Register fusion metadata. See state::registerFusion below.
   __attribute__((import_module("state"), import_name("register_fusion")))
   void state_register_fusion(int kind,
@@ -650,9 +658,13 @@ inline void setOnStateReady(void (*fn)(void)) {
 ///
 ///   state::registerShaderSPV("compute", COMPUTE_SPV, sizeof(COMPUTE_SPV));
 ///   auto cs = gpu::Device::createShaderModule("compute");
-inline void registerShaderSPV(const char* name, const void* spv, int spv_size) {
+inline void registerShaderSPV(const char* name, const void* spv, int spv_size,
+                              const char* format = nullptr,
+                              const char* access = nullptr) {
   state_register_shader_spv(name, std::strlen(name),
-                             static_cast<const unsigned char*>(spv), spv_size);
+                             static_cast<const unsigned char*>(spv), spv_size,
+                             format, format ? (int)std::strlen(format) : 0,
+                             access, access ? (int)std::strlen(access) : 0);
 }
 
 // ========================================================================

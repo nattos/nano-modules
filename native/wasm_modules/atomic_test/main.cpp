@@ -43,20 +43,23 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto cs_count = gpu::Device::createShaderModule(metal ? COUNT_MSL : COUNT_WGSL);
-  auto cs_vis   = gpu::Device::createShaderModule(metal ? VISUALIZE_MSL : VISUALIZE_WGSL);
+  // count writes a storage buffer (no storage texture) — default
+  // rgba8unorm,write override is irrelevant. visualize writes
+  // rgba8unorm output, default works.
+  state::registerShaderSPV("count",     COUNT_SPV,     COUNT_SPV_SIZE);
+  state::registerShaderSPV("visualize", VISUALIZE_SPV, VISUALIZE_SPV_SIZE);
+  auto cs_count = gpu::Device::createShaderModuleByName("count");
+  auto cs_vis   = gpu::Device::createShaderModuleByName("visualize");
   if (!cs_count || !cs_vis) return;
 
-  const char* entry = metal ? "main_" : "main";
   // Explicit layouts. The visualize layout deliberately includes the
   // inputTex slot (0), even though visualize.hlsl doesn't read it —
   // demonstrating that the host honours what we *bind*, not what the
   // shader currently parses.
-  s_pso_count = gpu::Device::createComputePSO(cs_count, entry, gpu::Bindings()
+  s_pso_count = gpu::Device::createComputePSO(cs_count, "main", gpu::Bindings()
       .tex2d(0)
       .storageRW(1));
-  s_pso_vis = gpu::Device::createComputePSO(cs_vis, entry, gpu::Bindings()
+  s_pso_vis = gpu::Device::createComputePSO(cs_vis, "main", gpu::Bindings()
       .tex2d(0)                                         // unused by shader, OK
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .storage(2)

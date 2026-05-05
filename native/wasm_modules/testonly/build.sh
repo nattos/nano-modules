@@ -20,21 +20,20 @@ compile_shaders_compute_fused_spv fuse_solid
 compile_shaders_full_spv gpu_test
 compile_shaders_full_spv spinningtris
 
-# hdr_test compiles the same compute.hlsl twice with different output
-# storage formats so the same shader can write to either an rgba16float
-# scratch (out16f) or the rgba8unorm visible target (out8).
-compile_shaders_compute_var hdr_test out16f rgba16float
-compile_shaders_compute_var hdr_test out8   rgba8unorm
-_emit_shader_header hdr_test out16f out8
-echo "  hdr_test shaders compiled (out16f + out8)"
+# hdr_test compiles the same compute.hlsl twice; the SPV is identical
+# for both variants, but the runtime registers each under its own name
+# with a different storage-format hint so naga emits matching
+# `texture_storage_2d<...>` declarations.
+compile_shaders_compute_var_spv hdr_test out16f compute
+compile_shaders_compute_var_spv hdr_test out8   compute
+_emit_spv_header_var hdr_test out16f out8
+echo "  hdr_test shaders compiled (SPV: out16f + out8)"
 
-# atomic_test has two shaders: a counting compute pass (no storage texture
-# output, so format is irrelevant — pick anything) and a visualize pass
-# that writes the rgba8unorm output. Both compile from their own .hlsl.
-compile_shaders_compute_var atomic_test count     rgba8unorm write count
-compile_shaders_compute_var atomic_test visualize rgba8unorm write visualize
-_emit_shader_header atomic_test count visualize
-echo "  atomic_test shaders compiled (count + visualize)"
+# atomic_test has two shaders compiled from separate .hlsl files.
+compile_shaders_compute_var_spv atomic_test count
+compile_shaders_compute_var_spv atomic_test visualize
+_emit_spv_header_var atomic_test count visualize
+echo "  atomic_test shaders compiled (SPV: count + visualize)"
 
 # mrt_test has all three stages: vertex, fragment (writes 2 targets),
 # and a combine compute pass.

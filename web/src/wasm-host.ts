@@ -245,7 +245,14 @@ export class WasmHost {
   // host translates SPIR-V → WGSL on demand when the effect calls
   // gpu::Device::createShaderModuleByName(name). Bytes are kept so a
   // re-translation request (e.g. after HMR) doesn't need a re-upload.
-  shaderSPV: Map<string, Uint8Array> = new Map();
+  // Optional storageFormat / storageAccess override naga's default
+  // rgba32float substitution for shaders that bind non-rgba8unorm
+  // storage textures (HDR, R32F read_write, etc.).
+  shaderSPV: Map<string, {
+    bytes: Uint8Array;
+    storageFormat: string;
+    storageAccess: string;
+  }> = new Map();
   // Cached compiled WGSL keyed by name. Re-create-shader-module from
   // the same name is rare in practice, but keeping the WGSL avoids a
   // second naga round-trip if it does happen.
@@ -659,13 +666,21 @@ export class WasmHost {
           this.onStateReadyIdx = fnIdx | 0;
         },
         register_shader_spv: (namePtr: number, nameLen: number,
-                               spvPtr: number, spvLen: number) => {
+                               spvPtr: number, spvLen: number,
+                               fmtPtr: number, fmtLen: number,
+                               accPtr: number, accLen: number) => {
           // Snapshot the SPV bytes — the WASM linear memory will be
           // reused for other allocations and we want the registry to
           // outlive the call. Slice copies into a fresh buffer.
           const name = this.readString(namePtr, nameLen);
           const src = new Uint8Array(this.memory.buffer, spvPtr, spvLen);
-          this.shaderSPV.set(name, new Uint8Array(src)); // copy
+          const storageFormat = fmtLen > 0 ? this.readString(fmtPtr, fmtLen) : 'rgba8unorm';
+          const storageAccess = accLen > 0 ? this.readString(accPtr, accLen) : 'write';
+          this.shaderSPV.set(name, {
+            bytes: new Uint8Array(src), // copy
+            storageFormat,
+            storageAccess,
+          });
         },
         register_fusion_by_name: (kind: number,
                                    namePtr: number, nameLen: number,
@@ -1110,19 +1125,20 @@ export class WasmHost {
    * to splice into a composed shader.
    */
   fetchShaderWgsl(name: string, mode: 'compute' | 'pixel' = 'compute'): string | null {
-    const spv = this.shaderSPV.get(name);
-    if (!spv) {
+    const entry = this.shaderSPV.get(name);
+    if (!entry) {
       console.error(`[wasm-host] shader '${name}' not registered (state::registerShaderSPV missing?)`);
       return null;
     }
     try {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/__naga/wgsl?storageFormat=rgba8unorm&storageAccess=write', /*async=*/false);
+      const url = `/__naga/wgsl?storageFormat=${encodeURIComponent(entry.storageFormat)}&storageAccess=${encodeURIComponent(entry.storageAccess)}`;
+      xhr.open('POST', url, /*async=*/false);
       // Note: synchronous XHR forbids setting responseType from a
       // document context (Workers tolerate it, but we run in tests
       // from a regular page). Default text behavior is fine — we
       // read xhr.responseText below.
-      xhr.send(spv);
+      xhr.send(entry.bytes);
       if (xhr.status !== 200) {
         console.error(`[wasm-host] naga bridge returned ${xhr.status} for shader '${name}': ${xhr.responseText}`);
         return null;
