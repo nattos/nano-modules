@@ -189,6 +189,13 @@ namespace noise {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace motion_blur {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -540,6 +547,20 @@ void nano_module_main() {
         noise::tick,
         noise::render,
         noise::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.motion_blur",
+        "Motion Blur",
+        "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
+        "video",
+        "blur,motion,velocity,render-outputs",
+        motion_blur::init,
+        motion_blur::tick,
+        motion_blur::render,
+        motion_blur::on_state_patched,
         nullptr,
     });
 }

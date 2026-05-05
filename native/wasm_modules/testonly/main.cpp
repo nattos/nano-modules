@@ -149,6 +149,20 @@ namespace lut3d_test {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace motion_rect {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace motion_blur {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -397,6 +411,34 @@ void nano_module_main() {
         lut3d_test::tick,
         lut3d_test::render,
         lut3d_test::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.motion_rect",
+        "Motion Rect",
+        "Test producer for the canonical RenderOutputs rail. Overlays a moving colored rectangle and writes per-pixel velocity vectors.",
+        "debug",
+        "test,motion,render-outputs,producer",
+        motion_rect::init,
+        motion_rect::tick,
+        motion_rect::render,
+        motion_rect::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.motion_blur",
+        "Motion Blur",
+        "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
+        "video",
+        "blur,motion,velocity,render-outputs",
+        motion_blur::init,
+        motion_blur::tick,
+        motion_blur::render,
+        motion_blur::on_state_patched,
         nullptr,
     });
 }

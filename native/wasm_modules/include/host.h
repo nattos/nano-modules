@@ -64,6 +64,8 @@ extern "C" {
   void state_mark_gpu_dirty(const char* path, int path_len);
   __attribute__((import_module("state"), import_name("set_gpu_buffer")))
   void state_set_gpu_buffer(const char* path, int path_len, int buffer_handle);
+  __attribute__((import_module("state"), import_name("set_gpu_texture")))
+  void state_set_gpu_texture(const char* path, int path_len, int texture_handle);
   __attribute__((import_module("state"), import_name("set_field_hidden")))
   void state_set_field_hidden(const char* path, int path_len, int hidden);
   __attribute__((import_module("state"), import_name("set_on_state_ready")))
@@ -301,6 +303,28 @@ public:
     appendOrder();
     appendRaw("}");
     return *this;
+  }
+
+  /// Canonical "auxiliary outputs of a 3D rendering pipeline" struct.
+  /// Always declares the same shape so that any two effects using this
+  /// helper have schema-compatible struct rails (auto-binding).
+  ///
+  /// All leaves are optional: a producer that doesn't write a field
+  /// simply doesn't call `state::setGpuTexture` for it; the consumer
+  /// observes `gpu::Device::textureForField("render_outputs/<name>")`
+  /// returning invalid and degrades gracefully (typically a pass-
+  /// through). Both leaves are rgba16float by convention — depth.x
+  /// is camera-space depth, motion.xy is per-pixel velocity in
+  /// viewport-uv space; remaining channels are reserved.
+  ///
+  /// Pass `state::PrimaryOutput` on the producer side (the rail and
+  /// its taps will be inferred when the user clicks the IDE pin) and
+  /// `state::PrimaryInput` on the consumer side.
+  Schema& renderOutputs(int io = None) {
+    return beginObject("render_outputs", io)
+      .textureField("depth",  None)
+      .textureField("motion", None)
+      .endObject();
   }
 
   /// Vec2/3/4 leaf with explicit component defaults. Stored as a flat
@@ -605,6 +629,14 @@ inline void markGpuDirty(const char* path) {
 /// should elide this call and use markGpuDirty alone.
 inline void setGpuBuffer(const char* path, int bufferHandle) {
   state_set_gpu_buffer(path, std::strlen(path), bufferHandle);
+}
+
+/// Assign a GPU texture handle to the field at `path`. Same shape as
+/// setGpuBuffer — only call on (re)allocation; texture reuse across
+/// frames should elide this call. Used for the writer side of struct
+/// rails containing texture leaves (e.g. RenderOutputs.motion).
+inline void setGpuTexture(const char* path, int textureHandle) {
+  state_set_gpu_texture(path, std::strlen(path), textureHandle);
 }
 
 /// Mark a schema field as hidden / visible in the IDE inspector. Hidden

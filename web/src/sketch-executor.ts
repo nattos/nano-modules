@@ -833,6 +833,12 @@ export class SketchExecutor {
         const childSrc = src?.[name];
         if (def?.type === 'array' && def.gpu) {
           out[name] = host.gpuBufferFields.get(childPath) ?? 0;
+        } else if (def?.type === 'texture') {
+          // Producer publishes texture handles via state::setGpuTexture into
+          // host.textureFields at the same slash-delimited path. Sentinel
+          // -1 means the producer didn't write this optional leaf — the
+          // reader's applyStructRead will skip installation.
+          out[name] = host.textureFields.get(childPath) ?? -1;
         } else if (def?.type === 'object') {
           out[name] = this.materializeStructSnapshot(childSrc, def, host, childPath);
         } else {
@@ -844,6 +850,9 @@ export class SketchExecutor {
     }
     if (type === 'array' && (schema as any).gpu) {
       return host.gpuBufferFields.get(pathPrefix) ?? 0;
+    }
+    if (type === 'texture') {
+      return host.textureFields.get(pathPrefix) ?? -1;
     }
     return deepClone(src);
   }

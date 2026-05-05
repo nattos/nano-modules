@@ -39,6 +39,19 @@ echo "  atomic_test shaders compiled (SPV: count + visualize)"
 # and a combine compute pass.
 compile_shaders_full_spv mrt_test
 
+# motion_rect has two compute shaders (color + motion) compiled from
+# separate .hlsl sources. The motion variant is registered with
+# rgba16float so the velocity texture survives [-1,1] writes.
+compile_shaders_compute_var_spv motion_rect color
+compile_shaders_compute_var_spv motion_rect motion
+_emit_spv_header_var motion_rect color motion
+echo "  motion_rect shaders compiled (SPV: color + motion)"
+
+# motion_blur is the production consumer of the RenderOutputs rail.
+# Mirrored into the testonly bundle so render-outputs E2E tests can
+# exercise the producer + consumer pair without pulling in `core`.
+compile_shaders_compute_spv motion_blur
+
 echo "=== Building WASM (testonly) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -69,6 +82,8 @@ wasm_build \
   ../rw_storage_test/main.cpp \
   ../clear_copy_test/main.cpp \
   ../mrt_test/main.cpp \
-  ../lut3d_test/main.cpp
+  ../lut3d_test/main.cpp \
+  ../motion_rect/main.cpp \
+  ../motion_blur/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

@@ -199,6 +199,7 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       },
       mark_gpu_dirty: (_pathPtr: number, _pathLen: number) => {},
       set_gpu_buffer: (_pathPtr: number, _pathLen: number, _handle: number) => {},
+      set_gpu_texture: (_pathPtr: number, _pathLen: number, _handle: number) => {},
       read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
              outputPtr: number, outputSize: number, resultsPtr: number): number => {
         const mem = new DataView(getMemory().buffer);

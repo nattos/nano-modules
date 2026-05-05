@@ -642,6 +642,14 @@ export class WasmHost {
           // means the consumer should re-resolve.
           this.pendingDirtyPaths.push(path);
         },
+        set_gpu_texture: (pathPtr: number, pathLen: number, textureHandle: number) => {
+          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+          const prev = this.textureFields.get(path) ?? -1;
+          if (prev !== textureHandle) {
+            this.textureFields.set(path, textureHandle);
+          }
+          this.pendingDirtyPaths.push(path);
+        },
         set_field_hidden: (pathPtr: number, pathLen: number, hidden: number) => {
           // UI-overlay only: the field's data path keeps working
           // (notifyStatePatched still routes to it, rails still bind to
