@@ -51,26 +51,26 @@ void init() {
     return;
   }
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  const char* cs = metal ? COMPUTE_MSL : COMPUTE_WGSL;
-  const char* entry = metal ? "main_" : "main";
 
-  auto cs_mod = gpu::Device::createShaderModule(cs);
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("pixel",   PIXEL_SPV,   PIXEL_SPV_SIZE);
+
+  auto cs_mod = gpu::Device::createShaderModuleByName("compute");
   if (!cs_mod) {
     state::log(state::LogLevel::Error, "BrightnessContrast: shader compile failed");
     return;
   }
 
-  s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_compute_pso = gpu::Device::createComputePSO(cs_mod, "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
 
   s_initialized = true;
   state::log("BrightnessContrast: initialized");
 
-  state::registerFusion(state::FusionKind::PerPixelMapper,
-                        PIXEL_WGSL, PIXEL_MSL,
-                        s_uniform_buf.id, sizeof(FuseUniforms),
-                        &prepare);
+  state::registerFusionByName(state::FusionKind::PerPixelMapper,
+                              "pixel",
+                              s_uniform_buf.id, sizeof(FuseUniforms),
+                              &prepare);
 }
 
 void tick(double dt) {

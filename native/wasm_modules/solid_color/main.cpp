@@ -41,21 +41,23 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto mod = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("pixel",   PIXEL_SPV,   PIXEL_SPV_SIZE);
+
+  auto mod = gpu::Device::createShaderModuleByName("compute");
   if (!mod) return;
 
   // Fusion-aware strict-output: bind at slots 1+2 (sparse — slot 0
   // unused) so the fragment's register(b2) maps cleanly when the
   // runtime fuser splices fuse_transform in.
-  s_pso = gpu::Device::createComputePSO(mod, metal ? "main_" : "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso = gpu::Device::createComputePSO(mod, "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 
-  state::registerFusion(state::FusionKind::StrictOutput,
-                        PIXEL_WGSL, PIXEL_MSL,
-                        s_uniform_buf.id, sizeof(FuseUniforms),
-                        &prepare);
+  state::registerFusionByName(state::FusionKind::StrictOutput,
+                              "pixel",
+                              s_uniform_buf.id, sizeof(FuseUniforms),
+                              &prepare);
 }
 
 void tick(double dt) { (void)dt; }

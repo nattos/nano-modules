@@ -43,11 +43,12 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto mod = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+
+  auto mod = gpu::Device::createShaderModuleByName("compute");
   if (!mod) return;
 
-  s_pso = gpu::Device::createComputePSO(mod, metal ? "main_" : "main", gpu::Bindings().tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+  s_pso = gpu::Device::createComputePSO(mod, "main", gpu::Bindings().tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
   state::log("blend: init");

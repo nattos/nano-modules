@@ -8,33 +8,33 @@ MODULE_NAME=core
 
 echo "=== Compiling shaders (core) ==="
 source ../wasm_build_env.sh
-compile_shaders_compute_fused brightness_contrast
-compile_shaders_compute_fused solid_color
-compile_shaders_compute video_blend
-compile_shaders_compute_fused bake_alpha
-compile_shaders_compute_fused curve
-compile_shaders_compute_fused exposure
-compile_shaders_compute_fused invert
-compile_shaders_compute_fused posterize
-compile_shaders_compute_fused levels
-compile_shaders_compute_fused hsl
-compile_shaders_compute_fused color_space
-compile_shaders_compute_fused hue_basis
+compile_shaders_compute_fused_spv brightness_contrast
+compile_shaders_compute_fused_spv solid_color
+compile_shaders_compute_spv video_blend
+compile_shaders_compute_fused_spv bake_alpha
+compile_shaders_compute_fused_spv curve
+compile_shaders_compute_fused_spv exposure
+compile_shaders_compute_fused_spv invert
+compile_shaders_compute_fused_spv posterize
+compile_shaders_compute_fused_spv levels
+compile_shaders_compute_fused_spv hsl
+compile_shaders_compute_fused_spv color_space
+compile_shaders_compute_fused_spv hue_basis
 compile_shaders_compute_fused_spv saturate
-compile_shaders_compute_fused vibrance
-compile_shaders_compute_fused vignette
-compile_shaders_compute blur
-compile_shaders_compute_var fast_blur down rgba8unorm write down
-compile_shaders_compute_var fast_blur up   rgba8unorm write up
-_emit_shader_header fast_blur down up
-echo "  fast_blur shaders compiled (down + up)"
-compile_shaders_compute sharpen
-compile_shaders_compute edges
-compile_shaders_compute crop
-compile_shaders_compute transform
-compile_shaders_compute_fused gradient
-compile_shaders_compute_fused grid
-compile_shaders_compute_fused noise
+compile_shaders_compute_fused_spv vibrance
+compile_shaders_compute_fused_spv vignette
+compile_shaders_compute_spv blur
+compile_shaders_compute_var_spv fast_blur down
+compile_shaders_compute_var_spv fast_blur up
+_emit_spv_header_var fast_blur down up
+echo "  fast_blur shaders compiled (down + up, SPV)"
+compile_shaders_compute_spv sharpen
+compile_shaders_compute_spv edges
+compile_shaders_compute_spv crop
+compile_shaders_compute_spv transform
+compile_shaders_compute_fused_spv gradient
+compile_shaders_compute_fused_spv grid
+compile_shaders_compute_fused_spv noise
 
 echo "=== Building WASM (core) ==="
 

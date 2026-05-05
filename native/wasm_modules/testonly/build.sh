@@ -8,17 +8,17 @@ MODULE_NAME=testonly
 
 echo "=== Compiling shaders (testonly) ==="
 source ../wasm_build_env.sh
-compile_shaders_compute brightness_contrast
-compile_shaders_compute solid_color
-compile_shaders_compute video_blend
+compile_shaders_compute_fused_spv brightness_contrast
+compile_shaders_compute_fused_spv solid_color
+compile_shaders_compute_spv video_blend
 # Test-only fusion-aware mappers + generator — back the multi-stage
 # fusion tests (mapper + mapper) and the strict-output top tests
 # (generator + mapper).
-compile_shaders_compute_fused fuse_add
-compile_shaders_compute_fused fuse_mul
-compile_shaders_compute_fused fuse_solid
-compile_shaders_full gpu_test
-compile_shaders_full spinningtris
+compile_shaders_compute_fused_spv fuse_add
+compile_shaders_compute_fused_spv fuse_mul
+compile_shaders_compute_fused_spv fuse_solid
+compile_shaders_full_spv gpu_test
+compile_shaders_full_spv spinningtris
 
 # hdr_test compiles the same compute.hlsl twice with different output
 # storage formats so the same shader can write to either an rgba16float
@@ -38,7 +38,7 @@ echo "  atomic_test shaders compiled (count + visualize)"
 
 # mrt_test has all three stages: vertex, fragment (writes 2 targets),
 # and a combine compute pass.
-compile_shaders_full mrt_test
+compile_shaders_full_spv mrt_test
 
 echo "=== Building WASM (testonly) ==="
 

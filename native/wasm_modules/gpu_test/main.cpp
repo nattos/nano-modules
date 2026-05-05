@@ -30,22 +30,20 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  const char* cs = metal ? COMPUTE_MSL : COMPUTE_WGSL;
-  const char* vs = metal ? VERTEX_MSL : VERTEX_WGSL;
-  const char* fs = metal ? FRAGMENT_MSL : FRAGMENT_WGSL;
-  const char* entry = metal ? "main_" : "main";
+  state::registerShaderSPV("compute",  COMPUTE_SPV,  COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("vertex",   VERTEX_SPV,   VERTEX_SPV_SIZE);
+  state::registerShaderSPV("fragment", FRAGMENT_SPV, FRAGMENT_SPV_SIZE);
 
-  auto cs_mod = gpu::Device::createShaderModule(cs);
-  auto vs_mod = gpu::Device::createShaderModule(vs);
-  auto fs_mod = gpu::Device::createShaderModule(fs);
+  auto cs_mod = gpu::Device::createShaderModuleByName("compute");
+  auto vs_mod = gpu::Device::createShaderModuleByName("vertex");
+  auto fs_mod = gpu::Device::createShaderModuleByName("fragment");
   if (!cs_mod || !vs_mod || !fs_mod) return;
 
-  s_compute_pso = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings()
+  s_compute_pso = gpu::Device::createComputePSO(cs_mod, "main", gpu::Bindings()
       .uniform(0)
       .storageRW(1));  // verts written by compute, read as VB by render
   s_render_pso = gpu::Device::createRenderPSO(
-      vs_mod, entry, fs_mod, entry, gpu::TextureFormat::Surface, gpu::Bindings());
+      vs_mod, "main", fs_mod, "main", gpu::TextureFormat::Surface, gpu::Bindings());
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s_vertex_buf = gpu::Device::createBuffer(6 * 24, gpu::BufferUsage::Storage);
 

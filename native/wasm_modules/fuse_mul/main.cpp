@@ -41,20 +41,22 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("pixel",   PIXEL_SPV,   PIXEL_SPV_SIZE);
+
+  auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main", gpu::Bindings()
+  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
   s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
   s_initialized = true;
 
-  state::registerFusion(state::FusionKind::PerPixelMapper,
-                        PIXEL_WGSL, PIXEL_MSL,
-                        s_uniform_buf.id, sizeof(FuseUniforms),
-                        &prepare);
+  state::registerFusionByName(state::FusionKind::PerPixelMapper,
+                              "pixel",
+                              s_uniform_buf.id, sizeof(FuseUniforms),
+                              &prepare);
 }
 
 void tick(double) {}

@@ -152,6 +152,75 @@ compile_shaders_compute_spv() {
   echo "  ${effect} shaders compiled (SPV)"
 }
 
+# compile_shaders_full_spv <effect>
+#
+#   Compile compute + vertex + fragment for an effect to SPIR-V via
+#   DXC. Mirrors compile_shaders_full but emits SPV blobs only.
+#   Effects use:
+#     state::registerShaderSPV("compute",  COMPUTE_SPV,  COMPUTE_SPV_SIZE);
+#     state::registerShaderSPV("vertex",   VERTEX_SPV,   VERTEX_SPV_SIZE);
+#     state::registerShaderSPV("fragment", FRAGMENT_SPV, FRAGMENT_SPV_SIZE);
+#   then `gpu::Device::createShaderModuleByName("vertex")` etc.
+compile_shaders_full_spv() {
+  local effect="$1"
+  if ! command -v dxc >/dev/null 2>&1; then
+    echo "ERROR: dxc not found"
+    return 1
+  fi
+  dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/compute.hlsl"  -Fo "$TMP_DIR/${effect}_compute.spv"
+  dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/vertex.hlsl"   -Fo "$TMP_DIR/${effect}_vertex.spv"
+  dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/fragment.hlsl" -Fo "$TMP_DIR/${effect}_fragment.spv"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+    "$TMP_DIR/${effect}_shaders.h" \
+    "compute=${TMP_DIR}/${effect}_compute.spv" \
+    "vertex=${TMP_DIR}/${effect}_vertex.spv" \
+    "fragment=${TMP_DIR}/${effect}_fragment.spv"
+  echo "  ${effect} shaders compiled (SPV: compute + vertex + fragment)"
+}
+
+# compile_shaders_compute_var_spv <effect> <variant> [<src_basename>]
+#
+#   Compile a single named compute variant to SPIR-V via DXC. Works
+#   like `compile_shaders_compute_spv` but accepts an arbitrary
+#   variant name + source basename — used by effects with multiple
+#   compute shaders (fast_blur, atomic_test, hdr_test). The variant
+#   name controls the C symbol that ends up in `<effect>_shaders.h`,
+#   and is also the name effects pass to `state::registerShaderSPV`
+#   at runtime.
+#
+#   Emits a per-variant SPV file under TMP_DIR. Caller must follow
+#   with `_emit_spv_header_var` once all variants are compiled.
+compile_shaders_compute_var_spv() {
+  local effect="$1"
+  local variant="$2"
+  local src="${3:-$variant}"
+  if ! command -v dxc >/dev/null 2>&1; then
+    echo "ERROR: dxc not found"
+    return 1
+  fi
+  dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+    -I "$SHADERS_COMMON_DIR" \
+    "../${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${variant}.spv"
+}
+
+# _emit_spv_header_var <effect> <variant1> [<variant2> ...]
+#   Bundle the per-variant SPV files into <effect>_shaders.h.
+_emit_spv_header_var() {
+  local effect="$1"; shift
+  local args=()
+  for variant in "$@"; do
+    args+=("${variant}=${TMP_DIR}/${effect}_${variant}.spv")
+  done
+  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+    "$TMP_DIR/${effect}_shaders.h" "${args[@]}"
+}
+
 # compile_shaders_compute_fused_spv <effect>
 #
 #   SPV-only counterpart to compile_shaders_compute_fused — compiles

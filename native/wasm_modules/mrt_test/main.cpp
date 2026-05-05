@@ -36,19 +36,20 @@ void init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto vs_mod = gpu::Device::createShaderModule(metal ? VERTEX_MSL  : VERTEX_WGSL);
-  auto fs_mod = gpu::Device::createShaderModule(metal ? FRAGMENT_MSL : FRAGMENT_WGSL);
-  auto cs_mod = gpu::Device::createShaderModule(metal ? COMPUTE_MSL  : COMPUTE_WGSL);
+  state::registerShaderSPV("compute",  COMPUTE_SPV,  COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("vertex",   VERTEX_SPV,   VERTEX_SPV_SIZE);
+  state::registerShaderSPV("fragment", FRAGMENT_SPV, FRAGMENT_SPV_SIZE);
+  auto vs_mod = gpu::Device::createShaderModuleByName("vertex");
+  auto fs_mod = gpu::Device::createShaderModuleByName("fragment");
+  auto cs_mod = gpu::Device::createShaderModuleByName("compute");
   if (!vs_mod || !fs_mod || !cs_mod) return;
 
-  const char* entry = metal ? "main_" : "main";
   // MRT pipeline takes no bindings — fragment shader writes constants.
   s_pso_mrt = gpu::Device::createInstancedRenderPSOMRT(
-      vs_mod, entry, fs_mod, entry,
+      vs_mod, "main", fs_mod, "main",
       { gpu::TextureFormat::RGBA8, gpu::TextureFormat::RGBA8 },
       gpu::Bindings());
-  s_pso_combine = gpu::Device::createComputePSO(cs_mod, entry, gpu::Bindings()
+  s_pso_combine = gpu::Device::createComputePSO(cs_mod, "main", gpu::Bindings()
       .tex2d(0)
       .tex2d(1)
       .storageTex2d(2, gpu::TextureFormat::RGBA8));

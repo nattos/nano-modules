@@ -79,9 +79,10 @@ public:
     if (m_initialized) return true;
     if (gpu::Device::backend() == gpu::Backend::None) return false;
 
-    bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-    auto cs_d = gpu::Device::createShaderModule(metal ? DOWN_MSL : DOWN_WGSL);
-    auto cs_u = gpu::Device::createShaderModule(metal ? UP_MSL   : UP_WGSL);
+    state::registerShaderSPV("fast_blur_down", DOWN_SPV, DOWN_SPV_SIZE);
+    state::registerShaderSPV("fast_blur_up",   UP_SPV,   UP_SPV_SIZE);
+    auto cs_d = gpu::Device::createShaderModuleByName("fast_blur_down");
+    auto cs_u = gpu::Device::createShaderModuleByName("fast_blur_up");
     if (!cs_d || !cs_u) return false;
 
     auto bindings = gpu::Bindings()
@@ -89,9 +90,8 @@ public:
         .storageTex2d(1, gpu::TextureFormat::RGBA8)
         .sampler(2)
         .uniform(3);
-    const char* entry = metal ? "main_" : "main";
-    m_pso_down = gpu::Device::createComputePSO(cs_d, entry, bindings);
-    m_pso_up   = gpu::Device::createComputePSO(cs_u, entry, bindings);
+    m_pso_down = gpu::Device::createComputePSO(cs_d, "main", bindings);
+    m_pso_up   = gpu::Device::createComputePSO(cs_u, "main", bindings);
 
     for (int i = 0; i < MAX_PASSES; i++) {
       m_uniform_bufs[i] = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
