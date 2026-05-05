@@ -76,7 +76,11 @@ export class TraceCapture {
     context.configure({
       device: this.device,
       format: this.format,
-      alphaMode: 'premultiplied',
+      // Opaque so the captured ImageBitmap holds the raw post-effect
+      // pixels without the browser pre-applying alpha to RGB. The
+      // engine's pipeline uses straight alpha throughout; matching
+      // here keeps trace captures faithful for monitor previews.
+      alphaMode: 'opaque',
     });
     slot = { canvas, context, width, height };
     this.slots.set(id, slot);

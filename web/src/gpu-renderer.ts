@@ -51,7 +51,13 @@ export class GPURenderer {
     this.device = await adapter.requestDevice();
     this.context = canvas.getContext('webgpu') as GPUCanvasContext;
     this.format = navigator.gpu.getPreferredCanvasFormat();
-    this.context.configure({ device: this.device, format: this.format, alphaMode: 'premultiplied' });
+    // Opaque presentation: alpha is INTERNAL to the pipeline (used by
+    // bake_alpha, video_blend, etc. with straight-alpha semantics)
+    // and is discarded at canvas blit. The page never sees through —
+    // this is a video-synthesis app, not a UI overlay. Avoids the
+    // "premultiplied canvas + straight-alpha shader math" mismatch
+    // that produces fringes on transparent pixels.
+    this.context.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
 
     const shaderModule = this.device.createShaderModule({ code: shaderSource });
 

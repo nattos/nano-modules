@@ -60,7 +60,12 @@ export class SketchInputManager {
 
     if (record.kind === 'image') {
       try {
-        const bitmap = await createImageBitmap(record.blob);
+        // premultiplyAlpha:'none' so the bitmap holds straight alpha
+        // — the engine's pipeline (bake_alpha, video_blend, etc.)
+        // assumes non-premultiplied input. Browser default is to
+        // premultiply on decode, which would silently double-multiply
+        // when shaders also apply alpha-over math.
+        const bitmap = await createImageBitmap(record.blob, { premultiplyAlpha: 'none' });
         if (token !== this.switchToken) {
           bitmap.close();
           return;
@@ -90,7 +95,7 @@ export class SketchInputManager {
     const token = ++this.switchToken;
     if (file.type.startsWith('image/')) {
       try {
-        const bitmap = await createImageBitmap(file);
+        const bitmap = await createImageBitmap(file, { premultiplyAlpha: 'none' });
         if (token !== this.switchToken) {
           bitmap.close();
           return;
@@ -155,7 +160,7 @@ export class SketchInputManager {
       if (session.stopped) return;
       if (video.readyState < 2 || video.videoWidth === 0) return;
       try {
-        const bitmap = await createImageBitmap(video);
+        const bitmap = await createImageBitmap(video, { premultiplyAlpha: 'none' });
         if (session.stopped) {
           bitmap.close();
           return;

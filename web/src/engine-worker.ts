@@ -314,7 +314,12 @@ async function init(width: number, height: number) {
   const format = 'rgba8unorm';
 
   gpuContext = canvas.getContext('webgpu') as GPUCanvasContext;
-  gpuContext.configure({ device: gpuDevice, format, alphaMode: 'premultiplied' });
+  // alphaMode: 'opaque' so the canvas presentation discards alpha at
+  // blit. Internal pipeline keeps STRAIGHT alpha — bake_alpha and
+  // video_blend assume non-premultiplied input/output. Mixing
+  // 'premultiplied' canvas with straight-alpha shader math fringes
+  // transparent pixels.
+  gpuContext.configure({ device: gpuDevice, format, alphaMode: 'opaque' });
 
   gpuHost = new GPUHost(gpuDevice, format);
   sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
