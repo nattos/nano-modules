@@ -6,8 +6,17 @@ TMP_DIR="${2:-../../build/tmp}"
 mkdir -p "$OUT_DIR" "$TMP_DIR"
 MODULE_NAME=nano
 
-echo "=== Building WASM (nano) ==="
+echo "=== Compiling shaders (nano) ==="
 source ../wasm_build_env.sh
+
+# motion_field — image-driven motion vector generator. Two compute
+# shaders sharing common.hlsl (DXC handles #include automatically).
+compile_shaders_compute_var_spv motion_field color
+compile_shaders_compute_var_spv motion_field motion
+_emit_spv_header_var motion_field color motion
+echo "  motion_field shaders compiled (SPV: color + motion)"
+
+echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
   -Wl,--export=nano_module_main
@@ -22,6 +31,7 @@ wasm_build \
   -I../../src \
   main.cpp \
   ../nanolooper/main.cpp \
-  ../nanolooper/core.cpp
+  ../nanolooper/core.cpp \
+  ../motion_field/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
