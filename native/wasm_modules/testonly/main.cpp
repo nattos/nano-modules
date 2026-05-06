@@ -156,6 +156,20 @@ namespace motion_rect {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace motion_swarm {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
+namespace motion_static {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 namespace motion_blur {
     void init();
     void tick(double dt);
@@ -425,6 +439,34 @@ void nano_module_main() {
         motion_rect::tick,
         motion_rect::render,
         motion_rect::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.motion_swarm",
+        "Motion Swarm",
+        "A swarm of randomly-coloured rectangles curling around the viewport center, each emitting its own velocity into render_outputs/motion. Test producer for non-uniform motion fields.",
+        "debug",
+        "test,motion,render-outputs,producer,swarm,curl",
+        motion_swarm::init,
+        motion_swarm::tick,
+        motion_swarm::render,
+        motion_swarm::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "debug.motion_static",
+        "Motion Static",
+        "Per-pixel thresholded-noise motion field rotating around the viewport center. Stress test for fine-grained motion blur input. Opacity overlays an HSV-polar visualization of the motion vectors.",
+        "debug",
+        "test,motion,render-outputs,producer,noise,static",
+        motion_static::init,
+        motion_static::tick,
+        motion_static::render,
+        motion_static::on_state_patched,
         nullptr,
     });
 

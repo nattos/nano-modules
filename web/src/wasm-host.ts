@@ -982,6 +982,7 @@ export class WasmHost {
               compute_set_texture_mip: () => {},
               create_sampler: () => -1,
               create_compute_pso_layout: () => -1,
+              create_compute_pso_v2: () => -1,
               create_render_pso_layout: () => -1,
               create_instanced_render_pso_layout: () => -1,
               create_instanced_render_pso_mrt_layout: () => -1,

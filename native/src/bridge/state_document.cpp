@@ -121,13 +121,35 @@ void StateDocument::collect_legacy_params(const json& fields, json& params_out) 
     else if (type == "int") param_type = 13;
     else if (type == "string") param_type = 100;
 
+    // Numeric coercion for the `default` field. nlohmann's
+    // `value("default", 0.0)` throws type_error::302 when the stored
+    // default is a boolean (or string), and there is no try/catch in
+    // this call chain — so without per-type extraction a single
+    // `boolField` in the schema would empty the entire legacy-params
+    // array, making every slider in the inspector fall through to
+    // the placeholder renderer. (That bug shipped, was caught when a
+    // user saw motion_static with no controls.)
+    double default_num = 0.0;
+    if (f.def.contains("default")) {
+      const auto& d = f.def["default"];
+      if (d.is_number())       default_num = d.get<double>();
+      else if (d.is_boolean()) default_num = d.get<bool>() ? 1.0 : 0.0;
+      // string / array defaults stay at 0.0 — they aren't usable as
+      // slider values anyway and the inspector renders them via the
+      // schema map, not via the legacy params row.
+    }
+    double min_num = f.def.contains("min") && f.def["min"].is_number()
+        ? f.def["min"].get<double>() : 0.0;
+    double max_num = f.def.contains("max") && f.def["max"].is_number()
+        ? f.def["max"].get<double>() : 1.0;
+
     json p = {
       {"index", param_index},
       {"name", f.name},
       {"type", param_type},
-      {"default", f.def.value("default", 0.0)},
-      {"min", f.def.value("min", 0.0)},
-      {"max", f.def.value("max", 1.0)},
+      {"default", default_num},
+      {"min", min_num},
+      {"max", max_num},
       {"io", io_flags},
     };
     params_out.push_back(p);

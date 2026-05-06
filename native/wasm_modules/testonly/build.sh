@@ -47,10 +47,29 @@ compile_shaders_compute_var_spv motion_rect motion
 _emit_spv_header_var motion_rect color motion
 echo "  motion_rect shaders compiled (SPV: color + motion)"
 
-# motion_blur is the production consumer of the RenderOutputs rail.
-# Mirrored into the testonly bundle so render-outputs E2E tests can
-# exercise the producer + consumer pair without pulling in `core`.
-compile_shaders_compute_spv motion_blur
+# motion_swarm — multi-rect curl-field swarm; same color/motion pass
+# layout as motion_rect but reads per-rect data from a storage buffer.
+compile_shaders_compute_var_spv motion_swarm color
+compile_shaders_compute_var_spv motion_swarm motion
+_emit_spv_header_var motion_swarm color motion
+echo "  motion_swarm shaders compiled (SPV: color + motion)"
+
+# motion_static — per-pixel thresholded-noise velocity field; stress
+# test for fine-grained vector input to motion_blur. Both shaders
+# include common.hlsl (shared math) — no extra build step needed since
+# DXC handles #include automatically.
+compile_shaders_compute_var_spv motion_static color
+compile_shaders_compute_var_spv motion_static motion
+_emit_spv_header_var motion_static color motion
+echo "  motion_static shaders compiled (SPV: color + motion)"
+
+# motion_blur — velocity-pyramid McGuire reconstruction. Mirrored from
+# core so render-outputs E2E tests can load testonly without pulling
+# core in. See core/build.sh for shader semantics.
+compile_shaders_compute_var_spv motion_blur reconstruct
+compile_shaders_compute_var_spv motion_blur pyramid_reduce
+_emit_spv_header_var motion_blur reconstruct pyramid_reduce
+echo "  motion_blur shaders compiled (SPV: reconstruct + pyramid_reduce)"
 
 echo "=== Building WASM (testonly) ==="
 
@@ -84,6 +103,8 @@ wasm_build \
   ../mrt_test/main.cpp \
   ../lut3d_test/main.cpp \
   ../motion_rect/main.cpp \
+  ../motion_swarm/main.cpp \
+  ../motion_static/main.cpp \
   ../motion_blur/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

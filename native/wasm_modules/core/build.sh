@@ -35,7 +35,18 @@ compile_shaders_compute_spv transform
 compile_shaders_compute_fused_spv gradient
 compile_shaders_compute_fused_spv grid
 compile_shaders_compute_fused_spv noise
-compile_shaders_compute_spv motion_blur
+
+# motion_blur — velocity-pyramid McGuire reconstruction. pyramid_reduce
+# builds a max-magnitude mip chain from the per-pixel motion texture;
+# reconstruct gathers along the dominant velocity at the appropriate
+# pyramid level. The previous TileMax+NeighborMax variant has been
+# dropped — the pyramid produced fewer artifacts at every quality
+# level for similar compute cost (see git history if you need the
+# old shaders back).
+compile_shaders_compute_var_spv motion_blur reconstruct
+compile_shaders_compute_var_spv motion_blur pyramid_reduce
+_emit_spv_header_var motion_blur reconstruct pyramid_reduce
+echo "  motion_blur shaders compiled (SPV: reconstruct + pyramid_reduce)"
 
 echo "=== Building WASM (core) ==="
 

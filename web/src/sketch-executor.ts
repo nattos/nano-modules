@@ -601,7 +601,22 @@ export class SketchExecutor {
         loaded.host.inputTextureHandles = inputTextures;
 
         // --- Populate textureFields for unified texture access ---
-        loaded.host.textureFields.clear();
+        // Only reset executor-managed slots. Producer-published textures
+        // (struct rail outputs written via state::setGpuTexture on
+        // allocation) must persist across frames so that downstream
+        // readers can still resolve them — same contract as
+        // state::setGpuBuffer + gpuBufferFields, which is never cleared.
+        // Wiping the whole map every frame here was silently breaking
+        // optional struct-rail texture leaves like render_outputs/motion.
+        loaded.host.textureFields.delete('tex_in');
+        loaded.host.textureFields.delete('tex_out');
+        // Drop any tex_in_N from a previous frame whose chain may have
+        // had more inputs than this frame's. Bound by inputTextureHandles
+        // history — fixed cap is fine since we never bind more than a
+        // handful of input slots.
+        for (const k of [...loaded.host.textureFields.keys()]) {
+          if (k.startsWith('tex_in_')) loaded.host.textureFields.delete(k);
+        }
         // Map input textures by their position names (legacy: "tex_in" for slot 0)
         if (inputTextures.length > 0 && inputTextures[0] >= 0) {
           loaded.host.textureFields.set('tex_in', inputTextures[0]);

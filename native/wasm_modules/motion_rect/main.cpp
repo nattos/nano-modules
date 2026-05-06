@@ -8,9 +8,25 @@
  * the auto-binding struct rail mechanism.
  *
  * Pixels inside the rect carry velocity = (cx - cx_prev, cy - cy_prev)
- * in uv-space (so [-1, 1] worst case). Pixels outside the rect carry
- * zero velocity. Tests asserting the chain end-to-end can rely on
- * "blurred inside the rect's swept band, untouched elsewhere."
+ * in uv-space. Pixels outside the rect carry zero velocity. Tests
+ * asserting the chain end-to-end can rely on "blurred inside the
+ * rect's swept band, untouched elsewhere."
+ *
+ * Compositing (`opacity`) is independent of the motion-vector output
+ * — a transparent rect still emits full-strength velocity so the
+ * downstream motion blur acts on the underlying background texture
+ * just as it would for an opaque rect. This lets the harness see
+ * what motion blur does to the background without the rect's color
+ * dominating the output.
+ *
+ * Animation patterns (`pattern`):
+ *   0 — Lissajous: smoothly varying sinusoidal curve. Velocity rotates
+ *       through every direction, useful for testing isotropic blur.
+ *   1 — Rectilinear: cycles around the perimeter of an inset square.
+ *       Velocity is axis-aligned within each side and turns 90° at
+ *       corners — easier to read at a glance, and the motion-blur
+ *       trail behind a side-traversing rect is straight-up
+ *       horizontal/vertical.
  */
 
 #include <gpu.h>
@@ -22,18 +38,26 @@
 namespace motion_rect {
 
 struct Uniforms {
+  // 16-byte aligned: each row is one float4.
   float cx;
   float cy;
   float cx_prev;
   float cy_prev;
+
   float half_w;
   float half_h;
+  float _pad0;
+  float _pad1;
+
   float color_r;
   float color_g;
   float color_b;
-  float _pad0;
-  float _pad1;
-  float _pad2;
+  float opacity;
+};
+
+enum Pattern : int {
+  PATTERN_LISSAJOUS   = 0,
+  PATTERN_RECTILINEAR = 1,
 };
 
 static gpu::ComputePSO s_pso_color;
@@ -44,12 +68,14 @@ static int  s_motion_w = 0;
 static int  s_motion_h = 0;
 static bool s_initialized = false;
 
-// Animation state (CPU-side). cx/cy are normalized to uv space [0, 1].
+// Animation params (CPU-side). cx/cy are normalized to uv space [0, 1].
 static float s_size = 0.2f;
 static float s_speed = 1.0f;
 static float s_color_r = 1.0f;
 static float s_color_g = 0.4f;
 static float s_color_b = 0.8f;
+static float s_opacity = 1.0f;
+static int   s_pattern = PATTERN_LISSAJOUS;
 
 static double s_t = 0.0;
 static float s_cx = 0.5f;
@@ -57,6 +83,10 @@ static float s_cy = 0.5f;
 static float s_cx_prev = 0.5f;
 static float s_cy_prev = 0.5f;
 static bool  s_have_prev = false;
+
+static inline float lerp1(float a, float b, float t) {
+  return a + (b - a) * t;
+}
 
 void init() {
   s_initialized = false;
@@ -67,8 +97,13 @@ void init() {
 
   state::init("debug.motion_rect", {1, 0, 0},
     state::Schema()
-      .floatField("size",  0.2f, 0.02f, 0.5f, state::PrimaryInput)
-      .floatField("speed", 1.0f, 0.0f,  5.0f, state::PrimaryInput)
+      .floatField("size",    0.2f, 0.02f, 0.5f, state::PrimaryInput)
+      .floatField("speed",   1.0f, 0.0f,  5.0f, state::PrimaryInput)
+      .floatField("opacity", 1.0f, 0.0f,  1.0f, state::PrimaryInput)
+      .selectField("pattern", PATTERN_LISSAJOUS, state::PrimaryInput, {
+        {"Lissajous",   PATTERN_LISSAJOUS},
+        {"Rectilinear", PATTERN_RECTILINEAR},
+      })
       .rgbField("color",   1.0f, 0.4f,  0.8f, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -101,17 +136,45 @@ void init() {
   state::log("motion_rect: initialized");
 }
 
+static void advance_lissajous(float w) {
+  s_cx = 0.5f + 0.35f * std::sin(w * 1.3f);
+  s_cy = 0.5f + 0.35f * std::sin(w * 0.9f + 0.7f);
+}
+
+static void advance_rectilinear(float w) {
+  // Inset square corners; rect cycles clockwise: top-left → top-right
+  // → bottom-right → bottom-left → top-left. Phase parameter wraps
+  // every 4 sides; each side traversal takes 1 phase unit.
+  static constexpr float LO = 0.15f;
+  static constexpr float HI = 0.85f;
+  float phase = std::fmod(w, 4.0f);
+  if (phase < 0.0f) phase += 4.0f;
+  if (phase < 1.0f) {
+    s_cx = lerp1(LO, HI, phase);
+    s_cy = LO;
+  } else if (phase < 2.0f) {
+    s_cx = HI;
+    s_cy = lerp1(LO, HI, phase - 1.0f);
+  } else if (phase < 3.0f) {
+    s_cx = lerp1(HI, LO, phase - 2.0f);
+    s_cy = HI;
+  } else {
+    s_cx = LO;
+    s_cy = lerp1(HI, LO, phase - 3.0f);
+  }
+}
+
 void tick(double dt) {
   if (!s_initialized) return;
   s_t += dt;
   s_cx_prev = s_cx;
   s_cy_prev = s_cy;
-  // Lissajous figure inside the unit square, biased to keep the rect
-  // fully on-screen at default size. Phase is independent on each axis
-  // so velocity rotates through every direction.
   float w = float(s_t) * s_speed;
-  s_cx = 0.5f + 0.35f * std::sin(w * 1.3f);
-  s_cy = 0.5f + 0.35f * std::sin(w * 0.9f + 0.7f);
+  if (s_pattern == PATTERN_RECTILINEAR) {
+    advance_rectilinear(w);
+  } else {
+    advance_lissajous(w);
+  }
   if (!s_have_prev) {
     s_cx_prev = s_cx;
     s_cy_prev = s_cy;
@@ -128,6 +191,10 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
       s_size = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "speed")) {
       s_speed = state::patchFloat(i);
+    } else if (state::pathIs(path, plen, "opacity")) {
+      s_opacity = state::patchFloat(i);
+    } else if (state::pathIs(path, plen, "pattern")) {
+      s_pattern = (int)state::patchFloat(i);
     } else if (state::pathIs(path, plen, "color")) {
       auto v = state::patchVec3(i);
       s_color_r = v.x; s_color_g = v.y; s_color_b = v.z;
@@ -160,8 +227,8 @@ void render(int vp_w, int vp_h) {
     s_cx, s_cy,
     s_cx_prev, s_cy_prev,
     s_size * 0.5f, s_size * 0.5f,
-    s_color_r, s_color_g, s_color_b,
-    0.f, 0.f, 0.f,
+    0.f, 0.f,
+    s_color_r, s_color_g, s_color_b, s_opacity,
   };
   s_uniform_buf.writeOne(u);
 

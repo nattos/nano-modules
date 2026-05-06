@@ -38,6 +38,7 @@ async function main() {
   // not loaded here — it's reserved for integration tests.
   appController.loadModule('com.nattos.core');
   appController.loadModule('com.nattos.nano');
+  appController.loadModule('com.nattos.testonly');
 }
 
 main();

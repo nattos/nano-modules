@@ -28,6 +28,26 @@ function getWasmBytes(): Buffer | null {
   try { return readFileSync(TESTONLY_WASM_PATH); } catch { return null; }
 }
 
+describe('motion_static schema', () => {
+  it('declares all expected parameters', async () => {
+    const bytes = getWasmBytes();
+    if (!bytes) { console.warn('WASM not found, skipping test'); return; }
+
+    const host = new WasmHost();
+    await loadModuleFromBytes(host, bytes, 'debug.motion_static');
+
+    expect(host.metadata?.id).toBe('debug.motion_static');
+    const paramNames = host.params.map(p => p.name).sort();
+    expect(paramNames).toEqual(['jitter', 'opacity', 'rate', 'seed',
+                                 'step', 'swirl', 'threshold', 'vis_scale']);
+    // Verify boolean and select types are surfaced correctly to the
+    // legacy-param row so generic-inspector can render checkboxes /
+    // dropdowns for them. (`type: 0` = bool, `type: 13` = int.)
+    expect(host.params.find(p => p.name === 'step')?.type).toBe(0);
+    expect(host.params.find(p => p.name === 'seed')?.type).toBe(13);
+  });
+});
+
 describe('Brightness/Contrast module', () => {
   it('loads and declares correct metadata', async () => {
     const bytes = getWasmBytes();

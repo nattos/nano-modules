@@ -46,6 +46,20 @@ extern "C" {
   __attribute__((import_module("gpu"), import_name("create_compute_pso_layout")))
   int gpu_create_compute_pso_layout(int shader, const char* entry, int entry_len,
                                      int binding_count, const int* bindings);
+  /// V2 of compute PSO creation: same as `create_compute_pso_layout`
+  /// plus a packed buffer of pipeline-creation-time constants
+  /// (specialization constant overrides). Constants buffer layout:
+  ///   u32 count
+  ///   per entry:
+  ///     u32 name_len
+  ///     <name_len bytes> name (UTF-8, no terminator)
+  ///     f64 value
+  /// Names match the `[[vk::constant_id(N)]]` declarations in HLSL,
+  /// preserved through DXC → SPIR-V → naga → WGSL `@id(N) override`.
+  __attribute__((import_module("gpu"), import_name("create_compute_pso_v2")))
+  int gpu_create_compute_pso_v2(int shader, const char* entry, int entry_len,
+                                 int binding_count, const int* bindings,
+                                 const unsigned char* constants, int constants_len);
   __attribute__((import_module("gpu"), import_name("create_render_pso_layout")))
   int gpu_create_render_pso_layout(int vs_shader, const char* vs, int vs_len,
                                     int fs_shader, const char* fs, int fs_len, int format,
@@ -243,6 +257,96 @@ namespace detail {
     }
     return n;
   }
+}
+
+// --- Pipeline-creation-time constants (specialization overrides) ---
+//
+// Effects declare overrides in HLSL via `[[vk::constant_id(N)]] const
+// T NAME = default;`. DXC emits SPIR-V SpecId; naga preserves as
+// `@id(N) override NAME: T = default;` in WGSL. The host fills the
+// values per-PSO using the names supplied here, so swapping presets
+// only re-creates the pipeline (no shader recompile, no naga round-
+// trip — WebGPU specifically optimizes this path).
+//
+// Use case (motion blur quality settings):
+//
+//   auto pso = gpu::Device::createComputePSO(mod, "main", bindings,
+//       gpu::Constants()
+//         .set("TILE_SIZE", 24)
+//         .set("NEIGHBOR_RADIUS", 2));
+//
+// Names must match the HLSL constant identifiers exactly. Values are
+// stored as f64 on the wire and coerced by WebGPU to whatever the
+// override's WGSL type happens to be (u32, i32, f32, bool).
+
+class Constants {
+public:
+  static constexpr int MAX_ENTRIES = 8;
+  static constexpr int MAX_NAME_LEN = 32;
+
+  Constants& set(const char* name, double value) {
+    if (m_count >= MAX_ENTRIES) return *this;
+    int i = m_count++;
+    int len = 0;
+    while (name[len] != '\0' && len < MAX_NAME_LEN - 1) {
+      m_entries[i].name[len] = name[len];
+      len++;
+    }
+    m_entries[i].name[len] = '\0';
+    m_entries[i].name_len = len;
+    m_entries[i].value = value;
+    return *this;
+  }
+  Constants& set(const char* name, int value)   { return set(name, double(value)); }
+  Constants& set(const char* name, unsigned int value) { return set(name, double(value)); }
+  Constants& set(const char* name, float value) { return set(name, double(value)); }
+  Constants& set(const char* name, bool value)  { return set(name, value ? 1.0 : 0.0); }
+
+  int count() const { return m_count; }
+  bool empty() const { return m_count == 0; }
+
+  /// Pack into the wire format the host expects:
+  ///   u32 count
+  ///   per entry: u32 name_len, <name_len bytes>, f64 value
+  /// Returns total byte length written. `out` must be sized for the
+  /// worst case (MAX_ENTRIES * (4 + MAX_NAME_LEN + 8) + 4 = 384B).
+  int pack(unsigned char* out) const {
+    auto write_u32 = [](unsigned char* p, unsigned int v) {
+      p[0] = (v >>  0) & 0xff;
+      p[1] = (v >>  8) & 0xff;
+      p[2] = (v >> 16) & 0xff;
+      p[3] = (v >> 24) & 0xff;
+    };
+    unsigned char* p = out;
+    write_u32(p, (unsigned)m_count); p += 4;
+    for (int i = 0; i < m_count; i++) {
+      const auto& e = m_entries[i];
+      write_u32(p, (unsigned)e.name_len); p += 4;
+      for (int j = 0; j < e.name_len; j++) p[j] = (unsigned char)e.name[j];
+      p += e.name_len;
+      // f64 little-endian — wasm32 is LE so just copy.
+      const unsigned char* vb = reinterpret_cast<const unsigned char*>(&e.value);
+      for (int j = 0; j < 8; j++) p[j] = vb[j];
+      p += 8;
+    }
+    return int(p - out);
+  }
+
+private:
+  struct Entry {
+    char name[MAX_NAME_LEN];
+    int name_len = 0;
+    double value = 0.0;
+  };
+  Entry m_entries[MAX_ENTRIES];
+  int m_count = 0;
+};
+
+namespace detail {
+  /// Maximum byte size of a packed Constants buffer.
+  static constexpr int CONSTANTS_PACK_MAX =
+      4 + Constants::MAX_ENTRIES *
+          (4 + Constants::MAX_NAME_LEN + 8);
 }
 
 // --- Handle base ---
@@ -465,6 +569,25 @@ struct Device {
     int n = detail::packBindings(bindings, packed);
     return ComputePSO(gpu_create_compute_pso_layout(
         shader.id, entryPoint, std::strlen(entryPoint), n, packed));
+  }
+
+  /// Compute PSO with pipeline-creation-time specialization constants.
+  /// `constants` map names → values; names must match the HLSL
+  /// `[[vk::constant_id(N)]]` declarations the SPV was built with.
+  /// Recreating a PSO with different constants is the recommended way
+  /// to swap quality presets — it skips the WGSL re-translation entirely
+  /// (only the pipeline object is rebuilt). Pass an empty `Constants{}`
+  /// to use shader-declared defaults.
+  static ComputePSO createComputePSO(ShaderModule shader, const char* entryPoint,
+                                      const Bindings& bindings,
+                                      const Constants& constants) {
+    int packed_bindings[Bindings::MAX_ENTRIES * 4];
+    int bn = detail::packBindings(bindings, packed_bindings);
+    unsigned char packed_consts[detail::CONSTANTS_PACK_MAX];
+    int cn = constants.pack(packed_consts);
+    return ComputePSO(gpu_create_compute_pso_v2(
+        shader.id, entryPoint, std::strlen(entryPoint),
+        bn, packed_bindings, packed_consts, cn));
   }
 
   /// Render pipeline with the standard float2-pos + float4-color

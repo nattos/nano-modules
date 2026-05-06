@@ -6,6 +6,12 @@
 // receive (0, 0, 0, 0). Convention: motion vectors describe how a
 // pixel's color content moved over the last frame, so consumers can
 // gather backwards along -velocity to reconstruct the trail.
+//
+// Note that the rect's `opacity` (used by the color pass) does NOT
+// affect the motion vectors. A mostly-transparent rect still emits
+// full-strength velocity so consumers can see how the underlying
+// background texture would be motion-blurred — separating "what's
+// in motion" from "how visible the moving feature is."
 
 RWTexture2D<float4> motionTex : register(u0);
 
@@ -16,12 +22,12 @@ cbuffer Uniforms : register(b1) {
   float cy_prev;
   float half_w;
   float half_h;
-  float _pad_r;
-  float _pad_g;
-  float _pad_b;
   float _pad0;
   float _pad1;
-  float _pad2;
+  float _pad_color_r;
+  float _pad_color_g;
+  float _pad_color_b;
+  float _pad_opacity;
 };
 
 [numthreads(8, 8, 1)]

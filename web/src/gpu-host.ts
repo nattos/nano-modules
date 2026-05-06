@@ -80,6 +80,30 @@ interface PipelineEntry {
   bindings: BindingDecl[];
 }
 
+/// Read packed pipeline-creation-time constants from a wasm-side byte
+/// buffer. Layout (matches gpu::Constants::pack in gpu.h):
+///   u32 count, then per entry: u32 name_len, name bytes, f64 value.
+/// All multi-byte integers are little-endian (wasm32). Returned map
+/// keys match the HLSL `[[vk::constant_id]]` names, which naga
+/// preserves verbatim in the WGSL `@id(N) override` declarations.
+function readConstants(bytes: Uint8Array): Record<string, number> {
+  if (bytes.byteLength < 4) return {};
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(0, true);
+  if (count === 0) return {};
+  const dec = new TextDecoder();
+  const out: Record<string, number> = {};
+  let p = 4;
+  for (let i = 0; i < count; i++) {
+    const nameLen = view.getUint32(p, true); p += 4;
+    const name = dec.decode(new Uint8Array(bytes.buffer, bytes.byteOffset + p, nameLen));
+    p += nameLen;
+    const value = view.getFloat64(p, true); p += 8;
+    out[name] = value;
+  }
+  return out;
+}
+
 /// Read N binding decls (4 int32s each: slot, kind, format, access) out of
 /// a flat byte buffer. The C++ side packs them into one contiguous array.
 function readBindingDecls(bytes: Uint8Array, count: number): BindingDecl[] {
@@ -235,12 +259,19 @@ export class GPUHost {
   createShaderModule(source: string): number {
     try {
       const module = this.device.createShaderModule({ code: source });
-      return this.alloc('shader', module);
+      const handle = this.alloc('shader', module);
+      // Stash the source alongside the handle. The constants resolver
+      // uses it to translate `{NAME: value}` constants maps into the
+      // `{"@id": value}` form Chromium currently requires for naga-
+      // generated modules.
+      this.shaderSources.set(handle, source);
+      return handle;
     } catch (e) {
       console.error('[gpu] shader compile error:', e);
       return -1;
     }
   }
+  private shaderSources: Map<number, string> = new Map();
 
   createBuffer(size: number, usage: number): number {
     let gpuUsage = GPUBufferUsage.COPY_DST;
@@ -323,16 +354,59 @@ export class GPUHost {
    */
   createComputePipelineWithLayout(
       shaderHandle: number, entryPoint: string,
-      bindings: BindingDecl[]): number {
+      bindings: BindingDecl[],
+      constants?: Record<string, number>): number {
     const shaderModule = this.get(shaderHandle) as GPUShaderModule;
     if (!shaderModule) return -1;
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(bindings, GPUShaderStage.COMPUTE);
+    // Specialization constants come from C++ as a name → value map
+    // (matching the HLSL `[[vk::constant_id(N)]] const T NAME = ...;`
+    // declarations). The WebGPU spec lets the constants record use
+    // either override names OR @id numeric strings, but Chromium
+    // currently only resolves IDs reliably for naga-emitted modules,
+    // so we translate name → "@id" via the WGSL we cached at module
+    // creation time.
+    const computeDesc: GPUProgrammableStage = { module: shaderModule, entryPoint };
+    if (constants && Object.keys(constants).length > 0) {
+      computeDesc.constants = this.resolveConstantsByID(shaderHandle, constants);
+    }
     const pipeline = this.device.createComputePipeline({
       layout: pipelineLayout,
-      compute: { module: shaderModule, entryPoint },
+      compute: computeDesc,
     });
     const entry: PipelineEntry = { pipeline, bindGroupLayout, bindings };
     return this.alloc('compute_pipeline', entry);
+  }
+
+  /// Translate a name-keyed constants map to an ID-keyed one by
+  /// scanning the WGSL we stashed when the shader was created.
+  /// Returns the original map if the WGSL isn't available (e.g.
+  /// the module was created via a non-name path that didn't cache
+  /// the source). Names that don't appear in the WGSL fall through
+  /// unchanged so Chromium can still surface "constant not found"
+  /// errors for typos.
+  private nameToIdCache: Map<number, Map<string, string>> = new Map();
+  private resolveConstantsByID(
+      shaderHandle: number,
+      constants: Record<string, number>): Record<string, number> {
+    let nameMap = this.nameToIdCache.get(shaderHandle);
+    if (!nameMap) {
+      const wgsl = this.shaderSources.get(shaderHandle);
+      if (!wgsl) return constants;
+      nameMap = new Map();
+      const re = /@id\(\s*(\d+)\s*\)\s+override\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(wgsl)) !== null) {
+        nameMap.set(m[2], m[1]);
+      }
+      this.nameToIdCache.set(shaderHandle, nameMap);
+    }
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(constants)) {
+      const id = nameMap.get(k);
+      out[id ?? k] = v;
+    }
+    return out;
   }
 
   /**
@@ -856,6 +930,16 @@ export class GPUHost {
                                    bindCount: number, bindPtr: number) => {
         const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
         return this.createComputePipelineWithLayout(shader, readString(entryPtr, entryLen), bindings);
+      },
+      create_compute_pso_v2: (shader: number, entryPtr: number, entryLen: number,
+                              bindCount: number, bindPtr: number,
+                              constsPtr: number, constsLen: number) => {
+        const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
+        const constants = constsLen > 0
+            ? readConstants(this.memorySlice(constsPtr, constsLen))
+            : undefined;
+        return this.createComputePipelineWithLayout(
+            shader, readString(entryPtr, entryLen), bindings, constants);
       },
       create_render_pso_layout: (
         vsShader: number, vsPtr: number, vsLen: number,

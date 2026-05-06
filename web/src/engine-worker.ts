@@ -14,7 +14,7 @@ import { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
 import { TraceCapture } from './trace-capture';
-import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
 import { BUCKET_SKETCH_ID, type Sketch } from './sketch-types';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -51,9 +51,9 @@ const effectRegistry = new Map<string, { compiled: WebAssembly.Module; effect: E
  */
 function makeBridgeVal(bc: BridgeCore, value: any): number | null {
   if (value === null || value === undefined) return bc.valNull();
-  if (typeof value === 'number')  return bc.valNumber(value);
+  if (typeof value === 'number') return bc.valNumber(value);
   if (typeof value === 'boolean') return bc.valBool(value);
-  if (typeof value === 'string')  return bc.valString(value);
+  if (typeof value === 'string') return bc.valString(value);
   if (Array.isArray(value)) {
     const arr = bc.valArray();
     for (const item of value) {
@@ -123,7 +123,7 @@ let debugMode = false;
 // frame and the last few. Cleared after each broadcast. Capped so a
 // chatty effect can't drown the channel.
 const DEBUG_CONSOLE_CAP = 200;
-const debugConsoleBuffer: import('./engine-types').DebugConsoleEntry[] = [];
+const debugConsoleBuffer: DebugConsoleEntry[] = [];
 
 // Command queue
 const pendingCommands: WorkerCommand[] = [];
@@ -608,7 +608,7 @@ function ensureRenderTarget(key: string, w: number, h: number): { tex: GPUTextur
       size: [w, h],
       format: 'rgba8unorm',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-           | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+        | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     const handle = gpuHost!.injectTexture(tex);
     rt = { tex, handle };
@@ -809,10 +809,12 @@ async function loadModule(moduleType: string) {
   // Don't reload if already registered
   if (moduleRegistry.has(wasmUrl)) {
     const existing = moduleRegistry.get(wasmUrl)!;
-    post({ type: 'effectsDiscovered', effects: existing.effects.map(e => ({
-      id: e.id, name: e.name, description: e.description,
-      category: e.category, keywords: e.keywords,
-    })) });
+    post({
+      type: 'effectsDiscovered', effects: existing.effects.map(e => ({
+        id: e.id, name: e.name, description: e.description,
+        category: e.category, keywords: e.keywords,
+      }))
+    });
     return;
   }
 
@@ -834,10 +836,12 @@ async function loadModule(moduleType: string) {
     }
 
     // Broadcast discovered effects to the main thread
-    post({ type: 'effectsDiscovered', effects: effects.map(e => ({
-      id: e.id, name: e.name, description: e.description,
-      category: e.category, keywords: e.keywords,
-    })) });
+    post({
+      type: 'effectsDiscovered', effects: effects.map(e => ({
+        id: e.id, name: e.name, description: e.description,
+        category: e.category, keywords: e.keywords,
+      }))
+    });
 
     markDirty();
   } catch (e) {
