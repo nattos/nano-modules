@@ -423,6 +423,105 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     expect(colors.size).toBeGreaterThan(20);
   });
 
+  it('chroma_delay shifts R/G/B channels along motion', async () => {
+    // motion_rect → motion_blur with chroma_delay on. Without chroma,
+    // the rect's pink (255, 102, 204) blurs into uniform pink along
+    // the motion direction. With chroma at strong R/B offsets, the
+    // R and B trails separate from the G — pixels in the trail end
+    // up with R-ish OR B-ish bias (rather than equal-pink gradients).
+    // The histogram should show new colors that aren't on the
+    // original pink-to-bg gradient line.
+    const buildChromaChain = (chromaOn: boolean): Sketch => ({
+      anchor: null,
+      columns: [{
+        name: 'main',
+        rails: [{
+          id: 'render_outputs_rail',
+          name: 'Render Outputs',
+          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
+        }],
+        chain: [
+          { type: 'texture_input', id: 'in' },
+          {
+            type: 'module',
+            module_type: 'generator.solid_color',
+            instance_key: 'bg@0',
+            params: { color: [0.05, 0.05, 0.05] },
+          },
+          {
+            type: 'module',
+            module_type: 'debug.motion_rect',
+            instance_key: 'rect@0',
+            params: { size: 0.25, speed: 3.0, color: [1.0, 0.4, 0.8] },
+            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }],
+          },
+          {
+            type: 'module',
+            module_type: 'video.motion_blur',
+            instance_key: 'blur@0',
+            params: {
+              strength: 32.0,
+              samples: 16,
+              quality: 1,
+              chroma_delay: chromaOn,
+              // Modest offsets so chroma-shifted R/G/B stay within
+              // the rect's footprint (otherwise they sample
+              // background and the chroma effect becomes "rect goes
+              // black" instead of "rect splits into RGB trails").
+              chroma_r:  0.4,
+              chroma_g:  0.0,
+              chroma_b: -0.4,
+            },
+            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'read' }],
+          },
+          { type: 'texture_output', id: 'out' },
+        ],
+      }],
+    });
+
+    const off = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nattos.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'mb_chroma_off', sketch: buildChromaChain(false) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_chroma_off' } },
+        ]},
+      ],
+      waitFrames: 30,
+      captureTraceIds: ['out'],
+      dumpName: 'render_outputs_chroma_off',
+    });
+    expect(off.success).toBe(true);
+
+    const on = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nattos.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'mb_chroma_on', sketch: buildChromaChain(true) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_chroma_on' } },
+        ]},
+      ],
+      waitFrames: 30,
+      captureTraceIds: ['out'],
+      dumpName: 'render_outputs_chroma_on',
+    });
+    expect(on.success).toBe(true);
+
+    // Without chroma, the gather samples R/G/B at the same positions,
+    // so the output's RGB ratio across the trail stays close to the
+    // rect's source ratio (255, 102, 204) blended with bg. With
+    // chroma on, R and B come from offset positions along the motion
+    // direction — pixels in the trail get distinctly different RGB
+    // ratios. We assert via "frames differ" rather than specific
+    // color-shift counts because exact ratios depend on V_max scale
+    // (which the bilinear pyramid sampling smooths) and the gather
+    // jitter. Frame diff is the robust signal that chroma changed
+    // something, regardless of magnitude.
+    on.trace('out').expectDifferentFrom(off.trace('out'), 100);
+  });
+
   it('quality preset switches PSO via pipeline constants', async () => {
     // Renders the same chain at Low (TILE_SIZE=16, NEIGHBOR_RADIUS=1)
     // vs High (TILE_SIZE=24, NEIGHBOR_RADIUS=3). Reach scales from

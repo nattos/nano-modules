@@ -28,16 +28,23 @@
 //   Blur", I3D 2012. Guertin et al., "A Fast and Stable Feature-Aware
 //   Motion Blur Filter", HPG 2014 (the simplifications adopted here).
 
-Texture2D<float4>   inputTex    : register(t0);
-Texture2D<float4>   motionTex   : register(t1);
-Texture2D<float4>   neighborTex : register(t2);
-RWTexture2D<float4> outputTex   : register(u3);
+Texture2D<float4>   inputTex      : register(t0);
+Texture2D<float4>   motionTex     : register(t1);
+Texture2D<float4>   neighborTex   : register(t2);
+RWTexture2D<float4> outputTex     : register(u3);
+SamplerState        linearSampler : register(s5);
 
 cbuffer Uniforms : register(b4) {
+  // row 0
   float strength;
   int   samples;
+  float chroma_r;
+  float chroma_g;
+  // row 1
+  float chroma_b;
   float _pad0;
   float _pad1;
+  float _pad2;
 };
 
 // Pipeline-creation-time overrides. The host fills these per-PSO via
@@ -57,6 +64,13 @@ cbuffer Uniforms : register(b4) {
 [[vk::constant_id(0)]] const uint TILE_SIZE          = 20;
 [[vk::constant_id(2)]] const uint NEIGHBOR_TEX_MIP   = 0;
 [[vk::constant_id(3)]] const int  PYRAMID_NBR_RADIUS = 0;
+// Stylized chromatic-aberration-along-motion. When non-zero, every
+// per-tap sample of `inputTex` reads R/G/B at independently offset
+// positions Y + V_max_px * chroma_<channel>, giving a velocity-
+// proportional RGB shift. Toggle is a spec constant so the chroma
+// branch is dead-stripped at compile time when off — turning it off
+// costs nothing.
+[[vk::constant_id(4)]] const int  CHROMA_ENABLED     = 0;
 // Below this many pixels of motion we treat the neighborhood as static
 // and skip the gather entirely (just emits the input pixel as-is).
 static const float HALF_VELOCITY_CUTOFF = 0.25;
@@ -80,6 +94,35 @@ float cylinder(float dist, float v_len) {
   return 1.0 - smoothstep(v_len - CYLINDER_SOFTNESS, v_len + CYLINDER_SOFTNESS, dist);
 }
 
+// Sample inputTex at `pos_px` with optional per-channel chroma offset
+// along V_max. When CHROMA_ENABLED is 0 the spec constant collapses
+// this to a single texture read; the chroma branch dead-strips at
+// pipeline-creation time.
+//
+// The branch is written as an `if` on the spec constant directly
+// (not a uint/int comparison) because naga rejects the SpecConstantOp
+// patterns DXC emits for `if (SPEC != 0u)` — the comparison ends up
+// in a SPV type slot. A bare `if (SPEC)` reads as bool-cast and
+// generates a clean conditional in the WGSL output.
+float4 sample_input(float2 pos_px, float2 V_max_px, float2 vp) {
+  int chroma_on = CHROMA_ENABLED;
+  if (chroma_on > 0) {
+    float2 P_r = pos_px + V_max_px * chroma_r;
+    float2 P_g = pos_px + V_max_px * chroma_g;
+    float2 P_b = pos_px + V_max_px * chroma_b;
+    int2 i_r = int2(clamp(P_r, float2(0.0, 0.0), vp - 1.0));
+    int2 i_g = int2(clamp(P_g, float2(0.0, 0.0), vp - 1.0));
+    int2 i_b = int2(clamp(P_b, float2(0.0, 0.0), vp - 1.0));
+    // Green carries alpha through unmodified — picking one channel
+    // as the "anchor" avoids guessing how to combine three different
+    // alpha samples. Green has no special meaning beyond convention.
+    float4 c_g = inputTex[i_g];
+    return float4(inputTex[i_r].r, c_g.g, inputTex[i_b].b, c_g.a);
+  }
+  int2 i = int2(clamp(pos_px, float2(0.0, 0.0), vp - 1.0));
+  return inputTex[i];
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
   uint w, h;
@@ -89,32 +132,38 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 X = float2(gid.xy);
   float2 vp = float2(float(w), float(h));
 
-  // V_max is per-tile (in uv-space). Scalar per-axis divides because
-  // a uint2 / spec-const division would have DXC synthesise a
-  // uint2(TILE_SIZE, TILE_SIZE) which naga rejects ("Initializer must
-  // be a const-expression") since the spec constant isn't const-
-  // evaluable until pipeline creation time.
-  uint tile_x = gid.x / TILE_SIZE;
-  uint tile_y = gid.y / TILE_SIZE;
-  int2 tile_coord = int2(int(tile_x), int(tile_y));
-
-  // Pyramid path: sample multiple tile-pixels around tile_coord at
-  // mip NEIGHBOR_TEX_MIP and pick the maximum-magnitude. For TileMax
-  // (PYRAMID_NBR_RADIUS = 0) the loop collapses to a single tap on
-  // the pre-expanded neighbor texture.
-  uint nw, nh;
-  uint nlevels;
-  neighborTex.GetDimensions(uint(NEIGHBOR_TEX_MIP), nw, nh, nlevels);
-  int max_x = int(nw) - 1;
-  int max_y = int(nh) - 1;
+  // Sample the pyramid at the chosen mip with HARDWARE BILINEAR. A
+  // nearest-neighbor Load() would produce hard tile boundaries —
+  // adjacent source pixels in different tiles see fully different
+  // V_max values, manifesting as a visible quantization grid in the
+  // output. Bilinear blends the 4 nearest pyramid texels per tap so
+  // V_max varies smoothly across tile boundaries.
+  //
+  // Tradeoff: bilinear of a max-field can underestimate the true max
+  // at boundaries (the blend of 10 and 2 is 6, but the "real" max
+  // over the 2x2 region is 10). Visually that just slightly softens
+  // the trail at boundaries — the alternative (sharp tiles) was the
+  // worse of the two artifacts.
+  //
+  // The 3x3 in-shader expansion still applies: each tap is its own
+  // bilinear sample, offset by one tile-step in uv space. Total
+  // reach = (NBR_RADIUS * 2 + 1) * tile_size with bilinear-smooth
+  // boundaries between tap regions.
+  float2 base_uv = (float2(gid.xy) + 0.5) / vp;
+  // One tile step in uv space. TILE_SIZE is the source-pixel
+  // footprint of one pyramid texel at the chosen mip.
+  float tile_step = float(TILE_SIZE);
+  float2 tile_step_uv = float2(tile_step, tile_step) / vp;
 
   float2 V_max_uv = float2(0.0, 0.0);
   float V_max_uv_len2 = 0.0;
   for (int dy = -PYRAMID_NBR_RADIUS; dy <= PYRAMID_NBR_RADIUS; dy++) {
-    int ty = clamp(tile_coord.y + dy, 0, max_y);
     for (int dx = -PYRAMID_NBR_RADIUS; dx <= PYRAMID_NBR_RADIUS; dx++) {
-      int tx = clamp(tile_coord.x + dx, 0, max_x);
-      float2 cand = neighborTex.Load(int3(tx, ty, int(NEIGHBOR_TEX_MIP))).xy;
+      float2 tap_uv = base_uv + float2(float(dx), float(dy)) * tile_step_uv;
+      // SampleLevel for compute shader: explicit mip, no derivatives
+      // needed. Sampler is set to linear-clamp on the C++ side.
+      float2 cand = neighborTex.SampleLevel(
+          linearSampler, tap_uv, float(NEIGHBOR_TEX_MIP)).xy;
       float l2 = dot(cand, cand);
       if (l2 > V_max_uv_len2) {
         V_max_uv_len2 = l2;
@@ -137,7 +186,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 V_x_px = V_x_uv * vp;
   float V_x_len = length(V_x_px);
 
-  float4 C_x = inputTex[gid.xy];
+  // X's own color, optionally chroma-shifted: the centre pixel still
+  // shows the trail effect when chroma is on, so the smear isn't
+  // "missing" at the seed pixel.
+  float4 C_x = sample_input(X, V_max_px, vp);
 
   // X's own color always weights into the average. Avoids a wrecked
   // result when every tap misses (e.g. on a thin moving feature).
@@ -167,7 +219,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float2 V_y_uv = motionTex[yi].xy * strength;
     float2 V_y_px = V_y_uv * vp;
     float V_y_len = length(V_y_px);
-    float4 C_y = inputTex[yi];
+    float4 C_y = sample_input(Y, V_max_px, vp);
 
     float dist = length(Y - X);
 

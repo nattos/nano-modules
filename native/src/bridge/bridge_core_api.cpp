@@ -343,7 +343,13 @@ int bridge_core_val_type_of(BridgeCoreHandle h, int val_h) {
 
 double bridge_core_val_as_number(BridgeCoreHandle h, int val_h) {
   auto* v = as(h)->get_val(val_h);
-  return (v && v->is_number()) ? v->get<double>() : 0.0;
+  if (!v) return 0.0;
+  if (v->is_number()) return v->get<double>();
+  // Coerce booleans so effects calling state::patchFloat on a bool
+  // patch see 1.0/0.0 rather than 0.0 always — matches the JS-only
+  // val store's `as_number` behaviour and the JavaScript convention.
+  if (v->is_boolean()) return v->get<bool>() ? 1.0 : 0.0;
+  return 0.0;
 }
 
 int bridge_core_val_as_bool(BridgeCoreHandle h, int val_h) {

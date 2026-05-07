@@ -904,7 +904,16 @@ export class WasmHost {
             if (typeof v === 'object') return 5;
             return 0;
           },
-          as_number: (h: number) => { const v = getVal(h); return typeof v === 'number' ? v : 0; },
+          as_number: (h: number) => {
+            const v = getVal(h);
+            if (typeof v === 'number') return v;
+            // Coerce booleans so `state::patchFloat(i)` on a bool patch
+            // returns 1.0/0.0 instead of always 0 — otherwise effects
+            // can't read their boolField patches via the float path,
+            // and the schema-typed bool patches get silently dropped.
+            if (typeof v === 'boolean') return v ? 1 : 0;
+            return 0;
+          },
           as_bool: (h: number) => { const v = getVal(h); return v ? 1 : 0; },
           as_string: (h: number, bufPtr: number, bufLen: number) => {
             const v = getVal(h);

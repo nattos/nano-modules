@@ -39,18 +39,22 @@ namespace motion_blur {
 // block — the reconstruction's `gid / TILE_SIZE` lookup uses
 // TILE_SIZE = 2 << mip to land on the correct tile coord.
 //
-// Effective trail reach at each preset (tile_size × 3 from the 3×3
-// in-shader expansion):
-//   Low    — mip 3 → 16-px tile, ~48-px reach
-//   Medium — mip 4 → 32-px tile, ~96-px reach
-//   High   — mip 5 → 64-px tile, ~192-px reach
+// Effective trail reach at each preset (one bilinear sample → 2×2
+// pyramid-texel blend → covers ~2 × tile_size source pixels):
+//   Low    — mip 4 → 32-px tile, ~64-px reach
+//   Medium — mip 5 → 64-px tile, ~128-px reach
+//   High   — mip 6 → 128-px tile, ~256-px reach
 //
-// All exceed what TileMax could provide at similar cost; High at 192
-// is fully scalable up to viewport-spanning trails (the limiter is
-// V_max, not the tile reach).
-static constexpr int PYRAMID_MIP_LOW    = 3;
-static constexpr int PYRAMID_MIP_MEDIUM = 4;
-static constexpr int PYRAMID_MIP_HIGH   = 5;
+// Earlier this used a 3×3 in-shader max-of-9 expansion at one mip
+// finer to extend reach. That produced visible grid artifacts:
+// hardware bilinear smooths within each tap, but the discrete max
+// still picks a winner per pixel — and when that winner switches at
+// boundaries between samples, the gather direction snaps. Single-tap
+// bilinear at one mip coarser gives the same reach with no
+// winner-switch discontinuities.
+static constexpr int PYRAMID_MIP_LOW    = 4;
+static constexpr int PYRAMID_MIP_MEDIUM = 5;
+static constexpr int PYRAMID_MIP_HIGH   = 6;
 
 enum Quality : int {
   QUALITY_LOW    = 0,
@@ -67,16 +71,28 @@ static int pyramid_mip_for(int quality) {
   }
 }
 
+// Two float4 rows. Layout matches reconstruct.hlsl's cbuffer.
 struct Uniforms {
+  // row 0
   float strength;
   int   samples;
+  float chroma_r;
+  float chroma_g;
+  // row 1
+  float chroma_b;
   float _pad0;
   float _pad1;
+  float _pad2;
 };
+static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
 
 static gpu::ComputePSO s_pso_pyramid_reduce;
 static gpu::ComputePSO s_pso_reconstruct;
 static gpu::Buffer     s_uniform_buf;
+// Linear-clamp sampler for bilinear pyramid sampling — eliminates
+// the visible tile grid that nearest-neighbor Load() would produce
+// at tile boundaries.
+static gpu::Sampler    s_linear_sampler;
 
 // Pyramid scratch — single texture with mips so the reconstruct
 // shader can `Load(coord, mip)` at the chosen level.
@@ -98,6 +114,10 @@ static float s_strength = 1.0f;
 static int   s_samples  = 12;
 static int   s_quality  = QUALITY_MEDIUM;
 static int   s_active_pyramid_mip = PYRAMID_MIP_MEDIUM;
+static bool  s_chroma_delay = false;
+static float s_chroma_r = 0.5f;
+static float s_chroma_g = 0.0f;
+static float s_chroma_b = -0.5f;
 static bool  s_initialized = false;
 
 static gpu::ShaderModule s_cs_recon;
@@ -119,11 +139,22 @@ static void rebuild_psos() {
 
   // TILE_SIZE = 2 << mip compensates for the half-resolution base of
   // the pyramid (each mip k covers 2^(k+1) source pixels).
+  // CHROMA_ENABLED is a spec constant so toggling chroma_delay
+  // rebuilds the PSO with a chroma-stripped or chroma-included shader
+  // — when off, the chroma branch is dead-stripped at compile time.
   int pyramid_tile_size = 2 << s_active_pyramid_mip;
   auto recon_consts = gpu::Constants()
       .set("TILE_SIZE", pyramid_tile_size)
       .set("NEIGHBOR_TEX_MIP", s_active_pyramid_mip)
-      .set("PYRAMID_NBR_RADIUS", 1);
+      // Single-tap bilinear: PYRAMID_NBR_RADIUS=0 collapses the
+      // shader's 3×3 expansion loop to one iteration. Bilinear blends
+      // 2×2 pyramid texels per sample — V_max varies smoothly across
+      // the viewport. The 3×3 max-of-9 path was strictly worse: the
+      // discrete max() winner-switches between adjacent pixels, which
+      // is visible as grid boundaries even though each individual tap
+      // is bilinear-smooth.
+      .set("PYRAMID_NBR_RADIUS", 0)
+      .set("CHROMA_ENABLED", s_chroma_delay ? 1 : 0);
 
   s_pso_reconstruct = gpu::Device::createComputePSO(s_cs_recon, "main",
       gpu::Bindings()
@@ -131,7 +162,8 @@ static void rebuild_psos() {
           .tex2d(1)   // per-pixel motion
           .tex2d(2)   // pyramid (multi-mip)
           .storageTex2d(3, gpu::TextureFormat::RGBA8)
-          .uniform(4),
+          .uniform(4)
+          .sampler(5),  // linear-clamp for pyramid bilinear
       recon_consts);
 }
 
@@ -142,13 +174,27 @@ static void apply_quality(int quality) {
   s_active_pyramid_mip = pyramid_mip_for(quality);
 }
 
+/// Show R/G/B chroma fields only when chroma_delay is on. Called from
+/// on_state_ready (once after init + state replay) and from
+/// on_state_patched whenever chroma_delay changes.
+static void apply_chroma_visibility() {
+  bool hide = !s_chroma_delay;
+  state::setFieldHidden("chroma_r", hide);
+  state::setFieldHidden("chroma_g", hide);
+  state::setFieldHidden("chroma_b", hide);
+}
+
+static void on_state_ready() {
+  apply_chroma_visibility();
+}
+
 void init() {
   s_strength = 1.0f;
   s_samples  = 12;
   s_initialized = false;
   apply_quality(QUALITY_MEDIUM);
 
-  state::init("video.motion_blur", {1, 3, 0},
+  state::init("video.motion_blur", {1, 4, 0},
     state::Schema()
       .floatField("strength", 1.0f, 0.f, 4.f, state::PrimaryInput)
       .intField("samples",    12,   4,   32,  state::PrimaryInput)
@@ -157,10 +203,20 @@ void init() {
         {"Medium", QUALITY_MEDIUM},
         {"High",   QUALITY_HIGH},
       })
+      // Stylized chromatic-aberration-along-motion. When on, R/G/B
+      // are sampled at independently offset positions along V_max,
+      // giving each channel its own velocity-proportional shift —
+      // classic RGB-trail look. R/G/B fields below are hidden in the
+      // inspector when this is off.
+      .boolField("chroma_delay", false, state::PrimaryInput)
+      .floatField("chroma_r",  0.5f,  -2.f, 2.f, state::PrimaryInput)
+      .floatField("chroma_g",  0.0f,  -2.f, 2.f, state::PrimaryInput)
+      .floatField("chroma_b", -0.5f,  -2.f, 2.f, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput)
   );
+  state::setOnStateReady(&on_state_ready);
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
@@ -178,6 +234,8 @@ void init() {
           .storageTex2d(1, gpu::TextureFormat::RGBA16F));
 
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s_linear_sampler = gpu::Device::createSampler(
+      gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
 
   rebuild_psos();
 
@@ -189,6 +247,7 @@ void tick(double) {}
 
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   bool quality_changed = false;
+  bool chroma_toggled  = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
@@ -205,10 +264,28 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
         apply_quality(q);
         quality_changed = true;
       }
+    } else if (state::pathIs(path, plen, "chroma_delay")) {
+      bool new_val = state::patchFloat(i) != 0.0f;
+      if (new_val != s_chroma_delay) {
+        s_chroma_delay = new_val;
+        chroma_toggled = true;
+      }
+    } else if (state::pathIs(path, plen, "chroma_r")) {
+      s_chroma_r = state::patchFloat(i);
+    } else if (state::pathIs(path, plen, "chroma_g")) {
+      s_chroma_g = state::patchFloat(i);
+    } else if (state::pathIs(path, plen, "chroma_b")) {
+      s_chroma_b = state::patchFloat(i);
     }
   }
-  if (quality_changed && s_initialized) {
+  // Quality and chroma_delay both bake into spec constants → rebuild
+  // the reconstruction PSO. R/G/B values are runtime uniforms so they
+  // don't trigger a rebuild.
+  if ((quality_changed || chroma_toggled) && s_initialized) {
     rebuild_psos();
+  }
+  if (chroma_toggled) {
+    apply_chroma_visibility();
   }
 }
 
@@ -272,7 +349,10 @@ void render(int vp_w, int vp_h) {
   auto motion = gpu::Device::textureForField("render_outputs/motion");
   if (!in.valid() || !out.valid()) return;
 
-  Uniforms u = { s_strength, s_samples, 0.f, 0.f };
+  Uniforms u = {
+    s_strength, s_samples, s_chroma_r, s_chroma_g,
+    s_chroma_b, 0.f, 0.f, 0.f,
+  };
   s_uniform_buf.writeOne(u);
 
   // Pass-through: no upstream motion. Bind a viewport-sized zero
@@ -299,6 +379,7 @@ void render(int vp_w, int vp_h) {
     cp.setTexture(s_zero_pyramid, 2, 0);
     cp.setTexture(out,            3, 1);
     cp.setBuffer(s_uniform_buf, 4);
+    cp.setSampler(s_linear_sampler, 5);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
     gpu::Device::submit();
@@ -315,6 +396,7 @@ void render(int vp_w, int vp_h) {
   cp.setTexture(s_pyramid_tex, 2, 0);
   cp.setTexture(out,           3, 1);
   cp.setBuffer(s_uniform_buf, 4);
+  cp.setSampler(s_linear_sampler, 5);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

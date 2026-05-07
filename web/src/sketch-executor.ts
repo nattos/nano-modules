@@ -494,6 +494,16 @@ export class SketchExecutor {
             loaded.host.frameState.params[paramIndex] = value;
             paramPatches.push({ op: 'replace', path: key, value });
             paramIndex++;
+          } else if (typeof value === 'boolean') {
+            // Booleans round-trip as 0/1 numbers in the param row but
+            // stay typed as boolean in the patch — the effect's
+            // on_state_patched can read either via patchFloat (which
+            // returns 0.0/1.0 for booleans on the JS-side patch
+            // rebuild) or via val::asBool when going through bridge
+            // core. Either path resolves to the right runtime value.
+            loaded.host.frameState.params[paramIndex] = value ? 1 : 0;
+            paramPatches.push({ op: 'replace', path: key, value });
+            paramIndex++;
           } else if (Array.isArray(value)
                      && value.every(v => typeof v === 'number')) {
             // Vec2/3/4 (and other plain numeric arrays): deliver as a
