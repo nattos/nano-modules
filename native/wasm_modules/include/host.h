@@ -68,6 +68,15 @@ extern "C" {
   void state_set_gpu_texture(const char* path, int path_len, int texture_handle);
   __attribute__((import_module("state"), import_name("set_field_hidden")))
   void state_set_field_hidden(const char* path, int path_len, int hidden);
+  // Returns non-zero if the schema field at `path` is connected through
+  // the current sketch's tap topology to a complementary tap. `direction`
+  // selects the side: 0 = "is anyone WRITING this field" (input-side
+  // check, useful for read taps), 1 = "is anyone READING this field"
+  // (output-side check, useful for write taps). The runtime updates the
+  // answer once per render() call from the executor's tap walk; effects
+  // can call this any time after on_state_ready.
+  __attribute__((import_module("state"), import_name("is_field_connected")))
+  int state_is_field_connected(const char* path, int path_len, int direction);
   __attribute__((import_module("state"), import_name("set_on_state_ready")))
   void state_set_on_state_ready(void (*fn)(void));
   // Register a SPIR-V shader blob under a name. The host translates
@@ -320,8 +329,15 @@ public:
   /// Pass `state::PrimaryOutput` on the producer side (the rail and
   /// its taps will be inferred when the user clicks the IDE pin) and
   /// `state::PrimaryInput` on the consumer side.
-  Schema& renderOutputs(int io = None) {
-    return beginObject("render_outputs", io)
+  ///
+  /// `name` lets one effect declare BOTH an input and an output of this
+  /// shape (the JSON schema disallows duplicate field names). Use the
+  /// default "render_outputs" for one direction and a different name
+  /// (e.g. "render_outputs_in") for the other. Auto-binding matches by
+  /// schema shape, not field name, so both will still rail-couple to
+  /// peers that use the canonical name.
+  Schema& renderOutputs(int io = None, const char* name = "render_outputs") {
+    return beginObject(name, io)
       .textureField("depth",  None)
       .textureField("motion", None)
       .endObject();
@@ -673,6 +689,34 @@ inline void setFieldHidden(const char* path, bool hidden) {
 ///   }
 inline void setOnStateReady(void (*fn)(void)) {
   state_set_on_state_ready(fn);
+}
+
+// --- Connection introspection ---
+
+/// True if the input field at `path` is connected to a producer through
+/// the current sketch's tap topology (i.e. an upstream effect has a
+/// write tap on the same rail this effect's read tap targets).
+///
+/// Effects use this to detect "wired in / dangling input" — e.g.
+/// motion_blur skips the blur pass and pass-throughs when its
+/// render_outputs input has no upstream writer.
+///
+/// The path is the schema field name (or slash-delimited subpath for
+/// struct leaves). The result reflects the sketch as of the most recent
+/// render() entry.
+inline bool isInputConnected(const char* path) {
+  return state_is_field_connected(path, std::strlen(path), 0) != 0;
+}
+
+/// True if the output field at `path` is connected to a consumer through
+/// the current sketch's tap topology (i.e. some downstream effect has a
+/// read tap on the same rail this effect's write tap targets).
+///
+/// Effects use this to skip work whose only purpose is publishing a
+/// side-output — e.g. a motion-vector generator can skip its motion pass
+/// when no downstream effect reads render_outputs.
+inline bool isOutputConnected(const char* path) {
+  return state_is_field_connected(path, std::strlen(path), 1) != 0;
 }
 
 // ========================================================================

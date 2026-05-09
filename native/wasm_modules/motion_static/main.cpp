@@ -47,6 +47,7 @@ static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
 static gpu::Buffer     s_uniform_buf;
 static gpu::Texture    s_motion_tex;
+static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
 static int  s_motion_w = 0;
 static int  s_motion_h = 0;
 static bool s_initialized = false;
@@ -116,6 +117,11 @@ void init() {
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)
+      // Upstream render-outputs (auxiliary input). When connected, the
+      // motion shader blends our per-pixel velocity field on top of the
+      // incoming one — pixels below threshold inherit upstream, active
+      // pixels override with this stage's local velocity.
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
@@ -134,7 +140,8 @@ void init() {
 
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)
-      .uniform(1));
+      .uniform(1)
+      .tex2d(2));  // upstream motion (zero fallback when unwired)
 
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
@@ -198,16 +205,6 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
-    }
-  }
-  if (!s_motion_tex.valid()) return;
-
   // Shader-facing seed combines the user-controlled `seed` with the
   // step counter so each step shifts the noise pattern. A small
   // multiplier on the user seed widely separates user-seed slots
@@ -230,12 +227,40 @@ void render(int vp_w, int vp_h) {
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
-  // Pass 2 — motion: per-pixel velocity field.
+
+  // Motion pass — only when something downstream actually reads it.
+  if (!state::isOutputConnected("render_outputs")) {
+    gpu::Device::submit();
+    return;
+  }
+
+  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
+    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    s_motion_w = vp_w;
+    s_motion_h = vp_h;
+    if (s_motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+    }
+  }
+  if (!s_motion_tex.valid()) return;
+
+  // Resolve upstream motion (or 1x1 zero fallback when unwired).
+  auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
+  if (!upstream.valid()) {
+    if (!s_zero_motion_tex.valid()) {
+      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    }
+    upstream = s_zero_motion_tex;
+  }
+
+  // Pass 2 — motion: per-pixel velocity field, with upstream as the
+  // baseline for inactive pixels.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
     cp.setTexture(s_motion_tex, 0, 1);
     cp.setBuffer(s_uniform_buf, 1);
+    cp.setTexture(upstream, 2, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

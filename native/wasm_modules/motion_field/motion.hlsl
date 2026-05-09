@@ -1,13 +1,18 @@
 // video.motion_field — motion pass.
 //
 // Computes the per-pixel velocity via the shared `mf_velocity_at`
-// and writes it directly into the rgba16float motion texture.
-// Pixels below the soft-threshold activation get (0, 0, 0, 0).
+// and writes it into the rgba16float motion texture. Pixels with zero
+// activation (sub-threshold luma) inherit `upstreamMotion` — the
+// upstream effect's render_outputs/motion when our render_outputs_in
+// is connected, or zero otherwise (1x1 fallback texture; out-of-bounds
+// loads return zero per WebGPU spec). Active pixels override with this
+// stage's local velocity.
 
 #include "common.hlsl"
 
-Texture2D<float4>   inputTex  : register(t0);
-RWTexture2D<float4> motionTex : register(u1);
+Texture2D<float4>   inputTex       : register(t0);
+RWTexture2D<float4> motionTex      : register(u1);
+Texture2D<float4>   upstreamMotion : register(t3);
 
 // Layout MUST match color.hlsl exactly so the same CPU-side uniform
 // buffer binds cleanly into both shaders.
@@ -61,5 +66,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   P.noise_time        = noise_time;
 
   float2 v = mf_velocity_at(inputTex, gid.xy, w, h, P);
-  motionTex[gid.xy] = float4(v.x, v.y, 0.0, 0.0);
+  // mf_velocity_at returns exactly (0, 0) for sub-threshold pixels.
+  // Any non-zero magnitude means this stage is "active" here and
+  // should override upstream; zero means pass upstream through.
+  float2 upstream = upstreamMotion[gid.xy].xy;
+  float2 out_vel = (length(v) > 0.0) ? v : upstream;
+  motionTex[gid.xy] = float4(out_vel.x, out_vel.y, 0.0, 0.0);
 }

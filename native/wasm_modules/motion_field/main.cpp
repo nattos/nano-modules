@@ -76,6 +76,7 @@ static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
 static gpu::Buffer     s_uniform_buf;
 static gpu::Texture    s_motion_tex;
+static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
 static int  s_motion_w = 0;
 static int  s_motion_h = 0;
 static bool s_initialized = false;
@@ -151,6 +152,12 @@ void init() {
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)
+      // Upstream render-outputs (auxiliary input). When connected, the
+      // motion shader blends our luma-driven velocity field on top of
+      // the incoming one — pixels below the activation threshold
+      // inherit upstream, active pixels override with this stage's
+      // local velocity.
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
@@ -171,7 +178,9 @@ void init() {
       .tex2d(0)                                       // input texture (sampled
                                                       // for both luma + gradient)
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
-      .uniform(2));
+      .uniform(2)
+      .tex2d(3));                                     // upstream motion (zero
+                                                      //  fallback when unwired)
 
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
@@ -223,19 +232,6 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // (Re)allocate the motion texture for the current viewport. Publish
-  // the handle once per allocation; matches the convention in
-  // motion_rect / motion_swarm / motion_static.
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
-    }
-  }
-  if (!s_motion_tex.valid()) return;
-
   Uniforms u = {
     s_threshold,
     s_softness,
@@ -276,6 +272,35 @@ void render(int vp_w, int vp_h) {
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
+
+  // Motion pass — only when something downstream actually reads the rail.
+  if (!state::isOutputConnected("render_outputs")) {
+    gpu::Device::submit();
+    return;
+  }
+
+  // (Re)allocate the motion texture for the current viewport. Publish
+  // the handle once per allocation; matches the convention in
+  // motion_rect / motion_swarm / motion_static.
+  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
+    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    s_motion_w = vp_w;
+    s_motion_h = vp_h;
+    if (s_motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+    }
+  }
+  if (!s_motion_tex.valid()) return;
+
+  // Resolve upstream motion (or 1x1 zero fallback when unwired).
+  auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
+  if (!upstream.valid()) {
+    if (!s_zero_motion_tex.valid()) {
+      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    }
+    upstream = s_zero_motion_tex;
+  }
+
   // Pass 2 — motion vectors.
   {
     auto cp = gpu::ComputePass::begin();
@@ -283,6 +308,7 @@ void render(int vp_w, int vp_h) {
     cp.setTexture(in,           0, 0);
     cp.setTexture(s_motion_tex, 1, 1);
     cp.setBuffer(s_uniform_buf, 2);
+    cp.setTexture(upstream,     3, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

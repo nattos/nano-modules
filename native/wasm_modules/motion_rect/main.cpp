@@ -64,6 +64,7 @@ static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
 static gpu::Buffer     s_uniform_buf;
 static gpu::Texture    s_motion_tex;
+static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
 static int  s_motion_w = 0;
 static int  s_motion_h = 0;
 static bool s_initialized = false;
@@ -108,6 +109,13 @@ void init() {
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)
+      // Upstream render-outputs (auxiliary input). When connected and
+      // motion is valid, the motion shader blends our local velocity on
+      // top of the incoming field — pixels outside our rect inherit
+      // upstream motion, pixels inside override it. Schema-compatible
+      // with any other render_outputs producer (auto-bind matches by
+      // shape, not field name).
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
@@ -128,7 +136,8 @@ void init() {
       .uniform(2));
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)
-      .uniform(1));
+      .uniform(1)
+      .tex2d(2));  // upstream motion texture (zero fallback when unwired)
 
   s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
@@ -209,20 +218,8 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // (Re)allocate the motion texture to match the current viewport. The
-  // handle is published once per allocation; readers receive it via the
-  // canonical `render_outputs` struct rail and the host's textureFields
-  // map at "render_outputs/motion".
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
-    }
-  }
-  if (!s_motion_tex.valid()) return;
-
+  // Color pass always runs (the rect overlay is independent of whether
+  // anyone consumes our render_outputs side rail).
   Uniforms u = {
     s_cx, s_cy,
     s_cx_prev, s_cy_prev,
@@ -242,12 +239,49 @@ void render(int vp_w, int vp_h) {
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
-  // Pass 2 — motion: write velocity inside rect, zero outside.
+
+  // Motion pass — only run when downstream actually reads the rail.
+  // No consumer → no point computing. (The rail's shape is fixed but
+  // the texture stays unallocated until a reader appears.)
+  if (!state::isOutputConnected("render_outputs")) {
+    gpu::Device::submit();
+    return;
+  }
+
+  // (Re)allocate the motion texture to match the current viewport. The
+  // handle is published once per allocation; readers receive it via the
+  // canonical `render_outputs` struct rail and the host's textureFields
+  // map at "render_outputs/motion".
+  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
+    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    s_motion_w = vp_w;
+    s_motion_h = vp_h;
+    if (s_motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+    }
+  }
+  if (!s_motion_tex.valid()) return;
+
+  // Resolve the upstream motion texture — when our render_outputs_in
+  // input is connected and the producer has populated it, blend onto
+  // it. Otherwise bind a 1x1 zero fallback so the shader's unconditional
+  // sample yields zero (and the binary mix collapses to local-only).
+  auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
+  if (!upstream.valid()) {
+    if (!s_zero_motion_tex.valid()) {
+      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    }
+    upstream = s_zero_motion_tex;
+  }
+
+  // Pass 2 — motion: write velocity inside rect; outside the rect,
+  // copy upstream motion through (or zero if none).
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
     cp.setTexture(s_motion_tex, 0, 1);
     cp.setBuffer(s_uniform_buf, 1);
+    cp.setTexture(upstream, 2, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

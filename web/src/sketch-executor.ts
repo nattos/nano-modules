@@ -346,13 +346,22 @@ export class SketchExecutor {
     // Collect column-local rail values for publishing
     const allColumnRails: Map<string, RailValue>[] = [];
 
+    // Precompute per-rail tap-direction counts for the whole sketch.
+    // The connectedness API (state::isInputConnected / isOutputConnected)
+    // queries this — a write tap is "connected" iff at least one read
+    // tap exists on the same rail (and vice versa). Counts per scope
+    // because column-local rail IDs may collide with sketch-rail IDs;
+    // we mirror the executor's resolution order (column-first).
+    const railCounts = this.computeRailTapCounts(sketch);
+
     let lastOutput = inputTextureHandle;
     for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
       const column = sketch.columns[colIdx];
       const colRails = new Map<string, RailValue>();
       const colOutput = await this.executeColumn(
         sketchId, sketch, colIdx, inputTextureHandle,
-        frameState, width, height, crossRailValues, slotCounter, colRails);
+        frameState, width, height, crossRailValues, slotCounter, colRails,
+        railCounts);
       allColumnRails.push(colRails);
       // Only update output if this column actually contains modules
       const hasModules = column.chain.some(e => e.type === 'module');
@@ -381,6 +390,49 @@ export class SketchExecutor {
   }
 
   /**
+   * Walk every tap in the sketch and count, per rail, how many read and
+   * write taps reference it. Used by the connectedness API to answer
+   * isInputConnected / isOutputConnected without re-walking on every
+   * effect query. Keys are scope-prefixed: column-local rails get
+   * `c<colIdx>:<railId>`, sketch-level rails get `s:<railId>`.
+   * Unresolvable rails (the tap references a missing rail) are dropped.
+   */
+  private computeRailTapCounts(
+    sketch: Sketch,
+  ): Map<string, { reads: number; writes: number }> {
+    const counts = new Map<string, { reads: number; writes: number }>();
+    for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
+      const column = sketch.columns[colIdx];
+      for (const entry of column.chain) {
+        if (entry.type !== 'module') continue;
+        for (const tap of entry.taps ?? []) {
+          const key = this.railKey(sketch, colIdx, tap.railId);
+          if (!key) continue;
+          let c = counts.get(key);
+          if (!c) { c = { reads: 0, writes: 0 }; counts.set(key, c); }
+          if (tap.direction === 'read') c.reads++;
+          else if (tap.direction === 'write') c.writes++;
+        }
+      }
+    }
+    return counts;
+  }
+
+  /**
+   * Resolve a tap's railId to a scope-prefixed key. Mirrors the
+   * column-first / sketch-fallback lookup the executor uses everywhere.
+   */
+  private railKey(sketch: Sketch, colIdx: number, railId: string): string | null {
+    if (sketch.columns[colIdx]?.rails?.find(r => r.id === railId)) {
+      return `c${colIdx}:${railId}`;
+    }
+    if (sketch.rails?.find(r => r.id === railId)) {
+      return `s:${railId}`;
+    }
+    return null;
+  }
+
+  /**
    * Execute a single column's chain with sideband rail routing.
    * Cross-cutting rail values are shared across columns via crossRailValues.
    */
@@ -395,6 +447,7 @@ export class SketchExecutor {
     crossRailValues: Map<string, RailValue>,
     slotCounter: { value: number },
     outColumnRails?: Map<string, RailValue>,
+    railCounts?: Map<string, { reads: number; writes: number }>,
   ): Promise<number> {
     const column = sketch.columns[colIdx];
     if (!column) return inputTextureHandle;
@@ -567,6 +620,28 @@ export class SketchExecutor {
         // keeps its cached scalar state and GPU buffer handle forever.
         // Deleting the tap should make the input appear empty / zeroed.
         this.resetInactiveStructInputs(loaded.host, loaded.module, entry);
+
+        // --- Populate connection introspection state ---
+        // For each tap on this entry, decide whether the OPPOSITE
+        // direction has at least one tap on the same rail somewhere in
+        // the sketch. The effect can then call state::isInputConnected
+        // / isOutputConnected to skip work whose only purpose is
+        // producing or consuming an unwired side rail.
+        loaded.host.fieldsWithReader.clear();
+        loaded.host.fieldsWithWriter.clear();
+        if (entry.taps && railCounts) {
+          for (const tap of entry.taps) {
+            const key = this.railKey(sketch, colIdx, tap.railId);
+            if (!key) continue;
+            const c = railCounts.get(key);
+            if (!c) continue;
+            if (tap.direction === 'write' && c.reads >= 1) {
+              loaded.host.fieldsWithReader.add(tap.fieldPath);
+            } else if (tap.direction === 'read' && c.writes >= 1) {
+              loaded.host.fieldsWithWriter.add(tap.fieldPath);
+            }
+          }
+        }
 
         // --- Apply read taps (before tick/render) ---
         const inputTextures: number[] = currentInputHandle >= 0 ? [currentInputHandle] : [];

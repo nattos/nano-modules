@@ -3,15 +3,19 @@
 // Writes the per-pixel velocity for whichever rect contains the
 // pixel. Last rect wins on overlap (matches the color pass's blend
 // stacking order, so the visible color and the motion vector at any
-// pixel describe the SAME rect). Pixels outside every rect get
-// (0, 0, 0, 0).
+// pixel describe the SAME rect). Pixels outside every rect inherit
+// `upstreamMotion` — the upstream effect's render_outputs/motion when
+// our render_outputs_in input is connected, or zero otherwise (the
+// host binds a 1x1 zero fallback in that case; out-of-bounds loads
+// return zero per WebGPU spec).
 //
 // `opacity` from the rect data is intentionally ignored here — a
 // fully-transparent rect still drives motion, so callers can use
 // motion_swarm to feed motion vectors over an arbitrary background
 // texture without staining the colors.
 
-RWTexture2D<float4> motionTex : register(u0);
+RWTexture2D<float4> motionTex      : register(u0);
+Texture2D<float4>   upstreamMotion : register(t3);
 
 struct RectInst {
   float4 pos;    // .xy current, .zw previous
@@ -34,6 +38,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= w || gid.y >= h) return;
 
   float2 uv = (float2(gid.xy) + 0.5) / float2(w, h);
+  bool any_inside = false;
   float2 vel = float2(0.0, 0.0);
 
   for (int i = 0; i < rect_count; i++) {
@@ -42,7 +47,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
                && (uv.y >= r.pos.y - r.size.y) && (uv.y <= r.pos.y + r.size.y);
     if (inside) {
       vel = float2(r.pos.x - r.pos.z, r.pos.y - r.pos.w);
+      any_inside = true;
     }
   }
-  motionTex[gid.xy] = float4(vel.x, vel.y, 0.0, 0.0);
+
+  // Outside every rect: pass upstream motion through. Inside any rect:
+  // emit this swarm's local velocity, overriding upstream there.
+  float2 upstream = upstreamMotion[gid.xy].xy;
+  float2 out_vel = any_inside ? vel : upstream;
+  motionTex[gid.xy] = float4(out_vel.x, out_vel.y, 0.0, 0.0);
 }

@@ -66,6 +66,7 @@ static gpu::ComputePSO s_pso_motion;
 static gpu::Buffer     s_rect_buf;
 static gpu::Buffer     s_uniform_buf;
 static gpu::Texture    s_motion_tex;
+static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
 static int  s_motion_w = 0;
 static int  s_motion_h = 0;
 static bool s_initialized = false;
@@ -159,6 +160,11 @@ void init() {
       .textureField("tex_in",   state::PrimaryInput)
       .textureField("tex_out",  state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)
+      // Upstream render-outputs (auxiliary input). When connected, the
+      // motion shader blends our swarm's per-pixel velocity on top of
+      // the incoming field — pixels outside any rect inherit upstream,
+      // pixels inside override with this swarm's own motion.
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
 
   seed_rects();
@@ -181,7 +187,9 @@ void init() {
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // motionTex
       .storage(1)                                     // rects
-      .uniform(2));                                   // Uniforms
+      .uniform(2)                                     // Uniforms
+      .tex2d(3));                                     // upstream motion (zero
+                                                      //  fallback when unwired)
 
   s_rect_buf = gpu::Device::createBuffer(
       sizeof(GpuRectInst) * MAX_RECTS, gpu::BufferUsage::Storage);
@@ -274,18 +282,6 @@ void render(int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // (Re)allocate the motion texture per viewport; publish the handle
-  // once per allocation. Same convention as motion_rect.
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
-    }
-  }
-  if (!s_motion_tex.valid()) return;
-
   // Pack CPU state into the GPU layout. Only `s_count` slots are
   // populated/read — the rest of the buffer keeps last-frame values
   // but is ignored by the shaders' index-bounded loops.
@@ -322,13 +318,46 @@ void render(int vp_w, int vp_h) {
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
-  // Pass 2 — motion: write velocity inside any rect, zero outside.
+
+  // Motion pass — only run when a downstream consumer reads the rail.
+  if (!state::isOutputConnected("render_outputs")) {
+    gpu::Device::submit();
+    return;
+  }
+
+  // (Re)allocate the motion texture per viewport; publish the handle
+  // once per allocation. Same convention as motion_rect.
+  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
+    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    s_motion_w = vp_w;
+    s_motion_h = vp_h;
+    if (s_motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+    }
+  }
+  if (!s_motion_tex.valid()) return;
+
+  // Resolve upstream motion (or the 1x1 zero fallback when nothing is
+  // wired in). textureLoad on the fallback's out-of-bounds coords
+  // returns zero per WebGPU spec, so the shader's unconditional sample
+  // is safe.
+  auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
+  if (!upstream.valid()) {
+    if (!s_zero_motion_tex.valid()) {
+      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    }
+    upstream = s_zero_motion_tex;
+  }
+
+  // Pass 2 — motion: write velocity inside any rect, fall back to
+  // upstream motion outside every rect.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
     cp.setTexture(s_motion_tex, 0, 1);
     cp.setBuffer(s_rect_buf, 1);
     cp.setBuffer(s_uniform_buf, 2);
+    cp.setTexture(upstream, 3, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

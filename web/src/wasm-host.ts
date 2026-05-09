@@ -215,6 +215,17 @@ export class WasmHost {
   // Populated by state::setGpuBuffer and read by gpu::bufferForField.
   gpuBufferFields: Map<string, number> = new Map();
 
+  // Per-frame connection state populated by the sketch executor before
+  // tick/render. Each set holds the schema field paths whose tap topology
+  // resolves to a complementary tap on the same rail this frame —
+  // i.e. fieldsWithWriter contains paths this effect READS that are
+  // produced by some upstream writer; fieldsWithReader contains paths
+  // this effect WRITES that are consumed by some downstream reader.
+  // Cleared and rebuilt per chain entry so the answer always reflects
+  // the current sketch's wiring.
+  fieldsWithWriter: Set<string> = new Set();
+  fieldsWithReader: Set<string> = new Set();
+
   // Paths pending a "dirty" notification. Drained by the sketch executor
   // and fed back into notifyStatePatched as dirty-op patches.
   pendingDirtyPaths: string[] = [];
@@ -666,6 +677,16 @@ export class WasmHost {
           // Schema visibility propagates only via broadcastState, which
           // fires when the engine state is dirty — let the worker know.
           this.onSchemaChanged?.();
+        },
+        is_field_connected: (pathPtr: number, pathLen: number, direction: number): number => {
+          // direction 0 → "is anyone WRITING this field" (input check).
+          // direction 1 → "is anyone READING this field"  (output check).
+          // The set is populated by the sketch executor each frame from
+          // the chain entry's tap topology.
+          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+          if (direction === 0) return this.fieldsWithWriter.has(path) ? 1 : 0;
+          if (direction === 1) return this.fieldsWithReader.has(path) ? 1 : 0;
+          return 0;
         },
         set_on_state_ready: (fnIdx: number) => {
           // Effect's `init()` registers a callback to be fired once
