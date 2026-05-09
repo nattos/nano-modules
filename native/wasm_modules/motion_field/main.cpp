@@ -64,11 +64,11 @@ struct Uniforms {
   float vis_opacity;
   float vis_scale;
 
-  // row 4: seeds
-  uint32_t seed_mag;
-  uint32_t seed_angle;
-  uint32_t _pad0;
-  uint32_t _pad1;
+  // row 4: temporal evolution
+  float    noise_time;   // accumulated_time × evolution_rate
+  float    _pad_t0;
+  float    _pad_t1;
+  float    _pad_t2;
 };
 static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
 
@@ -97,7 +97,14 @@ static float s_gradient_bias_deg = 90.0f;
 
 static float s_angle_jitter     = 0.0f;
 static float s_angle_noise_scale = 16.0f;
-static int   s_seed             = 0;
+// Hz at which the noise field mutates. 0 = static (single snapshot
+// repeats forever). 1 = one full snapshot transition per second.
+// Higher values give faster, more chaotic flow.
+static float s_evolution_rate   = 0.0f;
+// Accumulated "noise time" — units of "noise snapshots". Advances
+// by `dt * evolution_rate` every tick. The integer part picks the
+// snapshot, the fractional part interpolates to the next.
+static float s_noise_time       = 0.0f;
 static float s_vis_opacity      = 0.0f;
 static float s_vis_scale        = 100.0f;
 
@@ -128,7 +135,15 @@ void init() {
       // Per-pixel angular jitter
       .floatField("angle_jitter",      0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("angle_noise_scale", 16.0f, 1.0f,  100.0f, state::PrimaryInput)
-      .intField  ("seed",              0,     0,     1000,  state::PrimaryInput)
+      // Hz at which the noise pattern mutates over time. 0 freezes
+      // the field (deterministic per pixel); higher values stagger
+      // per-cell ticks faster. At 60 Hz cells average one tick per
+      // animation frame at typical refresh — fully chaotic look.
+      // Replaces the old `seed` integer — schemas with a saved seed
+      // will quietly drop it (no field by that name in the new
+      // schema) and pick up the default evolution_rate of 0,
+      // matching the old static behaviour.
+      .floatField("evolution_rate",    0.0f,  0.0f,  60.0f, state::PrimaryInput)
       // Visualization (off by default — production effects are
       // expected to pass through tex_in unchanged).
       .floatField("vis_opacity",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
@@ -164,7 +179,15 @@ void init() {
   state::log("motion_field: initialized");
 }
 
-void tick(double) {}
+void tick(double dt) {
+  // Advance the noise-field time accumulator. With evolution_rate=0
+  // this is a no-op and the field stays put. With rate=1 we walk
+  // through one integer-seed snapshot per second, interpolating
+  // smoothly across the boundary via mf_value_noise_evolving.
+  if (s_evolution_rate > 0.0f) {
+    s_noise_time += float(dt) * s_evolution_rate;
+  }
+}
 
 void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
   for (int i = 0; i < n; i++) {
@@ -188,7 +211,7 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     else if (state::pathIs(path, plen, "gradient_bias"))     s_gradient_bias_deg = state::patchFloat(i);
     else if (state::pathIs(path, plen, "angle_jitter"))      s_angle_jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "angle_noise_scale")) s_angle_noise_scale = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "seed"))              s_seed = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "evolution_rate"))    s_evolution_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "vis_opacity"))       s_vis_opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "vis_scale"))         s_vis_scale = state::patchFloat(i);
   }
@@ -213,10 +236,6 @@ void render(int vp_w, int vp_h) {
   }
   if (!s_motion_tex.valid()) return;
 
-  // Derive shader-side seeds from the schema seed. The two noise
-  // fields (magnitude + angle) are independent draws so we offset
-  // by arbitrary primes.
-  uint32_t base_seed = (uint32_t)s_seed;
   Uniforms u = {
     s_threshold,
     s_softness,
@@ -238,9 +257,12 @@ void render(int vp_w, int vp_h) {
     s_vis_opacity,
     s_vis_scale,
 
-    base_seed * 1664525u + 1013904223u,
-    base_seed * 22695477u + 1u,
-    0u, 0u,
+    // Continuous time index into the noise field. The shader's
+    // mf_value_noise_evolving interpolates between adjacent integer
+    // snapshots based on this; per-stream phase offsets bake-in to
+    // decorrelate the magnitude and angle noise.
+    s_noise_time,
+    0.f, 0.f, 0.f,
   };
   s_uniform_buf.writeOne(u);
 

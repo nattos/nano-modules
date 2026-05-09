@@ -32,10 +32,10 @@ cbuffer Uniforms : register(b2) {
   float vis_opacity;       // unused here (mirror only)
   float vis_scale;         // unused here
 
-  uint  seed_mag;
-  uint  seed_angle;
-  uint  _pad0;
-  uint  _pad1;
+  float noise_time;
+  float _pad_t0;
+  float _pad_t1;
+  float _pad_t2;
 };
 
 [numthreads(8, 8, 1)]
@@ -58,8 +58,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   P.gradient_bias_rad = gradient_bias_rad;
   P.angle_jitter      = angle_jitter;
   P.angle_noise_scale = angle_noise_scale;
-  P.seed_mag          = seed_mag;
-  P.seed_angle        = seed_angle;
+  P.noise_time        = noise_time;
 
   float2 v = mf_velocity_at(inputTex, gid.xy, w, h, P);
   motionTex[gid.xy] = float4(v.x, v.y, 0.0, 0.0);

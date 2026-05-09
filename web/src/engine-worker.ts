@@ -769,11 +769,28 @@ async function reloadWasmModule(wasmUrl: string) {
   }
 
   let invalidatedCount = 0;
+  // Sketch instances are keyed by entry.module_type, which the user
+  // may have stored as either:
+  //   - the registry-relative effect id ("video.motion_blur"), or
+  //   - the fully-qualified bundle form ("com.nattos.nano.video.motion_blur")
+  // depending on how the sketch was built (legacy expandModulesList
+  // produces relative; new auto-discovered effects in the IDE
+  // tend to qualify). The `effectIds` set holds RELATIVE ids
+  // (oldEffects came out of registerEffect at module-relative level),
+  // so a strict .has() check would silently miss any sketch using
+  // the qualified form — HMR loads the new module but rendering
+  // sticks to the old WasmHost. Resolve before checking.
+  const matchesReloadedModule = (moduleType: string) => {
+    if (effectIds.has(moduleType)) return true;
+    const resolved = resolveEffectId(moduleType);
+    return resolved !== moduleType && effectIds.has(resolved);
+  };
+
   if (sketchExecutor) {
     for (const [, sketch] of sketches) {
       for (const col of sketch.columns) {
         for (const entry of col.chain) {
-          if (entry.type === 'module' && effectIds.has(entry.module_type)) {
+          if (entry.type === 'module' && matchesReloadedModule(entry.module_type)) {
             sketchExecutor.invalidateInstance(entry.instance_key);
             invalidatedCount++;
           }
@@ -781,7 +798,47 @@ async function reloadWasmModule(wasmUrl: string) {
       }
     }
   }
-  console.log(`[wasm-hmr] invalidated ${invalidatedCount} live instance(s); they will be recreated on the next frame with persisted state replayed from the sketch`);
+
+  // realModules holds direct-instantiation hosts (instantiateEffect
+  // command, distinct from sketch chains). Their host.metadata.id is
+  // the resolved relative form, so a direct .has() check is enough.
+  // Drop+rebuild these too so the unassigned bucket stops rendering
+  // stale shaders after HMR.
+  let realRebuilt = 0;
+  const realKeysToRebuild: string[] = [];
+  for (const [key, { host }] of realModules) {
+    const id = host.metadata?.id ?? '';
+    if (effectIds.has(id)) realKeysToRebuild.push(key);
+  }
+  for (const key of realKeysToRebuild) {
+    const old = realModules.get(key);
+    if (!old) continue;
+    realModules.delete(key);
+    // Re-instantiate by id so a fresh host hooks into the new
+    // compiled module. This re-uses the same key in spirit (a new
+    // pluginKey is assigned, but the unassigned-bucket bookkeeping
+    // doesn't depend on key stability across HMR).
+    const id = old.host.metadata?.id ?? '';
+    if (id) {
+      // Fire-and-forget — instantiateEffect re-registers and updates
+      // the bucket sketch. Errors land in the worker console.
+      instantiateEffect(id).catch(err =>
+        console.error(`[wasm-hmr] failed to rebuild direct instance ${id}:`, err));
+      realRebuilt++;
+    }
+  }
+
+  if (invalidatedCount === 0 && realRebuilt === 0) {
+    console.warn(`[wasm-hmr] reload of ${moduleType} matched 0 live instances. ` +
+                 `If rendering looks unchanged, verify your sketch's module_type ` +
+                 `(${[...sketches.values()].flatMap(s => s.columns).flatMap(c => c.chain)
+                     .filter(e => e.type === 'module').map((e: any) => e.module_type).join(', ') || 'none'}) ` +
+                 `against the reloaded effect ids (${[...effectIds].join(', ')}).`);
+  } else {
+    console.log(`[wasm-hmr] invalidated ${invalidatedCount} sketch instance(s) ` +
+                `+ rebuilt ${realRebuilt} direct instance(s); ` +
+                `they recreate on the next frame with persisted state replayed from the sketch`);
+  }
 
   post({
     type: 'effectsDiscovered',

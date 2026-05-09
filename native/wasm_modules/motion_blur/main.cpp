@@ -209,9 +209,9 @@ void init() {
       // classic RGB-trail look. R/G/B fields below are hidden in the
       // inspector when this is off.
       .boolField("chroma_delay", false, state::PrimaryInput)
-      .floatField("chroma_r",  0.5f,  -2.f, 2.f, state::PrimaryInput)
-      .floatField("chroma_g",  0.0f,  -2.f, 2.f, state::PrimaryInput)
-      .floatField("chroma_b", -0.5f,  -2.f, 2.f, state::PrimaryInput)
+      .floatField("chroma_r",  0.5f,  -1.f, 1.f, state::PrimaryInput)
+      .floatField("chroma_g",  0.0f,  -1.f, 1.f, state::PrimaryInput)
+      .floatField("chroma_b", -0.5f,  -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput)

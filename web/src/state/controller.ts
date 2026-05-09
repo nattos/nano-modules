@@ -611,6 +611,30 @@ export class AppController {
 
   /** Sync state from the engine worker. Updates plugins and adopts new remote sketches. */
   syncFromRemoteState(engineState: EngineState) {
+    // Snapshot the previous plugin set so we can detect "we just learned
+    // a schema we didn't have before" and re-sync any sketch that was
+    // pushed to the engine without that knowledge.
+    //
+    // Why this matters: setAvailableEffects fires from the worker's
+    // `effectsDiscovered` post (synchronous on bundle-load completion),
+    // and that's when sketches first get pushed to the engine. But
+    // PLUGIN SCHEMAS (which are what augmentSketchWithImplicitConnections
+    // needs to wire up implicit struct-rail connections) arrive a frame
+    // later via this `state` broadcast. Without a re-sync here, the
+    // engine ends up holding an un-augmented sketch — every motion-vector
+    // consumer like video.motion_blur sits in pass-through fallback
+    // until something else triggers a sync (param release does, because
+    // its postRecordHook calls syncSketchesToEngine). Symptom on a fresh
+    // page reload: nothing renders until you release a slider.
+    const oldPluginIds = new Set(appState.local.plugins.map(p => p.id));
+    const newPluginIds = new Set(engineState.plugins.map(p => p.id));
+    let pluginsChanged = oldPluginIds.size !== newPluginIds.size;
+    if (!pluginsChanged) {
+      for (const id of newPluginIds) {
+        if (!oldPluginIds.has(id)) { pluginsChanged = true; break; }
+      }
+    }
+
     runInAction(() => { appState.local.plugins = engineState.plugins; });
 
     for (const [id, sketch] of Object.entries(engineState.sketches)) {
@@ -625,6 +649,14 @@ export class AppController {
           console.warn(`[conflict] Sketch ${id} differs between local and remote. Local wins for now.`);
         }
       }
+    }
+
+    if (pluginsChanged) {
+      // Re-push sketches now that we have schemas to drive implicit
+      // connection wiring. Idempotent on the engine side — it just
+      // overwrites its sketches map — but the augmented form will
+      // differ from whatever was pushed before plugins arrived.
+      this.syncSketchesToEngine();
     }
   }
 

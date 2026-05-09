@@ -911,7 +911,18 @@ export class GPUHost {
 
   buildImports(readMemory: (ptr: number, len: number) => Uint8Array,
                readString: (ptr: number, len: number) => string): Record<string, Function> {
-    this._readMemory = readMemory;
+    // Capture readMemory in a CLOSURE local to this buildImports call
+    // — every handler in the returned imports record reads through
+    // `memorySlice` below, which always sees THIS WasmHost's wasm
+    // memory regardless of which other WasmHost calls buildImports
+    // later. Previously we stored readMemory on `this._readMemory`
+    // (shared across all WasmHosts), so when the IDE held two
+    // WasmHosts (e.g. testonly + nano after a nano HMR), the LAST
+    // host to instantiate would overwrite _readMemory and the other
+    // host's gpu imports would read zeros from the wrong memory at
+    // its own offsets — manifesting as PSO bindings packed into all
+    // {slot:0,kind:0} when they came back through the import.
+    const memorySlice = (ptr: number, len: number): Uint8Array => readMemory(ptr, len);
     return {
       get_backend: () => this.getBackend(),
       create_shader_module: (srcPtr: number, srcLen: number) =>
@@ -928,15 +939,15 @@ export class GPUHost {
         this.createSampler(filterMode, addressMode),
       create_compute_pso_layout: (shader: number, entryPtr: number, entryLen: number,
                                    bindCount: number, bindPtr: number) => {
-        const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
+        const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
         return this.createComputePipelineWithLayout(shader, readString(entryPtr, entryLen), bindings);
       },
       create_compute_pso_v2: (shader: number, entryPtr: number, entryLen: number,
                               bindCount: number, bindPtr: number,
                               constsPtr: number, constsLen: number) => {
-        const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
+        const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
         const constants = constsLen > 0
-            ? readConstants(this.memorySlice(constsPtr, constsLen))
+            ? readConstants(memorySlice(constsPtr, constsLen))
             : undefined;
         return this.createComputePipelineWithLayout(
             shader, readString(entryPtr, entryLen), bindings, constants);
@@ -945,7 +956,7 @@ export class GPUHost {
         vsShader: number, vsPtr: number, vsLen: number,
         fsShader: number, fsPtr: number, fsLen: number, format: number,
         bindCount: number, bindPtr: number) => {
-        const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
+        const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
         return this.createRenderPipelineWithLayout(
           vsShader, readString(vsPtr, vsLen),
           fsShader, readString(fsPtr, fsLen), format, bindings);
@@ -954,7 +965,7 @@ export class GPUHost {
         vsShader: number, vsPtr: number, vsLen: number,
         fsShader: number, fsPtr: number, fsLen: number, format: number,
         bindCount: number, bindPtr: number) => {
-        const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
+        const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
         return this.createInstancedRenderPipelineWithLayout(
           vsShader, readString(vsPtr, vsLen),
           fsShader, readString(fsPtr, fsLen), format, bindings);
@@ -1000,27 +1011,19 @@ export class GPUHost {
         fsShader: number, fsPtr: number, fsLen: number,
         count: number, fmtsPtr: number,
         bindCount: number, bindPtr: number) => {
-        const fmts = new Int32Array(this.memorySlice(fmtsPtr, count * 4).buffer);
-        const bindings = readBindingDecls(this.memorySlice(bindPtr, bindCount * 16), bindCount);
+        const fmts = new Int32Array(memorySlice(fmtsPtr, count * 4).buffer);
+        const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
         return this.createInstancedRenderPipelineMRTWithLayout(
           vsShader, readString(vsPtr, vsLen),
           fsShader, readString(fsPtr, fsLen),
           count, fmts, bindings);
       },
       begin_render_pass_mrt: (count: number, texPtr: number, clearPtr: number) => {
-        const tex = new Int32Array(this.memorySlice(texPtr, count * 4).buffer);
-        const cv = new Float32Array(this.memorySlice(clearPtr, count * 16).buffer);
+        const tex = new Int32Array(memorySlice(texPtr, count * 4).buffer);
+        const cv = new Float32Array(memorySlice(clearPtr, count * 16).buffer);
         return this.beginRenderPassMRT(count, tex, cv);
       },
     };
   }
 
-  // Slice memory into a fresh ArrayBuffer (the readMemory passed in by
-  // wasm-host returns slices, but for typed-array views we need owned
-  // buffers; otherwise the offsets reference WASM memory which can move
-  // and align oddly).
-  private memorySlice(ptr: number, len: number): Uint8Array {
-    return this._readMemory ? this._readMemory(ptr, len) : new Uint8Array(0);
-  }
-  private _readMemory: ((ptr: number, len: number) => Uint8Array) | null = null;
 }

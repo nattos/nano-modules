@@ -43,6 +43,58 @@ float mf_value_noise(float2 p_pixels, float cell_size, uint seed) {
   return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
 }
 
+// Per-cell value at a continuous `time_index`, with staggered ticks.
+//
+// The naive "snapshot N → snapshot N+1 cross-fade" approach pulses
+// globally — every cell transitions at the same time, producing a
+// visible breathing rhythm. We avoid that by giving each cell its
+// own phase offset:
+//
+//   sig         = pcg(cell, base_seed XOR mix_prime)
+//   phase       = lower 16 bits of sig, normalized to [0, 1)
+//   step_index  = floor(phase + time_index)
+//   value       = mf_cell_rand(cell, base_seed + step_index)
+//
+// Because `phase` differs per cell, each cell crosses its own
+// integer threshold at a different time. At any moment some cells
+// just ticked, others are about to tick — the transitions are spread
+// out and look stochastic rather than synchronous. Each cell still
+// ticks once per unit `time_index`.
+//
+// The step is hard (no temporal lerp) — adjacent cells' values
+// disagree across the cell boundary anyway, and the spatial bilinear
+// interpolation in mf_value_noise_phased smooths the result over
+// space. Per-cell hard steps are perceptually preferable to a global
+// pulse even with quintic temporal ease.
+float mf_cell_rand_phased(int2 cell, uint base_seed, float time_index) {
+  // Sig: phase for this cell. XOR by golden-ratio prime decouples
+  // sig from any other hash that uses (cell, base_seed) directly,
+  // so the cell's value at step 0 isn't correlated with its phase.
+  uint sig = mf_pcg_hash3(uint(cell.x + 1000000),
+                          uint(cell.y + 1000000),
+                          base_seed ^ 0x9E3779B1u);
+  float phase = float(sig & 0xFFFFu) * (1.0 / 65536.0);
+  uint step_index = uint(floor(phase + time_index));
+  return mf_cell_rand(cell, base_seed + step_index);
+}
+
+// Spatial bilinear interpolation across 4 corners, each evaluated
+// via the per-cell phased rand. Cells in this composition tick
+// independently, so the noise field mutates over time without the
+// pulsing artifact of a global cross-snapshot lerp.
+float mf_value_noise_phased(float2 p_pixels, float cell_size,
+                            uint base_seed, float time_index) {
+  float2 p = p_pixels / max(cell_size, 1.0);
+  int2 i = int2(floor(p));
+  float2 f = frac(p);
+  float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = mf_cell_rand_phased(i,                base_seed, time_index);
+  float b = mf_cell_rand_phased(i + int2(1, 0),   base_seed, time_index);
+  float c = mf_cell_rand_phased(i + int2(0, 1),   base_seed, time_index);
+  float d = mf_cell_rand_phased(i + int2(1, 1),   base_seed, time_index);
+  return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+
 float mf_lum(float3 c) {
   return dot(c, float3(0.299, 0.587, 0.114));
 }
@@ -117,12 +169,20 @@ struct MfParams {
   float angle_jitter;       // ±jitter * π radians of jitter
   float angle_noise_scale;  // pixels per cell
 
-  // Seeds used by the two noise samples (magnitude + angle). Derived
-  // from the schema `seed` field with arbitrary offsets so the two
-  // noise fields are independent.
-  uint  seed_mag;
-  uint  seed_angle;
+  // Continuous time index into the noise field (host-side
+  // `accumulated_time * evolution_rate`). Drives smooth interpolation
+  // between adjacent integer-seed snapshots, so the noise field
+  // mutates over time when the user sets evolution_rate > 0 and
+  // freezes when evolution_rate == 0. Two phase offsets below
+  // decorrelate the magnitude and angle noise streams.
+  float noise_time;
 };
+
+// Phase offsets that drop the magnitude and angle noise streams in
+// totally separate regions of the pcg seed space — the two streams
+// stay uncorrelated even at the exact same `noise_time`.
+static const uint MF_PHASE_MAG   = 0xA1B2C3D4u;
+static const uint MF_PHASE_ANGLE = 0x9E3779B1u;  // golden-ratio mix prime
 
 // Returns the per-pixel velocity in uv-space. Pixels with zero
 // activation (luma below threshold) get (0, 0).
@@ -184,9 +244,11 @@ float2 mf_velocity_at(Texture2D<float4> inputTex,
   // and scaled by jitter strength. Noise is locally smooth (cell
   // size in pixels controls correlation length) so neighbouring
   // pixels rotate together — patches of the field swirl coherently
-  // instead of becoming random salt-and-pepper.
+  // instead of becoming random salt-and-pepper. The evolving variant
+  // makes the field mutate over time when evolution_rate > 0.
   if (P.angle_jitter > 0.0) {
-    float n = mf_value_noise(float2(gid), P.angle_noise_scale, P.seed_angle) - 0.5;
+    float n = mf_value_noise_phased(
+        float2(gid), P.angle_noise_scale, MF_PHASE_ANGLE, P.noise_time) - 0.5;
     float angle_off = n * P.angle_jitter * 6.2832;
     dir = mf_rotate(dir, angle_off);
   }
@@ -194,7 +256,8 @@ float2 mf_velocity_at(Texture2D<float4> inputTex,
   // ---- Magnitude ----
   // Local mag jitter via value noise: range [1 - mag_jitter, 1 + mag_jitter]
   // times `magnitude`. With mag_jitter=0 the magnitude is uniform.
-  float mag_n = mf_value_noise(float2(gid), P.mag_noise_scale, P.seed_mag);
+  float mag_n = mf_value_noise_phased(
+      float2(gid), P.mag_noise_scale, MF_PHASE_MAG, P.noise_time);
   float mag_scale = 1.0 + P.mag_jitter * (mag_n * 2.0 - 1.0);
   float mag = P.magnitude * max(0.0, mag_scale);
 
