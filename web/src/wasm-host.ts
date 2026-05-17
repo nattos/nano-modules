@@ -226,6 +226,14 @@ export class WasmHost {
   fieldsWithWriter: Set<string> = new Set();
   fieldsWithReader: Set<string> = new Set();
 
+  // textureFields keys installed by the executor's read-tap loop last
+  // frame for NAMED (non-numeric) texture taps. Cleared and rewritten
+  // each frame; lets us drop stale entries when a tap is removed
+  // without trampling on producer-published handles (state::setGpuTexture)
+  // or struct-rail texture leaves, which the executor has no visibility
+  // into.
+  tapInstalledTextureFields: Set<string> = new Set();
+
   // Paths pending a "dirty" notification. Drained by the sketch executor
   // and fed back into notifyStatePatched as dirty-op patches.
   pendingDirtyPaths: string[] = [];

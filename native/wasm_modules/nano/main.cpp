@@ -26,6 +26,13 @@ namespace motion_field {
     void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
 
+namespace flash_particles {
+    void init();
+    void tick(double dt);
+    void render(int vp_w, int vp_h);
+    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -55,6 +62,20 @@ void nano_module_main() {
         motion_field::tick,
         motion_field::render,
         motion_field::on_state_patched,
+        nullptr,
+    });
+
+    nano::registerEffect({
+        1,
+        "video.flash_particles",
+        "Flash Particles",
+        "Mask-driven particle compositor. Spawns particles at bright spots in the (optional) mask texture, captures the input color at each spawn, and composites alpha-masked oriented quads (solid / squircle / gaussian) using a power-curve life decay with frame jitter. Emits motion vectors along each particle's rotation; chains via render_outputs_in.",
+        "video",
+        "particles,motion,vectors,render-outputs,producer,mask,jitter",
+        flash_particles::init,
+        flash_particles::tick,
+        flash_particles::render,
+        flash_particles::on_state_patched,
         nullptr,
     });
 }

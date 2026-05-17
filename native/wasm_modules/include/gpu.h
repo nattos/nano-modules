@@ -131,6 +131,19 @@ extern "C" {
       int binding_count, const int* bindings);
   __attribute__((import_module("gpu"), import_name("begin_render_pass_mrt")))
   int gpu_begin_render_pass_mrt(int count, const int* tex_handles, const float* clear_values);
+  // Instanced render pipeline factory variant that accepts a blend
+  // mode int. 0 = standard alpha-over, 1 = additive
+  // (src*src.a + dst). Anything else falls back to alpha-over.
+  __attribute__((import_module("gpu"), import_name("create_instanced_render_pso_blend_layout")))
+  int gpu_create_instanced_render_pso_blend_layout(
+      int vs_shader, const char* vs, int vs_len,
+      int fs_shader, const char* fs, int fs_len, int format,
+      int binding_count, const int* bindings, int blend_mode);
+  // Begin a render pass that LOADS the existing texture content
+  // instead of clearing. Pair with a compute pre-fill that seeds the
+  // target so the raster pass blends on top.
+  __attribute__((import_module("gpu"), import_name("begin_render_pass_load")))
+  int gpu_begin_render_pass_load(int texture);
 }
 
 namespace gpu {
@@ -461,6 +474,14 @@ struct RenderPass {
     return { gpu_begin_render_pass(target.id, r, g, b, a) };
   }
 
+  /// Begin a render pass that LOADS the existing texture content.
+  /// Used when an upstream compute pass has already populated the
+  /// target and the raster pass should blend on top instead of
+  /// clearing first.
+  static RenderPass beginLoad(Texture target) {
+    return { gpu_begin_render_pass_load(target.id) };
+  }
+
   /// Begin a render pass with multiple color attachments (MRT). The
   /// matching pipeline must have been created via `Device::createInstancedRenderPSOMRT`
   /// with the same number/order of target formats. Up to 8 attachments
@@ -621,6 +642,33 @@ struct Device {
         vs.id, vsEntry, std::strlen(vsEntry),
         fs.id, fsEntry, std::strlen(fsEntry),
         static_cast<int>(format), n, packed));
+  }
+
+  /// Color blend equation for `createInstancedRenderPSO`. Picked at
+  /// pipeline-creation time and stamped into the WebGPU pipeline state
+  /// — switching at runtime requires a different PSO.
+  enum class BlendMode : int {
+    AlphaOver = 0,  ///< src*src.a + dst*(1 - src.a). Default.
+    Additive  = 1,  ///< src*src.a + dst. Particles accumulate.
+  };
+
+  /// Same as the bindings-only `createInstancedRenderPSO` overload, but
+  /// lets the caller pick the blend equation. Particle-style effects
+  /// often want both alpha-over and additive variants of the same
+  /// shader and create one PSO of each.
+  static RenderPSO createInstancedRenderPSO(
+      ShaderModule vs, const char* vsEntry,
+      ShaderModule fs, const char* fsEntry,
+      TextureFormat format,
+      const Bindings& bindings,
+      BlendMode blendMode) {
+    int packed[Bindings::MAX_ENTRIES * 4];
+    int n = detail::packBindings(bindings, packed);
+    return RenderPSO(gpu_create_instanced_render_pso_blend_layout(
+        vs.id, vsEntry, std::strlen(vsEntry),
+        fs.id, fsEntry, std::strlen(fsEntry),
+        static_cast<int>(format), n, packed,
+        static_cast<int>(blendMode)));
   }
 
   /// Multi-render-target render pipeline. Fragment outputs at

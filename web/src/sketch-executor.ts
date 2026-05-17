@@ -646,6 +646,17 @@ export class SketchExecutor {
         // --- Apply read taps (before tick/render) ---
         const inputTextures: number[] = currentInputHandle >= 0 ? [currentInputHandle] : [];
 
+        // Drop any named-texture-tap entries the executor installed
+        // last frame that aren't part of this frame's tap set. Without
+        // this, removing a tap leaves a stale handle in textureFields
+        // and the effect would keep resolving the freed/wrong texture.
+        // Producer-published entries (state::setGpuTexture) and struct-
+        // rail leaves are unaffected — they live outside this set.
+        for (const key of loaded.host.tapInstalledTextureFields) {
+          loaded.host.textureFields.delete(key);
+        }
+        loaded.host.tapInstalledTextureFields.clear();
+
         if (entry.taps) {
           for (const tap of entry.taps) {
             if (tap.direction !== 'read') continue;
@@ -663,11 +674,19 @@ export class SketchExecutor {
                 { op: 'replace', path: tap.fieldPath, value: rv.data },
               ]);
             } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
-              // Texture tap read: add to input texture handles
+              // Texture tap read. Numeric fieldPath → positional input
+              // slot (legacy `gpu::Device::inputTexture(N)` API used by
+              // video.blend etc). Named fieldPath → install directly
+              // under that name in textureFields, so the effect can
+              // resolve it via `gpu::Device::textureForField("<name>")`
+              // — same convention as struct-rail texture leaves.
               const texIndex = parseInt(tap.fieldPath, 10);
-              if (!isNaN(texIndex)) {
+              if (!isNaN(texIndex) && String(texIndex) === tap.fieldPath) {
                 while (inputTextures.length <= texIndex) inputTextures.push(-1);
                 inputTextures[texIndex] = rv.texture;
+              } else if (tap.fieldPath) {
+                loaded.host.textureFields.set(tap.fieldPath, rv.texture);
+                loaded.host.tapInstalledTextureFields.add(tap.fieldPath);
               }
             } else if (
               typeof rail?.dataType === 'object' &&

@@ -513,10 +513,15 @@ export class GPUHost {
   /// vertex_index / instance_index, optionally reading per-instance
   /// data from a storage buffer bound via one of the explicit
   /// `bindings` (visibility: vertex+fragment).
+  ///
+  /// `blendMode` selects the color/alpha blend equation:
+  ///   0 = alpha-over (default; src*src.a + dst*(1-src.a))
+  ///   1 = additive  (src*src.a + dst; alpha channel sums)
+  /// Anything else falls back to alpha-over.
   createInstancedRenderPipelineWithLayout(
       vsShaderHandle: number, vsEntry: string,
       fsShaderHandle: number, fsEntry: string, format: number,
-      bindings: BindingDecl[]): number {
+      bindings: BindingDecl[], blendMode: number = 0): number {
     const vsModule = this.get(vsShaderHandle) as GPUShaderModule;
     const fsModule = this.get(fsShaderHandle) as GPUShaderModule;
     if (!vsModule || !fsModule) return -1;
@@ -524,15 +529,21 @@ export class GPUHost {
                                                 : textureFormatFromCode(format);
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
+    const blend: GPUBlendState = blendMode === 1
+      ? {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+          alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' },
+        }
+      : {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        };
     const pipeline = this.device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: { module: vsModule, entryPoint: vsEntry, buffers: [] },
       fragment: {
         module: fsModule, entryPoint: fsEntry,
-        targets: [{ format: fmt, blend: {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-        }}],
+        targets: [{ format: fmt, blend }],
       },
       primitive: { topology: 'triangle-list' },
     });
@@ -717,6 +728,29 @@ export class GPUHost {
         view: texture.createView(),
         clearValue: { r: clearR, g: clearG, b: clearB, a: clearA },
         loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    this.renderPassEntry = null;
+    this.renderPassBuffers.clear();
+    return 1;
+  }
+
+  /**
+   * Begin a render pass that LOADS the existing texture content instead
+   * of clearing. Useful when an earlier compute pass pre-filled the
+   * target (e.g. tex_in × input_alpha for the particle compositor) and
+   * the raster pass should blend on top of that content.
+   */
+  beginRenderPassLoad(textureHandle: number): number {
+    const texture = this.get(textureHandle) as GPUTexture;
+    if (!texture) return -1;
+
+    const encoder = this.ensureEncoder();
+    this.renderPassEncoder = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView(),
+        loadOp: 'load',
         storeOp: 'store',
       }],
     });
@@ -970,6 +1004,15 @@ export class GPUHost {
           vsShader, readString(vsPtr, vsLen),
           fsShader, readString(fsPtr, fsLen), format, bindings);
       },
+      create_instanced_render_pso_blend_layout: (
+        vsShader: number, vsPtr: number, vsLen: number,
+        fsShader: number, fsPtr: number, fsLen: number, format: number,
+        bindCount: number, bindPtr: number, blendMode: number) => {
+        const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
+        return this.createInstancedRenderPipelineWithLayout(
+          vsShader, readString(vsPtr, vsLen),
+          fsShader, readString(fsPtr, fsLen), format, bindings, blendMode);
+      },
       write_buffer: (buf: number, offset: number, dataPtr: number, dataLen: number) =>
         this.writeBuffer(buf, offset, readMemory(dataPtr, dataLen)),
       begin_compute_pass: () => this.beginComputePass(),
@@ -988,6 +1031,8 @@ export class GPUHost {
       end_compute_pass: (pass: number) => this.endComputePass(pass),
       begin_render_pass: (texture: number, cr: number, cg: number, cb: number, ca: number) =>
         this.beginRenderPass(texture, cr, cg, cb, ca),
+      begin_render_pass_load: (texture: number) =>
+        this.beginRenderPassLoad(texture),
       render_set_pso: (pass: number, pipeline: number) =>
         this.renderSetPipeline(pass, pipeline),
       render_set_vertex_buffer: (pass: number, buf: number, offset: number, slot: number) =>

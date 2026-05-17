@@ -16,6 +16,34 @@ compile_shaders_compute_var_spv motion_field motion
 _emit_spv_header_var motion_field color motion
 echo "  motion_field shaders compiled (SPV: color + motion)"
 
+# flash_particles — mask-driven particle compositor.
+#   update  (compute) — per-particle lifetime + respawn.
+#   prefill (compute) — copy a source tex (× scale) to a dest storage
+#                       tex. Same SPV is registered twice with
+#                       different storage-format hints (color = rgba8,
+#                       motion = rgba16f) so each PSO gets the right
+#                       naga substitution.
+#   vs      (vertex)  — instanced quad vertex shader, shared by both
+#                       fragment passes.
+#   fs_color  (pixel) — color compositing, blends onto pre-filled
+#                       tex_out. Two PSOs (alpha and additive blend)
+#                       share this fragment.
+#   fs_motion (pixel) — motion vectors with mask=alpha; alpha blend
+#                       acts as a mask-controlled overwrite.
+compile_shaders_compute_var_spv flash_particles update
+compile_shaders_compute_var_spv flash_particles prefill
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../flash_particles/vs.hlsl -Fo "$TMP_DIR/flash_particles_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../flash_particles/fs_color.hlsl -Fo "$TMP_DIR/flash_particles_fs_color.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../flash_particles/fs_motion.hlsl -Fo "$TMP_DIR/flash_particles_fs_motion.spv"
+_emit_spv_header_var flash_particles update prefill vs fs_color fs_motion
+echo "  flash_particles shaders compiled (SPV: update + prefill + vs + fs_color + fs_motion)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -32,6 +60,7 @@ wasm_build \
   main.cpp \
   ../nanolooper/main.cpp \
   ../nanolooper/core.cpp \
-  ../motion_field/main.cpp
+  ../motion_field/main.cpp \
+  ../flash_particles/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
