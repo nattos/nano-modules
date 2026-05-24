@@ -231,6 +231,7 @@ const BUNDLE_MODULE_TYPES = new Set([
   'com.nattos.core',
   'com.nattos.nano',
   'com.nattos.testonly',
+  'com.nano.lights',
 ]);
 
 function expandModulesList(modules: string[]): any[] {

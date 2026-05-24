@@ -859,8 +859,11 @@ async function reloadWasmModule(wasmUrl: string) {
 async function loadModule(moduleType: string) {
   if (!bridgeCore || !gpuHost) return;
 
-  // Derive WASM filename from module type.
-  const moduleName = moduleType.replace(/^com\.nattos\./, '').replace(/\./g, '_');
+  // Derive WASM filename from module type. We strip any
+  // `com.<vendor>.` prefix (matches `com.nattos.nano`, `com.nano.lights`,
+  // etc) so the wasm file's short name is the last meaningful segment.
+  const stripped = moduleType.replace(/^com\.[^.]+\./, '');
+  const moduleName = stripped.replace(/\./g, '_');
   const wasmUrl = `/wasm/${moduleName}.wasm`;
 
   // Don't reload if already registered

@@ -593,3 +593,177 @@ state::init("video.warmgrade", {1, 0, 0},
     .textureField("tex_out", state::PrimaryOutput)
 );
 ```
+
+---
+
+## 8. Triggered / stateful effects — patterns from the lights bundle
+
+Distilled from building `plasma_beam_cannon` and friends. These apply to any effect with a phase machine (ADSR), an internal particle pool, or anything that fires on a cue.
+
+### 8.1 Trigger surface — bool gate + event trigger + auto_rate
+
+Standard three inputs (style guide §1.1 — expose lots of parameters):
+
+- **`gate` (bool, PrimaryInput)** — momentary / rising-edge fires the cycle. The held state after the rising edge is **irrelevant**; the synthetic pulse drives the envelope to completion on its own timer. Inspector checkbox can stay checked without "stuck in sustain"; toggle false→true to re-fire.
+- **`trigger` (event, PrimaryInput)** — one-shot; synthesizes the same pulse as a rising-edge gate. **Critical**: see §8.2 below.
+- **`auto_rate` (float, 0..1, PrimaryInput)** — Poisson auto-trigger per §4.1. **Default to a small non-zero value** (typically 0.2 ≈ 1.6 Hz) so the IDE preview demonstrates motion immediately when the effect is dropped fresh. Production patches set it to 0 when MIDI / Resolume drives the cue explicitly.
+
+Why momentary gate (not synth-style hold-to-sustain): the inspector checkbox is the primary tuning surface, and a held checkbox can't be quickly tapped. Hold-to-sustain semantics confuse users who expect "click → cycle plays." For *true* hold-to-sustain (continuous level signal from upstream), wire that to a separate continuous-level field — don't overload `gate`.
+
+### 8.2 Event handlers — defend against state replay
+
+The sketch-executor replays **every** instance-state value as `PatchReplace` patches **every frame**. Inspector hover and continuous-edit broadcasts can amplify this. An event handler that fires on every notification will re-arm itself forever:
+
+```cpp
+// ❌ BAD — re-fires every frame, freezes ADSR in sustain
+if (state::pathIs(path, plen, "trigger")) {
+  s_trigger_pulse = true;
+  s_trigger_hold_remaining = pulse_duration;
+}
+```
+
+Two defenses:
+
+- **Edge detection** (like `gate` does, via `s_gate_prev`): only fire when the value *changes*. Works for fields with a meaningful "previous value."
+- **Phase guard** (used for `trigger` event): only honor the patch when the effect is in a safe state to re-fire. For ADSR effects:
+  ```cpp
+  // ✅ Fires once when idle, ignores replays during active phases.
+  if (state::pathIs(path, plen, "trigger") && s_phase == PHASE_IDLE) {
+    s_trigger_pulse = true;
+    s_trigger_hold_remaining = pulse_duration;
+  }
+  ```
+
+The cost of the phase guard: mid-cycle re-trigger via the event is disabled. Workaround: `gate` rising edge still cuts the active cycle short and restarts; `auto_rate` still fires when its Poisson draw lands during release.
+
+### 8.3 ADSR phase machine
+
+Five states: `IDLE` / `ATTACK` / `DECAY` / `SUSTAIN` / `RELEASE`. State is `(phase, time_in_phase)`. Drive via an "effective gate" signal that's just the synthetic trigger pulse:
+
+```cpp
+bool effective_gate = s_trigger_pulse;
+switch (s_phase) {
+  case PHASE_IDLE:    if (effective_gate) enter_phase(PHASE_ATTACK); break;
+  case PHASE_ATTACK:  if (!effective_gate) enter_phase(PHASE_RELEASE);
+                      else if (time_in_phase >= attack_s) enter_phase(PHASE_DECAY); break;
+  // ... etc
+}
+```
+
+Pulse duration: `attack_s + decay_s + sustain_s`. After it expires, `effective_gate` falls, sustain transitions to release. Total cycle = `attack + decay + sustain + release` seconds.
+
+**Per-phase curve params** (signed `[-1, +1]`, mapped via `fx::signedSliderToExp`): one per envelope phase that has a visible ramp.
+```cpp
+float t_curved = std::pow(t_in_phase, fx::signedSliderToExp(s_phase_curve));
+```
+`-1` → exp 8 → slow start, fast finish. `+1` → exp 1/8 → fast start, slow finish. Linear at 0.
+
+For release effects whose visual decay is driven by other systems (particles, breaks, etc.), `release_curve` warps `release_t` **globally** at the top of those systems — so length targets, activation thresholds, and flicker onsets all shift together when the user dials it.
+
+**Tick/render ordering caveat**: first tick after a transition does `enter_phase(X); time_in_phase = 0`. Render then sees `t = 0`. Tests that need a phase to be visibly active need **at least 2 ticks** (one to enter, one to accumulate `time_in_phase > 0`).
+
+### 8.4 Particle pools (per-bar)
+
+Per-bar pool with compile-time max + runtime count:
+```cpp
+static constexpr int MAX_PER_BAR = 32;
+static CpuParticle s_pool[BARS][MAX_PER_BAR];   // pre-allocated
+// runtime `count_per_bar` clamped to MAX, inactive slots set to safe values
+```
+
+**Active-flag pattern**: compute `is_active[i]` once per tick (from age, threshold, lifetime, etc.). Gate every later operation — forces, length controller, render — by that flag. Inactive particles must contribute zero force AND not appear in rendering. Don't try to keep inactive particles "partially in" the simulation; it gets messy.
+
+**Lazy pop-to-min on first activation**: initialize particles with `size = 0`, then on first frame they're active set `size = min_size`. Avoids the awkward "size grows from 0 invisibly for 3 ticks before becoming visible" — particles pop into existence at minimum visible size, then the length controller takes over.
+
+**Staggered activation thresholds**: instead of all particles entering simultaneously, give each one a random `threshold` in `[activation_min, 1.0]` shaped by a power curve. They activate one-by-one over the lifetime instead of popping all at once. Use the standard signed-slider exp mapping for the curve param.
+
+### 8.5 N-body forces — Plummer softening
+
+The pair force `1/r²` is singular at close range. Two particles that seed even slightly close produce arbitrarily large velocity changes — even with a tiny strength multiplier. Use Plummer softening:
+```cpp
+float d_sq = abs_dy * abs_dy + softening * softening;
+force[i] += sign * strength / d_sq;
+```
+At `dy = 0`, force tops out at `strength / softening²` — bounded. Expose `softening` as a tuning param (~0.05 in uv-space is a good default for 1D bar-height sims). The hard floor variant (`d = max(abs_dy, floor)`) works too but introduces a discontinuity at the floor; Plummer is smooth and standard.
+
+### 8.6 Bimodal distributions for visual variety
+
+When you want particles to visibly fall into two visual classes (e.g. some breaks "stay small," others "grow large"), use **binary class assignment with per-particle personal max**, not a continuous distribution:
+```cpp
+bool wants_to_grow = rand_unit() < s_growth_fraction;
+p.personal_max_size = wants_to_grow ? s_max_size : s_min_size;
+```
+Then the global length-controller (or whatever drives size) clamps each particle to its personal max. Continuous distributions tend to look uniform — "everything is medium" — even when statistically they shouldn't. Hard binary gives the eye distinct visual classes.
+
+### 8.7 Per-particle teleport for organic churn
+
+Stochastic teleport of active particles keeps a field from settling into static configurations. Use size-biased rates: small particles teleport often, large ones never. Mapping:
+```cpp
+float size_factor = 1.0f - size_normalized;          // 1 at min, 0 at max
+float rate_hz = std::pow(60.0f, s_teleport_rate) - 1.0f;   // §4.1 mapping
+float lambda = rate_hz * size_factor * dt;
+if (rand_unit() < 1.0f - std::exp(-lambda)) p.y = rand_unit();
+```
+Add as a tuning knob (`teleport_rate` slider). At 0 the field locks down; cranking up animates it.
+
+### 8.8 Cycle seed — deterministic per-trigger pattern
+
+If you want each trigger to produce a fresh-but-deterministic random pattern (e.g. a different break arrangement each cycle):
+```cpp
+static int s_cycle_count = 0;
+// On phase entry into the relevant state:
+if (s_cycle_seed_enabled) s_cycle_count++;
+// In your seeding code:
+uint32_t effective_seed = (uint32_t)s_user_seed + (uint32_t)s_cycle_count;
+```
+Expose `cycle_seed` as a bool toggle. Default `true` for variety; flip off to lock the exact same pattern every trigger (useful for staging deterministic cues). **Don't** rely on global RNG drift from other systems (auto-trigger Poisson, etc.) — it works but is fragile across HMR, instance recreation, and changes to unrelated stochastic code.
+
+### 8.9 Separate RNG streams
+
+For unrelated stochastic operations (auto-trigger Poisson, per-particle teleport, seed generation), use **separate LCG state variables**:
+```cpp
+static uint32_t s_autotrigger_rng = 0xCAFEBABEu;
+static uint32_t s_break_op_rng    = 0xBADDCAFEu;
+```
+Independent streams mean toggling `auto_rate` doesn't subtly shift teleport timing, and changing one tuning param doesn't ripple unrelated stochastic state.
+
+### 8.10 Strict on/off rendering — "no alpha fades"
+
+For hard-edge aesthetics (90s anime, glitch, etc.), render decisions are boolean trees with passthrough as the default:
+```hlsl
+if (!active)                      { out = passthrough; return; }
+if (out_of_bar)                   { out = passthrough; return; }
+if (out_of_beam_extent)           { out = passthrough; return; }
+if (flicker_on == 0)              { out = passthrough; return; }
+if (covered_by_solid_break)       { out = passthrough; return; }
+out = beam_color * intensity;
+```
+No alpha computed anywhere. Tests use `expectPixelAt` for exact pixel assertions or `expectCoverage` for coverage thresholds; avoid soft-edge tolerance values.
+
+### 8.11 Param order matters in test runners
+
+The E2E runner applies `params: [...]` in array order. Rising-edge handlers compute pulse durations from THEN-CURRENT timing values. **Always set timing params before any field that triggers on rising edge**:
+```ts
+params: [
+  ['attack_s', 0.05],
+  ['decay_s',  0.05],
+  ['release_s', 1.0],
+  ['gate', 1.0],     // ← LAST so gate's pulse hold uses the small values
+]
+```
+Otherwise gate fires with default-value pulse durations and your test ends up in a different phase than you expected.
+
+### 8.12 Cross-cutting recipe — checklist for a new triggered effect
+
+- [ ] Three trigger inputs: `gate` (bool, rising edge), `trigger` (event, IDLE-only guard), `auto_rate` (Poisson, sensible default > 0).
+- [ ] Pulse duration = `attack + decay + sustain_s` (so one-shots auto-complete through sustain).
+- [ ] Per-phase `*_curve` params via `fx::signedSliderToExp`.
+- [ ] Tick/render: phase transition resets `time_in_phase = 0`, so the first render after transition sees `t = 0`. Tests need `ticks: 2` minimum to see in-phase visible state.
+- [ ] Pool of particles: compile-time max + runtime count, `is_active[]` gating everything, lazy pop-to-min on activation, staggered activation thresholds.
+- [ ] Plummer softening on any 1/r² force.
+- [ ] Bimodal distributions where you want visual variety.
+- [ ] Separate RNG streams for unrelated stochastic operations.
+- [ ] `cycle_seed` bool for trigger-to-trigger pattern variety.
+- [ ] All curves use the standard signed-slider exp mapping; default 0 (linear).
+- [ ] Strict on/off rendering decisions, no alpha (when aesthetic calls for it).
+

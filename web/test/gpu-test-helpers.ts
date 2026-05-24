@@ -28,7 +28,7 @@ const DUMP_DIR = '/tmp/gpu-test-dumps';
  * common test infrastructure can stick with `'testonly'` (default) for
  * pixel-stable assertions.
  */
-export type WasmBundle = 'core' | 'nano' | 'testonly';
+export type WasmBundle = 'core' | 'nano' | 'testonly' | 'lights';
 
 /// A single param-set entry. The first element selects the param:
 ///   - `number` — legacy: index into the wasm host's scalar params[] list.

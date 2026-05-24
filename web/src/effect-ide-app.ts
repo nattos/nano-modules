@@ -39,6 +39,7 @@ async function main() {
   appController.loadModule('com.nattos.core');
   appController.loadModule('com.nattos.nano');
   appController.loadModule('com.nattos.testonly');
+  appController.loadModule('com.nano.lights');
 }
 
 main();
