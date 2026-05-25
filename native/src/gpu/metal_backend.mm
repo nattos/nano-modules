@@ -302,14 +302,23 @@ public:
   // --- Compute pass ---
 
   int32_t beginComputePass() override {
-    cmdBuffer_ = [queue_ commandBuffer];
+    // Reuse cmdBuffer_ across compute/render/blit passes within a
+    // single submit() cycle. Allocating a fresh command buffer per
+    // pass would orphan any work already encoded into the previous
+    // one (since submit() only commits the *current* cmdBuffer_),
+    // which silently drops earlier passes' writes.
+    if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
     computeEncoder_ = [cmdBuffer_ computeCommandEncoder];
+    if (debugLog_) NSLog(@"[metal_backend] beginComputePass enc=%p cmd=%p",
+                          computeEncoder_, cmdBuffer_);
     return 1;
   }
 
   void computeSetPSO(int32_t pass, int32_t pso) override {
     (void)pass;
     id<MTLComputePipelineState> p = getAs<id<MTLComputePipelineState>>(pso);
+    if (debugLog_) NSLog(@"[metal_backend] setPSO handle=%d pso=%p enc=%p",
+                          pso, p, computeEncoder_);
     if (p && computeEncoder_) [computeEncoder_ setComputePipelineState:p];
     currentComputePSO_ = p;
   }
@@ -317,18 +326,31 @@ public:
   void computeSetBuffer(int32_t pass, int32_t buf, uint32_t offset, int32_t slot) override {
     (void)pass;
     id<MTLBuffer> b = getAs<id<MTLBuffer>>(buf);
+    if (debugLog_) NSLog(@"[metal_backend] setBuffer handle=%d slot=%d buf=%p",
+                          buf, slot, b);
     if (b && computeEncoder_) [computeEncoder_ setBuffer:b offset:offset atIndex:slot];
   }
 
   void computeSetTexture(int32_t pass, int32_t textureHandle, int32_t slot, int32_t access) override {
     (void)pass; (void)access;
     id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (debugLog_) NSLog(@"[metal_backend] setTexture handle=%d slot=%d tex=%p w=%lu h=%lu fmt=%lu",
+                          textureHandle, slot, tex,
+                          tex ? (unsigned long)[tex width] : 0,
+                          tex ? (unsigned long)[tex height] : 0,
+                          tex ? (unsigned long)[tex pixelFormat] : 0);
     if (tex && computeEncoder_) [computeEncoder_ setTexture:tex atIndex:slot];
   }
 
   void computeDispatch(int32_t pass, uint32_t x, uint32_t y, uint32_t z) override {
     (void)pass;
-    if (!computeEncoder_ || !currentComputePSO_) return;
+    if (debugLog_) NSLog(@"[metal_backend] dispatch %ux%ux%u enc=%p pso=%p",
+                          x, y, z, computeEncoder_, currentComputePSO_);
+    if (!computeEncoder_ || !currentComputePSO_) {
+      if (debugLog_) NSLog(@"[metal_backend] dispatch SKIPPED (enc=%p pso=%p)",
+                            computeEncoder_, currentComputePSO_);
+      return;
+    }
     // Threads-per-group must match the shader's [numthreads(...)].
     // All effects in the modules tree use [numthreads(8, 8, 1)], so
     // hardcode here. The old 1D test shader (test_gpu_metal) over-
@@ -357,6 +379,7 @@ public:
                            float cr, float cg, float cb, float ca) override {
     id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
     if (!tex) return -1;
+    // Reuse cmdBuffer_ — see beginComputePass for the reasoning.
     if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
 
     MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -405,6 +428,16 @@ public:
     if (cmdBuffer_) {
       [cmdBuffer_ commit];
       [cmdBuffer_ waitUntilCompleted];
+      // Surface command-buffer errors loudly. A Metal validation
+      // failure during compute dispatch (e.g. binding mismatch, dead
+      // PSO) commits silently and leaves status==Error with no other
+      // signal — the dispatch just doesn't write, producing black
+      // output.
+      if ([cmdBuffer_ status] == MTLCommandBufferStatusError) {
+        NSError* err = [cmdBuffer_ error];
+        NSLog(@"[metal_backend] command buffer FAILED: %@",
+              err ? [err localizedDescription] : @"(unknown)");
+      }
       cmdBuffer_ = nil;
     }
   }
@@ -453,6 +486,17 @@ public:
            bytesPerRow:w * 4];
   }
 
+  int32_t adoptExternalTexture(void* nativeTexture) override {
+    // The caller hands us an id<MTLTexture> (cast through void*). We
+    // store it in the resource table the same way locally-allocated
+    // textures live. Effects' setTexture/textureForField calls then
+    // bind this exact MTLTexture — no copy, the interop's pixels are
+    // both read and written directly through the pipeline.
+    if (!nativeTexture) return -1;
+    id<MTLTexture> tex = (__bridge id<MTLTexture>)nativeTexture;
+    return alloc(ResourceType::Texture, tex);
+  }
+
   // --- Cleanup ---
 
   void release(int32_t handle) override {
@@ -486,6 +530,11 @@ private:
   id<MTLComputeCommandEncoder> computeEncoder_ = nil;
   id<MTLComputePipelineState> currentComputePSO_ = nil;
   id<MTLRenderCommandEncoder> renderEncoder_ = nil;
+
+  // Trace flag — flipped on by the StreakyBlobs plugin via the env
+  // var NANO_METAL_DEBUG=1, so the dual-backend tests don't drown
+  // in NSLogs but the in-Resolume diagnostic runs do.
+  bool debugLog_ = (getenv("NANO_METAL_DEBUG") != nullptr);
 };
 
 // Factory function

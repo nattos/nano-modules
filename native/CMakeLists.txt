@@ -452,6 +452,29 @@ if(APPLE)
   )
   target_compile_options(native_test_runner PRIVATE -Wno-attributes)
 
+  # --- ffgl_runner: standalone host that dlopens an FFGL bundle ---
+  # Lets me iterate on StreakyBlobs without restarting Resolume — feed
+  # it a bundle path, get back stderr logs + an output PNG.
+  add_executable(ffgl_runner
+    tools/ffgl_runner.mm
+    src/plugin/streaky_blobs/InteropTexture.m
+  )
+  target_include_directories(ffgl_runner PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/plugin/streaky_blobs
+  )
+  target_link_libraries(ffgl_runner PRIVATE
+    ffgl::sdk
+    "-framework OpenGL"
+    "-framework Metal"
+    "-framework MetalKit"
+    "-framework CoreVideo"
+    "-framework AppKit"
+    "-framework Foundation"
+    z
+  )
+  target_compile_options(ffgl_runner PRIVATE -Wno-attributes -Wno-deprecated-declarations)
+
   # --- nano.StreakyBlobs FFGL bundle ---
   # Standalone .bundle (alongside NanoRepatch / NanoLooper) — links
   # effects_native + effect_runtime + gpu_backend statically. No

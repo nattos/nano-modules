@@ -120,6 +120,17 @@ public:
     (void)textureHandle; (void)w; (void)h; (void)bytes; (void)byteCount;
   }
 
+  // Adopt an external native texture (Metal `id<MTLTexture>` cast to
+  // void*; ignored by non-Metal backends) — returns a handle that
+  // points at the EXACT same underlying texture. Lets the FFGL plugin
+  // bridge IOSurface-backed InteropTexture into the runtime with zero
+  // copy: effects read/write directly to the interop's pixels.
+  // Default returns -1 (unsupported).
+  virtual int32_t adoptExternalTexture(void* nativeTexture) {
+    (void)nativeTexture;
+    return -1;
+  }
+
   // Cleanup
   virtual void release(int32_t handle) = 0;
 };

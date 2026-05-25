@@ -297,6 +297,7 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     // Effects' init() — registers schema, allocates GPU resources.
     _glowInst->doInit();
     _blurInst->doInit();
+    _rt->drainConsoleLog();
 
     // Mark soft_glow's render_outputs as connected so its motion pass
     // actually runs (the early-exit in soft_glow.render() checks
@@ -391,23 +392,31 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     glFlush();
 
     // ---- 2. Bridge interop textures into the runtime by handle ----
-    // InteropTexture exposes id<MTLTexture>; we need to expose it via
-    // the GPUBackend handle table so textureForField can return it.
-    // The Metal backend's `alloc(ResourceType::Texture, mtlTex)` is
-    // private — work around by writing the bytes via a roundtrip, OR
-    // extend GPUBackend to "adopt" an existing MTLTexture. Doing the
-    // latter is much cheaper. See injectExternalTexture below.
-    int32_t inputMtlHandle = injectMTLTexture(_inputInterop->getMetalTexture());
-    int32_t outputMtlHandle = injectMTLTexture(_outputInterop->getMetalTexture());
+    // Zero-copy: adopt the interop's id<MTLTexture> directly. Effects
+    // read/write through the SAME pixels the GL side sees. The handle
+    // is freshly allocated each frame; the underlying MTLTexture lives
+    // in the InteropTexture for the viewport's lifetime.
+    int32_t inputMtlHandle  = _gpu->adoptExternalTexture(
+        (__bridge void*)_inputInterop->getMetalTexture());
+    int32_t outputMtlHandle = _gpu->adoptExternalTexture(
+        (__bridge void*)_outputInterop->getMetalTexture());
 
-    // ---- 3. Run soft_glow (input → intermediate; motion → glow tex)
-    _glowInst->setTextureField("tex_in", inputMtlHandle);
-    _glowInst->setTextureField("tex_out", _intermediateColor);
-    _glowInst->setTextureField("render_outputs/motion", _glowMotionTex);
-
-    // Per-frame time bookkeeping — feed the host timeline into the
-    // effect runtime so soft_glow's tick() advances orbital phases at
-    // the right rate.
+    // DEBUG step 6: render soft_glow into a regular RGBA8 backend
+    // texture (the intermediate), then COPY that result into the
+    // adopted BGRA8 InteropTexture. Tests whether the soft_glow
+    // render path actually produces pixels — independent of whether
+    // the IOSurface-backed BGRA8 destination accepts compute-shader
+    // writes from a complex multi-binding PSO.
+    //
+    // If glow visible → soft_glow renders fine to an RGBA8 backend
+    // texture, but writing directly to the BGRA8 InteropTexture is
+    // the broken case. Fix would be either: render to intermediate
+    // and copy each frame (one extra blit, still fast); OR figure
+    // out why BGRA8 IOSurface writes fail for this specific shader.
+    //
+    // If still black → soft_glow's render itself never wrote to the
+    // intermediate texture either (PSO creation failed, dispatch
+    // didn't run, or buffer/uniform binding is wrong).
     double hostT = hostTime / 1000.0;
     if (!_timeInitialized) {
       _startHostTime = hostT;
@@ -420,17 +429,50 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     effect_runtime::setHostTime(hostT - _startHostTime);
     effect_runtime::setHostDeltaTime(dt);
     effect_runtime::setHostViewport(W, H);
+
+    // soft_glow writes directly into the adopted BGRA8 InteropTexture.
+    // Metal's compute storage-texture write does channel-semantic
+    // conversion (shader writes float4(r,g,b,a); Metal stores into
+    // BGRA8 with R→mem[2], G→mem[1], B→mem[0]). The GL side then
+    // reads semantic RGBA correctly.
+    //
+    // Earlier this path produced black, but that was because the
+    // metal_backend's beginComputePass was orphaning the previous
+    // pass's cmdBuffer on every begin(). Fixed in commit-pair with
+    // the cmdBuffer reuse — now both color and motion passes commit
+    // as one buffer at submit().
+    // Pipeline: soft_glow renders into the intermediate (RGBA8),
+    // also emitting motion vectors into a texture it allocates
+    // internally (overwriting whatever we pre-set into
+    // "render_outputs/motion"). Then motion_blur reads the
+    // intermediate + bridged motion and writes the final streaks
+    // into the adopted BGRA8 InteropTexture (which Metal handles
+    // with channel-semantic conversion).
+    _glowInst->setTextureField("tex_in", inputMtlHandle);
+    _glowInst->setTextureField("tex_out", _intermediateColor);
     _glowInst->doTick(dt);
     _glowInst->doRender(W, H);
 
-    // ---- 4. Run motion_blur (intermediate → output; motion from glow)
+    // Bridge soft_glow's render_outputs/motion → motion_blur's input
+    // of the same name. Each EffectInstance has its own textureFields
+    // map; the rails plumbing that auto-bridges these in the dev IDE
+    // is absent from the plugin (fixed routing).
+    int glowMotion = _glowInst->textureField("render_outputs/motion");
+
     _blurInst->setTextureField("tex_in", _intermediateColor);
     _blurInst->setTextureField("tex_out", outputMtlHandle);
-    _blurInst->setTextureField("render_outputs/motion", _glowMotionTex);
+    _blurInst->setTextureField("render_outputs/motion", glowMotion);
     _blurInst->doTick(dt);
     _blurInst->doRender(W, H);
 
     _gpu->submit();
+    _rt->drainConsoleLog();  // discard per-frame logs to keep host log clean
+
+    // Release the per-frame adopted handles so the backend's resource
+    // table doesn't grow without bound. The underlying MTLTextures
+    // belong to the InteropTextures (no Metal teardown happens here).
+    _gpu->release(inputMtlHandle);
+    _gpu->release(outputMtlHandle);
 
     // ---- 5. Blit output InteropTexture → host FBO via glBlitFramebuffer
     {
@@ -456,54 +498,6 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
   float GetFloatParameter(unsigned int) override { return 0.0f; }
 
  private:
-  // Cheat: register an MTLTexture (e.g. an InteropTexture's Metal side)
-  // with the Metal backend so it gets a handle the effect runtime can
-  // route to. The backend's alloc() is private — go around it by
-  // creating a 1×1 placeholder and then swapping the resource in the
-  // table. This is ugly; the right long-term fix is an
-  // `adoptExternalTexture(MTLTexture)` API on GPUBackend. For now we
-  // recreate the placeholder each frame (cheap) and abuse the fact
-  // that the backend's resource map keys map ints → id.
-  //
-  // …Actually that's not workable from outside the class. Instead, we
-  // re-create a fresh handle by allocating a real texture via
-  // createTexture and immediately replacing the underlying MTLTexture
-  // via reflection / private ABI hacks — also ugly.
-  //
-  // The cleanest path: add a public method on GPUBackend that adopts
-  // an MTLTexture and returns an int handle. See follow-up TODO. For
-  // now, fall back to a copy: blit interop's MTL texture into a
-  // backend-allocated texture using copyTexture. Cost: 2 per-frame
-  // texture copies. Acceptable for v1.
-  int32_t injectMTLTexture(id<MTLTexture> tex) {
-    // Make sure we have a per-shape cached backing.
-    NSUInteger w = [tex width], h = [tex height];
-    auto key = ((uint64_t)w << 32) | (uint64_t)h;
-    auto it = _injectedBackings.find(key);
-    int32_t handle;
-    if (it == _injectedBackings.end()) {
-      handle = _gpu->createTexture((uint32_t)w, (uint32_t)h, /*RGBA8*/ 1);
-      _injectedBackings[key] = handle;
-    } else {
-      handle = it->second;
-    }
-    // Read the interop pixels and write them into the backend texture.
-    // (Yes, expensive — see TODO above.)
-    std::vector<uint8_t> bytes(w * h * 4);
-    [tex getBytes:bytes.data() bytesPerRow:w * 4
-        fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
-    _gpu->writeTexture(handle, (uint32_t)w, (uint32_t)h,
-                       bytes.data(), (uint32_t)bytes.size());
-    return handle;
-  }
-
-  // Used by the inverse path: after the effect renders into a
-  // backend-allocated texture, we need to push the pixels back into
-  // the interop. We _could_ skip this by having the backend texture
-  // BE the interop's MTL texture, but the above injectMTLTexture
-  // wart precludes that.
-  // ... omitted — we just blit GL→GL for output via the FBO path.
-
   id<MTLDevice> _device = nil;
   std::unique_ptr<gpu::GPUBackend> _gpu;
   std::unique_ptr<effect_runtime::EffectRuntime> _rt;
@@ -516,7 +510,9 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
   int32_t _intermediateColor = -1;
   int32_t _glowMotionTex = -1;
 
-  std::map<uint64_t, int32_t> _injectedBackings;
+  // Diagnostic inline compute kernel — lazily-built solid-color fill.
+  int32_t _debugFillShader = -1;
+  int32_t _debugFillPSO = -1;
 
   native_gl::GLShader _blitRect;
   native_gl::GLShader _blit2D;

@@ -173,8 +173,22 @@ void InteropTexture::createMetalTexture() {
   // 2. Create a CoreVideo pixel buffer backed Metal texture image from the
   // texture cache.
 
+  // Specify usage flags including ShaderWrite so compute shaders can
+  // write to this texture via storage-texture bindings. The default
+  // (when textureAttributes is nil) is ShaderRead | RenderTarget,
+  // which fails silently for `outputTex[gid] = ...` writes from
+  // compute kernels — exactly the symptom that produced black output
+  // in the StreakyBlobs FFGL plugin.
+  NSDictionary* textureAttrs = @{
+    (NSString*)kCVMetalTextureUsage : @(
+      MTLTextureUsageShaderRead |
+      MTLTextureUsageShaderWrite |
+      MTLTextureUsageRenderTarget
+    ),
+  };
   cvret = CVMetalTextureCacheCreateTextureFromImage(
-      kCFAllocatorDefault, _CVMTLTextureCache, _CVPixelBuffer, nil,
+      kCFAllocatorDefault, _CVMTLTextureCache, _CVPixelBuffer,
+      (__bridge CFDictionaryRef)textureAttrs,
       _formatInfo->mtlFormat, _width, _height, 0, &_CVMTLTexture);
 
   if (cvret != kCVReturnSuccess) {
