@@ -114,7 +114,7 @@ static float s_strength = 1.0f;
 static int   s_samples  = 12;
 static int   s_quality  = QUALITY_MEDIUM;
 static int   s_active_pyramid_mip = PYRAMID_MIP_MEDIUM;
-static bool  s_chroma_delay = false;
+static bool  s_chroma_delay = true;
 static float s_chroma_r = 0.5f;
 static float s_chroma_g = 0.0f;
 static float s_chroma_b = -0.5f;
@@ -208,7 +208,7 @@ void init() {
       // giving each channel its own velocity-proportional shift —
       // classic RGB-trail look. R/G/B fields below are hidden in the
       // inspector when this is off.
-      .boolField("chroma_delay", false, state::PrimaryInput)
+      .boolField("chroma_delay", true, state::PrimaryInput)
       .floatField("chroma_r",  0.5f,  -1.f, 1.f, state::PrimaryInput)
       .floatField("chroma_g",  0.0f,  -1.f, 1.f, state::PrimaryInput)
       .floatField("chroma_b", -0.5f,  -1.f, 1.f, state::PrimaryInput)

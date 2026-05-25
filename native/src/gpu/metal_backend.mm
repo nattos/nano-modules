@@ -39,7 +39,13 @@ public:
         NSLog(@"Metal shader compile error: %@", error);
         return -1;
       }
-      return alloc(ResourceType::Library, lib);
+      int32_t handle = alloc(ResourceType::Library, lib);
+      // Parse function-constant declarations so PSO-creation can set
+      // them by NAME (matching the C++-side gpu::Constants::set(name, …))
+      // even though spirv-cross emits them with anonymous numeric
+      // indices like `TILE_SIZE_tmp [[function_constant(0)]]`.
+      shaderConstIndices_[handle] = parseFunctionConstants(source);
+      return handle;
     }
   }
 
@@ -103,24 +109,56 @@ public:
       NSString* name = [NSString stringWithUTF8String:entryPoint.c_str()];
       MTLFunctionConstantValues* values =
           [[MTLFunctionConstantValues alloc] init];
-      // The Metal API lets us set constants by index OR by name. We
-      // came in with names; use setConstantValue:type:withName: so we
-      // don't need to maintain a name→index map per shader. Pass all
-      // values as float — that's the WGSL `f32` equivalent. spirv-cross
-      // emits function constants typed by their original SPIR-V
-      // OpSpecConstant types; for our shaders these are all i32 (int)
-      // or u32 (uint). MTLDataType doesn't have an explicit "any
-      // numeric" — we use Float which Metal auto-converts to int for
-      // function-constant slots typed int.
-      // FIXME: if a future shader uses a non-numeric constant, this
-      // breaks. For now all spec constants in motion_blur are ints.
+      // spirv-cross emits Metal function constants with anonymous
+      // `_tmp`-suffixed names and exposes them by numeric index
+      // (`[[function_constant(N)]]`). setConstantValue:withName: would
+      // look for the post-suffix name we'd never know — bind by INDEX
+      // using the name→index map parsed at createShaderModule time.
+      // All current spec constants are int (TILE_SIZE, CHROMA_ENABLED,
+      // NEIGHBOR_TEX_MIP, PYRAMID_NBR_RADIUS); pass as MTLDataTypeInt.
+      auto idxIt = shaderConstIndices_.find(shaderHandle);
+      const auto* idxMap = (idxIt != shaderConstIndices_.end())
+                            ? &idxIt->second : nullptr;
       for (const auto& c : constants) {
-        NSString* nsName = [NSString stringWithUTF8String:c.name.c_str()];
-        // Try int first (matches motion_blur's TILE_SIZE etc.), fall
-        // back to float on type mismatch via try/catch isn't possible —
-        // Metal raises NSException. Just always use int for now; the
-        // existing spec constants in our shaders are all ints.
+        if (idxMap) {
+          auto it = idxMap->find(c.name);
+          if (it != idxMap->end()) {
+            // Pack the value at the constant's declared MSL type so
+            // Metal accepts the binding. Mixed uint/int constants are
+            // common (e.g. motion_blur uses both).
+            switch (it->second.type) {
+              case MTLDataTypeUInt: {
+                uint32_t v = (uint32_t)c.value;
+                [values setConstantValue:&v type:MTLDataTypeUInt
+                                  atIndex:(NSUInteger)it->second.index];
+                break;
+              }
+              case MTLDataTypeBool: {
+                bool v = c.value != 0.0;
+                [values setConstantValue:&v type:MTLDataTypeBool
+                                  atIndex:(NSUInteger)it->second.index];
+                break;
+              }
+              case MTLDataTypeFloat: {
+                float v = (float)c.value;
+                [values setConstantValue:&v type:MTLDataTypeFloat
+                                  atIndex:(NSUInteger)it->second.index];
+                break;
+              }
+              case MTLDataTypeInt:
+              default: {
+                int v = (int)c.value;
+                [values setConstantValue:&v type:MTLDataTypeInt
+                                  atIndex:(NSUInteger)it->second.index];
+                break;
+              }
+            }
+            continue;
+          }
+        }
+        // Fallback: by-name as int (rare path).
         int intValue = (int)c.value;
+        NSString* nsName = [NSString stringWithUTF8String:c.name.c_str()];
         [values setConstantValue:&intValue type:MTLDataTypeInt
                         withName:nsName];
       }
@@ -530,6 +568,62 @@ private:
   id<MTLComputeCommandEncoder> computeEncoder_ = nil;
   id<MTLComputePipelineState> currentComputePSO_ = nil;
   id<MTLRenderCommandEncoder> renderEncoder_ = nil;
+
+  // Per-shader spec-constant metadata: name → (numeric index, MSL type).
+  // Populated by createShaderModule by scanning the MSL source so
+  // createComputePSOWithConstants can both set by INDEX (spirv-cross
+  // emits `[[function_constant(N)]]`, not named entries Metal can find
+  // via setConstantValue:withName:) AND with the right MTLDataType
+  // (uint vs int — types are mixed across motion_blur's constants).
+  struct ConstInfo { int index; MTLDataType type; };
+  std::map<int32_t, std::map<std::string, ConstInfo>> shaderConstIndices_;
+
+  static std::map<std::string, ConstInfo>
+  parseFunctionConstants(const std::string& msl) {
+    std::map<std::string, ConstInfo> out;
+    const std::string marker = "[[function_constant(";
+    size_t pos = 0;
+    while ((pos = msl.find(marker, pos)) != std::string::npos) {
+      // Walk back from `pos` to find the identifier preceding the
+      // attribute — skip whitespace, then read [A-Za-z0-9_]+.
+      size_t nameEnd = pos;
+      while (nameEnd > 0 && std::isspace((unsigned char)msl[nameEnd - 1])) --nameEnd;
+      size_t nameStart = nameEnd;
+      while (nameStart > 0 && (std::isalnum((unsigned char)msl[nameStart - 1]) ||
+                                msl[nameStart - 1] == '_')) {
+        --nameStart;
+      }
+      std::string name = msl.substr(nameStart, nameEnd - nameStart);
+      // Walk back past whitespace before the name → that's the type
+      // token. e.g. `constant uint TILE_SIZE_tmp [[...]]`.
+      size_t typeEnd = nameStart;
+      while (typeEnd > 0 && std::isspace((unsigned char)msl[typeEnd - 1])) --typeEnd;
+      size_t typeStart = typeEnd;
+      while (typeStart > 0 && (std::isalnum((unsigned char)msl[typeStart - 1]) ||
+                                msl[typeStart - 1] == '_')) {
+        --typeStart;
+      }
+      std::string typeStr = msl.substr(typeStart, typeEnd - typeStart);
+
+      size_t idxStart = pos + marker.size();
+      size_t idxEnd = msl.find(')', idxStart);
+      if (idxEnd == std::string::npos) break;
+      int idx = std::atoi(msl.substr(idxStart, idxEnd - idxStart).c_str());
+
+      if (name.size() > 4 &&
+          name.compare(name.size() - 4, 4, "_tmp") == 0) {
+        name.resize(name.size() - 4);
+      }
+      MTLDataType mt = MTLDataTypeInt;
+      if (typeStr == "uint")        mt = MTLDataTypeUInt;
+      else if (typeStr == "int")    mt = MTLDataTypeInt;
+      else if (typeStr == "float")  mt = MTLDataTypeFloat;
+      else if (typeStr == "bool")   mt = MTLDataTypeBool;
+      out[name] = {idx, mt};
+      pos = idxEnd + 1;
+    }
+    return out;
+  }
 
   // Trace flag — flipped on by the StreakyBlobs plugin via the env
   // var NANO_METAL_DEBUG=1, so the dual-backend tests don't drown

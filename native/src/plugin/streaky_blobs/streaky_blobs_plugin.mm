@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -250,26 +252,26 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     SetMinInputs(1);
     SetMaxInputs(1);
     _device = MTLCreateSystemDefaultDevice();
+
+    // Set up the effect runtime + run effects' init() in the
+    // CONSTRUCTOR, not InitGL — because FFGL hosts (Resolume) query
+    // the parameter list on a *prototype* instance during plugin scan,
+    // and that prototype never receives InitGL. SetParamInfo must be
+    // called by the time the host walks the param list, which means
+    // before the constructor returns.
+    //
+    // Metal device creation + compute PSO setup don't need a GL
+    // context, so doing it here is safe. The actual GL-side resources
+    // (blit shaders, GLQuad, InteropTextures) live in InitGL/Resize
+    // where the host's GL context IS current.
+    if (_device) initRuntimeAndRegisterParams();
   }
 
-  FFResult InitGL(const FFGLViewportStruct* vp) override {
-    _currentViewport = *vp;
-    _blitRect.Compile(kBlitFromRectVS, kBlitFromRectFS);
-    _blit2D.Compile(kBlitFromRectVS, kBlitFromTex2DFS);
-    _quad.Initialise();
-
-    if (!_device) return FF_FAIL;
-
-    // Build the GPU backend that wraps our Metal device. The
-    // existing createMetalBackend() factory uses MTLCreateSystemDefaultDevice
-    // internally; we want to use the SAME device here so InteropTexture
-    // and effect-runtime resources live in one device.
+  void initRuntimeAndRegisterParams() {
     _gpu = gpu::createMetalBackend();
-    if (!_gpu) return FF_FAIL;
-
+    if (!_gpu) return;
     _rt = std::make_unique<effect_runtime::EffectRuntime>(_gpu.get());
 
-    // Register effects + MSL shaders.
     {
       effect_runtime::EffectDesc d;
       d.id = "gen.soft_glow";
@@ -294,7 +296,6 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     _rt->registerShaderMSL("reconstruct",      MOTION_BLUR_RECONSTRUCT_MSL);
     _rt->registerShaderMSL("pyramid_reduce",   MOTION_BLUR_PYRAMID_REDUCE_MSL);
 
-    // Effects' init() — registers schema, allocates GPU resources.
     _glowInst->doInit();
     _blurInst->doInit();
     _rt->drainConsoleLog();
@@ -303,13 +304,23 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     // actually runs (the early-exit in soft_glow.render() checks
     // isOutputConnected("render_outputs")).
     _glowInst->setFieldConnected("render_outputs", false, true);
-    // Mark motion_blur's render_outputs_in as connected on the input
-    // side. (motion_blur uses isInputConnected? Or just trusts the
-    // texture exists? Verify in motion_blur's render() — for now mark
-    // both sides.)
     _blurInst->setFieldConnected("render_outputs", true, false);
 
-    return CFFGLPlugin::InitGL(vp);
+    // Walk the schemas → SetParamInfo for each scalar field. Glow
+    // params take the schema name verbatim (intensity, hue, …); blur
+    // params keep a "Blur " prefix so the two motion_blur-specific
+    // sliders (strength, samples, …) don't visually collide with
+    // soft_glow's motion_strength / motion_skew etc.
+    registerEffectParams(_glowInst, "");
+    registerEffectParams(_blurInst, "Blur ");
+  }
+
+  FFResult InitGL(const FFGLViewportStruct* vp) override {
+    _currentViewport = *vp;
+    _blitRect.Compile(kBlitFromRectVS, kBlitFromRectFS);
+    _blit2D.Compile(kBlitFromRectVS, kBlitFromTex2DFS);
+    _quad.Initialise();
+    return _gpu ? CFFGLPlugin::InitGL(vp) : FF_FAIL;
   }
 
   FFResult DeInitGL() override {
@@ -318,12 +329,12 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     _quad.Free();
     _inputInterop.reset();
     _outputInterop.reset();
-    _intermediateColor = 0;
-    _glowMotionTex = 0;
-    _glowInst = nullptr;
-    _blurInst = nullptr;
-    _rt.reset();
-    _gpu.reset();
+    // Keep _rt + _gpu + effect instances alive across DeInitGL/InitGL
+    // cycles — they're not tied to the GL context. Resolume sometimes
+    // tears down GL state mid-session (e.g. on resize / device switch)
+    // and re-runs InitGL without destroying the plugin instance; if we
+    // tore _rt down here, we'd lose the registered effects + their
+    // file-static PSOs and have to recreate them all over again.
     return FF_SUCCESS;
   }
 
@@ -337,6 +348,10 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     const unsigned int W = _currentViewport.width;
     const unsigned int H = _currentViewport.height;
     if (W == 0 || H == 0) return FF_SUCCESS;
+
+    // Dispatch any host-side parameter changes into the effects'
+    // on_state_patched callbacks before we render the new frame.
+    flushDirtyParams();
 
     // Reallocate interop textures + intermediates on viewport change.
     if (!_outputInterop || _outputInterop->getWidth() != (int)W ||
@@ -492,10 +507,17 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     return FF_SUCCESS;
   }
 
-  FFResult SetFloatParameter(unsigned int, float) override {
-    return FF_SUCCESS;  // params not yet routed
+  FFResult SetFloatParameter(unsigned int idx, float val) override {
+    if (idx < _ffglParams.size()) {
+      _ffglParams[idx].currentValueNorm = val;
+      _ffglParams[idx].dirty = true;
+    }
+    return FF_SUCCESS;
   }
-  float GetFloatParameter(unsigned int) override { return 0.0f; }
+  float GetFloatParameter(unsigned int idx) override {
+    if (idx < _ffglParams.size()) return _ffglParams[idx].currentValueNorm;
+    return 0.0f;
+  }
 
  private:
   id<MTLDevice> _device = nil;
@@ -521,6 +543,102 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
   double _startHostTime = 0;
   double _prevHostTime = 0;
   bool _timeInitialized = false;
+
+  // --- FFGL parameter dispatch table ---
+  // Built once after the effects' init() runs in InitGL — walks each
+  // effect's schema JSON and registers an FFGL parameter per scalar /
+  // int / bool field. Resolume drives SetFloatParameter(index, [0,1]);
+  // we look up the spec, scale to the field's [min, max], dispatch
+  // via the runtime's setParamFloat. Vec/color params are deferred
+  // (none of the lights effects use vec/color params).
+  enum class FieldType { Float, Int, Bool };
+  struct ParamSpec {
+    effect_runtime::EffectInstance* inst;
+    std::string path;
+    FieldType type;
+    float minVal;
+    float maxVal;
+    float defaultVal;
+    float currentValueNorm; // [0, 1] as Resolume sends it
+    bool  dirty;
+  };
+  std::vector<ParamSpec> _ffglParams;
+
+  static float scaleToField(const ParamSpec& s, float v01) {
+    return s.minVal + std::max(0.0f, std::min(1.0f, v01)) * (s.maxVal - s.minVal);
+  }
+  static float normalizeForFFGL(const ParamSpec& s) {
+    if (s.maxVal == s.minVal) return 0.5f;
+    return (s.defaultVal - s.minVal) / (s.maxVal - s.minVal);
+  }
+
+  void registerEffectParams(effect_runtime::EffectInstance* inst,
+                             const std::string& prefix) {
+    if (!inst) return;
+    auto js = nlohmann::json::parse(inst->schemaJson(), nullptr, false);
+    if (js.is_discarded() || !js.contains("fields")) return;
+    const auto& fields = js["fields"];
+    if (!fields.is_object()) return;
+
+    // Sort fields by their "order" key so the inspector arranges
+    // them the way the effect author intended.
+    std::vector<std::pair<int, std::string>> ordered;
+    for (auto it = fields.begin(); it != fields.end(); ++it) {
+      int order = it.value().value("order", 0);
+      ordered.push_back({order, it.key()});
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    for (const auto& kv : ordered) {
+      const std::string& name = kv.second;
+      const auto& f = fields[name];
+      std::string ftype = f.value("type", std::string());
+      ParamSpec spec{};
+      spec.inst = inst;
+      spec.path = name;
+      spec.dirty = false;
+      if (ftype == "float") {
+        spec.type = FieldType::Float;
+        spec.minVal = f.value("min", 0.0f);
+        spec.maxVal = f.value("max", 1.0f);
+        spec.defaultVal = f.value("default", 0.0f);
+      } else if (ftype == "int") {
+        spec.type = FieldType::Int;
+        spec.minVal = (float)f.value("min", 0);
+        spec.maxVal = (float)f.value("max", 1);
+        spec.defaultVal = (float)f.value("default", 0);
+      } else if (ftype == "bool") {
+        spec.type = FieldType::Bool;
+        spec.minVal = 0.0f;
+        spec.maxVal = 1.0f;
+        spec.defaultVal = f.value("default", false) ? 1.0f : 0.0f;
+      } else {
+        continue;  // texture / object / vec — deferred
+      }
+      spec.currentValueNorm = normalizeForFFGL(spec);
+      std::string ffglName = prefix + name;
+      unsigned int idx = (unsigned int)_ffglParams.size();
+      _ffglParams.push_back(spec);
+      if (spec.type == FieldType::Bool) {
+        SetParamInfo(idx, ffglName.c_str(), FF_TYPE_BOOLEAN,
+                     spec.defaultVal > 0.5f);
+      } else {
+        SetParamInfo(idx, ffglName.c_str(), FF_TYPE_STANDARD,
+                     spec.currentValueNorm);
+      }
+    }
+  }
+
+  void flushDirtyParams() {
+    for (auto& p : _ffglParams) {
+      if (!p.dirty) continue;
+      p.dirty = false;
+      float v = scaleToField(p, p.currentValueNorm);
+      if (p.type == FieldType::Int) v = std::round(v);
+      else if (p.type == FieldType::Bool) v = (v >= 0.5f) ? 1.0f : 0.0f;
+      p.inst->setParamFloat(p.path, v);
+    }
+  }
 };
 
 static CFFGLPluginInfo PluginInfo(

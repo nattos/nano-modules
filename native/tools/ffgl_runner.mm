@@ -100,10 +100,30 @@ int main(int argc, const char* argv[]) {
       return 1;
     }
     const char* bundlePath = argv[1];
-    int width = argc >= 4 ? std::stoi(argv[2]) : 640;
-    int height = argc >= 4 ? std::stoi(argv[3]) : 480;
-    int numFrames = argc >= 5 ? std::stoi(argv[4]) : 60;
-    const char* outPath = argc >= 6 ? argv[5] : "/tmp/ffgl_runner_out.png";
+    int width = 640;
+    int height = 480;
+    int numFrames = 60;
+    const char* outPath = "/tmp/ffgl_runner_out.png";
+    // --param IDX VALUE — set FFGL parameter IDX to VALUE in [0,1].
+    // Repeatable. Parsed before positional args.
+    std::vector<std::pair<int, float>> paramOverrides;
+    int positional = 0;
+    for (int i = 2; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--param" && i + 2 < argc) {
+        int idx = std::stoi(argv[i + 1]);
+        float val = std::stof(argv[i + 2]);
+        paramOverrides.push_back({idx, val});
+        i += 2;
+      } else {
+        switch (positional++) {
+          case 0: width = std::stoi(arg); break;
+          case 1: height = std::stoi(arg); break;
+          case 2: numFrames = std::stoi(arg); break;
+          case 3: outPath = argv[i]; break;
+        }
+      }
+    }
 
     std::cerr << "[ffgl_runner] bundle=" << bundlePath
               << " size=" << width << "x" << height
@@ -155,6 +175,31 @@ int main(int argc, const char* argv[]) {
     }
     FFInstanceID instanceID = (FFInstanceID)r.PointerValue;
     plugMain(FF_RESIZE, (FFMixed){.PointerValue = &vp}, instanceID);
+
+    // Dump the parameter list (prototype-queried; uses instanceID=0).
+    FFUInt32 nparams = plugMain(FF_GET_NUM_PARAMETERS,
+                                 (FFMixed){.PointerValue = nullptr}, 0).UIntValue;
+    for (FFUInt32 i = 0; i < nparams; ++i) {
+      const char* name = (const char*)plugMain(
+          FF_GET_PARAMETER_NAME, (FFMixed){.UIntValue = i}, 0).PointerValue;
+      FFUInt32 type = plugMain(FF_GET_PARAMETER_TYPE,
+                                (FFMixed){.UIntValue = i}, 0).UIntValue;
+      std::cerr << "[ffgl_runner] param[" << i << "] type=" << type
+                << " name=" << (name ? name : "(null)") << "\n";
+    }
+
+    // Apply --param overrides via FF_SET_PARAMETER. FFGL packs floats
+    // into FFMixed's UIntValue via bit-cast (see FFGL.cpp's
+    // FF_SET_PARAMETER handler — it does *(float*)&UIntValue).
+    for (auto [idx, val] : paramOverrides) {
+      SetParameterStruct sps;
+      sps.ParameterNumber = (FFUInt32)idx;
+      uint32_t bits;
+      std::memcpy(&bits, &val, sizeof(bits));
+      sps.NewParameterValue.UIntValue = bits;
+      plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
+      std::cerr << "[ffgl_runner] param[" << idx << "] = " << val << "\n";
+    }
 
     // 4. Host FBO + color attachment for the plugin to render INTO.
     GLuint fbo = 0, texColor = 0;
