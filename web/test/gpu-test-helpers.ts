@@ -17,8 +17,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import { spawnSync } from 'child_process';
 
 const DUMP_DIR = '/tmp/gpu-test-dumps';
+
+// Path to the native_test_runner CLI built by the native CMake project.
+// CMake's default build dir is native/build/; tests assume the binary
+// exists there (built once via `cmake --build native/build --target
+// native_test_runner`).
+const NATIVE_RUNNER_PATH = path.resolve(
+  __dirname, '..', '..', 'native', 'build', 'native_test_runner',
+);
 
 // --- Config & raw result types ---
 
@@ -93,6 +102,50 @@ export interface GpuChainTestConfig {
    * mid-run intermediate value.
    */
   traceSteps?: number[];
+}
+
+/**
+ * Backend the test runs against. 'puppeteer' (default) routes through
+ * the browser + WebGPU, 'metal' spawns the native_test_runner CLI which
+ * runs effects natively against the Metal GPUBackend (no WASM).
+ * Per-effect helpers (runGpuTest, runGpuEffectTest, runGpuChainTest)
+ * pick this up via the ambient variable set by forEachBackend.
+ */
+export type Backend = 'puppeteer' | 'metal';
+
+let _ambientBackend: Backend = 'puppeteer';
+
+/**
+ * Wrap a describe-style body so it runs once per backend. The body
+ * receives the backend name and is expected to call describe() inside
+ * (mirrors forEachFusionMode). Tests inside the body don't need to
+ * thread the backend through their config objects — the helpers read
+ * the ambient variable at dispatch time.
+ *
+ * Metal backend requires native/build/native_test_runner — build it
+ * via `cmake --build native/build --target native_test_runner`. If the
+ * binary is missing, metal tests fail with a clear error.
+ *
+ * Usage:
+ *   forEachBackend((backend) => {
+ *     describe(`Soft Glow (${backend})`, () => {
+ *       it('...', async () => { const f = await runGpuEffectTest({...}); ... });
+ *     });
+ *   });
+ */
+export function forEachBackend(
+  body: (backend: Backend) => void,
+  backends: Backend[] = ['puppeteer', 'metal'],
+): void {
+  for (const backend of backends) {
+    const prev = _ambientBackend;
+    _ambientBackend = backend;
+    try {
+      body(backend);
+    } finally {
+      _ambientBackend = prev;
+    }
+  }
 }
 
 /**
@@ -377,6 +430,17 @@ export class Frame {
 let testCounter = 0;
 
 export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
+  if (_ambientBackend === 'metal') {
+    return runMetalConfig({
+      module: config.module,
+      bundle: config.bundle ?? 'testonly',
+      width: config.width ?? 64,
+      height: config.height ?? 64,
+      params: config.params ?? [],
+      ticks: config.ticks ?? 0,
+      samplePoints: config.samplePoints ?? [],
+    }, config.dumpName || `${config.module.replace('.wasm', '')}_${testCounter++}`);
+  }
   await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
 
   const effectiveMode = config.fusionMode ?? _ambientFusionMode;
@@ -431,9 +495,89 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
   return new Frame(raw, pixels, dumpPath);
 }
 
+// --- Internal: native (Metal) runner ---
+
+// Spawn the native_test_runner CLI with `cfg` on stdin, parse JSON
+// from stdout, decode pixels, wrap in a Frame. Same surface as
+// runRawConfig but talks to the no-WASM Metal runtime instead of
+// Puppeteer/WebGPU.
+function runMetalConfig(cfg: any, dumpName?: string): Frame {
+  if (!fs.existsSync(NATIVE_RUNNER_PATH)) {
+    throw new Error(
+      `native_test_runner not found at ${NATIVE_RUNNER_PATH}.\n` +
+      `Build it first: cmake --build native/build --target native_test_runner`,
+    );
+  }
+  const child = spawnSync(NATIVE_RUNNER_PATH, [], {
+    input: JSON.stringify(cfg),
+    encoding: 'utf-8',
+    maxBuffer: 256 * 1024 * 1024,  // large pixel buffers fit in 256MB
+  });
+  if (child.error) {
+    throw new Error(`native_test_runner spawn failed: ${child.error.message}`);
+  }
+  if (child.status !== 0 && !child.stdout) {
+    throw new Error(
+      `native_test_runner exited ${child.status}\nstderr: ${child.stderr}`,
+    );
+  }
+  let raw: any;
+  try {
+    raw = JSON.parse(child.stdout);
+  } catch (e) {
+    throw new Error(
+      `native_test_runner produced invalid JSON: ${String(e)}\nstdout: ${
+        child.stdout.slice(0, 500)
+      }`,
+    );
+  }
+  if (child.stderr) {
+    // Surface backend warnings (e.g. binding/format gaps) the same way
+    // the puppeteer path surfaces browser console output.
+    raw.consoleLog = (raw.consoleLog || []).concat(
+      child.stderr.split('\n').filter((l: string) => l.trim()).map(
+        (l: string) => `[stderr] ${l}`,
+      ),
+    );
+  }
+  const pixels = raw.pixelsBase64
+    ? new Uint8Array(Buffer.from(raw.pixelsBase64, 'base64'))
+    : new Uint8Array(0);
+
+  let dumpPath: string | undefined;
+  if (raw.success && pixels.length > 0 && dumpName) {
+    try {
+      fs.mkdirSync(DUMP_DIR, { recursive: true });
+      dumpPath = path.join(DUMP_DIR, `${dumpName}_metal.png`);
+      fs.writeFileSync(dumpPath, encodePNG(pixels, raw.width, raw.height));
+    } catch (e) {
+      console.warn('PNG dump (metal) failed:', e);
+    }
+  }
+  return new Frame(raw, pixels, dumpPath);
+}
+
 // --- Internal: run a raw config against the test runner ---
 
 async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
+  if (_ambientBackend === 'metal') {
+    // Chain configs not supported on the metal backend yet (Phase 1
+    // scope is per-effect only). Fail loudly if a chain test slips
+    // through forEachBackend.
+    if (cfg.chain) {
+      throw new Error('runMetalConfig: chain tests not supported (Phase 1 = per-effect only)');
+    }
+    return runMetalConfig({
+      module: cfg.module,
+      bundle: cfg.bundle ?? 'testonly',
+      width: cfg.width ?? 64,
+      height: cfg.height ?? 64,
+      params: cfg.params ?? [],
+      ticks: cfg.ticks ?? 0,
+      samplePoints: cfg.samplePoints ?? [],
+      inputColor: cfg.inputColor,
+    }, dumpName);
+  }
   await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
 
   // Explicit `fusionMode` on the cfg wins; otherwise inherit the

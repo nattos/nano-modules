@@ -1,4 +1,4 @@
-import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuTest, runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
@@ -13,8 +13,13 @@ import type { Sketch } from '../src/sketch-types';
 //   - default params on a black input → SOME bright pixels exist
 //   - very small blobs in a big canvas → mostly black with bright spots
 
-describe('Soft Glow Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Soft Glow Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
+  // Engine-level tests below (using runEngineTest with sketches /
+  // rails) run via Puppeteer only — the native runner is per-effect
+  // only in Phase 1. The metal-mode pass early-returns past them.
+  const skipEngine = backend === 'metal';
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
@@ -120,6 +125,7 @@ describe('Soft Glow Effect E2E', () => {
   });
 
   it('motion vectors flow through render_outputs rail into motion_blur', async () => {
+    if (skipEngine) return;
     // Chain: solid bg → soft_glow → motion_blur. With the canonical
     // render_outputs rail wired, soft_glow's per-blob velocity reaches
     // motion_blur and produces directional smearing of the glow. Without
@@ -231,6 +237,7 @@ describe('Soft Glow Effect E2E', () => {
   });
 
   it('motion_skew=1 (wavefront-only) differs from isotropic motion_skew=0', async () => {
+    if (skipEngine) return;
     // Same chain run twice — only `motion_skew` changes. Skew biases
     // motion-vector emission toward each blob's leading edge, so the
     // downstream motion_blur should smear asymmetrically vs. the
@@ -341,4 +348,5 @@ describe('Soft Glow Effect E2E', () => {
     const gDominant = litPixels.filter(p => p.g >= p.r && p.g >= p.b);
     expect(gDominant.length / litPixels.length).toBeGreaterThan(0.8);
   });
+});
 });

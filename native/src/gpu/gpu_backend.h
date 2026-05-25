@@ -56,6 +56,15 @@ public:
   virtual std::vector<uint8_t> readbackTexture(int32_t textureHandle,
                                                 uint32_t w, uint32_t h) = 0;
 
+  // Upload pixel bytes into a texture (for tests / FFGL input handoff
+  // without going through a full render path). RGBA8 / BGRA8 in row-
+  // major order; bytes.size() must be w*h*4. No-op for invalid handles.
+  virtual void writeTexture(int32_t textureHandle,
+                            uint32_t w, uint32_t h,
+                            const uint8_t* bytes, uint32_t byteCount) {
+    (void)textureHandle; (void)w; (void)h; (void)bytes; (void)byteCount;
+  }
+
   // Cleanup
   virtual void release(int32_t handle) = 0;
 };

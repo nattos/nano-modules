@@ -50,11 +50,25 @@ public:
   }
 
   int32_t createTexture(uint32_t w, uint32_t h, int32_t format) override {
+    // TextureFormat enum (from wasm_modules/include/gpu.h):
+    //   0=BGRA8, 1=RGBA8, 3=RGBA16F, 4=R32F.
+    MTLPixelFormat pf;
+    switch (format) {
+      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
+      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
+      case 3:  pf = MTLPixelFormatRGBA16Float; break;
+      case 4:  pf = MTLPixelFormatR32Float;    break;
+      default: pf = MTLPixelFormatRGBA8Unorm;  break;
+    }
     MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
     desc.width = w;
     desc.height = h;
-    desc.pixelFormat = (format == 0) ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
-    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    desc.pixelFormat = pf;
+    // ShaderWrite is required for storage-texture writes (the storageTex2d
+    // bindings in modern effects). Add it unconditionally — it's a no-op
+    // if the shader doesn't write to the texture.
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead
+               | MTLTextureUsageShaderWrite;
     desc.storageMode = MTLStorageModeShared; // CPU-readable for readback
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
     if (!tex) return -1;
@@ -166,8 +180,15 @@ public:
   void computeDispatch(int32_t pass, uint32_t x, uint32_t y, uint32_t z) override {
     (void)pass;
     if (!computeEncoder_ || !currentComputePSO_) return;
-    NSUInteger tw = [currentComputePSO_ threadExecutionWidth];
-    MTLSize threadsPerGroup = MTLSizeMake(tw, 1, 1);
+    // Threads-per-group must match the shader's [numthreads(...)].
+    // All effects in the modules tree use [numthreads(8, 8, 1)], so
+    // hardcode here. The old 1D test shader (test_gpu_metal) over-
+    // dispatches but writes the same value to every slot, so it still
+    // passes. If we add effects with different threadgroup sizes,
+    // we'll need per-PSO threadgroup tracking — read [numthreads]
+    // from the MSL source at PSO creation, or expose an explicit
+    // setter on the GPU API.
+    MTLSize threadsPerGroup = MTLSizeMake(8, 8, 1);
     MTLSize threadgroups = MTLSizeMake(x, y, z);
     [computeEncoder_ dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerGroup];
   }
@@ -267,6 +288,20 @@ public:
        fromRegion:MTLRegionMake2D(0, 0, w, h)
       mipmapLevel:0];
     return pixels;
+  }
+
+  // --- Upload ---
+
+  void writeTexture(int32_t textureHandle,
+                    uint32_t w, uint32_t h,
+                    const uint8_t* bytes, uint32_t byteCount) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (!tex || !bytes) return;
+    if (byteCount < w * h * 4) return;
+    [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
+           mipmapLevel:0
+             withBytes:bytes
+           bytesPerRow:w * 4];
   }
 
   // --- Cleanup ---

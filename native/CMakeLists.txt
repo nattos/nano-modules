@@ -351,3 +351,97 @@ if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
     NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm"
   )
 endif()
+
+# ============================================================================
+# No-WASM native effect runtime + dual-backend test runner (Phase 1)
+# ============================================================================
+#
+# Effects compile twice: as WASM (via wasm_modules/*/build.sh) for the
+# web runtime, AND as native C++ objects linked against the in-process
+# `effect_runtime` library for the no-WASM Metal path. This unblocks
+# both the dual-backend test runner (compare Puppeteer/WebGPU vs native
+# Metal pixel-for-pixel) and the StreakyBlobs FFGL plugin in Phase 3.
+#
+# Build depends on the WASM build having produced .spv files under
+# native/build/tmp/ — they're consumed by `naga` to emit per-effect MSL
+# headers via build_msl_headers.sh.
+
+if(APPLE)
+  set(EFFECTS_NATIVE_TMP "${CMAKE_SOURCE_DIR}/build/tmp")
+  set(EFFECTS_NATIVE_INC "${CMAKE_SOURCE_DIR}/wasm_modules/include")
+
+  # The in-process runtime: implements every host-import C symbol the
+  # effects reference. Statically linked into both the test runner CLI
+  # and (Phase 3) the StreakyBlobs FFGL bundle.
+  add_library(effect_runtime STATIC
+    src/runtime/effect_runtime.cpp
+    src/runtime/host_impls.cpp
+    src/runtime/gpu_impls.cpp
+  )
+  target_include_directories(effect_runtime PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
+    ${EFFECTS_NATIVE_INC}
+    ${EFFECTS_NATIVE_TMP}
+  )
+  target_link_libraries(effect_runtime PUBLIC
+    gpu_backend
+    nlohmann_json::nlohmann_json
+  )
+  # Suppress noise about ignored WASM-only __attribute__((import_module))
+  # annotations on the effect host-import declarations.
+  target_compile_options(effect_runtime PRIVATE -Wno-attributes)
+
+  # Per-effect MSL header generation. Reads .spv files emitted by the
+  # WASM build; depends on them having been produced (the build script
+  # fails loudly if not). Re-runs whenever the script or any input .spv
+  # changes.
+  set(SOFT_GLOW_MSL_H "${EFFECTS_NATIVE_TMP}/soft_glow_msl.h")
+  add_custom_command(
+    OUTPUT ${SOFT_GLOW_MSL_H}
+    COMMAND bash ${CMAKE_SOURCE_DIR}/effects_native/build_msl_headers.sh
+    DEPENDS
+      ${CMAKE_SOURCE_DIR}/effects_native/build_msl_headers.sh
+      ${EFFECTS_NATIVE_TMP}/soft_glow_color.spv
+      ${EFFECTS_NATIVE_TMP}/soft_glow_motion.spv
+    COMMENT "Translating soft_glow SPV → MSL headers via naga"
+    VERBATIM
+  )
+  add_custom_target(effects_msl_headers DEPENDS ${SOFT_GLOW_MSL_H})
+
+  # Effects compiled as native objects. Each effect's main.cpp is the
+  # same source compiled for WASM; the namespace wrappers
+  # (namespace soft_glow { ... }) prevent symbol collisions.
+  add_library(effects_native STATIC
+    wasm_modules/soft_glow/main.cpp
+  )
+  target_include_directories(effects_native PUBLIC
+    ${EFFECTS_NATIVE_INC}
+    ${EFFECTS_NATIVE_TMP}
+  )
+  target_link_libraries(effects_native PUBLIC effect_runtime)
+  # Same attribute-noise filter.
+  target_compile_options(effects_native PRIVATE -Wno-attributes)
+  # The .spv headers (soft_glow_shaders.h) are inputs to the native
+  # compile too. Add MSL header target as a build-order dep so it's
+  # generated before anything that consumes it.
+  add_dependencies(effects_native effects_msl_headers)
+
+  # Config-driven CLI test runner — JSON config on stdin, JSON pixel
+  # result on stdout. Mirrors web/public/gpu-test-runner.html for the
+  # dual-backend tests.
+  add_executable(native_test_runner tools/native_test_runner.mm)
+  target_include_directories(native_test_runner PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${EFFECTS_NATIVE_INC}
+    ${EFFECTS_NATIVE_TMP}
+  )
+  target_link_libraries(native_test_runner PRIVATE
+    effects_native
+    effect_runtime
+    gpu_backend
+    nlohmann_json::nlohmann_json
+    "-framework Metal"
+    "-framework Foundation"
+  )
+  target_compile_options(native_test_runner PRIVATE -Wno-attributes)
+endif()
