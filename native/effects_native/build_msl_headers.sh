@@ -29,6 +29,7 @@ fi
 # Variants correspond to the names used in state::registerShaderSPV.
 ENTRIES=(
   "soft_glow:color,motion"
+  "motion_blur:reconstruct,pyramid_reduce"
 )
 
 emit_header() {

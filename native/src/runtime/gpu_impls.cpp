@@ -76,14 +76,10 @@ int gpu_create_texture(int w, int h, int format) {
   return b->createTexture((uint32_t)w, (uint32_t)h, format);
 }
 
-int gpu_create_texture_mips(int w, int h, int format, int /*mips*/) {
-  // No mip support yet — fall back to non-mipped texture so callers
-  // that don't actually depend on multiple mip levels still get a
-  // working surface. fast_blur etc. will need this fleshed out before
-  // they work native.
+int gpu_create_texture_mips(int w, int h, int format, int mips) {
   auto* b = backend();
   if (!b) return -1;
-  return b->createTexture((uint32_t)w, (uint32_t)h, format);
+  return b->createTextureWithMips((uint32_t)w, (uint32_t)h, format, mips);
 }
 
 int gpu_create_texture_3d(int, int, int, int) {
@@ -91,9 +87,32 @@ int gpu_create_texture_3d(int, int, int, int) {
   return -1;
 }
 
-int gpu_create_sampler(int, int) {
-  unimplemented("create_sampler");
-  return -1;
+int gpu_create_sampler(int filterMode, int addressMode) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createSampler(filterMode, addressMode);
+}
+
+// Decode a packed Constants buffer (see gpu.h Constants::pack) into a
+// vector of {name, value} for the backend.
+static std::vector<gpu::GPUBackend::SpecConstant>
+decodeConstants(const unsigned char* p, int len) {
+  std::vector<gpu::GPUBackend::SpecConstant> out;
+  if (!p || len < 4) return out;
+  auto read_u32 = [](const unsigned char* q) {
+    return (uint32_t)q[0] | ((uint32_t)q[1] << 8)
+         | ((uint32_t)q[2] << 16) | ((uint32_t)q[3] << 24);
+  };
+  uint32_t count = read_u32(p); p += 4; len -= 4;
+  for (uint32_t i = 0; i < count && len >= 4; ++i) {
+    uint32_t nlen = read_u32(p); p += 4; len -= 4;
+    if (len < (int)nlen + 8) break;
+    std::string name((const char*)p, nlen); p += nlen; len -= (int)nlen;
+    double v = 0;
+    std::memcpy(&v, p, 8); p += 8; len -= 8;
+    out.push_back({std::move(name), v});
+  }
+  return out;
 }
 
 // MSL reserves the name "main" for kernel functions; spirv-cross
@@ -108,7 +127,7 @@ static std::string mapEntryName(const char* entry, int len) {
 }
 
 int gpu_create_compute_pso_layout(int shader, const char* entry, int entry_len,
-                                   const int* /*bindings*/, int /*binding_count*/) {
+                                   int /*binding_count*/, const int* /*bindings*/) {
   // Metal doesn't need pre-declared binding layouts — the per-dispatch
   // setBuffer/setTexture/setSampler calls determine the actual binding.
   // We accept and discard the bindings array.
@@ -118,10 +137,17 @@ int gpu_create_compute_pso_layout(int shader, const char* entry, int entry_len,
 }
 
 int gpu_create_compute_pso_v2(int shader, const char* entry, int entry_len,
-                               const int* /*bindings*/, int /*binding_count*/) {
+                               int /*binding_count*/, const int* /*bindings*/,
+                               const unsigned char* constants, int constants_len) {
   auto* b = backend();
   if (!b) return -1;
-  return b->createComputePSO(shader, mapEntryName(entry, entry_len));
+  auto consts = decodeConstants(constants, constants_len);
+  if (consts.empty()) {
+    return b->createComputePSO(shader, mapEntryName(entry, entry_len));
+  }
+  return b->createComputePSOWithConstants(shader,
+                                           mapEntryName(entry, entry_len),
+                                           consts);
 }
 
 int gpu_create_render_pso_layout(int /*vs*/, const char* /*vse*/, int /*vsl*/,
@@ -182,12 +208,13 @@ void gpu_compute_set_texture(int pass, int texture, int slot, int access) {
   if (b) b->computeSetTexture(pass, texture, slot, access);
 }
 void gpu_compute_set_texture_mip(int pass, int texture, int slot,
-                                  int access, int /*mip*/) {
+                                  int access, int mip) {
   auto* b = backend();
-  if (b) b->computeSetTexture(pass, texture, slot, access);
+  if (b) b->computeSetTextureMip(pass, texture, slot, access, mip);
 }
-void gpu_compute_set_sampler(int /*pass*/, int /*sampler*/, int /*slot*/) {
-  // Samplers not implemented yet — soft_glow doesn't use them.
+void gpu_compute_set_sampler(int pass, int sampler, int slot) {
+  auto* b = backend();
+  if (b) b->computeSetSampler(pass, sampler, slot);
 }
 void gpu_compute_dispatch(int pass, int x, int y, int z) {
   auto* b = backend();
@@ -269,11 +296,13 @@ int gpu_buffer_for_field(const char* path, int path_len) {
   return inst->bufferField(std::string(path, path_len));
 }
 
-void gpu_clear_texture(int /*tex*/, float, float, float, float) {
-  unimplemented("clear_texture");
+void gpu_clear_texture(int tex, float r, float g, float b, float a) {
+  auto* bk = backend();
+  if (bk) bk->clearTexture(tex, r, g, b, a);
 }
-void gpu_copy_texture(int /*src*/, int /*dst*/) {
-  unimplemented("copy_texture");
+void gpu_copy_texture(int src, int dst) {
+  auto* bk = backend();
+  if (bk) bk->copyTexture(src, dst);
 }
 
 }  // extern "C"

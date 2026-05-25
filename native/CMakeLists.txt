@@ -395,24 +395,31 @@ if(APPLE)
   # WASM build; depends on them having been produced (the build script
   # fails loudly if not). Re-runs whenever the script or any input .spv
   # changes.
-  set(SOFT_GLOW_MSL_H "${EFFECTS_NATIVE_TMP}/soft_glow_msl.h")
+  set(EFFECT_MSL_HEADERS
+    "${EFFECTS_NATIVE_TMP}/soft_glow_msl.h"
+    "${EFFECTS_NATIVE_TMP}/motion_blur_msl.h"
+  )
   add_custom_command(
-    OUTPUT ${SOFT_GLOW_MSL_H}
+    OUTPUT ${EFFECT_MSL_HEADERS}
     COMMAND bash ${CMAKE_SOURCE_DIR}/effects_native/build_msl_headers.sh
     DEPENDS
       ${CMAKE_SOURCE_DIR}/effects_native/build_msl_headers.sh
       ${EFFECTS_NATIVE_TMP}/soft_glow_color.spv
       ${EFFECTS_NATIVE_TMP}/soft_glow_motion.spv
-    COMMENT "Translating soft_glow SPV → MSL headers via naga"
+      ${EFFECTS_NATIVE_TMP}/motion_blur_reconstruct.spv
+      ${EFFECTS_NATIVE_TMP}/motion_blur_pyramid_reduce.spv
+    COMMENT "Translating effect SPV → MSL headers via spirv-cross"
     VERBATIM
   )
-  add_custom_target(effects_msl_headers DEPENDS ${SOFT_GLOW_MSL_H})
+  add_custom_target(effects_msl_headers DEPENDS ${EFFECT_MSL_HEADERS})
 
   # Effects compiled as native objects. Each effect's main.cpp is the
   # same source compiled for WASM; the namespace wrappers
-  # (namespace soft_glow { ... }) prevent symbol collisions.
+  # (namespace soft_glow { ... }, namespace motion_blur { ... })
+  # prevent symbol collisions.
   add_library(effects_native STATIC
     wasm_modules/soft_glow/main.cpp
+    wasm_modules/motion_blur/main.cpp
   )
   target_include_directories(effects_native PUBLIC
     ${EFFECTS_NATIVE_INC}
@@ -444,4 +451,39 @@ if(APPLE)
     "-framework Foundation"
   )
   target_compile_options(native_test_runner PRIVATE -Wno-attributes)
+
+  # --- nano.StreakyBlobs FFGL bundle ---
+  # Standalone .bundle (alongside NanoRepatch / NanoLooper) — links
+  # effects_native + effect_runtime + gpu_backend statically. No
+  # bridge_server.dylib. The GL↔Metal interop comes from the
+  # InteropTexture borrowed from /Users/nattos/Code/nano-ffglify.
+  add_library(StreakyBlobs MODULE
+    src/plugin/streaky_blobs/streaky_blobs_plugin.mm
+    src/plugin/streaky_blobs/InteropTexture.m
+  )
+  target_include_directories(StreakyBlobs PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${EFFECTS_NATIVE_INC}
+    ${EFFECTS_NATIVE_TMP}
+    ${CMAKE_SOURCE_DIR}/src/plugin/streaky_blobs
+  )
+  target_link_libraries(StreakyBlobs PRIVATE
+    effects_native
+    effect_runtime
+    gpu_backend
+    ffgl::sdk
+    "-framework OpenGL"
+    "-framework Metal"
+    "-framework MetalKit"
+    "-framework CoreVideo"
+    "-framework AppKit"
+    "-framework Foundation"
+  )
+  target_compile_options(StreakyBlobs PRIVATE -Wno-attributes -Wno-deprecated-declarations)
+  set_target_properties(StreakyBlobs PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "-undefined dynamic_lookup"
+  )
 endif()

@@ -40,11 +40,17 @@
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 
-// Per-effect registration helpers — each effect registers itself with
-// the runtime via a small entry function defined alongside its
-// `main.cpp`. For now soft_glow is the only one wired up.
+// Per-effect entry-point declarations. Each effect's main.cpp exports
+// a namespaced set of {init, tick, render, on_state_patched} that we
+// hand to the runtime as an EffectDesc.
 namespace soft_glow {
-  // The descriptor exported by soft_glow's main.cpp.
+  extern void init();
+  extern void tick(double dt);
+  extern void render(int vp_w, int vp_h);
+  extern void on_state_patched(int n, const char* pb, const int* off,
+                                const int* len, const int* ops);
+}
+namespace motion_blur {
   extern void init();
   extern void tick(double dt);
   extern void render(int vp_w, int vp_h);
@@ -53,6 +59,7 @@ namespace soft_glow {
 }
 
 #include "soft_glow_msl.h"
+#include "motion_blur_msl.h"
 
 namespace effect_runtime {
 // Setters defined in host_impls.cpp.
@@ -71,6 +78,8 @@ namespace {
 std::string resolveEffectId(const std::string& moduleName) {
   if (moduleName == "soft_glow.wasm" || moduleName == "soft_glow")
     return "gen.soft_glow";
+  if (moduleName == "motion_blur.wasm" || moduleName == "motion_blur")
+    return "video.motion_blur";
   return moduleName;
 }
 
@@ -78,6 +87,7 @@ std::string resolveEffectId(const std::string& moduleName) {
 // effect gets one EffectInstance.
 void registerAllEffects(effect_runtime::EffectRuntime& rt) {
   effect_runtime::EffectDesc d;
+
   d.id = "gen.soft_glow";
   d.name = "Soft Glow";
   d.init = &soft_glow::init;
@@ -86,10 +96,21 @@ void registerAllEffects(effect_runtime::EffectRuntime& rt) {
   d.on_state_patched = &soft_glow::on_state_patched;
   rt.registerEffect(d);
 
+  d = {};
+  d.id = "video.motion_blur";
+  d.name = "Motion Blur";
+  d.init = &motion_blur::init;
+  d.tick = &motion_blur::tick;
+  d.render = &motion_blur::render;
+  d.on_state_patched = &motion_blur::on_state_patched;
+  rt.registerEffect(d);
+
   // Pre-register MSL strings so state::registerShaderSPV("...") on the
   // effect side resolves the shader name to a Metal-compilable source.
   rt.registerShaderMSL("soft_glow_color", SOFT_GLOW_COLOR_MSL);
   rt.registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
+  rt.registerShaderMSL("reconstruct", MOTION_BLUR_RECONSTRUCT_MSL);
+  rt.registerShaderMSL("pyramid_reduce", MOTION_BLUR_PYRAMID_REDUCE_MSL);
 }
 
 // Read stdin to end-of-stream.

@@ -4,10 +4,12 @@
 #include <map>
 #include <string>
 #include <cstring>
+#include <vector>
 
 namespace gpu {
 
-enum class ResourceType { Buffer, Texture, Library, ComputePSO, RenderPSO };
+enum class ResourceType { Buffer, Texture, Library, ComputePSO, RenderPSO,
+                          Sampler };
 
 struct Resource {
   ResourceType type;
@@ -90,6 +92,153 @@ public:
       }
       return alloc(ResourceType::ComputePSO, pso);
     }
+  }
+
+  int32_t createComputePSOWithConstants(int32_t shaderHandle,
+                                         const std::string& entryPoint,
+                                         const std::vector<SpecConstant>& constants) override {
+    @autoreleasepool {
+      id<MTLLibrary> lib = getAs<id<MTLLibrary>>(shaderHandle);
+      if (!lib) return -1;
+      NSString* name = [NSString stringWithUTF8String:entryPoint.c_str()];
+      MTLFunctionConstantValues* values =
+          [[MTLFunctionConstantValues alloc] init];
+      // The Metal API lets us set constants by index OR by name. We
+      // came in with names; use setConstantValue:type:withName: so we
+      // don't need to maintain a name→index map per shader. Pass all
+      // values as float — that's the WGSL `f32` equivalent. spirv-cross
+      // emits function constants typed by their original SPIR-V
+      // OpSpecConstant types; for our shaders these are all i32 (int)
+      // or u32 (uint). MTLDataType doesn't have an explicit "any
+      // numeric" — we use Float which Metal auto-converts to int for
+      // function-constant slots typed int.
+      // FIXME: if a future shader uses a non-numeric constant, this
+      // breaks. For now all spec constants in motion_blur are ints.
+      for (const auto& c : constants) {
+        NSString* nsName = [NSString stringWithUTF8String:c.name.c_str()];
+        // Try int first (matches motion_blur's TILE_SIZE etc.), fall
+        // back to float on type mismatch via try/catch isn't possible —
+        // Metal raises NSException. Just always use int for now; the
+        // existing spec constants in our shaders are all ints.
+        int intValue = (int)c.value;
+        [values setConstantValue:&intValue type:MTLDataTypeInt
+                        withName:nsName];
+      }
+      NSError* error = nil;
+      id<MTLFunction> func = [lib newFunctionWithName:name
+                                       constantValues:values
+                                                error:&error];
+      if (!func) {
+        NSLog(@"Metal newFunctionWithName (constants) error: %@", error);
+        return -1;
+      }
+      id<MTLComputePipelineState> pso =
+          [device_ newComputePipelineStateWithFunction:func error:&error];
+      if (!pso) {
+        NSLog(@"Metal compute PSO (constants) error: %@", error);
+        return -1;
+      }
+      return alloc(ResourceType::ComputePSO, pso);
+    }
+  }
+
+  int32_t createTextureWithMips(uint32_t w, uint32_t h,
+                                 int32_t format, int32_t mipCount) override {
+    MTLPixelFormat pf;
+    switch (format) {
+      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
+      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
+      case 3:  pf = MTLPixelFormatRGBA16Float; break;
+      case 4:  pf = MTLPixelFormatR32Float;    break;
+      default: pf = MTLPixelFormatRGBA8Unorm;  break;
+    }
+    MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
+    desc.width = w;
+    desc.height = h;
+    desc.mipmapLevelCount = mipCount > 0 ? (NSUInteger)mipCount : 1;
+    desc.pixelFormat = pf;
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead
+               | MTLTextureUsageShaderWrite;
+    // Private storage for mip textures — they're GPU-only intermediates
+    // (the pyramid in motion_blur). CPU readback isn't needed.
+    desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
+    if (!tex) return -1;
+    return alloc(ResourceType::Texture, tex);
+  }
+
+  void computeSetTextureMip(int32_t pass, int32_t textureHandle,
+                            int32_t slot, int32_t /*access*/,
+                            int32_t mipLevel) override {
+    (void)pass;
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (!tex || !computeEncoder_) return;
+    // Bind a single-mip view (newTextureViewWithPixelFormat: textureType:
+    // levels:slices:) so the GPU rejects accesses outside that mip and
+    // the validation layer is happy about pyramid read+write of the
+    // same texture across passes.
+    id<MTLTexture> view = [tex newTextureViewWithPixelFormat:[tex pixelFormat]
+                                                  textureType:MTLTextureType2D
+                                                       levels:NSMakeRange((NSUInteger)mipLevel, 1)
+                                                       slices:NSMakeRange(0, 1)];
+    [computeEncoder_ setTexture:view atIndex:slot];
+  }
+
+  int32_t createSampler(int32_t filterMode, int32_t addressMode) override {
+    MTLSamplerDescriptor* desc = [[MTLSamplerDescriptor alloc] init];
+    desc.minFilter = (filterMode == 1) ? MTLSamplerMinMagFilterLinear
+                                        : MTLSamplerMinMagFilterNearest;
+    desc.magFilter = desc.minFilter;
+    MTLSamplerAddressMode am;
+    switch (addressMode) {
+      case 0:  am = MTLSamplerAddressModeClampToEdge;     break;
+      case 1:  am = MTLSamplerAddressModeRepeat;          break;
+      case 2:  am = MTLSamplerAddressModeMirrorRepeat;    break;
+      default: am = MTLSamplerAddressModeClampToEdge;     break;
+    }
+    desc.sAddressMode = am;
+    desc.tAddressMode = am;
+    desc.rAddressMode = am;
+    desc.mipFilter = MTLSamplerMipFilterLinear;  // for pyramid sampling
+    id<MTLSamplerState> sampler = [device_ newSamplerStateWithDescriptor:desc];
+    if (!sampler) return -1;
+    return alloc(ResourceType::Sampler, sampler);
+  }
+
+  void computeSetSampler(int32_t pass, int32_t samplerHandle,
+                         int32_t slot) override {
+    (void)pass;
+    id<MTLSamplerState> s = getAs<id<MTLSamplerState>>(samplerHandle);
+    if (s && computeEncoder_) [computeEncoder_ setSamplerState:s atIndex:slot];
+  }
+
+  void clearTexture(int32_t textureHandle,
+                    float r, float g, float b, float a) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (!tex) return;
+    if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
+    MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
+    desc.colorAttachments[0].texture = tex;
+    desc.colorAttachments[0].loadAction = MTLLoadActionClear;
+    desc.colorAttachments[0].storeAction = MTLStoreActionStore;
+    desc.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, a);
+    id<MTLRenderCommandEncoder> enc =
+        [cmdBuffer_ renderCommandEncoderWithDescriptor:desc];
+    [enc endEncoding];
+  }
+
+  void copyTexture(int32_t src, int32_t dst) override {
+    id<MTLTexture> s = getAs<id<MTLTexture>>(src);
+    id<MTLTexture> d = getAs<id<MTLTexture>>(dst);
+    if (!s || !d) return;
+    if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cmdBuffer_ blitCommandEncoder];
+    [blit copyFromTexture:s sourceSlice:0 sourceLevel:0
+                sourceOrigin:MTLOriginMake(0, 0, 0)
+                  sourceSize:MTLSizeMake([s width], [s height], 1)
+                   toTexture:d destinationSlice:0 destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [blit endEncoding];
   }
 
   int32_t createRenderPSO(int32_t vsHandle, const std::string& vsEntry,
