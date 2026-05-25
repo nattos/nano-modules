@@ -509,4 +509,25 @@ if(APPLE)
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
     LINK_FLAGS "-undefined dynamic_lookup"
   )
+
+  # Sign the bundle. STREAKYBLOBS_CODESIGN_IDENTITY can override at
+  # configure time — e.g. for a self-signed cert created via Keychain
+  # Access:
+  #   cmake -DSTREAKYBLOBS_CODESIGN_IDENTITY="Nano StreakyBlobs Self-Signed" ..
+  # Or for a notarizable build:
+  #   cmake -DSTREAKYBLOBS_CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)" ..
+  # Default is `-` (ad-hoc); the helper script fails loudly if the
+  # named identity isn't in the keychain rather than silently falling
+  # back to ad-hoc, which would force end-users to re-approve the
+  # plugin in System Settings after every rebuild.
+  if(NOT DEFINED STREAKYBLOBS_CODESIGN_IDENTITY)
+    set(STREAKYBLOBS_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET StreakyBlobs POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${STREAKYBLOBS_CODESIGN_IDENTITY}"
+            $<TARGET_BUNDLE_DIR:StreakyBlobs>
+    COMMENT "Codesigning StreakyBlobs.bundle (identity=${STREAKYBLOBS_CODESIGN_IDENTITY})"
+    VERBATIM
+  )
 endif()
