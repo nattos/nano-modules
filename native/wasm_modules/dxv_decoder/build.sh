@@ -3,6 +3,9 @@
 #
 # Service module = registers no EffectDesc, just exposes C functions the
 # TS host wrapper calls directly. See main.cpp for the export surface.
+#
+# No shader is bundled — BC1 decode happens in WebGPU hardware on the TS
+# side (bc1-rgba-unorm sample → rgba8unorm blit).
 
 set -e
 cd "$(dirname "$0")"
@@ -11,16 +14,8 @@ TMP_DIR="${2:-../../build/tmp}"
 mkdir -p "$OUT_DIR" "$TMP_DIR"
 MODULE_NAME=dxv_decoder
 
-echo "=== Compiling shaders (dxv_decoder) ==="
-source ../wasm_build_env.sh
-
-# BC1 decode compute shader. The runtime registers it as storage-format
-# rgba8unorm/write (see main.cpp's state::registerShaderSPV call) so naga
-# emits matching texture_storage_2d<rgba8unorm, write> declarations.
-compile_shaders_compute_var_spv dxv_decoder decode
-_emit_spv_header_var dxv_decoder decode
-
 echo "=== Building WASM (dxv_decoder) ==="
+source ../wasm_build_env.sh
 
 # Service-module exports. Skip init/tick/render/on_param_change — those are
 # effect-style callbacks that this module deliberately doesn't implement.
@@ -37,11 +32,10 @@ WASM_COMMON_EXPORTS=(
   -Wl,--export=dxv_video_fourcc
   -Wl,--export=dxv_get_frame_offset
   -Wl,--export=dxv_get_frame_size
-  -Wl,--export=dxv_decode_frame
+  -Wl,--export=dxv_lz_decompress_frame
 )
 
 wasm_build \
-  -I"$TMP_DIR" \
   -I../include \
   -I../../src \
   main.cpp \
