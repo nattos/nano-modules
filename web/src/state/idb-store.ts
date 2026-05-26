@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = 'nano-modules';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export const STORE_PROJECTS = 'projects';
 export const STORE_SETTINGS = 'settings';
@@ -18,6 +18,18 @@ export const STORE_SETTINGS = 'settings';
  * sketch id. Stores the raw `Blob` plus a `kind` discriminator.
  */
 export const STORE_SKETCH_INPUTS = 'sketchInputs';
+/**
+ * Source-level cost profile for the video playback service. Keyed by a
+ * derived sourceKey (e.g. 'name|size|lastModified') that the service
+ * computes without reading file contents. Holds codec/file timing EWMAs
+ * and the optional FileSystemFileHandle for restore.
+ */
+export const STORE_VIDEO_SOURCE_PROFILES = 'videoSourceProfiles';
+/**
+ * Clip-level (source+salt) access pattern profile. Captures the inferred
+ * mode plus mode-specific cache hints (loop range, hot frames, stride).
+ */
+export const STORE_VIDEO_CLIP_PROFILES = 'videoClipProfiles';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -35,6 +47,12 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_SKETCH_INPUTS)) {
         db.createObjectStore(STORE_SKETCH_INPUTS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_VIDEO_SOURCE_PROFILES)) {
+        db.createObjectStore(STORE_VIDEO_SOURCE_PROFILES, { keyPath: 'sourceKey' });
+      }
+      if (!db.objectStoreNames.contains(STORE_VIDEO_CLIP_PROFILES)) {
+        db.createObjectStore(STORE_VIDEO_CLIP_PROFILES, { keyPath: 'clipKey' });
       }
     };
     req.onsuccess = () => resolve(req.result);

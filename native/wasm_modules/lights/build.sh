@@ -17,6 +17,7 @@ source ../wasm_build_env.sh
 compile_shaders_compute_spv strobe_channel     render
 compile_shaders_compute_spv dispersion         render
 compile_shaders_compute_spv plasma_beam_cannon render
+compile_shaders_compute_spv orthomod           render
 
 # soft_glow has two compute shaders — color (rgba8) and motion
 # (rgba16f). Separate variants because naga substitutes one storage-
@@ -25,6 +26,22 @@ compile_shaders_compute_var_spv soft_glow color
 compile_shaders_compute_var_spv soft_glow motion
 _emit_spv_header_var soft_glow color motion
 echo "  soft_glow shaders compiled (SPV: color + motion)"
+
+# bounce_resonator also has color + motion passes — same pattern.
+compile_shaders_compute_var_spv bounce_resonator color
+compile_shaders_compute_var_spv bounce_resonator motion
+_emit_spv_header_var bounce_resonator color motion
+echo "  bounce_resonator shaders compiled (SPV: color + motion)"
+
+compile_shaders_compute_var_spv side_jet color
+compile_shaders_compute_var_spv side_jet motion
+_emit_spv_header_var side_jet color motion
+echo "  side_jet shaders compiled (SPV: color + motion)"
+
+compile_shaders_compute_var_spv motion_blobs color
+compile_shaders_compute_var_spv motion_blobs motion
+_emit_spv_header_var motion_blobs color motion
+echo "  motion_blobs shaders compiled (SPV: color + motion)"
 
 echo "=== Building WASM (lights) ==="
 
@@ -43,6 +60,10 @@ wasm_build \
   ../strobe_channel/main.cpp \
   ../soft_glow/main.cpp \
   ../dispersion/main.cpp \
-  ../plasma_beam_cannon/main.cpp
+  ../plasma_beam_cannon/main.cpp \
+  ../orthomod/main.cpp \
+  ../bounce_resonator/main.cpp \
+  ../side_jet/main.cpp \
+  ../motion_blobs/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

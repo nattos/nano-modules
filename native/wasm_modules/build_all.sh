@@ -17,7 +17,7 @@ cd "$(dirname "$0")"
 
 # Bundles in dependency order (bridge_core first since the others may
 # reference shared bridge state at load time).
-for bundle in bridge_core core testonly nano; do
+for bundle in bridge_core core testonly nano dxv_decoder; do
   echo "--- Building $bundle ---"
   ( cd "$bundle" && ./build.sh )
 done

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Video Playback Testbed</title>
+  <style>
+    html, body { background: #0d0d0d; color: #ddd; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      margin: 0; padding: 20px;
+    }
+    h1 { margin: 0 0 14px 0; font-weight: 500; font-size: 20px; }
+    p { margin: 4px 0; color: #999; }
+
+    #drop {
+      border: 2px dashed #444; border-radius: 6px;
+      padding: 60px; text-align: center; cursor: pointer;
+      max-width: 800px; margin: 60px auto; background: #151515;
+    }
+    #drop.drag { border-color: #4dd0ff; background: #142233; }
+    #drop p { font-size: 15px; }
+
+    #main { display: none; max-width: 1280px; margin: 0 auto; }
+
+    .row {
+      display: flex; gap: 12px; align-items: center;
+      margin: 12px 0; flex-wrap: wrap;
+    }
+    select {
+      background: #1a1a1a; color: #ddd;
+      border: 1px solid #333; padding: 5px 8px;
+      font: 13px/1 monospace; min-width: 140px;
+    }
+    select:disabled { opacity: 0.4; }
+
+    /* Slider styling — uses the same CSS-vars that scalar-slider
+     * reads. Tuned to fit comfortably in the testbed row. */
+    scalar-slider {
+      --app-text-color1: #ddd;
+      --app-text-color2: #888;
+      --app-hi-color2: #4dd0ff;
+      min-width: 180px;
+    }
+    scalar-slider[disabled] { opacity: 0.35; pointer-events: none; }
+
+    button {
+      background: #2a4a6a; color: #fff; border: 0;
+      padding: 6px 14px; cursor: pointer;
+      font: 13px sans-serif; border-radius: 3px;
+    }
+    button:hover { background: #366090; }
+
+    .panel {
+      display: grid; grid-template-columns: 1fr 420px; gap: 16px;
+      margin-top: 12px;
+    }
+    @media (max-width: 1050px) {
+      .panel { grid-template-columns: 1fr; }
+    }
+
+    #video-canvas {
+      width: 100%; height: auto; background: #000;
+      border: 1px solid #222; display: block;
+    }
+    .video-wrap { position: relative; }
+    .video-wrap .source-info {
+      position: absolute; top: 6px; left: 8px;
+      background: rgba(0,0,0,0.6); padding: 3px 8px;
+      font: 11px monospace; color: #ccc; border-radius: 3px;
+    }
+
+    #timeline {
+      width: 100%; height: 70px; background: #181818;
+      border: 1px solid #222; display: block; cursor: ew-resize;
+      margin-top: 12px;
+    }
+    .legend {
+      display: flex; gap: 18px; font-size: 11px; color: #777;
+      margin-top: 6px;
+    }
+    .legend i {
+      display: inline-block; width: 11px; height: 11px;
+      vertical-align: -1px; margin-right: 4px;
+      border: 1px solid #444;
+    }
+
+    #debug {
+      background: #0a0a0a; border: 1px solid #222;
+      padding: 12px 14px; margin: 0;
+      font: 12px/1.45 monospace; color: #b8d9c4;
+      white-space: pre-wrap; max-height: 560px; overflow-y: auto;
+    }
+    #debug .label { color: #678; }
+    #debug .val   { color: #cef; }
+    #debug .mode  { color: #fc6; }
+    #debug .warn  { color: #f88; }
+  </style>
+</head>
+<body>
+
+<div id="drop">
+  <h1>Video Playback Testbed</h1>
+  <p>Drop a DXV .mov file here, or click to choose.</p>
+  <input type="file" id="picker" accept="video/quicktime,.mov" style="display:none">
+</div>
+
+<div id="main">
+  <h1 id="title">Video Playback Testbed</h1>
+  <p id="subtitle"></p>
+
+  <div class="row">
+    <select id="mode" title="Play head controller">
+      <option value="loop">Loop</option>
+      <option value="reverse-loop">Reverse Loop</option>
+      <option value="pingpong">Ping Pong</option>
+      <option value="random-jumps">Random Jumps</option>
+      <option value="hold">Hold</option>
+    </select>
+    <scalar-slider id="in-frame"   label="In Frame"  min="0" max="0" step="1" value="0"></scalar-slider>
+    <scalar-slider id="out-frame"  label="Out Frame" min="0" max="0" step="1" value="0"></scalar-slider>
+    <scalar-slider id="fps"        label="FPS"       min="1" max="120" step="1" value="30"></scalar-slider>
+    <scalar-slider id="speed"      label="Speed"     min="-4" max="4" step="0.1" value="1" defaultValue="1"></scalar-slider>
+    <scalar-slider id="jump-every" label="Jump (ms)" min="50" max="5000" step="50" value="1500" data-only="random-jumps"></scalar-slider>
+    <scalar-slider id="hold-frame" label="Hold frame" min="0" max="0" step="1" value="0" data-only="hold"></scalar-slider>
+    <button id="reset">Reset</button>
+    <button id="load-new">Load different file…</button>
+  </div>
+
+  <div class="panel">
+    <div>
+      <div class="video-wrap">
+        <canvas id="video-canvas" width="640" height="360"></canvas>
+        <div class="source-info" id="source-info"></div>
+      </div>
+      <canvas id="timeline" width="1200" height="70"></canvas>
+      <div class="legend">
+        <span><i style="background:#2a2a2a"></i>Empty</span>
+        <span><i style="background:#28a"></i>Cached (LRU)</span>
+        <span><i style="background:#fc4"></i>Pinned</span>
+        <span><i style="background:#f33"></i>Playhead</span>
+        <span><i style="background:#999"></i>Range bracket</span>
+        <span style="color:#555;">·</span>
+        <span>Drag on timeline to scrub</span>
+      </div>
+    </div>
+    <pre id="debug">waiting for clip…</pre>
+  </div>
+</div>
+
+<script type="module">
+import { GPUHost } from '/src/gpu-host.ts';
+import { VideoPlaybackService } from '/src/video/playback-service.ts';
+import { Playhead, defaultParams } from '/src/video/playhead-controllers.ts';
+// Side-effect import to register the <scalar-slider> custom element.
+import '/src/widgets/scalar-slider.ts';
+
+// ---------- WebGPU boot ----------
+
+const adapter = await navigator.gpu?.requestAdapter();
+if (!adapter) {
+  document.getElementById('drop').textContent = 'WebGPU not available in this browser.';
+  throw new Error('no adapter');
+}
+const required = [];
+if (adapter.features.has('texture-compression-bc')) required.push('texture-compression-bc');
+const device = await adapter.requestDevice({ requiredFeatures: required });
+const gpuHost = new GPUHost(device, 'rgba8unorm');
+const service = new VideoPlaybackService(gpuHost);
+
+// ---------- State ----------
+
+let clip = null;
+let videoInfo = null;
+let playhead = null;
+let scrubFrame = null;          // null = use playhead; otherwise manual override
+let scrubbing = false;
+let lastDecodedFrameIdx = -1;
+let lastFrameByteOnSourceSeeks = 0;
+
+// CPU-side surface for displaying decoded frames at preview size. Filled
+// each frame by readback → ImageData → drawImage with scaling.
+let offCanvas = null;
+let offCtx = null;
+
+// ---------- DOM ----------
+
+const dropEl = document.getElementById('drop');
+const pickerEl = document.getElementById('picker');
+const mainEl = document.getElementById('main');
+const titleEl = document.getElementById('title');
+const subtitleEl = document.getElementById('subtitle');
+const sourceInfoEl = document.getElementById('source-info');
+const videoCanvas = document.getElementById('video-canvas');
+const videoCtx = videoCanvas.getContext('2d');
+const timelineCanvas = document.getElementById('timeline');
+const timelineCtx = timelineCanvas.getContext('2d');
+const debugEl = document.getElementById('debug');
+
+// Param inputs
+const modeEl = document.getElementById('mode');
+const inFrameEl = document.getElementById('in-frame');
+const outFrameEl = document.getElementById('out-frame');
+const fpsEl = document.getElementById('fps');
+const speedEl = document.getElementById('speed');
+const jumpEveryEl = document.getElementById('jump-every');
+const holdFrameEl = document.getElementById('hold-frame');
+const resetBtn = document.getElementById('reset');
+const loadNewBtn = document.getElementById('load-new');
+
+// ---------- Drop / pick ----------
+
+dropEl.addEventListener('click', () => pickerEl.click());
+dropEl.addEventListener('dragover', e => { e.preventDefault(); dropEl.classList.add('drag'); });
+dropEl.addEventListener('dragleave', () => dropEl.classList.remove('drag'));
+dropEl.addEventListener('drop', async e => {
+  e.preventDefault(); dropEl.classList.remove('drag');
+  const item = e.dataTransfer.items?.[0];
+  let source = null;
+  if (item?.getAsFileSystemHandle) {
+    try {
+      const h = await item.getAsFileSystemHandle();
+      if (h.kind === 'file') source = h;
+    } catch {}
+  }
+  if (!source) source = e.dataTransfer.files?.[0] || null;
+  if (source) await loadClip(source);
+});
+pickerEl.addEventListener('change', async () => {
+  const f = pickerEl.files?.[0];
+  if (f) await loadClip(f);
+});
+loadNewBtn.addEventListener('click', () => {
+  // Re-show the drop zone for a different file. The service keeps the
+  // previous clip open until we successfully open a new one.
+  pickerEl.value = '';
+  pickerEl.click();
+});
+
+async function loadClip(source) {
+  dropEl.textContent = 'Loading…';
+  try {
+    if (clip) {
+      const prev = clip; clip = null;
+      try { await service.close(prev); } catch {}
+    }
+    clip = await service.open(source, 'testbed');
+    videoInfo = service.inspect(clip);
+    titleEl.textContent = `${source.name ?? '<file>'} — ${videoInfo.width}×${videoInfo.height} · ${videoInfo.frameCount} frames · ${videoInfo.codec}`;
+    subtitleEl.textContent = `source key: ${videoInfo.sourceKey}`;
+    sourceInfoEl.textContent = videoInfo.codec;
+
+    // Init UI sliders for this clip. `max` updates the bar's normalized
+    // mapping; `value` sets the displayed/effective value.
+    const last = videoInfo.frameCount - 1;
+    inFrameEl.max = last;
+    outFrameEl.max = last;
+    holdFrameEl.max = last;
+    inFrameEl.value = 0;
+    outFrameEl.value = last;
+    holdFrameEl.value = Math.floor(last / 2);
+
+    setController('loop');
+    dropEl.style.display = 'none';
+    mainEl.style.display = 'block';
+    runLoop();
+  } catch (err) {
+    dropEl.textContent = 'Failed to open: ' + (err?.message ?? err);
+    console.error(err);
+  }
+}
+
+// ---------- Controller wiring ----------
+
+function readParamsFromUI() {
+  // scalar-slider's `.value` is a number — no parseFloat needed.
+  return {
+    kind: modeEl.value,
+    inFrame: clamp(inFrameEl.value, 0, videoInfo.frameCount - 1),
+    outFrame: clamp(outFrameEl.value, 0, videoInfo.frameCount - 1),
+    fps: Math.max(0.1, fpsEl.value),
+    speed: speedEl.value,
+    jumpEveryMs: Math.max(50, jumpEveryEl.value),
+    holdFrame: clamp(holdFrameEl.value, 0, videoInfo.frameCount - 1),
+  };
+}
+
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+function setController(kind) {
+  modeEl.value = kind;
+  const params = defaultParams(kind, videoInfo.frameCount, 30);
+  inFrameEl.value = params.inFrame;
+  outFrameEl.value = params.outFrame;
+  fpsEl.value = params.fps;
+  speedEl.value = params.speed;
+  if (params.jumpEveryMs) jumpEveryEl.value = params.jumpEveryMs;
+  if (params.holdFrame !== undefined) holdFrameEl.value = params.holdFrame;
+  applyParamVisibility(kind);
+  playhead = new Playhead(params, videoInfo.frameCount);
+  playhead.start(performance.now());
+}
+
+function applyParamVisibility(kind) {
+  document.querySelectorAll('scalar-slider[data-only]').forEach(el => {
+    const visible = el.dataset.only === kind;
+    if (visible) el.removeAttribute('disabled');
+    else el.setAttribute('disabled', '');
+  });
+}
+
+modeEl.addEventListener('change', () => setController(modeEl.value));
+// scalar-slider fires 'input' on each drag movement and 'change' on commit;
+// either is fine for live-updating the controller params.
+for (const el of [inFrameEl, outFrameEl, fpsEl, speedEl, jumpEveryEl, holdFrameEl]) {
+  el.addEventListener('input', () => {
+    if (!playhead) return;
+    playhead.params = readParamsFromUI();
+  });
+}
+resetBtn.addEventListener('click', () => {
+  if (playhead) playhead.reset(performance.now());
+});
+
+// ---------- Timeline scrubbing ----------
+
+function timelineXToFrame(clientX) {
+  const rect = timelineCanvas.getBoundingClientRect();
+  const x = clamp(clientX - rect.left, 0, rect.width);
+  return clamp(Math.floor((x / rect.width) * videoInfo.frameCount), 0, videoInfo.frameCount - 1);
+}
+
+timelineCanvas.addEventListener('pointerdown', e => {
+  if (!videoInfo) return;
+  timelineCanvas.setPointerCapture(e.pointerId);
+  scrubbing = true;
+  scrubFrame = timelineXToFrame(e.clientX);
+});
+timelineCanvas.addEventListener('pointermove', e => {
+  if (!scrubbing) return;
+  scrubFrame = timelineXToFrame(e.clientX);
+});
+timelineCanvas.addEventListener('pointerup', e => {
+  if (!scrubbing) return;
+  timelineCanvas.releasePointerCapture(e.pointerId);
+  scrubbing = false;
+  // Resume the controller from its current params/origin — the next
+  // frame will follow from where the controller's math thinks we are.
+  if (playhead) playhead.reset(performance.now());
+  scrubFrame = null;
+});
+
+// Testing hook — exposes loadClip/service/etc. so a puppeteer screenshot
+// run (and the smoke test) can drive the page without a real DataTransfer.
+// Harmless in normal use.
+window.__testbed = {
+  get service() { return service; },
+  get gpuHost() { return gpuHost; },
+  get clip() { return clip; },
+  get videoInfo() { return videoInfo; },
+  loadClip,
+  setController,
+  setScrub: f => { scrubFrame = f; },
+};
+
+// ---------- Render loop ----------
+
+let pending = false;
+async function runLoop() {
+  async function tick(nowMs) {
+    if (!clip) return;
+    requestAnimationFrame(tick);
+    if (pending) return;
+    pending = true;
+
+    let frameIdx;
+    if (scrubFrame !== null) {
+      frameIdx = scrubFrame;
+    } else {
+      frameIdx = playhead.frameAt(nowMs);
+    }
+    try {
+      const texHandle = await service.pull(clip, frameIdx);
+      lastDecodedFrameIdx = frameIdx;
+      if (texHandle > 0) {
+        await drawDecodedToCanvas(texHandle, videoInfo.width, videoInfo.height);
+      }
+    } catch (err) {
+      // pull errors get surfaced in the debug pane; don't kill the loop.
+      console.error('pull failed', frameIdx, err);
+    }
+    drawTimeline(frameIdx);
+    updateDebug(frameIdx);
+    pending = false;
+  }
+  requestAnimationFrame(tick);
+}
+
+async function drawDecodedToCanvas(texHandle, w, h) {
+  const bytes = await gpuHost.readbackTexture(texHandle, w, h);
+  if (!offCanvas || offCanvas.width !== w || offCanvas.height !== h) {
+    offCanvas = new OffscreenCanvas(w, h);
+    offCtx = offCanvas.getContext('2d');
+  }
+  // Wrap the readback as Uint8ClampedArray (no copy — same backing buffer)
+  // for ImageData. The browser then handles the scaled draw on the visible
+  // canvas — keeps the testbed display compact while leaving the full
+  // texture available to the cache.
+  const clamped = new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const img = new ImageData(clamped, w, h);
+  offCtx.putImageData(img, 0, 0);
+  // Fit the source frame into the display canvas, preserving aspect.
+  fitDraw(offCanvas, videoCtx, videoCanvas);
+}
+
+function fitDraw(src, ctx, dstCanvas) {
+  const dstW = dstCanvas.width, dstH = dstCanvas.height;
+  const srcAspect = src.width / src.height;
+  const dstAspect = dstW / dstH;
+  let w, h;
+  if (srcAspect > dstAspect) { w = dstW; h = dstW / srcAspect; }
+  else                       { h = dstH; w = dstH * srcAspect; }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, dstW, dstH);
+  ctx.drawImage(src, (dstW - w) / 2, (dstH - h) / 2, w, h);
+}
+
+// ---------- Timeline drawing ----------
+
+function drawTimeline(currentFrame) {
+  const W = timelineCanvas.width, H = timelineCanvas.height;
+  const snap = service.inspect(clip);
+  const count = snap.frameCount;
+
+  timelineCtx.fillStyle = '#111';
+  timelineCtx.fillRect(0, 0, W, H);
+
+  // Strip background.
+  const stripY = 16, stripH = H - 32;
+  timelineCtx.fillStyle = '#2a2a2a';
+  timelineCtx.fillRect(0, stripY, W, stripH);
+
+  // Range bracket [in, out] for the active controller.
+  if (playhead) {
+    const p = playhead.params;
+    const xIn = (p.inFrame / count) * W;
+    const xOut = ((p.outFrame + 1) / count) * W;
+    timelineCtx.strokeStyle = '#666';
+    timelineCtx.lineWidth = 1;
+    timelineCtx.strokeRect(xIn, stripY - 4, Math.max(2, xOut - xIn), stripH + 8);
+  }
+
+  // Cached frames (cyan).
+  timelineCtx.fillStyle = '#28a';
+  const cellW = Math.max(1, W / count);
+  for (const f of snap.cachedFrameIndices) {
+    timelineCtx.fillRect((f / count) * W, stripY, cellW, stripH);
+  }
+  // Pinned overlay (yellow band on top).
+  timelineCtx.fillStyle = '#fc4';
+  for (const f of snap.pinnedFrameIndices) {
+    timelineCtx.fillRect((f / count) * W, stripY, cellW, 5);
+  }
+
+  // Playhead (red).
+  const px = (currentFrame / count) * W;
+  timelineCtx.fillStyle = '#f33';
+  timelineCtx.fillRect(px - 1, 0, 2, H);
+
+  // Scrub hint while dragging.
+  if (scrubbing) {
+    timelineCtx.fillStyle = '#fff';
+    timelineCtx.font = '11px monospace';
+    timelineCtx.fillText(`scrub: frame ${currentFrame}`, px + 6, 12);
+  }
+
+  // Edge ticks (start, mid, end labels).
+  timelineCtx.fillStyle = '#777';
+  timelineCtx.font = '10px monospace';
+  timelineCtx.fillText('0', 2, H - 4);
+  timelineCtx.fillText(String(count - 1), W - 30, H - 4);
+}
+
+// ---------- Debug overlay ----------
+
+function updateDebug(currentFrame) {
+  const snap = service.inspect(clip);
+  const hints = service.hints(clip);
+  const lines = [];
+  const fmt = (v, digits = 2) => Number.isFinite(v) ? v.toFixed(digits) : '—';
+  const pct = (v) => (v * 100).toFixed(1) + '%';
+
+  lines.push(`mode               ${tag(snap.access.mode, 'mode')}  (conf ${fmt(snap.access.confidence)})`);
+  lines.push(`cost class         ${tag(snap.cost.costClass)}`);
+  lines.push(`suggestion         ${hints.suggestion || '—'}`);
+  lines.push('');
+  lines.push('---- access ----');
+  if (snap.access.stride !== undefined)    lines.push(`stride              ${snap.access.stride}`);
+  if (snap.access.loopRange)               lines.push(`loop range          [${snap.access.loopRange[0]}, ${snap.access.loopRange[1]}]`);
+  if (snap.access.hotFrames)               lines.push(`hot frames          ${snap.access.hotFrames.slice(0, 8).join(', ')}`);
+  lines.push('');
+  lines.push('---- cache ----');
+  lines.push(`entries             ${snap.cache.entries} / ~${Math.round(256 * 1024 * 1024 / (snap.width * snap.height * 4))} budget`);
+  lines.push(`bytes               ${(snap.cache.bytes / 1024 / 1024).toFixed(1)} MiB`);
+  lines.push(`pinned              ${snap.pinnedFrameIndices.length}`);
+  lines.push(`hits / misses (1s)  ${snap.cache.recentHits} / ${snap.cache.recentMisses}  (${pct(snap.cache.recentHitRate)})`);
+  lines.push(`hits / misses (tot) ${snap.cache.hits} / ${snap.cache.misses}  (${pct(snap.cache.hitRate)})`);
+  if (snap.cache.pinnedEvicted) lines.push(tag('  pinned evicted — memory-bound', 'warn'));
+  lines.push('');
+  lines.push('---- decode cost ----');
+  lines.push(`samples              ${snap.cost.samples}  (contig ${snap.cost.contiguousSamples} / seek ${snap.cost.seekSamples})`);
+  lines.push(`mean decode (contig) ${fmt(snap.cost.meanFrameDecodeMs)} ms`);
+  lines.push(`mean decode (seek)   ${fmt(snap.cost.seekDecodeMs)} ms`);
+  lines.push(`seek penalty         ${fmt(snap.cost.seekPenaltyMs)} ms`);
+  lines.push(`expected next pull   ${fmt(hints.expectedFrameLatencyMs)} ms`);
+  lines.push('');
+  lines.push('---- playhead ----');
+  lines.push(`requested frame      ${currentFrame}${scrubFrame !== null ? '  (scrubbing)' : ''}`);
+  lines.push(`controller mode      ${playhead?.params.kind ?? '—'}`);
+
+  debugEl.innerHTML = lines.join('\n');
+}
+
+function tag(text, cls = 'val') {
+  return `<span class="${cls}">${text}</span>`;
+}
+
+</script>
+
+</body>
+</html>

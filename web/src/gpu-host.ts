@@ -165,7 +165,10 @@ function bindingDeclToLayoutEntry(b: BindingDecl, visibility: number): GPUBindGr
 }
 
 export class GPUHost {
-  private device: GPUDevice;
+  /** The underlying WebGPU device. Exposed read-only so callers that need
+   *  raw device access (e.g. the DXV decoder's native BC1 writeTexture
+   *  upload) can reach it without re-plumbing it through every API. */
+  readonly device: GPUDevice;
   private handles = new Map<number, HandleEntry>();
   private nextHandle = 1;
 

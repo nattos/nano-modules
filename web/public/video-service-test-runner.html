@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head><title>Video Playback Service Test Runner</title></head>
+<body>
+<pre id="result">Waiting...</pre>
+<script type="module">
+import { GPUHost } from '/src/gpu-host.ts';
+import { VideoPlaybackService } from '/src/video/playback-service.ts';
+
+/*
+ * Bootstraps GPUHost + VideoPlaybackService and parks them on
+ * `window.__videoService` for the test harness to drive.
+ *
+ * Test helpers (all async):
+ *   __videoService.openByUrl(url, salt)    → ClipHandle
+ *   __videoService.pull(clip, idx)         → GPU texture handle
+ *   __videoService.readback(handle, w, h)  → Uint8Array of pixels
+ *   __videoService.inspect(clip)           → ProfileSnapshot
+ *   __videoService.hints(clip)             → PlaybackHints
+ *   __videoService.close(clip)             → void
+ *   __videoService.resetIdb()              → clears the two video stores
+ */
+
+async function run() {
+  const resultEl = document.getElementById('result');
+  resultEl.textContent = 'Booting WebGPU...';
+
+  const status = { ready: false, error: null };
+  window.__videoService = { status };
+
+  try {
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error('No GPU adapter');
+    const required = [];
+    if (adapter.features.has('texture-compression-bc')) required.push('texture-compression-bc');
+    const device = await adapter.requestDevice({ requiredFeatures: required });
+
+    const gpuHost = new GPUHost(device, 'rgba8unorm');
+    // Service-level memory budget can be overridden via ?budget=N (bytes)
+    // — handy for the eviction E2E test which wants a tight budget.
+    const params = new URLSearchParams(window.location.search);
+    const budgetBytes = parseInt(params.get('budget') || '268435456', 10);   // 256 MB default
+    const service = new VideoPlaybackService(gpuHost, { budgetBytes });
+
+    // Resolve the wasm URL relative to this page once (the dxv decoder
+    // does the same lookup internally; we just confirm it's reachable).
+
+    // --- Test helpers ---
+
+    async function openByUrl(url, salt) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`fetch ${url} → ${res.status}`);
+      const buf = await res.arrayBuffer();
+      return await service.open(buf, salt);
+    }
+
+    async function pull(clip, idx) {
+      return await service.pull(clip, idx);
+    }
+
+    async function readback(handle, w, h) {
+      return await gpuHost.readbackTexture(handle, w, h);
+    }
+
+    function inspect(clip) { return service.inspect(clip); }
+    function hints(clip)   { return service.hints(clip); }
+    async function close(clip) { return await service.close(clip); }
+
+    /** Wipes the two video profile stores so a test can start from cold. */
+    async function resetIdb() {
+      const dbReq = indexedDB.open('nano-modules');
+      const db = await new Promise((res, rej) => {
+        dbReq.onsuccess = () => res(dbReq.result);
+        dbReq.onerror = () => rej(dbReq.error);
+      });
+      for (const name of ['videoSourceProfiles', 'videoClipProfiles']) {
+        if (!db.objectStoreNames.contains(name)) continue;
+        await new Promise((res, rej) => {
+          const tx = db.transaction(name, 'readwrite');
+          tx.objectStore(name).clear();
+          tx.oncomplete = () => res();
+          tx.onerror = () => rej(tx.error);
+        });
+      }
+      db.close();
+    }
+
+    Object.assign(window.__videoService, {
+      service, gpuHost, device,
+      openByUrl, pull, readback, inspect, hints, close, resetIdb,
+    });
+    status.ready = true;
+    resultEl.textContent = 'Ready';
+  } catch (err) {
+    status.error = String(err && err.stack || err);
+    resultEl.textContent = 'Error: ' + status.error;
+  }
+}
+
+run();
+</script>
+</body>
+</html>

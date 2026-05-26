@@ -1,0 +1,47 @@
+/**
+ * DxvFrameSource — FrameSource backed by the existing DxvDecoder.
+ *
+ * Thin adapter: the decoder already takes (frameIdx, outTexHandle) and
+ * decodes into the caller's texture via the BC1 hardware path. We just
+ * surface its metadata + lifecycle behind the codec-agnostic interface.
+ */
+
+import { DxvDecoder, type BytesSource, type DxvVideoInfo } from '../dxv-decoder';
+import { GPUHost } from '../gpu-host';
+import type { FrameSource } from './frame-source';
+
+export class DxvFrameSource implements FrameSource {
+  readonly frameCount: number;
+  readonly width: number;
+  readonly height: number;
+  readonly formatCode: number = 1;     // rgba8unorm (matches GPUHost.createTexture code)
+  readonly codec: string;
+
+  private decoder: DxvDecoder;
+
+  private constructor(decoder: DxvDecoder, info: DxvVideoInfo) {
+    this.decoder = decoder;
+    this.frameCount = info.frameCount;
+    this.width = info.width;
+    this.height = info.height;
+    this.codec = `DXV-${info.fourccStr}`;   // e.g. "DXV-DXD3"
+  }
+
+  static async create(
+    gpuHost: GPUHost,
+    source: BytesSource,
+    wasmUrl?: string,
+  ): Promise<DxvFrameSource> {
+    const decoder = await DxvDecoder.create(gpuHost, wasmUrl);
+    const info = await decoder.open(source);
+    return new DxvFrameSource(decoder, info);
+  }
+
+  async decode(idx: number, outTexHandle: number): Promise<void> {
+    await this.decoder.decode(idx, outTexHandle);
+  }
+
+  dispose(): void {
+    this.decoder.dispose();
+  }
+}
