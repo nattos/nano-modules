@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head><title>DXV Decoder Test Runner</title></head>
+<body>
+<pre id="result">Waiting...</pre>
+<script type="module">
+import { GPUHost } from '/src/gpu-host.ts';
+import { DxvDecoder, arrayBufferBytesSource, blobBytesSource } from '/src/dxv-decoder.ts';
+
+/*
+ * DXV decoder test runner. Boots WebGPU + the dxv_decoder WASM module and
+ * parks a DxvDecoder instance on window.__dxvDecoder for the test to drive.
+ *
+ * Query params:
+ *   video=URL        Fetch this video, open() the decoder against it.
+ *                    Skipping the param leaves __dxvDecoder.decoder = null —
+ *                    useful for the BC-support probe test.
+ */
+
+async function run() {
+  const resultEl = document.getElementById('result');
+  resultEl.textContent = 'Booting WebGPU...';
+
+  const status = {
+    ready: false,
+    error: null,
+    bcSupported: false,
+    adapterFeatures: [],
+    info: null,
+  };
+  // Stash early so the test can read status even if init bails halfway.
+  window.__dxvDecoder = { status, decoder: null, gpuHost: null };
+
+  try {
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error('No GPU adapter');
+    status.adapterFeatures = Array.from(adapter.features);
+    status.bcSupported = adapter.features.has('texture-compression-bc');
+
+    // Request the BC feature when the host supports it so we have it ready
+    // for the native-upload fast-path in a future slice. Harmless when
+    // absent — the compute path is what we actually exercise for now.
+    const requiredFeatures = [];
+    if (status.bcSupported) requiredFeatures.push('texture-compression-bc');
+    const device = await adapter.requestDevice({ requiredFeatures });
+    const errors = [];
+    device.addEventListener?.('uncapturederror', e => {
+      errors.push(String(e.error?.message || e.error));
+    });
+    window.__gpuTestErrors = errors;
+
+    const gpuHost = new GPUHost(device, 'rgba8unorm');
+    const decoder = await DxvDecoder.create(gpuHost);
+
+    window.__dxvDecoder.gpuHost = gpuHost;
+    window.__dxvDecoder.decoder = decoder;
+    window.__dxvDecoder.device = device;
+
+    // Optional: open against a fetched video.
+    const params = new URLSearchParams(window.location.search);
+    const videoUrl = params.get('video');
+    if (videoUrl) {
+      resultEl.textContent = 'Fetching ' + videoUrl + '...';
+      const res = await fetch(videoUrl);
+      if (!res.ok) throw new Error('fetch ' + videoUrl + ' → ' + res.status);
+      const buf = await res.arrayBuffer();
+      status.info = await decoder.open(arrayBufferBytesSource(buf));
+    }
+
+    status.ready = true;
+    resultEl.textContent = 'Ready: ' + JSON.stringify(status, null, 2);
+  } catch (err) {
+    status.error = String(err && err.stack || err);
+    resultEl.textContent = 'Error: ' + status.error;
+  }
+}
+
+run();
+</script>
+</body>
+</html>

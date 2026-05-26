@@ -1146,6 +1146,21 @@ export class WasmHost {
   }
 
   /**
+   * Activate a module that registered zero effects (a "service" module).
+   * Returns the underlying instance + memory so the caller can invoke
+   * exports directly. Used by the DXV decoder, which exposes a small
+   * C ABI (dxv_parse_container, dxv_decode_frame, etc.) instead of the
+   * effect init/tick/render lifecycle.
+   *
+   * Any SPV shaders the module registered in nano_module_main are
+   * already in this.shaderSPV at this point and resolve through the
+   * usual createShaderModuleByName() path.
+   */
+  activateServiceModule(): { instance: WebAssembly.Instance; memory: WebAssembly.Memory } {
+    return { instance: this.instance, memory: this.memory };
+  }
+
+  /**
    * Fire the `on_state_ready` callback the effect registered in its
    * `init()` (via `state::setOnStateReady`). Callers should invoke
    * this once per instance, after the initial state replay (or
