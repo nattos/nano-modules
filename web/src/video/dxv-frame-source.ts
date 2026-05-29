@@ -10,6 +10,16 @@ import { DxvDecoder, type BytesSource, type DxvVideoInfo } from '../dxv-decoder'
 import { GPUHost } from '../gpu-host';
 import type { FrameSource } from './frame-source';
 
+/** Thrown by `DxvFrameSource.create` when the container parses but isn't a
+ *  DXV stream (e.g. an h264 .mp4). The playback service catches this and
+ *  falls back to the browser-decoder path. */
+export class NotDxvError extends Error {
+  constructor(public readonly fourcc: string) {
+    super(`not a DXV stream (codec '${fourcc}')`);
+    this.name = 'NotDxvError';
+  }
+}
+
 export class DxvFrameSource implements FrameSource {
   readonly frameCount: number;
   readonly width: number;
@@ -34,6 +44,13 @@ export class DxvFrameSource implements FrameSource {
   ): Promise<DxvFrameSource> {
     const decoder = await DxvDecoder.create(gpuHost, wasmUrl);
     const info = await decoder.open(source);
+    // The container parses for any ISO-BMFF, but only DXV streams carry a
+    // DXV codec tag (DXD3 / DXDI / DXDA …). Reject everything else so the
+    // service routes it to the browser-decoder path instead.
+    if (!/^DX/i.test(info.fourccStr)) {
+      decoder.dispose();
+      throw new NotDxvError(info.fourccStr);
+    }
     return new DxvFrameSource(decoder, info);
   }
 

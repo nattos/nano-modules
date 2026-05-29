@@ -20,6 +20,7 @@ import {
 } from '../dxv-decoder';
 import type { FrameSource } from './frame-source';
 import { DxvFrameSource } from './dxv-frame-source';
+import { VideoElementFrameSource } from './video-element-frame-source';
 import { FrameCache, type FrameCacheStats } from './frame-cache';
 import { CostTracker, type CostSnapshot } from './cost-tracker';
 import { AccessClassifier, type AccessMode, type ClassifierSnapshot } from './access-classifier';
@@ -122,26 +123,46 @@ export class VideoPlaybackService {
     source: FileSystemFileHandle | File | Blob | ArrayBuffer,
     salt: string,
   ): Promise<ClipHandle> {
-    // Derive source identity + a BytesSource for the decoder.
+    // Derive source identity + a BytesSource (for DXV) and a Blob (for
+    // the browser-decoder fallback) from whatever the caller handed us.
     let sourceKey: string;
     let bytesSource: BytesSource;
+    let blob: Blob;
     let handle: FileSystemFileHandle | undefined;
     if (source instanceof ArrayBuffer) {
       // Anonymous binary blob — derive a synthetic key from byte length.
       sourceKey = `arraybuffer|${source.byteLength}`;
       bytesSource = arrayBufferBytesSource(source);
+      blob = new Blob([source]);
     } else if (source instanceof Blob && !(source instanceof File)) {
       sourceKey = `blob|${source.size}|${source.type}`;
       bytesSource = blobBytesSource(source);
+      blob = source;
     } else {
       const { sourceKey: k, file } = await deriveSourceKey(source);
       sourceKey = k;
       bytesSource = blobBytesSource(file);
+      blob = file;
       if (!(source instanceof File)) handle = source;
     }
     const clipKey = `${sourceKey}::${salt}`;
 
-    const frameSource = await DxvFrameSource.create(this.gpuHost, bytesSource, this.dxvWasmUrl);
+    // Pick the codec backend. DXV first (it parses any ISO-BMFF and
+    // self-rejects non-DXV via NotDxvError); anything the DXV path can't
+    // own goes to the browser's own decoders through a <video> element,
+    // which emits the same RGBA8 GPUTexture and the same FrameSource API.
+    let frameSource: FrameSource;
+    try {
+      frameSource = await DxvFrameSource.create(this.gpuHost, bytesSource, this.dxvWasmUrl);
+    } catch (dxvErr) {
+      try {
+        frameSource = await VideoElementFrameSource.create(this.gpuHost, blob);
+      } catch (videoErr) {
+        throw new Error(
+          `could not open clip — not DXV (${(dxvErr as Error).message}) `
+          + `and <video> rejected it (${(videoErr as Error).message})`);
+      }
+    }
     const cache = new FrameCache(this.gpuHost, this.budgetBytes);
     const cost = new CostTracker();
     const classifier = new AccessClassifier();

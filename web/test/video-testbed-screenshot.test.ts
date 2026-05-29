@@ -6,8 +6,8 @@
 import * as fs from 'fs';
 
 const URL = 'http://localhost:5173/video-testbed.html';
-const VIDEO = '/test-videos/test01_dxv.mov';
-const OUT_PATH = '/tmp/gpu-test-dumps/video-testbed.png';
+const VIDEO = process.env.TESTBED_VIDEO || '/test-videos/test01_dxv.mov';
+const OUT_PATH = process.env.TESTBED_OUT || '/tmp/gpu-test-dumps/video-testbed.png';
 
 describe('Video testbed screenshot', () => {
   jest.setTimeout(45_000);
@@ -32,7 +32,11 @@ describe('Video testbed screenshot', () => {
     await page.evaluate(async (video) => {
       const res = await fetch(video);
       const buf = await res.arrayBuffer();
-      const file = new File([buf], 'test01_dxv.mov', { type: 'video/quicktime' });
+      const name = video.split('/').pop() || 'clip';
+      const type = name.endsWith('.mp4') ? 'video/mp4'
+                 : name.endsWith('.webm') ? 'video/webm'
+                 : 'video/quicktime';
+      const file = new File([buf], name, { type });
       await (window as any).__testbed.loadClip(file);
     }, VIDEO);
 

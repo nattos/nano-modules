@@ -100,8 +100,9 @@
 
 <div id="drop">
   <h1>Video Playback Testbed</h1>
-  <p>Drop a DXV .mov file here, or click to choose.</p>
-  <input type="file" id="picker" accept="video/quicktime,.mov" style="display:none">
+  <p>Drop a video file here, or click to choose.</p>
+  <p style="font-size:12px;color:#666;">DXV .mov decodes via the WASM path; any browser-playable format (mp4/webm/…) goes through a &lt;video&gt; element. Same cache + profiling either way.</p>
+  <input type="file" id="picker" accept="video/*,.mov,.mp4,.webm,.mkv" style="display:none">
 </div>
 
 <div id="main">

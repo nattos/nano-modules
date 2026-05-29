@@ -205,3 +205,81 @@ describe('VideoPlaybackService E2E', () => {
     expect(snap.final.cache.entries).toBeLessThan(200);  // some got evicted
   });
 });
+
+describe('VideoPlaybackService — browser-decoder (h264) path', () => {
+  jest.setTimeout(90_000);
+  const H264 = '/test-videos/test01_h264.mp4';
+
+  async function boot() {
+    await page.goto(RUNNER, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => {
+        const w = (window as any).__videoService;
+        return w && (w.status.ready || w.status.error);
+      },
+      { timeout: 45_000 },
+    );
+    const status = await page.evaluate(() => (window as any).__videoService.status);
+    if (status.error) throw new Error(`runner boot failed: ${status.error}`);
+    await page.evaluate(() => (window as any).__videoService.resetIdb());
+  }
+
+  it('opens an h264 mp4 through the <video> element and reports a video codec', async () => {
+    await boot();
+    const snap = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const clip = await svc.openByUrl(video, salt);
+      return svc.inspect(clip);
+    }, { video: H264, salt: uniqueSalt('h264-open') });
+
+    // Routed to the browser-decoder path, NOT the DXV WASM path.
+    expect(snap.codec.startsWith('video:')).toBe(true);
+    expect(snap.width).toBe(1920);
+    expect(snap.height).toBe(1080);
+    expect(snap.frameCount).toBeGreaterThan(0);
+  });
+
+  it('decodes h264 frames into RGBA8 textures with distinct content', async () => {
+    await boot();
+    const result = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const gpuHost = svc.gpuHost;
+      const clip = await svc.openByUrl(video, salt);
+      const info = svc.inspect(clip);
+      const W = info.width, H = info.height;
+
+      const sampleRow = async (frameIdx: number) => {
+        const tex = gpuHost.createTexture(W, H, 1);
+        await svc.pull(clip, frameIdx);   // warms cache; decode into service-owned tex
+        // Pull again to read the service's cached texture by decoding into ours:
+        // simplest is to decode straight into our own tex via the source —
+        // but the service owns decode, so instead read back the pulled handle.
+        const handle = await svc.pull(clip, frameIdx);
+        const px = await gpuHost.readbackTexture(handle, W, H);
+        const stride = W * 4;
+        const row = Math.floor(H / 2);
+        return Array.from(px.slice(row * stride, (row + 1) * stride));
+      };
+
+      const f0 = await sampleRow(0);
+      const fMid = await sampleRow(Math.floor(info.frameCount / 2));
+
+      // Non-trivial content on frame 0.
+      let nonZero = 0, minV = 255, maxV = 0;
+      for (let i = 0; i < f0.length; i += 4) {
+        const lum = Math.max(f0[i], f0[i + 1], f0[i + 2]);
+        if (f0[i] + f0[i + 1] + f0[i + 2] > 0) nonZero++;
+        if (lum < minV) minV = lum;
+        if (lum > maxV) maxV = lum;
+      }
+      let diff = 0;
+      for (let i = 0; i < Math.min(f0.length, fMid.length); i++) diff += Math.abs(f0[i] - fMid[i]);
+
+      return { width: W, height: H, nonZeroFrac: nonZero / (f0.length / 4), range: maxV - minV, diff };
+    }, { video: H264, salt: uniqueSalt('h264-decode') });
+
+    expect(result.nonZeroFrac).toBeGreaterThan(0.1);   // actually decoded something
+    expect(result.range).toBeGreaterThan(20);          // real content, not flat
+    expect(result.diff).toBeGreaterThan(1000);         // frame 0 ≠ middle frame
+  });
+});
