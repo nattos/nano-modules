@@ -6,6 +6,7 @@
 <script type="module">
 import { GPUHost } from '/src/gpu-host.ts';
 import { VideoPlaybackService } from '/src/video/playback-service.ts';
+import { FrameBlitter } from '/src/video/frame-blitter.ts';
 
 /*
  * Bootstraps GPUHost + VideoPlaybackService and parks them on
@@ -66,6 +67,33 @@ async function run() {
     function hints(clip)   { return service.hints(clip); }
     async function close(clip) { return await service.close(clip); }
 
+    // Mirrors the IDE bridge: pull a frame, blit it to an ImageBitmap
+    // (FrameBlitter), re-upload that bitmap into a fresh texture exactly
+    // like the engine-worker does, and read it back. Returns the center
+    // row from both the direct pull and the bridged round-trip so a test
+    // can confirm the bridge preserves pixels + orientation.
+    const blitter = new FrameBlitter(device);
+    async function blitRoundtrip(clip, frameIdx) {
+      const info = service.inspect(clip);
+      const W = info.width, H = info.height;
+      const handle = await service.pull(clip, frameIdx);
+      const srcTex = gpuHost.getTextureByHandle(handle);
+      const direct = await gpuHost.readbackTexture(handle, W, H);
+      const bitmap = blitter.toImageBitmap(srcTex, W, H);
+      const tmpHandle = gpuHost.createTexture(W, H, 1);
+      const tmpTex = gpuHost.getTextureByHandle(tmpHandle);
+      device.queue.copyExternalImageToTexture(
+        { source: bitmap, flipY: false }, { texture: tmpTex }, { width: W, height: H });
+      bitmap.close();
+      const bridged = await gpuHost.readbackTexture(tmpHandle, W, H);
+      const row = Math.floor(H / 2) * W * 4;
+      return {
+        width: W, height: H,
+        direct: Array.from(direct.slice(row, row + W * 4)),
+        bridged: Array.from(bridged.slice(row, row + W * 4)),
+      };
+    }
+
     /** Wipes the two video profile stores so a test can start from cold. */
     async function resetIdb() {
       const dbReq = indexedDB.open('nano-modules');
@@ -87,7 +115,7 @@ async function run() {
 
     Object.assign(window.__videoService, {
       service, gpuHost, device,
-      openByUrl, pull, readback, inspect, hints, close, resetIdb,
+      openByUrl, pull, readback, inspect, hints, close, resetIdb, blitRoundtrip,
     });
     status.ready = true;
     resultEl.textContent = 'Ready';

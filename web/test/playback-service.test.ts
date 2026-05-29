@@ -283,3 +283,52 @@ describe('VideoPlaybackService — browser-decoder (h264) path', () => {
     expect(result.diff).toBeGreaterThan(1000);         // frame 0 ≠ middle frame
   });
 });
+
+describe('FrameBlitter bridge (IDE integration path)', () => {
+  jest.setTimeout(60_000);
+
+  async function boot() {
+    await page.goto(RUNNER, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => {
+        const w = (window as any).__videoService;
+        return w && (w.status.ready || w.status.error);
+      },
+      { timeout: 45_000 },
+    );
+    const status = await page.evaluate(() => (window as any).__videoService.status);
+    if (status.error) throw new Error(`runner boot failed: ${status.error}`);
+    await page.evaluate(() => (window as any).__videoService.resetIdb());
+  }
+
+  it('texture→ImageBitmap→re-upload preserves pixels and orientation', async () => {
+    // This is the exact bridge the IDE uses: the main-thread service
+    // decodes into a texture, FrameBlitter turns it into an ImageBitmap,
+    // and the engine-worker re-uploads it. The round-trip must match the
+    // directly-pulled texture (RGB; alpha is forced opaque by the canvas).
+    await boot();
+    const r = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const clip = await svc.openByUrl(video, salt);
+      return svc.blitRoundtrip(clip, 0);
+    }, { video: VIDEO, salt: uniqueSalt('blit') });
+
+    expect(r.direct.length).toBe(r.width * 4);
+    expect(r.bridged.length).toBe(r.width * 4);
+
+    // Compare RGB across the center row. If the blit flipped or shifted
+    // the image, the rows would diverge wildly. A few codepoints of
+    // tolerance covers the rgba8 round-trip.
+    let maxDelta = 0;
+    let sampled = 0;
+    for (let x = 0; x < r.width; x += 7) {     // sparse sample, whole row
+      for (let c = 0; c < 3; c++) {            // RGB only — alpha is forced opaque
+        const d = Math.abs(r.direct[x * 4 + c] - r.bridged[x * 4 + c]);
+        if (d > maxDelta) maxDelta = d;
+        sampled++;
+      }
+    }
+    expect(sampled).toBeGreaterThan(100);
+    expect(maxDelta).toBeLessThanOrEqual(4);
+  });
+});

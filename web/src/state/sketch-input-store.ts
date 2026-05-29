@@ -15,6 +15,17 @@ import { idbDelete, idbGet, idbPut, STORE_SKETCH_INPUTS } from './idb-store';
 
 export type SketchInputKind = 'image' | 'video';
 
+/** Classify a dropped file as image / video / unsupported. Falls back to
+ *  the filename extension when the MIME type is missing or generic — some
+ *  platforms hand a DXV `.mov` over with an empty `file.type`. */
+export function inferSketchInputKind(file: File): SketchInputKind | null {
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('video/')) return 'video';
+  if (/\.(mov|mp4|m4v|webm|mkv|avi)$/i.test(file.name)) return 'video';
+  if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name)) return 'image';
+  return null;
+}
+
 export interface SketchInputRecord {
   /** Sketch id this file belongs to (`user:<uuid>` or `default:<effectId>`). */
   id: string;
@@ -40,13 +51,9 @@ export async function loadSketchInput(id: string): Promise<SketchInputRecord | n
 }
 
 export async function saveSketchInput(id: string, file: File): Promise<void> {
-  const kind: SketchInputKind | null = file.type.startsWith('image/')
-    ? 'image'
-    : file.type.startsWith('video/')
-      ? 'video'
-      : null;
+  const kind = inferSketchInputKind(file);
   if (!kind) {
-    console.warn('[sketch-input-store] unsupported file type:', file.type);
+    console.warn('[sketch-input-store] unsupported file type:', file.type, file.name);
     return;
   }
   const record: SketchInputRecord = {

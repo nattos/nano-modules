@@ -17,14 +17,27 @@ import {
   loadSketchInput,
   saveSketchInput,
   deleteSketchInput,
+  inferSketchInputKind,
 } from './sketch-input-store';
+import { GPUHost } from '../gpu-host';
+import { VideoPlaybackService, type ClipHandle } from '../video/playback-service';
+import { Playhead, defaultParams } from '../video/playhead-controllers';
+import { FrameBlitter } from '../video/frame-blitter';
+
+/** Default playback rate for the IDE's looping preview. The frame
+ *  sources don't expose an exact source fps, so we drive the loop at a
+ *  sensible default; the clip plays end-to-end in ~(frameCount / this). */
+const PLAYBACK_FPS = 30;
 
 interface VideoPump {
-  video: HTMLVideoElement;
-  objectUrl: string;
   sketchId: string;
+  clip: ClipHandle;
+  playhead: Playhead;
+  width: number;
+  height: number;
   rafId: number;
   stopped: boolean;
+  busy: boolean;
 }
 
 type EngineSetInput = (sketchId: string, bitmap: ImageBitmap | null) => void;
@@ -39,7 +52,36 @@ export class SketchInputManager {
   private switchToken = 0;
   private pump: VideoPump | null = null;
 
+  // Lazily-created main-thread GPU video stack. The service decodes DXV
+  // (WASM) and any browser-playable format (<video>) into GPU textures on
+  // this device; the blitter turns each pulled frame into an ImageBitmap
+  // for the existing engine-worker hand-off. Created on first video load.
+  private servicePromise: Promise<VideoPlaybackService> | null = null;
+  private gpuHost: GPUHost | null = null;
+  private blitter: FrameBlitter | null = null;
+
   constructor(private engineSetInput: EngineSetInput) {}
+
+  private ensureService(): Promise<VideoPlaybackService> {
+    if (this.servicePromise) return this.servicePromise;
+    this.servicePromise = (async () => {
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) throw new Error('no WebGPU adapter for video playback');
+      const required: GPUFeatureName[] = [];
+      // DXV's BC1 fast path needs this; harmless when the host lacks it
+      // (only the DXV codec is then unavailable — <video> formats still work).
+      if (adapter.features.has('texture-compression-bc')) {
+        required.push('texture-compression-bc');
+      }
+      const device = await adapter.requestDevice({ requiredFeatures: required });
+      this.gpuHost = new GPUHost(device, 'rgba8unorm');
+      this.blitter = new FrameBlitter(device);
+      // Absolute path: the dev server (and the built app) serve /wasm/
+      // at the root regardless of which page loaded the module.
+      return new VideoPlaybackService(this.gpuHost, { dxvWasmUrl: '/wasm/dxv_decoder.wasm' });
+    })();
+    return this.servicePromise;
+  }
 
   /**
    * Switch which sketch's input the manager drives. Stops any existing
@@ -75,7 +117,7 @@ export class SketchInputManager {
         console.warn('[sketch-input-manager] image decode failed', err);
       }
     } else if (record.kind === 'video') {
-      this.startVideoPump(sketchId, record.blob);
+      void this.startVideoPump(sketchId, record.blob);
     }
   }
 
@@ -93,7 +135,8 @@ export class SketchInputManager {
 
     this.stopPump();
     const token = ++this.switchToken;
-    if (file.type.startsWith('image/')) {
+    const kind = inferSketchInputKind(file);
+    if (kind === 'image') {
       try {
         const bitmap = await createImageBitmap(file, { premultiplyAlpha: 'none' });
         if (token !== this.switchToken) {
@@ -104,10 +147,10 @@ export class SketchInputManager {
       } catch (err) {
         console.warn('[sketch-input-manager] image decode failed', err);
       }
-    } else if (file.type.startsWith('video/')) {
-      this.startVideoPump(sketchId, file);
+    } else if (kind === 'video') {
+      void this.startVideoPump(sketchId, file);
     } else {
-      console.warn('[sketch-input-manager] unsupported file type:', file.type);
+      console.warn('[sketch-input-manager] unsupported file type:', file.type, file.name);
     }
   }
 
@@ -129,68 +172,79 @@ export class SketchInputManager {
 
   private stopPump() {
     if (!this.pump) return;
-    this.pump.stopped = true;
-    if (this.pump.rafId) cancelAnimationFrame(this.pump.rafId);
-    try { this.pump.video.pause(); } catch {}
-    try { URL.revokeObjectURL(this.pump.objectUrl); } catch {}
+    const p = this.pump;
+    p.stopped = true;
+    if (p.rafId) cancelAnimationFrame(p.rafId);
+    // Fire-and-forget close: flushes the profile to IDB and releases the
+    // clip's GPU cache. The service itself stays alive for the next clip.
+    this.servicePromise?.then(svc => svc.close(p.clip)).catch(() => {});
     this.pump = null;
   }
 
-  private startVideoPump(sketchId: string, blob: Blob) {
-    const video = document.createElement('video');
-    const objectUrl = URL.createObjectURL(blob);
-    video.src = objectUrl;
-    video.muted = true;
-    video.loop = true;
-    video.playsInline = true;
-    video.crossOrigin = 'anonymous';
+  /**
+   * Drive a sketch's texture_input from the VideoPlaybackService. The
+   * service handles DXV (WASM) and any browser-playable format
+   * (<video>) uniformly, with caching + profiling. We run a Loop
+   * playhead at PLAYBACK_FPS and bridge each pulled GPU texture to the
+   * engine-worker as an ImageBitmap (the engine's render device lives in
+   * the worker, so a main-thread texture can't cross directly).
+   */
+  private async startVideoPump(sketchId: string, blob: Blob) {
+    const token = this.switchToken;
+    let service: VideoPlaybackService;
+    try {
+      service = await this.ensureService();
+    } catch (err) {
+      console.warn('[sketch-input-manager] video service unavailable', err);
+      return;
+    }
+    if (token !== this.switchToken) return;   // switched away during init
+
+    let clip: ClipHandle;
+    try {
+      clip = await service.open(blob, sketchId);
+    } catch (err) {
+      console.warn('[sketch-input-manager] could not open video', err);
+      return;
+    }
+    if (token !== this.switchToken) { service.close(clip).catch(() => {}); return; }
+
+    const info = service.inspect(clip);
+    const playhead = new Playhead(
+      defaultParams('loop', info.frameCount, PLAYBACK_FPS), info.frameCount);
+    playhead.start(performance.now());
 
     const session: VideoPump = {
-      video,
-      objectUrl,
-      sketchId,
-      rafId: 0,
-      stopped: false,
+      sketchId, clip, playhead,
+      width: info.width, height: info.height,
+      rafId: 0, stopped: false, busy: false,
     };
     this.pump = session;
 
-    const useRvfc = typeof (video as any).requestVideoFrameCallback === 'function';
-
-    const pumpOnce = async () => {
+    const tick = () => {
       if (session.stopped) return;
-      if (video.readyState < 2 || video.videoWidth === 0) return;
-      try {
-        const bitmap = await createImageBitmap(video, { premultiplyAlpha: 'none' });
-        if (session.stopped) {
-          bitmap.close();
-          return;
-        }
-        this.engineSetInput(session.sketchId, bitmap);
-      } catch (err) {
-        // Decoding can fail transiently while the video seeks.
-        console.debug('[sketch-input-manager] frame decode failed', err);
-      }
+      session.rafId = requestAnimationFrame(tick);
+      if (session.busy) return;        // a previous pull is still decoding
+      session.busy = true;
+      void this.pumpFrame(session, service);
     };
+    session.rafId = requestAnimationFrame(tick);
+  }
 
-    const tickRvfc = () => {
-      if (session.stopped) return;
-      (video as any).requestVideoFrameCallback(async () => {
-        await pumpOnce();
-        tickRvfc();
-      });
-    };
-    const tickRaf = () => {
-      if (session.stopped) return;
-      session.rafId = requestAnimationFrame(async () => {
-        await pumpOnce();
-        tickRaf();
-      });
-    };
-
-    video.play().catch(err => {
-      console.warn('[sketch-input-manager] video play failed', err);
-    });
-    if (useRvfc) tickRvfc();
-    else tickRaf();
+  private async pumpFrame(session: VideoPump, service: VideoPlaybackService) {
+    try {
+      const frameIdx = session.playhead.frameAt(performance.now());
+      const texHandle = await service.pull(session.clip, frameIdx);
+      if (session.stopped || texHandle <= 0) return;
+      const tex = this.gpuHost!.getTextureByHandle(texHandle);
+      if (!tex) return;
+      const bitmap = this.blitter!.toImageBitmap(tex, session.width, session.height);
+      if (session.stopped) { bitmap.close(); return; }
+      this.engineSetInput(session.sketchId, bitmap);
+    } catch (err) {
+      console.debug('[sketch-input-manager] pump frame failed', err);
+    } finally {
+      session.busy = false;
+    }
   }
 }

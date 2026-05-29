@@ -107,8 +107,11 @@ export class CostTracker {
   }
 
   /** Seed from a persisted profile (an IDB lookup result). Caps the sample
-   *  count so subsequent live observations can still nudge the EWMAs. */
-  seedFromPersisted(snap: CostSnapshot): void {
+   *  count so subsequent live observations can still nudge the EWMAs.
+   *  Only needs the EWMA fields — the per-bucket sample sub-counts
+   *  (`contiguousSamples` / `seekSamples`) aren't persisted and accumulate
+   *  fresh from live pulls. */
+  seedFromPersisted(snap: Omit<CostSnapshot, 'contiguousSamples' | 'seekSamples'>): void {
     this.meanDecode = snap.meanFrameDecodeMs;
     this.seekDecode = snap.seekDecodeMs;
     this.firstByte = snap.firstByteLatencyMs;
