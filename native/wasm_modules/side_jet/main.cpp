@@ -123,12 +123,14 @@ static bool  s_debug_show_axis       = false;
 static CpuJet  s_jets[MAX_JETS];
 static double  s_shimmer_phase = 0.0;       // accumulator (§2.1)
 static double  s_turb_phase    = 0.0;       // accumulator (§2.1)
+// gate (bool) and trigger (event) are momentary in the IDE — value is 1
+// while held, 0 on release, replayed every frame (style guide §8.2). Both
+// spawn only on a 0→1 rising edge; firing on patch presence would spawn a
+// jet every frame and saturate the pool.
 static bool    s_gate_prev     = false;
-static double  s_refractory_remaining = 0.0;
+static float   s_trigger_prev  = 0.0f;
 static uint32_t s_spawn_rng    = 0xB16B00B5u;
 static uint32_t s_autotrigger_rng = 0xCAFEBABEu;
-
-static constexpr double TRIGGER_REFRACTORY_S = 0.02;
 
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -167,13 +169,12 @@ static void spawn_jet() {
   j.centerline_y = clampf(s_centerline_y + jitter, 0.0f, 1.0f);
   j.color_seed = lcg_unit(s_spawn_rng);
   j.transit_seconds = clampf(s_transit_seconds, 0.01f, 10.0f);
-  s_refractory_remaining = TRIGGER_REFRACTORY_S;
 }
 
 void init() {
   s_initialized = false;
   s_gate = false; s_gate_prev = false;
-  s_refractory_remaining = 0.0;
+  s_trigger_prev = 0.0f;
   s_shimmer_phase = 0.0; s_turb_phase = 0.0;
   s_spawn_rng = (uint32_t)s_seed ^ 0xB16B00B5u;
   s_autotrigger_rng = (uint32_t)s_seed ^ 0xCAFEBABEu;
@@ -254,11 +255,6 @@ void init() {
 void tick(double dt) {
   if (!s_initialized) return;
 
-  if (s_refractory_remaining > 0.0) {
-    s_refractory_remaining -= dt;
-    if (s_refractory_remaining < 0.0) s_refractory_remaining = 0.0;
-  }
-
   // Phase accumulators (§2.1 — never elapsed*rate).
   if (s_diamond_shimmer_rate_hz > 0.0f) {
     s_shimmer_phase += dt * (double)s_diamond_shimmer_rate_hz;
@@ -311,6 +307,13 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
         s_gate = new_gate;
         s_gate_prev = new_gate;
       }
+      else if (state::pathIs(path, plen, "trigger")) {
+        // Momentary event value (1 held / 0 released), replayed every
+        // frame — spawn only on the 0→1 rising edge, exactly like gate.
+        float v = state::patchFloat(i);
+        if (v != 0.0f && s_trigger_prev == 0.0f) spawn_jet();
+        s_trigger_prev = v;
+      }
       else if (state::pathIs(path, plen, "auto_rate"))           s_auto_rate           = state::patchFloat(i);
       else if (state::pathIs(path, plen, "transit_seconds"))     s_transit_seconds     = state::patchFloat(i);
       else if (state::pathIs(path, plen, "direction"))           s_direction           = (int)state::patchFloat(i);
@@ -346,10 +349,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
         }
       }
       else if (state::pathIs(path, plen, "debug_show_axis"))     s_debug_show_axis     = state::patchFloat(i) != 0.0f;
-    }
-
-    if (state::pathIs(path, plen, "trigger") && s_refractory_remaining <= 0.0) {
-      spawn_jet();
     }
   }
 }

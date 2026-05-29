@@ -43,6 +43,12 @@ cbuffer Uniforms : register(b2) {
   uint  render_bits;       // number of segments shown in the inset range
   uint  page_idx;          // current System B page (used as hash key)
   uint  seed;              // user seed (used as hash key)
+
+  // row 4
+  float env_brightness;    // env shaped by the brightness power curve (CPU-side)
+  float _pad_r4_0;
+  float _pad_r4_1;
+  float _pad_r4_2;
 };
 
 // Bits for the current page only — 4 rows × hadamard_size cols, one
@@ -84,8 +90,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float chs[4] = { ch0, ch1, ch2, ch3 };
   float ch = chs[bar];
 
-  // brightness = lerp(env, env * ch, channel_brightness_mod)
-  float brightness = lerp(env, env * ch, channel_brightness_mod);
+  // brightness = lerp(env_b, env_b * ch, channel_brightness_mod), where
+  // env_b is the envelope shaped by the brightness power curve. The raw
+  // env (not env_b) still drives scatter below so hue spread is unaffected.
+  float brightness = lerp(env_brightness, env_brightness * ch, channel_brightness_mod);
 
   // tent(env) = 4 * env * (1 - env) — peaks 1 at env=0.5, 0 at 0/1.
   float tent = 4.0 * env * (1.0 - env);

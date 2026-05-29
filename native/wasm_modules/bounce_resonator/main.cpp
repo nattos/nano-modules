@@ -2,11 +2,12 @@
  * gen.bounce_resonator — 4 coupled per-bar mass-on-spring with
  * cross-bar diffusion + non-linear send filters.
  *
- * Trigger semantics (style guide §8.1, adapted): gate (rising edge),
- * trigger (event with 50 ms refractory to suppress state-replay
- * storms — we don't have an IDLE phase to gate on like ADSR effects),
- * auto_rate (Poisson). Any of the three impulses the resonator at
- * either `bar_target` or all 4 bars simultaneously.
+ * Trigger semantics (style guide §8.1): gate (bool) and trigger (event)
+ * both fire on a 0→1 rising edge of their momentary value — the value is
+ * replayed every frame, so edge detection (not patch presence) is what
+ * keeps a single press from re-kicking every frame. auto_rate (Poisson)
+ * self-fires. Any of the three impulses the resonator at either
+ * `bar_target` or all 4 bars simultaneously.
  *
  * Outputs:
  *   tex_out                                 — additive bands over tex_in
@@ -79,12 +80,13 @@ static int   s_sub_steps         = 8;
 
 // --- Runtime state ---
 static fx::CoupledResonator4 s_res;
+// gate (bool) and trigger (event) are both momentary in the IDE — value
+// is 1 while held, 0 on release, replayed every frame (style guide §8.2).
+// Both fire only on a 0→1 rising edge; firing on patch presence would
+// re-kick the resonator every frame (stuck-trigger bug).
 static bool     s_gate_prev      = false;
-static bool     s_trigger_pulse  = false;          // single-frame intent flag
-static double   s_refractory_remaining = 0.0;      // suppress trigger-event during this window
+static float    s_trigger_prev   = 0.0f;
 static uint32_t s_autotrigger_rng = 0xCAFEBABEu;
-
-static constexpr double TRIGGER_REFRACTORY_S = 0.05;
 
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -102,15 +104,13 @@ static void fire_impulse() {
     if (b > BARS - 1) b = BARS - 1;
     s_res.impulse(b, clampf(s_impulse_strength, 0.0f, 4.0f), m);
   }
-  s_refractory_remaining = TRIGGER_REFRACTORY_S;
 }
 
 void init() {
   s_initialized = false;
   s_gate = false;
   s_gate_prev = false;
-  s_trigger_pulse = false;
-  s_refractory_remaining = 0.0;
+  s_trigger_prev = 0.0f;
   s_autotrigger_rng = 0xCAFEBABEu;
   s_motion_w = 0;
   s_motion_h = 0;
@@ -193,11 +193,6 @@ void init() {
 void tick(double dt) {
   if (!s_initialized) return;
 
-  if (s_refractory_remaining > 0.0) {
-    s_refractory_remaining -= dt;
-    if (s_refractory_remaining < 0.0) s_refractory_remaining = 0.0;
-  }
-
   // Poisson auto-trigger.
   if (s_auto_rate > 0.0f) {
     float rate_hz = std::pow(60.0f, s_auto_rate) - 1.0f;
@@ -242,6 +237,13 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
         s_gate = new_gate;
         s_gate_prev = new_gate;
       }
+      else if (state::pathIs(path, plen, "trigger")) {
+        // Momentary event value (1 held / 0 released), replayed every
+        // frame — kick only on the 0→1 rising edge, exactly like gate.
+        float v = state::patchFloat(i);
+        if (v != 0.0f && s_trigger_prev == 0.0f) fire_impulse();
+        s_trigger_prev = v;
+      }
       else if (state::pathIs(path, plen, "auto_rate"))           s_auto_rate          = state::patchFloat(i);
       else if (state::pathIs(path, plen, "bar_target"))          s_bar_target         = (int)state::patchFloat(i);
       else if (state::pathIs(path, plen, "bar_target_all"))      s_bar_target_all     = state::patchFloat(i) != 0.0f;
@@ -271,11 +273,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
       else if (state::pathIs(path, plen, "velocity_cap"))        s_velocity_cap       = state::patchFloat(i);
       else if (state::pathIs(path, plen, "motion_scale"))        s_motion_scale       = state::patchFloat(i);
       else if (state::pathIs(path, plen, "sub_steps"))           s_sub_steps          = (int)state::patchFloat(i);
-    }
-
-    // Event field — refractory-guarded to defend against state replay.
-    if (state::pathIs(path, plen, "trigger") && s_refractory_remaining <= 0.0) {
-      fire_impulse();
     }
   }
 }
