@@ -321,6 +321,40 @@ if(APPLE)
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
     LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
   )
+
+  # NanoProbe — FFGL probe plugin: dynamic param registration + plugin-
+  # set value experiment. Pure OpenGL passthrough + corner badge, no
+  # WASM, no bridge. Output is the log at ~/Library/Logs/NanoProbe/.
+  add_library(NanoProbe MODULE
+    src/plugin/nano_probe/nano_probe_plugin.cpp
+  )
+  target_include_directories(NanoProbe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(NanoProbe PRIVATE
+    ffgl::sdk
+    "-framework OpenGL"
+  )
+  set_target_properties(NanoProbe PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
+  )
+
+  # Codesign the bundle so Resolume / Gatekeeper accepts it. Same shape
+  # as StreakyBlobs (see further below); override the identity via
+  #   cmake -DNANOPROBE_CODESIGN_IDENTITY="<Your Identity>" ..
+  # Default `-` is ad-hoc; the helper script fails loudly if the named
+  # identity isn't in the keychain.
+  if(NOT DEFINED NANOPROBE_CODESIGN_IDENTITY)
+    set(NANOPROBE_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoProbe POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOPROBE_CODESIGN_IDENTITY}"
+            $<TARGET_BUNDLE_DIR:NanoProbe>
+    COMMENT "Codesigning NanoProbe.bundle (identity=${NANOPROBE_CODESIGN_IDENTITY})"
+    VERBATIM
+  )
 endif()
 
 # --- Bridge Harness (manual testing tool) ---
