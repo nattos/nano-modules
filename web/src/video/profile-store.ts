@@ -25,6 +25,11 @@ export interface SourceProfileRecord {
   samples: number;
   lastSeenAt: number;         // Date.now() at last write
   handle?: FileSystemFileHandle;   // optional for restore
+  /** For <video>-backed sources: whether the clip must play-forward
+   *  (sparse keyframes — seeking returns black) vs. supports random
+   *  access. Determined by a seek probe at first open; reused on
+   *  subsequent opens to skip re-probing. Undefined for DXV / unprobed. */
+  videoStreaming?: boolean;
 }
 
 /** Persist-format record for a single clip (source + salt) — access
@@ -139,6 +144,7 @@ export function buildSourceProfileRecord(
   cost: CostSnapshot,
   handle?: FileSystemFileHandle,
   now: number = Date.now(),
+  videoStreaming?: boolean,
 ): SourceProfileRecord {
   return {
     sourceKey,
@@ -151,6 +157,7 @@ export function buildSourceProfileRecord(
     samples: cost.samples,
     lastSeenAt: now,
     handle,
+    videoStreaming,
   };
 }
 

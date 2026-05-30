@@ -24,8 +24,13 @@ export class DxvFrameSource implements FrameSource {
   readonly frameCount: number;
   readonly width: number;
   readonly height: number;
+  // DXV is random-access (every frame independent), so playback rate is
+  // purely cosmetic — any value avoids black frames. The container's true
+  // rate isn't parsed yet; 30 is a sensible default.
+  readonly fps: number = 30;
   readonly formatCode: number = 1;     // rgba8unorm (matches GPUHost.createTexture code)
   readonly codec: string;
+  readonly streaming = false;          // random-access: every frame independent
 
   private decoder: DxvDecoder;
 

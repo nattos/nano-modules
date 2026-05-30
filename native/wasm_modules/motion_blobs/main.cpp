@@ -33,12 +33,17 @@ namespace motion_blobs {
 
 enum SpawnEdge : int { EDGE_TOP = 0, EDGE_BOTTOM = 1, EDGE_LEFT = 2, EDGE_RIGHT = 3 };
 static constexpr int MAX_BLOBS = 32;
+// Safety recycle: a hard inward pinch can trap a blob orbiting the center;
+// recycle any blob older than this so the field keeps flowing.
+static constexpr float BLOB_MAX_AGE = 10.0f;
 
 struct CpuBlob {
   bool   alive;
   float  x, y;
-  float  vx, vy;
+  float  vx0, vy0;        // free-stream velocity (constant, set at spawn)
+  float  vx, vy;          // current velocity = flow field sampled at (x,y)
   float  radius;          // cover-square units
+  float  age;             // seconds since spawn (safety recycle under hard pinch)
 };
 
 struct GpuBlob {
@@ -53,7 +58,7 @@ struct Uniforms {
   float motion_strength;
   float shadow_darkness;
   float softness_curve;
-  float _pad0;
+  float motion_extent;
 
   float shadow_r; float shadow_g; float shadow_b; float _pad1;
   float aspect_x; float aspect_y; float _pad2; float _pad3;
@@ -81,7 +86,22 @@ static float s_density               = 0.4f;
 static float s_traverse_speed        = 0.7f;
 static float s_traverse_speed_jitter = 0.5f;
 static float s_drift                 = 0.0f;
+// Signed [-1,+1]. Biases the spawn distribution so trajectories pass nearer
+// the viewport center (-1, bell concentrated on the center-streamline) or
+// out toward the periphery (+1). 0 = uniform.
+static float s_center_bias           = 0.0f;
+// Signed [-1,+1]. Curves trajectories radially about the center: +1 bulges
+// them OUTWARD (fish-eye / onion), -1 pinches them INWARD. 0 = straight.
+// Magnitude is the strength (how strongly paths follow the onion).
+static float s_arc_bias              = 0.0f;
+// Onion size — the deflection cylinder's radius in cover-square units.
+// Larger = a bigger onion (the bow extends further from center).
+static float s_arc_scale             = 0.5f;
 static float s_motion_strength       = 1.0f;
+// Size of the emitted motion footprint relative to the blob, 1→0. 1 = full
+// blob extent (default); 0.5 = vectors reach only ~50% of the blob, focused
+// on its center.
+static float s_motion_extent         = 1.0f;
 static float s_shadow_darkness       = 0.0f;
 static float s_shadow_tint_r         = 0.0f;
 static float s_shadow_tint_g         = 0.0f;
@@ -93,7 +113,6 @@ static int   s_blob_count_max        = 8;
 static float s_blob_size_jitter      = 0.3f;
 static float s_drift_jitter          = 0.1f;
 static float s_softness_curve        = 4.0f;
-static float s_spawn_offset          = -0.05f;
 static bool  s_spawn_edge_random     = false;
 static int   s_seed                  = 0x82C00L;
 // --- Debug ---
@@ -102,6 +121,13 @@ static bool  s_debug_show_blobs      = false;
 // --- Runtime ---
 static CpuBlob s_blobs[MAX_BLOBS];
 static uint32_t s_spawn_rng = 0x82C00LU;
+// Cover-square aspect half-extents, cached from render() so spawn (which
+// runs in tick, before render) can place blobs fully outside the viewport
+// including their soft halo. Overwritten on the first render; spawning is
+// held off until then.
+static float s_aspect_x     = 0.5f;
+static float s_aspect_y     = 0.5f;
+static bool  s_aspect_ready = false;
 
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -117,26 +143,196 @@ static inline float lcg_unit(uint32_t& s) {
 }
 static inline float lcg_signed(uint32_t& s) { return lcg_unit(s) * 2.0f - 1.0f; }
 
-static void spawn_one(CpuBlob& b) {
+// Distance (uv, along the given perpendicular axis) a blob center must sit
+// beyond the viewport edge for its gaussian halo to fall below ~2% alpha at
+// the edge. The halo reaches sqrt(ln(1/ε)/softness) ≈ sqrt(4/softness)
+// radii; +0.5 radius of slack. Converted from the cover-square radius to uv
+// via the aspect half-extent of that axis.
+static inline float halo_margin(float radius, float aspect_perp) {
+  float softness = s_softness_curve < 0.1f ? 0.1f : s_softness_curve;
+  float clearance_radii = std::sqrt(4.0f / softness) + 0.5f;
+  return clearance_radii * radius * aspect_perp;
+}
+
+// Warp a uniform edge-crossing u ∈ [0,1] toward (cb<0) or away from (cb>0)
+// `pivot` — the point where the center-streamline crosses this edge. cb=0 is
+// identity. A power curve on each side of the pivot gives a bell-ish
+// concentration at the pivot (trajectories through center) or at the edge
+// ends (trajectories to the periphery).
+static inline float center_bias_warp(float u, float pivot, float cb) {
+  if (cb > -1e-4f && cb < 1e-4f) return u;
+  float p = pivot < 0.0f ? 0.0f : (pivot > 1.0f ? 1.0f : pivot);
+  float gamma = std::pow(2.0f, -cb * 2.0f);   // cb<0 → >1 (toward pivot); cb>0 → <1 (toward ends)
+  if (u <= p) {
+    if (p < 1e-5f) return u;
+    float t = u / p;                          // 1 at pivot
+    return p * std::pow(t, 1.0f / gamma);
+  }
+  if (p > 1.0f - 1e-5f) return u;
+  float t = (u - p) / (1.0f - p);             // 0 at pivot
+  return p + (1.0f - p) * std::pow(t, gamma);
+}
+
+// Potential-flow-around-a-cylinder velocity field, centered on the viewport
+// and aligned with the blob's free-stream (vx0, vy0). Far from center it IS
+// the free-stream (so spawn / cull / coverage are unaffected); near center
+// it deflects the path AROUND the center and the streamlines RECONVERGE
+// downstream — the onion. `a2` is the signed doublet strength (cylinder
+// radius², cover-square units) and sets the onion SIZE: >0 bulges outward,
+// <0 pinches inward. `strength` ∈ [0,1] blends the (constant-speed) field
+// direction against the free-stream, so it controls how strongly paths
+// follow the onion independently of its size. Computed in cover-square space
+// so the bow is circular on screen. Output velocity is in uv/sec.
+static void field_velocity(float x, float y, float vx0, float vy0,
+                           float a2, float strength, float* ovx, float* ovy) {
+  if (strength < 1e-4f || (a2 > -1e-6f && a2 < 1e-6f)) { *ovx = vx0; *ovy = vy0; return; }
+  float ax = s_aspect_x, ay = s_aspect_y;
+  float qx = (x - 0.5f) / ax;                 // position rel. center (cover-square)
+  float qy = (y - 0.5f) / ay;
+  float ucx = vx0 / ax, ucy = vy0 / ay;       // free-stream (cover-square)
+  float umag = std::sqrt(ucx * ucx + ucy * ucy);
+  if (umag < 1e-6f) { *ovx = vx0; *ovy = vy0; return; }
+  float dhx = ucx / umag, dhy = ucy / umag;   // flow direction
+  float nhx = -dhy, nhy = dhx;                 // perpendicular
+  float along = qx * dhx + qy * dhy;           // flow-frame coords
+  float perp  = qx * nhx + qy * nhy;
+  float r2 = along * along + perp * perp;
+  float a2abs = a2 < 0.0f ? -a2 : a2;
+  float floor_r2 = a2abs > 1e-3f ? a2abs : 1e-3f;   // stay outside the cylinder (bound the doublet)
+  if (r2 < floor_r2) r2 = floor_r2;
+  float r4 = r2 * r2;
+  float u_local = umag * (1.0f - a2 * (along * along - perp * perp) / r4);
+  float v_local = umag * (-2.0f * a2 * along * perp / r4);
+  float vcx = u_local * dhx + v_local * nhx;   // back to cover-square world
+  float vcy = u_local * dhy + v_local * nhy;
+  // Use the field for DIRECTION only and renormalize to the free-stream
+  // speed (umag). We want the curved streamline SHAPE (which reconverges —
+  // the onion), but not its speed profile: the raw field slows to zero at
+  // the cylinder's stagnation points (blobs would stall there — the
+  // "attractor" at the onion's tail) and races at the flanks. Constant
+  // screen speed reads far more naturally and never stalls. At a true
+  // stagnation point the direction is undefined → fall back to free-stream.
+  float fmag = std::sqrt(vcx * vcx + vcy * vcy);
+  float fvx, fvy;                              // field direction at free-stream speed
+  if (fmag > 1e-5f) {
+    float s = umag / fmag;
+    fvx = vcx * s; fvy = vcy * s;
+  } else {
+    fvx = ucx; fvy = ucy;
+  }
+  // Blend free-stream → field direction by `strength`, then renormalize to
+  // free-stream speed (both endpoints have magnitude umag, so this is a
+  // clean directional interpolation that keeps the steady speed).
+  float bx = ucx + strength * (fvx - ucx);
+  float by = ucy + strength * (fvy - ucy);
+  float bmag = std::sqrt(bx * bx + by * by);
+  if (bmag > 1e-5f) {
+    float s = umag / bmag;
+    bx *= s; by *= s;
+  } else {
+    bx = ucx; by = ucy;
+  }
+  *ovx = bx * ax;                              // back to uv
+  *ovy = by * ay;
+}
+
+static void spawn_one(CpuBlob& b, bool scattered) {
+  // The primary edge sets the flow ORIENTATION: traverse runs perpendicular
+  // to it (into the canvas), drift runs parallel.
   int edge = s_spawn_edge;
   if (s_spawn_edge_random) {
     edge = (int)(lcg_unit(s_spawn_rng) * 4.0f);
     if (edge > 3) edge = 3;
   }
-  float along  = lcg_unit(s_spawn_rng);                                          // [0, 1) along the edge
-  float speed  = s_traverse_speed * (1.0f + clampf(s_traverse_speed_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng));
-  float drift  = s_drift + clampf(s_drift_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng);
-  float size   = s_blob_size * (1.0f + clampf(s_blob_size_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng));
+  float speed = s_traverse_speed * (1.0f + clampf(s_traverse_speed_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng));
+  float drift = s_drift + clampf(s_drift_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng);
+  float size  = s_blob_size * (1.0f + clampf(s_blob_size_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng));
   if (size < 1e-4f) size = 1e-4f;
-  float off    = clampf(s_spawn_offset, -0.5f, 0.0f);   // negative → just outside
 
+  // Resolve the velocity (uv/sec) for this blob.
+  float vx, vy;
   switch (edge) {
-    case EDGE_TOP:    b.x = along; b.y = off;            b.vx = drift; b.vy = +speed; break;
-    case EDGE_BOTTOM: b.x = along; b.y = 1.0f - off;     b.vx = drift; b.vy = -speed; break;
-    case EDGE_LEFT:   b.x = off;          b.y = along;   b.vx = +speed; b.vy = drift; break;
-    case EDGE_RIGHT:  b.x = 1.0f - off;   b.y = along;   b.vx = -speed; b.vy = drift; break;
+    case EDGE_TOP:    vx = drift;   vy = +speed;  break;
+    case EDGE_BOTTOM: vx = drift;   vy = -speed;  break;
+    case EDGE_LEFT:   vx = +speed;  vy = drift;   break;
+    default:          vx = -speed;  vy = drift;   break;  // RIGHT
   }
+
+  // Inject across EVERY inflow edge (those the flow enters through),
+  // choosing one with probability proportional to its normal flux
+  // (|v·n| · edge_length; edge_length = 1 in uv). For a constant velocity
+  // field this is exactly the condition that fills the interior uniformly
+  // — without it, an angled (drifting) flow leaves a growing wedge of the
+  // viewport on the upstream side permanently uncovered.
+  float fx = vx < 0.0f ? -vx : vx;        // flux through left/right (vertical) edges
+  float fy = vy < 0.0f ? -vy : vy;        // flux through top/bottom (horizontal) edges
+  float ftot = fx + fy;
+  float mx = halo_margin(size, s_aspect_x);
+  float my = halo_margin(size, s_aspect_y);
+
+  // `e` is where the blob should CROSS the edge (uniform along it). The
+  // spawn point sits one halo-margin outside (perpendicular), and we
+  // back-project along the parallel axis by the drift accrued over the
+  // approach time (margin / perpendicular speed). Without this, a blob with
+  // a large margin (big/soft blob) and sideways drift would slide far along
+  // the parallel axis during its long approach and cross the edge way off
+  // the intended spot — or miss the viewport entirely — which is what left
+  // the upstream side uncovered. (NOTE: this can place the spawn well past
+  // the OPPOSITE side's margin, e.g. far to the right for a leftward flow —
+  // the downstream-only cull in tick() is what keeps such still-approaching
+  // blobs alive instead of killing them on frame one.)
+  float e_uniform = lcg_unit(s_spawn_rng);
+
+  float sx, sy;
+  bool enter_horizontal_edge = (ftot <= 1e-6f) ? true
+                             : (lcg_unit(s_spawn_rng) * ftot < fy);
+  if (enter_horizontal_edge) {
+    // Cross the top (moving down) or bottom (moving up) edge at x = e.
+    // pivot = x where the center-streamline crosses this edge.
+    float y_edge = (vy >= 0.0f) ? 0.0f : 1.0f;
+    float pivot = (vy > 1e-5f || vy < -1e-5f) ? 0.5f + vx * (y_edge - 0.5f) / vy : 0.5f;
+    float e = center_bias_warp(e_uniform, pivot, s_center_bias);
+    float vperp = (vy >= 0.0f) ? vy : -vy;            // |vy|
+    float t0 = (vperp > 1e-6f) ? my / vperp : 0.0f;   // spawn → crossing time
+    sx = e - vx * t0;
+    sy = (vy >= 0.0f) ? -my : 1.0f + my;
+  } else {
+    // Cross the left (moving right) or right (moving left) edge at y = e.
+    // pivot = y where the center-streamline crosses this edge.
+    float x_edge = (vx >= 0.0f) ? 0.0f : 1.0f;
+    float pivot = (vx > 1e-5f || vx < -1e-5f) ? 0.5f + vy * (x_edge - 0.5f) / vx : 0.5f;
+    float e = center_bias_warp(e_uniform, pivot, s_center_bias);
+    float vperp = (vx >= 0.0f) ? vx : -vx;            // |vx|
+    float t0 = (vperp > 1e-6f) ? mx / vperp : 0.0f;
+    sy = e - vy * t0;
+    sx = (vx >= 0.0f) ? -mx : 1.0f + mx;
+  }
+
+  // Initial seeding: advance the blob by a random fraction of its full
+  // transit time so the pool starts distributed along the ENTIRE flow path
+  // — upstream approach zone, viewport, and exit alike. This both fills the
+  // viewport instantly (no opening wave) AND pre-loads the off-screen
+  // approach pipeline, so there's no lull before the first edge-respawns
+  // float in. Uniform-along-trajectory == the steady-state distribution.
+  if (scattered) {
+    float tx = 1e9f, ty = 1e9f;          // time to reach the downstream edge
+    if (vx < -1e-6f)      tx = (-mx - sx) / vx;
+    else if (vx > 1e-6f)  tx = (1.0f + mx - sx) / vx;
+    if (vy < -1e-6f)      ty = (-my - sy) / vy;
+    else if (vy > 1e-6f)  ty = (1.0f + my - sy) / vy;
+    float t_exit = (tx < ty) ? tx : ty;
+    if (t_exit < 0.0f) t_exit = 0.0f;
+    float age = lcg_unit(s_spawn_rng) * t_exit;
+    sx += vx * age;
+    sy += vy * age;
+  }
+
+  b.x = sx;
+  b.y = sy;
+  b.vx0 = vx;  b.vy0 = vy;   // free-stream (constant)
+  b.vx = vx;   b.vy = vy;    // current velocity (== free-stream until the field bends it)
   b.radius = size;
+  b.age = 0.0f;
   b.alive = true;
 }
 
@@ -146,8 +342,10 @@ void init() {
   for (int i = 0; i < MAX_BLOBS; i++) {
     s_blobs[i].alive = false;
     s_blobs[i].x = s_blobs[i].y = 0.5f;
+    s_blobs[i].vx0 = s_blobs[i].vy0 = 0.0f;
     s_blobs[i].vx = s_blobs[i].vy = 0.0f;
     s_blobs[i].radius = 0.0f;
+    s_blobs[i].age = 0.0f;
   }
   s_spawn_rng = (uint32_t)s_seed ^ 0xBADBA110u;
 
@@ -158,10 +356,14 @@ void init() {
       .floatField("traverse_speed",        0.7f,  0.0f, 3.0f,    state::PrimaryInput)
       .floatField("traverse_speed_jitter", 0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("drift",                 0.0f, -1.0f, 1.0f,    state::PrimaryInput)
+      .floatField("center_bias",           0.0f, -1.0f, 1.0f,    state::PrimaryInput)
+      .floatField("arc_bias",              0.0f, -1.0f, 1.0f,    state::PrimaryInput)
+      .floatField("arc_scale",             0.5f,  0.0f, 1.5f,    state::PrimaryInput)
       .floatField("motion_strength",       1.0f,  0.0f, 2.0f,    state::PrimaryInput)
+      .floatField("motion_extent",         1.0f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("shadow_darkness",       0.0f,  0.0f, 1.0f,    state::PrimaryInput)
       .rgbField  ("shadow_tint",           0.0f,  0.0f, 0.0f,    state::PrimaryInput)
-      .floatField("blob_size",             0.12f, 0.0f, 0.4f,    state::PrimaryInput)
+      .floatField("blob_size",             0.12f, 0.0f, 1.0f,    state::PrimaryInput)
       .selectField("spawn_edge",           EDGE_TOP, state::PrimaryInput,
                    {{"Top", 0}, {"Bottom", 1}, {"Left", 2}, {"Right", 3}})
       // --- Tuning ---
@@ -169,7 +371,6 @@ void init() {
       .floatField("blob_size_jitter",      0.3f, 0.0f, 1.0f,     state::PrimaryInput)
       .floatField("drift_jitter",          0.1f, 0.0f, 0.5f,     state::PrimaryInput)
       .floatField("softness_curve",        4.0f, 1.0f, 16.0f,    state::PrimaryInput)
-      .floatField("spawn_offset",          -0.05f, -0.5f, 0.0f,  state::PrimaryInput)
       .boolField ("spawn_edge_random",     false,                state::PrimaryInput)
       .intField  ("seed",                  0x82C00, 0, 0x7FFFFFFF, state::PrimaryInput)
       // --- Debug ---
@@ -216,16 +417,40 @@ void tick(double dt) {
   // 1. Integrate live blobs; cull when they've crossed the opposite side.
   int alive_count = 0;
   float fdt = (float)dt;
+  // Onion size from arc_scale (cylinder radius² in cover-square), signed by
+  // arc_bias (+ bulge / − pinch); strength = |arc_bias|.
+  float arc_str  = s_arc_bias < 0.0f ? -s_arc_bias : s_arc_bias;
+  float arc_sign = s_arc_bias < 0.0f ? -1.0f : 1.0f;
+  float arc_a2   = arc_sign * s_arc_scale * s_arc_scale;
   for (int i = 0; i < cap; i++) {
     CpuBlob& b = s_blobs[i];
     if (!b.alive) continue;
+
+    // Current velocity = potential-flow field sampled at the blob, curving
+    // the path around the center (== free-stream when strength/a2 == 0).
+    // Storing it back into vx/vy means the cull's downstream test and the
+    // uploaded motion vectors both follow the curved path.
+    field_velocity(b.x, b.y, b.vx0, b.vy0, arc_a2, arc_str, &b.vx, &b.vy);
     b.x += b.vx * fdt;
     b.y += b.vy * fdt;
-    // Cull when out by more than 1 + radius_uv_estimate. Use 0.5 as a
-    // loose bound (cover-square radius is comparable to uv at low aspect).
-    float margin = b.radius + 0.5f;
-    if (b.x < -margin || b.x > 1.0f + margin
-        || b.y < -margin || b.y > 1.0f + margin) {
+    b.age += fdt;
+
+    // Cull only when the blob has EXITED past a DOWNSTREAM edge (the side
+    // its velocity points toward), one halo-margin clear. Crucially we do
+    // NOT cull on the upstream side: the back-projected spawn places a blob
+    // far past the opposite margin while it's still approaching (e.g. a
+    // leftward flow spawns blobs well to the right of 1+mx), and an
+    // all-sides cull would kill them on frame one — which is exactly what
+    // left coverage stuck in the downstream corner. BLOB_MAX_AGE is the
+    // safety net for a hard inward pinch that would otherwise orbit forever.
+    float mx = halo_margin(b.radius, s_aspect_x);
+    float my = halo_margin(b.radius, s_aspect_y);
+    bool exited = (b.vx > 0.0f && b.x > 1.0f + mx)
+               || (b.vx < 0.0f && b.x < -mx)
+               || (b.vy > 0.0f && b.y > 1.0f + my)
+               || (b.vy < 0.0f && b.y < -my)
+               || (b.age > BLOB_MAX_AGE);
+    if (exited) {
       b.alive = false;
       continue;
     }
@@ -233,11 +458,19 @@ void tick(double dt) {
   }
   for (int i = cap; i < MAX_BLOBS; i++) s_blobs[i].alive = false;
 
-  // 2. Respawn dead blobs up to target_alive.
+  // 2. Respawn dead blobs up to target_alive. Hold off until render() has
+  // reported the viewport aspect — spawn placement depends on it, so
+  // spawning before then could pop a blob in at the wrong distance.
+  if (!s_aspect_ready) return;
+  // Cold start (filling 2+ from an empty pool — i.e. init, or density
+  // ramped up from 0): seed those scattered across the viewport so the
+  // field doesn't march in as one synchronized wave. Steady-state single
+  // replacements float in from the edge as usual.
+  bool scattered = (alive_count == 0 && target_alive > 1);
   for (int i = 0; i < cap && alive_count < target_alive; i++) {
     CpuBlob& b = s_blobs[i];
     if (b.alive) continue;
-    spawn_one(b);
+    spawn_one(b, scattered);
     alive_count++;
   }
 }
@@ -252,7 +485,11 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     else if (state::pathIs(path, plen, "traverse_speed"))        s_traverse_speed        = state::patchFloat(i);
     else if (state::pathIs(path, plen, "traverse_speed_jitter")) s_traverse_speed_jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drift"))                 s_drift                 = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "center_bias"))           s_center_bias           = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "arc_bias"))              s_arc_bias              = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "arc_scale"))             s_arc_scale             = state::patchFloat(i);
     else if (state::pathIs(path, plen, "motion_strength"))       s_motion_strength       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_extent"))         s_motion_extent         = state::patchFloat(i);
     else if (state::pathIs(path, plen, "shadow_darkness"))       s_shadow_darkness       = state::patchFloat(i);
     else if (state::pathIs(path, plen, "shadow_tint")) {
       auto v = state::patchVec3(i);
@@ -264,7 +501,6 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     else if (state::pathIs(path, plen, "blob_size_jitter"))      s_blob_size_jitter      = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drift_jitter"))          s_drift_jitter          = state::patchFloat(i);
     else if (state::pathIs(path, plen, "softness_curve"))        s_softness_curve        = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "spawn_offset"))          s_spawn_offset          = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spawn_edge_random"))     s_spawn_edge_random     = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "seed")) {
       int v = (int)state::patchFloat(i);
@@ -279,6 +515,14 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
 
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+
+  // Cache cover-square aspect for tick()'s spawn placement (runs before
+  // textures are resolved so it survives a dangling-input frame).
+  auto cs = fx::coverSquare(vp_w, vp_h);
+  s_aspect_x = cs.ax;
+  s_aspect_y = cs.ay;
+  s_aspect_ready = true;
+
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
@@ -297,12 +541,12 @@ void render(int vp_w, int vp_h) {
   }
   s_blob_buf.writeBytes(gpu_blobs, (int)sizeof(GpuBlob) * MAX_BLOBS);
 
-  // Uniforms (aspect-aware blob math).
-  auto cs = fx::coverSquare(vp_w, vp_h);
+  // Uniforms (aspect-aware blob math). cs computed at the top of render().
   Uniforms u = {};
   u.motion_strength = clampf(s_motion_strength, 0.0f, 4.0f);
   u.shadow_darkness = clampf(s_shadow_darkness, 0.0f, 1.0f);
   u.softness_curve  = clampf(s_softness_curve,  0.1f, 64.0f);
+  u.motion_extent   = clampf(s_motion_extent,   0.0f, 1.0f);
   u.shadow_r = s_shadow_tint_r;
   u.shadow_g = s_shadow_tint_g;
   u.shadow_b = s_shadow_tint_b;

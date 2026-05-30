@@ -134,7 +134,7 @@ describe('buildSourceProfileRecord / buildClipProfileRecord', () => {
     const rec = buildSourceProfileRecord('k', {
       meanFrameDecodeMs: 3, seekDecodeMs: 4, seekPenaltyMs: 1,
       firstByteLatencyMs: 0.1, payloadBytesPerFrame: 1024,
-      samples: 50, costClass: 'FastRandom',
+      samples: 50, contiguousSamples: 30, seekSamples: 20, costClass: 'FastRandom',
     });
     expect(rec.costClass).toBe('FastRandom');
     expect(rec.meanFrameDecodeMs).toBe(3);

@@ -210,8 +210,13 @@ export class SketchInputManager {
     if (token !== this.switchToken) { service.close(clip).catch(() => {}); return; }
 
     const info = service.inspect(clip);
+    // Drive the loop at the SOURCE's real frame rate. A faster playhead
+    // would request frames faster than a <video> source can play,
+    // drifting ahead into mid-GOP seeks that return black on
+    // sparse-keyframe clips. info.fps falls back to a sane default.
+    const fps = info.fps > 0 ? info.fps : PLAYBACK_FPS;
     const playhead = new Playhead(
-      defaultParams('loop', info.frameCount, PLAYBACK_FPS), info.frameCount);
+      defaultParams('loop', info.frameCount, fps), info.frameCount);
     playhead.start(performance.now());
 
     const session: VideoPump = {

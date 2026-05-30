@@ -249,11 +249,9 @@ describe('VideoPlaybackService — browser-decoder (h264) path', () => {
       const W = info.width, H = info.height;
 
       const sampleRow = async (frameIdx: number) => {
-        const tex = gpuHost.createTexture(W, H, 1);
-        await svc.pull(clip, frameIdx);   // warms cache; decode into service-owned tex
-        // Pull again to read the service's cached texture by decoding into ours:
-        // simplest is to decode straight into our own tex via the source —
-        // but the service owns decode, so instead read back the pulled handle.
+        // <video> sources sample the LIVE playing frame (decode ignores
+        // idx), so let real time pass between samples for the playback to
+        // advance to distinct content.
         const handle = await svc.pull(clip, frameIdx);
         const px = await gpuHost.readbackTexture(handle, W, H);
         const stride = W * 4;
@@ -262,6 +260,7 @@ describe('VideoPlaybackService — browser-decoder (h264) path', () => {
       };
 
       const f0 = await sampleRow(0);
+      await new Promise(r => setTimeout(r, 700));   // let playback advance
       const fMid = await sampleRow(Math.floor(info.frameCount / 2));
 
       // Non-trivial content on frame 0.
@@ -281,6 +280,198 @@ describe('VideoPlaybackService — browser-decoder (h264) path', () => {
     expect(result.nonZeroFrac).toBeGreaterThan(0.1);   // actually decoded something
     expect(result.range).toBeGreaterThan(20);          // real content, not flat
     expect(result.diff).toBeGreaterThan(1000);         // frame 0 ≠ middle frame
+  });
+
+  it('classifies a well-behaved clip as seekable and scrubs to distinct frames', async () => {
+    // test01_h264 is a re-encode with frequent keyframes — it seeks
+    // cleanly, so the source profile should mark it seekable (not
+    // streaming) and random-access scrubbing should yield distinct,
+    // non-black frames.
+    await boot();
+    const r = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const gpuHost = svc.gpuHost;
+      const clip = await svc.openByUrl(video, salt);
+      const info = svc.inspect(clip);
+      const W = info.width, H = info.height;
+      const sampleAt = async (idx: number) => {
+        const h = await svc.pull(clip, idx);
+        const px = await gpuHost.readbackTexture(h, W, H);
+        const row = Math.floor(H / 2) * W * 4;
+        let sum = 0, n = 0;
+        for (let x = 0; x < W; x += 11) { sum += Math.max(px[row+x*4], px[row+x*4+1], px[row+x*4+2]); n++; }
+        const rowArr = Array.from(px.slice(row, row + W * 4));
+        return { lum: sum / n, rowArr };
+      };
+      // Scattered, out-of-order scrub — pure random access.
+      const idxs = [0, Math.floor(info.frameCount * 0.6), Math.floor(info.frameCount * 0.25), Math.floor(info.frameCount * 0.85)];
+      const samples = [];
+      for (const i of idxs) samples.push(await sampleAt(i));
+      const diff = (a: number[], b: number[]) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i]-b[i]); return s; };
+      return {
+        codec: info.codec,
+        minLum: Math.min(...samples.map(s => s.lum)),
+        d01: diff(samples[0].rowArr, samples[1].rowArr),
+        d12: diff(samples[1].rowArr, samples[2].rowArr),
+      };
+    }, { video: H264, salt: uniqueSalt('h264-seek') });
+
+    // eslint-disable-next-line no-console
+    console.log('[h264-seek] report:', JSON.stringify({ codec: r.codec, minLum: Math.round(r.minLum), d01: r.d01, d12: r.d12 }));
+    expect(r.codec).toContain('(seek)');     // classified seekable, not streaming
+    expect(r.minLum).toBeGreaterThan(8);     // no black frames from scrubbing
+    expect(r.d01).toBeGreaterThan(1000);     // scattered seeks → distinct frames
+    expect(r.d12).toBeGreaterThan(1000);
+  });
+
+  it('survives a full sequential sweep and loop-around without stalling', async () => {
+    // Regression: non-DXV clips used to "conk out" on the first loop —
+    // a no-op <video> seek (over-sampled frame rate) never fired `seeked`
+    // and stalled the decode chain forever. This drives a long sweep past
+    // the end then wraps back to 0, exactly the loop the IDE runs. If the
+    // chain ever stalls, the page.evaluate hangs and the test times out.
+    await boot();
+    const result = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const clip = await svc.openByUrl(video, salt);
+      const info = svc.inspect(clip);
+      // CONSECUTIVE frames (stride 1) are what trigger the over-sampling
+      // collision: with an assumed rate above the real one, neighbouring
+      // requests land on the same underlying frame → no-op seek. Sweep a
+      // bounded range, then wrap back to 0 — the first-loop case.
+      const last = Math.min(info.frameCount - 1, 50);
+      let pulled = 0;
+      for (let i = 0; i <= last; i++) {
+        const h = await svc.pull(clip, i);
+        if (h > 0) pulled++;
+      }
+      for (let i = 0; i <= 10; i++) {          // wrap around to the start
+        const h = await svc.pull(clip, i);
+        if (h > 0) pulled++;
+      }
+      const tail = await svc.pull(clip, 0);
+      return { pulled, tailOk: tail > 0, frameCount: info.frameCount };
+    }, { video: H264, salt: uniqueSalt('h264-loop') });
+
+    expect(result.pulled).toBeGreaterThan(20);   // made real progress, didn't stall
+    expect(result.tailOk).toBe(true);            // still serving frames after the wrap
+  });
+});
+
+describe('VideoPlaybackService — sparse-keyframe stress (Adobe Stock)', () => {
+  jest.setTimeout(120_000);
+  const CLIP = '/test-videos/AdobeStock_392085730.mov';
+
+  async function boot() {
+    await page.goto(RUNNER, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => { const w = (window as any).__videoService; return w && (w.status.ready || w.status.error); },
+      { timeout: 45_000 });
+    const status = await page.evaluate(() => (window as any).__videoService.status);
+    if (status.error) throw new Error(`runner boot failed: ${status.error}`);
+    await page.evaluate(() => (window as any).__videoService.resetIdb());
+  }
+
+  it('decodes a sequential sweep without black frames (diagnostic)', async () => {
+    await boot();
+    const report = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const gpuHost = svc.gpuHost;
+      const clip = await svc.openByUrl(video, salt);
+      const info = svc.inspect(clip);
+      const W = info.width, H = info.height;
+      const frames: Array<{ idx: number; ms: number; lum: number }> = [];
+      // Pace at the SOURCE's reported fps — exactly what the IDE manager
+      // now does. (Using a faster rate is the original bug: the playhead
+      // outruns the <video>, forcing mid-GOP seeks that go black.)
+      const frameMs = 1000 / info.fps;
+      // Sequential sweep through the long opening GOP. Play-forward
+      // sampling decodes these cleanly; the old seek-per-frame returned
+      // black. Paced to real time so the <video> can actually roll.
+      for (let i = 0; i <= 60; i++) {
+        const t0 = performance.now();
+        const h = await svc.pull(clip, i);
+        const ms = performance.now() - t0;
+        let lum = 0;
+        if (h > 0) {
+          const px = await gpuHost.readbackTexture(h, W, H);
+          const row = Math.floor(H / 2) * W * 4;
+          let sum = 0, n = 0;
+          for (let x = 0; x < W; x += 9) { sum += Math.max(px[row+x*4], px[row+x*4+1], px[row+x*4+2]); n++; }
+          lum = sum / n;
+        }
+        frames.push({ idx: i, ms, lum });
+        const spent = performance.now() - t0;
+        if (spent < frameMs) await new Promise(r => setTimeout(r, frameMs - spent));
+      }
+      const black = frames.filter(f => f.lum < 8).length;
+      const maxMs = Math.max(...frames.map(f => f.ms));
+      return {
+        codec: info.codec, frameCount: info.frameCount, fps: info.fps,
+        black, total: frames.length, maxMs,
+        // last 10 frames' luminance to see the tail behaviour
+        tailLum: frames.slice(-10).map(f => Math.round(f.lum)),
+      };
+    }, { video: CLIP, salt: uniqueSalt('adobe') });
+
+    // eslint-disable-next-line no-console
+    console.log('[adobe] report:', JSON.stringify(report));
+    expect(report.frameCount).toBeGreaterThan(0);
+    // fps must be measured near the real 24 — the IDE drives its loop at
+    // this rate, so an over-estimate is what caused the black-out.
+    expect(report.fps).toBeGreaterThanOrEqual(20);
+    expect(report.fps).toBeLessThanOrEqual(30);
+    // The goal: most frames decode to real content, not black.
+    expect(report.black).toBeLessThanOrEqual(2);
+  });
+
+  it('keeps decoding past the loop wrap-around (no conk-out on loop 2)', async () => {
+    // The reported bug: loop 1 plays, then it conks to black after the
+    // first wrap. Stream the clip for longer than its full duration so we
+    // cross the loop boundary, sampling luminance throughout — including
+    // the frames AFTER the wrap, which used to go black.
+    await boot();
+    const report = await page.evaluate(async ({ video, salt }) => {
+      const svc = (window as any).__videoService;
+      const gpuHost = svc.gpuHost;
+      const clip = await svc.openByUrl(video, salt);
+      const info = svc.inspect(clip);
+      const W = info.width, H = info.height;
+      const durationMs = (info.frameCount / info.fps) * 1000;
+      const runMs = durationMs + 7000;        // well past the wrap into loop 2
+      const frameMs = 1000 / info.fps;
+
+      const start = performance.now();
+      let idx = 0, sampled = 0, black = 0, sampledLate = 0, blackLate = 0;
+      while (performance.now() - start < runMs) {
+        const t0 = performance.now();
+        const h = await svc.pull(clip, idx % info.frameCount);
+        // Sample luminance every ~12th frame (2K readback is costly).
+        if (idx % 12 === 0 && h > 0) {
+          const px = await gpuHost.readbackTexture(h, W, H);
+          const row = Math.floor(H / 2) * W * 4;
+          let sum = 0, n = 0;
+          for (let x = 0; x < W; x += 13) { sum += Math.max(px[row+x*4], px[row+x*4+1], px[row+x*4+2]); n++; }
+          const lum = sum / n;
+          sampled++; if (lum < 8) black++;
+          // The native <video> loops at real time, so anything past the
+          // clip's duration is loop 2+ — the regime that used to conk out.
+          if (performance.now() - start > durationMs) { sampledLate++; if (lum < 8) blackLate++; }
+        }
+        idx++;
+        const spent = performance.now() - t0;
+        if (spent < frameMs) await new Promise(r => setTimeout(r, frameMs - spent));
+      }
+      return { sampled, black, sampledLate, blackLate };
+    }, { video: CLIP, salt: uniqueSalt('adobe-loop') });
+
+    // eslint-disable-next-line no-console
+    console.log('[adobe-loop] report:', JSON.stringify(report));
+    // Ran long enough to be into loop 2+ for a while.
+    expect(report.sampledLate).toBeGreaterThan(5);
+    // The crux: loop 2+ frames are NOT black — no conk-out.
+    expect(report.blackLate).toBeLessThanOrEqual(1);
+    expect(report.black / report.sampled).toBeLessThan(0.1);
   });
 });
 

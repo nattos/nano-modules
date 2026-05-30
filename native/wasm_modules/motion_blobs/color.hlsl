@@ -14,7 +14,7 @@ cbuffer Uniforms : register(b2) {
   float motion_strength;
   float shadow_darkness;
   float softness_curve;
-  float _pad0;
+  float motion_extent;       // motion pass only; unused here
 
   float shadow_r;
   float shadow_g;

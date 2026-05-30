@@ -34,6 +34,10 @@ interface Entry {
   textureHandle: number;
   sizeBytes: number;
   lastAccessedMs: number;
+  /** False between `reserve()` and the decode writing real pixels into
+   *  the texture. A not-ready entry must never be served as a cache hit
+   *  (it's still black) nor evicted (its decode is writing into it). */
+  ready: boolean;
 }
 
 export interface FrameCacheStats {
@@ -101,11 +105,16 @@ export class FrameCache {
    *  pollute the stats. */
   lookup(frameIdx: number): number {
     const e = this.entries.get(frameIdx);
-    this.recordEvent(!!e);
-    if (!e) { this.misses++; return -1; }
+    // A reserved-but-not-yet-decoded entry is still black — treat it as a
+    // miss so the caller awaits the in-flight decode rather than serving
+    // garbage. (With slow <video> seeks the decode chain can back up, so
+    // this window is real, not theoretical.)
+    const ready = !!e && e.ready;
+    this.recordEvent(ready);
+    if (!ready) { this.misses++; return -1; }
     this.hits++;
-    e.lastAccessedMs = ++this.accessTicker;
-    return e.textureHandle;
+    e!.lastAccessedMs = ++this.accessTicker;
+    return e!.textureHandle;
   }
 
   /** Presence check that records nothing and doesn't touch LRU order.
@@ -143,9 +152,18 @@ export class FrameCache {
     this.entries.set(frameIdx, {
       frameIdx, textureHandle: handle, sizeBytes,
       lastAccessedMs: ++this.accessTicker,
+      ready: false,
     });
     this.bytesUsed += sizeBytes;
     return handle;
+  }
+
+  /** Mark a reserved entry's pixels valid — call once the decode that
+   *  filled its texture has completed. No-op if the entry was evicted in
+   *  the meantime. */
+  markReady(frameIdx: number): void {
+    const e = this.entries.get(frameIdx);
+    if (e) e.ready = true;
   }
 
   /** Replace the pinned set wholesale. Frames removed from the pinned
@@ -244,6 +262,9 @@ export class FrameCache {
   private collectByAge(pinnedOnly: boolean): Entry[] {
     const out: Entry[] = [];
     for (const e of this.entries.values()) {
+      // Never evict an entry whose decode is still in flight — its texture
+      // is being written to right now; freeing it would corrupt the write.
+      if (!e.ready) continue;
       const isPinned = this.pinned.has(e.frameIdx);
       if (isPinned === pinnedOnly) out.push(e);
     }

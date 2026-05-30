@@ -21,13 +21,23 @@ const W = 1920, H = 1080;
 const FRAME_BYTES = W * H * 4;          // 8.3 MB
 const FMT_RGBA8 = 1;
 
+/** Reserve a frame AND mark it decoded — the steady-state pairing in the
+ *  service (reserve → decode → markReady). Tests that care about a frame
+ *  being servable/evictable use this; tests probing the in-flight window
+ *  call `reserve` alone. */
+function put(c: FrameCache, idx: number): number {
+  const h = c.reserve(idx, W, H, FMT_RGBA8);
+  c.markReady(idx);
+  return h;
+}
+
 describe('FrameCache basic ops', () => {
   it('miss + reserve + lookup hits the same handle', () => {
     const host = makeMockHost();
     const c = new FrameCache(host, 100 * 1024 * 1024);
 
     expect(c.lookup(5)).toBe(-1);
-    const h = c.reserve(5, W, H, FMT_RGBA8);
+    const h = put(c, 5);
     expect(h).toBeGreaterThan(0);
     expect(c.lookup(5)).toBe(h);
 
@@ -52,9 +62,9 @@ describe('FrameCache LRU eviction', () => {
     const host = makeMockHost();
     // Budget for exactly 2 frames.
     const c = new FrameCache(host, 2 * FRAME_BYTES);
-    const a = c.reserve(0, W, H, FMT_RGBA8);
-    const b = c.reserve(1, W, H, FMT_RGBA8);
-    const cc = c.reserve(2, W, H, FMT_RGBA8);   // evicts 0 (oldest)
+    const a = put(c, 0);
+    const b = put(c, 1);
+    const cc = put(c, 2);   // evicts 0 (oldest)
     expect(host.released).toContain(a);
     expect(c.lookup(0)).toBe(-1);
     expect(c.lookup(1)).toBe(b);
@@ -64,10 +74,10 @@ describe('FrameCache LRU eviction', () => {
   it('lookup updates LRU position so the touched frame survives', () => {
     const host = makeMockHost();
     const c = new FrameCache(host, 2 * FRAME_BYTES);
-    const a = c.reserve(0, W, H, FMT_RGBA8);
-    const b = c.reserve(1, W, H, FMT_RGBA8);
+    const a = put(c, 0);
+    const b = put(c, 1);
     expect(c.lookup(0)).toBe(a);      // touch 0 → now 1 is older
-    c.reserve(2, W, H, FMT_RGBA8);    // should evict 1, not 0
+    put(c, 2);                        // should evict 1, not 0
     expect(c.lookup(0)).toBe(a);
     expect(c.lookup(1)).toBe(-1);
   });
@@ -77,11 +87,11 @@ describe('FrameCache pinned set', () => {
   it('does not evict pinned frames when LRU has capacity to give', () => {
     const host = makeMockHost();
     const c = new FrameCache(host, 3 * FRAME_BYTES);
-    const a = c.reserve(0, W, H, FMT_RGBA8);
-    const b = c.reserve(1, W, H, FMT_RGBA8);
+    const a = put(c, 0);
+    const b = put(c, 1);
     c.setPinned([0]);                  // pin frame 0
-    c.reserve(2, W, H, FMT_RGBA8);     // fits, no eviction
-    c.reserve(3, W, H, FMT_RGBA8);     // budget pressure → evict 1 (LRU non-pinned)
+    put(c, 2);                         // fits, no eviction
+    put(c, 3);                         // budget pressure → evict 1 (LRU non-pinned)
     expect(c.lookup(0)).toBe(a);       // still here
     expect(c.lookup(1)).toBe(-1);      // evicted
     expect(host.released).toContain(b);
@@ -90,10 +100,10 @@ describe('FrameCache pinned set', () => {
   it('force-evicts pinned oldest-first when pinned alone exceeds budget', () => {
     const host = makeMockHost();
     const c = new FrameCache(host, 2 * FRAME_BYTES);
-    const a = c.reserve(0, W, H, FMT_RGBA8);
-    const b = c.reserve(1, W, H, FMT_RGBA8);
+    const a = put(c, 0);
+    const b = put(c, 1);
     c.setPinned([0, 1]);
-    c.reserve(2, W, H, FMT_RGBA8);     // both pinned → must evict one
+    put(c, 2);                         // both pinned → must evict one
     const stats = c.stats();
     expect(stats.pinnedEvicted).toBe(true);
     // The newly-reserved frame must be present.
@@ -105,7 +115,7 @@ describe('FrameCache stats', () => {
   it('hitRate reflects ongoing requests', () => {
     const host = makeMockHost();
     const c = new FrameCache(host, 100 * 1024 * 1024);
-    c.reserve(0, W, H, FMT_RGBA8);     // reserve doesn't touch the counters
+    put(c, 0);                         // reserve+ready doesn't touch counters
     c.lookup(0);                       // hit
     c.lookup(0);                       // hit
     c.lookup(99);                      // miss
@@ -118,7 +128,7 @@ describe('FrameCache stats', () => {
   it('resetStats clears counters without dropping textures', () => {
     const host = makeMockHost();
     const c = new FrameCache(host, 100 * 1024 * 1024);
-    c.reserve(0, W, H, FMT_RGBA8);
+    put(c, 0);
     c.lookup(0);
     c.resetStats();
     const s = c.stats();
@@ -147,7 +157,7 @@ describe('FrameCache rolling 1-second stats', () => {
     let clock = 0;
     const c = new FrameCache(host, 100 * 1024 * 1024,
       { now: () => clock, recentWindowMs: 1000 });
-    c.reserve(0, W, H, FMT_RGBA8);
+    put(c, 0);
 
     // t=0..400ms: 3 hits, 1 miss (cumulative + recent both see them).
     clock = 0;   c.lookup(0);   // hit
@@ -177,7 +187,7 @@ describe('FrameCache rolling 1-second stats', () => {
     let clock = 0;
     const c = new FrameCache(host, 100 * 1024 * 1024,
       { now: () => clock, recentWindowMs: 1000 });
-    c.reserve(0, W, H, FMT_RGBA8);
+    put(c, 0);
     // A burst of misses long ago.
     clock = 0; c.lookup(1); c.lookup(2); c.lookup(3);
     // Now, a second later, all hits.
@@ -187,6 +197,29 @@ describe('FrameCache rolling 1-second stats', () => {
     expect(s.recentHits).toBe(2);
     expect(s.recentMisses).toBe(0);   // old misses aged out
     expect(s.recentHitRate).toBe(1);
+  });
+});
+
+describe('FrameCache readiness gate', () => {
+  it('treats a reserved-but-not-ready entry as a miss until markReady', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, 100 * 1024 * 1024);
+    const h = c.reserve(7, W, H, FMT_RGBA8);   // reserved, decode in flight
+    expect(c.lookup(7)).toBe(-1);              // still black → miss, not a hit
+    c.markReady(7);                            // decode done
+    expect(c.lookup(7)).toBe(h);               // now servable
+  });
+
+  it('does not evict an in-flight (not-ready) entry under budget pressure', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, 2 * FRAME_BYTES);
+    const a = c.reserve(0, W, H, FMT_RGBA8);   // in flight
+    const b = c.reserve(1, W, H, FMT_RGBA8);   // in flight
+    // Budget is full and both residents are mid-decode; a third reserve
+    // must not free either (freeing a texture being written corrupts it).
+    c.reserve(2, W, H, FMT_RGBA8);
+    expect(host.released).not.toContain(a);
+    expect(host.released).not.toContain(b);
   });
 });
 

@@ -68,7 +68,7 @@ struct MotionUniforms {
   float    aspect_y;
   float    motion_curl;     // signed [-1,+1] → rotation by curl·π radians
   float    intensity;       // scales coverage mask AND velocity magnitude
-  float    _pad_2;
+  float    motion_extent;   // 1 = full blob footprint; <1 shrinks toward centers
 };
 static_assert(sizeof(MotionUniforms) == 32, "MotionUniforms layout mismatch");
 
@@ -145,6 +145,7 @@ static float s_intensity_mod     = 0.0f;
 static float s_motion_strength   = 1.0f;  // boost — blobs drift slowly
 static float s_motion_skew       = 0.0f;  // 0=isotropic, 1=wavefront-only
 static float s_motion_curl       = 0.0f;  // signed [-1,+1] → rotate local motion by curl·π
+static float s_motion_extent     = 1.0f;  // 1→0: shrink emitted motion footprint toward centers
 static float s_pulse_depth       = 0.4f;
 static float s_pulse_rate        = 0.6f;   // Hz, fast breathing rate
 static float s_amp_drift_depth   = 0.9f;   // depth of slow envelope (multiplicative)
@@ -274,6 +275,7 @@ void init() {
       .floatField("motion_strength",  1.0f,  0.0f, 8.0f,  state::PrimaryInput)
       .floatField("motion_skew",      0.0f,  0.0f, 1.0f,  state::PrimaryInput)
       .floatField("motion_curl",      0.0f, -1.0f, 1.0f,  state::PrimaryInput)
+      .floatField("motion_extent",    1.0f,  0.0f, 1.0f,  state::PrimaryInput)
       .intField  ("seed",             0,    0,    65535, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -447,6 +449,7 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     else if (state::pathIs(path, plen, "motion_strength"))  s_motion_strength = state::patchFloat(i);
     else if (state::pathIs(path, plen, "motion_skew"))      s_motion_skew = state::patchFloat(i);
     else if (state::pathIs(path, plen, "motion_curl"))      s_motion_curl = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_extent"))    s_motion_extent = state::patchFloat(i);
     else if (state::pathIs(path, plen, "pulse_depth"))      s_pulse_depth = state::patchFloat(i);
     else if (state::pathIs(path, plen, "pulse_rate"))       s_pulse_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "amp_drift_depth"))  s_amp_drift_depth = state::patchFloat(i);
@@ -585,6 +588,7 @@ void render(int vp_w, int vp_h) {
   mu.aspect_y        = aspect_y;
   mu.motion_curl     = s_motion_curl;
   mu.intensity       = intensity;        // ties motion to the visible blob's brightness
+  mu.motion_extent   = s_motion_extent < 0.0f ? 0.0f : (s_motion_extent > 1.0f ? 1.0f : s_motion_extent);
   s_motion_uniform_buf.writeOne(mu);
 
   {

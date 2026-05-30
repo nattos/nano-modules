@@ -14,7 +14,7 @@ cbuffer Uniforms : register(b2) {
   float motion_strength;
   float shadow_darkness;
   float softness_curve;
-  float _pad0;
+  float motion_extent;       // 1 = full blob footprint; <1 shrinks toward centers
 
   float shadow_r; float shadow_g; float shadow_b; float _pad1;
   float aspect_x; float aspect_y; float _pad2; float _pad3;
@@ -57,7 +57,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   for (uint i = 0u; i < N; i++) {
     GpuBlob b = blobs[i];
     float2 cs_blob = (float2(b.x, b.y) - 0.5) / float2(aspect_x, aspect_y);
-    float r = max(b.radius, 1e-5);
+    // Shrink the motion footprint toward the blob center by motion_extent:
+    // the gaussian uses a reduced effective radius, so at 0.5 the vectors
+    // only reach ~50% of the visual blob's extent.
+    float r = max(b.radius * motion_extent, 1e-5);
     float d = length(cs_pixel - cs_blob) / r;
     float g = exp(-d * d * max(softness_curve, 0.01));
     v_accum += float2(b.vx, b.vy) * (motion_strength * g);

@@ -35,7 +35,7 @@ cbuffer Uniforms : register(b3) {
   float aspect_y;
   float motion_curl;       // signed [-1,+1] → rotate by curl·π (±π fully reverses)
   float intensity;         // scales coverage mask AND velocity magnitude
-  float _pad_2;
+  float motion_extent;     // 1 = full blob footprint; <1 shrinks toward centers
 };
 
 // Plummer softening scale — same convention as the color shader so
@@ -68,7 +68,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     r.x /= max(aspect_x, 1e-4);
     r.y /= max(aspect_y, 1e-4);
 
-    float sigma2 = b.pos_size.z * b.pos_size.z;
+    // Shrink the motion footprint toward the blob center by motion_extent:
+    // the gaussian (and its gradient, so curl stays consistent) uses a
+    // reduced effective radius. At 0.5 the vectors reach ~50% of the blob.
+    float sigma = b.pos_size.z * max(motion_extent, 1e-4);
+    float sigma2 = sigma * sigma;
     float r2 = dot(r, r) / sigma2;
     float gauss = exp(-r2 * 2.0) * b.pos_size.w;
 
