@@ -21,6 +21,11 @@ class BridgeCore {
 public:
   /// Callback to send a message to a specific client.
   using SendCallback = std::function<void(int client_id, const std::string& msg)>;
+  /// Fired right after a client patch has been applied to a plugin's
+  /// state. Lets a host (e.g., an FFGL plugin) react to editor-driven
+  /// state mutations — typically by marking the persisted config blob
+  /// as dirty and regenerating it on a debounce timer.
+  using ClientPatchCallback = std::function<void(const std::string& plugin_key)>;
 
   BridgeCore();
 
@@ -31,6 +36,8 @@ public:
 
   /// Set the callback used to send messages to clients.
   void set_send_callback(SendCallback cb) { send_cb_ = std::move(cb); }
+  /// Set a hook invoked after a client patch is applied to plugin state.
+  void set_client_patch_callback(ClientPatchCallback cb) { client_patch_cb_ = std::move(cb); }
 
   /// Process an incoming JSON message from a client.
   void handle_message(int client_id, const std::string& msg);
@@ -55,6 +62,7 @@ private:
   ObserverRegistry observers_;
 
   SendCallback send_cb_;
+  ClientPatchCallback client_patch_cb_;
   std::unordered_map<int64_t, std::string> param_paths_;
 };
 

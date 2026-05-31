@@ -46,6 +46,7 @@ void BridgeCore::handle_message(int client_id, const std::string& msg) {
     if (suffix != "/state") return;
 
     state_doc_.apply_client_patch(plugin_key, ops);
+    if (client_patch_cb_) client_patch_cb_(plugin_key);
   }
 }
 

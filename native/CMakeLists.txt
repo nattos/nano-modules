@@ -355,6 +355,103 @@ if(APPLE)
     COMMENT "Codesigning NanoProbe.bundle (identity=${NANOPROBE_CODESIGN_IDENTITY})"
     VERBATIM
   )
+
+  # NanoProbe2 — second FFGL probe focused on SetParamDisplayName /
+  # SetParamVisibility live-update behavior and FF_TYPE_TEXT max
+  # payload size round-trip. Same shape as NanoProbe (OpenGL only, no
+  # WASM, no bridge). Cyan corner badge to distinguish in a comp.
+  add_library(NanoProbe2 MODULE
+    src/plugin/nano_probe2/nano_probe2_plugin.cpp
+  )
+  target_include_directories(NanoProbe2 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(NanoProbe2 PRIVATE
+    ffgl::sdk
+    "-framework OpenGL"
+  )
+  set_target_properties(NanoProbe2 PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
+  )
+  if(NOT DEFINED NANOPROBE2_CODESIGN_IDENTITY)
+    set(NANOPROBE2_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoProbe2 POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOPROBE2_CODESIGN_IDENTITY}"
+            $<TARGET_BUNDLE_DIR:NanoProbe2>
+    COMMENT "Codesigning NanoProbe2.bundle (identity=${NANOPROBE2_CODESIGN_IDENTITY})"
+    VERBATIM
+  )
+
+  # NanoProbe3 — third FFGL probe: tests whether FF_TYPE_FILE can carry
+  # arbitrarily large opaque payloads (config blob) without the
+  # Resolume UI degrading the way FF_TYPE_TEXT does. Orange corner
+  # badge.
+  add_library(NanoProbe3 MODULE
+    src/plugin/nano_probe3/nano_probe3_plugin.cpp
+  )
+  target_include_directories(NanoProbe3 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(NanoProbe3 PRIVATE
+    ffgl::sdk
+    "-framework OpenGL"
+  )
+  set_target_properties(NanoProbe3 PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
+  )
+  if(NOT DEFINED NANOPROBE3_CODESIGN_IDENTITY)
+    set(NANOPROBE3_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoProbe3 POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOPROBE3_CODESIGN_IDENTITY}"
+            $<TARGET_BUNDLE_DIR:NanoProbe3>
+    COMMENT "Codesigning NanoProbe3.bundle (identity=${NANOPROBE3_CODESIGN_IDENTITY})"
+    VERBATIM
+  )
+
+  # NanoBarrel — v0 of the "barrel" plugin: one FFGL bundle that
+  # hosts a sketch, persists its full state inside a FF_TYPE_FILE param
+  # (proven safe up to 16 MB in probe 3), and stands up a per-instance
+  # websocket bridge so the sketch editor can connect. Links bridge_core
+  # directly — no WASM loader at this layer (the user wants
+  # bridge_core's code reused statically; WASM reload isn't a v0 need).
+  add_library(NanoBarrel MODULE
+    src/plugin/nano_barrel/nano_barrel_plugin.cpp
+  )
+  target_include_directories(NanoBarrel PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(NanoBarrel PRIVATE
+    ffgl::sdk
+    bridge_core
+    bridge_ws_server
+    state_system
+    param_cache
+    resolume_protocol
+    json_utils
+    nlohmann_json::nlohmann_json
+    ixwebsocket
+    "-framework OpenGL"
+  )
+  set_target_properties(NanoBarrel PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
+  )
+  if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
+    set(NANOBARREL_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoBarrel POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOBARREL_CODESIGN_IDENTITY}"
+            $<TARGET_BUNDLE_DIR:NanoBarrel>
+    COMMENT "Codesigning NanoBarrel.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
+    VERBATIM
+  )
 endif()
 
 # --- Bridge Harness (manual testing tool) ---
