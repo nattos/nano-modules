@@ -629,16 +629,14 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
         while (sk.columns.length <= colIdx) {
           sk.columns.push({
             name: `Column ${sk.columns.length + 1}`,
-            chain: [
-              { type: 'texture_input', id: `in_${sk.columns.length}` },
-              { type: 'texture_output', id: `out_${sk.columns.length}` },
-            ],
+            chain: [],
           });
         }
 
+        // Implicit output marker is below the chain; new modules append
+        // to the bottom of `chain`.
         const targetChain = sk.columns[colIdx].chain;
-        const outIdx = targetChain.findIndex(e => e.type === 'texture_output');
-        targetChain.splice(outIdx >= 0 ? outIdx : targetChain.length, 0, removed);
+        targetChain.push(removed);
       });
     }
 

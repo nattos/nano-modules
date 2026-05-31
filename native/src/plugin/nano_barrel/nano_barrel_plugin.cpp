@@ -140,10 +140,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     //    editor doesn't have to coerce a bare {}. macros start
     //    zero. --
     {
+      // Seed a single empty column. The editor's implicit-I/O model
+      // renders one input card + one output card per column, with a
+      // drop zone between them — so even an empty chain is editable.
+      nlohmann::json column_one = {
+        {"name", "Column 1"},
+        {"chain", nlohmann::json::array()},
+      };
       nlohmann::json initial = {
         {"sketch", {
           {"anchor", nullptr},
-          {"columns", nlohmann::json::array()},
+          {"columns", nlohmann::json::array({column_one})},
         }},
         {"macros", nlohmann::json::array()},
         {"triggers", nlohmann::json::object()},

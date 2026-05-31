@@ -15,6 +15,7 @@ import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selec
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
+import { normalizeSketchChains } from '../sketch-types';
 import { isRailCompatible } from '../schema-compat';
 import {
   isDefaultProjectId,
@@ -162,9 +163,10 @@ export class AppController {
     const instances: Record<string, import('../sketch-types').InstanceState> = {};
 
     const columns = outInstances.map(out => {
-      const chain: ChainEntry[] = [
-        { type: 'texture_input', id: 'primary_in' },
-      ];
+      // Texture I/O are implicit (always wrapped around the chain by
+      // the executor + the column-group widget); only the modules in
+      // between go into `chain`.
+      const chain: ChainEntry[] = [];
       if (inInstances.length > 0) {
         const inKey = inInstances[0].pluginKey;
         chain.push({
@@ -180,18 +182,11 @@ export class AppController {
         instance_key: out.pluginKey,
       });
       instances[out.pluginKey] = { module_type: out.moduleType, state: {} };
-      chain.push({ type: 'texture_output', id: 'primary_out' });
       return { name: shortName(out.moduleType), chain };
     });
 
     if (columns.length === 0) {
-      columns.push({
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'primary_in' },
-          { type: 'texture_output', id: 'primary_out' },
-        ],
-      });
+      columns.push({ name: 'main', chain: [] });
     }
 
     const anchor = outInstances[0]?.pluginKey ?? inInstances[0]?.pluginKey ?? null;
@@ -404,9 +399,13 @@ export class AppController {
   loadInitialSketches(sketches: Record<string, Sketch>) {
     runInAction(() => {
       for (const [id, sk] of Object.entries(sketches)) {
-        appState.database.sketches[id] = sk;
-        if (isPersistableProjectId(id) && !sk.isTemplate) {
-          this.projectsLastSavedJson.set(id, JSON.stringify(sk));
+        // Strip any legacy explicit texture_input / texture_output
+        // chain entries — they're implicit in the current model and
+        // would crash downstream iteration if left in.
+        const normalized = normalizeSketchChains(sk);
+        appState.database.sketches[id] = normalized;
+        if (isPersistableProjectId(id) && !normalized.isTemplate) {
+          this.projectsLastSavedJson.set(id, JSON.stringify(normalized));
         }
       }
     });

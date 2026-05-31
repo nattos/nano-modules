@@ -31,7 +31,15 @@ export interface InstanceState {
   state: Record<string, any>;
 }
 
-/** A column is a linear chain of processing steps with sideband rails. */
+/**
+ * A column is a linear chain of processing steps with sideband rails.
+ *
+ * Every column has an *implicit* texture input on top and an *implicit*
+ * texture output on the bottom; they are NOT stored in `chain`. The
+ * chain holds only the modules in between. Older sketches that
+ * persisted explicit `texture_input` / `texture_output` chain entries
+ * are normalised on load (see `normalizeSketch`).
+ */
 export interface SketchColumn {
   name: string;
   chain: ChainEntry[];
@@ -39,17 +47,8 @@ export interface SketchColumn {
   rails?: Rail[];
 }
 
-/** A single entry in a processing chain. */
-export type ChainEntry =
-  | TextureInputEntry
-  | ModuleEntry
-  | TextureOutputEntry;
-
-/** Marks a texture input point in the chain. */
-export interface TextureInputEntry {
-  type: 'texture_input';
-  id: string;
-}
+/** A single entry in a processing chain. Always a module. */
+export type ChainEntry = ModuleEntry;
 
 /** A virtual module instance in the chain. */
 export interface ModuleEntry {
@@ -62,10 +61,23 @@ export interface ModuleEntry {
   taps?: Tap[];
 }
 
-/** Marks a texture output point in the chain. */
-export interface TextureOutputEntry {
-  type: 'texture_output';
-  id: string;
+/**
+ * Strip any legacy `texture_input` / `texture_output` chain entries so a
+ * sketch matches the implicit-I/O model. Idempotent. Called on every
+ * sketch that enters `appState.database` from an external source —
+ * IndexedDB load, remote NanoBarrel snapshot, fixture creation, etc.
+ *
+ * Mutates the column chains in place if `inPlace` is true; otherwise
+ * returns a shallow-cloned sketch with cleaned chains.
+ */
+export function normalizeSketchChains(sketch: Sketch): Sketch {
+  const columns = sketch.columns.map(col => {
+    const cleaned = col.chain.filter(e => e && (e as any).type === 'module');
+    if (cleaned.length === col.chain.length) return col;
+    return { ...col, chain: cleaned as ChainEntry[] };
+  });
+  if (columns.every((c, i) => c === sketch.columns[i])) return sketch;
+  return { ...sketch, columns };
 }
 
 // --- Sideband Rails ---

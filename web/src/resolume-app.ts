@@ -9,6 +9,7 @@ import { boot } from './boot';
 import { appController } from './state/controller';
 import type { Sketch } from './sketch-types';
 import { WsBridgeClient } from './ws-bridge-client';
+import { normalizeSketchChains } from './sketch-types';
 
 // Import the root component (self-registering)
 import './views/sketch-app';
@@ -145,7 +146,7 @@ function coerceSketch(remote: any): Sketch {
   const r = (remote && typeof remote === 'object' && !Array.isArray(remote))
               ? remote
               : {};
-  return {
+  const draft: Sketch = {
     anchor: typeof r.anchor === 'string' ? r.anchor : null,
     columns: Array.isArray(r.columns) ? r.columns : [],
     rails: Array.isArray(r.rails) ? r.rails : undefined,
@@ -153,6 +154,18 @@ function coerceSketch(remote: any): Sketch {
                   ? r.instances
                   : undefined,
   };
+  // If the remote blob didn't supply any real columns (eg the persisted
+  // value is `{}` or earlier round-trip garbage like `{hello:"world"}`),
+  // seed one empty Column 1 so the editor shows a real column with
+  // implicit input/output markers and a drop zone between them. Without
+  // this the edit tab renders only the EXTRA_COLUMNS placeholder slots
+  // ("Drop effects here") which have no I/O cards by design.
+  if (draft.columns.length === 0) {
+    draft.columns = [{ name: 'Column 1', chain: [] }];
+  }
+  // Strip any legacy explicit I/O chain entries — texture input/output
+  // are implicit in the current model.
+  return normalizeSketchChains(draft);
 }
 
 /**
@@ -183,7 +196,6 @@ function createDebugParticleSketch() {
         dataType: { kind: 'struct', schema: PARTICLES_SCHEMA },
       }],
       chain: [
-        { type: 'texture_input', id: 'primary_in' },
         {
           type: 'module',
           module_type: 'data.particles_emitter',
@@ -200,7 +212,6 @@ function createDebugParticleSketch() {
             { railId: 'particles_rail', fieldPath: 'particles_in', direction: 'read' },
           ],
         },
-        { type: 'texture_output', id: 'primary_out' },
       ],
     }],
     instances: {

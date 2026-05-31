@@ -521,20 +521,12 @@ export class SketchExecutor {
       }
     };
 
+    // chain[] holds only modules now — texture input/output are
+    // implicit (the column's input handle on entry, the column's
+    // output handle after the last stage flushes).
     for (let chainIdx = 0; chainIdx < column.chain.length; chainIdx++) {
       const entry = column.chain[chainIdx];
-      if (entry.type === 'texture_input') {
-        continue;
-      }
-
-      if (entry.type === 'texture_output') {
-        // Pending fused run must dispatch before we exit so its output
-        // is real before the column's `lastOutput` is sampled.
-        flushFusedRun();
-        break;
-      }
-
-      if (entry.type === 'module') {
+      {
         const loaded = await this.ensureInstance(entry);
 
         // --- Apply initial state from sketch instances (or legacy entry.params) ---

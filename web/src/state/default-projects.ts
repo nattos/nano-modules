@@ -41,7 +41,10 @@ export function defaultProjectIdForEffect(effectId: string): string {
 
 /**
  * Build the canonical single-column shape for a fresh default project:
- *   texture_input → module → texture_output
+ * one module wrapped by the implicit texture input on top and the
+ * implicit texture output on the bottom. The I/O markers are NOT stored
+ * in the chain — the executor + UI add them around whatever modules
+ * land here.
  *
  * Returns null if the effect isn't in the available set yet (e.g. the WASM
  * module hasn't loaded). Caller should retry once effects are discovered.
@@ -58,9 +61,7 @@ export function synthesizeDefaultProject(
     columns: [{
       name: effect.name,
       chain: [
-        { type: 'texture_input', id: 'primary_in' },
         { type: 'module', module_type: effectId, instance_key: instanceKey },
-        { type: 'texture_output', id: 'primary_out' },
       ],
     }],
     instances: {

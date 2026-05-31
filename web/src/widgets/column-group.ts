@@ -664,7 +664,7 @@ export class ColumnGroup extends MobxLitElement {
       // Placeholder column: single insertion point at vertical center
       results.push({
         colIdx: this.colIdx,
-        insertIdx: 1, // after texture_input
+        insertIdx: 0, // implicit input is on top; first module goes at 0
         x: centerX,
         y: colRect.top + colRect.height / 2,
         isPlaceholder: true,
@@ -750,52 +750,82 @@ export class ColumnGroup extends MobxLitElement {
 
   private renderChain(sketch: Sketch, column: SketchColumn) {
     const items: (TemplateResult | typeof nothing)[] = [];
-
+    // Implicit texture input marker on top — not stored in chain.
+    items.push(this.renderInputMarker(column));
     for (let i = 0; i < column.chain.length; i++) {
-      const entry = column.chain[i];
-
-      if (entry.type === 'texture_input') {
-        items.push(this.renderInputMarker(i, entry));
-      } else if (entry.type === 'texture_output') {
-        items.push(this.renderOutputMarker(i, entry));
-      } else if (entry.type === 'module') {
-        items.push(this.renderEffectCard(i, entry));
-      }
+      items.push(this.renderEffectCard(i, column.chain[i]));
     }
-
+    // Implicit texture output marker on the bottom.
+    items.push(this.renderOutputMarker(column));
     return items;
   }
 
-  /** Render the texture_input marker with a bottom tab (insert-after-input). */
-  private renderInputMarker(chainIdx: number, entry: ChainEntry) {
-    const path = `input/${this.sketchId}/${this.colIdx}/${chainIdx}`;
+  /**
+   * Implicit texture-input marker. Drop tab below inserts a new module at
+   * chainIdx 0 (the top of the chain).
+   */
+  private renderInputMarker(column: SketchColumn) {
+    const path = `input/${this.sketchId}/${this.colIdx}`;
     const isSelected = appController.isSelected(path);
-    this.registerChainMarkerSelectable(path, 'Texture Input', chainIdx, entry);
+    this.registerChainMarkerSelectable(path, 'Texture Input', 'input');
     const selectMarker = (e: Event) => { e.stopPropagation(); appController.select(path); };
     return html`
       <div class="chain-marker" ?selected=${isSelected}>
         <div class="chain-marker-inner">
           <div class="chain-marker-label" @click=${selectMarker}>Input</div>
-          ${this.renderTraceCardRow(chainIdx, entry)}
+          ${this.renderInputTraceCardRow(column)}
         </div>
         <texture-drop-zone .sketchId=${this.sketchId}></texture-drop-zone>
-        ${this.renderDeviceTab('bottom', chainIdx + 1)}
+        ${this.renderDeviceTab('bottom', 0)}
       </div>
     `;
   }
 
-  /** Render the texture_output marker with a top tab (insert-before-output). */
-  private renderOutputMarker(chainIdx: number, entry: ChainEntry) {
-    const path = `output/${this.sketchId}/${this.colIdx}/${chainIdx}`;
+  /**
+   * Implicit texture-output marker. Drop tab above inserts a new module
+   * at chainIdx = chain.length (the bottom of the chain).
+   */
+  private renderOutputMarker(column: SketchColumn) {
+    const path = `output/${this.sketchId}/${this.colIdx}`;
     const isSelected = appController.isSelected(path);
-    this.registerChainMarkerSelectable(path, 'Texture Output', chainIdx, entry);
+    this.registerChainMarkerSelectable(path, 'Texture Output', 'output');
     const selectMarker = (e: Event) => { e.stopPropagation(); appController.select(path); };
     return html`
       <div class="chain-marker" ?selected=${isSelected}>
-        ${this.renderDeviceTab('top', chainIdx)}
+        ${this.renderDeviceTab('top', column.chain.length)}
         <div class="chain-marker-inner">
           <div class="chain-marker-label" @click=${selectMarker}>Output</div>
         </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Preview row beneath the input marker. The column's input texture is
+   * the input handle of chain[0]; with an empty chain there is no
+   * stage to trace and we render nothing.
+   */
+  private renderInputTraceCardRow(column: SketchColumn) {
+    if (column.chain.length === 0) return nothing;
+    const tracePath = `trace/${this.sketchId}/${this.colIdx}/input`;
+    const traceSelected = appController.isSelected(tracePath);
+    const traceId = `trace_${this.sketchId}/${this.colIdx}/input`;
+    const target: TracePoint['target'] = {
+      type: 'chain_entry',
+      sketchId: this.sketchId,
+      colIdx: this.colIdx,
+      chainIdx: 0,
+      side: 'input',
+    };
+    return html`
+      <div class="trace-card-row" ?selected=${traceSelected}
+        @click=${(e: Event) => { e.stopPropagation(); appController.select(tracePath); }}>
+        <texture-monitor
+          .traceId=${traceId}
+          .traceTarget=${target}
+          .width=${64}
+          .height=${36}
+        ></texture-monitor>
       </div>
     `;
   }
@@ -805,34 +835,11 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
 
   private renderTraceCardRow(chainIdx: number, entry: ChainEntry) {
-    if (entry.type === 'texture_input') {
-      const tracePath = `trace/${this.sketchId}/${this.colIdx}/${chainIdx}/input`;
-      const traceSelected = appController.isSelected(tracePath);
-      const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/input`;
-      const target: TracePoint['target'] = {
-        type: 'chain_entry',
-        sketchId: this.sketchId,
-        colIdx: this.colIdx,
-        chainIdx,
-        side: 'input',
-      };
-      return html`
-        <div class="trace-card-row" ?selected=${traceSelected}
-          @click=${(e: Event) => { e.stopPropagation(); appController.select(tracePath); }}>
-          <texture-monitor
-            .traceId=${traceId}
-            .traceTarget=${target}
-            .width=${64}
-            .height=${36}
-          ></texture-monitor>
-        </div>
-      `;
-    }
-
+    // chain[] holds only modules; the implicit input marker uses
+    // renderInputTraceCardRow directly.
     if (entry.type === 'module') {
       return this.renderModuleOutputRow(chainIdx, entry);
     }
-
     return nothing;
   }
 
@@ -1788,17 +1795,25 @@ export class ColumnGroup extends MobxLitElement {
     });
   }
 
-  /** Register a chain marker (texture input/output) as a selectable. */
-  private registerChainMarkerSelectable(path: string, label: string, chainIdx: number, entry: ChainEntry) {
-    const side = entry.type === 'texture_input' ? 'input' : 'output';
-    const traceId = `trace_${this.sketchId}/${this.colIdx}/${chainIdx}/${side}`;
+  /**
+   * Register the implicit input or output marker as a selectable. The
+   * trace target binds to chain[0]'s input (for the input marker) or
+   * chain[N-1]'s output (for the output marker) — those are the column's
+   * implicit I/O textures.
+   */
+  private registerChainMarkerSelectable(path: string, label: string, side: 'input' | 'output') {
+    const sketch = appState.database.sketches[this.sketchId];
+    const chainLen = sketch?.columns?.[this.colIdx]?.chain?.length ?? 0;
+    const chainIdx = side === 'input' ? 0 : Math.max(0, chainLen - 1);
+    const traceId = `trace_${this.sketchId}/${this.colIdx}/${side}`;
     const target: TracePoint['target'] = {
       type: 'chain_entry',
       sketchId: this.sketchId,
       colIdx: this.colIdx,
       chainIdx,
-      side: side as 'input' | 'output',
+      side,
     };
+    const previewAvailable = chainLen > 0;
 
     appController.defineSelectable({
       path,
@@ -1806,7 +1821,7 @@ export class ColumnGroup extends MobxLitElement {
       renderInspectorContent: () => html`
         <div class="inspector-field">
           <span class="inspector-field-label">Type</span>
-          <span class="inspector-field-value">${entry.type}</span>
+          <span class="inspector-field-value">${side === 'input' ? 'texture_input' : 'texture_output'}</span>
         </div>
         <div class="inspector-field">
           <span class="inspector-field-label">Column</span>
@@ -1814,12 +1829,18 @@ export class ColumnGroup extends MobxLitElement {
         </div>
         <div class="inspector-separator"></div>
         <div class="section-header">Preview</div>
-        <texture-monitor
-          .traceId=${traceId}
-          .traceTarget=${target}
-          .width=${280}
-          .height=${158}
-        ></texture-monitor>
+        ${previewAvailable ? html`
+          <texture-monitor
+            .traceId=${traceId}
+            .traceTarget=${target}
+            .width=${280}
+            .height=${158}
+          ></texture-monitor>
+        ` : html`
+          <div class="inspector-field-value" style="opacity:0.6">
+            ${side === 'input' ? 'No modules in this column yet.' : 'No modules in this column yet.'}
+          </div>
+        `}
       `,
     });
   }

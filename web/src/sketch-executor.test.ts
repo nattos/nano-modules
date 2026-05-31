@@ -116,24 +116,23 @@ describe('Sketch data model', () => {
       anchor: 'generator.spinningtris@0',
       columns: [{
         name: 'main',
+        // Texture input/output are implicit; chain holds only modules.
         chain: [
-          { type: 'texture_input', id: 'primary_in' },
           {
             type: 'module',
             module_type: 'video.brightness_contrast',
             instance_key: 'virtual_bc@0',
             params: { '0': 0.5, '1': 0.25 },
           },
-          { type: 'texture_output', id: 'primary_out' },
         ],
       }],
     };
 
     expect(sketch.anchor).toBe('generator.spinningtris@0');
     expect(sketch.columns).toHaveLength(1);
-    expect(sketch.columns[0].chain).toHaveLength(3);
+    expect(sketch.columns[0].chain).toHaveLength(1);
 
-    const moduleEntry = sketch.columns[0].chain[1];
+    const moduleEntry = sketch.columns[0].chain[0];
     expect(moduleEntry.type).toBe('module');
     if (moduleEntry.type === 'module') {
       expect(moduleEntry.module_type).toBe('video.brightness_contrast');
