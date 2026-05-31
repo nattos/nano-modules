@@ -133,10 +133,18 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           }
         });
 
-    // -- Seed initial state. sketch starts empty; macros start zero. --
+    // -- Seed initial state.
+    //    sketch starts as the editor's empty-Sketch shape
+    //    ({anchor:null, columns:[]}) so a fresh comp's first
+    //    snapshot is already a valid Sketch on the wire — the
+    //    editor doesn't have to coerce a bare {}. macros start
+    //    zero. --
     {
       nlohmann::json initial = {
-        {"sketch", nlohmann::json::object()},
+        {"sketch", {
+          {"anchor", nullptr},
+          {"columns", nlohmann::json::array()},
+        }},
         {"macros", nlohmann::json::array()},
         {"triggers", nlohmann::json::object()},
         {"host", nlohmann::json::object()},

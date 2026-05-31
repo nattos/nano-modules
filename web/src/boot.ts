@@ -21,11 +21,29 @@ import { loadUserSettings } from './state/user-settings';
 import { loadAllProjects } from './state/project-store';
 import { idbGetAll, idbGet, STORE_PROJECTS, STORE_SETTINGS, STORE_SKETCH_INPUTS } from './state/idb-store';
 
+export interface BootOptions {
+  width?: number;
+  height?: number;
+  /**
+   * When true, skip loading projects from IndexedDB and skip enabling
+   * IndexedDB persistence. The caller is responsible for supplying the
+   * sketch from another source (eg the remote NanoBarrel bridge in
+   * `resolume-app.ts`). Without this, stale local projects would be
+   * fed into the engine sync the moment effects are discovered — and
+   * mutations to the barrel-mirrored sketch would silently get
+   * persisted on top of unrelated local state.
+   */
+  barrelMode?: boolean;
+}
+
 export interface BootResult {
   engine: EngineProxy;
 }
 
-export async function boot(width = 320, height = 180): Promise<BootResult> {
+export async function boot(opts: BootOptions = {}): Promise<BootResult> {
+  const width = opts.width ?? 320;
+  const height = opts.height ?? 180;
+  const barrelMode = !!opts.barrelMode;
   const engine = new EngineProxy(width, height);
   appController.setEngine(engine);
 
@@ -80,17 +98,20 @@ export async function boot(width = 320, height = 180): Promise<BootResult> {
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
   }
-  try {
-    const projects = await loadAllProjects();
-    if (Object.keys(projects).length > 0) {
-      appController.loadInitialSketches(projects);
+  if (!barrelMode) {
+    try {
+      const projects = await loadAllProjects();
+      if (Object.keys(projects).length > 0) {
+        appController.loadInitialSketches(projects);
+      }
+    } catch (err) {
+      console.warn('[boot] failed to load projects', err);
     }
-  } catch (err) {
-    console.warn('[boot] failed to load projects', err);
   }
 
   // Subsequent mutations from this point on persist explicitly.
-  appController.enablePersistence();
+  // Barrel-mode editors don't persist — the remote bridge holds the truth.
+  if (!barrelMode) appController.enablePersistence();
 
   return { engine };
 }

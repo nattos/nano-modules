@@ -43,6 +43,7 @@ export class AppState {
     selection: null,
     queuedSelectionPath: null,
     userSettings: defaultUserSettings(),
+    barrelMode: false,
   };
 
   constructor() {

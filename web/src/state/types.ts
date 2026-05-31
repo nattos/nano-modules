@@ -142,4 +142,13 @@ export interface LocalState {
   // --- Effect IDE / cross-cutting persisted preferences ---
   /** UI preferences persisted to IndexedDB (never undo/redo-able). */
   userSettings: UserSettings;
+
+  /**
+   * True when this editor session is bound to a remote NanoBarrel FFGL
+   * plugin (entered via `?barrel=ws://…`). Locks the UI into the
+   * single-sketch edit view, hides the Create/Organize tabs, and
+   * disables the dev-only auto-instantiation of demo effects. The
+   * remote bridge is the source of truth for the sketch.
+   */
+  barrelMode: boolean;
 }

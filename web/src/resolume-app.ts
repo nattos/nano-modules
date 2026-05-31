@@ -16,13 +16,32 @@ import './views/sketch-app';
 // Dev-only WASM HMR listener (no-op in production).
 import './wasm-hmr-client';
 
+/**
+ * The sketch ID we use locally to mirror the barrel's single sketch.
+ * Doesn't need to match the plugin key — it's just the row index in
+ * `appState.database.sketches` that the edit tab will hand to its
+ * children.
+ */
+const BARREL_SKETCH_ID = 'barrel';
+
 async function main() {
-  const { engine } = await boot();
+  // Decide barrel mode up front, BEFORE booting — boot needs the flag
+  // so it can skip the IndexedDB project load (otherwise stale local
+  // sketches would feed into syncSketchesToEngine the moment effects
+  // are discovered, and any of them with malformed shape would crash
+  // augmentSketchWithImplicitConnections).
+  const params = new URLSearchParams(location.search);
+  const barrelUrl = params.get('barrel');
+  const barrelMode = !!barrelUrl;
+
+  const { engine } = await boot({ barrelMode });
+  appController.setBarrelMode(barrelMode);
 
   let debugSketchCreated = false;
   const baseHandler = engine.onEffectsDiscovered;
   engine.onEffectsDiscovered = (effects) => {
     baseHandler?.(effects);
+    if (barrelMode) return;
     appController.instantiateEffect('generator.spinningtris');
     appController.instantiateEffect('generator.solid_color');
     appController.instantiateEffect('debug.gpu_test');
@@ -40,36 +59,67 @@ async function main() {
   appController.loadModule('com.nattos.testonly');
   appController.loadModule('com.nano.lights');
 
-  // Optional remote bridge: `?barrel=ws://localhost:9090` connects this
-  // editor to a running NanoBarrel FFGL plugin's per-instance WS
-  // server. The client is exposed on `window.__barrel` for ad-hoc
-  // round-trip testing from the devtools console:
-  //
-  //   window.__barrel.get('/')
-  //   window.__barrel.patch('/plugins/com.nattos.nanobarrel@0/state',
-  //                         [{op:'replace', path:'/sketch', value:{...}}])
-  //
-  // The snapshot reply is stashed at `window.__barrelState` for
-  // inspection, and every incoming patch is logged. No UI binding yet —
-  // this is the first end-to-end wire test ahead of the real editor
-  // integration.
-  maybeConnectBarrel();
+  if (barrelMode) connectBarrel(barrelUrl!);
 }
 
-function maybeConnectBarrel() {
-  const params = new URLSearchParams(location.search);
-  const barrelUrl = params.get('barrel');
-  if (!barrelUrl) return;
-
-  const barrel = new WsBridgeClient(barrelUrl);
+/**
+ * Connect to a running NanoBarrel FFGL plugin via its per-instance WS
+ * server. On the initial snapshot we discover the plugin key, mirror
+ * the remote sketch into `appState.database.sketches[BARREL_SKETCH_ID]`,
+ * and auto-select it for editing. On subsequent patches that touch the
+ * sketch subtree we re-fetch the sketch and replace the local mirror.
+ *
+ * The client is also exposed on `window.__barrel` / `window.__barrelState`
+ * for ad-hoc devtools-console patching while we bring up the UI:
+ *
+ *   window.__barrel.patch('/plugins/com.nattos.nanobarrel@0/state',
+ *                         [{op:'replace', path:'/sketch', value:{...}}])
+ *
+ * Editor-side mutations don't push back yet — that's the next slice.
+ */
+function connectBarrel(url: string) {
+  const barrel = new WsBridgeClient(url);
   (window as any).__barrel = barrel;
+
+  let barrelPluginKey: string | null = null;
+  let sketchSubscribed = false;
+
+  const applySketchFromSnapshot = (sketch: any) => {
+    appController.setBarrelSketch(BARREL_SKETCH_ID, coerceSketch(sketch));
+    appController.editSketch(BARREL_SKETCH_ID);
+  };
 
   barrel.onSnapshot('/', (data) => {
     (window as any).__barrelState = data;
-    console.log('[barrel] snapshot /', data);
+    const plugins = data?.plugins ?? {};
+    const keys = Object.keys(plugins);
+    if (keys.length === 0) {
+      console.warn('[barrel] root snapshot had no plugins');
+      return;
+    }
+    barrelPluginKey = keys[0];
+    const sketch = plugins[barrelPluginKey!]?.state?.sketch ?? {};
+    applySketchFromSnapshot(sketch);
+    console.log(`[barrel] mirrored sketch from /plugins/${barrelPluginKey}/state/sketch`);
+
+    // Now that we know the plugin key, register a snapshot handler for
+    // the sketch path so subsequent re-fetches land in the same spot.
+    if (!sketchSubscribed) {
+      sketchSubscribed = true;
+      const sketchPath = `/plugins/${barrelPluginKey}/state/sketch`;
+      barrel.onSnapshot(sketchPath, (latest) => {
+        applySketchFromSnapshot(latest);
+      });
+    }
   });
+
   barrel.onPatch((ops) => {
-    console.log('[barrel] patch', ops);
+    if (!barrelPluginKey) return;
+    const sketchPath = `/plugins/${barrelPluginKey}/state/sketch`;
+    const sketchTouched = ops.some(
+      (op: any) => typeof op?.path === 'string' &&
+                   (op.path === sketchPath || op.path.startsWith(sketchPath + '/')));
+    if (sketchTouched) barrel.get(sketchPath);
   });
 
   const subscribe = () => {
@@ -79,7 +129,30 @@ function maybeConnectBarrel() {
   if (barrel.isOpen) subscribe();
   else barrel.onOpen = subscribe;
 
-  console.log(`[barrel] connecting ${barrelUrl} (window.__barrel / __barrelState)`);
+  console.log(`[barrel] connecting ${url} (window.__barrel / __barrelState)`);
+}
+
+/**
+ * Force the remote state.sketch blob into a minimally-valid Sketch
+ * shape. The barrel's persisted state is just opaque JSON from the
+ * plugin's perspective — early bring-up sometimes leaves arbitrary
+ * payloads in there (eg the `{hello:'world'}` round-trip test) that
+ * would crash the edit tab's `sketch.columns.length` reads. We bridge
+ * the gap by filling in defaults for any missing fields; the editor
+ * then renders an empty sketch instead of throwing.
+ */
+function coerceSketch(remote: any): Sketch {
+  const r = (remote && typeof remote === 'object' && !Array.isArray(remote))
+              ? remote
+              : {};
+  return {
+    anchor: typeof r.anchor === 'string' ? r.anchor : null,
+    columns: Array.isArray(r.columns) ? r.columns : [],
+    rails: Array.isArray(r.rails) ? r.rails : undefined,
+    instances: (r.instances && typeof r.instances === 'object' && !Array.isArray(r.instances))
+                  ? r.instances
+                  : undefined,
+  };
 }
 
 /**

@@ -1060,6 +1060,26 @@ export class AppController {
     runInAction(() => { appState.local.selectedSketchId = id; });
   }
 
+  setBarrelMode(on: boolean) {
+    runInAction(() => {
+      appState.local.barrelMode = on;
+      if (on) appState.local.activeTab = 'edit';
+    });
+  }
+
+  /**
+   * Direct write into the sketches database without going through
+   * `mutate()`. Used by the barrel sync to mirror remote state — no
+   * undo entry, no IndexedDB persistence (the remote bridge owns it).
+   * `sketch` is intentionally loose-typed (any) because the remote
+   * blob may not yet conform to the Sketch shape during early bring-up.
+   */
+  setBarrelSketch(id: string, sketch: any) {
+    runInAction(() => {
+      appState.database.sketches[id] = sketch;
+    });
+  }
+
   editSketch(id: string | null) {
     runInAction(() => { appState.local.editingSketchId = id; });
     // Register/unregister the edit preview trace point via the trace controller
