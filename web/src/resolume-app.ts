@@ -112,6 +112,17 @@ function connectBarrel(url: string) {
         applySketchFromSnapshot(latest);
       });
     }
+
+    // Wire the editor → barrel push direction. Every committed mutation
+    // of the mirrored sketch fires this pusher with the post-mutation
+    // sketch object, which we wrap in a replace-/sketch JSON patch
+    // targeting the barrel plugin's state subtree.
+    appController.setBarrelPusher(BARREL_SKETCH_ID, (snapshot) => {
+      if (!barrelPluginKey) return;
+      barrel.patch(`/plugins/${barrelPluginKey}/state`, [
+        { op: 'replace', path: '/sketch', value: snapshot },
+      ]);
+    });
   });
 
   barrel.onPatch((ops) => {

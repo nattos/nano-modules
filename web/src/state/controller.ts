@@ -84,6 +84,22 @@ export class AppController {
    */
   private engineSketchFilter: ((sketchId: string) => boolean) | null = null;
 
+  // -- Barrel-mode push: when a remote NanoBarrel sketch is mirrored
+  //    into the editor, mutations to that sketch get serialised back
+  //    over the bridge. Stored as a (sketchId, pusher) pair so the
+  //    push is gated on "this is the barrel-tracked sketch" — other
+  //    local sketches (if any) keep their normal IDB persistence
+  //    behaviour without spuriously pushing to the bridge.
+  //
+  //    `lastPushedBarrelJson` is the last JSON we either pushed OR
+  //    received. The post-record hook compares against it to skip
+  //    redundant pushes and — critically — `setBarrelSketch` seeds it
+  //    so a snapshot we just received from the bridge doesn't echo
+  //    straight back. --
+  private barrelSketchId: string | null = null;
+  private barrelPusher: ((sketch: Sketch) => void) | null = null;
+  private lastPushedBarrelJson: string | null = null;
+
   // -- Persistence scheduling (no MobX reactions; fired explicitly by
   //    every method that mutates the relevant slice) --
 
@@ -132,6 +148,7 @@ export class AppController {
     this.history.postRecordHook = () => {
       this.syncSketchesToEngine();
       this.requestProjectsSave();
+      this.maybePushBarrelSketch();
     };
     // Wire the trace controller to push trace points through the engine
     traceController.onFlush = (tracePoints) => this.setTracePoints(tracePoints);
@@ -1072,11 +1089,65 @@ export class AppController {
    * undo entry, no IndexedDB persistence (the remote bridge owns it).
    * `sketch` is intentionally loose-typed (any) because the remote
    * blob may not yet conform to the Sketch shape during early bring-up.
+   *
+   * Also seeds `lastPushedBarrelJson` so the immediately-following
+   * `postRecordHook` invocations (if any) don't observe a diff and
+   * push the snapshot we just received straight back to the bridge.
    */
   setBarrelSketch(id: string, sketch: any) {
     runInAction(() => {
       appState.database.sketches[id] = sketch;
     });
+    if (this.barrelSketchId === id) {
+      try { this.lastPushedBarrelJson = JSON.stringify(sketch); }
+      catch { this.lastPushedBarrelJson = null; }
+    }
+  }
+
+  /**
+   * Wire (or rewire) the editor → barrel push path. Every subsequent
+   * mutation of the named sketch produces a single JSON-patch send via
+   * `pusher`, debounced only by an identity check on the serialized
+   * sketch (no time-based debounce — the remote bridge already has its
+   * own 200 ms regen window before the value reaches the FILE param).
+   *
+   * Pass `null` (or call `clearBarrelPusher()`) to detach when the
+   * bridge disconnects.
+   */
+  setBarrelPusher(sketchId: string, pusher: (sketch: Sketch) => void) {
+    this.barrelSketchId = sketchId;
+    this.barrelPusher = pusher;
+    // Seed the high-water mark to whatever's currently in the database
+    // so we don't immediately push a snapshot the bridge just sent us.
+    const sketch = appState.database.sketches[sketchId];
+    if (sketch) {
+      try { this.lastPushedBarrelJson = JSON.stringify(toJS(sketch)); }
+      catch { this.lastPushedBarrelJson = null; }
+    } else {
+      this.lastPushedBarrelJson = null;
+    }
+  }
+
+  clearBarrelPusher() {
+    this.barrelSketchId = null;
+    this.barrelPusher = null;
+    this.lastPushedBarrelJson = null;
+  }
+
+  private maybePushBarrelSketch() {
+    const id = this.barrelSketchId;
+    const pusher = this.barrelPusher;
+    if (!id || !pusher) return;
+    const sketch = appState.database.sketches[id];
+    if (!sketch) return;
+    const plain = toJS(sketch);
+    let json: string;
+    try { json = JSON.stringify(plain); }
+    catch { return; }
+    if (json === this.lastPushedBarrelJson) return;
+    this.lastPushedBarrelJson = json;
+    try { pusher(plain as Sketch); }
+    catch (err) { console.warn('[barrel] pusher failed:', err); }
   }
 
   editSketch(id: string | null) {
