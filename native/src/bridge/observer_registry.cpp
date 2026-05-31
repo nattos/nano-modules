@@ -33,8 +33,19 @@ std::unordered_set<std::string> ObserverRegistry::client_paths(ClientId client) 
 // A patch at path P is relevant to a subscription at path S if:
 // - P starts with S (the patch is at or under the observed path), OR
 // - S starts with P (the patch replaces a parent of the observed path)
-static bool path_matches(const std::string& patch_path, const std::string& sub_path) {
-  // Exact match
+//
+// "/" is normalised to "" on both sides — subscribing to the document
+// root means subscribing to *everything*, mirroring StateDocument::get_at
+// which already does the same normalisation. Without this, the prefix-
+// match check (which requires the byte right after `sub_path` to be a
+// `/`) would treat "/" as the literal path "/" and never match any real
+// patch path like "/plugins/<key>/state/macros/0".
+static bool path_matches(const std::string& patch_path_in,
+                         const std::string& sub_path_in) {
+  const std::string patch_path = (patch_path_in == "/") ? "" : patch_path_in;
+  const std::string sub_path   = (sub_path_in   == "/") ? "" : sub_path_in;
+
+  // Exact match (covers both = "")
   if (patch_path == sub_path) return true;
 
   // Patch is a child of subscription: "/a/b/c" starts with "/a/b"

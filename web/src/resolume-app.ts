@@ -8,6 +8,7 @@
 import { boot } from './boot';
 import { appController } from './state/controller';
 import type { Sketch } from './sketch-types';
+import { WsBridgeClient } from './ws-bridge-client';
 
 // Import the root component (self-registering)
 import './views/sketch-app';
@@ -38,6 +39,47 @@ async function main() {
   appController.loadModule('com.nattos.nano');
   appController.loadModule('com.nattos.testonly');
   appController.loadModule('com.nano.lights');
+
+  // Optional remote bridge: `?barrel=ws://localhost:9090` connects this
+  // editor to a running NanoBarrel FFGL plugin's per-instance WS
+  // server. The client is exposed on `window.__barrel` for ad-hoc
+  // round-trip testing from the devtools console:
+  //
+  //   window.__barrel.get('/')
+  //   window.__barrel.patch('/plugins/com.nattos.nanobarrel@0/state',
+  //                         [{op:'replace', path:'/sketch', value:{...}}])
+  //
+  // The snapshot reply is stashed at `window.__barrelState` for
+  // inspection, and every incoming patch is logged. No UI binding yet —
+  // this is the first end-to-end wire test ahead of the real editor
+  // integration.
+  maybeConnectBarrel();
+}
+
+function maybeConnectBarrel() {
+  const params = new URLSearchParams(location.search);
+  const barrelUrl = params.get('barrel');
+  if (!barrelUrl) return;
+
+  const barrel = new WsBridgeClient(barrelUrl);
+  (window as any).__barrel = barrel;
+
+  barrel.onSnapshot('/', (data) => {
+    (window as any).__barrelState = data;
+    console.log('[barrel] snapshot /', data);
+  });
+  barrel.onPatch((ops) => {
+    console.log('[barrel] patch', ops);
+  });
+
+  const subscribe = () => {
+    barrel.get('/');
+    barrel.observe('/');
+  };
+  if (barrel.isOpen) subscribe();
+  else barrel.onOpen = subscribe;
+
+  console.log(`[barrel] connecting ${barrelUrl} (window.__barrel / __barrelState)`);
 }
 
 /**

@@ -113,6 +113,27 @@ TEST_CASE("filter_patches root observer gets everything", "[observer_registry]")
   REQUIRE(result[1].size() == 2);
 }
 
+// Regression: subscribing to "/" must behave identically to subscribing
+// to "" — i.e., "give me everything". Bug encountered when the
+// WsBridgeClient editor sent {action:"observe", path:"/"} and saw zero
+// patches even though state mutations were visible in fresh snapshots.
+// Without the normalisation the path-prefix check requires the byte
+// after sub_path to be a '/', so "/plugins/..."'s second char being 'p'
+// fails the match.
+TEST_CASE("filter_patches '/' observer also gets everything", "[observer_registry]") {
+  ObserverRegistry reg;
+  reg.observe(1, "/");
+
+  std::vector<PatchOp> patches = {
+    {"replace", "/plugins/m0/state/x", 1, {}},
+    {"replace", "/plugins/com.nattos.nanobarrel@0/state/macros/0", 0.5, {}},
+    {"add", "/global/plugins/-", {}, {}},
+  };
+
+  auto result = reg.filter_patches(patches);
+  REQUIRE(result[1].size() == 3);
+}
+
 TEST_CASE("filter_patches no duplicate when multiple subscriptions match", "[observer_registry]") {
   ObserverRegistry reg;
   reg.observe(1, "/plugins/m0");
