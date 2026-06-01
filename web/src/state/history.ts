@@ -83,6 +83,18 @@ export class HistoryManager {
 
   /** @internal */ public inDraftHook: InDraftHook | null = null;
   /** @internal */ public postRecordHook: PostRecordHook | null = null;
+  /**
+   * Fires after every long-edit preview application (begin / update /
+   * cancel-revert). Distinct from `postRecordHook` so consumers can
+   * pick the right cadence:
+   *   - persistence + engine-sync = commit-only (postRecordHook)
+   *   - remote bridge mirroring   = preview-too (longEditHook)
+   *
+   * Long-edit *accepts* end up calling `record(...)` internally, so
+   * postRecordHook fires for the final value the normal way — this
+   * hook only covers the preview window.
+   */
+  /** @internal */ public longEditHook: PostRecordHook | null = null;
 
   constructor(private appState: AppState) {}
 
@@ -172,6 +184,7 @@ export class HistoryManager {
     const edit = new LongEdit(this, description, recipe);
     this.activeLongEdit = edit;
     this.applyLongEditPreview(recipe);
+    this.longEditHook?.(description);
     return edit;
   }
 
@@ -213,6 +226,7 @@ export class HistoryManager {
   _updateLongEdit(edit: LongEdit) {
     if (this.activeLongEdit !== edit) return;
     this.applyLongEditPreview(edit._getRecipe());
+    this.longEditHook?.(edit._getDescription());
   }
 
   /** @internal Commit the long edit as a single undo point. */
@@ -245,14 +259,21 @@ export class HistoryManager {
   _cancelLongEdit(edit: LongEdit) {
     if (this.activeLongEdit !== edit) return;
 
-    if (this.longEditInverse.length > 0) {
+    const hadInverse = this.longEditInverse.length > 0;
+    if (hadInverse) {
       runInAction(() => {
         this.applyPatchesToObservable(this.appState.database, this.longEditInverse);
       });
     }
 
+    const description = edit._getDescription();
     this.activeLongEdit = null;
     this.longEditInverse = [];
+
+    // Notify so the remote bridge mirror gets the reverted state. If
+    // the preview was a no-op (nothing to revert) the consumer's own
+    // identity check still makes this cheap.
+    if (hadInverse) this.longEditHook?.(`cancel ${description}`);
   }
 
   /**

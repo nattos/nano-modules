@@ -150,6 +150,16 @@ export class AppController {
       this.requestProjectsSave();
       this.maybePushBarrelSketch();
     };
+    // Long-edit preview hook: fires during slider drags (begin / update /
+    // cancel-revert), separately from commit-time concerns. We push the
+    // in-progress state to the remote bridge so a connected NanoBarrel
+    // (and any second observer subscribed via WS) sees the slider sweep
+    // live. We deliberately *don't* sync to the engine here (it gets its
+    // own per-update call via `engine.setParam` in the long-edit driver)
+    // or schedule an IndexedDB write (commits handle that).
+    this.history.longEditHook = () => {
+      this.maybePushBarrelSketch();
+    };
     // Wire the trace controller to push trace points through the engine
     traceController.onFlush = (tracePoints) => this.setTracePoints(tracePoints);
   }
