@@ -27,6 +27,11 @@ let gpuContext: GPUCanvasContext | null = null;
 let sketchExecutor: SketchExecutor | null = null;
 let traceCapture: TraceCapture | null = null;
 
+// True when the editor is bound to a remote NanoBarrel — the worker
+// becomes editor-only: no simulateTick, no warmupEffects, no
+// broadcastState. Plugin schemas come from the WS bridge instead.
+let barrelMode = false;
+
 // Real module instances
 const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
 
@@ -149,15 +154,20 @@ async function processQueue() {
 async function handleCommand(cmd: WorkerCommand) {
   switch (cmd.type) {
     case 'init':
+      barrelMode = !!cmd.barrelMode;
       await init(cmd.width, cmd.height);
       break;
     case 'resize':
       if (canvas) { canvas.width = cmd.width; canvas.height = cmd.height; }
       break;
     case 'loadModule':
+      // In barrel mode the worker never instantiates effects. Schemas
+      // come from the WS bridge.
+      if (barrelMode) break;
       await loadModule(cmd.moduleType);
       break;
     case 'instantiateEffect':
+      if (barrelMode) break;
       await instantiateEffect(cmd.effectId);
       break;
     case 'changeInstanceType': {
@@ -198,6 +208,10 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     }
     case 'setParam': {
+      // In barrel mode the canonical state lives on the remote and the
+      // controller's barrelPusher is the only sink that matters. The
+      // worker has no live executor + no WasmHosts to patch.
+      if (barrelMode) break;
       const sketch = sketches.get(cmd.sketchId);
       if (sketch) {
         const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
@@ -295,6 +309,16 @@ async function handleCommand(cmd: WorkerCommand) {
 }
 
 async function init(width: number, height: number) {
+  // In barrel mode the worker is an editor-only stub. Skip GPU adapter
+  // acquisition, bridge core, sketch executor — none of it is needed
+  // because the worker never simulates, never instantiates effects, and
+  // never publishes plugin state. The rAF loop is skipped too; the worker
+  // just idles waiting for the (mostly no-op) command stream.
+  if (barrelMode) {
+    post({ type: 'ready' });
+    return;
+  }
+
   canvas = new OffscreenCanvas(width, height);
 
   bridgeCore = new BridgeCore();
@@ -1048,6 +1072,10 @@ function removeInstancesFromBucket(sketch: Sketch) {
 
 function broadcastState() {
   if (!bridgeCore) return;
+  // In barrel mode the worker has no plugins, no sketches, no sketch
+  // state. Pushing an empty `state` snapshot here would clobber the
+  // controller's barrel-supplied plugin list on the next round-trip.
+  if (barrelMode) return;
 
   const globalData = bridgeCore.getAt('/global');
   const plugins: PluginInfo[] = [];

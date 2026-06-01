@@ -44,7 +44,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   const width = opts.width ?? 320;
   const height = opts.height ?? 180;
   const barrelMode = !!opts.barrelMode;
-  const engine = new EngineProxy(width, height);
+  const engine = new EngineProxy(width, height, barrelMode);
   appController.setEngine(engine);
 
   (window as any).debugDumpState = () => toJS(appState);
@@ -77,15 +77,23 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     console.log('[debugClearIdb] done — reload to start fresh');
   };
 
-  engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
-  engine.onFps = (fps) => appController.setEngineFps(fps);
-  engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
-  engine.onSketchState = (state) => appController.setSketchState(state);
-  engine.onPluginStates = (states) => appController.setPluginStates(states);
-  engine.onDebugStats = (stats) => appController.setDebugStats(stats);
-  engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
   engine.onError = (msg) => appController.setEngineError(msg);
-  engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
+  // In barrel mode the worker never simulates, so the remote-state /
+  // FPS / traced-frames / sketchState / pluginStates streams are all
+  // permanently empty. Skip the wiring so empty payloads can't clobber
+  // the controller's bridge-supplied plugin list or stomp the trace UI
+  // with cleared frames. `effectsDiscovered` is barrel-supplied too —
+  // resolume-app derives it from the bridge's plugin_schemas blob.
+  if (!barrelMode) {
+    engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
+    engine.onFps = (fps) => appController.setEngineFps(fps);
+    engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
+    engine.onSketchState = (state) => appController.setSketchState(state);
+    engine.onPluginStates = (states) => appController.setPluginStates(states);
+    engine.onDebugStats = (stats) => appController.setDebugStats(stats);
+    engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
+    engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
+  }
 
   // Restore from IndexedDB before mounting UI so the first paint is correct.
   // Errors are non-fatal; we fall back to defaults. Persistence stays

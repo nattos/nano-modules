@@ -167,6 +167,23 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         {"name", "Column 1"},
         {"chain", nlohmann::json::array()},
       };
+      // Publish the registered effects' schemas so the web client can
+      // populate its inspector + augmenter without instantiating any
+      // effects locally. Shape mirrors web/src/state/types.ts PluginInfo;
+      // `params` and `io` are derived web-side from the schema fields,
+      // so we publish only the raw schema + identity here.
+      nlohmann::json plugin_schemas = nlohmann::json::object();
+      if (registry_) {
+        for (const auto& [module_type, schema_fields] :
+             registry_->schemas()) {
+          plugin_schemas[module_type] = {
+            {"key",     module_type},
+            {"id",      module_type},
+            {"version", "0.0.0"},
+            {"schema",  schema_fields},
+          };
+        }
+      }
       nlohmann::json initial = {
         {"sketch", {
           {"anchor", nullptr},
@@ -175,6 +192,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         {"macros", nlohmann::json::array()},
         {"triggers", nlohmann::json::object()},
         {"host", nlohmann::json::object()},
+        {"plugin_schemas", plugin_schemas},
       };
       for (int i = 0; i < (int)N_MACROS; ++i) {
         initial["macros"].push_back(0.0);

@@ -67,6 +67,13 @@ export class TextureMonitor extends MobxLitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    // Barrel mode: no local executor, no traced frames ever arrive.
+    // Skip registration + the per-frame autorun so we don't subscribe
+    // to a permanently-empty source. The render() path still draws the
+    // checkerboard canvas as a "no preview" indicator.
+    // TODO: once the barrel publishes low/high-res texture snapshots
+    // over WS, subscribe to those here keyed by `traceTarget`.
+    if (appState.local.barrelMode) return;
     this.registerTrace();
 
     this.frameDisposer = autorun(() => {
@@ -90,6 +97,7 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   updated(changed: Map<string, unknown>) {
+    if (appState.local.barrelMode) return;
     if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution')) {
       // Re-register if target, ID, or resolution changed
       if (changed.has('traceId')) {

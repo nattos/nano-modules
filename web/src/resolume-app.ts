@@ -53,12 +53,15 @@ async function main() {
     }
   };
 
-  // Resolume is the developer-facing sketch editor — load all three bundles
-  // so every effect is reachable.
-  appController.loadModule('com.nattos.core');
-  appController.loadModule('com.nattos.nano');
-  appController.loadModule('com.nattos.testonly');
-  appController.loadModule('com.nano.lights');
+  // Local-mode IDE: load every effect bundle so all effects are reachable.
+  // Barrel mode skips this — the worker never instantiates anything; the
+  // plugin list comes from the barrel's WS state subtree (see connectBarrel).
+  if (!barrelMode) {
+    appController.loadModule('com.nattos.core');
+    appController.loadModule('com.nattos.nano');
+    appController.loadModule('com.nattos.testonly');
+    appController.loadModule('com.nano.lights');
+  }
 
   if (barrelMode) connectBarrel(barrelUrl!);
 }
@@ -90,6 +93,20 @@ function connectBarrel(url: string) {
     appController.editSketch(BARREL_SKETCH_ID);
   };
 
+  /**
+   * Adopt the barrel's published effect schemas. Each entry is one
+   * registered effect on the native side (module_type → PluginInfo-ish
+   * shape). The controller derives `params` / `io` from the raw schema
+   * fields so its inspector + augmenter behave the same as in local
+   * mode — except no WasmHost ever runs on the web.
+   */
+  const applyPluginSchemasFromSnapshot = (schemasObj: any) => {
+    if (!schemasObj || typeof schemasObj !== 'object') return;
+    const remotePlugins = Object.values(schemasObj)
+      .filter((v: any) => v && typeof v === 'object' && typeof v.id === 'string') as any[];
+    appController.setBarrelPlugins(remotePlugins);
+  };
+
   barrel.onSnapshot('/', (data) => {
     (window as any).__barrelState = data;
     const plugins = data?.plugins ?? {};
@@ -99,7 +116,14 @@ function connectBarrel(url: string) {
       return;
     }
     barrelPluginKey = keys[0];
-    const sketch = plugins[barrelPluginKey!]?.state?.sketch ?? {};
+    const pluginState = plugins[barrelPluginKey!]?.state ?? {};
+    const sketch = pluginState.sketch ?? {};
+    // Plugin schemas must land before applying the sketch — the
+    // inspector + augmenter rely on them, and the sketch apply path
+    // calls `backfillEmptyInstanceStates` which needs the schemas to
+    // fill in defaults for instances the user dropped before any
+    // schema was known.
+    applyPluginSchemasFromSnapshot(pluginState.plugin_schemas);
     applySketchFromSnapshot(sketch);
     console.log(`[barrel] mirrored sketch from /plugins/${barrelPluginKey}/state/sketch`);
 

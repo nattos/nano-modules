@@ -9,6 +9,7 @@ import type { Sketch } from './sketch-types';
 export class EngineProxy {
   private worker: Worker;
   private _ready = false;
+  private _barrelMode = false;
 
   onStateUpdate: ((state: EngineState) => void) | null = null;
   onEffectsDiscovered: ((effects: EffectInfo[]) => void) | null = null;
@@ -26,11 +27,12 @@ export class EngineProxy {
   onError: ((message: string) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
 
-  constructor(width: number, height: number) {
+  constructor(width: number, height: number, barrelMode = false) {
     this.worker = new Worker(
       new URL('./engine-worker.ts', import.meta.url),
       { type: 'module' },
     );
+    this._barrelMode = barrelMode;
 
     this.worker.onmessage = (e: MessageEvent<WorkerEvent>) => {
       const event = e.data;
@@ -65,10 +67,11 @@ export class EngineProxy {
       }
     };
 
-    this.send({ type: 'init', width, height });
+    this.send({ type: 'init', width, height, barrelMode });
   }
 
   get ready() { return this._ready; }
+  get barrelMode() { return this._barrelMode; }
 
   private send(cmd: WorkerCommand, transfer?: Transferable[]) {
     if (transfer) this.worker.postMessage(cmd, transfer);

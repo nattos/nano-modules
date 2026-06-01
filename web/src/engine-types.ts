@@ -115,7 +115,13 @@ export interface TracePoint {
 export type ParamValue = number | number[] | string | boolean;
 
 export type WorkerCommand =
-  | { type: 'init'; width: number; height: number }
+  // `barrelMode: true` puts the worker into editor-only mode: no per-frame
+  // simulateTick, no warmupEffects (so no WasmHost ever gets instantiated),
+  // no broadcastState (the editor's plugin list comes from the WS bridge
+  // instead). The render loop's rAF still fires so paused/resumed state
+  // and frame-event posts stay alive for any UI bookkeeping that depends
+  // on them.
+  | { type: 'init'; width: number; height: number; barrelMode?: boolean }
   | { type: 'resize'; width: number; height: number }
   | { type: 'loadModule'; moduleType: string }
   | { type: 'instantiateEffect'; effectId: string }

@@ -1145,6 +1145,90 @@ export class AppController {
   }
 
   /**
+   * Adopt a plugin list published by the remote barrel through the WS
+   * bridge. Bypasses the engine worker entirely — in barrel mode the
+   * worker never instantiates effects, so its schemas would otherwise
+   * never reach the inspector or the augmenter.
+   *
+   * Each entry already carries an `id` and a raw `schema` fields object;
+   * `params` and `io` are derived here from the schema (mirroring the
+   * same derivation `wasm-host.ts` runs when a wasm effect registers
+   * locally), so callers don't have to think about that shape.
+   *
+   * Also surfaces the same list as `availableEffects` so the column
+   * picker has something to show — the create-tab is hidden in barrel
+   * mode but the per-column "Drop effect" UI still queries it.
+   */
+  setBarrelPlugins(remotePlugins: Array<{ id: string; key?: string; version?: string; schema?: Record<string, any> }>) {
+    const plugins: PluginInfo[] = remotePlugins.map(rp => {
+      const schema = rp.schema ?? {};
+      const params: PluginInfo['params'] = [];
+      const io: PluginInfo['io'] = [];
+      let paramIdx = 0;
+      for (const [name, fieldRaw] of Object.entries(schema)) {
+        const field = fieldRaw as any;
+        const ioFlags = field?.io ?? 0;
+        if (field?.type === 'texture') {
+          const dir = (ioFlags & 1) ? 0 : 1;       // 0=input, 1=output
+          const role = (ioFlags & 4) ? 0 : 1;       // 0=primary, 1=secondary
+          io.push({ index: io.length, name, kind: dir, role });
+        } else if (field?.type === 'object' || field?.type === 'array'
+                || field?.type === 'float2' || field?.type === 'float3'
+                || field?.type === 'float4') {
+          if (ioFlags & 2) {
+            const role = (ioFlags & 4) ? 0 : 1;
+            io.push({ index: io.length, name, kind: 2, role });
+          }
+        } else {
+          let type = 10;                            // Standard
+          if (field?.type === 'bool') type = 0;
+          else if (field?.type === 'event') type = 1;
+          else if (field?.type === 'int') type = 13;
+          else if (field?.type === 'string') type = 100;
+          let defaultValue = 0;
+          const fd = field?.default;
+          if (typeof fd === 'number') defaultValue = fd;
+          else if (typeof fd === 'boolean') defaultValue = fd ? 1 : 0;
+          params.push({
+            index: paramIdx++, name, type, defaultValue,
+            min: typeof field?.min === 'number' ? field.min : 0,
+            max: typeof field?.max === 'number' ? field.max : 1,
+          });
+          if (ioFlags & 2) {
+            const role = (ioFlags & 4) ? 0 : 1;
+            io.push({ index: io.length, name, kind: 2, role });
+          }
+        }
+      }
+      return {
+        key: rp.key ?? rp.id,
+        id: rp.id,
+        version: rp.version ?? '0.0.0',
+        params, io, schema,
+      };
+    });
+
+    const availableEffects: AvailableEffect[] = plugins.map(p => ({
+      id: p.id,
+      name: shortName(p.id),
+      description: '',
+      category: '',
+      keywords: [],
+    }));
+
+    runInAction(() => {
+      appState.local.plugins = plugins;
+      appState.local.availableEffects = availableEffects;
+    });
+
+    // Any sketch instances whose state landed before the schemas arrived
+    // (typical in barrel mode where the WS snapshot races schema and
+    // sketch arrival) now get their defaults filled in. The resulting
+    // mutation pushes the upgraded sketch back to the barrel.
+    this.backfillEmptyInstanceStates();
+  }
+
+  /**
    * Direct write into the sketches database without going through
    * `mutate()`. Used by the barrel sync to mirror remote state — no
    * undo entry, no IndexedDB persistence (the remote bridge owns it).
