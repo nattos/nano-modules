@@ -22,7 +22,7 @@ async function main() {
   // Boot the engine at 1920x1080 — the IDE is a development testbed for
   // effects, so we want the chain to render at full resolution by default.
   // (Resolume's entry stays at the smaller default for performance.)
-  await boot(1920, 1080);
+  await boot({ width: 1920, height: 1080 });
 
   // The IDE renders only the currently-selected project. Other user
   // projects and template copies stay in `appState.database.sketches` so
