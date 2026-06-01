@@ -531,6 +531,25 @@ if(APPLE)
   target_include_directories(sketch_augment PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sketch_augment PUBLIC nlohmann_json::nlohmann_json)
 
+  # --- Shared sketch executor ---
+  # Walks an augmented sketch graph, dispatching effects through the
+  # EffectRuntime. Reusable by the FFGL barrel plugin and the future
+  # bridge_server-with-native-effects path. Host owns the runtime +
+  # GPUBackend + input/output texture handles; this library handles
+  # tap routing, intermediate pool management, and the augmentation
+  # step internally.
+  add_library(sketch_executor STATIC
+    src/sketch/module_registry.cpp
+    src/sketch/sketch_executor.cpp
+  )
+  target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(sketch_executor PUBLIC
+    sketch_augment
+    effect_runtime
+    gpu_backend
+    nlohmann_json::nlohmann_json
+  )
+
   add_library(effects_native STATIC
     wasm_modules/soft_glow/main.cpp
     wasm_modules/motion_blur/main.cpp
@@ -665,9 +684,7 @@ if(APPLE)
   )
   target_link_libraries(NanoBarrel PRIVATE
     effects_native
-    effect_runtime
-    gpu_backend
-    sketch_augment
+    sketch_executor      # brings in sketch_augment + effect_runtime + gpu_backend
     bridge_core
     bridge_ws_server
     state_system

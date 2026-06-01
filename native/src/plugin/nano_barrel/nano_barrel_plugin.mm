@@ -48,7 +48,8 @@
 
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
-#include "sketch/sketch_augment.h"
+#include "sketch/module_registry.h"
+#include "sketch/sketch_executor.h"
 
 #import "InteropTexture.h"
 #include "barrel_log.h"
@@ -198,7 +199,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     BARREL_LOG("ctor-done",
                "params=%u port_pending=true config_blob_size=%zu effects=%zu",
-               N_PARAMS, config_blob_.size(), module_registry_.size());
+               N_PARAMS, config_blob_.size(),
+               registry_ ? registry_->size() : 0);
   }
 
   ~NanoBarrelPlugin() override {
@@ -221,11 +223,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (src_fbo_) { glDeleteFramebuffers(1, &src_fbo_); src_fbo_ = 0; }
     input_interop_.reset();
     output_interop_.reset();
-    for (int32_t h : intermediates_) {
-      if (h > 0 && gpu_) gpu_->release(h);
-    }
-    intermediates_.clear();
-    intermediates_w_ = intermediates_h_ = 0;
     return FF_SUCCESS;
   }
 
@@ -409,16 +406,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     effect_runtime::setHostDeltaTime(dt);
     effect_runtime::setHostViewport((int)W, (int)H);
 
-    // Walk the sketch.
+    // Pull the current sketch out of the bridge's state document and
+    // hand it to the shared executor. The executor owns the augmenter,
+    // intermediate pool, and tap routing; the plugin's only job here
+    // is the FFGL ↔ Metal interop around it.
     nlohmann::json sketch_json;
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
       sketch_json = bridge_core_.state_document().get_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch");
     }
-    int32_t finalHandle = executeSketch(sketch_json,
-                                        inputHandle, outputHandle,
-                                        (int)W, (int)H, dt);
+    int32_t finalHandle = executor_
+        ? executor_->execute(sketch_json,
+                              inputHandle, outputHandle,
+                              (int)W, (int)H, dt)
+        : inputHandle;
 
     gpu_->submit();
     rt_->drainConsoleLog();
@@ -432,6 +434,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
  private:
   // -- Effect runtime setup -------------------------------------------
+  // Builds the Metal-backed EffectRuntime, registers every shader MSL
+  // string from the effects_native bundle by the name each effect
+  // expects to find at `state::registerShaderSPV`, populates the
+  // ModuleRegistry with the editor module_types we statically link,
+  // and creates the SketchExecutor that walks them per frame.
   void initEffectRuntime() {
     device_ = MTLCreateSystemDefaultDevice();
     if (!device_) {
@@ -445,490 +452,42 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     rt_ = std::make_unique<effect_runtime::EffectRuntime>(gpu_.get());
 
-    // Register shader MSL by name. Effects call
-    // `state::registerShaderSPV(name, ...)` in their init(); the runtime
-    // ignores the SPV bytes and uses these pre-registered MSL strings
-    // for shader-module compile.
-    rt_->registerShaderMSL("compute",        BRIGHTNESS_CONTRAST_COMPUTE_MSL);
-    rt_->registerShaderMSL("pixel",          BRIGHTNESS_CONTRAST_PIXEL_MSL);
+    rt_->registerShaderMSL("compute",          BRIGHTNESS_CONTRAST_COMPUTE_MSL);
+    rt_->registerShaderMSL("pixel",            BRIGHTNESS_CONTRAST_PIXEL_MSL);
     rt_->registerShaderMSL("soft_glow_color",  SOFT_GLOW_COLOR_MSL);
     rt_->registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
     rt_->registerShaderMSL("reconstruct",      MOTION_BLUR_RECONSTRUCT_MSL);
     rt_->registerShaderMSL("pyramid_reduce",   MOTION_BLUR_PYRAMID_REDUCE_MSL);
 
-    registerEffect("video.brightness_contrast", "Brightness Contrast",
-                   &brightness_contrast::init, &brightness_contrast::tick,
-                   &brightness_contrast::render, &brightness_contrast::on_state_patched);
-    registerEffect("gen.soft_glow", "Soft Glow",
-                   &soft_glow::init, &soft_glow::tick,
-                   &soft_glow::render, &soft_glow::on_state_patched);
-    registerEffect("video.motion_blur", "Motion Blur",
-                   &motion_blur::init, &motion_blur::tick,
-                   &motion_blur::render, &motion_blur::on_state_patched);
+    registry_ = std::make_unique<sketch_executor::ModuleRegistry>(rt_.get());
+    registry_->registerEffect(
+        "video.brightness_contrast", "Brightness Contrast",
+        &brightness_contrast::init, &brightness_contrast::tick,
+        &brightness_contrast::render, &brightness_contrast::on_state_patched);
+    registry_->registerEffect(
+        "gen.soft_glow", "Soft Glow",
+        &soft_glow::init, &soft_glow::tick,
+        &soft_glow::render, &soft_glow::on_state_patched);
+    registry_->registerEffect(
+        "video.motion_blur", "Motion Blur",
+        &motion_blur::init, &motion_blur::tick,
+        &motion_blur::render, &motion_blur::on_state_patched);
+
+    executor_ = std::make_unique<sketch_executor::SketchExecutor>(
+        rt_.get(), registry_.get(), gpu_.get());
 
     rt_->drainConsoleLog();
+    BARREL_LOG("initEffectRuntime",
+               "effects=%zu", registry_->size());
   }
 
-  void registerEffect(const std::string& moduleType,
-                      const std::string& displayName,
-                      void (*init)(), void (*tick)(double),
-                      void (*render)(int, int),
-                      void (*on_state_patched)(int, const char*, const int*,
-                                                const int*, const int*)) {
-    effect_runtime::EffectDesc d;
-    d.id   = moduleType;
-    d.name = displayName;
-    d.init             = init;
-    d.tick             = tick;
-    d.render           = render;
-    d.on_state_patched = on_state_patched;
-    auto* inst = rt_->registerEffect(d);
-    if (!inst) {
-      BARREL_LOG("registerEffect", "registerEffect returned nullptr for %s",
-                 moduleType.c_str());
-      return;
-    }
-    inst->doInit();
-    RegisteredModule reg;
-    reg.inst = inst;
-    auto parsed = nlohmann::json::parse(inst->schemaJson(), nullptr, false);
-    if (!parsed.is_discarded() && parsed.is_object()) {
-      reg.schemaFields = parsed.value("fields", nlohmann::json::object());
-    } else {
-      reg.schemaFields = nlohmann::json::object();
-    }
-    extractTextureLeafPaths(reg.schemaFields, "",
-                            reg.inputTexturePaths,
-                            reg.outputTexturePaths);
-    BARREL_LOG("registerEffect",
-               "id=%s fields=%zu input_tex=%zu output_tex=%zu",
-               moduleType.c_str(),
-               reg.schemaFields.is_object() ? reg.schemaFields.size() : 0,
-               reg.inputTexturePaths.size(),
-               reg.outputTexturePaths.size());
-    module_registry_[moduleType] = std::move(reg);
-  }
-
-  // Recursive walk: split every texture-leaf path into the input and
-  // output buckets based on the io bitfield. Skips the primary
-  // tex_in / tex_out (which the executor wires explicitly each frame).
-  static void extractTextureLeafPaths(const nlohmann::json& fields,
-                                      const std::string& prefix,
-                                      std::vector<std::string>& inputs,
-                                      std::vector<std::string>& outputs) {
-    if (!fields.is_object()) return;
-    for (auto it = fields.begin(); it != fields.end(); ++it) {
-      const std::string& name = it.key();
-      const auto& def = it.value();
-      if (!def.is_object()) continue;
-      const std::string type = def.value("type", std::string());
-      const std::string path = prefix.empty() ? name : (prefix + "/" + name);
-      if (type == "texture") {
-        if (path == "tex_in" || path == "tex_out") continue;
-        const int io = def.value("io", 0);
-        if (io & 1) inputs.push_back(path);
-        if (io & 2) outputs.push_back(path);
-      } else if (type == "object") {
-        const auto& sub = def.value("fields", nlohmann::json::object());
-        extractTextureLeafPaths(sub, path, inputs, outputs);
-      }
-    }
-  }
-
-  // -- Sketch execution ----------------------------------------------
-  // Returns the GPU handle of the final pixels — either `outputHandle`
-  // (if any effect ran into it) or `inputHandle` (passthrough).
-  //
-  // Render-prep pipeline:
-  //   1. Augment the raw sketch with implicit struct-rail connections
-  //      via the shared `sketch_augment` library. After this step the
-  //      sketch carries synthetic rails on the column and explicit
-  //      read/write taps on each module — the same graph the editor's
-  //      controller.ts produces today, but generated here so the
-  //      barrel doesn't rely on the editor having done it.
-  //   2. Walk each column following the explicit taps. Texture rails
-  //      route a single texture per tap; struct rails snapshot every
-  //      texture leaf in the rail's schema and re-emit it under the
-  //      consumer's tap fieldPath (so producer's
-  //      `render_outputs/motion` lands at consumer's
-  //      `render_outputs/motion` — or `render_outputs_in/motion` if
-  //      the consumer's tap names it that way).
-  int32_t executeSketch(const nlohmann::json& rawSketch,
-                        int32_t inputHandle, int32_t outputHandle,
-                        int W, int H, double dt) {
-    if (!rawSketch.is_object()) return inputHandle;
-
-    // Build module_type → schema-fields map for the augmenter.
-    std::unordered_map<std::string, nlohmann::json> schemas;
-    schemas.reserve(module_registry_.size());
-    for (const auto& kv : module_registry_) {
-      schemas.emplace(kv.first, kv.second.schemaFields);
-    }
-    nlohmann::json sketch =
-        sketch_augment::augmentSketchWithImplicitConnections(rawSketch, schemas);
-
-    auto columns = sketch.value("columns", nlohmann::json::array());
-    if (!columns.is_array() || columns.empty()) return inputHandle;
-    auto instances = sketch.value("instances", nlohmann::json::object());
-    auto sketchRails = sketch.value("rails", nlohmann::json::array());
-
-    // One-shot diagnostic: dump the augmented sketch's per-column
-    // rails + taps so we can see explicit user-created taps. Only logs
-    // once every 600 frames so it doesn't drown the log.
-    if ((frame_ % 600) == 1) {
-      for (size_t ci = 0; ci < columns.size(); ++ci) {
-        const auto& cc = columns[ci];
-        auto crails = cc.value("rails", nlohmann::json::array());
-        BARREL_LOG("sketch-dump",
-                   "col=%zu rails=%s",
-                   ci, crails.dump().c_str());
-        auto cchain = cc.value("chain", nlohmann::json::array());
-        for (size_t ei = 0; ei < cchain.size(); ++ei) {
-          const auto& ee = cchain[ei];
-          auto taps = ee.value("taps", nlohmann::json::array());
-          if (!taps.is_array() || taps.empty()) continue;
-          BARREL_LOG("sketch-dump",
-                     "col=%zu chain=%zu module=%s taps=%s",
-                     ci, ei,
-                     ee.value("module_type", std::string()).c_str(),
-                     taps.dump().c_str());
-        }
-      }
-      auto skrails = sketch.value("rails", nlohmann::json::array());
-      if (skrails.is_array() && !skrails.empty()) {
-        BARREL_LOG("sketch-dump", "sketch_rails=%s", skrails.dump().c_str());
-      }
-    }
-
-    int32_t finalHandle = inputHandle;
-    bool anyDispatched = false;
-
-    for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
-      const auto& col = columns[colIdx];
-      auto chain = col.value("chain", nlohmann::json::array());
-      if (!chain.is_array() || chain.empty()) continue;
-
-      // Build per-column rail-by-id (column rails + sketch-wide rails).
-      std::unordered_map<std::string, nlohmann::json> railsById;
-      auto indexRails = [&](const nlohmann::json& rails) {
-        if (!rails.is_array()) return;
-        for (const auto& r : rails) {
-          if (!r.is_object()) continue;
-          std::string id = r.value("id", std::string());
-          if (!id.empty()) railsById[id] = r;
-        }
-      };
-      indexRails(col.value("rails", nlohmann::json::array()));
-      indexRails(sketchRails);
-
-      // railId → leafPath → texture handle. The empty-string leaf is
-      // reserved for single-texture rails.
-      std::unordered_map<std::string,
-        std::unordered_map<std::string, int32_t>> railTextures;
-      // railId → float value (single scalar per rail).
-      std::unordered_map<std::string, float> railFloats;
-
-      int32_t colInput = inputHandle;
-
-      std::vector<size_t> resolvable;
-      for (size_t i = 0; i < chain.size(); ++i) {
-        const auto& entry = chain[i];
-        std::string mt = entry.value("module_type", std::string());
-        if (module_registry_.count(mt)) resolvable.push_back(i);
-      }
-      if (resolvable.empty()) continue;
-
-      const bool isLastCol = (colIdx == columns.size() - 1);
-      for (size_t k = 0; k < resolvable.size(); ++k) {
-        size_t i = resolvable[k];
-        const auto& entry = chain[i];
-        const std::string mt      = entry.value("module_type", std::string());
-        const std::string instKey = entry.value("instance_key", std::string());
-
-        auto it = module_registry_.find(mt);
-        if (it == module_registry_.end()) continue;
-        const RegisteredModule& reg = it->second;
-        auto* inst = reg.inst;
-
-        const bool isLastInColumn = (k == resolvable.size() - 1);
-        const bool isFinalStage   = isLastCol && isLastInColumn;
-
-        int32_t outHandle;
-        if (isFinalStage) outHandle = outputHandle;
-        else              outHandle = nextIntermediate(W, H);
-
-        // Persisted state.
-        if (instances.is_object() && instances.contains(instKey)) {
-          const auto& instJson = instances[instKey];
-          const auto& state = instJson.value("state", nlohmann::json::object());
-          applyState(inst, state);
-        }
-
-        // -- Zero stale field state before this frame's tap routing.
-        //    Without this, an input texture set last frame by some now-
-        //    removed routing (eg implicit augmentation that's been
-        //    superseded by an explicit-but-empty user rail) keeps
-        //    pointing at a still-live texture handle and the effect
-        //    silently sees stale data. Connection markers reset for
-        //    the same reason — soft_glow's motion pass keys off
-        //    isOutputConnected("render_outputs"), so a stale "true" is
-        //    just as wrong as a stale handle. --
-        for (const auto& path : reg.inputTexturePaths) {
-          inst->setTextureField(path, 0);
-          inst->setFieldConnected(path, false, false);
-        }
-        for (const auto& path : reg.outputTexturePaths) {
-          inst->setFieldConnected(path, false, false);
-        }
-
-        // Primary channels.
-        inst->setTextureField("tex_in",  colInput);
-        inst->setTextureField("tex_out", outHandle);
-        inst->setFieldConnected("tex_in",  true,  false);
-        inst->setFieldConnected("tex_out", false, true);
-
-        // -- Read taps before render --
-        applyReadTaps(inst, entry, railsById, railTextures, railFloats);
-        // -- Pre-render: mark write-tap fields as output-connected
-        //    (eg soft_glow's render_outputs early-exits its motion
-        //    pass unless `isOutputConnected("render_outputs")`). --
-        markWriteTapOutputsConnected(inst, entry);
-
-        inst->doTick(dt);
-        inst->doRender(W, H);
-
-        // -- Write taps after render --
-        captureWriteTaps(inst, entry, instKey, instances,
-                          railsById, railTextures, railFloats);
-
-        anyDispatched = true;
-        finalHandle = outHandle;
-        colInput = outHandle;
-      }
-    }
-    return anyDispatched ? finalHandle : inputHandle;
-  }
-
-  // Read taps fire before the consumer's render. For a struct rail we
-  // walk the rail's schema for texture leaves and forward each from the
-  // captured producer handles into the consumer's `tap.fieldPath + leaf`.
-  // For a texture rail (single texture) the empty-string leaf is the
-  // payload.
-  void applyReadTaps(
-      effect_runtime::EffectInstance* inst,
-      const nlohmann::json& entry,
-      const std::unordered_map<std::string, nlohmann::json>& railsById,
-      const std::unordered_map<std::string,
-        std::unordered_map<std::string, int32_t>>& railTextures,
-      const std::unordered_map<std::string, float>& railFloats) {
-    if (!entry.contains("taps") || !entry["taps"].is_array()) return;
-    for (const auto& tap : entry["taps"]) {
-      if (tap.value("direction", std::string()) != "read") continue;
-      const std::string railId = tap.value("railId", std::string());
-      const std::string fieldPath = tap.value("fieldPath", std::string());
-      auto railIt = railsById.find(railId);
-      if (railIt == railsById.end()) {
-        if ((frame_ % 600) == 1) {
-          BARREL_LOG("read-tap-miss",
-                     "rail not indexed: railId=%s fieldPath=%s",
-                     railId.c_str(), fieldPath.c_str());
-        }
-        continue;
-      }
-
-      const auto& dataType = railIt->second.value("dataType", nlohmann::json());
-
-      // Float rail — forward the captured scalar via setParamFloat,
-      // routing the producer's instance-state value into the consumer's
-      // same-named field (or whatever fieldPath the read tap targets).
-      if (dataType.is_string() &&
-          dataType.get<std::string>() == "float") {
-        auto fit = railFloats.find(railId);
-        if (fit != railFloats.end()) {
-          inst->setParamFloat(fieldPath, fit->second);
-          inst->setFieldConnected(fieldPath, true, false);
-        }
-        continue;
-      }
-
-      // Texture / struct rail — route handles by leaf path.
-      auto texIt = railTextures.find(railId);
-      if (texIt == railTextures.end()) {
-        if ((frame_ % 600) == 1) {
-          BARREL_LOG("read-tap-empty",
-                     "rail has no published textures: railId=%s fieldPath=%s",
-                     railId.c_str(), fieldPath.c_str());
-        }
-        continue;
-      }
-      int routed = 0;
-      forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
-        auto lit = texIt->second.find(leaf);
-        if (lit == texIt->second.end() || lit->second <= 0) return;
-        const std::string target = leaf.empty() ? fieldPath
-                                                : (fieldPath + "/" + leaf);
-        inst->setTextureField(target, lit->second);
-        routed++;
-      });
-      if ((frame_ % 600) == 1) {
-        BARREL_LOG("read-tap",
-                   "railId=%s fieldPath=%s dataType=%s leaves_routed=%d",
-                   railId.c_str(), fieldPath.c_str(),
-                   dataType.dump().c_str(), routed);
-      }
-      inst->setFieldConnected(fieldPath, true, false);
-    }
-  }
-
-  // Write taps fire after the producer's render. Mirror image of read:
-  // for each texture leaf in the rail's schema, capture the producer's
-  // handle from `tap.fieldPath + leaf` into railTextures[railId][leaf].
-  void captureWriteTaps(
-      effect_runtime::EffectInstance* inst,
-      const nlohmann::json& entry,
-      const std::string& producerInstanceKey,
-      const nlohmann::json& sketchInstances,
-      const std::unordered_map<std::string, nlohmann::json>& railsById,
-      std::unordered_map<std::string,
-        std::unordered_map<std::string, int32_t>>& railTextures,
-      std::unordered_map<std::string, float>& railFloats) {
-    if (!entry.contains("taps") || !entry["taps"].is_array()) return;
-    for (const auto& tap : entry["taps"]) {
-      if (tap.value("direction", std::string()) != "write") continue;
-      const std::string railId = tap.value("railId", std::string());
-      const std::string fieldPath = tap.value("fieldPath", std::string());
-      auto railIt = railsById.find(railId);
-      if (railIt == railsById.end()) {
-        if ((frame_ % 600) == 1) {
-          BARREL_LOG("write-tap-miss",
-                     "rail not indexed: railId=%s fieldPath=%s",
-                     railId.c_str(), fieldPath.c_str());
-        }
-        continue;
-      }
-
-      const auto& dataType = railIt->second.value("dataType", nlohmann::json());
-
-      // Float rail — read the producer's current scalar value from the
-      // sketch's instance state and publish it. The runtime doesn't
-      // expose a "what's your current param value" API, but the
-      // canonical state is in sketch.instances[<key>].state which we
-      // already mirror from the bridge each frame.
-      if (dataType.is_string() &&
-          dataType.get<std::string>() == "float") {
-        float value = 0.0f;
-        bool found = false;
-        if (sketchInstances.is_object() &&
-            sketchInstances.contains(producerInstanceKey)) {
-          const auto& st = sketchInstances[producerInstanceKey]
-                              .value("state", nlohmann::json::object());
-          if (st.is_object() && st.contains(fieldPath)) {
-            const auto& v = st[fieldPath];
-            if      (v.is_number()) { value = (float)v.get<double>(); found = true; }
-            else if (v.is_boolean()) { value = v.get<bool>() ? 1.0f : 0.0f; found = true; }
-          }
-        }
-        if (found) {
-          railFloats[railId] = value;
-          inst->setFieldConnected(fieldPath, false, true);
-        }
-        if ((frame_ % 600) == 1) {
-          BARREL_LOG("write-tap-float",
-                     "railId=%s fieldPath=%s value=%.4f found=%d",
-                     railId.c_str(), fieldPath.c_str(),
-                     (double)value, (int)found);
-        }
-        continue;
-      }
-
-      // Texture / struct rail — capture handles by leaf path.
-      auto& texMap = railTextures[railId];
-      int captured = 0;
-      forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
-        const std::string source = leaf.empty() ? fieldPath
-                                                : (fieldPath + "/" + leaf);
-        int32_t h = inst->textureField(source);
-        if (h > 0) { texMap[leaf] = h; captured++; }
-      });
-      if ((frame_ % 600) == 1) {
-        BARREL_LOG("write-tap",
-                   "railId=%s fieldPath=%s dataType=%s leaves_captured=%d",
-                   railId.c_str(), fieldPath.c_str(),
-                   dataType.dump().c_str(), captured);
-      }
-    }
-  }
-
-  void markWriteTapOutputsConnected(
-      effect_runtime::EffectInstance* inst,
-      const nlohmann::json& entry) {
-    if (!entry.contains("taps") || !entry["taps"].is_array()) return;
-    for (const auto& tap : entry["taps"]) {
-      if (tap.value("direction", std::string()) != "write") continue;
-      const std::string fieldPath = tap.value("fieldPath", std::string());
-      inst->setFieldConnected(fieldPath, false, true);
-    }
-  }
-
-  // Visit each texture-leaf path in a rail's dataType. Texture rails
-  // emit a single empty-string leaf. Struct rails walk their schema's
-  // nested texture fields. Other rail types yield nothing.
-  template <class F>
-  static void forEachRailLeafTexture(const nlohmann::json& dataType, F&& f) {
-    if (dataType.is_string()) {
-      if (dataType.get<std::string>() == "texture") f(std::string());
-      return;
-    }
-    if (dataType.is_object() &&
-        dataType.value("kind", std::string()) == "struct") {
-      const auto& schema = dataType.value("schema", nlohmann::json());
-      std::vector<std::string> leaves;
-      sketch_augment::collectTextureLeaves(schema, "", leaves);
-      for (auto& l : leaves) f(l);
-    }
-  }
-
-  void applyState(effect_runtime::EffectInstance* inst,
-                  const nlohmann::json& state) {
-    if (!state.is_object()) return;
-    for (auto it = state.begin(); it != state.end(); ++it) {
-      const auto& v = it.value();
-      const std::string& name = it.key();
-      if (v.is_number()) {
-        inst->setParamFloat(name, (float)v.get<double>());
-      } else if (v.is_boolean()) {
-        inst->setParamFloat(name, v.get<bool>() ? 1.0f : 0.0f);
-      } else if (v.is_array()) {
-        std::vector<float> comps;
-        for (const auto& x : v) {
-          if (x.is_number()) comps.push_back((float)x.get<double>());
-        }
-        if (!comps.empty()) inst->setParamArray(name, comps);
-      } else if (v.is_string()) {
-        // Strings round-trip as JSON-quoted text through setParamJson;
-        // most effects ignore them, but keep the path open.
-        inst->setParamJson(name, "\"" + v.get<std::string>() + "\"");
-      }
-    }
-  }
-
-  int32_t nextIntermediate(int W, int H) {
-    if (W != intermediates_w_ || H != intermediates_h_) {
-      for (int32_t h : intermediates_) { if (h > 0 && gpu_) gpu_->release(h); }
-      intermediates_.clear();
-      intermediates_w_ = W; intermediates_h_ = H;
-    }
-    if (intermediate_cursor_ >= (int)intermediates_.size()) {
-      // Allocate RGBA8 (code 1). brightness_contrast et al. write
-      // through Metal's storageTexture API; format conversion is handled
-      // by the backend.
-      int32_t h = gpu_->createTexture((uint32_t)W, (uint32_t)H, 1);
-      intermediates_.push_back(h);
-    }
-    return intermediates_[intermediate_cursor_++];
-  }
 
   // -- Interop management ---------------------------------------------
+  // (Re)create the input/output `InteropTexture` pair on viewport size
+  // changes. Both interops are CVPixelBuffer-backed so the GL FBO side
+  // and the Metal MTLTexture side share IOSurface storage — zero-copy
+  // ping-pong between the host's GL pipeline and the executor's Metal
+  // dispatches.
   void ensureInterop(int inW, int inH, int outW, int outH) {
     if (!device_) return;
     if (!input_interop_ ||
@@ -945,8 +504,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           device_, [NSOpenGLContext currentContext], true,
           MTLPixelFormatBGRA8Unorm, outW, outH);
     }
-    // Rotating intermediates reset cursor per frame.
-    intermediate_cursor_ = 0;
   }
 
   // -- GL bridge helpers ----------------------------------------------
@@ -1114,37 +671,18 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   std::unique_ptr<bridge::WsServer> ws_server_;
   std::string                      barrel_plugin_key_;
 
-  // Effect runtime.
-  id<MTLDevice>                                       device_ = nil;
-  std::unique_ptr<gpu::GPUBackend>                    gpu_;
-  std::unique_ptr<effect_runtime::EffectRuntime>      rt_;
-  struct RegisteredModule {
-    effect_runtime::EffectInstance* inst = nullptr;
-    /** Parsed schema "fields" sub-object — fed to
-     *  augmentSketchWithImplicitConnections() each frame so it knows
-     *  every module's full schema. */
-    nlohmann::json schemaFields;
-    /** Slash-joined leaf paths for every input texture field declared
-     *  by the schema (excluding the primary "tex_in"). Each frame the
-     *  executor zeroes these before applying taps so stale handles
-     *  from a previous frame's routing can't leak through when the
-     *  current frame's tap config doesn't cover them. */
-    std::vector<std::string> inputTexturePaths;
-    /** Same idea, output side (excluding "tex_out"). Used to reset
-     *  output-connected markers each frame. The producer's render
-     *  reassigns the actual handle via state::setGpuTexture, so we
-     *  don't zero the handle itself. */
-    std::vector<std::string> outputTexturePaths;
-  };
-  std::unordered_map<std::string, RegisteredModule> module_registry_;
+  // Effect runtime. The plugin owns everything above the executor;
+  // the executor manages its own intermediate textures + per-frame
+  // tap state.
+  id<MTLDevice>                                            device_ = nil;
+  std::unique_ptr<gpu::GPUBackend>                         gpu_;
+  std::unique_ptr<effect_runtime::EffectRuntime>           rt_;
+  std::unique_ptr<sketch_executor::ModuleRegistry>         registry_;
+  std::unique_ptr<sketch_executor::SketchExecutor>         executor_;
 
-  // GL ↔ Metal interop + intermediate pool.
+  // GL ↔ Metal interop.
   std::unique_ptr<InteropTexture>  input_interop_;
   std::unique_ptr<InteropTexture>  output_interop_;
-  std::vector<int32_t>             intermediates_;
-  int                              intermediates_w_ = 0;
-  int                              intermediates_h_ = 0;
-  int                              intermediate_cursor_ = 0;
 
   // Time.
   double                           time_start_ = 0.0;

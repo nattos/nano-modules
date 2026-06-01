@@ -1,0 +1,127 @@
+// sketch_executor.h — host-agnostic sketch graph runner.
+//
+// Walks an editor-shaped sketch graph one frame at a time, dispatching
+// each module's compute kernels through the EffectRuntime, plumbing
+// data between modules via the explicit + augmentation-synthesized
+// taps the sketch carries on its `taps` arrays.
+//
+// Reusable wherever Metal-backed effects need to run against a
+// JSON-shaped graph: the FFGL barrel plugin owns one of these and
+// feeds it the sketch mirrored from its WebSocket bridge; the
+// in-process bridge_server dylib will own one of these once it grows
+// native-effect support; future CLI tools likewise.
+//
+// What the executor owns:
+//   - a small pool of intermediate Metal textures, recycled across
+//     frames and resized when the viewport changes;
+//   - the per-frame tap/rail routing state.
+//
+// What the host owns (and passes in):
+//   - the EffectRuntime and the ModuleRegistry built against it;
+//   - the GPUBackend (Metal today; abstract for future portability);
+//   - the input/output texture handles for the frame (typically
+//     adopted-from-interop handles in the FFGL host's case).
+//
+// What the executor does NOT do:
+//   - GL/Metal interop (host concern — `InteropTexture` in the FFGL
+//     plugin);
+//   - texture format conversion (Metal handles RGBA↔BGRA channel
+//     semantics);
+//   - state persistence (host pulls the sketch JSON from wherever it
+//     lives and passes it in);
+//   - logging (silent by design; host wraps if it wants traces).
+
+#pragma once
+
+#include "sketch/module_registry.h"
+
+#include <nlohmann/json.hpp>
+#include <unordered_map>
+#include <vector>
+#include <string>
+
+namespace gpu { class GPUBackend; }
+namespace effect_runtime {
+class EffectRuntime;
+class EffectInstance;
+}  // namespace effect_runtime
+
+namespace sketch_executor {
+
+class SketchExecutor {
+ public:
+  SketchExecutor(effect_runtime::EffectRuntime* rt,
+                 ModuleRegistry* registry,
+                 gpu::GPUBackend* gpu);
+  ~SketchExecutor();
+
+  SketchExecutor(const SketchExecutor&) = delete;
+  SketchExecutor& operator=(const SketchExecutor&) = delete;
+
+  /**
+   * Execute one frame.
+   *
+   * `rawSketch` is the un-augmented graph (typically the editor's
+   * current state, mirrored from the bridge). The executor augments
+   * it internally — wires implicit struct-rail connections through
+   * `sketch_augment::augmentSketchWithImplicitConnections` — before
+   * walking. The original JSON is not mutated.
+   *
+   * `inputHandle` is the GPU texture handle of the upstream pixels
+   * (eg the host's adopted GL→Metal input interop). `outputHandle`
+   * is the texture handle the executor writes the *final* stage's
+   * pixels into (eg the host's output interop). For sketches with
+   * no resolvable modules in the chain the executor returns
+   * `inputHandle` unchanged (passthrough); the host can use the
+   * returned handle to choose what to blit downstream.
+   *
+   * `W` / `H` are the render-pass dimensions. `dt` is the wall-clock
+   * delta since the previous frame, forwarded to each effect's
+   * `tick`.
+   */
+  int32_t execute(const nlohmann::json& rawSketch,
+                  int32_t inputHandle, int32_t outputHandle,
+                  int W, int H, double dt);
+
+ private:
+  effect_runtime::EffectRuntime* rt_;
+  ModuleRegistry* registry_;
+  gpu::GPUBackend* gpu_;
+
+  // Intermediate Metal textures, walked from cursor 0 each frame.
+  // Grown lazily up to (sketch's module count − 1); released on
+  // destruction or viewport change.
+  std::vector<int32_t> intermediates_;
+  int intermediates_w_ = 0;
+  int intermediates_h_ = 0;
+  int intermediate_cursor_ = 0;
+
+  int32_t nextIntermediate(int W, int H);
+
+  void applyState(effect_runtime::EffectInstance* inst,
+                  const nlohmann::json& state);
+
+  void applyReadTaps(
+      effect_runtime::EffectInstance* inst,
+      const nlohmann::json& entry,
+      const std::unordered_map<std::string, nlohmann::json>& railsById,
+      const std::unordered_map<std::string,
+        std::unordered_map<std::string, int32_t>>& railTextures,
+      const std::unordered_map<std::string, float>& railFloats);
+
+  void captureWriteTaps(
+      effect_runtime::EffectInstance* inst,
+      const nlohmann::json& entry,
+      const std::string& producerInstanceKey,
+      const nlohmann::json& sketchInstances,
+      const std::unordered_map<std::string, nlohmann::json>& railsById,
+      std::unordered_map<std::string,
+        std::unordered_map<std::string, int32_t>>& railTextures,
+      std::unordered_map<std::string, float>& railFloats);
+
+  void markWriteTapOutputsConnected(
+      effect_runtime::EffectInstance* inst,
+      const nlohmann::json& entry);
+};
+
+}  // namespace sketch_executor
