@@ -1,9 +1,11 @@
 #include "gpu/gpu_backend.h"
 
 #import <Metal/Metal.h>
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <map>
 #include <string>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace gpu {
@@ -510,6 +512,69 @@ public:
     return pixels;
   }
 
+  std::vector<uint8_t> readbackTextureScaled(int32_t textureHandle,
+                                              uint32_t srcW, uint32_t srcH,
+                                              uint32_t dstW, uint32_t dstH) override {
+    id<MTLTexture> src = getAs<id<MTLTexture>>(textureHandle);
+    if (!src || dstW == 0 || dstH == 0) return {};
+
+    // Fast path: same size — skip the scaler, getBytes directly. Also
+    // covers any caller that wants a copy without resampling.
+    if (srcW == dstW && srcH == dstH) {
+      return readbackTexture(textureHandle, dstW, dstH);
+    }
+
+    @autoreleasepool {
+      id<MTLTexture> dst = getOrCreateScratchScaleTarget(dstW, dstH);
+      if (!dst) return {};
+
+      if (!scaler_) {
+        scaler_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
+      }
+
+      // Use a dedicated command buffer so this doesn't tangle with
+      // mid-frame encoders the caller may still be building. The barrel
+      // calls this AFTER its main submit(), so cmdBuffer_ is nil here in
+      // practice; on a fresh buffer we don't have to care either way.
+      id<MTLCommandBuffer> cb = [queue_ commandBuffer];
+      [scaler_ encodeToCommandBuffer:cb
+                       sourceTexture:src
+                  destinationTexture:dst];
+      [cb commit];
+      [cb waitUntilCompleted];
+
+      std::vector<uint8_t> pixels((size_t)dstW * dstH * 4);
+      [dst getBytes:pixels.data()
+        bytesPerRow:dstW * 4
+         fromRegion:MTLRegionMake2D(0, 0, dstW, dstH)
+        mipmapLevel:0];
+      return pixels;
+    }
+  }
+
+private:
+  // Reuse a single scratch texture per destination size across frames.
+  // Preview captures hit the same handful of sizes (one for high-res,
+  // one for low-res thumbnails) so the cache stays tiny.
+  id<MTLTexture> getOrCreateScratchScaleTarget(uint32_t w, uint32_t h) {
+    uint64_t key = ((uint64_t)w << 32) | (uint64_t)h;
+    auto it = scaleScratchTextures_.find(key);
+    if (it != scaleScratchTextures_.end()) return it->second;
+
+    MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
+    desc.width = w;
+    desc.height = h;
+    desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
+    desc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModeShared;
+    id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
+    if (!tex) return nil;
+    scaleScratchTextures_[key] = tex;
+    return tex;
+  }
+
+public:
+
   // --- Upload ---
 
   void writeTexture(int32_t textureHandle,
@@ -568,6 +633,14 @@ private:
   id<MTLComputeCommandEncoder> computeEncoder_ = nil;
   id<MTLComputePipelineState> currentComputePSO_ = nil;
   id<MTLRenderCommandEncoder> renderEncoder_ = nil;
+
+  // Bilinear downscale used by readbackTextureScaled. Lazily created so
+  // backends that never preview pay nothing.
+  MPSImageBilinearScale* scaler_ = nil;
+  // Destination textures keyed by ((w << 32) | h). Read+write-only;
+  // never published through `resources_` because no caller outside this
+  // class needs handles to them.
+  std::unordered_map<uint64_t, id<MTLTexture>> scaleScratchTextures_;
 
   // Per-shader spec-constant metadata: name → (numeric index, MSL type).
   // Populated by createShaderModule by scanning the MSL source so

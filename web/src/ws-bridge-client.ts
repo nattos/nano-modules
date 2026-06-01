@@ -39,6 +39,10 @@ export class WsBridgeClient {
   onClose?: () => void;
   /** Fired on transport-level error events. */
   onError?: (err: Event) => void;
+  /** Fired for every WebSocket binary frame from the server. The barrel
+   *  uses this for out-of-band data — currently RGBA preview frames; the
+   *  JSON-patch protocol stays text-only. */
+  onBinaryFrame?: (buf: ArrayBuffer) => void;
 
   private ws: WebSocket | null = null;
   private sendQueue: string[] = [];
@@ -123,6 +127,11 @@ export class WsBridgeClient {
       return;
     }
     this.ws = ws;
+    // The browser delivers binary frames as Blob by default, which
+    // forces an async .arrayBuffer() round-trip. Request ArrayBuffer
+    // directly so onBinaryFrame can hand the buffer to a typed-array
+    // view in the same tick.
+    ws.binaryType = 'arraybuffer';
     ws.addEventListener('open', () => {
       console.log(`[WsBridgeClient] connected ${this.url}`);
       this.reconnectAttempts = 0;
@@ -136,9 +145,11 @@ export class WsBridgeClient {
       this.onOpen?.();
     });
     ws.addEventListener('message', (ev) => {
-      const data = typeof ev.data === 'string' ? ev.data : '';
-      if (!data) return;
-      this.handleMessage(data);
+      if (typeof ev.data === 'string') {
+        if (ev.data) this.handleMessage(ev.data);
+      } else if (ev.data instanceof ArrayBuffer) {
+        this.onBinaryFrame?.(ev.data);
+      }
     });
     ws.addEventListener('close', () => {
       console.log(`[WsBridgeClient] disconnected ${this.url}`);

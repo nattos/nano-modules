@@ -35,6 +35,7 @@
 
 #include "sketch/module_registry.h"
 
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,29 @@ namespace sketch_executor {
 
 class SketchExecutor {
  public:
+  /**
+   * Hook fired after each chain entry's render encodes (but before the
+   * next entry runs). The handles point at the textures feeding into
+   * the stage (`inputHandle`) and the texture it just wrote
+   * (`outputHandle`). Both are live for the rest of the frame; the host
+   * is expected to issue any downscale+readback before the next frame's
+   * `execute()` rotates the intermediate pool.
+   *
+   * `colIdx`/`chainIdx` match the editor's `chain_entry` trace-point
+   * shape so the host can filter against active preview requests.
+   */
+  using ChainEntryHook = std::function<void(
+      int colIdx, int chainIdx,
+      int32_t inputHandle, int32_t outputHandle,
+      int W, int H)>;
+
+  /**
+   * Hook fired after the final chain entry, identifying the texture
+   * the host can blit to its surface. Only fires when the sketch
+   * actually dispatched something (mirrors execute()'s return value).
+   */
+  using SketchOutputHook = std::function<void(int32_t handle, int W, int H)>;
+
   SketchExecutor(effect_runtime::EffectRuntime* rt,
                  ModuleRegistry* registry,
                  gpu::GPUBackend* gpu);
@@ -57,6 +81,11 @@ class SketchExecutor {
 
   SketchExecutor(const SketchExecutor&) = delete;
   SketchExecutor& operator=(const SketchExecutor&) = delete;
+
+  /** Set (or clear with empty) the per-chain-entry capture hook. */
+  void setChainEntryHook(ChainEntryHook hook) { chainEntryHook_ = std::move(hook); }
+  /** Set (or clear with empty) the sketch-output hook. */
+  void setSketchOutputHook(SketchOutputHook hook) { sketchOutputHook_ = std::move(hook); }
 
   /**
    * Execute one frame.
@@ -95,6 +124,9 @@ class SketchExecutor {
   int intermediates_w_ = 0;
   int intermediates_h_ = 0;
   int intermediate_cursor_ = 0;
+
+  ChainEntryHook chainEntryHook_;
+  SketchOutputHook sketchOutputHook_;
 
   int32_t nextIntermediate(int W, int H);
 

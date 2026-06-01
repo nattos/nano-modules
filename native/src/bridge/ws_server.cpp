@@ -101,4 +101,26 @@ void WsServer::send_to(ClientId client, const std::string& msg) {
   }
 }
 
+void WsServer::send_binary_to(ClientId client, const void* data, size_t size) {
+  if (!data || size == 0) return;
+  std::lock_guard lock(clients_mutex_);
+  auto it = clients_.find(client);
+  if (it == clients_.end()) return;
+  // ixwebsocket's sendBinary takes a std::string but treats it as an
+  // opaque byte buffer. The string ctor we use here does NOT scan for
+  // a null terminator — it's the (ptr, len) form — so embedded zeros
+  // pass through unchanged.
+  std::string buf(reinterpret_cast<const char*>(data), size);
+  it->second->sendBinary(buf);
+}
+
+void WsServer::broadcast_binary(const void* data, size_t size) {
+  if (!server_ || !running_ || !data || size == 0) return;
+  std::string buf(reinterpret_cast<const char*>(data), size);
+  std::lock_guard lock(clients_mutex_);
+  for (auto& [id, ws] : clients_) {
+    ws->sendBinary(buf);
+  }
+}
+
 } // namespace bridge

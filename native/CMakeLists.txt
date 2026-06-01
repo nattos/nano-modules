@@ -126,6 +126,7 @@ if(APPLE)
   target_include_directories(gpu_backend PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(gpu_backend PUBLIC
     "-framework Metal"
+    "-framework MetalPerformanceShaders"
     "-framework Foundation"
   )
 endif()

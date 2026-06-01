@@ -111,6 +111,27 @@ public:
   virtual std::vector<uint8_t> readbackTexture(int32_t textureHandle,
                                                 uint32_t w, uint32_t h) = 0;
 
+  // Bilinear-downscale a texture and read the result back as tightly-
+  // packed RGBA8 bytes (`dstW * dstH * 4` bytes). The barrel uses this
+  // every frame to publish preview thumbnails to the editor over the
+  // WS bridge — downscaling on the GPU keeps the readback small (a
+  // 1920×1080 frame → 128×72 thumbnail collapses ~8 MB into 37 kB).
+  //
+  // `srcW`/`srcH` are the source texture's native dimensions; the call
+  // samples the full source. Implementations are free to cache per-
+  // dest-size scratch textures internally — the caller is expected to
+  // call this many times per frame with a small set of recurring sizes.
+  //
+  // Returns an empty vector on unsupported backends or invalid handles.
+  virtual std::vector<uint8_t> readbackTextureScaled(int32_t textureHandle,
+                                                      uint32_t srcW,
+                                                      uint32_t srcH,
+                                                      uint32_t dstW,
+                                                      uint32_t dstH) {
+    (void)textureHandle; (void)srcW; (void)srcH; (void)dstW; (void)dstH;
+    return {};
+  }
+
   // Upload pixel bytes into a texture (for tests / FFGL input handoff
   // without going through a full render path). RGBA8 / BGRA8 in row-
   // major order; bytes.size() must be w*h*4. No-op for invalid handles.

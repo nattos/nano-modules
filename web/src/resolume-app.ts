@@ -147,7 +147,55 @@ function connectBarrel(url: string) {
         { op: 'replace', path: '/sketch', value: snapshot },
       ]);
     });
+
+    // Wire the trace controller → bridge preview-request relay. Every
+    // texture-monitor mount or unmount triggers a flush; we translate
+    // the consolidated tracepoint set into a JSON map at
+    // /preview_requests so the barrel knows which textures to capture
+    // and ship back. Only the `width`/`height` from `tp.size` ride
+    // through — the barrel ignores resolution metadata and just
+    // honours the requested dimensions.
+    let lastPushedRequestsJson: string | null = null;
+    appController.setBarrelPreviewPusher((tracePoints) => {
+      if (!barrelPluginKey) return;
+      const requests: Record<string, any> = {};
+      for (const tp of tracePoints) {
+        const target = tp.target;
+        let serialized: any = null;
+        if (target.type === 'sketch_output') {
+          serialized = { type: 'sketch_output', sketchId: target.sketchId };
+        } else if (target.type === 'chain_entry') {
+          serialized = {
+            type: 'chain_entry',
+            sketchId: target.sketchId,
+            colIdx: target.colIdx,
+            chainIdx: target.chainIdx,
+            side: target.side,
+          };
+        } else {
+          continue;  // plugin_output not yet supported in barrel mode
+        }
+        requests[tp.id] = {
+          target: serialized,
+          width:  tp.size?.width  ?? 128,
+          height: tp.size?.height ?? 72,
+        };
+      }
+      const json = JSON.stringify(requests);
+      if (json === lastPushedRequestsJson) return;
+      lastPushedRequestsJson = json;
+      barrel.patch(`/plugins/${barrelPluginKey}/state`, [
+        { op: 'replace', path: '/preview_requests', value: requests },
+      ]);
+    });
   });
+
+  // Binary frames from the bridge carry preview snapshots. The decoder
+  // lives on the controller because it owns appState; resolume-app is
+  // just the transport wire.
+  barrel.onBinaryFrame = (buf) => {
+    void appController.ingestBarrelPreviewFrame(buf);
+  };
 
   barrel.onPatch((ops) => {
     if (!barrelPluginKey) return;

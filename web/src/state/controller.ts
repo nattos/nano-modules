@@ -99,6 +99,12 @@ export class AppController {
   private barrelSketchId: string | null = null;
   private barrelPusher: ((sketch: Sketch) => void) | null = null;
   private lastPushedBarrelJson: string | null = null;
+  // In barrel mode the bridge — not the engine worker — owns the trace
+  // pipeline. resolume-app installs a pusher that translates the trace
+  // controller's flush into a /preview_requests JSON patch. The
+  // controller stays the single hub: texture-monitors register the
+  // same way in both modes.
+  private barrelPreviewPusher: ((tracePoints: TracePoint[]) => void) | null = null;
 
   // -- Persistence scheduling (no MobX reactions; fired explicitly by
   //    every method that mutates the relevant slice) --
@@ -160,8 +166,18 @@ export class AppController {
     this.history.longEditHook = () => {
       this.maybePushBarrelSketch();
     };
-    // Wire the trace controller to push trace points through the engine
-    traceController.onFlush = (tracePoints) => this.setTracePoints(tracePoints);
+    // Wire the trace controller. In local mode, push to the worker so
+    // it can capture pixels. In barrel mode the worker is idle; the
+    // installed barrelPreviewPusher pushes a /preview_requests JSON
+    // patch to the bridge so the native barrel can capture the matching
+    // textures and stream them back as binary WS frames.
+    traceController.onFlush = (tracePoints) => {
+      if (appState.local.barrelMode) {
+        this.barrelPreviewPusher?.(tracePoints);
+      } else {
+        this.setTracePoints(tracePoints);
+      }
+    };
   }
 
   setEngine(engine: EngineProxy) {
@@ -1285,6 +1301,77 @@ export class AppController {
     this.barrelSketchId = null;
     this.barrelPusher = null;
     this.lastPushedBarrelJson = null;
+  }
+
+  /**
+   * Install (or clear with null) the barrel-mode preview pusher.
+   * resolume-app uses this to relay trace-controller flush events into
+   * a /preview_requests JSON patch on the bridge. Called after the
+   * WsBridgeClient connects so the closure captures a live client.
+   *
+   * Triggers an immediate flush so the bridge picks up any registrations
+   * that landed before the pusher was wired (texture-monitors connected
+   * during the barrel handshake).
+   */
+  setBarrelPreviewPusher(pusher: ((tracePoints: TracePoint[]) => void) | null) {
+    this.barrelPreviewPusher = pusher;
+    // Force a flush so any texture-monitors that mounted before the WS
+    // connected get a fresh request landing on the bridge.
+    if (pusher) traceController.requestFlush();
+  }
+
+  /**
+   * Decode + ingest a binary WS frame from the barrel. Frame layout:
+   *
+   *   bytes 0-3: magic "NBPV"
+   *   byte 4:    version (1)
+   *   byte 5:    pixel format (1 = RGBA8)
+   *   bytes 6-7: u16 traceId length
+   *   bytes 8-9: u16 width
+   *   bytes 10-11: u16 height
+   *   bytes 12 ..: traceId (UTF-8) followed by tightly-packed RGBA8 pixels
+   *
+   * On success the decoded ImageBitmap lands at
+   * `appState.local.engine.tracedFrames[traceId]`, which existing
+   * texture-monitor autoruns already redraw from. Foreign / malformed
+   * frames are dropped silently.
+   */
+  async ingestBarrelPreviewFrame(buf: ArrayBuffer) {
+    if (buf.byteLength < 12) return;
+    const dv = new DataView(buf);
+    if (dv.getUint8(0) !== 0x4E || dv.getUint8(1) !== 0x42 ||  // 'N' 'B'
+        dv.getUint8(2) !== 0x50 || dv.getUint8(3) !== 0x56) {  // 'P' 'V'
+      return;
+    }
+    if (dv.getUint8(4) !== 1) return;        // unknown version
+    if (dv.getUint8(5) !== 1) return;        // unknown pixel format
+    const idLen  = dv.getUint16(6, true);
+    const width  = dv.getUint16(8, true);
+    const height = dv.getUint16(10, true);
+    const headerEnd = 12 + idLen;
+    const pixelBytes = width * height * 4;
+    if (buf.byteLength < headerEnd + pixelBytes) return;
+    const traceId = new TextDecoder().decode(new Uint8Array(buf, 12, idLen));
+    // ImageData requires its backing Uint8ClampedArray to span its own
+    // buffer (byteOffset 0, full length). A subview over the incoming
+    // ArrayBuffer would be cheaper but breaks the spec — so we copy
+    // into a fresh tightly-owned buffer. At low-res (128×72×4 = 36 kB)
+    // this is single-digit microseconds.
+    const owned = new Uint8ClampedArray(pixelBytes);
+    owned.set(new Uint8Array(buf, headerEnd, pixelBytes));
+    const imageData = new ImageData(owned, width, height);
+    const bitmap = await createImageBitmap(imageData);
+    runInAction(() => {
+      const prev = appState.local.engine.tracedFrames[traceId];
+      // ImageBitmap is a one-shot resource — drop the old one if any
+      // before swapping so the GPU-backed buffer can be freed.
+      try { prev?.close(); } catch { /* ignore */ }
+      appState.local.engine.tracedFrames = {
+        ...appState.local.engine.tracedFrames,
+        [traceId]: bitmap,
+      };
+      appState.local.engine.frameGeneration++;
+    });
   }
 
   private maybePushBarrelSketch() {

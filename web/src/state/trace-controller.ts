@@ -51,6 +51,17 @@ export class TraceController {
     }
   }
 
+  /**
+   * Schedule a flush even if the registration set hasn't changed.
+   * Useful when the consumer of the flush (eg barrel-mode preview
+   * pusher) gets wired after texture-monitors have already mounted —
+   * without this their initial registrations would sit unflushed until
+   * a later (un)register happened to bump `dirty`.
+   */
+  requestFlush(): void {
+    this.markDirty();
+  }
+
   private markDirty(): void {
     if (this.dirty) return;
     this.dirty = true;

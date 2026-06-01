@@ -162,10 +162,19 @@ int32_t SketchExecutor::execute(
       captureWriteTaps(inst, entry, instKey, instances,
                        railsById, railTextures, railFloats);
 
+      // -- Capture hook: lets a host (the FFGL barrel) publish per-stage
+      // textures over its WS bridge. Cheap when no hook is registered.
+      if (chainEntryHook_) {
+        chainEntryHook_((int)colIdx, (int)i, colInput, outHandle, W, H);
+      }
+
       anyDispatched = true;
       finalHandle = outHandle;
       colInput = outHandle;
     }
+  }
+  if (anyDispatched && sketchOutputHook_) {
+    sketchOutputHook_(finalHandle, W, H);
   }
   return anyDispatched ? finalHandle : inputHandle;
 }

@@ -159,6 +159,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           if (key == barrel_plugin_key_) {
             dirty_ = true;
             dirty_since_ms_ = ::nano_barrel_log::now_ms();
+            // Patches don't tell us which subpath changed, so we re-read
+            // the preview_requests subtree unconditionally. It's a small
+            // JSON object — rebuild cost is in the microseconds.
+            refreshPreviewRequests();
           }
         });
 
@@ -434,6 +438,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       sketch_json = bridge_core_.state_document().get_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch");
     }
+    // Snapshots for the editor's preview push are gathered during the
+    // executor's render via the chain-entry / sketch-output hooks bound
+    // in initEffectRuntime. Clear them each frame so a request that's
+    // been removed (or whose chain entry no longer exists) doesn't
+    // resurrect last frame's pixels.
+    frame_captures_.clear();
     int32_t finalHandle = executor_
         ? executor_->execute(sketch_json,
                               inputHandle, outputHandle,
@@ -442,6 +452,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     gpu_->submit();
     rt_->drainConsoleLog();
+
+    // After submit() returns the GPU work is fully complete; intermediates
+    // and the output interop carry this frame's pixels. Publish any
+    // requested previews before next frame's execute() rotates the pool.
+    publishPreviewFrames();
+
     gpu_->release(inputHandle);
     gpu_->release(outputHandle);
 
@@ -493,6 +509,25 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     executor_ = std::make_unique<sketch_executor::SketchExecutor>(
         rt_.get(), registry_.get(), gpu_.get());
+
+    // Wire the executor's capture hooks into the per-frame snapshot map.
+    // Hooks fire DURING execute() (between chain-entry encodes), so
+    // we only record handles — actual readback happens later this frame,
+    // after submit(), when the GPU work has completed.
+    executor_->setChainEntryHook(
+        [this](int colIdx, int chainIdx,
+               int32_t inputHandle, int32_t outputHandle, int W, int H) {
+          // Single-sketch barrel → no sketchId in the key.
+          char buf[64];
+          snprintf(buf, sizeof(buf), "ce:%d/%d/input", colIdx, chainIdx);
+          frame_captures_[buf] = {inputHandle, W, H};
+          snprintf(buf, sizeof(buf), "ce:%d/%d/output", colIdx, chainIdx);
+          frame_captures_[buf] = {outputHandle, W, H};
+        });
+    executor_->setSketchOutputHook(
+        [this](int32_t handle, int W, int H) {
+          frame_captures_["so"] = {handle, W, H};
+        });
 
     rt_->drainConsoleLog();
     BARREL_LOG("initEffectRuntime",
@@ -655,6 +690,96 @@ class NanoBarrelPlugin : public CFFGLPlugin {
                "applied sketch (json_size=%zu)", sketch_json.size());
   }
 
+  // -- Preview helpers ------------------------------------------------
+  // Rebuild preview_requests_ from the bridge state document. Caller
+  // must hold tick_mu_.
+  void refreshPreviewRequests() {
+    auto path = "/plugins/" + barrel_plugin_key_ + "/state/preview_requests";
+    auto raw = bridge_core_.state_document().get_at(path);
+    preview_requests_.clear();
+    if (!raw.is_object()) return;
+    for (auto it = raw.begin(); it != raw.end(); ++it) {
+      const auto& entry = it.value();
+      if (!entry.is_object()) continue;
+      PreviewRequest req;
+      req.traceId = it.key();
+      req.width   = (uint32_t)entry.value("width",  128);
+      req.height  = (uint32_t)entry.value("height", 72);
+      const auto& target = entry.value("target", nlohmann::json::object());
+      const std::string ttype = target.value("type", std::string());
+      if (ttype == "sketch_output") {
+        req.targetKey = "so";
+      } else if (ttype == "chain_entry") {
+        const int col   = target.value("colIdx",   -1);
+        const int chain = target.value("chainIdx", -1);
+        const std::string side = target.value("side", std::string("output"));
+        if (col < 0 || chain < 0) continue;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "ce:%d/%d/%s",
+                 col, chain, side.c_str());
+        req.targetKey = buf;
+      } else {
+        continue;
+      }
+      preview_requests_[req.traceId] = std::move(req);
+    }
+  }
+
+  // Format described inline; the matching decoder lives in
+  // web/src/widgets/texture-monitor.ts (handleBinaryFrame).
+  static std::vector<uint8_t> buildPreviewFrameBytes(
+      const std::string& traceId, uint16_t width, uint16_t height,
+      const std::vector<uint8_t>& pixels) {
+    const size_t headerSize = 12 + traceId.size();
+    std::vector<uint8_t> out;
+    out.reserve(headerSize + pixels.size());
+    out.resize(headerSize);
+    out[0] = 'N'; out[1] = 'B'; out[2] = 'P'; out[3] = 'V';
+    out[4] = 1;             // version
+    out[5] = 1;             // format: RGBA8
+    uint16_t idLen = (uint16_t)traceId.size();
+    out[6] = (uint8_t)(idLen & 0xFF);
+    out[7] = (uint8_t)(idLen >> 8);
+    out[8] = (uint8_t)(width  & 0xFF);
+    out[9] = (uint8_t)(width  >> 8);
+    out[10] = (uint8_t)(height & 0xFF);
+    out[11] = (uint8_t)(height >> 8);
+    memcpy(out.data() + 12, traceId.data(), idLen);
+    out.insert(out.end(), pixels.begin(), pixels.end());
+    return out;
+  }
+
+  void publishPreviewFrames() {
+    if (!gpu_ || !ws_server_) return;
+    // Copy the active request set under the lock, then release before
+    // doing GPU readbacks / WS sends — neither needs the bridge mutex.
+    std::vector<PreviewRequest> reqs;
+    {
+      std::lock_guard<std::mutex> lock(tick_mu_);
+      reqs.reserve(preview_requests_.size());
+      for (auto& [_, r] : preview_requests_) reqs.push_back(r);
+    }
+    if (reqs.empty()) return;
+    for (const auto& req : reqs) {
+      auto it = frame_captures_.find(req.targetKey);
+      if (it == frame_captures_.end()) continue;
+      const auto& slot = it->second;
+      if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
+      auto pixels = gpu_->readbackTextureScaled(
+          slot.handle,
+          (uint32_t)slot.width, (uint32_t)slot.height,
+          req.width, req.height);
+      if (pixels.empty()) continue;
+      auto bytes = buildPreviewFrameBytes(
+          req.traceId, (uint16_t)req.width, (uint16_t)req.height, pixels);
+      // Typical case is exactly one editor connected; multi-client
+      // scenarios all share the same request set today (the request map
+      // isn't keyed by client). A per-client routing layer can come if
+      // we ever expect concurrent editors.
+      ws_server_->broadcast_binary(bytes.data(), bytes.size());
+    }
+  }
+
   void maybeRegenerateConfig() {
     bool should_regen = false;
     std::string sketch_json;
@@ -683,11 +808,39 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     RaiseParamEvent(P_CONFIG, FF_EVENT_FLAG_VALUE);
   }
 
-  // -- State -----------------------------------------------------------
+  // -- Preview push (per-frame texture snapshots over WS binary) ------
+  // The editor publishes a map of { traceId → { target, width, height } }
+  // at /plugins/<key>/state/preview_requests. We re-read the full map
+  // each time the bridge's client_patch_callback fires (cheap; the map
+  // is tiny). Each frame we run the executor with hooks that record the
+  // texture handles for every chain entry + the final sketch output,
+  // then iterate requests and ship each one as a binary WS frame.
+  struct PreviewRequest {
+    // Editor-facing trace ID — the only thing routed back to the web.
+    std::string traceId;
+    // "so:<sketchId>" or "ce:<sketchId>/<col>/<chain>/<side>". Same shape
+    // as the web's trace-controller targetKey so the executor hooks can
+    // store under matching keys.
+    std::string targetKey;
+    uint32_t    width  = 128;
+    uint32_t    height = 72;
+  };
+  struct CaptureSlot {
+    int32_t  handle = -1;
+    int      width  = 0;
+    int      height = 0;
+  };
+
   std::mutex                       tick_mu_;
   bridge::BridgeCore               bridge_core_;
   std::unique_ptr<bridge::WsServer> ws_server_;
   std::string                      barrel_plugin_key_;
+
+  // Active preview requests (guarded by tick_mu_).
+  std::unordered_map<std::string, PreviewRequest> preview_requests_;
+  // Per-frame texture snapshots (NOT guarded — only touched on render
+  // thread between executor->execute() and the publish loop below it).
+  std::unordered_map<std::string, CaptureSlot> frame_captures_;
 
   // Effect runtime. The plugin owns everything above the executor;
   // the executor manages its own intermediate textures + per-frame
