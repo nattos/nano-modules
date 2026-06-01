@@ -420,38 +420,8 @@ if(APPLE)
   # websocket bridge so the sketch editor can connect. Links bridge_core
   # directly — no WASM loader at this layer (the user wants
   # bridge_core's code reused statically; WASM reload isn't a v0 need).
-  add_library(NanoBarrel MODULE
-    src/plugin/nano_barrel/nano_barrel_plugin.cpp
-  )
-  target_include_directories(NanoBarrel PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  target_link_libraries(NanoBarrel PRIVATE
-    ffgl::sdk
-    bridge_core
-    bridge_ws_server
-    state_system
-    param_cache
-    resolume_protocol
-    json_utils
-    nlohmann_json::nlohmann_json
-    ixwebsocket
-    "-framework OpenGL"
-  )
-  set_target_properties(NanoBarrel PROPERTIES
-    BUNDLE TRUE
-    BUNDLE_EXTENSION "bundle"
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
-    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
-  )
-  if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
-    set(NANOBARREL_CODESIGN_IDENTITY "-")
-  endif()
-  add_custom_command(TARGET NanoBarrel POST_BUILD
-    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
-            "${NANOBARREL_CODESIGN_IDENTITY}"
-            $<TARGET_BUNDLE_DIR:NanoBarrel>
-    COMMENT "Codesigning NanoBarrel.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
-    VERBATIM
-  )
+  # NanoBarrel target is defined later, after the no-WASM native
+  # runtime block exposes effects_native / effect_runtime / gpu_backend.
 endif()
 
 # --- Bridge Harness (manual testing tool) ---
@@ -529,6 +499,7 @@ if(APPLE)
   set(EFFECT_MSL_HEADERS
     "${EFFECTS_NATIVE_TMP}/soft_glow_msl.h"
     "${EFFECTS_NATIVE_TMP}/motion_blur_msl.h"
+    "${EFFECTS_NATIVE_TMP}/brightness_contrast_msl.h"
   )
   add_custom_command(
     OUTPUT ${EFFECT_MSL_HEADERS}
@@ -539,6 +510,8 @@ if(APPLE)
       ${EFFECTS_NATIVE_TMP}/soft_glow_motion.spv
       ${EFFECTS_NATIVE_TMP}/motion_blur_reconstruct.spv
       ${EFFECTS_NATIVE_TMP}/motion_blur_pyramid_reduce.spv
+      ${EFFECTS_NATIVE_TMP}/brightness_contrast_compute.spv
+      ${EFFECTS_NATIVE_TMP}/brightness_contrast_pixel.spv
     COMMENT "Translating effect SPV → MSL headers via spirv-cross"
     VERBATIM
   )
@@ -548,9 +521,20 @@ if(APPLE)
   # same source compiled for WASM; the namespace wrappers
   # (namespace soft_glow { ... }, namespace motion_blur { ... })
   # prevent symbol collisions.
+  # --- Shared sketch-render preparation ---
+  # Lives outside the effect runtime so any host (FFGL plugin, future
+  # CLI, wasm-bound web engine-worker) consumes the same augmentation
+  # logic for implicit struct-rail wiring.
+  add_library(sketch_augment STATIC
+    src/sketch/sketch_augment.cpp
+  )
+  target_include_directories(sketch_augment PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(sketch_augment PUBLIC nlohmann_json::nlohmann_json)
+
   add_library(effects_native STATIC
     wasm_modules/soft_glow/main.cpp
     wasm_modules/motion_blur/main.cpp
+    wasm_modules/brightness_contrast/main.cpp
   )
   target_include_directories(effects_native PUBLIC
     ${EFFECTS_NATIVE_INC}
@@ -659,6 +643,62 @@ if(APPLE)
             "${STREAKYBLOBS_CODESIGN_IDENTITY}"
             $<TARGET_BUNDLE_DIR:StreakyBlobs>
     COMMENT "Codesigning StreakyBlobs.bundle (identity=${STREAKYBLOBS_CODESIGN_IDENTITY})"
+    VERBATIM
+  )
+
+  # --- NanoBarrel FFGL bundle ---
+  # The full-fat barrel: one FFGL bundle that hosts a sketch + bridge
+  # (FF_TYPE_FILE config persisted by Resolume + per-instance WS) AND
+  # executes the sketch each frame via the Metal-backed effect runtime.
+  # Mirrors the StreakyBlobs link set — same effects_native / runtime /
+  # gpu_backend dependency, same InteropTexture for GL↔Metal.
+  set(FFGL_BUNDLE_LINK_FLAGS_BARREL "-undefined dynamic_lookup")
+  add_library(NanoBarrel MODULE
+    src/plugin/nano_barrel/nano_barrel_plugin.mm
+    src/plugin/nano_barrel/InteropTexture.m
+  )
+  target_include_directories(NanoBarrel PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${EFFECTS_NATIVE_INC}
+    ${EFFECTS_NATIVE_TMP}
+    ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
+  )
+  target_link_libraries(NanoBarrel PRIVATE
+    effects_native
+    effect_runtime
+    gpu_backend
+    sketch_augment
+    bridge_core
+    bridge_ws_server
+    state_system
+    param_cache
+    resolume_protocol
+    json_utils
+    nlohmann_json::nlohmann_json
+    ixwebsocket
+    ffgl::sdk
+    "-framework OpenGL"
+    "-framework Metal"
+    "-framework MetalKit"
+    "-framework CoreVideo"
+    "-framework AppKit"
+    "-framework Foundation"
+  )
+  target_compile_options(NanoBarrel PRIVATE -Wno-attributes -Wno-deprecated-declarations)
+  set_target_properties(NanoBarrel PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS_BARREL}"
+  )
+  if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
+    set(NANOBARREL_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoBarrel POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOBARREL_CODESIGN_IDENTITY}"
+            $<TARGET_BUNDLE_DIR:NanoBarrel>
+    COMMENT "Codesigning NanoBarrel.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
     VERBATIM
   )
 endif()

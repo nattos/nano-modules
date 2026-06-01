@@ -30,6 +30,7 @@ fi
 ENTRIES=(
   "soft_glow:color,motion"
   "motion_blur:reconstruct,pyramid_reduce"
+  "brightness_contrast:compute,pixel"
 )
 
 emit_header() {
