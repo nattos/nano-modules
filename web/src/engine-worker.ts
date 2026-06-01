@@ -348,6 +348,18 @@ async function frame() {
   if (paused) {
     // Keep the loop alive but skip simulation. Posting fps=0 keeps the UI's
     // pause indicator reactive (consumers re-render as expected).
+    //
+    // Crucially we still drain pending state broadcasts here. Plugin
+    // schemas, IO declarations, and hidden-field overlays can change
+    // while paused (eg WASM HMR, the Effect IDE's setFieldHidden) and
+    // the editor needs those updates to keep its inspector coherent.
+    // Skipping broadcastState during pause silently strands the editor
+    // on stale state — and used to also strand barrel mode's plugin
+    // schemas behind a perma-paused engine inherited from another tab.
+    if (stateGeneration !== lastBroadcastGeneration) {
+      broadcastState();
+      lastBroadcastGeneration = stateGeneration;
+    }
     post({
       type: 'frame',
       fps: 0,
@@ -903,9 +915,49 @@ async function loadModule(moduleType: string) {
       }))
     });
 
+    // Warm up each effect's schema. Each `activateEffect` instantiates
+    // the WASM module afresh and runs the effect's `init`, which calls
+    // the `set_schema` host import — which is what actually registers
+    // the plugin (with its full schema and param defaults) in bridge
+    // core's `/global/plugins`. Without this, the schema only lands
+    // once a *sketch instance* runs the effect, and the editor can't
+    // look up param defaults at drop-time (the standalone IDE got away
+    // with it because the dev fixture sketches incidentally instantiate
+    // a handful of effects; barrel mode doesn't).
+    //
+    // Each warmup host stays referenced in `warmupHosts` so it isn't
+    // GC'd while bridge core still holds its plugin key. Memory cost
+    // ~1-2 MB per effect, fine for our effect counts.
+    await warmupEffects(compiled, effects);
+
     markDirty();
+    // Push state immediately so the editor sees the newly-registered
+    // plugin schemas even if the simulation frame loop hasn't ticked
+    // yet (eg the engine is paused, or simulateTick is throwing on a
+    // sketch that's missing an upstream module). Without this the
+    // editor's `local.plugins` would stay empty until something else
+    // bumped stateGeneration past lastBroadcastGeneration.
+    broadcastState();
+    lastBroadcastGeneration = stateGeneration;
   } catch (e) {
     post({ type: 'error', message: `Failed to load ${moduleType}: ${e}` });
+  }
+}
+
+const warmupHosts: WasmHost[] = [];
+
+async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string }[]) {
+  for (const eff of effects) {
+    try {
+      const wh = new WasmHost();
+      wh.bridgeCore = bridgeCore;
+      wh.gpuHost = gpuHost;
+      await wh.load(compiled);
+      wh.activateEffect(eff.id);
+      warmupHosts.push(wh);
+    } catch (err) {
+      console.warn(`[warmup] schema registration failed for ${eff.id}:`, err);
+    }
   }
 }
 

@@ -673,7 +673,58 @@ export class AppController {
       // overwrites its sketches map — but the augmented form will
       // differ from whatever was pushed before plugins arrived.
       this.syncSketchesToEngine();
+      // Schemas just arrived → back-fill any instance whose state was
+      // left empty because the schema wasn't yet known when the user
+      // dropped the effect. This is the common path in barrel mode,
+      // where no effect plugins get registered until they're first
+      // used (and the user's first drop is the first use). The
+      // resulting mutation pushes proper defaults back to the barrel.
+      this.backfillEmptyInstanceStates();
     }
+  }
+
+  /**
+   * Walk every sketch's instance map; for any instance whose `state`
+   * is `{}` and whose plugin schema is now known, populate defaults
+   * from `plugin.params`. Coalesces into one `mutate(...)` so undo
+   * sees a single "discover defaults" step (and the barrel push fires
+   * exactly once with the post-discovery sketch).
+   */
+  private backfillEmptyInstanceStates() {
+    const pluginsById = new Map<string, PluginInfo>();
+    for (const p of appState.local.plugins) {
+      if (p.params && p.params.length > 0) pluginsById.set(p.id, p);
+    }
+    if (pluginsById.size === 0) return;
+
+    type Job = { sketchId: string; instanceKey: string; defaults: Record<string, number> };
+    const jobs: Job[] = [];
+    for (const [sketchId, sketch] of Object.entries(appState.database.sketches)) {
+      const instances = sketch?.instances;
+      if (!instances) continue;
+      for (const [instKey, inst] of Object.entries(instances)) {
+        if (!inst || typeof inst !== 'object') continue;
+        const state = (inst as any).state;
+        if (state && typeof state === 'object' && Object.keys(state).length > 0) continue;
+        const moduleType = (inst as any).module_type;
+        if (typeof moduleType !== 'string') continue;
+        const plugin = pluginsById.get(moduleType);
+        if (!plugin) continue;
+        const defaults: Record<string, number> = {};
+        for (const p of plugin.params) defaults[p.name] = p.defaultValue;
+        if (Object.keys(defaults).length === 0) continue;
+        jobs.push({ sketchId, instanceKey: instKey, defaults });
+      }
+    }
+    if (jobs.length === 0) return;
+
+    this.mutate('Discover plugin defaults', draft => {
+      for (const job of jobs) {
+        const sk = draft.sketches[job.sketchId];
+        if (!sk?.instances?.[job.instanceKey]) continue;
+        sk.instances[job.instanceKey].state = job.defaults;
+      }
+    });
   }
 
   addToStaging(plugin: PluginInfo) {
@@ -1102,6 +1153,14 @@ export class AppController {
       try { this.lastPushedBarrelJson = JSON.stringify(sketch); }
       catch { this.lastPushedBarrelJson = null; }
     }
+    // The remote may have handed us instances with `state: {}` left over
+    // from before the plugin schemas were known (eg the user dropped an
+    // effect in barrel mode before the warmup landed). Run the backfill
+    // unconditionally — it's a no-op when plugins aren't yet registered
+    // OR when every instance already has populated state, and when it
+    // does have work, the resulting mutation push upgrades the persisted
+    // bridge blob in place.
+    this.backfillEmptyInstanceStates();
   }
 
   /**
