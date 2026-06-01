@@ -497,10 +497,42 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     } else {
       reg.schemaFields = nlohmann::json::object();
     }
-    BARREL_LOG("registerEffect", "id=%s fields=%zu",
+    extractTextureLeafPaths(reg.schemaFields, "",
+                            reg.inputTexturePaths,
+                            reg.outputTexturePaths);
+    BARREL_LOG("registerEffect",
+               "id=%s fields=%zu input_tex=%zu output_tex=%zu",
                moduleType.c_str(),
-               reg.schemaFields.is_object() ? reg.schemaFields.size() : 0);
+               reg.schemaFields.is_object() ? reg.schemaFields.size() : 0,
+               reg.inputTexturePaths.size(),
+               reg.outputTexturePaths.size());
     module_registry_[moduleType] = std::move(reg);
+  }
+
+  // Recursive walk: split every texture-leaf path into the input and
+  // output buckets based on the io bitfield. Skips the primary
+  // tex_in / tex_out (which the executor wires explicitly each frame).
+  static void extractTextureLeafPaths(const nlohmann::json& fields,
+                                      const std::string& prefix,
+                                      std::vector<std::string>& inputs,
+                                      std::vector<std::string>& outputs) {
+    if (!fields.is_object()) return;
+    for (auto it = fields.begin(); it != fields.end(); ++it) {
+      const std::string& name = it.key();
+      const auto& def = it.value();
+      if (!def.is_object()) continue;
+      const std::string type = def.value("type", std::string());
+      const std::string path = prefix.empty() ? name : (prefix + "/" + name);
+      if (type == "texture") {
+        if (path == "tex_in" || path == "tex_out") continue;
+        const int io = def.value("io", 0);
+        if (io & 1) inputs.push_back(path);
+        if (io & 2) outputs.push_back(path);
+      } else if (type == "object") {
+        const auto& sub = def.value("fields", nlohmann::json::object());
+        extractTextureLeafPaths(sub, path, inputs, outputs);
+      }
+    }
   }
 
   // -- Sketch execution ----------------------------------------------
@@ -540,6 +572,34 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     auto instances = sketch.value("instances", nlohmann::json::object());
     auto sketchRails = sketch.value("rails", nlohmann::json::array());
 
+    // One-shot diagnostic: dump the augmented sketch's per-column
+    // rails + taps so we can see explicit user-created taps. Only logs
+    // once every 600 frames so it doesn't drown the log.
+    if ((frame_ % 600) == 1) {
+      for (size_t ci = 0; ci < columns.size(); ++ci) {
+        const auto& cc = columns[ci];
+        auto crails = cc.value("rails", nlohmann::json::array());
+        BARREL_LOG("sketch-dump",
+                   "col=%zu rails=%s",
+                   ci, crails.dump().c_str());
+        auto cchain = cc.value("chain", nlohmann::json::array());
+        for (size_t ei = 0; ei < cchain.size(); ++ei) {
+          const auto& ee = cchain[ei];
+          auto taps = ee.value("taps", nlohmann::json::array());
+          if (!taps.is_array() || taps.empty()) continue;
+          BARREL_LOG("sketch-dump",
+                     "col=%zu chain=%zu module=%s taps=%s",
+                     ci, ei,
+                     ee.value("module_type", std::string()).c_str(),
+                     taps.dump().c_str());
+        }
+      }
+      auto skrails = sketch.value("rails", nlohmann::json::array());
+      if (skrails.is_array() && !skrails.empty()) {
+        BARREL_LOG("sketch-dump", "sketch_rails=%s", skrails.dump().c_str());
+      }
+    }
+
     int32_t finalHandle = inputHandle;
     bool anyDispatched = false;
 
@@ -565,6 +625,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // reserved for single-texture rails.
       std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>> railTextures;
+      // railId → float value (single scalar per rail).
+      std::unordered_map<std::string, float> railFloats;
 
       int32_t colInput = inputHandle;
 
@@ -602,6 +664,23 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           applyState(inst, state);
         }
 
+        // -- Zero stale field state before this frame's tap routing.
+        //    Without this, an input texture set last frame by some now-
+        //    removed routing (eg implicit augmentation that's been
+        //    superseded by an explicit-but-empty user rail) keeps
+        //    pointing at a still-live texture handle and the effect
+        //    silently sees stale data. Connection markers reset for
+        //    the same reason — soft_glow's motion pass keys off
+        //    isOutputConnected("render_outputs"), so a stale "true" is
+        //    just as wrong as a stale handle. --
+        for (const auto& path : reg.inputTexturePaths) {
+          inst->setTextureField(path, 0);
+          inst->setFieldConnected(path, false, false);
+        }
+        for (const auto& path : reg.outputTexturePaths) {
+          inst->setFieldConnected(path, false, false);
+        }
+
         // Primary channels.
         inst->setTextureField("tex_in",  colInput);
         inst->setTextureField("tex_out", outHandle);
@@ -609,7 +688,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         inst->setFieldConnected("tex_out", false, true);
 
         // -- Read taps before render --
-        applyReadTaps(inst, entry, railsById, railTextures);
+        applyReadTaps(inst, entry, railsById, railTextures, railFloats);
         // -- Pre-render: mark write-tap fields as output-connected
         //    (eg soft_glow's render_outputs early-exits its motion
         //    pass unless `isOutputConnected("render_outputs")`). --
@@ -619,7 +698,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         inst->doRender(W, H);
 
         // -- Write taps after render --
-        captureWriteTaps(inst, entry, railsById, railTextures);
+        captureWriteTaps(inst, entry, instKey, instances,
+                          railsById, railTextures, railFloats);
 
         anyDispatched = true;
         finalHandle = outHandle;
@@ -639,25 +719,63 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       const nlohmann::json& entry,
       const std::unordered_map<std::string, nlohmann::json>& railsById,
       const std::unordered_map<std::string,
-        std::unordered_map<std::string, int32_t>>& railTextures) {
+        std::unordered_map<std::string, int32_t>>& railTextures,
+      const std::unordered_map<std::string, float>& railFloats) {
     if (!entry.contains("taps") || !entry["taps"].is_array()) return;
     for (const auto& tap : entry["taps"]) {
       if (tap.value("direction", std::string()) != "read") continue;
       const std::string railId = tap.value("railId", std::string());
       const std::string fieldPath = tap.value("fieldPath", std::string());
       auto railIt = railsById.find(railId);
-      if (railIt == railsById.end()) continue;
-      auto texIt = railTextures.find(railId);
-      if (texIt == railTextures.end()) continue;
+      if (railIt == railsById.end()) {
+        if ((frame_ % 600) == 1) {
+          BARREL_LOG("read-tap-miss",
+                     "rail not indexed: railId=%s fieldPath=%s",
+                     railId.c_str(), fieldPath.c_str());
+        }
+        continue;
+      }
 
       const auto& dataType = railIt->second.value("dataType", nlohmann::json());
+
+      // Float rail — forward the captured scalar via setParamFloat,
+      // routing the producer's instance-state value into the consumer's
+      // same-named field (or whatever fieldPath the read tap targets).
+      if (dataType.is_string() &&
+          dataType.get<std::string>() == "float") {
+        auto fit = railFloats.find(railId);
+        if (fit != railFloats.end()) {
+          inst->setParamFloat(fieldPath, fit->second);
+          inst->setFieldConnected(fieldPath, true, false);
+        }
+        continue;
+      }
+
+      // Texture / struct rail — route handles by leaf path.
+      auto texIt = railTextures.find(railId);
+      if (texIt == railTextures.end()) {
+        if ((frame_ % 600) == 1) {
+          BARREL_LOG("read-tap-empty",
+                     "rail has no published textures: railId=%s fieldPath=%s",
+                     railId.c_str(), fieldPath.c_str());
+        }
+        continue;
+      }
+      int routed = 0;
       forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
         auto lit = texIt->second.find(leaf);
         if (lit == texIt->second.end() || lit->second <= 0) return;
         const std::string target = leaf.empty() ? fieldPath
                                                 : (fieldPath + "/" + leaf);
         inst->setTextureField(target, lit->second);
+        routed++;
       });
+      if ((frame_ % 600) == 1) {
+        BARREL_LOG("read-tap",
+                   "railId=%s fieldPath=%s dataType=%s leaves_routed=%d",
+                   railId.c_str(), fieldPath.c_str(),
+                   dataType.dump().c_str(), routed);
+      }
       inst->setFieldConnected(fieldPath, true, false);
     }
   }
@@ -668,25 +786,76 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   void captureWriteTaps(
       effect_runtime::EffectInstance* inst,
       const nlohmann::json& entry,
+      const std::string& producerInstanceKey,
+      const nlohmann::json& sketchInstances,
       const std::unordered_map<std::string, nlohmann::json>& railsById,
       std::unordered_map<std::string,
-        std::unordered_map<std::string, int32_t>>& railTextures) {
+        std::unordered_map<std::string, int32_t>>& railTextures,
+      std::unordered_map<std::string, float>& railFloats) {
     if (!entry.contains("taps") || !entry["taps"].is_array()) return;
     for (const auto& tap : entry["taps"]) {
       if (tap.value("direction", std::string()) != "write") continue;
       const std::string railId = tap.value("railId", std::string());
       const std::string fieldPath = tap.value("fieldPath", std::string());
       auto railIt = railsById.find(railId);
-      if (railIt == railsById.end()) continue;
+      if (railIt == railsById.end()) {
+        if ((frame_ % 600) == 1) {
+          BARREL_LOG("write-tap-miss",
+                     "rail not indexed: railId=%s fieldPath=%s",
+                     railId.c_str(), fieldPath.c_str());
+        }
+        continue;
+      }
 
       const auto& dataType = railIt->second.value("dataType", nlohmann::json());
+
+      // Float rail — read the producer's current scalar value from the
+      // sketch's instance state and publish it. The runtime doesn't
+      // expose a "what's your current param value" API, but the
+      // canonical state is in sketch.instances[<key>].state which we
+      // already mirror from the bridge each frame.
+      if (dataType.is_string() &&
+          dataType.get<std::string>() == "float") {
+        float value = 0.0f;
+        bool found = false;
+        if (sketchInstances.is_object() &&
+            sketchInstances.contains(producerInstanceKey)) {
+          const auto& st = sketchInstances[producerInstanceKey]
+                              .value("state", nlohmann::json::object());
+          if (st.is_object() && st.contains(fieldPath)) {
+            const auto& v = st[fieldPath];
+            if      (v.is_number()) { value = (float)v.get<double>(); found = true; }
+            else if (v.is_boolean()) { value = v.get<bool>() ? 1.0f : 0.0f; found = true; }
+          }
+        }
+        if (found) {
+          railFloats[railId] = value;
+          inst->setFieldConnected(fieldPath, false, true);
+        }
+        if ((frame_ % 600) == 1) {
+          BARREL_LOG("write-tap-float",
+                     "railId=%s fieldPath=%s value=%.4f found=%d",
+                     railId.c_str(), fieldPath.c_str(),
+                     (double)value, (int)found);
+        }
+        continue;
+      }
+
+      // Texture / struct rail — capture handles by leaf path.
       auto& texMap = railTextures[railId];
+      int captured = 0;
       forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
         const std::string source = leaf.empty() ? fieldPath
                                                 : (fieldPath + "/" + leaf);
         int32_t h = inst->textureField(source);
-        if (h > 0) texMap[leaf] = h;
+        if (h > 0) { texMap[leaf] = h; captured++; }
       });
+      if ((frame_ % 600) == 1) {
+        BARREL_LOG("write-tap",
+                   "railId=%s fieldPath=%s dataType=%s leaves_captured=%d",
+                   railId.c_str(), fieldPath.c_str(),
+                   dataType.dump().c_str(), captured);
+      }
     }
   }
 
@@ -955,6 +1124,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
      *  augmentSketchWithImplicitConnections() each frame so it knows
      *  every module's full schema. */
     nlohmann::json schemaFields;
+    /** Slash-joined leaf paths for every input texture field declared
+     *  by the schema (excluding the primary "tex_in"). Each frame the
+     *  executor zeroes these before applying taps so stale handles
+     *  from a previous frame's routing can't leak through when the
+     *  current frame's tap config doesn't cover them. */
+    std::vector<std::string> inputTexturePaths;
+    /** Same idea, output side (excluding "tex_out"). Used to reset
+     *  output-connected markers each frame. The producer's render
+     *  reassigns the actual handle via state::setGpuTexture, so we
+     *  don't zero the handle itself. */
+    std::vector<std::string> outputTexturePaths;
   };
   std::unordered_map<std::string, RegisteredModule> module_registry_;
 
