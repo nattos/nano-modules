@@ -86,9 +86,21 @@ interface TEExports {
   te_next_dirty_region(outPtr: number): number;
 }
 
+import type { FontRequest } from './engine-types';
+
 /** A named font the host resolves to sfnt bytes at a URL (the web font provider's
  *  bundled, parity-guaranteed set). A run's JSON `family` matches `family` here. */
 export interface FontSource { family: string; url: string; }
+
+/** Canonical face-registry key for a (family, weight, italic) style. MUST stay
+ *  byte-identical to faceKey() in native/src/text/text_engine.cpp — regular
+ *  (weight 400, upright) keeps the bare family name; styled faces append a
+ *  0x01-separated weight (+ "i" for italic). */
+export function faceKey(family: string, weight: number, italic: boolean): string {
+  if (!family) return '';
+  if (weight === 400 && !italic) return family;
+  return `${family}\u0001${Math.round(weight)}${italic ? 'i' : ''}`;
+}
 
 // Bundled families guaranteed on the web side — the parity-guaranteed set, OFL
 // Noto faces fetched by web/scripts/fetch_fonts.sh (see FONTS.md). Their bytes
@@ -124,13 +136,13 @@ export class TextEngine {
     return G.__textEngineInit ?? Promise.resolve(G.__textEngine ?? null);
   }
 
-  // Host hook: invoked (once per family, via ensureFontsForSpec) when a spec
-  // names a family that isn't registered yet. The engine runs in a Worker where
-  // Local Font Access (queryLocalFonts) is unavailable, so the worker sets this
-  // to ask the MAIN thread to resolve the bytes and post them back to
-  // registerFontBytes. When unset (engine on the main thread, e.g. tests),
-  // ensureFontsForSpec falls back to ensureLocalFont directly.
-  onFontRequest: ((family: string) => void) | null = null;
+  // Host hook: invoked (once per face key, via ensureFontsForSpec) when a spec
+  // names a styled face that isn't registered yet. The engine runs in a Worker
+  // where Local Font Access (queryLocalFonts) is unavailable, so the worker sets
+  // this to ask the MAIN thread to resolve the bytes and post them back to
+  // registerFontBytes (under req.key). When unset (engine on the main thread,
+  // e.g. tests), ensureFontsForSpec falls back to ensureLocalFont directly.
+  onFontRequest: ((req: FontRequest) => void) | null = null;
 
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
   static init(
@@ -250,24 +262,48 @@ export class TextEngine {
     return id;
   }
 
-  // Families already resolved or attempted, so a per-frame spec scan never
+  // Face keys already resolved or attempted, so a per-frame spec scan never
   // re-queries (Local Font Access is expensive and prompts permission once).
-  private attemptedFamilies = new Set<string>();
+  private attemptedFaces = new Set<string>();
 
-  /** Scan a layout spec for `"family":"…"` values and kick off async resolution
-   *  (Local Font Access) of any not yet registered. Fire-and-forget: the current
-   *  frame falls back to the primary font; the resolved face appears on a later
-   *  frame. Each family is attempted at most once. Call before layout(). */
+  /** Scan a layout spec's runs for styled faces (family + weight + italic) and
+   *  kick off async resolution of any not yet registered. Fire-and-forget: the
+   *  current frame falls back to the regular/primary font; the resolved face
+   *  appears on a later frame. Each face key is attempted at most once. Call
+   *  before layout(). */
   ensureFontsForSpec(specJson: string): void {
-    const re = /"family"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(specJson)) !== null) {
-      const family = m[1].replace(/\\(.)/g, '$1');
-      if (!family || this.attemptedFamilies.has(family) || this.hasFont(family)) continue;
-      this.attemptedFamilies.add(family);
-      if (this.onFontRequest) this.onFontRequest(family);  // worker → main thread resolves
-      else void this.ensureLocalFont(family);              // main-thread direct (tests)
+    for (const req of this.facesNeededBy(specJson)) {
+      if (this.attemptedFaces.has(req.key) || this.hasFont(req.key)) continue;
+      this.attemptedFaces.add(req.key);
+      if (this.onFontRequest) this.onFontRequest(req);     // worker → main thread resolves
+      else void this.ensureLocalFont(req.family);          // main-thread direct (tests)
     }
+  }
+
+  /** Extract the distinct styled faces a spec references as FontRequests. Parses
+   *  the runs array (family/weight/italic); falls back to a family-name regex
+   *  (regular only) if the spec isn't valid JSON. */
+  private facesNeededBy(specJson: string): FontRequest[] {
+    const out: FontRequest[] = [];
+    const add = (family: string, weight: number, italic: boolean) => {
+      if (!family) return;
+      const key = faceKey(family, weight, italic);
+      if (!out.some((r) => r.key === key)) out.push({ key, family, weight, italic });
+    };
+    let runs: any[] | null = null;
+    try { const o = JSON.parse(specJson); if (Array.isArray(o?.runs)) runs = o.runs; } catch { /* regex below */ }
+    if (runs) {
+      for (const r of runs) {
+        if (typeof r?.family !== 'string') continue;
+        const weight = typeof r.weight === 'number' ? r.weight : 400;
+        add(r.family, weight, r.italic === true || r.italic === 1);
+      }
+    } else {
+      const re = /"family"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(specJson)) !== null) add(m[1].replace(/\\(.)/g, '$1'), 400, false);
+    }
+    return out;
   }
 
   /** Resolve `family` via the browser's Local Font Access API (Chromium, behind

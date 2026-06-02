@@ -3,7 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
-import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue, DebugStats, DebugConsoleEntry } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue, DebugStats, DebugConsoleEntry, FontRequest } from './engine-types';
 import type { Sketch } from './sketch-types';
 
 export class EngineProxy {
@@ -25,9 +25,9 @@ export class EngineProxy {
   /// produced any log output.
   onDebugConsoleLog: ((entries: DebugConsoleEntry[]) => void) | null = null;
   onError: ((message: string) => void) | null = null;
-  /// The worker's text engine saw a spec naming a font family it doesn't have.
+  /// The worker's text engine saw a spec naming a styled face it doesn't have.
   /// The main thread resolves it via Local Font Access and calls registerFont().
-  onFontRequest: ((family: string) => void) | null = null;
+  onFontRequest: ((req: FontRequest) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
 
   constructor(width: number, height: number, barrelMode = false) {
@@ -64,7 +64,7 @@ export class EngineProxy {
           console.error('[engine]', event.message);
           break;
         case 'fontRequest':
-          this.onFontRequest?.(event.family);
+          this.onFontRequest?.(event.req);
           break;
         case 'debugDump':
           this.debugDumpResolve?.(event.data);
@@ -146,10 +146,10 @@ export class EngineProxy {
     this.send({ type: 'reloadWasm', wasmUrl });
   }
 
-  /** Register an OS-resolved font face (sfnt bytes) under `family` with the
-   *  worker's text engine. The buffer is transferred (consumed here). */
-  registerFont(family: string, bytes: ArrayBuffer) {
-    this.send({ type: 'registerFont', family, bytes }, [bytes]);
+  /** Register an OS-resolved font face (sfnt bytes) under the engine face `key`
+   *  with the worker's text engine. The buffer is transferred (consumed here). */
+  registerFont(key: string, bytes: ArrayBuffer) {
+    this.send({ type: 'registerFont', key, bytes }, [bytes]);
   }
 
   /**

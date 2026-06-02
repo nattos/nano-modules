@@ -23,6 +23,8 @@ namespace gen_text {
 struct State {
   char  text[2048] = "Text";
   char  font[128] = "";       // OS/bundled family name ("" = host primary font)
+  bool  bold = false;         // selects the family's bold face (weight 700)
+  bool  italic = false;       // selects the family's italic face
   float size = 64.0f;
   float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
   float max_width = 0.0f;     // 0 = no wrap
@@ -49,6 +51,8 @@ void module_init() {
     state::Schema()
       .textField  ("text",         "Text", state::PrimaryInput)
       .textField  ("font",         "",     state::PrimaryInput)
+      .boolField  ("bold",         false,  state::PrimaryInput)
+      .boolField  ("italic",       false,  state::PrimaryInput)
       .floatField ("size",         64.0f,  8.0f, 512.0f, state::PrimaryInput)
       .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput)
       .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput)
@@ -72,6 +76,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const char* p = pb + off[i]; int pl = len[i];
     if      (state::pathIs(p, pl, "text"))         state::patchString(i, s->text, sizeof(s->text));
     else if (state::pathIs(p, pl, "font"))         state::patchString(i, s->font, sizeof(s->font));
+    else if (state::pathIs(p, pl, "bold"))         s->bold = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, pl, "italic"))       s->italic = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(p, pl, "size"))         s->size = state::patchFloat(i);
     else if (state::pathIs(p, pl, "max_width"))    s->max_width = state::patchFloat(i);
     else if (state::pathIs(p, pl, "line_spacing")) s->line_spacing = state::patchFloat(i);
@@ -91,10 +97,11 @@ void render(void* self, int vp_w, int vp_h) {
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"text\":\"");
   appendEscaped(spec, pos, (int)sizeof(spec), s->text);
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",\"runs\":[{");
-  if (s->font[0]) {   // name a family → host resolves it (bundled / OS font)
-    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"family\":\"");
+  if (s->font[0]) {   // name a family → host resolves it (bundled / OS font),
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"family\":\"");  // incl. bold/italic face
     appendEscaped(spec, pos, (int)sizeof(spec), s->font);
-    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",");
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",\"weight\":%d,\"italic\":%s,",
+                         s->bold ? 700 : 400, s->italic ? "true" : "false");
   }
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\"size_px\":%.3f,\"rgba\":[%.4f,%.4f,%.4f,%.4f]}],"

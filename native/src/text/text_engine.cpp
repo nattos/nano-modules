@@ -103,6 +103,30 @@ static void readFloatArray(const char* s, int n, const char* key, float* out, in
   }
 }
 
+// Read a JSON boolean (true/false or 1/0) for `key`; `fallback` if absent.
+static bool readBool(const char* s, int n, const char* key, bool fallback) {
+  int p = findField(s, n, key);
+  if (p < 0 || p >= n) return fallback;
+  char c = s[p];
+  if (c == 't' || c == 'T' || c == '1') return true;
+  if (c == 'f' || c == 'F' || c == '0') return false;
+  return fallback;
+}
+
+// Canonical face-registry key for a (family, weight, italic) style. MUST stay
+// byte-identical to faceKey() in web/src/font-access.ts so the host registers a
+// resolved face under exactly the key the engine looks up. Regular (weight 400,
+// upright) keeps the bare family name (back-compat + the common case).
+static std::string faceKey(const std::string& family, int weight, bool italic) {
+  if (family.empty()) return std::string();
+  if (weight == 400 && !italic) return family;
+  std::string k = family;
+  k.push_back('\x01');
+  k += std::to_string(weight);
+  if (italic) k.push_back('i');
+  return k;
+}
+
 // A styled run: a byte range [b0, b1) of the text with its size, color, and the
 // resolved faceId (0 = primary font; >0 = a host-registered named family).
 struct Run { int b0, b1; float size; float r, g, b, a; int face; };
@@ -116,11 +140,17 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize,
   auto resolveFace = [&](const char* sub, int sl) -> int {
     int fp = findField(sub, sl, "family");
     std::string fam;
-    if (fp >= 0 && readString(sub, sl, fp, fam) && !fam.empty()) {
-      auto it = faceByName.find(fam);
-      if (it != faceByName.end()) return it->second;
-    }
-    return 0;  // primary font / unknown family
+    if (!(fp >= 0 && readString(sub, sl, fp, fam)) || fam.empty()) return 0;
+    int  weight = (int)readNumber(sub, sl, "weight", 400.0f);
+    bool italic = readBool(sub, sl, "italic", false);
+    // Prefer the exact styled face, then the family's regular face, then the
+    // primary font — so a bold/italic run degrades gracefully when only the
+    // regular face is registered.
+    auto it = faceByName.find(faceKey(fam, weight, italic));
+    if (it != faceByName.end()) return it->second;
+    auto rit = faceByName.find(fam);
+    if (rit != faceByName.end()) return rit->second;
+    return 0;
   };
   std::vector<Run> runs;
   int p = findField(s, n, "runs");

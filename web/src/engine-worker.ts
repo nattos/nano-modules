@@ -278,7 +278,7 @@ async function handleCommand(cmd: WorkerCommand) {
       // Main thread resolved an OS font via Local Font Access; register its
       // bytes with the shared text engine so the next frame can use the face.
       const te = await TextEngine.whenReady();
-      if (te && te.registerFontBytes(cmd.family, new Uint8Array(cmd.bytes)) >= 0) markDirty();
+      if (te && te.registerFontBytes(cmd.key, new Uint8Array(cmd.bytes)) >= 0) markDirty();
       break;
     }
     case 'setFusionMode':
@@ -367,7 +367,7 @@ async function init(width: number, height: number) {
       // queryLocalFonts is unavailable in the worker; ask the main thread to
       // resolve any unregistered family a spec names (it ships bytes back via
       // the registerFont command). One request per family per session.
-      te.onFontRequest = (family) => post({ type: 'fontRequest', family });
+      te.onFontRequest = (req) => post({ type: 'fontRequest', req });
     })
     .catch((e) => console.warn('[engine-worker] text engine init failed:', e));
   sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
