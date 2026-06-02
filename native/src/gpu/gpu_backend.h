@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -130,6 +131,25 @@ public:
                                                       uint32_t dstH) {
     (void)textureHandle; (void)srcW; (void)srcH; (void)dstW; (void)dstH;
     return {};
+  }
+
+  // Async variant — the GPU work is committed but NOT waited on. The
+  // backend invokes `callback(pixels)` from a backend-owned thread
+  // (Metal's completion-handler queue) once the readback finishes.
+  // Critical for hosts that want to keep their render thread free —
+  // the FFGL barrel uses this so it can publish previews without
+  // blocking Resolume on a per-frame waitUntilCompleted.
+  //
+  // The default falls back to the synchronous path and invokes the
+  // callback inline.
+  virtual void readbackTextureScaledAsync(
+      int32_t textureHandle,
+      uint32_t srcW, uint32_t srcH,
+      uint32_t dstW, uint32_t dstH,
+      std::function<void(std::vector<uint8_t>)> callback) {
+    auto pixels = readbackTextureScaled(textureHandle, srcW, srcH,
+                                         dstW, dstH);
+    if (!pixels.empty() && callback) callback(std::move(pixels));
   }
 
   // Upload pixel bytes into a texture (for tests / FFGL input handoff

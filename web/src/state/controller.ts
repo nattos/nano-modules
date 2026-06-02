@@ -1397,12 +1397,19 @@ export class AppController {
 
   editSketch(id: string | null) {
     runInAction(() => { appState.local.editingSketchId = id; });
-    // Register/unregister the edit preview trace point via the trace controller
+    // Register/unregister the edit preview trace point via the trace controller.
     if (id) {
+      // The receiving canvas (edit-tab.ts `#preview-canvas`) has HTML
+      // attrs 320×180; CSS scales it to ~100% of its panel column. 640×360
+      // covers the canvas at ~2× DPR without being so large that the
+      // barrel's readback (which runs on the FFGL render thread) stalls
+      // Resolume. Without a size override the request was 0/0 → "source
+      // dimensions" → 1920×1080 readback every frame.
       traceController.register({
         id: 'edit_preview',
         target: { type: 'sketch_output', sketchId: id },
         resolution: 'high',
+        size: { width: 640, height: 360 },
       });
     } else {
       traceController.unregister('edit_preview');

@@ -15,9 +15,18 @@ export interface TraceRegistration {
   target: TracePoint['target'];
   /** Resolution tier: 'low' for thumbnails, 'high' for full-res monitors. */
   resolution: 'low' | 'high';
+  /**
+   * Desired capture dimensions in pixels (typically the consumer's
+   * display size × devicePixelRatio). When omitted the controller
+   * falls back to LOW_RES for 'low' and to "source resolution" for
+   * 'high'. Prefer setting this — sending more pixels than the
+   * consumer will draw is wasted bandwidth and (in barrel mode) wasted
+   * GPU readback time on the render thread.
+   */
+  size?: { width: number; height: number };
 }
 
-/** Low-res thumbnail dimensions. */
+/** Low-res thumbnail dimensions — used when a 'low' registration omits its own size. */
 const LOW_RES = { width: 128, height: 72 };
 
 function targetKey(target: TracePoint['target']): string {
@@ -86,9 +95,9 @@ export class TraceController {
     }
 
     // Build trace points. Each registration gets its own trace point ID
-    // so its bitmap appears at tracedFrames[reg.id].
-    // If multiple registrations share a target, we still emit separate trace points
-    // (the engine captures each independently). Future optimization: share captures.
+    // so its bitmap appears at tracedFrames[reg.id]. Per-registration
+    // size (from `reg.size`) is honoured directly — multiple monitors
+    // on the same target can each request their own dimensions.
     const tracePoints: TracePoint[] = [];
     for (const [, group] of byTarget) {
       for (const id of group.ids) {
@@ -97,7 +106,9 @@ export class TraceController {
           id,
           target: group.target,
         };
-        if (reg.resolution === 'low' && !group.needsHigh) {
+        if (reg.size) {
+          tp.size = reg.size;
+        } else if (reg.resolution === 'low' && !group.needsHigh) {
           tp.size = LOW_RES;
         }
         tracePoints.push(tp);

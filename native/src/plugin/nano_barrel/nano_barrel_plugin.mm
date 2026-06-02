@@ -21,11 +21,15 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -239,6 +243,26 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
   ~NanoBarrelPlugin() override {
     BARREL_LOG("dtor", "this=%p frame=%d", (void*)this, frame_);
+    // Order matters here. Resolume has already returned from any
+    // ProcessOpenGL call by the time the dtor fires, so no NEW
+    // readbacks will be issued. We drain in two steps:
+    // (1) wait for every Metal completion handler to finish enqueuing
+    //     its bytes into send_queue_ AND for the worker to ship them
+    //     (in_flight_previews_ counts both, decremented post-send),
+    // (2) signal the worker to stop and join. Only after both does
+    //     stopBridge tear down ws_server_, which both the handlers and
+    //     the worker dereference.
+    int spins = 0;
+    while (in_flight_previews_.load() > 0 && spins < 200) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      ++spins;
+    }
+    {
+      std::lock_guard<std::mutex> lock(send_mu_);
+      send_thread_stop_.store(true, std::memory_order_release);
+    }
+    send_cv_.notify_one();
+    if (send_thread_.joinable()) send_thread_.join();
     stopBridge();
   }
 
@@ -549,9 +573,37 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           frame_captures_["so"] = {handle, W, H};
         });
 
+    // Spin up the preview send worker. See member-var comment for why
+    // this exists.
+    send_thread_ = std::thread([this] { runSendWorker(); });
+
     rt_->drainConsoleLog();
     BARREL_LOG("initEffectRuntime",
                "effects=%zu", registry_->size());
+  }
+
+  void runSendWorker() {
+    while (true) {
+      std::vector<uint8_t> bytes;
+      {
+        std::unique_lock<std::mutex> lock(send_mu_);
+        send_cv_.wait(lock, [this] {
+          return send_thread_stop_.load(std::memory_order_acquire)
+              || !send_queue_.empty();
+        });
+        if (send_queue_.empty()) {
+          if (send_thread_stop_.load(std::memory_order_acquire)) return;
+          continue;
+        }
+        bytes = std::move(send_queue_.front());
+        send_queue_.pop_front();
+      }
+      // ws_server_ outlives the worker (dtor stops + joins us first).
+      if (ws_server_) {
+        ws_server_->broadcast_binary(bytes.data(), bytes.size());
+      }
+      in_flight_previews_.fetch_sub(1, std::memory_order_acq_rel);
+    }
   }
 
 
@@ -775,23 +827,54 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // tick_mu_ scope above where the dirty flag is drained). It's stable
     // for the rest of this frame, so iterate it directly — no lock.
     if (preview_requests_.empty()) return;
+    bridge::WsServer* ws_server_raw = ws_server_.get();
     for (const auto& [_, req] : preview_requests_) {
       auto it = frame_captures_.find(req.targetKey);
       if (it == frame_captures_.end()) continue;
       const auto& slot = it->second;
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
-      auto pixels = gpu_->readbackTextureScaled(
+      // Editor sends 0/0 to mean "capture at the source texture's
+      // native resolution" — used by high-res requests like the main
+      // edit preview where we want full fidelity, not a 128×72 thumb.
+      const uint32_t outW = req.width  ? req.width
+                                       : (uint32_t)slot.width;
+      const uint32_t outH = req.height ? req.height
+                                       : (uint32_t)slot.height;
+      // Async readback: the render thread encodes + commits a tiny MPS
+      // cmd buffer and returns immediately. The Metal completion
+      // handler fires on Metal's serial dispatch queue once the GPU
+      // finishes; it does the bare minimum (getBytes + frame
+      // assembly + enqueue) before yielding. The actual WS broadcast
+      // runs on send_thread_ to keep Metal's completion queue moving
+      // — otherwise high-entropy preview content (where
+      // permessage-deflate is slow) stalls completions and
+      // back-pressures the render thread's [cb commit].
+      in_flight_previews_.fetch_add(1, std::memory_order_acq_rel);
+      std::string traceId = req.traceId;
+      (void)ws_server_raw;  // worker owns the broadcast now
+      gpu_->readbackTextureScaledAsync(
           slot.handle,
           (uint32_t)slot.width, (uint32_t)slot.height,
-          req.width, req.height);
-      if (pixels.empty()) continue;
-      auto bytes = buildPreviewFrameBytes(
-          req.traceId, (uint16_t)req.width, (uint16_t)req.height, pixels);
-      // Typical case is exactly one editor connected; multi-client
-      // scenarios all share the same request set today (the request map
-      // isn't keyed by client). A per-client routing layer can come if
-      // we ever expect concurrent editors.
-      ws_server_->broadcast_binary(bytes.data(), bytes.size());
+          outW, outH,
+          [this, traceId = std::move(traceId), outW, outH]
+          (std::vector<uint8_t> pixels) {
+            auto bytes = buildPreviewFrameBytes(
+                traceId, (uint16_t)outW, (uint16_t)outH, pixels);
+            {
+              std::lock_guard<std::mutex> lock(send_mu_);
+              // Bound the queue so we don't grow memory + latency when
+              // the worker can't keep up. ~half a second of headroom
+              // at 60fps × 3 monitors; we drop oldest first to prefer
+              // freshness over completeness.
+              constexpr size_t kMaxQueue = 32;
+              while (send_queue_.size() >= kMaxQueue) {
+                send_queue_.pop_front();
+                in_flight_previews_.fetch_sub(1, std::memory_order_acq_rel);
+              }
+              send_queue_.push_back(std::move(bytes));
+            }
+            send_cv_.notify_one();
+          });
     }
   }
 
@@ -856,6 +939,26 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // patch callback only flips the flag, never mutates the map directly.
   std::unordered_map<std::string, PreviewRequest> preview_requests_;
   std::atomic<bool> preview_requests_dirty_{false};
+  // Outstanding async preview readbacks. Each `readbackTextureScaledAsync`
+  // call increments before issuing; the send worker decrements after
+  // the broadcast completes. The dtor drains this to zero before
+  // tearing the WS server down so handlers don't fire on a destroyed
+  // instance.
+  std::atomic<int> in_flight_previews_{0};
+
+  // Send worker: takes the Metal completion handler off the critical
+  // path. Without this, broadcast_binary (which involves
+  // ixwebsocket's send queueing + per-message deflate compression on
+  // high-entropy preview pixels) runs on Metal's serial completion
+  // dispatch queue. When that backs up, Metal can't free committed
+  // cmd buffers fast enough and new commits from the render thread
+  // start blocking — which is exactly the "content-complexity-driven
+  // FPS drop" symptom that motivated this.
+  std::thread          send_thread_;
+  std::mutex           send_mu_;
+  std::condition_variable send_cv_;
+  std::deque<std::vector<uint8_t>> send_queue_;
+  std::atomic<bool>    send_thread_stop_{false};
   // Per-frame texture snapshots (NOT guarded — only touched on render
   // thread between executor->execute() and the publish loop below it).
   std::unordered_map<std::string, CaptureSlot> frame_captures_;

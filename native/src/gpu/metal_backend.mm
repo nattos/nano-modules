@@ -552,10 +552,51 @@ public:
     }
   }
 
+  void readbackTextureScaledAsync(
+      int32_t textureHandle,
+      uint32_t srcW, uint32_t srcH,
+      uint32_t dstW, uint32_t dstH,
+      std::function<void(std::vector<uint8_t>)> callback) override {
+    id<MTLTexture> src = getAs<id<MTLTexture>>(textureHandle);
+    if (!src || dstW == 0 || dstH == 0 || !callback) return;
+
+    @autoreleasepool {
+      id<MTLTexture> dst = nextAsyncScratchScaleTarget(dstW, dstH);
+      if (!dst) return;
+      if (!scaler_) {
+        scaler_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
+      }
+
+      id<MTLCommandBuffer> cb = [queue_ commandBuffer];
+      [scaler_ encodeToCommandBuffer:cb
+                       sourceTexture:src
+                  destinationTexture:dst];
+
+      // The block runs on a Metal-owned thread once the GPU work
+      // completes. `dst` is retained by the block (ARC); the scratch
+      // pool keeps it valid across frames anyway. dstW/dstH/callback
+      // are captured by value. getBytes is a tight memcpy on UMA, so
+      // the window in which dst could be reused for the next frame's
+      // encode is small — and we have a pool of `kAsyncScratchPoolSize`
+      // scratches to widen it further.
+      __block auto cb_callback = std::move(callback);
+      [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+        if ([finished status] == MTLCommandBufferStatusError) return;
+        std::vector<uint8_t> pixels((size_t)dstW * dstH * 4);
+        [dst getBytes:pixels.data()
+          bytesPerRow:dstW * 4
+           fromRegion:MTLRegionMake2D(0, 0, dstW, dstH)
+          mipmapLevel:0];
+        cb_callback(std::move(pixels));
+      }];
+      [cb commit];
+    }
+  }
+
 private:
-  // Reuse a single scratch texture per destination size across frames.
-  // Preview captures hit the same handful of sizes (one for high-res,
-  // one for low-res thumbnails) so the cache stays tiny.
+  // Reuse a single scratch texture per destination size across frames
+  // (used by the SYNC readback path — sender waits for completion, so
+  // one scratch per size is safe).
   id<MTLTexture> getOrCreateScratchScaleTarget(uint32_t w, uint32_t h) {
     uint64_t key = ((uint64_t)w << 32) | (uint64_t)h;
     auto it = scaleScratchTextures_.find(key);
@@ -571,6 +612,38 @@ private:
     if (!tex) return nil;
     scaleScratchTextures_[key] = tex;
     return tex;
+  }
+
+  // For the ASYNC readback path the next frame's encode could overwrite
+  // the scratch while the previous frame's completion handler is still
+  // running getBytes on it. Rotate through a small pool per dest size
+  // so a frame's scratch is reused only after `kAsyncScratchPoolSize`
+  // frames — by then any handler racing it has long since returned.
+  static constexpr size_t kAsyncScratchPoolSize = 3;
+  struct AsyncScratchPool {
+    std::vector<id<MTLTexture>> textures;
+    size_t cursor = 0;
+  };
+  id<MTLTexture> nextAsyncScratchScaleTarget(uint32_t w, uint32_t h) {
+    uint64_t key = ((uint64_t)w << 32) | (uint64_t)h;
+    auto& pool = asyncScaleScratchPools_[key];
+    if (pool.textures.empty()) {
+      MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
+      desc.width = w;
+      desc.height = h;
+      desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
+      desc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+      desc.storageMode = MTLStorageModeShared;
+      pool.textures.reserve(kAsyncScratchPoolSize);
+      for (size_t i = 0; i < kAsyncScratchPoolSize; ++i) {
+        id<MTLTexture> t = [device_ newTextureWithDescriptor:desc];
+        if (!t) return nil;
+        pool.textures.push_back(t);
+      }
+    }
+    id<MTLTexture> dst = pool.textures[pool.cursor];
+    pool.cursor = (pool.cursor + 1) % pool.textures.size();
+    return dst;
   }
 
 public:
@@ -639,8 +712,11 @@ private:
   MPSImageBilinearScale* scaler_ = nil;
   // Destination textures keyed by ((w << 32) | h). Read+write-only;
   // never published through `resources_` because no caller outside this
-  // class needs handles to them.
+  // class needs handles to them. Sync-path uses one scratch per size;
+  // async-path needs a small per-size pool so a frame's completion
+  // handler doesn't race the next frame's encode.
   std::unordered_map<uint64_t, id<MTLTexture>> scaleScratchTextures_;
+  std::unordered_map<uint64_t, AsyncScratchPool> asyncScaleScratchPools_;
 
   // Per-shader spec-constant metadata: name → (numeric index, MSL type).
   // Populated by createShaderModule by scanning the MSL source so

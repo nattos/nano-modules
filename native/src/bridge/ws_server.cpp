@@ -16,6 +16,14 @@ bool WsServer::start(int port) {
 
   ix::initNetSystem();
   server_ = std::make_unique<ix::WebSocketServer>(port, "0.0.0.0");
+  // We're a localhost-only bridge carrying mostly raw RGBA pixel
+  // frames — high entropy data that the deflate codec spends CPU on
+  // for almost no size reduction. The cost showed up as a
+  // content-complexity-driven FPS drop on the FFGL host: the send
+  // worker ran the compression synchronously, and busy worker stretches
+  // back-pressured the Metal completion queue. Turning it off
+  // collapses the cost to zero.
+  server_->disablePerMessageDeflate();
 
   server_->setOnClientMessageCallback(
       [this](std::shared_ptr<ix::ConnectionState> state,

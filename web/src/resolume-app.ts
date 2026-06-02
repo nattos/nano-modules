@@ -175,10 +175,15 @@ function connectBarrel(url: string) {
         } else {
           continue;  // plugin_output not yet supported in barrel mode
         }
+        // trace-controller only sets `tp.size` for 'low' registrations;
+        // 'high' leaves it undefined, meaning "capture at the source
+        // texture's native resolution". Send `0/0` to the barrel as a
+        // sentinel for that case — the barrel substitutes the live
+        // source dimensions in publishPreviewFrames.
         requests[tp.id] = {
           target: serialized,
-          width:  tp.size?.width  ?? 128,
-          height: tp.size?.height ?? 72,
+          width:  tp.size?.width  ?? 0,
+          height: tp.size?.height ?? 0,
         };
       }
       const json = JSON.stringify(requests);

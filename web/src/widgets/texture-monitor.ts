@@ -107,10 +107,16 @@ export class TextureMonitor extends MobxLitElement {
 
   private registerTrace() {
     if (!this.traceId || !this.traceTarget) return;
+    // Ask for exactly the pixel count we'll display. devicePixelRatio
+    // can drift (multi-monitor moves, browser zoom) but a one-frame
+    // mismatch on a thumbnail is harmless and the next register() call
+    // will refresh it.
+    const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
     traceController.register({
       id: this.traceId,
       target: this.traceTarget,
       resolution: this.resolution,
+      size: { width: this.width * dpr, height: this.height * dpr },
     });
   }
 
