@@ -13,555 +13,330 @@
 #include <module_api.h>
 #include <cstddef>
 
-namespace brightness_contrast {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(brightness_contrast)
 
-namespace solid_color {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
-namespace video_blend {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(video_blend)
 
-namespace paramlinker {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-    void on_resolume_param(long long param_id, double value);
-}
+NANO_DECLARE_LEGACY_EFFECT(paramlinker)
+namespace paramlinker { void on_resolume_param(long long param_id, double value); }
 
-namespace bake_alpha {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
-namespace curve {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(curve)
 
-namespace exposure {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(exposure)
 
-namespace invert {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(invert)
 
-namespace posterize {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(posterize)
 
-namespace levels {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(levels)
 
-namespace hsl {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(hsl)
 
-namespace color_space {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(color_space)
 
-namespace hue_basis {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(hue_basis)
 
-namespace saturate {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(saturate)
 
-namespace vibrance {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(vibrance)
 
-namespace vignette {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(vignette)
 
-namespace blur {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(blur)
 
-namespace fast_blur {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(fast_blur)
 
-namespace sharpen {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(sharpen)
 
-namespace edges {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(edges)
 
-namespace crop {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(crop)
 
-namespace transform {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_LEGACY_EFFECT(transform)
 
-namespace gradient {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(gradient)
 
-namespace grid {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(grid)
 
-namespace noise {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(noise)
 
-namespace motion_blur {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     nano::registerEffect({
-        1,
+        2,
         "video.brightness_contrast",
         "Brightness/Contrast",
         "Adjusts brightness and contrast of a texture input",
         "video",
         "color,adjust,filter",
-        brightness_contrast::init,
-        brightness_contrast::tick,
-        brightness_contrast::render,
-        brightness_contrast::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(brightness_contrast),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "generator.solid_color",
         "Solid Color",
         "Fills the render target with a uniform RGB color",
         "generator",
         "color,fill",
-        solid_color::init,
-        solid_color::tick,
-        solid_color::render,
-        solid_color::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(solid_color),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.blend",
         "Video Blend",
         "Blends two texture inputs with opacity control",
         "video",
         "blend,mix,composite,opacity",
-        video_blend::init,
-        video_blend::tick,
-        video_blend::render,
-        video_blend::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(video_blend),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "utility.paramlinker",
         "Param Linker",
         "Links two Resolume parameters together via learn mechanism",
         "utility",
         "resolume,parameter,link,automation",
-        paramlinker::init,
-        paramlinker::tick,
-        paramlinker::render,
-        paramlinker::on_state_patched,
-        paramlinker::on_resolume_param,
+        nullptr,
+        []() -> void* { return (void*)1; },
+        [](void*) {},
+        [](void* self) { (void)self; paramlinker::init(); },
+        [](void* self, double dt) { (void)self; paramlinker::tick(dt); },
+        [](void* self, int w, int h) { (void)self; paramlinker::render(w, h); },
+        [](void* self, int n, const char* pb, const int* o, const int* l, const int* op) {
+            (void)self; paramlinker::on_state_patched(n, pb, o, l, op);
+        },
+        [](void* self, long long id, double v) { (void)self; paramlinker::on_resolume_param(id, v); },
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.bake_alpha",
         "Bake Alpha",
         "Premultiplies RGB by alpha (mixable amount)",
         "video",
         "alpha,premultiply,composite",
-        bake_alpha::init,
-        bake_alpha::tick,
-        bake_alpha::render,
-        bake_alpha::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(bake_alpha),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.curve",
         "Curve",
         "Power curve applied to RGB and alpha (-1 squashes down, +1 lifts up)",
         "video",
         "curve,gamma,tonemap",
-        curve::init,
-        curve::tick,
-        curve::render,
-        curve::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(curve),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.exposure",
         "Exposure",
         "Multiplicative gain measured in stops, with an optional warmth tint",
         "video",
         "exposure,gain,brightness,stops",
-        exposure::init,
-        exposure::tick,
-        exposure::render,
-        exposure::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(exposure),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.invert",
         "Invert",
         "Mixable color inversion with optional alpha invert",
         "video",
         "invert,negative,color",
-        invert::init,
-        invert::tick,
-        invert::render,
-        invert::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(invert),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.posterize",
         "Posterize",
         "Quantizes RGB (and optionally alpha) to a small number of levels",
         "video",
         "posterize,quantize,bitcrush",
-        posterize::init,
-        posterize::tick,
-        posterize::render,
-        posterize::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(posterize),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.levels",
         "Levels",
         "Photoshop-style input/output remap with a gamma midtone control",
         "video",
         "levels,gamma,contrast,remap",
-        levels::init,
-        levels::tick,
-        levels::render,
-        levels::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(levels),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.hsl",
         "HSL",
         "Hue rotation, saturation pull, and bipolar lightness in HSL space",
         "video",
         "hue,saturation,lightness,color",
-        hsl::init,
-        hsl::tick,
-        hsl::render,
-        hsl::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(hsl),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.color_space",
         "Color Space",
         "Convert RGB between sRGB and Linear encodings",
         "video",
         "color,space,srgb,linear,gamma,encoding",
-        color_space::init,
-        color_space::tick,
-        color_space::render,
-        color_space::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(color_space),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.hue_basis",
         "Hue Basis",
         "Channel-mix into a basis defined by three hues; white-preserving forward, NaN-free reverse",
         "video",
         "hue,basis,channel-mixer,color,matrix",
-        hue_basis::init,
-        hue_basis::tick,
-        hue_basis::render,
-        hue_basis::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(hue_basis),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.saturate",
         "Saturate",
         "Per-channel tanh soft-clip with linear deadzone and asymmetric drive",
         "video",
         "saturate,softclip,tanh,waveshaper,compressor,rolloff",
-        saturate::init,
-        saturate::tick,
-        saturate::render,
-        saturate::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(saturate),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.vibrance",
         "Vibrance",
         "Saturation boost biased toward already-unsaturated pixels",
         "video",
         "vibrance,saturation,color",
-        vibrance::init,
-        vibrance::tick,
-        vibrance::render,
-        vibrance::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(vibrance),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.vignette",
         "Vignette",
         "Radial darken/lighten around a cover-square anchor with soft falloff",
         "video",
         "vignette,edge,fade,corner",
-        vignette::init,
-        vignette::tick,
-        vignette::render,
-        vignette::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(vignette),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.blur",
         "Blur",
         "Single-pass Gaussian blur with adjustable radius",
         "video",
         "blur,gaussian,defocus,soften",
-        blur::init,
-        blur::tick,
-        blur::render,
-        blur::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(blur),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.fast_blur",
         "Fast Blur",
         "Iterative dual-filter blur (CoD/SIGGRAPH 2014). Cheaper than Gaussian for large radii.",
         "video",
         "blur,bloom,dual-filter,downsample,upsample,fast",
-        fast_blur::init,
-        fast_blur::tick,
-        fast_blur::render,
-        fast_blur::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(fast_blur),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.sharpen",
         "Sharpen",
         "Discrete Laplacian sharpen with adjustable radius",
         "video",
         "sharpen,detail,laplacian",
-        sharpen::init,
-        sharpen::tick,
-        sharpen::render,
-        sharpen::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(sharpen),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.edges",
         "Edge Detection",
         "Sobel edges with adjustable threshold and overlay colours",
         "video",
         "edge,sobel,outline,detect",
-        edges::init,
-        edges::tick,
-        edges::render,
-        edges::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(edges),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.crop",
         "Crop",
         "Soft-edged rectangular crop in cover-square coordinates",
         "video",
         "crop,mask,frame,window",
-        crop::init,
-        crop::tick,
-        crop::render,
-        crop::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(crop),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.transform",
         "Transform",
         "2D affine resample (scale, rotate, translate around a pivot)",
         "video",
         "transform,scale,rotate,translate,affine",
-        transform::init,
-        transform::tick,
-        transform::render,
-        transform::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(transform),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "generator.gradient",
         "Gradient",
         "Two-colour linear gradient with adjustable angle, offset, and softness",
         "generator",
         "gradient,ramp,linear",
-        gradient::init,
-        gradient::tick,
-        gradient::render,
-        gradient::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(gradient),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "generator.grid",
         "Grid",
         "Tiled grid pattern with adjustable cell size, line width, and softness",
         "generator",
         "grid,pattern,tile,lines",
-        grid::init,
-        grid::tick,
-        grid::render,
-        grid::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(grid),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "generator.noise",
         "Noise",
         "Procedural noise: white, value, fbm, or animated static",
         "generator",
         "noise,perlin,static,grain,procedural",
-        noise::init,
-        noise::tick,
-        noise::render,
-        noise::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(noise),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.motion_blur",
         "Motion Blur",
         "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
         "video",
         "blur,motion,velocity,render-outputs",
-        motion_blur::init,
-        motion_blur::tick,
-        motion_blur::render,
-        motion_blur::on_state_patched,
-        nullptr,
+        NANO_INSTANCE_LIFECYCLE(motion_blur),
     });
 }
 

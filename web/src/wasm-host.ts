@@ -36,7 +36,10 @@ export interface EffectInfo {
   description: string;
   category: string;
   keywords: string[];
-  /** @internal function table indices */
+  /** @internal function table indices (EffectDesc_v2: instance ABI) */
+  _moduleInitIdx: number;   // type-level setup, run once per effect type
+  _createIdx: number;       // returns per-instance self pointer
+  _destroyIdx: number;
   _initIdx: number;
   _tickIdx: number;
   _renderIdx: number;
@@ -253,6 +256,16 @@ export class WasmHost {
   // 0 (the WASM ABI's "no function") means the effect didn't register
   // a callback — `fireStateReady()` is a no-op in that case.
   onStateReadyIdx = 0;
+  // The per-instance `self` pointer returned by the active effect's
+  // create() (EffectDesc_v2). Threaded into every instance callback
+  // (tick/render/on_state_patched/on_state_ready/prepare). 0 until an
+  // effect is activated. One WasmHost == one effect instance on the
+  // real render path; the warmup host reuses one host across effects,
+  // where activeSelf just tracks the most recently activated effect.
+  activeSelf = 0;
+  // Effect ids whose module_init() has already run on this host (type-
+  // level setup is once-per-type; a host may host many effect types).
+  private moduleInitedIds: Set<string> = new Set();
   /// True once `fireStateReady()` has dispatched the registered
   /// callback (or noticed there's nothing to dispatch). Re-arming
   /// would require a new instance, since the callback is a one-shot
@@ -1067,19 +1080,26 @@ export class WasmHost {
         register_effect: (descPtr: number) => {
           const mem = new DataView(this.memory.buffer);
           const version = mem.getInt32(descPtr, true);
-          if (version !== 1) return; // Unknown version, skip
+          if (version !== 2) return; // Unknown version, skip
 
+          // EffectDesc_v2 layout (wasm32, 4-byte ptrs/fn-indices):
+          //  +0 version, +4..+20 id/name/desc/category/keywords,
+          //  +24 module_init, +28 create, +32 destroy, +36 init,
+          //  +40 tick, +44 render, +48 on_state_patched, +52 on_resolume_param.
           const idPtr = mem.getUint32(descPtr + 4, true);
           const namePtr = mem.getUint32(descPtr + 8, true);
           const descriptionPtr = mem.getUint32(descPtr + 12, true);
           const categoryPtr = mem.getUint32(descPtr + 16, true);
           const keywordsPtr = mem.getUint32(descPtr + 20, true);
 
-          const initIdx = mem.getUint32(descPtr + 24, true);
-          const tickIdx = mem.getUint32(descPtr + 28, true);
-          const renderIdx = mem.getUint32(descPtr + 32, true);
-          const onStatePatchedIdx = mem.getUint32(descPtr + 36, true);
-          const onResolumeParamIdx = mem.getUint32(descPtr + 40, true);
+          const moduleInitIdx = mem.getUint32(descPtr + 24, true);
+          const createIdx = mem.getUint32(descPtr + 28, true);
+          const destroyIdx = mem.getUint32(descPtr + 32, true);
+          const initIdx = mem.getUint32(descPtr + 36, true);
+          const tickIdx = mem.getUint32(descPtr + 40, true);
+          const renderIdx = mem.getUint32(descPtr + 44, true);
+          const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
+          const onResolumeParamIdx = mem.getUint32(descPtr + 52, true);
 
           this.registeredEffects.push({
             id: this.readCString(idPtr),
@@ -1087,6 +1107,9 @@ export class WasmHost {
             description: this.readCString(descriptionPtr),
             category: this.readCString(categoryPtr),
             keywords: this.readCString(keywordsPtr).split(',').filter(k => k.length > 0),
+            _moduleInitIdx: moduleInitIdx,
+            _createIdx: createIdx,
+            _destroyIdx: destroyIdx,
             _initIdx: initIdx,
             _tickIdx: tickIdx,
             _renderIdx: renderIdx,
@@ -1124,24 +1147,42 @@ export class WasmHost {
 
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
 
-    const initFn = table.get(effect._initIdx) as () => void;
-    const tickFn = table.get(effect._tickIdx) as (dt: number) => void;
-    const renderFn = table.get(effect._renderIdx) as (vpW: number, vpH: number) => void;
+    // EffectDesc_v2 / class-like instance ABI: module_init (once per
+    // type) → create() → init(self), then instance callbacks thread self.
+    if (effect._moduleInitIdx && !this.moduleInitedIds.has(effect.id)) {
+      const moduleInitFn = table.get(effect._moduleInitIdx) as (() => void) | null;
+      if (moduleInitFn) moduleInitFn();
+      this.moduleInitedIds.add(effect.id);
+    }
+
+    let self = 0;
+    if (effect._createIdx) {
+      const createFn = table.get(effect._createIdx) as (() => number) | null;
+      if (createFn) self = createFn() | 0;
+    }
+    this.activeSelf = self;
+
+    const initFn = table.get(effect._initIdx) as (self: number) => void;
+    const tickFn = table.get(effect._tickIdx) as (self: number, dt: number) => void;
+    const renderFn = table.get(effect._renderIdx) as (self: number, vpW: number, vpH: number) => void;
     const onStatePatchedFn = table.get(effect._onStatePatchedIdx) as
-      (n: number, pb: number, off: number, len: number, ops: number) => void;
+      (self: number, n: number, pb: number, off: number, len: number, ops: number) => void;
     const onResolumeParamFn = effect._onResolumeParamIdx !== 0
-      ? table.get(effect._onResolumeParamIdx) as (paramId: bigint, value: number) => void
+      ? table.get(effect._onResolumeParamIdx) as (self: number, paramId: bigint, value: number) => void
       : undefined;
 
-    // Call init immediately
-    initFn();
+    // Call init immediately, threading the instance's self pointer.
+    initFn(self);
 
     return {
       init: () => {}, // Already called
-      tick: tickFn,
-      render: renderFn,
-      onStatePatched: onStatePatchedFn,
-      onResolumeParam: onResolumeParamFn,
+      tick: (dt: number) => tickFn(self, dt),
+      render: (vpW: number, vpH: number) => renderFn(self, vpW, vpH),
+      onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) =>
+        onStatePatchedFn(self, n, pb, off, len, ops),
+      onResolumeParam: onResolumeParamFn
+        ? (paramId: bigint, value: number) => onResolumeParamFn(self, paramId, value)
+        : undefined,
     };
   }
 
@@ -1172,8 +1213,8 @@ export class WasmHost {
     this.stateReadyFired = true;
     if (!this.onStateReadyIdx) return;
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
-    const fn = table.get(this.onStateReadyIdx) as (() => void) | null;
-    if (fn) fn();
+    const fn = table.get(this.onStateReadyIdx) as ((self: number) => void) | null;
+    if (fn) fn(this.activeSelf);
   }
 
   /**
@@ -1272,8 +1313,8 @@ export class WasmHost {
   firePrepare(vpW: number, vpH: number) {
     if (!this.fusionPrepareIdx) return;
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
-    const fn = table.get(this.fusionPrepareIdx) as ((w: number, h: number) => void) | null;
-    if (fn) fn(vpW, vpH);
+    const fn = table.get(this.fusionPrepareIdx) as ((self: number, w: number, h: number) => void) | null;
+    if (fn) fn(this.activeSelf, vpW, vpH);
   }
 
   /**

@@ -15,6 +15,10 @@
  *
  * Uses an internal accumulator to advance the static phase, per the
  * style guide's time-handling rule (no `elapsed * rate`).
+ *
+ * Class-like instance model: module_init() sets up the type-shared
+ * compute PSO + schema once; each chain entry gets its own State (params
+ * + uniform buffer) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -39,48 +43,44 @@ struct FuseUniforms {
   float _pad_z;
 };
 
-static int   s_algorithm = 0;
-static float s_scale = 0.5f;
-static float s_contrast = 0.0f;
-static float s_seed = 0.0f;
-static int   s_octaves = 4;
-static float s_color = 0.0f;
-static float s_speed = 0.5f;
+// Per-instance state. One per chain entry.
+struct State {
+  int   algorithm = 0;
+  float scale = 0.5f;
+  float contrast = 0.0f;
+  float seed = 0.0f;
+  int   octaves = 4;
+  float color = 0.0f;
+  float speed = 0.5f;
 
-static float s_static_phase = 0.0f;  // accumulator (style guide §2.1)
+  float static_phase = 0.0f;  // accumulator (style guide §2.1)
 
-static bool s_initialized = false;
+  bool initialized = false;
+  gpu::Buffer uniform_buf;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer s_uniform_buf;
 
-void prepare(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void prepare(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
   FuseUniforms u = {};
-  u.algorithm = s_algorithm;
-  u.scale = s_scale;
-  u.contrast = s_contrast;
-  u.seed = s_seed;
-  u.octaves = s_octaves;
-  u.color = s_color;
-  u.static_phase = s_static_phase;
+  u.algorithm = s->algorithm;
+  u.scale = s->scale;
+  u.contrast = s->contrast;
+  u.seed = s->seed;
+  u.octaves = s->octaves;
+  u.color = s->color;
+  u.static_phase = s->static_phase;
   u.aspect_x = ax;
   u.aspect_y = ay;
-  s_uniform_buf.writeOne(u);
+  s->uniform_buf.writeOne(u);
 }
 
-void init() {
-  s_algorithm = 0;
-  s_scale = 0.5f;
-  s_contrast = 0.0f;
-  s_seed = 0.0f;
-  s_octaves = 4;
-  s_color = 0.0f;
-  s_speed = 0.5f;
-  s_static_phase = 0.0f;
-
-  s_initialized = false;
-
+// Type-level setup: schema + shared compute PSO. Runs once per type.
+void module_init() {
   state::init("generator.noise", {1, 0, 0},
     state::Schema()
       .intField("algorithm", 0,    0, 3,    state::PrimaryInput)
@@ -101,50 +101,85 @@ void init() {
   auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
-  s_initialized = true;
+}
+
+// Per-instance construction: allocate State + its own uniform buffer.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+
+// Per-instance init tail: defaults + per-instance fusion registration.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->algorithm = 0;
+  s->scale = 0.5f;
+  s->contrast = 0.0f;
+  s->seed = 0.0f;
+  s->octaves = 4;
+  s->color = 0.0f;
+  s->speed = 0.5f;
+  s->static_phase = 0.0f;
+
+  if (!s->uniform_buf.valid()) return;
+  s->initialized = true;
 
   state::registerFusionByName(state::FusionKind::StrictOutput,
                               "pixel",
-                              s_uniform_buf.id, sizeof(FuseUniforms),
+                              s->uniform_buf.id, sizeof(FuseUniforms),
                               &prepare);
 }
 
-void tick(double dt) {
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   // Advance the "static" phase as an accumulator. speed=0 freezes; speed=1 → 30 reroll/s.
-  s_static_phase += static_cast<float>(dt) * (s_speed * 30.0f);
+  s->static_phase += static_cast<float>(dt) * (s->speed * 30.0f);
   // Wrap to keep the value bounded (any large modulus is fine).
-  if (s_static_phase > 1.0e6f) s_static_phase -= 1.0e6f;
+  if (s->static_phase > 1.0e6f) s->static_phase -= 1.0e6f;
 }
 
-void on_param_change(int, double) {}
+void on_resolume_param(void*, long long, double) {}
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "algorithm")) s_algorithm = (int)state::patchFloat(i);
-    else if (state::pathIs(p, l, "scale"))     s_scale = state::patchFloat(i);
-    else if (state::pathIs(p, l, "contrast"))  s_contrast = state::patchFloat(i);
-    else if (state::pathIs(p, l, "seed"))      s_seed = state::patchFloat(i);
-    else if (state::pathIs(p, l, "octaves"))   s_octaves = (int)state::patchFloat(i);
-    else if (state::pathIs(p, l, "color"))     s_color = state::patchFloat(i);
-    else if (state::pathIs(p, l, "speed"))     s_speed = state::patchFloat(i);
+    if      (state::pathIs(p, l, "algorithm")) s->algorithm = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "scale"))     s->scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "contrast"))  s->contrast = state::patchFloat(i);
+    else if (state::pathIs(p, l, "seed"))      s->seed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "octaves"))   s->octaves = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "color"))     s->color = state::patchFloat(i);
+    else if (state::pathIs(p, l, "speed"))     s->speed = state::patchFloat(i);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto output = gpu::Device::textureForField("tex_out");
   if (!output.valid()) return;
 
-  prepare(vp_w, vp_h);
+  prepare(self, vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(output, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setBuffer(s->uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

@@ -71,7 +71,7 @@ static void apply_mode_visibility() {
   state::setFieldHidden("inset_bottom", !inset);
 }
 
-static void on_state_ready();
+static void on_state_ready(void* self);
 
 void init() {
   s_mode = ModeSpan;
@@ -120,7 +120,8 @@ void init() {
   s_initialized = true;
 }
 
-static void on_state_ready() {
+static void on_state_ready(void* self) {
+  (void)self;
   // Fired after init + initial state replay. Whatever the mode landed
   // at, hide the inactive mode's fields so the IDE never paints the
   // intermediate "all fields visible" state.

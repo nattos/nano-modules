@@ -27,6 +27,10 @@
  *
  * Default basis is (R, G, B) at hues 0, 1/3, 2/3 → M = identity.
  * Both directions pass through unchanged.
+ *
+ * Class-like instance model: module_init() sets up the type-shared
+ * compute PSO + schema once; each chain entry gets its own State (params
+ * + uniform buffer) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -46,23 +50,23 @@ struct FuseUniforms {
   float c2[4];
 };
 
-static int   s_direction = DirForward;
-static float s_hue[3] = { 0.0f, 1.0f / 3.0f, 2.0f / 3.0f };
-static bool s_initialized = false;
+// Per-instance state. One per chain entry.
+struct State {
+  int   direction = DirForward;
+  float hue[3] = { 0.0f, 1.0f / 3.0f, 2.0f / 3.0f };
+  bool initialized = false;
+  gpu::Buffer uniform_buf;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer s_uniform_buf;
 
 // Forward decl — body after init() since prepare() uses hue_to_rgb
 // (defined later as a static helper).
-void prepare(int vp_w, int vp_h);
+void prepare(void* self, int vp_w, int vp_h);
 
-void init() {
-  s_direction = DirForward;
-  s_hue[0] = 0.0f;
-  s_hue[1] = 1.0f / 3.0f;
-  s_hue[2] = 2.0f / 3.0f;
-  s_initialized = false;
-
+// Type-level setup: schema + shared compute PSO. Runs once per type.
+void module_init() {
   state::init("video.hue_basis", {1, 0, 0},
     state::Schema()
       .selectField("direction", DirForward, state::PrimaryInput, {
@@ -87,26 +91,57 @@ void init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
-  s_initialized = true;
+}
+
+// Per-instance construction: allocate State + its own uniform buffer.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+
+// Per-instance init tail: defaults + per-instance fusion registration.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->direction = DirForward;
+  s->hue[0] = 0.0f;
+  s->hue[1] = 1.0f / 3.0f;
+  s->hue[2] = 2.0f / 3.0f;
+  if (!s->uniform_buf.valid()) return;
+  s->initialized = true;
 
   state::registerFusionByName(state::FusionKind::PerPixelMapper,
                               "pixel",
-                              s_uniform_buf.id, sizeof(FuseUniforms),
+                              s->uniform_buf.id, sizeof(FuseUniforms),
                               &prepare);
 }
 
-void tick(double) {}
-void on_param_change(int, double) {}
+void tick(void* self, double dt) {
+  (void)self;
+  (void)dt;
+}
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "direction")) s_direction = (int)state::patchFloat(i);
-    else if (state::pathIs(p, l, "hue_a"))     s_hue[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "hue_b"))     s_hue[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "hue_c"))     s_hue[2] = state::patchFloat(i);
+    if      (state::pathIs(p, l, "direction")) s->direction = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "hue_a"))     s->hue[0] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "hue_b"))     s->hue[1] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "hue_c"))     s->hue[2] = state::patchFloat(i);
   }
 }
 
@@ -122,24 +157,25 @@ static void hue_to_rgb(float h, float& r, float& g, float& b) {
   else              { r = 1.f;       g = 0.f;        b = 6.f - k; }
 }
 
-void prepare(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void prepare(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   // Build M with columns b'_i. Each b'_i is a fully-saturated RGB
   // colour with components summing to 1.
   float bv[3][3];
   for (int i = 0; i < 3; i++) {
-    hue_to_rgb(s_hue[i], bv[i][0], bv[i][1], bv[i][2]);
-    float s = bv[i][0] + bv[i][1] + bv[i][2];
-    if (s <= 1e-6f) s = 1e-6f;
-    float inv = 1.0f / s;
+    hue_to_rgb(s->hue[i], bv[i][0], bv[i][1], bv[i][2]);
+    float sum = bv[i][0] + bv[i][1] + bv[i][2];
+    if (sum <= 1e-6f) sum = 1e-6f;
+    float inv = 1.0f / sum;
     bv[i][0] *= inv; bv[i][1] *= inv; bv[i][2] *= inv;
   }
 
   // Pick M for Forward, M^-1 for Reverse (closed-form 3×3 inverse).
   // Falls back to M if M is singular — collapses cleanly without NaN.
   float upload[3][3];
-  if (s_direction == DirForward) {
+  if (s->direction == DirForward) {
     upload[0][0] = bv[0][0]; upload[0][1] = bv[0][1]; upload[0][2] = bv[0][2];
     upload[1][0] = bv[1][0]; upload[1][1] = bv[1][1]; upload[1][2] = bv[1][2];
     upload[2][0] = bv[2][0]; upload[2][1] = bv[2][1]; upload[2][2] = bv[2][2];
@@ -183,22 +219,23 @@ void prepare(int vp_w, int vp_h) {
   u.c0[0] = upload[0][0]; u.c0[1] = upload[0][1]; u.c0[2] = upload[0][2];
   u.c1[0] = upload[1][0]; u.c1[1] = upload[1][1]; u.c1[2] = upload[1][2];
   u.c2[0] = upload[2][0]; u.c2[1] = upload[2][1]; u.c2[2] = upload[2][2];
-  s_uniform_buf.writeOne(u);
+  s->uniform_buf.writeOne(u);
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  prepare(vp_w, vp_h);
+  prepare(self, vp_w, vp_h);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(in, 0, 0);
   cp.setTexture(out, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setBuffer(s->uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

@@ -38,45 +38,33 @@ extern "C" {
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     nano::registerEffect({
-        1,
+        2,
         "sequencer.nanolooper",
         "Nano Looper",
         "4-channel 16-step looper sequencer with visual overlay",
         "sequencer",
         "loop,trigger,beat,midi",
-        nanolooper::init,
-        nanolooper::tick,
-        nanolooper::render,
-        nanolooper::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(nanolooper),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.motion_field",
         "Motion Field",
         "Per-pixel motion vector generator. Soft-thresholds the input by luma, then composes a velocity field from a static rotation, a radial outward direction, and the luma gradient (each weighted), with magnitude and angular jitter on top.",
         "video",
         "motion,vectors,render-outputs,producer,luma,gradient",
-        motion_field::init,
-        motion_field::tick,
-        motion_field::render,
-        motion_field::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(motion_field),
     });
 
     nano::registerEffect({
-        1,
+        2,
         "video.flash_particles",
         "Flash Particles",
         "Mask-driven particle compositor. Spawns particles at bright spots in the (optional) mask texture, captures the input color at each spawn, and composites alpha-masked oriented quads (solid / squircle / gaussian) using a power-curve life decay with frame jitter. Emits motion vectors along each particle's rotation; chains via render_outputs_in.",
         "video",
         "particles,motion,vectors,render-outputs,producer,mask,jitter",
-        flash_particles::init,
-        flash_particles::tick,
-        flash_particles::render,
-        flash_particles::on_state_patched,
-        nullptr,
+        NANO_LEGACY_LIFECYCLE(flash_particles),
     });
 }
 

@@ -167,6 +167,14 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
         return len;
       },
       set_metadata: (_idPtr: number, _idLen: number, _versionPacked: number) => {},
+      // GPU-effect imports (the nano bundle now links motion_field /
+      // flash_particles which reference these). nanolooper never calls
+      // them, but they must exist for the bundle to instantiate.
+      register_shader_spv: () => {},
+      register_fusion: () => {},
+      register_fusion_by_name: () => {},
+      set_on_state_ready: () => {},
+      set_field_hidden: () => {},
       console_log: (_level: number, _msgPtr: number, _msgLen: number) => {},
       console_log_structured: (_level: number, _msgPtr: number, _msgLen: number,
                                 _jsonPtr: number, _jsonLen: number) => {},
@@ -278,13 +286,32 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       buffer_for_field: () => 0,
       create_instanced_render_pso: () => -1,
       render_set_buffer: () => {},
+      // Additional gpu imports referenced by the bundle's GPU effects
+      // (motion_field / flash_particles). Unused by nanolooper; present
+      // only so instantiation links.
+      create_shader_module_named: () => -1,
+      create_compute_pso_layout: () => -1,
+      create_compute_pso_v2: () => -1,
+      create_render_pso_layout: () => -1,
+      create_instanced_render_pso_layout: () => -1,
+      create_instanced_render_pso_mrt_layout: () => -1,
+      create_instanced_render_pso_blend_layout: () => -1,
+      create_texture_mips: () => -1,
+      create_texture_3d: () => -1,
+      create_sampler: () => -1,
+      compute_set_texture_mip: () => {},
+      compute_set_sampler: () => {},
+      clear_texture: () => {},
+      copy_texture: () => {},
+      begin_render_pass_load: () => -1,
+      begin_render_pass_mrt: () => -1,
     },
     module: {
       register_effect: (descPtr: number) => {
         const mem = new DataView(getMemory().buffer);
         const memBytes = new Uint8Array(getMemory().buffer);
         const version = mem.getInt32(descPtr, true);
-        if (version !== 1) return;
+        if (version !== 2) return;
 
         const readCStr = (ptr: number) => {
           let end = ptr;
@@ -292,17 +319,21 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
           return new TextDecoder().decode(memBytes.slice(ptr, end));
         };
 
+        // EffectDesc_v2 layout — see module_api.h / wasm-host register_effect.
         host.registeredEffects.push({
           id: readCStr(mem.getUint32(descPtr + 4, true)),
           name: readCStr(mem.getUint32(descPtr + 8, true)),
           description: readCStr(mem.getUint32(descPtr + 12, true)),
           category: readCStr(mem.getUint32(descPtr + 16, true)),
           keywords: readCStr(mem.getUint32(descPtr + 20, true)).split(',').filter((k: string) => k.length > 0),
-          _initIdx: mem.getUint32(descPtr + 24, true),
-          _tickIdx: mem.getUint32(descPtr + 28, true),
-          _renderIdx: mem.getUint32(descPtr + 32, true),
-          _onStatePatchedIdx: mem.getUint32(descPtr + 36, true),
-          _onResolumeParamIdx: mem.getUint32(descPtr + 40, true),
+          _moduleInitIdx: mem.getUint32(descPtr + 24, true),
+          _createIdx: mem.getUint32(descPtr + 28, true),
+          _destroyIdx: mem.getUint32(descPtr + 32, true),
+          _initIdx: mem.getUint32(descPtr + 36, true),
+          _tickIdx: mem.getUint32(descPtr + 40, true),
+          _renderIdx: mem.getUint32(descPtr + 44, true),
+          _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
+          _onResolumeParamIdx: mem.getUint32(descPtr + 52, true),
         });
       },
     },
