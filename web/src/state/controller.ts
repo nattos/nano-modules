@@ -1359,8 +1359,13 @@ export class AppController {
     // this is single-digit microseconds.
     const owned = new Uint8ClampedArray(pixelBytes);
     owned.set(new Uint8Array(buf, headerEnd, pixelBytes));
-    const imageData = new ImageData(owned, width, height);
-    const bitmap = await createImageBitmap(imageData);
+    let bitmap: ImageBitmap;
+    try {
+      const imageData = new ImageData(owned, width, height);
+      bitmap = await createImageBitmap(imageData);
+    } catch {
+      return;
+    }
     runInAction(() => {
       const prev = appState.local.engine.tracedFrames[traceId];
       // ImageBitmap is a one-shot resource — drop the old one if any

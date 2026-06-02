@@ -156,14 +156,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         });
     bridge_core_.set_client_patch_callback(
         [this](const std::string& key) {
-          if (key == barrel_plugin_key_) {
-            dirty_ = true;
-            dirty_since_ms_ = ::nano_barrel_log::now_ms();
-            // Patches don't tell us which subpath changed, so we re-read
-            // the preview_requests subtree unconditionally. It's a small
-            // JSON object — rebuild cost is in the microseconds.
-            refreshPreviewRequests();
-          }
+          if (key != barrel_plugin_key_) return;
+          // Fired from the WS message thread. Stay lock-free here —
+          // taking tick_mu_ from this thread risks contending with the
+          // render thread for the entire duration of bridge_core_.tick()
+          // (which iterates send_cb_ → ws_server.send_to inside the
+          // tick_mu_ scope) and was the source of the reconnect hang.
+          // dirty_ + dirty_since_ms_ are written as benign races
+          // (single-word stores; the worst case is a one-frame jitter
+          // in the regen debounce). preview_requests_ needs a real
+          // refresh, but that mutates an unordered_map — racy from
+          // here. Park a dirty flag for ProcessOpenGL to consume under
+          // tick_mu_ where it's safe.
+          dirty_ = true;
+          dirty_since_ms_ = ::nano_barrel_log::now_ms();
+          preview_requests_dirty_.store(true, std::memory_order_release);
         });
 
     {
@@ -197,6 +204,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         {"triggers", nlohmann::json::object()},
         {"host", nlohmann::json::object()},
         {"plugin_schemas", plugin_schemas},
+        // Editor preview-request inbox. Pre-populating with an empty
+        // object lets the editor target it with a JSON Patch `replace`
+        // (it would also accept `add`, but every other path here is
+        // pre-populated so this stays consistent).
+        {"preview_requests", nlohmann::json::object()},
       };
       for (int i = 0; i < (int)N_MACROS; ++i) {
         initial["macros"].push_back(0.0);
@@ -437,6 +449,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       std::lock_guard<std::mutex> lock(tick_mu_);
       sketch_json = bridge_core_.state_document().get_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch");
+      // Drain any preview-request changes the WS thread has signalled.
+      // Doing the actual map rebuild here keeps it on the render thread
+      // (single writer) so publishPreviewFrames can iterate later in
+      // the frame without further locking ceremony.
+      if (preview_requests_dirty_.exchange(false,
+                                            std::memory_order_acq_rel)) {
+        refreshPreviewRequests();
+      }
     }
     // Snapshots for the editor's preview push are gathered during the
     // executor's render via the chain-entry / sketch-output hooks bound
@@ -751,16 +771,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
   void publishPreviewFrames() {
     if (!gpu_ || !ws_server_) return;
-    // Copy the active request set under the lock, then release before
-    // doing GPU readbacks / WS sends — neither needs the bridge mutex.
-    std::vector<PreviewRequest> reqs;
-    {
-      std::lock_guard<std::mutex> lock(tick_mu_);
-      reqs.reserve(preview_requests_.size());
-      for (auto& [_, r] : preview_requests_) reqs.push_back(r);
-    }
-    if (reqs.empty()) return;
-    for (const auto& req : reqs) {
+    // preview_requests_ is single-writer (render thread, inside the
+    // tick_mu_ scope above where the dirty flag is drained). It's stable
+    // for the rest of this frame, so iterate it directly — no lock.
+    if (preview_requests_.empty()) return;
+    for (const auto& [_, req] : preview_requests_) {
       auto it = frame_captures_.find(req.targetKey);
       if (it == frame_captures_.end()) continue;
       const auto& slot = it->second;
@@ -836,8 +851,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   std::unique_ptr<bridge::WsServer> ws_server_;
   std::string                      barrel_plugin_key_;
 
-  // Active preview requests (guarded by tick_mu_).
+  // Active preview requests (guarded by tick_mu_). Refreshed lazily on
+  // the render thread when `preview_requests_dirty_` is set — the WS
+  // patch callback only flips the flag, never mutates the map directly.
   std::unordered_map<std::string, PreviewRequest> preview_requests_;
+  std::atomic<bool> preview_requests_dirty_{false};
   // Per-frame texture snapshots (NOT guarded — only touched on render
   // thread between executor->execute() and the publish loop below it).
   std::unordered_map<std::string, CaptureSlot> frame_captures_;

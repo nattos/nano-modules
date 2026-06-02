@@ -155,7 +155,20 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     }
     .preview-area canvas {
       width: 100%; aspect-ratio: 16/9;
-      background: #000; border-radius: 4px; display: block;
+      border-radius: 4px; display: block;
+      /* Same Photoshop-style transparency checkerboard as
+         <texture-monitor>. The preview texture often carries an alpha
+         channel (eg generators like soft_glow output a glow over
+         transparency); against a solid black canvas those pixels would
+         disappear. The checkerboard shows the actual content. */
+      background-color: #999;
+      background-image:
+        linear-gradient(45deg,  #777 25%, transparent 25%),
+        linear-gradient(-45deg, #777 25%, transparent 25%),
+        linear-gradient(45deg,  transparent 75%, #777 75%),
+        linear-gradient(-45deg, transparent 75%, #777 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
     }
 
     /* --- Buttons --- */

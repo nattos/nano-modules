@@ -184,8 +184,12 @@ function connectBarrel(url: string) {
       const json = JSON.stringify(requests);
       if (json === lastPushedRequestsJson) return;
       lastPushedRequestsJson = json;
+      // `add` on an existing path replaces (RFC 6902 §4.1); on a missing
+      // path it creates. `replace` would fail silently if the barrel
+      // hadn't pre-populated `/preview_requests` in its initial state,
+      // so `add` keeps us robust against both old + new barrel binaries.
       barrel.patch(`/plugins/${barrelPluginKey}/state`, [
-        { op: 'replace', path: '/preview_requests', value: requests },
+        { op: 'add', path: '/preview_requests', value: requests },
       ]);
     });
   });

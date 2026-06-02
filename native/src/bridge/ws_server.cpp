@@ -85,42 +85,63 @@ void WsServer::stop() {
   running_ = false;
 }
 
+// IMPORTANT: ixwebsocket's send()/sendBinary() can synchronously fire
+// the WebSocket's onMessage callback with a Close payload when it
+// detects a dead connection (sendData → flushSendBuffer → setReadyState
+// → onClose). That re-enters our setOnClientMessageCallback Close
+// branch, which tries to take `clients_mutex_`. If we were already
+// holding it for the send loop, deadlock — and that's the exact stack
+// we hit when the editor tab closes leaving a stale client_id in
+// `clients_` that the next broadcast trips over. So every send below
+// snapshots the target websockets under the lock and sends outside it.
+
 void WsServer::broadcast(const std::string& msg) {
   if (!server_ || !running_) return;
-  std::lock_guard lock(clients_mutex_);
-  for (auto& [id, ws] : clients_) {
-    ws->send(msg);
+  std::vector<std::shared_ptr<ix::WebSocket>> snapshot;
+  {
+    std::lock_guard lock(clients_mutex_);
+    snapshot.reserve(clients_.size());
+    for (auto& [_, ws] : clients_) snapshot.push_back(ws);
   }
+  for (auto& ws : snapshot) ws->send(msg);
 }
 
 void WsServer::send_to(ClientId client, const std::string& msg) {
-  std::lock_guard lock(clients_mutex_);
-  auto it = clients_.find(client);
-  if (it != clients_.end()) {
-    it->second->send(msg);
+  std::shared_ptr<ix::WebSocket> ws;
+  {
+    std::lock_guard lock(clients_mutex_);
+    auto it = clients_.find(client);
+    if (it != clients_.end()) ws = it->second;
   }
+  if (ws) ws->send(msg);
 }
 
 void WsServer::send_binary_to(ClientId client, const void* data, size_t size) {
   if (!data || size == 0) return;
-  std::lock_guard lock(clients_mutex_);
-  auto it = clients_.find(client);
-  if (it == clients_.end()) return;
+  std::shared_ptr<ix::WebSocket> ws;
+  {
+    std::lock_guard lock(clients_mutex_);
+    auto it = clients_.find(client);
+    if (it != clients_.end()) ws = it->second;
+  }
+  if (!ws) return;
   // ixwebsocket's sendBinary takes a std::string but treats it as an
-  // opaque byte buffer. The string ctor we use here does NOT scan for
-  // a null terminator — it's the (ptr, len) form — so embedded zeros
-  // pass through unchanged.
+  // opaque byte buffer. The (ptr, len) string ctor here does NOT scan
+  // for a null terminator, so embedded zeros pass through unchanged.
   std::string buf(reinterpret_cast<const char*>(data), size);
-  it->second->sendBinary(buf);
+  ws->sendBinary(buf);
 }
 
 void WsServer::broadcast_binary(const void* data, size_t size) {
   if (!server_ || !running_ || !data || size == 0) return;
-  std::string buf(reinterpret_cast<const char*>(data), size);
-  std::lock_guard lock(clients_mutex_);
-  for (auto& [id, ws] : clients_) {
-    ws->sendBinary(buf);
+  std::vector<std::shared_ptr<ix::WebSocket>> snapshot;
+  {
+    std::lock_guard lock(clients_mutex_);
+    snapshot.reserve(clients_.size());
+    for (auto& [_, ws] : clients_) snapshot.push_back(ws);
   }
+  std::string buf(reinterpret_cast<const char*>(data), size);
+  for (auto& ws : snapshot) ws->sendBinary(buf);
 }
 
 } // namespace bridge
