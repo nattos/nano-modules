@@ -18,8 +18,24 @@
  */
 
 // FontData is not in the ambient TS lib yet; describe the bits we use.
-interface FontData { family: string; fullName: string; postscriptName: string; blob(): Promise<Blob>; }
+// queryLocalFonts() returns one entry PER FACE, so a family like "Arial" yields
+// separate Regular / Bold / Italic / Bold-Italic entries that all share
+// `family` — we must pick the upright regular face for the bare family name.
+interface FontData { family: string; fullName: string; postscriptName: string; style?: string; blob(): Promise<Blob>; }
 type QueryLocalFonts = () => Promise<FontData[]>;
+
+// Lower = closer to "upright regular". Penalizes italic/oblique and off-regular
+// weights/widths so the bare family name maps to the normal face (per-run
+// bold/italic selection is a later feature — the engine doesn't carry style yet).
+function faceScore(fd: FontData): number {
+  const s = `${fd.style ?? ''} ${fd.fullName ?? ''} ${fd.postscriptName ?? ''}`.toLowerCase();
+  let score = fd.fullName ? fd.fullName.length * 0.001 : 0;   // tie-break: shorter name
+  if (/italic|oblique/.test(s)) score += 8;
+  if (/\bbold\b/.test(s)) score += 4;
+  if (/thin|light|black|heavy|semibold|demibold|medium|book|condensed|narrow|expanded|extra|ultra/.test(s)) score += 2;
+  if (/\bregular\b|\broman\b|\bnormal\b/.test(s)) score -= 1;  // explicit regular marker
+  return score;
+}
 
 /** Fonts we expect to exist on common desktop targets (macOS-first, our Electron
  *  deployment target; many also exist on Windows). Offered as picker suggestions
@@ -57,7 +73,11 @@ export async function primeLocalFonts(): Promise<boolean> {
   try {
     const list = await q();
     cached = new Map();
-    for (const fd of list) if (!cached.has(fd.family)) cached.set(fd.family, fd);
+    // Keep the best (most upright-regular) face per family.
+    for (const fd of list) {
+      const prev = cached.get(fd.family);
+      if (!prev || faceScore(fd) < faceScore(prev)) cached.set(fd.family, fd);
+    }
     return true;
   } catch {
     return false;  // permission denied / no user activation
