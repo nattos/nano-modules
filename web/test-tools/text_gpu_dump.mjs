@@ -13,7 +13,7 @@
  * Exit 0 if the GPU output matches the CPU golden within tolerance.
  */
 import puppeteer from 'puppeteer';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,8 +23,13 @@ const PORT = process.env.PORT || '5174';
 const spec = process.argv[2] ||
   '{"text":"Hello\\nWorld!","runs":[{"size_px":48}],"constraints":{"max_width_px":300}}';
 const name = process.argv[3] || 'gpu_hello';
+const fontPath = process.env.TE_FONT || '/System/Library/Fonts/Monaco.ttf';
 const dumpDir = resolve(root, 'build/text-dumps');
 mkdirSync(dumpDir, { recursive: true });
+
+// Serve the font so the browser harness fetches the SAME bytes the CPU ref reads.
+const servedFont = resolve(root, 'build/wasm/testfont.ttf');
+copyFileSync(fontPath, servedFont);
 
 // ---- 1. GPU render in the browser ----
 const cfg = (await import(resolve(root, 'web/jest-puppeteer.config.js'))).default;
@@ -34,7 +39,7 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 page.on('console', (m) => { if (m.type() === 'error') console.error('[page]', m.text()); });
-const url = `http://localhost:${PORT}/text-gpu-test.html?spec=${encodeURIComponent(spec)}`;
+const url = `http://localhost:${PORT}/text-gpu-test.html?spec=${encodeURIComponent(spec)}&font=/wasm/testfont.ttf`;
 await page.goto(url, { waitUntil: 'networkidle0' });
 await page.waitForFunction(() => document.getElementById('result').textContent !== 'pending', { timeout: 20000 });
 const txt = await page.$eval('#result', (e) => e.textContent);
@@ -72,9 +77,15 @@ console.error(`❌ GPU vs CPU exceeds tolerance (maxChannelDiff=${maxDiff})`); p
 // ---- helpers ----
 async function cpuReference(spec) {
   const wasmPath = resolve(root, 'build/wasm/text_engine.wasm');
-  const wasi = { args_get: () => 0, args_sizes_get: () => 0, fd_close: () => 0, fd_seek: () => 0, fd_write: () => 0, proc_exit: () => { throw new Error('exit'); } };
-  const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), { wasi_snapshot_preview1: wasi });
+  const mod = new WebAssembly.Module(readFileSync(wasmPath));
+  const importObject = {};
+  for (const i of WebAssembly.Module.imports(mod)) { (importObject[i.module] ??= {}); if (i.kind === 'function') importObject[i.module][i.name] = () => 0; }
+  const instance = await WebAssembly.instantiate(mod, importObject);
   const ex = instance.exports; ex.__wasm_call_ctors?.();
+  // Same font as the browser harness.
+  const font = readFileSync(servedFont);
+  const fp = ex.malloc(font.length); new Uint8Array(ex.memory.buffer).set(font, fp);
+  ex.te_set_font(fp, font.length); ex.free(fp);
   const enc = new TextEncoder().encode(spec);
   const sp = ex.malloc(enc.length); new Uint8Array(ex.memory.buffer).set(enc, sp);
   const id = ex.te_layout(sp, enc.length); ex.free(sp);

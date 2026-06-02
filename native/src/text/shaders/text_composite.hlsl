@@ -34,18 +34,19 @@ cbuffer CompositeUniforms : register(b5) {
   uint  atlas_h;
   float origin_x;
   float origin_y;
-  uint  atlas_kind;   // 0 = MSDF, 1 = alpha coverage (stub)
+  uint  atlas_kind;      // 0 = MSDF, 1 = alpha coverage (stub)
+  float atlas_px_range;  // MSDF distance range in atlas px
+  float _pad0; float _pad1; float _pad2;
 };
 
-// Nearest-fetch a texel's alpha (coverage) from the packed atlas buffer.
-float atlas_coverage(float u, float v) {
-  int tx = (int)(u * (float)atlas_w);
-  int ty = (int)(v * (float)atlas_h);
-  tx = clamp(tx, 0, (int)atlas_w - 1);
-  ty = clamp(ty, 0, (int)atlas_h - 1);
-  uint packed = atlas[ty * (int)atlas_w + tx];
-  uint a = (packed >> 24) & 0xFFu;   // RGBA8 little-endian → alpha in high byte
-  return (float)a * (1.0 / 255.0);
+float median3(float a, float b, float c) { return max(min(a, b), min(max(a, b), c)); }
+
+// Nearest-fetch a packed RGBA8 texel from the atlas buffer (LE: R=low byte).
+float4 atlas_texel(float u, float v) {
+  int tx = clamp((int)(u * (float)atlas_w), 0, (int)atlas_w - 1);
+  int ty = clamp((int)(v * (float)atlas_h), 0, (int)atlas_h - 1);
+  uint p = atlas[ty * (int)atlas_w + tx];
+  return float4((p & 0xFFu), (p >> 8) & 0xFFu, (p >> 16) & 0xFFu, (p >> 24) & 0xFFu) * (1.0 / 255.0);
 }
 
 [numthreads(8, 8, 1)]
@@ -67,7 +68,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float au = g.uv.x + lu * (g.uv.z - g.uv.x);
     float av = g.uv.y + lv * (g.uv.w - g.uv.y);
 
-    float cov = atlas_coverage(au, av);   // Phase 1: MSDF median when atlas_kind==0
+    float4 texel = atlas_texel(au, av);
+    float cov;
+    if (atlas_kind == 0u) {                       // MSDF: median + screenPxRange AA
+      float tile_h_px = (g.uv.w - g.uv.y) * (float)atlas_h;
+      float screen_px_range = tile_h_px > 0.0 ? atlas_px_range * g.rect.w / tile_h_px : 1.0;
+      float sd = median3(texel.r, texel.g, texel.b);
+      cov = clamp(screen_px_range * (sd - 0.5) + 0.5, 0.0, 1.0);
+    } else {                                      // alpha-coverage (stub atlas)
+      cov = texel.a;
+    }
     float a = cov * g.rgba.a;
     col = g.rgba.rgb * a + col * (1.0 - a);
   }
