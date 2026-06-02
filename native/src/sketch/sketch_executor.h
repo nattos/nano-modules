@@ -142,6 +142,15 @@ class SketchExecutor {
   // for instances that get removed cost ~one JSON's worth of memory.
   std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
 
+  // Cached compute PSOs for fused chains. Key is the ordered list of
+  // module_types joined by '|'. Created lazily on first use; released
+  // in the destructor (no host can hot-add effects today, so the cache
+  // never grows unboundedly under normal operation).
+  std::unordered_map<std::string, int32_t> fusedPSOs_;
+  // Compiled shader modules backing those PSOs, kept alive so the
+  // GPUBackend doesn't free them out from under us.
+  std::vector<int32_t> fusedShaderModules_;
+
   int32_t nextIntermediate(int W, int H);
 
   void applyState(effect_runtime::EffectInstance* inst,

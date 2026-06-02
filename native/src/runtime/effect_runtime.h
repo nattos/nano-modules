@@ -63,6 +63,26 @@ class EffectInstance {
   void doInit();
   void doTick(double dt);
   void doRender(int vp_w, int vp_h);
+  // Drive only the per-frame uniform-buffer write (no dispatch). The
+  // fusion path uses this in place of doRender so the executor can
+  // batch N effects' uniforms + a single compute dispatch. No-op if
+  // the effect didn't register fusion info.
+  void doPrepare(int vp_w, int vp_h);
+
+  // --- Fusion metadata ---
+  // Populated when the effect calls state::registerFusionByName(...)
+  // inside its init(). Effects that never register stay
+  // FusionKind::Freeform (=0) and the executor runs their standalone
+  // doRender() path.
+  struct FusionInfo {
+    int  kind = 0;                       // mirrors state::FusionKind
+    std::string fragmentName;            // shader-module name (the "pixel" SPV/MSL)
+    int  uniformBufferHandle = 0;        // gpu buffer id the effect wrote on registration
+    int  uniformSizeBytes = 0;
+    void (*prepare)(int, int) = nullptr; // per-frame uniform writer; called by the fusion path instead of render()
+  };
+  const FusionInfo& fusionInfo() const { return fusion_info_; }
+  void setFusionInfo(FusionInfo info) { fusion_info_ = std::move(info); }
 
   // Push a single replacement patch through on_state_patched. Pass the
   // field path (e.g. "intensity") and a JSON value.
@@ -138,6 +158,7 @@ class EffectInstance {
     std::string access;
   };
   std::unordered_map<std::string, RegisteredShader> shaders_by_name_;
+  FusionInfo fusion_info_;
 
   // val_* handle table — JSON values addressed by opaque int handles,
   // released explicitly. Populated by hostBeginPatchTransaction so

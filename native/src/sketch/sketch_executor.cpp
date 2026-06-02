@@ -3,6 +3,7 @@
 #include "sketch/sketch_augment.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "runtime/fusion_codegen.h"
 
 #include <utility>
 
@@ -137,6 +138,134 @@ int32_t SketchExecutor::execute(
     if (resolvable.empty()) continue;
 
     const bool isLastCol = (colIdx == columns.size() - 1);
+
+    // ----- Fusion fast-path ----------------------------------------
+    // If every resolvable entry is a PerPixelMapper with no taps, we
+    // can collapse the whole chain into a single compute dispatch
+    // (one Metal cmd-buffer encode, no intermediate texture writes
+    // between stages, no per-stage driver overhead). Falls through to
+    // the standard per-entry loop on any miss.
+    {
+      // Metal's compute-stage [[buffer(N)]] indices top out at 30. We
+      // bind one uniform per fused stage at slots 2..N+1, so cap the
+      // group size accordingly. Larger chains fall back to per-entry
+      // dispatch — still correct, just no fusion benefit.
+      // (A future refactor could pack all uniforms into one slot to
+      // remove this cap; not needed for the typical chain.)
+      static constexpr size_t kMaxFusionStages = 28;
+      bool eligible = (resolvable.size() >= 2)
+                   && (resolvable.size() <= kMaxFusionStages);
+      if (eligible) {
+        for (size_t k : resolvable) {
+          const auto& entry = chain[k];
+          const std::string mt = entry.value("module_type", std::string());
+          const RegisteredModule* reg = registry_->find(mt);
+          if (!reg) { eligible = false; break; }
+          const auto& fi = reg->inst->fusionInfo();
+          // FusionKind::PerPixelMapper == 1 in state::FusionKind. We
+          // check by numeric value because the enum lives in the WASM
+          // host header — pulling it in just for the constant would
+          // tangle the runtime/effects boundary.
+          if (fi.kind != 1 || fi.fragmentName.empty() || !fi.prepare) {
+            eligible = false; break;
+          }
+          if (entry.contains("taps") && entry["taps"].is_array() &&
+              !entry["taps"].empty()) {
+            eligible = false; break;
+          }
+        }
+      }
+      if (eligible) {
+        // Resolve per-stage MSL fragments and a stable cache key. We
+        // cache by ordered module_type so a repeated chain shape
+        // (same effects in same order) shares one compiled PSO.
+        std::string cacheKey;
+        std::vector<std::string> fragments;
+        std::vector<effect_runtime::EffectInstance*> stages;
+        bool fragsOK = true;
+        for (size_t k : resolvable) {
+          const auto& entry = chain[k];
+          const std::string mt = entry.value("module_type", std::string());
+          const RegisteredModule* reg = registry_->find(mt);
+          if (!cacheKey.empty()) cacheKey += '|';
+          cacheKey += mt;
+          stages.push_back(reg->inst);
+          std::string msl;
+          if (!rt_->lookupMSL(reg->inst->fusionInfo().fragmentName, &msl)) {
+            fragsOK = false; break;
+          }
+          fragments.push_back(std::move(msl));
+        }
+        int32_t pso = -1;
+        if (fragsOK) {
+          auto it = fusedPSOs_.find(cacheKey);
+          if (it != fusedPSOs_.end()) {
+            pso = it->second;
+          } else {
+            std::string src = fusion_codegen::generateFusedMSL(fragments);
+            if (!src.empty()) {
+              int32_t sm = gpu_->createShaderModule(src);
+              if (sm > 0) {
+                fusedShaderModules_.push_back(sm);
+                pso = gpu_->createComputePSO(sm, "fused_main");
+                if (pso > 0) fusedPSOs_[cacheKey] = pso;
+              }
+            }
+          }
+        }
+        if (pso > 0) {
+          // Per-stage prep: apply persisted state (dirty-cached so
+          // unchanged state costs ~one JSON compare) and run tick.
+          // doPrepare writes the effect's uniform buffer — same data
+          // the standalone doRender path would write, just no
+          // dispatch yet.
+          for (size_t idx = 0; idx < resolvable.size(); ++idx) {
+            size_t k = resolvable[idx];
+            const auto& entry = chain[k];
+            const std::string instKey = entry.value("instance_key", std::string());
+            auto* inst = stages[idx];
+            if (instances.is_object() && instances.contains(instKey)) {
+              const auto& state = instances[instKey].value("state", json::object());
+              auto& cachedState = lastAppliedState_[instKey];
+              if (cachedState != state) {
+                applyState(inst, state);
+                cachedState = state;
+              }
+            }
+            inst->doTick(dt);
+            inst->doPrepare(W, H);
+          }
+          const bool isFinalStage = isLastCol;
+          int32_t outHandle = isFinalStage ? outputHandle
+                                           : nextIntermediate(W, H);
+          int32_t pass = gpu_->beginComputePass();
+          gpu_->computeSetPSO(pass, pso);
+          gpu_->computeSetTexture(pass, colInput,  0, /*access=read */ 0);
+          gpu_->computeSetTexture(pass, outHandle, 1, /*access=write*/ 1);
+          for (size_t idx = 0; idx < stages.size(); ++idx) {
+            gpu_->computeSetBuffer(pass,
+                stages[idx]->fusionInfo().uniformBufferHandle,
+                0, (int32_t)(2 + idx));
+          }
+          gpu_->computeDispatch(pass,
+                                ((uint32_t)W + 7) / 8,
+                                ((uint32_t)H + 7) / 8, 1);
+          gpu_->endComputePass(pass);
+
+          // Chain-entry hooks are intentionally NOT fired per stage —
+          // there is no separate texture for any intermediate stage in
+          // a fused dispatch. If a host wants per-stage previews on a
+          // fused chain it should either trigger a re-plan that
+          // disables fusion or readback the final output.
+          anyDispatched = true;
+          finalHandle = outHandle;
+          colInput = outHandle;
+          continue;  // skip the per-entry loop below for this column
+        }
+      }
+    }
+    // ----- End fusion fast-path ------------------------------------
+
     for (size_t k = 0; k < resolvable.size(); ++k) {
       size_t i = resolvable[k];
       const auto& entry = chain[i];

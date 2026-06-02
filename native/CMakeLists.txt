@@ -479,6 +479,7 @@ if(APPLE)
     src/runtime/effect_runtime.cpp
     src/runtime/host_impls.cpp
     src/runtime/gpu_impls.cpp
+    src/runtime/fusion_codegen.cpp
   )
   target_include_directories(effect_runtime PUBLIC
     ${CMAKE_SOURCE_DIR}/src
@@ -719,4 +720,31 @@ if(APPLE)
     COMMENT "Codesigning NanoBarrel.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
     VERBATIM
   )
+
+  # --- benchmark_barrel CLI ---
+  # Standalone driver that exercises the same render path as
+  # NanoBarrel::ProcessOpenGL (GL→Metal blit → executor → submit →
+  # Metal→GL blit) but without the FFGL SDK or the bridge, so we can
+  # micro-benchmark optimizations in isolation.
+  add_executable(benchmark_barrel
+    tests/benchmark_barrel.mm
+    src/plugin/nano_barrel/InteropTexture.m
+  )
+  target_include_directories(benchmark_barrel PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${EFFECTS_NATIVE_INC}
+    ${EFFECTS_NATIVE_TMP}
+    ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
+  )
+  target_link_libraries(benchmark_barrel PRIVATE
+    effects_native
+    sketch_executor
+    nlohmann_json::nlohmann_json
+    "-framework OpenGL"
+    "-framework Metal"
+    "-framework CoreVideo"
+    "-framework AppKit"
+    "-framework Foundation"
+  )
+  target_compile_options(benchmark_barrel PRIVATE -Wno-deprecated-declarations)
 endif()

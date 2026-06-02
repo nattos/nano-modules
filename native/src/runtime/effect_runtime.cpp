@@ -52,6 +52,13 @@ void EffectInstance::doRender(int vp_w, int vp_h) {
   runtime_->setActive(nullptr);
 }
 
+void EffectInstance::doPrepare(int vp_w, int vp_h) {
+  if (!fusion_info_.prepare) return;
+  runtime_->setActive(this);
+  fusion_info_.prepare(vp_w, vp_h);
+  runtime_->setActive(nullptr);
+}
+
 void EffectInstance::setTextureField(const std::string& path, int handle) {
   texture_fields_[path] = handle;
 }

@@ -140,13 +140,40 @@ void state_register_shader_spv(const char* name, int name_len,
                               std::string_view(access, access_len));
 }
 
-void state_register_fusion(int, const char*, int, const char*, int,
-                            int, int, void(*)(int, int)) {
-  // Fusion is not used on the no-WASM path — every effect runs its
-  // standalone render(). Stub.
+void state_register_fusion(int kind,
+                            const char* /*frag_wgsl*/, int /*frag_wgsl_len*/,
+                            const char* /*frag_msl*/, int /*frag_msl_len*/,
+                            int uniform_buf_handle, int uniform_size_bytes,
+                            void(*prepare)(int, int)) {
+  // Older variant — the explicit-source form isn't what the modern
+  // effects use, but we still wire it to the same path with no
+  // fragment name. The native executor's fusion planner skips groups
+  // whose fragmentName is empty.
+  if (auto* inst = active()) {
+    effect_runtime::EffectInstance::FusionInfo info;
+    info.kind = kind;
+    info.uniformBufferHandle = uniform_buf_handle;
+    info.uniformSizeBytes = uniform_size_bytes;
+    info.prepare = prepare;
+    inst->setFusionInfo(std::move(info));
+  }
 }
-void state_register_fusion_by_name(int, const char*, int, int, int,
-                                    void(*)(int, int)) {}
+void state_register_fusion_by_name(int kind,
+                                    const char* fragment_name, int fragment_name_len,
+                                    int uniform_buf_handle, int uniform_size_bytes,
+                                    void(*prepare)(int, int)) {
+  if (auto* inst = active()) {
+    effect_runtime::EffectInstance::FusionInfo info;
+    info.kind = kind;
+    if (fragment_name && fragment_name_len > 0) {
+      info.fragmentName.assign(fragment_name, (size_t)fragment_name_len);
+    }
+    info.uniformBufferHandle = uniform_buf_handle;
+    info.uniformSizeBytes = uniform_size_bytes;
+    info.prepare = prepare;
+    inst->setFusionInfo(std::move(info));
+  }
+}
 
 int state_read(const char*, int, const char*,
                 char*, int, char*) { return 0; }
