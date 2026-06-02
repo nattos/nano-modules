@@ -11,12 +11,16 @@
 #   web/public/fonts/default.ttf       primary font (face 0) — Noto Sans
 #   web/public/fonts/noto-sans.ttf     family "Noto Sans"
 #   web/public/fonts/noto-serif.ttf    family "Noto Serif"
-#   web/public/fonts/noto-sans-sc.ttf  CJK fallback (Simplified Chinese / Han)
+#   web/public/fonts/noto-sans-sc.ttf  CJK fallback — Simplified Chinese / Han
+#   web/public/fonts/noto-sans-tc.ttf  CJK fallback — Traditional Chinese
+#   web/public/fonts/noto-sans-jp.ttf  CJK fallback — Japanese (kana + kanji)
+#   web/public/fonts/noto-sans-kr.ttf  CJK fallback — Korean (hangul)
 #
 # DEFAULT_FONTS / DEFAULT_FALLBACKS in web/src/text-engine.ts map these to served
-# URLs. The CJK face is glyf-flavored (not CFF) so it keeps byte-exact parity.
-# Add faces (Japanese kana / Korean hangul / Arabic / Hebrew for full i18n) by
-# extending FILES below + the manifest.
+# URLs. All CJK faces are glyf-flavored (not CFF) so they keep byte-exact parity.
+# Han ideographs resolve to the first chain face (SC) regardless of language;
+# per-run lang-based regional selection is a later refinement. Add faces (Arabic
+# / Hebrew for full i18n) by extending FILES below + the manifest.
 set -euo pipefail
 cd "$(dirname "$0")/../public/fonts"
 
@@ -29,6 +33,9 @@ FILES=(
   "noto-sans.ttf|ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf|bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d"
   "noto-serif.ttf|ofl/notoserif/NotoSerif%5Bwdth%2Cwght%5D.ttf|4d8e6761424656867019081a1a01336f3cb086982682698714054fc33f782713"
   "noto-sans-sc.ttf|ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf|a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"
+  "noto-sans-tc.ttf|ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf|864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f"
+  "noto-sans-jp.ttf|ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf|c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f"
+  "noto-sans-kr.ttf|ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf|194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252"
 )
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }

@@ -117,7 +117,10 @@ const DEFAULT_FONTS: FontSource[] = [
 // lacks, so CJK etc. render instead of tofu. glyf-flavored Noto faces → byte
 // parity. Extend with JP kana / KR hangul / Arabic / Hebrew for full coverage.
 const DEFAULT_FALLBACKS: string[] = [
-  '/fonts/noto-sans-sc.ttf',   // Simplified Chinese / Han (covers CJK ideographs)
+  '/fonts/noto-sans-sc.ttf',   // Simplified Chinese / Han (shared ideographs)
+  '/fonts/noto-sans-tc.ttf',   // Traditional Chinese
+  '/fonts/noto-sans-jp.ttf',   // Japanese (kana + kanji)
+  '/fonts/noto-sans-kr.ttf',   // Korean (hangul)
 ];
 
 // Back the singleton with globalThis so it survives module duplication across

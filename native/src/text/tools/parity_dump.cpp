@@ -55,14 +55,23 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Optional fallback face for CJK/missing-codepoint parity (TE_FALLBACK); the
-  // wasm tool registers the SAME file via addFallbackFont the SAME way.
-  if (const char* fbPath = std::getenv("TE_FALLBACK")) {
-    if (FILE* ff = std::fopen(fbPath, "rb")) {
-      std::fseek(ff, 0, SEEK_END); long fn = std::ftell(ff); std::fseek(ff, 0, SEEK_SET);
-      std::vector<uint8_t> fb(fn);
-      if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn) eng.addFallbackFont(fb.data(), (int)fn);
-      std::fclose(ff);
+  // Optional fallback CHAIN for CJK/missing-codepoint parity: TE_FALLBACK is a
+  // colon-separated list of font paths registered in order via addFallbackFont
+  // (the wasm tool registers the SAME files the SAME way).
+  if (const char* fbEnv = std::getenv("TE_FALLBACK")) {
+    std::string list(fbEnv), path;
+    for (size_t i = 0; i <= list.size(); i++) {
+      if (i == list.size() || list[i] == ':') {
+        if (!path.empty()) {
+          if (FILE* ff = std::fopen(path.c_str(), "rb")) {
+            std::fseek(ff, 0, SEEK_END); long fn = std::ftell(ff); std::fseek(ff, 0, SEEK_SET);
+            std::vector<uint8_t> fb(fn);
+            if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn) eng.addFallbackFont(fb.data(), (int)fn);
+            std::fclose(ff);
+          }
+          path.clear();
+        }
+      } else path.push_back(list[i]);
     }
   }
 
