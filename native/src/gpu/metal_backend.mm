@@ -567,6 +567,18 @@ public:
         scaler_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
       }
 
+      // If a batch is open, encode into the shared cmd buffer and
+      // accumulate the (dst, callback) pair so commitPreviewBatch can
+      // service them all from one completion handler. Otherwise fall
+      // back to the per-call cmd buffer (legacy behavior).
+      if (async_batch_cb_) {
+        [scaler_ encodeToCommandBuffer:async_batch_cb_
+                         sourceTexture:src
+                    destinationTexture:dst];
+        async_batch_pending_.push_back({dst, dstW, dstH, std::move(callback)});
+        return;
+      }
+
       id<MTLCommandBuffer> cb = [queue_ commandBuffer];
       [scaler_ encodeToCommandBuffer:cb
                        sourceTexture:src
@@ -593,6 +605,53 @@ public:
     }
   }
 
+  void beginPreviewBatch() override {
+    if (async_batch_cb_) return;  // already open — defensive
+    @autoreleasepool {
+      async_batch_cb_ = [queue_ commandBuffer];
+    }
+    // Ping-pong: this frame uses one pool, next frame the other. Within
+    // this batch, the cursor walks 0..N as readbacks are added; the
+    // pool grows on demand. The OTHER pool was used in the previous
+    // frame and its completion handler may still be running getBytes,
+    // so we don't touch it.
+    async_batch_pool_index_ ^= 1;
+    for (auto& [_, set] : asyncScaleScratchPools_) {
+      set.pools[async_batch_pool_index_].cursor = 0;
+    }
+  }
+
+  void commitPreviewBatch() override {
+    if (!async_batch_cb_) return;
+    if (async_batch_pending_.empty()) {
+      // Nothing to do — drop the unused cmd buffer.
+      async_batch_cb_ = nil;
+      return;
+    }
+    @autoreleasepool {
+      // Hand the pending records to the block by move. The shared_ptr
+      // wrapper is so the block can hold them without slicing or
+      // copying the std::function members.
+      auto pending = std::make_shared<std::vector<BatchPendingReadback>>(
+          std::move(async_batch_pending_));
+      async_batch_pending_.clear();
+      id<MTLCommandBuffer> cb = async_batch_cb_;
+      async_batch_cb_ = nil;
+      [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+        if ([finished status] == MTLCommandBufferStatusError) return;
+        for (auto& p : *pending) {
+          std::vector<uint8_t> pixels((size_t)p.dstW * p.dstH * 4);
+          [p.dst getBytes:pixels.data()
+              bytesPerRow:p.dstW * 4
+               fromRegion:MTLRegionMake2D(0, 0, p.dstW, p.dstH)
+              mipmapLevel:0];
+          p.callback(std::move(pixels));
+        }
+      }];
+      [cb commit];
+    }
+  }
+
 private:
   // Reuse a single scratch texture per destination size across frames
   // (used by the SYNC readback path — sender waits for completion, so
@@ -614,36 +673,44 @@ private:
     return tex;
   }
 
-  // For the ASYNC readback path the next frame's encode could overwrite
-  // the scratch while the previous frame's completion handler is still
-  // running getBytes on it. Rotate through a small pool per dest size
-  // so a frame's scratch is reused only after `kAsyncScratchPoolSize`
-  // frames — by then any handler racing it has long since returned.
-  static constexpr size_t kAsyncScratchPoolSize = 3;
+  // For the ASYNC readback path we need scratch textures that:
+  //   (a) don't alias within a single batched cmd buffer (multiple
+  //       readbacks of the same dest size in one frame must each write
+  //       a distinct texture, or the completion handler sees only the
+  //       last write's pixels in every record), and
+  //   (b) don't get overwritten by the NEXT frame's encode while the
+  //       PREVIOUS frame's completion handler is still calling
+  //       getBytes on them.
+  //
+  // We use a two-pool ping-pong per (w,h): each frame's batch picks one
+  // pool (alternates), grows it on demand within the batch (so case
+  // (a) is impossible), and resets its cursor for the next time that
+  // pool is picked. By then ~2 frames have elapsed, well past the
+  // microseconds the handler needs.
   struct AsyncScratchPool {
     std::vector<id<MTLTexture>> textures;
     size_t cursor = 0;
   };
+  struct AsyncScratchPoolSet {
+    AsyncScratchPool pools[2];
+  };
+  size_t async_batch_pool_index_ = 0;
   id<MTLTexture> nextAsyncScratchScaleTarget(uint32_t w, uint32_t h) {
     uint64_t key = ((uint64_t)w << 32) | (uint64_t)h;
-    auto& pool = asyncScaleScratchPools_[key];
-    if (pool.textures.empty()) {
+    auto& pool = asyncScaleScratchPools_[key]
+                    .pools[async_batch_pool_index_];
+    if (pool.cursor >= pool.textures.size()) {
       MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
       desc.width = w;
       desc.height = h;
       desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
       desc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
       desc.storageMode = MTLStorageModeShared;
-      pool.textures.reserve(kAsyncScratchPoolSize);
-      for (size_t i = 0; i < kAsyncScratchPoolSize; ++i) {
-        id<MTLTexture> t = [device_ newTextureWithDescriptor:desc];
-        if (!t) return nil;
-        pool.textures.push_back(t);
-      }
+      id<MTLTexture> t = [device_ newTextureWithDescriptor:desc];
+      if (!t) return nil;
+      pool.textures.push_back(t);
     }
-    id<MTLTexture> dst = pool.textures[pool.cursor];
-    pool.cursor = (pool.cursor + 1) % pool.textures.size();
-    return dst;
+    return pool.textures[pool.cursor++];
   }
 
 public:
@@ -716,7 +783,19 @@ private:
   // async-path needs a small per-size pool so a frame's completion
   // handler doesn't race the next frame's encode.
   std::unordered_map<uint64_t, id<MTLTexture>> scaleScratchTextures_;
-  std::unordered_map<uint64_t, AsyncScratchPool> asyncScaleScratchPools_;
+  std::unordered_map<uint64_t, AsyncScratchPoolSet> asyncScaleScratchPools_;
+
+  // Preview-batch state. When beginPreviewBatch opens a cmd buffer all
+  // subsequent readbackTextureScaledAsync calls encode into it; the
+  // matching commitPreviewBatch drains the per-call records through a
+  // single completion handler. Strictly render-thread only.
+  struct BatchPendingReadback {
+    id<MTLTexture> dst;
+    uint32_t dstW, dstH;
+    std::function<void(std::vector<uint8_t>)> callback;
+  };
+  id<MTLCommandBuffer> async_batch_cb_ = nil;
+  std::vector<BatchPendingReadback> async_batch_pending_;
 
   // Per-shader spec-constant metadata: name → (numeric index, MSL type).
   // Populated by createShaderModule by scanning the MSL source so

@@ -140,6 +140,12 @@ public:
   // the FFGL barrel uses this so it can publish previews without
   // blocking Resolume on a per-frame waitUntilCompleted.
   //
+  // When wrapped between `beginPreviewBatch()` and `commitPreviewBatch()`,
+  // multiple async readbacks coalesce into a single Metal command
+  // buffer with one shared completion handler — turning N cmd-buffer
+  // commits + N completion callbacks into 1 + 1. Without an active
+  // batch the call commits its own per-readback cmd buffer (legacy).
+  //
   // The default falls back to the synchronous path and invokes the
   // callback inline.
   virtual void readbackTextureScaledAsync(
@@ -151,6 +157,13 @@ public:
                                          dstW, dstH);
     if (!pixels.empty() && callback) callback(std::move(pixels));
   }
+
+  // Batch helpers — wrap a sequence of `readbackTextureScaledAsync`
+  // calls so they share one cmd buffer + one completion handler. No-op
+  // on backends without batching support; they fall through to per-
+  // call commits.
+  virtual void beginPreviewBatch() {}
+  virtual void commitPreviewBatch() {}
 
   // Upload pixel bytes into a texture (for tests / FFGL input handoff
   // without going through a full render path). RGBA8 / BGRA8 in row-

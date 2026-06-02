@@ -103,6 +103,14 @@ void WsServer::stop() {
 // `clients_` that the next broadcast trips over. So every send below
 // snapshots the target websockets under the lock and sends outside it.
 
+bool WsServer::has_open_clients() const {
+  std::lock_guard lock(clients_mutex_);
+  for (auto& [_, ws] : clients_) {
+    if (ws->getReadyState() == ix::ReadyState::Open) return true;
+  }
+  return false;
+}
+
 void WsServer::broadcast(const std::string& msg) {
   if (!server_ || !running_) return;
   std::vector<std::shared_ptr<ix::WebSocket>> snapshot;

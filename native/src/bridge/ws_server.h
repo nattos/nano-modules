@@ -29,6 +29,12 @@ public:
   void stop();
   bool is_running() const { return running_; }
 
+  /// Approximate live client count — true if at least one socket is in
+  /// the Open ready state. Used by hosts that want to skip producing
+  /// data when nobody's listening (eg the barrel skips per-frame
+  /// preview readbacks entirely when the editor is disconnected).
+  bool has_open_clients() const;
+
   /// Broadcast a message to all connected clients.
   void broadcast(const std::string& msg);
 
@@ -52,7 +58,7 @@ private:
   bool running_ = false;
   int next_client_id_ = 1;
 
-  std::mutex clients_mutex_;
+  mutable std::mutex clients_mutex_;
   std::unordered_map<ClientId, std::shared_ptr<ix::WebSocket>> clients_;
   std::unordered_map<ix::WebSocket*, ClientId> ws_to_id_;
 

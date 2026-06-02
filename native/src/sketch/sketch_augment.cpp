@@ -280,4 +280,30 @@ json augmentSketchWithImplicitConnections(
   return clone;
 }
 
+bool sketchNeedsAugmentation(
+    const json& sketch,
+    const std::unordered_map<std::string, json>& pluginSchemas) {
+  if (!sketch.is_object() || !sketch.contains("columns")) return false;
+  const auto& columns = sketch["columns"];
+  if (!columns.is_array()) return false;
+  for (const auto& col : columns) {
+    if (!col.is_object() || !col.contains("chain")) continue;
+    const auto& chain = col["chain"];
+    if (!chain.is_array()) continue;
+    for (const auto& entry : chain) {
+      if (!entry.is_object()) continue;
+      const auto mtIt = entry.find("module_type");
+      if (mtIt == entry.end() || !mtIt->is_string()) continue;
+      const auto schemaIt = pluginSchemas.find(mtIt->get<std::string>());
+      if (schemaIt == pluginSchemas.end()) continue;
+      const auto& fields = schemaIt->second;
+      if (!fields.is_object()) continue;
+      for (auto fIt = fields.begin(); fIt != fields.end(); ++fIt) {
+        if (isStructuredSchemaTypeDef(fIt.value())) return true;
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace sketch_augment

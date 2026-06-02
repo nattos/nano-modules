@@ -128,6 +128,20 @@ class SketchExecutor {
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;
 
+  // Schemas are constant once the registry's effects are registered
+  // (which the host does once at startup), but the augmenter consumes
+  // them as a map every frame. Cache the snapshot — `schemas()` was
+  // rebuilding ~the same map every frame, hot on the profile.
+  std::unordered_map<std::string, nlohmann::json> cachedSchemas_;
+  bool cachedSchemasValid_ = false;
+
+  // Per-instance state JSON from the previous frame — used to skip
+  // applyState (and the cascade of setParamJson → firePatched →
+  // val_blobs_ + json::dump allocations) when the state hasn't changed.
+  // Indexed by sketch instance key. Cleared lazily; long-lived entries
+  // for instances that get removed cost ~one JSON's worth of memory.
+  std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
+
   int32_t nextIntermediate(int W, int H);
 
   void applyState(effect_runtime::EffectInstance* inst,

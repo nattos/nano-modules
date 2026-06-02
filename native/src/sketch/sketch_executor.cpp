@@ -55,15 +55,45 @@ int32_t SketchExecutor::execute(
     int W, int H, double dt) {
   if (!rawSketch.is_object() || !registry_ || !gpu_) return inputHandle;
 
-  // Augment with implicit struct-rail connections.
-  auto schemas = registry_->schemas();
-  json sketch =
-      sketch_augment::augmentSketchWithImplicitConnections(rawSketch, schemas);
+  // Augment with implicit struct-rail connections. Schemas are
+  // immutable after the host's one-shot registerEffect calls, so build
+  // the map once and reuse.
+  if (!cachedSchemasValid_) {
+    cachedSchemas_ = registry_->schemas();
+    cachedSchemasValid_ = true;
+  }
+  // The augmenter deep-clones the whole sketch. For chains with only
+  // texture-typed I/O (eg N×brightness_contrast) the augmenter is a
+  // no-op anyway, so skip the clone entirely in that case. Detected
+  // by `sketchNeedsAugmentation` walking the chain in O(N) and
+  // checking whether any module's schema has a structured field.
+  json augmentedStorage;
+  const json* sketchPtr = &rawSketch;
+  if (sketch_augment::sketchNeedsAugmentation(rawSketch, cachedSchemas_)) {
+    augmentedStorage = sketch_augment::augmentSketchWithImplicitConnections(
+        rawSketch, cachedSchemas_);
+    sketchPtr = &augmentedStorage;
+  }
+  const json& sketch = *sketchPtr;
 
-  auto columns = sketch.value("columns", json::array());
-  if (!columns.is_array() || columns.empty()) return inputHandle;
-  auto instances = sketch.value("instances", json::object());
-  auto sketchRails = sketch.value("rails", json::array());
+  // Avoid value()-returned copies of large sub-objects. `value(key,
+  // default)` deep-copies the matched subtree (and constructs the
+  // default container as a temporary every call) — at 60 fps × per-
+  // column × per-entry that adds up to a sizeable chunk of the
+  // remaining JSON copy/destroy time on the profile.
+  static const json EMPTY_ARR = json::array();
+  static const json EMPTY_OBJ = json::object();
+  auto refOr = [](const json& parent, const char* key, const json& fallback,
+                  bool wantArray) -> const json& {
+    auto it = parent.find(key);
+    if (it == parent.end()) return fallback;
+    if (wantArray  ? !it->is_array()  : !it->is_object()) return fallback;
+    return *it;
+  };
+  const json& columns      = refOr(sketch, "columns",   EMPTY_ARR, true);
+  if (columns.empty()) return inputHandle;
+  const json& instances    = refOr(sketch, "instances", EMPTY_OBJ, false);
+  const json& sketchRails  = refOr(sketch, "rails",     EMPTY_ARR, true);
 
   intermediate_cursor_ = 0;
   int32_t finalHandle = inputHandle;
@@ -71,8 +101,8 @@ int32_t SketchExecutor::execute(
 
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
     const auto& col = columns[colIdx];
-    auto chain = col.value("chain", json::array());
-    if (!chain.is_array() || chain.empty()) continue;
+    const json& chain = refOr(col, "chain", EMPTY_ARR, true);
+    if (chain.empty()) continue;
 
     // Build per-column rail-by-id index (column-local + sketch-wide).
     std::unordered_map<std::string, json> railsById;
@@ -84,7 +114,7 @@ int32_t SketchExecutor::execute(
         if (!id.empty()) railsById[id] = r;
       }
     };
-    indexRails(col.value("rails", json::array()));
+    indexRails(refOr(col, "rails", EMPTY_ARR, true));
     indexRails(sketchRails);
 
     // Per-column rail value tables. Texture handles keyed by leafPath
@@ -139,10 +169,20 @@ int32_t SketchExecutor::execute(
       }
 
       // -- Apply persisted instance state from the sketch --
+      // applyState fans out into setParamJson/firePatched, which
+      // allocates a vector + json::parse/dump on every field. For an
+      // idle slider, the state is byte-identical across frames; bail
+      // when nothing changed. JSON equality on a small state object
+      // (a handful of fields) is microseconds vs the cascade it
+      // avoids.
       if (instances.is_object() && instances.contains(instKey)) {
         const auto& instJson = instances[instKey];
         const auto& state = instJson.value("state", json::object());
-        applyState(inst, state);
+        auto& cachedState = lastAppliedState_[instKey];
+        if (cachedState != state) {
+          applyState(inst, state);
+          cachedState = state;
+        }
       }
 
       // -- Wire primary channels --

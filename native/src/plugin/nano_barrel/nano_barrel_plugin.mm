@@ -482,12 +482,18 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         refreshPreviewRequests();
       }
     }
+    // Decide once per frame whether the capture machinery should run.
+    // When off, the executor hooks early-return and publishPreviewFrames
+    // never gets called — the cost of having an idle editor connected
+    // (or no editor at all) is just this single check.
+    captures_enabled_ = ws_server_ && ws_server_->has_open_clients()
+                                   && !preview_requests_.empty();
     // Snapshots for the editor's preview push are gathered during the
     // executor's render via the chain-entry / sketch-output hooks bound
     // in initEffectRuntime. Clear them each frame so a request that's
     // been removed (or whose chain entry no longer exists) doesn't
     // resurrect last frame's pixels.
-    frame_captures_.clear();
+    if (captures_enabled_) frame_captures_.clear();
     int32_t finalHandle = executor_
         ? executor_->execute(sketch_json,
                               inputHandle, outputHandle,
@@ -500,7 +506,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // After submit() returns the GPU work is fully complete; intermediates
     // and the output interop carry this frame's pixels. Publish any
     // requested previews before next frame's execute() rotates the pool.
-    publishPreviewFrames();
+    if (captures_enabled_) publishPreviewFrames();
 
     gpu_->release(inputHandle);
     gpu_->release(outputHandle);
@@ -561,6 +567,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     executor_->setChainEntryHook(
         [this](int colIdx, int chainIdx,
                int32_t inputHandle, int32_t outputHandle, int W, int H) {
+          if (!captures_enabled_) return;
           // Single-sketch barrel → no sketchId in the key.
           char buf[64];
           snprintf(buf, sizeof(buf), "ce:%d/%d/input", colIdx, chainIdx);
@@ -570,6 +577,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         });
     executor_->setSketchOutputHook(
         [this](int32_t handle, int W, int H) {
+          if (!captures_enabled_) return;
           frame_captures_["so"] = {handle, W, H};
         });
 
@@ -827,8 +835,32 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // tick_mu_ scope above where the dirty flag is drained). It's stable
     // for the rest of this frame, so iterate it directly — no lock.
     if (preview_requests_.empty()) return;
+    // If no editor is connected, every readback below is wasted work —
+    // the bytes would have nowhere to go. Bail before touching the GPU.
+    // Note: preview_requests_ may still hold entries from an editor
+    // that just disconnected (we don't actively clear them); they'll
+    // be replaced wholesale next time an editor connects and patches
+    // /preview_requests, so leaving them stable here is fine.
+    if (!ws_server_->has_open_clients()) return;
     bridge::WsServer* ws_server_raw = ws_server_.get();
+    // Batch every readback this frame into a single cmd buffer + one
+    // completion handler. For a sketch with N chain entries the editor
+    // typically mounts ~N+2 monitors (column input + per-effect output
+    // + main preview); without batching that's N+2 commits per frame,
+    // each carrying Metal driver overhead and a separate completion
+    // callback. Batching collapses that to 1 + 1.
+    // Chain-entry intermediate thumbnails refresh on every-other-frame
+    // (so 30 fps when Resolume is at 60). Each one adds a Metal cmd
+    // buffer encode + render-pass setup; on a long chain (eg 10×
+    // brightness_contrast) the editor mounts ~12 of them, and the
+    // FFGL host's render-thread time spent in AGX state encoding was
+    // the dominant cost on the profile. The main edit preview
+    // (`so`) keeps running every frame so slider feedback stays
+    // smooth.
+    const bool include_intermediates = (frame_ & 1) == 0;
+    gpu_->beginPreviewBatch();
     for (const auto& [_, req] : preview_requests_) {
+      if (!include_intermediates && req.targetKey != "so") continue;
       auto it = frame_captures_.find(req.targetKey);
       if (it == frame_captures_.end()) continue;
       const auto& slot = it->second;
@@ -876,6 +908,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
             send_cv_.notify_one();
           });
     }
+    gpu_->commitPreviewBatch();
   }
 
   void maybeRegenerateConfig() {
@@ -945,6 +978,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // tearing the WS server down so handlers don't fire on a destroyed
   // instance.
   std::atomic<int> in_flight_previews_{0};
+
+  // Flipped at the top of each ProcessOpenGL — true iff the WS bridge
+  // has an open client AND there's at least one active preview
+  // request. The capture hooks consult it before touching
+  // frame_captures_ so a disconnected editor doesn't pay for
+  // per-chain-entry string formatting + map inserts.
+  bool captures_enabled_ = false;
 
   // Send worker: takes the Metal completion handler off the critical
   // path. Without this, broadcast_binary (which involves

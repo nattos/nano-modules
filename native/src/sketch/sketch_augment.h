@@ -63,6 +63,24 @@ nlohmann::json augmentSketchWithImplicitConnections(
     const std::unordered_map<std::string, nlohmann::json>& pluginSchemas);
 
 /**
+ * Cheap pre-check that returns true iff any chain entry in `sketch`
+ * uses a module whose schema contains at least one structured field
+ * (object/array/vecN). The full augmentation pass only ever inserts
+ * taps for structured I/O, so when this returns false the executor
+ * can skip the deep clone + per-column walk entirely.
+ *
+ * Conservative — returns true for any module that COULD be augmented,
+ * even when every consumer already has an explicit read tap. The
+ * actual augmenter is a no-op in that case; we just don't fast-path
+ * around it. The hot case is "every chain is texture-only" (eg a long
+ * chain of brightness_contrast / saturate / etc.), which we do
+ * skip.
+ */
+bool sketchNeedsAugmentation(
+    const nlohmann::json& sketch,
+    const std::unordered_map<std::string, nlohmann::json>& pluginSchemas);
+
+/**
  * Walk a JSON schema subtree and append every texture-leaf path
  * (slash-separated, relative to `prefix`) to `out`. Recursively
  * descends `type:object` fields. Used by the executor when routing a
