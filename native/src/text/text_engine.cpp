@@ -21,6 +21,8 @@
 
 #include <msdfgen.h>
 
+#include <linebreak.h>   // libunibreak: UAX#14 line break opportunities
+
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -473,6 +475,15 @@ int Engine::layout(const char* spec_json, int len) {
     word.clear(); wordW = 0;
   };
 
+  // UAX#14 break opportunities (libunibreak): brks[b] is the break status after
+  // the character whose last byte is b — MUSTBREAK / ALLOWBREAK / NOBREAK. This
+  // is what lets CJK (which has no spaces) wrap between ideographs while keeping
+  // Latin words intact. Whitespace/newline keep their existing handling; this
+  // only adds break points after non-space characters (CJK, hyphens, …).
+  std::vector<char> brks(text.size());
+  if (!text.empty())
+    set_linebreaks_utf8((const utf8_t*)text.data(), text.size(), "", brks.data());
+
   for (int i = 0; i < (int)text.size();) {
     int byteStart = i;
     unsigned cp; i = decodeUTF8(text, i, cp);
@@ -490,6 +501,10 @@ int Engine::layout(const char* spec_json, int len) {
       continue;
     }
     word.push_back({r.size, r.r, r.g, r.b, r.a, info, faceId}); wordW += info->advance * r.size;
+    // End the segment at an allowed break (the last byte of this char is i-1),
+    // so the next segment can wrap onto a new line independently.
+    char br = (i >= 1 && i <= (int)brks.size()) ? brks[i - 1] : (char)LINEBREAK_NOBREAK;
+    if (br == LINEBREAK_ALLOWBREAK || br == LINEBREAK_MUSTBREAK) flushWord();
   }
   flushWord();
   // Finalize the trailing line — unless the text ended exactly on a newline

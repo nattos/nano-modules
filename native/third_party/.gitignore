@@ -1,4 +1,6 @@
 # Pinned dep source trees are fetched via fetch_deps.sh, not committed
-# (~12 MB FreeType + msdfgen). The hand-authored config/shim/probes ARE tracked.
+# (~12 MB FreeType + msdfgen + libunibreak). The hand-authored config/shim/
+# probes ARE tracked.
 /freetype/
 /msdfgen/
+/libunibreak/

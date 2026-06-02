@@ -20,10 +20,14 @@ TP="$ROOT/native/third_party"
 [ -d "$TP/freetype" ] || bash "$TP/fetch_deps.sh"
 FTSRC=""; for s in base/ftbase base/ftinit base/ftsystem base/ftdebug base/ftbitmap base/ftmm sfnt/sfnt truetype/truetype psnames/psnames cff/cff psaux/psaux pshinter/pshinter; do FTSRC="$FTSRC $TP/freetype/src/$s.c"; done
 MDSRC=""; for c in Contour DistanceMapping EdgeHolder MSDFErrorCorrection Projection Scanline Shape contour-combiners edge-coloring edge-segments edge-selectors equation-solver msdf-error-correction msdfgen rasterization render-sdf sdf-error-estimation shape-description; do MDSRC="$MDSRC $TP/msdfgen/core/$c.cpp"; done
+# libunibreak must build as C (C++ rejects its implicit enum/void* conversions),
+# so compile it to objects first and link them into the C++ build.
+UBOBJ=""; for s in linebreak linebreakdata linebreakdef unibreakbase unibreakdef eastasianwidthdef eastasianwidthdata; do
+  clang -std=c11 -O2 -I"$TP/libunibreak/src" -c "$TP/libunibreak/src/$s.c" -o "/tmp/ub_$s.o"; UBOBJ="$UBOBJ /tmp/ub_$s.o"; done
 clang++ -std=c++17 -fno-exceptions -fno-rtti -O2 \
   -DFT2_BUILD_LIBRARY '-DFT_CONFIG_OPTIONS_H="ftoption_custom.h"' '-DFT_CONFIG_MODULES_H="ftmodule_custom.h"' \
-  -I"$TP/freetype/include" -I"$TP/ft-config" -I"$TP/msdf-config" -I"$TP/msdfgen" -I"$SRC" \
-  $FTSRC $MDSRC "$SRC/text_engine.cpp" "$SRC/tools/parity_dump.cpp" -o /tmp/te_parity_dump
+  -I"$TP/freetype/include" -I"$TP/ft-config" -I"$TP/msdf-config" -I"$TP/msdfgen" -I"$TP/libunibreak/src" -I"$SRC" \
+  $FTSRC $MDSRC $UBOBJ "$SRC/text_engine.cpp" "$SRC/tools/parity_dump.cpp" -o /tmp/te_parity_dump
 
 DUMP_DIR="$ROOT/build/text-dumps"
 mkdir -p "$DUMP_DIR"
@@ -45,6 +49,7 @@ SPECS=(
   '{"text":"REDblue","runs":[{"start":0,"len":3,"size_px":120,"rgba":[1,0.2,0.2,1]},{"start":3,"len":4,"size_px":60,"rgba":[0.3,0.5,1,1]}]}'
   '{"text":"MonoSerif","runs":[{"start":0,"len":4,"size_px":72},{"start":4,"len":5,"size_px":72,"family":"Serif","rgba":[0.4,1,0.6,1]}]}'
   '{"text":"Hello 世界 你好","size_px":56}'
+  '{"text":"你好世界这是一个换行测试","constraints":{"max_width_px":200,"size_px":40}}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.

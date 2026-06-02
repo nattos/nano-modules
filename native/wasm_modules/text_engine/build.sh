@@ -16,13 +16,13 @@ TP="../../third_party"
 OUT_DIR="${1:-../../../build/wasm}"
 mkdir -p "$OUT_DIR"
 
-if [ ! -d "$TP/freetype" ] || [ ! -d "$TP/msdfgen" ]; then
+if [ ! -d "$TP/freetype" ] || [ ! -d "$TP/msdfgen" ] || [ ! -d "$TP/libunibreak" ]; then
   echo "Vendored deps missing — running fetch_deps.sh"; bash "$TP/fetch_deps.sh"
 fi
 
 # Include paths: setjmp shim first (shadow wasi-libc's erroring header).
 INCS=(-I"$TP/wasm-shim" -I"$TP/freetype/include" -I"$TP/ft-config"
-      -I"$TP/msdf-config" -I"$TP/msdfgen" -I"$SRC_DIR")
+      -I"$TP/msdf-config" -I"$TP/msdfgen" -I"$TP/libunibreak/src" -I"$SRC_DIR")
 FTDEFS=(-DFT2_BUILD_LIBRARY '-DFT_CONFIG_OPTIONS_H="ftoption_custom.h"'
         '-DFT_CONFIG_MODULES_H="ftmodule_custom.h"')
 
@@ -36,6 +36,15 @@ for s in base/ftbase base/ftinit base/ftsystem base/ftdebug base/ftbitmap base/f
          cff/cff psaux/psaux pshinter/pshinter; do
   o="$TMP/ft_$(basename "$s").o"
   "$CLANG" "${WASM_CXXFLAGS[@]}" "${INCS[@]}" "${FTDEFS[@]}" -c "$TP/freetype/src/$s.c" -o "$o"
+  objs+=("$o")
+done
+# libunibreak (C): UAX#14 line breaking for CJK-aware wrapping. Must build as C
+# (it relies on C's implicit enum/void* conversions that C++ rejects).
+UB_CFLAGS=(--target=wasm32-wasip1 --sysroot="$WASI_LIBC" -O2 -x c -std=c11 -fno-exceptions)
+for s in linebreak linebreakdata linebreakdef unibreakbase unibreakdef \
+         eastasianwidthdef eastasianwidthdata; do
+  o="$TMP/ub_$s.o"
+  "$CLANG" "${UB_CFLAGS[@]}" -I"$TP/libunibreak/src" -c "$TP/libunibreak/src/$s.c" -o "$o"
   objs+=("$o")
 done
 # msdfgen core subset (C++), excludes ext/ + save-*/export-svg.

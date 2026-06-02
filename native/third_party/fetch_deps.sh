@@ -15,6 +15,7 @@ clone() { # repo tag dir
 }
 
 echo "Fetching pinned text-engine deps:"
-clone https://github.com/freetype/freetype.git VER-2-13-3 freetype
-clone https://github.com/Chlumsky/msdfgen.git    v1.12.1     msdfgen
-echo "Done. freetype=$(du -sh freetype|cut -f1) msdfgen=$(du -sh msdfgen|cut -f1)"
+clone https://github.com/freetype/freetype.git    VER-2-13-3 freetype
+clone https://github.com/Chlumsky/msdfgen.git     v1.12.1    msdfgen
+clone https://github.com/adah1972/libunibreak.git libunibreak_6_1 libunibreak
+echo "Done. freetype=$(du -sh freetype|cut -f1) msdfgen=$(du -sh msdfgen|cut -f1) libunibreak=$(du -sh libunibreak|cut -f1)"
