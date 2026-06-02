@@ -122,7 +122,7 @@ int state_is_field_connected(const char* path, int path_len, int direction) {
                           : inst->isOutputConnected(p)) ? 1 : 0;
 }
 
-void state_set_on_state_ready(void (*fn)(void)) {
+void state_set_on_state_ready(void (*fn)(void* self)) {
   auto* inst = active();
   if (!inst) return;
   inst->hostSetOnStateReady(fn);
@@ -144,7 +144,7 @@ void state_register_fusion(int kind,
                             const char* /*frag_wgsl*/, int /*frag_wgsl_len*/,
                             const char* /*frag_msl*/, int /*frag_msl_len*/,
                             int uniform_buf_handle, int uniform_size_bytes,
-                            void(*prepare)(int, int)) {
+                            void(*prepare)(void*, int, int)) {
   // Older variant — the explicit-source form isn't what the modern
   // effects use, but we still wire it to the same path with no
   // fragment name. The native executor's fusion planner skips groups
@@ -161,7 +161,7 @@ void state_register_fusion(int kind,
 void state_register_fusion_by_name(int kind,
                                     const char* fragment_name, int fragment_name_len,
                                     int uniform_buf_handle, int uniform_size_bytes,
-                                    void(*prepare)(int, int)) {
+                                    void(*prepare)(void*, int, int)) {
   if (auto* inst = active()) {
     effect_runtime::EffectInstance::FusionInfo info;
     info.kind = kind;

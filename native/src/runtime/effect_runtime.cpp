@@ -28,34 +28,56 @@ void setCurrentRuntime(EffectRuntime* rt) { g_runtime = rt; }
 EffectInstance::EffectInstance(EffectRuntime* rt, EffectDesc desc)
     : runtime_(rt), desc_(std::move(desc)) {}
 
-EffectInstance::~EffectInstance() = default;
+EffectInstance::~EffectInstance() {
+  // Per-key instances own their user_state; the prototype never has one.
+  if (user_state_) doDestroy();
+}
 
-void EffectInstance::doInit() {
+void EffectInstance::doModuleInit() {
+  // Type-level setup: register shaders, create the shared PSO, publish
+  // the schema prototype. Routed to this (prototype) instance via the
+  // active pointer so state::* host calls land here.
   runtime_->setActive(this);
-  if (desc_.init) desc_.init();
-  // Schema may have been registered during init() via state::init →
-  // state_set_schema. Fire the on_state_ready hook if set (mirrors the
-  // host's post-init + post-state-replay callback).
-  if (on_state_ready_) on_state_ready_();
+  if (desc_.module_init) desc_.module_init();
   runtime_->setActive(nullptr);
+}
+
+void EffectInstance::doCreate() {
+  runtime_->setActive(this);
+  if (desc_.create) user_state_ = desc_.create();
+  // Per-instance init tail: defaults, fusion registration with THIS
+  // instance's uniform buffer, blob seeding, etc.
+  if (desc_.init) desc_.init(user_state_);
+  // Fire the on_state_ready hook if set during init (mirrors the host's
+  // post-init + post-state-replay callback).
+  if (on_state_ready_) on_state_ready_(user_state_);
+  runtime_->setActive(nullptr);
+}
+
+void EffectInstance::doDestroy() {
+  if (!user_state_) return;
+  runtime_->setActive(this);
+  if (desc_.destroy) desc_.destroy(user_state_);
+  runtime_->setActive(nullptr);
+  user_state_ = nullptr;
 }
 
 void EffectInstance::doTick(double dt) {
   runtime_->setActive(this);
-  if (desc_.tick) desc_.tick(dt);
+  if (desc_.tick) desc_.tick(user_state_, dt);
   runtime_->setActive(nullptr);
 }
 
 void EffectInstance::doRender(int vp_w, int vp_h) {
   runtime_->setActive(this);
-  if (desc_.render) desc_.render(vp_w, vp_h);
+  if (desc_.render) desc_.render(user_state_, vp_w, vp_h);
   runtime_->setActive(nullptr);
 }
 
 void EffectInstance::doPrepare(int vp_w, int vp_h) {
   if (!fusion_info_.prepare) return;
   runtime_->setActive(this);
-  fusion_info_.prepare(vp_w, vp_h);
+  fusion_info_.prepare(user_state_, vp_w, vp_h);
   runtime_->setActive(nullptr);
 }
 
@@ -105,7 +127,7 @@ void EffectInstance::hostRegisterShaderSpv(std::string_view name,
   slot.format = std::string(format);
   slot.access = std::string(access);
 }
-void EffectInstance::hostSetOnStateReady(void (*fn)(void)) {
+void EffectInstance::hostSetOnStateReady(void (*fn)(void* self)) {
   on_state_ready_ = fn;
 }
 
@@ -166,7 +188,8 @@ void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
     val_blobs_.push_back(obj.dump());
   }
 
-  desc_.on_state_patched(static_cast<int>(patches.size()),
+  desc_.on_state_patched(user_state_,
+                         static_cast<int>(patches.size()),
                          pb.empty() ? nullptr : pb.data(),
                          off.empty() ? nullptr : off.data(),
                          len.empty() ? nullptr : len.data(),
@@ -198,12 +221,40 @@ EffectInstance* EffectRuntime::registerEffect(const EffectDesc& desc) {
   auto* ptr = inst.get();
   by_id_[desc.id] = ptr;
   effects_.push_back(std::move(inst));
+  // Run type-level setup once: shaders, shared PSO, schema prototype.
+  ptr->doModuleInit();
   return ptr;
 }
 
 EffectInstance* EffectRuntime::find(const std::string& id) {
   auto it = by_id_.find(id);
   return it != by_id_.end() ? it->second : nullptr;
+}
+
+EffectInstance* EffectRuntime::instanceFor(const std::string& type,
+                                           const std::string& instanceKey) {
+  const std::string key = poolKey(type, instanceKey);
+  auto it = instance_pool_.find(key);
+  if (it != instance_pool_.end()) return it->second.get();
+
+  EffectInstance* proto = find(type);
+  if (!proto) return nullptr;
+
+  // New per-key instance shares the type's descriptor; create() gives it
+  // its own user_state + per-instance uniform buffer, init() registers
+  // its per-instance fusion info.
+  auto inst = std::make_unique<EffectInstance>(this, proto->desc_);
+  auto* ptr = inst.get();
+  instance_pool_.emplace(key, std::move(inst));
+  ptr->doCreate();
+  return ptr;
+}
+
+void EffectRuntime::destroyInstance(const std::string& type,
+                                    const std::string& instanceKey) {
+  auto it = instance_pool_.find(poolKey(type, instanceKey));
+  if (it == instance_pool_.end()) return;
+  instance_pool_.erase(it);  // ~EffectInstance runs doDestroy
 }
 
 void EffectRuntime::registerShaderMSL(const std::string& name, std::string msl) {
@@ -227,31 +278,37 @@ std::vector<std::string> EffectRuntime::drainConsoleLog() {
   return out;
 }
 
-void EffectRuntime::registerFromDesc(const void* desc_v1_ptr) {
-  // Mirrors nano::EffectDesc_v1 layout — see wasm_modules/include/module_api.h.
+void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
+  // Mirrors nano::EffectDesc_v2 layout — see wasm_modules/include/module_api.h.
   // We can't include that header directly (it declares the
   // nano_register_effect import) so we replicate the layout here.
-  struct DescV1 {
+  struct DescV2 {
     int32_t struct_version;
     const char* id;
     const char* name;
     const char* description;
     const char* category;
     const char* keywords;
-    void (*init)();
-    void (*tick)(double);
-    void (*render)(int, int);
-    void (*on_state_patched)(int, const char*, const int*, const int*, const int*);
-    void (*on_resolume_param)(long long, double);
+    void  (*module_init)();
+    void* (*create)();
+    void  (*destroy)(void*);
+    void  (*init)(void*);
+    void  (*tick)(void*, double);
+    void  (*render)(void*, int, int);
+    void  (*on_state_patched)(void*, int, const char*, const int*, const int*, const int*);
+    void  (*on_resolume_param)(void*, long long, double);
   };
-  const auto* d = static_cast<const DescV1*>(desc_v1_ptr);
-  if (!d || d->struct_version != 1) return;
+  const auto* d = static_cast<const DescV2*>(desc_v2_ptr);
+  if (!d || d->struct_version != 2) return;
   EffectDesc desc;
   desc.id = d->id ? d->id : "";
   desc.name = d->name ? d->name : "";
   desc.description = d->description ? d->description : "";
   desc.category = d->category ? d->category : "";
   desc.keywords = d->keywords ? d->keywords : "";
+  desc.module_init = d->module_init;
+  desc.create = d->create;
+  desc.destroy = d->destroy;
   desc.init = d->init;
   desc.tick = d->tick;
   desc.render = d->render;

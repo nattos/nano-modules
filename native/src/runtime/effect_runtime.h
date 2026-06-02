@@ -26,27 +26,36 @@ namespace gpu { class GPUBackend; }
 
 namespace effect_runtime {
 
-// Mirrors nano::EffectDesc_v1 — what the bundle's nano_module_main
-// registers per effect via the imported `nano_register_effect`.
+// Mirrors nano::EffectDesc_v2 — the canonical class-like effect ABI.
+// `module_init` runs once per effect TYPE (shaders, shared PSO, schema
+// prototype, fusion type metadata). `create` constructs a per-instance
+// `State` and returns it as an opaque `self`; the runtime threads `self`
+// back through every instance-scoped callback. `destroy` frees it.
 struct EffectDesc {
   std::string id;
   std::string name;
   std::string description;
   std::string category;
   std::string keywords;
-  void (*init)() = nullptr;
-  void (*tick)(double dt) = nullptr;
-  void (*render)(int vp_w, int vp_h) = nullptr;
-  void (*on_state_patched)(int n, const char* pb, const int* off,
-                           const int* len, const int* ops) = nullptr;
-  void (*on_resolume_param)(long long param_id, double value) = nullptr;
+  void  (*module_init)() = nullptr;
+  void* (*create)() = nullptr;
+  void  (*destroy)(void* self) = nullptr;
+  void  (*init)(void* self) = nullptr;
+  void  (*tick)(void* self, double dt) = nullptr;
+  void  (*render)(void* self, int vp_w, int vp_h) = nullptr;
+  void  (*on_state_patched)(void* self, int n, const char* pb, const int* off,
+                            const int* len, const int* ops) = nullptr;
+  void  (*on_resolume_param)(void* self, long long param_id, double value) = nullptr;
 };
 
-// Per-effect state owned by the runtime. There's one instance per
-// registered effect (registry-key = effect id); since effects use file-
-// static state (`static int s_blob_count`, etc.), reusing the same effect
-// from multiple instances would collide — single-instance-per-effect-id is
-// a hard invariant.
+// One EffectInstance per (effect type, sketch instance_key). Each owns the
+// effect's per-instance `State` via `user_state_` (allocated by the
+// descriptor's create()) plus the per-instance uniform buffer, texture
+// wiring, and fusion info. A single "prototype" instance per type (created
+// by EffectRuntime::registerEffect) holds the type-level schema/metadata
+// and is where module_init's host calls land; it has no user_state and
+// never renders. Per-key render instances come from EffectRuntime::
+// instanceFor().
 class EffectInstance {
  public:
   // Owning runtime + effect descriptor are set at construction.
@@ -59,8 +68,16 @@ class EffectInstance {
   const std::string& metadataVersion() const { return metadata_version_; }
 
   // Lifecycle — runtime sets the active instance pointer before each
-  // call so the extern-C host impls can route back to this instance.
-  void doInit();
+  // call so the extern-C host impls can route back to this instance, and
+  // threads `user_state_` into the descriptor's instance callbacks.
+  //
+  // doModuleInit runs the type-level setup on the prototype instance
+  // (once per effect type). doCreate allocates user_state_ + runs the
+  // per-instance init() tail. The two are split so module-level resources
+  // (shaders, shared PSO, schema) are created exactly once.
+  void doModuleInit();
+  void doCreate();
+  void doDestroy();
   void doTick(double dt);
   void doRender(int vp_w, int vp_h);
   // Drive only the per-frame uniform-buffer write (no dispatch). The
@@ -68,6 +85,8 @@ class EffectInstance {
   // batch N effects' uniforms + a single compute dispatch. No-op if
   // the effect didn't register fusion info.
   void doPrepare(int vp_w, int vp_h);
+
+  void* userState() const { return user_state_; }
 
   // --- Fusion metadata ---
   // Populated when the effect calls state::registerFusionByName(...)
@@ -79,7 +98,7 @@ class EffectInstance {
     std::string fragmentName;            // shader-module name (the "pixel" SPV/MSL)
     int  uniformBufferHandle = 0;        // gpu buffer id the effect wrote on registration
     int  uniformSizeBytes = 0;
-    void (*prepare)(int, int) = nullptr; // per-frame uniform writer; called by the fusion path instead of render()
+    void (*prepare)(void*, int, int) = nullptr; // per-frame uniform writer; called by the fusion path instead of render()
   };
   const FusionInfo& fusionInfo() const { return fusion_info_; }
   void setFusionInfo(FusionInfo info) { fusion_info_ = std::move(info); }
@@ -116,7 +135,7 @@ class EffectInstance {
                              const unsigned char* spv, int spv_len,
                              std::string_view format,
                              std::string_view access);
-  void hostSetOnStateReady(void (*fn)(void));
+  void hostSetOnStateReady(void (*fn)(void* self));
 
   // Patch reading — driven by setParam* methods. Held only for the
   // duration of doOnStatePatched. The path buffer (pb) and arrays
@@ -140,10 +159,15 @@ class EffectInstance {
   EffectRuntime* runtime_;
   EffectDesc desc_;
 
+  // Per-instance state object returned by desc_.create(), threaded into
+  // every instance-scoped callback as `self`. Null on the type prototype
+  // (which only runs module_init) and on effects without a create().
+  void* user_state_ = nullptr;
+
   std::string metadata_id_;
   std::string metadata_version_;
   std::string schema_json_;
-  void (*on_state_ready_)(void) = nullptr;
+  void (*on_state_ready_)(void* self) = nullptr;
 
   std::unordered_map<std::string, int> texture_fields_;
   std::unordered_map<std::string, int> buffer_fields_;
@@ -180,14 +204,28 @@ class EffectRuntime {
 
   gpu::GPUBackend* gpu() { return gpu_; }
 
-  // Register an effect descriptor. The descriptor is captured by value;
-  // its function pointers must remain valid for the runtime's lifetime
-  // (they typically point at namespaced effect functions, which is fine
-  // for static-linkage builds).
+  // Register an effect TYPE. Creates the type's prototype instance and
+  // runs its module_init() once (registering shaders, the shared PSO,
+  // and the schema prototype). The descriptor is captured by value; its
+  // function pointers must remain valid for the runtime's lifetime (they
+  // typically point at namespaced effect functions, fine for static
+  // linkage). Returns the prototype (used by the registry to read schema).
   EffectInstance* registerEffect(const EffectDesc& desc);
 
-  // Look up by id. Returns nullptr if not registered.
+  // Look up the type prototype by id. Returns nullptr if not registered.
   EffectInstance* find(const std::string& id);
+
+  // Get (creating on first use) the per-key render instance for a given
+  // effect type + sketch instance_key. Lazily allocates the instance's
+  // user_state via create() and runs its init() tail. Returns nullptr if
+  // the type isn't registered. The returned pointer is owned by the
+  // runtime and stays valid until destroyInstance / runtime teardown.
+  EffectInstance* instanceFor(const std::string& type,
+                              const std::string& instanceKey);
+
+  // Destroy a pooled per-key instance (calls desc.destroy on its
+  // user_state). Caller must ensure the GPU is idle. No-op if absent.
+  void destroyInstance(const std::string& type, const std::string& instanceKey);
 
   // The bundle's nano_module_main calls `nano_register_effect`, which
   // routes here. The runtime expects bundles to be initialized via
@@ -210,16 +248,26 @@ class EffectRuntime {
   std::vector<std::string> drainConsoleLog();
 
   // Internal — set by activate*() pre/post hooks. extern-C host impls
-  // route through this.
+  // route through this. During module_init this is the type prototype;
+  // during a per-key instance's lifecycle it's that instance.
   EffectInstance* active() const { return active_; }
 
  private:
   friend class EffectInstance;
   void setActive(EffectInstance* inst) { active_ = inst; }
 
+  static std::string poolKey(const std::string& type,
+                             const std::string& instanceKey) {
+    return type + "|" + instanceKey;
+  }
+
   gpu::GPUBackend* gpu_;
+  // Type prototypes (one per effect type). Own the type-level schema +
+  // module_init side effects.
   std::vector<std::unique_ptr<EffectInstance>> effects_;
   std::unordered_map<std::string, EffectInstance*> by_id_;
+  // Per-(type, instance_key) render instances, created lazily.
+  std::unordered_map<std::string, std::unique_ptr<EffectInstance>> instance_pool_;
   std::unordered_map<std::string, std::string> msl_by_name_;
   std::vector<std::string> console_log_;
   EffectInstance* active_ = nullptr;

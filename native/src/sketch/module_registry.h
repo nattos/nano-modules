@@ -6,9 +6,10 @@
 // needs and the texture-leaf path lists the executor needs to zero
 // state between frames.
 //
-// Single-instance-per-effect-type is a hard invariant of EffectRuntime
-// (effects use file-static state); registering the same module_type
-// twice is a no-op.
+// Registering the same module_type twice is a no-op. Effects now keep
+// per-instance state (see EffectRuntime::instanceFor) rather than file
+// statics, so multiple chain entries of the same type each get their own
+// instance — the registry holds only the type-level schema/metadata.
 
 #pragma once
 
@@ -30,7 +31,6 @@ namespace sketch_executor {
  * the schema the effect publishes from its init().
  */
 struct RegisteredModule {
-  effect_runtime::EffectInstance* inst = nullptr;
   /**
    * Parsed schema `fields` sub-object. Passed to
    * `sketch_augment::augmentSketchWithImplicitConnections()` each
@@ -64,24 +64,28 @@ class ModuleRegistry {
   explicit ModuleRegistry(effect_runtime::EffectRuntime* rt);
 
   /**
-   * Register an effect under its editor module_type (eg
-   * "video.brightness_contrast"). Runs the effect's `init()` synchronously
-   * which is when the effect publishes its schema and registers any
-   * required GPU resources (shader modules, PSOs, uniform buffers).
+   * Register an effect TYPE under its editor module_type (eg
+   * "video.brightness_contrast"). Runs the effect's `module_init()`
+   * synchronously — when it publishes its schema and creates the shared
+   * GPU resources (shader modules, PSOs). Per-instance state (uniform
+   * buffers, params) is created lazily per chain entry via
+   * EffectRuntime::instanceFor.
    *
    * Returns true on success, false if the runtime rejected the
    * registration. A repeated registration for the same module_type
-   * is silently ignored (the single-instance-per-type invariant
-   * means we can't have two).
+   * is silently ignored.
    */
   bool registerEffect(
       const std::string& moduleType,
       const std::string& displayName,
-      void (*init)(),
-      void (*tick)(double),
-      void (*render)(int, int),
-      void (*on_state_patched)(int, const char*, const int*,
-                               const int*, const int*));
+      void  (*module_init)(),
+      void* (*create)(),
+      void  (*destroy)(void*),
+      void  (*init)(void*),
+      void  (*tick)(void*, double),
+      void  (*render)(void*, int, int),
+      void  (*on_state_patched)(void*, int, const char*, const int*,
+                                const int*, const int*));
 
   /** Look up by editor module_type. nullptr if not registered. */
   const RegisteredModule* find(const std::string& moduleType) const;

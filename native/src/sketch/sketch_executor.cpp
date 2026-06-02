@@ -39,17 +39,11 @@ void forEachRailLeafTexture(const json& dataType, F&& f) {
 SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
                                ModuleRegistry* registry,
                                gpu::GPUBackend* gpu)
-  : rt_(rt), registry_(registry), gpu_(gpu) {
-  (void)rt_;  // currently routed through registry / instances; retained
-              // for future runtime-level hooks (drainConsoleLog etc.).
-}
+  : rt_(rt), registry_(registry), gpu_(gpu) {}
 
 SketchExecutor::~SketchExecutor() {
   for (int32_t h : intermediates_) {
     if (h > 0 && gpu_) gpu_->release(h);
-  }
-  for (auto& [_, ub] : fusedInstanceUniforms_) {
-    if (ub.handle > 0 && gpu_) gpu_->release(ub.handle);
   }
   for (auto& [_, pso] : fusedPSOs_) {
     if (pso > 0 && gpu_) gpu_->release(pso);
@@ -168,10 +162,15 @@ int32_t SketchExecutor::execute(
       for (size_t k = 0; k < resolvable.size(); ++k) {
         const auto& entry = chain[resolvable[k]];
         const std::string mt = entry.value("module_type", std::string());
-        const RegisteredModule* reg = registry_->find(mt);
+        const std::string instKey = entry.value("instance_key", std::string());
+        // Lazily materialise the per-key instance so we can read its
+        // fusion info (registered in its init() with its own uniform
+        // buffer). Fusion kind/fragment are identical across instances
+        // of a type; the per-instance uniform buffer differs.
+        auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
         bool e = false;
-        if (reg) {
-          const auto& fi = reg->inst->fusionInfo();
+        if (inst) {
+          const auto& fi = inst->fusionInfo();
           // FusionKind::PerPixelMapper == 1 in state::FusionKind.
           e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.prepare;
           if (e && entry.contains("taps") && entry["taps"].is_array() &&
@@ -206,23 +205,17 @@ int32_t SketchExecutor::execute(
     }
 
     // ----- Helpers --------------------------------------------------
-    // Apply the persisted instance state, with a "this instance owns
-    // the effect's file-statics" gate. The cache only skips when the
-    // file-static state would already match — see the
-    // lastAppliedInstanceByType_ comment for why.
+    // Apply the persisted instance state, skipping the re-apply when this
+    // instance's state is unchanged from last frame. Each chain entry has
+    // its own EffectInstance now, so the cache keys purely on instance_key
+    // — no cross-instance file-static aliasing to guard against.
     auto maybeApplyState = [&](effect_runtime::EffectInstance* inst,
-                               const std::string& mt,
                                const std::string& instKey,
                                const json& state) {
-      auto typeIt = lastAppliedInstanceByType_.find(mt);
-      const bool sameInstanceAsLastForType =
-          (typeIt != lastAppliedInstanceByType_.end()
-           && typeIt->second == instKey);
       auto& cachedState = lastAppliedState_[instKey];
-      if (sameInstanceAsLastForType && cachedState == state) return;
+      if (cachedState == state) return;
       applyState(inst, state);
       cachedState = state;
-      lastAppliedInstanceByType_[mt] = instKey;
     };
 
     auto runStandalone = [&](size_t k, bool isLastGroupInCol) {
@@ -233,7 +226,8 @@ int32_t SketchExecutor::execute(
 
       const RegisteredModule* reg = registry_->find(mt);
       if (!reg) return;
-      auto* inst = reg->inst;
+      auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
+      if (!inst) return;
 
       const bool isFinalStage = isLastCol && isLastGroupInCol;
       int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
@@ -251,7 +245,7 @@ int32_t SketchExecutor::execute(
       if (instances.is_object() && instances.contains(instKey)) {
         const auto& instJson = instances[instKey];
         const auto& state = instJson.value("state", json::object());
-        maybeApplyState(inst, mt, instKey, state);
+        maybeApplyState(inst, instKey, state);
       }
 
       // -- Wire primary channels --
@@ -288,12 +282,14 @@ int32_t SketchExecutor::execute(
       for (size_t k = g.firstK; k <= g.lastK; ++k) {
         const auto& entry = chain[resolvable[k]];
         const std::string mt = entry.value("module_type", std::string());
-        const RegisteredModule* reg = registry_->find(mt);
+        const std::string instKey = entry.value("instance_key", std::string());
+        auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
+        if (!inst) { fragsOK = false; break; }
         if (!cacheKey.empty()) cacheKey += '|';
         cacheKey += mt;
-        stages.push_back(reg->inst);
+        stages.push_back(inst);
         std::string msl;
-        if (!rt_->lookupMSL(reg->inst->fusionInfo().fragmentName, &msl)) {
+        if (!rt_->lookupMSL(inst->fusionInfo().fragmentName, &msl)) {
           fragsOK = false; break;
         }
         fragments.push_back(std::move(msl));
@@ -325,48 +321,22 @@ int32_t SketchExecutor::execute(
         return;
       }
 
-      // Per-stage prep + per-instance uniform snapshot.
-      //
-      // Effects keep their uniform buffer in file-static storage, so
-      // every chain entry of a given effect type shares one handle.
-      // That breaks fusion outright — the LAST stage's doPrepare
-      // overwrites every prior stage's data, and binding the shared
-      // buffer to all N slots makes every fused stage see the same
-      // uniforms. We work around it by keeping a per-chain-entry
-      // copy in the executor: after each stage's doPrepare runs, we
-      // memcpy the freshly-written uniforms out of the effect's
-      // shared buffer into the per-instance one, and bind THOSE
-      // (one per stage) to the fused dispatch below.
-      std::vector<int32_t> perInstanceUniforms(stages.size(), -1);
+      // Per-stage prep. Each chain entry has its own EffectInstance with
+      // its own uniform buffer (created in its create()/init()), so
+      // doPrepare writes into a distinct buffer per stage — we bind those
+      // directly to the fused dispatch below. No snapshotting needed now
+      // that state is per-instance rather than file-static.
       for (size_t idx = 0; idx < stages.size(); ++idx) {
         size_t k = g.firstK + idx;
         const auto& entry = chain[resolvable[k]];
-        const std::string mt      = entry.value("module_type",  std::string());
         const std::string instKey = entry.value("instance_key", std::string());
         auto* inst = stages[idx];
         if (instances.is_object() && instances.contains(instKey)) {
           const auto& state = instances[instKey].value("state", json::object());
-          maybeApplyState(inst, mt, instKey, state);
+          maybeApplyState(inst, instKey, state);
         }
         inst->doTick(dt);
         inst->doPrepare(W, H);
-
-        // Snapshot the effect's just-written uniforms.
-        const auto& fi = inst->fusionInfo();
-        uint32_t size = (uint32_t)fi.uniformSizeBytes;
-        if (size == 0) continue;
-        auto& slot = fusedInstanceUniforms_[instKey];
-        if (slot.handle <= 0 || slot.size != size) {
-          if (slot.handle > 0) gpu_->release(slot.handle);
-          slot.handle = gpu_->createBuffer(size, /*usage*/ 0);
-          slot.size = size;
-        }
-        void* src = gpu_->bufferContents(fi.uniformBufferHandle);
-        if (src && slot.handle > 0) {
-          gpu_->writeBuffer(slot.handle, 0,
-                            (const uint8_t*)src, size);
-        }
-        perInstanceUniforms[idx] = slot.handle;
       }
 
       const bool isFinalStage = isLastCol && isLastGroupInCol;
@@ -380,14 +350,8 @@ int32_t SketchExecutor::execute(
       gpu_->computeSetTexture(pass, groupInput,  0, /*read */ 0);
       gpu_->computeSetTexture(pass, groupOutput, 1, /*write*/ 1);
       for (size_t idx = 0; idx < stages.size(); ++idx) {
-        int32_t ub = perInstanceUniforms[idx] > 0
-                     ? perInstanceUniforms[idx]
-                     // Fallback: if the per-instance snapshot failed
-                     // (no fusion info / write failure), bind the
-                     // effect's shared buffer. Correctness is
-                     // suspect in that case but at least we don't
-                     // unbind a slot the shader expects.
-                     : stages[idx]->fusionInfo().uniformBufferHandle;
+        // Each stage binds its own per-instance uniform buffer.
+        int32_t ub = stages[idx]->fusionInfo().uniformBufferHandle;
         gpu_->computeSetBuffer(pass, ub, 0, (int32_t)(2 + idx));
       }
       gpu_->computeDispatch(pass,

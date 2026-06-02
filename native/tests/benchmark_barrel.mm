@@ -49,12 +49,16 @@
 #include "plugin/nano_barrel/InteropTexture.h"
 
 // Effect entry points (these come out of the effects_native bundle the
-// barrel links against).
+// barrel links against). Class-like instance ABI: instance callbacks
+// take an opaque per-instance self pointer.
 namespace brightness_contrast {
-void init();
-void tick(double);
-void render(int, int);
-void on_state_patched(int, const char*, const int*, const int*, const int*);
+void  module_init();
+void* create();
+void  destroy(void* self);
+void  init(void* self);
+void  tick(void* self, double);
+void  render(void* self, int, int);
+void  on_state_patched(void* self, int, const char*, const int*, const int*, const int*);
 }
 
 // Host-state setters live in runtime/host_impls.cpp but aren't declared
@@ -80,6 +84,7 @@ struct Args {
   int  width     = 1920;
   int  height    = 1080;
   bool quiet     = false;
+  bool assertMode = false;
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -94,14 +99,18 @@ Args parseArgs(int argc, char** argv) {
     else if (!std::strcmp(k, "--width"))  take(a.width);
     else if (!std::strcmp(k, "--height")) take(a.height);
     else if (!std::strcmp(k, "--quiet"))  a.quiet = true;
+    else if (!std::strcmp(k, "--assert")) a.assertMode = true;
   }
   return a;
 }
 
-json buildSketch(int effectCount) {
+// Build an N-stage brightness_contrast chain. Each entry gets distinct
+// (brightness, contrast) so per-instance state is exercised — under the
+// old file-static model these would all collapse to one stage's params.
+json buildSketch(const std::vector<std::pair<float, float>>& params) {
   json chain = json::array();
   json instances = json::object();
-  for (int i = 0; i < effectCount; ++i) {
+  for (size_t i = 0; i < params.size(); ++i) {
     std::string key = "bc" + std::to_string(i);
     chain.push_back({
       {"type", "module"},
@@ -112,8 +121,8 @@ json buildSketch(int effectCount) {
     instances[key] = {
       {"module_type", "video.brightness_contrast"},
       {"state", {
-        {"brightness", 0.5},
-        {"contrast",   1.0},
+        {"brightness", params[i].first},
+        {"contrast",   params[i].second},
       }},
     };
   }
@@ -125,6 +134,30 @@ json buildSketch(int effectCount) {
     }})},
     {"instances", instances},
   };
+}
+
+// Perf-mode chain: distinct-but-mild per-stage params (won't saturate
+// to black/white so the GPU does real work every stage).
+json buildSketch(int effectCount) {
+  std::vector<std::pair<float, float>> params;
+  params.reserve(effectCount);
+  for (int i = 0; i < effectCount; ++i) {
+    float b = 0.5f + 0.02f * (float)(i % 5 - 2);  // ~[0.46, 0.54]
+    params.emplace_back(b, 0.5f);
+  }
+  return buildSketch(params);
+}
+
+// CPU reference for one brightness_contrast stage (matches pixel.hlsl
+// fuse_transform: shift by (b-0.5)*2, scale by c*2, saturate).
+uint8_t bcStageChannel(uint8_t in, float b, float c) {
+  float v = in / 255.0f;
+  v += (b - 0.5f) * 2.0f;
+  v *= c * 2.0f;
+  if (v < 0.f) v = 0.f;
+  if (v > 1.f) v = 1.f;
+  int o = (int)(v * 255.0f + 0.5f);
+  return (uint8_t)(o < 0 ? 0 : (o > 255 ? 255 : o));
 }
 
 // Headless GL context (3.2 core, accelerated). Stays current for the
@@ -226,11 +259,150 @@ void blitInteropToHostFbo(InteropTexture* interop, int W, int H,
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
 }
 
+// --- Per-instance correctness gate (--assert) -----------------------
+// Builds a 4-stage brightness_contrast chain with DISTINCT per-stage
+// params and checks that each stage applies its OWN params — the bug
+// this whole refactor fixes is params bleeding across instances of the
+// same effect type. Uses plain RGBA8 textures (no GL/interop) so
+// readback is channel-order-consistent and avoids the BGRA output blit.
+//
+// Test 1 (standalone): force a barrier at every stage so each stage's
+//   output lands in a real intermediate; verify out_k == T(out_{k-1}, p_k).
+// Test 2 (fused): no barriers → the 4 same-type stages fuse into one
+//   kernel bound to 4 distinct per-instance uniform buffers; verify the
+//   final output equals the full CPU chain.
+int runAssert() {
+  id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+  if (!device) { std::fprintf(stderr, "assert: no MTLDevice\n"); return 1; }
+  auto gpu = gpu::createMetalBackend();
+  if (!gpu) { std::fprintf(stderr, "assert: no Metal backend\n"); return 1; }
+  auto rt = std::make_unique<effect_runtime::EffectRuntime>(gpu.get());
+  rt->registerShaderMSL("compute", BRIGHTNESS_CONTRAST_COMPUTE_MSL);
+  rt->registerShaderMSL("pixel",   BRIGHTNESS_CONTRAST_PIXEL_MSL);
+  auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
+  registry->registerEffect(
+      "video.brightness_contrast", "Brightness Contrast",
+      &brightness_contrast::module_init, &brightness_contrast::create,
+      &brightness_contrast::destroy, &brightness_contrast::init,
+      &brightness_contrast::tick, &brightness_contrast::render,
+      &brightness_contrast::on_state_patched);
+  auto executor = std::make_unique<sketch_executor::SketchExecutor>(
+      rt.get(), registry.get(), gpu.get());
+
+  const int W = 16, H = 16;
+  // Constant mid-tone input — distinct per channel so a R/B swap in
+  // readback can't accidentally hide a mismatch.
+  const uint8_t IN_R = 80, IN_G = 120, IN_B = 160;
+  std::vector<uint8_t> inPix((size_t)W * H * 4);
+  for (size_t p = 0; p < (size_t)W * H; ++p) {
+    inPix[p * 4 + 0] = IN_R;
+    inPix[p * 4 + 1] = IN_G;
+    inPix[p * 4 + 2] = IN_B;
+    inPix[p * 4 + 3] = 255;
+  }
+  int32_t inputTex  = gpu->createTexture(W, H, 1);
+  int32_t outputTex = gpu->createTexture(W, H, 1);
+  gpu->writeTexture(inputTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  // Mild, distinct params so no stage saturates (which would mask a
+  // wrong-param bug). Last stage is identity (0.5, 0.5).
+  std::vector<std::pair<float, float>> params = {
+    {0.70f, 0.50f}, {0.35f, 0.60f}, {0.60f, 0.45f}, {0.50f, 0.50f},
+  };
+  const int N = (int)params.size();
+  json sketch = buildSketch(params);
+
+  bool ok = true;
+  auto centerRGB = [&](const std::vector<uint8_t>& px, int* r, int* g, int* b) {
+    size_t o = ((size_t)(H / 2) * W + (W / 2)) * 4;
+    *r = px[o + 0]; *g = px[o + 1]; *b = px[o + 2];
+  };
+
+  // ---- Test 1: standalone, per-stage isolation ----
+  std::vector<int32_t> outByChain(N, -1);
+  executor->setBarrierPredicate([](int, int) { return true; });
+  executor->setChainEntryHook(
+      [&](int /*col*/, int chainIdx, int32_t /*inH*/, int32_t outH,
+          int /*w*/, int /*h*/) {
+        if (chainIdx >= 0 && chainIdx < N) outByChain[chainIdx] = outH;
+      });
+  executor->execute(sketch, inputTex, outputTex, W, H, 1.0 / 60.0);
+  gpu->submit();
+
+  int pr = IN_R, pg = IN_G, pb = IN_B;  // previous stage's actual output
+  for (int k = 0; k < N; ++k) {
+    if (outByChain[k] <= 0) {
+      std::fprintf(stderr, "assert: stage %d produced no output handle\n", k);
+      ok = false; break;
+    }
+    auto px = gpu->readbackTexture(outByChain[k], W, H);
+    if (px.size() < (size_t)W * H * 4) {
+      std::fprintf(stderr, "assert: stage %d readback failed\n", k);
+      ok = false; break;
+    }
+    int ar, ag, ab; centerRGB(px, &ar, &ag, &ab);
+    int er = bcStageChannel((uint8_t)pr, params[k].first, params[k].second);
+    int eg = bcStageChannel((uint8_t)pg, params[k].first, params[k].second);
+    int eb = bcStageChannel((uint8_t)pb, params[k].first, params[k].second);
+    auto near = [](int a, int b) { return std::abs(a - b) <= 2; };
+    if (!near(ar, er) || !near(ag, eg) || !near(ab, eb)) {
+      std::fprintf(stderr,
+          "assert: stage %d (b=%.2f c=%.2f) expected (%d,%d,%d) got (%d,%d,%d)\n",
+          k, params[k].first, params[k].second, er, eg, eb, ar, ag, ab);
+      ok = false;
+    }
+    pr = ar; pg = ag; pb = ab;
+  }
+  std::printf("assert: standalone per-stage %s\n", ok ? "PASS" : "FAIL");
+
+  // ---- Test 2: fused path, end-to-end ----
+  bool fok = true;
+  executor->setChainEntryHook({});
+  executor->setBarrierPredicate([](int, int) { return false; });
+  executor->execute(sketch, inputTex, outputTex, W, H, 1.0 / 60.0);
+  gpu->submit();
+  {
+    auto px = gpu->readbackTexture(outputTex, W, H);
+    if (px.size() < (size_t)W * H * 4) {
+      std::fprintf(stderr, "assert: fused readback failed\n");
+      fok = false;
+    } else {
+      int er = IN_R, eg = IN_G, eb = IN_B;
+      for (int k = 0; k < N; ++k) {
+        er = bcStageChannel((uint8_t)er, params[k].first, params[k].second);
+        eg = bcStageChannel((uint8_t)eg, params[k].first, params[k].second);
+        eb = bcStageChannel((uint8_t)eb, params[k].first, params[k].second);
+      }
+      int ar, ag, ab; centerRGB(px, &ar, &ag, &ab);
+      auto near = [](int a, int b) { return std::abs(a - b) <= 3; };
+      if (!near(ar, er) || !near(ag, eg) || !near(ab, eb)) {
+        std::fprintf(stderr,
+            "assert: fused final expected (%d,%d,%d) got (%d,%d,%d)\n",
+            er, eg, eb, ar, ag, ab);
+        fok = false;
+      }
+    }
+  }
+  std::printf("assert: fused end-to-end %s\n", fok ? "PASS" : "FAIL");
+
+  gpu->release(inputTex);
+  gpu->release(outputTex);
+  executor.reset();
+  registry.reset();
+  rt.reset();
+  gpu.reset();
+  return (ok && fok) ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   @autoreleasepool {
     Args args = parseArgs(argc, argv);
+
+    if (args.assertMode) {
+      return runAssert();
+    }
 
     if (!args.quiet) {
       std::printf("=== NanoBarrel benchmark ===\n");
@@ -262,8 +434,10 @@ int main(int argc, char** argv) {
     auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
     registry->registerEffect(
         "video.brightness_contrast", "Brightness Contrast",
-        &brightness_contrast::init, &brightness_contrast::tick,
-        &brightness_contrast::render, &brightness_contrast::on_state_patched);
+        &brightness_contrast::module_init, &brightness_contrast::create,
+        &brightness_contrast::destroy, &brightness_contrast::init,
+        &brightness_contrast::tick, &brightness_contrast::render,
+        &brightness_contrast::on_state_patched);
     auto executor = std::make_unique<sketch_executor::SketchExecutor>(
         rt.get(), registry.get(), gpu.get());
 

@@ -155,19 +155,11 @@ class SketchExecutor {
   // Per-instance state JSON from the previous frame — used to skip
   // applyState (and the cascade of setParamJson → firePatched →
   // val_blobs_ + json::dump allocations) when the state hasn't changed.
-  // Indexed by sketch instance key. Cleared lazily; long-lived entries
-  // for instances that get removed cost ~one JSON's worth of memory.
+  // Indexed by sketch instance key. Each effect chain entry now has its
+  // own EffectInstance (see EffectRuntime::instanceFor), so the cache
+  // keys purely on instance_key + state-equality — no cross-instance
+  // file-static aliasing to guard against anymore.
   std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
-
-  // For each module_type, the sketch instance whose state is currently
-  // sitting in the effect's file-static storage. Used to gate the
-  // applyState cache — we can only skip a re-apply when the previous
-  // applyState was for THE SAME sketch instance of the same effect
-  // type, because effects share file-static state across all of their
-  // chain entries (single-instance-per-effect-type invariant). Without
-  // this, dirty-skipping bc3 when bc9 was the last to actually touch
-  // s_brightness/s_contrast bakes bc9's values into bc3's render.
-  std::unordered_map<std::string, std::string> lastAppliedInstanceByType_;
 
   // Cached compute PSOs for fused chains. Key is the ordered list of
   // module_types joined by '|'. Created lazily on first use; released
@@ -177,20 +169,6 @@ class SketchExecutor {
   // Compiled shader modules backing those PSOs, kept alive so the
   // GPUBackend doesn't free them out from under us.
   std::vector<int32_t> fusedShaderModules_;
-
-  // Per-chain-entry uniform buffers used by the fusion dispatch path.
-  // Effects use file-static uniform storage (see EFFECTS_STYLE_GUIDE),
-  // so two chain entries of the same effect type share one buffer
-  // handle. That breaks fusion — every bound slot would see the
-  // last-applied stage's values. The executor snapshots each entry's
-  // uniforms into its own buffer here right after doPrepare, then
-  // binds the per-entry buffers to the fused dispatch instead of the
-  // shared one. Keyed by sketch instance key. Released in the dtor.
-  struct PerInstanceUniformBuf {
-    int32_t  handle = -1;
-    uint32_t size   = 0;
-  };
-  std::unordered_map<std::string, PerInstanceUniformBuf> fusedInstanceUniforms_;
 
   int32_t nextIntermediate(int W, int H);
 

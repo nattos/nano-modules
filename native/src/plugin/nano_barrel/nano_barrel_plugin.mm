@@ -61,29 +61,25 @@
 
 // Effect entry points (native compile of wasm_modules/<effect>/main.cpp
 // linked via the effects_native static library). Each namespace exposes
-// the same {init, tick, render, on_state_patched} surface that
-// EffectRuntime calls into via EffectDesc function pointers.
-namespace brightness_contrast {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
-namespace soft_glow {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
-namespace motion_blur {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
+// the class-like instance surface {module_init, create, destroy, init,
+// tick, render, on_state_patched} that EffectRuntime calls via EffectDesc
+// function pointers; instance callbacks take an opaque per-instance self.
+#define DECLARE_EFFECT_NS(ns)                                                 \
+  namespace ns {                                                              \
+    extern void  module_init();                                               \
+    extern void* create();                                                    \
+    extern void  destroy(void* self);                                         \
+    extern void  init(void* self);                                            \
+    extern void  tick(void* self, double dt);                                 \
+    extern void  render(void* self, int vp_w, int vp_h);                      \
+    extern void  on_state_patched(void* self, int n, const char* pb,          \
+                                  const int* off, const int* len,             \
+                                  const int* ops);                            \
+  }
+DECLARE_EFFECT_NS(brightness_contrast)
+DECLARE_EFFECT_NS(soft_glow)
+DECLARE_EFFECT_NS(motion_blur)
+#undef DECLARE_EFFECT_NS
 
 namespace effect_runtime {
   void setHostTime(double t);
@@ -545,16 +541,22 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     registry_ = std::make_unique<sketch_executor::ModuleRegistry>(rt_.get());
     registry_->registerEffect(
         "video.brightness_contrast", "Brightness Contrast",
-        &brightness_contrast::init, &brightness_contrast::tick,
-        &brightness_contrast::render, &brightness_contrast::on_state_patched);
+        &brightness_contrast::module_init, &brightness_contrast::create,
+        &brightness_contrast::destroy, &brightness_contrast::init,
+        &brightness_contrast::tick, &brightness_contrast::render,
+        &brightness_contrast::on_state_patched);
     registry_->registerEffect(
         "gen.soft_glow", "Soft Glow",
-        &soft_glow::init, &soft_glow::tick,
-        &soft_glow::render, &soft_glow::on_state_patched);
+        &soft_glow::module_init, &soft_glow::create,
+        &soft_glow::destroy, &soft_glow::init,
+        &soft_glow::tick, &soft_glow::render,
+        &soft_glow::on_state_patched);
     registry_->registerEffect(
         "video.motion_blur", "Motion Blur",
-        &motion_blur::init, &motion_blur::tick,
-        &motion_blur::render, &motion_blur::on_state_patched);
+        &motion_blur::module_init, &motion_blur::create,
+        &motion_blur::destroy, &motion_blur::init,
+        &motion_blur::tick, &motion_blur::render,
+        &motion_blur::on_state_patched);
 
     executor_ = std::make_unique<sketch_executor::SketchExecutor>(
         rt_.get(), registry_.get(), gpu_.get());

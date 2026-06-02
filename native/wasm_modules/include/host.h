@@ -78,7 +78,7 @@ extern "C" {
   __attribute__((import_module("state"), import_name("is_field_connected")))
   int state_is_field_connected(const char* path, int path_len, int direction);
   __attribute__((import_module("state"), import_name("set_on_state_ready")))
-  void state_set_on_state_ready(void (*fn)(void));
+  void state_set_on_state_ready(void (*fn)(void* self));
   // Register a SPIR-V shader blob under a name. The host translates
   // it to the platform-native shader source (WGSL on the web via
   // naga, MSL on Metal natives) the first time it's referenced via
@@ -101,7 +101,7 @@ extern "C" {
                               const char* msl,  int msl_len,
                               int uniform_buf_handle,
                               int uniform_size_bytes,
-                              void (*prepare)(int vp_w, int vp_h));
+                              void (*prepare)(void* self, int vp_w, int vp_h));
   // Register fusion metadata, with the per-pixel kernel sourced by
   // NAME (registered earlier via state::registerShaderSPV) instead
   // of inline WGSL/MSL text. The runtime fetches SPV → WGSL via the
@@ -111,7 +111,7 @@ extern "C" {
                                       const char* fragment_name, int fragment_name_len,
                                       int uniform_buf_handle,
                                       int uniform_size_bytes,
-                                      void (*prepare)(int vp_w, int vp_h));
+                                      void (*prepare)(void* self, int vp_w, int vp_h));
   __attribute__((import_module("state"), import_name("read")))
   int state_read(const char* layout, int field_count, const char* paths,
                  char* output, int output_size, char* results);
@@ -683,11 +683,12 @@ inline void setFieldHidden(const char* path, bool hidden) {
 ///     state::init(...);
 ///     state::setOnStateReady(&my_state_ready);
 ///   }
-///   void my_state_ready() {
-///     state::setFieldHidden("inset_left",  s_mode != Inset);
+///   void my_state_ready(void* self) {
+///     auto* s = static_cast<State*>(self);
+///     state::setFieldHidden("inset_left",  s->mode != Inset);
 ///     ...
 ///   }
-inline void setOnStateReady(void (*fn)(void)) {
+inline void setOnStateReady(void (*fn)(void* self)) {
   state_set_on_state_ready(fn);
 }
 
@@ -793,7 +794,7 @@ inline void registerFusion(FusionKind kind,
                            const char* fragment_msl,
                            int uniform_buf_handle,
                            int uniform_size_bytes,
-                           void (*prepare)(int vp_w, int vp_h)) {
+                           void (*prepare)(void* self, int vp_w, int vp_h)) {
   state_register_fusion(static_cast<int>(kind),
                         fragment_wgsl, fragment_wgsl ? (int)std::strlen(fragment_wgsl) : 0,
                         fragment_msl,  fragment_msl  ? (int)std::strlen(fragment_msl)  : 0,
@@ -808,7 +809,7 @@ inline void registerFusionByName(FusionKind kind,
                                  const char* fragment_name,
                                  int uniform_buf_handle,
                                  int uniform_size_bytes,
-                                 void (*prepare)(int vp_w, int vp_h)) {
+                                 void (*prepare)(void* self, int vp_w, int vp_h)) {
   state_register_fusion_by_name(static_cast<int>(kind),
                                  fragment_name, (int)std::strlen(fragment_name),
                                  uniform_buf_handle, uniform_size_bytes, prepare);

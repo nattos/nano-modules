@@ -10,28 +10,35 @@ ModuleRegistry::ModuleRegistry(effect_runtime::EffectRuntime* rt)
 bool ModuleRegistry::registerEffect(
     const std::string& moduleType,
     const std::string& displayName,
-    void (*init)(),
-    void (*tick)(double),
-    void (*render)(int, int),
-    void (*on_state_patched)(int, const char*, const int*,
-                             const int*, const int*)) {
+    void  (*module_init)(),
+    void* (*create)(),
+    void  (*destroy)(void*),
+    void  (*init)(void*),
+    void  (*tick)(void*, double),
+    void  (*render)(void*, int, int),
+    void  (*on_state_patched)(void*, int, const char*, const int*,
+                              const int*, const int*)) {
   if (entries_.count(moduleType)) return true;
   if (!rt_) return false;
 
   effect_runtime::EffectDesc d;
   d.id   = moduleType;
   d.name = displayName;
+  d.module_init      = module_init;
+  d.create           = create;
+  d.destroy          = destroy;
   d.init             = init;
   d.tick             = tick;
   d.render           = render;
   d.on_state_patched = on_state_patched;
-  auto* inst = rt_->registerEffect(d);
-  if (!inst) return false;
-  inst->doInit();
+  // registerEffect creates the type prototype and runs module_init()
+  // (schema publish + shared GPU resources). Per-instance state is
+  // created lazily per chain entry via EffectRuntime::instanceFor.
+  auto* proto = rt_->registerEffect(d);
+  if (!proto) return false;
 
   RegisteredModule reg;
-  reg.inst = inst;
-  auto parsed = nlohmann::json::parse(inst->schemaJson(), nullptr, false);
+  auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());
   } else {

@@ -5,9 +5,10 @@
  * wrap). Per pixel sums blob contributions, looks up a hue-shifting
  * ramp, additively blends over input.
  *
- * Deferred for later iteration: random-walk LFO drift, divergence
- * (per-bar hue offset on a threshold), HDR-then-tone-map output,
- * blob lifetime/respawn.
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (params, blob pool, per-instance buffers/textures)
+ * via create(). All instance callbacks take `self`.
  */
 
 #include <effect_utils.h>
@@ -89,7 +90,7 @@ struct BlobState {
   float vx, vy;          // instantaneous velocity (orbit + bias) for motion
 
   float size_jit;        // signed [-1,+1] — radius is recomputed each tick
-                         // from (s_blob_size, s_blob_size_jitter, size_jit)
+                         // from (blob_size, blob_size_jitter, size_jit)
                          // so size changes don't need a reseed
   float hue_offset;
   // Two-octave amplitude oscillator. phase_a fast (breathing); phase_b
@@ -102,7 +103,7 @@ struct BlobState {
   // 1/fade_time. amp is multiplied by current_alive at pack time, so
   // a slot's full contribution to BOTH color and motion ramps with
   // its visibility. target_alive is derived each tick from
-  // (i < s_blob_count) AND the `wants_respawn` override.
+  // (i < blob_count) AND the `wants_respawn` override.
   float target_alive;    // 0 or 1
   float current_alive;   // [0, 1]
   // Set when the orbit has drifted fully off-screen — forces target to
@@ -112,55 +113,60 @@ struct BlobState {
   bool  wants_respawn;
 };
 
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Buffer  motion_uniform_buf;
+  gpu::Buffer  blob_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;   // 1x1 rgba16f fallback (no upstream)
+  int          motion_w = 0;
+  int          motion_h = 0;
+  BlobState    blobs[MAX_BLOBS];
+  bool         initialized = false;
+
+  // Schema-mirrored params
+  int   blob_count        = 12;
+  float blob_size         = 0.4f;
+  float blob_size_jitter  = 0.3f;
+  float drift_rate        = 0.2f;
+  float drift_x_bias      = 0.0f;
+  float drift_y_bias      = 0.0f;
+  float hue               = 0.05f;  // hue at peak amplitude
+  float hue_shift         = 0.30f;  // amount added as amp → 0
+  float hue_curve         = 0.0f;   // signed [-1..+1] → exp via signedSliderToExp(2.0)
+  float saturation        = 0.95f;
+  float intensity_skew    = 0.0f;
+  float overflow_band     = 0.0f;  // 0 = soft-clip hue at peak; >0 → banding
+  float color_strength    = 1.0f;  // final multiplier on emitted glow (color only)
+  float ramp_curve        = 0.0f;   // signed [-1..+1] → exp via signedSliderToExp(2.0)
+  float white_point       = 1.5f;
+  float intensity         = 1.0f;
+  float intensity_mod     = 0.0f;
+  float motion_strength   = 1.0f;  // boost — blobs drift slowly
+  float motion_skew       = 0.0f;  // 0=isotropic, 1=wavefront-only
+  float motion_curl       = 0.0f;  // signed [-1,+1] → rotate local motion by curl·π
+  float motion_extent     = 1.0f;  // 1→0: shrink emitted motion footprint toward centers
+  float pulse_depth       = 0.4f;
+  float pulse_rate        = 0.6f;   // Hz, fast breathing rate
+  float amp_drift_depth   = 0.9f;   // depth of slow envelope (multiplicative)
+  float amp_drift_rate    = 0.08f;  // Hz, slow drift rate (~12s period)
+  float fade_time         = 3.0f;   // sec — blob_count fade in/out
+  uint32_t seed           = 0xA17F2B91u;
+
+  // RNG stream used for *respawn* of revived slots. Advances on each
+  // respawn so toggling count up and down yields fresh positions on
+  // every spawn (rather than re-drawing the deterministic seed_all
+  // sequence). Reset from seed whenever the user changes seed.
+  uint32_t spawn_rng      = 0xDEADBEEFu;
+
+  // Set once after init()'s seed_all finishes.
+  bool blobs_seeded = false;
+};
+
+// Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Buffer     s_motion_uniform_buf;
-static gpu::Buffer     s_blob_buf;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;   // 1x1 rgba16f fallback (no upstream)
-static int             s_motion_w = 0;
-static int             s_motion_h = 0;
-static BlobState       s_blobs[MAX_BLOBS];
-static bool s_initialized   = false;
-
-// Schema-mirrored params
-static int   s_blob_count        = 12;
-static float s_blob_size         = 0.4f;
-static float s_blob_size_jitter  = 0.3f;
-static float s_drift_rate        = 0.2f;
-static float s_drift_x_bias      = 0.0f;
-static float s_drift_y_bias      = 0.0f;
-static float s_hue               = 0.05f;  // hue at peak amplitude
-static float s_hue_shift         = 0.30f;  // amount added as amp → 0
-static float s_hue_curve         = 0.0f;   // signed [-1..+1] → exp via signedSliderToExp(2.0)
-static float s_saturation        = 0.95f;
-static float s_intensity_skew    = 0.0f;
-static float s_overflow_band     = 0.0f;  // 0 = soft-clip hue at peak; >0 → banding
-static float s_color_strength    = 1.0f;  // final multiplier on emitted glow (color only)
-static float s_ramp_curve        = 0.0f;   // signed [-1..+1] → exp via signedSliderToExp(2.0)
-static float s_white_point       = 1.5f;
-static float s_intensity         = 1.0f;
-static float s_intensity_mod     = 0.0f;
-static float s_motion_strength   = 1.0f;  // boost — blobs drift slowly
-static float s_motion_skew       = 0.0f;  // 0=isotropic, 1=wavefront-only
-static float s_motion_curl       = 0.0f;  // signed [-1,+1] → rotate local motion by curl·π
-static float s_motion_extent     = 1.0f;  // 1→0: shrink emitted motion footprint toward centers
-static float s_pulse_depth       = 0.4f;
-static float s_pulse_rate        = 0.6f;   // Hz, fast breathing rate
-static float s_amp_drift_depth   = 0.9f;   // depth of slow envelope (multiplicative)
-static float s_amp_drift_rate    = 0.08f;  // Hz, slow drift rate (~12s period)
-static float s_fade_time         = 3.0f;   // sec — blob_count fade in/out
-static uint32_t s_seed           = 0xA17F2B91u;
-
-// RNG stream used for *respawn* of revived slots. Advances on each
-// respawn so toggling count up and down yields fresh positions on
-// every spawn (rather than re-drawing the deterministic seed_all
-// sequence). Reset from s_seed whenever the user changes seed.
-static uint32_t s_spawn_rng      = 0xDEADBEEFu;
-
-// Init flag — populated once after init() finishes
-static bool s_blobs_seeded = false;
 
 static uint32_t lcg_next(uint32_t& s) {
   s = s * 1664525u + 1013904223u;
@@ -171,8 +177,8 @@ static float lcg_unit(uint32_t& s) {
 }
 static float lcg_signed(uint32_t& s) { return lcg_unit(s) * 2.0f - 1.0f; }
 
-static void seed_blob(int i, uint32_t& rng) {
-  BlobState& b = s_blobs[i];
+static void seed_blob(State& st, int i, uint32_t& rng) {
+  BlobState& b = st.blobs[i];
   // Wobble center anywhere in uv-space.
   b.cx = lcg_unit(rng);
   b.cy = lcg_unit(rng);
@@ -202,22 +208,22 @@ static void seed_blob(int i, uint32_t& rng) {
   b.wants_respawn = false;
 }
 
-static void respawn_blob(int i) {
-  seed_blob(i, s_spawn_rng);
-  BlobState& b = s_blobs[i];
+static void respawn_blob(State& st, int i) {
+  seed_blob(st, i, st.spawn_rng);
+  BlobState& b = st.blobs[i];
   // If a drift bias is set, respawn upwind (just off the trailing
   // edge) so blobs sweep across the viewport like wind-blown clouds
   // instead of clustering at the leading edge. With no bias, the
   // seed_blob random position in [0, 1) stands.
-  if (s_drift_x_bias > 0.0f) {
-    b.cx = -b.wobble_rx - 0.05f - lcg_unit(s_spawn_rng) * 0.15f;
-  } else if (s_drift_x_bias < 0.0f) {
-    b.cx = 1.0f + b.wobble_rx + 0.05f + lcg_unit(s_spawn_rng) * 0.15f;
+  if (st.drift_x_bias > 0.0f) {
+    b.cx = -b.wobble_rx - 0.05f - lcg_unit(st.spawn_rng) * 0.15f;
+  } else if (st.drift_x_bias < 0.0f) {
+    b.cx = 1.0f + b.wobble_rx + 0.05f + lcg_unit(st.spawn_rng) * 0.15f;
   }
-  if (s_drift_y_bias > 0.0f) {
-    b.cy = -b.wobble_ry - 0.05f - lcg_unit(s_spawn_rng) * 0.15f;
-  } else if (s_drift_y_bias < 0.0f) {
-    b.cy = 1.0f + b.wobble_ry + 0.05f + lcg_unit(s_spawn_rng) * 0.15f;
+  if (st.drift_y_bias > 0.0f) {
+    b.cy = -b.wobble_ry - 0.05f - lcg_unit(st.spawn_rng) * 0.15f;
+  } else if (st.drift_y_bias < 0.0f) {
+    b.cy = 1.0f + b.wobble_ry + 0.05f + lcg_unit(st.spawn_rng) * 0.15f;
   }
   // Recompute initial position from (possibly relocated) center.
   b.x = b.cx + b.wobble_rx * std::cos(b.wobble_phase);
@@ -228,26 +234,25 @@ static void respawn_blob(int i) {
   b.current_alive = 0.0f;
 }
 
-static void seed_all() {
-  uint32_t rng = s_seed;
+static void seed_all(State& st) {
+  uint32_t rng = st.seed;
   for (int i = 0; i < MAX_BLOBS; i++) {
-    seed_blob(i, rng);
-    bool alive = (i < s_blob_count);
+    seed_blob(st, i, rng);
+    bool alive = (i < st.blob_count);
     // Initial state: blobs within count start fully alive (no fade-in
     // on first frame), blobs beyond count start fully dead.
-    s_blobs[i].target_alive  = alive ? 1.0f : 0.0f;
-    s_blobs[i].current_alive = alive ? 1.0f : 0.0f;
+    st.blobs[i].target_alive  = alive ? 1.0f : 0.0f;
+    st.blobs[i].current_alive = alive ? 1.0f : 0.0f;
   }
   // Continue the spawn-rng stream from wherever seed_all left off, so
   // subsequent respawns get fresh randomness rather than re-drawing
   // the initial sequence.
-  s_spawn_rng = rng;
-  s_blobs_seeded = true;
+  st.spawn_rng = rng;
+  st.blobs_seeded = true;
 }
 
-void init() {
-  s_blobs_seeded = false;
-
+// Type-level setup: schema + the two shared compute PSOs.
+void module_init() {
   state::init("gen.soft_glow", {1, 0, 0},
     state::Schema()
       .floatField("intensity",        1.0f, 0.0f, 2.0f, state::PrimaryInput)
@@ -306,40 +311,66 @@ void init() {
       .storageTex2d(2, gpu::TextureFormat::RGBA16F)     // motionTex
       .uniform(3));                                     // MotionUniforms
 
-  s_blob_buf = gpu::Device::createBuffer(
-      sizeof(GpuBlob) * MAX_BLOBS, gpu::BufferUsage::Storage);
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  s_motion_uniform_buf = gpu::Device::createBuffer(
-      sizeof(MotionUniforms), gpu::BufferUsage::Uniform);
-
-  s_initialized = true;
-  seed_all();
-  state::log("soft_glow: initialized");
+  state::log("soft_glow: module initialized");
 }
 
-void tick(double dt) {
-  if (!s_initialized || !s_blobs_seeded) return;
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* st = new State();
+  st->blob_buf = gpu::Device::createBuffer(
+      sizeof(GpuBlob) * MAX_BLOBS, gpu::BufferUsage::Storage);
+  st->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  st->motion_uniform_buf = gpu::Device::createBuffer(
+      sizeof(MotionUniforms), gpu::BufferUsage::Uniform);
+  return st;
+}
+
+void destroy(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->blob_buf.release();
+  st->uniform_buf.release();
+  st->motion_uniform_buf.release();
+  st->motion_tex.release();
+  st->zero_motion_tex.release();
+  delete st;
+}
+
+// Per-instance init tail: mark ready + seed the blob pool.
+void init(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  if (!st->blob_buf.valid() || !st->uniform_buf.valid() ||
+      !st->motion_uniform_buf.valid()) return;
+  st->initialized = true;
+  seed_all(*st);
+}
+
+void tick(void* self, double dt) {
+  auto* st = static_cast<State*>(self);
+  if (!st || !st->initialized || !st->blobs_seeded) return;
   float fdt = (float)dt;
 
   // Per-second fade rate (current_alive moves at this rate toward
   // target_alive). fade_time → 0 means instantaneous.
-  float fade_t = s_fade_time > 0.001f ? s_fade_time : 0.001f;
+  float fade_t = st->fade_time > 0.001f ? st->fade_time : 0.001f;
   float fade_rate = 1.0f / fade_t;
 
-  float omega_fast = s_pulse_rate * TAU;
-  float omega_slow = s_amp_drift_rate * TAU;
+  float omega_fast = st->pulse_rate * TAU;
+  float omega_slow = st->amp_drift_rate * TAU;
 
   for (int i = 0; i < MAX_BLOBS; i++) {
-    BlobState& b = s_blobs[i];
+    BlobState& b = st->blobs[i];
 
     // ---- Fade machine ----
     // Priority order: wants_respawn (off-screen drift) → count-derived
     // target. wants_respawn forces fade-out; once current_alive hits
     // 0 we respawn at a fresh location and clear the flag.
-    float count_target = (i < s_blob_count) ? 1.0f : 0.0f;
+    float count_target = (i < st->blob_count) ? 1.0f : 0.0f;
     if (b.wants_respawn) {
       if (b.current_alive == 0.0f) {
-        respawn_blob(i);
+        respawn_blob(*st, i);
         b.wants_respawn = false;
         // respawn_blob set target=1, current=0 — fade-in proceeds.
       } else {
@@ -350,7 +381,7 @@ void tick(double dt) {
                           && b.target_alive == 0.0f
                           && b.current_alive == 0.0f);
       if (fresh_spawn) {
-        respawn_blob(i);
+        respawn_blob(*st, i);
       } else {
         b.target_alive = count_target;
       }
@@ -375,10 +406,10 @@ void tick(double dt) {
     // screen" below and route the blob through the fade-out + respawn
     // path, which is invisible to the viewer since the blob is already
     // off-screen.
-    b.cx += s_drift_x_bias * fdt;
-    b.cy += s_drift_y_bias * fdt;
+    b.cx += st->drift_x_bias * fdt;
+    b.cy += st->drift_y_bias * fdt;
 
-    float omega_eff = s_drift_rate * b.wobble_omega;
+    float omega_eff = st->drift_rate * b.wobble_omega;
     b.wobble_phase += omega_eff * fdt;
 
     float c = std::cos(b.wobble_phase);
@@ -388,8 +419,8 @@ void tick(double dt) {
     // Instantaneous orbital velocity (analytic derivative of position).
     // With rx ≠ ry, |v| varies around the orbit and is smallest near
     // the long-axis apexes — exactly the "weight at corners" feel.
-    b.vx = -b.wobble_rx * sn * omega_eff + s_drift_x_bias;
-    b.vy =  b.wobble_ry * c  * omega_eff + s_drift_y_bias;
+    b.vx = -b.wobble_rx * sn * omega_eff + st->drift_x_bias;
+    b.vy =  b.wobble_ry * c  * omega_eff + st->drift_y_bias;
 
     // Per-blob off-screen check: only check the *leading* edge along
     // each axis (the edge the drift bias is carrying the blob toward).
@@ -400,10 +431,10 @@ void tick(double dt) {
     // edge anyway (initial cx ∈ [0, 1)).
     if (!b.wants_respawn) {
       bool oob = false;
-      if (s_drift_x_bias >= 0.0f && b.cx - b.wobble_rx > 1.0f) oob = true;
-      if (s_drift_x_bias <= 0.0f && b.cx + b.wobble_rx < 0.0f) oob = true;
-      if (s_drift_y_bias >= 0.0f && b.cy - b.wobble_ry > 1.0f) oob = true;
-      if (s_drift_y_bias <= 0.0f && b.cy + b.wobble_ry < 0.0f) oob = true;
+      if (st->drift_x_bias >= 0.0f && b.cx - b.wobble_rx > 1.0f) oob = true;
+      if (st->drift_x_bias <= 0.0f && b.cx + b.wobble_rx < 0.0f) oob = true;
+      if (st->drift_y_bias >= 0.0f && b.cy - b.wobble_ry > 1.0f) oob = true;
+      if (st->drift_y_bias <= 0.0f && b.cy + b.wobble_ry < 0.0f) oob = true;
       if (oob) b.wants_respawn = true;
     }
 
@@ -411,14 +442,19 @@ void tick(double dt) {
     b.phase_a += omega_fast * b.freq_jit * fdt;
     b.phase_b += omega_slow * b.freq_jit * fdt;
     float slow_unit = 0.5f + 0.5f * std::sin(b.phase_b);
-    float slow_env  = (1.0f - s_amp_drift_depth) + s_amp_drift_depth * slow_unit;
-    float breath    = 1.0f + s_pulse_depth * std::sin(b.phase_a);
+    float slow_env  = (1.0f - st->amp_drift_depth) + st->amp_drift_depth * slow_unit;
+    float breath    = 1.0f + st->pulse_depth * std::sin(b.phase_a);
     float amp       = slow_env * breath;
     b.amp = amp > 0.0f ? amp : 0.0f;
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
   // Only `seed` change triggers a reseed now — blob_size, blob_size_jitter,
   // drift_rate, drift_x/y_bias all take effect per-tick via the derived
   // wobble physics and radius packing. State-replay defense (§8.2) lives
@@ -428,36 +464,36 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
-    if      (state::pathIs(path, plen, "intensity"))        s_intensity = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "intensity_mod"))    s_intensity_mod = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "blob_count"))       s_blob_count = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "fade_time"))        s_fade_time = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "blob_size"))        s_blob_size = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "blob_size_jitter")) s_blob_size_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "drift_rate"))       s_drift_rate = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "drift_x_bias"))     s_drift_x_bias = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "drift_y_bias"))     s_drift_y_bias = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "hue"))              s_hue = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "hue_shift"))        s_hue_shift = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "hue_curve"))        s_hue_curve = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "overflow_band"))    s_overflow_band = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "color_strength"))   s_color_strength = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "saturation"))       s_saturation = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "intensity_skew"))   s_intensity_skew = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "ramp_curve"))       s_ramp_curve = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "white_point"))      s_white_point = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_strength"))  s_motion_strength = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_skew"))      s_motion_skew = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_curl"))      s_motion_curl = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_extent"))    s_motion_extent = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "pulse_depth"))      s_pulse_depth = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "pulse_rate"))       s_pulse_rate = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "amp_drift_depth"))  s_amp_drift_depth = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "amp_drift_rate"))   s_amp_drift_rate = state::patchFloat(i);
+    if      (state::pathIs(path, plen, "intensity"))        st->intensity = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity_mod"))    st->intensity_mod = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "blob_count"))       st->blob_count = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "fade_time"))        st->fade_time = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "blob_size"))        st->blob_size = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "blob_size_jitter")) st->blob_size_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "drift_rate"))       st->drift_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "drift_x_bias"))     st->drift_x_bias = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "drift_y_bias"))     st->drift_y_bias = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "hue"))              st->hue = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "hue_shift"))        st->hue_shift = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "hue_curve"))        st->hue_curve = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "overflow_band"))    st->overflow_band = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "color_strength"))   st->color_strength = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "saturation"))       st->saturation = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity_skew"))   st->intensity_skew = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "ramp_curve"))       st->ramp_curve = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "white_point"))      st->white_point = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_strength"))  st->motion_strength = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_skew"))      st->motion_skew = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_curl"))      st->motion_curl = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_extent"))    st->motion_extent = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "pulse_depth"))      st->pulse_depth = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "pulse_rate"))       st->pulse_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "amp_drift_depth"))  st->amp_drift_depth = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "amp_drift_rate"))   st->amp_drift_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "seed")) {
       uint32_t new_seed = (uint32_t)((int)state::patchFloat(i)) ^ 0xA17F2B91u;
-      if (new_seed != s_seed) {
-        s_seed = new_seed;
+      if (new_seed != st->seed) {
+        st->seed = new_seed;
         seed_changed = true;
       }
     }
@@ -465,13 +501,14 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
   // Full re-seed on seed change — fresh deterministic positions/orbits
   // for all slots. The spawn-rng stream is also rebound to the new
   // seed so subsequent respawn-on-revival hits new sequences.
-  if (seed_changed && s_initialized) {
-    seed_all();
+  if (seed_changed && st->initialized) {
+    seed_all(*st);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* st = static_cast<State*>(self);
+  if (!st || !st->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
@@ -488,11 +525,11 @@ void render(int vp_w, int vp_h) {
   GpuBlob gpu_blobs[MAX_BLOBS];
   std::memset(gpu_blobs, 0, sizeof(gpu_blobs));
   for (int i = 0; i < MAX_BLOBS; i++) {
-    const BlobState& b = s_blobs[i];
+    const BlobState& b = st->blobs[i];
     // Radius is derived each tick from base + per-blob jitter factor,
     // so blob_size / blob_size_jitter changes take effect without a
     // reseed.
-    float radius = s_blob_size * (1.0f + b.size_jit * s_blob_size_jitter);
+    float radius = st->blob_size * (1.0f + b.size_jit * st->blob_size_jitter);
     if (radius < 0.02f) radius = 0.02f;
     // Smoothstep on the linear fade — zero slope at both endpoints so
     // the contribution easily eases away from 0 and into 1 instead of
@@ -509,10 +546,10 @@ void render(int vp_w, int vp_h) {
     gpu_blobs[i].jitters[1]  = b.vx;
     gpu_blobs[i].jitters[2]  = b.vy;
   }
-  s_blob_buf.writeBytes(gpu_blobs, sizeof(GpuBlob) * MAX_BLOBS);
+  st->blob_buf.writeBytes(gpu_blobs, sizeof(GpuBlob) * MAX_BLOBS);
   uint32_t cnt = (uint32_t)MAX_BLOBS;
 
-  float intensity = s_intensity + s_intensity_mod;
+  float intensity = st->intensity + st->intensity_mod;
   if (intensity < 0.0f) intensity = 0.0f;
 
   Uniforms u = {};
@@ -522,31 +559,31 @@ void render(int vp_w, int vp_h) {
   // matching hue_curve. 0 = linear; +1 = fast initial response (peak
   // saturates early); -1 = slow initial response (peak takes more
   // accum to reach).
-  u.ramp_curve     = fx::signedSliderToExp(s_ramp_curve, 2.0f);
-  u.white_point    = s_white_point;
-  u.hue       = s_hue;
-  u.hue_shift      = s_hue_shift;
-  u.saturation     = s_saturation;
+  u.ramp_curve     = fx::signedSliderToExp(st->ramp_curve, 2.0f);
+  u.white_point    = st->white_point;
+  u.hue       = st->hue;
+  u.hue_shift      = st->hue_shift;
+  u.saturation     = st->saturation;
   u.aspect_x       = aspect_x;
   u.aspect_y       = aspect_y;
-  u.intensity_skew = s_intensity_skew;
+  u.intensity_skew = st->intensity_skew;
   // Signed slider [-1,+1] mapped to an exponent in [1/4, 4] via the
   // canonical curve helper (style guide §8.3 / §1.3). 0 = linear; +1 =
   // contrast at the peak (fast initial shift); -1 = contrast at the rim
   // (clings to peak, then races at low amp).
-  u.hue_curve      = fx::signedSliderToExp(s_hue_curve, 2.0f);
-  u.overflow_band  = s_overflow_band;
-  u.color_strength = s_color_strength;
-  s_uniform_buf.writeOne(u);
+  u.hue_curve      = fx::signedSliderToExp(st->hue_curve, 2.0f);
+  u.overflow_band  = st->overflow_band;
+  u.color_strength = st->color_strength;
+  st->uniform_buf.writeOne(u);
 
   // Pass 1 — color.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_color);
-    cp.setBuffer(s_blob_buf, 0);
+    cp.setBuffer(st->blob_buf, 0);
     cp.setTexture(in,  1, 0);
     cp.setTexture(out, 2, 1);
-    cp.setBuffer(s_uniform_buf, 3);
+    cp.setBuffer(st->uniform_buf, 3);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -557,15 +594,15 @@ void render(int vp_w, int vp_h) {
     return;
   }
 
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+  if (!st->motion_tex.valid() || st->motion_w != vp_w || st->motion_h != vp_h) {
+    st->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    st->motion_w = vp_w;
+    st->motion_h = vp_h;
+    if (st->motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", st->motion_tex.id);
     }
   }
-  if (!s_motion_tex.valid()) {
+  if (!st->motion_tex.valid()) {
     gpu::Device::submit();
     return;
   }
@@ -574,30 +611,30 @@ void render(int vp_w, int vp_h) {
   // is wired so the shader's unconditional sample is safe.
   auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
   if (!upstream.valid()) {
-    if (!s_zero_motion_tex.valid()) {
-      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    if (!st->zero_motion_tex.valid()) {
+      st->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
     }
-    upstream = s_zero_motion_tex;
+    upstream = st->zero_motion_tex;
   }
 
   MotionUniforms mu = {};
   mu.blob_count      = cnt;
-  mu.motion_strength = s_motion_strength;
-  mu.motion_skew     = s_motion_skew;
+  mu.motion_strength = st->motion_strength;
+  mu.motion_skew     = st->motion_skew;
   mu.aspect_x        = aspect_x;
   mu.aspect_y        = aspect_y;
-  mu.motion_curl     = s_motion_curl;
+  mu.motion_curl     = st->motion_curl;
   mu.intensity       = intensity;        // ties motion to the visible blob's brightness
-  mu.motion_extent   = s_motion_extent < 0.0f ? 0.0f : (s_motion_extent > 1.0f ? 1.0f : s_motion_extent);
-  s_motion_uniform_buf.writeOne(mu);
+  mu.motion_extent   = st->motion_extent < 0.0f ? 0.0f : (st->motion_extent > 1.0f ? 1.0f : st->motion_extent);
+  st->motion_uniform_buf.writeOne(mu);
 
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
-    cp.setBuffer(s_blob_buf, 0);
+    cp.setBuffer(st->blob_buf, 0);
     cp.setTexture(upstream, 1, 0);
-    cp.setTexture(s_motion_tex, 2, 1);
-    cp.setBuffer(s_motion_uniform_buf, 3);
+    cp.setTexture(st->motion_tex, 2, 1);
+    cp.setBuffer(st->motion_uniform_buf, 3);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
