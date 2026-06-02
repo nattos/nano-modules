@@ -31,6 +31,17 @@ mkdirSync(dumpDir, { recursive: true });
 const servedFont = resolve(root, 'build/wasm/testfont.ttf');
 copyFileSync(fontPath, servedFont);
 
+// Optional second face for the multi-font path: serve it + describe it so both
+// the GPU page and the CPU reference register identical bytes under the family.
+const font2Path = process.env.TE_FONT2;
+const family2 = process.env.TE_FAMILY2;
+let extraFonts = [];
+if (font2Path && family2) {
+  const servedFont2 = resolve(root, 'build/wasm/testfont2.ttf');
+  copyFileSync(font2Path, servedFont2);
+  extraFonts = [{ family: family2, url: '/wasm/testfont2.ttf', served: servedFont2 }];
+}
+
 // ---- 1. GPU render in the browser ----
 const cfg = (await import(resolve(root, 'web/jest-puppeteer.config.js'))).default;
 const browser = await puppeteer.launch({
@@ -39,7 +50,10 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 page.on('console', (m) => { if (m.type() === 'error') console.error('[page]', m.text()); });
-const url = `http://localhost:${PORT}/text-gpu-test.html?spec=${encodeURIComponent(spec)}&font=/wasm/testfont.ttf`;
+const fontsParam = extraFonts.length
+  ? `&fonts=${encodeURIComponent(JSON.stringify(extraFonts.map(({ family, url }) => ({ family, url }))))}`
+  : '';
+const url = `http://localhost:${PORT}/text-gpu-test.html?spec=${encodeURIComponent(spec)}&font=/wasm/testfont.ttf${fontsParam}`;
 await page.goto(url, { waitUntil: 'networkidle0' });
 await page.waitForFunction(() => document.getElementById('result').textContent !== 'pending', { timeout: 20000 });
 const txt = await page.$eval('#result', (e) => e.textContent);
@@ -86,6 +100,15 @@ async function cpuReference(spec) {
   const font = readFileSync(servedFont);
   const fp = ex.malloc(font.length); new Uint8Array(ex.memory.buffer).set(font, fp);
   ex.te_set_font(fp, font.length); ex.free(fp);
+  // Register the same extra faces the browser harness did (identical bytes).
+  for (const f of extraFonts) {
+    const b = readFileSync(f.served);
+    const bp = ex.malloc(b.length); new Uint8Array(ex.memory.buffer).set(b, bp);
+    const nameEnc = new TextEncoder().encode(f.family);
+    const np = ex.malloc(nameEnc.length); new Uint8Array(ex.memory.buffer).set(nameEnc, np);
+    ex.te_add_font(np, nameEnc.length, bp, b.length);
+    ex.free(np); ex.free(bp);
+  }
   const enc = new TextEncoder().encode(spec);
   const sp = ex.malloc(enc.length); new Uint8Array(ex.memory.buffer).set(enc, sp);
   const id = ex.te_layout(sp, enc.length); ex.free(sp);

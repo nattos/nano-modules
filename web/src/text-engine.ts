@@ -72,6 +72,8 @@ interface TEExports {
   free(p: number): void;
   __wasm_call_ctors?(): void;
   te_set_font(ptr: number, len: number): number;
+  te_add_font(namePtr: number, nameLen: number, ptr: number, len: number): number;
+  te_has_font(namePtr: number, nameLen: number): number;
   te_layout(ptr: number, len: number): number;
   te_measure(id: number, outPtr: number): number;
   te_glyph_count(id: number): number;
@@ -83,6 +85,15 @@ interface TEExports {
   te_atlas_ptr(): number;
   te_next_dirty_region(outPtr: number): number;
 }
+
+/** A named font the host resolves to sfnt bytes at a URL (the web font provider's
+ *  bundled, parity-guaranteed set). A run's JSON `family` matches `family` here. */
+export interface FontSource { family: string; url: string; }
+
+// Bundled families guaranteed on the web side. Empty by default — the app (or a
+// test harness) supplies the manifest via TextEngine.init({ fonts }). Bundled
+// font files are gitignored/fetched, so we never hard-require specific URLs here.
+const DEFAULT_FONTS: FontSource[] = [];
 
 // Back the singleton with globalThis so it survives module duplication across
 // vite/HMR boundaries (wasm-host.ts and gpu-test-runner.html can otherwise end
@@ -103,18 +114,22 @@ export class TextEngine {
   static get instance(): TextEngine | null { return G.__textEngine ?? null; }
 
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
-  static init(device: GPUDevice, opts?: { wasmUrl?: string; fontUrl?: string }): Promise<TextEngine> {
+  static init(
+    device: GPUDevice,
+    opts?: { wasmUrl?: string; fontUrl?: string; fonts?: FontSource[] },
+  ): Promise<TextEngine> {
     if (G.__textEngine) return Promise.resolve(G.__textEngine);
     if (!G.__textEngineInit) {
       const e = new TextEngine();
       G.__textEngineInit = e
-        ._init(device, opts?.wasmUrl ?? '/wasm/text_engine.wasm', opts?.fontUrl ?? '/fonts/default.ttf')
+        ._init(device, opts?.wasmUrl ?? '/wasm/text_engine.wasm',
+               opts?.fontUrl ?? '/fonts/default.ttf', opts?.fonts ?? DEFAULT_FONTS)
         .then(() => (G.__textEngine = e));
     }
     return G.__textEngineInit;
   }
 
-  private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string) {
+  private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string, fonts: FontSource[]) {
     this.device = device;
     const bytes = await (await fetch(wasmUrl)).arrayBuffer();
     const mod = await WebAssembly.compile(bytes);
@@ -133,6 +148,14 @@ export class TextEngine {
     new Uint8Array(this.ex.memory.buffer).set(font, fp);
     if (!this.ex.te_set_font(fp, font.length)) throw new Error('text-engine: te_set_font failed');
     this.ex.free(fp);
+
+    // Register the bundled, parity-guaranteed font set (each family resolves to
+    // byte-identical sfnt bytes on native + web). Failures are non-fatal — a run
+    // referencing a missing family falls back to the primary font (face 0).
+    for (const f of fonts) {
+      try { await this.loadFont(f.family, f.url); }
+      catch (e) { console.warn(`text-engine: bundled font "${f.family}" failed to load`, e); }
+    }
 
     this.pipeline = device.createComputePipeline({
       layout: 'auto',
@@ -166,6 +189,67 @@ export class TextEngine {
 
   glyphCount(id: number): number { return this.ex.te_glyph_count(id); }
   release(id: number): void { this.ex.te_release(id); }
+
+  // --- Font provider ---------------------------------------------------------
+  // The host owns font resolution: a run's `family` is matched against faces
+  // registered here. Resolution is necessarily async (fetch / Local Font Access)
+  // while layout() is per-frame sync, so families must be registered BEFORE the
+  // layouts that use them; an unregistered family falls back to the primary
+  // font (face 0) for that frame.
+
+  /** True if `family` is already registered (skip re-resolving its bytes). */
+  hasFont(family: string): boolean {
+    const enc = new TextEncoder().encode(family);
+    const p = this.ex.malloc(enc.length);
+    this.u8().set(enc, p);
+    const has = this.ex.te_has_font(p, enc.length) !== 0;
+    this.ex.free(p);
+    return has;
+  }
+
+  /** Register a face from sfnt bytes under `family`. Returns the faceId (>=0),
+   *  or -1 on failure. Idempotent by family name. */
+  registerFontBytes(family: string, bytes: Uint8Array): number {
+    const nameEnc = new TextEncoder().encode(family);
+    const np = this.ex.malloc(nameEnc.length);
+    this.u8().set(nameEnc, np);
+    const bp = this.ex.malloc(bytes.length);
+    this.u8().set(bytes, bp);
+    const id = this.ex.te_add_font(np, nameEnc.length, bp, bytes.length);
+    this.ex.free(bp);
+    this.ex.free(np);
+    return id;
+  }
+
+  /** Fetch sfnt bytes from `url` and register them under `family`. No-op if the
+   *  family is already registered. */
+  async loadFont(family: string, url: string): Promise<number> {
+    if (this.hasFont(family)) return 0;
+    const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const id = this.registerFontBytes(family, bytes);
+    if (id < 0) throw new Error(`text-engine: failed to register font "${family}" from ${url}`);
+    return id;
+  }
+
+  /** Resolve `family` via the browser's Local Font Access API (Chromium, behind
+   *  a permission prompt) and register its bytes. Returns true if registered,
+   *  false if unavailable / not found / denied — callers should fall back to a
+   *  bundled face. Off the per-frame path; call when the user picks a font. */
+  async ensureLocalFont(family: string): Promise<boolean> {
+    if (this.hasFont(family)) return true;
+    const ql = (globalThis as any).queryLocalFonts as
+      undefined | (() => Promise<Array<{ family: string; blob(): Promise<Blob> }>>);
+    if (!ql) return false;
+    try {
+      const fonts = await ql();
+      const hit = fonts.find((f) => f.family === family);
+      if (!hit) return false;
+      const bytes = new Uint8Array(await (await hit.blob()).arrayBuffer());
+      return this.registerFontBytes(family, bytes) >= 0;
+    } catch {
+      return false;  // permission denied / not supported
+    }
+  }
 
   /** Composite the laid-out text for `id` into `target` at (originX, originY). */
   render(id: number, target: GPUTexture, originX: number, originY: number): void {

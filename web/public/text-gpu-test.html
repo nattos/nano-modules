@@ -103,16 +103,27 @@ async function getDevice() {
   return gpu;
 }
 
-window.renderTextGPU = async (spec, fontUrl) => {
+window.renderTextGPU = async (spec, fontUrl, fonts) => {
   const ex = await loadEngine();
   const { device, pipeline } = await getDevice();
 
-  // Install the font (served bytes — same file the CPU reference reads).
+  // Install the primary font (served bytes — same file the CPU reference reads).
   const fontBytes = new Uint8Array(await (await fetch(fontUrl || '/wasm/testfont.ttf')).arrayBuffer());
   const fptr = ex.malloc(fontBytes.length);
   new Uint8Array(ex.memory.buffer).set(fontBytes, fptr);
   if (!ex.te_set_font(fptr, fontBytes.length)) throw new Error('te_set_font failed');
   ex.free(fptr);
+
+  // Register any additional named faces (the font provider's bundled set). A
+  // run's "family" selects one; the CPU reference registers the SAME bytes.
+  for (const f of (fonts || [])) {
+    const b = new Uint8Array(await (await fetch(f.url)).arrayBuffer());
+    const bp = ex.malloc(b.length); new Uint8Array(ex.memory.buffer).set(b, bp);
+    const nameEnc = new TextEncoder().encode(f.family);
+    const np = ex.malloc(nameEnc.length); new Uint8Array(ex.memory.buffer).set(nameEnc, np);
+    ex.te_add_font(np, nameEnc.length, bp, b.length);
+    ex.free(np); ex.free(bp);
+  }
 
   // --- CPU engine: layout → metrics → glyphs → atlas ---
   const enc = new TextEncoder().encode(spec);
@@ -206,7 +217,8 @@ window.renderTextGPU = async (spec, fontUrl) => {
 // Auto-run when ?spec= is present (puppeteer drives this).
 const params = new URLSearchParams(location.search);
 if (params.has('spec')) {
-  window.renderTextGPU(params.get('spec'), params.get('font') || undefined)
+  const fonts = params.has('fonts') ? JSON.parse(params.get('fonts')) : undefined;
+  window.renderTextGPU(params.get('spec'), params.get('font') || undefined, fonts)
     .then((r) => { document.getElementById('result').textContent = JSON.stringify(r); })
     .catch((e) => { document.getElementById('result').textContent = 'ERROR: ' + e.message + '\n' + e.stack; });
 }
