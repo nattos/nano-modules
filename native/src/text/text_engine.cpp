@@ -40,6 +40,11 @@ static constexpr int    ATLAS_H   = 1024;
 static constexpr double REF_PX    = 48.0;  // glyph em rendered at this px size in the atlas
 static constexpr double RANGE_PX  = 4.0;   // MSDF distance range, atlas px
 static constexpr int    PAD       = 5;     // tile padding ≥ ceil(RANGE_PX), atlas px
+static constexpr int    GAP       = 1;     // transparent gutter between packed tiles:
+                                           // bilinear sampling at a tile edge then
+                                           // blends with empty (fully-outside) space
+                                           // instead of the neighbor tile — kills the
+                                           // thin-line / dot atlas-bleed artifacts.
 
 // ---- Minimal exception-free JSON field extraction (as in Phase 0) ----------
 static int findField(const char* s, int n, const char* key) {
@@ -294,14 +299,15 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi) {
   if (tileW > ATLAS_W) tileW = ATLAS_W;
   if (tileH > ATLAS_H) tileH = ATLAS_H;
 
-  // Shelf pack.
-  if (shelf_x + tileW > ATLAS_W) { shelf_y += shelf_h; shelf_x = 0; shelf_h = 0; }
+  // Shelf pack, leaving a GAP-px gutter between tiles (and shelves) so bilinear
+  // sampling at tile edges never reaches a neighbor glyph.
+  if (shelf_x + tileW > ATLAS_W) { shelf_y += shelf_h + GAP; shelf_x = 0; shelf_h = 0; }
   if (tileH > shelf_h) shelf_h = tileH;
   if (shelf_y + tileH > ATLAS_H) {            // atlas full — degrade to advance-only
     glyphs.emplace(key, info); return &glyphs[key];
   }
   int px = shelf_x, py = shelf_y;
-  shelf_x += tileW;
+  shelf_x += tileW + GAP;
 
   // Generate MSDF into a tile. Projection maps font-unit shape → tile px:
   //   tile_px = (shapeCoord + translate) * scale ; with PAD px margin.
