@@ -3,6 +3,7 @@ import type { GPUHost } from './gpu-host';
 import type { BridgeCore } from './bridge-core';
 import { createWasiShim } from './wasi-shim';
 import * as fakeResolume from './fake-resolume';
+import { TextEngine } from './text-engine';
 
 export interface FrameState {
   elapsedTime: number;
@@ -1083,6 +1084,38 @@ export class WasmHost {
           const path = this.readString(pathPtr, pathLen);
           return this.gpuBufferFields.get(path) ?? 0;
         },
+      },
+      // text — host text shaping/rendering service. Delegates to the shared
+      // TextEngine (one text_engine.wasm + the WebGPU MSDF compositor). Must be
+      // initialized (TextEngine.init) before any effect that uses text renders.
+      text: {
+        layout: (specPtr: number, specLen: number): number => {
+          const te = TextEngine.instance;
+          if (!te) return 0;
+          return te.layout(this.readString(specPtr, specLen));
+        },
+        measure: (id: number, outPtr: number): number => {
+          const te = TextEngine.instance;
+          if (!te) return 0;
+          const bytes = te.measureBytes(id);          // 32-byte TextMetrics
+          new Uint8Array(this.memory.buffer).set(bytes, outPtr);
+          return 1;
+        },
+        render: (id: number, targetTex: number, xformPtr: number, xformLen: number): void => {
+          const te = TextEngine.instance;
+          if (!te || !this.gpuHost) return;
+          const target = this.gpuHost.getTextureByHandle(targetTex);
+          if (!target) return;
+          let ox = 0, oy = 0;
+          if (xformLen > 0) {
+            try { const x = JSON.parse(this.readString(xformPtr, xformLen)); ox = x.x ?? 0; oy = x.y ?? 0; } catch { /* default */ }
+          }
+          te.render(id, target, ox, oy);
+        },
+        // Escape hatch (Phase 2): expose the shared atlas + positioned glyphs.
+        atlas: (_id: number): number => -1,
+        glyphs: (_id: number, _outPtr: number, _outBytes: number): number => 0,
+        release: (id: number): void => { TextEngine.instance?.release(id); },
       },
       module: {
         register_effect: (descPtr: number) => {

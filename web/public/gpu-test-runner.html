@@ -7,6 +7,7 @@
 import { GPUHost } from '/src/gpu-host.ts';
 import { WasmHost } from '/src/wasm-host.ts';
 import { FusionDispatcher } from '/src/fusion-dispatcher.ts';
+import { TextEngine } from '/src/text-engine.ts';
 
 /*
  * Generic GPU module test runner.
@@ -128,6 +129,11 @@ async function run() {
                    | GPUTextureUsage.COPY_DST;
 
     const gpuHost = new GPUHost(device, format);
+
+    // Initialize the shared text engine so effects using the text.* service
+    // (e.g. gen.text) can render. Idempotent; safe even if unused.
+    try { await TextEngine.init(device, { fontUrl: '/fonts/default.ttf' }); }
+    catch (e) { console.warn('[gpu-test-runner] text engine init failed:', e); }
 
     // Fusion dispatcher used when the test config requests
     // force-on fusion mode — every per-step dispatch goes through the

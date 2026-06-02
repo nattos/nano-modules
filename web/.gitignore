@@ -1,0 +1,3 @@
+
+# Provisioned default font for the text engine (Phase 3 replaces with the real font provider)
+public/fonts/default.ttf

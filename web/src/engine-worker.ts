@@ -11,6 +11,7 @@
 
 import { BridgeCore } from './bridge-core';
 import { GPUHost } from './gpu-host';
+import { TextEngine } from './text-engine';
 import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
 import { TraceCapture } from './trace-capture';
@@ -352,6 +353,10 @@ async function init(width: number, height: number) {
   gpuContext.configure({ device: gpuDevice, format, alphaMode: 'opaque' });
 
   gpuHost = new GPUHost(gpuDevice, format);
+  // Initialize the shared text engine so text.* effects (gen.text) can render.
+  // Idempotent; failures are non-fatal (effects that don't use text are fine).
+  TextEngine.init(gpuDevice, { fontUrl: '/fonts/default.ttf' })
+    .catch((e) => console.warn('[engine-worker] text engine init failed:', e));
   sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
   // Wire host-level schema-overlay changes (state::setFieldHidden) into
   // the worker's broadcast generation, so visibility edits show up in
