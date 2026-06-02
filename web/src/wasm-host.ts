@@ -27,6 +27,13 @@ export interface WasmModule {
   /** State change notification with patch details. All modules implement this. */
   onStatePatched(patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number): void;
   onResolumeParam?(paramId: bigint, value: number): void;
+  /**
+   * Pure passthrough predicate. Returns true when the effect, with its
+   * current applied state, is an identity (output == primary input) — lets
+   * the executor skip its dispatch and alias input→output. Returns false
+   * when the effect did not register an is_identity predicate.
+   */
+  isIdentity(): boolean;
 }
 
 /** Metadata for an effect discovered via nano_module_main registration. */
@@ -45,6 +52,7 @@ export interface EffectInfo {
   _renderIdx: number;
   _onStatePatchedIdx: number;
   _onResolumeParamIdx: number; // 0 = not supported
+  _isIdentityIdx: number; // 0 = not supported (never skippable)
 }
 
 export interface ConsoleEntry {
@@ -1085,7 +1093,8 @@ export class WasmHost {
           // EffectDesc_v2 layout (wasm32, 4-byte ptrs/fn-indices):
           //  +0 version, +4..+20 id/name/desc/category/keywords,
           //  +24 module_init, +28 create, +32 destroy, +36 init,
-          //  +40 tick, +44 render, +48 on_state_patched, +52 on_resolume_param.
+          //  +40 tick, +44 render, +48 on_state_patched, +52 on_resolume_param,
+          //  +56 is_identity (optional; 0/absent => never skippable).
           const idPtr = mem.getUint32(descPtr + 4, true);
           const namePtr = mem.getUint32(descPtr + 8, true);
           const descriptionPtr = mem.getUint32(descPtr + 12, true);
@@ -1100,6 +1109,7 @@ export class WasmHost {
           const renderIdx = mem.getUint32(descPtr + 44, true);
           const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
           const onResolumeParamIdx = mem.getUint32(descPtr + 52, true);
+          const isIdentityIdx = mem.getUint32(descPtr + 56, true);
 
           this.registeredEffects.push({
             id: this.readCString(idPtr),
@@ -1115,6 +1125,7 @@ export class WasmHost {
             _renderIdx: renderIdx,
             _onStatePatchedIdx: onStatePatchedIdx,
             _onResolumeParamIdx: onResolumeParamIdx,
+            _isIdentityIdx: isIdentityIdx,
           });
         },
       },
@@ -1170,6 +1181,19 @@ export class WasmHost {
     const onResolumeParamFn = effect._onResolumeParamIdx !== 0
       ? table.get(effect._onResolumeParamIdx) as (self: number, paramId: bigint, value: number) => void
       : undefined;
+    // is_identity is a trailing/optional descriptor field (offset +56).
+    // A bundle built before the field existed has no value there, so the
+    // decoded index may be garbage; guard the table lookup and treat any
+    // out-of-range index as "no predicate" (never skippable). Properly
+    // built bundles leave it 0 (aggregate-init) when unsupplied.
+    let isIdentityFn: ((self: number) => number) | undefined;
+    if (effect._isIdentityIdx !== 0) {
+      try {
+        isIdentityFn = table.get(effect._isIdentityIdx) as (self: number) => number;
+      } catch {
+        isIdentityFn = undefined;
+      }
+    }
 
     // Call init immediately, threading the instance's self pointer.
     initFn(self);
@@ -1183,6 +1207,7 @@ export class WasmHost {
       onResolumeParam: onResolumeParamFn
         ? (paramId: bigint, value: number) => onResolumeParamFn(self, paramId, value)
         : undefined,
+      isIdentity: () => isIdentityFn ? (isIdentityFn(self) | 0) !== 0 : false,
     };
   }
 

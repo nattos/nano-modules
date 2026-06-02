@@ -115,6 +115,16 @@ void tick(void* self, double dt) {
 
 void on_resolume_param(void*, long long, double) {}
 
+// Passthrough at neutral: gain = stops(amount) and the tint factors are
+// 1 ± warmth*tint_amount*0.5. So amount == 0 (gain = 1) AND tint_amount
+// == 0 (tint factors = 1) ⇒ all gains 1× ⇒ out == in (tint_warmth is
+// irrelevant when tint_amount is 0). Stateless — skippable, and the
+// fused group collapses if every stage is identity.
+int32_t is_identity(void* self) {
+  auto* s = static_cast<State*>(self);
+  return (s && s->amount == 0.0f && s->tint_amount == 0.0f) ? 1 : 0;
+}
+
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);

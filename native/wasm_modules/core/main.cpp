@@ -14,6 +14,7 @@
 #include <cstddef>
 
 NANO_DECLARE_INSTANCE_EFFECT(brightness_contrast)
+namespace brightness_contrast { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
@@ -27,6 +28,7 @@ NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 NANO_DECLARE_INSTANCE_EFFECT(curve)
 
 NANO_DECLARE_INSTANCE_EFFECT(exposure)
+namespace exposure { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(invert)
 
@@ -51,12 +53,15 @@ NANO_DECLARE_LEGACY_EFFECT(blur)
 NANO_DECLARE_LEGACY_EFFECT(fast_blur)
 
 NANO_DECLARE_LEGACY_EFFECT(sharpen)
+namespace sharpen { int is_identity(); }
 
 NANO_DECLARE_LEGACY_EFFECT(edges)
+namespace edges { int is_identity(); }
 
 NANO_DECLARE_LEGACY_EFFECT(crop)
 
 NANO_DECLARE_LEGACY_EFFECT(transform)
+namespace transform { int is_identity(); }
 
 NANO_DECLARE_INSTANCE_EFFECT(gradient)
 
@@ -78,6 +83,7 @@ void nano_module_main() {
         "video",
         "color,adjust,filter",
         NANO_INSTANCE_LIFECYCLE(brightness_contrast),
+        &brightness_contrast::is_identity,
     });
 
     nano::registerEffect({
@@ -147,6 +153,7 @@ void nano_module_main() {
         "video",
         "exposure,gain,brightness,stops",
         NANO_INSTANCE_LIFECYCLE(exposure),
+        &exposure::is_identity,
     });
 
     nano::registerEffect({
@@ -267,6 +274,7 @@ void nano_module_main() {
         "video",
         "sharpen,detail,laplacian",
         NANO_LEGACY_LIFECYCLE(sharpen),
+        [](void* self) -> int32_t { (void)self; return sharpen::is_identity(); },
     });
 
     nano::registerEffect({
@@ -277,6 +285,7 @@ void nano_module_main() {
         "video",
         "edge,sobel,outline,detect",
         NANO_LEGACY_LIFECYCLE(edges),
+        [](void* self) -> int32_t { (void)self; return edges::is_identity(); },
     });
 
     nano::registerEffect({
@@ -297,6 +306,7 @@ void nano_module_main() {
         "video",
         "transform,scale,rotate,translate,affine",
         NANO_LEGACY_LIFECYCLE(transform),
+        [](void* self) -> int32_t { (void)self; return transform::is_identity(); },
     });
 
     nano::registerEffect({

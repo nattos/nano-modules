@@ -58,6 +58,22 @@ struct EffectDesc_v2 {
 
     // Optional callbacks (nullptr if not supported)
     void  (*on_resolume_param)(void* self, long long param_id, double value);
+
+    // Optional: pure passthrough predicate. Returns nonzero when the
+    // effect, with its CURRENT applied state, is an identity (output ==
+    // primary input) this frame — lets the executor skip the effect's
+    // dispatch entirely and alias input→output (zero GPU work for non-
+    // final stages; the final stage's result is just the input handle).
+    // Contract:
+    //   - side-effect free (a pure function of current param state),
+    //   - only ever returns nonzero for STATELESS configs. An effect
+    //     with per-frame state (particles, feedback, accumulators) must
+    //     NOT report identity, since skipping a frame freezes/desyncs
+    //     its simulation.
+    // Trailing + optional: aggregate-init omits it (=> nullptr) for the
+    // many effects that don't supply one, and nullptr means "never
+    // skippable".
+    int32_t (*is_identity)(void* self);
 };
 
 /// Register an effect with the host.

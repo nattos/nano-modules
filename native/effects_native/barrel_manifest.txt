@@ -20,17 +20,23 @@
 #   shaders   — comma list of registerShaderSPV names. `name` when the SPV
 #               variant matches the name; `name=variant` when they differ
 #               (variant = the <effect>_<variant>.spv basename suffix).
+#   identity  — OPTIONAL 7th column. The literal token `identity` marks an
+#               effect that exposes an is_identity() predicate (instance:
+#               `int32_t is_identity(void* self)`; legacy: `int is_identity()`).
+#               The executor calls it to skip the dispatch and alias
+#               input→output when the current state is a pure passthrough.
+#               Only for STATELESS effects. Omit the column otherwise.
 #
 # Lines starting with # and blank lines are ignored.
 #
-# bundle | namespace | id | display | abi | shaders
-core | brightness_contrast | video.brightness_contrast | Brightness/Contrast | instance | compute,pixel
+# bundle | namespace | id | display | abi | shaders | [identity]
+core | brightness_contrast | video.brightness_contrast | Brightness/Contrast | instance | compute,pixel | identity
 core | solid_color | generator.solid_color | Solid Color | instance | compute,pixel
 core | video_blend | video.blend | Video Blend | legacy | compute
 core | paramlinker | utility.paramlinker | Param Linker | legacy | 
 core | bake_alpha | video.bake_alpha | Bake Alpha | instance | compute,pixel
 core | curve | video.curve | Curve | instance | compute,pixel
-core | exposure | video.exposure | Exposure | instance | compute,pixel
+core | exposure | video.exposure | Exposure | instance | compute,pixel | identity
 core | invert | video.invert | Invert | instance | compute,pixel
 core | posterize | video.posterize | Posterize | instance | compute,pixel
 core | levels | video.levels | Levels | instance | compute,pixel
@@ -42,10 +48,10 @@ core | vibrance | video.vibrance | Vibrance | instance | compute,pixel
 core | vignette | video.vignette | Vignette | instance | compute,pixel
 core | blur | video.blur | Blur | legacy | blur_compute=compute
 core | fast_blur | video.fast_blur | Fast Blur | legacy | fast_blur_down=down,fast_blur_up=up
-core | sharpen | video.sharpen | Sharpen | legacy | compute
-core | edges | video.edges | Edge Detection | legacy | compute
+core | sharpen | video.sharpen | Sharpen | legacy | compute | identity
+core | edges | video.edges | Edge Detection | legacy | compute | identity
 core | crop | video.crop | Crop | legacy | compute
-core | transform | video.transform | Transform | legacy | compute
+core | transform | video.transform | Transform | legacy | compute | identity
 core | gradient | generator.gradient | Gradient | instance | compute,pixel
 core | grid | generator.grid | Grid | instance | compute,pixel
 core | noise | generator.noise | Noise | instance | compute,pixel

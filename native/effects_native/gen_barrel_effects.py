@@ -40,6 +40,10 @@ def parse_manifest(path):
             if len(cols) < 6:
                 sys.exit(f"gen_barrel_effects: malformed manifest line: {line}")
             _bundle, ns, eid, display, abi, shaders = cols[:6]
+            # Optional 7th column: the literal `identity` flags an effect
+            # that exposes an is_identity() predicate the executor can use
+            # to skip its dispatch.
+            identity = len(cols) >= 7 and cols[6] == "identity"
             shader_pairs = []
             for tok in (s.strip() for s in shaders.split(",")):
                 if not tok:
@@ -51,7 +55,7 @@ def parse_manifest(path):
                 shader_pairs.append((regname.strip(), variant.strip()))
             effects.append({
                 "ns": ns, "id": eid, "display": display,
-                "abi": abi, "shaders": shader_pairs,
+                "abi": abi, "shaders": shader_pairs, "identity": identity,
             })
     return effects
 
@@ -121,12 +125,16 @@ def gen_registration(effects, tmp_dir):
             w("  void  render(void* self, int vp_w, int vp_h);")
             w("  void  on_state_patched(void* self, int n, const char* pb,")
             w("                         const int* off, const int* len, const int* ops);")
+            if e["identity"]:
+                w("  int32_t is_identity(void* self);")
         else:
             w("  void init();")
             w("  void tick(double dt);")
             w("  void render(int vp_w, int vp_h);")
             w("  void on_state_patched(int n, const char* pb, const int* off,")
             w("                        const int* len, const int* ops);")
+            if e["identity"]:
+                w("  int is_identity();")
         w("}")
     w("")
     w("namespace nano_barrel_gen {")
@@ -145,15 +153,19 @@ def gen_registration(effects, tmp_dir):
         eid = cstr(e["id"])
         disp = cstr(e["display"])
         if e["abi"] == "instance":
+            ident = f", &{ns}::is_identity" if e["identity"] else ""
             w(f'  registry.registerEffect("{eid}", "{disp}",')
             w(f"      &{ns}::module_init, &{ns}::create, &{ns}::destroy, &{ns}::init,")
-            w(f"      &{ns}::tick, &{ns}::render, &{ns}::on_state_patched);")
+            w(f"      &{ns}::tick, &{ns}::render, &{ns}::on_state_patched{ident});")
         else:
             # Legacy free-function effect → native trampoline. The old init()
             # (schema + file-static GPU setup) runs once as module_init on the
             # type prototype; per-instance create/init are no-ops; tick/render/
             # on_state_patched forward to the free functions (file-static state,
             # so correct single-instance only).
+            ident = (f",\n      [](void* s) -> int32_t "
+                     f"{{ (void)s; return {ns}::is_identity(); }}"
+                     ) if e["identity"] else ""
             w(f'  registry.registerEffect("{eid}", "{disp}",')
             w(f"      []{{ {ns}::init(); }},")
             w("      []() -> void* { return (void*)1; },")
@@ -162,7 +174,7 @@ def gen_registration(effects, tmp_dir):
             w(f"      [](void* s, double dt) {{ (void)s; {ns}::tick(dt); }},")
             w(f"      [](void* s, int w, int h) {{ (void)s; {ns}::render(w, h); }},")
             w(f"      [](void* s, int n, const char* pb, const int* o,")
-            w(f"         const int* l, const int* op) {{ (void)s; {ns}::on_state_patched(n, pb, o, l, op); }});")
+            w(f"         const int* l, const int* op) {{ (void)s; {ns}::on_state_patched(n, pb, o, l, op); }}{ident});")
     w("}")
     w("")
     w("}  // namespace nano_barrel_gen")

@@ -106,6 +106,16 @@ void tick(void* self, double dt) {
 
 void on_resolume_param(void*, long long, double) {}
 
+// Passthrough at neutral: pixel.hlsl shifts by (brightness-0.5)*2 and
+// scales by contrast*2, so brightness == 0.5 (no shift) AND contrast ==
+// 0.5 (1× scale) ⇒ out == in (the trailing saturate is a no-op on the
+// already-[0,1] input). Stateless — the executor skips this stage and,
+// if its whole fused group is identity, the group's dispatch entirely.
+int32_t is_identity(void* self) {
+  auto* s = static_cast<State*>(self);
+  return (s && s->brightness == 0.5f && s->contrast == 0.5f) ? 1 : 0;
+}
+
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);

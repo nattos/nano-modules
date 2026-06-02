@@ -48,6 +48,7 @@ async function loadHost(): Promise<{ host: WasmHost; module: import('./wasm-host
     render: exports.render as (vpW: number, vpH: number) => void,
     onStatePatched: exports.on_state_patched as
       (n: number, pb: number, off: number, len: number, ops: number) => void,
+    isIdentity: () => false,
   };
   wasmModule.init();
 
@@ -334,6 +335,7 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
           _renderIdx: mem.getUint32(descPtr + 44, true),
           _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
           _onResolumeParamIdx: mem.getUint32(descPtr + 52, true),
+          _isIdentityIdx: mem.getUint32(descPtr + 56, true),
         });
       },
     },
@@ -503,5 +505,139 @@ describe('WasmHost', () => {
     host.frameState.viewportH = 600;
     module.render(800, 600);
     expect(host.drawList.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// is_identity ABI decode
+//
+// The EffectDesc_v2 descriptor grew a trailing optional `is_identity`
+// predicate at byte offset +56 (wasm32, 4-byte fn-table indices). The host
+// decodes it in register_effect and exposes it as the activated module's
+// isIdentity() method, threading the per-instance `self` through the indirect
+// function table exactly like tick/render/on_state_patched.
+//
+// We can't easily rebuild the wasm bundles in CI, so this test synthesizes a
+// descriptor in a real WebAssembly.Memory and a fake indirect-function-table
+// (an object exposing .get(idx)), drives the host's real register_effect +
+// activateEffect, and asserts isIdentity() resolves through the table. This
+// covers both the +56 decode and the self-threading wrapper without GPU.
+// ---------------------------------------------------------------------------
+describe('EffectDesc_v2 is_identity decode', () => {
+  // Build a host with a synthetic descriptor + fake function table.
+  // `identityResult` is what the fake is_identity table entry returns
+  // (a number, like the wasm function would); pass `null` to omit the
+  // predicate entirely (index 0 => never skippable).
+  function makeHostWithDescriptor(identityResult: number | null): {
+    host: WasmHost; capturedSelf: { value: number };
+  } {
+    const host = new WasmHost();
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const mem = new DataView(memory.buffer);
+    const bytes = new Uint8Array(memory.buffer);
+
+    // Lay out the strings + descriptor in linear memory.
+    let cursor = 64;
+    const writeStr = (s: string): number => {
+      const ptr = cursor;
+      const enc = new TextEncoder().encode(s);
+      bytes.set(enc, ptr);
+      bytes[ptr + enc.length] = 0;
+      cursor += enc.length + 1;
+      return ptr;
+    };
+    const idPtr = writeStr('video.test_identity');
+    const namePtr = writeStr('Test Identity');
+    const descPtrStr = writeStr('desc');
+    const catPtr = writeStr('video');
+    const kwPtr = writeStr('');
+
+    // Fake indirect function table: we only ever need .get(idx).
+    const SELF = 0xABCD;       // sentinel "self" pointer create() returns
+    const capturedSelf = { value: 0 };
+    const IDX_CREATE = 1, IDX_INIT = 2, IDX_TICK = 3, IDX_RENDER = 4,
+          IDX_ONPATCH = 5, IDX_IS_IDENTITY = 9;
+    const table = {
+      get(idx: number): any {
+        switch (idx) {
+          case IDX_CREATE: return () => SELF;
+          case IDX_INIT: return (_self: number) => {};
+          case IDX_TICK: return (_self: number, _dt: number) => {};
+          case IDX_RENDER: return (_self: number, _w: number, _h: number) => {};
+          case IDX_ONPATCH: return () => {};
+          case IDX_IS_IDENTITY:
+            return (self: number) => { capturedSelf.value = self; return identityResult; };
+          default: return null;
+        }
+      },
+    };
+
+    (host as any).memory = memory;
+    (host as any).instance = { exports: { __indirect_function_table: table } };
+
+    // Write the descriptor: version, 5 string ptrs, then fn-table indices.
+    const descPtr = cursor;
+    mem.setInt32(descPtr + 0, 2, true);            // struct_version
+    mem.setUint32(descPtr + 4, idPtr, true);
+    mem.setUint32(descPtr + 8, namePtr, true);
+    mem.setUint32(descPtr + 12, descPtrStr, true);
+    mem.setUint32(descPtr + 16, catPtr, true);
+    mem.setUint32(descPtr + 20, kwPtr, true);
+    mem.setUint32(descPtr + 24, 0, true);          // module_init
+    mem.setUint32(descPtr + 28, IDX_CREATE, true); // create
+    mem.setUint32(descPtr + 32, 0, true);          // destroy
+    mem.setUint32(descPtr + 36, IDX_INIT, true);   // init
+    mem.setUint32(descPtr + 40, IDX_TICK, true);   // tick
+    mem.setUint32(descPtr + 44, IDX_RENDER, true); // render
+    mem.setUint32(descPtr + 48, IDX_ONPATCH, true);// on_state_patched
+    mem.setUint32(descPtr + 52, 0, true);          // on_resolume_param
+    mem.setUint32(descPtr + 56,                    // is_identity (NEW)
+      identityResult === null ? 0 : IDX_IS_IDENTITY, true);
+
+    // Drive the host's real decode (mirrors register_effect in load()).
+    (host as any).registeredEffects.push({
+      id: 'video.test_identity',
+      name: 'Test Identity',
+      description: 'desc',
+      category: 'video',
+      keywords: [],
+      _moduleInitIdx: mem.getUint32(descPtr + 24, true),
+      _createIdx: mem.getUint32(descPtr + 28, true),
+      _destroyIdx: mem.getUint32(descPtr + 32, true),
+      _initIdx: mem.getUint32(descPtr + 36, true),
+      _tickIdx: mem.getUint32(descPtr + 40, true),
+      _renderIdx: mem.getUint32(descPtr + 44, true),
+      _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
+      _onResolumeParamIdx: mem.getUint32(descPtr + 52, true),
+      _isIdentityIdx: mem.getUint32(descPtr + 56, true),
+    });
+
+    return { host, capturedSelf };
+  }
+
+  it('isIdentity() returns true when the predicate returns nonzero', () => {
+    const { host } = makeHostWithDescriptor(1);
+    const module = host.activateEffect('video.test_identity');
+    expect(module.isIdentity()).toBe(true);
+  });
+
+  it('isIdentity() returns false when the predicate returns zero', () => {
+    const { host } = makeHostWithDescriptor(0);
+    const module = host.activateEffect('video.test_identity');
+    expect(module.isIdentity()).toBe(false);
+  });
+
+  it('isIdentity() returns false when no predicate is registered (idx 0)', () => {
+    const { host } = makeHostWithDescriptor(null);
+    const module = host.activateEffect('video.test_identity');
+    expect(module.isIdentity()).toBe(false);
+  });
+
+  it('isIdentity() threads the per-instance self pointer', () => {
+    const { host, capturedSelf } = makeHostWithDescriptor(1);
+    const module = host.activateEffect('video.test_identity');
+    module.isIdentity();
+    // create() returned 0xABCD; the wrapper must pass that as `self`.
+    expect(capturedSelf.value).toBe(0xABCD);
   });
 });

@@ -91,6 +91,12 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
   }
 }
 
+// Passthrough when the edge result is fully mixed out: the shader ends
+// with out = lerp(src, detected, amount) (alpha preserved), so amount ==
+// 0 ⇒ out == src exactly, regardless of threshold/colors/keep_input.
+// Stateless, so the executor can skip the dispatch and alias input→output.
+int is_identity() { return s_amount == 0.0f ? 1 : 0; }
+
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 

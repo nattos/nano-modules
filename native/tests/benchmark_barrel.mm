@@ -59,6 +59,7 @@ void  init(void* self);
 void  tick(void* self, double);
 void  render(void* self, int, int);
 void  on_state_patched(void* self, int, const char*, const int*, const int*, const int*);
+int32_t is_identity(void* self);
 }
 
 // Host-state setters live in runtime/host_impls.cpp but aren't declared
@@ -285,7 +286,7 @@ int runAssert() {
       &brightness_contrast::module_init, &brightness_contrast::create,
       &brightness_contrast::destroy, &brightness_contrast::init,
       &brightness_contrast::tick, &brightness_contrast::render,
-      &brightness_contrast::on_state_patched);
+      &brightness_contrast::on_state_patched, &brightness_contrast::is_identity);
   auto executor = std::make_unique<sketch_executor::SketchExecutor>(
       rt.get(), registry.get(), gpu.get());
 
@@ -385,7 +386,120 @@ int runAssert() {
   }
   std::printf("assert: fused end-to-end %s\n", fok ? "PASS" : "FAIL");
 
-  // ---- Test 3: fusion overflow (>28 fused stages) ----
+  // ---- Test 3: identity standalone alias ----
+  // A middle stage at neutral params (0.5, 0.5) is a pure passthrough.
+  // With a barrier at every stage (standalone path), the executor must
+  // SKIP its dispatch and ALIAS its input handle as its output: the
+  // identity stage's chain-entry output handle equals its input handle
+  // (no fresh intermediate consumed), which in turn equals the previous
+  // stage's output. Final pixels match the chain with the stage removed.
+  bool iok = true;
+  {
+    std::vector<std::pair<float, float>> p3 = {
+      {0.70f, 0.50f}, {0.50f, 0.50f}, {0.60f, 0.45f},
+    };
+    const int N3 = (int)p3.size();
+    json s3 = buildSketch(p3);
+    std::vector<int32_t> inBy(N3, -2), outBy(N3, -2);
+    executor->setBarrierPredicate([](int, int) { return true; });
+    executor->setChainEntryHook(
+        [&](int, int chainIdx, int32_t inH, int32_t outH, int, int) {
+          if (chainIdx >= 0 && chainIdx < N3) { inBy[chainIdx] = inH; outBy[chainIdx] = outH; }
+        });
+    executor->execute(s3, inputTex, outputTex, W, H, 1.0 / 60.0);
+    gpu->submit();
+    executor->setChainEntryHook({});
+    if (outBy[1] != inBy[1]) {
+      std::fprintf(stderr, "assert: identity stage not aliased (in=%d out=%d)\n",
+                   inBy[1], outBy[1]);
+      iok = false;
+    }
+    if (inBy[1] != outBy[0]) {
+      std::fprintf(stderr, "assert: identity stage input (%d) != prev output (%d)\n",
+                   inBy[1], outBy[0]);
+      iok = false;
+    }
+    auto px = gpu->readbackTexture(outBy[2] > 0 ? outBy[2] : outputTex, W, H);
+    if (px.size() < (size_t)W * H * 4) { iok = false; }
+    else {
+      int er = IN_R, eg = IN_G, eb = IN_B;
+      for (int k : {0, 2}) {
+        er = bcStageChannel((uint8_t)er, p3[k].first, p3[k].second);
+        eg = bcStageChannel((uint8_t)eg, p3[k].first, p3[k].second);
+        eb = bcStageChannel((uint8_t)eb, p3[k].first, p3[k].second);
+      }
+      int ar, ag, ab; centerRGB(px, &ar, &ag, &ab);
+      auto near = [](int a, int b) { return std::abs(a - b) <= 2; };
+      if (!near(ar, er) || !near(ag, eg) || !near(ab, eb)) {
+        std::fprintf(stderr,
+            "assert: identity standalone final expected (%d,%d,%d) got (%d,%d,%d)\n",
+            er, eg, eb, ar, ag, ab);
+        iok = false;
+      }
+    }
+  }
+  std::printf("assert: identity standalone alias %s\n", iok ? "PASS" : "FAIL");
+
+  // ---- Test 4: all-identity fused group skipped ----
+  // Every stage neutral → the whole fused group is a no-op. The executor
+  // must skip the fused dispatch entirely; with nothing dispatched in the
+  // sketch, execute() returns the INPUT handle and its pixels are the
+  // untouched input.
+  bool fiok = true;
+  {
+    std::vector<std::pair<float, float>> p4 = {
+      {0.5f, 0.5f}, {0.5f, 0.5f}, {0.5f, 0.5f},
+    };
+    json s4 = buildSketch(p4);
+    executor->setBarrierPredicate([](int, int) { return false; });
+    int32_t ret = executor->execute(s4, inputTex, outputTex, W, H, 1.0 / 60.0);
+    gpu->submit();
+    if (ret != inputTex) {
+      std::fprintf(stderr,
+          "assert: all-identity group not skipped (ret=%d input=%d)\n", ret, inputTex);
+      fiok = false;
+    }
+    auto px = gpu->readbackTexture(ret > 0 ? ret : inputTex, W, H);
+    int ar, ag, ab; centerRGB(px, &ar, &ag, &ab);
+    if (ar != IN_R || ag != IN_G || ab != IN_B) {
+      std::fprintf(stderr, "assert: all-identity passthrough wrong (%d,%d,%d)\n", ar, ag, ab);
+      fiok = false;
+    }
+  }
+  std::printf("assert: identity fused-group skip %s\n", fiok ? "PASS" : "FAIL");
+
+  // ---- Test 5: identity stage dropped from a partial fused group ----
+  // A neutral stage between two real ones must be excluded from the fused
+  // kernel; the dispatch runs only the 2 real stages and the result
+  // equals the chain with the identity stage removed.
+  bool pok = true;
+  {
+    std::vector<std::pair<float, float>> p5 = {
+      {0.70f, 0.50f}, {0.50f, 0.50f}, {0.60f, 0.45f},
+    };
+    json s5 = buildSketch(p5);
+    executor->setBarrierPredicate([](int, int) { return false; });
+    executor->execute(s5, inputTex, outputTex, W, H, 1.0 / 60.0);
+    gpu->submit();
+    auto px = gpu->readbackTexture(outputTex, W, H);
+    int er = IN_R, eg = IN_G, eb = IN_B;
+    for (int k : {0, 2}) {
+      er = bcStageChannel((uint8_t)er, p5[k].first, p5[k].second);
+      eg = bcStageChannel((uint8_t)eg, p5[k].first, p5[k].second);
+      eb = bcStageChannel((uint8_t)eb, p5[k].first, p5[k].second);
+    }
+    int ar, ag, ab; centerRGB(px, &ar, &ag, &ab);
+    auto near = [](int a, int b) { return std::abs(a - b) <= 3; };
+    if (!near(ar, er) || !near(ag, eg) || !near(ab, eb)) {
+      std::fprintf(stderr,
+          "assert: partial-fused final expected (%d,%d,%d) got (%d,%d,%d)\n",
+          er, eg, eb, ar, ag, ab);
+      pok = false;
+    }
+  }
+  std::printf("assert: identity partial fused %s\n", pok ? "PASS" : "FAIL");
+
+  // ---- Test 6: fusion overflow (>28 fused stages) ----
   // Metal's compute buffer table caps a fused group at 28 stages (input +
   // output + one uniform per stage from slot 2). A longer eligible run must
   // split into back-to-back fused groups, materializing a real intermediate
@@ -452,7 +566,7 @@ int runAssert() {
   registry.reset();
   rt.reset();
   gpu.reset();
-  return (ok && fok && xok) ? 0 : 1;
+  return (ok && fok && iok && fiok && pok && xok) ? 0 : 1;
 }
 
 }  // namespace

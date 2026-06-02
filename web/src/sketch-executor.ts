@@ -98,6 +98,7 @@ export class SketchExecutor {
     standaloneDispatches: 0,
     fusedRuns: 0,
     fusedStages: 0,
+    identitySkipped: 0,
   };
 
   consumeDebugStats(): import('./engine-types').DebugStats {
@@ -109,11 +110,13 @@ export class SketchExecutor {
       fusedStages: s.fusedStages,
       dispatchesSaved: Math.max(0, s.fusedStages - s.fusedRuns),
       gpuDispatches: s.standaloneDispatches + s.fusedRuns,
+      identitySkipped: s.identitySkipped,
     };
     this.debugStats.effectsExecuted = 0;
     this.debugStats.standaloneDispatches = 0;
     this.debugStats.fusedRuns = 0;
     this.debugStats.fusedStages = 0;
+    this.debugStats.identitySkipped = 0;
     return out;
   }
 
@@ -740,6 +743,32 @@ export class SketchExecutor {
         // --- Tick and render ---
         loaded.host.drawList = [];
         loaded.module.tick(frameState.deltaTime);
+
+        // --- Identity skip (stateless passthrough) ---
+        // An effect whose current params make it a pure passthrough
+        // (output == primary input) can have its dispatch skipped and
+        // its input texture aliased as its output. Only valid for
+        // STATELESS effects, which the predicate enforces.
+        //
+        // Gated on !entryHasTaps to match the native executor: taps can
+        // drive params from rails or publish outputs, which the alias
+        // path doesn't handle.
+        //
+        // Do NOT render, do NOT consume a slot, and do NOT flush an
+        // in-progress fused run — a no-op stage can sit inside a fused
+        // run, so the surrounding mappers still fuse across it. Aliasing
+        // input→output just leaves currentInputHandle unchanged for the
+        // next stage; an all-identity chain then returns the original
+        // input handle, which is the desired passthrough.
+        const entryHasTaps = Array.isArray(entry.taps) && entry.taps.length > 0;
+        if (!entryHasTaps && loaded.module.isIdentity()) {
+          this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+            input: currentInputHandle,
+            output: currentInputHandle,
+          });
+          this.debugStats.identitySkipped = (this.debugStats.identitySkipped | 0) + 1;
+          continue;
+        }
 
         // Fused vs standalone branch.
         //

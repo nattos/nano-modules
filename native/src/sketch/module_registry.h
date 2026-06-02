@@ -85,7 +85,8 @@ class ModuleRegistry {
       void  (*tick)(void*, double),
       void  (*render)(void*, int, int),
       void  (*on_state_patched)(void*, int, const char*, const int*,
-                                const int*, const int*));
+                                const int*, const int*),
+      int32_t (*is_identity)(void*) = nullptr);
 
   /** Look up by editor module_type. nullptr if not registered. */
   const RegisteredModule* find(const std::string& moduleType) const;

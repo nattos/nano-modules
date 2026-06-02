@@ -143,7 +143,34 @@ void  render(void* self, int vp_w, int vp_h);
 void  on_state_patched(void* self, int n, const char* pb,
                        const int* off, const int* len, const int* ops);
 void  on_resolume_param(void* self, long long param_id, double value);  // ok as no-op
+int32_t is_identity(void* self);     // OPTIONAL: nonzero ⇒ pure passthrough now
 ```
+
+### `is_identity` — let the executor skip your no-op
+
+If your effect has a parameter setting that makes it a pure passthrough
+(`output == primary input`), expose an `is_identity(self)` predicate returning
+nonzero for that state. The executor then **skips the dispatch entirely** and
+aliases input→output: a standalone stage costs zero GPU work, and a fused group
+whose stages are *all* identity is dropped (a single identity stage inside a
+larger fused group is dropped from the fused kernel). Examples: `exposure` at
+`amount==0 && tint_amount==0`; `brightness_contrast` at `(0.5, 0.5)`; `transform`
+at neutral scale/rotation/translate; `sharpen`/`edges` at `amount==0`.
+
+Rules:
+- **Stateless only.** Never return nonzero from a stateful effect (particles,
+  feedback, accumulators, anything with hysteresis) — skipping a frame freezes
+  its simulation. Most generators have no identity either; leave the predicate
+  off (`nullptr`) and nothing is skipped.
+- **Side-effect free.** It's a pure read of the current param state; the runtime
+  may call it any number of times per frame.
+- **Wiring.** Instance effects pass `&ns::is_identity` as the trailing
+  descriptor field; legacy effects expose `int is_identity()` and the registrar
+  wraps it. In the native barrel, add the `identity` token as the 7th column of
+  the effect's `barrel_manifest.txt` line. Don't add the predicate to an effect
+  that has no genuine identity state.
+- **Taps.** The executor only skips tap-free chain entries (taps can drive
+  params from rails or publish outputs); a tapped entry always runs.
 
 The split — **mutable per-instance → `State`; immutable type-shared → file static:**
 

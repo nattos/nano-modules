@@ -81,6 +81,17 @@ void EffectInstance::doPrepare(int vp_w, int vp_h) {
   runtime_->setActive(nullptr);
 }
 
+bool EffectInstance::isIdentity() {
+  if (!desc_.is_identity) return false;
+  // Set the active pointer for parity with the other lifecycle calls, in
+  // case a predicate reads host state (e.g. isInputConnected). The
+  // predicate must be side-effect free.
+  runtime_->setActive(this);
+  int32_t r = desc_.is_identity(user_state_);
+  runtime_->setActive(nullptr);
+  return r != 0;
+}
+
 void EffectInstance::setTextureField(const std::string& path, int handle) {
   texture_fields_[path] = handle;
 }
@@ -297,6 +308,7 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
     void  (*render)(void*, int, int);
     void  (*on_state_patched)(void*, int, const char*, const int*, const int*, const int*);
     void  (*on_resolume_param)(void*, long long, double);
+    int32_t (*is_identity)(void*);
   };
   const auto* d = static_cast<const DescV2*>(desc_v2_ptr);
   if (!d || d->struct_version != 2) return;
@@ -314,6 +326,7 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
   desc.render = d->render;
   desc.on_state_patched = d->on_state_patched;
   desc.on_resolume_param = d->on_resolume_param;
+  desc.is_identity = d->is_identity;
   registerEffect(desc);
 }
 

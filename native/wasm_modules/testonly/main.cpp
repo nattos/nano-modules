@@ -22,6 +22,10 @@
 // ---- Effects that also exist in core (duplicated here for test access) ----
 
 NANO_DECLARE_INSTANCE_EFFECT(brightness_contrast)
+// Identity-skip predicate (same source as core). testonly loads after core
+// and wins the editor's last-registered-wins override, so it must wire this
+// too or the editor's brightness_contrast loses identity-skip.
+namespace brightness_contrast { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
@@ -86,6 +90,7 @@ void nano_module_main() {
         "video",
         "color,adjust,filter",
         NANO_INSTANCE_LIFECYCLE(brightness_contrast),
+        &brightness_contrast::is_identity,
     });
 
     nano::registerEffect({

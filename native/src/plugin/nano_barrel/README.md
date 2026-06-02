@@ -144,6 +144,14 @@ lifecycle — each chain entry gets its own per-instance state via
 file-static state, so correct only single-instance in a native chain; convert
 to the instance ABI for true per-instance behaviour).
 
+An optional **7th `identity` column** marks an effect that exposes an
+`is_identity()` predicate (instance: `int32_t is_identity(void* self)`; legacy:
+`int is_identity()`). When it reports the current state is a pure passthrough,
+the executor skips that stage's dispatch and aliases input→output — and drops it
+from (or entirely skips) a fused group. Only for stateless effects; see
+EFFECTS_STYLE_GUIDE.md. Currently flagged: brightness_contrast, exposure,
+sharpen, edges, transform.
+
 **Helper-class shaders.** Effects whose shaders live in a shared helper header
 (`fx::GaussianBlur` → `effect_blur.h`, `fx::FastBlur` → `effect_fast_blur.h`)
 register shader names from inside the helper, not from the effect's `main.cpp`.

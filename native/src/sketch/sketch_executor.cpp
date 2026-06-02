@@ -235,9 +235,6 @@ int32_t SketchExecutor::execute(
       auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
       if (!inst) return;
 
-      const bool isFinalStage = isLastCol && isLastGroupInCol;
-      int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
-
       // -- Zero stale per-field state from the previous frame --
       for (const auto& path : reg->inputTexturePaths) {
         inst->setTextureField(path, 0);
@@ -253,6 +250,27 @@ int32_t SketchExecutor::execute(
         const auto& state = instJson.value("state", json::object());
         maybeApplyState(inst, instKey, state);
       }
+
+      // -- Identity skip: stateless passthrough → alias input as this
+      // stage's output, no dispatch, no intermediate consumed. Gated on
+      // tap-free entries: read taps can drive params from rails (which
+      // changes identity, and is applied below — after this point) and
+      // write taps publish this stage's output texture; the alias path
+      // handles neither. Tap-bearing entries are also never fusion-
+      // eligible, so this mirrors the fused path's contract. Checked
+      // after applyState so the predicate sees current params. --
+      const bool hasTaps = entry.contains("taps") && entry["taps"].is_array()
+                           && !entry["taps"].empty();
+      if (!hasTaps && inst->isIdentity()) {
+        if (chainEntryHook_) {
+          chainEntryHook_((int)colIdx, (int)i, colInput, colInput, W, H);
+        }
+        finalHandle = colInput;   // alias; colInput stays for the next stage
+        return;
+      }
+
+      const bool isFinalStage = isLastCol && isLastGroupInCol;
+      int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
 
       // -- Wire primary channels --
       inst->setTextureField("tex_in",  colInput);
@@ -279,20 +297,47 @@ int32_t SketchExecutor::execute(
     };
 
     auto runFusedGroup = [&](const Group& g, bool isLastGroupInCol) {
-      // Resolve fragments + build cache key.
-      std::string cacheKey;
-      std::vector<std::string> fragments;
-      std::vector<effect_runtime::EffectInstance*> stages;
-      stages.reserve(g.lastK - g.firstK + 1);
-      bool fragsOK = true;
+      // Resolve every stage's instance and apply its state + tick FIRST,
+      // so the identity predicate below sees current params.
+      std::vector<effect_runtime::EffectInstance*> allStages;
+      allStages.reserve(g.lastK - g.firstK + 1);
+      bool stagesOK = true;
       for (size_t k = g.firstK; k <= g.lastK; ++k) {
         const auto& entry = chain[resolvable[k]];
         const std::string mt = entry.value("module_type", std::string());
         const std::string instKey = entry.value("instance_key", std::string());
         auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
-        if (!inst) { fragsOK = false; break; }
+        if (!inst) { stagesOK = false; break; }
+        if (instances.is_object() && instances.contains(instKey)) {
+          const auto& state = instances[instKey].value("state", json::object());
+          maybeApplyState(inst, instKey, state);
+        }
+        inst->doTick(dt);
+        allStages.push_back(inst);
+      }
+      if (!stagesOK) {
+        for (size_t k = g.firstK; k <= g.lastK; ++k) {
+          bool last = (k == g.lastK) && isLastGroupInCol;
+          runStandalone(k, last);
+        }
+        return;
+      }
+
+      // Drop identity stages: a passthrough mapper f(x)=x contributes
+      // nothing to the fused composition, so exclude it from the codegen
+      // + dispatch entirely. The surviving chain is mathematically
+      // identical (point-op composition). If EVERY stage is identity the
+      // group is a pure no-op → alias group input as output (no GPU work).
+      std::string cacheKey;
+      std::vector<std::string> fragments;
+      std::vector<effect_runtime::EffectInstance*> stages;
+      bool fragsOK = true;
+      for (size_t idx = 0; idx < allStages.size(); ++idx) {
+        auto* inst = allStages[idx];
+        if (inst->isIdentity()) continue;
         if (!cacheKey.empty()) cacheKey += '|';
-        cacheKey += mt;
+        cacheKey += chain[resolvable[g.firstK + idx]]
+                        .value("module_type", std::string());
         stages.push_back(inst);
         std::string msl;
         if (!rt_->lookupMSL(inst->fusionInfo().fragmentName, &msl)) {
@@ -300,6 +345,24 @@ int32_t SketchExecutor::execute(
         }
         fragments.push_back(std::move(msl));
       }
+
+      const bool isFinalStage = isLastCol && isLastGroupInCol;
+      const int32_t groupInput = colInput;
+
+      // Whole group is identity → passthrough.
+      if (fragsOK && stages.empty()) {
+        if (chainEntryHook_) {
+          chainEntryHook_((int)colIdx, (int)resolvable[g.firstK],
+                          groupInput, groupInput, W, H);
+          if (g.lastK != g.firstK) {
+            chainEntryHook_((int)colIdx, (int)resolvable[g.lastK],
+                            groupInput, groupInput, W, H);
+          }
+        }
+        finalHandle = groupInput;   // alias; colInput unchanged
+        return;
+      }
+
       int32_t pso = -1;
       if (fragsOK) {
         auto it = fusedPSOs_.find(cacheKey);
@@ -327,26 +390,12 @@ int32_t SketchExecutor::execute(
         return;
       }
 
-      // Per-stage prep. Each chain entry has its own EffectInstance with
-      // its own uniform buffer (created in its create()/init()), so
-      // doPrepare writes into a distinct buffer per stage — we bind those
-      // directly to the fused dispatch below. No snapshotting needed now
-      // that state is per-instance rather than file-static.
-      for (size_t idx = 0; idx < stages.size(); ++idx) {
-        size_t k = g.firstK + idx;
-        const auto& entry = chain[resolvable[k]];
-        const std::string instKey = entry.value("instance_key", std::string());
-        auto* inst = stages[idx];
-        if (instances.is_object() && instances.contains(instKey)) {
-          const auto& state = instances[instKey].value("state", json::object());
-          maybeApplyState(inst, instKey, state);
-        }
-        inst->doTick(dt);
-        inst->doPrepare(W, H);
-      }
+      // Per-stage prep — only the surviving (non-identity) stages. Each
+      // has its own uniform buffer (created in its create()/init()), so
+      // doPrepare writes a distinct buffer per stage; we bind those
+      // directly to the fused dispatch below.
+      for (auto* inst : stages) inst->doPrepare(W, H);
 
-      const bool isFinalStage = isLastCol && isLastGroupInCol;
-      const int32_t groupInput = colInput;
       const int32_t groupOutput = isFinalStage
                                   ? outputHandle
                                   : nextIntermediate(W, H);

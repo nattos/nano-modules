@@ -46,6 +46,11 @@ struct EffectDesc {
   void  (*on_state_patched)(void* self, int n, const char* pb, const int* off,
                             const int* len, const int* ops) = nullptr;
   void  (*on_resolume_param)(void* self, long long param_id, double value) = nullptr;
+  // Optional pure passthrough predicate (see nano::EffectDesc_v2::is_identity).
+  // Returns nonzero when the current state makes the effect an identity;
+  // the executor then skips its dispatch and aliases input→output. Only
+  // valid for stateless effects.
+  int32_t (*is_identity)(void* self) = nullptr;
 };
 
 // One EffectInstance per (effect type, sketch instance_key). Each owns the
@@ -87,6 +92,13 @@ class EffectInstance {
   void doPrepare(int vp_w, int vp_h);
 
   void* userState() const { return user_state_; }
+
+  // Pure passthrough query — true when the effect's descriptor supplies
+  // an is_identity predicate AND it reports the current state is an
+  // identity (output == primary input). The executor uses this to skip
+  // the dispatch and alias input→output. False when no predicate is set.
+  // Side-effect free; safe to call after state has been applied.
+  bool isIdentity();
 
   // --- Fusion metadata ---
   // Populated when the effect calls state::registerFusionByName(...)

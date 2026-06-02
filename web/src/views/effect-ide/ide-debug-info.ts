@@ -4,8 +4,9 @@
  * Two sections:
  *   - "Frame Stats" — live per-frame counters from the executor:
  *     effects executed, dispatches issued, fused runs, dispatches
- *     saved by fusion. Highlights the win the coalescing optimization
- *     produces in the current scene.
+ *     saved by fusion, and dispatches skipped because an effect was a
+ *     pure passthrough (identity). Highlights the win the coalescing +
+ *     identity-skip optimizations produce in the current scene.
  *   - "Console" — recent console-log entries from any WASM effect.
  *     Reversed (newest at top); auto-trimmed to 500 entries.
  *
@@ -144,6 +145,8 @@ export class IdeDebugInfo extends MobxLitElement {
         <span class="value">${stats?.fusedStages ?? '–'}</span>
         <span class="label saved-row">Dispatches saved by fusion</span>
         <span class="value saved-row">${stats?.dispatchesSaved ?? '–'}</span>
+        <span class="label saved-row">Dispatches skipped (identity)</span>
+        <span class="value saved-row">${stats?.identitySkipped ?? '–'}</span>
       </div>
 
       <div class="section-header">

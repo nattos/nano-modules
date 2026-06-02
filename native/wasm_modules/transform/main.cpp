@@ -96,6 +96,18 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
   }
 }
 
+// Passthrough when the affine is the identity: scale=0 (→ 4^0 = 1×),
+// scale_aspect=0 (→ uniform), rotation=0, translate=(0,0). Then every
+// output pixel samples its own texel centre, so the bilinear resample
+// reproduces the input exactly. pivot/wrap_mode are irrelevant at
+// identity (nothing is displaced or sampled out of bounds). Stateless —
+// skipping the dispatch and aliasing input→output is bit-exact (and
+// avoids the sampler's float round-trip entirely).
+int is_identity() {
+  return (s_scale == 0.0f && s_scale_aspect == 0.0f && s_rotation == 0.0f
+          && s_tx == 0.0f && s_ty == 0.0f) ? 1 : 0;
+}
+
 void render(int vp_w, int vp_h) {
   if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
 

@@ -76,6 +76,8 @@ export interface DebugStats {
   dispatchesSaved: number;
   /** Total compute passes issued (= standaloneDispatches + fusedRuns). */
   gpuDispatches: number;
+  /** Stateless passthrough stages skipped via the identity predicate. */
+  identitySkipped: number;
 }
 
 /**
