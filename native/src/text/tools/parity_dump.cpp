@@ -72,6 +72,11 @@ int main(int argc, char** argv) {
   uint32_t chash = 0x811c9dc5u;
   for (uint8_t v : img) { chash ^= v; chash *= 0x01000193u; }
   if (const char* p = std::getenv("TE_PNG")) png_write::writeFile(p, img.data(), cw, ch);
+  // Raw composite for tolerant native↔wasm comparison (bilinear float math may
+  // differ by a few LSB across toolchains — perceptual, not byte, parity).
+  if (const char* rp = std::getenv("TE_RAW")) {
+    if (FILE* rf = std::fopen(rp, "wb")) { std::fwrite(img.data(), 1, img.size(), rf); std::fclose(rf); }
+  }
 
   // Emit JSON matching parity_dump.mjs (2-space indent, same key order/rounding).
   std::printf("{\n");

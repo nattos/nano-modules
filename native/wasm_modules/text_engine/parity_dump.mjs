@@ -125,6 +125,10 @@ if (process.env.TE_PNG) {
   const { writeFileSync } = await import('node:fs');
   writeFileSync(process.env.TE_PNG, encodePNG(img, cw, ch));
 }
+if (process.env.TE_RAW) {
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(process.env.TE_RAW, Buffer.from(img));   // tolerant native↔wasm compare
+}
 ex.te_release(id);
 
 console.log(JSON.stringify({

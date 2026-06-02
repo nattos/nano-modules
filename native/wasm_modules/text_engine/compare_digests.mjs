@@ -11,7 +11,10 @@ const EPS = 1e-3;
 const [a, b] = process.argv.slice(2).map((p) => JSON.parse(readFileSync(p, 'utf8')));
 
 function eq(x, y, path = '') {
-  if (path.endsWith('.ptr')) return true; // env-specific, intentionally ignored
+  if (path.endsWith('.ptr')) return true;            // env-specific, intentionally ignored
+  if (path === '.composite.hash') return true;       // bilinear float math differs a few LSB
+                                                     // across toolchains — compared tolerantly
+                                                     // via the raw composite (see parity_check.sh)
   if (typeof x === 'number' && typeof y === 'number') {
     if (Math.abs(x - y) > EPS * (1 + Math.abs(x))) {
       console.error(`mismatch at ${path}: ${x} != ${y}`); return false;

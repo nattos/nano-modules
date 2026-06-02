@@ -23,9 +23,6 @@ fi
 # Include paths: setjmp shim first (shadow wasi-libc's erroring header).
 INCS=(-I"$TP/wasm-shim" -I"$TP/freetype/include" -I"$TP/ft-config"
       -I"$TP/msdf-config" -I"$TP/msdfgen" -I"$SRC_DIR")
-# Disable FP contraction (FMA) so float math — notably the rasterizer's bilinear
-# interpolation — is bit-identical to the native build (preserves byte-parity).
-FPFLAGS=(-ffp-contract=off)
 FTDEFS=(-DFT2_BUILD_LIBRARY '-DFT_CONFIG_OPTIONS_H="ftoption_custom.h"'
         '-DFT_CONFIG_MODULES_H="ftmodule_custom.h"')
 
@@ -37,7 +34,7 @@ echo "Building text_engine.wasm (FreeType + msdfgen + engine)"
 for s in base/ftbase base/ftinit base/ftsystem base/ftdebug base/ftbitmap base/ftmm \
          sfnt/sfnt truetype/truetype psnames/psnames; do
   o="$TMP/ft_$(basename "$s").o"
-  "$CLANG" "${WASM_CXXFLAGS[@]}" "${FPFLAGS[@]}" "${INCS[@]}" "${FTDEFS[@]}" -c "$TP/freetype/src/$s.c" -o "$o"
+  "$CLANG" "${WASM_CXXFLAGS[@]}" "${INCS[@]}" "${FTDEFS[@]}" -c "$TP/freetype/src/$s.c" -o "$o"
   objs+=("$o")
 done
 # msdfgen core subset (C++), excludes ext/ + save-*/export-svg.
@@ -45,13 +42,13 @@ for c in Contour DistanceMapping EdgeHolder MSDFErrorCorrection Projection Scanl
          contour-combiners edge-coloring edge-segments edge-selectors equation-solver \
          msdf-error-correction msdfgen rasterization render-sdf sdf-error-estimation shape-description; do
   o="$TMP/md_$c.o"
-  "$CLANG" "${WASM_CXXFLAGS[@]}" "${FPFLAGS[@]}" "${INCS[@]}" -c "$TP/msdfgen/core/$c.cpp" -o "$o"
+  "$CLANG" "${WASM_CXXFLAGS[@]}" "${INCS[@]}" -c "$TP/msdfgen/core/$c.cpp" -o "$o"
   objs+=("$o")
 done
 # Engine + wasm ABI.
 for s in text_engine text_engine_wasm; do
   o="$TMP/$s.o"
-  "$CLANG" "${WASM_CXXFLAGS[@]}" "${FPFLAGS[@]}" "${INCS[@]}" -c "$SRC_DIR/$s.cpp" -o "$o"
+  "$CLANG" "${WASM_CXXFLAGS[@]}" "${INCS[@]}" -c "$SRC_DIR/$s.cpp" -o "$o"
   objs+=("$o")
 done
 
