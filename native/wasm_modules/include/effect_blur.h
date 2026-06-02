@@ -100,12 +100,36 @@ public:
     if (!m_initialized || w <= 0 || h <= 0) return;
     if (!input.valid() || !output.valid()) return;
 
+    int half_count = computeKernel(sigma_px, spacing_px);
+    m_weights.write(m_weights_data, MAX_HALF_COUNT + 1);
+
+    // No-blur fast path. When sigma collapses the kernel to the centre
+    // tap (half_count == 0, e.g. radius ≈ 0), the shader's gather loop
+    // doesn't run and every pixel emits `inputTex[gid] * weights[0]`
+    // with weights[0] == 1 — an exact copy. The two separable passes
+    // would just round-trip the image through scratch, so run a SINGLE
+    // passthrough pass straight input→output and skip the second
+    // dispatch + the scratch allocation. A gpu::copy would be cheaper
+    // still but isn't channel-safe: input/output can be different pixel
+    // formats (BGRA8 interop surface vs RGBA8 intermediate) and a blit
+    // doesn't swizzle, whereas the compute pass reads/writes in logical
+    // RGBA order regardless of storage format.
+    if (half_count == 0) {
+      Uniforms u = { 1.0f, 0.0f, spacing_px, 0 };
+      m_uniform_h.writeOne(u);
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(m_pso);
+      cp.setTexture(input, 0, 0);
+      cp.setTexture(output, 1, 1);
+      cp.setBuffer(m_uniform_h, 2);
+      cp.setBuffer(m_weights, 3);
+      cp.dispatch((w + 7) / 8, (h + 7) / 8);
+      cp.end();
+      return;
+    }
+
     ensureScratch(w, h);
     if (!m_scratch.valid()) return;
-
-    int half_count = computeKernel(sigma_px, spacing_px);
-
-    m_weights.write(m_weights_data, MAX_HALF_COUNT + 1);
 
     Uniforms uh = { 1.0f, 0.0f, spacing_px, half_count };
     m_uniform_h.writeOne(uh);

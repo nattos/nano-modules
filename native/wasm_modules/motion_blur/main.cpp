@@ -393,11 +393,23 @@ void render(void* self, int vp_w, int vp_h) {
   };
   st->uniform_buf.writeOne(u);
 
-  // Pass-through: no upstream motion. Bind a viewport-sized zero
-  // motion texture and a 1×1 zero pyramid stand-in. Reconstruction's
+  // No-blur fast path. The reconstruction shader scales V_max by
+  // `strength` (reconstruct.hlsl:174) *before* the HALF_VELOCITY_CUTOFF
+  // test, so strength <= 0 forces every pixel down the cutoff branch
+  // and emits `inputTex[gid]` unchanged — the pyramid build + full
+  // gather are pure waste. Treat it like the no-motion case below: one
+  // passthrough dispatch, no pyramid (skips ~log2(min(w,h)) reduce
+  // dispatches). We can't shortcut to gpu::copy because tex_in/tex_out
+  // may have different pixel formats (BGRA8 interop surface vs RGBA8
+  // intermediate) and a blit doesn't swizzle; the compute dispatch
+  // reads/writes in logical RGBA order, so it's correct across formats.
+  const bool no_blur = st->strength <= 0.0f;
+
+  // Pass-through: no upstream motion (or no blur). Bind a viewport-sized
+  // zero motion texture and a 1×1 zero pyramid stand-in. Reconstruction's
   // V_max-cutoff branch then fires at every pixel and forwards
   // `inputTex[gid]` directly. Skips the pyramid build entirely.
-  if (!motion.valid()) {
+  if (!motion.valid() || no_blur) {
     if (!st->zero_motion.valid() || st->zero_w != vp_w || st->zero_h != vp_h) {
       st->zero_motion = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
       st->zero_w = vp_w;
