@@ -52,7 +52,7 @@ for s in text_engine text_engine_wasm; do
   objs+=("$o")
 done
 
-EXPORTS=(te_set_font te_add_font te_has_font te_layout te_measure te_glyph_count te_glyphs te_release
+EXPORTS=(te_set_font te_add_font te_has_font te_add_fallback_font te_layout te_measure te_glyph_count te_glyphs te_release
          te_rasterize te_atlas_width te_atlas_height te_atlas_ptr te_next_dirty_region
          malloc free __wasm_call_ctors)
 EXPFLAGS=(); for e in "${EXPORTS[@]}"; do EXPFLAGS+=(-Wl,--export="$e"); done

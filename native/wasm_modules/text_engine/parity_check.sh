@@ -34,12 +34,17 @@ mkdir -p "$DUMP_DIR"
 export TE_FONT2="${TE_FONT2:-/System/Library/Fonts/Times.ttc}"
 export TE_FAMILY2="${TE_FAMILY2:-Serif}"
 
+# CJK fallback face — covers codepoints the Latin primary font lacks. Both tools
+# register the SAME file via addFallbackFont → byte-identical fallback glyphs.
+export TE_FALLBACK="${TE_FALLBACK:-/System/Library/Fonts/STHeiti Light.ttc}"
+
 SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'
   '{"text":"wrap me onto many lines please","constraints":{"max_width_px":160,"size_px":24}}'
   '{"text":"€ é ✓ 你好","size_px":32}'
   '{"text":"REDblue","runs":[{"start":0,"len":3,"size_px":120,"rgba":[1,0.2,0.2,1]},{"start":3,"len":4,"size_px":60,"rgba":[0.3,0.5,1,1]}]}'
   '{"text":"MonoSerif","runs":[{"start":0,"len":4,"size_px":72},{"start":4,"len":5,"size_px":72,"family":"Serif","rgba":[0.4,1,0.6,1]}]}'
+  '{"text":"Hello 世界 你好","size_px":56}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.

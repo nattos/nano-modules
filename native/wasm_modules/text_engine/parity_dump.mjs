@@ -64,6 +64,15 @@ if (process.env.TE_FONT2 && process.env.TE_FAMILY2) {
   ex.free(famp); ex.free(f2p);
 }
 
+// Optional fallback face (CJK/missing-codepoint parity): register TE_FALLBACK
+// via te_add_fallback_font, matching the native tool byte-for-byte.
+if (process.env.TE_FALLBACK) {
+  const fb = readFileSync(process.env.TE_FALLBACK);
+  const fbp = ex.malloc(fb.length); u8().set(fb, fbp);
+  ex.te_add_fallback_font(fbp, fb.length);
+  ex.free(fbp);
+}
+
 // Stage the spec JSON into engine memory.
 const enc = new TextEncoder().encode(spec);
 const specPtr = ex.malloc(enc.length);

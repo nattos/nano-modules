@@ -83,6 +83,14 @@ public:
   // True if `name` is already registered (host can skip re-resolving bytes).
   bool hasFontNamed(const char* name, int name_len) const;
 
+  // Register an (unnamed) fallback face and append it to the fallback chain:
+  // when a run's face lacks a codepoint (e.g. CJK in a Latin font), the engine
+  // consults the chain in registration order and shapes the codepoint with the
+  // first face that covers it. The host installs these once (e.g. Noto Sans CJK)
+  // so international text renders without tofu. Additive — does NOT reset the
+  // atlas. Returns the faceId (>=0), or -1 on failure.
+  int addFallbackFont(const uint8_t* bytes, int len);
+
   // Lay out an attributed-string JSON spec (schema documented in host.h).
   // Returns an opaque layoutId (>0) or 0 on error. Deterministic given the
   // same spec + same available fonts.

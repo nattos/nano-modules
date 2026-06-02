@@ -65,6 +65,12 @@ int te_has_font(const char* name, int name_len) {
   return Engine::instance().hasFontNamed(name, name_len) ? 1 : 0;
 }
 
+// Register a fallback face (appended to the chain consulted for codepoints the
+// run's face lacks, e.g. CJK). Returns the faceId (>=0), or -1 on failure.
+int te_add_fallback_font(const uint8_t* bytes, int len) {
+  return Engine::instance().addFallbackFont(bytes, len);
+}
+
 int te_layout(const char* spec, int len) {
   return Engine::instance().layout(spec, len);
 }

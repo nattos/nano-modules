@@ -213,6 +213,7 @@ struct Engine::Impl {
   FT_Library lib = nullptr;
   std::vector<Face> faces;                         // face 0 = primary (setFont)
   std::unordered_map<std::string, int> faceByName; // family name → faceId (>0)
+  std::vector<int> fallbackFaces;                  // ordered chain for missing codepoints
   bool  font_loaded = false;
 
   std::vector<uint8_t> atlas;     // ATLAS_W*ATLAS_H*4 RGBA8 (MSDF), shared across faces
@@ -236,6 +237,23 @@ struct Engine::Impl {
     for (Face& f : faces) if (f.ft) FT_Done_Face(f.ft);
     faces.clear();
     faceByName.clear();
+    fallbackFaces.clear();
+  }
+
+  // Glyph index for `cp` in `preferFace`, else the first fallback face that has
+  // it; writes the resolved face + index. Returns false only if nothing covers
+  // it (caller renders preferFace's .notdef). The resolved face may differ from
+  // preferFace, so CJK/emoji in a Latin run pick up the fallback face.
+  bool resolveCodepoint(unsigned cp, int preferFace, int& outFace, uint32_t& outGi) {
+    outFace = preferFace;
+    outGi = FT_Get_Char_Index(faces[preferFace].ft, cp);
+    if (outGi != 0) return true;
+    for (int fb : fallbackFaces) {
+      if (fb == preferFace || fb < 0 || fb >= (int)faces.size()) continue;
+      uint32_t g = FT_Get_Char_Index(faces[fb].ft, cp);
+      if (g != 0) { outFace = fb; outGi = g; return true; }
+    }
+    return false;  // no coverage → .notdef of preferFace
   }
 
   static uint64_t gkey(int faceId, uint32_t gi) { return ((uint64_t)faceId << 32) | gi; }
@@ -378,6 +396,17 @@ bool Engine::hasFontNamed(const char* name, int name_len) const {
   return impl_->faceByName.count(std::string(name, name_len)) != 0;
 }
 
+int Engine::addFallbackFont(const uint8_t* bytes, int len) {
+  if (!impl_->font_loaded || !bytes || len <= 0) return -1;
+  Face fc;
+  fc.bytes.assign(bytes, bytes + len);
+  if (!openFace(impl_->lib, fc)) return -1;
+  int id = (int)impl_->faces.size();
+  impl_->faces.push_back(std::move(fc));
+  impl_->fallbackFaces.push_back(id);
+  return id;
+}
+
 int Engine::layout(const char* spec_json, int len) {
   if (!spec_json || len <= 0 || !impl_->font_loaded) return 0;
 
@@ -449,16 +478,18 @@ int Engine::layout(const char* spec_json, int len) {
     unsigned cp; i = decodeUTF8(text, i, cp);
     const Run& r = runFor(byteStart);
     if (cp == '\n') { flushWord(); finalizeLine(); continue; }
-    uint32_t gi = FT_Get_Char_Index(impl_->faces[r.face].ft, cp);
-    const GlyphInfo* info = impl_->ensureGlyph(r.face, gi);
+    // Resolve via the run's face, falling through the fallback chain (CJK etc.).
+    int faceId; uint32_t gi;
+    impl_->resolveCodepoint(cp, r.face, faceId, gi);
+    const GlyphInfo* info = impl_->ensureGlyph(faceId, gi);
     if (cp == ' ') {
       flushWord();
       float adv = info->advance * r.size;
       if (max_width > 0 && penX > 0 && penX + adv > max_width) { finalizeLine(); }
-      else { bumpLineMetrics(r.size, r.face); penX += adv; }
+      else { bumpLineMetrics(r.size, faceId); penX += adv; }
       continue;
     }
-    word.push_back({r.size, r.r, r.g, r.b, r.a, info, r.face}); wordW += info->advance * r.size;
+    word.push_back({r.size, r.r, r.g, r.b, r.a, info, faceId}); wordW += info->advance * r.size;
   }
   flushWord();
   // Finalize the trailing line — unless the text ended exactly on a newline

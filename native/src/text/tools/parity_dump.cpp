@@ -55,6 +55,17 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Optional fallback face for CJK/missing-codepoint parity (TE_FALLBACK); the
+  // wasm tool registers the SAME file via addFallbackFont the SAME way.
+  if (const char* fbPath = std::getenv("TE_FALLBACK")) {
+    if (FILE* ff = std::fopen(fbPath, "rb")) {
+      std::fseek(ff, 0, SEEK_END); long fn = std::ftell(ff); std::fseek(ff, 0, SEEK_SET);
+      std::vector<uint8_t> fb(fn);
+      if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn) eng.addFallbackFont(fb.data(), (int)fn);
+      std::fclose(ff);
+    }
+  }
+
   int id = eng.layout(spec.c_str(), (int)spec.size());
   if (id <= 0) { std::fprintf(stderr, "layout failed\n"); return 1; }
 
