@@ -74,6 +74,7 @@ interface TEExports {
   te_set_font(ptr: number, len: number): number;
   te_add_font(namePtr: number, nameLen: number, ptr: number, len: number): number;
   te_has_font(namePtr: number, nameLen: number): number;
+  te_add_fallback_font(ptr: number, len: number): number;
   te_layout(ptr: number, len: number): number;
   te_measure(id: number, outPtr: number): number;
   te_glyph_count(id: number): number;
@@ -112,6 +113,13 @@ const DEFAULT_FONTS: FontSource[] = [
   { family: 'Noto Serif', url: '/fonts/noto-serif.ttf' },
 ];
 
+// Fallback chain (in priority order): consulted for codepoints the active face
+// lacks, so CJK etc. render instead of tofu. glyf-flavored Noto faces → byte
+// parity. Extend with JP kana / KR hangul / Arabic / Hebrew for full coverage.
+const DEFAULT_FALLBACKS: string[] = [
+  '/fonts/noto-sans-sc.ttf',   // Simplified Chinese / Han (covers CJK ideographs)
+];
+
 // Back the singleton with globalThis so it survives module duplication across
 // vite/HMR boundaries (wasm-host.ts and gpu-test-runner.html can otherwise end
 // up with separate module instances, splitting a plain `static` singleton).
@@ -147,20 +155,22 @@ export class TextEngine {
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
   static init(
     device: GPUDevice,
-    opts?: { wasmUrl?: string; fontUrl?: string; fonts?: FontSource[] },
+    opts?: { wasmUrl?: string; fontUrl?: string; fonts?: FontSource[]; fallbacks?: string[] },
   ): Promise<TextEngine> {
     if (G.__textEngine) return Promise.resolve(G.__textEngine);
     if (!G.__textEngineInit) {
       const e = new TextEngine();
       G.__textEngineInit = e
         ._init(device, opts?.wasmUrl ?? '/wasm/text_engine.wasm',
-               opts?.fontUrl ?? '/fonts/default.ttf', opts?.fonts ?? DEFAULT_FONTS)
+               opts?.fontUrl ?? '/fonts/default.ttf', opts?.fonts ?? DEFAULT_FONTS,
+               opts?.fallbacks ?? DEFAULT_FALLBACKS)
         .then(() => (G.__textEngine = e));
     }
     return G.__textEngineInit;
   }
 
-  private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string, fonts: FontSource[]) {
+  private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string,
+                      fonts: FontSource[], fallbacks: string[]) {
     this.device = device;
     const bytes = await (await fetch(wasmUrl)).arrayBuffer();
     const mod = await WebAssembly.compile(bytes);
@@ -186,6 +196,11 @@ export class TextEngine {
     for (const f of fonts) {
       try { await this.loadFont(f.family, f.url); }
       catch (e) { console.warn(`text-engine: bundled font "${f.family}" failed to load`, e); }
+    }
+    // Register the fallback chain (CJK etc.) in priority order.
+    for (const url of fallbacks) {
+      try { await this.loadFallback(url); }
+      catch (e) { console.warn(`text-engine: fallback font ${url} failed to load`, e); }
     }
 
     this.pipeline = device.createComputePipeline({
@@ -249,6 +264,24 @@ export class TextEngine {
     const id = this.ex.te_add_font(np, nameEnc.length, bp, bytes.length);
     this.ex.free(bp);
     this.ex.free(np);
+    return id;
+  }
+
+  /** Register a fallback face from sfnt bytes (appended to the chain consulted
+   *  for codepoints the active face lacks). Returns the faceId, or -1. */
+  registerFallbackBytes(bytes: Uint8Array): number {
+    const bp = this.ex.malloc(bytes.length);
+    this.u8().set(bytes, bp);
+    const id = this.ex.te_add_fallback_font(bp, bytes.length);
+    this.ex.free(bp);
+    return id;
+  }
+
+  /** Fetch sfnt bytes from `url` and register them as a fallback face. */
+  async loadFallback(url: string): Promise<number> {
+    const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const id = this.registerFallbackBytes(bytes);
+    if (id < 0) throw new Error(`text-engine: failed to register fallback ${url}`);
     return id;
   }
 

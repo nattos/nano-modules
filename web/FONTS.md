@@ -24,6 +24,22 @@ The engine itself is multi-face: `setFont` installs the primary (face 0),
 `addFont(name, bytes)` registers a named face, and glyphs are cached by
 `(faceId, glyphIndex)` in one shared atlas.
 
+## Fallback chain (CJK and other missing codepoints)
+
+When a run's face lacks a codepoint (e.g. CJK in a Latin font), the engine
+consults an ordered **fallback chain** and shapes that codepoint with the first
+face that covers it — so 你好 renders real glyphs instead of tofu. The host
+installs the chain via `addFallbackFont(bytes)` (web: `DEFAULT_FALLBACKS` in
+`text-engine.ts`, fetched by `fetch_fonts.sh`). The bundled fallback is
+**Noto Sans SC** (Simplified Chinese / Han), which is glyf-flavored so it keeps
+byte-exact parity. Extend the chain (Japanese kana, Korean hangul, Arabic,
+Hebrew) by adding files to `fetch_fonts.sh` + `DEFAULT_FALLBACKS`.
+
+FreeType is built with both the TrueType (`glyf`) and **CFF** drivers, so
+OpenType-CFF OS fonts (many CJK faces) open too — though CFF charstring
+interpretation adds a few LSB of FP noise to the atlas, so CFF faces have
+perceptual rather than byte-exact parity (the bundled glyf faces are byte-exact).
+
 ## The parity-guaranteed bundled set
 
 Large OFL binaries are **not committed**. `web/scripts/fetch_fonts.sh`

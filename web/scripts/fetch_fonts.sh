@@ -8,12 +8,14 @@
 # this script downloads them at a PINNED google/fonts commit and verifies their
 # sha256, so every checkout (and the native host) gets byte-identical files.
 #
-#   web/public/fonts/default.ttf     primary font (face 0) — Noto Sans
-#   web/public/fonts/noto-sans.ttf   family "Noto Sans"
-#   web/public/fonts/noto-serif.ttf  family "Noto Serif"
+#   web/public/fonts/default.ttf       primary font (face 0) — Noto Sans
+#   web/public/fonts/noto-sans.ttf     family "Noto Sans"
+#   web/public/fonts/noto-serif.ttf    family "Noto Serif"
+#   web/public/fonts/noto-sans-sc.ttf  CJK fallback (Simplified Chinese / Han)
 #
-# The DEFAULT_FONTS manifest in web/src/text-engine.ts maps the family names to
-# these served URLs. Add faces (CJK / Arabic / Hebrew for full i18n) by
+# DEFAULT_FONTS / DEFAULT_FALLBACKS in web/src/text-engine.ts map these to served
+# URLs. The CJK face is glyf-flavored (not CFF) so it keeps byte-exact parity.
+# Add faces (Japanese kana / Korean hangul / Arabic / Hebrew for full i18n) by
 # extending FILES below + the manifest.
 set -euo pipefail
 cd "$(dirname "$0")/../public/fonts"
@@ -26,6 +28,7 @@ BASE="https://cdn.jsdelivr.net/gh/google/fonts@${PIN}"
 FILES=(
   "noto-sans.ttf|ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf|bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d"
   "noto-serif.ttf|ofl/notoserif/NotoSerif%5Bwdth%2Cwght%5D.ttf|4d8e6761424656867019081a1a01336f3cb086982682698714054fc33f782713"
+  "noto-sans-sc.ttf|ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf|a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"
 )
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
