@@ -385,13 +385,74 @@ int runAssert() {
   }
   std::printf("assert: fused end-to-end %s\n", fok ? "PASS" : "FAIL");
 
+  // ---- Test 3: fusion overflow (>28 fused stages) ----
+  // Metal's compute buffer table caps a fused group at 28 stages (input +
+  // output + one uniform per stage from slot 2). A longer eligible run must
+  // split into back-to-back fused groups, materializing a real intermediate
+  // texture at the seam. Verify both that the split happens (exactly 2 fused
+  // groups → 2 materialized outputs) and that the pixels are still correct.
+  //
+  // Params keep every stage's result an EXACT 8-bit value (contrast 0.5 →
+  // scale 1.0; brightness offset = (b-0.5)*2 = k/255 for integer k), so the
+  // CPU reference (which rounds per stage) matches the GPU regardless of
+  // where the fused path actually rounds (only at the 28-stage seam + end).
+  bool xok = true;
+  {
+    const int BIG = 30;  // > 28 → forces one split
+    std::vector<std::pair<float, float>> big;
+    for (int i = 0; i < BIG; ++i) {
+      int k = 1 + (i % 2);                       // +1/255 or +2/255 per stage
+      big.emplace_back(0.5f + (float)k / 510.0f, 0.5f);
+    }
+    json bigSketch = buildSketch(big);
+
+    int materializedOutputs = 0;
+    executor->setBarrierPredicate([](int, int) { return false; });
+    executor->setChainEntryHook(
+        [&](int, int, int32_t, int32_t outH, int, int) {
+          if (outH > 0) ++materializedOutputs;   // one per fused group's output
+        });
+    executor->execute(bigSketch, inputTex, outputTex, W, H, 1.0 / 60.0);
+    gpu->submit();
+    executor->setChainEntryHook({});
+
+    // groups [0..27] + [28..29], each fused → exactly 2 materialized outputs.
+    if (materializedOutputs != 2) {
+      std::fprintf(stderr,
+          "assert: overflow expected 2 fused groups (materialized outputs), got %d\n",
+          materializedOutputs);
+      xok = false;
+    }
+    auto px = gpu->readbackTexture(outputTex, W, H);
+    if (px.size() < (size_t)W * H * 4) {
+      std::fprintf(stderr, "assert: overflow readback failed\n");
+      xok = false;
+    } else {
+      int er = IN_R, eg = IN_G, eb = IN_B;
+      for (auto& p : big) {
+        er = bcStageChannel((uint8_t)er, p.first, p.second);
+        eg = bcStageChannel((uint8_t)eg, p.first, p.second);
+        eb = bcStageChannel((uint8_t)eb, p.first, p.second);
+      }
+      int ar, ag, ab; centerRGB(px, &ar, &ag, &ab);
+      auto near = [](int a, int b) { return std::abs(a - b) <= 2; };
+      if (!near(ar, er) || !near(ag, eg) || !near(ab, eb)) {
+        std::fprintf(stderr,
+            "assert: overflow final expected (%d,%d,%d) got (%d,%d,%d)\n",
+            er, eg, eb, ar, ag, ab);
+        xok = false;
+      }
+    }
+  }
+  std::printf("assert: fusion overflow (>28 stages) %s\n", xok ? "PASS" : "FAIL");
+
   gpu->release(inputTex);
   gpu->release(outputTex);
   executor.reset();
   registry.reset();
   rt.reset();
   gpu.reset();
-  return (ok && fok) ? 0 : 1;
+  return (ok && fok && xok) ? 0 : 1;
 }
 
 }  // namespace
