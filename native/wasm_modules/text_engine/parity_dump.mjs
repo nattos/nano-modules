@@ -30,12 +30,28 @@ const wasi = {
 };
 
 const bytes = readFileSync(wasmPath);
-const { instance } = await WebAssembly.instantiate(bytes, { wasi_snapshot_preview1: wasi });
+const mod = new WebAssembly.Module(bytes);
+// Generic no-op stubs for every import (wasi_snapshot_preview1 + the unused
+// env setjmp/longjmp FreeType pulls in but never calls).
+const importObject = {};
+for (const i of WebAssembly.Module.imports(mod)) {
+  (importObject[i.module] ??= {});
+  if (i.kind === 'function') importObject[i.module][i.name] = (i.module === 'wasi_snapshot_preview1' && wasi[i.name]) || (() => 0);
+}
+const instance = await WebAssembly.instantiate(mod, importObject);
 const ex = instance.exports;
 ex.__wasm_call_ctors?.();
 
 const mem = () => new DataView(ex.memory.buffer);
 const u8 = () => new Uint8Array(ex.memory.buffer);
+
+// Install the same font the native tool uses (env TE_FONT, default Monaco).
+const fontPath = process.env.TE_FONT || '/System/Library/Fonts/Monaco.ttf';
+const fontBytes = readFileSync(fontPath);
+const fontPtr = ex.malloc(fontBytes.length);
+u8().set(fontBytes, fontPtr);
+if (!ex.te_set_font(fontPtr, fontBytes.length)) { console.error('te_set_font failed'); process.exit(1); }
+ex.free(fontPtr);
 
 // Stage the spec JSON into engine memory.
 const enc = new TextEncoder().encode(spec);

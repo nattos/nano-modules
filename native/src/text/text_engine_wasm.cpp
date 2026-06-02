@@ -47,6 +47,11 @@ static_assert(sizeof(AbiDirtyRegion) == 20, "AbiDirtyRegion layout");
 
 extern "C" {
 
+// Install the font from bytes the host staged into linear memory. Returns 1/0.
+int te_set_font(const uint8_t* bytes, int len) {
+  return Engine::instance().setFont(bytes, len) ? 1 : 0;
+}
+
 int te_layout(const char* spec, int len) {
   return Engine::instance().layout(spec, len);
 }

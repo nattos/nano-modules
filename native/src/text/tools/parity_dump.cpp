@@ -30,6 +30,17 @@ int main(int argc, char** argv) {
   std::string spec = (argc > 1) ? argv[1] : kDefaultSpec;
   auto& eng = text_engine::Engine::instance();
 
+  // Install a font (env TE_FONT, default Monaco). The wasm tool reads the SAME
+  // file, so font bytes — and thus glyphs — are identical on both sides.
+  const char* fontPath = std::getenv("TE_FONT");
+  if (!fontPath) fontPath = "/System/Library/Fonts/Monaco.ttf";
+  if (FILE* ff = std::fopen(fontPath, "rb")) {
+    std::fseek(ff, 0, SEEK_END); long fn = std::ftell(ff); std::fseek(ff, 0, SEEK_SET);
+    std::vector<uint8_t> fb(fn);
+    if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn) eng.setFont(fb.data(), (int)fn);
+    std::fclose(ff);
+  }
+
   int id = eng.layout(spec.c_str(), (int)spec.size());
   if (id <= 0) { std::fprintf(stderr, "layout failed\n"); return 1; }
 

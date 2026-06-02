@@ -1,22 +1,28 @@
 /*
- * text_engine.cpp — Phase 0 STUB implementation of the shared text engine.
+ * text_engine.cpp — Phase 1 implementation: real glyphs via FreeType + msdfgen.
  *
- * Renders one solid box glyph per Unicode codepoint into a tiny alpha-coverage
- * atlas and lays the boxes out left-to-right with naive wrapping. This exists
- * only to prove the JSON-in / atlas-and-geometry-out pipeline end to end and to
- * stand up the native↔wasm byte-parity harness BEFORE the heavy FreeType +
- * msdfgen + HarfBuzz machinery lands (Phase 1+).
+ * Replaces the Phase-0 box stub. A font is installed from memory bytes
+ * (setFont). layout() shapes UTF-8 text LTR (cmap + advances), greedy word-wraps
+ * to a max width, and emits positioned glyph quads. Each unseen glyph is
+ * rasterized once to an MSDF tile (FreeType outline → msdfgen) at a reference em
+ * size and shelf-packed into a shared atlas; the quad is scaled to the requested
+ * font size in layout space (so font size never multiplies atlas entries).
  *
- * No GPU calls. No wall-clock, RNG, or threads — output is a deterministic
- * function of the spec, so the native build and text_engine.wasm produce
- * byte-identical atlas + geometry + metrics.
- *
- * Compiles under both native clang and wasm32-wasip1 (-fno-exceptions
- * -fno-rtti): uses only std containers, no throw/try, no RTTI.
+ * Still NO GPU calls and fully deterministic — compiled identically native +
+ * wasm, so atlas + geometry + metrics stay byte-identical across environments
+ * (parity_check.sh). RTL/bidi/complex-shaping/rich-text are Phase 2/3.
  */
 
 #include "text_engine.h"
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_OUTLINE_H
+
+#include <msdfgen.h>
+
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -25,39 +31,26 @@
 
 namespace text_engine {
 
-// ---- Stub atlas geometry ----------------------------------------------------
-static constexpr int ATLAS_W   = 256;
-static constexpr int ATLAS_H   = 256;
-static constexpr int CELL      = 32;   // one box glyph occupies a 32x32 cell at (0,0)
-static constexpr int BOX_INSET = 3;    // transparent margin inside the cell
+// Atlas + MSDF reference parameters.
+static constexpr int    ATLAS_W   = 1024;
+static constexpr int    ATLAS_H   = 1024;
+static constexpr double REF_PX    = 48.0;  // glyph em rendered at this px size in the atlas
+static constexpr double RANGE_PX  = 4.0;   // MSDF distance range, atlas px
+static constexpr int    PAD       = 5;     // tile padding ≥ ceil(RANGE_PX), atlas px
 
-// ---- Minimal, exception-free JSON field extraction --------------------------
-// NOT a general parser — just enough to read our own emitted spec. Phase 1
-// replaces this with a real no-exception JSON parser (spec_json.cpp).
-
-// Find the value position just after `"key":` at object depth (ignores nesting
-// niceties; fine for our flat spec). Returns -1 if not found.
+// ---- Minimal exception-free JSON field extraction (as in Phase 0) ----------
 static int findField(const char* s, int n, const char* key) {
-  std::string pat = "\"";
-  pat += key;
-  pat += "\"";
+  std::string pat = "\""; pat += key; pat += "\"";
   int klen = (int)pat.size();
   for (int i = 0; i + klen <= n; i++) {
     if (std::memcmp(s + i, pat.data(), klen) == 0) {
       int j = i + klen;
       while (j < n && (s[j] == ' ' || s[j] == '\t')) j++;
-      if (j < n && s[j] == ':') {
-        j++;
-        while (j < n && (s[j] == ' ' || s[j] == '\t')) j++;
-        return j;
-      }
+      if (j < n && s[j] == ':') { j++; while (j < n && (s[j] == ' ' || s[j] == '\t')) j++; return j; }
     }
   }
   return -1;
 }
-
-// Read a JSON string value at position `p` (must point at the opening quote)
-// into `out`, handling \" \\ \n \t escapes. Returns false if not a string.
 static bool readString(const char* s, int n, int p, std::string& out) {
   if (p < 0 || p >= n || s[p] != '"') return false;
   out.clear();
@@ -67,223 +60,319 @@ static bool readString(const char* s, int n, int p, std::string& out) {
     if (c == '\\' && j + 1 < n) {
       char e = s[j + 1];
       switch (e) {
-        case 'n': out.push_back('\n'); break;
-        case 't': out.push_back('\t'); break;
-        case '"': out.push_back('"'); break;
-        case '\\': out.push_back('\\'); break;
-        case '/': out.push_back('/'); break;
-        default: out.push_back(e); break;  // (unicode \u escapes deferred to Phase 1)
+        case 'n': out.push_back('\n'); break; case 't': out.push_back('\t'); break;
+        case '"': out.push_back('"'); break;  case '\\': out.push_back('\\'); break;
+        case '/': out.push_back('/'); break;  default: out.push_back(e); break;
       }
       j += 2;
-    } else {
-      out.push_back(c);
-      j++;
-    }
+    } else { out.push_back(c); j++; }
   }
   return true;
 }
-
 static float readNumber(const char* s, int n, const char* key, float fallback) {
   int p = findField(s, n, key);
   if (p < 0 || p >= n) return fallback;
-  char* end = nullptr;
-  // strtod needs a NUL-terminated region; the spec buffer isn't guaranteed
-  // terminated, so copy the numeric token out first.
   int j = p;
-  while (j < n && (s[j] == '-' || s[j] == '+' || s[j] == '.' ||
-                   s[j] == 'e' || s[j] == 'E' || (s[j] >= '0' && s[j] <= '9'))) j++;
+  while (j < n && (s[j]=='-'||s[j]=='+'||s[j]=='.'||s[j]=='e'||s[j]=='E'||(s[j]>='0'&&s[j]<='9'))) j++;
   std::string tok(s + p, s + j);
-  double v = std::strtod(tok.c_str(), &end);
-  if (end == tok.c_str()) return fallback;
-  return (float)v;
+  char* end = nullptr; double v = std::strtod(tok.c_str(), &end);
+  return end == tok.c_str() ? fallback : (float)v;
 }
-
-// Advance past one UTF-8 codepoint starting at byte `i`; returns the next byte
-// index. (Validation is lenient — malformed bytes advance by 1.)
-static int nextCodepoint(const std::string& t, int i) {
+// Decode one UTF-8 codepoint at byte i; returns next index, writes cp.
+static int decodeUTF8(const std::string& t, int i, unsigned& cp) {
   unsigned char c = (unsigned char)t[i];
-  if (c < 0x80) return i + 1;
-  if ((c >> 5) == 0x6) return i + 2 <= (int)t.size() ? i + 2 : i + 1;
-  if ((c >> 4) == 0xE) return i + 3 <= (int)t.size() ? i + 3 : i + 1;
-  if ((c >> 3) == 0x1E) return i + 4 <= (int)t.size() ? i + 4 : i + 1;
-  return i + 1;
+  if (c < 0x80) { cp = c; return i + 1; }
+  if ((c >> 5) == 0x6 && i + 1 < (int)t.size()) { cp = ((c & 0x1F) << 6) | ((unsigned char)t[i+1] & 0x3F); return i + 2; }
+  if ((c >> 4) == 0xE && i + 2 < (int)t.size()) { cp = ((c & 0x0F) << 12) | (((unsigned char)t[i+1] & 0x3F) << 6) | ((unsigned char)t[i+2] & 0x3F); return i + 3; }
+  if ((c >> 3) == 0x1E && i + 3 < (int)t.size()) { cp = ((c & 0x07) << 18) | (((unsigned char)t[i+1] & 0x3F) << 12) | (((unsigned char)t[i+2] & 0x3F) << 6) | ((unsigned char)t[i+3] & 0x3F); return i + 4; }
+  cp = c; return i + 1;
 }
 
-// ---- Engine state -----------------------------------------------------------
+// ---- msdfgen Shape builder from a FreeType outline -------------------------
+namespace {
+struct ShapeBuilder {
+  msdfgen::Shape* shape = nullptr; msdfgen::Contour* contour = nullptr; msdfgen::Point2 cur{};
+  static msdfgen::Point2 pt(const FT_Vector* v) { return msdfgen::Point2((double)v->x, (double)v->y); }
+};
+int sbMove(const FT_Vector* to, void* u){ auto*b=(ShapeBuilder*)u; b->contour=&b->shape->addContour(); b->cur=ShapeBuilder::pt(to); return 0; }
+int sbLine(const FT_Vector* to, void* u){ auto*b=(ShapeBuilder*)u; auto e=ShapeBuilder::pt(to); b->contour->addEdge(msdfgen::EdgeHolder(b->cur,e)); b->cur=e; return 0; }
+int sbConic(const FT_Vector* c,const FT_Vector* to,void* u){ auto*b=(ShapeBuilder*)u; auto e=ShapeBuilder::pt(to); b->contour->addEdge(msdfgen::EdgeHolder(b->cur,ShapeBuilder::pt(c),e)); b->cur=e; return 0; }
+int sbCubic(const FT_Vector* c1,const FT_Vector* c2,const FT_Vector* to,void* u){ auto*b=(ShapeBuilder*)u; auto e=ShapeBuilder::pt(to); b->contour->addEdge(msdfgen::EdgeHolder(b->cur,ShapeBuilder::pt(c1),ShapeBuilder::pt(c2),e)); b->cur=e; return 0; }
+} // namespace
+
+// Per-glyph cache entry. Plane bounds are in EM units (relative to the pen
+// origin on the baseline, y-up); the layout scales them by the font size.
+struct GlyphInfo {
+  float u0=0,v0=0,u1=0,v1=0;          // atlas uv rect
+  float planeL=0,planeB=0,planeR=0,planeT=0;  // em units, y-up
+  float advance=0;                    // em units
+  bool  has_msdf=false;               // false for whitespace/empty glyphs
+};
+
 struct LayoutData {
   std::vector<GlyphQuad> quads;
   Metrics metrics;
 };
 
 struct Engine::Impl {
-  std::vector<uint8_t> atlas;                       // ATLAS_W*ATLAS_H*4 RGBA8
-  std::vector<AtlasRegion> dirty;                   // pending uploads
+  FT_Library lib = nullptr;
+  FT_Face    face = nullptr;
+  std::vector<unsigned char> font_bytes;
+  bool  font_loaded = false;
+  int   units_per_em = 1000;
+  float ascender_em = 0.8f, descender_em = -0.2f;
+
+  std::vector<uint8_t> atlas;     // ATLAS_W*ATLAS_H*4 RGBA8 (MSDF)
+  int shelf_x = 0, shelf_y = 0, shelf_h = 0;
+  std::unordered_map<uint32_t, GlyphInfo> glyphs;   // by FT glyph index
+  bool atlas_dirty = false;
+
   std::unordered_map<int, LayoutData> layouts;
   int next_id = 1;
-  bool box_drawn = false;
 
   Impl() : atlas((size_t)ATLAS_W * ATLAS_H * 4, 0) {}
 
-  void ensureBox() {
-    if (box_drawn) return;
-    // Solid opaque white box, inset by BOX_INSET, in the (0,0) cell.
-    for (int y = BOX_INSET; y < CELL - BOX_INSET; y++) {
-      for (int x = BOX_INSET; x < CELL - BOX_INSET; x++) {
-        uint8_t* px = &atlas[((size_t)y * ATLAS_W + x) * 4];
-        px[0] = px[1] = px[2] = px[3] = 255;
-      }
-    }
-    box_drawn = true;
-    // Expose the FULL atlas as the dirty region so it honors the header's
-    // tightly-packed (stride = w*4) contract — for a full-width region that's
-    // exactly the master image. Phase 1's skyline packer will emit true
-    // sub-rects (copied into a tight scratch buffer before queueing).
-    AtlasRegion r{0, 0, ATLAS_W, ATLAS_H, atlas.data()};
-    dirty.push_back(r);
+  void resetAtlas() {
+    std::fill(atlas.begin(), atlas.end(), 0);
+    shelf_x = shelf_y = shelf_h = 0;
+    glyphs.clear();
+    atlas_dirty = true;
   }
+
+  const GlyphInfo* ensureGlyph(uint32_t gi);
 };
 
-Engine::Engine() : impl_(new Impl()) {}
-Engine::~Engine() { delete impl_; }
+const GlyphInfo* Engine::Impl::ensureGlyph(uint32_t gi) {
+  auto it = glyphs.find(gi);
+  if (it != glyphs.end()) return &it->second;
 
-Engine& Engine::instance() {
-  static Engine e;
-  return e;
+  GlyphInfo info;
+  if (FT_Load_Glyph(face, gi, FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING)) {
+    glyphs.emplace(gi, info); return &glyphs[gi];
+  }
+  info.advance = (float)(face->glyph->metrics.horiAdvance) / (float)units_per_em;
+
+  msdfgen::Shape shape; ShapeBuilder b; b.shape = &shape;
+  FT_Outline_Funcs funcs = { sbMove, sbLine, sbConic, sbCubic, 0, 0 };
+  FT_Outline_Decompose(&face->glyph->outline, &funcs, &b);
+  shape.normalize();
+
+  if (shape.contours.empty()) {           // whitespace / empty glyph: advance only
+    glyphs.emplace(gi, info); return &glyphs[gi];
+  }
+
+  msdfgen::Shape::Bounds bnds = shape.getBounds();
+  double pxPerUnit = REF_PX / (double)units_per_em;
+  int gw = (int)std::ceil((bnds.r - bnds.l) * pxPerUnit);
+  int gh = (int)std::ceil((bnds.t - bnds.b) * pxPerUnit);
+  int tileW = gw + 2 * PAD, tileH = gh + 2 * PAD;
+  if (tileW > ATLAS_W) tileW = ATLAS_W;
+  if (tileH > ATLAS_H) tileH = ATLAS_H;
+
+  // Shelf pack.
+  if (shelf_x + tileW > ATLAS_W) { shelf_y += shelf_h; shelf_x = 0; shelf_h = 0; }
+  if (tileH > shelf_h) shelf_h = tileH;
+  if (shelf_y + tileH > ATLAS_H) {            // atlas full — degrade to advance-only
+    glyphs.emplace(gi, info); return &glyphs[gi];
+  }
+  int px = shelf_x, py = shelf_y;
+  shelf_x += tileW;
+
+  // Generate MSDF into a tile. Projection maps font-unit shape → tile px:
+  //   tile_px = (shapeCoord + translate) * scale ; with PAD px margin.
+  double s = pxPerUnit;
+  msdfgen::Vector2 translate(-bnds.l + PAD / s, -bnds.b + PAD / s);
+  msdfgen::edgeColoringSimple(shape, 3.0);
+  msdfgen::Bitmap<float, 3> bmp(tileW, tileH);
+  msdfgen::generateMSDF(bmp, shape, msdfgen::Range(RANGE_PX / s), msdfgen::Vector2(s, s), translate);
+
+  // Copy into atlas (y-flip: msdfgen y-up → atlas y-down).
+  auto toByte = [](float v){ v = v<0?0:(v>1?1:v); return (uint8_t)(v*255.0f+0.5f); };
+  for (int y = 0; y < tileH; y++) {
+    for (int x = 0; x < tileW; x++) {
+      const float* p = bmp(x, tileH - 1 - y);
+      uint8_t* d = &atlas[((size_t)(py + y) * ATLAS_W + (px + x)) * 4];
+      d[0] = toByte(p[0]); d[1] = toByte(p[1]); d[2] = toByte(p[2]); d[3] = 255;
+    }
+  }
+
+  info.u0 = (float)px / ATLAS_W; info.v0 = (float)py / ATLAS_H;
+  info.u1 = (float)(px + tileW) / ATLAS_W; info.v1 = (float)(py + tileH) / ATLAS_H;
+  // Plane bounds (em units, y-up): the tile spans [bnds.l - PAD/s, bnds.r + PAD/s] etc.
+  double upem = (double)units_per_em;
+  info.planeL = (float)((bnds.l - PAD / s) / upem);
+  info.planeR = (float)((bnds.r + PAD / s) / upem);
+  info.planeB = (float)((bnds.b - PAD / s) / upem);
+  info.planeT = (float)((bnds.t + PAD / s) / upem);
+  info.has_msdf = true;
+
+  atlas_dirty = true;
+  glyphs.emplace(gi, info);
+  return &glyphs[gi];
 }
 
+Engine::Engine() : impl_(new Impl()) {}
+Engine::~Engine() {
+  if (impl_->face) FT_Done_Face(impl_->face);
+  if (impl_->lib) FT_Done_FreeType(impl_->lib);
+  delete impl_;
+}
+Engine& Engine::instance() { static Engine e; return e; }
+
+bool Engine::setFont(const uint8_t* bytes, int len) {
+  if (!bytes || len <= 0) return false;
+  if (!impl_->lib && FT_Init_FreeType(&impl_->lib)) return false;
+  if (impl_->face) { FT_Done_Face(impl_->face); impl_->face = nullptr; }
+  impl_->font_bytes.assign(bytes, bytes + len);
+  if (FT_New_Memory_Face(impl_->lib, impl_->font_bytes.data(), (FT_Long)len, 0, &impl_->face)) {
+    impl_->font_loaded = false; return false;
+  }
+  impl_->font_loaded   = true;
+  impl_->units_per_em  = impl_->face->units_per_EM ? impl_->face->units_per_EM : 1000;
+  impl_->ascender_em   = (float)impl_->face->ascender / impl_->units_per_em;
+  impl_->descender_em  = (float)impl_->face->descender / impl_->units_per_em;
+  impl_->resetAtlas();
+  impl_->layouts.clear();
+  return true;
+}
+bool Engine::hasFont() const { return impl_->font_loaded; }
+
 int Engine::layout(const char* spec_json, int len) {
-  if (!spec_json || len <= 0) return 0;
-  impl_->ensureBox();
+  if (!spec_json || len <= 0 || !impl_->font_loaded) return 0;
 
   std::string text;
   int tp = findField(spec_json, len, "text");
   if (tp >= 0) readString(spec_json, len, tp, text);
-
-  float size_px   = readNumber(spec_json, len, "size_px", 48.0f);
+  float size      = readNumber(spec_json, len, "size_px", 48.0f);
   float max_width = readNumber(spec_json, len, "max_width_px", 0.0f);
-  float line_h    = size_px * 1.2f;
-
-  // UV for the single stub box cell.
-  const float u0 = 0.0f, v0 = 0.0f;
-  const float u1 = (float)CELL / (float)ATLAS_W;
-  const float v1 = (float)CELL / (float)ATLAS_H;
+  float line_sp   = readNumber(spec_json, len, "line_spacing", 1.2f);
+  float line_h    = size * line_sp;
+  float ascent_px = impl_->ascender_em * size;
 
   LayoutData ld;
-  float pen_x = 0.0f, pen_y = 0.0f, max_line_w = 0.0f;
+  float penX = 0, baseline = ascent_px, maxLineW = 0;
   int lines = 1;
-  const float advance = size_px;  // square cells for the stub
+
+  struct WG { uint32_t gi; const GlyphInfo* info; };
+  std::vector<WG> word; float wordW = 0;
+
+  auto emit = [&](const WG& g, float x0) {
+    const GlyphInfo* gi = g.info;
+    if (!gi->has_msdf) return;
+    GlyphQuad q;
+    q.x = x0 + gi->planeL * size;
+    q.w = (gi->planeR - gi->planeL) * size;
+    q.y = baseline - gi->planeT * size;
+    q.h = (gi->planeT - gi->planeB) * size;
+    q.u0 = gi->u0; q.v0 = gi->v0; q.u1 = gi->u1; q.v1 = gi->v1;
+    q.r = q.g = q.b = q.a = 1.0f;
+    ld.quads.push_back(q);
+  };
+  auto newline = [&]() { if (penX > maxLineW) maxLineW = penX; penX = 0; baseline += line_h; lines++; };
+  auto flushWord = [&]() {
+    if (word.empty()) return;
+    if (max_width > 0 && penX > 0 && penX + wordW > max_width) newline();
+    for (auto& g : word) { emit(g, penX); penX += g.info->advance * size; }
+    word.clear(); wordW = 0;
+  };
 
   for (int i = 0; i < (int)text.size();) {
-    int j = nextCodepoint(text, i);
-    bool is_newline = (text[i] == '\n');
-    bool is_space   = (text[i] == ' ');
-
-    if (is_newline) {
-      if (pen_x > max_line_w) max_line_w = pen_x;
-      pen_x = 0.0f; pen_y += line_h; lines++; i = j; continue;
+    unsigned cp; i = decodeUTF8(text, i, cp);
+    if (cp == '\n') { flushWord(); newline(); continue; }
+    uint32_t gi = FT_Get_Char_Index(impl_->face, cp);
+    const GlyphInfo* info = impl_->ensureGlyph(gi);
+    if (cp == ' ') {
+      flushWord();
+      float adv = info->advance * size;
+      if (max_width > 0 && penX > 0 && penX + adv > max_width) newline();
+      else penX += adv;
+      continue;
     }
-    if (max_width > 0.0f && pen_x + advance > max_width && pen_x > 0.0f) {
-      if (pen_x > max_line_w) max_line_w = pen_x;
-      pen_x = 0.0f; pen_y += line_h; lines++;
-    }
-    if (!is_space) {
-      GlyphQuad q;
-      q.x = pen_x; q.y = pen_y; q.w = advance; q.h = advance;
-      q.u0 = u0; q.v0 = v0; q.u1 = u1; q.v1 = v1;
-      q.r = q.g = q.b = q.a = 1.0f;  // white (stub ignores run colors)
-      ld.quads.push_back(q);
-    }
-    pen_x += advance;
-    i = j;
+    word.push_back({gi, info}); wordW += info->advance * size;
   }
-  if (pen_x > max_line_w) max_line_w = pen_x;
+  flushWord();
+  if (penX > maxLineW) maxLineW = penX;
 
-  ld.metrics.width          = max_line_w;
+  ld.metrics.width          = maxLineW;
   ld.metrics.height         = (float)lines * line_h;
   ld.metrics.line_count     = lines;
-  ld.metrics.first_baseline = size_px;       // approximate ascent
+  ld.metrics.first_baseline = ascent_px;
   ld.metrics.glyph_count    = (int)ld.quads.size();
-  ld.metrics.atlas_kind     = (int)AtlasKind::AlphaCoverage;
-  ld.metrics.atlas_px_range = 0.0f;
+  ld.metrics.atlas_kind     = (int)AtlasKind::MSDF;
+  ld.metrics.atlas_px_range = (float)RANGE_PX;
 
   int id = impl_->next_id++;
   impl_->layouts.emplace(id, std::move(ld));
   return id;
 }
 
-bool Engine::measure(int layout_id, Metrics& out) const {
-  auto it = impl_->layouts.find(layout_id);
+bool Engine::measure(int id, Metrics& out) const {
+  auto it = impl_->layouts.find(id);
   if (it == impl_->layouts.end()) return false;
-  out = it->second.metrics;
-  return true;
+  out = it->second.metrics; return true;
 }
-
-int Engine::glyphCount(int layout_id) const {
-  auto it = impl_->layouts.find(layout_id);
+int Engine::glyphCount(int id) const {
+  auto it = impl_->layouts.find(id);
   return it == impl_->layouts.end() ? 0 : (int)it->second.quads.size();
 }
-
-int Engine::glyphs(int layout_id, GlyphQuad* out, int max_count) const {
-  auto it = impl_->layouts.find(layout_id);
+int Engine::glyphs(int id, GlyphQuad* out, int max_count) const {
+  auto it = impl_->layouts.find(id);
   if (it == impl_->layouts.end() || !out || max_count <= 0) return 0;
-  int n = (int)it->second.quads.size();
-  if (n > max_count) n = max_count;
+  int n = (int)it->second.quads.size(); if (n > max_count) n = max_count;
   std::memcpy(out, it->second.quads.data(), (size_t)n * sizeof(GlyphQuad));
   return n;
 }
+void Engine::release(int id) { impl_->layouts.erase(id); }
 
-void Engine::release(int layout_id) {
-  impl_->layouts.erase(layout_id);
+// MSDF median of the nearest atlas texel, with screenPxRange AA. Nearest (not
+// bilinear) keeps this byte-matchable with the buffer-fetch GPU compositor.
+static float msdfCoverage(const uint8_t* atlas, int au, int av, float screenPxRange) {
+  const uint8_t* t = &atlas[((size_t)av * ATLAS_W + au) * 4];
+  float r = t[0]/255.0f, g = t[1]/255.0f, b = t[2]/255.0f;
+  float med = std::max(std::min(r,g), std::min(std::max(r,g), b));
+  float d = screenPxRange * (med - 0.5f) + 0.5f;
+  return d < 0 ? 0 : (d > 1 ? 1 : d);
 }
 
-bool Engine::rasterize(int layout_id, int outW, int outH,
-                       float originX, float originY,
+bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
                        const uint8_t* bg, uint8_t* out) const {
-  auto it = impl_->layouts.find(layout_id);
+  auto it = impl_->layouts.find(id);
   if (it == impl_->layouts.end() || !out || outW <= 0 || outH <= 0) return false;
-
-  // Initialize from bg (or opaque black).
   size_t bytes = (size_t)outW * outH * 4;
   if (bg) std::memcpy(out, bg, bytes);
-  else {
-    for (size_t i = 0; i < bytes; i += 4) {
-      out[i] = out[i + 1] = out[i + 2] = 0; out[i + 3] = 255;
-    }
-  }
+  else for (size_t i = 0; i < bytes; i += 4) { out[i]=out[i+1]=out[i+2]=0; out[i+3]=255; }
 
   const uint8_t* atlas = impl_->atlas.data();
-  const int aw = ATLAS_W, ah = ATLAS_H;
+  bool msdf = it->second.metrics.atlas_kind == (int)AtlasKind::MSDF;
+  float pxRange = it->second.metrics.atlas_px_range;
 
   for (const GlyphQuad& q : it->second.quads) {
-    // Device-pixel bounds of this glyph quad (clamped to the canvas).
-    int x0 = (int)(q.x + originX);
-    int y0 = (int)(q.y + originY);
-    int x1 = (int)(q.x + originX + q.w);
-    int y1 = (int)(q.y + originY + q.h);
+    int x0 = (int)(q.x + originX), y0 = (int)(q.y + originY);
+    int x1 = (int)(q.x + originX + q.w), y1 = (int)(q.y + originY + q.h);
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
     if (x1 > outW) x1 = outW; if (y1 > outH) y1 = outH;
+    float tileH_px = (q.v1 - q.v0) * ATLAS_H;
+    float screenPxRange = (msdf && tileH_px > 0) ? pxRange * q.h / tileH_px : 1.0f;
 
     for (int py = y0; py < y1; py++) {
       for (int px = x0; px < x1; px++) {
-        // Local uv within the quad → atlas uv → nearest texel (the stub atlas
-        // is alpha-coverage; Phase 1 swaps in MSDF median + screenPxRange).
         float lu = (px + 0.5f - (q.x + originX)) / q.w;
         float lv = (py + 0.5f - (q.y + originY)) / q.h;
         float au = q.u0 + lu * (q.u1 - q.u0);
         float av = q.v0 + lv * (q.v1 - q.v0);
-        int tx = (int)(au * aw); int ty = (int)(av * ah);
-        if (tx < 0) tx = 0; if (tx >= aw) tx = aw - 1;
-        if (ty < 0) ty = 0; if (ty >= ah) ty = ah - 1;
-        float coverage = atlas[((size_t)ty * aw + tx) * 4 + 3] * (1.0f / 255.0f);
-        float a = coverage * q.a;
+        int tx = (int)(au * ATLAS_W), ty = (int)(av * ATLAS_H);
+        if (tx < 0) tx = 0; if (tx >= ATLAS_W) tx = ATLAS_W - 1;
+        if (ty < 0) ty = 0; if (ty >= ATLAS_H) ty = ATLAS_H - 1;
+        float cov = msdf ? msdfCoverage(atlas, tx, ty, screenPxRange)
+                         : atlas[((size_t)ty*ATLAS_W+tx)*4+3]/255.0f;
+        float a = cov * q.a;
         if (a <= 0.0f) continue;
-
         uint8_t* d = &out[((size_t)py * outW + px) * 4];
         float inv = 1.0f - a;
-        d[0] = (uint8_t)(q.r * 255.0f * a + d[0] * inv + 0.5f);
-        d[1] = (uint8_t)(q.g * 255.0f * a + d[1] * inv + 0.5f);
-        d[2] = (uint8_t)(q.b * 255.0f * a + d[2] * inv + 0.5f);
-        d[3] = (uint8_t)(a * 255.0f + d[3] * inv + 0.5f);
+        d[0]=(uint8_t)(q.r*255.0f*a + d[0]*inv + 0.5f);
+        d[1]=(uint8_t)(q.g*255.0f*a + d[1]*inv + 0.5f);
+        d[2]=(uint8_t)(q.b*255.0f*a + d[2]*inv + 0.5f);
+        d[3]=(uint8_t)(a*255.0f + d[3]*inv + 0.5f);
       }
     }
   }
@@ -295,9 +384,9 @@ int Engine::atlasHeight() const { return ATLAS_H; }
 const uint8_t* Engine::atlasPixels() const { return impl_->atlas.data(); }
 
 bool Engine::nextDirtyRegion(AtlasRegion& out) {
-  if (impl_->dirty.empty()) return false;
-  out = impl_->dirty.back();
-  impl_->dirty.pop_back();
+  if (!impl_->atlas_dirty) return false;
+  impl_->atlas_dirty = false;       // full-atlas upload (sub-rect packing is a later optimization)
+  out = AtlasRegion{0, 0, ATLAS_W, ATLAS_H, impl_->atlas.data()};
   return true;
 }
 

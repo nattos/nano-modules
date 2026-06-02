@@ -15,9 +15,15 @@ SRC="../../src/text"
 echo "[1/3] building text_engine.wasm"
 bash build.sh >/dev/null
 
-echo "[2/3] building native parity_dump"
+echo "[2/3] building native parity_dump (FreeType + msdfgen + engine)"
+TP="$ROOT/native/third_party"
+[ -d "$TP/freetype" ] || bash "$TP/fetch_deps.sh"
+FTSRC=""; for s in base/ftbase base/ftinit base/ftsystem base/ftdebug base/ftbitmap base/ftmm sfnt/sfnt truetype/truetype psnames/psnames; do FTSRC="$FTSRC $TP/freetype/src/$s.c"; done
+MDSRC=""; for c in Contour DistanceMapping EdgeHolder MSDFErrorCorrection Projection Scanline Shape contour-combiners edge-coloring edge-segments edge-selectors equation-solver msdf-error-correction msdfgen rasterization render-sdf sdf-error-estimation shape-description; do MDSRC="$MDSRC $TP/msdfgen/core/$c.cpp"; done
 clang++ -std=c++17 -fno-exceptions -fno-rtti -O2 \
-  "$SRC/text_engine.cpp" "$SRC/tools/parity_dump.cpp" -I "$SRC" -o /tmp/te_parity_dump
+  -DFT2_BUILD_LIBRARY '-DFT_CONFIG_OPTIONS_H="ftoption_custom.h"' '-DFT_CONFIG_MODULES_H="ftmodule_custom.h"' \
+  -I"$TP/freetype/include" -I"$TP/ft-config" -I"$TP/msdf-config" -I"$TP/msdfgen" -I"$SRC" \
+  $FTSRC $MDSRC "$SRC/text_engine.cpp" "$SRC/tools/parity_dump.cpp" -o /tmp/te_parity_dump
 
 DUMP_DIR="$ROOT/build/text-dumps"
 mkdir -p "$DUMP_DIR"

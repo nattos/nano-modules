@@ -65,6 +65,13 @@ class Engine {
 public:
   static Engine& instance();
 
+  // Install the font used for subsequent layouts, from in-memory sfnt bytes
+  // (the sandbox-safe path the host font provider supplies). Resets the glyph
+  // atlas + caches. Returns false if FreeType rejects the bytes. Phase 1 is
+  // single-font; Phase 2/3 add per-run faces + fallback.
+  bool setFont(const uint8_t* bytes, int len);
+  bool hasFont() const;
+
   // Lay out an attributed-string JSON spec (schema documented in host.h).
   // Returns an opaque layoutId (>0) or 0 on error. Deterministic given the
   // same spec + same available fonts.
