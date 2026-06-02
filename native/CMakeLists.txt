@@ -123,6 +123,10 @@ if(APPLE)
   add_library(gpu_backend STATIC
     src/gpu/metal_backend.mm
   )
+  # metal_backend.mm is compiled under ARC — id members of the C++ backend
+  # class (device/queue/encoders, the resource handle table, scratch pools)
+  # are managed automatically. See the file header.
+  target_compile_options(gpu_backend PRIVATE -fobjc-arc)
   target_include_directories(gpu_backend PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(gpu_backend PUBLIC
     "-framework Metal"

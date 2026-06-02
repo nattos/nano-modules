@@ -612,12 +612,10 @@ public:
 
   void beginPreviewBatch() override {
     if (async_batch_cb_) return;  // already open — defensive
-    // We're compiled MRC ([queue_ commandBuffer] returns an
-    // autoreleased object). Retain explicitly so the cmd buffer
-    // outlives any autoreleasepool drain between begin and commit.
-    // Released in commitPreviewBatch after [cb commit] returns
-    // (commit transfers ownership to Metal's internal queue).
-    async_batch_cb_ = [[queue_ commandBuffer] retain];
+    // ARC: the strong async_batch_cb_ member retains the cmd buffer, so it
+    // outlives any autoreleasepool drain between begin and commit. Cleared
+    // (released) in commitPreviewBatch.
+    async_batch_cb_ = [queue_ commandBuffer];
     // Ping-pong: this frame uses one pool, next frame the other. Within
     // this batch, the cursor walks 0..N as readbacks are added; the
     // pool grows on demand. The OTHER pool was used in the previous
@@ -632,8 +630,7 @@ public:
   void commitPreviewBatch() override {
     if (!async_batch_cb_) return;
     if (async_batch_pending_.empty()) {
-      // Nothing to do — release the retained cmd buffer.
-      [async_batch_cb_ release];
+      // Nothing to do — drop the cmd buffer (ARC releases).
       async_batch_cb_ = nil;
       return;
     }
@@ -658,9 +655,8 @@ public:
         }
       }];
       [cb commit];
-      // Drop our retain from beginPreviewBatch — the Metal queue
-      // holds its own ref until completion.
-      [cb release];
+      // ARC: `cb` (local strong) and the Metal queue both held refs; the
+      // queue keeps its own until completion, ARC drops ours at scope end.
     }
   }
 
