@@ -43,20 +43,23 @@
 // Per-effect entry-point declarations. Each effect's main.cpp exports
 // a namespaced set of {init, tick, render, on_state_patched} that we
 // hand to the runtime as an EffectDesc.
-namespace soft_glow {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
-namespace motion_blur {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
+// Class-like instance ABI (see EFFECTS_STYLE_GUIDE §0).
+#define DECLARE_EFFECT_NS(ns)                                                 \
+  namespace ns {                                                              \
+    extern void  module_init();                                               \
+    extern void* create();                                                    \
+    extern void  destroy(void* self);                                         \
+    extern void  init(void* self);                                            \
+    extern void  tick(void* self, double dt);                                 \
+    extern void  render(void* self, int vp_w, int vp_h);                      \
+    extern void  on_state_patched(void* self, int n, const char* pb,          \
+                                  const int* off, const int* len,             \
+                                  const int* ops);                            \
+    extern void  on_resolume_param(void* self, long long param_id, double v); \
+  }
+DECLARE_EFFECT_NS(soft_glow)
+DECLARE_EFFECT_NS(motion_blur)
+#undef DECLARE_EFFECT_NS
 
 #include "soft_glow_msl.h"
 #include "motion_blur_msl.h"
@@ -86,31 +89,40 @@ std::string resolveEffectId(const std::string& moduleName) {
 // Register all known native-built effects with the runtime. Each
 // effect gets one EffectInstance.
 void registerAllEffects(effect_runtime::EffectRuntime& rt) {
+  // Pre-register MSL strings BEFORE registerEffect: it runs the effect's
+  // module_init() synchronously, which compiles the shared PSO via
+  // createShaderModuleByName (so the MSL must already be resolvable).
+  rt.registerShaderMSL("soft_glow_color", SOFT_GLOW_COLOR_MSL);
+  rt.registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
+  rt.registerShaderMSL("reconstruct", MOTION_BLUR_RECONSTRUCT_MSL);
+  rt.registerShaderMSL("pyramid_reduce", MOTION_BLUR_PYRAMID_REDUCE_MSL);
+
   effect_runtime::EffectDesc d;
 
   d.id = "gen.soft_glow";
   d.name = "Soft Glow";
-  d.init = &soft_glow::init;
-  d.tick = &soft_glow::tick;
-  d.render = &soft_glow::render;
+  d.module_init      = &soft_glow::module_init;
+  d.create           = &soft_glow::create;
+  d.destroy          = &soft_glow::destroy;
+  d.init             = &soft_glow::init;
+  d.tick             = &soft_glow::tick;
+  d.render           = &soft_glow::render;
   d.on_state_patched = &soft_glow::on_state_patched;
+  d.on_resolume_param = &soft_glow::on_resolume_param;
   rt.registerEffect(d);
 
   d = {};
   d.id = "video.motion_blur";
   d.name = "Motion Blur";
-  d.init = &motion_blur::init;
-  d.tick = &motion_blur::tick;
-  d.render = &motion_blur::render;
+  d.module_init      = &motion_blur::module_init;
+  d.create           = &motion_blur::create;
+  d.destroy          = &motion_blur::destroy;
+  d.init             = &motion_blur::init;
+  d.tick             = &motion_blur::tick;
+  d.render           = &motion_blur::render;
   d.on_state_patched = &motion_blur::on_state_patched;
+  d.on_resolume_param = &motion_blur::on_resolume_param;
   rt.registerEffect(d);
-
-  // Pre-register MSL strings so state::registerShaderSPV("...") on the
-  // effect side resolves the shader name to a Metal-compilable source.
-  rt.registerShaderMSL("soft_glow_color", SOFT_GLOW_COLOR_MSL);
-  rt.registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
-  rt.registerShaderMSL("reconstruct", MOTION_BLUR_RECONSTRUCT_MSL);
-  rt.registerShaderMSL("pyramid_reduce", MOTION_BLUR_PYRAMID_REDUCE_MSL);
 }
 
 // Read stdin to end-of-stream.
@@ -214,16 +226,15 @@ int main(int argc, char** argv) {
 
     std::string moduleName = cfg.value("module", std::string("soft_glow.wasm"));
     std::string effectId = resolveEffectId(moduleName);
-    auto* inst = rt.find(effectId);
+    // Create the per-key render instance (runs create() + init(self)); the
+    // type was registered + module_init'd in registerAllEffects.
+    auto* inst = rt.instanceFor(effectId, "test");
     if (!inst) {
       nlohmann::json err{{"success", false},
                           {"error", "unknown effect id: " + effectId}};
       std::cout << err.dump() << std::endl;
       return 1;
     }
-
-    // Drive init — effect registers its schema, allocates GPU resources.
-    inst->doInit();
 
     // Wire input + output texture fields so the effect's
     // gpu::Device::textureForField("tex_in") / "tex_out" resolve.
@@ -306,10 +317,15 @@ int main(int argc, char** argv) {
       {"consoleLog", rt.drainConsoleLog()},
       {"gpuErrors", nlohmann::json::array()},
       {"pluginState", nlohmann::json::object()},
-      {"metadata", {
-        {"id", inst->metadataId()},
-        {"version", inst->metadataVersion()},
-      }},
+      // Metadata + schema are published by module_init() onto the type
+      // prototype, not the per-key render instance — read it from there.
+      {"metadata", [&] {
+        auto* proto = rt.find(effectId);
+        return nlohmann::json{
+          {"id",      proto ? proto->metadataId()      : std::string()},
+          {"version", proto ? proto->metadataVersion() : std::string()},
+        };
+      }()},
       {"params", nlohmann::json::array()},
     };
     std::cout << result.dump() << std::endl;

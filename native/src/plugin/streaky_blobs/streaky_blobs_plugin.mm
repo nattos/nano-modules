@@ -40,21 +40,23 @@
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 
-// Effect entry points — see native_test_runner.mm for the same wiring.
-namespace soft_glow {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
-namespace motion_blur {
-  extern void init();
-  extern void tick(double dt);
-  extern void render(int vp_w, int vp_h);
-  extern void on_state_patched(int n, const char* pb, const int* off,
-                                const int* len, const int* ops);
-}
+// Effect entry points — class-like instance ABI (see EFFECTS_STYLE_GUIDE §0).
+#define DECLARE_EFFECT_NS(ns)                                                 \
+  namespace ns {                                                              \
+    extern void  module_init();                                               \
+    extern void* create();                                                    \
+    extern void  destroy(void* self);                                         \
+    extern void  init(void* self);                                            \
+    extern void  tick(void* self, double dt);                                 \
+    extern void  render(void* self, int vp_w, int vp_h);                      \
+    extern void  on_state_patched(void* self, int n, const char* pb,          \
+                                  const int* off, const int* len,             \
+                                  const int* ops);                            \
+    extern void  on_resolume_param(void* self, long long param_id, double v); \
+  }
+DECLARE_EFFECT_NS(soft_glow)
+DECLARE_EFFECT_NS(motion_blur)
+#undef DECLARE_EFFECT_NS
 
 namespace effect_runtime {
   void setHostTime(double t);
@@ -272,32 +274,46 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     if (!_gpu) return;
     _rt = std::make_unique<effect_runtime::EffectRuntime>(_gpu.get());
 
-    {
-      effect_runtime::EffectDesc d;
-      d.id = "gen.soft_glow";
-      d.name = "Soft Glow";
-      d.init = &soft_glow::init;
-      d.tick = &soft_glow::tick;
-      d.render = &soft_glow::render;
-      d.on_state_patched = &soft_glow::on_state_patched;
-      _glowInst = _rt->registerEffect(d);
-
-      d = {};
-      d.id = "video.motion_blur";
-      d.name = "Motion Blur";
-      d.init = &motion_blur::init;
-      d.tick = &motion_blur::tick;
-      d.render = &motion_blur::render;
-      d.on_state_patched = &motion_blur::on_state_patched;
-      _blurInst = _rt->registerEffect(d);
-    }
+    // Register MSL shaders BEFORE registering effect types: registerEffect
+    // runs the effect's module_init() synchronously, which compiles the
+    // shared compute PSOs via createShaderModuleByName.
     _rt->registerShaderMSL("soft_glow_color",  SOFT_GLOW_COLOR_MSL);
     _rt->registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
     _rt->registerShaderMSL("reconstruct",      MOTION_BLUR_RECONSTRUCT_MSL);
     _rt->registerShaderMSL("pyramid_reduce",   MOTION_BLUR_PYRAMID_REDUCE_MSL);
 
-    _glowInst->doInit();
-    _blurInst->doInit();
+    {
+      effect_runtime::EffectDesc d;
+      d.id = "gen.soft_glow";
+      d.name = "Soft Glow";
+      d.module_init      = &soft_glow::module_init;
+      d.create           = &soft_glow::create;
+      d.destroy          = &soft_glow::destroy;
+      d.init             = &soft_glow::init;
+      d.tick             = &soft_glow::tick;
+      d.render           = &soft_glow::render;
+      d.on_state_patched = &soft_glow::on_state_patched;
+      d.on_resolume_param = &soft_glow::on_resolume_param;
+      _rt->registerEffect(d);   // registers the type + runs module_init()
+
+      d = {};
+      d.id = "video.motion_blur";
+      d.name = "Motion Blur";
+      d.module_init      = &motion_blur::module_init;
+      d.create           = &motion_blur::create;
+      d.destroy          = &motion_blur::destroy;
+      d.init             = &motion_blur::init;
+      d.tick             = &motion_blur::tick;
+      d.render           = &motion_blur::render;
+      d.on_state_patched = &motion_blur::on_state_patched;
+      d.on_resolume_param = &motion_blur::on_resolume_param;
+      _rt->registerEffect(d);
+    }
+
+    // One render instance of each (StreakyBlobs is a fixed 2-stage chain).
+    // instanceFor lazily runs create() + init(self) for the keyed instance.
+    _glowInst = _rt->instanceFor("gen.soft_glow", "glow");
+    _blurInst = _rt->instanceFor("video.motion_blur", "blur");
     _rt->drainConsoleLog();
 
     // Mark soft_glow's render_outputs as connected so its motion pass
@@ -311,8 +327,8 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     // params keep a "Blur " prefix so the two motion_blur-specific
     // sliders (strength, samples, …) don't visually collide with
     // soft_glow's motion_strength / motion_skew etc.
-    registerEffectParams(_glowInst, "");
-    registerEffectParams(_blurInst, "Blur ");
+    registerEffectParams(_glowInst, _rt->find("gen.soft_glow"), "");
+    registerEffectParams(_blurInst, _rt->find("video.motion_blur"), "Blur ");
   }
 
   FFResult InitGL(const FFGLViewportStruct* vp) override {
@@ -572,10 +588,14 @@ class StreakyBlobsPlugin : public CFFGLPlugin {
     return (s.defaultVal - s.minVal) / (s.maxVal - s.minVal);
   }
 
+  // `inst` is the render instance (setParamFloat target); `schemaInst` is the
+  // type prototype that carries the published schema (module_init populates the
+  // prototype, not the per-key render instance).
   void registerEffectParams(effect_runtime::EffectInstance* inst,
+                             effect_runtime::EffectInstance* schemaInst,
                              const std::string& prefix) {
-    if (!inst) return;
-    auto js = nlohmann::json::parse(inst->schemaJson(), nullptr, false);
+    if (!inst || !schemaInst) return;
+    auto js = nlohmann::json::parse(schemaInst->schemaJson(), nullptr, false);
     if (js.is_discarded() || !js.contains("fields")) return;
     const auto& fields = js["fields"];
     if (!fields.is_object()) return;
