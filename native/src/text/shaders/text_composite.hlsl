@@ -20,11 +20,11 @@ struct Glyph {
 
 // Binding slots are globally unique across resource classes (project
 // convention: register number == Vulkan binding number, no per-class reuse).
-StructuredBuffer<Glyph> glyphs : register(t0);
-StructuredBuffer<uint>  atlas  : register(t1);   // one RGBA8 texel per uint (LE: R=bits0..7)
-Texture2D<float4>       bg_tex : register(t2);
-SamplerState            samp   : register(s3);
-RWTexture2D<float4>     out_tex : register(u4);
+StructuredBuffer<Glyph> glyphs   : register(t0);
+Texture2D<float4>       atlas_tex : register(t1);  // MSDF atlas; sampled LINEAR
+Texture2D<float4>       bg_tex    : register(t2);
+SamplerState            samp      : register(s3);  // linear filtering
+RWTexture2D<float4>     out_tex   : register(u4);
 
 cbuffer CompositeUniforms : register(b5) {
   uint  canvas_w;
@@ -41,12 +41,9 @@ cbuffer CompositeUniforms : register(b5) {
 
 float median3(float a, float b, float c) { return max(min(a, b), min(max(a, b), c)); }
 
-// Nearest-fetch a packed RGBA8 texel from the atlas buffer (LE: R=low byte).
+// LINEAR-filtered sample — bilinear distance-field interpolation = smooth MSDF.
 float4 atlas_texel(float u, float v) {
-  int tx = clamp((int)(u * (float)atlas_w), 0, (int)atlas_w - 1);
-  int ty = clamp((int)(v * (float)atlas_h), 0, (int)atlas_h - 1);
-  uint p = atlas[ty * (int)atlas_w + tx];
-  return float4((p & 0xFFu), (p >> 8) & 0xFFu, (p >> 16) & 0xFFu, (p >> 24) & 0xFFu) * (1.0 / 255.0);
+  return atlas_tex.SampleLevel(samp, float2(u, v), 0.0);
 }
 
 [numthreads(8, 8, 1)]

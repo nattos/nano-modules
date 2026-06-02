@@ -184,7 +184,11 @@ const GlyphInfo* Engine::Impl::ensureGlyph(uint32_t gi) {
   msdfgen::Vector2 translate(-bnds.l + PAD / s, -bnds.b + PAD / s);
   msdfgen::edgeColoringSimple(shape, 3.0);
   msdfgen::Bitmap<float, 3> bmp(tileW, tileH);
-  msdfgen::generateMSDF(bmp, shape, msdfgen::Range(RANGE_PX / s), msdfgen::Vector2(s, s), translate);
+  // Default error correction (EDGE_PRIORITY) — the recommended mode for crisp
+  // text. The atlas is sampled BILINEARLY on the GPU (linear-filtered texture),
+  // which is what makes MSDF smooth and corner-sharp at any magnification.
+  msdfgen::generateMSDF(bmp, shape, msdfgen::Range(RANGE_PX / s),
+                        msdfgen::Vector2(s, s), translate);
 
   // Copy into atlas (y-flip: msdfgen y-up → atlas y-down).
   auto toByte = [](float v){ v = v<0?0:(v>1?1:v); return (uint8_t)(v*255.0f+0.5f); };
@@ -324,14 +328,30 @@ int Engine::glyphs(int id, GlyphQuad* out, int max_count) const {
 }
 void Engine::release(int id) { impl_->layouts.erase(id); }
 
-// MSDF median of the nearest atlas texel, with screenPxRange AA. Nearest (not
-// bilinear) keeps this byte-matchable with the buffer-fetch GPU compositor.
-static float msdfCoverage(const uint8_t* atlas, int au, int av, float screenPxRange) {
-  const uint8_t* t = &atlas[((size_t)av * ATLAS_W + au) * 4];
-  float r = t[0]/255.0f, g = t[1]/255.0f, b = t[2]/255.0f;
-  float med = std::max(std::min(r,g), std::min(std::max(r,g), b));
-  float d = screenPxRange * (med - 0.5f) + 0.5f;
-  return d < 0 ? 0 : (d > 1 ? 1 : d);
+// Bilinearly sample one channel of the atlas (clamp-to-edge), matching GPU
+// linear filtering: texel centers at (i+0.5)/dim.
+static inline float texel(const uint8_t* atlas, int x, int y, int ch) {
+  if (x < 0) x = 0; if (x >= ATLAS_W) x = ATLAS_W - 1;
+  if (y < 0) y = 0; if (y >= ATLAS_H) y = ATLAS_H - 1;
+  return atlas[((size_t)y * ATLAS_W + x) * 4 + ch] / 255.0f;
+}
+// MSDF median of the BILINEARLY-interpolated atlas, with screenPxRange AA.
+// Bilinear is what makes MSDF scale-independent (interpolating the distance
+// field reconstructs smooth, corner-sharp edges at any magnification); the
+// GPU compositor samples the same atlas as a linear-filtered texture.
+static float msdfCoverage(const uint8_t* atlas, float au, float av, float screenPxRange) {
+  float fx = au * ATLAS_W - 0.5f, fy = av * ATLAS_H - 0.5f;
+  int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+  float tx = fx - x0, ty = fy - y0;
+  float chan[3];
+  for (int c = 0; c < 3; c++) {
+    float a = texel(atlas, x0, y0, c),     b = texel(atlas, x0 + 1, y0, c);
+    float d = texel(atlas, x0, y0 + 1, c), e = texel(atlas, x0 + 1, y0 + 1, c);
+    chan[c] = (a * (1 - tx) + b * tx) * (1 - ty) + (d * (1 - tx) + e * tx) * ty;
+  }
+  float med = std::max(std::min(chan[0], chan[1]), std::min(std::max(chan[0], chan[1]), chan[2]));
+  float dist = screenPxRange * (med - 0.5f) + 0.5f;
+  return dist < 0 ? 0 : (dist > 1 ? 1 : dist);
 }
 
 bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
@@ -360,11 +380,15 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
         float lv = (py + 0.5f - (q.y + originY)) / q.h;
         float au = q.u0 + lu * (q.u1 - q.u0);
         float av = q.v0 + lv * (q.v1 - q.v0);
-        int tx = (int)(au * ATLAS_W), ty = (int)(av * ATLAS_H);
-        if (tx < 0) tx = 0; if (tx >= ATLAS_W) tx = ATLAS_W - 1;
-        if (ty < 0) ty = 0; if (ty >= ATLAS_H) ty = ATLAS_H - 1;
-        float cov = msdf ? msdfCoverage(atlas, tx, ty, screenPxRange)
-                         : atlas[((size_t)ty*ATLAS_W+tx)*4+3]/255.0f;
+        float cov;
+        if (msdf) {
+          cov = msdfCoverage(atlas, au, av, screenPxRange);
+        } else {
+          int tx = (int)(au * ATLAS_W), ty = (int)(av * ATLAS_H);
+          if (tx < 0) tx = 0; if (tx >= ATLAS_W) tx = ATLAS_W - 1;
+          if (ty < 0) ty = 0; if (ty >= ATLAS_H) ty = ATLAS_H - 1;
+          cov = atlas[((size_t)ty * ATLAS_W + tx) * 4 + 3] / 255.0f;
+        }
         float a = cov * q.a;
         if (a <= 0.0f) continue;
         uint8_t* d = &out[((size_t)py * outW + px) * 4];

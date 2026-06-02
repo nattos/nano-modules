@@ -70,7 +70,7 @@ writeFileSync(resolve(dumpDir, `${name}_cpu.png`), encodePNG(cpu.rgba, cpu.w, cp
 
 console.log(`GPU ${gpu.width}x${gpu.height}, ${gpu.glyphs} glyphs | diff: ${nDiff} bytes (${pctDiff}%), maxChannelDiff=${maxDiff}`);
 console.log(`PNGs: ${name}_gpu.png, ${name}_cpu.png in build/text-dumps`);
-const TOL = 1; // 8-bit rounding between GPU and CPU rasterizers
+const TOL = 6; // GPU hardware bilinear vs CPU software bilinear differ by a few LSBs
 if (maxDiff <= TOL) { console.log(`✅ GPU pixels match CPU golden (≤${TOL}/channel)`); process.exit(0); }
 console.error(`❌ GPU vs CPU exceeds tolerance (maxChannelDiff=${maxDiff})`); process.exit(1);
 

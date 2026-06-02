@@ -22,18 +22,17 @@ struct U {
   _p0:f32, _p1:f32, _p2:f32,
 };
 @group(0) @binding(0) var<storage, read> glyphs: array<Glyph>;
-@group(0) @binding(1) var<storage, read> atlas: array<u32>;
+@group(0) @binding(1) var atlas_tex: texture_2d<f32>;
 @group(0) @binding(2) var bg_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var<uniform> u: U;
 
 fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c)); }
+// LINEAR-filtered sample — bilinear interpolation of the distance field is what
+// makes MSDF smooth (and corner-sharp) at any magnification.
 fn atlas_texel(uu:f32, vv:f32) -> vec4<f32> {
-  let tx = clamp(i32(uu * f32(u.atlas_w)), 0, i32(u.atlas_w) - 1);
-  let ty = clamp(i32(vv * f32(u.atlas_h)), 0, i32(u.atlas_h) - 1);
-  let p = atlas[ty * i32(u.atlas_w) + tx];
-  return vec4<f32>(f32(p & 0xFFu), f32((p>>8u)&0xFFu), f32((p>>16u)&0xFFu), f32((p>>24u)&0xFFu)) / 255.0;
+  return textureSampleLevel(atlas_tex, samp, vec2<f32>(uu, vv), 0.0);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -85,29 +84,34 @@ interface TEExports {
   te_next_dirty_region(outPtr: number): number;
 }
 
-export class TextEngine {
-  private static _instance: TextEngine | null = null;
-  private static _initPromise: Promise<TextEngine> | null = null;
+// Back the singleton with globalThis so it survives module duplication across
+// vite/HMR boundaries (wasm-host.ts and gpu-test-runner.html can otherwise end
+// up with separate module instances, splitting a plain `static` singleton).
+const G = globalThis as unknown as {
+  __textEngine?: TextEngine;
+  __textEngineInit?: Promise<TextEngine>;
+};
 
+export class TextEngine {
   private ex!: TEExports;
   private device!: GPUDevice;
   private pipeline!: GPUComputePipeline;
   private bgTex!: GPUTexture;
   private sampler!: GPUSampler;
-  private atlasBuf: GPUBuffer | null = null;
+  private atlasTex: GPUTexture | null = null;
 
-  static get instance(): TextEngine | null { return TextEngine._instance; }
+  static get instance(): TextEngine | null { return G.__textEngine ?? null; }
 
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
   static init(device: GPUDevice, opts?: { wasmUrl?: string; fontUrl?: string }): Promise<TextEngine> {
-    if (TextEngine._instance) return Promise.resolve(TextEngine._instance);
-    if (!TextEngine._initPromise) {
+    if (G.__textEngine) return Promise.resolve(G.__textEngine);
+    if (!G.__textEngineInit) {
       const e = new TextEngine();
-      TextEngine._initPromise = e
+      G.__textEngineInit = e
         ._init(device, opts?.wasmUrl ?? '/wasm/text_engine.wasm', opts?.fontUrl ?? '/fonts/default.ttf')
-        .then(() => (TextEngine._instance = e));
+        .then(() => (G.__textEngine = e));
     }
-    return TextEngine._initPromise;
+    return G.__textEngineInit;
   }
 
   private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string) {
@@ -136,7 +140,8 @@ export class TextEngine {
     });
     this.bgTex = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: this.bgTex }, new Uint8Array([0, 0, 0, 255]), { bytesPerRow: 4 }, [1, 1]);
-    this.sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+    // LINEAR filtering — required for MSDF distance-field interpolation.
+    this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   }
 
   private u8() { return new Uint8Array(this.ex.memory.buffer); }
@@ -182,16 +187,19 @@ export class TextEngine {
     ex.free(mPtr);
 
     const aw = ex.te_atlas_width(), ah = ex.te_atlas_height();
-    // Drain dirty regions; re-upload the atlas buffer if anything changed.
+    // Drain dirty regions; re-upload the atlas texture if anything changed.
     let dirty = false;
     const rPtr = ex.malloc(20);
     while (ex.te_next_dirty_region(rPtr)) dirty = true;
     ex.free(rPtr);
-    if (!this.atlasBuf || dirty) {
+    if (!this.atlasTex) {
+      this.atlasTex = device.createTexture({ size: [aw, ah], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      dirty = true;
+    }
+    if (dirty) {
       const aPtr = ex.te_atlas_ptr();
       const atlasBytes = this.u8().slice(aPtr, aPtr + aw * ah * 4);
-      if (!this.atlasBuf) this.atlasBuf = device.createBuffer({ size: atlasBytes.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-      device.queue.writeBuffer(this.atlasBuf, 0, atlasBytes);
+      device.queue.writeTexture({ texture: this.atlasTex }, atlasBytes, { bytesPerRow: aw * 4, rowsPerImage: ah }, [aw, ah]);
     }
 
     const cw = target.width, ch = target.height;
@@ -211,7 +219,7 @@ export class TextEngine {
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: glyphBuf } },
-        { binding: 1, resource: { buffer: this.atlasBuf! } },
+        { binding: 1, resource: this.atlasTex.createView() },
         { binding: 2, resource: this.bgTex.createView() },
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: target.createView() },
