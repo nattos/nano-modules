@@ -205,16 +205,22 @@ int32_t SketchExecutor::execute(
     }
 
     // ----- Helpers --------------------------------------------------
-    // Apply the persisted instance state, skipping the re-apply when this
-    // instance's state is unchanged from last frame. Each chain entry has
-    // its own EffectInstance now, so the cache keys purely on instance_key
-    // — no cross-instance file-static aliasing to guard against.
+    // Apply the persisted instance state. Two layers of work-skipping:
+    //   1. Whole-state fast path — if nothing changed since last frame,
+    //      skip entirely (the common case at steady state).
+    //   2. Per-field diff — when something DID change, only fire patches
+    //      for the fields that actually changed vs. the last applied
+    //      state. A single moving slider then fires one setParam* instead
+    //      of re-patching every field (each patch is a firePatched →
+    //      on_state_patched → val_blobs + json::dump cascade).
+    // Each chain entry has its own EffectInstance, so the cache keys purely
+    // on instance_key — no cross-instance file-static aliasing to guard.
     auto maybeApplyState = [&](effect_runtime::EffectInstance* inst,
                                const std::string& instKey,
                                const json& state) {
       auto& cachedState = lastAppliedState_[instKey];
       if (cachedState == state) return;
-      applyState(inst, state);
+      applyState(inst, cachedState, state);
       cachedState = state;
     };
 
@@ -416,11 +422,20 @@ int32_t SketchExecutor::nextIntermediate(int W, int H) {
 
 void SketchExecutor::applyState(
     effect_runtime::EffectInstance* inst,
+    const json& prevState,
     const json& state) {
   if (!state.is_object()) return;
+  const bool havePrev = prevState.is_object();
   for (auto it = state.begin(); it != state.end(); ++it) {
     const auto& v = it.value();
     const std::string& name = it.key();
+    // Per-field skip: only patch fields whose value differs from the last
+    // applied state. Fields removed from `state` are intentionally left at
+    // their last-applied value (the runtime has no "unset param").
+    if (havePrev) {
+      auto pit = prevState.find(name);
+      if (pit != prevState.end() && *pit == v) continue;
+    }
     if (v.is_number()) {
       inst->setParamFloat(name, (float)v.get<double>());
     } else if (v.is_boolean()) {

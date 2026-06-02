@@ -152,13 +152,14 @@ class SketchExecutor {
   std::unordered_map<std::string, nlohmann::json> cachedSchemas_;
   bool cachedSchemasValid_ = false;
 
-  // Per-instance state JSON from the previous frame — used to skip
-  // applyState (and the cascade of setParamJson → firePatched →
-  // val_blobs_ + json::dump allocations) when the state hasn't changed.
-  // Indexed by sketch instance key. Each effect chain entry now has its
-  // own EffectInstance (see EffectRuntime::instanceFor), so the cache
-  // keys purely on instance_key + state-equality — no cross-instance
-  // file-static aliasing to guard against anymore.
+  // Per-instance state JSON from the previous frame. Two uses: (1) the
+  // whole-state fast path — skip applyState entirely when nothing changed;
+  // (2) the per-field diff basis — applyState only fires patches for fields
+  // that differ from this snapshot, so a single moving slider doesn't
+  // re-patch every field (each patch is a setParam* → firePatched →
+  // on_state_patched → val_blobs_ + json::dump cascade). Indexed by sketch
+  // instance key. Each chain entry has its own EffectInstance (see
+  // EffectRuntime::instanceFor), so the cache keys purely on instance_key.
   std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
 
   // Cached compute PSOs for fused chains. Key is the ordered list of
@@ -172,7 +173,11 @@ class SketchExecutor {
 
   int32_t nextIntermediate(int W, int H);
 
+  // Apply `state` to the instance, firing setParam* only for fields that
+  // differ from `prevState` (pass an empty/non-object prevState to force a
+  // full apply). See lastAppliedState_.
   void applyState(effect_runtime::EffectInstance* inst,
+                  const nlohmann::json& prevState,
                   const nlohmann::json& state);
 
   void applyReadTaps(
