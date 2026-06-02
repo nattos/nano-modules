@@ -339,6 +339,11 @@ public:
     memcpy((uint8_t*)[buf contents] + offset, data, len);
   }
 
+  void* bufferContents(int32_t bufHandle) override {
+    id<MTLBuffer> buf = getAs<id<MTLBuffer>>(bufHandle);
+    return buf ? [buf contents] : nullptr;
+  }
+
   // --- Compute pass ---
 
   int32_t beginComputePass() override {
@@ -607,9 +612,12 @@ public:
 
   void beginPreviewBatch() override {
     if (async_batch_cb_) return;  // already open — defensive
-    @autoreleasepool {
-      async_batch_cb_ = [queue_ commandBuffer];
-    }
+    // We're compiled MRC ([queue_ commandBuffer] returns an
+    // autoreleased object). Retain explicitly so the cmd buffer
+    // outlives any autoreleasepool drain between begin and commit.
+    // Released in commitPreviewBatch after [cb commit] returns
+    // (commit transfers ownership to Metal's internal queue).
+    async_batch_cb_ = [[queue_ commandBuffer] retain];
     // Ping-pong: this frame uses one pool, next frame the other. Within
     // this batch, the cursor walks 0..N as readbacks are added; the
     // pool grows on demand. The OTHER pool was used in the previous
@@ -624,7 +632,8 @@ public:
   void commitPreviewBatch() override {
     if (!async_batch_cb_) return;
     if (async_batch_pending_.empty()) {
-      // Nothing to do — drop the unused cmd buffer.
+      // Nothing to do — release the retained cmd buffer.
+      [async_batch_cb_ release];
       async_batch_cb_ = nil;
       return;
     }
@@ -649,6 +658,9 @@ public:
         }
       }];
       [cb commit];
+      // Drop our retain from beginPreviewBatch — the Metal queue
+      // holds its own ref until completion.
+      [cb release];
     }
   }
 

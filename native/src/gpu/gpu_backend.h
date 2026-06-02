@@ -81,6 +81,12 @@ public:
   // Buffer operations
   virtual void writeBuffer(int32_t bufHandle, uint32_t offset,
                            const uint8_t* data, uint32_t len) = 0;
+  // Return a CPU-readable pointer to the buffer's contents, or nullptr
+  // if the backend doesn't support direct access (eg the buffer is
+  // private/staging). Metal-backed buffers use MTLStorageModeShared by
+  // default, so the pointer is valid for both read and write and is
+  // immediately coherent with GPU access.
+  virtual void* bufferContents(int32_t bufHandle) { (void)bufHandle; return nullptr; }
 
   // Compute pass
   virtual int32_t beginComputePass() = 0;

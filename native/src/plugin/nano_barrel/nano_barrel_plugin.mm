@@ -512,7 +512,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     gpu_->release(outputHandle);
 
     blitInteropToGlOutput(pGL, finalHandle == outputHandle);
-    drawBadgeOnly(pGL);
     return FF_SUCCESS;
   }
 
@@ -579,6 +578,33 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         [this](int32_t handle, int W, int H) {
           if (!captures_enabled_) return;
           frame_captures_["so"] = {handle, W, H};
+        });
+    // Tell the executor's fusion planner which chain entries' outputs
+    // need to land in real intermediate textures. A monitor on
+    // `ce:<col>/<k>/output` materialises stage k; a monitor on
+    // `ce:<col>/<k>/input` materialises the upstream (stage k-1's
+    // output). The planner splits fused groups at these barriers so
+    // the requested texture is readable post-execute.
+    executor_->setBarrierPredicate(
+        [this](int colIdx, int chainIdx) -> bool {
+          if (!captures_enabled_) return false;
+          for (const auto& [_, req] : preview_requests_) {
+            const std::string& tk = req.targetKey;
+            // Format: "ce:<col>/<chain>/<side>"
+            if (tk.rfind("ce:", 0) != 0) continue;
+            int rcol = -1, rchain = -1;
+            char side[16] = {0};
+            if (std::sscanf(tk.c_str(), "ce:%d/%d/%15s",
+                            &rcol, &rchain, side) != 3) continue;
+            if (rcol != colIdx) continue;
+            if (rchain == chainIdx && std::strcmp(side, "output") == 0) {
+              return true;
+            }
+            if (rchain == chainIdx + 1 && std::strcmp(side, "input") == 0) {
+              return true;
+            }
+          }
+          return false;
         });
 
     // Spin up the preview send worker. See member-var comment for why

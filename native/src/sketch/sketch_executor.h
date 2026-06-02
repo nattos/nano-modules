@@ -88,6 +88,22 @@ class SketchExecutor {
   void setSketchOutputHook(SketchOutputHook hook) { sketchOutputHook_ = std::move(hook); }
 
   /**
+   * Predicate that lets a host force a chain entry's output to land in
+   * a real intermediate texture (i.e., act as a fusion barrier). The
+   * executor calls this for every chain entry during planning; when
+   * true, the fusion planner splits the group there so the entry's
+   * output is a real readable texture.
+   *
+   * The barrel uses this to materialise textures that have active
+   * preview-monitor subscriptions — without it, fused intermediate
+   * stages have no separate texture to read back from.
+   */
+  using BarrierPredicate = std::function<bool(int colIdx, int chainIdx)>;
+  void setBarrierPredicate(BarrierPredicate p) {
+    barrierPredicate_ = std::move(p);
+  }
+
+  /**
    * Execute one frame.
    *
    * `rawSketch` is the un-augmented graph (typically the editor's
@@ -127,6 +143,7 @@ class SketchExecutor {
 
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;
+  BarrierPredicate barrierPredicate_;
 
   // Schemas are constant once the registry's effects are registered
   // (which the host does once at startup), but the augmenter consumes
@@ -142,6 +159,16 @@ class SketchExecutor {
   // for instances that get removed cost ~one JSON's worth of memory.
   std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
 
+  // For each module_type, the sketch instance whose state is currently
+  // sitting in the effect's file-static storage. Used to gate the
+  // applyState cache — we can only skip a re-apply when the previous
+  // applyState was for THE SAME sketch instance of the same effect
+  // type, because effects share file-static state across all of their
+  // chain entries (single-instance-per-effect-type invariant). Without
+  // this, dirty-skipping bc3 when bc9 was the last to actually touch
+  // s_brightness/s_contrast bakes bc9's values into bc3's render.
+  std::unordered_map<std::string, std::string> lastAppliedInstanceByType_;
+
   // Cached compute PSOs for fused chains. Key is the ordered list of
   // module_types joined by '|'. Created lazily on first use; released
   // in the destructor (no host can hot-add effects today, so the cache
@@ -150,6 +177,20 @@ class SketchExecutor {
   // Compiled shader modules backing those PSOs, kept alive so the
   // GPUBackend doesn't free them out from under us.
   std::vector<int32_t> fusedShaderModules_;
+
+  // Per-chain-entry uniform buffers used by the fusion dispatch path.
+  // Effects use file-static uniform storage (see EFFECTS_STYLE_GUIDE),
+  // so two chain entries of the same effect type share one buffer
+  // handle. That breaks fusion — every bound slot would see the
+  // last-applied stage's values. The executor snapshots each entry's
+  // uniforms into its own buffer here right after doPrepare, then
+  // binds the per-entry buffers to the fused dispatch instead of the
+  // shared one. Keyed by sketch instance key. Released in the dtor.
+  struct PerInstanceUniformBuf {
+    int32_t  handle = -1;
+    uint32_t size   = 0;
+  };
+  std::unordered_map<std::string, PerInstanceUniformBuf> fusedInstanceUniforms_;
 
   int32_t nextIntermediate(int W, int H);
 

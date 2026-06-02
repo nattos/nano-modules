@@ -48,6 +48,15 @@ SketchExecutor::~SketchExecutor() {
   for (int32_t h : intermediates_) {
     if (h > 0 && gpu_) gpu_->release(h);
   }
+  for (auto& [_, ub] : fusedInstanceUniforms_) {
+    if (ub.handle > 0 && gpu_) gpu_->release(ub.handle);
+  }
+  for (auto& [_, pso] : fusedPSOs_) {
+    if (pso > 0 && gpu_) gpu_->release(pso);
+  }
+  for (int32_t sm : fusedShaderModules_) {
+    if (sm > 0 && gpu_) gpu_->release(sm);
+  }
 }
 
 int32_t SketchExecutor::execute(
@@ -139,156 +148,97 @@ int32_t SketchExecutor::execute(
 
     const bool isLastCol = (colIdx == columns.size() - 1);
 
-    // ----- Fusion fast-path ----------------------------------------
-    // If every resolvable entry is a PerPixelMapper with no taps, we
-    // can collapse the whole chain into a single compute dispatch
-    // (one Metal cmd-buffer encode, no intermediate texture writes
-    // between stages, no per-stage driver overhead). Falls through to
-    // the standard per-entry loop on any miss.
+    // ----- Plan groups ---------------------------------------------
+    // Each group is a run of consecutive chain entries (indices into
+    // resolvable[]) processed together. A group is "fused" iff every
+    // entry in it is fusion-eligible AND it has 2+ entries. The
+    // barrier predicate forces the host's requested chain-entry
+    // outputs into real intermediate textures by splitting the
+    // would-be fused group there.
+    struct Group { size_t firstK; size_t lastK; bool fused; };
+    std::vector<Group> groups;
     {
-      // Metal's compute-stage [[buffer(N)]] indices top out at 30. We
-      // bind one uniform per fused stage at slots 2..N+1, so cap the
-      // group size accordingly. Larger chains fall back to per-entry
-      // dispatch — still correct, just no fusion benefit.
-      // (A future refactor could pack all uniforms into one slot to
-      // remove this cap; not needed for the typical chain.)
+      // Metal's compute-stage [[buffer(N)]] indices cap at 30. We bind
+      // one uniform per fused stage starting at slot 2, so the group
+      // size cap is 28. Beyond that, the planner just starts a new
+      // group; no observable behavior change.
       static constexpr size_t kMaxFusionStages = 28;
-      bool eligible = (resolvable.size() >= 2)
-                   && (resolvable.size() <= kMaxFusionStages);
-      if (eligible) {
-        for (size_t k : resolvable) {
-          const auto& entry = chain[k];
-          const std::string mt = entry.value("module_type", std::string());
-          const RegisteredModule* reg = registry_->find(mt);
-          if (!reg) { eligible = false; break; }
+      std::vector<char> eligibleK(resolvable.size(), 0);
+      std::vector<char> isBarrier(resolvable.size(), 0);
+      for (size_t k = 0; k < resolvable.size(); ++k) {
+        const auto& entry = chain[resolvable[k]];
+        const std::string mt = entry.value("module_type", std::string());
+        const RegisteredModule* reg = registry_->find(mt);
+        bool e = false;
+        if (reg) {
           const auto& fi = reg->inst->fusionInfo();
-          // FusionKind::PerPixelMapper == 1 in state::FusionKind. We
-          // check by numeric value because the enum lives in the WASM
-          // host header — pulling it in just for the constant would
-          // tangle the runtime/effects boundary.
-          if (fi.kind != 1 || fi.fragmentName.empty() || !fi.prepare) {
-            eligible = false; break;
-          }
-          if (entry.contains("taps") && entry["taps"].is_array() &&
+          // FusionKind::PerPixelMapper == 1 in state::FusionKind.
+          e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.prepare;
+          if (e && entry.contains("taps") && entry["taps"].is_array() &&
               !entry["taps"].empty()) {
-            eligible = false; break;
+            e = false;
           }
         }
+        eligibleK[k] = e ? 1 : 0;
+        isBarrier[k] = (barrierPredicate_
+                        && barrierPredicate_((int)colIdx,
+                                              (int)resolvable[k])) ? 1 : 0;
       }
-      if (eligible) {
-        // Resolve per-stage MSL fragments and a stable cache key. We
-        // cache by ordered module_type so a repeated chain shape
-        // (same effects in same order) shares one compiled PSO.
-        std::string cacheKey;
-        std::vector<std::string> fragments;
-        std::vector<effect_runtime::EffectInstance*> stages;
-        bool fragsOK = true;
-        for (size_t k : resolvable) {
-          const auto& entry = chain[k];
-          const std::string mt = entry.value("module_type", std::string());
-          const RegisteredModule* reg = registry_->find(mt);
-          if (!cacheKey.empty()) cacheKey += '|';
-          cacheKey += mt;
-          stages.push_back(reg->inst);
-          std::string msl;
-          if (!rt_->lookupMSL(reg->inst->fusionInfo().fragmentName, &msl)) {
-            fragsOK = false; break;
-          }
-          fragments.push_back(std::move(msl));
+      size_t start = 0;
+      while (start < resolvable.size()) {
+        if (!eligibleK[start]) {
+          groups.push_back({start, start, false});
+          ++start; continue;
         }
-        int32_t pso = -1;
-        if (fragsOK) {
-          auto it = fusedPSOs_.find(cacheKey);
-          if (it != fusedPSOs_.end()) {
-            pso = it->second;
-          } else {
-            std::string src = fusion_codegen::generateFusedMSL(fragments);
-            if (!src.empty()) {
-              int32_t sm = gpu_->createShaderModule(src);
-              if (sm > 0) {
-                fusedShaderModules_.push_back(sm);
-                pso = gpu_->createComputePSO(sm, "fused_main");
-                if (pso > 0) fusedPSOs_[cacheKey] = pso;
-              }
-            }
-          }
+        size_t end = start;
+        // Extend while the next entry is also eligible AND the current
+        // entry isn't a barrier (a barrier forces its output into a
+        // real texture, ending the group).
+        while (end + 1 < resolvable.size()
+               && !isBarrier[end]
+               && eligibleK[end + 1]
+               && (end + 1 - start + 1) <= kMaxFusionStages) {
+          ++end;
         }
-        if (pso > 0) {
-          // Per-stage prep: apply persisted state (dirty-cached so
-          // unchanged state costs ~one JSON compare) and run tick.
-          // doPrepare writes the effect's uniform buffer — same data
-          // the standalone doRender path would write, just no
-          // dispatch yet.
-          for (size_t idx = 0; idx < resolvable.size(); ++idx) {
-            size_t k = resolvable[idx];
-            const auto& entry = chain[k];
-            const std::string instKey = entry.value("instance_key", std::string());
-            auto* inst = stages[idx];
-            if (instances.is_object() && instances.contains(instKey)) {
-              const auto& state = instances[instKey].value("state", json::object());
-              auto& cachedState = lastAppliedState_[instKey];
-              if (cachedState != state) {
-                applyState(inst, state);
-                cachedState = state;
-              }
-            }
-            inst->doTick(dt);
-            inst->doPrepare(W, H);
-          }
-          const bool isFinalStage = isLastCol;
-          int32_t outHandle = isFinalStage ? outputHandle
-                                           : nextIntermediate(W, H);
-          int32_t pass = gpu_->beginComputePass();
-          gpu_->computeSetPSO(pass, pso);
-          gpu_->computeSetTexture(pass, colInput,  0, /*access=read */ 0);
-          gpu_->computeSetTexture(pass, outHandle, 1, /*access=write*/ 1);
-          for (size_t idx = 0; idx < stages.size(); ++idx) {
-            gpu_->computeSetBuffer(pass,
-                stages[idx]->fusionInfo().uniformBufferHandle,
-                0, (int32_t)(2 + idx));
-          }
-          gpu_->computeDispatch(pass,
-                                ((uint32_t)W + 7) / 8,
-                                ((uint32_t)H + 7) / 8, 1);
-          gpu_->endComputePass(pass);
-
-          // Chain-entry hooks are intentionally NOT fired per stage —
-          // there is no separate texture for any intermediate stage in
-          // a fused dispatch. If a host wants per-stage previews on a
-          // fused chain it should either trigger a re-plan that
-          // disables fusion or readback the final output.
-          anyDispatched = true;
-          finalHandle = outHandle;
-          colInput = outHandle;
-          continue;  // skip the per-entry loop below for this column
-        }
+        groups.push_back({start, end, end > start});
+        start = end + 1;
       }
     }
-    // ----- End fusion fast-path ------------------------------------
 
-    for (size_t k = 0; k < resolvable.size(); ++k) {
+    // ----- Helpers --------------------------------------------------
+    // Apply the persisted instance state, with a "this instance owns
+    // the effect's file-statics" gate. The cache only skips when the
+    // file-static state would already match — see the
+    // lastAppliedInstanceByType_ comment for why.
+    auto maybeApplyState = [&](effect_runtime::EffectInstance* inst,
+                               const std::string& mt,
+                               const std::string& instKey,
+                               const json& state) {
+      auto typeIt = lastAppliedInstanceByType_.find(mt);
+      const bool sameInstanceAsLastForType =
+          (typeIt != lastAppliedInstanceByType_.end()
+           && typeIt->second == instKey);
+      auto& cachedState = lastAppliedState_[instKey];
+      if (sameInstanceAsLastForType && cachedState == state) return;
+      applyState(inst, state);
+      cachedState = state;
+      lastAppliedInstanceByType_[mt] = instKey;
+    };
+
+    auto runStandalone = [&](size_t k, bool isLastGroupInCol) {
       size_t i = resolvable[k];
       const auto& entry = chain[i];
       const std::string mt      = entry.value("module_type", std::string());
       const std::string instKey = entry.value("instance_key", std::string());
 
       const RegisteredModule* reg = registry_->find(mt);
-      if (!reg) continue;
+      if (!reg) return;
       auto* inst = reg->inst;
 
-      const bool isLastInColumn = (k == resolvable.size() - 1);
-      const bool isFinalStage   = isLastCol && isLastInColumn;
-
+      const bool isFinalStage = isLastCol && isLastGroupInCol;
       int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
 
       // -- Zero stale per-field state from the previous frame --
-      // Without this, a tap that was routed last frame but not this
-      // frame (eg implicit-augmentation superseded by an explicit
-      // empty user rail) leaves a dangling texture handle pointing
-      // at a still-live texture, so the effect silently sees stale
-      // data. The connection markers reset for the same reason —
-      // effects like soft_glow key their motion pass off
-      // `isOutputConnected("render_outputs")`.
       for (const auto& path : reg->inputTexturePaths) {
         inst->setTextureField(path, 0);
         inst->setFieldConnected(path, false, false);
@@ -298,20 +248,10 @@ int32_t SketchExecutor::execute(
       }
 
       // -- Apply persisted instance state from the sketch --
-      // applyState fans out into setParamJson/firePatched, which
-      // allocates a vector + json::parse/dump on every field. For an
-      // idle slider, the state is byte-identical across frames; bail
-      // when nothing changed. JSON equality on a small state object
-      // (a handful of fields) is microseconds vs the cascade it
-      // avoids.
       if (instances.is_object() && instances.contains(instKey)) {
         const auto& instJson = instances[instKey];
         const auto& state = instJson.value("state", json::object());
-        auto& cachedState = lastAppliedState_[instKey];
-        if (cachedState != state) {
-          applyState(inst, state);
-          cachedState = state;
-        }
+        maybeApplyState(inst, mt, instKey, state);
       }
 
       // -- Wire primary channels --
@@ -320,19 +260,15 @@ int32_t SketchExecutor::execute(
       inst->setFieldConnected("tex_in",  true,  false);
       inst->setFieldConnected("tex_out", false, true);
 
-      // -- Tap routing before render --
       applyReadTaps(inst, entry, railsById, railTextures, railFloats);
       markWriteTapOutputsConnected(inst, entry);
 
       inst->doTick(dt);
       inst->doRender(W, H);
 
-      // -- Capture write-tap outputs after render --
       captureWriteTaps(inst, entry, instKey, instances,
                        railsById, railTextures, railFloats);
 
-      // -- Capture hook: lets a host (the FFGL barrel) publish per-stage
-      // textures over its WS bridge. Cheap when no hook is registered.
       if (chainEntryHook_) {
         chainEntryHook_((int)colIdx, (int)i, colInput, outHandle, W, H);
       }
@@ -340,6 +276,157 @@ int32_t SketchExecutor::execute(
       anyDispatched = true;
       finalHandle = outHandle;
       colInput = outHandle;
+    };
+
+    auto runFusedGroup = [&](const Group& g, bool isLastGroupInCol) {
+      // Resolve fragments + build cache key.
+      std::string cacheKey;
+      std::vector<std::string> fragments;
+      std::vector<effect_runtime::EffectInstance*> stages;
+      stages.reserve(g.lastK - g.firstK + 1);
+      bool fragsOK = true;
+      for (size_t k = g.firstK; k <= g.lastK; ++k) {
+        const auto& entry = chain[resolvable[k]];
+        const std::string mt = entry.value("module_type", std::string());
+        const RegisteredModule* reg = registry_->find(mt);
+        if (!cacheKey.empty()) cacheKey += '|';
+        cacheKey += mt;
+        stages.push_back(reg->inst);
+        std::string msl;
+        if (!rt_->lookupMSL(reg->inst->fusionInfo().fragmentName, &msl)) {
+          fragsOK = false; break;
+        }
+        fragments.push_back(std::move(msl));
+      }
+      int32_t pso = -1;
+      if (fragsOK) {
+        auto it = fusedPSOs_.find(cacheKey);
+        if (it != fusedPSOs_.end()) {
+          pso = it->second;
+        } else {
+          std::string src = fusion_codegen::generateFusedMSL(fragments);
+          if (!src.empty()) {
+            int32_t sm = gpu_->createShaderModule(src);
+            if (sm > 0) {
+              fusedShaderModules_.push_back(sm);
+              pso = gpu_->createComputePSO(sm, "fused_main");
+              if (pso > 0) fusedPSOs_[cacheKey] = pso;
+            }
+          }
+        }
+      }
+      if (pso <= 0) {
+        // Codegen / compile failed — fall back to per-entry path for
+        // every stage in this group so we at least produce output.
+        for (size_t k = g.firstK; k <= g.lastK; ++k) {
+          bool last = (k == g.lastK) && isLastGroupInCol;
+          runStandalone(k, last);
+        }
+        return;
+      }
+
+      // Per-stage prep + per-instance uniform snapshot.
+      //
+      // Effects keep their uniform buffer in file-static storage, so
+      // every chain entry of a given effect type shares one handle.
+      // That breaks fusion outright — the LAST stage's doPrepare
+      // overwrites every prior stage's data, and binding the shared
+      // buffer to all N slots makes every fused stage see the same
+      // uniforms. We work around it by keeping a per-chain-entry
+      // copy in the executor: after each stage's doPrepare runs, we
+      // memcpy the freshly-written uniforms out of the effect's
+      // shared buffer into the per-instance one, and bind THOSE
+      // (one per stage) to the fused dispatch below.
+      std::vector<int32_t> perInstanceUniforms(stages.size(), -1);
+      for (size_t idx = 0; idx < stages.size(); ++idx) {
+        size_t k = g.firstK + idx;
+        const auto& entry = chain[resolvable[k]];
+        const std::string mt      = entry.value("module_type",  std::string());
+        const std::string instKey = entry.value("instance_key", std::string());
+        auto* inst = stages[idx];
+        if (instances.is_object() && instances.contains(instKey)) {
+          const auto& state = instances[instKey].value("state", json::object());
+          maybeApplyState(inst, mt, instKey, state);
+        }
+        inst->doTick(dt);
+        inst->doPrepare(W, H);
+
+        // Snapshot the effect's just-written uniforms.
+        const auto& fi = inst->fusionInfo();
+        uint32_t size = (uint32_t)fi.uniformSizeBytes;
+        if (size == 0) continue;
+        auto& slot = fusedInstanceUniforms_[instKey];
+        if (slot.handle <= 0 || slot.size != size) {
+          if (slot.handle > 0) gpu_->release(slot.handle);
+          slot.handle = gpu_->createBuffer(size, /*usage*/ 0);
+          slot.size = size;
+        }
+        void* src = gpu_->bufferContents(fi.uniformBufferHandle);
+        if (src && slot.handle > 0) {
+          gpu_->writeBuffer(slot.handle, 0,
+                            (const uint8_t*)src, size);
+        }
+        perInstanceUniforms[idx] = slot.handle;
+      }
+
+      const bool isFinalStage = isLastCol && isLastGroupInCol;
+      const int32_t groupInput = colInput;
+      const int32_t groupOutput = isFinalStage
+                                  ? outputHandle
+                                  : nextIntermediate(W, H);
+
+      int32_t pass = gpu_->beginComputePass();
+      gpu_->computeSetPSO(pass, pso);
+      gpu_->computeSetTexture(pass, groupInput,  0, /*read */ 0);
+      gpu_->computeSetTexture(pass, groupOutput, 1, /*write*/ 1);
+      for (size_t idx = 0; idx < stages.size(); ++idx) {
+        int32_t ub = perInstanceUniforms[idx] > 0
+                     ? perInstanceUniforms[idx]
+                     // Fallback: if the per-instance snapshot failed
+                     // (no fusion info / write failure), bind the
+                     // effect's shared buffer. Correctness is
+                     // suspect in that case but at least we don't
+                     // unbind a slot the shader expects.
+                     : stages[idx]->fusionInfo().uniformBufferHandle;
+        gpu_->computeSetBuffer(pass, ub, 0, (int32_t)(2 + idx));
+      }
+      gpu_->computeDispatch(pass,
+                            ((uint32_t)W + 7) / 8,
+                            ((uint32_t)H + 7) / 8, 1);
+      gpu_->endComputePass(pass);
+
+      // Hook firing for fused groups: only the LAST stage's output is
+      // materialised, so we only fire its hook with output =
+      // groupOutput. We also fire the FIRST stage's hook with
+      // input = groupInput (the upstream's real texture) so that
+      // `ce:<col>/<first>/input` previews land. Middle stages don't
+      // have real textures — they're computed in-register inside the
+      // fused kernel — and intentionally skip the hook. Hosts that
+      // need a middle-stage preview should provoke a barrier via the
+      // BarrierPredicate, which will split the group there.
+      if (chainEntryHook_) {
+        chainEntryHook_((int)colIdx, (int)resolvable[g.firstK],
+                        groupInput, /*output=*/-1, W, H);
+        if (g.lastK != g.firstK) {
+          chainEntryHook_((int)colIdx, (int)resolvable[g.lastK],
+                          /*input=*/-1, groupOutput, W, H);
+        }
+      }
+
+      anyDispatched = true;
+      finalHandle = groupOutput;
+      colInput = groupOutput;
+    };
+
+    for (size_t gi = 0; gi < groups.size(); ++gi) {
+      const Group& g = groups[gi];
+      const bool isLastGroupInCol = (gi == groups.size() - 1);
+      if (g.fused) {
+        runFusedGroup(g, isLastGroupInCol);
+      } else {
+        // size 1 — non-eligible or single-eligible (no fusion savings)
+        runStandalone(g.firstK, isLastGroupInCol);
+      }
     }
   }
   if (anyDispatched && sketchOutputHook_) {
