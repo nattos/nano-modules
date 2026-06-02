@@ -76,6 +76,20 @@ public:
   int  glyphs(int layout_id, GlyphQuad* out, int max_count) const;
   void release(int layout_id);
 
+  // --- CPU reference compositor ---
+  // Rasterize a layout into a caller-allocated RGBA8 buffer (out, outW*outH*4),
+  // placing the layout-box origin at (originX, originY). `bg` (outW*outH*4, may
+  // be null → opaque black) is the starting background; glyphs are alpha-over
+  // composited on top using the SAME math the GPU shader will use. Returns
+  // false on an invalid handle.
+  //
+  // This is the golden reference: because it's compiled identically native +
+  // wasm, both environments produce byte-identical pixels, and the GPU
+  // compositor (Phase 1+) is validated against it.
+  bool rasterize(int layout_id, int outW, int outH,
+                 float originX, float originY,
+                 const uint8_t* bg, uint8_t* out) const;
+
   // --- Atlas access for the per-platform GPU glue ---
   int  atlasWidth() const;
   int  atlasHeight() const;

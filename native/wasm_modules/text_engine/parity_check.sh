@@ -19,6 +19,9 @@ echo "[2/3] building native parity_dump"
 clang++ -std=c++17 -fno-exceptions -fno-rtti -O2 \
   "$SRC/text_engine.cpp" "$SRC/tools/parity_dump.cpp" -I "$SRC" -o /tmp/te_parity_dump
 
+DUMP_DIR="$ROOT/build/text-dumps"
+mkdir -p "$DUMP_DIR"
+
 # Specs to check (add tricky cases here as the engine grows).
 SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'
@@ -26,16 +29,19 @@ SPECS=(
   '{"text":"€ é ✓ 你好","size_px":32}'
 )
 
-echo "[3/3] comparing digests"
+echo "[3/3] comparing digests + dumping PNGs"
 fail=0
+i=0
 for spec in "${SPECS[@]}"; do
-  /tmp/te_parity_dump "$spec" > /tmp/te_native.json
-  node parity_dump.mjs "$spec" > /tmp/te_wasm.json
+  i=$((i+1))
+  TE_PNG="$DUMP_DIR/case${i}_native.png" /tmp/te_parity_dump "$spec" > /tmp/te_native.json
+  TE_PNG="$DUMP_DIR/case${i}_wasm.png" node parity_dump.mjs "$spec" > /tmp/te_wasm.json
   if node compare_digests.mjs /tmp/te_native.json /tmp/te_wasm.json; then
-    echo "  ✅ parity: $spec"
+    echo "  ✅ parity (geometry + pixels): $spec"
   else
     echo "  ❌ MISMATCH: $spec"; fail=1
   fi
 done
+echo "  PNGs in $DUMP_DIR"
 
 [ "$fail" -eq 0 ] && echo "ALL PARITY CHECKS PASSED" || { echo "PARITY FAILURES"; exit 1; }

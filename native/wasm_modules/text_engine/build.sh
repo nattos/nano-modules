@@ -25,6 +25,7 @@ TE_EXPORTS=(
   -Wl,--export=te_glyph_count
   -Wl,--export=te_glyphs
   -Wl,--export=te_release
+  -Wl,--export=te_rasterize
   -Wl,--export=te_atlas_width
   -Wl,--export=te_atlas_height
   -Wl,--export=te_atlas_ptr

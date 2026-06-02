@@ -236,6 +236,60 @@ void Engine::release(int layout_id) {
   impl_->layouts.erase(layout_id);
 }
 
+bool Engine::rasterize(int layout_id, int outW, int outH,
+                       float originX, float originY,
+                       const uint8_t* bg, uint8_t* out) const {
+  auto it = impl_->layouts.find(layout_id);
+  if (it == impl_->layouts.end() || !out || outW <= 0 || outH <= 0) return false;
+
+  // Initialize from bg (or opaque black).
+  size_t bytes = (size_t)outW * outH * 4;
+  if (bg) std::memcpy(out, bg, bytes);
+  else {
+    for (size_t i = 0; i < bytes; i += 4) {
+      out[i] = out[i + 1] = out[i + 2] = 0; out[i + 3] = 255;
+    }
+  }
+
+  const uint8_t* atlas = impl_->atlas.data();
+  const int aw = ATLAS_W, ah = ATLAS_H;
+
+  for (const GlyphQuad& q : it->second.quads) {
+    // Device-pixel bounds of this glyph quad (clamped to the canvas).
+    int x0 = (int)(q.x + originX);
+    int y0 = (int)(q.y + originY);
+    int x1 = (int)(q.x + originX + q.w);
+    int y1 = (int)(q.y + originY + q.h);
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+    if (x1 > outW) x1 = outW; if (y1 > outH) y1 = outH;
+
+    for (int py = y0; py < y1; py++) {
+      for (int px = x0; px < x1; px++) {
+        // Local uv within the quad → atlas uv → nearest texel (the stub atlas
+        // is alpha-coverage; Phase 1 swaps in MSDF median + screenPxRange).
+        float lu = (px + 0.5f - (q.x + originX)) / q.w;
+        float lv = (py + 0.5f - (q.y + originY)) / q.h;
+        float au = q.u0 + lu * (q.u1 - q.u0);
+        float av = q.v0 + lv * (q.v1 - q.v0);
+        int tx = (int)(au * aw); int ty = (int)(av * ah);
+        if (tx < 0) tx = 0; if (tx >= aw) tx = aw - 1;
+        if (ty < 0) ty = 0; if (ty >= ah) ty = ah - 1;
+        float coverage = atlas[((size_t)ty * aw + tx) * 4 + 3] * (1.0f / 255.0f);
+        float a = coverage * q.a;
+        if (a <= 0.0f) continue;
+
+        uint8_t* d = &out[((size_t)py * outW + px) * 4];
+        float inv = 1.0f - a;
+        d[0] = (uint8_t)(q.r * 255.0f * a + d[0] * inv + 0.5f);
+        d[1] = (uint8_t)(q.g * 255.0f * a + d[1] * inv + 0.5f);
+        d[2] = (uint8_t)(q.b * 255.0f * a + d[2] * inv + 0.5f);
+        d[3] = (uint8_t)(a * 255.0f + d[3] * inv + 0.5f);
+      }
+    }
+  }
+  return true;
+}
+
 int Engine::atlasWidth() const  { return ATLAS_W; }
 int Engine::atlasHeight() const { return ATLAS_H; }
 const uint8_t* Engine::atlasPixels() const { return impl_->atlas.data(); }

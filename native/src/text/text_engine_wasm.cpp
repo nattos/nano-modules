@@ -81,6 +81,15 @@ void te_release(int id) {
   Engine::instance().release(id);
 }
 
+// CPU reference compositor. bg_ptr/out_ptr are byte offsets into linear memory
+// (the host mallocs them); bg_ptr may be 0 for opaque black. Returns 1/0.
+int te_rasterize(int id, int outW, int outH, float ox, float oy,
+                 int bg_ptr, int out_ptr) {
+  const uint8_t* bg = bg_ptr ? (const uint8_t*)(intptr_t)bg_ptr : nullptr;
+  uint8_t* out = (uint8_t*)(intptr_t)out_ptr;
+  return Engine::instance().rasterize(id, outW, outH, ox, oy, bg, out) ? 1 : 0;
+}
+
 int te_atlas_width()  { return Engine::instance().atlasWidth(); }
 int te_atlas_height() { return Engine::instance().atlasHeight(); }
 

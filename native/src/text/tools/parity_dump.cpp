@@ -11,9 +11,12 @@
  */
 
 #include "text_engine.h"
+#include "png_write.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -47,6 +50,18 @@ int main(int argc, char** argv) {
     for (int i = 0; i < n; i++) { hash ^= r.rgba[i]; hash *= 0x01000193u; }
   }
 
+  // --- CPU reference composite → real pixels ---
+  // Deterministic canvas: layout bounds + 16px margin, opaque-black background.
+  const int MARGIN = 16;
+  int cw = (int)std::ceil(m.width) + 2 * MARGIN;
+  int ch = (int)std::ceil(m.height) + 2 * MARGIN;
+  if (cw < 1) cw = 1; if (ch < 1) ch = 1;
+  std::vector<uint8_t> img((size_t)cw * ch * 4);
+  eng.rasterize(id, cw, ch, (float)MARGIN, (float)MARGIN, nullptr, img.data());
+  uint32_t chash = 0x811c9dc5u;
+  for (uint8_t v : img) { chash ^= v; chash *= 0x01000193u; }
+  if (const char* p = std::getenv("TE_PNG")) png_write::writeFile(p, img.data(), cw, ch);
+
   // Emit JSON matching parity_dump.mjs (2-space indent, same key order/rounding).
   std::printf("{\n");
   std::printf("  \"metrics\": {\n");
@@ -74,7 +89,9 @@ int main(int argc, char** argv) {
                       rx, ry, rw, rh, rptr);
   else    std::printf("    \"region\": null,\n");
   std::printf("    \"hash\": \"%x\"\n", hash);
-  std::printf("  }\n}\n");
+  std::printf("  },\n");
+  std::printf("  \"composite\": { \"w\": %d, \"h\": %d, \"hash\": \"%x\" }\n", cw, ch, chash);
+  std::printf("}\n");
 
   eng.release(id);
   return 0;
