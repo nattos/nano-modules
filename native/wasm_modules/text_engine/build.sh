@@ -32,7 +32,8 @@ objs=()
 echo "Building text_engine.wasm (FreeType + msdfgen + engine)"
 # FreeType subset (C).
 for s in base/ftbase base/ftinit base/ftsystem base/ftdebug base/ftbitmap base/ftmm \
-         sfnt/sfnt truetype/truetype psnames/psnames; do
+         sfnt/sfnt truetype/truetype psnames/psnames \
+         cff/cff psaux/psaux pshinter/pshinter; do
   o="$TMP/ft_$(basename "$s").o"
   "$CLANG" "${WASM_CXXFLAGS[@]}" "${INCS[@]}" "${FTDEFS[@]}" -c "$TP/freetype/src/$s.c" -o "$o"
   objs+=("$o")
