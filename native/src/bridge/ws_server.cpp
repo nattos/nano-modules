@@ -109,7 +109,15 @@ void WsServer::broadcast(const std::string& msg) {
   {
     std::lock_guard lock(clients_mutex_);
     snapshot.reserve(clients_.size());
-    for (auto& [_, ws] : clients_) snapshot.push_back(ws);
+    for (auto& [_, ws] : clients_) {
+      // Skip sockets that are already closing — ixwebsocket would
+      // synchronously fire the Close handler from inside send(),
+      // which costs CPU on the broadcast thread and (before the
+      // out-of-lock fix) deadlocked us. Once Close completes on its
+      // own, our message handler erases the entry from clients_.
+      if (ws->getReadyState() != ix::ReadyState::Open) continue;
+      snapshot.push_back(ws);
+    }
   }
   for (auto& ws : snapshot) ws->send(msg);
 }
@@ -121,7 +129,7 @@ void WsServer::send_to(ClientId client, const std::string& msg) {
     auto it = clients_.find(client);
     if (it != clients_.end()) ws = it->second;
   }
-  if (ws) ws->send(msg);
+  if (ws && ws->getReadyState() == ix::ReadyState::Open) ws->send(msg);
 }
 
 void WsServer::send_binary_to(ClientId client, const void* data, size_t size) {
@@ -132,7 +140,7 @@ void WsServer::send_binary_to(ClientId client, const void* data, size_t size) {
     auto it = clients_.find(client);
     if (it != clients_.end()) ws = it->second;
   }
-  if (!ws) return;
+  if (!ws || ws->getReadyState() != ix::ReadyState::Open) return;
   // ixwebsocket's sendBinary takes a std::string but treats it as an
   // opaque byte buffer. The (ptr, len) string ctor here does NOT scan
   // for a null terminator, so embedded zeros pass through unchanged.
@@ -146,7 +154,10 @@ void WsServer::broadcast_binary(const void* data, size_t size) {
   {
     std::lock_guard lock(clients_mutex_);
     snapshot.reserve(clients_.size());
-    for (auto& [_, ws] : clients_) snapshot.push_back(ws);
+    for (auto& [_, ws] : clients_) {
+      if (ws->getReadyState() != ix::ReadyState::Open) continue;
+      snapshot.push_back(ws);
+    }
   }
   std::string buf(reinterpret_cast<const char*>(data), size);
   for (auto& ws : snapshot) ws->sendBinary(buf);
