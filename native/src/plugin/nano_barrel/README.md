@@ -155,16 +155,14 @@ wired this way and render correctly.
 
 Render-pass effects work: the Metal backend implements instanced render
 pipelines (`createInstancedRenderPSO` with alpha-over / additive blend),
-load-action render passes (`beginRenderPassLoad`), and stage-unified render
-buffer binding (`renderSetBuffer`). `video.flash_particles` (compute particle
-sim + instanced raster) renders natively.
+load-action render passes (`beginRenderPassLoad`), stage-unified render buffer
+binding (`renderSetBuffer`), and multi-render-target pipelines + passes
+(`createInstancedRenderPSOMRT` / `beginRenderPassMRT`, up to 8 attachments).
+`video.flash_particles` (compute particle sim + instanced raster) renders
+natively.
 
-**Known gaps** (effect registers + appears in the inspector, but won't render
-correctly until the native host gains the missing pieces — all degrade
-gracefully to passthrough/black, no crashes):
-- Multi-render-target effects: `begin_render_pass_mrt` /
-  `create_instanced_render_pso_mrt_layout` are still stubs (no cared-about
-  bundle effect needs MRT today).
+**Known gap** (effect registers + appears in the inspector, but won't render
+correctly natively — degrades gracefully to passthrough/black, no crashes):
 - Canvas-overlay effects (e.g. `sequencer.nanolooper`): the `canvas_*` host
   imports are no-ops natively (a debug surface — intentionally deferred).
 

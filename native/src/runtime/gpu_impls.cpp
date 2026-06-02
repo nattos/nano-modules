@@ -173,12 +173,15 @@ int gpu_create_instanced_render_pso(int vs, const char* vse, int vsl,
   return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
                                      fs, mapEntryName(fse, fsl), fmt, /*blend=*/0);
 }
-int gpu_create_instanced_render_pso_mrt_layout(int, const char*, int,
-                                                int, const char*, int,
-                                                int, const int*,
-                                                int, const int*) {
-  unimplemented("create_instanced_render_pso_mrt_layout");
-  return -1;
+int gpu_create_instanced_render_pso_mrt_layout(int vs, const char* vse, int vsl,
+                                                int fs, const char* fse, int fsl,
+                                                int target_count, const int* target_formats,
+                                                int /*bcount*/, const int* /*bindings*/) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createInstancedRenderPSOMRT(vs, mapEntryName(vse, vsl),
+                                        fs, mapEntryName(fse, fsl),
+                                        target_count, target_formats);
 }
 int gpu_create_instanced_render_pso_blend_layout(int vs, const char* vse, int vsl,
                                                   int fs, const char* fse, int fsl,
@@ -239,9 +242,9 @@ int gpu_begin_render_pass_load(int tex) {
   auto* b = backend();
   return b ? b->beginRenderPassLoad(tex) : -1;
 }
-int gpu_begin_render_pass_mrt(int /*count*/, const int* /*texs*/, const float* /*clears*/) {
-  unimplemented("begin_render_pass_mrt");
-  return -1;
+int gpu_begin_render_pass_mrt(int count, const int* texs, const float* clears) {
+  auto* b = backend();
+  return b ? b->beginRenderPassMRT(count, texs, clears) : -1;
 }
 void gpu_render_set_pso(int pass, int pso) {
   auto* b = backend();

@@ -381,6 +381,51 @@ public:
     }
   }
 
+  int32_t createInstancedRenderPSOMRT(int32_t vsHandle, const std::string& vsEntry,
+                                       int32_t fsHandle, const std::string& fsEntry,
+                                       int32_t targetCount, const int32_t* targetFormats) override {
+    @autoreleasepool {
+      id<MTLLibrary> vsLib = getAs<id<MTLLibrary>>(vsHandle);
+      id<MTLLibrary> fsLib = getAs<id<MTLLibrary>>(fsHandle);
+      if (!vsLib || !fsLib) return -1;
+
+      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:
+          [NSString stringWithUTF8String:vsEntry.c_str()]];
+      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:
+          [NSString stringWithUTF8String:fsEntry.c_str()]];
+      if (!vsFunc || !fsFunc) return -1;
+
+      MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+      desc.vertexFunction = vsFunc;
+      desc.fragmentFunction = fsFunc;
+      // One color attachment per target; fragment @location(i) → target i.
+      for (int i = 0; i < targetCount && i < 8; ++i) {
+        MTLPixelFormat fmt;
+        switch (targetFormats[i]) {
+          case 0:  fmt = MTLPixelFormatBGRA8Unorm;  break;
+          case 1:  fmt = MTLPixelFormatRGBA8Unorm;  break;
+          case 3:  fmt = MTLPixelFormatRGBA16Float; break;
+          case 4:  fmt = MTLPixelFormatR32Float;    break;
+          case 2:  default: fmt = surfaceFormat_;   break;  // Surface
+        }
+        desc.colorAttachments[i].pixelFormat = fmt;
+        desc.colorAttachments[i].blendingEnabled = YES;
+        desc.colorAttachments[i].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        desc.colorAttachments[i].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        desc.colorAttachments[i].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        desc.colorAttachments[i].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      }
+
+      NSError* error = nil;
+      id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&error];
+      if (!pso) {
+        NSLog(@"Metal MRT render PSO error: %@", error);
+        return -1;
+      }
+      return alloc(ResourceType::RenderPSO, pso);
+    }
+  }
+
   // --- Buffer operations ---
 
   void writeBuffer(int32_t bufHandle, uint32_t offset,
@@ -498,6 +543,25 @@ public:
     desc.colorAttachments[0].loadAction = MTLLoadActionLoad;   // keep existing pixels
     desc.colorAttachments[0].storeAction = MTLStoreActionStore;
 
+    renderEncoder_ = [cmdBuffer_ renderCommandEncoderWithDescriptor:desc];
+    return 1;
+  }
+
+  int32_t beginRenderPassMRT(int32_t count, const int32_t* texHandles,
+                             const float* clears) override {
+    if (count <= 0) return -1;
+    if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
+    MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
+    for (int i = 0; i < count && i < 8; ++i) {
+      id<MTLTexture> tex = getAs<id<MTLTexture>>(texHandles[i]);
+      if (!tex) return -1;
+      desc.colorAttachments[i].texture = tex;
+      desc.colorAttachments[i].loadAction = MTLLoadActionClear;
+      desc.colorAttachments[i].storeAction = MTLStoreActionStore;
+      desc.colorAttachments[i].clearColor = MTLClearColorMake(
+          clears[i * 4 + 0], clears[i * 4 + 1],
+          clears[i * 4 + 2], clears[i * 4 + 3]);
+    }
     renderEncoder_ = [cmdBuffer_ renderCommandEncoderWithDescriptor:desc];
     return 1;
   }

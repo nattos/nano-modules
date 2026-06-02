@@ -37,6 +37,18 @@ public:
     return -1;
   }
 
+  // Multi-render-target instanced pipeline: fragment @location(i) writes
+  // color attachment i. `targetFormats` is `targetCount` TextureFormat
+  // enum values; alpha-over blend on each. Default unimplemented.
+  virtual int32_t createInstancedRenderPSOMRT(
+      int32_t vsHandle, const std::string& vsEntry,
+      int32_t fsHandle, const std::string& fsEntry,
+      int32_t targetCount, const int32_t* targetFormats) {
+    (void)vsHandle; (void)vsEntry; (void)fsHandle; (void)fsEntry;
+    (void)targetCount; (void)targetFormats;
+    return -1;
+  }
+
   // Optional: compute PSO with Metal function-constant overrides
   // (== WebGPU spec constants). Backends that don't support spec
   // constants ignore the `constants` payload and behave like
@@ -118,6 +130,12 @@ public:
   // texture). Default unimplemented (returns -1).
   virtual int32_t beginRenderPassLoad(int32_t textureHandle) {
     (void)textureHandle; return -1;
+  }
+  // Begin an MRT render pass — clears each of `count` targets to its
+  // clears[i*4 .. i*4+3] RGBA color. Default unimplemented (returns -1).
+  virtual int32_t beginRenderPassMRT(int32_t count, const int32_t* texHandles,
+                                     const float* clears) {
+    (void)count; (void)texHandles; (void)clears; return -1;
   }
   virtual void renderSetPSO(int32_t pass, int32_t pso) = 0;
   virtual void renderSetVertexBuffer(int32_t pass, int32_t buf,
