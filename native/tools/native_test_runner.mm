@@ -40,29 +40,12 @@
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 
-// Per-effect entry-point declarations. Each effect's main.cpp exports
-// a namespaced set of {init, tick, render, on_state_patched} that we
-// hand to the runtime as an EffectDesc.
-// Class-like instance ABI (see EFFECTS_STYLE_GUIDE §0).
-#define DECLARE_EFFECT_NS(ns)                                                 \
-  namespace ns {                                                              \
-    extern void  module_init();                                               \
-    extern void* create();                                                    \
-    extern void  destroy(void* self);                                         \
-    extern void  init(void* self);                                            \
-    extern void  tick(void* self, double dt);                                 \
-    extern void  render(void* self, int vp_w, int vp_h);                      \
-    extern void  on_state_patched(void* self, int n, const char* pb,          \
-                                  const int* off, const int* len,             \
-                                  const int* ops);                            \
-    extern void  on_resolume_param(void* self, long long param_id, double v); \
-  }
-DECLARE_EFFECT_NS(soft_glow)
-DECLARE_EFFECT_NS(motion_blur)
-#undef DECLARE_EFFECT_NS
-
-#include "soft_glow_msl.h"
-#include "motion_blur_msl.h"
+// Effect registration is generated from effects_native/barrel_manifest.txt
+// (gen_barrel_effects.py): namespace forward-decls + MSL + the
+// registerAllBarrelEffects(rt, registry) entry point. Using it here means the
+// runner can render ANY effect the barrel exposes, by id — same set, same
+// registration path as the plugin.
+#include "barrel_effects.gen.h"
 
 namespace effect_runtime {
 // Setters defined in host_impls.cpp.
@@ -84,45 +67,6 @@ std::string resolveEffectId(const std::string& moduleName) {
   if (moduleName == "motion_blur.wasm" || moduleName == "motion_blur")
     return "video.motion_blur";
   return moduleName;
-}
-
-// Register all known native-built effects with the runtime. Each
-// effect gets one EffectInstance.
-void registerAllEffects(effect_runtime::EffectRuntime& rt) {
-  // Pre-register MSL strings BEFORE registerEffect: it runs the effect's
-  // module_init() synchronously, which compiles the shared PSO via
-  // createShaderModuleByName (so the MSL must already be resolvable).
-  rt.registerShaderMSL("soft_glow_color", SOFT_GLOW_COLOR_MSL);
-  rt.registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
-  rt.registerShaderMSL("reconstruct", MOTION_BLUR_RECONSTRUCT_MSL);
-  rt.registerShaderMSL("pyramid_reduce", MOTION_BLUR_PYRAMID_REDUCE_MSL);
-
-  effect_runtime::EffectDesc d;
-
-  d.id = "gen.soft_glow";
-  d.name = "Soft Glow";
-  d.module_init      = &soft_glow::module_init;
-  d.create           = &soft_glow::create;
-  d.destroy          = &soft_glow::destroy;
-  d.init             = &soft_glow::init;
-  d.tick             = &soft_glow::tick;
-  d.render           = &soft_glow::render;
-  d.on_state_patched = &soft_glow::on_state_patched;
-  d.on_resolume_param = &soft_glow::on_resolume_param;
-  rt.registerEffect(d);
-
-  d = {};
-  d.id = "video.motion_blur";
-  d.name = "Motion Blur";
-  d.module_init      = &motion_blur::module_init;
-  d.create           = &motion_blur::create;
-  d.destroy          = &motion_blur::destroy;
-  d.init             = &motion_blur::init;
-  d.tick             = &motion_blur::tick;
-  d.render           = &motion_blur::render;
-  d.on_state_patched = &motion_blur::on_state_patched;
-  d.on_resolume_param = &motion_blur::on_resolume_param;
-  rt.registerEffect(d);
 }
 
 // Read stdin to end-of-stream.
@@ -219,15 +163,31 @@ int main(int argc, char** argv) {
       }
       gpu->writeTexture(inputTex, (uint32_t)W, (uint32_t)H,
                         fill.data(), (uint32_t)fill.size());
+    } else if (cfg.value("inputStep", false)) {
+      // Left half black, right half white — a vertical step edge. Useful
+      // for confirming spatial filters (blur softens the boundary column;
+      // a passthrough leaves it a hard 0→255 step).
+      std::vector<uint8_t> fill(W * H * 4, 0);
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+          uint8_t v = (x >= W / 2) ? 255 : 0;
+          size_t o = ((size_t)y * W + x) * 4;
+          fill[o] = fill[o + 1] = fill[o + 2] = v; fill[o + 3] = 255;
+        }
+      gpu->writeTexture(inputTex, (uint32_t)W, (uint32_t)H,
+                        fill.data(), (uint32_t)fill.size());
     }
 
     effect_runtime::EffectRuntime rt(gpu.get());
-    registerAllEffects(rt);
+    sketch_executor::ModuleRegistry registry(&rt);
+    // Registers every effect in barrel_manifest.txt (same set + path as the
+    // NanoBarrel plugin), so the runner can render any of them by id.
+    nano_barrel_gen::registerAllBarrelEffects(rt, registry);
 
     std::string moduleName = cfg.value("module", std::string("soft_glow.wasm"));
     std::string effectId = resolveEffectId(moduleName);
     // Create the per-key render instance (runs create() + init(self)); the
-    // type was registered + module_init'd in registerAllEffects.
+    // type was registered + module_init'd above.
     auto* inst = rt.instanceFor(effectId, "test");
     if (!inst) {
       nlohmann::json err{{"success", false},

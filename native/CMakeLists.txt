@@ -469,8 +469,9 @@ endif()
 # Metal pixel-for-pixel) and the StreakyBlobs FFGL plugin in Phase 3.
 #
 # Build depends on the WASM build having produced .spv files under
-# native/build/tmp/ — they're consumed by `naga` to emit per-effect MSL
-# headers via build_msl_headers.sh.
+# native/build/tmp/ — they're consumed by gen_barrel_effects.py (spirv-cross)
+# to emit per-effect MSL headers + the barrel registration. See
+# effects_native/barrel_manifest.txt.
 
 if(APPLE)
   set(EFFECTS_NATIVE_TMP "${CMAKE_SOURCE_DIR}/build/tmp")
@@ -498,30 +499,28 @@ if(APPLE)
   # annotations on the effect host-import declarations.
   target_compile_options(effect_runtime PRIVATE -Wno-attributes)
 
-  # Per-effect MSL header generation. Reads .spv files emitted by the
-  # WASM build; depends on them having been produced (the build script
-  # fails loudly if not). Re-runs whenever the script or any input .spv
-  # changes.
-  set(EFFECT_MSL_HEADERS
-    "${EFFECTS_NATIVE_TMP}/soft_glow_msl.h"
-    "${EFFECTS_NATIVE_TMP}/motion_blur_msl.h"
-    "${EFFECTS_NATIVE_TMP}/brightness_contrast_msl.h"
-  )
+  # Barrel effect codegen. `barrel_manifest.txt` is the source of truth for
+  # which effects NanoBarrel exposes; gen_barrel_effects.py reads it and emits
+  # barrel_effects.gen.h (forward-decls + registerAllBarrelEffects) plus the
+  # per-effect MSL headers (SPV→MSL via spirv-cross). Inputs are the .spv files
+  # the WASM bundle build produced under build/tmp. Adding an effect = one
+  # manifest line (after its bundle's build.sh has run).
+  set(BARREL_MANIFEST ${CMAKE_SOURCE_DIR}/effects_native/barrel_manifest.txt)
+  set(BARREL_GEN_HEADER ${EFFECTS_NATIVE_TMP}/barrel_effects.gen.h)
+  # Glob the WASM build's .spv so the codegen re-runs when shaders change.
+  file(GLOB _barrel_spv ${EFFECTS_NATIVE_TMP}/*.spv)
   add_custom_command(
-    OUTPUT ${EFFECT_MSL_HEADERS}
-    COMMAND bash ${CMAKE_SOURCE_DIR}/effects_native/build_msl_headers.sh
+    OUTPUT ${BARREL_GEN_HEADER}
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/effects_native/gen_barrel_effects.py
+            ${BARREL_MANIFEST} ${EFFECTS_NATIVE_TMP}
     DEPENDS
-      ${CMAKE_SOURCE_DIR}/effects_native/build_msl_headers.sh
-      ${EFFECTS_NATIVE_TMP}/soft_glow_color.spv
-      ${EFFECTS_NATIVE_TMP}/soft_glow_motion.spv
-      ${EFFECTS_NATIVE_TMP}/motion_blur_reconstruct.spv
-      ${EFFECTS_NATIVE_TMP}/motion_blur_pyramid_reduce.spv
-      ${EFFECTS_NATIVE_TMP}/brightness_contrast_compute.spv
-      ${EFFECTS_NATIVE_TMP}/brightness_contrast_pixel.spv
-    COMMENT "Translating effect SPV → MSL headers via spirv-cross"
+      ${CMAKE_SOURCE_DIR}/effects_native/gen_barrel_effects.py
+      ${BARREL_MANIFEST}
+      ${_barrel_spv}
+    COMMENT "Generating NanoBarrel effect registration (SPV→MSL via spirv-cross)"
     VERBATIM
   )
-  add_custom_target(effects_msl_headers DEPENDS ${EFFECT_MSL_HEADERS})
+  add_custom_target(effects_msl_headers DEPENDS ${BARREL_GEN_HEADER})
 
   # Effects compiled as native objects. Each effect's main.cpp is the
   # same source compiled for WASM; the namespace wrappers
@@ -556,11 +555,25 @@ if(APPLE)
     nlohmann_json::nlohmann_json
   )
 
-  add_library(effects_native STATIC
-    wasm_modules/soft_glow/main.cpp
-    wasm_modules/motion_blur/main.cpp
-    wasm_modules/brightness_contrast/main.cpp
-  )
+  # Effect source list derived from the manifest (column 2 = namespace).
+  # Each effect's sources are wasm_modules/<namespace>/*.cpp (picks up
+  # helpers like nanolooper/core.cpp alongside main.cpp).
+  file(STRINGS ${BARREL_MANIFEST} _manifest_lines)
+  set(_effect_sources "")
+  foreach(_line ${_manifest_lines})
+    # Data lines contain '|' and don't start with '#'. (Avoid continue()
+    # for portability across CMake versions.)
+    if(_line MATCHES "\\|" AND NOT _line MATCHES "^[ \t]*#")
+      string(REPLACE "|" ";" _cols "${_line}")
+      list(GET _cols 1 _ns)
+      string(STRIP "${_ns}" _ns)
+      file(GLOB _ns_srcs ${CMAKE_SOURCE_DIR}/wasm_modules/${_ns}/*.cpp)
+      list(APPEND _effect_sources ${_ns_srcs})
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _effect_sources)
+
+  add_library(effects_native STATIC ${_effect_sources})
   target_include_directories(effects_native PUBLIC
     ${EFFECTS_NATIVE_INC}
     ${EFFECTS_NATIVE_TMP}
@@ -577,6 +590,7 @@ if(APPLE)
   # result on stdout. Mirrors web/public/gpu-test-runner.html for the
   # dual-backend tests.
   add_executable(native_test_runner tools/native_test_runner.mm)
+  add_dependencies(native_test_runner effects_msl_headers)  # barrel_effects.gen.h
   target_include_directories(native_test_runner PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${EFFECTS_NATIVE_INC}
@@ -584,6 +598,7 @@ if(APPLE)
   )
   target_link_libraries(native_test_runner PRIVATE
     effects_native
+    sketch_executor   # ModuleRegistry (used by the generated registration)
     effect_runtime
     gpu_backend
     nlohmann_json::nlohmann_json
@@ -682,6 +697,8 @@ if(APPLE)
     src/plugin/nano_barrel/nano_barrel_plugin.mm
     src/plugin/nano_barrel/InteropTexture.m
   )
+  # NanoBarrel #includes the generated barrel_effects.gen.h.
+  add_dependencies(NanoBarrel effects_msl_headers)
   target_include_directories(NanoBarrel PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${EFFECTS_NATIVE_INC}

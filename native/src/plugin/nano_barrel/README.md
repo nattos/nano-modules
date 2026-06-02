@@ -107,38 +107,59 @@ recreates the plugin instance to refresh Resolume's param surface —
 can repopulate the bridge state in the new instance's ctor before the
 host's restored `SetTextParameter` fires.
 
-## Effect registration
+## Effect registration — manifest-driven (automatic)
 
 `initEffectRuntime()` (called from the ctor) bootstraps:
 
 1. `MTLCreateSystemDefaultDevice()`, `gpu::createMetalBackend()`,
-   `effect_runtime::EffectRuntime`.
-2. `rt_->registerShaderMSL(name, ...)` for every shader the linked
-   effects expect to find at `state::registerShaderSPV`. MSL strings
-   come from the generated `<effect>_msl.h` headers in
-   `effects_native`.
-3. `ModuleRegistry::registerEffect(...)` for every editor module_type
-   the plugin supports.
-4. `SketchExecutor` constructed against the runtime + registry +
-   GPUBackend.
+   `effect_runtime::EffectRuntime`, `ModuleRegistry`.
+2. `nano_barrel_gen::registerAllBarrelEffects(rt, registry)` — generated
+   code that, per effect, registers its shader MSL then its type.
+3. `SketchExecutor` constructed against the runtime + registry + GPUBackend.
 
-Currently registered effects (extend the list when you add more to
-`effects_native`):
+The effect set is **not hand-maintained here**. `effects_native/barrel_manifest.txt`
+is the source of truth (one line per effect: bundle, namespace, id, display,
+abi, shaders). At build time `gen_barrel_effects.py` (a CMake custom command)
+reads it and emits, into `build/tmp/`:
 
-| Editor module_type | Native namespace |
-|---|---|
-| `video.brightness_contrast` | `::brightness_contrast` |
-| `gen.soft_glow` | `::soft_glow` |
-| `video.motion_blur` | `::motion_blur` |
+- `<effect>_msl.h` — SPV→MSL (spirv-cross) for each shader the effect declares;
+- `barrel_effects.gen.h` — namespace forward-decls + `registerAllBarrelEffects`,
+  which registers each effect's shader MSL immediately before registering the
+  effect. That **interleaving** is why effects can share bare shader names like
+  `compute`/`pixel`: each effect's PSO is compiled from its own MSL during
+  `module_init` (run synchronously inside `registerEffect`) before the next
+  effect overwrites the global MSL-name slot.
 
-Adding more is three matching edits: `build_msl_headers.sh ENTRIES`
-(SPV → MSL header gen), `effects_native` source list in
-`native/CMakeLists.txt`, and one `registry_->registerEffect(...)` call
-here (passing the effect's `module_init`/`create`/`destroy` + self-taking
-lifecycle pointers — the class-like instance ABI, see EFFECTS_STYLE_GUIDE §0).
-Each chain entry gets its own per-instance state via
-`EffectRuntime::instanceFor`, so multiple entries of the same type render
-independently.
+CMake also derives the `effects_native` source list from the manifest
+(`wasm_modules/<namespace>/*.cpp`).
+
+**To add an effect to the barrel:** add one manifest line (after its WASM
+bundle's `build.sh` has produced the effect's `.spv` under `build/tmp/`), then
+rebuild. No edits to this plugin or CMake.
+
+`abi` is `instance` (class-like: `module_init`/`create`/`destroy` + self-taking
+lifecycle — each chain entry gets its own per-instance state via
+`EffectRuntime::instanceFor`, so multiple entries render independently) or
+`legacy` (old free-function effect, adapted by a generated native trampoline —
+file-static state, so correct only single-instance in a native chain; convert
+to the instance ABI for true per-instance behaviour).
+
+**Helper-class shaders.** Effects whose shaders live in a shared helper header
+(`fx::GaussianBlur` → `effect_blur.h`, `fx::FastBlur` → `effect_fast_blur.h`)
+register shader names from inside the helper, not from the effect's `main.cpp`.
+The manifest bootstrap only scans `main.cpp`, so those shaders must be added to
+the manifest by hand — list the names the helper passes to
+`registerShaderSPV` (e.g. `video.blur` → `blur_compute=compute`; `video.fast_blur`
+→ `fast_blur_down=down,fast_blur_up=up`). `video.blur` / `video.fast_blur` are
+wired this way and render correctly.
+
+**Known gaps** (effect registers + appears in the inspector, but won't render
+correctly until the native host gains the missing pieces — all degrade
+gracefully to passthrough/black, no crashes):
+- Render-pass / instanced-draw effects (e.g. `video.flash_particles`): the
+  Metal backend's render-PSO entry points are still stubs.
+- Canvas-overlay effects (e.g. `sequencer.nanolooper`): the `canvas_*` host
+  imports are no-ops natively.
 
 ## Macros
 

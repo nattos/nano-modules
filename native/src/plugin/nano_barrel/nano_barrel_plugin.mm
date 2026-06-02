@@ -59,38 +59,18 @@
 #include "barrel_log.h"
 #include "barrel_codec.h"
 
-// Effect entry points (native compile of wasm_modules/<effect>/main.cpp
-// linked via the effects_native static library). Each namespace exposes
-// the class-like instance surface {module_init, create, destroy, init,
-// tick, render, on_state_patched} that EffectRuntime calls via EffectDesc
-// function pointers; instance callbacks take an opaque per-instance self.
-#define DECLARE_EFFECT_NS(ns)                                                 \
-  namespace ns {                                                              \
-    extern void  module_init();                                               \
-    extern void* create();                                                    \
-    extern void  destroy(void* self);                                         \
-    extern void  init(void* self);                                            \
-    extern void  tick(void* self, double dt);                                 \
-    extern void  render(void* self, int vp_w, int vp_h);                      \
-    extern void  on_state_patched(void* self, int n, const char* pb,          \
-                                  const int* off, const int* len,             \
-                                  const int* ops);                            \
-  }
-DECLARE_EFFECT_NS(brightness_contrast)
-DECLARE_EFFECT_NS(soft_glow)
-DECLARE_EFFECT_NS(motion_blur)
-#undef DECLARE_EFFECT_NS
-
 namespace effect_runtime {
   void setHostTime(double t);
   void setHostDeltaTime(double dt);
   void setHostViewport(int w, int h);
 }
 
-// MSL shader headers — bundled into effects_native at build time.
-#include "brightness_contrast_msl.h"
-#include "soft_glow_msl.h"
-#include "motion_blur_msl.h"
+// Effect registration is generated from effects_native/barrel_manifest.txt by
+// gen_barrel_effects.py (CMake custom command). This header forward-declares
+// every listed effect namespace, includes their MSL shader headers, and
+// defines nano_barrel_gen::registerAllBarrelEffects(rt, registry). Add an
+// effect to the barrel by adding a manifest line — no edits here.
+#include "barrel_effects.gen.h"
 
 namespace {
 
@@ -530,33 +510,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       return;
     }
     rt_ = std::make_unique<effect_runtime::EffectRuntime>(gpu_.get());
-
-    rt_->registerShaderMSL("compute",          BRIGHTNESS_CONTRAST_COMPUTE_MSL);
-    rt_->registerShaderMSL("pixel",            BRIGHTNESS_CONTRAST_PIXEL_MSL);
-    rt_->registerShaderMSL("soft_glow_color",  SOFT_GLOW_COLOR_MSL);
-    rt_->registerShaderMSL("soft_glow_motion", SOFT_GLOW_MOTION_MSL);
-    rt_->registerShaderMSL("reconstruct",      MOTION_BLUR_RECONSTRUCT_MSL);
-    rt_->registerShaderMSL("pyramid_reduce",   MOTION_BLUR_PYRAMID_REDUCE_MSL);
-
     registry_ = std::make_unique<sketch_executor::ModuleRegistry>(rt_.get());
-    registry_->registerEffect(
-        "video.brightness_contrast", "Brightness Contrast",
-        &brightness_contrast::module_init, &brightness_contrast::create,
-        &brightness_contrast::destroy, &brightness_contrast::init,
-        &brightness_contrast::tick, &brightness_contrast::render,
-        &brightness_contrast::on_state_patched);
-    registry_->registerEffect(
-        "gen.soft_glow", "Soft Glow",
-        &soft_glow::module_init, &soft_glow::create,
-        &soft_glow::destroy, &soft_glow::init,
-        &soft_glow::tick, &soft_glow::render,
-        &soft_glow::on_state_patched);
-    registry_->registerEffect(
-        "video.motion_blur", "Motion Blur",
-        &motion_blur::module_init, &motion_blur::create,
-        &motion_blur::destroy, &motion_blur::init,
-        &motion_blur::tick, &motion_blur::render,
-        &motion_blur::on_state_patched);
+
+    // Registers every effect listed in barrel_manifest.txt (shaders + types).
+    nano_barrel_gen::registerAllBarrelEffects(*rt_, *registry_);
 
     executor_ = std::make_unique<sketch_executor::SketchExecutor>(
         rt_.get(), registry_.get(), gpu_.get());
