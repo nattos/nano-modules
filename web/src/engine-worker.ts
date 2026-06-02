@@ -274,6 +274,13 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'reloadWasm':
       await reloadWasmModule(cmd.wasmUrl);
       break;
+    case 'registerFont': {
+      // Main thread resolved an OS font via Local Font Access; register its
+      // bytes with the shared text engine so the next frame can use the face.
+      const te = await TextEngine.whenReady();
+      if (te && te.registerFontBytes(cmd.family, new Uint8Array(cmd.bytes)) >= 0) markDirty();
+      break;
+    }
     case 'setFusionMode':
       if (sketchExecutor) sketchExecutor.setFusionMode(cmd.mode);
       break;
@@ -356,6 +363,12 @@ async function init(width: number, height: number) {
   // Initialize the shared text engine so text.* effects (gen.text) can render.
   // Idempotent; failures are non-fatal (effects that don't use text are fine).
   TextEngine.init(gpuDevice, { fontUrl: '/fonts/default.ttf' })
+    .then((te) => {
+      // queryLocalFonts is unavailable in the worker; ask the main thread to
+      // resolve any unregistered family a spec names (it ships bytes back via
+      // the registerFont command). One request per family per session.
+      te.onFontRequest = (family) => post({ type: 'fontRequest', family });
+    })
     .catch((e) => console.warn('[engine-worker] text engine init failed:', e));
   sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
   // Wire host-level schema-overlay changes (state::setFieldHidden) into

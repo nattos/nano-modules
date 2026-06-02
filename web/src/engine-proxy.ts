@@ -25,6 +25,9 @@ export class EngineProxy {
   /// produced any log output.
   onDebugConsoleLog: ((entries: DebugConsoleEntry[]) => void) | null = null;
   onError: ((message: string) => void) | null = null;
+  /// The worker's text engine saw a spec naming a font family it doesn't have.
+  /// The main thread resolves it via Local Font Access and calls registerFont().
+  onFontRequest: ((family: string) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
 
   constructor(width: number, height: number, barrelMode = false) {
@@ -59,6 +62,9 @@ export class EngineProxy {
         case 'error':
           this.onError?.(event.message);
           console.error('[engine]', event.message);
+          break;
+        case 'fontRequest':
+          this.onFontRequest?.(event.family);
           break;
         case 'debugDump':
           this.debugDumpResolve?.(event.data);
@@ -138,6 +144,12 @@ export class EngineProxy {
 
   reloadWasm(wasmUrl: string) {
     this.send({ type: 'reloadWasm', wasmUrl });
+  }
+
+  /** Register an OS-resolved font face (sfnt bytes) under `family` with the
+   *  worker's text engine. The buffer is transferred (consumed here). */
+  registerFont(family: string, bytes: ArrayBuffer) {
+    this.send({ type: 'registerFont', family, bytes }, [bytes]);
   }
 
   /**

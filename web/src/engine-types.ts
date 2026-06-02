@@ -151,6 +151,10 @@ export type WorkerCommand =
   // Default off — collection is essentially free, but the broadcast
   // overhead is paid only when the user opens the Debug Info tab.
   | { type: 'setDebugMode'; on: boolean }
+  // Main → worker: register an OS-resolved font face (sfnt bytes) under `family`
+  // for the shared text engine. The main thread resolves these via Local Font
+  // Access in response to a `fontRequest` event. `bytes` is transferred.
+  | { type: 'registerFont'; family: string; bytes: ArrayBuffer }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---
@@ -174,4 +178,7 @@ export type WorkerEvent =
   | { type: 'effectsDiscovered'; effects: EffectInfo[] }
   | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
   | { type: 'error'; message: string }
+  // Worker → main: a text spec named `family` but the engine has no such face;
+  // asks the main thread to resolve it via Local Font Access and register it.
+  | { type: 'fontRequest'; family: string }
   | { type: 'debugDump'; data: any };

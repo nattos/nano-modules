@@ -118,6 +118,20 @@ export class TextEngine {
 
   static get instance(): TextEngine | null { return G.__textEngine ?? null; }
 
+  /** Resolves to the engine once init completes (or null if init never started).
+   *  Lets late arrivals — e.g. a registerFont message that races init — wait. */
+  static whenReady(): Promise<TextEngine | null> {
+    return G.__textEngineInit ?? Promise.resolve(G.__textEngine ?? null);
+  }
+
+  // Host hook: invoked (once per family, via ensureFontsForSpec) when a spec
+  // names a family that isn't registered yet. The engine runs in a Worker where
+  // Local Font Access (queryLocalFonts) is unavailable, so the worker sets this
+  // to ask the MAIN thread to resolve the bytes and post them back to
+  // registerFontBytes. When unset (engine on the main thread, e.g. tests),
+  // ensureFontsForSpec falls back to ensureLocalFont directly.
+  onFontRequest: ((family: string) => void) | null = null;
+
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
   static init(
     device: GPUDevice,
@@ -251,7 +265,8 @@ export class TextEngine {
       const family = m[1].replace(/\\(.)/g, '$1');
       if (!family || this.attemptedFamilies.has(family) || this.hasFont(family)) continue;
       this.attemptedFamilies.add(family);
-      void this.ensureLocalFont(family);  // async; populates the face for later frames
+      if (this.onFontRequest) this.onFontRequest(family);  // worker → main thread resolves
+      else void this.ensureLocalFont(family);              // main-thread direct (tests)
     }
   }
 

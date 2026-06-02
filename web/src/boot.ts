@@ -17,6 +17,7 @@ import { toJS } from 'mobx';
 import { appState } from './state/app-state';
 import { appController } from './state/controller';
 import { EngineProxy } from './engine-proxy';
+import { initFontProvider, requestFont } from './font-access';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllProjects } from './state/project-store';
 import { idbGetAll, idbGet, STORE_PROJECTS, STORE_SETTINGS, STORE_SKETCH_INPUTS } from './state/idb-store';
@@ -46,6 +47,12 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   const barrelMode = !!opts.barrelMode;
   const engine = new EngineProxy(width, height, barrelMode);
   appController.setEngine(engine);
+
+  // Bridge OS font resolution: the worker's text engine asks (fontRequest) for a
+  // family it lacks; the main thread resolves the bytes via Local Font Access
+  // (gesture-primed, Chromium/Electron) and ships them back (registerFont).
+  initFontProvider((family, bytes) => engine.registerFont(family, bytes));
+  engine.onFontRequest = (family) => requestFont(family);
 
   (window as any).debugDumpState = () => toJS(appState);
   (window as any).debugPrintState = () => {
