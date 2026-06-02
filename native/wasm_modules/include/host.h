@@ -141,6 +141,28 @@ extern "C" {
   int resolume_get_clip_name(int index, char* buf, int buf_len);
   __attribute__((import_module("resolume"), import_name("load_thumbnail")))
   int resolume_load_thumbnail(int clip_index);
+
+  // text — host-side text shaping/rendering service (FreeType + HarfBuzz +
+  // msdfgen, owned by the host so modules don't link the engine). The
+  // attributed string + layout constraints cross as ONE JSON blob per
+  // layout call (see the spec schema in text_engine docs); richness lives
+  // in the JSON, not the verb count. Opaque integer `layout_id` handles
+  // follow the val.h convention (>0 valid, 0 = error). POD readback structs
+  // (TextMetrics, GlyphQuad below) are passed as `void*` to keep a plain C
+  // ABI; the C++ wrappers in `namespace text` cast to the typed layouts.
+  __attribute__((import_module("text"), import_name("layout")))
+  int text_layout(const char* spec_json, int spec_len);
+  __attribute__((import_module("text"), import_name("measure")))
+  int text_measure(int layout_id, void* out_metrics);          // fills TextMetrics; 1 = ok
+  __attribute__((import_module("text"), import_name("render")))
+  void text_render(int layout_id, int target_tex,
+                   const char* xform_json, int xform_len);      // easy path: composite into target_tex
+  __attribute__((import_module("text"), import_name("atlas")))
+  int text_atlas(int layout_id);                               // escape hatch: shared atlas tex handle
+  __attribute__((import_module("text"), import_name("glyphs")))
+  int text_glyphs(int layout_id, void* out_quads, int out_bytes); // escape hatch: GlyphQuad[]; returns glyph count
+  __attribute__((import_module("text"), import_name("release")))
+  void text_release(int layout_id);
 }
 
 namespace host {
@@ -171,6 +193,87 @@ inline void drawText(const char* text, float x, float y, float size,
 }
 
 } // namespace canvas
+
+// ---------------------------------------------------------------------------
+// text — host text shaping/rendering service.
+//
+// Pipeline lives in the host (one shared FreeType + HarfBuzz + msdfgen engine,
+// compiled identically native + wasm so output is byte-identical → the web
+// simulator reproduces the native "for realz" pixels). Modules just drive it:
+//
+//   auto id = text::layout(specJson);            // spec = attributed string + constraints
+//   text::TextMetrics m; text::measure(id, m);   // for fit/center
+//   text::render(id, texOut, "{\"x\":40,\"y\":40}");   // easy path
+//   // ...or the escape hatch: sample the shared atlas in your own shader
+//   int atlas = text::atlasTexture(id);
+//   int n = text::glyphCount(id);
+//   text::glyphs(id, quads, n);
+//   text::release(id);
+//
+// The JSON spec schema (built cheaply module-side, marshalled once):
+//   { "text": "…utf8…",
+//     "runs":[{"start":0,"len":5,"family":"Inter","weight":700,"italic":false,
+//              "size_px":48,"rgba":[1,1,1,1],"features":["liga"]}],
+//     "constraints":{"max_width_px":1024,"align":"start|center|end|justify",
+//                    "direction":"auto|ltr|rtl","line_spacing":1.2} }
+// ---------------------------------------------------------------------------
+namespace text {
+
+using Layout = int;
+
+// Layout-level metrics. POD with a FIXED layout — the host fills this via the
+// `text_measure` void* out param. Keep field order/size stable across the ABI.
+struct TextMetrics {
+  float width;          // laid-out content width, px
+  float height;         // total laid-out height, px
+  int   line_count;     // number of lines after wrapping
+  float first_baseline; // px from layout-box top to the first baseline
+  int   glyph_count;    // total positioned glyphs (== text_glyphs return)
+  int   atlas_kind;     // 0 = MSDF, 1 = alpha-coverage (host backend dependent)
+  float atlas_px_range; // MSDF distance range in atlas px (for screenPxRange AA)
+  int   _pad;
+};
+
+// One positioned glyph quad (escape hatch). POD, fixed 48-byte layout. Screen
+// rect is in px relative to the layout box origin (top-left); apply your own
+// transform in-shader. UVs are normalized into the shared atlas texture.
+struct GlyphQuad {
+  float x, y, w, h;       // screen-space rect, px (layout-box-relative)
+  float u0, v0, u1, v1;   // atlas UV rect, normalized
+  float r, g, b, a;       // run color (linear, premultiply-free)
+};
+
+/// Lay out an attributed string. Returns an opaque layout handle (>0), or 0 on
+/// error. The host caches by spec hash, so re-laying the same spec is cheap.
+inline Layout layout(const char* specJson, int len) { return text_layout(specJson, len); }
+inline Layout layout(const char* specJson) { return text_layout(specJson, (int)std::strlen(specJson)); }
+
+/// Fill `out` with layout metrics. Returns false on an invalid handle.
+inline bool measure(Layout id, TextMetrics& out) { return text_measure(id, &out) != 0; }
+
+/// Easy path: host uploads the glyph atlas and composites the laid-out text
+/// into `targetTex` (AlphaOver). `xformJson` (may be null) positions/scales the
+/// layout box, e.g. {"x":40,"y":40,"scale":1.0}.
+inline void render(Layout id, int targetTex, const char* xformJson = nullptr) {
+  text_render(id, targetTex, xformJson, xformJson ? (int)std::strlen(xformJson) : 0);
+}
+
+/// Escape hatch: the shared atlas GPU texture handle (sample it yourself).
+inline int atlasTexture(Layout id) { return text_atlas(id); }
+
+/// Number of positioned glyphs (size your GlyphQuad buffer to this).
+inline int glyphCount(Layout id) { return text_glyphs(id, nullptr, 0); }
+
+/// Escape hatch: copy up to `maxCount` positioned glyph quads into `out`.
+/// Returns the number written.
+inline int glyphs(Layout id, GlyphQuad* out, int maxCount) {
+  return text_glyphs(id, out, maxCount * (int)sizeof(GlyphQuad));
+}
+
+/// Release a layout handle (host frees its cached layout/geometry).
+inline void release(Layout id) { text_release(id); }
+
+} // namespace text
 
 namespace state {
 
@@ -567,6 +670,18 @@ inline float patchFloat(int index) {
   auto patch = val::Value(state::getPatch(index));
   auto v = val::Value(val::get(patch.h, "value"));
   return static_cast<float>(val::asNumber(v.h));
+}
+
+/// Read a string value from the Nth patch into `buf` (NUL-terminated, capped
+/// at bufLen-1). Returns the byte length written. Use for `textField` params
+/// (e.g. the `text` content of a text node) — there is no string type on the
+/// `state::read` path, so string fields must be picked up via patches.
+inline int patchString(int index, char* buf, int bufLen) {
+  auto patch = val::Value(state::getPatch(index));
+  auto v = val::Value(val::get(patch.h, "value"));
+  int n = val::asString(v.h, buf, bufLen);
+  if (bufLen > 0) { int t = (n < bufLen) ? n : bufLen - 1; buf[t] = '\0'; }
+  return n;
 }
 
 /// 2/3/4-component vector results from vec patches.
