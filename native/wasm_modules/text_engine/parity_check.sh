@@ -33,6 +33,7 @@ SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'
   '{"text":"wrap me onto many lines please","constraints":{"max_width_px":160,"size_px":24}}'
   '{"text":"€ é ✓ 你好","size_px":32}'
+  '{"text":"REDblue","runs":[{"start":0,"len":3,"size_px":120,"rgba":[1,0.2,0.2,1]},{"start":3,"len":4,"size_px":60,"rgba":[0.3,0.5,1,1]}]}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.

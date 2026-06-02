@@ -22,6 +22,7 @@
 #include <msdfgen.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -86,6 +87,47 @@ static int decodeUTF8(const std::string& t, int i, unsigned& cp) {
   if ((c >> 4) == 0xE && i + 2 < (int)t.size()) { cp = ((c & 0x0F) << 12) | (((unsigned char)t[i+1] & 0x3F) << 6) | ((unsigned char)t[i+2] & 0x3F); return i + 3; }
   if ((c >> 3) == 0x1E && i + 3 < (int)t.size()) { cp = ((c & 0x07) << 18) | (((unsigned char)t[i+1] & 0x3F) << 12) | (((unsigned char)t[i+2] & 0x3F) << 6) | ((unsigned char)t[i+3] & 0x3F); return i + 4; }
   cp = c; return i + 1;
+}
+
+// Parse "key":[n0,n1,...] into out[count]; entries past the array keep defaults.
+static void readFloatArray(const char* s, int n, const char* key, float* out, int count) {
+  int p = findField(s, n, key);
+  if (p < 0 || p >= n || s[p] != '[') return;
+  int j = p + 1, idx = 0;
+  while (j < n && s[j] != ']' && idx < count) {
+    if (s[j] == '-' || s[j] == '.' || (s[j] >= '0' && s[j] <= '9')) {
+      int k = j;
+      while (k < n && (s[k]=='-'||s[k]=='+'||s[k]=='.'||s[k]=='e'||s[k]=='E'||(s[k]>='0'&&s[k]<='9'))) k++;
+      std::string tok(s + j, s + k); out[idx++] = (float)std::strtod(tok.c_str(), nullptr); j = k;
+    } else j++;
+  }
+}
+
+// A styled run: a byte range [b0, b1) of the text with its size + color.
+struct Run { int b0, b1; float size; float r, g, b, a; };
+
+// Parse the spec's "runs" array. Each run = {start, len, size_px, rgba}. Falls
+// back to a single default run covering all text (white, defSize) when absent.
+static std::vector<Run> parseRuns(const char* s, int n, float defSize) {
+  std::vector<Run> runs;
+  int p = findField(s, n, "runs");
+  if (p >= 0 && p < n && s[p] == '[') {
+    int j = p + 1;
+    while (j < n && s[j] != ']') {
+      if (s[j] != '{') { j++; continue; }
+      int depth = 1, os = j; j++;
+      while (j < n && depth > 0) { if (s[j] == '{') depth++; else if (s[j] == '}') depth--; j++; }
+      const char* sub = s + os; int sl = j - os;
+      int start = (int)readNumber(sub, sl, "start", 0.0f);
+      float flen = readNumber(sub, sl, "len", -1.0f);
+      float size = readNumber(sub, sl, "size_px", defSize);
+      float rgba[4] = {1, 1, 1, 1}; readFloatArray(sub, sl, "rgba", rgba, 4);
+      runs.push_back({start, flen < 0 ? INT_MAX : start + (int)flen, size,
+                      rgba[0], rgba[1], rgba[2], rgba[3]});
+    }
+  }
+  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1});
+  return runs;
 }
 
 // ---- msdfgen Shape builder from a FreeType outline -------------------------
@@ -247,60 +289,89 @@ int Engine::layout(const char* spec_json, int len) {
   std::string text;
   int tp = findField(spec_json, len, "text");
   if (tp >= 0) readString(spec_json, len, tp, text);
-  float size      = readNumber(spec_json, len, "size_px", 48.0f);
+  float defSize   = readNumber(spec_json, len, "size_px", 48.0f);
   float max_width = readNumber(spec_json, len, "max_width_px", 0.0f);
   float line_sp   = readNumber(spec_json, len, "line_spacing", 1.2f);
-  float line_h    = size * line_sp;
-  float ascent_px = impl_->ascender_em * size;
+  std::vector<Run> runs = parseRuns(spec_json, len, defSize);
 
   LayoutData ld;
-  float penX = 0, baseline = ascent_px, maxLineW = 0;
-  int lines = 1;
+  float maxLineW = 0, totalH = 0, firstBaseline = -1;
+  int lines = 0;
 
-  struct WG { uint32_t gi; const GlyphInfo* info; };
-  std::vector<WG> word; float wordW = 0;
+  // A glyph with its own run style. Layout buffers a line (baseline TBD), so
+  // mixed sizes align on a shared baseline = lineTop + maxAscent on the line.
+  struct SG { float size; float r, g, b, a; const GlyphInfo* info; };
+  std::vector<SG> word; float wordW = 0;                 // current word (for wrap)
+  struct LG { float x; SG g; };
+  std::vector<LG> lineGlyphs;                            // glyphs placed on the current line
+  float penX = 0, lineMaxAscent = 0, lineMaxHeight = 0;
 
-  auto emit = [&](const WG& g, float x0) {
-    const GlyphInfo* gi = g.info;
-    if (!gi->has_msdf) return;
-    GlyphQuad q;
-    q.x = x0 + gi->planeL * size;
-    q.w = (gi->planeR - gi->planeL) * size;
-    q.y = baseline - gi->planeT * size;
-    q.h = (gi->planeT - gi->planeB) * size;
-    q.u0 = gi->u0; q.v0 = gi->v0; q.u1 = gi->u1; q.v1 = gi->v1;
-    q.r = q.g = q.b = q.a = 1.0f;
-    ld.quads.push_back(q);
+  auto runFor = [&](int off) -> const Run& {
+    for (const Run& r : runs) if (off >= r.b0 && off < r.b1) return r;
+    return runs.back();
   };
-  auto newline = [&]() { if (penX > maxLineW) maxLineW = penX; penX = 0; baseline += line_h; lines++; };
+  auto bumpLineMetrics = [&](float size) {
+    float asc = impl_->ascender_em * size, lh = size * line_sp;
+    if (asc > lineMaxAscent) lineMaxAscent = asc;
+    if (lh > lineMaxHeight)  lineMaxHeight = lh;
+  };
+  auto finalizeLine = [&]() {
+    if (penX > maxLineW) maxLineW = penX;
+    float baseline = totalH + lineMaxAscent;
+    if (firstBaseline < 0) firstBaseline = baseline;
+    for (const LG& lg : lineGlyphs) {
+      const GlyphInfo* gi = lg.g.info;
+      if (!gi->has_msdf) continue;
+      float sz = lg.g.size;
+      GlyphQuad q;
+      q.x = lg.x + gi->planeL * sz;
+      q.w = (gi->planeR - gi->planeL) * sz;
+      q.y = baseline - gi->planeT * sz;
+      q.h = (gi->planeT - gi->planeB) * sz;
+      q.u0 = gi->u0; q.v0 = gi->v0; q.u1 = gi->u1; q.v1 = gi->v1;
+      q.r = lg.g.r; q.g = lg.g.g; q.b = lg.g.b; q.a = lg.g.a;
+      ld.quads.push_back(q);
+    }
+    totalH += lineMaxHeight > 0 ? lineMaxHeight : defSize * line_sp;
+    lines++;
+    lineGlyphs.clear(); penX = 0; lineMaxAscent = 0; lineMaxHeight = 0;
+  };
   auto flushWord = [&]() {
     if (word.empty()) return;
-    if (max_width > 0 && penX > 0 && penX + wordW > max_width) newline();
-    for (auto& g : word) { emit(g, penX); penX += g.info->advance * size; }
+    if (max_width > 0 && penX > 0 && penX + wordW > max_width) finalizeLine();
+    for (const SG& g : word) {
+      bumpLineMetrics(g.size);
+      lineGlyphs.push_back({penX, g});
+      penX += g.info->advance * g.size;
+    }
     word.clear(); wordW = 0;
   };
 
   for (int i = 0; i < (int)text.size();) {
+    int byteStart = i;
     unsigned cp; i = decodeUTF8(text, i, cp);
-    if (cp == '\n') { flushWord(); newline(); continue; }
+    const Run& r = runFor(byteStart);
+    if (cp == '\n') { flushWord(); finalizeLine(); continue; }
     uint32_t gi = FT_Get_Char_Index(impl_->face, cp);
     const GlyphInfo* info = impl_->ensureGlyph(gi);
     if (cp == ' ') {
       flushWord();
-      float adv = info->advance * size;
-      if (max_width > 0 && penX > 0 && penX + adv > max_width) newline();
-      else penX += adv;
+      float adv = info->advance * r.size;
+      if (max_width > 0 && penX > 0 && penX + adv > max_width) { finalizeLine(); }
+      else { bumpLineMetrics(r.size); penX += adv; }
       continue;
     }
-    word.push_back({gi, info}); wordW += info->advance * size;
+    word.push_back({r.size, r.r, r.g, r.b, r.a, info}); wordW += info->advance * r.size;
   }
   flushWord();
-  if (penX > maxLineW) maxLineW = penX;
+  // Finalize the trailing line — unless the text ended exactly on a newline
+  // (no pending glyphs) so we don't emit a spurious empty line.
+  if (!lineGlyphs.empty() || penX > 0 || lines == 0) finalizeLine();
 
   ld.metrics.width          = maxLineW;
-  ld.metrics.height         = (float)lines * line_h;
+  ld.metrics.height         = totalH;
   ld.metrics.line_count     = lines;
-  ld.metrics.first_baseline = ascent_px;
+  ld.metrics.first_baseline = firstBaseline < 0 ? 0 : firstBaseline;
   ld.metrics.glyph_count    = (int)ld.quads.size();
   ld.metrics.atlas_kind     = (int)AtlasKind::MSDF;
   ld.metrics.atlas_px_range = (float)RANGE_PX;
