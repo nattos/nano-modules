@@ -22,6 +22,7 @@ namespace gen_text {
 
 struct State {
   char  text[2048] = "Text";
+  char  font[128] = "";       // OS/bundled family name ("" = host primary font)
   float size = 64.0f;
   float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
   float max_width = 0.0f;     // 0 = no wrap
@@ -47,6 +48,7 @@ void module_init() {
   state::init("gen.text", {1, 0, 0},
     state::Schema()
       .textField  ("text",         "Text", state::PrimaryInput)
+      .textField  ("font",         "",     state::PrimaryInput)
       .floatField ("size",         64.0f,  8.0f, 512.0f, state::PrimaryInput)
       .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput)
       .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput)
@@ -69,6 +71,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int pl = len[i];
     if      (state::pathIs(p, pl, "text"))         state::patchString(i, s->text, sizeof(s->text));
+    else if (state::pathIs(p, pl, "font"))         state::patchString(i, s->font, sizeof(s->font));
     else if (state::pathIs(p, pl, "size"))         s->size = state::patchFloat(i);
     else if (state::pathIs(p, pl, "max_width"))    s->max_width = state::patchFloat(i);
     else if (state::pathIs(p, pl, "line_spacing")) s->line_spacing = state::patchFloat(i);
@@ -87,8 +90,14 @@ void render(void* self, int vp_w, int vp_h) {
   int pos = 0;
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"text\":\"");
   appendEscaped(spec, pos, (int)sizeof(spec), s->text);
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",\"runs\":[{");
+  if (s->font[0]) {   // name a family → host resolves it (bundled / OS font)
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"family\":\"");
+    appendEscaped(spec, pos, (int)sizeof(spec), s->font);
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",");
+  }
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
-      "\",\"runs\":[{\"size_px\":%.3f,\"rgba\":[%.4f,%.4f,%.4f,%.4f]}],"
+      "\"size_px\":%.3f,\"rgba\":[%.4f,%.4f,%.4f,%.4f]}],"
       "\"constraints\":{\"max_width_px\":%.3f,\"line_spacing\":%.3f}}",
       s->size, s->r, s->g, s->b, s->a, s->max_width, s->line_spacing);
 

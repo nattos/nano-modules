@@ -1092,7 +1092,9 @@ export class WasmHost {
         layout: (specPtr: number, specLen: number): number => {
           const te = TextEngine.instance;
           if (!te) return 0;
-          return te.layout(this.readString(specPtr, specLen));
+          const spec = this.readString(specPtr, specLen);
+          te.ensureFontsForSpec(spec);   // lazily resolve any named families (OS fonts)
+          return te.layout(spec);
         },
         measure: (id: number, outPtr: number): number => {
           const te = TextEngine.instance;

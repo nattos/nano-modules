@@ -231,6 +231,25 @@ export class TextEngine {
     return id;
   }
 
+  // Families already resolved or attempted, so a per-frame spec scan never
+  // re-queries (Local Font Access is expensive and prompts permission once).
+  private attemptedFamilies = new Set<string>();
+
+  /** Scan a layout spec for `"family":"…"` values and kick off async resolution
+   *  (Local Font Access) of any not yet registered. Fire-and-forget: the current
+   *  frame falls back to the primary font; the resolved face appears on a later
+   *  frame. Each family is attempted at most once. Call before layout(). */
+  ensureFontsForSpec(specJson: string): void {
+    const re = /"family"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(specJson)) !== null) {
+      const family = m[1].replace(/\\(.)/g, '$1');
+      if (!family || this.attemptedFamilies.has(family) || this.hasFont(family)) continue;
+      this.attemptedFamilies.add(family);
+      void this.ensureLocalFont(family);  // async; populates the face for later frames
+    }
+  }
+
   /** Resolve `family` via the browser's Local Font Access API (Chromium, behind
    *  a permission prompt) and register its bytes. Returns true if registered,
    *  false if unavailable / not found / denied — callers should fall back to a
