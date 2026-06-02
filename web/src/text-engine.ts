@@ -90,10 +90,15 @@ interface TEExports {
  *  bundled, parity-guaranteed set). A run's JSON `family` matches `family` here. */
 export interface FontSource { family: string; url: string; }
 
-// Bundled families guaranteed on the web side. Empty by default — the app (or a
-// test harness) supplies the manifest via TextEngine.init({ fonts }). Bundled
-// font files are gitignored/fetched, so we never hard-require specific URLs here.
-const DEFAULT_FONTS: FontSource[] = [];
+// Bundled families guaranteed on the web side — the parity-guaranteed set, OFL
+// Noto faces fetched by web/scripts/fetch_fonts.sh (see FONTS.md). Their bytes
+// match what the native host bundles, so a run naming one of these families is
+// reproduced pixel-for-pixel. Missing files (script not run) load-fail softly
+// → fallback to the primary font. The app can override via init({ fonts }).
+const DEFAULT_FONTS: FontSource[] = [
+  { family: 'Noto Sans',  url: '/fonts/noto-sans.ttf' },
+  { family: 'Noto Serif', url: '/fonts/noto-serif.ttf' },
+];
 
 // Back the singleton with globalThis so it survives module duplication across
 // vite/HMR boundaries (wasm-host.ts and gpu-test-runner.html can otherwise end

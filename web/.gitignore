@@ -1,3 +1,6 @@
 
-# Provisioned default font for the text engine (Phase 3 replaces with the real font provider)
-public/fonts/default.ttf
+# Bundled text-engine fonts — large OFL binaries fetched (not committed) by
+# web/scripts/fetch_fonts.sh at a pinned commit + verified sha256. See FONTS.md.
+public/fonts/*.ttf
+public/fonts/*.otf
+public/fonts/*.ttc
