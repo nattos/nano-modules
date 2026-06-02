@@ -506,6 +506,10 @@ if(APPLE)
   # the WASM bundle build produced under build/tmp. Adding an effect = one
   # manifest line (after its bundle's build.sh has run).
   set(BARREL_MANIFEST ${CMAKE_SOURCE_DIR}/effects_native/barrel_manifest.txt)
+  # Re-run CMake configure when the manifest changes — the effects_native
+  # source list is derived from it at configure time, so a bare `make`
+  # after editing the manifest must reconfigure to pick up new sources.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${BARREL_MANIFEST})
   set(BARREL_GEN_HEADER ${EFFECTS_NATIVE_TMP}/barrel_effects.gen.h)
   # Glob the WASM build's .spv so the codegen re-runs when shaders change.
   file(GLOB _barrel_spv ${EFFECTS_NATIVE_TMP}/*.spv)

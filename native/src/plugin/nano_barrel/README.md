@@ -153,13 +153,20 @@ the manifest by hand — list the names the helper passes to
 → `fast_blur_down=down,fast_blur_up=up`). `video.blur` / `video.fast_blur` are
 wired this way and render correctly.
 
+Render-pass effects work: the Metal backend implements instanced render
+pipelines (`createInstancedRenderPSO` with alpha-over / additive blend),
+load-action render passes (`beginRenderPassLoad`), and stage-unified render
+buffer binding (`renderSetBuffer`). `video.flash_particles` (compute particle
+sim + instanced raster) renders natively.
+
 **Known gaps** (effect registers + appears in the inspector, but won't render
 correctly until the native host gains the missing pieces — all degrade
 gracefully to passthrough/black, no crashes):
-- Render-pass / instanced-draw effects (e.g. `video.flash_particles`): the
-  Metal backend's render-PSO entry points are still stubs.
+- Multi-render-target effects: `begin_render_pass_mrt` /
+  `create_instanced_render_pso_mrt_layout` are still stubs (no cared-about
+  bundle effect needs MRT today).
 - Canvas-overlay effects (e.g. `sequencer.nanolooper`): the `canvas_*` host
-  imports are no-ops natively.
+  imports are no-ops natively (a debug surface — intentionally deferred).
 
 ## Macros
 

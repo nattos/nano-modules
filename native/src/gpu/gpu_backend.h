@@ -23,6 +23,20 @@ public:
                                    int32_t fsHandle, const std::string& fsEntry,
                                    int32_t format) = 0;
 
+  // Instanced render pipeline: a procedural vertex shader that pulls
+  // geometry from storage buffers (no vertex descriptor / vertex buffer).
+  // `format` is a TextureFormat enum value (2 = Surface). `blendMode`:
+  // 0 = alpha-over (src*src.a + dst*(1-src.a)), 1 = additive
+  // (src*src.a + dst). Default unimplemented (returns -1).
+  virtual int32_t createInstancedRenderPSO(
+      int32_t vsHandle, const std::string& vsEntry,
+      int32_t fsHandle, const std::string& fsEntry,
+      int32_t format, int32_t blendMode) {
+    (void)vsHandle; (void)vsEntry; (void)fsHandle; (void)fsEntry;
+    (void)format; (void)blendMode;
+    return -1;
+  }
+
   // Optional: compute PSO with Metal function-constant overrides
   // (== WebGPU spec constants). Backends that don't support spec
   // constants ignore the `constants` payload and behave like
@@ -99,9 +113,21 @@ public:
   // Render pass
   virtual int32_t beginRenderPass(int32_t textureHandle,
                                    float cr, float cg, float cb, float ca) = 0;
+  // Begin a render pass that LOADS existing target contents (no clear) —
+  // for blend-on-top raster (e.g. instanced particles over a pre-filled
+  // texture). Default unimplemented (returns -1).
+  virtual int32_t beginRenderPassLoad(int32_t textureHandle) {
+    (void)textureHandle; return -1;
+  }
   virtual void renderSetPSO(int32_t pass, int32_t pso) = 0;
   virtual void renderSetVertexBuffer(int32_t pass, int32_t buf,
                                      uint32_t offset, int32_t slot) = 0;
+  // Bind a buffer at `slot` to BOTH vertex and fragment stages (WGSL bind
+  // groups are stage-unified; spirv-cross emits [[buffer(slot)]] in
+  // whichever stage uses it). Default no-op.
+  virtual void renderSetBuffer(int32_t pass, int32_t buf, int32_t slot) {
+    (void)pass; (void)buf; (void)slot;
+  }
   virtual void renderDraw(int32_t pass, uint32_t vertexCount, uint32_t instanceCount) = 0;
   virtual void endRenderPass(int32_t pass) = 0;
 

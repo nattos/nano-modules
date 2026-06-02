@@ -330,6 +330,57 @@ public:
     }
   }
 
+  int32_t createInstancedRenderPSO(int32_t vsHandle, const std::string& vsEntry,
+                                    int32_t fsHandle, const std::string& fsEntry,
+                                    int32_t format, int32_t blendMode) override {
+    @autoreleasepool {
+      id<MTLLibrary> vsLib = getAs<id<MTLLibrary>>(vsHandle);
+      id<MTLLibrary> fsLib = getAs<id<MTLLibrary>>(fsHandle);
+      if (!vsLib || !fsLib) return -1;
+
+      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:
+          [NSString stringWithUTF8String:vsEntry.c_str()]];
+      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:
+          [NSString stringWithUTF8String:fsEntry.c_str()]];
+      if (!vsFunc || !fsFunc) return -1;
+
+      // TextureFormat enum: 0=BGRA8, 1=RGBA8, 2=Surface, 3=RGBA16F, 4=R32F.
+      MTLPixelFormat fmt;
+      switch (format) {
+        case 0:  fmt = MTLPixelFormatBGRA8Unorm;  break;
+        case 1:  fmt = MTLPixelFormatRGBA8Unorm;  break;
+        case 3:  fmt = MTLPixelFormatRGBA16Float; break;
+        case 4:  fmt = MTLPixelFormatR32Float;    break;
+        case 2:  default: fmt = surfaceFormat_;   break;  // Surface
+      }
+
+      MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+      desc.vertexFunction = vsFunc;
+      desc.fragmentFunction = fsFunc;
+      // No vertexDescriptor: the vertex shader synthesizes geometry from
+      // [[vertex_id]] / [[instance_id]] + storage buffers (instanced quads).
+      desc.colorAttachments[0].pixelFormat = fmt;
+      desc.colorAttachments[0].blendingEnabled = YES;
+      desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+      desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+      if (blendMode == 1) {  // additive: src*src.a + dst
+        desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+        desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+      } else {               // alpha-over: src*src.a + dst*(1 - src.a)
+        desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      }
+
+      NSError* error = nil;
+      id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&error];
+      if (!pso) {
+        NSLog(@"Metal instanced render PSO error: %@", error);
+        return -1;
+      }
+      return alloc(ResourceType::RenderPSO, pso);
+    }
+  }
+
   // --- Buffer operations ---
 
   void writeBuffer(int32_t bufHandle, uint32_t offset,
@@ -437,6 +488,20 @@ public:
     return 1;
   }
 
+  int32_t beginRenderPassLoad(int32_t textureHandle) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (!tex) return -1;
+    if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
+
+    MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
+    desc.colorAttachments[0].texture = tex;
+    desc.colorAttachments[0].loadAction = MTLLoadActionLoad;   // keep existing pixels
+    desc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    renderEncoder_ = [cmdBuffer_ renderCommandEncoderWithDescriptor:desc];
+    return 1;
+  }
+
   void renderSetPSO(int32_t pass, int32_t pso) override {
     (void)pass;
     id<MTLRenderPipelineState> p = getAs<id<MTLRenderPipelineState>>(pso);
@@ -448,6 +513,17 @@ public:
     (void)pass;
     id<MTLBuffer> b = getAs<id<MTLBuffer>>(buf);
     if (b && renderEncoder_) [renderEncoder_ setVertexBuffer:b offset:offset atIndex:slot];
+  }
+
+  void renderSetBuffer(int32_t pass, int32_t buf, int32_t slot) override {
+    (void)pass;
+    id<MTLBuffer> b = getAs<id<MTLBuffer>>(buf);
+    if (!b || !renderEncoder_) return;
+    // WGSL bind groups are stage-unified; bind to both Metal stage tables
+    // so [[buffer(slot)]] resolves whether the vertex or fragment shader
+    // reads it. Unused bindings on a stage are harmless.
+    [renderEncoder_ setVertexBuffer:b offset:0 atIndex:slot];
+    [renderEncoder_ setFragmentBuffer:b offset:0 atIndex:slot];
   }
 
   void renderDraw(int32_t pass, uint32_t vertexCount, uint32_t instanceCount) override {

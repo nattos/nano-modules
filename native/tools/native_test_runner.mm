@@ -230,14 +230,18 @@ int main(int argc, char** argv) {
     int tickCount = cfg.value("ticks", 0);
     effect_runtime::setHostViewport(W, H);
     effect_runtime::setHostBpm(120.0);
+    // One render per tick — a real frame is tick + render. Effects whose
+    // simulation runs GPU-side inside render() (e.g. flash_particles'
+    // particle update compute) need render() called every frame, not once.
     for (int i = 0; i < tickCount; ++i) {
       double t = (i + 1) * 0.016;
       effect_runtime::setHostTime(t);
       effect_runtime::setHostDeltaTime(0.016);
       effect_runtime::setHostBarPhase(std::fmod(t * 120.0 / 60.0 / 4.0, 1.0));
       inst->doTick(0.016);
+      inst->doRender(W, H);
     }
-    inst->doRender(W, H);
+    if (tickCount == 0) inst->doRender(W, H);
 
     // Submit + read back. Many effects call gpu::Device::submit() at
     // the end of render(), but if a future effect doesn't, ensure we

@@ -150,38 +150,44 @@ int gpu_create_compute_pso_v2(int shader, const char* entry, int entry_len,
                                            consts);
 }
 
-int gpu_create_render_pso_layout(int /*vs*/, const char* /*vse*/, int /*vsl*/,
-                                  int /*fs*/, const char* /*fse*/, int /*fsl*/,
-                                  int /*fmt*/, const int* /*bindings*/, int /*bcount*/) {
-  unimplemented("create_render_pso_layout");
-  return -1;
+int gpu_create_render_pso_layout(int vs, const char* vse, int vsl,
+                                  int fs, const char* fse, int fsl,
+                                  int fmt, int /*bcount*/, const int* /*bindings*/) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createRenderPSO(vs, mapEntryName(vse, vsl),
+                            fs, mapEntryName(fse, fsl), fmt);
 }
-int gpu_create_instanced_render_pso_layout(int, const char*, int,
-                                            int, const char*, int,
-                                            int, int, const int*, int) {
-  unimplemented("create_instanced_render_pso_layout");
-  return -1;
+int gpu_create_instanced_render_pso_layout(int vs, const char* vse, int vsl,
+                                            int fs, const char* fse, int fsl,
+                                            int fmt, int /*bcount*/, const int* /*bindings*/) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
+                                     fs, mapEntryName(fse, fsl), fmt, /*blend=*/0);
 }
-int gpu_create_instanced_render_pso(int, const char*, int,
-                                     int, const char*, int,
-                                     int, int) {
-  unimplemented("create_instanced_render_pso");
-  return -1;
+int gpu_create_instanced_render_pso(int vs, const char* vse, int vsl,
+                                     int fs, const char* fse, int fsl, int fmt) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
+                                     fs, mapEntryName(fse, fsl), fmt, /*blend=*/0);
 }
 int gpu_create_instanced_render_pso_mrt_layout(int, const char*, int,
                                                 int, const char*, int,
                                                 int, const int*,
-                                                int, const int*, int) {
+                                                int, const int*) {
   unimplemented("create_instanced_render_pso_mrt_layout");
   return -1;
 }
-int gpu_create_instanced_render_pso_blend_layout(int, const char*, int,
-                                                  int, const char*, int,
-                                                  int, int,
-                                                  int, int, int, int,
-                                                  const int*, int) {
-  unimplemented("create_instanced_render_pso_blend_layout");
-  return -1;
+int gpu_create_instanced_render_pso_blend_layout(int vs, const char* vse, int vsl,
+                                                  int fs, const char* fse, int fsl,
+                                                  int fmt, int /*bcount*/,
+                                                  const int* /*bindings*/, int blend_mode) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
+                                     fs, mapEntryName(fse, fsl), fmt, blend_mode);
 }
 
 void gpu_write_buffer(int buf, int offset, const void* data, int data_len) {
@@ -229,9 +235,9 @@ int gpu_begin_render_pass(int tex, float r, float g, float b_, float a) {
   auto* b = backend();
   return b ? b->beginRenderPass(tex, r, g, b_, a) : -1;
 }
-int gpu_begin_render_pass_load(int /*tex*/) {
-  unimplemented("begin_render_pass_load");
-  return -1;
+int gpu_begin_render_pass_load(int tex) {
+  auto* b = backend();
+  return b ? b->beginRenderPassLoad(tex) : -1;
 }
 int gpu_begin_render_pass_mrt(int /*count*/, const int* /*texs*/, const float* /*clears*/) {
   unimplemented("begin_render_pass_mrt");
@@ -245,8 +251,9 @@ void gpu_render_set_vertex_buffer(int pass, int buf, int offset, int slot) {
   auto* b = backend();
   if (b) b->renderSetVertexBuffer(pass, buf, (uint32_t)offset, slot);
 }
-void gpu_render_set_buffer(int /*pass*/, int /*buf*/, int /*slot*/) {
-  unimplemented("render_set_buffer");
+void gpu_render_set_buffer(int pass, int buf, int slot) {
+  auto* b = backend();
+  if (b) b->renderSetBuffer(pass, buf, slot);
 }
 void gpu_render_draw(int pass, int vc, int ic) {
   auto* b = backend();
