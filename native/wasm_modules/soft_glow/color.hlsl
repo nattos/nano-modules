@@ -139,5 +139,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // color_strength scales the emitted glow (NOT the motion field — the
   // motion shader has its own scaling). 0 = passthrough; 1 = nominal;
   // >1 brightens, clamped by saturate.
-  outputTex[gid.xy] = float4(saturate(base.rgb + glow * color_strength), base.a);
+  //
+  // Output alpha: the glow is rendered additively over the input. To
+  // stay visible against a transparent background we have to push our
+  // own alpha contribution — `val` is the HSV-pre-conversion brightness
+  // (= saturate(accum)), which is exactly the "how much glow is here"
+  // signal. max() with base.a keeps the input's opacity intact and
+  // lets the glow only INCREASE opacity, never decrease it.
+  float glow_alpha = saturate(val * color_strength);
+  outputTex[gid.xy] = float4(
+      saturate(base.rgb + glow * color_strength),
+      max(base.a, glow_alpha));
 }
