@@ -41,6 +41,20 @@ int main(int argc, char** argv) {
     std::fclose(ff);
   }
 
+  // Optional second face for multi-family parity: register TE_FONT2 under the
+  // family name TE_FAMILY2 (the wasm tool registers the SAME file the SAME way).
+  const char* font2 = std::getenv("TE_FONT2");
+  const char* family2 = std::getenv("TE_FAMILY2");
+  if (font2 && family2) {
+    if (FILE* ff = std::fopen(font2, "rb")) {
+      std::fseek(ff, 0, SEEK_END); long fn = std::ftell(ff); std::fseek(ff, 0, SEEK_SET);
+      std::vector<uint8_t> fb(fn);
+      if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn)
+        eng.addFont(family2, (int)std::strlen(family2), fb.data(), (int)fn);
+      std::fclose(ff);
+    }
+  }
+
   int id = eng.layout(spec.c_str(), (int)spec.size());
   if (id <= 0) { std::fprintf(stderr, "layout failed\n"); return 1; }
 

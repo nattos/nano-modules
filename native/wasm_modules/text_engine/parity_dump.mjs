@@ -53,6 +53,17 @@ u8().set(fontBytes, fontPtr);
 if (!ex.te_set_font(fontPtr, fontBytes.length)) { console.error('te_set_font failed'); process.exit(1); }
 ex.free(fontPtr);
 
+// Optional second face (multi-family parity): register TE_FONT2 under TE_FAMILY2,
+// matching the native tool byte-for-byte.
+if (process.env.TE_FONT2 && process.env.TE_FAMILY2) {
+  const f2 = readFileSync(process.env.TE_FONT2);
+  const f2p = ex.malloc(f2.length); u8().set(f2, f2p);
+  const fam = new TextEncoder().encode(process.env.TE_FAMILY2);
+  const famp = ex.malloc(fam.length); u8().set(fam, famp);
+  ex.te_add_font(famp, fam.length, f2p, f2.length);
+  ex.free(famp); ex.free(f2p);
+}
+
 // Stage the spec JSON into engine memory.
 const enc = new TextEncoder().encode(spec);
 const specPtr = ex.malloc(enc.length);

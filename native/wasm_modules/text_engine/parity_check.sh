@@ -29,11 +29,17 @@ DUMP_DIR="$ROOT/build/text-dumps"
 mkdir -p "$DUMP_DIR"
 
 # Specs to check (add tricky cases here as the engine grows).
+# A distinct second face registered under family "Serif" for the multi-font
+# case (both tools register the SAME file the SAME way → byte-identical faces).
+export TE_FONT2="${TE_FONT2:-/System/Library/Fonts/Times.ttc}"
+export TE_FAMILY2="${TE_FAMILY2:-Serif}"
+
 SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'
   '{"text":"wrap me onto many lines please","constraints":{"max_width_px":160,"size_px":24}}'
   '{"text":"€ é ✓ 你好","size_px":32}'
   '{"text":"REDblue","runs":[{"start":0,"len":3,"size_px":120,"rgba":[1,0.2,0.2,1]},{"start":3,"len":4,"size_px":60,"rgba":[0.3,0.5,1,1]}]}'
+  '{"text":"MonoSerif","runs":[{"start":0,"len":4,"size_px":72},{"start":4,"len":5,"size_px":72,"family":"Serif","rgba":[0.4,1,0.6,1]}]}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.
