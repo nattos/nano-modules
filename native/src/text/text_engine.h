@@ -65,12 +65,23 @@ class Engine {
 public:
   static Engine& instance();
 
-  // Install the font used for subsequent layouts, from in-memory sfnt bytes
-  // (the sandbox-safe path the host font provider supplies). Resets the glyph
-  // atlas + caches. Returns false if FreeType rejects the bytes. Phase 1 is
-  // single-font; Phase 2/3 add per-run faces + fallback.
+  // Install the PRIMARY font from in-memory sfnt bytes (the sandbox-safe path
+  // the host font provider supplies). This is face 0, used by any run that does
+  // not name a registered family. Resets the glyph atlas + caches + registry.
+  // Returns false if FreeType rejects the bytes.
   bool setFont(const uint8_t* bytes, int len);
   bool hasFont() const;
+
+  // Register an ADDITIONAL named face the host font provider resolved (by
+  // family name → sfnt bytes: Core Text natively, bundled / Local Font Access
+  // on web). A run whose JSON `family` matches `name` is shaped with this face;
+  // unmatched families fall back to face 0. Idempotent: a name already
+  // registered returns its existing id without re-reading the bytes. Additive —
+  // does NOT reset the atlas (existing glyphs/layouts stay valid). Returns the
+  // faceId (>=0), or -1 on failure (no primary font installed, or bad bytes).
+  int addFont(const char* name, int name_len, const uint8_t* bytes, int len);
+  // True if `name` is already registered (host can skip re-resolving bytes).
+  bool hasFontNamed(const char* name, int name_len) const;
 
   // Lay out an attributed-string JSON spec (schema documented in host.h).
   // Returns an opaque layoutId (>0) or 0 on error. Deterministic given the

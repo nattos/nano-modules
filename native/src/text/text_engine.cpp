@@ -103,12 +103,25 @@ static void readFloatArray(const char* s, int n, const char* key, float* out, in
   }
 }
 
-// A styled run: a byte range [b0, b1) of the text with its size + color.
-struct Run { int b0, b1; float size; float r, g, b, a; };
+// A styled run: a byte range [b0, b1) of the text with its size, color, and the
+// resolved faceId (0 = primary font; >0 = a host-registered named family).
+struct Run { int b0, b1; float size; float r, g, b, a; int face; };
 
-// Parse the spec's "runs" array. Each run = {start, len, size_px, rgba}. Falls
-// back to a single default run covering all text (white, defSize) when absent.
-static std::vector<Run> parseRuns(const char* s, int n, float defSize) {
+// Parse the spec's "runs" array. Each run = {start, len, size_px, rgba, family}.
+// `family` is resolved to a faceId via `faceByName` (unknown/empty → face 0, the
+// primary font). Falls back to a single default run covering all text (white,
+// defSize, face 0) when absent.
+static std::vector<Run> parseRuns(const char* s, int n, float defSize,
+                                  const std::unordered_map<std::string, int>& faceByName) {
+  auto resolveFace = [&](const char* sub, int sl) -> int {
+    int fp = findField(sub, sl, "family");
+    std::string fam;
+    if (fp >= 0 && readString(sub, sl, fp, fam) && !fam.empty()) {
+      auto it = faceByName.find(fam);
+      if (it != faceByName.end()) return it->second;
+    }
+    return 0;  // primary font / unknown family
+  };
   std::vector<Run> runs;
   int p = findField(s, n, "runs");
   if (p >= 0 && p < n && s[p] == '[') {
@@ -123,10 +136,10 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize) {
       float size = readNumber(sub, sl, "size_px", defSize);
       float rgba[4] = {1, 1, 1, 1}; readFloatArray(sub, sl, "rgba", rgba, 4);
       runs.push_back({start, flen < 0 ? INT_MAX : start + (int)flen, size,
-                      rgba[0], rgba[1], rgba[2], rgba[3]});
+                      rgba[0], rgba[1], rgba[2], rgba[3], resolveFace(sub, sl)});
     }
   }
-  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1});
+  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1, 0});
   return runs;
 }
 
@@ -156,17 +169,26 @@ struct LayoutData {
   Metrics metrics;
 };
 
-struct Engine::Impl {
-  FT_Library lib = nullptr;
-  FT_Face    face = nullptr;
-  std::vector<unsigned char> font_bytes;
-  bool  font_loaded = false;
+// One registered font face. Plane bounds / advances are normalized to em units
+// per face (using its own units_per_em), so a glyph quad is face-independent
+// once generated and the shared atlas can mix faces freely.
+struct Face {
+  std::vector<unsigned char> bytes;
+  FT_Face ft = nullptr;
   int   units_per_em = 1000;
   float ascender_em = 0.8f, descender_em = -0.2f;
+};
 
-  std::vector<uint8_t> atlas;     // ATLAS_W*ATLAS_H*4 RGBA8 (MSDF)
+struct Engine::Impl {
+  FT_Library lib = nullptr;
+  std::vector<Face> faces;                         // face 0 = primary (setFont)
+  std::unordered_map<std::string, int> faceByName; // family name → faceId (>0)
+  bool  font_loaded = false;
+
+  std::vector<uint8_t> atlas;     // ATLAS_W*ATLAS_H*4 RGBA8 (MSDF), shared across faces
   int shelf_x = 0, shelf_y = 0, shelf_h = 0;
-  std::unordered_map<uint32_t, GlyphInfo> glyphs;   // by FT glyph index
+  // Glyph cache keyed by (faceId, FT glyph index) so faces never collide.
+  std::unordered_map<uint64_t, GlyphInfo> glyphs;
   bool atlas_dirty = false;
 
   std::unordered_map<int, LayoutData> layouts;
@@ -180,17 +202,28 @@ struct Engine::Impl {
     glyphs.clear();
     atlas_dirty = true;
   }
+  void clearFaces() {
+    for (Face& f : faces) if (f.ft) FT_Done_Face(f.ft);
+    faces.clear();
+    faceByName.clear();
+  }
 
-  const GlyphInfo* ensureGlyph(uint32_t gi);
+  static uint64_t gkey(int faceId, uint32_t gi) { return ((uint64_t)faceId << 32) | gi; }
+  const GlyphInfo* ensureGlyph(int faceId, uint32_t gi);
 };
 
-const GlyphInfo* Engine::Impl::ensureGlyph(uint32_t gi) {
-  auto it = glyphs.find(gi);
+const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi) {
+  uint64_t key = gkey(faceId, gi);
+  auto it = glyphs.find(key);
   if (it != glyphs.end()) return &it->second;
+
+  Face& fc = faces[faceId];
+  FT_Face face = fc.ft;
+  int units_per_em = fc.units_per_em;
 
   GlyphInfo info;
   if (FT_Load_Glyph(face, gi, FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING)) {
-    glyphs.emplace(gi, info); return &glyphs[gi];
+    glyphs.emplace(key, info); return &glyphs[key];
   }
   info.advance = (float)(face->glyph->metrics.horiAdvance) / (float)units_per_em;
 
@@ -200,7 +233,7 @@ const GlyphInfo* Engine::Impl::ensureGlyph(uint32_t gi) {
   shape.normalize();
 
   if (shape.contours.empty()) {           // whitespace / empty glyph: advance only
-    glyphs.emplace(gi, info); return &glyphs[gi];
+    glyphs.emplace(key, info); return &glyphs[key];
   }
 
   msdfgen::Shape::Bounds bnds = shape.getBounds();
@@ -215,7 +248,7 @@ const GlyphInfo* Engine::Impl::ensureGlyph(uint32_t gi) {
   if (shelf_x + tileW > ATLAS_W) { shelf_y += shelf_h; shelf_x = 0; shelf_h = 0; }
   if (tileH > shelf_h) shelf_h = tileH;
   if (shelf_y + tileH > ATLAS_H) {            // atlas full — degrade to advance-only
-    glyphs.emplace(gi, info); return &glyphs[gi];
+    glyphs.emplace(key, info); return &glyphs[key];
   }
   int px = shelf_x, py = shelf_y;
   shelf_x += tileW;
@@ -253,35 +286,67 @@ const GlyphInfo* Engine::Impl::ensureGlyph(uint32_t gi) {
   info.has_msdf = true;
 
   atlas_dirty = true;
-  glyphs.emplace(gi, info);
-  return &glyphs[gi];
+  glyphs.emplace(key, info);
+  return &glyphs[key];
 }
 
 Engine::Engine() : impl_(new Impl()) {}
 Engine::~Engine() {
-  if (impl_->face) FT_Done_Face(impl_->face);
+  impl_->clearFaces();
   if (impl_->lib) FT_Done_FreeType(impl_->lib);
   delete impl_;
 }
 Engine& Engine::instance() { static Engine e; return e; }
 
+// Open an sfnt face from owned bytes; fills the per-face metrics. Returns false
+// (and leaves fc.ft null) on FreeType rejection.
+static bool openFace(FT_Library lib, Face& fc) {
+  if (FT_New_Memory_Face(lib, fc.bytes.data(), (FT_Long)fc.bytes.size(), 0, &fc.ft)) {
+    fc.ft = nullptr; return false;
+  }
+  fc.units_per_em = fc.ft->units_per_EM ? fc.ft->units_per_EM : 1000;
+  fc.ascender_em  = (float)fc.ft->ascender / fc.units_per_em;
+  fc.descender_em = (float)fc.ft->descender / fc.units_per_em;
+  return true;
+}
+
 bool Engine::setFont(const uint8_t* bytes, int len) {
   if (!bytes || len <= 0) return false;
   if (!impl_->lib && FT_Init_FreeType(&impl_->lib)) return false;
-  if (impl_->face) { FT_Done_Face(impl_->face); impl_->face = nullptr; }
-  impl_->font_bytes.assign(bytes, bytes + len);
-  if (FT_New_Memory_Face(impl_->lib, impl_->font_bytes.data(), (FT_Long)len, 0, &impl_->face)) {
-    impl_->font_loaded = false; return false;
-  }
-  impl_->font_loaded   = true;
-  impl_->units_per_em  = impl_->face->units_per_EM ? impl_->face->units_per_EM : 1000;
-  impl_->ascender_em   = (float)impl_->face->ascender / impl_->units_per_em;
-  impl_->descender_em  = (float)impl_->face->descender / impl_->units_per_em;
+  // Installing a new primary font resets the whole registry + atlas: existing
+  // named faces and packed glyphs no longer have a stable place.
+  impl_->clearFaces();
+  Face fc;
+  fc.bytes.assign(bytes, bytes + len);
+  if (!openFace(impl_->lib, fc)) { impl_->font_loaded = false; return false; }
+  impl_->faces.push_back(std::move(fc));   // faceId 0 = primary
+  impl_->font_loaded = true;
   impl_->resetAtlas();
   impl_->layouts.clear();
   return true;
 }
 bool Engine::hasFont() const { return impl_->font_loaded; }
+
+int Engine::addFont(const char* name, int name_len, const uint8_t* bytes, int len) {
+  if (!impl_->font_loaded || !bytes || len <= 0) return -1;  // need a primary first
+  std::string key = (name && name_len > 0) ? std::string(name, name_len) : std::string();
+  if (!key.empty()) {
+    auto it = impl_->faceByName.find(key);
+    if (it != impl_->faceByName.end()) return it->second;    // idempotent
+  }
+  Face fc;
+  fc.bytes.assign(bytes, bytes + len);
+  if (!openFace(impl_->lib, fc)) return -1;
+  int id = (int)impl_->faces.size();
+  impl_->faces.push_back(std::move(fc));
+  if (!key.empty()) impl_->faceByName[key] = id;
+  return id;
+}
+
+bool Engine::hasFontNamed(const char* name, int name_len) const {
+  if (!name || name_len <= 0) return false;
+  return impl_->faceByName.count(std::string(name, name_len)) != 0;
+}
 
 int Engine::layout(const char* spec_json, int len) {
   if (!spec_json || len <= 0 || !impl_->font_loaded) return 0;
@@ -292,7 +357,7 @@ int Engine::layout(const char* spec_json, int len) {
   float defSize   = readNumber(spec_json, len, "size_px", 48.0f);
   float max_width = readNumber(spec_json, len, "max_width_px", 0.0f);
   float line_sp   = readNumber(spec_json, len, "line_spacing", 1.2f);
-  std::vector<Run> runs = parseRuns(spec_json, len, defSize);
+  std::vector<Run> runs = parseRuns(spec_json, len, defSize, impl_->faceByName);
 
   LayoutData ld;
   float maxLineW = 0, totalH = 0, firstBaseline = -1;
@@ -300,7 +365,7 @@ int Engine::layout(const char* spec_json, int len) {
 
   // A glyph with its own run style. Layout buffers a line (baseline TBD), so
   // mixed sizes align on a shared baseline = lineTop + maxAscent on the line.
-  struct SG { float size; float r, g, b, a; const GlyphInfo* info; };
+  struct SG { float size; float r, g, b, a; const GlyphInfo* info; int face; };
   std::vector<SG> word; float wordW = 0;                 // current word (for wrap)
   struct LG { float x; SG g; };
   std::vector<LG> lineGlyphs;                            // glyphs placed on the current line
@@ -310,8 +375,10 @@ int Engine::layout(const char* spec_json, int len) {
     for (const Run& r : runs) if (off >= r.b0 && off < r.b1) return r;
     return runs.back();
   };
-  auto bumpLineMetrics = [&](float size) {
-    float asc = impl_->ascender_em * size, lh = size * line_sp;
+  // Line ascent/height take the tallest contributing run, using that run's own
+  // face ascender so mixed faces (and sizes) share a correct baseline.
+  auto bumpLineMetrics = [&](float size, int faceId) {
+    float asc = impl_->faces[faceId].ascender_em * size, lh = size * line_sp;
     if (asc > lineMaxAscent) lineMaxAscent = asc;
     if (lh > lineMaxHeight)  lineMaxHeight = lh;
   };
@@ -340,7 +407,7 @@ int Engine::layout(const char* spec_json, int len) {
     if (word.empty()) return;
     if (max_width > 0 && penX > 0 && penX + wordW > max_width) finalizeLine();
     for (const SG& g : word) {
-      bumpLineMetrics(g.size);
+      bumpLineMetrics(g.size, g.face);
       lineGlyphs.push_back({penX, g});
       penX += g.info->advance * g.size;
     }
@@ -352,16 +419,16 @@ int Engine::layout(const char* spec_json, int len) {
     unsigned cp; i = decodeUTF8(text, i, cp);
     const Run& r = runFor(byteStart);
     if (cp == '\n') { flushWord(); finalizeLine(); continue; }
-    uint32_t gi = FT_Get_Char_Index(impl_->face, cp);
-    const GlyphInfo* info = impl_->ensureGlyph(gi);
+    uint32_t gi = FT_Get_Char_Index(impl_->faces[r.face].ft, cp);
+    const GlyphInfo* info = impl_->ensureGlyph(r.face, gi);
     if (cp == ' ') {
       flushWord();
       float adv = info->advance * r.size;
       if (max_width > 0 && penX > 0 && penX + adv > max_width) { finalizeLine(); }
-      else { bumpLineMetrics(r.size); penX += adv; }
+      else { bumpLineMetrics(r.size, r.face); penX += adv; }
       continue;
     }
-    word.push_back({r.size, r.r, r.g, r.b, r.a, info}); wordW += info->advance * r.size;
+    word.push_back({r.size, r.r, r.g, r.b, r.a, info, r.face}); wordW += info->advance * r.size;
   }
   flushWord();
   // Finalize the trailing line — unless the text ended exactly on a newline
