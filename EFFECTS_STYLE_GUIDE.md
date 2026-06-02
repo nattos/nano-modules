@@ -74,7 +74,7 @@ if (state::pathIs(p, l, "line"))   { auto v = state::patchVec3(i); /* … */ }
 
 **Mode-dependent parameters — declare them all, hide the inactive ones**
 
-When an effect has multiple "shapes" controlled by a mode selector (Span vs Inset crop, RGB vs HSV picker, …), register *every* parameter the effect can ever expose in `init()`. Then use `state::setOnStateReady` to register a callback that — fired once after init + the initial state replay — calls `state::setFieldHidden(path, hidden)` to hide whichever fields the active mode doesn't use. In `on_state_patched`, when the mode field changes, re-run the visibility logic.
+When an effect has multiple "shapes" controlled by a mode selector (Span vs Inset crop, RGB vs HSV picker, …), register *every* parameter the effect can ever expose in the schema (`module_init`). Then use `state::setOnStateReady` to register a callback that — fired once after init + the initial state replay — calls `state::setFieldHidden(path, hidden)` to hide whichever fields the active mode doesn't use. In `on_state_patched`, when the mode field changes, re-run the visibility logic. The callback takes `self` so it can read the instance's mode.
 
 ```cpp
 .selectField("mode", ModeSpan, state::PrimaryInput, {{"Span", 0}, {"Inset", 1}})
@@ -82,14 +82,16 @@ When an effect has multiple "shapes" controlled by a mode selector (Span vs Inse
 .floatField("inset_left", 0.0f, 0.f, 1.f, state::PrimaryInput)   // inset-only
 …
 
-void init() {
-  state::init(...);
+void init(void* self) {                // per-instance tail (schema is in module_init)
   state::setOnStateReady(&on_state_ready);
 }
-static void on_state_ready() { apply_mode_visibility(); }
-void on_state_patched(...) {
-  /* update s_mode etc. */
-  if (mode_changed) apply_mode_visibility();
+static void on_state_ready(void* self) {
+  apply_mode_visibility(*static_cast<State*>(self));
+}
+void on_state_patched(void* self, ...) {
+  auto* s = static_cast<State*>(self);
+  /* update s->mode etc. */
+  if (mode_changed) apply_mode_visibility(*s);
 }
 ```
 
@@ -114,13 +116,109 @@ Why this shape:
 
 `fx::FastBlur` in `<effect_fast_blur.h>` packages the whole dual-filter pattern (multi-mip scratch, single-mip view bindings via `setTextureMip`, 13-tap down + 9-tap tent up shaders). `video.fast_blur` is the thin wrapper effect — three-line `init()`, three-line `render()` — and any future bloom/glow/DOF should just instantiate `fx::FastBlur s_blur;` next to its `fx::GaussianBlur` and `fx::FastBlur` siblings.
 
+**Effect structure — per-instance instances (the class-like ABI)**
+
+Effects are **class-like**: a single effect *type* can be instantiated many
+times (one per chain entry). Per-instance state lives in a heap-allocated
+`State` object the host threads back to every callback as `void* self`; the
+type's shared, immutable-after-compile resources stay file-static.
+
+> **Why:** the native barrel runs one effect runtime shared across the whole
+> chain, so two entries of the same type would collide on any file-static
+> mutable state (params, uniform buffers). The web/WASM path sandboxes each
+> chain entry in its own module instance, so file statics happen to be
+> per-instance there — but the barrel does not. The instance ABI is the single
+> source of truth; don't rely on file-static mutable state.
+
+Every converted effect exposes exactly these entry points (all instance
+callbacks take `self` first):
+
+```cpp
+void  module_init();                 // ONCE per type: schema + shared GPU resources
+void* create();                      // alloc State + this instance's buffers; return it
+void  destroy(void* self);           // release per-instance GPU resources, delete State
+void  init(void* self);              // per-instance tail: defaults + registerFusion*
+void  tick(void* self, double dt);
+void  render(void* self, int vp_w, int vp_h);
+void  on_state_patched(void* self, int n, const char* pb,
+                       const int* off, const int* len, const int* ops);
+void  on_resolume_param(void* self, long long param_id, double value);  // ok as no-op
+```
+
+The split — **mutable per-instance → `State`; immutable type-shared → file static:**
+
+```cpp
+struct State {                       // one per chain entry
+  float brightness = 0.5f, contrast = 0.5f;
+  bool  initialized = false;
+  gpu::Buffer uniform_buf;           // per-instance: its own buffer
+};
+static gpu::ComputePSO s_pso;        // type-shared: compiled once, read by all instances
+
+void module_init() {                 // schema + shaders + the shared PSO (once per type)
+  state::init("video.example", {1,0,0}, state::Schema() /* … */);
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  auto cs = gpu::Device::createShaderModuleByName("compute");
+  s_pso = gpu::Device::createComputePSO(cs, "main", /* bindings */);
+}
+void* create() {                     // per-instance allocation
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+void init(void* self) {              // per-instance tail
+  auto* s = static_cast<State*>(self);
+  s->initialized = true;
+  state::registerFusionByName(state::FusionKind::PerPixelMapper, "pixel",
+                              s->uniform_buf.id, sizeof(FuseUniforms), &prepare);
+}
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  /* … read s->brightness etc., bind s->uniform_buf + the shared s_pso … */
+}
+```
+
+Rule of thumb: **anything mutated per-frame or per-instance** (param scalars,
+uniform buffers, scratch/accumulator textures, particle pools, RNG state, an
+`initialized` flag) goes in `State`. **Anything immutable post-compile** (PSOs,
+shader modules, samplers, compile-time constants) stays file-static and is
+created once in `module_init()`. `brightness_contrast/main.cpp` is the canonical
+template; `soft_glow` and `motion_blur` show richer State (blob pools, per-
+instance pyramid textures, per-instance spec-constant PSOs).
+
+**Registering in the bundle.** The aggregator's `nano_module_main` declares and
+registers each effect. Converted effects use the instance macros; effects not
+yet converted use the legacy trampoline (correct on WASM because each entry is
+its own module instance — convert them for real before relying on them in the
+native barrel):
+
+```cpp
+NANO_DECLARE_INSTANCE_EFFECT(example)   // forward-declares the 8 entry points
+NANO_DECLARE_LEGACY_EFFECT(old_effect)  // forward-declares the old free funcs
+
+void nano_module_main() {
+  nano::registerEffect({ 2, "video.example", "Example", "…", "video", "kw",
+                         NANO_INSTANCE_LIFECYCLE(example) });
+  nano::registerEffect({ 2, "video.old", "Old", "…", "video", "kw",
+                         NANO_LEGACY_LIFECYCLE(old_effect) });   // trampoline
+}
+```
+
+(`struct_version` is `2`. The macros live in `wasm_modules/include/module_api.h`.)
+
 ---
 
 ## 0.1 Fusion-aware effects — opt in when you can
 
 Per-pixel effects that follow a strict shape can be **coalesced**: the engine collapses runs of adjacent fusion-aware stages in a column into a *single* compute dispatch, eliminating the intermediate texture round-trip between them. A column like `color_space → curve → vignette → saturate` becomes one dispatch instead of four — measurably faster on busy sketches and visible live in the **Debug Info** sidebar (it shows "Dispatches saved by fusion" per frame).
 
-Opt-in is a single `state::registerFusion(...)` call in `init()` plus a small refactor of the per-pixel logic into a `pixel.hlsl` file. **Default is no fusion** — effects that don't call `registerFusion` keep the standalone path verbatim.
+Opt-in is a single `state::registerFusionByName(...)` call in the effect's per-instance `init(self)` (using that instance's uniform buffer) plus a small refactor of the per-pixel logic into a `pixel.hlsl` file. **Default is no fusion** — effects that don't call it keep the standalone path verbatim.
 
 ### Choosing a `FusionKind`
 
@@ -192,29 +290,33 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
 For `StrictOutput` effects the wrapper omits `inputTex` and passes `uint2(w, h)` as the second arg.
 
-**`main.cpp`** — split `render()` into a uniform-update step + dispatch, then register fusion:
+**`main.cpp`** — follow the per-instance ABI from §0 (struct `State`,
+`module_init`/`create`/`destroy`/`init(self)`). The fusion `prepare` callback
+**takes `self` first** (the engine calls it per fused stage with that stage's
+instance), and registers via `registerFusionByName` using *this instance's*
+uniform buffer handle:
 
 ```cpp
 struct FuseUniforms { float strength; float bias; float _pad0; float _pad1; };
 
-static gpu::Buffer s_uniform_buf;
-static gpu::ComputePSO s_pso;
-static bool s_initialized = false;
-static float s_strength = 1.0f, s_bias = 0.0f;
+struct State {
+  float strength = 1.0f, bias = 0.0f;
+  bool  initialized = false;
+  gpu::Buffer uniform_buf;             // per-instance
+};
+static gpu::ComputePSO s_pso;          // type-shared
 
-// Updates the uniform buffer for the current frame. Called from
-// render() (standalone path) AND by the engine via the fusion
-// prepare callback (fused path) — both share the same uniform write
-// so the dispatched output is identical.
-void prepare(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
-  FuseUniforms u = { s_strength, s_bias, 0.f, 0.f };
-  s_uniform_buf.writeOne(u);
+// Updates THIS instance's uniform buffer. Called from render() (standalone)
+// AND by the engine via the fusion prepare callback (fused path) — both share
+// the same write so the dispatched output is identical. Takes self FIRST.
+void prepare(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
+  FuseUniforms u = { s->strength, s->bias, 0.f, 0.f };
+  s->uniform_buf.writeOne(u);
 }
 
-void init() {
-  s_strength = 1.0f; s_bias = 0.0f; s_initialized = false;
-
+void module_init() {                   // once per type: schema + shared PSO
   state::init("video.example", {1, 0, 0},
     state::Schema()
       .floatField("strength", 1.0f, 0.f, 4.f, state::PrimaryInput)
@@ -223,35 +325,53 @@ void init() {
       .textureField("tex_out", state::PrimaryOutput));
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
-  bool metal = (gpu::Device::backend() == gpu::Backend::Metal);
-  auto cs = gpu::Device::createShaderModule(metal ? COMPUTE_MSL : COMPUTE_WGSL);
+  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("pixel",   PIXEL_SPV,   PIXEL_SPV_SIZE);
+  auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, metal ? "main_" : "main",
+  s_pso = gpu::Device::createComputePSO(cs, "main",
     gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
-  s_initialized = true;
-
-  // Opt in to fusion. Stage type, fragment WGSL/MSL (auto-emitted by
-  // the build), the uniform buffer's runtime handle, its size, and
-  // the prepare callback. No-op for other effects.
-  state::registerFusion(state::FusionKind::PerPixelMapper,
-                        PIXEL_WGSL, PIXEL_MSL,
-                        s_uniform_buf.id, sizeof(FuseUniforms),
-                        &prepare);
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(FuseUniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+
+void init(void* self) {                // per-instance: defaults + fusion opt-in
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->uniform_buf.valid()) return;
+  s->initialized = true;
+  // Stage type, the per-pixel fragment's registered SPV name, THIS instance's
+  // uniform buffer handle, its size, and the prepare callback. No-op for
+  // effects that never call this (they stay Freeform).
+  state::registerFusionByName(state::FusionKind::PerPixelMapper, "pixel",
+                              s->uniform_buf.id, sizeof(FuseUniforms), &prepare);
+}
+
+void tick(void* self, double dt) { (void)self; (void)dt; }
+void on_resolume_param(void*, long long, double) {}
+
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  prepare(vp_w, vp_h);                 // shared uniform write
+  prepare(self, vp_w, vp_h);           // shared uniform write
   auto cp = gpu::ComputePass::begin();
-  cp.setPSO(s_pso);
+  cp.setPSO(s_pso);                    // shared PSO
   cp.setTexture(in,  0, 0);
   cp.setTexture(out, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setBuffer(s->uniform_buf, 2);     // per-instance buffer
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
   gpu::Device::submit();
@@ -555,6 +675,7 @@ For `bool`-typed debug toggles, the `mute`-style schema entry works well:
 
 ## 7. Checklist before merging an effect
 
+- [ ] Uses the per-instance ABI (§0): mutable state in `struct State` threaded via `self`; only immutable type-shared resources (PSOs, shader modules, samplers) are file-static. No file-static mutable state.
 - [ ] All parameters declared in `state::Schema` with `order:` and a sensible `io:` flag.
 - [ ] Standard params come first; tuning / debug params after.
 - [ ] Every parameter is on a normalized range OR has a documented perceptual mapping in its description.
@@ -599,6 +720,16 @@ state::init("video.warmgrade", {1, 0, 0},
 ## 8. Triggered / stateful effects — patterns from the lights bundle
 
 Distilled from building `plasma_beam_cannon` and friends. These apply to any effect with a phase machine (ADSR), an internal particle pool, or anything that fires on a cue.
+
+> **Per-instance note:** the examples below show file-static state (`s_phase`,
+> `s_pool`, `s_*_rng`, `s_gate_prev`, `s_cycle_count`, …) because these lights
+> effects predate the per-instance ABI and currently ship via the legacy
+> trampoline (`NANO_LEGACY_LIFECYCLE`) — fine on WASM, where each chain entry is
+> its own module instance. When converting one to run in the native barrel,
+> every one of these statics moves into `struct State` (per §0), and the
+> `on_state_ready` / RNG / pool state become per-instance members. The patterns
+> (ADSR machine, Poisson triggers, Plummer softening, …) are unchanged; only
+> their *storage* moves from file-static to `State`.
 
 ### 8.1 Trigger surface — bool gate + event trigger + auto_rate
 

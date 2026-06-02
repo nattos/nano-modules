@@ -134,8 +134,11 @@ Currently registered effects (extend the list when you add more to
 Adding more is three matching edits: `build_msl_headers.sh ENTRIES`
 (SPV → MSL header gen), `effects_native` source list in
 `native/CMakeLists.txt`, and one `registry_->registerEffect(...)` call
-here. Single-instance-per-type constraint (see `sketch_executor`
-docs) still applies.
+here (passing the effect's `module_init`/`create`/`destroy` + self-taking
+lifecycle pointers — the class-like instance ABI, see EFFECTS_STYLE_GUIDE §0).
+Each chain entry gets its own per-instance state via
+`EffectRuntime::instanceFor`, so multiple entries of the same type render
+independently.
 
 ## Macros
 
@@ -176,7 +179,10 @@ logs were used during bring-up and have been removed. Re-add ad-hoc
 
 ## Known limitations / future work
 
-- **Single instance per effect type.** Inherited from `effect_runtime`.
+- **Legacy effects not yet on the instance ABI** keep file-static state, which
+  only the sandboxed WASM path makes per-instance — they must be converted to
+  the class-like instance ABI before being used multiple times in a native
+  barrel chain. The three currently-registered effects are converted.
 - **No HTTP-serve of the editor JS bundle.** The editor is hosted
   elsewhere; the user opens
   `http://localhost:5173/resolume/?barrel=ws://localhost:<port>` to

@@ -89,20 +89,24 @@ auto rt = std::make_unique<effect_runtime::EffectRuntime>(gpuBackend.get());
 auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
 registry->registerEffect(
     "video.brightness_contrast", "Brightness Contrast",
-    &brightness_contrast::init, &brightness_contrast::tick,
-    &brightness_contrast::render, &brightness_contrast::on_state_patched);
+    &brightness_contrast::module_init, &brightness_contrast::create,
+    &brightness_contrast::destroy, &brightness_contrast::init,
+    &brightness_contrast::tick, &brightness_contrast::render,
+    &brightness_contrast::on_state_patched);
 ```
 
-`registerEffect` runs the effect's `init()` synchronously. That's when
-the effect publishes its schema, registers shader modules, allocates
-its uniform buffer, etc. So the host must have called
-`rt->registerShaderMSL(name, ...)` for every shader the effect will
-ask for *before* `registerEffect` runs.
+`registerEffect` registers the effect *type* and runs its `module_init()`
+synchronously — when it publishes its schema, registers shader modules, and
+creates the shared compute PSO. So the host must have called
+`rt->registerShaderMSL(name, ...)` for every shader the effect will ask for
+*before* `registerEffect` runs.
 
-Hard invariant inherited from `effect_runtime`:
-**single-instance-per-effect-type**. Effects use file-static state;
-two instances of the same effect type would collide. Repeated
-`registerEffect` calls for the same module_type are silent no-ops.
+Per-instance state (uniform buffers, params) is created lazily per chain entry
+via `EffectRuntime::instanceFor(type, instance_key)` — each chain entry gets its
+own `EffectInstance` with its own `create()`-allocated state. Two
+`brightness_contrast` entries with different params render independently.
+Repeated `registerEffect` calls for the same module_type are silent no-ops (the
+*type* is registered once; instances are per-key).
 
 `registry->schemas()` produces the `module_type → schema-fields` map
 the executor passes to the augmenter each frame.
@@ -223,13 +227,15 @@ consumer.
 
 ## Constraints / known limitations
 
-- **Single instance per effect type.** Inherited from
-  `effect_runtime`. A sketch with two `brightness_contrast` instances
-  in the same chain would step on each other's file-static state. The
-  registry silently ignores the second `registerEffect` for the same
-  module_type, and the executor binds both instance_keys to the same
-  underlying instance — effectively the second one overwrites the
-  first's state every frame.
+- **Per-instance state via the class-like effect ABI.** Each chain entry
+  gets its own `EffectInstance` (its own `create()`-allocated `State` +
+  uniform buffer), keyed by `instance_key` through
+  `EffectRuntime::instanceFor`. Two `brightness_contrast` entries with
+  different params render independently — the old file-static
+  single-instance-per-type collision is gone. (Effects still shipping via the
+  legacy trampoline keep file-static state, which is only correct on the
+  sandboxed WASM path; convert them to the instance ABI before relying on
+  multiple barrel instances of that type.)
 - **Within-column rails only.** Sketch-wide rails (cross-column) are
   indexed but not routed differently from column-local rails. Fine
   today since the editor doesn't really use cross-column flow.
