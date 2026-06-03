@@ -35,17 +35,33 @@
 
 namespace text_engine {
 
-// Atlas + MSDF reference parameters.
-static constexpr int    ATLAS_W   = 1024;
-static constexpr int    ATLAS_H   = 1024;
-static constexpr double REF_PX    = 48.0;  // glyph em rendered at this px size in the atlas
-static constexpr double RANGE_PX  = 4.0;   // MSDF distance range, atlas px
+// Multi-page, multi-resolution atlas parameters. Every page is the SAME pixel
+// size (uploaded as one texture-array layer) but a page's glyphs are rasterized
+// at its own reference em (refPx) — dense scripts (CJK) get higher-resolution
+// pages so feature density / corner sharpness survives at large render sizes,
+// while sparse scripts (Latin) stay compact (more glyphs per page).
+static constexpr int    PAGE_W    = 2048;
+static constexpr int    PAGE_H    = 2048;
+static constexpr int    REF_STD   = 64;    // non-CJK glyphs (sparse features)
+static constexpr int    REF_HIGH  = 128;   // CJK ideographs / kana / hangul (dense)
+static constexpr double RANGE_PX  = 4.0;   // MSDF distance range, atlas px (all pages)
 static constexpr int    PAD       = 5;     // tile padding ≥ ceil(RANGE_PX), atlas px
 static constexpr int    GAP       = 1;     // transparent gutter between packed tiles:
                                            // bilinear sampling at a tile edge then
                                            // blends with empty (fully-outside) space
                                            // instead of the neighbor tile — kills the
                                            // thin-line / dot atlas-bleed artifacts.
+
+// Reference em for a codepoint: dense CJK scripts (ideographs, kana, hangul,
+// compat ideographs, SIP) → high-res pages; everything else → standard.
+static int refPxForCodepoint(unsigned cp) {
+  if ((cp >= 0x2E80 && cp <= 0x9FFF) ||   // CJK radicals … Unified Ideographs (+kana/hangul-jamo)
+      (cp >= 0xAC00 && cp <= 0xD7AF) ||   // Hangul syllables
+      (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compatibility ideographs
+      (cp >= 0x20000 && cp <= 0x2FA1F))   // CJK ext B–F + compat supplement
+    return REF_HIGH;
+  return REF_STD;
+}
 
 // ---- Minimal exception-free JSON field extraction (as in Phase 0) ----------
 static int findField(const char* s, int n, const char* key) {
@@ -219,9 +235,10 @@ int sbCubic(const FT_Vector* c1,const FT_Vector* c2,const FT_Vector* to,void* u)
 // Per-glyph cache entry. Plane bounds are in EM units (relative to the pen
 // origin on the baseline, y-up); the layout scales them by the font size.
 struct GlyphInfo {
-  float u0=0,v0=0,u1=0,v1=0;          // atlas uv rect
+  float u0=0,v0=0,u1=0,v1=0;          // atlas-page uv rect
   float planeL=0,planeB=0,planeR=0,planeT=0;  // em units, y-up
   float advance=0;                    // em units
+  int   page=0;                       // atlas-array layer holding this glyph
   bool  has_msdf=false;               // false for whitespace/empty glyphs
 };
 
@@ -241,6 +258,17 @@ struct Face {
   std::string lang;   // normalized CJK script tag for fallback faces ("" = none)
 };
 
+// One atlas page: a PAGE_W×PAGE_H RGBA8 image whose glyphs are all rasterized at
+// `refPx`, shelf-packed. Pages of the same refPx form a class; a new page is
+// added when the current one fills.
+struct Page {
+  std::vector<uint8_t> rgba;
+  int refPx;
+  int shelf_x = 0, shelf_y = 0, shelf_h = 0;
+  bool dirty = true;
+  explicit Page(int ref) : rgba((size_t)PAGE_W * PAGE_H * 4, 0), refPx(ref) {}
+};
+
 struct Engine::Impl {
   FT_Library lib = nullptr;
   std::vector<Face> faces;                         // face 0 = primary (setFont)
@@ -249,22 +277,18 @@ struct Engine::Impl {
   std::string defaultLang;                         // system locale → regional Han default
   bool  font_loaded = false;
 
-  std::vector<uint8_t> atlas;     // ATLAS_W*ATLAS_H*4 RGBA8 (MSDF), shared across faces
-  int shelf_x = 0, shelf_y = 0, shelf_h = 0;
+  std::vector<Page> pages;        // atlas pages (texture-array layers)
   // Glyph cache keyed by (faceId, FT glyph index) so faces never collide.
   std::unordered_map<uint64_t, GlyphInfo> glyphs;
-  bool atlas_dirty = false;
 
   std::unordered_map<int, LayoutData> layouts;
   int next_id = 1;
 
-  Impl() : atlas((size_t)ATLAS_W * ATLAS_H * 4, 0) {}
+  Impl() {}
 
   void resetAtlas() {
-    std::fill(atlas.begin(), atlas.end(), 0);
-    shelf_x = shelf_y = shelf_h = 0;
+    pages.clear();
     glyphs.clear();
-    atlas_dirty = true;
   }
   void clearFaces() {
     for (Face& f : faces) if (f.ft) FT_Done_Face(f.ft);
@@ -298,10 +322,33 @@ struct Engine::Impl {
   }
 
   static uint64_t gkey(int faceId, uint32_t gi) { return ((uint64_t)faceId << 32) | gi; }
-  const GlyphInfo* ensureGlyph(int faceId, uint32_t gi);
+  const GlyphInfo* ensureGlyph(int faceId, uint32_t gi, unsigned cp);
+
+  // Shelf-pack a tileW×tileH tile onto a page of class `refPx` (creating a new
+  // page if the current one is full), leaving a GAP gutter. Returns the page
+  // index and top-left (x,y), or -1 if the tile can't fit a page at all.
+  int allocTile(int refPx, int tileW, int tileH, int& outX, int& outY) {
+    // Find the most recent page of this class; else start a fresh one.
+    int pi = -1;
+    for (int i = (int)pages.size() - 1; i >= 0; i--)
+      if (pages[i].refPx == refPx) { pi = i; break; }
+    for (int attempt = 0; attempt < 2; attempt++) {
+      if (pi < 0) { pages.emplace_back(refPx); pi = (int)pages.size() - 1; }
+      Page& pg = pages[pi];
+      if (pg.shelf_x + tileW > PAGE_W) { pg.shelf_y += pg.shelf_h + GAP; pg.shelf_x = 0; pg.shelf_h = 0; }
+      if (pg.shelf_y + tileH <= PAGE_H) {
+        if (tileH > pg.shelf_h) pg.shelf_h = tileH;
+        outX = pg.shelf_x; outY = pg.shelf_y;
+        pg.shelf_x += tileW + GAP;
+        return pi;
+      }
+      pi = -1;  // page full → new page on the next attempt
+    }
+    return -1;  // tile larger than a page
+  }
 };
 
-const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi) {
+const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp) {
   uint64_t key = gkey(faceId, gi);
   auto it = glyphs.find(key);
   if (it != glyphs.end()) return &it->second;
@@ -325,23 +372,19 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi) {
     glyphs.emplace(key, info); return &glyphs[key];
   }
 
+  // Resolution class for this codepoint (CJK → high-res page).
+  int refPx = refPxForCodepoint(cp);
+  double pxPerUnit = (double)refPx / (double)units_per_em;
   msdfgen::Shape::Bounds bnds = shape.getBounds();
-  double pxPerUnit = REF_PX / (double)units_per_em;
   int gw = (int)std::ceil((bnds.r - bnds.l) * pxPerUnit);
   int gh = (int)std::ceil((bnds.t - bnds.b) * pxPerUnit);
   int tileW = gw + 2 * PAD, tileH = gh + 2 * PAD;
-  if (tileW > ATLAS_W) tileW = ATLAS_W;
-  if (tileH > ATLAS_H) tileH = ATLAS_H;
+  if (tileW > PAGE_W) tileW = PAGE_W;
+  if (tileH > PAGE_H) tileH = PAGE_H;
 
-  // Shelf pack, leaving a GAP-px gutter between tiles (and shelves) so bilinear
-  // sampling at tile edges never reaches a neighbor glyph.
-  if (shelf_x + tileW > ATLAS_W) { shelf_y += shelf_h + GAP; shelf_x = 0; shelf_h = 0; }
-  if (tileH > shelf_h) shelf_h = tileH;
-  if (shelf_y + tileH > ATLAS_H) {            // atlas full — degrade to advance-only
-    glyphs.emplace(key, info); return &glyphs[key];
-  }
-  int px = shelf_x, py = shelf_y;
-  shelf_x += tileW + GAP;
+  int px, py;
+  int page = allocTile(refPx, tileW, tileH, px, py);
+  if (page < 0) { glyphs.emplace(key, info); return &glyphs[key]; }  // can't fit → advance-only
 
   // Generate MSDF into a tile. Projection maps font-unit shape → tile px:
   //   tile_px = (shapeCoord + translate) * scale ; with PAD px margin.
@@ -350,23 +393,25 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi) {
   msdfgen::edgeColoringSimple(shape, 3.0);
   msdfgen::Bitmap<float, 3> bmp(tileW, tileH);
   // Default error correction (EDGE_PRIORITY) — the recommended mode for crisp
-  // text. The atlas is sampled BILINEARLY on the GPU (linear-filtered texture),
-  // which is what makes MSDF smooth and corner-sharp at any magnification.
+  // text. Each page is sampled BILINEARLY on the GPU (linear-filtered texture
+  // array), which is what makes MSDF smooth and corner-sharp at any scale.
   msdfgen::generateMSDF(bmp, shape, msdfgen::Range(RANGE_PX / s),
                         msdfgen::Vector2(s, s), translate);
 
-  // Copy into atlas (y-flip: msdfgen y-up → atlas y-down).
+  // Copy into the page (y-flip: msdfgen y-up → page y-down).
+  uint8_t* atlas = pages[page].rgba.data();
   auto toByte = [](float v){ v = v<0?0:(v>1?1:v); return (uint8_t)(v*255.0f+0.5f); };
   for (int y = 0; y < tileH; y++) {
     for (int x = 0; x < tileW; x++) {
       const float* p = bmp(x, tileH - 1 - y);
-      uint8_t* d = &atlas[((size_t)(py + y) * ATLAS_W + (px + x)) * 4];
+      uint8_t* d = &atlas[((size_t)(py + y) * PAGE_W + (px + x)) * 4];
       d[0] = toByte(p[0]); d[1] = toByte(p[1]); d[2] = toByte(p[2]); d[3] = 255;
     }
   }
 
-  info.u0 = (float)px / ATLAS_W; info.v0 = (float)py / ATLAS_H;
-  info.u1 = (float)(px + tileW) / ATLAS_W; info.v1 = (float)(py + tileH) / ATLAS_H;
+  info.page = page;
+  info.u0 = (float)px / PAGE_W; info.v0 = (float)py / PAGE_H;
+  info.u1 = (float)(px + tileW) / PAGE_W; info.v1 = (float)(py + tileH) / PAGE_H;
   // Plane bounds (em units, y-up): the tile spans [bnds.l - PAD/s, bnds.r + PAD/s] etc.
   double upem = (double)units_per_em;
   info.planeL = (float)((bnds.l - PAD / s) / upem);
@@ -375,7 +420,7 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi) {
   info.planeT = (float)((bnds.t + PAD / s) / upem);
   info.has_msdf = true;
 
-  atlas_dirty = true;
+  pages[page].dirty = true;
   glyphs.emplace(key, info);
   return &glyphs[key];
 }
@@ -508,6 +553,7 @@ int Engine::layout(const char* spec_json, int len) {
       q.h = (gi->planeT - gi->planeB) * sz;
       q.u0 = gi->u0; q.v0 = gi->v0; q.u1 = gi->u1; q.v1 = gi->v1;
       q.r = lg.g.r; q.g = lg.g.g; q.b = lg.g.b; q.a = lg.g.a;
+      q.page = (float)gi->page; q._r0 = q._r1 = q._r2 = 0.0f;
       ld.quads.push_back(q);
     }
     totalH += lineMaxHeight > 0 ? lineMaxHeight : defSize * line_sp;
@@ -543,7 +589,7 @@ int Engine::layout(const char* spec_json, int len) {
     // preferring the run's language for regional Han.
     int faceId; uint32_t gi;
     impl_->resolveCodepoint(cp, r.face, r.lang, faceId, gi);
-    const GlyphInfo* info = impl_->ensureGlyph(faceId, gi);
+    const GlyphInfo* info = impl_->ensureGlyph(faceId, gi, cp);
     if (cp == ' ') {
       flushWord();
       float adv = info->advance * r.size;
@@ -593,25 +639,25 @@ int Engine::glyphs(int id, GlyphQuad* out, int max_count) const {
 }
 void Engine::release(int id) { impl_->layouts.erase(id); }
 
-// Bilinearly sample one channel of the atlas (clamp-to-edge), matching GPU
-// linear filtering: texel centers at (i+0.5)/dim.
-static inline float texel(const uint8_t* atlas, int x, int y, int ch) {
-  if (x < 0) x = 0; if (x >= ATLAS_W) x = ATLAS_W - 1;
-  if (y < 0) y = 0; if (y >= ATLAS_H) y = ATLAS_H - 1;
-  return atlas[((size_t)y * ATLAS_W + x) * 4 + ch] / 255.0f;
+// Bilinearly sample one channel of a page (clamp-to-edge), matching GPU linear
+// filtering: texel centers at (i+0.5)/dim.
+static inline float texel(const uint8_t* page, int x, int y, int ch) {
+  if (x < 0) x = 0; if (x >= PAGE_W) x = PAGE_W - 1;
+  if (y < 0) y = 0; if (y >= PAGE_H) y = PAGE_H - 1;
+  return page[((size_t)y * PAGE_W + x) * 4 + ch] / 255.0f;
 }
-// MSDF median of the BILINEARLY-interpolated atlas, with screenPxRange AA.
+// MSDF median of the BILINEARLY-interpolated page, with screenPxRange AA.
 // Bilinear is what makes MSDF scale-independent (interpolating the distance
 // field reconstructs smooth, corner-sharp edges at any magnification); the
-// GPU compositor samples the same atlas as a linear-filtered texture.
-static float msdfCoverage(const uint8_t* atlas, float au, float av, float screenPxRange) {
-  float fx = au * ATLAS_W - 0.5f, fy = av * ATLAS_H - 0.5f;
+// GPU compositor samples the same page as a linear-filtered texture-array layer.
+static float msdfCoverage(const uint8_t* page, float au, float av, float screenPxRange) {
+  float fx = au * PAGE_W - 0.5f, fy = av * PAGE_H - 0.5f;
   int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
   float tx = fx - x0, ty = fy - y0;
   float chan[3];
   for (int c = 0; c < 3; c++) {
-    float a = texel(atlas, x0, y0, c),     b = texel(atlas, x0 + 1, y0, c);
-    float d = texel(atlas, x0, y0 + 1, c), e = texel(atlas, x0 + 1, y0 + 1, c);
+    float a = texel(page, x0, y0, c),     b = texel(page, x0 + 1, y0, c);
+    float d = texel(page, x0, y0 + 1, c), e = texel(page, x0 + 1, y0 + 1, c);
     chan[c] = (a * (1 - tx) + b * tx) * (1 - ty) + (d * (1 - tx) + e * tx) * ty;
   }
   float med = std::max(std::min(chan[0], chan[1]), std::min(std::max(chan[0], chan[1]), chan[2]));
@@ -627,16 +673,19 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
   if (bg) std::memcpy(out, bg, bytes);
   else for (size_t i = 0; i < bytes; i += 4) { out[i]=out[i+1]=out[i+2]=0; out[i+3]=255; }
 
-  const uint8_t* atlas = impl_->atlas.data();
   bool msdf = it->second.metrics.atlas_kind == (int)AtlasKind::MSDF;
   float pxRange = it->second.metrics.atlas_px_range;
+  int pageCount = (int)impl_->pages.size();
 
   for (const GlyphQuad& q : it->second.quads) {
+    int pageIdx = (int)q.page;
+    if (pageIdx < 0 || pageIdx >= pageCount) continue;
+    const uint8_t* atlas = impl_->pages[pageIdx].rgba.data();
     int x0 = (int)(q.x + originX), y0 = (int)(q.y + originY);
     int x1 = (int)(q.x + originX + q.w), y1 = (int)(q.y + originY + q.h);
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
     if (x1 > outW) x1 = outW; if (y1 > outH) y1 = outH;
-    float tileH_px = (q.v1 - q.v0) * ATLAS_H;
+    float tileH_px = (q.v1 - q.v0) * PAGE_H;
     float screenPxRange = (msdf && tileH_px > 0) ? pxRange * q.h / tileH_px : 1.0f;
 
     for (int py = y0; py < y1; py++) {
@@ -649,10 +698,10 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
         if (msdf) {
           cov = msdfCoverage(atlas, au, av, screenPxRange);
         } else {
-          int tx = (int)(au * ATLAS_W), ty = (int)(av * ATLAS_H);
-          if (tx < 0) tx = 0; if (tx >= ATLAS_W) tx = ATLAS_W - 1;
-          if (ty < 0) ty = 0; if (ty >= ATLAS_H) ty = ATLAS_H - 1;
-          cov = atlas[((size_t)ty * ATLAS_W + tx) * 4 + 3] / 255.0f;
+          int tx = (int)(au * PAGE_W), ty = (int)(av * PAGE_H);
+          if (tx < 0) tx = 0; if (tx >= PAGE_W) tx = PAGE_W - 1;
+          if (ty < 0) ty = 0; if (ty >= PAGE_H) ty = PAGE_H - 1;
+          cov = atlas[((size_t)ty * PAGE_W + tx) * 4 + 3] / 255.0f;
         }
         float a = cov * q.a;
         if (a <= 0.0f) continue;
@@ -668,15 +717,22 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
   return true;
 }
 
-int Engine::atlasWidth() const  { return ATLAS_W; }
-int Engine::atlasHeight() const { return ATLAS_H; }
-const uint8_t* Engine::atlasPixels() const { return impl_->atlas.data(); }
+int Engine::atlasWidth() const  { return PAGE_W; }
+int Engine::atlasHeight() const { return PAGE_H; }
+int Engine::atlasPageCount() const { return (int)impl_->pages.size(); }
+const uint8_t* Engine::atlasPagePixels(int page) const {
+  return (page >= 0 && page < (int)impl_->pages.size()) ? impl_->pages[page].rgba.data() : nullptr;
+}
 
 bool Engine::nextDirtyRegion(AtlasRegion& out) {
-  if (!impl_->atlas_dirty) return false;
-  impl_->atlas_dirty = false;       // full-atlas upload (sub-rect packing is a later optimization)
-  out = AtlasRegion{0, 0, ATLAS_W, ATLAS_H, impl_->atlas.data()};
-  return true;
+  for (int i = 0; i < (int)impl_->pages.size(); i++) {
+    if (impl_->pages[i].dirty) {
+      impl_->pages[i].dirty = false;   // full-page upload (sub-rect packing is a later optimization)
+      out = AtlasRegion{i, 0, 0, PAGE_W, PAGE_H, impl_->pages[i].rgba.data()};
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace text_engine

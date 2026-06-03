@@ -91,15 +91,15 @@ int main(int argc, char** argv) {
   std::vector<text_engine::GlyphQuad> quads(count);
   int written = eng.glyphs(id, quads.data(), count);
 
-  // FNV-1a over the reported dirty region (matches the JS tool).
+  // FNV-1a over every dirty page (page index folded in), matching the JS tool.
   uint32_t hash = 0x811c9dc5u;
-  int rx = 0, ry = 0, rw = 0, rh = 0; long rptr = 0;
   text_engine::AtlasRegion r;
-  if (eng.nextDirtyRegion(r)) {
-    rx = r.x; ry = r.y; rw = r.w; rh = r.h; rptr = (long)(intptr_t)r.rgba;
-    int n = r.w * r.h * 4;
-    for (int i = 0; i < n; i++) { hash ^= r.rgba[i]; hash *= 0x01000193u; }
+  while (eng.nextDirtyRegion(r)) {
+    hash ^= (uint32_t)r.page; hash *= 0x01000193u;
+    long n = (long)r.w * r.h * 4;
+    for (long i = 0; i < n; i++) { hash ^= r.rgba[i]; hash *= 0x01000193u; }
   }
+  int pageCount = eng.atlasPageCount();
 
   // --- CPU reference composite → real pixels ---
   // Deterministic canvas: layout bounds + 16px margin, opaque-black background.
@@ -134,16 +134,14 @@ int main(int argc, char** argv) {
   for (int i = 0; i < written; i++) {
     const float* f = &quads[i].x;
     std::printf("    [");
-    for (int k = 0; k < 12; k++) std::printf("%s%g", k ? ", " : "", (double)f[k]);
+    for (int k = 0; k < 16; k++) std::printf("%s%g", k ? ", " : "", (double)f[k]);
     std::printf("]%s\n", i + 1 < written ? "," : "");
   }
   std::printf("  ],\n");
   std::printf("  \"atlas\": {\n");
   std::printf("    \"w\": %d,\n", eng.atlasWidth());
   std::printf("    \"h\": %d,\n", eng.atlasHeight());
-  if (rw) std::printf("    \"region\": { \"x\": %d, \"y\": %d, \"w\": %d, \"h\": %d, \"ptr\": %ld },\n",
-                      rx, ry, rw, rh, rptr);
-  else    std::printf("    \"region\": null,\n");
+  std::printf("    \"pages\": %d,\n", pageCount);
   std::printf("    \"hash\": \"%x\"\n", hash);
   std::printf("  },\n");
   std::printf("  \"composite\": { \"w\": %d, \"h\": %d, \"hash\": \"%x\" }\n", cw, ch, chash);

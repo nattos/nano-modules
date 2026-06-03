@@ -238,13 +238,16 @@ struct TextMetrics {
   int   _pad;
 };
 
-// One positioned glyph quad (escape hatch). POD, fixed 48-byte layout. Screen
+// One positioned glyph quad (escape hatch). POD, fixed 64-byte layout. Screen
 // rect is in px relative to the layout box origin (top-left); apply your own
-// transform in-shader. UVs are normalized into the shared atlas texture.
+// transform in-shader. UVs are normalized into the glyph's atlas PAGE; `page` is
+// the atlas-array layer to sample (dense scripts land on higher-res pages).
 struct GlyphQuad {
   float x, y, w, h;       // screen-space rect, px (layout-box-relative)
-  float u0, v0, u1, v1;   // atlas UV rect, normalized
+  float u0, v0, u1, v1;   // atlas-page UV rect, normalized
   float r, g, b, a;       // run color (linear, premultiply-free)
+  float page;             // atlas-array layer index
+  float _r0, _r1, _r2;    // reserved (16-byte alignment for GPU storage buffers)
 };
 
 /// Lay out an attributed string. Returns an opaque layout handle (>0), or 0 on

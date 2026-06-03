@@ -103,38 +103,34 @@ const metrics = {
 };
 ex.free(mPtr);
 
-// Glyph quads (48 bytes each).
+// Glyph quads (64 bytes each, 16 floats).
 const count = ex.te_glyph_count(id);
-const gPtr = ex.malloc(count * 48);
-const written = ex.te_glyphs(id, gPtr, count * 48);
+const gPtr = ex.malloc(count * 64);
+const written = ex.te_glyphs(id, gPtr, count * 64);
 const quads = [];
 for (let i = 0; i < written; i++) {
-  const b = gPtr + i * 48;
+  const b = gPtr + i * 64;
   const d = mem();
-  quads.push([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((k) => +d.getFloat32(b + k * 4, true).toFixed(4)));
+  quads.push(Array.from({ length: 16 }, (_, k) => +d.getFloat32(b + k * 4, true).toFixed(4)));
 }
 ex.free(gPtr);
 
-// Atlas FNV-1a hash over the dirty region the engine reports.
+// Atlas FNV-1a hash over every dirty page (page index folded in), matching the
+// native tool. 24-byte AbiDirtyRegion: page, x, y, w, h, rgba_ptr.
 const aw = ex.te_atlas_width(), ah = ex.te_atlas_height();
 let atlasHash = 0x811c9dc5 >>> 0;
-const rPtr = ex.malloc(20);
-let region = null;
-if (ex.te_next_dirty_region(rPtr)) {
+const rPtr = ex.malloc(24);
+while (ex.te_next_dirty_region(rPtr)) {
   const d = mem();
-  region = {
-    x: d.getInt32(rPtr, true), y: d.getInt32(rPtr + 4, true),
-    w: d.getInt32(rPtr + 8, true), h: d.getInt32(rPtr + 12, true),
-    ptr: d.getInt32(rPtr + 16, true),
-  };
+  const page = d.getInt32(rPtr, true);
+  const w = d.getInt32(rPtr + 12, true), h = d.getInt32(rPtr + 16, true), ptr = d.getInt32(rPtr + 20, true);
+  atlasHash ^= page >>> 0; atlasHash = Math.imul(atlasHash, 0x01000193) >>> 0;
   const bytes = u8();
-  const n = region.w * region.h * 4;
-  for (let i = 0; i < n; i++) {
-    atlasHash ^= bytes[region.ptr + i];
-    atlasHash = Math.imul(atlasHash, 0x01000193) >>> 0;
-  }
+  const n = w * h * 4;
+  for (let i = 0; i < n; i++) { atlasHash ^= bytes[ptr + i]; atlasHash = Math.imul(atlasHash, 0x01000193) >>> 0; }
 }
 ex.free(rPtr);
+const pages = ex.te_atlas_page_count();
 
 // CPU reference composite → real pixels (same deterministic canvas as the
 // native tool: layout bounds + 16px margin, opaque-black bg).
@@ -159,7 +155,7 @@ ex.te_release(id);
 
 console.log(JSON.stringify({
   metrics, quad_count: written, quads,
-  atlas: { w: aw, h: ah, region, hash: atlasHash.toString(16) },
+  atlas: { w: aw, h: ah, pages, hash: atlasHash.toString(16) },
   composite: { w: cw, h: ch, hash: chash.toString(16) },
 }, null, 2));
 

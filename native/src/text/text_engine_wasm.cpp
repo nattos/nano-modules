@@ -37,13 +37,14 @@ struct AbiMetrics {
 };
 static_assert(sizeof(AbiMetrics) == 32, "AbiMetrics must match text::TextMetrics");
 
-// 20-byte dirty-region descriptor handed to the GPU glue: rect + the byte
-// offset (within this module's linear memory) of the tightly-packed RGBA8.
+// 24-byte dirty-page descriptor handed to the GPU glue: target array layer +
+// rect + the byte offset (within this module's linear memory) of the RGBA8.
 struct AbiDirtyRegion {
+  int32_t page;      // atlas-array layer to upload
   int32_t x, y, w, h;
   int32_t rgba_ptr;  // offset into linear memory
 };
-static_assert(sizeof(AbiDirtyRegion) == 20, "AbiDirtyRegion layout");
+static_assert(sizeof(AbiDirtyRegion) == 24, "AbiDirtyRegion layout");
 
 extern "C" {
 
@@ -122,15 +123,18 @@ int te_rasterize(int id, int outW, int outH, float ox, float oy,
 
 int te_atlas_width()  { return Engine::instance().atlasWidth(); }
 int te_atlas_height() { return Engine::instance().atlasHeight(); }
+int te_atlas_page_count() { return Engine::instance().atlasPageCount(); }
 
-int te_atlas_ptr() {
-  return (int)(intptr_t)Engine::instance().atlasPixels();
+// Byte offset (within linear memory) of page `p`'s RGBA8 pixels, or 0.
+int te_atlas_page_ptr(int p) {
+  return (int)(intptr_t)Engine::instance().atlasPagePixels(p);
 }
 
 int te_next_dirty_region(void* out) {
   text_engine::AtlasRegion r;
   if (!Engine::instance().nextDirtyRegion(r)) return 0;
   AbiDirtyRegion a;
+  a.page = r.page;
   a.x = r.x; a.y = r.y; a.w = r.w; a.h = r.h;
   a.rgba_ptr = (int)(intptr_t)r.rgba;
   std::memcpy(out, &a, sizeof(a));

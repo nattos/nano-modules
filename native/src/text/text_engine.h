@@ -44,18 +44,22 @@ struct Metrics {
 };
 
 // One positioned glyph quad. Screen rect is px relative to the layout-box
-// origin (top-left); UVs are normalized into the master atlas. Mirrors
-// text::GlyphQuad in host.h.
+// origin (top-left); UVs are normalized into the glyph's atlas PAGE; `page` is
+// the atlas-array layer to sample. 64 bytes (4 vec4s) for GPU storage-buffer
+// alignment. Mirrors text::GlyphQuad in host.h.
 struct GlyphQuad {
   float x, y, w, h;       // layout-box-relative rect, px
-  float u0, v0, u1, v1;   // atlas UV rect, normalized
+  float u0, v0, u1, v1;   // atlas-page UV rect, normalized
   float r, g, b, a;       // run color (linear)
+  float page;             // atlas-array layer index
+  float _r0, _r1, _r2;    // reserved (keeps the struct 16-byte aligned)
 };
 
-// A sub-rectangle of the master atlas that changed and needs GPU upload.
+// A dirty atlas PAGE that changed and needs GPU upload (full-page granularity).
 // `rgba` points into engine-owned memory (tightly packed, stride = w*4); it is
-// valid until the next layout() call. The GPU glue uploads then discards it.
+// valid until the next layout() call. The GPU glue uploads `page`'s layer.
 struct AtlasRegion {
+  int page;
   int x, y, w, h;
   const uint8_t* rgba;
 };
@@ -123,12 +127,17 @@ public:
                  float originX, float originY,
                  const uint8_t* bg, uint8_t* out) const;
 
-  // --- Atlas access for the per-platform GPU glue ---
-  int  atlasWidth() const;
-  int  atlasHeight() const;
-  const uint8_t* atlasPixels() const;   // full master image, RGBA8, row stride = width*4
-  // Pops the next pending dirty region (false when none remain). The GPU glue
-  // drains this after each layout() and uploads each region.
+  // --- Multi-page atlas access for the per-platform GPU glue ---
+  // The atlas is split into fixed-size pages (all atlasWidth()×atlasHeight()),
+  // uploaded as a texture array; a GlyphQuad's `page` field is the layer to
+  // sample. Pages may use different internal glyph resolutions — dense scripts
+  // (CJK) are packed onto higher-resolution pages, so large text stays crisp.
+  int  atlasWidth() const;            // page width (all pages identical)
+  int  atlasHeight() const;           // page height
+  int  atlasPageCount() const;        // number of allocated pages
+  const uint8_t* atlasPagePixels(int page) const;  // RGBA8, row stride = width*4
+  // Pops the next pending dirty page (false when none remain); out.page is the
+  // layer. The GPU glue drains this after each layout() and re-uploads each.
   bool nextDirtyRegion(AtlasRegion& out);
 
   Engine(const Engine&) = delete;

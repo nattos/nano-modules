@@ -35,7 +35,9 @@ mkdir -p "$DUMP_DIR"
 # Specs to check (add tricky cases here as the engine grows).
 # A distinct second face registered under family "Serif" for the multi-font
 # case (both tools register the SAME file the SAME way → byte-identical faces).
-export TE_FONT2="${TE_FONT2:-/System/Library/Fonts/Times.ttc}"
+# Glyf-flavored serif (bundled Noto Serif) so the exact-digest atlas hash holds;
+# CFF faces have perceptual (composite-tolerant) not byte-exact-atlas parity.
+export TE_FONT2="${TE_FONT2:-$ROOT/web/public/fonts/noto-serif.ttf}"
 export TE_FAMILY2="${TE_FAMILY2:-Serif}"
 
 # CJK fallback CHAIN — the bundled, glyf-flavored (byte-parity) Noto faces, in
