@@ -166,6 +166,32 @@ static std::string faceKey(const std::string& family, int weight, bool italic) {
   return k;
 }
 
+// Split a CSS-style font-family value into an ordered list of family names:
+// comma-separated, each optionally quoted ("Times New Roman" / 'Courier New')
+// or a generic keyword (serif, sans-serif, …). Whitespace-trimmed; quotes
+// stripped. Generics resolve like any other name (the host registers "serif"
+// etc. as aliases; unmatched names fall through to the primary font). MUST match
+// parseFamilyList() in web/src/text-engine.ts.
+static std::vector<std::string> parseFamilyList(const std::string& s) {
+  std::vector<std::string> out;
+  size_t i = 0, n = s.size();
+  while (i <= n) {
+    size_t j = s.find(',', i);
+    if (j == std::string::npos) j = n;
+    std::string tok = s.substr(i, j - i);
+    size_t a = tok.find_first_not_of(" \t\n\r"), b = tok.find_last_not_of(" \t\n\r");
+    if (a != std::string::npos) {
+      tok = tok.substr(a, b - a + 1);
+      if (tok.size() >= 2 && ((tok.front() == '"' && tok.back() == '"') ||
+                              (tok.front() == '\'' && tok.back() == '\'')))
+        tok = tok.substr(1, tok.size() - 2);
+      if (!tok.empty()) out.push_back(tok);
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
 // A styled run: a byte range [b0, b1) of the text with its size, color, the
 // resolved faceId (0 = primary font; >0 = a host-registered named family), and
 // the normalized CJK script (for regional Han fallback selection).
@@ -184,13 +210,15 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize,
     if (!(fp >= 0 && readString(sub, sl, fp, fam)) || fam.empty()) return 0;
     int  weight = (int)readNumber(sub, sl, "weight", 400.0f);
     bool italic = readBool(sub, sl, "italic", false);
-    // Prefer the exact styled face, then the family's regular face, then the
-    // primary font — so a bold/italic run degrades gracefully when only the
-    // regular face is registered.
-    auto it = faceByName.find(faceKey(fam, weight, italic));
-    if (it != faceByName.end()) return it->second;
-    auto rit = faceByName.find(fam);
-    if (rit != faceByName.end()) return rit->second;
+    // `family` is a CSS-style list: walk it and use the FIRST registered family.
+    // For each candidate, prefer its exact styled face, then its regular face;
+    // try the next candidate if neither is registered. None → primary font.
+    for (const std::string& cand : parseFamilyList(fam)) {
+      auto it = faceByName.find(faceKey(cand, weight, italic));
+      if (it != faceByName.end()) return it->second;
+      auto rit = faceByName.find(cand);
+      if (rit != faceByName.end()) return rit->second;
+    }
     return 0;
   };
   auto resolveLang = [&](const char* sub, int sl) -> std::string {

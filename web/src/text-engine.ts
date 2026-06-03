@@ -106,6 +106,28 @@ export function faceKey(family: string, weight: number, italic: boolean): string
   return `${family}\u0001${Math.round(weight)}${italic ? 'i' : ''}`;
 }
 
+/** Split a CSS-style font-family value into ordered family names (comma-split,
+ *  trimmed, quotes stripped). MUST match parseFamilyList() in
+ *  native/src/text/text_engine.cpp so the engine resolves the same list. */
+export function parseFamilyList(s: string): string[] {
+  const out: string[] = [];
+  for (let tok of s.split(',')) {
+    tok = tok.trim();
+    const q = tok[0];
+    if (tok.length >= 2 && (q === '"' || q === "'") && tok[tok.length - 1] === q) tok = tok.slice(1, -1);
+    if (tok) out.push(tok);
+  }
+  return out;
+}
+
+// CSS generic family keywords — resolved host-side (serif → bundled Noto Serif;
+// the rest fall through to the primary font), so we don't try to resolve them as
+// OS fonts via Local Font Access.
+const GENERIC_FAMILIES = new Set([
+  'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
+  'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong',
+]);
+
 // Bundled families guaranteed on the web side — the parity-guaranteed set, OFL
 // Noto faces fetched by web/scripts/fetch_fonts.sh (see FONTS.md). Their bytes
 // match what the native host bundles, so a run naming one of these families is
@@ -114,6 +136,8 @@ export function faceKey(family: string, weight: number, italic: boolean): string
 const DEFAULT_FONTS: FontSource[] = [
   { family: 'Noto Sans',  url: '/fonts/noto-sans.ttf' },
   { family: 'Noto Serif', url: '/fonts/noto-serif.ttf' },
+  { family: 'serif',      url: '/fonts/noto-serif.ttf' },  // CSS generic → Noto Serif
+  // sans-serif / monospace are left to fall through to the primary font (Noto Sans).
 ];
 
 /** A fallback face + its CJK region tag (for regional Han selection). */
@@ -367,10 +391,14 @@ export class TextEngine {
    *  (regular only) if the spec isn't valid JSON. */
   private facesNeededBy(specJson: string): FontRequest[] {
     const out: FontRequest[] = [];
-    const add = (family: string, weight: number, italic: boolean) => {
-      if (!family) return;
-      const key = faceKey(family, weight, italic);
-      if (!out.some((r) => r.key === key)) out.push({ key, family, weight, italic });
+    // `family` may be a CSS list — request each concrete candidate (so any could
+    // win); generics resolve host-side (bundled alias / fallthrough).
+    const add = (familyList: string, weight: number, italic: boolean) => {
+      for (const family of parseFamilyList(familyList)) {
+        if (GENERIC_FAMILIES.has(family.toLowerCase())) continue;
+        const key = faceKey(family, weight, italic);
+        if (!out.some((r) => r.key === key)) out.push({ key, family, weight, italic });
+      }
     };
     let runs: any[] | null = null;
     try { const o = JSON.parse(specJson); if (Array.isArray(o?.runs)) runs = o.runs; } catch { /* regex below */ }
