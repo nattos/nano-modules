@@ -71,8 +71,11 @@ if (process.env.TE_FALLBACK) {
   for (const path of process.env.TE_FALLBACK.split(':').filter(Boolean)) {
     const fb = readFileSync(path);
     const fbp = ex.malloc(fb.length); u8().set(fb, fbp);
-    ex.te_add_fallback_font(fbp, fb.length);
-    ex.free(fbp);
+    const lang = path.includes('-sc') ? 'zh-Hans' : path.includes('-tc') ? 'zh-Hant'
+               : path.includes('-jp') ? 'ja' : path.includes('-kr') ? 'ko' : '';
+    const lb = new TextEncoder().encode(lang); const lp = ex.malloc(lb.length || 1); u8().set(lb, lp);
+    ex.te_add_fallback_font(fbp, fb.length, lp, lb.length);
+    ex.free(lp); ex.free(fbp);
   }
 }
 

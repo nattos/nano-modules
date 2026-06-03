@@ -63,10 +63,16 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i <= list.size(); i++) {
       if (i == list.size() || list[i] == ':') {
         if (!path.empty()) {
+          // Tag the face's region from its filename so regional Han resolves.
+          const char* lang = path.find("-sc") != std::string::npos ? "zh-Hans"
+                           : path.find("-tc") != std::string::npos ? "zh-Hant"
+                           : path.find("-jp") != std::string::npos ? "ja"
+                           : path.find("-kr") != std::string::npos ? "ko" : "";
           if (FILE* ff = std::fopen(path.c_str(), "rb")) {
             std::fseek(ff, 0, SEEK_END); long fn = std::ftell(ff); std::fseek(ff, 0, SEEK_SET);
             std::vector<uint8_t> fb(fn);
-            if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn) eng.addFallbackFont(fb.data(), (int)fn);
+            if (std::fread(fb.data(), 1, fn, ff) == (size_t)fn)
+              eng.addFallbackFont(fb.data(), (int)fn, lang, (int)std::strlen(lang));
             std::fclose(ff);
           }
           path.clear();

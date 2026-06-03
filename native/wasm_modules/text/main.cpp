@@ -23,6 +23,7 @@ namespace gen_text {
 struct State {
   char  text[2048] = "Text";
   char  font[128] = "";       // OS/bundled family name ("" = host primary font)
+  char  lang[16] = "";        // BCP-47 (ja/ko/zh-Hant/zh-Hans); "" = system locale
   bool  bold = false;         // selects the family's bold face (weight 700)
   bool  italic = false;       // selects the family's italic face
   float size = 64.0f;
@@ -51,6 +52,7 @@ void module_init() {
     state::Schema()
       .textField  ("text",         "Text", state::PrimaryInput)
       .textField  ("font",         "",     state::PrimaryInput)
+      .textField  ("lang",         "",     state::PrimaryInput)
       .boolField  ("bold",         false,  state::PrimaryInput)
       .boolField  ("italic",       false,  state::PrimaryInput)
       .floatField ("size",         64.0f,  8.0f, 512.0f, state::PrimaryInput)
@@ -76,6 +78,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const char* p = pb + off[i]; int pl = len[i];
     if      (state::pathIs(p, pl, "text"))         state::patchString(i, s->text, sizeof(s->text));
     else if (state::pathIs(p, pl, "font"))         state::patchString(i, s->font, sizeof(s->font));
+    else if (state::pathIs(p, pl, "lang"))         state::patchString(i, s->lang, sizeof(s->lang));
     else if (state::pathIs(p, pl, "bold"))         s->bold = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(p, pl, "italic"))       s->italic = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(p, pl, "size"))         s->size = state::patchFloat(i);
@@ -96,7 +99,13 @@ void render(void* self, int vp_w, int vp_h) {
   int pos = 0;
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"text\":\"");
   appendEscaped(spec, pos, (int)sizeof(spec), s->text);
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",\"runs\":[{");
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",");
+  if (s->lang[0]) {   // override the system-locale default for regional Han forms
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"lang\":\"");
+    appendEscaped(spec, pos, (int)sizeof(spec), s->lang);
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",");
+  }
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"runs\":[{");
   if (s->font[0]) {   // name a family → host resolves it (bundled / OS font),
     pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"family\":\"");  // incl. bold/italic face
     appendEscaped(spec, pos, (int)sizeof(spec), s->font);

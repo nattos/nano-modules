@@ -56,6 +56,7 @@ SPECS=(
   '{"text":"日本語 こんにちは 世界","size_px":48}'
   '{"text":"繁體中文 測試 你好嗎","size_px":48}'
   '{"text":"한국어 안녕하세요 세계","size_px":48}'
+  '{"text":"雪 直 海 言","lang":"ja","size_px":72}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.

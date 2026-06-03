@@ -85,11 +85,18 @@ public:
 
   // Register an (unnamed) fallback face and append it to the fallback chain:
   // when a run's face lacks a codepoint (e.g. CJK in a Latin font), the engine
-  // consults the chain in registration order and shapes the codepoint with the
-  // first face that covers it. The host installs these once (e.g. Noto Sans CJK)
-  // so international text renders without tofu. Additive — does NOT reset the
-  // atlas. Returns the faceId (>=0), or -1 on failure.
-  int addFallbackFont(const uint8_t* bytes, int len);
+  // consults the chain and shapes the codepoint with the first face that covers
+  // it. `lang` (BCP-47-ish: "ja", "ko", "zh-Hant", "zh-Hans"; may be null) tags
+  // the face's region: a run whose language matches is served by this face FIRST,
+  // so Han ideographs shared across CJK render in the correct regional glyph
+  // forms. The host installs these once (Noto Sans JP/KR/TC/SC). Additive — does
+  // NOT reset the atlas. Returns the faceId (>=0), or -1 on failure.
+  int addFallbackFont(const uint8_t* bytes, int len, const char* lang = nullptr, int lang_len = 0);
+
+  // Default language for runs/specs that don't carry their own `lang`, used to
+  // pick the regional fallback for shared Han. On web the host derives this from
+  // navigator.language (the system locale). Empty → chain order (no preference).
+  void setDefaultLang(const char* lang, int lang_len);
 
   // Lay out an attributed-string JSON spec (schema documented in host.h).
   // Returns an opaque layoutId (>0) or 0 on error. Deterministic given the

@@ -24,6 +24,7 @@
 #include <linebreak.h>   // libunibreak: UAX#14 line break opportunities
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -110,6 +111,21 @@ static void readFloatArray(const char* s, int n, const char* key, float* out, in
   }
 }
 
+// Normalize a BCP-47-ish language tag to the CJK script bucket used to pick a
+// regional fallback face: "ja", "ko", "zh-hant" (TW/HK/MO/Hant), "zh-hans"
+// (CN/SG/Hans/bare zh), or "" (no CJK regional preference). Used identically for
+// face tags and run languages so matching is plain string equality.
+static std::string langScript(const std::string& lang) {
+  std::string s;
+  for (char c : lang) s.push_back((char)std::tolower((unsigned char)c));
+  if (s.rfind("ja", 0) == 0) return "ja";
+  if (s.rfind("ko", 0) == 0) return "ko";
+  if (s.rfind("zh-hant", 0) == 0 || s.rfind("zh-tw", 0) == 0 ||
+      s.rfind("zh-hk", 0) == 0 || s.rfind("zh-mo", 0) == 0) return "zh-hant";
+  if (s.rfind("zh", 0) == 0) return "zh-hans";
+  return "";
+}
+
 // Read a JSON boolean (true/false or 1/0) for `key`; `fallback` if absent.
 static bool readBool(const char* s, int n, const char* key, bool fallback) {
   int p = findField(s, n, key);
@@ -134,16 +150,18 @@ static std::string faceKey(const std::string& family, int weight, bool italic) {
   return k;
 }
 
-// A styled run: a byte range [b0, b1) of the text with its size, color, and the
-// resolved faceId (0 = primary font; >0 = a host-registered named family).
-struct Run { int b0, b1; float size; float r, g, b, a; int face; };
+// A styled run: a byte range [b0, b1) of the text with its size, color, the
+// resolved faceId (0 = primary font; >0 = a host-registered named family), and
+// the normalized CJK script (for regional Han fallback selection).
+struct Run { int b0, b1; float size; float r, g, b, a; int face; std::string lang; };
 
-// Parse the spec's "runs" array. Each run = {start, len, size_px, rgba, family}.
-// `family` is resolved to a faceId via `faceByName` (unknown/empty → face 0, the
-// primary font). Falls back to a single default run covering all text (white,
-// defSize, face 0) when absent.
+// Parse the spec's "runs" array. Each run = {start, len, size_px, rgba, family,
+// weight, italic, lang}. `family` resolves to a faceId via `faceByName`; `lang`
+// (run-level, else `docLang`) selects the regional fallback for shared Han.
+// Falls back to a single default run covering all text when absent.
 static std::vector<Run> parseRuns(const char* s, int n, float defSize,
-                                  const std::unordered_map<std::string, int>& faceByName) {
+                                  const std::unordered_map<std::string, int>& faceByName,
+                                  const std::string& docLang) {
   auto resolveFace = [&](const char* sub, int sl) -> int {
     int fp = findField(sub, sl, "family");
     std::string fam;
@@ -159,6 +177,12 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize,
     if (rit != faceByName.end()) return rit->second;
     return 0;
   };
+  auto resolveLang = [&](const char* sub, int sl) -> std::string {
+    int lp = findField(sub, sl, "lang");
+    std::string lg;
+    if (lp >= 0 && readString(sub, sl, lp, lg) && !lg.empty()) return langScript(lg);
+    return docLang;  // already normalized
+  };
   std::vector<Run> runs;
   int p = findField(s, n, "runs");
   if (p >= 0 && p < n && s[p] == '[') {
@@ -173,10 +197,10 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize,
       float size = readNumber(sub, sl, "size_px", defSize);
       float rgba[4] = {1, 1, 1, 1}; readFloatArray(sub, sl, "rgba", rgba, 4);
       runs.push_back({start, flen < 0 ? INT_MAX : start + (int)flen, size,
-                      rgba[0], rgba[1], rgba[2], rgba[3], resolveFace(sub, sl)});
+                      rgba[0], rgba[1], rgba[2], rgba[3], resolveFace(sub, sl), resolveLang(sub, sl)});
     }
   }
-  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1, 0});
+  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1, 0, docLang});
   return runs;
 }
 
@@ -214,6 +238,7 @@ struct Face {
   FT_Face ft = nullptr;
   int   units_per_em = 1000;
   float ascender_em = 0.8f, descender_em = -0.2f;
+  std::string lang;   // normalized CJK script tag for fallback faces ("" = none)
 };
 
 struct Engine::Impl {
@@ -221,6 +246,7 @@ struct Engine::Impl {
   std::vector<Face> faces;                         // face 0 = primary (setFont)
   std::unordered_map<std::string, int> faceByName; // family name → faceId (>0)
   std::vector<int> fallbackFaces;                  // ordered chain for missing codepoints
+  std::string defaultLang;                         // system locale → regional Han default
   bool  font_loaded = false;
 
   std::vector<uint8_t> atlas;     // ATLAS_W*ATLAS_H*4 RGBA8 (MSDF), shared across faces
@@ -247,18 +273,26 @@ struct Engine::Impl {
     fallbackFaces.clear();
   }
 
-  // Glyph index for `cp` in `preferFace`, else the first fallback face that has
-  // it; writes the resolved face + index. Returns false only if nothing covers
-  // it (caller renders preferFace's .notdef). The resolved face may differ from
-  // preferFace, so CJK/emoji in a Latin run pick up the fallback face.
-  bool resolveCodepoint(unsigned cp, int preferFace, int& outFace, uint32_t& outGi) {
+  // Glyph index for `cp` in `preferFace`, else a fallback face; writes the
+  // resolved face + index. Two-pass over the chain: first only faces tagged with
+  // the run's `lang` (so shared Han renders in the right regional form — e.g. a
+  // ja run takes the JP face), then the rest in chain order. Returns false only
+  // if nothing covers it (caller renders preferFace's .notdef).
+  bool resolveCodepoint(unsigned cp, int preferFace, const std::string& lang,
+                        int& outFace, uint32_t& outGi) {
     outFace = preferFace;
     outGi = FT_Get_Char_Index(faces[preferFace].ft, cp);
     if (outGi != 0) return true;
-    for (int fb : fallbackFaces) {
-      if (fb == preferFace || fb < 0 || fb >= (int)faces.size()) continue;
-      uint32_t g = FT_Get_Char_Index(faces[fb].ft, cp);
-      if (g != 0) { outFace = fb; outGi = g; return true; }
+    for (int pass = 0; pass < 2; pass++) {
+      // pass 0: only lang-matching faces (skipped when the run has no lang).
+      if (pass == 0 && lang.empty()) continue;
+      for (int fb : fallbackFaces) {
+        if (fb == preferFace || fb < 0 || fb >= (int)faces.size()) continue;
+        bool match = !lang.empty() && faces[fb].lang == lang;
+        if (pass == 0 ? !match : match) continue;
+        uint32_t g = FT_Get_Char_Index(faces[fb].ft, cp);
+        if (g != 0) { outFace = fb; outGi = g; return true; }
+      }
     }
     return false;  // no coverage → .notdef of preferFace
   }
@@ -404,15 +438,20 @@ bool Engine::hasFontNamed(const char* name, int name_len) const {
   return impl_->faceByName.count(std::string(name, name_len)) != 0;
 }
 
-int Engine::addFallbackFont(const uint8_t* bytes, int len) {
+int Engine::addFallbackFont(const uint8_t* bytes, int len, const char* lang, int lang_len) {
   if (!impl_->font_loaded || !bytes || len <= 0) return -1;
   Face fc;
   fc.bytes.assign(bytes, bytes + len);
   if (!openFace(impl_->lib, fc)) return -1;
+  if (lang && lang_len > 0) fc.lang = langScript(std::string(lang, lang_len));
   int id = (int)impl_->faces.size();
   impl_->faces.push_back(std::move(fc));
   impl_->fallbackFaces.push_back(id);
   return id;
+}
+
+void Engine::setDefaultLang(const char* lang, int lang_len) {
+  impl_->defaultLang = (lang && lang_len > 0) ? langScript(std::string(lang, lang_len)) : std::string();
 }
 
 int Engine::layout(const char* spec_json, int len) {
@@ -424,7 +463,12 @@ int Engine::layout(const char* spec_json, int len) {
   float defSize   = readNumber(spec_json, len, "size_px", 48.0f);
   float max_width = readNumber(spec_json, len, "max_width_px", 0.0f);
   float line_sp   = readNumber(spec_json, len, "line_spacing", 1.2f);
-  std::vector<Run> runs = parseRuns(spec_json, len, defSize, impl_->faceByName);
+  // Document-level language: spec "lang" (in constraints or top-level) overrides
+  // the engine default (system locale); runs may override per-run.
+  std::string docLang = impl_->defaultLang;
+  { int lp = findField(spec_json, len, "lang"); std::string lg;
+    if (lp >= 0 && readString(spec_json, len, lp, lg) && !lg.empty()) docLang = langScript(lg); }
+  std::vector<Run> runs = parseRuns(spec_json, len, defSize, impl_->faceByName, docLang);
 
   LayoutData ld;
   float maxLineW = 0, totalH = 0, firstBaseline = -1;
@@ -495,9 +539,10 @@ int Engine::layout(const char* spec_json, int len) {
     unsigned cp; i = decodeUTF8(text, i, cp);
     const Run& r = runFor(byteStart);
     if (cp == '\n') { flushWord(); finalizeLine(); continue; }
-    // Resolve via the run's face, falling through the fallback chain (CJK etc.).
+    // Resolve via the run's face, falling through the fallback chain (CJK etc.),
+    // preferring the run's language for regional Han.
     int faceId; uint32_t gi;
-    impl_->resolveCodepoint(cp, r.face, faceId, gi);
+    impl_->resolveCodepoint(cp, r.face, r.lang, faceId, gi);
     const GlyphInfo* info = impl_->ensureGlyph(faceId, gi);
     if (cp == ' ') {
       flushWord();

@@ -212,10 +212,14 @@ inline void drawText(const char* text, float x, float y, float size,
 //
 // The JSON spec schema (built cheaply module-side, marshalled once):
 //   { "text": "…utf8…",
+//     "lang":"ja",                       // optional doc default for regional Han
 //     "runs":[{"start":0,"len":5,"family":"Inter","weight":700,"italic":false,
-//              "size_px":48,"rgba":[1,1,1,1],"features":["liga"]}],
+//              "size_px":48,"rgba":[1,1,1,1],"lang":"zh-Hant","features":["liga"]}],
 //     "constraints":{"max_width_px":1024,"align":"start|center|end|justify",
 //                    "direction":"auto|ltr|rtl","line_spacing":1.2} }
+//   `lang` (run-level, else doc-level, else the host's system-locale default)
+//   selects the regional CJK fallback so shared Han ideographs render in the
+//   correct glyph forms (ja / ko / zh-Hant / zh-Hans).
 // ---------------------------------------------------------------------------
 namespace text {
 

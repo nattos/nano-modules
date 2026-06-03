@@ -74,7 +74,8 @@ interface TEExports {
   te_set_font(ptr: number, len: number): number;
   te_add_font(namePtr: number, nameLen: number, ptr: number, len: number): number;
   te_has_font(namePtr: number, nameLen: number): number;
-  te_add_fallback_font(ptr: number, len: number): number;
+  te_add_fallback_font(ptr: number, len: number, langPtr: number, langLen: number): number;
+  te_set_default_lang(langPtr: number, langLen: number): void;
   te_layout(ptr: number, len: number): number;
   te_measure(id: number, outPtr: number): number;
   te_glyph_count(id: number): number;
@@ -113,14 +114,18 @@ const DEFAULT_FONTS: FontSource[] = [
   { family: 'Noto Serif', url: '/fonts/noto-serif.ttf' },
 ];
 
-// Fallback chain (in priority order): consulted for codepoints the active face
-// lacks, so CJK etc. render instead of tofu. glyf-flavored Noto faces → byte
-// parity. Extend with JP kana / KR hangul / Arabic / Hebrew for full coverage.
-const DEFAULT_FALLBACKS: string[] = [
-  '/fonts/noto-sans-sc.ttf',   // Simplified Chinese / Han (shared ideographs)
-  '/fonts/noto-sans-tc.ttf',   // Traditional Chinese
-  '/fonts/noto-sans-jp.ttf',   // Japanese (kana + kanji)
-  '/fonts/noto-sans-kr.ttf',   // Korean (hangul)
+/** A fallback face + its CJK region tag (for regional Han selection). */
+interface FallbackSource { url: string; lang: string; }
+
+// Fallback chain (priority order): consulted for codepoints the active face
+// lacks, so CJK etc. render instead of tofu. `lang` lets a run pick the right
+// regional Han forms (ja/ko/zh-Hant/zh-Hans). glyf-flavored Noto faces → byte
+// parity. Extend with Arabic / Hebrew for full coverage.
+const DEFAULT_FALLBACKS: FallbackSource[] = [
+  { url: '/fonts/noto-sans-sc.ttf', lang: 'zh-Hans' },  // Simplified Chinese / Han
+  { url: '/fonts/noto-sans-tc.ttf', lang: 'zh-Hant' },  // Traditional Chinese
+  { url: '/fonts/noto-sans-jp.ttf', lang: 'ja' },       // Japanese (kana + kanji)
+  { url: '/fonts/noto-sans-kr.ttf', lang: 'ko' },       // Korean (hangul)
 ];
 
 // Back the singleton with globalThis so it survives module duplication across
@@ -158,7 +163,7 @@ export class TextEngine {
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
   static init(
     device: GPUDevice,
-    opts?: { wasmUrl?: string; fontUrl?: string; fonts?: FontSource[]; fallbacks?: string[] },
+    opts?: { wasmUrl?: string; fontUrl?: string; fonts?: FontSource[]; fallbacks?: FallbackSource[] },
   ): Promise<TextEngine> {
     if (G.__textEngine) return Promise.resolve(G.__textEngine);
     if (!G.__textEngineInit) {
@@ -173,7 +178,7 @@ export class TextEngine {
   }
 
   private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string,
-                      fonts: FontSource[], fallbacks: string[]) {
+                      fonts: FontSource[], fallbacks: FallbackSource[]) {
     this.device = device;
     const bytes = await (await fetch(wasmUrl)).arrayBuffer();
     const mod = await WebAssembly.compile(bytes);
@@ -200,10 +205,16 @@ export class TextEngine {
       try { await this.loadFont(f.family, f.url); }
       catch (e) { console.warn(`text-engine: bundled font "${f.family}" failed to load`, e); }
     }
-    // Register the fallback chain (CJK etc.) in priority order.
-    for (const url of fallbacks) {
-      try { await this.loadFallback(url); }
-      catch (e) { console.warn(`text-engine: fallback font ${url} failed to load`, e); }
+    // Default the regional Han language to the system locale. navigator.language
+    // is available in Web Workers too (where the engine lives) and reflects the
+    // OS locale under Electron; a run/spec `lang` overrides it per-text.
+    this.setDefaultLang((globalThis as any).navigator?.language ?? '');
+
+    // Register the fallback chain (CJK etc.) in priority order, each tagged with
+    // its region so a run's language picks the right Han forms.
+    for (const f of fallbacks) {
+      try { await this.loadFallback(f.url, f.lang); }
+      catch (e) { console.warn(`text-engine: fallback font ${f.url} failed to load`, e); }
     }
 
     this.pipeline = device.createComputePipeline({
@@ -271,21 +282,36 @@ export class TextEngine {
   }
 
   /** Register a fallback face from sfnt bytes (appended to the chain consulted
-   *  for codepoints the active face lacks). Returns the faceId, or -1. */
-  registerFallbackBytes(bytes: Uint8Array): number {
+   *  for codepoints the active face lacks). `lang` (ja/ko/zh-Hant/zh-Hans) tags
+   *  its region for Han selection. Returns the faceId, or -1. */
+  registerFallbackBytes(bytes: Uint8Array, lang = ''): number {
     const bp = this.ex.malloc(bytes.length);
     this.u8().set(bytes, bp);
-    const id = this.ex.te_add_fallback_font(bp, bytes.length);
+    const lb = new TextEncoder().encode(lang);
+    const lp = this.ex.malloc(lb.length || 1);
+    this.u8().set(lb, lp);
+    const id = this.ex.te_add_fallback_font(bp, bytes.length, lp, lb.length);
+    this.ex.free(lp);
     this.ex.free(bp);
     return id;
   }
 
-  /** Fetch sfnt bytes from `url` and register them as a fallback face. */
-  async loadFallback(url: string): Promise<number> {
+  /** Fetch sfnt bytes from `url` and register them as a fallback face, tagged
+   *  with its CJK region `lang`. */
+  async loadFallback(url: string, lang = ''): Promise<number> {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    const id = this.registerFallbackBytes(bytes);
+    const id = this.registerFallbackBytes(bytes, lang);
     if (id < 0) throw new Error(`text-engine: failed to register fallback ${url}`);
     return id;
+  }
+
+  /** Set the default language (system locale) for text without its own `lang`. */
+  setDefaultLang(lang: string): void {
+    const lb = new TextEncoder().encode(lang);
+    const lp = this.ex.malloc(lb.length || 1);
+    this.u8().set(lb, lp);
+    this.ex.te_set_default_lang(lp, lb.length);
+    this.ex.free(lp);
   }
 
   /** Fetch sfnt bytes from `url` and register them under `family`. No-op if the
