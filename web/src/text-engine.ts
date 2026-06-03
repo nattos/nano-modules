@@ -117,6 +117,21 @@ const DEFAULT_FONTS: FontSource[] = [
 /** A fallback face + its CJK region tag (for regional Han selection). */
 interface FallbackSource { url: string; lang: string; }
 
+/** Pick the default CJK language from the browser/OS locale. Scans
+ *  navigator.languages (the ordered preference list) for the FIRST entry that
+ *  maps to a CJK script — so a user whose primary UI is English but who lists
+ *  Japanese as a preference still gets ja Han forms. Falls back to
+ *  navigator.language (which normalizes to "" if non-CJK → chain order).
+ *  Returns { chosen, language, languages } for diagnostics. */
+function detectDefaultLang(): { chosen: string; language: string; languages: string[] } {
+  const nav: any = (globalThis as any).navigator;
+  const language: string = nav?.language ?? '';
+  const languages: string[] = nav?.languages?.length ? [...nav.languages] : (language ? [language] : []);
+  const isCjk = (l: string) => /^(ja|ko|zh)\b/i.test(l);
+  const chosen = languages.find(isCjk) ?? language;
+  return { chosen, language, languages };
+}
+
 // Fallback chain (priority order): consulted for codepoints the active face
 // lacks, so CJK etc. render instead of tofu. `lang` lets a run pick the right
 // regional Han forms (ja/ko/zh-Hant/zh-Hans). glyf-flavored Noto faces → byte
@@ -205,10 +220,12 @@ export class TextEngine {
       try { await this.loadFont(f.family, f.url); }
       catch (e) { console.warn(`text-engine: bundled font "${f.family}" failed to load`, e); }
     }
-    // Default the regional Han language to the system locale. navigator.language
-    // is available in Web Workers too (where the engine lives) and reflects the
-    // OS locale under Electron; a run/spec `lang` overrides it per-text.
-    this.setDefaultLang((globalThis as any).navigator?.language ?? '');
+    // Default the regional Han language to the system locale (navigator is
+    // available in Web Workers too; reflects the OS locale under Electron). A
+    // run/spec `lang` overrides it per-text. Logged so the choice is inspectable.
+    const loc = detectDefaultLang();
+    console.info('[text-engine] locale →', JSON.stringify(loc), '(set gen.text "lang" to override)');
+    this.setDefaultLang(loc.chosen);
 
     // Register the fallback chain (CJK etc.) in priority order, each tagged with
     // its region so a run's language picks the right Han forms.
