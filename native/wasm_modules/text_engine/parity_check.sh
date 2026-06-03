@@ -59,7 +59,7 @@ SPECS=(
   '{"text":"繁體中文 測試 你好嗎","lang":"zh-Hant","size_px":48}'
   '{"text":"한국어 안녕하세요 세계","lang":"ko","size_px":48}'
   '{"text":"雪 直 海 言","lang":"ja","size_px":72}'
-  '{"text":"CSSlist","runs":[{"family":"\"No Such Font\", Serif","size_px":72,"rgba":[0.6,0.8,1,1]}]}'
+  '{"text":"CSSlist","runs":[{"family":"\"No Such Font\", sErIf","size_px":72,"rgba":[0.6,0.8,1,1]}]}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.

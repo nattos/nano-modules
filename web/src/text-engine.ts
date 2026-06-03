@@ -101,9 +101,10 @@ export interface FontSource { family: string; url: string; }
  *  (weight 400, upright) keeps the bare family name; styled faces append a
  *  0x01-separated weight (+ "i" for italic). */
 export function faceKey(family: string, weight: number, italic: boolean): string {
-  if (!family) return '';
-  if (weight === 400 && !italic) return family;
-  return `${family}\u0001${Math.round(weight)}${italic ? 'i' : ''}`;
+  const fam = family.toLowerCase();
+  if (!fam) return '';
+  if (weight === 400 && !italic) return fam;
+  return `${fam}\u0001${Math.round(weight)}${italic ? 'i' : ''}`;
 }
 
 /** Split a CSS-style font-family value into ordered family names (comma-split,

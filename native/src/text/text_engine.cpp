@@ -152,14 +152,23 @@ static bool readBool(const char* s, int n, const char* key, bool fallback) {
   return fallback;
 }
 
+// ASCII-lowercase (font family names match case-insensitively, like CSS).
+static std::string lowerAscii(const std::string& s) {
+  std::string r = s;
+  for (char& c : r) c = (char)std::tolower((unsigned char)c);
+  return r;
+}
+
 // Canonical face-registry key for a (family, weight, italic) style. MUST stay
-// byte-identical to faceKey() in web/src/font-access.ts so the host registers a
-// resolved face under exactly the key the engine looks up. Regular (weight 400,
-// upright) keeps the bare family name (back-compat + the common case).
+// byte-identical to faceKey() in web/src/text-engine.ts so the host registers a
+// resolved face under exactly the key the engine looks up. The family is
+// ASCII-lowercased (case-insensitive matching); regular (weight 400, upright)
+// keeps the bare family name (the common case).
 static std::string faceKey(const std::string& family, int weight, bool italic) {
-  if (family.empty()) return std::string();
-  if (weight == 400 && !italic) return family;
-  std::string k = family;
+  std::string fam = lowerAscii(family);
+  if (fam.empty()) return std::string();
+  if (weight == 400 && !italic) return fam;
+  std::string k = fam;
   k.push_back('\x01');
   k += std::to_string(weight);
   if (italic) k.push_back('i');
@@ -216,7 +225,7 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize,
     for (const std::string& cand : parseFamilyList(fam)) {
       auto it = faceByName.find(faceKey(cand, weight, italic));
       if (it != faceByName.end()) return it->second;
-      auto rit = faceByName.find(cand);
+      auto rit = faceByName.find(lowerAscii(cand));
       if (rit != faceByName.end()) return rit->second;
     }
     return 0;
@@ -492,7 +501,7 @@ bool Engine::hasFont() const { return impl_->font_loaded; }
 
 int Engine::addFont(const char* name, int name_len, const uint8_t* bytes, int len) {
   if (!impl_->font_loaded || !bytes || len <= 0) return -1;  // need a primary first
-  std::string key = (name && name_len > 0) ? std::string(name, name_len) : std::string();
+  std::string key = (name && name_len > 0) ? lowerAscii(std::string(name, name_len)) : std::string();
   if (!key.empty()) {
     auto it = impl_->faceByName.find(key);
     if (it != impl_->faceByName.end()) return it->second;    // idempotent
@@ -508,7 +517,7 @@ int Engine::addFont(const char* name, int name_len, const uint8_t* bytes, int le
 
 bool Engine::hasFontNamed(const char* name, int name_len) const {
   if (!name || name_len <= 0) return false;
-  return impl_->faceByName.count(std::string(name, name_len)) != 0;
+  return impl_->faceByName.count(lowerAscii(std::string(name, name_len))) != 0;
 }
 
 int Engine::addFallbackFont(const uint8_t* bytes, int len, const char* lang, int lang_len) {
