@@ -43,7 +43,7 @@ export TE_FAMILY2="${TE_FAMILY2:-Serif}"
 # Traditional Chinese, Japanese (kana), and Korean (hangul). Fetched by
 # web/scripts/fetch_fonts.sh. Both tools register the SAME files in order.
 FONTS="$ROOT/web/public/fonts"
-export TE_FALLBACK="${TE_FALLBACK:-$FONTS/noto-sans-sc.ttf:$FONTS/noto-sans-tc.ttf:$FONTS/noto-sans-jp.ttf:$FONTS/noto-sans-kr.ttf}"
+export TE_FALLBACK="${TE_FALLBACK:-$FONTS/noto-sans-jp.ttf:$FONTS/noto-sans-sc.ttf:$FONTS/noto-sans-tc.ttf:$FONTS/noto-sans-kr.ttf}"
 
 SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'
@@ -53,9 +53,9 @@ SPECS=(
   '{"text":"MonoSerif","runs":[{"start":0,"len":4,"size_px":72},{"start":4,"len":5,"size_px":72,"family":"Serif","rgba":[0.4,1,0.6,1]}]}'
   '{"text":"Hello 世界 你好","size_px":56}'
   '{"text":"你好世界这是一个换行测试","constraints":{"max_width_px":200,"size_px":40}}'
-  '{"text":"日本語 こんにちは 世界","size_px":48}'
-  '{"text":"繁體中文 測試 你好嗎","size_px":48}'
-  '{"text":"한국어 안녕하세요 세계","size_px":48}'
+  '{"text":"日本語 こんにちは 世界","lang":"ja","size_px":48}'
+  '{"text":"繁體中文 測試 你好嗎","lang":"zh-Hant","size_px":48}'
+  '{"text":"한국어 안녕하세요 세계","lang":"ko","size_px":48}'
   '{"text":"雪 直 海 言","lang":"ja","size_px":72}'
 )
 

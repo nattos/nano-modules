@@ -137,9 +137,9 @@ function detectDefaultLang(): { chosen: string; language: string; languages: str
 // regional Han forms (ja/ko/zh-Hant/zh-Hans). glyf-flavored Noto faces → byte
 // parity. Extend with Arabic / Hebrew for full coverage.
 const DEFAULT_FALLBACKS: FallbackSource[] = [
+  { url: '/fonts/noto-sans-jp.ttf', lang: 'ja' },       // Japanese (kana + kanji)
   { url: '/fonts/noto-sans-sc.ttf', lang: 'zh-Hans' },  // Simplified Chinese / Han
   { url: '/fonts/noto-sans-tc.ttf', lang: 'zh-Hant' },  // Traditional Chinese
-  { url: '/fonts/noto-sans-jp.ttf', lang: 'ja' },       // Japanese (kana + kanji)
   { url: '/fonts/noto-sans-kr.ttf', lang: 'ko' },       // Korean (hangul)
 ];
 
