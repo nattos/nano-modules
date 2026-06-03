@@ -15,24 +15,25 @@
 
 // MSDF compositor — mirrors native/src/text/shaders/text_composite.hlsl.
 const WGSL = `
-struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32> };
+// 64-byte glyph: aux.x = atlas-array page (layer). ("meta" is a WGSL keyword.)
+struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32> };
 struct U {
   canvas_w:u32, canvas_h:u32, glyph_count:u32, atlas_w:u32, atlas_h:u32,
   origin_x:f32, origin_y:f32, atlas_kind:u32, atlas_px_range:f32,
   _p0:f32, _p1:f32, _p2:f32,
 };
 @group(0) @binding(0) var<storage, read> glyphs: array<Glyph>;
-@group(0) @binding(1) var atlas_tex: texture_2d<f32>;
+@group(0) @binding(1) var atlas_arr: texture_2d_array<f32>;
 @group(0) @binding(2) var bg_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var<uniform> u: U;
 
 fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c)); }
-// LINEAR-filtered sample — bilinear interpolation of the distance field is what
-// makes MSDF smooth (and corner-sharp) at any magnification.
-fn atlas_texel(uu:f32, vv:f32) -> vec4<f32> {
-  return textureSampleLevel(atlas_tex, samp, vec2<f32>(uu, vv), 0.0);
+// LINEAR-filtered sample of the glyph's atlas PAGE (array layer) — bilinear
+// distance-field interpolation = smooth, corner-sharp MSDF at any magnification.
+fn atlas_texel(uu:f32, vv:f32, page:i32) -> vec4<f32> {
+  return textureSampleLevel(atlas_arr, samp, vec2<f32>(uu, vv), page, 0.0);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -50,7 +51,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lv = (p.y - gy) / g.rect.w;
     let au = g.uv.x + lu * (g.uv.z - g.uv.x);
     let av = g.uv.y + lv * (g.uv.w - g.uv.y);
-    let texel = atlas_texel(au, av);
+    let texel = atlas_texel(au, av, i32(g.aux.x));
     var cov: f32;
     if (u.atlas_kind == 0u) {
       let tile_h_px = (g.uv.w - g.uv.y) * f32(u.atlas_h);
@@ -84,7 +85,8 @@ interface TEExports {
   te_rasterize(id: number, w: number, h: number, ox: number, oy: number, bg: number, out: number): number;
   te_atlas_width(): number;
   te_atlas_height(): number;
-  te_atlas_ptr(): number;
+  te_atlas_page_count(): number;
+  te_atlas_page_ptr(page: number): number;
   te_next_dirty_region(outPtr: number): number;
 }
 
@@ -157,7 +159,8 @@ export class TextEngine {
   private pipeline!: GPUComputePipeline;
   private bgTex!: GPUTexture;
   private sampler!: GPUSampler;
-  private atlasTex: GPUTexture | null = null;
+  private atlasTex: GPUTexture | null = null;   // texture-array (one layer per atlas page)
+  private atlasPages = 0;
 
   static get instance(): TextEngine | null { return G.__textEngine ?? null; }
 
@@ -405,6 +408,15 @@ export class TextEngine {
     }
   }
 
+  /** Upload page `p`'s pixels into atlas-array layer `p`. */
+  private uploadPage(p: number, aw: number, ah: number): void {
+    const ptr = this.ex.te_atlas_page_ptr(p);
+    const bytes = this.u8().slice(ptr, ptr + aw * ah * 4);
+    this.device.queue.writeTexture(
+      { texture: this.atlasTex!, origin: { x: 0, y: 0, z: p } },
+      bytes, { bytesPerRow: aw * 4, rowsPerImage: ah }, [aw, ah, 1]);
+  }
+
   /** Composite the laid-out text for `id` into `target` at (originX, originY). */
   render(id: number, target: GPUTexture, originX: number, originY: number): void {
     const ex = this.ex;
@@ -412,9 +424,9 @@ export class TextEngine {
 
     const count = ex.te_glyph_count(id);
     if (count <= 0) return;
-    const gPtr = ex.malloc(count * 48);
-    const written = ex.te_glyphs(id, gPtr, count * 48);
-    const glyphBytes = this.u8().slice(gPtr, gPtr + written * 48);
+    const gPtr = ex.malloc(count * 64);
+    const written = ex.te_glyphs(id, gPtr, count * 64);
+    const glyphBytes = this.u8().slice(gPtr, gPtr + written * 64);
     ex.free(gPtr);
 
     const mPtr = ex.malloc(32);
@@ -425,23 +437,27 @@ export class TextEngine {
     ex.free(mPtr);
 
     const aw = ex.te_atlas_width(), ah = ex.te_atlas_height();
-    // Drain dirty regions; re-upload the atlas texture if anything changed.
-    let dirty = false;
-    const rPtr = ex.malloc(20);
-    while (ex.te_next_dirty_region(rPtr)) dirty = true;
+    const pageCount = Math.max(1, ex.te_atlas_page_count());
+    // Drain dirty pages (24-byte region: page at offset 0).
+    const dirtyPages = new Set<number>();
+    const rPtr = ex.malloc(24);
+    while (ex.te_next_dirty_region(rPtr)) dirtyPages.add(new DataView(ex.memory.buffer).getInt32(rPtr, true));
     ex.free(rPtr);
-    if (!this.atlasTex) {
-      this.atlasTex = device.createTexture({ size: [aw, ah], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-      dirty = true;
-    }
-    if (dirty) {
-      const aPtr = ex.te_atlas_ptr();
-      const atlasBytes = this.u8().slice(aPtr, aPtr + aw * ah * 4);
-      device.queue.writeTexture({ texture: this.atlasTex }, atlasBytes, { bytesPerRow: aw * 4, rowsPerImage: ah }, [aw, ah]);
+    // (Re)create the atlas texture-array when the layer count grows; that
+    // invalidates old contents, so re-upload every page.
+    if (!this.atlasTex || this.atlasPages !== pageCount) {
+      this.atlasTex = device.createTexture({
+        size: [aw, ah, pageCount], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      this.atlasPages = pageCount;
+      for (let p = 0; p < ex.te_atlas_page_count(); p++) this.uploadPage(p, aw, ah);
+    } else {
+      for (const p of dirtyPages) if (p < ex.te_atlas_page_count()) this.uploadPage(p, aw, ah);
     }
 
     const cw = target.width, ch = target.height;
-    const glyphBuf = device.createBuffer({ size: Math.max(48, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const glyphBuf = device.createBuffer({ size: Math.max(64, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(glyphBuf, 0, glyphBytes);
 
     const uni = new ArrayBuffer(48);
@@ -457,7 +473,7 @@ export class TextEngine {
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: glyphBuf } },
-        { binding: 1, resource: this.atlasTex.createView() },
+        { binding: 1, resource: this.atlasTex.createView({ dimension: '2d-array' }) },
         { binding: 2, resource: this.bgTex.createView() },
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: target.createView() },

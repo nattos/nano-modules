@@ -21,14 +21,14 @@ const ATLAS_RGBA_OFFSET_ALPHA = 24; // alpha in high byte of LE-packed RGBA8
 // Hand-authored WGSL mirroring native/src/text/shaders/text_composite.hlsl
 // (the production web path will auto-generate this from the HLSL via naga).
 const WGSL = `
-struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32> };
+struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32> };
 struct U {
   canvas_w:u32, canvas_h:u32, glyph_count:u32, atlas_w:u32, atlas_h:u32,
   origin_x:f32, origin_y:f32, atlas_kind:u32, atlas_px_range:f32,
   _p0:f32, _p1:f32, _p2:f32,
 };
 @group(0) @binding(0) var<storage, read> glyphs: array<Glyph>;
-@group(0) @binding(1) var atlas_tex: texture_2d<f32>;
+@group(0) @binding(1) var atlas_arr: texture_2d_array<f32>;
 @group(0) @binding(2) var bg_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var out_tex: texture_storage_2d<rgba8unorm, write>;
@@ -36,9 +36,9 @@ struct U {
 
 fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c)); }
 
-// LINEAR-filtered sample — bilinear distance-field interpolation = smooth MSDF.
-fn atlas_texel(uu:f32, vv:f32) -> vec4<f32> {
-  return textureSampleLevel(atlas_tex, samp, vec2<f32>(uu, vv), 0.0);
+// LINEAR-filtered sample of the glyph's atlas page (array layer) = smooth MSDF.
+fn atlas_texel(uu:f32, vv:f32, page:i32) -> vec4<f32> {
+  return textureSampleLevel(atlas_arr, samp, vec2<f32>(uu, vv), page, 0.0);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -56,7 +56,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lv = (p.y - gy) / g.rect.w;
     let au = g.uv.x + lu * (g.uv.z - g.uv.x);
     let av = g.uv.y + lv * (g.uv.w - g.uv.y);
-    let texel = atlas_texel(au, av);
+    let texel = atlas_texel(au, av, i32(g.aux.x));
     var cov: f32;
     if (u.atlas_kind == 0u) {                    // MSDF: median + screenPxRange AA
       let tile_h_px = (g.uv.w - g.uv.y) * f32(u.atlas_h);
@@ -95,9 +95,12 @@ async function getDevice() {
   if (gpu) return gpu;
   const adapter = await navigator.gpu.requestAdapter();
   const device = await adapter.requestDevice();
+  const module = device.createShaderModule({ code: WGSL });
+  const info = await module.getCompilationInfo();
+  for (const m of info.messages) if (m.type === 'error') console.error('WGSL ' + m.lineNum + ':' + m.linePos + ' ' + m.message);
   const pipeline = device.createComputePipeline({
     layout: 'auto',
-    compute: { module: device.createShaderModule({ code: WGSL }), entryPoint: 'main' },
+    compute: { module, entryPoint: 'main' },
   });
   gpu = { device, pipeline };
   return gpu;
@@ -147,21 +150,26 @@ window.renderTextGPU = async (spec, fontUrl, fonts) => {
   const ch = Math.max(1, Math.ceil(height) + 2 * MARGIN);
 
   const count = ex.te_glyph_count(id);
-  const gPtr = ex.malloc(count * 48);
-  const written = ex.te_glyphs(id, gPtr, count * 48);
-  const glyphBytes = new Uint8Array(ex.memory.buffer.slice(gPtr, gPtr + written * 48));
+  const gPtr = ex.malloc(count * 64);
+  const written = ex.te_glyphs(id, gPtr, count * 64);
+  const glyphBytes = new Uint8Array(ex.memory.buffer.slice(gPtr, gPtr + written * 64));
   ex.free(gPtr);
 
   const aw = ex.te_atlas_width(), ah = ex.te_atlas_height();
-  const aPtr = ex.te_atlas_ptr();
-  const atlasBytes = new Uint8Array(ex.memory.buffer.slice(aPtr, aPtr + aw * ah * 4));
+  const pageCount = Math.max(1, ex.te_atlas_page_count());
   ex.te_release(id);
 
   // --- GPU resources ---
-  const glyphBuf = device.createBuffer({ size: Math.max(48, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const glyphBuf = device.createBuffer({ size: Math.max(64, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(glyphBuf, 0, glyphBytes);
-  const atlasTex = device.createTexture({ size: [aw, ah], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-  device.queue.writeTexture({ texture: atlasTex }, atlasBytes, { bytesPerRow: aw * 4, rowsPerImage: ah }, [aw, ah]);
+  // Atlas as a texture array — one layer per page (pages may be different
+  // internal resolutions; the glyph's aux.x selects the layer).
+  const atlasTex = device.createTexture({ size: [aw, ah, pageCount], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  for (let p = 0; p < pageCount; p++) {
+    const pPtr = ex.te_atlas_page_ptr(p);
+    const pageBytes = new Uint8Array(ex.memory.buffer.slice(pPtr, pPtr + aw * ah * 4));
+    device.queue.writeTexture({ texture: atlasTex, origin: { x: 0, y: 0, z: p } }, pageBytes, { bytesPerRow: aw * 4, rowsPerImage: ah }, [aw, ah, 1]);
+  }
 
   const uni = new ArrayBuffer(48);
   const uv = new DataView(uni);
@@ -183,7 +191,7 @@ window.renderTextGPU = async (spec, fontUrl, fonts) => {
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: glyphBuf } },
-      { binding: 1, resource: atlasTex.createView() },
+      { binding: 1, resource: atlasTex.createView({ dimension: '2d-array' }) },
       { binding: 2, resource: bgTex.createView() },
       { binding: 3, resource: sampler },
       { binding: 4, resource: outTex.createView() },

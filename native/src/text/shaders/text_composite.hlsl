@@ -14,15 +14,16 @@
 
 struct Glyph {
   float4 rect;   // x, y, w, h  (layout-box-relative, px)
-  float4 uv;     // u0, v0, u1, v1 (normalized atlas coords)
+  float4 uv;     // u0, v0, u1, v1 (normalized atlas-page coords)
   float4 rgba;   // run color (linear)
+  float4 aux;    // aux.x = atlas-array page (layer); rest reserved
 };
 
 // Binding slots are globally unique across resource classes (project
 // convention: register number == Vulkan binding number, no per-class reuse).
-StructuredBuffer<Glyph> glyphs   : register(t0);
-Texture2D<float4>       atlas_tex : register(t1);  // MSDF atlas; sampled LINEAR
-Texture2D<float4>       bg_tex    : register(t2);
+StructuredBuffer<Glyph>      glyphs    : register(t0);
+Texture2DArray<float4>       atlas_arr : register(t1);  // MSDF atlas pages; sampled LINEAR
+Texture2D<float4>            bg_tex    : register(t2);
 SamplerState            samp      : register(s3);  // linear filtering
 RWTexture2D<float4>     out_tex   : register(u4);
 
@@ -41,9 +42,10 @@ cbuffer CompositeUniforms : register(b5) {
 
 float median3(float a, float b, float c) { return max(min(a, b), min(max(a, b), c)); }
 
-// LINEAR-filtered sample — bilinear distance-field interpolation = smooth MSDF.
-float4 atlas_texel(float u, float v) {
-  return atlas_tex.SampleLevel(samp, float2(u, v), 0.0);
+// LINEAR-filtered sample of the glyph's atlas PAGE (array layer) — bilinear
+// distance-field interpolation = smooth, corner-sharp MSDF at any magnification.
+float4 atlas_texel(float u, float v, float page) {
+  return atlas_arr.SampleLevel(samp, float3(u, v, page), 0.0);
 }
 
 [numthreads(8, 8, 1)]
@@ -65,7 +67,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float au = g.uv.x + lu * (g.uv.z - g.uv.x);
     float av = g.uv.y + lv * (g.uv.w - g.uv.y);
 
-    float4 texel = atlas_texel(au, av);
+    float4 texel = atlas_texel(au, av, g.aux.x);
     float cov;
     if (atlas_kind == 0u) {                       // MSDF: median + screenPxRange AA
       float tile_h_px = (g.uv.w - g.uv.y) * (float)atlas_h;
