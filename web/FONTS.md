@@ -28,12 +28,20 @@ The engine itself is multi-face: `setFont` installs the primary (face 0),
 
 When a run's face lacks a codepoint (e.g. CJK in a Latin font), the engine
 consults an ordered **fallback chain** and shapes that codepoint with the first
-face that covers it — so 你好 renders real glyphs instead of tofu. The host
-installs the chain via `addFallbackFont(bytes)` (web: `DEFAULT_FALLBACKS` in
-`text-engine.ts`, fetched by `fetch_fonts.sh`). The bundled fallback is
-**Noto Sans SC** (Simplified Chinese / Han), which is glyf-flavored so it keeps
-byte-exact parity. Extend the chain (Japanese kana, Korean hangul, Arabic,
-Hebrew) by adding files to `fetch_fonts.sh` + `DEFAULT_FALLBACKS`.
+covering face — so 你好 renders real glyphs instead of tofu. The host installs
+the chain via `addFallbackFont(bytes, lang)` (web: `DEFAULT_FALLBACKS` in
+`text-engine.ts`, fetched by `fetch_fonts.sh`). Selection is a 4-pass match in
+descending preference: **lang+style → lang → style → any**. So the chosen
+fallback matches both the run's **region** (`lang`: ja / ko / zh-Hant / zh-Hans,
+for correct regional Han forms) and its **style** (serif vs sans, auto-detected
+from each face's OS/2 `sFamilyClass`) — a serif primary (e.g. Times, or the
+`serif` generic) pulls a serif CJK face, mirroring OS font fallback.
+
+The bundled chain is **Noto Sans + Noto Serif** in **SC / TC / JP / KR**, all
+glyf-flavored (byte-exact parity), covering Simplified + Traditional Chinese,
+Japanese (kana), and Korean (hangul) in both styles. These are large (~130 MB of
+CJK across the 8 faces); they're fetched (not committed) and gitignored. Extend
+(Arabic, Hebrew, …) by adding files to `fetch_fonts.sh` + `DEFAULT_FALLBACKS`.
 
 FreeType is built with both the TrueType (`glyf`) and **CFF** drivers, so
 OpenType-CFF OS fonts (many CJK faces) open too — though CFF charstring

@@ -18,6 +18,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
+#include FT_TRUETYPE_TABLES_H   // TT_OS2 for serif/sans classification
 
 #include <msdfgen.h>
 
@@ -293,7 +294,25 @@ struct Face {
   int   units_per_em = 1000;
   float ascender_em = 0.8f, descender_em = -0.2f;
   std::string lang;   // normalized CJK script tag for fallback faces ("" = none)
+  bool  isSerif = false;  // OS/2 classification → style-matched fallback
 };
+
+// Classify a face as serif (vs sans) from its OS/2 sFamilyClass, with Panose as
+// a tiebreaker. Lets a serif primary font pull a serif CJK fallback for missing
+// codepoints (and sans→sans), mirroring OS font fallback.
+static bool classifySerif(FT_Face face) {
+  TT_OS2* os2 = (TT_OS2*)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+  if (os2 && os2->version != 0xFFFF) {
+    int cls = (os2->sFamilyClass >> 8) & 0xFF;
+    if (cls >= 1 && cls <= 7) return true;   // serif classes (oldstyle … slab/freeform)
+    if (cls == 8) return false;              // sans-serif
+    if (os2->panose[0] == 2) {               // Latin Text → Panose "serif style" byte
+      int s = os2->panose[1];
+      return s >= 2 && s <= 10;              // 2–10 serif; 11–15 sans/flared/rounded
+    }
+  }
+  return false;  // unknown → treat as sans
+}
 
 // One atlas page: a PAGE_W×PAGE_H RGBA8 image whose glyphs are all rasterized at
 // `refPx`, shelf-packed. Pages of the same refPx form a class; a new page is
@@ -335,22 +354,26 @@ struct Engine::Impl {
   }
 
   // Glyph index for `cp` in `preferFace`, else a fallback face; writes the
-  // resolved face + index. Two-pass over the chain: first only faces tagged with
-  // the run's `lang` (so shared Han renders in the right regional form — e.g. a
-  // ja run takes the JP face), then the rest in chain order. Returns false only
-  // if nothing covers it (caller renders preferFace's .notdef).
+  // resolved face + index. Walks the chain in passes of descending preference so
+  // missing codepoints land on the best-matching fallback:
+  //   0: lang AND style match   (e.g. a ja serif run → Noto Serif JP)
+  //   1: lang match             (regional Han form)
+  //   2: style match            (serif run with no/zh lang → a serif CJK face)
+  //   3: any covering face
+  // Returns false only if nothing covers it (caller renders preferFace .notdef).
   bool resolveCodepoint(unsigned cp, int preferFace, const std::string& lang,
                         int& outFace, uint32_t& outGi) {
     outFace = preferFace;
     outGi = FT_Get_Char_Index(faces[preferFace].ft, cp);
     if (outGi != 0) return true;
-    for (int pass = 0; pass < 2; pass++) {
-      // pass 0: only lang-matching faces (skipped when the run has no lang).
-      if (pass == 0 && lang.empty()) continue;
+    bool wantSerif = faces[preferFace].isSerif;
+    for (int pass = 0; pass < 4; pass++) {
       for (int fb : fallbackFaces) {
         if (fb == preferFace || fb < 0 || fb >= (int)faces.size()) continue;
-        bool match = !lang.empty() && faces[fb].lang == lang;
-        if (pass == 0 ? !match : match) continue;
+        bool langM  = !lang.empty() && faces[fb].lang == lang;
+        bool styleM = faces[fb].isSerif == wantSerif;
+        bool ok = pass == 0 ? (langM && styleM) : pass == 1 ? langM : pass == 2 ? styleM : true;
+        if (!ok) continue;
         uint32_t g = FT_Get_Char_Index(faces[fb].ft, cp);
         if (g != 0) { outFace = fb; outGi = g; return true; }
       }
@@ -479,6 +502,7 @@ static bool openFace(FT_Library lib, Face& fc) {
   fc.units_per_em = fc.ft->units_per_EM ? fc.ft->units_per_EM : 1000;
   fc.ascender_em  = (float)fc.ft->ascender / fc.units_per_em;
   fc.descender_em = (float)fc.ft->descender / fc.units_per_em;
+  fc.isSerif      = classifySerif(fc.ft);
   return true;
 }
 

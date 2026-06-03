@@ -164,10 +164,17 @@ function detectDefaultLang(): { chosen: string; language: string; languages: str
 // regional Han forms (ja/ko/zh-Hant/zh-Hans). glyf-flavored Noto faces → byte
 // parity. Extend with Arabic / Hebrew for full coverage.
 const DEFAULT_FALLBACKS: FallbackSource[] = [
-  { url: '/fonts/noto-sans-jp.ttf', lang: 'ja' },       // Japanese (kana + kanji)
-  { url: '/fonts/noto-sans-sc.ttf', lang: 'zh-Hans' },  // Simplified Chinese / Han
-  { url: '/fonts/noto-sans-tc.ttf', lang: 'zh-Hant' },  // Traditional Chinese
-  { url: '/fonts/noto-sans-kr.ttf', lang: 'ko' },       // Korean (hangul)
+  // Sans-serif CJK (matched to sans primaries / the default Noto Sans).
+  { url: '/fonts/noto-sans-jp.ttf', lang: 'ja' },        // Japanese (kana + kanji)
+  { url: '/fonts/noto-sans-sc.ttf', lang: 'zh-Hans' },   // Simplified Chinese / Han
+  { url: '/fonts/noto-sans-tc.ttf', lang: 'zh-Hant' },   // Traditional Chinese
+  { url: '/fonts/noto-sans-kr.ttf', lang: 'ko' },        // Korean (hangul)
+  // Serif CJK — chosen for serif primaries (the engine style-matches via OS/2;
+  // missing if fetch_fonts.sh wasn't run → serif text falls back to sans CJK).
+  { url: '/fonts/noto-serif-jp.ttf', lang: 'ja' },
+  { url: '/fonts/noto-serif-sc.ttf', lang: 'zh-Hans' },
+  { url: '/fonts/noto-serif-tc.ttf', lang: 'zh-Hant' },
+  { url: '/fonts/noto-serif-kr.ttf', lang: 'ko' },
 ];
 
 // Back the singleton with globalThis so it survives module duplication across

@@ -26,7 +26,8 @@ cd "$(dirname "$0")/../public/fonts"
 
 # Pinned google/fonts commit — change this (and the sha256s) to update fonts.
 PIN=647e52b1cbc941916c322994994bbe2e3a08ca6e
-BASE="https://cdn.jsdelivr.net/gh/google/fonts@${PIN}"
+BASE="https://cdn.jsdelivr.net/gh/google/fonts@${PIN}"        # fast CDN (≤50 MB)
+RAW="https://github.com/google/fonts/raw/${PIN}"             # fallback (large files)
 
 # out-file  url-path  sha256
 FILES=(
@@ -36,6 +37,10 @@ FILES=(
   "noto-sans-tc.ttf|ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf|864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f"
   "noto-sans-jp.ttf|ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf|c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f"
   "noto-sans-kr.ttf|ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf|194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252"
+  "noto-serif-sc.ttf|ofl/notoserifsc/NotoSerifSC%5Bwght%5D.ttf|050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9"
+  "noto-serif-tc.ttf|ofl/notoseriftc/NotoSerifTC%5Bwght%5D.ttf|0077e18f57c6908f4a000969880940bdb0dad057c0e8d98b49dc364c3d1b09c6"
+  "noto-serif-jp.ttf|ofl/notoserifjp/NotoSerifJP%5Bwght%5D.ttf|2fd527ba12b6a44ec30d796d633360da0aeba6c5d4af1304ce12bb4dc15a7dfc"
+  "noto-serif-kr.ttf|ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf|11f8d5de6f1b79195efba3828aaa2ec95c1178f5ae976fb23c8d53250a9938f3"
 )
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
@@ -46,7 +51,12 @@ for entry in "${FILES[@]}"; do
     echo "  $out already present (sha ok)"; continue
   fi
   echo "  fetching $out"
-  curl -fsSL --max-time 60 -o "$out" "$BASE/$path"
+  # jsdelivr first; fall back to GitHub raw for files over its 50 MB CDN limit
+  # (the large CJK serif faces) — verified by sha256 either way.
+  curl -fsSL --max-time 120 -o "$out" "$BASE/$path" || true
+  if [ "$(sha "$out" 2>/dev/null)" != "$want" ]; then
+    curl -fsSL --max-time 300 -o "$out" "$RAW/$path"
+  fi
   got="$(sha "$out")"
   if [ "$got" != "$want" ]; then
     echo "  ERROR: $out sha256 mismatch (got $got, want $want)"; rm -f "$out"; exit 1

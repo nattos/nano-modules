@@ -45,7 +45,7 @@ export TE_FAMILY2="${TE_FAMILY2:-Serif}"
 # Traditional Chinese, Japanese (kana), and Korean (hangul). Fetched by
 # web/scripts/fetch_fonts.sh. Both tools register the SAME files in order.
 FONTS="$ROOT/web/public/fonts"
-export TE_FALLBACK="${TE_FALLBACK:-$FONTS/noto-sans-jp.ttf:$FONTS/noto-sans-sc.ttf:$FONTS/noto-sans-tc.ttf:$FONTS/noto-sans-kr.ttf}"
+export TE_FALLBACK="${TE_FALLBACK:-$FONTS/noto-sans-jp.ttf:$FONTS/noto-sans-sc.ttf:$FONTS/noto-sans-tc.ttf:$FONTS/noto-sans-kr.ttf:$FONTS/noto-serif-jp.ttf:$FONTS/noto-serif-sc.ttf:$FONTS/noto-serif-tc.ttf:$FONTS/noto-serif-kr.ttf}"
 
 SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'
@@ -60,6 +60,7 @@ SPECS=(
   '{"text":"한국어 안녕하세요 세계","lang":"ko","size_px":48}'
   '{"text":"雪 直 海 言","lang":"ja","size_px":72}'
   '{"text":"CSSlist","runs":[{"family":"\"No Such Font\", sErIf","size_px":72,"rgba":[0.6,0.8,1,1]}]}'
+  '{"text":"Serif 明朝","runs":[{"family":"Serif","lang":"ja","size_px":64,"rgba":[1,0.85,0.4,1]}]}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.
