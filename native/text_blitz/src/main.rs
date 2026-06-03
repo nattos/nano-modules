@@ -13,7 +13,7 @@
 // a summary. GIDs are font-intrinsic, so the same GID fed to FreeType (loading
 // the SAME sfnt bytes) selects the same outline — that's why the seam works.
 
-use blitz_dom::{build_single_font_ctx, DocumentConfig};
+use blitz_dom::{build_single_font_ctx, DocumentConfig, StyleThreading};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::layout::PositionedLayoutItem;
@@ -54,6 +54,10 @@ fn main() {
     let config = DocumentConfig {
         viewport: Some(viewport),
         font_ctx: Some(font_ctx),
+        // Sequential traversal: identical code path native & wasm (no rayon),
+        // so glyph-run output can't diverge on thread-scheduling and wasm32
+        // (no threads under wasip1) takes the same branch.
+        style_threading: StyleThreading::Sequential,
         ..Default::default()
     };
 
