@@ -1,0 +1,25 @@
+# text_blitz — SPIKE: prove blitz-dom can emit positioned glyph runs that map
+# into our MSDF atlas at the glyph-run seam (see plan: Blitz as optional mode).
+#
+# Layout/shaping ONLY — no painter (no anyrender/vello). We disable default
+# features (system_fonts especially: we feed our OWN font bytes so the same
+# sfnt bytes drive both this layout engine and the FreeType+msdfgen rasterizer,
+# preserving native↔wasm parity). svg/woff/accessibility/file_input off too.
+[package]
+name = "text_blitz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "blitz_runs"
+path = "src/main.rs"
+
+[dependencies]
+blitz-dom = { version = "=0.3.0-alpha.4", default-features = false }
+blitz-html = "=0.3.0-alpha.4"
+blitz-traits = "=0.3.0-alpha.4"
+parley = { version = "=0.9.0", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 2
