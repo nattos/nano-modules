@@ -88,6 +88,49 @@ interface TEExports {
   te_atlas_page_count(): number;
   te_atlas_page_ptr(page: number): number;
   te_next_dirty_region(outPtr: number): number;
+  // Blitz complex-layout mode: rasterize pre-shaped runs from text_blitz.wasm.
+  te_layout_glyphs(runsPtr: number, count: number): number;
+}
+
+/** Exports of text_blitz.wasm — the Rust Blitz layout lib (Stylo + Taffy +
+ *  parley). Lays out HTML/CSS with the host's font bytes and returns pre-shaped
+ *  glyph runs (TbGlyph == text_engine::PreGlyph, 48 bytes) for the GID seam. */
+interface TBExports {
+  memory: WebAssembly.Memory;
+  _initialize?(): void;
+  tb_alloc(n: number): number;
+  tb_dealloc(p: number, n: number): void;
+  tb_create(): number;
+  tb_destroy(s: number): void;
+  tb_add_font(s: number, namePtr: number, nameLen: number, bytesPtr: number, len: number): number;
+  tb_layout(s: number, htmlPtr: number, len: number, w: number, h: number, scale: number): number;
+  tb_glyph_count(r: number): number;
+  tb_glyph_ptr(r: number): number;
+  tb_free_layout(r: number): void;
+}
+
+/** Minimal correct wasi_snapshot_preview1 shim for text_blitz.wasm (Stylo/std).
+ *  Out-params are written and preopen enumeration is terminated (EBADF=8);
+ *  randomness/time are zeroed — they don't affect layout output, which is why
+ *  the runs stay byte-parity with native (proven in blitz_parity.sh). */
+function makeBlitzWasi(mem: () => WebAssembly.Memory): Record<string, (...a: number[]) => number> {
+  const dv = () => new DataView(mem().buffer);
+  const u8 = () => new Uint8Array(mem().buffer);
+  return {
+    random_get: (p, n) => { u8().fill(0, p, p + n); return 0; },
+    environ_sizes_get: (c, s) => { const d = dv(); d.setUint32(c, 0, true); d.setUint32(s, 0, true); return 0; },
+    environ_get: () => 0,
+    clock_time_get: (_id, _prec, tp) => { dv().setBigUint64(tp, 0n, true); return 0; },
+    fd_close: () => 0,
+    fd_fdstat_get: (_fd, p) => { u8().fill(0, p, p + 24); return 0; },
+    fd_filestat_get: () => 8,
+    fd_prestat_get: () => 8,
+    fd_prestat_dir_name: () => 8,
+    fd_write: (_fd, iovs, n, nwr) => { const d = dv(); let t = 0; for (let i = 0; i < n; i++) t += d.getUint32(iovs + i * 8 + 4, true); d.setUint32(nwr, t, true); return 0; },
+    path_open: () => 8,
+    proc_exit: (code) => { throw new Error('text_blitz.wasm proc_exit ' + code); },
+    sched_yield: () => 0,
+  };
 }
 
 import type { FontRequest } from './engine-types';
@@ -193,6 +236,11 @@ export class TextEngine {
   private sampler!: GPUSampler;
   private atlasTex: GPUTexture | null = null;   // texture-array (one layer per atlas page)
   private atlasPages = 0;
+  // Blitz complex-layout mode (optional): text_blitz.wasm + a session whose
+  // faces are registered in the SAME order as the engine's, so faceId N is the
+  // same bytes on both. Loaded best-effort; null → mode:"html" specs no-op.
+  private blz: TBExports | null = null;
+  private blzSess = 0;
 
   static get instance(): TextEngine | null { return G.__textEngine ?? null; }
 
@@ -213,7 +261,7 @@ export class TextEngine {
   /** Idempotent async init. Safe to call repeatedly; the first call wins. */
   static init(
     device: GPUDevice,
-    opts?: { wasmUrl?: string; fontUrl?: string; fonts?: FontSource[]; fallbacks?: FallbackSource[] },
+    opts?: { wasmUrl?: string; blitzUrl?: string; fontUrl?: string; fonts?: FontSource[]; fallbacks?: FallbackSource[] },
   ): Promise<TextEngine> {
     if (G.__textEngine) return Promise.resolve(G.__textEngine);
     if (!G.__textEngineInit) {
@@ -221,14 +269,15 @@ export class TextEngine {
       G.__textEngineInit = e
         ._init(device, opts?.wasmUrl ?? '/wasm/text_engine.wasm',
                opts?.fontUrl ?? '/fonts/default.ttf', opts?.fonts ?? DEFAULT_FONTS,
-               opts?.fallbacks ?? DEFAULT_FALLBACKS)
+               opts?.fallbacks ?? DEFAULT_FALLBACKS,
+               opts?.blitzUrl ?? '/wasm/text_blitz.wasm')
         .then(() => (G.__textEngine = e));
     }
     return G.__textEngineInit;
   }
 
   private async _init(device: GPUDevice, wasmUrl: string, fontUrl: string,
-                      fonts: FontSource[], fallbacks: FallbackSource[]) {
+                      fonts: FontSource[], fallbacks: FallbackSource[], blitzUrl?: string) {
     this.device = device;
     const bytes = await (await fetch(wasmUrl)).arrayBuffer();
     const mod = await WebAssembly.compile(bytes);
@@ -242,11 +291,18 @@ export class TextEngine {
     this.ex = inst.exports as unknown as TEExports;
     this.ex.__wasm_call_ctors?.();
 
+    // Optional Blitz complex-layout mode. Best-effort: if text_blitz.wasm isn't
+    // served (or fails), mode:"html" specs simply no-op — the simple paragraph
+    // engine is unaffected.
+    if (blitzUrl) await this.initBlitz(blitzUrl).catch((e) =>
+      console.warn('text-engine: Blitz mode unavailable', e));
+
     const font = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
     const fp = this.ex.malloc(font.length);
     new Uint8Array(this.ex.memory.buffer).set(font, fp);
     if (!this.ex.te_set_font(fp, font.length)) throw new Error('text-engine: te_set_font failed');
     this.ex.free(fp);
+    this.blzAddFont(null, font);   // mirror primary (faceId 0) into Blitz
 
     // Register the bundled, parity-guaranteed font set (each family resolves to
     // byte-identical sfnt bytes on native + web). Failures are non-fatal — a run
@@ -282,12 +338,84 @@ export class TextEngine {
   private u8() { return new Uint8Array(this.ex.memory.buffer); }
 
   layout(specJson: string): number {
+    // Blitz complex-layout mode: spec carries {mode:"html", html, width, height,
+    // scale?}. Routed to the two-wasm path; everything downstream (measure,
+    // glyphs, render) is identical because it produces the same GlyphQuads.
+    if (specJson.includes('"mode"')) {
+      try {
+        const o = JSON.parse(specJson);
+        if (o && o.mode === 'html' && typeof o.html === 'string') {
+          return this.layoutHtml(o.html, o.width | 0 || 1920, o.height | 0 || 1080, o.scale || 1);
+        }
+      } catch { /* fall through to the paragraph engine */ }
+    }
     const enc = new TextEncoder().encode(specJson);
     const p = this.ex.malloc(enc.length);
     this.u8().set(enc, p);
     const id = this.ex.te_layout(p, enc.length);
     this.ex.free(p);
     return id;
+  }
+
+  /** True if the Blitz complex-layout mode (text_blitz.wasm) is available. */
+  get blitzReady(): boolean { return this.blz !== null; }
+
+  /** Lay out an HTML/CSS document via Blitz (Stylo+Taffy+parley) into a w×h px
+   *  viewport, feeding the pre-shaped runs through the engine's GID seam. Returns
+   *  a layoutId usable with measure/glyphs/render, or 0 if Blitz isn't loaded.
+   *  Pixel-parity with native is proven in blitz_parity.sh. */
+  layoutHtml(html: string, width: number, height: number, scale = 1): number {
+    const blz = this.blz;
+    if (!blz || !this.blzSess) return 0;
+    const htmlEnc = new TextEncoder().encode(html);
+    const hp = blz.tb_alloc(htmlEnc.length);
+    new Uint8Array(blz.memory.buffer).set(htmlEnc, hp);
+    const bl = blz.tb_layout(this.blzSess, hp, htmlEnc.length, width, height, scale);
+    blz.tb_dealloc(hp, htmlEnc.length);
+    if (!bl) return 0;
+    const n = blz.tb_glyph_count(bl);
+    const gp = blz.tb_glyph_ptr(bl);
+    // Copy the run buffer (48B records) out of Blitz memory and into the engine.
+    const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 48);
+    blz.tb_free_layout(bl);
+    const rp = this.ex.malloc(runs.length || 1);
+    this.u8().set(runs, rp);
+    const id = this.ex.te_layout_glyphs(rp, n);
+    this.ex.free(rp);
+    return id;
+  }
+
+  // Load text_blitz.wasm and start a layout session. Best-effort (see _init).
+  private async initBlitz(url: string): Promise<void> {
+    const bytes = await (await fetch(url)).arrayBuffer();
+    const mod = await WebAssembly.compile(bytes);
+    let inst: WebAssembly.Instance;
+    const blzRef = { ex: null as TBExports | null };
+    inst = await WebAssembly.instantiate(mod, {
+      wasi_snapshot_preview1: makeBlitzWasi(() => blzRef.ex!.memory),
+    });
+    const ex = inst.exports as unknown as TBExports;
+    blzRef.ex = ex;
+    ex._initialize?.();           // cdylib reactor: run ctors
+    this.blz = ex;
+    this.blzSess = ex.tb_create();
+  }
+
+  // Register a face into the Blitz session, in lock-step with the engine's
+  // faceId assignment. No-op if Blitz isn't loaded.
+  private blzAddFont(family: string | null, bytes: Uint8Array): void {
+    const blz = this.blz;
+    if (!blz || !this.blzSess) return;
+    let np = 0, nl = 0;
+    if (family) {
+      const ne = new TextEncoder().encode(family);
+      np = blz.tb_alloc(ne.length); new Uint8Array(blz.memory.buffer).set(ne, np); nl = ne.length;
+    }
+    const bp = blz.tb_alloc(bytes.length);
+    new Uint8Array(blz.memory.buffer).set(bytes, bp);
+    blz.tb_add_font(this.blzSess, np, nl, bp, bytes.length);
+    blz.tb_dealloc(bp, bytes.length);
+    if (np) blz.tb_dealloc(np, nl);
   }
 
   /** Copy the 32-byte TextMetrics for `id` out of engine memory. */
@@ -330,6 +458,7 @@ export class TextEngine {
     const id = this.ex.te_add_font(np, nameEnc.length, bp, bytes.length);
     this.ex.free(bp);
     this.ex.free(np);
+    if (id >= 0) this.blzAddFont(family, bytes);  // keep Blitz faceIds aligned
     return id;
   }
 
@@ -345,6 +474,7 @@ export class TextEngine {
     const id = this.ex.te_add_fallback_font(bp, bytes.length, lp, lb.length);
     this.ex.free(lp);
     this.ex.free(bp);
+    if (id >= 0) this.blzAddFont(null, bytes);    // mirror into the Blitz chain
     return id;
   }
 
