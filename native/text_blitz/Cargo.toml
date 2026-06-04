@@ -1,15 +1,23 @@
-# text_blitz — SPIKE: prove blitz-dom can emit positioned glyph runs that map
-# into our MSDF atlas at the glyph-run seam (see plan: Blitz as optional mode).
+# text_blitz — Blitz complex-layout mode for the text engine.
 #
-# Layout/shaping ONLY — no painter (no anyrender/vello). We disable default
-# features (system_fonts especially: we feed our OWN font bytes so the same
-# sfnt bytes drive both this layout engine and the FreeType+msdfgen rasterizer,
-# preserving native↔wasm parity). svg/woff/accessibility/file_input off too.
+# A C-ABI lib (staticlib native / cdylib wasm) that lays out HTML/CSS headlessly
+# with blitz-dom (Stylo cascade + Taffy flex/grid + parley/harfrust shaping)
+# using OUR font bytes, and emits pre-shaped glyph runs (TbGlyph) for the
+# FreeType+msdfgen atlas at the glyph-run seam — so Blitz owns layout+shaping and
+# we keep owning MSDF raster + the GPU compositor, preserving native↔wasm parity.
+#
+# Layout/shaping ONLY — no painter (no anyrender/vello). Default features off
+# (system_fonts especially: only our registered bytes shape, on both sides).
 [package]
 name = "text_blitz"
 version = "0.0.0"
 edition = "2021"
 publish = false
+
+[lib]
+name = "text_blitz"
+crate-type = ["rlib", "staticlib", "cdylib"]
+path = "src/lib.rs"
 
 [[bin]]
 name = "blitz_runs"
@@ -20,6 +28,8 @@ blitz-dom = { version = "=0.3.0-alpha.4", default-features = false }
 blitz-html = "=0.3.0-alpha.4"
 blitz-traits = "=0.3.0-alpha.4"
 parley = { version = "=0.9.0", default-features = false, features = ["std"] }
+# Stylo (re-exported by blitz-dom as crate `style`) for computed-color extraction.
+stylo = "=0.17.0"
 
 [profile.release]
 opt-level = 2

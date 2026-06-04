@@ -1,22 +1,10 @@
-// text_blitz spike — prove blitz-dom (Stylo + Taffy + parley) can lay out an
-// HTML/CSS document headlessly using OUR font bytes and emit positioned glyph
-// runs we can hand to the existing FreeType+msdfgen atlas at the glyph-run seam.
-//
-// This is the load-bearing hypothesis for "Blitz as an optional complex-layout
-// mode": Blitz owns layout + shaping (incl. OpenType features via harfrust),
-// we keep owning rasterization + the MSDF GPU compositor — so native↔wasm pixel
-// parity is preserved because the painter never changes.
+// blitz_runs — dev/parity dump for the text_blitz layout lib. Lays out an
+// HTML/CSS doc with one registered font and prints the pre-shaped glyph runs,
+// so native and the wasm build can be diffed for byte parity (run_wasm.mjs).
 //
 //   cargo run --release [font.ttf] [doc.html]
-//
-// Prints one line per glyph (node id, GID, size, page-absolute x/y, advance) and
-// a summary. GIDs are font-intrinsic, so the same GID fed to FreeType (loading
-// the SAME sfnt bytes) selects the same outline — that's why the seam works.
 
-use blitz_dom::{build_single_font_ctx, DocumentConfig, StyleThreading};
-use blitz_html::HtmlDocument;
-use blitz_traits::shell::{ColorScheme, Viewport};
-use parley::layout::PositionedLayoutItem;
+use text_blitz::Session;
 
 const SAMPLE_HTML: &str = r#"<!DOCTYPE html>
 <html><head><style>
@@ -24,7 +12,7 @@ const SAMPLE_HTML: &str = r#"<!DOCTYPE html>
   .wrap { display: flex; gap: 16px; padding: 24px; }
   h1 { font-size: 40px; font-weight: 700; margin: 0 0 8px; }
   p  { font-size: 18px; line-height: 1.4; width: 320px; }
-  .badge { font-size: 14px; font-weight: 700; }
+  .badge { font-size: 14px; font-weight: 700; color: #6cf; }
 </style></head><body>
   <div class="wrap">
     <div>
@@ -41,76 +29,23 @@ fn main() {
     let font_path = args
         .next()
         .unwrap_or_else(|| "../../web/public/fonts/default.ttf".into());
-    let font_bytes = std::fs::read(&font_path)
-        .unwrap_or_else(|e| panic!("read font {font_path}: {e}"));
+    let font_bytes =
+        std::fs::read(&font_path).unwrap_or_else(|e| panic!("read font {font_path}: {e}"));
     let html = match args.next() {
         Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read html {p}: {e}")),
         None => SAMPLE_HTML.to_string(),
     };
 
-    // One font registered as every generic family (sans/serif/mono/system-ui).
-    let font_ctx = build_single_font_ctx(&font_bytes);
-    let viewport = Viewport::new(800, 600, 1.0, ColorScheme::Light);
-    let config = DocumentConfig {
-        viewport: Some(viewport),
-        font_ctx: Some(font_ctx),
-        // Sequential traversal: identical code path native & wasm (no rayon),
-        // so glyph-run output can't diverge on thread-scheduling and wasm32
-        // (no threads under wasip1) takes the same branch.
-        style_threading: StyleThreading::Sequential,
-        ..Default::default()
-    };
+    let mut session = Session::new();
+    session.add_font(None, font_bytes); // faceId 0, all generics
+    let glyphs = session.layout(&html, 800, 600, 1.0);
 
-    let mut doc = HtmlDocument::from_html(&html, config);
-    doc.resolve(0.0); // style cascade (Stylo) + layout (Taffy) + shaping (parley)
-
-    let mut total_runs = 0usize;
-    let mut total_glyphs = 0usize;
-
-    for (node_id, node) in doc.tree().iter() {
-        if !node.flags.is_inline_root() {
-            continue;
-        }
-        let Some(ild) = node
-            .element_data()
-            .and_then(|ed| ed.inline_layout_data.as_ref())
-        else {
-            continue;
-        };
-        let layout = &ild.layout;
-
-        // Glyph positions are layout-box-relative; lift them to page-absolute via
-        // the inline root's absolute origin + its content-box inset.
-        let origin = node.absolute_position(0.0, 0.0);
-        let cbx = node.final_layout.content_box_x();
-        let cby = node.final_layout.content_box_y();
-
-        for line in layout.lines() {
-            for item in line.items() {
-                let PositionedLayoutItem::GlyphRun(grun) = item else {
-                    continue;
-                };
-                total_runs += 1;
-                let run = grun.run();
-                let size = run.font_size();
-                let synth = run.synthesis();
-                for g in grun.positioned_glyphs() {
-                    total_glyphs += 1;
-                    let ax = origin.x + cbx + g.x;
-                    let ay = origin.y + cby + g.y;
-                    println!(
-                        "node {node_id:>3}  gid {:>5}  size {:>5.1}  @ ({:>7.2},{:>7.2})  adv {:>6.2}{}",
-                        g.id,
-                        size,
-                        ax,
-                        ay,
-                        g.advance,
-                        if synth.embolden() || synth.skew().is_some() { "  [synth]" } else { "" },
-                    );
-                }
-            }
-        }
+    for g in &glyphs {
+        let synth = if g.skew != 0.0 || g.embolden != 0.0 { "  [synth]" } else { "" };
+        println!(
+            "gid {:>5}  cp U+{:04X}  size {:>5.1}  @ ({:>7.2},{:>7.2})  rgba({:.2},{:.2},{:.2},{:.2}){}",
+            g.gid, g.cp, g.size, g.x, g.y, g.r, g.g, g.b, g.a, synth,
+        );
     }
-
-    eprintln!("--- glyph runs: {total_runs}, glyphs: {total_glyphs} ---");
+    eprintln!("--- glyphs: {} ---", glyphs.len());
 }
