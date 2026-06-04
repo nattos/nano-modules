@@ -82,7 +82,7 @@ export const COMMON_FONT_SUGGESTIONS: string[] = [
 
 let cached: Map<string, FontData[]> | null = null;  // family → all its faces
 const wanted = new Map<string, FontRequest>();      // face key → request, pending resolution
-let registerCb: ((key: string, bytes: ArrayBuffer) => void) | null = null;
+let registerCb: ((key: string, family: string, bytes: ArrayBuffer) => void) | null = null;
 
 function ql(): QueryLocalFonts | null {
   const fn = (globalThis as any).queryLocalFonts;
@@ -132,7 +132,8 @@ async function tryResolve(req: FontRequest): Promise<void> {
   if (!fd) { wanted.delete(req.key); return; }  // family not local — give up (one shot)
   try {
     const bytes = await (await fd.blob()).arrayBuffer();
-    registerCb(req.key, bytes);                 // register under the engine face key
+    // key → engine faceKey match; family → Blitz/fontique CSS family match.
+    registerCb(req.key, req.family, bytes);
   } catch { /* ignore */ }
   wanted.delete(req.key);
 }
@@ -141,7 +142,7 @@ async function tryResolve(req: FontRequest): Promise<void> {
  *  engine face key). Installs a one-time gesture listener that primes Local Font
  *  Access and flushes any faces requested before the user interacted. Call once
  *  at boot. */
-export function initFontProvider(register: (key: string, bytes: ArrayBuffer) => void): void {
+export function initFontProvider(register: (key: string, family: string, bytes: ArrayBuffer) => void): void {
   registerCb = register;
   if (!ql()) return;  // non-Chromium: OS fonts simply won't resolve (bundled set still works)
   const prime = async () => {

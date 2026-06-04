@@ -241,6 +241,10 @@ export class TextEngine {
   // same bytes on both. Loaded best-effort; null → mode:"html" specs no-op.
   private blz: TBExports | null = null;
   private blzSess = 0;
+  // Engine keys already mirrored into Blitz — guards against a duplicate
+  // te_add_font (idempotent, no new engine face) adding a stray Blitz face and
+  // shifting faceIds out of lock-step.
+  private blzMirrored = new Set<string>();
 
   static get instance(): TextEngine | null { return G.__textEngine ?? null; }
 
@@ -447,10 +451,13 @@ export class TextEngine {
     return has;
   }
 
-  /** Register a face from sfnt bytes under `family`. Returns the faceId (>=0),
-   *  or -1 on failure. Idempotent by family name. */
-  registerFontBytes(family: string, bytes: Uint8Array): number {
-    const nameEnc = new TextEncoder().encode(family);
+  /** Register a face from sfnt bytes under engine face `key`. Returns the faceId
+   *  (>=0), or -1 on failure. Idempotent by key. `blitzFamily` is the real CSS
+   *  family name registered into Blitz/fontique (so HTML `font-family` matches);
+   *  it defaults to `key` for the bundled fonts where the two are the same, and
+   *  is passed explicitly for OS faces (whose engine key is a styled faceKey). */
+  registerFontBytes(key: string, bytes: Uint8Array, blitzFamily = key): number {
+    const nameEnc = new TextEncoder().encode(key);
     const np = this.ex.malloc(nameEnc.length);
     this.u8().set(nameEnc, np);
     const bp = this.ex.malloc(bytes.length);
@@ -458,7 +465,11 @@ export class TextEngine {
     const id = this.ex.te_add_font(np, nameEnc.length, bp, bytes.length);
     this.ex.free(bp);
     this.ex.free(np);
-    if (id >= 0) this.blzAddFont(family, bytes);  // keep Blitz faceIds aligned
+    // Mirror into Blitz once per engine key (te_add_font is idempotent by key).
+    if (id >= 0 && !this.blzMirrored.has(key)) {
+      this.blzMirrored.add(key);
+      this.blzAddFont(blitzFamily, bytes);             // Blitz matches by family
+    }
     return id;
   }
 
@@ -539,7 +550,16 @@ export class TextEngine {
       }
     };
     let runs: any[] | null = null;
-    try { const o = JSON.parse(specJson); if (Array.isArray(o?.runs)) runs = o.runs; } catch { /* regex below */ }
+    let parsed: any = null;
+    try { parsed = JSON.parse(specJson); if (Array.isArray(parsed?.runs)) runs = parsed.runs; } catch { /* regex below */ }
+    // Blitz (mode:"html") path: families live in CSS `font-family:` declarations,
+    // not a runs[] array — scan them so OS fonts named in CSS get resolved.
+    if (parsed && parsed.mode === 'html' && typeof parsed.html === 'string') {
+      const re = /font-family\s*:\s*([^;}{]+)/gi;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(parsed.html)) !== null) add(m[1], 400, false);
+      return out;
+    }
     if (runs) {
       for (const r of runs) {
         if (typeof r?.family !== 'string') continue;

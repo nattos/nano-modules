@@ -148,8 +148,8 @@ export class EngineProxy {
 
   /** Register an OS-resolved font face (sfnt bytes) under the engine face `key`
    *  with the worker's text engine. The buffer is transferred (consumed here). */
-  registerFont(key: string, bytes: ArrayBuffer) {
-    this.send({ type: 'registerFont', key, bytes }, [bytes]);
+  registerFont(key: string, bytes: ArrayBuffer, family?: string) {
+    this.send({ type: 'registerFont', key, family, bytes }, [bytes]);
   }
 
   /**

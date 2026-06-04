@@ -278,7 +278,9 @@ async function handleCommand(cmd: WorkerCommand) {
       // Main thread resolved an OS font via Local Font Access; register its
       // bytes with the shared text engine so the next frame can use the face.
       const te = await TextEngine.whenReady();
-      if (te && te.registerFontBytes(cmd.key, new Uint8Array(cmd.bytes)) >= 0) markDirty();
+      // Engine matches by faceKey (cmd.key); Blitz/fontique matches by real CSS
+      // family (cmd.family) so `font-family:"Monaco"` in HTML/CSS resolves too.
+      if (te && te.registerFontBytes(cmd.key, new Uint8Array(cmd.bytes), cmd.family) >= 0) markDirty();
       break;
     }
     case 'setFusionMode':

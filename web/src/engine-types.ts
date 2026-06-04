@@ -155,7 +155,9 @@ export type WorkerCommand =
   // engine face key `key` for the shared text engine. The main thread resolves
   // these via Local Font Access in response to a `fontRequest`. `bytes` is
   // transferred.
-  | { type: 'registerFont'; key: string; bytes: ArrayBuffer }
+  // `family` is the real CSS family name (for the Blitz/fontique path, which
+  // matches by family, not the engine faceKey); omitted for the simple engine.
+  | { type: 'registerFont'; key: string; family?: string; bytes: ArrayBuffer }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---
