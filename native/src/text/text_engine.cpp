@@ -766,6 +766,9 @@ int Engine::layoutGlyphs(const PreGlyph* glyphs, int count,
     q.u0 = info->u0; q.v0 = info->v0; q.u1 = info->u1; q.v1 = info->v1;
     q.r = g.r; q.g = g.g; q.b = g.b; q.a = g.a;
     q.page = (float)info->page; q._r0 = q._r1 = q._r2 = 0.0f;
+    q.clip_x = g.clip_x; q.clip_y = g.clip_y; q.clip_w = g.clip_w; q.clip_h = g.clip_h;
+    q.clip_r_tl = g.clip_r_tl; q.clip_r_tr = g.clip_r_tr;
+    q.clip_r_br = g.clip_r_br; q.clip_r_bl = g.clip_r_bl;
     ld.quads.push_back(q);
 
     if (q.x < minX) minX = q.x;     if (q.x + q.w > maxX) maxX = q.x + q.w;
@@ -860,6 +863,19 @@ static inline float sdRoundBox(float px, float py, float cx, float cy,
   return outside + inside - r;
 }
 
+// overflow:hidden mask: coverage in [0,1] of pixel `(px,py)` inside the clip's
+// rounded rect (top-left `(cx,cy)`, size `(cw,ch)`, origin already applied).
+// clip_w<=0 → unclipped (1). Same 0.5px-edge AA as the box fill.
+static inline float clipCoverage(float px, float py, float cx, float cy,
+                                 float cw, float ch,
+                                 float rtl, float rtr, float rbr, float rbl) {
+  if (cw <= 0.0f || ch <= 0.0f) return 1.0f;
+  float sd = sdRoundBox(px, py, cx + cw * 0.5f, cy + ch * 0.5f,
+                        cw * 0.5f, ch * 0.5f, rtl, rtr, rbr, rbl);
+  float c = 0.5f - sd;
+  return c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
+}
+
 bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
                        const uint8_t* bg, uint8_t* out) const {
   auto it = impl_->layouts.find(id);
@@ -884,6 +900,8 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
         float sd = sdRoundBox(px + 0.5f, py + 0.5f, cx, cy, hx, hy,
                               b.r_tl, b.r_tr, b.r_br, b.r_bl);
         float cov = 0.5f - sd; cov = cov < 0.0f ? 0.0f : (cov > 1.0f ? 1.0f : cov);
+        cov *= clipCoverage(px + 0.5f, py + 0.5f, b.clip_x + originX, b.clip_y + originY,
+                            b.clip_w, b.clip_h, b.clip_r_tl, b.clip_r_tr, b.clip_r_br, b.clip_r_bl);
         float a = cov * b.a;
         if (a <= 0.0f) continue;
         uint8_t* d = &out[((size_t)py * outW + px) * 4];
@@ -926,6 +944,8 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
           if (ty < 0) ty = 0; if (ty >= PAGE_H) ty = PAGE_H - 1;
           cov = atlas[((size_t)ty * PAGE_W + tx) * 4 + 3] / 255.0f;
         }
+        cov *= clipCoverage(px + 0.5f, py + 0.5f, q.clip_x + originX, q.clip_y + originY,
+                            q.clip_w, q.clip_h, q.clip_r_tl, q.clip_r_tr, q.clip_r_br, q.clip_r_bl);
         float a = cov * q.a;
         if (a <= 0.0f) continue;
         uint8_t* d = &out[((size_t)py * outW + px) * 4];

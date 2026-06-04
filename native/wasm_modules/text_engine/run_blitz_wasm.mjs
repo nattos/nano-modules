@@ -58,8 +58,8 @@ const bn = ex.tb_box_count(bl);
 const bp = ex.tb_box_ptr(bl);
 // Snapshot glyphs (52B) then boxes (48B) — same order blitz_dump writes TE_RUNS,
 // so the cross-target byte-diff covers the whole layout.
-const glyphs = Buffer.from(new Uint8Array(ex.memory.buffer, gp, n * 52));
-const boxes = Buffer.from(new Uint8Array(ex.memory.buffer, bp, bn * 48));
+const glyphs = Buffer.from(new Uint8Array(ex.memory.buffer, gp, n * 84)); // PreGlyph=84B
+const boxes = Buffer.from(new Uint8Array(ex.memory.buffer, bp, bn * 80)); // BoxQuad=80B
 process.stdout.write(glyphs);
 process.stdout.write(boxes);
 ex.tb_free_layout(bl);

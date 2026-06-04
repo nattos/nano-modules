@@ -103,13 +103,14 @@ const metrics = {
 };
 ex.free(mPtr);
 
-// Glyph quads (64 bytes each, 16 floats).
+// Glyph quads (96 bytes each); the digest covers the first 16 floats (rect, uv,
+// rgba, aux) — same as the native tool. The trailing clip fields are 0 here.
 const count = ex.te_glyph_count(id);
-const gPtr = ex.malloc(count * 64);
-const written = ex.te_glyphs(id, gPtr, count * 64);
+const gPtr = ex.malloc(count * 96);
+const written = ex.te_glyphs(id, gPtr, count * 96);
 const quads = [];
 for (let i = 0; i < written; i++) {
-  const b = gPtr + i * 64;
+  const b = gPtr + i * 96;
   const d = mem();
   quads.push(Array.from({ length: 16 }, (_, k) => +d.getFloat32(b + k * 4, true).toFixed(4)));
 }

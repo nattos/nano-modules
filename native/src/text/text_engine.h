@@ -53,6 +53,11 @@ struct GlyphQuad {
   float r, g, b, a;       // run color (linear)
   float page;             // atlas-array layer index
   float _r0, _r1, _r2;    // reserved (keeps the struct 16-byte aligned)
+  // overflow:hidden clip = the nearest clipping ancestor's rounded padding box,
+  // applied as a coverage mask. clip_w <= 0 → no clip. 96 bytes (6 vec4).
+  // Defaulted so the JSON layout() path (which doesn't clip) emits clip_w=0.
+  float clip_x = 0, clip_y = 0, clip_w = 0, clip_h = 0;
+  float clip_r_tl = 0, clip_r_tr = 0, clip_r_br = 0, clip_r_bl = 0;
 };
 
 // One filled background box from the external layout engine (Blitz: an element's
@@ -66,6 +71,10 @@ struct BoxQuad {
   float x, y, w, h;                  // border-box rect, layout-box px
   float r, g, b, a;                  // background color (linear)
   float r_tl, r_tr, r_br, r_bl;      // corner radii, px
+  // overflow:hidden clip (nearest clipping ANCESTOR's rounded padding box),
+  // clip_w <= 0 → no clip. 80 bytes (5 vec4).
+  float clip_x, clip_y, clip_w, clip_h;
+  float clip_r_tl, clip_r_tr, clip_r_br, clip_r_bl;
 };
 
 // One PRE-SHAPED glyph from an external layout/shaping engine (the Blitz path:
@@ -88,6 +97,10 @@ struct PreGlyph {
   float    rot;           // glyph rotation, radians (vertical text: rotated forms
                           //   like the chōonpu / Latin; 0 = upright). Baked into
                           //   the atlas tile (rotated about the glyph's center).
+  // overflow:hidden clip carried from Blitz (nearest clipping ancestor's rounded
+  // padding box); clip_w <= 0 → no clip. Copied into the emitted GlyphQuad. 84 bytes.
+  float    clip_x, clip_y, clip_w, clip_h;
+  float    clip_r_tl, clip_r_tr, clip_r_br, clip_r_bl;
 };
 
 // A dirty atlas PAGE that changed and needs GPU upload (full-page granularity).

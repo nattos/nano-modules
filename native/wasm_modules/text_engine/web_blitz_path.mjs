@@ -91,8 +91,8 @@ const n = blz.tb_glyph_count(bl);
 const gp = blz.tb_glyph_ptr(bl);
 const bn = blz.tb_box_count(bl);
 const bp = blz.tb_box_ptr(bl);
-const runs = blzU8().slice(gp, gp + n * 52);        // copy out before any realloc (PreGlyph=52B)
-const boxBytes = blzU8().slice(bp, bp + bn * 48);   // BoxQuad=48B
+const runs = blzU8().slice(gp, gp + n * 84);        // copy out before any realloc (PreGlyph=84B)
+const boxBytes = blzU8().slice(bp, bp + bn * 80);   // BoxQuad=80B
 const rp = engPut(runs);
 const bxp = bn > 0 ? engPut(boxBytes) : 0;
 const id = eng.te_layout_glyphs(rp, n, bxp, bn);

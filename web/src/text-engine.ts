@@ -15,10 +15,11 @@
 
 // MSDF compositor — mirrors native/src/text/shaders/text_composite.hlsl.
 const WGSL = `
-// 64-byte glyph: aux.x = atlas-array page (layer). ("meta" is a WGSL keyword.)
-struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32> };
-// 48-byte background box: rect(x,y,w,h), rgba, radius(tl,tr,br,bl).
-struct Box { rect: vec4<f32>, rgba: vec4<f32>, radius: vec4<f32> };
+// 96-byte glyph: aux.x = atlas-array page (layer). clip/clipr = overflow:hidden
+// rounded rect (clip.z<=0 → none). ("meta" is a WGSL keyword.)
+struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32>, clip: vec4<f32>, clipr: vec4<f32> };
+// 80-byte background box: rect(x,y,w,h), rgba, radius(tl,tr,br,bl), clip+clipr.
+struct Box { rect: vec4<f32>, rgba: vec4<f32>, radius: vec4<f32>, clip: vec4<f32>, clipr: vec4<f32> };
 struct U {
   canvas_w:u32, canvas_h:u32, glyph_count:u32, atlas_w:u32, atlas_h:u32,
   origin_x:f32, origin_y:f32, atlas_kind:u32, atlas_px_range:f32,
@@ -44,6 +45,14 @@ fn sd_round_box(p:vec2<f32>, c:vec2<f32>, h:vec2<f32>, rad:vec4<f32>) -> f32 {
   let q = abs(d) - h + vec2<f32>(r, r);
   return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
 }
+// overflow:hidden coverage mask for pixel p; clip.z<=0 → unclipped. clip rect is
+// in layout px (origin added like glyphs/boxes), same AA as the box fill.
+fn clip_cov(p:vec2<f32>, clip:vec4<f32>, clipr:vec4<f32>) -> f32 {
+  if (clip.z <= 0.0 || clip.w <= 0.0) { return 1.0; }
+  let c = vec2<f32>(clip.x + u.origin_x + clip.z * 0.5, clip.y + u.origin_y + clip.w * 0.5);
+  let sd = sd_round_box(p, c, vec2<f32>(clip.z * 0.5, clip.w * 0.5), clipr);
+  return clamp(0.5 - sd, 0.0, 1.0);
+}
 // LINEAR-filtered sample of the glyph's atlas PAGE (array layer) — bilinear
 // distance-field interpolation = smooth, corner-sharp MSDF at any magnification.
 fn atlas_texel(uu:f32, vv:f32, page:i32) -> vec4<f32> {
@@ -62,7 +71,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = vec2<f32>(bq.rect.x + u.origin_x + bq.rect.z * 0.5,
                       bq.rect.y + u.origin_y + bq.rect.w * 0.5);
     let sd = sd_round_box(p, c, vec2<f32>(bq.rect.z * 0.5, bq.rect.w * 0.5), bq.radius);
-    let bcov = clamp(0.5 - sd, 0.0, 1.0);
+    let bcov = clamp(0.5 - sd, 0.0, 1.0) * clip_cov(p, bq.clip, bq.clipr);
     let ba = bcov * bq.rgba.a;
     col = bq.rgba.rgb * ba + col * (1.0 - ba);
   }
@@ -85,6 +94,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
       cov = texel.a;
     }
+    cov = cov * clip_cov(p, g.clip, g.clipr);
     let a = cov * g.rgba.a;
     col = g.rgba.rgb * a + col * (1.0 - a);
   }
@@ -414,9 +424,9 @@ export class TextEngine {
     const gp = blz.tb_glyph_ptr(bl);
     const bn = blz.tb_box_count(bl);
     const bp = blz.tb_box_ptr(bl);
-    // Copy glyph runs (52B) and background boxes (48B) out of Blitz memory.
-    const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 52); // PreGlyph = 52 bytes
-    const boxes = new Uint8Array(blz.memory.buffer).slice(bp, bp + bn * 48); // BoxQuad = 48 bytes
+    // Copy glyph runs (84B) and background boxes (80B) out of Blitz memory.
+    const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 84); // PreGlyph = 84 bytes
+    const boxes = new Uint8Array(blz.memory.buffer).slice(bp, bp + bn * 80); // BoxQuad = 80 bytes
     blz.tb_free_layout(bl);
     const rp = this.ex.malloc(runs.length || 1);
     this.u8().set(runs, rp);
@@ -666,20 +676,20 @@ export class TextEngine {
     let written = 0;
     let glyphBytes = new Uint8Array(0);
     if (count > 0) {
-      const gPtr = ex.malloc(count * 64);
-      written = ex.te_glyphs(id, gPtr, count * 64);
-      glyphBytes = this.u8().slice(gPtr, gPtr + written * 64);
+      const gPtr = ex.malloc(count * 96);
+      written = ex.te_glyphs(id, gPtr, count * 96);
+      glyphBytes = this.u8().slice(gPtr, gPtr + written * 96);
       ex.free(gPtr);
     }
 
-    // Background boxes (48B each), drawn behind the glyphs by the shader.
+    // Background boxes (80B each), drawn behind the glyphs by the shader.
     const boxCount = ex.te_box_count(id);
     let boxesWritten = 0;
     let boxBytes = new Uint8Array(0);
     if (boxCount > 0) {
-      const bPtr = ex.malloc(boxCount * 48);
-      boxesWritten = ex.te_boxes(id, bPtr, boxCount * 48);
-      boxBytes = this.u8().slice(bPtr, bPtr + boxesWritten * 48);
+      const bPtr = ex.malloc(boxCount * 80);
+      boxesWritten = ex.te_boxes(id, bPtr, boxCount * 80);
+      boxBytes = this.u8().slice(bPtr, bPtr + boxesWritten * 80);
       ex.free(bPtr);
     }
 
@@ -711,9 +721,9 @@ export class TextEngine {
     }
 
     const cw = target.width, ch = target.height;
-    const glyphBuf = device.createBuffer({ size: Math.max(64, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const glyphBuf = device.createBuffer({ size: Math.max(96, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(glyphBuf, 0, glyphBytes);
-    const boxBuf = device.createBuffer({ size: Math.max(48, boxBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const boxBuf = device.createBuffer({ size: Math.max(80, boxBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(boxBuf, 0, boxBytes);
 
     const uni = new ArrayBuffer(48);

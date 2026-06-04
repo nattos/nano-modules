@@ -40,6 +40,16 @@ pub struct TbGlyph {
     pub skew: f32,
     pub embolden: f32,
     pub rot: f32, // glyph rotation, radians (vertical rotated forms; 0 = upright)
+    // overflow:hidden clip (nearest clipping ancestor's rounded padding box, output
+    // px); clip_w <= 0 → no clip. Matches text_engine::PreGlyph (84 bytes).
+    pub clip_x: f32,
+    pub clip_y: f32,
+    pub clip_w: f32,
+    pub clip_h: f32,
+    pub clip_r_tl: f32,
+    pub clip_r_tr: f32,
+    pub clip_r_br: f32,
+    pub clip_r_bl: f32,
 }
 
 /// One filled background box (an element's `background-color` + `border-radius`).
@@ -60,6 +70,16 @@ pub struct TbBox {
     pub r_tr: f32,
     pub r_br: f32,
     pub r_bl: f32,
+    // overflow:hidden clip (nearest clipping ANCESTOR's rounded padding box, output
+    // px); clip_w <= 0 → no clip. Matches text_engine::BoxQuad (80 bytes).
+    pub clip_x: f32,
+    pub clip_y: f32,
+    pub clip_w: f32,
+    pub clip_h: f32,
+    pub clip_r_tl: f32,
+    pub clip_r_tr: f32,
+    pub clip_r_br: f32,
+    pub clip_r_bl: f32,
 }
 
 /// A reusable layout session: holds the registered font set (a [`FontContext`]
@@ -217,6 +237,7 @@ impl Session {
                 continue;
             }
             let (bx, by) = content_origin(cnode);
+            let clip = nearest_clip(doc, cid, zoom);
             // Column extents come from the VIEWPORT (deterministic, computed here)
             // + the container's content origin (bx/by). We don't use the vertical
             // container's taffy SIZE: blitz-dom-alpha.4 lays a vertical-rl div out
@@ -254,6 +275,8 @@ impl Session {
                     face: p.face, gid, cp: p.cp,
                     x: gx * zoom, y: baseline * zoom, size: p.size * zoom,
                     r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden, rot,
+                    clip_x: clip.x, clip_y: clip.y, clip_w: clip.w, clip_h: clip.h,
+                    clip_r_tl: clip.r_tl, clip_r_tr: clip.r_tr, clip_r_br: clip.r_br, clip_r_bl: clip.r_bl,
                 });
                 y += em; // vertical pitch ≈ em (full-width ideographs)
             }
@@ -265,6 +288,7 @@ impl Session {
                 continue;
             }
             let (bx, by) = content_origin(node);
+            let clip = nearest_clip(doc, nid, zoom);
             let mut pend: Vec<Pend> = Vec::new();
             self.collect_inline_pend(doc, node, &mut pend);
             for p in &pend {
@@ -273,6 +297,8 @@ impl Session {
                     // (block origin + parley glyph offset), all CSS px → output px.
                     x: (bx + p.hx) * zoom, y: (by + p.hy) * zoom, size: p.size * zoom,
                     r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden, rot: 0.0,
+                    clip_x: clip.x, clip_y: clip.y, clip_w: clip.w, clip_h: clip.h,
+                    clip_r_tl: clip.r_tl, clip_r_tr: clip.r_tr, clip_r_br: clip.r_br, clip_r_bl: clip.r_bl,
                 });
             }
         }
@@ -344,6 +370,62 @@ fn content_origin(node: &Node) -> (f32, f32) {
         p.x + fl.border.left + fl.padding.left,
         p.y + fl.border.top + fl.padding.top,
     )
+}
+
+/// An `overflow:hidden` clip region in output px (a rounded rect). `w <= 0` means
+/// "no clip" (the engine leaves coverage untouched).
+#[derive(Clone, Copy)]
+struct ClipRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r_tl: f32,
+    r_tr: f32,
+    r_br: f32,
+    r_bl: f32,
+}
+const NO_CLIP: ClipRect = ClipRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0,
+    r_tl: 0.0, r_tr: 0.0, r_br: 0.0, r_bl: 0.0 };
+
+/// Walk up from `node_id` (inclusive) and return the nearest ancestor whose
+/// `overflow` is not `visible` as a clip region = its rounded PADDING box (the
+/// CSS overflow clip edge), in output px. `NO_CLIP` if none clips. Only the
+/// nearest clipper is honored (nested overflow:hidden isn't intersected) — enough
+/// for headline VJ layouts. Borders aren't rendered, so the (outer) border-radius
+/// is used directly for the corner.
+fn nearest_clip(doc: &BaseDocument, node_id: usize, zoom: f32) -> ClipRect {
+    use style::values::computed::{Length, Overflow};
+    let mut cur = Some(node_id);
+    while let Some(id) = cur {
+        let Some(node) = doc.get_node(id) else { break };
+        if let Some(styles) = node.primary_styles() {
+            if styles.clone_overflow_x() != Overflow::Visible
+                || styles.clone_overflow_y() != Overflow::Visible
+            {
+                let p = node.absolute_position(0.0, 0.0);
+                let fl = &node.final_layout;
+                let w = fl.size.width - fl.border.left - fl.border.right;
+                let h = fl.size.height - fl.border.top - fl.border.bottom;
+                let bd = styles.get_border();
+                let rad = |c: &style::values::computed::BorderCornerRadius| {
+                    c.0.width.0.resolve(Length::new(w)).px() * zoom
+                };
+                return ClipRect {
+                    x: (p.x + fl.border.left) * zoom,
+                    y: (p.y + fl.border.top) * zoom,
+                    w: w * zoom,
+                    h: h * zoom,
+                    r_tl: rad(&bd.border_top_left_radius),
+                    r_tr: rad(&bd.border_top_right_radius),
+                    r_br: rad(&bd.border_bottom_right_radius),
+                    r_bl: rad(&bd.border_bottom_left_radius),
+                };
+            }
+        }
+        cur = node.parent;
+    }
+    NO_CLIP
 }
 
 /// Rotation (radians) applied to a glyph in vertical text. 90° clockwise on
@@ -523,6 +605,8 @@ fn collect_boxes(doc: &BaseDocument, zoom: f32) -> Vec<TbBox> {
         let rad = |c: &style::values::computed::BorderCornerRadius| {
             c.0.width.0.resolve(Length::new(sz.width)).px() * zoom
         };
+        // The element's OWN overflow doesn't clip its background — only ancestors do.
+        let clip = node.parent.map(|pid| nearest_clip(doc, pid, zoom)).unwrap_or(NO_CLIP);
         out.push(TbBox {
             x: p.x * zoom,
             y: p.y * zoom,
@@ -536,6 +620,8 @@ fn collect_boxes(doc: &BaseDocument, zoom: f32) -> Vec<TbBox> {
             r_tr: rad(&bd.border_top_right_radius),
             r_br: rad(&bd.border_bottom_right_radius),
             r_bl: rad(&bd.border_bottom_left_radius),
+            clip_x: clip.x, clip_y: clip.y, clip_w: clip.w, clip_h: clip.h,
+            clip_r_tl: clip.r_tl, clip_r_tr: clip.r_tr, clip_r_br: clip.r_br, clip_r_bl: clip.r_bl,
         });
     }
     out
