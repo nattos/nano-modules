@@ -118,26 +118,49 @@ impl Session {
         face
     }
 
-    /// Lay out `html` into a `width`×`height` (px) viewport at `scale` and
-    /// return the pre-shaped glyphs in document order.
-    pub fn layout(&self, html: &str, width: u32, height: u32, scale: f32) -> Vec<TbGlyph> {
+    /// Lay out `html` into a `width`×`height` px output target at `zoom` and
+    /// return the pre-shaped glyphs in output-pixel space (document order).
+    ///
+    /// Coordinate model (the important bit): `width`/`height` are the OUTPUT
+    /// texture pixels, and emitted glyph positions/sizes are in those same
+    /// pixels — so `100vw`/`100%` == the target width, and `font-size:48px` is
+    /// 48 output px. `zoom` magnifies content (2 = everything twice as big, half
+    /// the CSS content fits) without changing what `100vw` maps to.
+    ///
+    /// Two Blitz quirks are normalized here: (a) we build the viewport at
+    /// `hidpi_scale = 1` so parley emits glyph positions in CSS px; (b) Blitz's
+    /// taffy block positions (node box / content-box) come out at BLOCK_DEVICE×
+    /// the parley/CSS scale, so we divide them back. Both, then `× zoom`, put
+    /// everything in one consistent output-pixel space (mirrors how blitz-paint
+    /// composes `box_position*scale + glyph.x`).
+    pub fn layout(&self, html: &str, width: u32, height: u32, zoom: f32) -> Vec<TbGlyph> {
+        let z = if zoom > 0.0 { zoom } else { 1.0 };
+        // CSS viewport = target / zoom: a larger zoom means fewer CSS px span the
+        // target, so the same content renders larger.
+        let win_w = ((width as f32 / z).round() as u32).max(1);
+        let win_h = ((height as f32 / z).round() as u32).max(1);
         let config = DocumentConfig {
-            viewport: Some(Viewport::new(width, height, scale, ColorScheme::Light)),
+            // hidpi_scale = 1 → parley glyph positions come out in CSS px.
+            viewport: Some(Viewport::new(win_w, win_h, 1.0, ColorScheme::Light)),
             font_ctx: Some(self.ctx.clone()),
             // Identical (no-rayon) path native & wasm → deterministic output.
             style_threading: StyleThreading::Sequential,
-            // Default text to white: the engine composites over an opaque-black
-            // canvas, so the CSS/UA default (black) would render invisibly. This
-            // is a UA-origin rule, so any author `color:` still wins.
-            ua_stylesheets: Some(vec![":root{color:#fff}".to_string()]),
+            // UA rules: default text white (we composite over opaque black, so the
+            // CSS default black would be invisible) and reset the body margin so
+            // top-level `100%` matches `100vw`. Both are UA-origin → author CSS wins.
+            ua_stylesheets: Some(vec![":root{color:#fff}body{margin:0}".to_string()]),
             ..Default::default()
         };
         let mut doc = HtmlDocument::from_html(html, config);
         doc.resolve(0.0); // Stylo cascade + Taffy layout + parley shaping
-        self.collect_glyphs(&doc)
+        self.collect_glyphs(&doc, z)
     }
 
-    fn collect_glyphs(&self, doc: &BaseDocument) -> Vec<TbGlyph> {
+    fn collect_glyphs(&self, doc: &BaseDocument, zoom: f32) -> Vec<TbGlyph> {
+        // Blitz emits taffy block positions at this multiple of the parley/CSS
+        // scale (empirically 2× with hidpi_scale=1); divide block coords by it so
+        // they share the glyph/CSS coordinate space. Pinned deps → stable.
+        const BLOCK_DEVICE: f32 = 2.0;
         let mut out = Vec::new();
         for (_id, node) in doc.tree().iter() {
             if !node.flags.is_inline_root() {
@@ -152,10 +175,11 @@ impl Session {
             let layout = &ild.layout;
             let text = ild.text.as_str();
 
-            // Glyph positions are layout-box-relative; lift to page-absolute.
+            // Node content-box origin (taffy/block space) → CSS px, then the
+            // parley glyph offset (already CSS px) is added per glyph below.
             let origin = node.absolute_position(0.0, 0.0);
-            let cbx = node.final_layout.content_box_x();
-            let cby = node.final_layout.content_box_y();
+            let bx = (origin.x + node.final_layout.content_box_x()) / BLOCK_DEVICE;
+            let by = (origin.y + node.final_layout.content_box_y()) / BLOCK_DEVICE;
 
             for line in layout.lines() {
                 for item in line.items() {
@@ -187,9 +211,10 @@ impl Session {
                             face,
                             gid: gly.id,
                             cp,
-                            x: origin.x + cbx + gly.x,
-                            y: origin.y + cby + gly.y,
-                            size,
+                            // (block origin + glyph offset), all CSS px, → output px.
+                            x: (bx + gly.x) * zoom,
+                            y: (by + gly.y) * zoom,
+                            size: size * zoom,
                             r,
                             g,
                             b,

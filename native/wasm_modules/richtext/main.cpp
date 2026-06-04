@@ -89,10 +89,10 @@ void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
-  // Lay the document out into the render target's CSS viewport. width/height are
-  // device px / scale so a hidpi scale enlarges glyphs without reflowing. The
-  // document is <style>{css}</style>{html} — structure and styling are edited
-  // in separate fields.
+  // Lay the document out at the render target's pixel size. width/height are the
+  // OUTPUT pixels (so 100vw / 100% == the node's full width, and font-size:48px
+  // is 48 output px); `scale` is a zoom (2 = twice as big). The document is
+  // <style>{css}</style>{html} — structure and styling are edited separately.
   char spec[24576];
   int pos = 0;
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"mode\":\"html\",\"html\":\"<style>");
@@ -100,8 +100,7 @@ void render(void* self, int vp_w, int vp_h) {
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</style>");
   appendEscaped(spec, pos, (int)sizeof(spec), s->html);
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
-      "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}",
-      (int)(vp_w / s->scale), (int)(vp_h / s->scale), s->scale);
+      "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}", vp_w, vp_h, s->scale);
 
   int id = text::layout(spec, pos);
   if (id > 0) {
