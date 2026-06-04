@@ -23,12 +23,21 @@
 namespace gen_richtext {
 
 struct State {
-  char  html[8192] =
-    "<style>body{margin:0;font-family:sans-serif;color:#fff}"
-    "h1{font-size:64px}p{font-size:28px;width:640px}"
-    ".k{color:#6cf;font-weight:700}</style>"
-    "<div style=\"padding:48px\"><h1>Rich <span class=\"k\">text</span></h1>"
-    "<p>HTML &amp; CSS laid out by Blitz, rendered through the MSDF atlas.</p></div>";
+  // Structure (HTML) and styling (CSS) are separate fields so each gets its own
+  // multi-line editor; render() combines them as <style>{css}</style>{html}.
+  char  html[6144] =
+    "<div class=\"kicker\">NANO \xc2\xb7 REPATCH</div>\n"
+    "<h1>Type that <em>moves</em><br>at frame rate.</h1>\n"
+    "<p>HTML &amp; CSS laid out by Blitz, rendered through an MSDF atlas "
+    "\xe2\x80\x94 crisp at any size, byte-identical in the browser and native.</p>";
+  char  css[4096] =
+    ":root{ --accent:#7c5cff; --muted:#9aa4b2; }\n"
+    "*{ margin:0; box-sizing:border-box; }\n"
+    "body{ font-family:sans-serif; padding:56px; }\n"
+    ".kicker{ font-size:19px; font-weight:700; letter-spacing:6px; color:var(--accent); }\n"
+    "h1{ font-size:92px; font-weight:800; line-height:1.04; letter-spacing:-2px; margin:14px 0; }\n"
+    "h1 em{ color:var(--accent); font-style:normal; }\n"
+    "p{ font-size:24px; line-height:1.5; color:var(--muted); max-width:760px; margin-top:20px; }";
   float scale = 1.0f;       // CSS px → device px (hidpi)
   bool  initialized = false;
 };
@@ -51,6 +60,7 @@ void module_init() {
   state::init("gen.richtext", {1, 0, 0},
     state::Schema()
       .textField   ("html",  "HTML", state::PrimaryInput)
+      .textField   ("css",   "CSS",  state::PrimaryInput)
       .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -70,6 +80,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int pl = len[i];
     if      (state::pathIs(p, pl, "html"))  state::patchString(i, s->html, sizeof(s->html));
+    else if (state::pathIs(p, pl, "css"))   state::patchString(i, s->css, sizeof(s->css));
     else if (state::pathIs(p, pl, "scale")) s->scale = state::patchFloat(i);
   }
 }
@@ -79,10 +90,14 @@ void render(void* self, int vp_w, int vp_h) {
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   // Lay the document out into the render target's CSS viewport. width/height are
-  // device px / scale so a hidpi scale enlarges glyphs without reflowing.
-  char spec[16384];
+  // device px / scale so a hidpi scale enlarges glyphs without reflowing. The
+  // document is <style>{css}</style>{html} — structure and styling are edited
+  // in separate fields.
+  char spec[24576];
   int pos = 0;
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"mode\":\"html\",\"html\":\"");
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"mode\":\"html\",\"html\":\"<style>");
+  appendEscaped(spec, pos, (int)sizeof(spec), s->css);
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</style>");
   appendEscaped(spec, pos, (int)sizeof(spec), s->html);
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}",
