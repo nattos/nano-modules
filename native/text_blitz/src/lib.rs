@@ -13,12 +13,12 @@
 //! bytes in the same order it gives the text engine, so a TbGlyph.face selects
 //! the identical FreeType face (and GIDs, being font-intrinsic, then agree).
 
-use blitz_dom::{BaseDocument, DocumentConfig, FontContext, StyleThreading};
+use blitz_dom::{BaseDocument, DocumentConfig, FontContext, Node, StyleThreading};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::fontique::{Blob, FontInfoOverride, FontStyle, FontWeight, GenericFamily, Script};
 use parley::layout::PositionedLayoutItem;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// One pre-shaped glyph. Byte-identical layout to `text_engine::PreGlyph`
@@ -162,148 +162,148 @@ impl Session {
         // they share the glyph/CSS coordinate space. Pinned deps → stable.
         const BLOCK_DEVICE: f32 = 2.0;
         let mut out = Vec::new();
-        for (node_id, node) in doc.tree().iter() {
-            if !node.flags.is_inline_root() {
+        let mut handled: HashSet<usize> = HashSet::new();
+
+        // Pass 1: vertical containers. blitz-dom-alpha.4 has no vertical writing-
+        // mode, so for any element whose inline `style` sets writing-mode:vertical-*
+        // we gather ALL its descendant inline roots (document order — heading then
+        // paragraph, etc.) and flow them as ONE continuous column stack ourselves:
+        // glyphs upright, top→bottom, columns leftward (rl) / rightward (lr).
+        // (Punctuation vert-forms and Latin rotation would need per-glyph rotation.)
+        for (cid, cnode) in doc.tree().iter() {
+            let Some(is_lr) = vertical_own(doc, cid) else { continue };
+            let mut pend: Vec<Pend> = Vec::new();
+            self.gather_inline(doc, cid, &mut pend, &mut handled);
+            if pend.is_empty() {
                 continue;
             }
-            let Some(ild) = node
-                .element_data()
-                .and_then(|ed| ed.inline_layout_data.as_ref())
-            else {
-                continue;
-            };
-            let layout = &ild.layout;
-            let text = ild.text.as_str();
+            let origin = cnode.absolute_position(0.0, 0.0);
+            let bx = (origin.x + cnode.final_layout.content_box_x()) / BLOCK_DEVICE;
+            let by = (origin.y + cnode.final_layout.content_box_y()) / BLOCK_DEVICE;
+            // NB: taffy SIZES (content_box_width/height) are CSS px (1×), unlike
+            // POSITIONS (location), which are 2× — so these are NOT divided by
+            // BLOCK_DEVICE. (bx/by above are positions, so they are.)
+            let avail_h = cnode.final_layout.content_box_height().max(1.0);
+            let cb_w = cnode.final_layout.content_box_width();
+            let mut col_near = if is_lr { bx } else { bx + cb_w };
+            let mut y = by;
+            let mut col_em = 0.0_f32;
+            for p in &pend {
+                let em = p.size.max(1.0);
+                if y > by && y + em > by + avail_h {
+                    let w = col_em.max(em);
+                    col_near += if is_lr { w } else { -w };
+                    y = by;
+                    col_em = 0.0;
+                }
+                col_em = col_em.max(em);
+                let col_left = if is_lr { col_near } else { col_near - em };
+                // Center the glyph's advance box in the em-wide column.
+                let gx = col_left + (em - p.advance) * 0.5;
+                let baseline = y + p.ascent;
+                out.push(TbGlyph {
+                    face: p.face, gid: p.gid, cp: p.cp,
+                    x: gx * zoom, y: baseline * zoom, size: p.size * zoom,
+                    r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden,
+                });
+                y += em; // vertical pitch ≈ em (full-width ideographs)
+            }
+        }
 
-            // Node content-box origin (taffy/block space) → CSS px, then the
-            // parley glyph offset (already CSS px) is added per glyph below.
+        // Pass 2: every remaining inline root → horizontal (as parley laid it out).
+        for (nid, node) in doc.tree().iter() {
+            if !node.flags.is_inline_root() || handled.contains(&nid) {
+                continue;
+            }
             let origin = node.absolute_position(0.0, 0.0);
             let bx = (origin.x + node.final_layout.content_box_x()) / BLOCK_DEVICE;
             let by = (origin.y + node.final_layout.content_box_y()) / BLOCK_DEVICE;
-
-            // Blitz/parley have no vertical writing-mode, so for `writing-mode:
-            // vertical-*` we reflow this inline root's glyphs into vertical columns
-            // ourselves (basic CJK: glyphs upright, top-to-bottom; columns right-
-            // to-left for vertical-rl). Punctuation vert-forms and Latin rotation
-            // would need per-glyph rotation — a follow-up.
-            // blitz-dom-alpha.4 doesn't apply the `writing-mode` property, so we
-            // detect vertical text from the raw inline `style` of this inline root
-            // or its nearest ancestor that sets it. Some(false)=vertical-rl,
-            // Some(true)=vertical-lr, None=horizontal.
-            let vmode = vertical_mode(doc, node_id);
-            let vertical = vmode.is_some();
-            let vertical_lr = vmode == Some(true);
-
-            // Buffer the inline root's glyphs (in document order), then emit either
-            // horizontally (as laid out) or reflowed vertically.
             let mut pend: Vec<Pend> = Vec::new();
-            for line in layout.lines() {
-                for item in line.items() {
-                    let PositionedLayoutItem::GlyphRun(grun) = item else {
-                        continue;
-                    };
-                    let run = grun.run();
-                    let size = run.font_size();
-                    let ascent = run.metrics().ascent;
-                    let synth = run.synthesis();
-                    // parley's synthetic styling when the face lacks the request.
-                    let skew = synth.skew().map(|d| d.to_radians()).unwrap_or(0.0);
-                    let embolden = if synth.embolden() { 0.03 } else { 0.0 };
-                    let face = self
-                        .blob_to_face
-                        .get(&run.font().data.id())
-                        .copied()
-                        .unwrap_or(0);
-                    // Runs are single-script, so the run's first scalar fixes the
-                    // atlas resolution class (CJK → dense page) for all its glyphs.
-                    let cp = text
-                        .get(run.text_range())
-                        .and_then(|s| s.chars().next())
-                        .map(|c| c as u32)
-                        .unwrap_or(0);
-                    let (r, g, b, a) = node_rgba(doc, grun.style().brush.id);
-                    for gly in grun.positioned_glyphs() {
-                        pend.push(Pend {
-                            face, gid: gly.id, cp, size, advance: gly.advance, ascent,
-                            r, g, b, a, skew, embolden, hx: gly.x, hy: gly.y,
-                        });
-                    }
-                }
-            }
-
-            if vertical {
-                // Column flow: top→bottom, then leftward (rl) or rightward (lr).
-                let top = by;
-                let avail_h = (node.final_layout.content_box_height() / BLOCK_DEVICE).max(1.0);
-                let cb_w = node.final_layout.content_box_width() / BLOCK_DEVICE;
-                // vertical-rl starts at the right edge; vertical-lr at the left.
-                let mut col_near = if vertical_lr { bx } else { bx + cb_w };
-                let mut y = top;
-                let mut col_em = 0.0_f32;
-                for p in &pend {
-                    let em = p.size.max(1.0);
-                    if y > top && y + em > top + avail_h {
-                        // Column full → advance to the next column.
-                        let w = col_em.max(em);
-                        col_near += if vertical_lr { w } else { -w };
-                        y = top;
-                        col_em = 0.0;
-                    }
-                    col_em = col_em.max(em);
-                    let col_left = if vertical_lr { col_near } else { col_near - em };
-                    // Center the glyph's advance box in the em-wide column.
-                    let gx = col_left + (em - p.advance) * 0.5;
-                    let baseline = y + p.ascent;
-                    out.push(TbGlyph {
-                        face: p.face, gid: p.gid, cp: p.cp,
-                        x: gx * zoom, y: baseline * zoom, size: p.size * zoom,
-                        r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden,
-                    });
-                    y += em; // vertical pitch ≈ em (full-width ideographs)
-                }
-            } else {
-                for p in &pend {
-                    out.push(TbGlyph {
-                        face: p.face, gid: p.gid, cp: p.cp,
-                        // (block origin + glyph offset), all CSS px, → output px.
-                        x: (bx + p.hx) * zoom, y: (by + p.hy) * zoom, size: p.size * zoom,
-                        r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden,
-                    });
-                }
+            self.collect_inline_pend(doc, node, &mut pend);
+            for p in &pend {
+                out.push(TbGlyph {
+                    face: p.face, gid: p.gid, cp: p.cp,
+                    // (block origin + parley glyph offset), all CSS px → output px.
+                    x: (bx + p.hx) * zoom, y: (by + p.hy) * zoom, size: p.size * zoom,
+                    r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden,
+                });
             }
         }
         out
     }
-}
 
-/// Detect a vertical writing mode for `node_id` by scanning its inline `style`
-/// (and ancestors', since writing-mode inherits) for `writing-mode: vertical-*`.
-/// blitz-dom-alpha.4 doesn't compute the property, so this is a raw-string read.
-/// Returns Some(is_lr) for vertical (false = rl, true = lr), None for horizontal.
-/// (Inline styles only; `<style>` rules aren't covered.)
-fn vertical_mode(doc: &BaseDocument, mut node_id: usize) -> Option<bool> {
-    for _ in 0..64 {
-        let node = doc.get_node(node_id)?;
-        if let Some(attrs) = node.attrs() {
-            for a in attrs {
-                if a.name.local.eq_str_ignore_ascii_case("style") {
-                    let v = a.value.to_ascii_lowercase();
-                    if let Some(i) = v.find("writing-mode") {
-                        let rest = &v[i + "writing-mode".len()..];
-                        // up to the next ';' so we don't read a later declaration
-                        let decl = rest.split(';').next().unwrap_or(rest);
-                        if decl.contains("vertical-rl") {
-                            return Some(false);
-                        } else if decl.contains("vertical-lr") {
-                            return Some(true);
-                        } else {
-                            return None; // explicit horizontal-tb → stop
-                        }
-                    }
+    // DFS `node_id`'s subtree; for each inline root append its glyphs (document
+    // order) to `pend` and mark it handled, so a vertical container claims all of
+    // its descendants' glyphs as one continuous flow.
+    fn gather_inline(&self, doc: &BaseDocument, node_id: usize,
+                     pend: &mut Vec<Pend>, handled: &mut HashSet<usize>) {
+        let Some(node) = doc.get_node(node_id) else { return };
+        if node.flags.is_inline_root() {
+            if !handled.insert(node_id) {
+                return; // already claimed by an outer container
+            }
+            self.collect_inline_pend(doc, node, pend);
+            return; // inline content lives in this root's layout — don't recurse
+        }
+        for &child in node.children.iter() {
+            self.gather_inline(doc, child, pend, handled);
+        }
+    }
+
+    // Append one inline root's glyphs (document order) to `pend`.
+    fn collect_inline_pend(&self, doc: &BaseDocument, node: &Node, pend: &mut Vec<Pend>) {
+        let Some(ild) = node.element_data().and_then(|ed| ed.inline_layout_data.as_ref()) else {
+            return;
+        };
+        let text = ild.text.as_str();
+        for line in ild.layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(grun) = item else { continue };
+                let run = grun.run();
+                let size = run.font_size();
+                let ascent = run.metrics().ascent;
+                let synth = run.synthesis();
+                // parley's synthetic styling when the face lacks the request.
+                let skew = synth.skew().map(|d| d.to_radians()).unwrap_or(0.0);
+                let embolden = if synth.embolden() { 0.03 } else { 0.0 };
+                let face = self.blob_to_face.get(&run.font().data.id()).copied().unwrap_or(0);
+                // Runs are single-script, so the first scalar fixes the atlas
+                // resolution class (CJK → dense page) for all its glyphs.
+                let cp = text.get(run.text_range())
+                    .and_then(|s| s.chars().next()).map(|c| c as u32).unwrap_or(0);
+                let (r, g, b, a) = node_rgba(doc, grun.style().brush.id);
+                for gly in grun.positioned_glyphs() {
+                    pend.push(Pend {
+                        face, gid: gly.id, cp, size, advance: gly.advance, ascent,
+                        r, g, b, a, skew, embolden, hx: gly.x, hy: gly.y,
+                    });
                 }
             }
         }
-        node_id = node.parent?;
+    }
+}
+
+/// Detect a vertical writing mode set on `node_id`'s OWN inline `style`. blitz-dom
+/// -alpha.4 doesn't compute the `writing-mode` property, so this is a raw-string
+/// read of `writing-mode: vertical-*`. Returns Some(is_lr) for vertical (false =
+/// rl, true = lr), None otherwise. (Inline styles only; `<style>` rules aren't
+/// covered — and because the engine never applies it, only the element that sets
+/// it directly is treated as the vertical container.)
+fn vertical_own(doc: &BaseDocument, node_id: usize) -> Option<bool> {
+    let node = doc.get_node(node_id)?;
+    for a in node.attrs()? {
+        if a.name.local.eq_str_ignore_ascii_case("style") {
+            let v = a.value.to_ascii_lowercase();
+            if let Some(i) = v.find("writing-mode") {
+                let rest = &v[i + "writing-mode".len()..];
+                let decl = rest.split(';').next().unwrap_or(rest); // this declaration only
+                if decl.contains("vertical-rl") {
+                    return Some(false);
+                } else if decl.contains("vertical-lr") {
+                    return Some(true);
+                }
+            }
+        }
     }
     None
 }
