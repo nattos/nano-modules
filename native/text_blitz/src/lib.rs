@@ -16,7 +16,7 @@
 use blitz_dom::{BaseDocument, DocumentConfig, FontContext, StyleThreading};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use parley::fontique::{Blob, FontInfoOverride, FontStyle, FontWeight, GenericFamily};
+use parley::fontique::{Blob, FontInfoOverride, FontStyle, FontWeight, GenericFamily, Script};
 use parley::layout::PositionedLayoutItem;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,7 +48,18 @@ pub struct Session {
     ctx: FontContext,
     blob_to_face: HashMap<u64, i32>,
     next_face: i32,
+    all_families: Vec<parley::fontique::FamilyId>,
 }
+
+// Scripts for which we install a last-resort fallback to our whole font chain,
+// so an unresolved/unknown CSS `font-family` (e.g. a typo, or a font not present)
+// still renders in the default font instead of producing ZERO glyphs (which
+// would leave the effect's previous frame on screen). Covers our bundled
+// coverage; parley picks the first chain face that covers each codepoint.
+const FALLBACK_SCRIPTS: &[[u8; 4]] = &[
+    *b"Latn", *b"Grek", *b"Cyrl", *b"Zyyy", *b"Hani", *b"Hira",
+    *b"Kana", *b"Hang", *b"Arab", *b"Hebr", *b"Thai", *b"Deva",
+];
 
 impl Session {
     pub fn new() -> Self {
@@ -56,6 +67,7 @@ impl Session {
             ctx: FontContext::default(), // empty; system_fonts off by default here
             blob_to_face: HashMap::new(),
             next_face: 0,
+            all_families: Vec::new(),
         }
     }
 
@@ -93,6 +105,15 @@ impl Session {
             self.ctx
                 .collection
                 .append_generic_families(generic, fam_ids.iter().copied());
+        }
+        // Install the full chain as the last-resort script fallback (re-set with
+        // the growing list), so an unresolved CSS family still renders.
+        self.all_families.extend(fam_ids.iter().copied());
+        let fams = self.all_families.clone();
+        for s in FALLBACK_SCRIPTS {
+            self.ctx
+                .collection
+                .set_fallbacks(Script::from_bytes(*s), fams.iter().copied());
         }
         face
     }
