@@ -47,7 +47,11 @@ for (const p of (process.env.TE_FALLBACK || '').split(':').filter(Boolean)) {
 }
 
 const html = readFileSync(htmlPath);
-const bl = ex.tb_layout(sess, put(html), html.length, 800, 600, 1.0);
+// Match blitz_dump's viewport env (TE_W/TE_H, default 800×600) so the two sides
+// lay out at the SAME dimensions — a mismatch shifts viewport-relative positions
+// (e.g. vertical-rl column origins) and looks like a false parity failure.
+const W = Number(process.env.TE_W) || 800, H = Number(process.env.TE_H) || 600;
+const bl = ex.tb_layout(sess, put(html), html.length, W, H, 1.0);
 const n = ex.tb_glyph_count(bl);
 const gp = ex.tb_glyph_ptr(bl);
 // Snapshot the run buffer immediately (no further allocations after this).

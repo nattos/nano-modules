@@ -20,7 +20,9 @@ const blitzPath = resolve(here, '../../text_blitz/target/wasm32-wasip1/release/t
 const fontPath = process.env.TE_FONT;
 const fallbacks = (process.env.TE_FALLBACK || '').split(':').filter(Boolean);
 const htmlPath = process.argv[2];
-const W = 800, H = 600;
+// Same viewport env as blitz_dump (TE_W/TE_H, default 800×600); a mismatch would
+// shift viewport-relative positions and read as a false parity failure.
+const W = Number(process.env.TE_W) || 800, H = Number(process.env.TE_H) || 600;
 
 // --- text_engine.wasm: imports are unused at runtime → no-op stubs (as the
 //     real web loader does in text-engine.ts). ---

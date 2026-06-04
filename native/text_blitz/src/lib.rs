@@ -50,6 +50,10 @@ pub struct Session {
     blob_to_face: HashMap<u64, i32>,
     next_face: i32,
     all_families: Vec<parley::fontique::FamilyId>,
+    // faceId → (gid → vertical-form gid), from the font's `vert`/`vrt2` GSUB.
+    // Used in vertical text to swap in the font's designed vertical glyph (the
+    // chōonpu, rotated brackets, centered punctuation) instead of rotating.
+    vert_maps: HashMap<i32, HashMap<u32, u32>>,
 }
 
 // Scripts for which we install a last-resort fallback to our whole font chain,
@@ -69,6 +73,7 @@ impl Session {
             blob_to_face: HashMap::new(),
             next_face: 0,
             all_families: Vec::new(),
+            vert_maps: HashMap::new(),
         }
     }
 
@@ -79,10 +84,16 @@ impl Session {
     /// families in registration order, so a missing glyph falls back across faces
     /// in the same order the text engine's chain uses. Returns the faceId.
     pub fn add_font(&mut self, name: Option<&str>, weight: i32, italic: bool, bytes: Vec<u8>) -> i32 {
-        // WOFF/WOFF2 would need decoding; we register raw sfnt (parity bytes).
-        let blob: Blob<u8> = Blob::new(Arc::new(bytes) as Arc<dyn AsRef<[u8]> + Send + Sync>);
         let face = self.next_face;
         self.next_face += 1;
+        // Read the font's designed vertical forms before the bytes move into the
+        // Blob; empty if the font has no `vert`/`vrt2` GSUB.
+        let vmap = build_vert_map(&bytes);
+        if !vmap.is_empty() {
+            self.vert_maps.insert(face, vmap);
+        }
+        // WOFF/WOFF2 would need decoding; we register raw sfnt (parity bytes).
+        let blob: Blob<u8> = Blob::new(Arc::new(bytes) as Arc<dyn AsRef<[u8]> + Send + Sync>);
         self.blob_to_face.insert(blob.id(), face);
 
         let ov = if name.is_some() || weight > 0 || italic {
@@ -154,10 +165,10 @@ impl Session {
         };
         let mut doc = HtmlDocument::from_html(html, config);
         doc.resolve(0.0); // Stylo cascade + Taffy layout + parley shaping
-        self.collect_glyphs(&doc, z)
+        self.collect_glyphs(&doc, z, win_w as f32, win_h as f32)
     }
 
-    fn collect_glyphs(&self, doc: &BaseDocument, zoom: f32) -> Vec<TbGlyph> {
+    fn collect_glyphs(&self, doc: &BaseDocument, zoom: f32, win_w: f32, win_h: f32) -> Vec<TbGlyph> {
         // Blitz emits taffy block positions at this multiple of the parley/CSS
         // scale (empirically 2× with hidpi_scale=1); divide block coords by it so
         // they share the glyph/CSS coordinate space. Pinned deps → stable.
@@ -169,8 +180,9 @@ impl Session {
         // mode, so for any element whose inline `style` sets writing-mode:vertical-*
         // we gather ALL its descendant inline roots (document order — heading then
         // paragraph, etc.) and flow them as ONE continuous column stack ourselves:
-        // glyphs upright, top→bottom, columns leftward (rl) / rightward (lr).
-        // (Punctuation vert-forms and Latin rotation would need per-glyph rotation.)
+        // top→bottom, columns leftward (rl) / rightward (lr). Each glyph either
+        // uses the font's designed vertical form (`vert`/`vrt2` GSUB) or, lacking
+        // one, rotates 90° (Latin) / stays upright (CJK) — see the per-glyph block.
         for (cid, cnode) in doc.tree().iter() {
             let Some(is_lr) = vertical_own(doc, cid) else { continue };
             let mut pend: Vec<Pend> = Vec::new();
@@ -181,12 +193,16 @@ impl Session {
             let origin = cnode.absolute_position(0.0, 0.0);
             let bx = (origin.x + cnode.final_layout.content_box_x()) / BLOCK_DEVICE;
             let by = (origin.y + cnode.final_layout.content_box_y()) / BLOCK_DEVICE;
-            // NB: taffy SIZES (content_box_width/height) are CSS px (1×), unlike
-            // POSITIONS (location), which are 2× — so these are NOT divided by
-            // BLOCK_DEVICE. (bx/by above are positions, so they are.)
-            let avail_h = cnode.final_layout.content_box_height().max(1.0);
-            let cb_w = cnode.final_layout.content_box_width();
-            let mut col_near = if is_lr { bx } else { bx + cb_w };
+            // Column extents come from the VIEWPORT (deterministic, computed here)
+            // + the container's POSITION (bx/by), NOT taffy SIZES: blitz-dom
+            // -alpha.4's content_box_width/height for this element diverge native↔
+            // wasm (the device scale leaks into sizes inconsistently) AND are wrong
+            // anyway (it lays the vertical div out as a single horizontal line). We
+            // anchor the column block at the container's top-left and let it fill to
+            // the mirrored bottom/edge inset — correct for full-bleed headline text
+            // and identical on both targets. (Explicit container width/height can't
+            // be honored in vertical mode with this blitz version regardless.)
+            let avail_h = (win_h - 2.0 * by).max(1.0);            let mut col_near = if is_lr { bx } else { win_w - bx };
             let mut y = by;
             let mut col_em = 0.0_f32;
             for p in &pend {
@@ -198,16 +214,21 @@ impl Session {
                     col_em = 0.0;
                 }
                 col_em = col_em.max(em);
-                // Rotate the glyphs that should turn sideways in vertical text
-                // (chōonpu, Latin, dashes); centered-glyph reflow keeps the column
-                // rhythm uniform so the rotated forms sit in their cells.
-                let rot = if rotates_in_vertical(p.cp) { ROT_CW90 } else { 0.0 };
+                // Prefer the font's DESIGNED vertical form (`vert`/`vrt2` GSUB):
+                // the chōonpu, rotated brackets「」, centered 、。 — drawn upright,
+                // no rotation. Fall back to rotating the horizontal outline for
+                // glyphs with no vertical form (Latin, ASCII, dashes).
+                let vsub = self.vert_maps.get(&p.face).and_then(|m| m.get(&p.gid).copied());
+                let (gid, rot) = match vsub {
+                    Some(vg) => (vg, 0.0),
+                    None => (p.gid, if rotates_in_vertical(p.cp) { ROT_CW90 } else { 0.0 }),
+                };
                 let col_left = if is_lr { col_near } else { col_near - em };
                 // Center the glyph's advance box in the em-wide column.
                 let gx = col_left + (em - p.advance) * 0.5;
                 let baseline = y + p.ascent;
                 out.push(TbGlyph {
-                    face: p.face, gid: p.gid, cp: p.cp,
+                    face: p.face, gid, cp: p.cp,
                     x: gx * zoom, y: baseline * zoom, size: p.size * zoom,
                     r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden, rot,
                 });
@@ -298,8 +319,9 @@ const ROT_CW90: f32 = -std::f32::consts::FRAC_PI_2;
 /// Unicode Vertical_Orientation (simplified): true if `cp` should be rotated 90°
 /// in vertical text. The bulk of CJK (ideographs, kana letters, hangul, CJK
 /// punctuation like 、。「」) stays upright; Latin/ASCII, dashes and the chōonpu
-/// rotate. The chōonpu (and a few marks) are technically Upright but need their
-/// vertical form, which we approximate by rotation (no `vert` GSUB).
+/// rotate. This is only the FALLBACK for glyphs the font has no designed vertical
+/// form for: when a `vert`/`vrt2` GSUB substitution exists (the chōonpu, brackets,
+/// centered punctuation in CJK fonts) we use that real glyph instead of rotating.
 fn rotates_in_vertical(cp: u32) -> bool {
     if matches!(cp, 0x30FC | 0x30A0 | 0x301C | 0x3030) {
         return true; // chōonpu, katakana double hyphen, wave dashes
@@ -316,6 +338,67 @@ fn rotates_in_vertical(cp: u32) -> bool {
         0x20000..=0x3FFFF   // CJK ext B+
     );
     !upright
+}
+
+/// Read a font's `vert`/`vrt2` GSUB single substitutions into a gid → vert_gid
+/// map — the font's purpose-drawn vertical glyph forms. Empty if the font has no
+/// GSUB, no vertical feature, or only non-single (contextual) substitutions.
+/// Applied post-shaping by GID (valid because these features are 1:1 single
+/// substitutions); this is the small slice of OpenType needed for the subset,
+/// not full HarfBuzz shaping.
+fn build_vert_map(bytes: &[u8]) -> HashMap<u32, u32> {
+    use read_fonts::tables::gsub::SubstitutionSubtables;
+    use read_fonts::types::Tag;
+    use read_fonts::{FontRef, TableProvider};
+
+    let mut map = HashMap::new();
+    let Ok(font) = FontRef::new(bytes) else { return map };
+    let Ok(gsub) = font.gsub() else { return map };
+    let (Ok(features), Ok(lookups)) = (gsub.feature_list(), gsub.lookup_list()) else {
+        return map;
+    };
+    let fdata = features.offset_data();
+    for rec in features.feature_records() {
+        let tag = rec.feature_tag();
+        if tag != Tag::new(b"vert") && tag != Tag::new(b"vrt2") {
+            continue;
+        }
+        let Ok(feature) = rec.feature(fdata) else { continue };
+        for li in feature.lookup_list_indices() {
+            let Ok(lookup) = lookups.lookups().get(li.get() as usize) else { continue };
+            let Ok(subtables) = lookup.subtables() else { continue };
+            let SubstitutionSubtables::Single(singles) = subtables else { continue };
+            for sub in singles.iter().flatten() {
+                collect_single_subst(&sub, &mut map);
+            }
+        }
+    }
+    map
+}
+
+/// Fold one SingleSubst subtable (format 1 = uniform delta, format 2 = explicit
+/// list) into the gid → vert_gid map.
+fn collect_single_subst(sub: &read_fonts::tables::gsub::SingleSubst, map: &mut HashMap<u32, u32>) {
+    use read_fonts::tables::gsub::SingleSubst;
+    match sub {
+        SingleSubst::Format1(f) => {
+            let Ok(cov) = f.coverage() else { return };
+            let delta = f.delta_glyph_id() as i32;
+            for gid in cov.iter() {
+                let g = gid.to_u16() as i32;
+                map.insert(g as u32, ((g + delta) & 0xFFFF) as u32);
+            }
+        }
+        SingleSubst::Format2(f) => {
+            let Ok(cov) = f.coverage() else { return };
+            let subs = f.substitute_glyph_ids();
+            for (idx, gid) in cov.iter().enumerate() {
+                if let Some(s) = subs.get(idx) {
+                    map.insert(gid.to_u32(), s.get().to_u32());
+                }
+            }
+        }
+    }
 }
 
 /// Detect a vertical writing mode set on `node_id`'s OWN inline `style`. blitz-dom

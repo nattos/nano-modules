@@ -1486,6 +1486,7 @@ dependencies = [
  "blitz-html",
  "blitz-traits",
  "parley",
+ "read-fonts",
  "stylo",
 ]
 
