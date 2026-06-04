@@ -82,7 +82,8 @@ export const COMMON_FONT_SUGGESTIONS: string[] = [
 
 let cached: Map<string, FontData[]> | null = null;  // family → all its faces
 const wanted = new Map<string, FontRequest>();      // face key → request, pending resolution
-let registerCb: ((key: string, family: string, bytes: ArrayBuffer) => void) | null = null;
+const shippedFamilies = new Set<string>();          // families fully enumerated → worker
+let registerCb: ((family: string, weight: number, italic: boolean, bytes: ArrayBuffer) => void) | null = null;
 
 function ql(): QueryLocalFonts | null {
   const fn = (globalThis as any).queryLocalFonts;
@@ -128,13 +129,20 @@ export async function resolveFontBytes(family: string): Promise<ArrayBuffer | nu
 
 async function tryResolve(req: FontRequest): Promise<void> {
   if (!cached || !registerCb) return;          // wait for prime / wiring
-  const fd = pickFace(req.family, req.weight, req.italic);
-  if (!fd) { wanted.delete(req.key); return; }  // family not local — give up (one shot)
-  try {
-    const bytes = await (await fd.blob()).arrayBuffer();
-    // key → engine faceKey match; family → Blitz/fontique CSS family match.
-    registerCb(req.key, req.family, bytes);
-  } catch { /* ignore */ }
+  const faces = cached.get(req.family);
+  if (!faces || faces.length === 0) { wanted.delete(req.key); return; }  // not local — give up
+  // Register EVERY face of the family with its true weight/style, so the Blitz
+  // path matches any CSS font-weight/font-style exactly (no synthesis), and the
+  // simple engine gets the requested styled face too. Once per family.
+  if (!shippedFamilies.has(req.family)) {
+    shippedFamilies.add(req.family);
+    for (const fd of faces) {
+      try {
+        const bytes = await (await fd.blob()).arrayBuffer();
+        registerCb(req.family, inferWeight(fd), isItalicFace(fd), bytes);
+      } catch { /* skip this face */ }
+    }
+  }
   wanted.delete(req.key);
 }
 
@@ -142,7 +150,7 @@ async function tryResolve(req: FontRequest): Promise<void> {
  *  engine face key). Installs a one-time gesture listener that primes Local Font
  *  Access and flushes any faces requested before the user interacted. Call once
  *  at boot. */
-export function initFontProvider(register: (key: string, family: string, bytes: ArrayBuffer) => void): void {
+export function initFontProvider(register: (family: string, weight: number, italic: boolean, bytes: ArrayBuffer) => void): void {
   registerCb = register;
   if (!ql()) return;  // non-Chromium: OS fonts simply won't resolve (bundled set still works)
   const prime = async () => {

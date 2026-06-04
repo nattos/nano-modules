@@ -102,7 +102,7 @@ interface TBExports {
   tb_dealloc(p: number, n: number): void;
   tb_create(): number;
   tb_destroy(s: number): void;
-  tb_add_font(s: number, namePtr: number, nameLen: number, bytesPtr: number, len: number): number;
+  tb_add_font(s: number, namePtr: number, nameLen: number, weight: number, italic: number, bytesPtr: number, len: number): number;
   tb_layout(s: number, htmlPtr: number, len: number, w: number, h: number, scale: number): number;
   tb_glyph_count(r: number): number;
   tb_glyph_ptr(r: number): number;
@@ -406,8 +406,10 @@ export class TextEngine {
   }
 
   // Register a face into the Blitz session, in lock-step with the engine's
-  // faceId assignment. No-op if Blitz isn't loaded.
-  private blzAddFont(family: string | null, bytes: Uint8Array): void {
+  // faceId assignment. `weight` (0 = the font's own axes) + `italic` set its
+  // fontique attributes so CSS font-weight/font-style select the right static OS
+  // face. No-op if Blitz isn't loaded.
+  private blzAddFont(family: string | null, bytes: Uint8Array, weight = 0, italic = false): void {
     const blz = this.blz;
     if (!blz || !this.blzSess) return;
     let np = 0, nl = 0;
@@ -417,7 +419,7 @@ export class TextEngine {
     }
     const bp = blz.tb_alloc(bytes.length);
     new Uint8Array(blz.memory.buffer).set(bytes, bp);
-    blz.tb_add_font(this.blzSess, np, nl, bp, bytes.length);
+    blz.tb_add_font(this.blzSess, np, nl, weight, italic ? 1 : 0, bp, bytes.length);
     blz.tb_dealloc(bp, bytes.length);
     if (np) blz.tb_dealloc(np, nl);
   }
@@ -456,7 +458,8 @@ export class TextEngine {
    *  family name registered into Blitz/fontique (so HTML `font-family` matches);
    *  it defaults to `key` for the bundled fonts where the two are the same, and
    *  is passed explicitly for OS faces (whose engine key is a styled faceKey). */
-  registerFontBytes(key: string, bytes: Uint8Array, blitzFamily = key): number {
+  registerFontBytes(key: string, bytes: Uint8Array, blitzFamily = key,
+                    weight = 0, italic = false): number {
     const nameEnc = new TextEncoder().encode(key);
     const np = this.ex.malloc(nameEnc.length);
     this.u8().set(nameEnc, np);
@@ -465,12 +468,20 @@ export class TextEngine {
     const id = this.ex.te_add_font(np, nameEnc.length, bp, bytes.length);
     this.ex.free(bp);
     this.ex.free(np);
-    // Mirror into Blitz once per engine key (te_add_font is idempotent by key).
+    // Mirror into Blitz once per engine key (te_add_font is idempotent by key),
+    // with the face's true weight/style so fontique matches CSS exactly.
     if (id >= 0 && !this.blzMirrored.has(key)) {
       this.blzMirrored.add(key);
-      this.blzAddFont(blitzFamily, bytes);             // Blitz matches by family
+      this.blzAddFont(blitzFamily, bytes, weight, italic);  // Blitz matches by family
     }
     return id;
+  }
+
+  /** Register an OS-resolved face: engine under its faceKey, Blitz under the
+   *  real family with its true weight/style (so HTML `font-weight`/`font-style`
+   *  pick the right static face instead of synthesizing). Returns the faceId. */
+  registerOsFace(family: string, weight: number, italic: boolean, bytes: Uint8Array): number {
+    return this.registerFontBytes(faceKey(family, weight, italic), bytes, family, weight, italic);
   }
 
   /** Register a fallback face from sfnt bytes (appended to the chain consulted

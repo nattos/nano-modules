@@ -71,7 +71,7 @@ const enc = (s) => new TextEncoder().encode(s);
 const sess = blz.tb_create();
 const font = readFileSync(fontPath);
 { const p = engPut(font); eng.te_set_font(p, font.length); eng.free(p); }
-blz.tb_add_font(sess, 0, 0, blzPut(font), font.length);
+blz.tb_add_font(sess, 0, 0, 0, 0, blzPut(font), font.length);
 for (const fp of fallbacks) {
   const cb = readFileSync(fp);
   const lang = fp.includes('-sc') ? 'zh-Hans' : fp.includes('-tc') ? 'zh-Hant'
@@ -79,7 +79,7 @@ for (const fp of fallbacks) {
   const bp = engPut(cb); const lp = lang ? engPut(enc(lang)) : 0;
   eng.te_add_fallback_font(bp, cb.length, lp, lang.length);
   eng.free(bp); if (lp) eng.free(lp);
-  blz.tb_add_font(sess, 0, 0, blzPut(cb), cb.length);
+  blz.tb_add_font(sess, 0, 0, 0, 0, blzPut(cb), cb.length);
 }
 
 // Blitz layout → run buffer → engine GID seam.

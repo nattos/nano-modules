@@ -51,7 +51,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   // Bridge OS font resolution: the worker's text engine asks (fontRequest) for a
   // family it lacks; the main thread resolves the bytes via Local Font Access
   // (gesture-primed, Chromium/Electron) and ships them back (registerFont).
-  initFontProvider((key, family, bytes) => engine.registerFont(key, bytes, family));
+  initFontProvider((family, weight, italic, bytes) => engine.registerFont(family, weight, italic, bytes));
   engine.onFontRequest = (req) => requestFont(req);
 
   (window as any).debugDumpState = () => toJS(appState);

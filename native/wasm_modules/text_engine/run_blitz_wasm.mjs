@@ -39,10 +39,10 @@ const sess = ex.tb_create();
 // Primary font (faceId 0), then the fallback chain — same order as native.
 const fontPath = process.env.TE_FONT;
 const fb = readFileSync(fontPath);
-ex.tb_add_font(sess, 0, 0, put(fb), fb.length);
+ex.tb_add_font(sess, 0, 0, 0, 0, put(fb), fb.length);
 for (const p of (process.env.TE_FALLBACK || '').split(':').filter(Boolean)) {
   const cb = readFileSync(p);
-  ex.tb_add_font(sess, 0, 0, put(cb), cb.length); // faceId assigned in order
+  ex.tb_add_font(sess, 0, 0, 0, 0, put(cb), cb.length); // faceId assigned in order
   void langFromName; // (lang tags only matter to the engine's fallback, not Blitz)
 }
 

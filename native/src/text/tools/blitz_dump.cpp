@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
   std::vector<uint8_t> fb = readFile(fontPath);
   if (fb.empty()) { std::fprintf(stderr, "font load failed: %s\n", fontPath); return 1; }
   eng.setFont(fb.data(), (int)fb.size());
-  tb_add_font(sess, nullptr, 0, fb.data(), (int)fb.size());
+  tb_add_font(sess, nullptr, 0, 0, 0, fb.data(), (int)fb.size());
 
   // Optional fallback CHAIN (colon-separated paths), appended to BOTH in the
   // same order so faceId N is the same bytes on both sides. Filename → lang.
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
           std::vector<uint8_t> cb = readFile(path.c_str());
           if (!cb.empty()) {
             eng.addFallbackFont(cb.data(), (int)cb.size(), lang, (int)std::strlen(lang));
-            tb_add_font(sess, nullptr, 0, cb.data(), (int)cb.size());
+            tb_add_font(sess, nullptr, 0, 0, 0, cb.data(), (int)cb.size());
           }
           path.clear();
         }

@@ -37,7 +37,7 @@ fn main() {
     };
 
     let mut session = Session::new();
-    session.add_font(None, font_bytes); // faceId 0, all generics
+    session.add_font(None, 0, false, font_bytes); // faceId 0, all generics
     let glyphs = session.layout(&html, 800, 600, 1.0);
 
     for g in &glyphs {

@@ -23,11 +23,12 @@ typedef struct TbLayout  TbLayout;
 TbSession* tb_create(void);
 void       tb_destroy(TbSession* s);
 
-// Register a face (optional CSS family `name`); returns its faceId (0-based,
-// registration order), or -1 on error. Append faces in the SAME order as the
-// engine's primary + fallback chain so a glyph's `face` selects the same bytes.
+// Register a face (optional CSS family `name`; `weight` 0 = font's own, `italic`
+// 0/1 set its fontique attributes for CSS weight/style matching). Returns its
+// faceId (0-based, registration order), or -1. Append faces in the SAME order as
+// the engine's primary + fallback chain so a glyph's `face` selects the same bytes.
 int tb_add_font(TbSession* s, const unsigned char* name, int name_len,
-                const unsigned char* bytes, int len);
+                int weight, int italic, const unsigned char* bytes, int len);
 
 // Lay out `html` (utf-8, `len` bytes) into a w×h px viewport at `scale`.
 // Returns a layout handle (free with tb_free_layout) or null on error.

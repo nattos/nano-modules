@@ -16,7 +16,7 @@
 use blitz_dom::{BaseDocument, DocumentConfig, FontContext, StyleThreading};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
+use parley::fontique::{Blob, FontInfoOverride, FontStyle, FontWeight, GenericFamily};
 use parley::layout::PositionedLayoutItem;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,21 +59,29 @@ impl Session {
         }
     }
 
-    /// Register an sfnt face. `name` (optional) is its CSS family; every face is
-    /// also appended to all generic families in registration order, so a missing
-    /// glyph falls back across faces in the same order the text engine's chain
-    /// uses. Returns the faceId (0-based, registration order).
-    pub fn add_font(&mut self, name: Option<&str>, bytes: Vec<u8>) -> i32 {
+    /// Register an sfnt face. `name` (optional) is its CSS family; `weight`
+    /// (0 = use the font's own) and `italic` set its fontique attributes so CSS
+    /// `font-weight`/`font-style` select the right static OS face (variable fonts
+    /// pass 0 and use their own axes). Every face is also appended to all generic
+    /// families in registration order, so a missing glyph falls back across faces
+    /// in the same order the text engine's chain uses. Returns the faceId.
+    pub fn add_font(&mut self, name: Option<&str>, weight: i32, italic: bool, bytes: Vec<u8>) -> i32 {
         // WOFF/WOFF2 would need decoding; we register raw sfnt (parity bytes).
         let blob: Blob<u8> = Blob::new(Arc::new(bytes) as Arc<dyn AsRef<[u8]> + Send + Sync>);
         let face = self.next_face;
         self.next_face += 1;
         self.blob_to_face.insert(blob.id(), face);
 
-        let ov = name.map(|n| FontInfoOverride {
-            family_name: Some(n),
-            ..Default::default()
-        });
+        let ov = if name.is_some() || weight > 0 || italic {
+            Some(FontInfoOverride {
+                family_name: name,
+                weight: if weight > 0 { Some(FontWeight::new(weight as f32)) } else { None },
+                style: if italic { Some(FontStyle::Italic) } else { None },
+                ..Default::default()
+            })
+        } else {
+            None
+        };
         let registered = self.ctx.collection.register_fonts(blob, ov);
         let fam_ids: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
         for generic in [
@@ -236,12 +244,15 @@ pub extern "C" fn tb_destroy(s: *mut Session) {
 }
 
 /// Register a face from `bytes`; `name`/`name_len` is the optional CSS family
-/// (pass null/0 for none). Returns the faceId, or -1 on a null session.
+/// (pass null/0 for none), `weight` (0 = font's own) + `italic` (0/1) set its
+/// fontique attributes. Returns the faceId, or -1 on a null session.
 #[no_mangle]
 pub extern "C" fn tb_add_font(
     s: *mut Session,
     name: *const u8,
     name_len: i32,
+    weight: i32,
+    italic: i32,
     bytes: *const u8,
     len: i32,
 ) -> i32 {
@@ -256,7 +267,7 @@ pub extern "C" fn tb_add_font(
         let nb = unsafe { std::slice::from_raw_parts(name, name_len as usize) };
         std::str::from_utf8(nb).ok().map(|s| s.to_owned())
     };
-    session.add_font(nm.as_deref(), data)
+    session.add_font(nm.as_deref(), weight, italic != 0, data)
 }
 
 /// Lay out `html` (utf-8, `len` bytes) into `w`×`h` px at `scale`. Returns an
