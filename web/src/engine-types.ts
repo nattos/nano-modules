@@ -155,10 +155,23 @@ export type WorkerCommand =
 
 // --- Worker events (worker → main) ---
 
+/**
+ * Minimal per-frame state delta. `changed` holds only the top-level keys
+ * (instance_key / plugin key) whose value differs from the last frame;
+ * `removed` lists keys that disappeared. An all-empty diff (no changed
+ * keys, no removed) means "nothing changed" and the main thread does no
+ * work. The first frame after (re)connect naturally sends everything as
+ * `changed` since the baseline starts empty.
+ */
+export interface StateDiff {
+  changed: Record<string, any>;
+  removed: string[];
+}
+
 export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
   | { type: 'effectsDiscovered'; effects: EffectInfo[] }
-  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchState: Record<string, any>; pluginStates: Record<string, any>; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
+  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
   | { type: 'error'; message: string }
   | { type: 'debugDump'; data: any };

@@ -7,7 +7,7 @@
  * - Engine commands (forwarded to worker via EngineProxy)
  */
 
-import { runInAction, toJS } from 'mobx';
+import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
@@ -1424,15 +1424,33 @@ export class AppController {
     runInAction(() => { appState.local.engine.error = error; });
   }
 
-  setSketchState(sketchState: Record<string, any>) {
+  /**
+   * Apply a per-frame sketch_state delta from the engine. Only the keys
+   * the worker reported as changed/removed are touched (via mobx
+   * set/remove), so unchanged instances keep their observable identity and
+   * don't trigger spurious re-renders — and an empty diff is a no-op. The
+   * whole-object replacement this used to do re-wrapped the entire state
+   * into fresh deep observables every frame (the trace's mobx hot spot).
+   */
+  applySketchStateDiff(diff: import('../engine-types').StateDiff) {
+    if (!diff) return;
+    const changedKeys = Object.keys(diff.changed);
+    if (changedKeys.length === 0 && diff.removed.length === 0) return;
     runInAction(() => {
-      appState.local.engine.sketchState = sketchState;
+      const ss = appState.local.engine.sketchState;
+      for (const k of diff.removed) mobxRemove(ss as object, k);
+      for (const k of changedKeys) mobxSet(ss as object, k, diff.changed[k]);
     });
   }
 
-  setPluginStates(pluginStates: Record<string, any>) {
+  applyPluginStatesDiff(diff: import('../engine-types').StateDiff) {
+    if (!diff) return;
+    const changedKeys = Object.keys(diff.changed);
+    if (changedKeys.length === 0 && diff.removed.length === 0) return;
     runInAction(() => {
-      appState.local.engine.pluginStates = pluginStates;
+      const ps = appState.local.engine.pluginStates;
+      for (const k of diff.removed) mobxRemove(ps as object, k);
+      for (const k of changedKeys) mobxSet(ps as object, k, diff.changed[k]);
     });
   }
 

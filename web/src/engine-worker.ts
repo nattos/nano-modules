@@ -120,6 +120,11 @@ let fps = 0;
 let stateGeneration = 0;
 let lastBroadcastGeneration = -1;
 let paused = false;
+// While paused we tell the UI fps=0 exactly once (on entering pause) rather
+// than posting an empty 'frame' every rAF — the per-frame post made the main
+// thread churn mobx + re-render lit ~60×/s for nothing. Reset on resume.
+let pausedFramePosted = false;
+let debugStatsTick = 0; // throttles Debug Info panel updates to ~10 Hz
 // When on, the next frame event carries DebugStats + recent
 // console-log entries (for the Debug Info sidebar). Off by default —
 // the toggle flips with `setDebugMode`.
@@ -251,8 +256,9 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'setPaused':
       paused = cmd.paused;
       // On resume, reset lastTime so the next frame's dt isn't a giant
-      // catch-up jump that breaks animation smoothness.
-      if (!paused) lastTime = performance.now() / 1000;
+      // catch-up jump that breaks animation smoothness. Re-arm the
+      // one-shot paused indicator so the next pause re-notifies the UI.
+      if (!paused) { lastTime = performance.now() / 1000; pausedFramePosted = false; }
       break;
     case 'restart':
       elapsed = 0;
@@ -384,13 +390,21 @@ async function frame() {
       broadcastState();
       lastBroadcastGeneration = stateGeneration;
     }
-    post({
-      type: 'frame',
-      fps: 0,
-      tracedFrames: {},
-      sketchState: {},
-      pluginStates: {},
-    });
+    // Notify the UI we're paused (fps=0) exactly ONCE. Posting an empty
+    // frame every rAF made the main thread re-run mobx + lit ~60×/s for
+    // nothing — the dominant CPU cost while paused. A genuine state change
+    // (HMR / setFieldHidden) still flows via broadcastState above.
+    if (!pausedFramePosted) {
+      pausedFramePosted = true;
+      fps = 0;
+      post({
+        type: 'frame',
+        fps: 0,
+        tracedFrames: {},
+        sketchStateDiff: { changed: {}, removed: [] },
+        pluginStatesDiff: { changed: {}, removed: [] },
+      });
+    }
     frameInFlight = false;
     requestAnimationFrame(frame);
     return;
@@ -461,7 +475,13 @@ function handleSetSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
     );
   }
   bitmap.close();
-  markDirty();
+  // NOTE: deliberately NOT markDirty(). Uploading an input texture changes
+  // only the input image, not the inspector state (plugins / schemas /
+  // sketch_state) that broadcastState ships. The frame loop already samples
+  // the latest input texture every tick, so the canvas updates regardless.
+  // A video/live source feeds this ~30-60×/s; calling markDirty() here used
+  // to trigger a full /global JSON dump + plugins re-wrap + 'state' post
+  // every input frame — the dominant CPU churn even when output was stopped.
 }
 
 /**
@@ -656,6 +676,35 @@ function ensureRenderTarget(key: string, w: number, h: number): { tex: GPUTextur
 /** Resolved texture handles for each trace point (populated by simulateTick). */
 const traceHandles = new Map<string, number>();
 
+// Per-key stringified baseline for cheap frame-to-frame diffing of the
+// sketch_state / pluginStates maps. We ship only changed + removed keys so
+// the main thread merges deltas (mobx set/remove) instead of re-wrapping the
+// whole state every frame.
+let lastSketchJson: Record<string, string> = {};
+let lastPluginJson: Record<string, string> = {};
+
+/**
+ * Diff `cur` (a flat map keyed by instance/plugin key) against `baseline`
+ * (per-key JSON), MUTATING `baseline` to match, and return the
+ * {changed, removed} delta. Compared by JSON string, so unchanged keys
+ * produce nothing even though `getAt` returns fresh object refs each frame.
+ */
+function diffMap(baseline: Record<string, string>, cur: Record<string, any>):
+    import('./engine-types').StateDiff {
+  const changed: Record<string, any> = {};
+  const seen = new Set<string>();
+  for (const k in cur) {
+    seen.add(k);
+    const j = JSON.stringify(cur[k]);
+    if (baseline[k] !== j) { changed[k] = cur[k]; baseline[k] = j; }
+  }
+  const removed: string[] = [];
+  for (const k in baseline) {
+    if (!seen.has(k)) { removed.push(k); delete baseline[k]; }
+  }
+  return { changed, removed };
+}
+
 /**
  * Capture each trace point by blitting its texture to an OffscreenCanvas
  * and calling transferToImageBitmap(). Fully GPU-resident — no CPU readback.
@@ -666,22 +715,35 @@ function captureAndSendFrame() {
   const tracedFrames: Record<string, ImageBitmap> = {};
   const transfers: Transferable[] = [];
 
-  const sketchState = bridgeCore?.getAt('/sketch_state') ?? {};
+  const sketchStateFull = bridgeCore?.getAt('/sketch_state') ?? {};
 
   // Collect live pluginState for all instances (sketch executor + real modules)
-  const pluginStates: Record<string, any> = sketchExecutor
+  const pluginStatesFull: Record<string, any> = sketchExecutor
     ? sketchExecutor.getPluginStates()
     : {};
   for (const [key, { host }] of realModules) {
-    if (!(key in pluginStates) && host.pluginState && Object.keys(host.pluginState).length > 0) {
-      pluginStates[key] = host.pluginState;
+    if (!(key in pluginStatesFull) && host.pluginState && Object.keys(host.pluginState).length > 0) {
+      pluginStatesFull[key] = host.pluginState;
     }
   }
 
-  // Drain debug stats every frame so counters reset; only attach
-  // them to the broadcast when the user has the Debug Info tab open.
+  // Diff vs. the last frame and ship only what changed. At steady state
+  // both diffs are empty, so the main thread does zero mobx/lit work and
+  // the postMessage payload is tiny. (Previously we shipped the full
+  // sketch_state + every pluginState every frame, which the main thread
+  // re-wrapped into deep observables — the dominant CPU cost in the trace.)
+  const sketchStateDiff = diffMap(lastSketchJson, sketchStateFull);
+  const pluginStatesDiff = diffMap(lastPluginJson, pluginStatesFull);
+
+  // Drain debug stats every frame so counters reset and each sample is a
+  // true single-frame count. Forward to the UI only every 6th frame (~10
+  // Hz): the Debug Info panel re-renders on each update, and 60 Hz stat
+  // flicker is both unreadable and the main remaining per-frame lit cost
+  // when the panel is open. Throttling here keeps the panel responsive
+  // without re-rendering it 60×/s.
   const stats = sketchExecutor?.consumeDebugStats();
-  const debugStats = debugMode ? stats : undefined;
+  const sendDebug = debugMode && (++debugStatsTick % 6 === 0);
+  const debugStats = sendDebug ? stats : undefined;
   // Same for the console buffer — drain unconditionally (so the cap
   // bounds memory) but only ship when debug mode is on.
   let debugConsoleLog: import('./engine-types').DebugConsoleEntry[] | undefined;
@@ -691,7 +753,7 @@ function captureAndSendFrame() {
   }
 
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates, debugStats, debugConsoleLog }, []);
+    post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, debugStats, debugConsoleLog }, []);
     return;
   }
 
@@ -711,7 +773,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, tracedFrames, sketchState, pluginStates, debugStats, debugConsoleLog }, transfers);
+  post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, debugStats, debugConsoleLog }, transfers);
 }
 
 // ========================================================================
