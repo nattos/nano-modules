@@ -82,6 +82,13 @@ int te_layout(const char* spec, int len) {
   return Engine::instance().layout(spec, len);
 }
 
+// Lay out PRE-SHAPED glyph runs from the Blitz layout wasm (text_blitz). `ptr`
+// points at a packed array of `count` text_engine::PreGlyph records (48 bytes
+// each) the host wrote into engine memory; returns a layoutId (>0) or 0.
+int te_layout_glyphs(const void* ptr, int count) {
+  return Engine::instance().layoutGlyphs((const text_engine::PreGlyph*)ptr, count);
+}
+
 int te_measure(int id, void* out_metrics) {
   text_engine::Metrics m;
   if (!Engine::instance().measure(id, m)) return 0;

@@ -381,8 +381,18 @@ struct Engine::Impl {
     return false;  // no coverage → .notdef of preferFace
   }
 
-  static uint64_t gkey(int faceId, uint32_t gi) { return ((uint64_t)faceId << 32) | gi; }
-  const GlyphInfo* ensureGlyph(int faceId, uint32_t gi, unsigned cp);
+  // Glyph cache key. (face, gid) is the common case; synthetic oblique/bold
+  // (Blitz path) bake into the outline, so they must key distinctly. Quantize
+  // skew/embolden into a byte each and fold in — (skew=0,embolden=0) collapses
+  // to the plain (face,gid) key so the codepoint path is unaffected.
+  static uint64_t gkey(int faceId, uint32_t gi, float skew = 0, float embolden = 0) {
+    uint32_t sb = (uint32_t)std::lround(std::min(std::max(skew, -1.0f), 1.0f) * 100.0f) & 0xFF;
+    uint32_t eb = (uint32_t)std::lround(std::min(std::max(embolden, 0.0f), 0.5f) * 500.0f) & 0xFF;
+    return ((uint64_t)(faceId & 0xFF) << 40) | ((uint64_t)(gi & 0xFFFFFF) << 16)
+           | (sb << 8) | eb;
+  }
+  const GlyphInfo* ensureGlyph(int faceId, uint32_t gi, unsigned cp,
+                               float skew = 0, float embolden = 0);
 
   // Shelf-pack a tileW×tileH tile onto a page of class `refPx` (creating a new
   // page if the current one is full), leaving a GAP gutter. Returns the page
@@ -408,8 +418,9 @@ struct Engine::Impl {
   }
 };
 
-const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp) {
-  uint64_t key = gkey(faceId, gi);
+const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
+                                           float skew, float embolden) {
+  uint64_t key = gkey(faceId, gi, skew, embolden);
   auto it = glyphs.find(key);
   if (it != glyphs.end()) return &it->second;
 
@@ -422,6 +433,21 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp)
     glyphs.emplace(key, info); return &glyphs[key];
   }
   info.advance = (float)(face->glyph->metrics.horiAdvance) / (float)units_per_em;
+
+  // Synthetic styling (Blitz path): apply parley's oblique/bold to the unscaled
+  // outline before decomposing, so the MSDF tile bakes them in. embolden also
+  // widens the advance (FT_Outline_Embolden grows the glyph by ~strength).
+  if (embolden > 0.0f) {
+    FT_Pos strength = (FT_Pos)std::lround(embolden * units_per_em);
+    FT_Outline_Embolden(&face->glyph->outline, strength);
+    info.advance += (float)strength / (float)units_per_em;
+  }
+  if (skew != 0.0f) {
+    // x' = x + y·tan(skew): a horizontal shear producing a faux-italic slant.
+    FT_Matrix m = { 0x10000, (FT_Fixed)std::lround(std::tan(skew) * 65536.0),
+                    0, 0x10000 };
+    FT_Outline_Transform(&face->glyph->outline, &m);
+  }
 
   msdfgen::Shape shape; ShapeBuilder b; b.shape = &shape;
   FT_Outline_Funcs funcs = { sbMove, sbLine, sbConic, sbCubic, 0, 0 };
@@ -672,6 +698,54 @@ int Engine::layout(const char* spec_json, int len) {
   ld.metrics.width          = maxLineW;
   ld.metrics.height         = totalH;
   ld.metrics.line_count     = lines;
+  ld.metrics.first_baseline = firstBaseline < 0 ? 0 : firstBaseline;
+  ld.metrics.glyph_count    = (int)ld.quads.size();
+  ld.metrics.atlas_kind     = (int)AtlasKind::MSDF;
+  ld.metrics.atlas_px_range = (float)RANGE_PX;
+
+  int id = impl_->next_id++;
+  impl_->layouts.emplace(id, std::move(ld));
+  return id;
+}
+
+int Engine::layoutGlyphs(const PreGlyph* glyphs, int count) {
+  if (!impl_->font_loaded || count < 0) return 0;
+  if (count > 0 && !glyphs) return 0;
+
+  LayoutData ld;
+  // The external engine already positioned every glyph; we only rasterize each
+  // (face, gid) tile and place a quad. Metrics are derived from the glyph
+  // extents (the external box origin is the layout-box origin).
+  float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f, firstBaseline = -1;
+  float lastBaselineY = 1e30f; int lineCount = 0;
+
+  for (int i = 0; i < count; i++) {
+    const PreGlyph& g = glyphs[i];
+    if (g.face < 0 || g.face >= (int)impl_->faces.size()) continue;
+    const GlyphInfo* info = impl_->ensureGlyph(g.face, g.gid, g.cp, g.skew, g.embolden);
+
+    // Count baselines (distinct y) for a rough line_count, in glyph order.
+    if (g.y != lastBaselineY) { lineCount++; lastBaselineY = g.y; }
+    if (firstBaseline < 0) firstBaseline = g.y;
+
+    if (!info->has_msdf) continue;  // whitespace / empty / unfittable → advance only
+    GlyphQuad q;
+    q.x = g.x + info->planeL * g.size;
+    q.w = (info->planeR - info->planeL) * g.size;
+    q.y = g.y - info->planeT * g.size;
+    q.h = (info->planeT - info->planeB) * g.size;
+    q.u0 = info->u0; q.v0 = info->v0; q.u1 = info->u1; q.v1 = info->v1;
+    q.r = g.r; q.g = g.g; q.b = g.b; q.a = g.a;
+    q.page = (float)info->page; q._r0 = q._r1 = q._r2 = 0.0f;
+    ld.quads.push_back(q);
+
+    if (q.x < minX) minX = q.x;     if (q.x + q.w > maxX) maxX = q.x + q.w;
+    if (q.y < minY) minY = q.y;     if (q.y + q.h > maxY) maxY = q.y + q.h;
+  }
+
+  ld.metrics.width          = ld.quads.empty() ? 0 : maxX;  // box-origin-relative extent
+  ld.metrics.height         = ld.quads.empty() ? 0 : maxY;
+  ld.metrics.line_count     = lineCount;
   ld.metrics.first_baseline = firstBaseline < 0 ? 0 : firstBaseline;
   ld.metrics.glyph_count    = (int)ld.quads.size();
   ld.metrics.atlas_kind     = (int)AtlasKind::MSDF;

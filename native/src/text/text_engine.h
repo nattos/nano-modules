@@ -55,6 +55,25 @@ struct GlyphQuad {
   float _r0, _r1, _r2;    // reserved (keeps the struct 16-byte aligned)
 };
 
+// One PRE-SHAPED glyph from an external layout/shaping engine (the Blitz path:
+// Stylo + Taffy + parley/harfrust). The external engine owns wrapping, shaping
+// and positioning; the text engine only rasterizes by GID and emits quads, so
+// no cmap / wrap / fallback runs here. Positions are layout-box px: (x, y) is
+// the glyph ORIGIN sitting on the baseline (same convention as parley's
+// positioned_glyphs). `cp` is a representative codepoint used ONLY to pick the
+// atlas resolution class (CJK → dense page). `skew`/`embolden` carry parley's
+// synthetic oblique/bold when a face lacks the requested style (0 = none).
+struct PreGlyph {
+  int      face;          // registered faceId (0 = primary)
+  uint32_t gid;           // FreeType glyph index — already shaped (no cmap)
+  uint32_t cp;            // representative codepoint (atlas resolution class)
+  float    x, y;          // glyph origin x, baseline y (layout-box px)
+  float    size;          // font size, px
+  float    r, g, b, a;    // color (linear)
+  float    skew;          // synthetic oblique shear, radians (0 = none)
+  float    embolden;      // synthetic bold strength, em (0 = none)
+};
+
 // A dirty atlas PAGE that changed and needs GPU upload (full-page granularity).
 // `rgba` points into engine-owned memory (tightly packed, stride = w*4); it is
 // valid until the next layout() call. The GPU glue uploads `page`'s layer.
@@ -106,6 +125,15 @@ public:
   // Returns an opaque layoutId (>0) or 0 on error. Deterministic given the
   // same spec + same available fonts.
   int  layout(const char* spec_json, int len);
+
+  // Lay out PRE-SHAPED glyph runs from an external engine (the Blitz complex-
+  // layout mode). Each PreGlyph is self-contained (carries its own face, size,
+  // color, position), so this just generates/caches each (face, gid) MSDF tile
+  // and emits one GlyphQuad per visible glyph — reusing the SAME atlas, page
+  // policy and quad math as layout(). Deterministic given the same glyphs +
+  // fonts, so it stays byte-parity across native/wasm. Returns an opaque
+  // layoutId (>0) or 0 on error.
+  int  layoutGlyphs(const PreGlyph* glyphs, int count);
 
   bool measure(int layout_id, Metrics& out) const;
   int  glyphCount(int layout_id) const;
