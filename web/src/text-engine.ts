@@ -372,11 +372,15 @@ export class TextEngine {
     const blz = this.blz;
     if (!blz || !this.blzSess) return 0;
     const htmlEnc = new TextEncoder().encode(html);
+    // Empty / blank HTML → an empty engine layout (valid id, 0 glyphs) so the
+    // effect still renders and CLEARS its target, rather than skipping and
+    // leaving the previous frame.
+    if (htmlEnc.length === 0) return this.ex.te_layout_glyphs(0, 0);
     const hp = blz.tb_alloc(htmlEnc.length);
     new Uint8Array(blz.memory.buffer).set(htmlEnc, hp);
     const bl = blz.tb_layout(this.blzSess, hp, htmlEnc.length, width, height, scale);
     blz.tb_dealloc(hp, htmlEnc.length);
-    if (!bl) return 0;
+    if (!bl) return this.ex.te_layout_glyphs(0, 0);  // layout failed → clear, not stale
     const n = blz.tb_glyph_count(bl);
     const gp = blz.tb_glyph_ptr(bl);
     // Copy the run buffer (48B records) out of Blitz memory and into the engine.
@@ -619,12 +623,19 @@ export class TextEngine {
     const ex = this.ex;
     const device = this.device;
 
+    // 0 glyphs is a VALID layout (empty / whitespace-only doc). We still run the
+    // compositor below — it writes background-over-glyphs to every pixel, so an
+    // empty layout CLEARS the target to the background instead of leaving the
+    // previous frame on screen.
     const count = ex.te_glyph_count(id);
-    if (count <= 0) return;
-    const gPtr = ex.malloc(count * 64);
-    const written = ex.te_glyphs(id, gPtr, count * 64);
-    const glyphBytes = this.u8().slice(gPtr, gPtr + written * 64);
-    ex.free(gPtr);
+    let written = 0;
+    let glyphBytes = new Uint8Array(0);
+    if (count > 0) {
+      const gPtr = ex.malloc(count * 64);
+      written = ex.te_glyphs(id, gPtr, count * 64);
+      glyphBytes = this.u8().slice(gPtr, gPtr + written * 64);
+      ex.free(gPtr);
+    }
 
     const mPtr = ex.malloc(32);
     ex.te_measure(id, mPtr);
