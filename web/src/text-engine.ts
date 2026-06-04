@@ -17,10 +17,12 @@
 const WGSL = `
 // 64-byte glyph: aux.x = atlas-array page (layer). ("meta" is a WGSL keyword.)
 struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32> };
+// 48-byte background box: rect(x,y,w,h), rgba, radius(tl,tr,br,bl).
+struct Box { rect: vec4<f32>, rgba: vec4<f32>, radius: vec4<f32> };
 struct U {
   canvas_w:u32, canvas_h:u32, glyph_count:u32, atlas_w:u32, atlas_h:u32,
   origin_x:f32, origin_y:f32, atlas_kind:u32, atlas_px_range:f32,
-  _p0:f32, _p1:f32, _p2:f32,
+  box_count:u32, _p1:f32, _p2:f32,
 };
 @group(0) @binding(0) var<storage, read> glyphs: array<Glyph>;
 @group(0) @binding(1) var atlas_arr: texture_2d_array<f32>;
@@ -28,8 +30,20 @@ struct U {
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var<uniform> u: U;
+@group(0) @binding(6) var<storage, read> boxes: array<Box>;
 
 fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c)); }
+// Signed distance (px) to a rounded box; radius = (tl,tr,br,bl), selected per
+// quadrant and clamped to half-extent. Matches the engine's CPU sdRoundBox, so
+// the GPU composite is byte-equal to the te_rasterize reference.
+fn sd_round_box(p:vec2<f32>, c:vec2<f32>, h:vec2<f32>, rad:vec4<f32>) -> f32 {
+  let d = p - c;
+  let top = d.y < 0.0;
+  var r = select(select(rad.w, rad.x, top), select(rad.z, rad.y, top), d.x > 0.0);
+  r = clamp(r, 0.0, min(h.x, h.y));
+  let q = abs(d) - h + vec2<f32>(r, r);
+  return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
+}
 // LINEAR-filtered sample of the glyph's atlas PAGE (array layer) — bilinear
 // distance-field interpolation = smooth, corner-sharp MSDF at any magnification.
 fn atlas_texel(uu:f32, vv:f32, page:i32) -> vec4<f32> {
@@ -42,6 +56,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let p = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
   let bg_uv = p / vec2<f32>(f32(u.canvas_w), f32(u.canvas_h));
   var col = textureSampleLevel(bg_tex, samp, bg_uv, 0.0).rgb;
+  // Background fills, behind the glyphs, in document order.
+  for (var b:u32 = 0u; b < u.box_count; b = b + 1u) {
+    let bq = boxes[b];
+    let c = vec2<f32>(bq.rect.x + u.origin_x + bq.rect.z * 0.5,
+                      bq.rect.y + u.origin_y + bq.rect.w * 0.5);
+    let sd = sd_round_box(p, c, vec2<f32>(bq.rect.z * 0.5, bq.rect.w * 0.5), bq.radius);
+    let bcov = clamp(0.5 - sd, 0.0, 1.0);
+    let ba = bcov * bq.rgba.a;
+    col = bq.rgba.rgb * ba + col * (1.0 - ba);
+  }
   for (var i:u32 = 0u; i < u.glyph_count; i = i + 1u) {
     let g = glyphs[i];
     let gx = g.rect.x + u.origin_x;
@@ -81,6 +105,8 @@ interface TEExports {
   te_measure(id: number, outPtr: number): number;
   te_glyph_count(id: number): number;
   te_glyphs(id: number, outPtr: number, outBytes: number): number;
+  te_box_count(id: number): number;
+  te_boxes(id: number, outPtr: number, outBytes: number): number;
   te_release(id: number): void;
   te_rasterize(id: number, w: number, h: number, ox: number, oy: number, bg: number, out: number): number;
   te_atlas_width(): number;
@@ -88,8 +114,9 @@ interface TEExports {
   te_atlas_page_count(): number;
   te_atlas_page_ptr(page: number): number;
   te_next_dirty_region(outPtr: number): number;
-  // Blitz complex-layout mode: rasterize pre-shaped runs from text_blitz.wasm.
-  te_layout_glyphs(runsPtr: number, count: number): number;
+  // Blitz complex-layout mode: rasterize pre-shaped runs + background boxes
+  // from text_blitz.wasm.
+  te_layout_glyphs(runsPtr: number, count: number, boxPtr: number, boxCount: number): number;
 }
 
 /** Exports of text_blitz.wasm — the Rust Blitz layout lib (Stylo + Taffy +
@@ -106,6 +133,8 @@ interface TBExports {
   tb_layout(s: number, htmlPtr: number, len: number, w: number, h: number, scale: number): number;
   tb_glyph_count(r: number): number;
   tb_glyph_ptr(r: number): number;
+  tb_box_count(r: number): number;
+  tb_box_ptr(r: number): number;
   tb_free_layout(r: number): void;
 }
 
@@ -375,21 +404,27 @@ export class TextEngine {
     // Empty / blank HTML → an empty engine layout (valid id, 0 glyphs) so the
     // effect still renders and CLEARS its target, rather than skipping and
     // leaving the previous frame.
-    if (htmlEnc.length === 0) return this.ex.te_layout_glyphs(0, 0);
+    if (htmlEnc.length === 0) return this.ex.te_layout_glyphs(0, 0, 0, 0);
     const hp = blz.tb_alloc(htmlEnc.length);
     new Uint8Array(blz.memory.buffer).set(htmlEnc, hp);
     const bl = blz.tb_layout(this.blzSess, hp, htmlEnc.length, width, height, scale);
     blz.tb_dealloc(hp, htmlEnc.length);
-    if (!bl) return this.ex.te_layout_glyphs(0, 0);  // layout failed → clear, not stale
+    if (!bl) return this.ex.te_layout_glyphs(0, 0, 0, 0);  // layout failed → clear, not stale
     const n = blz.tb_glyph_count(bl);
     const gp = blz.tb_glyph_ptr(bl);
-    // Copy the run buffer (48B records) out of Blitz memory and into the engine.
+    const bn = blz.tb_box_count(bl);
+    const bp = blz.tb_box_ptr(bl);
+    // Copy glyph runs (52B) and background boxes (48B) out of Blitz memory.
     const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 52); // PreGlyph = 52 bytes
+    const boxes = new Uint8Array(blz.memory.buffer).slice(bp, bp + bn * 48); // BoxQuad = 48 bytes
     blz.tb_free_layout(bl);
     const rp = this.ex.malloc(runs.length || 1);
     this.u8().set(runs, rp);
-    const id = this.ex.te_layout_glyphs(rp, n);
+    const bxp = bn > 0 ? this.ex.malloc(boxes.length) : 0;
+    if (bxp) this.u8().set(boxes, bxp);
+    const id = this.ex.te_layout_glyphs(rp, n, bxp, bn);
     this.ex.free(rp);
+    if (bxp) this.ex.free(bxp);
     return id;
   }
 
@@ -637,6 +672,17 @@ export class TextEngine {
       ex.free(gPtr);
     }
 
+    // Background boxes (48B each), drawn behind the glyphs by the shader.
+    const boxCount = ex.te_box_count(id);
+    let boxesWritten = 0;
+    let boxBytes = new Uint8Array(0);
+    if (boxCount > 0) {
+      const bPtr = ex.malloc(boxCount * 48);
+      boxesWritten = ex.te_boxes(id, bPtr, boxCount * 48);
+      boxBytes = this.u8().slice(bPtr, bPtr + boxesWritten * 48);
+      ex.free(bPtr);
+    }
+
     const mPtr = ex.malloc(32);
     ex.te_measure(id, mPtr);
     const dv = new DataView(ex.memory.buffer);
@@ -667,6 +713,8 @@ export class TextEngine {
     const cw = target.width, ch = target.height;
     const glyphBuf = device.createBuffer({ size: Math.max(64, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(glyphBuf, 0, glyphBytes);
+    const boxBuf = device.createBuffer({ size: Math.max(48, boxBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(boxBuf, 0, boxBytes);
 
     const uni = new ArrayBuffer(48);
     const uv = new DataView(uni);
@@ -674,6 +722,7 @@ export class TextEngine {
     uv.setUint32(12, aw, true); uv.setUint32(16, ah, true);
     uv.setFloat32(20, originX, true); uv.setFloat32(24, originY, true);
     uv.setUint32(28, atlasKind, true); uv.setFloat32(32, atlasPxRange, true);
+    uv.setUint32(36, boxesWritten, true);
     const uniBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(uniBuf, 0, uni);
 
@@ -686,6 +735,7 @@ export class TextEngine {
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: target.createView() },
         { binding: 5, resource: { buffer: uniBuf } },
+        { binding: 6, resource: { buffer: boxBuf } },
       ],
     });
 
