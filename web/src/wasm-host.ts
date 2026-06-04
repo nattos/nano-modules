@@ -1093,8 +1093,14 @@ export class WasmHost {
           const te = TextEngine.instance;
           if (!te) return 0;
           const spec = this.readString(specPtr, specLen);
-          te.ensureFontsForSpec(spec);   // lazily resolve any named families (OS fonts)
-          return te.layout(spec);
+          // Font resolution / layout must never trap the calling effect (that
+          // would abort its render and leave stale output). Scan failures are
+          // non-fatal (the frame falls back to bundled fonts); a layout error
+          // returns 0 so the effect simply skips this frame.
+          try { te.ensureFontsForSpec(spec); }
+          catch (e) { console.warn('[text] font scan failed', e); }
+          try { return te.layout(spec); }
+          catch (e) { console.warn('[text] layout failed', e); return 0; }
         },
         measure: (id: number, outPtr: number): number => {
           const te = TextEngine.instance;

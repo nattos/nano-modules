@@ -449,6 +449,16 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
     FT_Outline_Transform(&face->glyph->outline, &m);
   }
 
+  // msdfgen's distance sign assumes TrueType winding (filled area to the right
+  // of a clockwise contour). PostScript/CFF fonts (e.g. macOS Helvetica Neue)
+  // wind the opposite way, which inverts the MSDF (glyph renders as a knocked-
+  // out hole in a filled tile). Reverse those outlines to the TrueType
+  // convention — TrueType fonts (FT_ORIENTATION_TRUETYPE) are left untouched, so
+  // existing glyphs stay byte-identical. Done after embolden/skew (which are
+  // orientation-aware) and before decompose.
+  if (FT_Outline_Get_Orientation(&face->glyph->outline) == FT_ORIENTATION_POSTSCRIPT)
+    FT_Outline_Reverse(&face->glyph->outline);
+
   msdfgen::Shape shape; ShapeBuilder b; b.shape = &shape;
   FT_Outline_Funcs funcs = { sbMove, sbLine, sbConic, sbCubic, 0, 0 };
   FT_Outline_Decompose(&face->glyph->outline, &funcs, &b);
