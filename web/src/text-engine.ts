@@ -384,7 +384,7 @@ export class TextEngine {
     const n = blz.tb_glyph_count(bl);
     const gp = blz.tb_glyph_ptr(bl);
     // Copy the run buffer (48B records) out of Blitz memory and into the engine.
-    const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 48);
+    const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 52); // PreGlyph = 52 bytes
     blz.tb_free_layout(bl);
     const rp = this.ex.malloc(runs.length || 1);
     this.u8().set(runs, rp);

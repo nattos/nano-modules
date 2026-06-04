@@ -87,7 +87,7 @@ const html = readFileSync(htmlPath);
 const bl = blz.tb_layout(sess, blzPut(html), html.length, W, H, 1.0);
 const n = blz.tb_glyph_count(bl);
 const gp = blz.tb_glyph_ptr(bl);
-const runs = blzU8().slice(gp, gp + n * 48);        // copy out before any realloc
+const runs = blzU8().slice(gp, gp + n * 52);        // copy out before any realloc (PreGlyph=52B)
 const rp = engPut(runs);
 const id = eng.te_layout_glyphs(rp, n);
 eng.free(rp);

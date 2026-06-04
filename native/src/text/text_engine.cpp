@@ -385,14 +385,15 @@ struct Engine::Impl {
   // (Blitz path) bake into the outline, so they must key distinctly. Quantize
   // skew/embolden into a byte each and fold in — (skew=0,embolden=0) collapses
   // to the plain (face,gid) key so the codepoint path is unaffected.
-  static uint64_t gkey(int faceId, uint32_t gi, float skew = 0, float embolden = 0) {
-    uint32_t sb = (uint32_t)std::lround(std::min(std::max(skew, -1.0f), 1.0f) * 100.0f) & 0xFF;
-    uint32_t eb = (uint32_t)std::lround(std::min(std::max(embolden, 0.0f), 0.5f) * 500.0f) & 0xFF;
-    return ((uint64_t)(faceId & 0xFF) << 40) | ((uint64_t)(gi & 0xFFFFFF) << 16)
-           | (sb << 8) | eb;
+  static uint64_t gkey(int faceId, uint32_t gi, float skew = 0, float embolden = 0, float rot = 0) {
+    uint64_t sb = (uint64_t)(std::lround(std::min(std::max(skew, -1.0f), 1.0f) * 100.0f) & 0xFF);
+    uint64_t eb = (uint64_t)(std::lround(std::min(std::max(embolden, 0.0f), 0.5f) * 500.0f) & 0xFF);
+    uint64_t rb = (uint64_t)(std::lround(std::min(std::max(rot, -3.2f), 3.2f) * 20.0f) & 0xFF);
+    return ((uint64_t)(faceId & 0xFF) << 56) | ((uint64_t)(gi & 0xFFFFFF) << 32)
+           | (sb << 24) | (eb << 16) | (rb << 8);
   }
   const GlyphInfo* ensureGlyph(int faceId, uint32_t gi, unsigned cp,
-                               float skew = 0, float embolden = 0);
+                               float skew = 0, float embolden = 0, float rot = 0);
 
   // Shelf-pack a tileW×tileH tile onto a page of class `refPx` (creating a new
   // page if the current one is full), leaving a GAP gutter. Returns the page
@@ -419,8 +420,8 @@ struct Engine::Impl {
 };
 
 const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
-                                           float skew, float embolden) {
-  uint64_t key = gkey(faceId, gi, skew, embolden);
+                                           float skew, float embolden, float rot) {
+  uint64_t key = gkey(faceId, gi, skew, embolden, rot);
   auto it = glyphs.find(key);
   if (it != glyphs.end()) return &it->second;
 
@@ -447,6 +448,18 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
     FT_Matrix m = { 0x10000, (FT_Fixed)std::lround(std::tan(skew) * 65536.0),
                     0, 0x10000 };
     FT_Outline_Transform(&face->glyph->outline, &m);
+  }
+  if (rot != 0.0f) {
+    // Rotate about the glyph's bounding-box center so the rotated form stays put
+    // (vertical text: the chōonpu becomes a vertical bar, Latin turns sideways).
+    FT_BBox cb; FT_Outline_Get_CBox(&face->glyph->outline, &cb);
+    FT_Pos cx = (cb.xMin + cb.xMax) / 2, cy = (cb.yMin + cb.yMax) / 2;
+    FT_Outline_Translate(&face->glyph->outline, -cx, -cy);
+    double c = std::cos(rot), s = std::sin(rot);
+    FT_Matrix m = { (FT_Fixed)std::lround(c * 65536.0), (FT_Fixed)std::lround(-s * 65536.0),
+                    (FT_Fixed)std::lround(s * 65536.0), (FT_Fixed)std::lround(c * 65536.0) };
+    FT_Outline_Transform(&face->glyph->outline, &m);
+    FT_Outline_Translate(&face->glyph->outline, cx, cy);
   }
 
   // msdfgen's distance sign assumes TrueType winding (filled area to the right
@@ -732,7 +745,7 @@ int Engine::layoutGlyphs(const PreGlyph* glyphs, int count) {
   for (int i = 0; i < count; i++) {
     const PreGlyph& g = glyphs[i];
     if (g.face < 0 || g.face >= (int)impl_->faces.size()) continue;
-    const GlyphInfo* info = impl_->ensureGlyph(g.face, g.gid, g.cp, g.skew, g.embolden);
+    const GlyphInfo* info = impl_->ensureGlyph(g.face, g.gid, g.cp, g.skew, g.embolden, g.rot);
 
     // Count baselines (distinct y) for a rough line_count, in glyph order.
     if (g.y != lastBaselineY) { lineCount++; lastBaselineY = g.y; }

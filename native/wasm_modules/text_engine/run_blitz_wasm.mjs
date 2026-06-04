@@ -51,7 +51,7 @@ const bl = ex.tb_layout(sess, put(html), html.length, 800, 600, 1.0);
 const n = ex.tb_glyph_count(bl);
 const gp = ex.tb_glyph_ptr(bl);
 // Snapshot the run buffer immediately (no further allocations after this).
-const runs = Buffer.from(new Uint8Array(ex.memory.buffer, gp, n * 48));
+const runs = Buffer.from(new Uint8Array(ex.memory.buffer, gp, n * 52)); // PreGlyph=52B
 process.stdout.write(runs);
 ex.tb_free_layout(bl);
 ex.tb_destroy(sess);

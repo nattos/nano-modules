@@ -26,8 +26,8 @@
 #include <string>
 #include <vector>
 
-static_assert(sizeof(text_engine::PreGlyph) == 48,
-              "PreGlyph must be 48 bytes to match Rust TbGlyph");
+static_assert(sizeof(text_engine::PreGlyph) == 52,
+              "PreGlyph must be 52 bytes to match Rust TbGlyph");
 
 static std::vector<uint8_t> readFile(const char* path) {
   std::vector<uint8_t> out;

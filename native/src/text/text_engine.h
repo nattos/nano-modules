@@ -72,6 +72,9 @@ struct PreGlyph {
   float    r, g, b, a;    // color (linear)
   float    skew;          // synthetic oblique shear, radians (0 = none)
   float    embolden;      // synthetic bold strength, em (0 = none)
+  float    rot;           // glyph rotation, radians (vertical text: rotated forms
+                          //   like the chōonpu / Latin; 0 = upright). Baked into
+                          //   the atlas tile (rotated about the glyph's center).
 };
 
 // A dirty atlas PAGE that changed and needs GPU upload (full-page granularity).

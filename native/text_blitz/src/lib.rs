@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// One pre-shaped glyph. Byte-identical layout to `text_engine::PreGlyph`
-/// (48 bytes), so the host can pass the buffer straight into `te_layout_glyphs`.
+/// (52 bytes), so the host can pass the buffer straight into `te_layout_glyphs`.
 /// `(x, y)` is the glyph origin on the baseline, in layout-box px.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -39,6 +39,7 @@ pub struct TbGlyph {
     pub a: f32,
     pub skew: f32,
     pub embolden: f32,
+    pub rot: f32, // glyph rotation, radians (vertical rotated forms; 0 = upright)
 }
 
 /// A reusable layout session: holds the registered font set (a [`FontContext`]
@@ -197,6 +198,10 @@ impl Session {
                     col_em = 0.0;
                 }
                 col_em = col_em.max(em);
+                // Rotate the glyphs that should turn sideways in vertical text
+                // (chōonpu, Latin, dashes); centered-glyph reflow keeps the column
+                // rhythm uniform so the rotated forms sit in their cells.
+                let rot = if rotates_in_vertical(p.cp) { ROT_CW90 } else { 0.0 };
                 let col_left = if is_lr { col_near } else { col_near - em };
                 // Center the glyph's advance box in the em-wide column.
                 let gx = col_left + (em - p.advance) * 0.5;
@@ -204,7 +209,7 @@ impl Session {
                 out.push(TbGlyph {
                     face: p.face, gid: p.gid, cp: p.cp,
                     x: gx * zoom, y: baseline * zoom, size: p.size * zoom,
-                    r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden,
+                    r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden, rot,
                 });
                 y += em; // vertical pitch ≈ em (full-width ideographs)
             }
@@ -225,7 +230,7 @@ impl Session {
                     face: p.face, gid: p.gid, cp: p.cp,
                     // (block origin + parley glyph offset), all CSS px → output px.
                     x: (bx + p.hx) * zoom, y: (by + p.hy) * zoom, size: p.size * zoom,
-                    r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden,
+                    r: p.r, g: p.g, b: p.b, a: p.a, skew: p.skew, embolden: p.embolden, rot: 0.0,
                 });
             }
         }
@@ -267,12 +272,15 @@ impl Session {
                 let skew = synth.skew().map(|d| d.to_radians()).unwrap_or(0.0);
                 let embolden = if synth.embolden() { 0.03 } else { 0.0 };
                 let face = self.blob_to_face.get(&run.font().data.id()).copied().unwrap_or(0);
-                // Runs are single-script, so the first scalar fixes the atlas
-                // resolution class (CJK → dense page) for all its glyphs.
-                let cp = text.get(run.text_range())
-                    .and_then(|s| s.chars().next()).map(|c| c as u32).unwrap_or(0);
+                // Per-glyph codepoint via char-index zip (CJK is 1 char = 1 glyph,
+                // no ligatures) — fixes the atlas resolution class and lets the
+                // vertical path rotate the right glyphs (e.g. the chōonpu).
+                let run_chars: Vec<u32> = text.get(run.text_range())
+                    .map(|s| s.chars().map(|c| c as u32).collect()).unwrap_or_default();
+                let cp0 = run_chars.first().copied().unwrap_or(0);
                 let (r, g, b, a) = node_rgba(doc, grun.style().brush.id);
-                for gly in grun.positioned_glyphs() {
+                for (gi, gly) in grun.positioned_glyphs().enumerate() {
+                    let cp = run_chars.get(gi).copied().unwrap_or(cp0);
                     pend.push(Pend {
                         face, gid: gly.id, cp, size, advance: gly.advance, ascent,
                         r, g, b, a, skew, embolden, hx: gly.x, hy: gly.y,
@@ -281,6 +289,33 @@ impl Session {
             }
         }
     }
+}
+
+/// Rotation (radians) applied to a glyph in vertical text. 90° clockwise on
+/// screen; the engine bakes it into the atlas tile about the glyph's center.
+const ROT_CW90: f32 = -std::f32::consts::FRAC_PI_2;
+
+/// Unicode Vertical_Orientation (simplified): true if `cp` should be rotated 90°
+/// in vertical text. The bulk of CJK (ideographs, kana letters, hangul, CJK
+/// punctuation like 、。「」) stays upright; Latin/ASCII, dashes and the chōonpu
+/// rotate. The chōonpu (and a few marks) are technically Upright but need their
+/// vertical form, which we approximate by rotation (no `vert` GSUB).
+fn rotates_in_vertical(cp: u32) -> bool {
+    if matches!(cp, 0x30FC | 0x30A0 | 0x301C | 0x3030) {
+        return true; // chōonpu, katakana double hyphen, wave dashes
+    }
+    let upright = matches!(cp,
+        0x2E80..=0x303E |   // CJK radicals, Kangxi, CJK symbols & punctuation
+        0x3041..=0x33FF |   // hiragana, katakana, bopomofo, CJK compat
+        0x3400..=0x9FFF |   // CJK ext A + Unified Ideographs
+        0xA000..=0xA4CF |   // Yi
+        0xAC00..=0xD7FF |   // Hangul
+        0xF900..=0xFAFF |   // CJK compat ideographs
+        0xFE30..=0xFE4F |   // CJK compat forms
+        0xFF00..=0xFFEF |   // halfwidth / fullwidth
+        0x20000..=0x3FFFF   // CJK ext B+
+    );
+    !upright
 }
 
 /// Detect a vertical writing mode set on `node_id`'s OWN inline `style`. blitz-dom
