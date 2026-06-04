@@ -54,8 +54,13 @@ const W = Number(process.env.TE_W) || 800, H = Number(process.env.TE_H) || 600;
 const bl = ex.tb_layout(sess, put(html), html.length, W, H, 1.0);
 const n = ex.tb_glyph_count(bl);
 const gp = ex.tb_glyph_ptr(bl);
-// Snapshot the run buffer immediately (no further allocations after this).
-const runs = Buffer.from(new Uint8Array(ex.memory.buffer, gp, n * 52)); // PreGlyph=52B
-process.stdout.write(runs);
+const bn = ex.tb_box_count(bl);
+const bp = ex.tb_box_ptr(bl);
+// Snapshot glyphs (52B) then boxes (48B) — same order blitz_dump writes TE_RUNS,
+// so the cross-target byte-diff covers the whole layout.
+const glyphs = Buffer.from(new Uint8Array(ex.memory.buffer, gp, n * 52));
+const boxes = Buffer.from(new Uint8Array(ex.memory.buffer, bp, bn * 48));
+process.stdout.write(glyphs);
+process.stdout.write(boxes);
 ex.tb_free_layout(bl);
 ex.tb_destroy(sess);

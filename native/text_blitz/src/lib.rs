@@ -42,6 +42,26 @@ pub struct TbGlyph {
     pub rot: f32, // glyph rotation, radians (vertical rotated forms; 0 = upright)
 }
 
+/// One filled background box (an element's `background-color` + `border-radius`).
+/// Byte-identical to `text_engine::BoxQuad` (48 bytes), drawn behind the glyphs.
+/// Rect is the border box in output px; radii are per-corner (tl,tr,br,bl), px.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TbBox {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+    pub r_tl: f32,
+    pub r_tr: f32,
+    pub r_br: f32,
+    pub r_bl: f32,
+}
+
 /// A reusable layout session: holds the registered font set (a [`FontContext`]
 /// with system fonts disabled) and the blob-id → faceId map. Cloned per layout
 /// so each document gets a fresh, independent style/layout state.
@@ -145,7 +165,7 @@ impl Session {
     /// the parley/CSS scale, so we divide them back. Both, then `× zoom`, put
     /// everything in one consistent output-pixel space (mirrors how blitz-paint
     /// composes `box_position*scale + glyph.x`).
-    pub fn layout(&self, html: &str, width: u32, height: u32, zoom: f32) -> Vec<TbGlyph> {
+    pub fn layout(&self, html: &str, width: u32, height: u32, zoom: f32) -> (Vec<TbGlyph>, Vec<TbBox>) {
         let z = if zoom > 0.0 { zoom } else { 1.0 };
         // CSS viewport = target / zoom: a larger zoom means fewer CSS px span the
         // target, so the same content renders larger.
@@ -165,7 +185,9 @@ impl Session {
         };
         let mut doc = HtmlDocument::from_html(html, config);
         doc.resolve(0.0); // Stylo cascade + Taffy layout + parley shaping
-        self.collect_glyphs(&doc, z, win_w as f32, win_h as f32)
+        let glyphs = self.collect_glyphs(&doc, z, win_w as f32, win_h as f32);
+        let boxes = collect_boxes(&doc, z);
+        (glyphs, boxes)
     }
 
     fn collect_glyphs(&self, doc: &BaseDocument, zoom: f32, win_w: f32, win_h: f32) -> Vec<TbGlyph> {
@@ -466,13 +488,67 @@ fn node_rgba(doc: &BaseDocument, node_id: usize) -> (f32, f32, f32, f32) {
     (1.0, 1.0, 1.0, 1.0)
 }
 
+/// Collect element background fills (`background-color` + `border-radius`) as
+/// [`TbBox`]es in document order (so a child's background paints over its
+/// parent's, and all of them behind the text). Border-box rect = the element's
+/// absolute position + size; radii resolve against the box (circular: horizontal
+/// radius). Transparent backgrounds (alpha 0, the default) are skipped. Only
+/// solid colors — gradients / images / borders aren't handled.
+fn collect_boxes(doc: &BaseDocument, zoom: f32) -> Vec<TbBox> {
+    use style::values::computed::Length;
+    let mut out = Vec::new();
+    for (_id, node) in doc.tree().iter() {
+        if !node.is_element() {
+            continue;
+        }
+        let Some(styles) = node.primary_styles() else { continue };
+        // background-color → absolute sRGB (currentColor resolves against `color`).
+        let cur = styles.clone_color();
+        let abs = styles
+            .get_background()
+            .background_color
+            .resolve_to_absolute(&cur)
+            .to_color_space(style::color::ColorSpace::Srgb);
+        let k = abs.raw_components();
+        if k[3] <= 0.0 {
+            continue; // transparent → nothing to paint
+        }
+        let sz = node.final_layout.size;
+        if sz.width <= 0.0 || sz.height <= 0.0 {
+            continue;
+        }
+        let p = node.absolute_position(0.0, 0.0);
+        // border-radius: circular, horizontal component resolved against width.
+        let bd = styles.get_border();
+        let rad = |c: &style::values::computed::BorderCornerRadius| {
+            c.0.width.0.resolve(Length::new(sz.width)).px() * zoom
+        };
+        out.push(TbBox {
+            x: p.x * zoom,
+            y: p.y * zoom,
+            w: sz.width * zoom,
+            h: sz.height * zoom,
+            r: k[0],
+            g: k[1],
+            b: k[2],
+            a: k[3],
+            r_tl: rad(&bd.border_top_left_radius),
+            r_tr: rad(&bd.border_top_right_radius),
+            r_br: rad(&bd.border_bottom_right_radius),
+            r_bl: rad(&bd.border_bottom_left_radius),
+        });
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // C ABI — opaque Session/LayoutResult handles; the host owns their lifetimes.
 // ---------------------------------------------------------------------------
 
-/// Owns a laid-out glyph buffer until the host frees it.
+/// Owns a laid-out glyph + background-box buffer until the host frees it.
 pub struct LayoutResult {
     glyphs: Vec<TbGlyph>,
+    boxes: Vec<TbBox>,
 }
 
 /// Allocate `n` bytes of wasm linear memory for the host to fill (html/font
@@ -552,8 +628,8 @@ pub extern "C" fn tb_layout(
     let Ok(html_str) = std::str::from_utf8(hb) else {
         return std::ptr::null_mut();
     };
-    let glyphs = session.layout(html_str, w, h, scale);
-    Box::into_raw(Box::new(LayoutResult { glyphs }))
+    let (glyphs, boxes) = session.layout(html_str, w, h, scale);
+    Box::into_raw(Box::new(LayoutResult { glyphs, boxes }))
 }
 
 #[no_mangle]
@@ -572,6 +648,25 @@ pub extern "C" fn tb_glyph_ptr(r: *const LayoutResult) -> *const TbGlyph {
         return std::ptr::null();
     }
     unsafe { (*r).glyphs.as_ptr() }
+}
+
+/// Number of background boxes in the layout (drawn behind the glyphs).
+#[no_mangle]
+pub extern "C" fn tb_box_count(r: *const LayoutResult) -> i32 {
+    if r.is_null() {
+        return 0;
+    }
+    unsafe { (*r).boxes.len() as i32 }
+}
+
+/// Pointer to the contiguous `TbBox` array (48 bytes each), valid until
+/// tb_free_layout. The host forwards these to the engine as BoxQuads.
+#[no_mangle]
+pub extern "C" fn tb_box_ptr(r: *const LayoutResult) -> *const TbBox {
+    if r.is_null() {
+        return std::ptr::null();
+    }
+    unsafe { (*r).boxes.as_ptr() }
 }
 
 #[no_mangle]

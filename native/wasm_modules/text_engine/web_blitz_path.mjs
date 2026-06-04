@@ -89,10 +89,14 @@ const html = readFileSync(htmlPath);
 const bl = blz.tb_layout(sess, blzPut(html), html.length, W, H, 1.0);
 const n = blz.tb_glyph_count(bl);
 const gp = blz.tb_glyph_ptr(bl);
+const bn = blz.tb_box_count(bl);
+const bp = blz.tb_box_ptr(bl);
 const runs = blzU8().slice(gp, gp + n * 52);        // copy out before any realloc (PreGlyph=52B)
+const boxBytes = blzU8().slice(bp, bp + bn * 48);   // BoxQuad=48B
 const rp = engPut(runs);
-const id = eng.te_layout_glyphs(rp, n);
-eng.free(rp);
+const bxp = bn > 0 ? engPut(boxBytes) : 0;
+const id = eng.te_layout_glyphs(rp, n, bxp, bn);
+eng.free(rp); if (bxp) eng.free(bxp);
 if (id <= 0) { console.error('te_layout_glyphs failed'); process.exit(1); }
 
 // Composite over the full viewport (origin 0,0).

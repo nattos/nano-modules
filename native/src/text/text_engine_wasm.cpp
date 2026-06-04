@@ -82,11 +82,15 @@ int te_layout(const char* spec, int len) {
   return Engine::instance().layout(spec, len);
 }
 
-// Lay out PRE-SHAPED glyph runs from the Blitz layout wasm (text_blitz). `ptr`
-// points at a packed array of `count` text_engine::PreGlyph records (48 bytes
-// each) the host wrote into engine memory; returns a layoutId (>0) or 0.
-int te_layout_glyphs(const void* ptr, int count) {
-  return Engine::instance().layoutGlyphs((const text_engine::PreGlyph*)ptr, count);
+// Lay out PRE-SHAPED glyph runs from the Blitz layout wasm (text_blitz).
+// `ptr`/`count` is a packed array of text_engine::PreGlyph records; `boxPtr`/
+// `boxCount` is a packed array of text_engine::BoxQuad background fills (may be
+// 0/0). Both were written into engine memory by the host. Returns a layoutId
+// (>0) or 0.
+int te_layout_glyphs(const void* ptr, int count, const void* boxPtr, int boxCount) {
+  return Engine::instance().layoutGlyphs(
+      (const text_engine::PreGlyph*)ptr, count,
+      (const text_engine::BoxQuad*)boxPtr, boxCount);
 }
 
 int te_measure(int id, void* out_metrics) {
@@ -113,6 +117,16 @@ int te_glyphs(int id, void* out, int out_bytes) {
   int max_count = out_bytes / (int)sizeof(text_engine::GlyphQuad);
   if (max_count <= 0) return 0;
   return Engine::instance().glyphs(id, (text_engine::GlyphQuad*)out, max_count);
+}
+
+int te_box_count(int id) {
+  return Engine::instance().boxCount(id);
+}
+
+int te_boxes(int id, void* out, int out_bytes) {
+  int max_count = out_bytes / (int)sizeof(text_engine::BoxQuad);
+  if (max_count <= 0) return 0;
+  return Engine::instance().boxes(id, (text_engine::BoxQuad*)out, max_count);
 }
 
 void te_release(int id) {

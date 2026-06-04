@@ -55,6 +55,19 @@ struct GlyphQuad {
   float _r0, _r1, _r2;    // reserved (keeps the struct 16-byte aligned)
 };
 
+// One filled background box from the external layout engine (Blitz: an element's
+// `background-color` + `border-radius`). Already in layout-box px, drawn BEHIND
+// the glyphs (painter order = the order emitted, i.e. document order, so a child
+// background sits over its parent's). The same POD is the engine's input AND its
+// GPU draw record (no atlas needed): 48 bytes = 3 vec4 for storage-buffer
+// alignment. Radii are per-corner (top-left, top-right, bottom-right, bottom-left),
+// circular, in px; the SDF fill clamps each to half the box. a=0 → skip.
+struct BoxQuad {
+  float x, y, w, h;                  // border-box rect, layout-box px
+  float r, g, b, a;                  // background color (linear)
+  float r_tl, r_tr, r_br, r_bl;      // corner radii, px
+};
+
 // One PRE-SHAPED glyph from an external layout/shaping engine (the Blitz path:
 // Stylo + Taffy + parley/harfrust). The external engine owns wrapping, shaping
 // and positioning; the text engine only rasterizes by GID and emits quads, so
@@ -135,13 +148,18 @@ public:
   // and emits one GlyphQuad per visible glyph — reusing the SAME atlas, page
   // policy and quad math as layout(). Deterministic given the same glyphs +
   // fonts, so it stays byte-parity across native/wasm. Returns an opaque
-  // layoutId (>0) or 0 on error.
-  int  layoutGlyphs(const PreGlyph* glyphs, int count);
+  // layoutId (>0) or 0 on error. `boxes`/`boxCount` are the element background
+  // fills (may be null/0); they are stored verbatim and drawn behind the glyphs.
+  int  layoutGlyphs(const PreGlyph* glyphs, int count,
+                    const BoxQuad* boxes = nullptr, int boxCount = 0);
 
   bool measure(int layout_id, Metrics& out) const;
   int  glyphCount(int layout_id) const;
   // Copies up to max_count quads into `out`; returns the number written.
   int  glyphs(int layout_id, GlyphQuad* out, int max_count) const;
+  // Background boxes (drawn behind the glyphs): count + copy-out, same pattern.
+  int  boxCount(int layout_id) const;
+  int  boxes(int layout_id, BoxQuad* out, int max_count) const;
   void release(int layout_id);
 
   // --- CPU reference compositor ---

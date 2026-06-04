@@ -36,8 +36,14 @@ TbLayout* tb_layout(TbSession* s, const unsigned char* html, int len,
                     unsigned w, unsigned h, float scale);
 
 int                          tb_glyph_count(const TbLayout* r);
-// The run records ARE text_engine::PreGlyph (48 bytes each).
+// The run records ARE text_engine::PreGlyph.
 const text_engine::PreGlyph* tb_glyph_ptr(const TbLayout* r);
+
+// Background fills (element background-color + border-radius), drawn behind the
+// glyphs. The records ARE text_engine::BoxQuad, fed straight to layoutGlyphs.
+int                          tb_box_count(const TbLayout* r);
+const text_engine::BoxQuad*  tb_box_ptr(const TbLayout* r);
+
 void                         tb_free_layout(TbLayout* r);
 
 // Web-only helpers (host writes html/font bytes into wasm memory). Unused

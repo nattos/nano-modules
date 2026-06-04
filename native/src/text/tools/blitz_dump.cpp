@@ -28,6 +28,8 @@
 
 static_assert(sizeof(text_engine::PreGlyph) == 52,
               "PreGlyph must be 52 bytes to match Rust TbGlyph");
+static_assert(sizeof(text_engine::BoxQuad) == 48,
+              "BoxQuad must be 48 bytes to match Rust TbBox");
 
 static std::vector<uint8_t> readFile(const char* path) {
   std::vector<uint8_t> out;
@@ -99,15 +101,20 @@ int main(int argc, char** argv) {
   if (!bl) { std::fprintf(stderr, "tb_layout failed\n"); return 1; }
   int runCount = tb_glyph_count(bl);
   const text_engine::PreGlyph* runs = tb_glyph_ptr(bl);
+  int boxCount = tb_box_count(bl);
+  const text_engine::BoxQuad* boxes = tb_box_ptr(bl);
 
-  // Raw run buffer for cross-target (native lib vs wasm lib) byte parity.
+  // Raw run buffer for cross-target (native lib vs wasm lib) byte parity. Glyphs
+  // then boxes, so the wasm runner can diff the whole layout.
   if (const char* rp = std::getenv("TE_RUNS")) {
     if (FILE* rf = std::fopen(rp, "wb")) {
-      std::fwrite(runs, sizeof(text_engine::PreGlyph), runCount, rf); std::fclose(rf);
+      std::fwrite(runs, sizeof(text_engine::PreGlyph), runCount, rf);
+      std::fwrite(boxes, sizeof(text_engine::BoxQuad), boxCount, rf);
+      std::fclose(rf);
     }
   }
 
-  int id = eng.layoutGlyphs(runs, runCount);
+  int id = eng.layoutGlyphs(runs, runCount, boxes, boxCount);
   if (id <= 0) { std::fprintf(stderr, "layoutGlyphs failed\n"); return 1; }
 
   text_engine::Metrics m; eng.measure(id, m);
@@ -133,9 +140,9 @@ int main(int argc, char** argv) {
     if (FILE* rf = std::fopen(rp, "wb")) { std::fwrite(img.data(), 1, img.size(), rf); std::fclose(rf); }
   }
 
-  std::printf("{\"runs\":%d,\"glyphs\":%d,\"pages\":%d,"
+  std::printf("{\"runs\":%d,\"boxes\":%d,\"glyphs\":%d,\"pages\":%d,"
               "\"width\":%.3f,\"height\":%.3f,\"atlas\":%u,\"composite\":%u}\n",
-              runCount, count, eng.atlasPageCount(), m.width, m.height, hash, chash);
+              runCount, boxCount, count, eng.atlasPageCount(), m.width, m.height, hash, chash);
 
   tb_free_layout(bl);
   tb_destroy(sess);

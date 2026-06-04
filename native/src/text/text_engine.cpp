@@ -282,6 +282,7 @@ struct GlyphInfo {
 
 struct LayoutData {
   std::vector<GlyphQuad> quads;
+  std::vector<BoxQuad> boxes;   // background fills, drawn behind the glyphs
   Metrics metrics;
 };
 
@@ -731,11 +732,16 @@ int Engine::layout(const char* spec_json, int len) {
   return id;
 }
 
-int Engine::layoutGlyphs(const PreGlyph* glyphs, int count) {
-  if (!impl_->font_loaded || count < 0) return 0;
+int Engine::layoutGlyphs(const PreGlyph* glyphs, int count,
+                         const BoxQuad* boxes, int boxCount) {
+  if (!impl_->font_loaded || count < 0 || boxCount < 0) return 0;
   if (count > 0 && !glyphs) return 0;
+  if (boxCount > 0 && !boxes) return 0;
 
   LayoutData ld;
+  // Background boxes are pre-positioned in layout px; store verbatim (drawn
+  // behind the glyphs in emission/document order).
+  if (boxCount > 0) ld.boxes.assign(boxes, boxes + boxCount);
   // The external engine already positioned every glyph; we only rasterize each
   // (face, gid) tile and place a quad. Metrics are derived from the glyph
   // extents (the external box origin is the layout-box origin).
@@ -795,6 +801,17 @@ int Engine::glyphs(int id, GlyphQuad* out, int max_count) const {
   std::memcpy(out, it->second.quads.data(), (size_t)n * sizeof(GlyphQuad));
   return n;
 }
+int Engine::boxCount(int id) const {
+  auto it = impl_->layouts.find(id);
+  return it == impl_->layouts.end() ? 0 : (int)it->second.boxes.size();
+}
+int Engine::boxes(int id, BoxQuad* out, int max_count) const {
+  auto it = impl_->layouts.find(id);
+  if (it == impl_->layouts.end() || !out || max_count <= 0) return 0;
+  int n = (int)it->second.boxes.size(); if (n > max_count) n = max_count;
+  std::memcpy(out, it->second.boxes.data(), (size_t)n * sizeof(BoxQuad));
+  return n;
+}
 void Engine::release(int id) { impl_->layouts.erase(id); }
 
 // Bilinearly sample one channel of a page (clamp-to-edge), matching GPU linear
@@ -823,6 +840,26 @@ static float msdfCoverage(const uint8_t* page, float au, float av, float screenP
   return dist < 0 ? 0 : (dist > 1 ? 1 : dist);
 }
 
+// Signed distance (px) from `p` to a rounded box centered at `c` with half-size
+// `h` and per-corner radii (tl,tr,br,bl). Negative inside. The radius for the
+// point's quadrant is selected and clamped to the smaller half-extent (CSS-style),
+// so an over-large radius degrades to a pill/circle instead of inverting.
+static inline float sdRoundBox(float px, float py, float cx, float cy,
+                               float hx, float hy,
+                               float rtl, float rtr, float rbr, float rbl) {
+  float dx = px - cx, dy = py - cy;
+  float r = (dx > 0.0f) ? ((dy < 0.0f) ? rtr : rbr)
+                        : ((dy < 0.0f) ? rtl : rbl);
+  float rmax = hx < hy ? hx : hy;
+  if (r > rmax) r = rmax; if (r < 0.0f) r = 0.0f;
+  float qx = std::fabs(dx) - hx + r;
+  float qy = std::fabs(dy) - hy + r;
+  float ax = qx > 0.0f ? qx : 0.0f, ay = qy > 0.0f ? qy : 0.0f;
+  float outside = std::sqrt(ax * ax + ay * ay);
+  float inside = std::min(std::max(qx, qy), 0.0f);
+  return outside + inside - r;
+}
+
 bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
                        const uint8_t* bg, uint8_t* out) const {
   auto it = impl_->layouts.find(id);
@@ -830,6 +867,34 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
   size_t bytes = (size_t)outW * outH * 4;
   if (bg) std::memcpy(out, bg, bytes);
   else for (size_t i = 0; i < bytes; i += 4) { out[i]=out[i+1]=out[i+2]=0; out[i+3]=255; }
+
+  // Background boxes first (behind the glyphs), in stored (document) order. A 1px
+  // SDF edge gives the same antialiasing the GPU compositor uses.
+  for (const BoxQuad& b : it->second.boxes) {
+    if (b.a <= 0.0f || b.w <= 0.0f || b.h <= 0.0f) continue;
+    float bx = b.x + originX, by = b.y + originY;
+    float cx = bx + b.w * 0.5f, cy = by + b.h * 0.5f;
+    float hx = b.w * 0.5f, hy = b.h * 0.5f;
+    int x0 = (int)std::floor(bx) - 1, y0 = (int)std::floor(by) - 1;
+    int x1 = (int)std::ceil(bx + b.w) + 1, y1 = (int)std::ceil(by + b.h) + 1;
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+    if (x1 > outW) x1 = outW; if (y1 > outH) y1 = outH;
+    for (int py = y0; py < y1; py++) {
+      for (int px = x0; px < x1; px++) {
+        float sd = sdRoundBox(px + 0.5f, py + 0.5f, cx, cy, hx, hy,
+                              b.r_tl, b.r_tr, b.r_br, b.r_bl);
+        float cov = 0.5f - sd; cov = cov < 0.0f ? 0.0f : (cov > 1.0f ? 1.0f : cov);
+        float a = cov * b.a;
+        if (a <= 0.0f) continue;
+        uint8_t* d = &out[((size_t)py * outW + px) * 4];
+        float inv = 1.0f - a;
+        d[0]=(uint8_t)(b.r*255.0f*a + d[0]*inv + 0.5f);
+        d[1]=(uint8_t)(b.g*255.0f*a + d[1]*inv + 0.5f);
+        d[2]=(uint8_t)(b.b*255.0f*a + d[2]*inv + 0.5f);
+        d[3]=(uint8_t)(a*255.0f + d[3]*inv + 0.5f);
+      }
+    }
+  }
 
   bool msdf = it->second.metrics.atlas_kind == (int)AtlasKind::MSDF;
   float pxRange = it->second.metrics.atlas_px_range;

@@ -38,7 +38,7 @@ fn main() {
 
     let mut session = Session::new();
     session.add_font(None, 0, false, font_bytes); // faceId 0, all generics
-    let glyphs = session.layout(&html, 800, 600, 1.0);
+    let (glyphs, boxes) = session.layout(&html, 800, 600, 1.0);
 
     for g in &glyphs {
         let synth = if g.skew != 0.0 || g.embolden != 0.0 { "  [synth]" } else { "" };
@@ -47,5 +47,11 @@ fn main() {
             g.gid, g.cp, g.size, g.x, g.y, g.r, g.g, g.b, g.a, synth,
         );
     }
-    eprintln!("--- glyphs: {} ---", glyphs.len());
+    for b in &boxes {
+        println!(
+            "box @ ({:>7.2},{:>7.2}) {:>7.2}x{:>7.2}  rgba({:.2},{:.2},{:.2},{:.2})  r({:.1},{:.1},{:.1},{:.1})",
+            b.x, b.y, b.w, b.h, b.r, b.g, b.b, b.a, b.r_tl, b.r_tr, b.r_br, b.r_bl,
+        );
+    }
+    eprintln!("--- glyphs: {}  boxes: {} ---", glyphs.len(), boxes.len());
 }
