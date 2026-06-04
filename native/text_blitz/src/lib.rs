@@ -169,10 +169,14 @@ impl Session {
     }
 
     fn collect_glyphs(&self, doc: &BaseDocument, zoom: f32, win_w: f32, win_h: f32) -> Vec<TbGlyph> {
-        // Blitz emits taffy block positions at this multiple of the parley/CSS
-        // scale (empirically 2× with hidpi_scale=1); divide block coords by it so
-        // they share the glyph/CSS coordinate space. Pinned deps → stable.
-        const BLOCK_DEVICE: f32 = 2.0;
+        // Coordinate model: with the viewport at hidpi_scale=1 and zoom=1, taffy
+        // lays everything out in CSS px (1×) — absolute_position() is the ABSOLUTE
+        // border-box top-left, final_layout.size is the border-box size. An inline
+        // root's glyphs (parley offsets) are relative to its CONTENT box, whose
+        // absolute origin is `absolute_position + border.left/top + padding.left/top`
+        // (the node's own insets). So glyph_out = (content_origin + parley_offset)
+        // × zoom — one coherent frame, no fudge factor. (`zoom` then magnifies into
+        // the output texture; viewport was built at win = target/zoom.)
         let mut out = Vec::new();
         let mut handled: HashSet<usize> = HashSet::new();
 
@@ -190,19 +194,16 @@ impl Session {
             if pend.is_empty() {
                 continue;
             }
-            let origin = cnode.absolute_position(0.0, 0.0);
-            let bx = (origin.x + cnode.final_layout.content_box_x()) / BLOCK_DEVICE;
-            let by = (origin.y + cnode.final_layout.content_box_y()) / BLOCK_DEVICE;
+            let (bx, by) = content_origin(cnode);
             // Column extents come from the VIEWPORT (deterministic, computed here)
-            // + the container's POSITION (bx/by), NOT taffy SIZES: blitz-dom
-            // -alpha.4's content_box_width/height for this element diverge native↔
-            // wasm (the device scale leaks into sizes inconsistently) AND are wrong
-            // anyway (it lays the vertical div out as a single horizontal line). We
-            // anchor the column block at the container's top-left and let it fill to
-            // the mirrored bottom/edge inset — correct for full-bleed headline text
-            // and identical on both targets. (Explicit container width/height can't
-            // be honored in vertical mode with this blitz version regardless.)
-            let avail_h = (win_h - 2.0 * by).max(1.0);            let mut col_near = if is_lr { bx } else { win_w - bx };
+            // + the container's content origin (bx/by). We don't use the vertical
+            // container's taffy SIZE: blitz-dom-alpha.4 lays a vertical-rl div out
+            // as a single horizontal line, so its height is wrong; we anchor the
+            // column block at the container's top-left and fill to the mirrored
+            // bottom/edge inset — correct for full-bleed headline text. (Explicit
+            // container width/height can't be honored in vertical mode regardless.)
+            let avail_h = (win_h - 2.0 * by).max(1.0);
+            let mut col_near = if is_lr { bx } else { win_w - bx };
             let mut y = by;
             let mut col_em = 0.0_f32;
             for p in &pend {
@@ -241,9 +242,7 @@ impl Session {
             if !node.flags.is_inline_root() || handled.contains(&nid) {
                 continue;
             }
-            let origin = node.absolute_position(0.0, 0.0);
-            let bx = (origin.x + node.final_layout.content_box_x()) / BLOCK_DEVICE;
-            let by = (origin.y + node.final_layout.content_box_y()) / BLOCK_DEVICE;
+            let (bx, by) = content_origin(node);
             let mut pend: Vec<Pend> = Vec::new();
             self.collect_inline_pend(doc, node, &mut pend);
             for p in &pend {
@@ -310,6 +309,19 @@ impl Session {
             }
         }
     }
+}
+
+/// Absolute CSS-px origin of a node's CONTENT box (top-left), = its absolute
+/// border-box position plus its own left/top border + padding. parley glyph
+/// offsets are relative to this. (taffy's content_box_x/y are parent-relative, so
+/// they can't be added to the absolute position — that was the old coordinate bug.)
+fn content_origin(node: &Node) -> (f32, f32) {
+    let p = node.absolute_position(0.0, 0.0);
+    let fl = &node.final_layout;
+    (
+        p.x + fl.border.left + fl.padding.left,
+        p.y + fl.border.top + fl.padding.top,
+    )
 }
 
 /// Rotation (radians) applied to a glyph in vertical text. 90° clockwise on
