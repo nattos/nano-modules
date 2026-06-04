@@ -97,6 +97,10 @@ impl Session {
             font_ctx: Some(self.ctx.clone()),
             // Identical (no-rayon) path native & wasm → deterministic output.
             style_threading: StyleThreading::Sequential,
+            // Default text to white: the engine composites over an opaque-black
+            // canvas, so the CSS/UA default (black) would render invisibly. This
+            // is a UA-origin rule, so any author `color:` still wins.
+            ua_stylesheets: Some(vec![":root{color:#fff}".to_string()]),
             ..Default::default()
         };
         let mut doc = HtmlDocument::from_html(html, config);
