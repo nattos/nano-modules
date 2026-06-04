@@ -66,14 +66,29 @@ clang++ -std=c++17 -fno-exceptions -fno-rtti -O2 \
 
 echo "[3/4] native: HTML → Blitz → engine → PNG"
 export TE_FONT="$FONT" TE_FALLBACK="$FALLBACK"
-TE_PNG="$OUT/blitz_native.png" TE_RUNS=/tmp/blitz_native.runs /tmp/blitz_dump "$HTML" > /tmp/blitz_native.json
+TE_PNG="$OUT/blitz_native.png" TE_RUNS=/tmp/blitz_native.runs TE_RAW=/tmp/blitz_native.raw \
+  /tmp/blitz_dump "$HTML" > /tmp/blitz_native.json
 cat /tmp/blitz_native.json
 echo "  PNG: $OUT/blitz_native.png"
 
-echo "[4/4] wasm run parity (text_blitz.wasm) — runs must be byte-identical"
+echo "[4/5] wasm run parity (text_blitz.wasm) — runs must be byte-identical"
 TE_FONT="$FONT" TE_FALLBACK="$FALLBACK" node run_blitz_wasm.mjs "$HTML" > /tmp/blitz_wasm.runs
 if cmp -s /tmp/blitz_native.runs /tmp/blitz_wasm.runs; then
   echo "✅ BLITZ RUN PARITY: native lib == wasm lib (byte-identical pre-shaped runs)"
 else
   echo "❌ run buffers differ:"; cmp -l /tmp/blitz_native.runs /tmp/blitz_wasm.runs | head; exit 1
 fi
+
+echo "[5/5] web-path pixel parity — text_blitz.wasm + text_engine.wasm (as the worker)"
+[ -f "$ROOT/build/wasm/text_engine.wasm" ] || bash build.sh >/dev/null 2>&1
+TE_FONT="$FONT" TE_FALLBACK="$FALLBACK" TE_RAW=/tmp/blitz_web.raw node web_blitz_path.mjs "$HTML" | sed 's/^/  web: /'
+# Tolerant compare to the native composite (bilinear float math differs a few
+# LSB across toolchains — perceptual, not byte, parity; same rule as the JSON path).
+node -e '
+  import("node:fs").then(fs=>{
+    const a=fs.readFileSync("/tmp/blitz_native.raw"), b=fs.readFileSync("/tmp/blitz_web.raw"), TOL=4;
+    if(a.length!==b.length){console.error("  composite size mismatch");process.exit(1);}
+    let max=0,nz=0; for(let k=0;k<a.length;k++){const d=Math.abs(a[k]-b[k]); if(d){nz++; if(d>max)max=d;}}
+    if(max>TOL){console.error(`  ❌ composite exceeds tol: maxΔ=${max}`);process.exit(1);}
+    console.log(`  ✅ WEB-PATH PIXEL PARITY: web composite ≈ native (maxΔ=${max}, ${nz} bytes)`);
+  });'
