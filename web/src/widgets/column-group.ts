@@ -78,7 +78,10 @@ function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
     case 1: // event
       return { type: 'button', label: p.name, path: p.name, text: p.name };
     case 100: // text
-      return { type: 'string', label: p.name, path: p.name };
+      // HTML/CSS fields (gen.richtext) get a multi-line editor so a whole
+      // document can be pasted/edited; other text fields stay single-line.
+      return { type: 'string', label: p.name, path: p.name,
+               multiline: /^(html|css)$/i.test(p.name) };
     default: // 10=standard, 11=option, 13=integer
       return {
         type: 'slider',

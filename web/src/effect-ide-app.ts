@@ -41,6 +41,7 @@ async function main() {
   appController.loadModule('com.nattos.testonly');
   appController.loadModule('com.nano.lights');
   appController.loadModule('com.nattos.text');
+  appController.loadModule('com.nattos.richtext');   // gen.richtext (Blitz HTML/CSS)
 }
 
 main();

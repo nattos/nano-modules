@@ -31,7 +31,7 @@ import './field-color';
 // --- Field definitions ---
 
 export type InspectorFieldDef =
-  | { type: 'string'; label: string; path: string; placeholder?: string; default?: string }
+  | { type: 'string'; label: string; path: string; placeholder?: string; default?: string; multiline?: boolean }
   | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number }
   | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number }
   | { type: 'boolean'; label: string; path: string; default?: boolean }
@@ -58,6 +58,7 @@ const renderString = (binding: FieldBinding, f: Extract<InspectorFieldDef, { typ
     .label=${f.label}
     .placeholder=${f.placeholder ?? ''}
     .defaultValue=${f.default ?? ''}
+    .multiline=${f.multiline ?? false}
     .binding=${binding}
   ></field-text>
 `;

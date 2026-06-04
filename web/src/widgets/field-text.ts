@@ -13,12 +13,15 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
   @property() label = '';
   @property() placeholder = '';
   @property() defaultValue = '';
+  // Render a multi-line <textarea> instead of a one-line <input> (e.g. for the
+  // gen.richtext HTML field, where you want to paste/edit a whole document).
+  @property({ type: Boolean }) multiline = false;
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
 
   getControlElements(): HTMLElement[] {
-    const el = this.renderRoot.querySelector('input') as HTMLElement | null;
+    const el = this.renderRoot.querySelector('input, textarea') as HTMLElement | null;
     return el ? [el] : [this];
   }
 
@@ -33,7 +36,7 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
   }
 
   private onInput(e: Event) {
-    this.binding?.setValue(this.fieldPath, (e.target as HTMLInputElement).value);
+    this.binding?.setValue(this.fieldPath, (e.target as HTMLInputElement | HTMLTextAreaElement).value);
   }
 
   static styles = css`
@@ -64,9 +67,35 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
       font-family: inherit;
     }
     input:focus { outline: none; border-color: var(--app-hi-color2, #4169E1); }
+    :host(.multiline) { align-items: flex-start; }
+    textarea {
+      flex: 1;
+      min-width: 0;
+      min-height: 96px;
+      resize: vertical;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--app-text-color1, #eaeaea);
+      border-radius: 2px;
+      padding: 3px 4px;
+      font-size: 10px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      line-height: 1.4;
+      white-space: pre;
+    }
+    textarea:focus { outline: none; border-color: var(--app-hi-color2, #4169E1); }
   `;
 
   render() {
+    if (this.multiline) {
+      // Reflect a host class so flex-start aligns the label with the box top.
+      this.classList.add('multiline');
+      return html`
+        <span class="label">${this.label}</span>
+        <textarea spellcheck="false" .value=${this.value}
+                  placeholder=${this.placeholder} @input=${this.onInput}></textarea>
+      `;
+    }
     return html`
       <span class="label">${this.label}</span>
       <input type="text" .value=${this.value} placeholder=${this.placeholder}
