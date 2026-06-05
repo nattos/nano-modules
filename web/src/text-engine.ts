@@ -78,7 +78,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bw = bq.bord.x;
     let inner = select(shape, clamp(0.5 - (sd + bw), 0.0, 1.0), bw > 0.0);
     let ring = max(shape - inner, 0.0);
-    let af = shape * bq.rgba.a * clip;
+    // Fill the padding box (inner), not the full box, so the background doesn't
+    // bleed a light fringe past the border at the outer AA edge.
+    let af = inner * bq.rgba.a * clip;
     col = bq.rgba.rgb * af + col * (1.0 - af);
     let ar = ring * bq.bcol.a * clip;
     col = bq.bcol.rgb * ar + col * (1.0 - ar);

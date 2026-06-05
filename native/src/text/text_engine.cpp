@@ -911,7 +911,10 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
         inner = inner < 0.0f ? 0.0f : (inner > 1.0f ? 1.0f : inner);
         float ring = shape - inner; if (ring < 0.0f) ring = 0.0f;
         uint8_t* d = &out[((size_t)py * outW + px) * 4];
-        float aF = shape * b.a * clip;
+        // Fill the PADDING box (inner), not the full box: the border owns the
+        // outer ring, so letting the background reach the outer AA edge would
+        // bleed a light fringe beyond the border. (border_w=0 → inner == shape.)
+        float aF = inner * b.a * clip;
         if (aF > 0.0f) {
           float inv = 1.0f - aF;
           d[0]=(uint8_t)(b.r*255.0f*aF + d[0]*inv + 0.5f);
