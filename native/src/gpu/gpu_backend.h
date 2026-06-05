@@ -71,6 +71,25 @@ public:
     (void)mipCount;
     return createTexture(w, h, format);
   }
+
+  // Optional: 2D-ARRAY texture creation (`layers` slices, all w×h, one mip),
+  // sampled as `texture2d_array` in the shader. Used by the host text
+  // compositor for the multi-page MSDF atlas. Default returns -1 (unsupported)
+  // — binding a plain 2D texture where the shader declares an array would fail
+  // validation, so misuse should be loud rather than silently wrong.
+  virtual int32_t createTextureArray(uint32_t w, uint32_t h,
+                                      int32_t format, int32_t layers) {
+    (void)w; (void)h; (void)format; (void)layers;
+    return -1;
+  }
+  // Upload tightly-packed RGBA8 (`w*h*4` bytes) into one array `layer`. No-op
+  // on backends without array support / invalid handles.
+  virtual void writeTextureLayer(int32_t textureHandle, int32_t layer,
+                                 uint32_t w, uint32_t h,
+                                 const uint8_t* bytes, uint32_t byteCount) {
+    (void)textureHandle; (void)layer; (void)w; (void)h;
+    (void)bytes; (void)byteCount;
+  }
   // Bind a SPECIFIC mip level of a multi-mip texture to a compute
   // slot. Required when one pass reads one mip and writes another of
   // the same texture (the default sampled view spans all mips and

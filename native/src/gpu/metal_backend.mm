@@ -85,6 +85,43 @@ public:
     return alloc(ResourceType::Texture, tex);
   }
 
+  int32_t createTextureArray(uint32_t w, uint32_t h,
+                             int32_t format, int32_t layers) override {
+    MTLPixelFormat pf;
+    switch (format) {
+      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
+      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
+      case 3:  pf = MTLPixelFormatRGBA16Float; break;
+      case 4:  pf = MTLPixelFormatR32Float;    break;
+      default: pf = MTLPixelFormatRGBA8Unorm;  break;
+    }
+    MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
+    desc.textureType = MTLTextureType2DArray;
+    desc.width = w;
+    desc.height = h;
+    desc.arrayLength = layers > 0 ? (NSUInteger)layers : 1;
+    desc.pixelFormat = pf;
+    desc.usage = MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModeShared;  // CPU per-layer upload
+    id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
+    if (!tex) return -1;
+    return alloc(ResourceType::Texture, tex);
+  }
+
+  void writeTextureLayer(int32_t textureHandle, int32_t layer,
+                         uint32_t w, uint32_t h,
+                         const uint8_t* bytes, uint32_t byteCount) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (!tex || !bytes) return;
+    if (byteCount < w * h * 4) return;
+    [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
+           mipmapLevel:0
+                 slice:(NSUInteger)layer
+             withBytes:bytes
+           bytesPerRow:w * 4
+         bytesPerImage:(NSUInteger)w * h * 4];
+  }
+
   int32_t createComputePSO(int32_t shaderHandle, const std::string& entryPoint) override {
     @autoreleasepool {
       id<MTLLibrary> lib = getAs<id<MTLLibrary>>(shaderHandle);

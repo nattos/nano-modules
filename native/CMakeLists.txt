@@ -477,15 +477,79 @@ if(APPLE)
   set(EFFECTS_NATIVE_TMP "${CMAKE_SOURCE_DIR}/build/tmp")
   set(EFFECTS_NATIVE_INC "${CMAKE_SOURCE_DIR}/wasm_modules/include")
 
+  # ==========================================================================
+  # Shared text engine (FreeType + msdfgen + libunibreak) — the pure-CPU
+  # engine behind the text.* host service. Compiled here as a static lib (the
+  # SAME source also builds to text_engine.wasm for the web host). The vendored
+  # snapshots live under third_party/; fetch them at configure time if absent.
+  # ==========================================================================
+  set(TEXT_TP "${CMAKE_SOURCE_DIR}/third_party")
+  if(NOT EXISTS "${TEXT_TP}/freetype")
+    message(STATUS "text_engine: fetching vendored deps (FreeType/msdfgen/...)")
+    execute_process(COMMAND bash "${TEXT_TP}/fetch_deps.sh"
+                    WORKING_DIRECTORY "${TEXT_TP}")
+  endif()
+
+  set(FT_SRCS base/ftbase base/ftinit base/ftsystem base/ftdebug base/ftbitmap
+      base/ftmm sfnt/sfnt truetype/truetype psnames/psnames cff/cff psaux/psaux
+      pshinter/pshinter)
+  set(MSDF_SRCS Contour DistanceMapping EdgeHolder MSDFErrorCorrection Projection
+      Scanline Shape contour-combiners edge-coloring edge-segments edge-selectors
+      equation-solver msdf-error-correction msdfgen rasterization render-sdf
+      sdf-error-estimation shape-description)
+  set(UB_SRCS linebreak linebreakdata linebreakdef unibreakbase unibreakdef
+      eastasianwidthdef eastasianwidthdata)
+  set(TEXT_ENGINE_SRCS src/text/text_engine.cpp)
+  foreach(s ${FT_SRCS})
+    list(APPEND TEXT_ENGINE_SRCS "${TEXT_TP}/freetype/src/${s}.c")
+  endforeach()
+  foreach(c ${MSDF_SRCS})
+    list(APPEND TEXT_ENGINE_SRCS "${TEXT_TP}/msdfgen/core/${c}.cpp")
+  endforeach()
+  foreach(s ${UB_SRCS})
+    list(APPEND TEXT_ENGINE_SRCS "${TEXT_TP}/libunibreak/src/${s}.c")
+  endforeach()
+
+  add_library(text_engine STATIC ${TEXT_ENGINE_SRCS})
+  target_include_directories(text_engine PUBLIC ${CMAKE_SOURCE_DIR}/src/text)
+  target_include_directories(text_engine PRIVATE
+    "${TEXT_TP}/freetype/include" "${TEXT_TP}/ft-config"
+    "${TEXT_TP}/msdf-config" "${TEXT_TP}/msdfgen" "${TEXT_TP}/libunibreak/src")
+  target_compile_definitions(text_engine PRIVATE
+    FT2_BUILD_LIBRARY
+    FT_CONFIG_OPTIONS_H="ftoption_custom.h"
+    FT_CONFIG_MODULES_H="ftmodule_custom.h")
+  # The engine is exception/RTTI-free (matches the wasm build), keeping it
+  # deterministic and byte-parity with text_engine.wasm.
+  target_compile_options(text_engine PRIVATE -fno-exceptions -fno-rtti -O2)
+
+  # ==========================================================================
+  # text_blitz — the Rust HTML/CSS layout lib (Stylo + Taffy + parley), built
+  # to a native staticlib by cargo and imported. Drives the gen.richtext mode.
+  # ==========================================================================
+  set(TEXT_BLITZ_DIR "${CMAKE_SOURCE_DIR}/text_blitz")
+  set(TEXT_BLITZ_LIB "${TEXT_BLITZ_DIR}/target/release/libtext_blitz.a")
+  add_custom_command(
+    OUTPUT "${TEXT_BLITZ_LIB}"
+    COMMAND cargo build --release
+    WORKING_DIRECTORY "${TEXT_BLITZ_DIR}"
+    COMMENT "Building libtext_blitz.a (Rust: Stylo + Taffy + parley)"
+    VERBATIM)
+  add_custom_target(text_blitz_build DEPENDS "${TEXT_BLITZ_LIB}")
+  add_library(text_blitz STATIC IMPORTED GLOBAL)
+  set_target_properties(text_blitz PROPERTIES IMPORTED_LOCATION "${TEXT_BLITZ_LIB}")
+
   # The in-process runtime: implements every host-import C symbol the
   # effects reference. Statically linked into both the test runner CLI
   # and (Phase 3) the StreakyBlobs FFGL bundle.
   add_library(effect_runtime STATIC
     src/runtime/effect_runtime.cpp
     src/runtime/host_impls.cpp
+    src/runtime/host_impls_text.cpp
     src/runtime/gpu_impls.cpp
     src/runtime/fusion_codegen.cpp
   )
+  add_dependencies(effect_runtime text_blitz_build)
   target_include_directories(effect_runtime PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${EFFECTS_NATIVE_INC}
@@ -493,7 +557,12 @@ if(APPLE)
   )
   target_link_libraries(effect_runtime PUBLIC
     gpu_backend
+    text_engine
+    text_blitz
     nlohmann_json::nlohmann_json
+    # Rust staticlib pulls these macOS system frameworks/libs.
+    "-framework CoreFoundation" "-framework Security"
+    "-framework SystemConfiguration" "-liconv" "-lobjc"
   )
   # Suppress noise about ignored WASM-only __attribute__((import_module))
   # annotations on the effect host-import declarations.
@@ -575,6 +644,12 @@ if(APPLE)
       list(APPEND _effect_sources ${_ns_srcs})
     endif()
   endforeach()
+  # The text effects (gen.text / gen.richtext) are NOT in barrel_manifest.txt —
+  # they're backed by the text.* host service (no MSL shaders) and registered
+  # explicitly in nano_barrel_plugin.mm — so add their sources directly.
+  list(APPEND _effect_sources
+    ${CMAKE_SOURCE_DIR}/wasm_modules/text/main.cpp
+    ${CMAKE_SOURCE_DIR}/wasm_modules/richtext/main.cpp)
   list(REMOVE_DUPLICATES _effect_sources)
 
   add_library(effects_native STATIC ${_effect_sources})
