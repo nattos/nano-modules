@@ -28,8 +28,8 @@
 
 static_assert(sizeof(text_engine::PreGlyph) == 84,
               "PreGlyph must be 84 bytes to match Rust TbGlyph");
-static_assert(sizeof(text_engine::BoxQuad) == 80,
-              "BoxQuad must be 80 bytes to match Rust TbBox");
+static_assert(sizeof(text_engine::BoxQuad) == 112,
+              "BoxQuad must be 112 bytes to match Rust TbBox");
 
 static std::vector<uint8_t> readFile(const char* path) {
   std::vector<uint8_t> out;

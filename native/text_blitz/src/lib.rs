@@ -80,6 +80,16 @@ pub struct TbBox {
     pub clip_r_tr: f32,
     pub clip_r_br: f32,
     pub clip_r_bl: f32,
+    // Uniform solid border (px width + linear rgba), a ring inside the rounded
+    // edge. border_w <= 0 → none. Matches text_engine::BoxQuad (112 bytes).
+    pub border_w: f32,
+    pub _bpad0: f32,
+    pub _bpad1: f32,
+    pub _bpad2: f32,
+    pub border_r: f32,
+    pub border_g: f32,
+    pub border_b: f32,
+    pub border_a: f32,
 }
 
 /// A reusable layout session: holds the registered font set (a [`FontContext`]
@@ -592,12 +602,24 @@ fn collect_boxes(doc: &BaseDocument, zoom: f32) -> Vec<TbBox> {
             .resolve_to_absolute(&cur)
             .to_color_space(style::color::ColorSpace::Srgb);
         let k = abs.raw_components();
-        if k[3] <= 0.0 {
-            continue; // transparent → nothing to paint
-        }
         let sz = node.final_layout.size;
         if sz.width <= 0.0 || sz.height <= 0.0 {
             continue;
+        }
+        // Uniform solid border: taffy already resolved the per-side widths (px);
+        // we treat the top side as the uniform width. Color via resolve_color
+        // (handles currentColor). Per-side widths/colors aren't modeled.
+        let fl = &node.final_layout;
+        let border_w = fl.border.top;
+        let btc = styles.get_border().clone_border_top_color();
+        let bc = styles
+            .resolve_color(&btc)
+            .to_color_space(style::color::ColorSpace::Srgb);
+        let bk = bc.raw_components();
+        let has_bg = k[3] > 0.0;
+        let has_border = border_w > 0.0 && bk[3] > 0.0;
+        if !has_bg && !has_border {
+            continue; // nothing to paint
         }
         let p = node.absolute_position(0.0, 0.0);
         // border-radius: circular, horizontal component resolved against width.
@@ -622,6 +644,8 @@ fn collect_boxes(doc: &BaseDocument, zoom: f32) -> Vec<TbBox> {
             r_bl: rad(&bd.border_bottom_left_radius),
             clip_x: clip.x, clip_y: clip.y, clip_w: clip.w, clip_h: clip.h,
             clip_r_tl: clip.r_tl, clip_r_tr: clip.r_tr, clip_r_br: clip.r_br, clip_r_bl: clip.r_bl,
+            border_w: border_w * zoom, _bpad0: 0.0, _bpad1: 0.0, _bpad2: 0.0,
+            border_r: bk[0], border_g: bk[1], border_b: bk[2], border_a: bk[3],
         });
     }
     out

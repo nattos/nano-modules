@@ -18,8 +18,9 @@ const WGSL = `
 // 96-byte glyph: aux.x = atlas-array page (layer). clip/clipr = overflow:hidden
 // rounded rect (clip.z<=0 → none). ("meta" is a WGSL keyword.)
 struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32>, clip: vec4<f32>, clipr: vec4<f32> };
-// 80-byte background box: rect(x,y,w,h), rgba, radius(tl,tr,br,bl), clip+clipr.
-struct Box { rect: vec4<f32>, rgba: vec4<f32>, radius: vec4<f32>, clip: vec4<f32>, clipr: vec4<f32> };
+// 112-byte background box: rect(x,y,w,h), rgba, radius(tl,tr,br,bl), clip+clipr,
+// bord(border_w,_,_,_), bcol(border rgba) — uniform solid border ring.
+struct Box { rect: vec4<f32>, rgba: vec4<f32>, radius: vec4<f32>, clip: vec4<f32>, clipr: vec4<f32>, bord: vec4<f32>, bcol: vec4<f32> };
 struct U {
   canvas_w:u32, canvas_h:u32, glyph_count:u32, atlas_w:u32, atlas_h:u32,
   origin_x:f32, origin_y:f32, atlas_kind:u32, atlas_px_range:f32,
@@ -71,9 +72,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = vec2<f32>(bq.rect.x + u.origin_x + bq.rect.z * 0.5,
                       bq.rect.y + u.origin_y + bq.rect.w * 0.5);
     let sd = sd_round_box(p, c, vec2<f32>(bq.rect.z * 0.5, bq.rect.w * 0.5), bq.radius);
-    let bcov = clamp(0.5 - sd, 0.0, 1.0) * clip_cov(p, bq.clip, bq.clipr);
-    let ba = bcov * bq.rgba.a;
-    col = bq.rgba.rgb * ba + col * (1.0 - ba);
+    let clip = clip_cov(p, bq.clip, bq.clipr);
+    let shape = clamp(0.5 - sd, 0.0, 1.0);
+    // background fills the whole box; border = ring (SDF offset by border_w).
+    let bw = bq.bord.x;
+    let inner = select(shape, clamp(0.5 - (sd + bw), 0.0, 1.0), bw > 0.0);
+    let ring = max(shape - inner, 0.0);
+    let af = shape * bq.rgba.a * clip;
+    col = bq.rgba.rgb * af + col * (1.0 - af);
+    let ar = ring * bq.bcol.a * clip;
+    col = bq.bcol.rgb * ar + col * (1.0 - ar);
   }
   for (var i:u32 = 0u; i < u.glyph_count; i = i + 1u) {
     let g = glyphs[i];
@@ -426,7 +434,7 @@ export class TextEngine {
     const bp = blz.tb_box_ptr(bl);
     // Copy glyph runs (84B) and background boxes (80B) out of Blitz memory.
     const runs = new Uint8Array(blz.memory.buffer).slice(gp, gp + n * 84); // PreGlyph = 84 bytes
-    const boxes = new Uint8Array(blz.memory.buffer).slice(bp, bp + bn * 80); // BoxQuad = 80 bytes
+    const boxes = new Uint8Array(blz.memory.buffer).slice(bp, bp + bn * 112); // BoxQuad = 112 bytes
     blz.tb_free_layout(bl);
     const rp = this.ex.malloc(runs.length || 1);
     this.u8().set(runs, rp);
@@ -687,9 +695,9 @@ export class TextEngine {
     let boxesWritten = 0;
     let boxBytes = new Uint8Array(0);
     if (boxCount > 0) {
-      const bPtr = ex.malloc(boxCount * 80);
-      boxesWritten = ex.te_boxes(id, bPtr, boxCount * 80);
-      boxBytes = this.u8().slice(bPtr, bPtr + boxesWritten * 80);
+      const bPtr = ex.malloc(boxCount * 112);
+      boxesWritten = ex.te_boxes(id, bPtr, boxCount * 112);
+      boxBytes = this.u8().slice(bPtr, bPtr + boxesWritten * 112);
       ex.free(bPtr);
     }
 
@@ -723,7 +731,7 @@ export class TextEngine {
     const cw = target.width, ch = target.height;
     const glyphBuf = device.createBuffer({ size: Math.max(96, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(glyphBuf, 0, glyphBytes);
-    const boxBuf = device.createBuffer({ size: Math.max(80, boxBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const boxBuf = device.createBuffer({ size: Math.max(112, boxBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(boxBuf, 0, boxBytes);
 
     const uni = new ArrayBuffer(48);

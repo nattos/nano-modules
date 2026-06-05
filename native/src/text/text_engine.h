@@ -72,9 +72,14 @@ struct BoxQuad {
   float r, g, b, a;                  // background color (linear)
   float r_tl, r_tr, r_br, r_bl;      // corner radii, px
   // overflow:hidden clip (nearest clipping ANCESTOR's rounded padding box),
-  // clip_w <= 0 → no clip. 80 bytes (5 vec4).
+  // clip_w <= 0 → no clip.
   float clip_x, clip_y, clip_w, clip_h;
   float clip_r_tl, clip_r_tr, clip_r_br, clip_r_bl;
+  // Uniform solid border: a `border_w`-px ring inside the rounded edge, painted
+  // over the background (CSS background-clip:border-box). border_w<=0 → none.
+  // 112 bytes (7 vec4).
+  float border_w = 0, _bpad0 = 0, _bpad1 = 0, _bpad2 = 0;
+  float border_r = 0, border_g = 0, border_b = 0, border_a = 0;
 };
 
 // One PRE-SHAPED glyph from an external layout/shaping engine (the Blitz path:

@@ -887,7 +887,9 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
   // Background boxes first (behind the glyphs), in stored (document) order. A 1px
   // SDF edge gives the same antialiasing the GPU compositor uses.
   for (const BoxQuad& b : it->second.boxes) {
-    if (b.a <= 0.0f || b.w <= 0.0f || b.h <= 0.0f) continue;
+    // Skip only if nothing to paint — a border-only box (transparent bg) still draws.
+    bool hasBorder = b.border_w > 0.0f && b.border_a > 0.0f;
+    if ((b.a <= 0.0f && !hasBorder) || b.w <= 0.0f || b.h <= 0.0f) continue;
     float bx = b.x + originX, by = b.y + originY;
     float cx = bx + b.w * 0.5f, cy = by + b.h * 0.5f;
     float hx = b.w * 0.5f, hy = b.h * 0.5f;
@@ -899,17 +901,32 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
       for (int px = x0; px < x1; px++) {
         float sd = sdRoundBox(px + 0.5f, py + 0.5f, cx, cy, hx, hy,
                               b.r_tl, b.r_tr, b.r_br, b.r_bl);
-        float cov = 0.5f - sd; cov = cov < 0.0f ? 0.0f : (cov > 1.0f ? 1.0f : cov);
-        cov *= clipCoverage(px + 0.5f, py + 0.5f, b.clip_x + originX, b.clip_y + originY,
+        float shape = 0.5f - sd; shape = shape < 0.0f ? 0.0f : (shape > 1.0f ? 1.0f : shape);
+        float clip = clipCoverage(px + 0.5f, py + 0.5f, b.clip_x + originX, b.clip_y + originY,
                             b.clip_w, b.clip_h, b.clip_r_tl, b.clip_r_tr, b.clip_r_br, b.clip_r_bl);
-        float a = cov * b.a;
-        if (a <= 0.0f) continue;
+        // Background fills the whole rounded box (background-clip:border-box); the
+        // border is a `border_w`-px ring (offsetting the SDF by border_w gives the
+        // inner/padding rounded edge) painted on top.
+        float inner = b.border_w > 0.0f ? (0.5f - (sd + b.border_w)) : shape;
+        inner = inner < 0.0f ? 0.0f : (inner > 1.0f ? 1.0f : inner);
+        float ring = shape - inner; if (ring < 0.0f) ring = 0.0f;
         uint8_t* d = &out[((size_t)py * outW + px) * 4];
-        float inv = 1.0f - a;
-        d[0]=(uint8_t)(b.r*255.0f*a + d[0]*inv + 0.5f);
-        d[1]=(uint8_t)(b.g*255.0f*a + d[1]*inv + 0.5f);
-        d[2]=(uint8_t)(b.b*255.0f*a + d[2]*inv + 0.5f);
-        d[3]=(uint8_t)(a*255.0f + d[3]*inv + 0.5f);
+        float aF = shape * b.a * clip;
+        if (aF > 0.0f) {
+          float inv = 1.0f - aF;
+          d[0]=(uint8_t)(b.r*255.0f*aF + d[0]*inv + 0.5f);
+          d[1]=(uint8_t)(b.g*255.0f*aF + d[1]*inv + 0.5f);
+          d[2]=(uint8_t)(b.b*255.0f*aF + d[2]*inv + 0.5f);
+          d[3]=(uint8_t)(aF*255.0f + d[3]*inv + 0.5f);
+        }
+        float aR = ring * b.border_a * clip;
+        if (aR > 0.0f) {
+          float inv = 1.0f - aR;
+          d[0]=(uint8_t)(b.border_r*255.0f*aR + d[0]*inv + 0.5f);
+          d[1]=(uint8_t)(b.border_g*255.0f*aR + d[1]*inv + 0.5f);
+          d[2]=(uint8_t)(b.border_b*255.0f*aR + d[2]*inv + 0.5f);
+          d[3]=(uint8_t)(aR*255.0f + d[3]*inv + 0.5f);
+        }
       }
     }
   }
