@@ -24,7 +24,10 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
     expect(result.success).toBe(true);
     const nl = result.state.plugins.find((p: any) => p.id === 'sequencer.nanolooper');
     expect(nl).toBeDefined();
-    expect(nl!.key).toBe('sequencer.nanolooper@0');
+    // Key carries an instance-counter suffix (@N); the bundle warmup registers
+    // the schema-only instance and instantiateEffect makes the live one, so the
+    // exact N isn't load-bearing — just assert the id@N shape.
+    expect(nl!.key).toMatch(/^sequencer\.nanolooper@\d+$/);
 
     // Spot-check a few schema fields — full coverage lives in wasm-host.test.ts.
     const paramNames = nl!.params.map((p: any) => p.name);
@@ -46,7 +49,8 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
     });
 
     expect(result.success).toBe(true);
-    const pluginState = result.state.pluginStates?.['sequencer.nanolooper@0'];
+    const nl = result.state.plugins.find((p: any) => p.id === 'sequencer.nanolooper');
+    const pluginState = result.state.pluginStates?.[nl!.key];
     expect(pluginState).toBeDefined();
     // Grid is the canonical "what's recorded" surface — should exist and
     // start empty for each of the 4 channels.

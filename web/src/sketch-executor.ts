@@ -529,6 +529,12 @@ export class SketchExecutor {
     // output handle after the last stage flushes).
     for (let chainIdx = 0; chainIdx < column.chain.length; chainIdx++) {
       const entry = column.chain[chainIdx];
+      // chain[] is module-only in current sketches, but tolerate legacy/explicit
+      // texture_input / texture_output entries (the column's input/output are
+      // implicit) — they carry no module_type and must not hit ensureInstance,
+      // which would resolveEffectId(undefined) and throw. Mirrors the
+      // `type !== 'module'` filters elsewhere in this file.
+      if (entry.type !== 'module') continue;
       {
         const loaded = await this.ensureInstance(entry);
 

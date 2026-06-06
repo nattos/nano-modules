@@ -104,7 +104,14 @@ async function run() {
     const engine = new EngineProxy(W, H);
 
     let lastState = null;
+    // Accumulate per-frame pluginStates diffs (the engine ships changed+removed
+    // keys each frame, not a full map) so tests can read result.state.pluginStates.
+    const pluginStatesAcc = {};
     engine.onStateUpdate = (state) => { lastState = state; };
+    engine.onPluginStatesDiff = (diff) => {
+      if (diff && diff.changed) for (const k in diff.changed) pluginStatesAcc[k] = diff.changed[k];
+      if (diff && diff.removed) for (const k of diff.removed) delete pluginStatesAcc[k];
+    };
     engine.onTracedFrames = () => {};
 
     // Wait for ready
@@ -133,7 +140,7 @@ async function run() {
 
     engine.destroy();
 
-    const output = { success: true, state: lastState };
+    const output = { success: true, state: { ...(lastState || {}), pluginStates: pluginStatesAcc } };
     if (config.phases) {
       output.phases = phaseResults;
     } else {

@@ -24,7 +24,10 @@ describe('Param Linker Effect E2E', () => {
     expect(result.success).toBe(true);
     const pl = result.state.plugins.find((p: any) => p.id === 'utility.paramlinker');
     expect(pl).toBeDefined();
-    expect(pl!.key).toBe('utility.paramlinker@0');
+    // Key carries an instance-counter suffix (@N); the bundle warmup registers
+    // the schema-only instance and instantiateEffect makes the live one, so the
+    // exact N isn't load-bearing — just assert the id@N shape.
+    expect(pl!.key).toMatch(/^utility\.paramlinker@\d+$/);
     const paramNames = pl!.params.map((p: any) => p.name).sort();
     expect(paramNames).toEqual(['active', 'learn']);
   });
@@ -41,7 +44,8 @@ describe('Param Linker Effect E2E', () => {
     });
 
     expect(result.success).toBe(true);
-    const pluginState = result.state.pluginStates?.['utility.paramlinker@0'];
+    const pl = result.state.plugins.find((p: any) => p.id === 'utility.paramlinker');
+    const pluginState = result.state.pluginStates?.[pl!.key];
     expect(pluginState).toBeDefined();
     expect(pluginState.learning).toBe(false);
     // Active is true by default, but linking is inactive until input/output assigned.

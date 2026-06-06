@@ -782,6 +782,7 @@ function captureAndSendFrame() {
 
 /** Find the compiled WebAssembly.Module that contains a given effect ID (module-relative or qualified). */
 function findCompiledModule(effectId: string): { compiled: WebAssembly.Module; resolvedId: string } | null {
+  if (!effectId) return null;
   const resolved = resolveEffectId(effectId);
   const entry = effectRegistry.get(resolved);
   if (!entry) return null;
