@@ -672,7 +672,8 @@ export class TextEngine {
   }
 
   /** Composite the laid-out text for `id` into `target` at (originX, originY). */
-  render(id: number, target: GPUTexture, originX: number, originY: number): void {
+  render(id: number, target: GPUTexture, originX: number, originY: number,
+         bg?: GPUTexture | null): void {
     const ex = this.ex;
     const device = this.device;
 
@@ -749,7 +750,10 @@ export class TextEngine {
       entries: [
         { binding: 0, resource: { buffer: glyphBuf } },
         { binding: 1, resource: this.atlasTex.createView({ dimension: '2d-array' }) },
-        { binding: 2, resource: this.bgTex.createView() },
+        // Background behind the text: caller-supplied input (overlay) or the
+        // engine's 1×1 opaque-black fallback. Sampled at per-pixel UV, so a
+        // full-res input maps 1:1.
+        { binding: 2, resource: (bg ?? this.bgTex).createView() },
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: target.createView() },
         { binding: 5, resource: { buffer: uniBuf } },

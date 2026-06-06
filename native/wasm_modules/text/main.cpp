@@ -59,6 +59,7 @@ void module_init() {
       .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput)
       .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput)
       .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput)
+      .textureField("tex_in",  state::PrimaryInput)   // overlay text on this; black if unconnected
       .textureField("tex_out", state::PrimaryOutput)
   );
 }
@@ -117,6 +118,16 @@ void render(void* self, int vp_w, int vp_h) {
       "\"constraints\":{\"max_width_px\":%.3f,\"line_spacing\":%.3f}}",
       s->size, s->r, s->g, s->b, s->a, s->max_width, s->line_spacing);
 
+  // Output target: the executor binds our PrimaryOutput as the "tex_out" field
+  // (same as every other effect). renderTarget() only works on a path that set
+  // a swapchain surface — the sketch executor binds a texture field instead, so
+  // prefer the field and fall back to the surface for standalone/test paths.
+  int target = gpu::Device::textureForField("tex_out").id;
+  if (target < 0) target = gpu::Device::renderTarget().id;
+  // Overlay the text on the incoming texture (the host composites text over it);
+  // an unconnected input is -1 → opaque-black background.
+  int bg = gpu::Device::textureForField("tex_in").id;
+
   int id = text::layout(spec, pos);
   if (id > 0) {
     // Center the laid-out text in the viewport.
@@ -128,7 +139,7 @@ void render(void* self, int vp_w, int vp_h) {
     }
     char xform[96];
     std::snprintf(xform, sizeof(xform), "{\"x\":%.2f,\"y\":%.2f}", ox, oy);
-    text::render(id, gpu::Device::renderTarget().id, xform);
+    text::render(id, target, xform, bg);
     text::release(id);
   }
   gpu::Device::submit();

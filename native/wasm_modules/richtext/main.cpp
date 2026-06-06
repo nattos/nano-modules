@@ -62,6 +62,7 @@ void module_init() {
       .textField   ("html",  "HTML", state::PrimaryInput)
       .textField   ("css",   "CSS",  state::PrimaryInput)
       .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput)
+      .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; black if unconnected
       .textureField("tex_out", state::PrimaryOutput)
   );
 }
@@ -102,10 +103,19 @@ void render(void* self, int vp_w, int vp_h) {
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}", vp_w, vp_h, s->scale);
 
+  // Output target: the executor binds our PrimaryOutput as "tex_out" (same as
+  // every other effect). renderTarget() only works when a swapchain surface was
+  // set; the sketch executor binds a texture field instead.
+  int target = gpu::Device::textureForField("tex_out").id;
+  if (target < 0) target = gpu::Device::renderTarget().id;
+  // Overlay the document on the incoming texture (transparent areas of the doc
+  // show it through); an unconnected input is -1 → opaque-black background.
+  int bg = gpu::Device::textureForField("tex_in").id;
+
   int id = text::layout(spec, pos);
   if (id > 0) {
     // The document is already positioned in viewport space → draw at the origin.
-    text::render(id, gpu::Device::renderTarget().id, "{\"x\":0,\"y\":0}");
+    text::render(id, target, "{\"x\":0,\"y\":0}", bg);
     text::release(id);
   }
   gpu::Device::submit();

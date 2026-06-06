@@ -1109,16 +1109,22 @@ export class WasmHost {
           new Uint8Array(this.memory.buffer).set(bytes, outPtr);
           return 1;
         },
-        render: (id: number, targetTex: number, xformPtr: number, xformLen: number): void => {
+        render: (id: number, targetTex: number, bgTex: number, xformPtr: number, xformLen: number): void => {
           const te = TextEngine.instance;
           if (!te || !this.gpuHost) return;
           const target = this.gpuHost.getTextureByHandle(targetTex);
           if (!target) return;
+          // Background sampled behind the text: a caller-supplied input texture
+          // (overlay), else null → the engine's 1×1 opaque-black fallback. Must
+          // differ from the target (WebGPU forbids same-texture read+write).
+          const bg = (bgTex >= 0 && bgTex !== targetTex)
+            ? this.gpuHost.getTextureByHandle(bgTex)
+            : null;
           let ox = 0, oy = 0;
           if (xformLen > 0) {
             try { const x = JSON.parse(this.readString(xformPtr, xformLen)); ox = x.x ?? 0; oy = x.y ?? 0; } catch { /* default */ }
           }
-          te.render(id, target, ox, oy);
+          te.render(id, target, ox, oy, bg);
         },
         // Escape hatch (Phase 2): expose the shared atlas + positioned glyphs.
         atlas: (_id: number): number => -1,

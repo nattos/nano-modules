@@ -285,7 +285,7 @@ int text_measure(int layout_id, void* out_metrics) {
   return 1;
 }
 
-void text_render(int layout_id, int target_tex,
+void text_render(int layout_id, int target_tex, int bg_tex,
                  const char* xform_json, int xform_len) {
   auto* rt = currentRuntime();
   gpu::GPUBackend* b = rt ? rt->gpu() : nullptr;
@@ -316,8 +316,13 @@ void text_render(int layout_id, int target_tex,
 
   int atlas = ensureAtlas(b, layout_id);
 
-  // Canvas dims = the surface (gen.text/richtext render into renderTarget()).
-  int cw = b->getSurfaceWidth(), ch = b->getSurfaceHeight();
+  // Canvas dims = the TARGET texture (mirrors the web path, which sizes off
+  // GPUTexture.width/height). gen.text/richtext are generators that render into
+  // an executor-bound output texture, not a swapchain surface — so the surface
+  // dims are 0 here and can't be used. Fall back to the surface only for a
+  // standalone/test path that explicitly called setSurface().
+  int cw = b->getTextureWidth(target_tex), ch = b->getTextureHeight(target_tex);
+  if (cw <= 0 || ch <= 0) { cw = b->getSurfaceWidth(); ch = b->getSurfaceHeight(); }
   if (cw <= 0 || ch <= 0) return;
 
   g_gpu.glyphBuf = ensureBuffer(b, g_gpu.glyphBuf, g_gpu.glyphCap,
@@ -345,8 +350,12 @@ void text_render(int layout_id, int target_tex,
   b->computeSetBuffer(pass, g_gpu.glyphBuf, 0, 0);
   b->computeSetBuffer(pass, g_gpu.boxBuf, 0, 1);
   b->computeSetBuffer(pass, g_gpu.uniBuf, 0, 2);
+  // Background sampled behind the text: a caller-supplied input texture (overlay
+  // text on it), else the 1×1 opaque-black fallback. The compositor samples bg
+  // at the per-pixel normalized UV, so a full-res input maps 1:1.
+  int bg = (bg_tex >= 0 && bg_tex != target_tex) ? bg_tex : g_gpu.bg;
   b->computeSetTexture(pass, atlas, 0, /*read*/0);
-  b->computeSetTexture(pass, g_gpu.bg, 1, /*read*/0);
+  b->computeSetTexture(pass, bg, 1, /*read*/0);
   b->computeSetTexture(pass, target_tex, 2, /*write*/1);
   b->computeSetSampler(pass, g_gpu.sampler, 0);
   b->computeDispatch(pass, (uint32_t)((cw + 7) / 8), (uint32_t)((ch + 7) / 8), 1);

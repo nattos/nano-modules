@@ -242,16 +242,37 @@ export class AppController {
     return sketchId;
   }
 
+  /**
+   * Initial instance state for a plugin, seeded from its typed schema
+   * defaults. The legacy `params` list is numeric-only — it coerces string
+   * defaults to 0 and drops vector (float2/3/4, color) fields entirely — so a
+   * gen.text node would come up with `text: 0` and no color. Reading the raw
+   * schema `default` preserves strings (`"Text"`), numbers (`64`), bools, and
+   * vectors as arrays (`[1,1,1,1]`), matching what the inspector widgets and
+   * the native patch readers (patchString / patchVec4) expect. Falls back to
+   * the params list for any field the schema didn't carry (or schema-less
+   * plugins).
+   */
+  private defaultStateForPlugin(plugin: PluginInfo): Record<string, any> {
+    const state: Record<string, any> = {};
+    const schema = (plugin.schema ?? {}) as Record<string, any>;
+    for (const [name, field] of Object.entries(schema)) {
+      if (field?.type === 'texture') continue;            // wiring, not state
+      if (field?.default !== undefined) state[name] = field.default;
+    }
+    for (const p of plugin.params) {
+      if (!(p.name in state)) state[p.name] = p.defaultValue;
+    }
+    return state;
+  }
+
   addEffectToChain(sketchId: string, colIdx: number, insertIdx: number, moduleType: string) {
     const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
 
     const plugin = appState.local.plugins.find(p => p.id === moduleType);
-    const defaultState: Record<string, any> = {};
-    if (plugin) {
-      for (const p of plugin.params) {
-        defaultState[p.name] = p.defaultValue;
-      }
-    }
+    const defaultState: Record<string, any> = plugin
+      ? this.defaultStateForPlugin(plugin)
+      : {};
 
     this.mutate(`Add ${shortName(moduleType)}`, draft => {
       const sketch = draft.sketches[sketchId];
@@ -723,7 +744,7 @@ export class AppController {
     }
     if (pluginsById.size === 0) return;
 
-    type Job = { sketchId: string; instanceKey: string; defaults: Record<string, number> };
+    type Job = { sketchId: string; instanceKey: string; defaults: Record<string, any> };
     const jobs: Job[] = [];
     for (const [sketchId, sketch] of Object.entries(appState.database.sketches)) {
       const instances = sketch?.instances;
@@ -736,8 +757,7 @@ export class AppController {
         if (typeof moduleType !== 'string') continue;
         const plugin = pluginsById.get(moduleType);
         if (!plugin) continue;
-        const defaults: Record<string, number> = {};
-        for (const p of plugin.params) defaults[p.name] = p.defaultValue;
+        const defaults = this.defaultStateForPlugin(plugin);
         if (Object.keys(defaults).length === 0) continue;
         jobs.push({ sketchId, instanceKey: instKey, defaults });
       }

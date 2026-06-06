@@ -679,6 +679,15 @@ public:
   int32_t getSurfaceWidth() override { return surfaceW_; }
   int32_t getSurfaceHeight() override { return surfaceH_; }
 
+  int32_t getTextureWidth(int32_t textureHandle) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    return tex ? (int32_t)[tex width] : 0;
+  }
+  int32_t getTextureHeight(int32_t textureHandle) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    return tex ? (int32_t)[tex height] : 0;
+  }
+
   // --- Readback ---
 
   std::vector<uint8_t> readbackTexture(int32_t textureHandle,

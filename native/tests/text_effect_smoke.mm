@@ -112,6 +112,48 @@ int main() {
         std::fprintf(stderr, "✅ %s rendered through the native runtime\n", c.type);
       }
     }
+
+    // Executor-style pass: this is the path that actually broke in NanoBarrel.
+    // The sketch executor binds the effect's PrimaryOutput as the "tex_out"
+    // field and never sets a swapchain surface — so renderTarget() is -1 and the
+    // surface dims are 0. The effect must resolve its output via
+    // textureForField("tex_out") and the host must size the dispatch off that
+    // target texture. Tear the surface down to prove we don't depend on it.
+    backend->setSurface(-1, 0, 0);
+    {
+      int inTex  = backend->createTexture(W, H, /*RGBA8*/1);
+      int outTex = backend->createTexture(W, H, /*RGBA8*/1);
+      auto* inst = rt.instanceFor("gen.text", "k_exec");
+      if (!inst) { std::fprintf(stderr, "instanceFor(exec) failed\n"); return 1; }
+      inst->setParamJson("text", "\"Exec\"");
+      // Overlay onto a solid-red input: the bg must show through behind the
+      // text. tex_in/tex_out are distinct (WebGPU forbids same-texture R+W).
+      inst->setTextureField("tex_in",  inTex);
+      inst->setTextureField("tex_out", outTex);
+      inst->setFieldConnected("tex_in",  /*input*/true,  /*output*/false);
+      inst->setFieldConnected("tex_out", /*input*/false, /*output*/true);
+      backend->clearTexture(inTex, 1, 0, 0, 1);     // red background
+      backend->clearTexture(outTex, 0, 0, 0, 1);
+      backend->submit();
+      inst->doRender(W, H);
+      auto img = backend->readbackTexture(outTex, W, H);
+      long nb = nonBlack(img);
+      // Count strongly-red, non-white pixels → the input background showing
+      // through (text texels are bright on all channels, so excluded).
+      long red = 0;
+      for (size_t i = 0; i + 3 < img.size(); i += 4)
+        if (img[i] > 200 && img[i + 1] < 60 && img[i + 2] < 60) red++;
+      std::printf("{\"effect\":\"gen.text(executor,overlay)\",\"nonBlackPx\":%ld,\"redBgPx\":%ld}\n", nb, red);
+      if (nb < 50) {
+        std::fprintf(stderr, "❌ gen.text via tex_out field with no surface rendered (near-)blank\n");
+        rc = 1;
+      } else if (red < W * H / 2) {
+        std::fprintf(stderr, "❌ gen.text overlay: red input background did not show through (red=%ld)\n", red);
+        rc = 1;
+      } else {
+        std::fprintf(stderr, "✅ gen.text renders text over the input texture with no surface set\n");
+      }
+    }
     return rc;
   }
 }

@@ -39,7 +39,7 @@
 extern "C" {
 int  text_layout(const char* spec_json, int spec_len);
 int  text_measure(int layout_id, void* out_metrics);
-void text_render(int layout_id, int target_tex, const char* xform_json, int xform_len);
+void text_render(int layout_id, int target_tex, int bg_tex, const char* xform_json, int xform_len);
 void text_release(int layout_id);
 }
 
@@ -135,7 +135,8 @@ int main(int argc, char** argv) {
     }
 
     // --- GPU path (the host impl) ---
-    text_render(id, surface, xform.c_str(), (int)xform.size());
+    // bg = -1 → opaque-black background, matching the CPU golden for parity.
+    text_render(id, surface, -1, xform.c_str(), (int)xform.size());
     backend->submit();                         // the effect would call submit()
     std::vector<uint8_t> gpuImg = backend->readbackTexture(surface, (uint32_t)W, (uint32_t)H);
 

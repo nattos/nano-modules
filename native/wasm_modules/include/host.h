@@ -155,8 +155,8 @@ extern "C" {
   __attribute__((import_module("text"), import_name("measure")))
   int text_measure(int layout_id, void* out_metrics);          // fills TextMetrics; 1 = ok
   __attribute__((import_module("text"), import_name("render")))
-  void text_render(int layout_id, int target_tex,
-                   const char* xform_json, int xform_len);      // easy path: composite into target_tex
+  void text_render(int layout_id, int target_tex, int bg_tex,
+                   const char* xform_json, int xform_len);      // easy path: composite over bg_tex into target_tex
   __attribute__((import_module("text"), import_name("atlas")))
   int text_atlas(int layout_id);                               // escape hatch: shared atlas tex handle
   __attribute__((import_module("text"), import_name("glyphs")))
@@ -259,10 +259,16 @@ inline Layout layout(const char* specJson) { return text_layout(specJson, (int)s
 inline bool measure(Layout id, TextMetrics& out) { return text_measure(id, &out) != 0; }
 
 /// Easy path: host uploads the glyph atlas and composites the laid-out text
-/// into `targetTex` (AlphaOver). `xformJson` (may be null) positions/scales the
-/// layout box, e.g. {"x":40,"y":40,"scale":1.0}.
-inline void render(Layout id, int targetTex, const char* xformJson = nullptr) {
-  text_render(id, targetTex, xformJson, xformJson ? (int)std::strlen(xformJson) : 0);
+/// over `bgTex` into `targetTex` (AlphaOver). `xformJson` (may be null)
+/// positions/scales the layout box, e.g. {"x":40,"y":40,"scale":1.0}.
+/// `bgTex` is the background sampled behind the text — pass an input texture to
+/// overlay text on it, or -1 for an opaque-black background. `bgTex` MUST differ
+/// from `targetTex` (the compositor reads bg + writes target in one pass; WebGPU
+/// forbids same-texture read+write).
+inline void render(Layout id, int targetTex, const char* xformJson = nullptr,
+                   int bgTex = -1) {
+  text_render(id, targetTex, bgTex, xformJson,
+              xformJson ? (int)std::strlen(xformJson) : 0);
 }
 
 /// Escape hatch: the shared atlas GPU texture handle (sample it yourself).
