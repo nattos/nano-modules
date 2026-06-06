@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
+import { instanceStateToParams } from './sketch-executor';
 import type { Sketch, ChainEntry } from './sketch-types';
 
 // Common-infra unit tests load the testonly bundle so their assertions stay
@@ -138,5 +139,53 @@ describe('Sketch data model', () => {
       expect(moduleEntry.module_type).toBe('video.brightness_contrast');
       expect(moduleEntry.params?.['1']).toBe(0.25);
     }
+  });
+});
+
+describe('instanceStateToParams (restore mapping)', () => {
+  // Regression: string params (gen.text `text`, gen.richtext `html`/`css`)
+  // used to be dropped on restore — the loop handled number/boolean/numeric-
+  // array but not string — so the IDE "forgot" text params across reloads.
+  it('emits a replace patch for string params', () => {
+    const { patches } = instanceStateToParams({
+      text: 'hello world',
+      html: '<h1>hi</h1>',
+      css: 'h1 { color: red }',
+    });
+    expect(patches).toEqual([
+      { op: 'replace', path: 'text', value: 'hello world' },
+      { op: 'replace', path: 'html', value: '<h1>hi</h1>' },
+      { op: 'replace', path: 'css', value: 'h1 { color: red }' },
+    ]);
+  });
+
+  it('preserves empty strings (a valid edited value, not a default)', () => {
+    const { patches } = instanceStateToParams({ text: '' });
+    expect(patches).toEqual([{ op: 'replace', path: 'text', value: '' }]);
+  });
+
+  it('keeps numbers/booleans on the positional float row, strings off it', () => {
+    const { patches, positional } = instanceStateToParams({
+      size: 64,        // number → patch + positional
+      bold: true,      // boolean → patch + positional (1)
+      text: 'Hi',      // string  → patch only, no positional slot
+      color: [1, 0, 0, 1], // numeric array → patch only
+    });
+    expect(positional).toEqual([64, 1]);
+    expect(patches).toEqual([
+      { op: 'replace', path: 'size', value: 64 },
+      { op: 'replace', path: 'bold', value: true },
+      { op: 'replace', path: 'text', value: 'Hi' },
+      { op: 'replace', path: 'color', value: [1, 0, 0, 1] },
+    ]);
+  });
+
+  it('drops unsupported value types (objects, mixed arrays)', () => {
+    const { patches, positional } = instanceStateToParams({
+      obj: { a: 1 },
+      mixed: [1, 'x'],
+    });
+    expect(patches).toEqual([]);
+    expect(positional).toEqual([]);
   });
 });

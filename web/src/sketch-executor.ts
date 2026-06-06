@@ -43,6 +43,49 @@ function deepClone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
 }
 
+/**
+ * Map a sketch instance's persisted `state` into the patches replayed into a
+ * freshly-loaded effect (its on_state_patched), plus the dense positional float
+ * row for legacy host::param(index) reads.
+ *
+ * Every JSON value type that can live in instance state must have a branch here
+ * or it is silently dropped on restore — which is exactly how text params used
+ * to be "forgotten" across reloads: number/boolean/numeric-array were handled
+ * but `string` was not, so gen.text's `text` and gen.richtext's `html`/`css`
+ * never reached the effect and it fell back to the schema default. Strings and
+ * numeric arrays are patch-only (no positional float slot); number/boolean also
+ * contribute a positional float, in encounter order.
+ *
+ * Exported for unit testing — this is the locus of the dropped-param class of
+ * bug, so it is covered directly.
+ */
+export function instanceStateToParams(
+  instanceState: Record<string, unknown>,
+): { patches: import('./wasm-host').PatchOp[]; positional: number[] } {
+  const patches: import('./wasm-host').PatchOp[] = [];
+  const positional: number[] = [];
+  for (const [key, value] of Object.entries(instanceState)) {
+    if (typeof value === 'number') {
+      positional.push(value);
+      patches.push({ op: 'replace', path: key, value });
+    } else if (typeof value === 'boolean') {
+      // Booleans ride the positional row as 0/1 but stay typed in the patch —
+      // the effect reads either via patchFloat (0.0/1.0) or val::asBool.
+      positional.push(value ? 1 : 0);
+      patches.push({ op: 'replace', path: key, value });
+    } else if (Array.isArray(value) && value.every(v => typeof v === 'number')) {
+      // Vec2/3/4 (and other plain numeric arrays): patch only, no float slot.
+      patches.push({ op: 'replace', path: key, value });
+    } else if (typeof value === 'string') {
+      // String params (gen.text `text`, gen.richtext `html`/`css`) are
+      // patch-only; the downstream bridge-core commit already handles strings.
+      patches.push({ op: 'replace', path: key, value });
+    }
+    // Anything else (objects, mixed arrays) is left for the effect to handle.
+  }
+  return { patches, positional };
+}
+
 function stripLeadingSlash(p: string): string {
   return p.startsWith('/') ? p.slice(1) : p;
 }
@@ -540,30 +583,11 @@ export class SketchExecutor {
 
         // --- Apply initial state from sketch instances (or legacy entry.params) ---
         const instanceState = sketch.instances?.[entry.instance_key]?.state ?? entry.params ?? {};
-        const paramPatches: import('./wasm-host').PatchOp[] = [];
-        let paramIndex = 0;
-        for (const [key, value] of Object.entries(instanceState)) {
-          if (typeof value === 'number') {
-            // Set frameState.params by position for legacy host::param(index) reads
-            loaded.host.frameState.params[paramIndex] = value;
-            paramPatches.push({ op: 'replace', path: key, value });
-            paramIndex++;
-          } else if (typeof value === 'boolean') {
-            // Booleans round-trip as 0/1 numbers in the param row but
-            // stay typed as boolean in the patch — the effect's
-            // on_state_patched can read either via patchFloat (which
-            // returns 0.0/1.0 for booleans on the JS-side patch
-            // rebuild) or via val::asBool when going through bridge
-            // core. Either path resolves to the right runtime value.
-            loaded.host.frameState.params[paramIndex] = value ? 1 : 0;
-            paramPatches.push({ op: 'replace', path: key, value });
-            paramIndex++;
-          } else if (Array.isArray(value)
-                     && value.every(v => typeof v === 'number')) {
-            // Vec2/3/4 (and other plain numeric arrays): deliver as a
-            // patch but skip frameState.params (which is positional float).
-            paramPatches.push({ op: 'replace', path: key, value });
-          }
+        const { patches: paramPatches, positional } =
+          instanceStateToParams(instanceState as Record<string, unknown>);
+        // Positional floats feed legacy host::param(index) reads, in order.
+        for (let i = 0; i < positional.length; i++) {
+          loaded.host.frameState.params[i] = positional[i];
         }
         if (paramPatches.length > 0) {
           loaded.host.notifyStatePatched(loaded.module, paramPatches);
