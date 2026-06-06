@@ -496,7 +496,11 @@ void SketchExecutor::applyState(
       }
       if (!comps.empty()) inst->setParamArray(name, comps);
     } else if (v.is_string()) {
-      inst->setParamJson(name, "\"" + v.get<std::string>() + "\"");
+      // dump() emits a properly-escaped JSON string literal. Naive quoting
+      // ("\"" + s + "\"") produces invalid JSON the moment the value contains
+      // a quote/backslash/newline — e.g. rich-text HTML (<h1 style="…">) — and
+      // setParamJson then parses it as null (renders the literal "null").
+      inst->setParamJson(name, v.dump());
     }
   }
 }

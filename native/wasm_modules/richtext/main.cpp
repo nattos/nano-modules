@@ -93,13 +93,20 @@ void render(void* self, int vp_w, int vp_h) {
   // Lay the document out at the render target's pixel size. width/height are the
   // OUTPUT pixels (so 100vw / 100% == the node's full width, and font-size:48px
   // is 48 output px); `scale` is a zoom (2 = twice as big). The document is
-  // <style>{css}</style>{html} — structure and styling are edited separately.
+  // Full document: <html><head><style>{css}</style></head><body>{html}</body>.
+  // The scaffolding matters — Blitz only establishes the initial containing
+  // block (and thus a sized body) for a real document; a bare {style}{html}
+  // fragment leaves block children (<h1>/<div>/<p>) with zero size, so they
+  // lay out nothing (only inline/bare text flows). Structure (html) and
+  // styling (css) are still edited as separate fields.
   char spec[24576];
   int pos = 0;
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "{\"mode\":\"html\",\"html\":\"<style>");
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos,
+      "{\"mode\":\"html\",\"html\":\"<!DOCTYPE html><html><head><style>");
   appendEscaped(spec, pos, (int)sizeof(spec), s->css);
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</style>");
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</style></head><body>");
   appendEscaped(spec, pos, (int)sizeof(spec), s->html);
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</body></html>");
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}", vp_w, vp_h, s->scale);
 

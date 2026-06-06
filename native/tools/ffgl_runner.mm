@@ -17,6 +17,8 @@
 #include <ffgl/FFGL.h>
 #include <ffgl/FFGLLib.h>
 
+#include "../src/plugin/nano_barrel/barrel_codec.h"  // wrap a sketch JSON into the config param
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -107,6 +109,12 @@ int main(int argc, const char* argv[]) {
     // --param IDX VALUE — set FFGL parameter IDX to VALUE in [0,1].
     // Repeatable. Parsed before positional args.
     std::vector<std::pair<int, float>> paramOverrides;
+    // --config <file>: read a sketch JSON file, wrap it the way NanoBarrel's
+    // FILE config param expects (nanobarrel://config?<base64>), and set it on
+    // text param 0 after instantiate so the barrel runs that sketch.
+    std::string configWrapped;
+    // --text IDX <string>: set an arbitrary text param verbatim.
+    std::vector<std::pair<int, std::string>> textOverrides;
     int positional = 0;
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
@@ -114,6 +122,15 @@ int main(int argc, const char* argv[]) {
         int idx = std::stoi(argv[i + 1]);
         float val = std::stof(argv[i + 2]);
         paramOverrides.push_back({idx, val});
+        i += 2;
+      } else if (arg == "--config" && i + 1 < argc) {
+        std::ifstream f(argv[i + 1], std::ios::binary);
+        std::string json((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+        configWrapped = barrel_codec::wrap_config(json);
+        i += 1;
+      } else if (arg == "--text" && i + 2 < argc) {
+        textOverrides.push_back({std::stoi(argv[i + 1]), argv[i + 2]});
         i += 2;
       } else {
         switch (positional++) {
@@ -199,6 +216,24 @@ int main(int argc, const char* argv[]) {
       sps.NewParameterValue.UIntValue = bits;
       plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
       std::cerr << "[ffgl_runner] param[" << idx << "] = " << val << "\n";
+    }
+
+    // Text-param overrides (FFGL routes FF_TYPE_TEXT/FILE to SetTextParameter
+    // via NewParameterValue.PointerValue). The config (param 0) goes last so it
+    // wins over any --text on the same index.
+    for (auto& [idx, str] : textOverrides) {
+      SetParameterStruct sps;
+      sps.ParameterNumber = (FFUInt32)idx;
+      sps.NewParameterValue.PointerValue = (void*)str.c_str();
+      plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
+      std::cerr << "[ffgl_runner] text param[" << idx << "] set (" << str.size() << " bytes)\n";
+    }
+    if (!configWrapped.empty()) {
+      SetParameterStruct sps;
+      sps.ParameterNumber = 0;  // P_CONFIG
+      sps.NewParameterValue.PointerValue = (void*)configWrapped.c_str();
+      plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
+      std::cerr << "[ffgl_runner] config set (" << configWrapped.size() << " bytes wrapped)\n";
     }
 
     // 4. Host FBO + color attachment for the plugin to render INTO.

@@ -109,6 +109,14 @@ bool textInstallSystemPrimary() {
 // (a bundled face) if it loads, else the system UI font, then the system CJK
 // fallback chain. Safe to call once at plugin init.
 void textInstallDefaultFonts(const char* primaryPath) {
+  // Idempotent: the engine and the Blitz session are process-global singletons,
+  // but a host may construct several plugin instances (FFGL prototype scan +
+  // each layer instance), each calling this. Re-installing would APPEND a second
+  // copy of every face to Blitz (tb_add_font) while the engine's setFont only
+  // REPLACES face 0 — desyncing the lock-step face indices, so e.g. bold text
+  // (which resolves to a duplicate Blitz face the engine never got) shapes
+  // against the wrong font and renders blank. Install exactly once per process.
+  if (textFontsReady()) return;
   bool havePrimary = false;
   if (primaryPath && primaryPath[0]) {
     std::vector<uint8_t> bytes = readFile(primaryPath);
