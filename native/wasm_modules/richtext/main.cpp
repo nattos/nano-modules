@@ -42,16 +42,31 @@ struct State {
   bool  initialized = false;
 };
 
-// Append `src` to `dst` (at *pos, cap n) with JSON string escaping.
+// Append `src` to `dst` (at *pos, cap n) with JSON string escaping. ALL C0
+// control chars must be escaped: a raw control byte (e.g. \r from CRLF / pasted
+// HTML/CSS) is invalid inside a JSON string and the web's strict JSON.parse
+// rejects the whole spec → blank render. (Native nlohmann is lenient and hid
+// this.)
 static void appendEscaped(char* dst, int& pos, int n, const char* src) {
-  for (int i = 0; src[i] && pos < n - 7; i++) {
-    char c = src[i];
+  static const char kHex[] = "0123456789abcdef";
+  for (int i = 0; src[i] && pos < n - 7; i++) {   // n-7 leaves room for \u00XX
+    unsigned char c = (unsigned char)src[i];
     switch (c) {
       case '"':  dst[pos++]='\\'; dst[pos++]='"';  break;
       case '\\': dst[pos++]='\\'; dst[pos++]='\\'; break;
       case '\n': dst[pos++]='\\'; dst[pos++]='n';  break;
+      case '\r': dst[pos++]='\\'; dst[pos++]='r';  break;
       case '\t': dst[pos++]='\\'; dst[pos++]='t';  break;
-      default:   dst[pos++] = c;                   break;  // UTF-8 bytes pass through
+      case '\b': dst[pos++]='\\'; dst[pos++]='b';  break;
+      case '\f': dst[pos++]='\\'; dst[pos++]='f';  break;
+      default:
+        if (c < 0x20) {                             // other control → \u00XX
+          dst[pos++]='\\'; dst[pos++]='u'; dst[pos++]='0'; dst[pos++]='0';
+          dst[pos++]=kHex[(c >> 4) & 0xF]; dst[pos++]=kHex[c & 0xF];
+        } else {
+          dst[pos++] = (char)c;                     // UTF-8 bytes pass through
+        }
+        break;
     }
   }
 }
