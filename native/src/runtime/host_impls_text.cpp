@@ -52,7 +52,14 @@ void ensureBlitz() {
 int installFallback(const uint8_t* bytes, int len, const char* lang, int lang_len) {
   ensureBlitz();
   int fid = engine().addFallbackFont(bytes, len, lang, lang_len);
-  tb_add_font(g_blitz, nullptr, 0, 0, 0, bytes, len);
+  // Lock-step is only preserved if BOTH libs accept the face. The engine
+  // (FreeType openFace) rejects some faces the Blitz stack (parley) would
+  // accept — e.g. a .ttc it won't open — returning -1. Mirroring such a face
+  // into Blitz alone shifts every later Blitz faceId one ahead of the engine's,
+  // so pre-shaped runs (gen.richtext) reference a faceId the engine lacks and
+  // every glyph is dropped (face-out-of-range). Only mirror when the engine
+  // took it.
+  if (fid >= 0) tb_add_font(g_blitz, nullptr, 0, 0, 0, bytes, len);
   return fid;
 }
 
@@ -217,6 +224,15 @@ struct AbiMetrics {
 namespace effect_runtime {
 
 void textInstallPrimaryFont(const uint8_t* bytes, int len) {
+  // Installing a primary RESETS the engine's face registry: engine().setFont()
+  // clears its faces + atlas (faceId 0 := this font). The Blitz session must
+  // reset in lock-step — tb_add_font only ever appends, so without this a
+  // re-install would leave Blitz with stale faces while the engine is back at 0,
+  // and Blitz would hand back a faceId past the engine's range (every pre-shaped
+  // glyph dropped). Recreate g_blitz so engine faceId N == Blitz faceId N again.
+  // (textInstallDefaultFonts is idempotent so this normally runs once, but this
+  // keeps the invariant correct for any direct re-install.)
+  if (g_blitz) { tb_destroy(g_blitz); g_blitz = nullptr; }
   ensureBlitz();
   engine().setFont(bytes, len);
   tb_add_font(g_blitz, nullptr, 0, 0, 0, bytes, len);
