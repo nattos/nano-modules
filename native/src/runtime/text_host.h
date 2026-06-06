@@ -33,4 +33,15 @@ void textSetDefaultLang(const char* lang, int lang_len);
 // True once a primary font is installed (explicitly or via env bootstrap).
 bool textFontsReady();
 
+// --- Core Text provider (host_impls_font.mm, macOS) -------------------------
+// One-shot bootstrap for a host with no env config (the FFGL plugin): install
+// `primaryPath` (a bundled face, for Latin parity) if it loads, else the system
+// UI font, then the OS's CJK fallback chain. Pass nullptr to skip the bundled
+// primary and use the system UI font.
+void textInstallDefaultFonts(const char* primaryPath);
+// Install the OS's preferred CJK faces (ja/ko/zh-Hans/zh-Hant) as fallbacks.
+void textInstallSystemFallbacks();
+// Install the system UI font as the primary face. Returns false on failure.
+bool textInstallSystemPrimary();
+
 }  // namespace effect_runtime

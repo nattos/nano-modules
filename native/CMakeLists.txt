@@ -546,6 +546,7 @@ if(APPLE)
     src/runtime/effect_runtime.cpp
     src/runtime/host_impls.cpp
     src/runtime/host_impls_text.cpp
+    src/runtime/host_impls_font.mm
     src/runtime/gpu_impls.cpp
     src/runtime/fusion_codegen.cpp
   )
@@ -560,6 +561,8 @@ if(APPLE)
     text_engine
     text_blitz
     nlohmann_json::nlohmann_json
+    # Core Text font provider (host_impls_font.mm).
+    "-framework CoreText"
     # Rust staticlib pulls these macOS system frameworks/libs.
     "-framework CoreFoundation" "-framework Security"
     "-framework SystemConfiguration" "-liconv" "-lobjc"
@@ -685,6 +688,19 @@ if(APPLE)
     "-framework Foundation"
   )
   target_compile_options(native_test_runner PRIVATE -Wno-attributes)
+
+  # Runtime smoke test for the text effects (gen.text / gen.richtext) mapped into
+  # the native bundle: register + module_init + Core Text fonts + render, the
+  # plugin-time path a compile check can't exercise.
+  add_executable(text_effect_smoke tests/text_effect_smoke.mm)
+  target_include_directories(text_effect_smoke PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${EFFECTS_NATIVE_INC} ${EFFECTS_NATIVE_TMP})
+  target_link_libraries(text_effect_smoke PRIVATE
+    effects_native effect_runtime gpu_backend
+    nlohmann_json::nlohmann_json
+    "-framework Metal" "-framework Foundation")
+  target_compile_options(text_effect_smoke PRIVATE -Wno-attributes)
+  add_dependencies(text_effect_smoke effects_msl_headers)
 
   # --- ffgl_runner: standalone host that dlopens an FFGL bundle ---
   # Lets me iterate on StreakyBlobs without restarting Resolume — feed
@@ -813,6 +829,25 @@ if(APPLE)
   if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
     set(NANOBARREL_CODESIGN_IDENTITY "-")
   endif()
+  # Bundle the Latin primary font (default.ttf) into Resources/fonts/ for the
+  # text.* service — the parity-exact primary; CJK falls back to system faces
+  # via Core Text (host_impls_font.mm). Best-effort: the file is gitignored, so
+  # skip quietly if it isn't present in the web public dir.
+  set(NANOBARREL_FONT_SRC "${CMAKE_SOURCE_DIR}/../web/public/fonts/default.ttf")
+  if(EXISTS "${NANOBARREL_FONT_SRC}")
+    add_custom_command(TARGET NanoBarrel POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+              "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/fonts"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${NANOBARREL_FONT_SRC}"
+              "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/fonts/default.ttf"
+      COMMENT "Bundling default.ttf into NanoBarrel.bundle/Resources/fonts"
+      VERBATIM
+    )
+  else()
+    message(STATUS "NanoBarrel: default.ttf not found — text effects will use the system UI font as primary")
+  endif()
+
   add_custom_command(TARGET NanoBarrel POST_BUILD
     COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
             "${NANOBARREL_CODESIGN_IDENTITY}"

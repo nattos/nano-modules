@@ -52,12 +52,36 @@
 
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "runtime/text_host.h"
 #include "sketch/module_registry.h"
+
+#include <dlfcn.h>
 #include "sketch/sketch_executor.h"
 
 #import "InteropTexture.h"
 #include "barrel_log.h"
 #include "barrel_codec.h"
+
+// gen.text / gen.richtext are NOT in barrel_manifest.txt — they're backed by
+// the text.* host service (no MSL shaders) and need a font install, so they're
+// absent from the generated barrel_effects.gen.h. Declare their entry points
+// here and register them explicitly alongside registerAllBarrelEffects (see
+// initEffectRuntime). The manifest effects are declared by the generated header.
+#define DECLARE_EFFECT_NS(ns)                                                 \
+  namespace ns {                                                              \
+    extern void  module_init();                                               \
+    extern void* create();                                                    \
+    extern void  destroy(void* self);                                         \
+    extern void  init(void* self);                                            \
+    extern void  tick(void* self, double dt);                                 \
+    extern void  render(void* self, int vp_w, int vp_h);                      \
+    extern void  on_state_patched(void* self, int n, const char* pb,          \
+                                  const int* off, const int* len,             \
+                                  const int* ops);                            \
+  }
+DECLARE_EFFECT_NS(gen_text)
+DECLARE_EFFECT_NS(gen_richtext)
+#undef DECLARE_EFFECT_NS
 
 namespace effect_runtime {
   void setHostTime(double t);
@@ -492,6 +516,22 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   }
 
  private:
+  // Resolve a file under this bundle's Contents/Resources/fonts/. Uses dladdr
+  // on a symbol in our own image to find the bundle, mirroring the bridge-dylib
+  // discovery in looper_plugin.cpp. Empty if we can't locate the bundle.
+  static std::string bundleFontPath(const char* name) {
+    Dl_info info;
+    // Any address in our own image works; use this function itself (static
+    // member → plain function pointer) so we don't depend on symbol order.
+    if (!dladdr(reinterpret_cast<const void*>(&bundleFontPath), &info) || !info.dli_fname)
+      return "";
+    std::string p = info.dli_fname;                 // …/NanoBarrel.bundle/Contents/MacOS/NanoBarrel
+    auto pos = p.find(".bundle/");
+    if (pos == std::string::npos) return "";
+    p = p.substr(0, pos + 8) + "Contents/Resources/fonts/" + name;
+    return p;
+  }
+
   // -- Effect runtime setup -------------------------------------------
   // Builds the Metal-backed EffectRuntime, registers every shader MSL
   // string from the effects_native bundle by the name each effect
@@ -514,6 +554,26 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     // Registers every effect listed in barrel_manifest.txt (shaders + types).
     nano_barrel_gen::registerAllBarrelEffects(*rt_, *registry_);
+
+    // Text effects. They need NO registerShaderMSL — the text.* host service
+    // owns its MSDF compositor PSO. But the engine needs font BYTES: install the
+    // bundled default.ttf as the parity-exact Latin primary (falling back to the
+    // system UI font if absent), plus the OS's CJK faces as the fallback chain.
+    effect_runtime::textInstallDefaultFonts(bundleFontPath("default.ttf").c_str());
+    // init() sets the per-instance `initialized` flag the effects' render()
+    // gates on — it MUST be wired or render() early-returns (blank output).
+    registry_->registerEffect(
+        "gen.text", "Text",
+        &gen_text::module_init, &gen_text::create,
+        &gen_text::destroy, &gen_text::init,
+        &gen_text::tick, &gen_text::render,
+        &gen_text::on_state_patched);
+    registry_->registerEffect(
+        "gen.richtext", "Rich Text",
+        &gen_richtext::module_init, &gen_richtext::create,
+        &gen_richtext::destroy, &gen_richtext::init,
+        &gen_richtext::tick, &gen_richtext::render,
+        &gen_richtext::on_state_patched);
 
     executor_ = std::make_unique<sketch_executor::SketchExecutor>(
         rt_.get(), registry_.get(), gpu_.get());

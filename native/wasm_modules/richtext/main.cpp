@@ -115,6 +115,10 @@ void render(void* self, int vp_w, int vp_h) {
 
 NANO_DECLARE_INSTANCE_EFFECT(gen_richtext)
 
+// WASM module entry. Native bundles (NanoBarrel) register the effect via the
+// gen_richtext:: namespace function pointers instead, and several effects share
+// one binary — so this global export is WASM-only to avoid duplicate symbols.
+#ifdef __wasm__
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
   nano::registerEffect({
@@ -127,3 +131,4 @@ void nano_module_main() {
     NANO_INSTANCE_LIFECYCLE(gen_richtext),
   });
 }
+#endif
