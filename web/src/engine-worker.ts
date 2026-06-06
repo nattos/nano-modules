@@ -284,6 +284,13 @@ async function handleCommand(cmd: WorkerCommand) {
       if (te && te.registerOsFace(cmd.family, cmd.weight, cmd.italic, new Uint8Array(cmd.bytes)) >= 0) markDirty();
       break;
     }
+    case 'registerFallback': {
+      // Main thread resolved an OS CJK face via Local Font Access; append it to
+      // the engine's fallback chain (and Blitz's) so the next frame shapes CJK.
+      const te = await TextEngine.whenReady();
+      if (te && te.registerFallbackBytes(new Uint8Array(cmd.bytes), cmd.lang) >= 0) markDirty();
+      break;
+    }
     case 'setFusionMode':
       if (sketchExecutor) sketchExecutor.setFusionMode(cmd.mode);
       break;

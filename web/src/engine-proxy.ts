@@ -152,6 +152,13 @@ export class EngineProxy {
     this.send({ type: 'registerFont', family, weight, italic, bytes }, [bytes]);
   }
 
+  /** Register an OS-resolved FALLBACK face (sfnt bytes) into the engine's
+   *  fallback chain, tagged with its CJK region `lang`. The buffer is
+   *  transferred (consumed here). */
+  registerFallback(lang: string, bytes: ArrayBuffer) {
+    this.send({ type: 'registerFallback', lang, bytes }, [bytes]);
+  }
+
   /**
    * Test-only knob — switches the engine's fusion planner between auto
    * (production), force-on (every fusion-eligible stage takes the

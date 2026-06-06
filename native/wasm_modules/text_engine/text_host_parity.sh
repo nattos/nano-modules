@@ -21,7 +21,8 @@ OUT="$ROOT/build/text-dumps"
 mkdir -p "$OUT" /tmp/thp
 
 FONT="${TE_FONT:-$ROOT/web/public/fonts/default.ttf}"
-FALLBACK="${TE_FALLBACK:-$ROOT/web/public/fonts/noto-sans-jp.ttf:$ROOT/web/public/fonts/noto-sans-kr.ttf:$ROOT/web/public/fonts/noto-sans-sc.ttf:$ROOT/web/public/fonts/noto-sans-tc.ttf}"
+# CJK faces live in web/test-fonts (fetched, not served — see web/scripts/fetch_fonts.sh).
+FALLBACK="${TE_FALLBACK:-$ROOT/web/test-fonts/noto-sans-jp.ttf:$ROOT/web/test-fonts/noto-sans-kr.ttf:$ROOT/web/test-fonts/noto-sans-sc.ttf:$ROOT/web/test-fonts/noto-sans-tc.ttf}"
 
 echo "[1/4] building text_blitz (native staticlib)"
 ( cd "$BLITZ" && cargo build --release >/dev/null 2>&1 )

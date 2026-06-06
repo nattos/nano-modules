@@ -159,6 +159,9 @@ export type WorkerCommand =
   // (family, weight, italic) and registers it into both the simple engine and
   // Blitz/fontique (which matches by family + weight + style).
   | { type: 'registerFont'; family: string; weight: number; italic: boolean; bytes: ArrayBuffer }
+  // OS-resolved fallback face (Local Font Access, main thread) → the engine's
+  // fallback chain, tagged with its CJK region `lang` (ja/ko/zh-Hant/zh-Hans).
+  | { type: 'registerFallback'; lang: string; bytes: ArrayBuffer }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---

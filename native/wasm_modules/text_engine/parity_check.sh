@@ -40,12 +40,12 @@ mkdir -p "$DUMP_DIR"
 export TE_FONT2="${TE_FONT2:-$ROOT/web/public/fonts/noto-serif.ttf}"
 export TE_FAMILY2="${TE_FAMILY2:-Serif}"
 
-# CJK fallback CHAIN — the bundled, glyf-flavored (byte-parity) Noto faces, in
-# the same order as the real app's DEFAULT_FALLBACKS. Covers Simplified +
-# Traditional Chinese, Japanese (kana), and Korean (hangul). Fetched by
-# web/scripts/fetch_fonts.sh. Both tools register the SAME files in order.
-FONTS="$ROOT/web/public/fonts"
-export TE_FALLBACK="${TE_FALLBACK:-$FONTS/noto-sans-jp.ttf:$FONTS/noto-sans-sc.ttf:$FONTS/noto-sans-tc.ttf:$FONTS/noto-sans-kr.ttf:$FONTS/noto-serif-jp.ttf:$FONTS/noto-serif-sc.ttf:$FONTS/noto-serif-tc.ttf:$FONTS/noto-serif-kr.ttf}"
+# CJK fallback CHAIN — glyf-flavored (byte-parity) Noto faces. These are no
+# longer served by the web app (it resolves OS CJK via Local Font Access); they
+# live in web/test-fonts, fetched by web/scripts/fetch_fonts.sh, for this parity
+# test. Covers Simplified + Traditional Chinese, Japanese (kana), Korean (hangul).
+CJK="$ROOT/web/test-fonts"
+export TE_FALLBACK="${TE_FALLBACK:-$CJK/noto-sans-jp.ttf:$CJK/noto-sans-sc.ttf:$CJK/noto-sans-tc.ttf:$CJK/noto-sans-kr.ttf:$CJK/noto-serif-jp.ttf:$CJK/noto-serif-sc.ttf:$CJK/noto-serif-tc.ttf:$CJK/noto-serif-kr.ttf}"
 
 SPECS=(
   '{"text":"Hello\nWorld!","runs":[{"start":0,"len":12,"size_px":48}],"constraints":{"max_width_px":300}}'

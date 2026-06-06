@@ -4,3 +4,6 @@
 public/fonts/*.ttf
 public/fonts/*.otf
 public/fonts/*.ttc
+# CJK parity-test faces — fetched but NOT served (the app resolves OS CJK via
+# Local Font Access); used only by the native parity harness.
+test-fonts/

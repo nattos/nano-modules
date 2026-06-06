@@ -80,10 +80,24 @@ export const COMMON_FONT_SUGGESTIONS: string[] = [
   'Palatino', 'Geneva', 'Gill Sans', 'Baskerville', 'SF Pro Text',
 ];
 
+// System CJK faces to register as the engine's fallback chain, in place of the
+// (huge) bundled Noto CJK. First available family per region wins; tagged with
+// `lang` for correct regional Han forms. macOS-first (our Electron target),
+// then Windows, then Noto (Linux / installed). Mirrors the native Core Text
+// host's probe order so web + native pull the same OS faces.
+const SYSTEM_CJK_FALLBACKS: { lang: string; families: string[] }[] = [
+  { lang: 'ja',      families: ['Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', 'Noto Sans CJK JP', 'Noto Sans JP'] },
+  { lang: 'ko',      families: ['Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans CJK KR', 'Noto Sans KR', 'AppleGothic'] },
+  { lang: 'zh-Hans', families: ['PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Heiti SC', 'STHeiti'] },
+  { lang: 'zh-Hant', families: ['PingFang TC', 'PingFang HK', 'Microsoft JhengHei', 'Noto Sans CJK TC', 'Noto Sans TC', 'Heiti TC'] },
+];
+
 let cached: Map<string, FontData[]> | null = null;  // family → all its faces
 const wanted = new Map<string, FontRequest>();      // face key → request, pending resolution
 const shippedFamilies = new Set<string>();          // families fully enumerated → worker
+let cjkFallbacksShipped = false;                     // system CJK chain installed once
 let registerCb: ((family: string, weight: number, italic: boolean, bytes: ArrayBuffer) => void) | null = null;
+let registerFallbackCb: ((lang: string, bytes: ArrayBuffer) => void) | null = null;
 
 function ql(): QueryLocalFonts | null {
   const fn = (globalThis as any).queryLocalFonts;
@@ -146,15 +160,51 @@ async function tryResolve(req: FontRequest): Promise<void> {
   wanted.delete(req.key);
 }
 
-/** Wire the provider: `register` ships resolved bytes to the worker (keyed by the
- *  engine face key). Installs a one-time gesture listener that primes Local Font
- *  Access and flushes any faces requested before the user interacted. Call once
- *  at boot. */
-export function initFontProvider(register: (family: string, weight: number, italic: boolean, bytes: ArrayBuffer) => void): void {
+/** Resolve the platform's CJK faces and register them as the engine's fallback
+ *  chain (replacing the bundled Noto CJK). One face per region, first available
+ *  candidate wins; deduped so a face that serves two regions isn't shipped
+ *  twice. Best-effort and once per session. Requires a primed cache. */
+async function installSystemCjkFallbacks(): Promise<void> {
+  if (cjkFallbacksShipped || !cached || !registerFallbackCb) return;
+  cjkFallbacksShipped = true;
+  const shipped = new Set<string>();
+  for (const { lang, families } of SYSTEM_CJK_FALLBACKS) {
+    const family = families.find((f) => cached!.has(f));
+    if (!family || shipped.has(family)) continue;
+    const fd = pickFace(family, 400, false);
+    if (!fd) continue;
+    try {
+      const bytes = await (await fd.blob()).arrayBuffer();
+      registerFallbackCb(lang, bytes);
+      shipped.add(family);
+    } catch { /* skip — blob denied / read failed */ }
+  }
+}
+
+/** Wire the provider: `register` ships resolved NAMED faces to the worker (keyed
+ *  by the engine face key); `registerFallback` ships OS CJK faces into the
+ *  fallback chain. Installs a one-time gesture listener that primes Local Font
+ *  Access, installs the system CJK fallbacks, and flushes any faces requested
+ *  before the user interacted. Call once at boot. */
+export function initFontProvider(
+  register: (family: string, weight: number, italic: boolean, bytes: ArrayBuffer) => void,
+  registerFallback?: (lang: string, bytes: ArrayBuffer) => void,
+): void {
   registerCb = register;
-  if (!ql()) return;  // non-Chromium: OS fonts simply won't resolve (bundled set still works)
+  registerFallbackCb = registerFallback ?? null;
+  if (!ql()) {
+    // No Local Font Access (non-Chromium, or a plain web build): OS faces can't
+    // be read, so named OS fonts and the CJK fallback chain won't resolve. Latin
+    // (bundled) is unaffected; CJK renders as tofu. Logged so the empty boxes
+    // aren't a mystery in Safari/Firefox. The Electron app auto-grants this.
+    console.info('[fonts] Local Font Access unavailable — CJK falls back to tofu (Latin unaffected).');
+    return;
+  }
   const prime = async () => {
-    if (await primeLocalFonts()) for (const req of [...wanted.values()]) void tryResolve(req);
+    if (await primeLocalFonts()) {
+      void installSystemCjkFallbacks();
+      for (const req of [...wanted.values()]) void tryResolve(req);
+    }
   };
   // Transient activation from any first interaction lets the prompt show / grant.
   window.addEventListener('pointerdown', prime, { once: true });

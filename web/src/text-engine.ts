@@ -253,21 +253,19 @@ function detectDefaultLang(): { chosen: string; language: string; languages: str
 
 // Fallback chain (priority order): consulted for codepoints the active face
 // lacks, so CJK etc. render instead of tofu. `lang` lets a run pick the right
-// regional Han forms (ja/ko/zh-Hant/zh-Hans). glyf-flavored Noto faces → byte
-// parity. Extend with Arabic / Hebrew for full coverage.
-const DEFAULT_FALLBACKS: FallbackSource[] = [
-  // Sans-serif CJK (matched to sans primaries / the default Noto Sans).
-  { url: '/fonts/noto-sans-jp.ttf', lang: 'ja' },        // Japanese (kana + kanji)
-  { url: '/fonts/noto-sans-sc.ttf', lang: 'zh-Hans' },   // Simplified Chinese / Han
-  { url: '/fonts/noto-sans-tc.ttf', lang: 'zh-Hant' },   // Traditional Chinese
-  { url: '/fonts/noto-sans-kr.ttf', lang: 'ko' },        // Korean (hangul)
-  // Serif CJK — chosen for serif primaries (the engine style-matches via OS/2;
-  // missing if fetch_fonts.sh wasn't run → serif text falls back to sans CJK).
-  { url: '/fonts/noto-serif-jp.ttf', lang: 'ja' },
-  { url: '/fonts/noto-serif-sc.ttf', lang: 'zh-Hans' },
-  { url: '/fonts/noto-serif-tc.ttf', lang: 'zh-Hant' },
-  { url: '/fonts/noto-serif-kr.ttf', lang: 'ko' },
-];
+// regional Han forms (ja/ko/zh-Hant/zh-Hans).
+//
+// CJK is NO LONGER bundled — the four Noto Sans + four Noto Serif CJK faces are
+// ~123 MB and shipping them to every client is wasteful. Instead the OS's CJK
+// faces are resolved on demand via Local Font Access (font-access.ts): on the
+// first user gesture (the permission prompt's required activation) we enumerate
+// system fonts and register the platform CJK faces (PingFang / Hiragino / Apple
+// SD Gothic / …) as fallbacks. This also matches the native FFGL host, which
+// pulls system CJK via Core Text — so both sides use the OS faces. Where Local
+// Font Access is unavailable (non-Chromium, or permission denied) CJK degrades
+// to tofu; Latin and any bundled/named faces are unaffected. A deployment that
+// wants guaranteed CJK can still pass `fallbacks:` to TextEngine.init.
+const DEFAULT_FALLBACKS: FallbackSource[] = [];
 
 // Back the singleton with globalThis so it survives module duplication across
 // vite/HMR boundaries (wasm-host.ts and gpu-test-runner.html can otherwise end

@@ -29,19 +29,32 @@ The engine itself is multi-face: `setFont` installs the primary (face 0),
 When a run's face lacks a codepoint (e.g. CJK in a Latin font), the engine
 consults an ordered **fallback chain** and shapes that codepoint with the first
 covering face — so 你好 renders real glyphs instead of tofu. The host installs
-the chain via `addFallbackFont(bytes, lang)` (web: `DEFAULT_FALLBACKS` in
-`text-engine.ts`, fetched by `fetch_fonts.sh`). Selection is a 4-pass match in
+the chain via `addFallbackFont(bytes, lang)`. Selection is a 4-pass match in
 descending preference: **lang+style → lang → style → any**. So the chosen
 fallback matches both the run's **region** (`lang`: ja / ko / zh-Hant / zh-Hans,
 for correct regional Han forms) and its **style** (serif vs sans, auto-detected
 from each face's OS/2 `sFamilyClass`) — a serif primary (e.g. Times, or the
 `serif` generic) pulls a serif CJK face, mirroring OS font fallback.
 
-The bundled chain is **Noto Sans + Noto Serif** in **SC / TC / JP / KR**, all
-glyf-flavored (byte-exact parity), covering Simplified + Traditional Chinese,
-Japanese (kana), and Korean (hangul) in both styles. These are large (~130 MB of
-CJK across the 8 faces); they're fetched (not committed) and gitignored. Extend
-(Arabic, Hebrew, …) by adding files to `fetch_fonts.sh` + `DEFAULT_FALLBACKS`.
+**CJK fallback is OS-resolved, not bundled.** The four Noto Sans + four Noto
+Serif CJK faces are ~123 MB — far too heavy to ship to every web client. So the
+web app no longer bundles them (`DEFAULT_FALLBACKS` is empty). Instead, on the
+first user gesture, `web/src/font-access.ts` enumerates the OS's fonts via Local
+Font Access (Chromium, behind a one-time permission prompt) and registers the
+platform's CJK faces — PingFang SC/TC, Hiragino Sans, Apple SD Gothic Neo,
+Microsoft YaHei/JhengHei, Yu Gothic, Malgun Gothic, or installed Noto CJK — into
+the fallback chain (one per region, tagged with `lang`). This **mirrors the
+native FFGL host**, which pulls system CJK via Core Text — so both sides use the
+OS faces, and on the same machine they're the same bytes. Where Local Font
+Access is unavailable (non-Chromium, or denied) CJK degrades to tofu; Latin and
+any bundled/named faces are unaffected. A deployment that wants guaranteed CJK
+can pass an explicit `fallbacks:` list to `TextEngine.init`.
+
+> **Parity note:** because CJK now comes from OS faces (which differ across
+> machines), CJK is **not** byte-parity-guaranteed in the running app — same as
+> the native side. The *engine* parity guarantee (identical bytes → identical
+> pixels) is unchanged and is still proven by the harness, which feeds both
+> engines the same Noto CJK from `web/test-fonts/` (fetched but **not** served).
 
 FreeType is built with both the TrueType (`glyf`) and **CFF** drivers, so
 OpenType-CFF OS fonts (many CJK faces) open too — though CFF charstring
