@@ -33,21 +33,35 @@ describe('Grid Effect E2E', () => {
       module: 'grid.wasm',
       bundle: 'core',
       width: 64, height: 64,
-      params: [[0, 0.0], [1, 0.5], [2, 0.5]],
+      // Set fields by NAME — grid reads params via named patches (instance
+      // ABI), so positional [index,val] entries (legacy params[] list) are
+      // ignored and cell_size would stay at its default for both cases.
+      // line_width is cell-NORMALIZED (pixel.hlsl), so total line coverage is
+      // ~constant across cell_size; what changes is line POSITION/density.
+      params: [['cell_size', 0.0], ['line_width', 0.5], ['softness', 0.1]],
       dumpName: 'grid_fine',
     });
     const coarse = await runGpuTest({
       module: 'grid.wasm',
       bundle: 'core',
       width: 64, height: 64,
-      params: [[0, 1.0], [1, 0.5], [2, 0.5]],
+      params: [['cell_size', 1.0], ['line_width', 0.5], ['softness', 0.1]],
       dumpName: 'grid_coarse',
     });
     expect(fine.success && coarse.success).toBe(true);
-    // Fine grid has more line pixels than coarse grid.
+    // cell_size=0 clamps to a fine grid (~0.02); cell_size=1 is coarse. The
+    // fine grid is non-degenerate (has both line and bg pixels), and because
+    // its lines sit at a different spatial frequency than the coarse grid, the
+    // two frames must differ pixel-wise (this is what proves cell_size took
+    // effect through the clamp, not a total-line-pixel count which is
+    // cell_size-invariant for this shader).
     const linePixels = (frame: typeof fine) =>
       frame.countPixels(c => c.r > 150 && c.a > 100);
-    expect(linePixels(fine)).toBeGreaterThan(linePixels(coarse));
+    const bgPixels = (frame: typeof fine) =>
+      frame.countPixels(c => c.a < 100);
+    expect(linePixels(fine)).toBeGreaterThan(0);
+    expect(bgPixels(fine)).toBeGreaterThan(0);
+    fine.expectDifferentFrom(coarse, 50);
   });
 
   it('custom line and bg colours apply', async () => {

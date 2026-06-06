@@ -1032,6 +1032,15 @@ async function loadModule(moduleType: string) {
 }
 
 const warmupHosts: WasmHost[] = [];
+// Warmup hosts indexed by resolved effect id, available for the FIRST
+// instantiateEffect of that id to reuse (instead of spawning a second host).
+// Each warmup activation already registered a `<id>@0` plugin key; reusing it
+// means the first live instance is `@0` rather than `@1`, so plugin_output
+// traces / metadata that reference `@0` resolve to the live, rendered instance.
+// The host stays in warmupHosts[] too, so its plugin registration (and palette
+// schema) persists even if the instance is later removed. Consumed entries are
+// deleted so a 2nd instance of the same id correctly gets a fresh `@1` host.
+const warmupByEffect = new Map<string, { host: WasmHost; module: WasmModule }>();
 
 async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string }[]) {
   for (const eff of effects) {
@@ -1040,8 +1049,9 @@ async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string
       wh.bridgeCore = bridgeCore;
       wh.gpuHost = gpuHost;
       await wh.load(compiled);
-      wh.activateEffect(eff.id);
+      const mod = wh.activateEffect(eff.id);
       warmupHosts.push(wh);
+      warmupByEffect.set(eff.id, { host: wh, module: mod });
     } catch (err) {
       console.warn(`[warmup] schema registration failed for ${eff.id}:`, err);
     }
@@ -1063,13 +1073,25 @@ async function instantiateEffect(effectId: string) {
     return;
   }
 
-  const host = new WasmHost();
-  host.bridgeCore = bridgeCore;
-  host.gpuHost = gpuHost;
-
   try {
-    await host.load(found.compiled);
-    const mod = host.activateEffect(found.resolvedId);
+    // Reuse the bundle-warmup host for the first instantiation of this effect
+    // (it's already loaded + activated as `<id>@0`), so the live instance is
+    // `@0` rather than a fresh `@1`. Subsequent instantiations of the same id
+    // fall through to a fresh host.
+    const warm = warmupByEffect.get(found.resolvedId);
+    let host: WasmHost;
+    let mod: WasmModule;
+    if (warm) {
+      warmupByEffect.delete(found.resolvedId);
+      host = warm.host;
+      mod = warm.module;
+    } else {
+      host = new WasmHost();
+      host.bridgeCore = bridgeCore;
+      host.gpuHost = gpuHost;
+      await host.load(found.compiled);
+      mod = host.activateEffect(found.resolvedId);
+    }
 
     const key = host.pluginKey || `${resolvedId}@0`;
     realModules.set(key, { host, module: mod });

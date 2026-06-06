@@ -107,10 +107,18 @@ async function run() {
     // Accumulate per-frame pluginStates diffs (the engine ships changed+removed
     // keys each frame, not a full map) so tests can read result.state.pluginStates.
     const pluginStatesAcc = {};
+    // Same deal for sketch_state — the engine ships sketchStateDiff per frame
+    // (the proxy exposes onSketchStateDiff, NOT onSketchState), so accumulate it
+    // here so tests can read result.sketchState.
+    const sketchStateAcc = {};
     engine.onStateUpdate = (state) => { lastState = state; };
     engine.onPluginStatesDiff = (diff) => {
       if (diff && diff.changed) for (const k in diff.changed) pluginStatesAcc[k] = diff.changed[k];
       if (diff && diff.removed) for (const k of diff.removed) delete pluginStatesAcc[k];
+    };
+    engine.onSketchStateDiff = (diff) => {
+      if (diff && diff.changed) for (const k in diff.changed) sketchStateAcc[k] = diff.changed[k];
+      if (diff && diff.removed) for (const k of diff.removed) delete sketchStateAcc[k];
     };
     engine.onTracedFrames = () => {};
 
@@ -135,7 +143,7 @@ async function run() {
       await sendCommands(engine, phase.commands || []);
       const { lastFrames, lastSketchState } = await waitForFrames(engine, phase.waitFrames || 10);
       const traced = await captureFrames(lastFrames, phase.captureTraceIds);
-      phaseResults.push({ tracedFrames: traced, sketchState: lastSketchState });
+      phaseResults.push({ tracedFrames: traced, sketchState: { ...sketchStateAcc } });
     }
 
     engine.destroy();
@@ -145,7 +153,7 @@ async function run() {
       output.phases = phaseResults;
     } else {
       output.tracedFrames = phaseResults[0]?.tracedFrames || {};
-      output.sketchState = phaseResults[0]?.sketchState || {};
+      output.sketchState = sketchStateAcc;
     }
 
     resultEl.textContent = JSON.stringify(output);
