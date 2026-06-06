@@ -536,7 +536,7 @@ public:
   Schema& textField(const char* name, const char* def = "", int io = None) {
     beginField(name);
     appendRaw("\"type\":\"string\",\"default\":\"");
-    appendRaw(def);
+    appendJsonString(def);   // escape — defaults may be multi-line CSS/HTML
     appendRaw("\",\"io\":");
     appendInt(io);
     appendOrder();
@@ -614,6 +614,34 @@ private:
 
   void appendRaw(const char* s) {
     while (*s && len_ < (int)sizeof(buf_) - 1) buf_[len_++] = *s++;
+  }
+
+  // Append `s` into the schema JSON as the body of a string literal, escaping
+  // any character that JSON forbids raw. A textField default can be a whole
+  // multi-line stylesheet (gen.richtext) with embedded quotes and newlines; a
+  // raw control byte / unescaped quote corrupts the schema JSON and the web's
+  // strict JSON.parse rejects it. (Native nlohmann is lenient and would hide it.)
+  void appendJsonString(const char* s) {
+    static const char kHex[] = "0123456789abcdef";
+    while (*s && len_ < (int)sizeof(buf_) - 7) {   // -7 leaves room for \u00XX
+      unsigned char c = (unsigned char)*s++;
+      switch (c) {
+        case '"':  buf_[len_++]='\\'; buf_[len_++]='"';  break;
+        case '\\': buf_[len_++]='\\'; buf_[len_++]='\\'; break;
+        case '\n': buf_[len_++]='\\'; buf_[len_++]='n';  break;
+        case '\r': buf_[len_++]='\\'; buf_[len_++]='r';  break;
+        case '\t': buf_[len_++]='\\'; buf_[len_++]='t';  break;
+        case '\b': buf_[len_++]='\\'; buf_[len_++]='b';  break;
+        case '\f': buf_[len_++]='\\'; buf_[len_++]='f';  break;
+        default:
+          if (c < 0x20) {                            // other control → \u00XX
+            buf_[len_++]='\\'; buf_[len_++]='u'; buf_[len_++]='0'; buf_[len_++]='0';
+            buf_[len_++]=kHex[(c >> 4) & 0xF]; buf_[len_++]=kHex[c & 0xF];
+          } else {
+            buf_[len_++] = (char)c;                  // UTF-8 bytes pass through
+          }
+      }
+    }
   }
 
   void appendInt(int v) {

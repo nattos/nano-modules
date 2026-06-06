@@ -22,22 +22,76 @@
 
 namespace gen_richtext {
 
+// Default document. Defined as macros so the SAME text seeds BOTH the in-memory
+// State (the native runtime default) AND the param schema (textField's 2nd arg is
+// the default *value*) — the web reads that schema default via
+// defaultStateForPlugin, so a fresh gen.richtext starts identical in the browser
+// and native. Structure (HTML) and styling (CSS) are separate fields so each gets
+// its own multi-line editor; render() combines them as <style>{css}</style>{html}.
+//
+// The default stylesheet is variable-driven: colours and the master font-size are
+// CSS custom properties (Blitz/Stylo fully supports var()), so the whole look
+// retunes by editing the :root block alone. Headings/labels size off --font-size
+// via em (font-size is inherited, so child em is relative to body's resolved px),
+// which keeps proportions when you change the one knob.
+#define GEN_RICHTEXT_DEFAULT_HTML \
+  "<div class=\"kicker\">\n" \
+  "  NANO \xc2\xb7 REPATCH\n" \
+  "</div>\n" \
+  "<h1>\n" \
+  "  Type that <em>moves</em><br>at frame rate.\n" \
+  "</h1>\n" \
+  "<p>\n" \
+  "  HTML &amp; CSS laid out by Blitz, rendered through an MSDF atlas " \
+  "\xe2\x80\x94 crisp at any size, byte-identical in the browser and native.\n" \
+  "</p>"
+
+#define GEN_RICHTEXT_DEFAULT_CSS \
+  ":root {\n" \
+  "  --fg: #ffffff;       /* body text */\n" \
+  "  --accent: #7c5cff;   /* headings / highlights */\n" \
+  "  --muted: #9aa4b2;    /* secondary text */\n" \
+  "  --font: sans-serif;  /* family (resolved by the host) */\n" \
+  "  --font-size: 24px;   /* master size \xe2\x80\x94 headings em off this */\n" \
+  "}\n" \
+  "* {\n" \
+  "  margin: 0;\n" \
+  "  box-sizing: border-box;\n" \
+  "}\n" \
+  "body {\n" \
+  "  font-family: var(--font);\n" \
+  "  font-size: var(--font-size);\n" \
+  "  color: var(--fg);\n" \
+  "  padding: 56px;\n" \
+  "}\n" \
+  ".kicker {\n" \
+  "  font-size: 0.8em;\n" \
+  "  font-weight: 700;\n" \
+  "  letter-spacing: 6px;\n" \
+  "  color: var(--accent);\n" \
+  "}\n" \
+  "h1 {\n" \
+  "  font-size: 3.83em;\n" \
+  "  font-weight: 800;\n" \
+  "  line-height: 1.04;\n" \
+  "  letter-spacing: -2px;\n" \
+  "  margin: 14px 0;\n" \
+  "}\n" \
+  "h1 em {\n" \
+  "  color: var(--accent);\n" \
+  "  font-style: normal;\n" \
+  "}\n" \
+  "p {\n" \
+  "  font-size: 1em;\n" \
+  "  line-height: 1.5;\n" \
+  "  color: var(--muted);\n" \
+  "  max-width: 760px;\n" \
+  "  margin-top: 20px;\n" \
+  "}"
+
 struct State {
-  // Structure (HTML) and styling (CSS) are separate fields so each gets its own
-  // multi-line editor; render() combines them as <style>{css}</style>{html}.
-  char  html[6144] =
-    "<div class=\"kicker\">NANO \xc2\xb7 REPATCH</div>\n"
-    "<h1>Type that <em>moves</em><br>at frame rate.</h1>\n"
-    "<p>HTML &amp; CSS laid out by Blitz, rendered through an MSDF atlas "
-    "\xe2\x80\x94 crisp at any size, byte-identical in the browser and native.</p>";
-  char  css[4096] =
-    ":root{ --accent:#7c5cff; --muted:#9aa4b2; }\n"
-    "*{ margin:0; box-sizing:border-box; }\n"
-    "body{ font-family:sans-serif; padding:56px; }\n"
-    ".kicker{ font-size:19px; font-weight:700; letter-spacing:6px; color:var(--accent); }\n"
-    "h1{ font-size:92px; font-weight:800; line-height:1.04; letter-spacing:-2px; margin:14px 0; }\n"
-    "h1 em{ color:var(--accent); font-style:normal; }\n"
-    "p{ font-size:24px; line-height:1.5; color:var(--muted); max-width:760px; margin-top:20px; }";
+  char  html[6144] = GEN_RICHTEXT_DEFAULT_HTML;
+  char  css[4096]  = GEN_RICHTEXT_DEFAULT_CSS;
   float scale = 1.0f;       // CSS px → device px (hidpi)
   bool  initialized = false;
 };
@@ -74,8 +128,8 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 void module_init() {
   state::init("gen.richtext", {1, 0, 0},
     state::Schema()
-      .textField   ("html",  "HTML", state::PrimaryInput)
-      .textField   ("css",   "CSS",  state::PrimaryInput)
+      .textField   ("html",  GEN_RICHTEXT_DEFAULT_HTML, state::PrimaryInput)
+      .textField   ("css",   GEN_RICHTEXT_DEFAULT_CSS,  state::PrimaryInput)
       .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; black if unconnected
       .textureField("tex_out", state::PrimaryOutput)
