@@ -297,10 +297,11 @@ int val_as_bool(int h) {
 
 int val_as_string(int h, char* buf, int buf_len) {
   auto* v = val_lookup(h);
-  if (!v) return 0;
-  std::string s;
-  if (v->is_string()) s = v->get<std::string>();
-  else s = v->dump();
+  if (!v || !v->is_string()) return 0;   // non-string (incl. null/discarded) → empty;
+                                          // NOT dump() — that turned a null value into the
+                                          // literal text "null" when read by a string field.
+                                          // Matches bridge_core_val_as_string.
+  const std::string& s = v->get_ref<const std::string&>();
   int n = std::min((int)s.size(), buf_len);
   if (buf && n > 0) memcpy(buf, s.data(), n);
   return (int)s.size();

@@ -28,6 +28,51 @@
 #include <vector>
 #include <zlib.h>
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <chrono>
+#include <thread>
+
+// Minimal send-only WebSocket client: connect, RFC6455 handshake, send ONE
+// masked text frame, close. Lets ffgl_runner drive the plugin's own bridge over
+// WS exactly as the web editor does — to repro barrel-mode-only bugs.
+static bool ws_send_text(int port, const std::string& payload) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return false;
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)port);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+  if (connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) { close(fd); return false; }
+  // Handshake (fixed RFC example key; we don't validate the accept).
+  std::string req =
+    "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
+    "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+    "Sec-WebSocket-Version: 13\r\n\r\n";
+  if (write(fd, req.data(), req.size()) < 0) { close(fd); return false; }
+  char buf[2048]; std::string resp;
+  while (resp.find("\r\n\r\n") == std::string::npos) {
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n <= 0) break;
+    resp.append(buf, n);
+  }
+  // Build a masked client text frame (mask key = 0 → payload unchanged).
+  std::vector<uint8_t> frame;
+  frame.push_back(0x81);  // FIN + text
+  size_t len = payload.size();
+  if (len < 126) { frame.push_back(0x80 | (uint8_t)len); }
+  else if (len < 65536) { frame.push_back(0x80 | 126); frame.push_back((len>>8)&0xff); frame.push_back(len&0xff); }
+  else { frame.push_back(0x80 | 127); for (int i=7;i>=0;i--) frame.push_back((len>>(8*i))&0xff); }
+  frame.insert(frame.end(), {0,0,0,0});  // zero mask key
+  frame.insert(frame.end(), payload.begin(), payload.end());
+  bool ok = write(fd, frame.data(), frame.size()) == (ssize_t)frame.size();
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let the server apply
+  close(fd);
+  return ok;
+}
+
 typedef FFMixed (*FFGLPluginMainPtr)(FFUInt32, FFMixed, FFInstanceID);
 
 // --- Minimal PNG encoder (lifted from web/test/gpu-test-helpers.ts pattern) ---
@@ -113,6 +158,10 @@ int main(int argc, const char* argv[]) {
     // FILE config param expects (nanobarrel://config?<base64>), and set it on
     // text param 0 after instantiate so the barrel runs that sketch.
     std::string configWrapped;
+    // --ws-patch <file>: after instantiate, push the sketch JSON over the
+    // plugin's own WebSocket bridge as `replace /sketch` (exactly like the web
+    // editor in barrel mode), to repro barrel-only bugs.
+    std::string wsSketch;
     // --text IDX <string>: set an arbitrary text param verbatim.
     std::vector<std::pair<int, std::string>> textOverrides;
     int positional = 0;
@@ -132,6 +181,11 @@ int main(int argc, const char* argv[]) {
       } else if (arg == "--text" && i + 2 < argc) {
         textOverrides.push_back({std::stoi(argv[i + 1]), argv[i + 2]});
         i += 2;
+      } else if (arg == "--ws-patch" && i + 1 < argc) {
+        std::ifstream f(argv[i + 1], std::ios::binary);
+        wsSketch.assign((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+        i += 1;
       } else {
         switch (positional++) {
           case 0: width = std::stoi(arg); break;
@@ -234,6 +288,25 @@ int main(int argc, const char* argv[]) {
       sps.NewParameterValue.PointerValue = (void*)configWrapped.c_str();
       plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
       std::cerr << "[ffgl_runner] config set (" << configWrapped.size() << " bytes wrapped)\n";
+    }
+
+    // Barrel WS path: push the sketch over the plugin's bridge like the editor.
+    if (!wsSketch.empty()) {
+      // Port lives in text param 1 (P_PORT), set once the bridge bound.
+      std::string portStr;
+      for (int tries = 0; tries < 50 && portStr.empty(); ++tries) {
+        const char* p = (const char*)plugMain(
+            FF_GET_PARAMETER, (FFMixed){.UIntValue = 1}, instanceID).PointerValue;
+        if (p && p[0]) portStr = p;
+        else std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      int port = portStr.empty() ? 0 : std::stoi(portStr);
+      // key = meta.id@<instance>; each plugin's StateDocument counts from 0.
+      std::string msg =
+        "{\"action\":\"patch\",\"target\":\"/plugins/com.nattos.nanobarrel@0/state\","
+        "\"ops\":[{\"op\":\"replace\",\"path\":\"/sketch\",\"value\":" + wsSketch + "}]}";
+      bool ok = port && ws_send_text(port, msg);
+      std::cerr << "[ffgl_runner] ws-patch port=" << port << " sent=" << ok << "\n";
     }
 
     // 4. Host FBO + color attachment for the plugin to render INTO.
