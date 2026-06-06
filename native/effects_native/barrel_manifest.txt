@@ -32,8 +32,8 @@
 # bundle | namespace | id | display | abi | shaders | [identity]
 core | brightness_contrast | video.brightness_contrast | Brightness/Contrast | instance | compute,pixel | identity
 core | solid_color | generator.solid_color | Solid Color | instance | compute,pixel
-core | video_blend | video.blend | Video Blend | legacy | compute
-core | paramlinker | utility.paramlinker | Param Linker | legacy | 
+core | video_blend | video.blend | Video Blend | instance | compute
+core | paramlinker | utility.paramlinker | Param Linker | instance | 
 core | bake_alpha | video.bake_alpha | Bake Alpha | instance | compute,pixel
 core | curve | video.curve | Curve | instance | compute,pixel
 core | exposure | video.exposure | Exposure | instance | compute,pixel | identity
@@ -46,24 +46,24 @@ core | hue_basis | video.hue_basis | Hue Basis | instance | compute,pixel
 core | saturate | video.saturate | Saturate | instance | compute,pixel
 core | vibrance | video.vibrance | Vibrance | instance | compute,pixel
 core | vignette | video.vignette | Vignette | instance | compute,pixel
-core | blur | video.blur | Blur | legacy | blur_compute=compute
-core | fast_blur | video.fast_blur | Fast Blur | legacy | fast_blur_down=down,fast_blur_up=up
-core | sharpen | video.sharpen | Sharpen | legacy | compute | identity
-core | edges | video.edges | Edge Detection | legacy | compute | identity
-core | crop | video.crop | Crop | legacy | compute
-core | transform | video.transform | Transform | legacy | compute | identity
+core | blur | video.blur | Blur | instance | blur_compute=compute
+core | fast_blur | video.fast_blur | Fast Blur | instance | fast_blur_down=down,fast_blur_up=up
+core | sharpen | video.sharpen | Sharpen | instance | compute | identity
+core | edges | video.edges | Edge Detection | instance | compute | identity
+core | crop | video.crop | Crop | instance | compute
+core | transform | video.transform | Transform | instance | compute | identity
 core | gradient | generator.gradient | Gradient | instance | compute,pixel
 core | grid | generator.grid | Grid | instance | compute,pixel
 core | noise | generator.noise | Noise | instance | compute,pixel
 core | motion_blur | video.motion_blur | Motion Blur | instance | reconstruct,pyramid_reduce
-lights | strobe_channel | gen.strobe_channel | Strobe Channel | legacy | strobe_channel_render=render
+lights | strobe_channel | gen.strobe_channel | Strobe Channel | instance | strobe_channel_render=render
 lights | soft_glow | gen.soft_glow | Soft Glow | instance | soft_glow_color=color,soft_glow_motion=motion
-lights | dispersion | fx.dispersion | Dispersion | legacy | dispersion_render=render
-lights | plasma_beam_cannon | gen.plasma_beam_cannon | Plasma Beam Cannon | legacy | plasma_beam_cannon_render=render
-lights | orthomod | gen.orthomod | Orthomod | legacy | orthomod_render=render
-lights | bounce_resonator | gen.bounce_resonator | Bounce Resonator | legacy | bounce_resonator_color=color,bounce_resonator_motion=motion
-lights | side_jet | gen.side_jet | Side Jet | legacy | side_jet_color=color,side_jet_motion=motion
-lights | motion_blobs | gen.motion_blobs | Motion Blobs | legacy | motion_blobs_color=color,motion_blobs_motion=motion
-nano | nanolooper | sequencer.nanolooper | Nano Looper | legacy | 
-nano | motion_field | video.motion_field | Motion Field | legacy | motion_field_color=color,motion_field_motion=motion
-nano | flash_particles | video.flash_particles | Flash Particles | legacy | flash_particles_update=update,flash_particles_prefill_color=prefill,flash_particles_prefill_motion=prefill,flash_particles_vs=vs,flash_particles_fs_color=fs_color,flash_particles_fs_motion=fs_motion
+lights | dispersion | fx.dispersion | Dispersion | instance | dispersion_render=render
+lights | plasma_beam_cannon | gen.plasma_beam_cannon | Plasma Beam Cannon | instance | plasma_beam_cannon_render=render
+lights | orthomod | gen.orthomod | Orthomod | instance | orthomod_render=render
+lights | bounce_resonator | gen.bounce_resonator | Bounce Resonator | instance | bounce_resonator_color=color,bounce_resonator_motion=motion
+lights | side_jet | gen.side_jet | Side Jet | instance | side_jet_color=color,side_jet_motion=motion
+lights | motion_blobs | gen.motion_blobs | Motion Blobs | instance | motion_blobs_color=color,motion_blobs_motion=motion
+nano | nanolooper | sequencer.nanolooper | Nano Looper | instance | 
+nano | motion_field | video.motion_field | Motion Field | instance | motion_field_color=color,motion_field_motion=motion
+nano | flash_particles | video.flash_particles | Flash Particles | instance | flash_particles_update=update,flash_particles_prefill_color=prefill,flash_particles_prefill_motion=prefill,flash_particles_vs=vs,flash_particles_fs_color=fs_color,flash_particles_fs_motion=fs_motion
