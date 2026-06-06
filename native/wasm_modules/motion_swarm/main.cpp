@@ -19,6 +19,11 @@
  * motion blur over the underlying tex_in. That separation lets a test
  * harness see how motion blur reshapes a background without the
  * swarm rects themselves dominating the output.
+ *
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (params, rect pool, per-instance buffers/textures)
+ * via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -58,29 +63,37 @@ struct CpuRectState {
   // trajectory without needing a per-frame RNG draw.
   float seed_a, seed_b;
 };
-static CpuRectState s_rects_cpu[MAX_RECTS];
-static GpuRectInst  s_rects_gpu[MAX_RECTS];
 
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  rect_buf;
+  gpu::Buffer  uniform_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
+  int          motion_w = 0;
+  int          motion_h = 0;
+
+  // CPU rect pool + GPU pack scratch.
+  CpuRectState rects_cpu[MAX_RECTS];
+  GpuRectInst  rects_gpu[MAX_RECTS];
+
+  bool initialized = false;
+
+  // Schema params
+  int    count       = 16;
+  float  size        = 0.05f;
+  float  swirl       = 1.0f;
+  float  radial      = 0.0f;
+  float  randomness  = 0.3f;
+  float  speed       = 1.0f;
+  float  opacity     = 1.0f;
+  int    seed        = 0;
+  double t           = 0.0;
+};
+
+// Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
-static gpu::Buffer     s_rect_buf;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
-static int  s_motion_w = 0;
-static int  s_motion_h = 0;
-static bool s_initialized = false;
-
-// Schema params
-static int   s_count       = 16;
-static float s_size        = 0.05f;
-static float s_swirl       = 1.0f;
-static float s_radial      = 0.0f;
-static float s_randomness  = 0.3f;
-static float s_speed       = 1.0f;
-static float s_opacity     = 1.0f;
-static int   s_seed        = 0;
-static double s_t = 0.0;
 
 // Tiny LCG, deterministic on a 32-bit seed. Used for both initial
 // rect placement and per-rect color/seed assignment so swarms with
@@ -113,16 +126,16 @@ static void hsv_to_rgb(float h, float s, float v, float& r, float& g, float& b) 
   }
 }
 
-/// Reseed all MAX_RECTS slots from `s_seed`. Even slots beyond
-/// `s_count` get populated so that bumping count at runtime doesn't
+/// Reseed all MAX_RECTS slots from `st.seed`. Even slots beyond
+/// `st.count` get populated so that bumping count at runtime doesn't
 /// reveal uninitialised rects with zero-pos/black-color.
-static void seed_rects() {
-  uint32_t rng = uint32_t(s_seed) ^ 0xA17F2B91u;
+static void seed_rects(State& st) {
+  uint32_t rng = uint32_t(st.seed) ^ 0xA17F2B91u;
   // First mix to avoid degenerate first values for low seeds.
   for (int i = 0; i < 4; i++) lcg_next(rng);
 
   for (int i = 0; i < MAX_RECTS; i++) {
-    auto& r = s_rects_cpu[i];
+    auto& r = st.rects_cpu[i];
     r.cx = lcg_unit(rng) * 0.8f + 0.1f;
     r.cy = lcg_unit(rng) * 0.8f + 0.1f;
     r.cx_prev = r.cx;
@@ -135,18 +148,8 @@ static void seed_rects() {
   }
 }
 
-void init() {
-  s_count       = 16;
-  s_size        = 0.05f;
-  s_swirl       = 1.0f;
-  s_radial      = 0.0f;
-  s_randomness  = 0.3f;
-  s_speed       = 1.0f;
-  s_opacity     = 1.0f;
-  s_seed        = 0;
-  s_t           = 0.0;
-  s_initialized = false;
-
+// Type-level setup: schema + the two shared compute PSOs.
+void module_init() {
   state::init("debug.motion_swarm", {1, 0, 0},
     state::Schema()
       .intField  ("count",      16,    1, MAX_RECTS, state::PrimaryInput)
@@ -166,8 +169,6 @@ void init() {
       // pixels inside override with this swarm's own motion.
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
-
-  seed_rects();
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
@@ -191,22 +192,64 @@ void init() {
       .tex2d(3));                                     // upstream motion (zero
                                                       //  fallback when unwired)
 
-  s_rect_buf = gpu::Device::createBuffer(
-      sizeof(GpuRectInst) * MAX_RECTS, gpu::BufferUsage::Storage);
-  s_uniform_buf = gpu::Device::createBuffer(
-      sizeof(GpuUniforms), gpu::BufferUsage::Uniform);
+  state::log("motion_swarm: module initialized");
+}
 
-  s_initialized = true;
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* st = new State();
+  st->rect_buf = gpu::Device::createBuffer(
+      sizeof(GpuRectInst) * MAX_RECTS, gpu::BufferUsage::Storage);
+  st->uniform_buf = gpu::Device::createBuffer(
+      sizeof(GpuUniforms), gpu::BufferUsage::Uniform);
+  return st;
+}
+
+void destroy(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->rect_buf.release();
+  st->uniform_buf.release();
+  st->motion_tex.release();
+  st->zero_motion_tex.release();
+  delete st;
+}
+
+// Per-instance init tail: reset params, seed the rect pool, mark ready.
+void init(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->count       = 16;
+  st->size        = 0.05f;
+  st->swirl       = 1.0f;
+  st->radial      = 0.0f;
+  st->randomness  = 0.3f;
+  st->speed       = 1.0f;
+  st->opacity     = 1.0f;
+  st->seed        = 0;
+  st->t           = 0.0;
+  st->motion_w    = 0;
+  st->motion_h    = 0;
+  st->initialized = false;
+
+  seed_rects(*st);
+
+  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  if (!st->rect_buf.valid() || !st->uniform_buf.valid()) return;
+
+  st->initialized = true;
   state::log("motion_swarm: initialized");
 }
 
-void tick(double dt) {
-  if (!s_initialized) return;
-  s_t += dt;
-  float fdt = float(dt) * s_speed;
+void tick(void* self, double dt) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  if (!st->initialized) return;
+  st->t += dt;
+  float fdt = float(dt) * st->speed;
 
-  for (int i = 0; i < s_count; i++) {
-    auto& r = s_rects_cpu[i];
+  for (int i = 0; i < st->count; i++) {
+    auto& r = st->rects_cpu[i];
     r.cx_prev = r.cx;
     r.cy_prev = r.cy;
 
@@ -216,17 +259,17 @@ void tick(double dt) {
     float inv_rmag = 1.f / (rmag + 1e-5f);
 
     // Tangential curl (rotation about center) + radial drift.
-    float vx = -dy * s_swirl + dx * inv_rmag * s_radial;
-    float vy =  dx * s_swirl + dy * inv_rmag * s_radial;
+    float vx = -dy * st->swirl + dx * inv_rmag * st->radial;
+    float vy =  dx * st->swirl + dy * inv_rmag * st->radial;
 
     // Per-rect smooth noise. Two sinusoids with rect-specific phase
     // and (slightly) frequency. Decoupled enough that no two rects
     // share trajectories even when count is high.
-    float t = float(s_t);
+    float t = float(st->t);
     float t1 = t * (0.5f + 0.7f * r.seed_a) + r.seed_a * 6.2832f;
     float t2 = t * (0.5f + 0.7f * r.seed_b) + r.seed_b * 6.2832f + 1.5708f;
-    vx += std::sin(t1) * s_randomness;
-    vy += std::cos(t2) * s_randomness;
+    vx += std::sin(t1) * st->randomness;
+    vy += std::cos(t2) * st->randomness;
 
     r.cx += vx * fdt;
     r.cy += vy * fdt;
@@ -241,7 +284,12 @@ void tick(double dt) {
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
   bool seed_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -251,44 +299,45 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
       int c = (int)state::patchFloat(i);
       if (c < 1) c = 1;
       if (c > MAX_RECTS) c = MAX_RECTS;
-      s_count = c;
+      st->count = c;
     } else if (state::pathIs(path, plen, "size")) {
-      s_size = state::patchFloat(i);
+      st->size = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "swirl")) {
-      s_swirl = state::patchFloat(i);
+      st->swirl = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "radial")) {
-      s_radial = state::patchFloat(i);
+      st->radial = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "randomness")) {
-      s_randomness = state::patchFloat(i);
+      st->randomness = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "speed")) {
-      s_speed = state::patchFloat(i);
+      st->speed = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "opacity")) {
-      s_opacity = state::patchFloat(i);
+      st->opacity = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "seed")) {
       int new_seed = (int)state::patchFloat(i);
-      if (new_seed != s_seed) {
-        s_seed = new_seed;
+      if (new_seed != st->seed) {
+        st->seed = new_seed;
         seed_changed = true;
       }
     }
   }
-  if (seed_changed) seed_rects();
+  if (seed_changed) seed_rects(*st);
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* st = static_cast<State*>(self);
+  if (!st || !st->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // Pack CPU state into the GPU layout. Only `s_count` slots are
+  // Pack CPU state into the GPU layout. Only `st->count` slots are
   // populated/read — the rest of the buffer keeps last-frame values
   // but is ignored by the shaders' index-bounded loops.
-  float half = s_size * 0.5f;
-  for (int i = 0; i < s_count; i++) {
-    const auto& src = s_rects_cpu[i];
-    auto& dst = s_rects_gpu[i];
+  float half = st->size * 0.5f;
+  for (int i = 0; i < st->count; i++) {
+    const auto& src = st->rects_cpu[i];
+    auto& dst = st->rects_gpu[i];
     dst.pos[0]   = src.cx;
     dst.pos[1]   = src.cy;
     dst.pos[2]   = src.cx_prev;
@@ -300,12 +349,12 @@ void render(int vp_w, int vp_h) {
     dst.color[0] = src.color_r;
     dst.color[1] = src.color_g;
     dst.color[2] = src.color_b;
-    dst.color[3] = s_opacity;
+    dst.color[3] = st->opacity;
   }
-  s_rect_buf.writeBytes(s_rects_gpu, int(sizeof(GpuRectInst)) * s_count);
+  st->rect_buf.writeBytes(st->rects_gpu, int(sizeof(GpuRectInst)) * st->count);
 
-  GpuUniforms u = { s_count, 0, 0, 0 };
-  s_uniform_buf.writeOne(u);
+  GpuUniforms u = { st->count, 0, 0, 0 };
+  st->uniform_buf.writeOne(u);
 
   // Pass 1 — color: tex_in → tex_out, alpha-blending each rect.
   {
@@ -313,8 +362,8 @@ void render(int vp_w, int vp_h) {
     cp.setPSO(s_pso_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_rect_buf, 2);
-    cp.setBuffer(s_uniform_buf, 3);
+    cp.setBuffer(st->rect_buf, 2);
+    cp.setBuffer(st->uniform_buf, 3);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -327,15 +376,15 @@ void render(int vp_w, int vp_h) {
 
   // (Re)allocate the motion texture per viewport; publish the handle
   // once per allocation. Same convention as motion_rect.
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+  if (!st->motion_tex.valid() || st->motion_w != vp_w || st->motion_h != vp_h) {
+    st->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    st->motion_w = vp_w;
+    st->motion_h = vp_h;
+    if (st->motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", st->motion_tex.id);
     }
   }
-  if (!s_motion_tex.valid()) return;
+  if (!st->motion_tex.valid()) return;
 
   // Resolve upstream motion (or the 1x1 zero fallback when nothing is
   // wired in). textureLoad on the fallback's out-of-bounds coords
@@ -343,10 +392,10 @@ void render(int vp_w, int vp_h) {
   // is safe.
   auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
   if (!upstream.valid()) {
-    if (!s_zero_motion_tex.valid()) {
-      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    if (!st->zero_motion_tex.valid()) {
+      st->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
     }
-    upstream = s_zero_motion_tex;
+    upstream = st->zero_motion_tex;
   }
 
   // Pass 2 — motion: write velocity inside any rect, fall back to
@@ -354,9 +403,9 @@ void render(int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
-    cp.setTexture(s_motion_tex, 0, 1);
-    cp.setBuffer(s_rect_buf, 1);
-    cp.setBuffer(s_uniform_buf, 2);
+    cp.setTexture(st->motion_tex, 0, 1);
+    cp.setBuffer(st->rect_buf, 1);
+    cp.setBuffer(st->uniform_buf, 2);
     cp.setTexture(upstream, 3, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();

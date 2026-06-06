@@ -12,26 +12,9 @@
 #include <module_api.h>
 #include <cstddef>
 
-namespace nanolooper {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
-
-namespace motion_field {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
-
-namespace flash_particles {
-    void init();
-    void tick(double dt);
-    void render(int vp_w, int vp_h);
-    void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops);
-}
+NANO_DECLARE_INSTANCE_EFFECT(nanolooper)
+NANO_DECLARE_INSTANCE_EFFECT(motion_field)
+NANO_DECLARE_INSTANCE_EFFECT(flash_particles)
 
 extern "C" {
 
@@ -44,7 +27,7 @@ void nano_module_main() {
         "4-channel 16-step looper sequencer with visual overlay",
         "sequencer",
         "loop,trigger,beat,midi",
-        NANO_LEGACY_LIFECYCLE(nanolooper),
+        NANO_INSTANCE_LIFECYCLE(nanolooper),
     });
 
     nano::registerEffect({
@@ -54,7 +37,7 @@ void nano_module_main() {
         "Per-pixel motion vector generator. Soft-thresholds the input by luma, then composes a velocity field from a static rotation, a radial outward direction, and the luma gradient (each weighted), with magnitude and angular jitter on top.",
         "video",
         "motion,vectors,render-outputs,producer,luma,gradient",
-        NANO_LEGACY_LIFECYCLE(motion_field),
+        NANO_INSTANCE_LIFECYCLE(motion_field),
     });
 
     nano::registerEffect({
@@ -64,7 +47,7 @@ void nano_module_main() {
         "Mask-driven particle compositor. Spawns particles at bright spots in the (optional) mask texture, captures the input color at each spawn, and composites alpha-masked oriented quads (solid / squircle / gaussian) using a power-curve life decay with frame jitter. Emits motion vectors along each particle's rotation; chains via render_outputs_in.",
         "video",
         "particles,motion,vectors,render-outputs,producer,mask,jitter",
-        NANO_LEGACY_LIFECYCLE(flash_particles),
+        NANO_INSTANCE_LIFECYCLE(flash_particles),
     });
 }
 

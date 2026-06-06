@@ -220,20 +220,17 @@ template; `soft_glow` and `motion_blur` show richer State (blob pools, per-
 instance pyramid textures, per-instance spec-constant PSOs).
 
 **Registering in the bundle.** The aggregator's `nano_module_main` declares and
-registers each effect. Converted effects use the instance macros; effects not
-yet converted use the legacy trampoline (correct on WASM because each entry is
-its own module instance — convert them for real before relying on them in the
-native barrel):
+registers each effect with the instance macros. Every effect in every bundle is
+on the instance ABI — there is no legacy trampoline:
 
 ```cpp
 NANO_DECLARE_INSTANCE_EFFECT(example)   // forward-declares the 8 entry points
-NANO_DECLARE_LEGACY_EFFECT(old_effect)  // forward-declares the old free funcs
 
 void nano_module_main() {
   nano::registerEffect({ 2, "video.example", "Example", "…", "video", "kw",
                          NANO_INSTANCE_LIFECYCLE(example) });
-  nano::registerEffect({ 2, "video.old", "Old", "…", "video", "kw",
-                         NANO_LEGACY_LIFECYCLE(old_effect) });   // trampoline
+  // Effects with a genuine identity state pass &example::is_identity as the
+  // trailing field (see §"is_identity").
 }
 ```
 
@@ -749,14 +746,13 @@ state::init("video.warmgrade", {1, 0, 0},
 Distilled from building `plasma_beam_cannon` and friends. These apply to any effect with a phase machine (ADSR), an internal particle pool, or anything that fires on a cue.
 
 > **Per-instance note:** the examples below show file-static state (`s_phase`,
-> `s_pool`, `s_*_rng`, `s_gate_prev`, `s_cycle_count`, …) because these lights
-> effects predate the per-instance ABI and currently ship via the legacy
-> trampoline (`NANO_LEGACY_LIFECYCLE`) — fine on WASM, where each chain entry is
-> its own module instance. When converting one to run in the native barrel,
-> every one of these statics moves into `struct State` (per §0), and the
-> `on_state_ready` / RNG / pool state become per-instance members. The patterns
-> (ADSR machine, Poisson triggers, Plummer softening, …) are unchanged; only
-> their *storage* moves from file-static to `State`.
+> `s_pool`, `s_*_rng`, `s_gate_prev`, `s_cycle_count`, …) for brevity, but in the
+> shipping code every one of these lives in a per-instance `struct State` (per
+> §0) — the lights bundle and all others are fully on the instance ABI. When
+> reading these patterns, mentally map each `s_foo` to `s->foo` (and any
+> `on_state_ready` / RNG / pool state to a `State` member). The patterns (ADSR
+> machine, Poisson triggers, Plummer softening, …) are unchanged; only their
+> *storage* is per-instance.
 
 ### 8.1 Trigger surface — bool gate + event trigger + auto_rate
 

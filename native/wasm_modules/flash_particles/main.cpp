@@ -25,6 +25,12 @@
  * Aspect: width/height are stored in "isotropic uv" — one unit
  * corresponds to min(W, H) pixels. So size.x == size.y always renders
  * as a real pixel square, regardless of viewport aspect.
+ *
+ * Class-like instance model: module_init() compiles the shared
+ * compute/render PSOs + publishes the schema once per type; each chain
+ * entry gets its own State (params, particle pool buffer, per-instance
+ * uniform buffers/textures) via create(). All instance callbacks take
+ * `self`.
  */
 
 #include <gpu.h>
@@ -140,60 +146,70 @@ static_assert(sizeof(MotionUniforms) == 16, "MotionUniforms layout mismatch");
 enum BlendMode : int { BLEND_ALPHA = 0, BLEND_ADD = 1 };
 enum ShapeKind : int { SHAPE_SOLID = 0, SHAPE_CIRCLE = 1, SHAPE_GAUSSIAN = 2 };
 
+// Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_update;
 static gpu::ComputePSO s_pso_prefill_color;
 static gpu::ComputePSO s_pso_prefill_motion;
 static gpu::RenderPSO  s_pso_render_alpha;   // color, alpha-over blend
 static gpu::RenderPSO  s_pso_render_add;     // color, additive blend
 static gpu::RenderPSO  s_pso_render_motion;  // motion, alpha-over (mask-as-blend-alpha)
-static gpu::Buffer     s_particle_buf;
-static gpu::Buffer     s_update_uniforms;
-static gpu::Buffer     s_prefill_color_uniforms;
-static gpu::Buffer     s_prefill_motion_uniforms;
-static gpu::Buffer     s_vs_uniforms;
-static gpu::Buffer     s_color_uniforms;
-static gpu::Buffer     s_motion_uniforms;
-static gpu::Sampler    s_sampler;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;  // 1×1 fallback when no upstream
-static int  s_motion_w = 0;
-static int  s_motion_h = 0;
-static bool s_initialized = false;
 
-// CPU mirrors of all schema params.
-static int   s_count               = 64;
-static float s_life                = 1.5f;
-static float s_respawn_delay       = 0.3f;
-static float s_life_jitter         = 0.3f;
-static float s_width               = 0.05f;
-static float s_height              = 0.05f;
-static float s_width_jitter        = 0.3f;
-static float s_height_jitter       = 0.3f;
-static float s_global_scale        = 1.0f;
-static float s_rotation_deg        = 0.0f;
-static float s_rotation_jitter_deg = 30.0f;
-static int   s_shape_kind          = SHAPE_GAUSSIAN;
-static float s_shape_param         = 0.5f;
-static float s_alpha_curve         = 1.5f;
-static float s_frame_alpha_jitter  = 0.0f;
-static float s_global_color_r      = 1.0f;
-static float s_global_color_g      = 1.0f;
-static float s_global_color_b      = 1.0f;
-static float s_color_blend         = 0.5f;
-static float s_hue_jitter          = 0.1f;
-static float s_brightness_jitter   = 0.1f;
-static float s_saturation_jitter   = 0.1f;
-static float s_alpha_jitter        = 0.1f;
-static int   s_blend_mode          = BLEND_ALPHA;
-static float s_input_alpha         = 1.0f;
-static float s_motion_strength     = 0.5f;
-static float s_exposure            = 1.0f;
-static float s_color_alpha         = 1.0f;
-static float s_mask_temperature    = 0.0f;
+// Per-instance state. One per chain entry.
+struct State {
+  // Per-instance GPU buffers.
+  gpu::Buffer  particle_buf;
+  gpu::Buffer  update_uniforms;
+  gpu::Buffer  prefill_color_uniforms;
+  gpu::Buffer  prefill_motion_uniforms;
+  gpu::Buffer  vs_uniforms;
+  gpu::Buffer  color_uniforms;
+  gpu::Buffer  motion_uniforms;
+  gpu::Sampler sampler;
 
-static int      s_inited_count = 0;
-static uint32_t s_frame_index  = 0;
-static uint32_t s_init_lcg     = 0x12345678u;
+  // Per-instance, viewport-sized motion target (+ 1×1 zero fallback).
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;  // 1×1 fallback when no upstream
+  int  motion_w = 0;
+  int  motion_h = 0;
+
+  bool initialized = false;
+
+  // CPU mirrors of all schema params.
+  int   count               = 64;
+  float life                = 1.5f;
+  float respawn_delay       = 0.3f;
+  float life_jitter         = 0.3f;
+  float width               = 0.05f;
+  float height              = 0.05f;
+  float width_jitter        = 0.3f;
+  float height_jitter       = 0.3f;
+  float global_scale        = 1.0f;
+  float rotation_deg        = 0.0f;
+  float rotation_jitter_deg = 30.0f;
+  int   shape_kind          = SHAPE_GAUSSIAN;
+  float shape_param         = 0.5f;
+  float alpha_curve         = 1.5f;
+  float frame_alpha_jitter  = 0.0f;
+  float global_color_r      = 1.0f;
+  float global_color_g      = 1.0f;
+  float global_color_b      = 1.0f;
+  float color_blend         = 0.5f;
+  float hue_jitter          = 0.1f;
+  float brightness_jitter   = 0.1f;
+  float saturation_jitter   = 0.1f;
+  float alpha_jitter        = 0.1f;
+  int   blend_mode          = BLEND_ALPHA;
+  float input_alpha         = 1.0f;
+  float motion_strength     = 0.5f;
+  float exposure            = 1.0f;
+  float color_alpha         = 1.0f;
+  float mask_temperature    = 0.0f;
+
+  // Spawn/seed accumulators.
+  int      inited_count = 0;
+  uint32_t frame_index  = 0;
+  uint32_t init_lcg     = 0x12345678u;
+};
 
 static inline uint32_t lcg_next(uint32_t& s) {
   s = s * 1664525u + 1013904223u;
@@ -212,11 +228,11 @@ static constexpr int INIT_CHUNK = 256;
 // Seed slots [from, to) with a "ready to respawn" state, randomised
 // across [0, life + respawn] so the pool spawns staggered rather than
 // in lockstep on the first frame.
-static void seed_initial_slots(int from, int to) {
-  if (s_initialized == false) return;
+static void seed_initial_slots(State& s, int from, int to) {
+  if (s.initialized == false) return;
   if (from >= to) return;
   GpuParticle entries[INIT_CHUNK];
-  float cycle = s_life + s_respawn_delay;
+  float cycle = s.life + s.respawn_delay;
   for (int chunk_start = from; chunk_start < to; chunk_start += INIT_CHUNK) {
     int chunk_end = chunk_start + INIT_CHUNK;
     if (chunk_end > to) chunk_end = to;
@@ -228,29 +244,25 @@ static void seed_initial_slots(int from, int to) {
       p.pos_size[3] = 1e-3f;
       p.state[2]    = 1.0f;          // life_total placeholder
       p.state[1]    = 0.0f;          // life_remain (start invisible)
-      p.state[3]    = lcg_unit(s_init_lcg) * cycle;  // staggered respawn
+      p.state[3]    = lcg_unit(s.init_lcg) * cycle;  // staggered respawn
     }
-    s_particle_buf.writeBytes(
+    s.particle_buf.writeBytes(
         entries, int(sizeof(GpuParticle)) * n,
         int(sizeof(GpuParticle)) * chunk_start);
   }
 }
 
-static void apply_count_change() {
-  if (s_count > MAX_PARTICLES) s_count = MAX_PARTICLES;
-  if (s_count < 1)             s_count = 1;
-  if (s_count > s_inited_count) {
-    seed_initial_slots(s_inited_count, s_count);
-    s_inited_count = s_count;
+static void apply_count_change(State& s) {
+  if (s.count > MAX_PARTICLES) s.count = MAX_PARTICLES;
+  if (s.count < 1)             s.count = 1;
+  if (s.count > s.inited_count) {
+    seed_initial_slots(s, s.inited_count, s.count);
+    s.inited_count = s.count;
   }
 }
 
-void init() {
-  s_initialized = false;
-  s_inited_count = 0;
-  s_frame_index  = 0;
-  s_init_lcg     = 0x12345678u;
-
+// Type-level setup: schema + shared compute/render PSOs.
+void module_init() {
   state::init("video.flash_particles", {1, 0, 0},
     state::Schema()
       // ---- Pool ----
@@ -391,71 +403,118 @@ void init() {
           .uniform(2),      // MotionUniforms (fragment)
       gpu::Device::BlendMode::AlphaOver);
 
-  // ---- Buffers ----
-  s_particle_buf = gpu::Device::createBuffer(
-      sizeof(GpuParticle) * MAX_PARTICLES, gpu::BufferUsage::Storage);
-  s_update_uniforms = gpu::Device::createBuffer(
-      sizeof(UpdateUniforms), gpu::BufferUsage::Uniform);
-  s_prefill_color_uniforms = gpu::Device::createBuffer(
-      sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
-  s_prefill_motion_uniforms = gpu::Device::createBuffer(
-      sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
-  s_vs_uniforms = gpu::Device::createBuffer(
-      sizeof(VsUniforms), gpu::BufferUsage::Uniform);
-  s_color_uniforms = gpu::Device::createBuffer(
-      sizeof(ColorUniforms), gpu::BufferUsage::Uniform);
-  s_motion_uniforms = gpu::Device::createBuffer(
-      sizeof(MotionUniforms), gpu::BufferUsage::Uniform);
-  s_sampler = gpu::Device::createSampler(gpu::FilterMode::Linear,
-                                          gpu::AddressMode::ClampToEdge);
-
-  s_initialized = true;
-  apply_count_change();   // seed the initial pool
-  state::log("flash_particles: initialized");
+  state::log("flash_particles: module initialized");
 }
 
-void tick(double dt) { (void)dt; }  // all timing is GPU-side via dt uniform
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* s = new State();
+  s->particle_buf = gpu::Device::createBuffer(
+      sizeof(GpuParticle) * MAX_PARTICLES, gpu::BufferUsage::Storage);
+  s->update_uniforms = gpu::Device::createBuffer(
+      sizeof(UpdateUniforms), gpu::BufferUsage::Uniform);
+  s->prefill_color_uniforms = gpu::Device::createBuffer(
+      sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
+  s->prefill_motion_uniforms = gpu::Device::createBuffer(
+      sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
+  s->vs_uniforms = gpu::Device::createBuffer(
+      sizeof(VsUniforms), gpu::BufferUsage::Uniform);
+  s->color_uniforms = gpu::Device::createBuffer(
+      sizeof(ColorUniforms), gpu::BufferUsage::Uniform);
+  s->motion_uniforms = gpu::Device::createBuffer(
+      sizeof(MotionUniforms), gpu::BufferUsage::Uniform);
+  s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear,
+                                          gpu::AddressMode::ClampToEdge);
+  return s;
+}
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->particle_buf.release();
+  s->update_uniforms.release();
+  s->prefill_color_uniforms.release();
+  s->prefill_motion_uniforms.release();
+  s->vs_uniforms.release();
+  s->color_uniforms.release();
+  s->motion_uniforms.release();
+  s->sampler.release();
+  s->motion_tex.release();
+  s->zero_motion_tex.release();
+  delete s;
+}
+
+// Per-instance init tail: reset accumulators + seed the initial pool.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s_pso_update.valid() || !s_pso_prefill_color.valid() ||
+      !s_pso_prefill_motion.valid() || !s_pso_render_alpha.valid() ||
+      !s_pso_render_add.valid() || !s_pso_render_motion.valid()) return;
+  if (!s->particle_buf.valid()) return;
+
+  s->inited_count = 0;
+  s->frame_index  = 0;
+  s->init_lcg     = 0x12345678u;
+  s->motion_w     = 0;
+  s->motion_h     = 0;
+
+  s->initialized = true;
+  apply_count_change(*s);   // seed the initial pool
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  (void)dt;  // all timing is GPU-side via dt uniform
+}
+
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
-    if      (state::pathIs(path, plen, "count"))            { s_count = (int)state::patchFloat(i); apply_count_change(); }
-    else if (state::pathIs(path, plen, "life"))             s_life = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "respawn_delay"))    s_respawn_delay = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "life_jitter"))      s_life_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "mask_temperature")) s_mask_temperature = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "width"))            s_width = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "height"))           s_height = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "width_jitter"))     s_width_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "height_jitter"))    s_height_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "global_scale"))     s_global_scale = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "rotation"))         s_rotation_deg = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "rotation_jitter"))  s_rotation_jitter_deg = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "shape_kind"))       s_shape_kind = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "shape_param"))      s_shape_param = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "alpha_curve"))      s_alpha_curve = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "frame_alpha_jitter")) s_frame_alpha_jitter = state::patchFloat(i);
+    if      (state::pathIs(path, plen, "count"))            { s->count = (int)state::patchFloat(i); apply_count_change(*s); }
+    else if (state::pathIs(path, plen, "life"))             s->life = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "respawn_delay"))    s->respawn_delay = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "life_jitter"))      s->life_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "mask_temperature")) s->mask_temperature = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "width"))            s->width = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "height"))           s->height = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "width_jitter"))     s->width_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "height_jitter"))    s->height_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "global_scale"))     s->global_scale = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "rotation"))         s->rotation_deg = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "rotation_jitter"))  s->rotation_jitter_deg = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "shape_kind"))       s->shape_kind = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "shape_param"))      s->shape_param = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "alpha_curve"))      s->alpha_curve = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "frame_alpha_jitter")) s->frame_alpha_jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "global_color")) {
       auto v = state::patchVec3(i);
-      s_global_color_r = v.x; s_global_color_g = v.y; s_global_color_b = v.z;
+      s->global_color_r = v.x; s->global_color_g = v.y; s->global_color_b = v.z;
     }
-    else if (state::pathIs(path, plen, "color_blend"))        s_color_blend = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "hue_jitter"))         s_hue_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "brightness_jitter"))  s_brightness_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "saturation_jitter"))  s_saturation_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "alpha_jitter"))       s_alpha_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "blend_mode"))         s_blend_mode = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "input_alpha"))        s_input_alpha = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "exposure"))           s_exposure = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "color_alpha"))        s_color_alpha = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_strength"))    s_motion_strength = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "color_blend"))        s->color_blend = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "hue_jitter"))         s->hue_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "brightness_jitter"))  s->brightness_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "saturation_jitter"))  s->saturation_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "alpha_jitter"))       s->alpha_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "blend_mode"))         s->blend_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "input_alpha"))        s->input_alpha = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "exposure"))           s->exposure = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "color_alpha"))        s->color_alpha = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_strength"))    s->motion_strength = state::patchFloat(i);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
@@ -467,91 +526,91 @@ void render(int vp_w, int vp_h) {
 
   bool emit_motion = state::isOutputConnected("render_outputs");
   if (emit_motion) {
-    if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-      s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-      s_motion_w = vp_w;
-      s_motion_h = vp_h;
-      if (s_motion_tex.valid()) {
-        state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+    if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
+      s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+      s->motion_w = vp_w;
+      s->motion_h = vp_h;
+      if (s->motion_tex.valid()) {
+        state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
       }
     }
-    if (!s_motion_tex.valid()) emit_motion = false;
+    if (!s->motion_tex.valid()) emit_motion = false;
   }
 
   auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
   if (!upstream.valid()) {
-    if (!s_zero_motion_tex.valid()) {
-      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    if (!s->zero_motion_tex.valid()) {
+      s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
     }
-    upstream = s_zero_motion_tex;
+    upstream = s->zero_motion_tex;
   }
 
-  s_frame_index++;
+  s->frame_index++;
 
   // ---- Update uniforms ----
   UpdateUniforms uu = {};
-  uu.count               = (uint32_t)s_count;
-  uu.frame_index         = s_frame_index;
+  uu.count               = (uint32_t)s->count;
+  uu.frame_index         = s->frame_index;
   uu.dt                  = (float)host::deltaTime();
-  uu.mask_temperature    = s_mask_temperature;
-  uu.life                = s_life;
-  uu.respawn_delay       = s_respawn_delay;
-  uu.life_jitter         = s_life_jitter;
-  uu.width               = s_width;
-  uu.height              = s_height;
-  uu.global_scale        = s_global_scale;
-  uu.width_jitter        = s_width_jitter;
-  uu.height_jitter       = s_height_jitter;
-  uu.rotation_rad        = s_rotation_deg * DEG2RAD;
-  uu.rotation_jitter_rad = s_rotation_jitter_deg * DEG2RAD;
-  uu.hue_jitter          = s_hue_jitter;
-  uu.brightness_jitter   = s_brightness_jitter;
-  uu.saturation_jitter   = s_saturation_jitter;
-  uu.alpha_jitter        = s_alpha_jitter;
-  s_update_uniforms.writeOne(uu);
+  uu.mask_temperature    = s->mask_temperature;
+  uu.life                = s->life;
+  uu.respawn_delay       = s->respawn_delay;
+  uu.life_jitter         = s->life_jitter;
+  uu.width               = s->width;
+  uu.height              = s->height;
+  uu.global_scale        = s->global_scale;
+  uu.width_jitter        = s->width_jitter;
+  uu.height_jitter       = s->height_jitter;
+  uu.rotation_rad        = s->rotation_deg * DEG2RAD;
+  uu.rotation_jitter_rad = s->rotation_jitter_deg * DEG2RAD;
+  uu.hue_jitter          = s->hue_jitter;
+  uu.brightness_jitter   = s->brightness_jitter;
+  uu.saturation_jitter   = s->saturation_jitter;
+  uu.alpha_jitter        = s->alpha_jitter;
+  s->update_uniforms.writeOne(uu);
 
-  PrefillUniforms pu_color  = { s_input_alpha, s_input_alpha, s_input_alpha, 1.0f };
+  PrefillUniforms pu_color  = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
   PrefillUniforms pu_motion = { 1.0f, 1.0f, 1.0f, 1.0f };
-  s_prefill_color_uniforms.writeOne(pu_color);
-  s_prefill_motion_uniforms.writeOne(pu_motion);
+  s->prefill_color_uniforms.writeOne(pu_color);
+  s->prefill_motion_uniforms.writeOne(pu_motion);
 
   // Aspect normalization for "isotropic uv" rendering.
   float min_dim = float(vp_w < vp_h ? vp_w : vp_h);
   VsUniforms vu = { min_dim / float(vp_w), min_dim / float(vp_h), 0.f, 0.f };
-  s_vs_uniforms.writeOne(vu);
+  s->vs_uniforms.writeOne(vu);
 
   ColorUniforms cu = {};
-  cu.input_alpha        = s_input_alpha;
-  cu.color_blend        = s_color_blend;
-  cu.global_color_r     = s_global_color_r;
-  cu.global_color_g     = s_global_color_g;
-  cu.global_color_b     = s_global_color_b;
-  cu.alpha_curve        = s_alpha_curve;
-  cu.frame_alpha_jitter = s_frame_alpha_jitter;
-  cu.frame_index        = s_frame_index;
-  cu.shape_kind         = (uint32_t)s_shape_kind;
-  cu.shape_param        = s_shape_param;
-  cu.exposure           = s_exposure;
-  cu.color_alpha        = s_color_alpha;
-  s_color_uniforms.writeOne(cu);
+  cu.input_alpha        = s->input_alpha;
+  cu.color_blend        = s->color_blend;
+  cu.global_color_r     = s->global_color_r;
+  cu.global_color_g     = s->global_color_g;
+  cu.global_color_b     = s->global_color_b;
+  cu.alpha_curve        = s->alpha_curve;
+  cu.frame_alpha_jitter = s->frame_alpha_jitter;
+  cu.frame_index        = s->frame_index;
+  cu.shape_kind         = (uint32_t)s->shape_kind;
+  cu.shape_param        = s->shape_param;
+  cu.exposure           = s->exposure;
+  cu.color_alpha        = s->color_alpha;
+  s->color_uniforms.writeOne(cu);
 
   MotionUniforms mu = {};
-  mu.motion_strength = s_motion_strength;
-  mu.shape_kind      = (uint32_t)s_shape_kind;
-  mu.shape_param     = s_shape_param;
-  mu.alpha_curve     = s_alpha_curve;
-  s_motion_uniforms.writeOne(mu);
+  mu.motion_strength = s->motion_strength;
+  mu.shape_kind      = (uint32_t)s->shape_kind;
+  mu.shape_param     = s->shape_param;
+  mu.alpha_curve     = s->alpha_curve;
+  s->motion_uniforms.writeOne(mu);
 
   // ---- Pass 1: update particles ----
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_update);
-    cp.setBuffer(s_particle_buf, 0);
+    cp.setBuffer(s->particle_buf, 0);
     cp.setTexture(mask, 1, 0);
     cp.setTexture(in,   2, 0);
-    cp.setSampler(s_sampler, 3);
-    cp.setBuffer(s_update_uniforms, 4);
-    int groups = (s_count + 63) / 64;
+    cp.setSampler(s->sampler, 3);
+    cp.setBuffer(s->update_uniforms, 4);
+    int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();
   }
@@ -562,7 +621,7 @@ void render(int vp_w, int vp_h) {
     cp.setPSO(s_pso_prefill_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_prefill_color_uniforms, 2);
+    cp.setBuffer(s->prefill_color_uniforms, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -572,8 +631,8 @@ void render(int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_prefill_motion);
     cp.setTexture(upstream,    0, 0);
-    cp.setTexture(s_motion_tex, 1, 1);
-    cp.setBuffer(s_prefill_motion_uniforms, 2);
+    cp.setTexture(s->motion_tex, 1, 1);
+    cp.setBuffer(s->prefill_motion_uniforms, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -582,25 +641,25 @@ void render(int vp_w, int vp_h) {
   // Skipped at color_alpha=0 — every fragment would output alpha=0 and
   // contribute nothing under either blend mode, so save the draw.
   // tex_out keeps the pre-filled `tex_in × input_alpha` content.
-  if (s_color_alpha > 0.0f) {
+  if (s->color_alpha > 0.0f) {
     auto rp = gpu::RenderPass::beginLoad(out);
-    auto pso = (s_blend_mode == BLEND_ADD) ? s_pso_render_add : s_pso_render_alpha;
+    auto pso = (s->blend_mode == BLEND_ADD) ? s_pso_render_add : s_pso_render_alpha;
     rp.setPSO(pso);
-    rp.setBuffer(s_particle_buf, 0);
-    rp.setBuffer(s_vs_uniforms,  1);
-    rp.setBuffer(s_color_uniforms, 2);
-    rp.draw(6, s_count);
+    rp.setBuffer(s->particle_buf, 0);
+    rp.setBuffer(s->vs_uniforms,  1);
+    rp.setBuffer(s->color_uniforms, 2);
+    rp.draw(6, s->count);
     rp.end();
   }
 
   // ---- Pass 5: motion raster (only when downstream consumes the rail) ----
   if (emit_motion) {
-    auto rp = gpu::RenderPass::beginLoad(s_motion_tex);
+    auto rp = gpu::RenderPass::beginLoad(s->motion_tex);
     rp.setPSO(s_pso_render_motion);
-    rp.setBuffer(s_particle_buf,   0);
-    rp.setBuffer(s_vs_uniforms,    1);
-    rp.setBuffer(s_motion_uniforms, 2);
-    rp.draw(6, s_count);
+    rp.setBuffer(s->particle_buf,   0);
+    rp.setBuffer(s->vs_uniforms,    1);
+    rp.setBuffer(s->motion_uniforms, 2);
+    rp.draw(6, s->count);
     rp.end();
   }
 

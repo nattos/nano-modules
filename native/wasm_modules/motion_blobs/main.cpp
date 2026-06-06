@@ -18,6 +18,11 @@
  *   - Position spawns just outside the canvas at spawn_offset (negative).
  *   - Die when blob exits the OPPOSITE side; respawn only while
  *     alive_count < density * blob_count_max.
+ *
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (params, blob pool, per-instance buffers/textures)
+ * via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -70,64 +75,68 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 64, "Uniforms layout mismatch");
 
-// --- GPU resources ---
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Buffer  blob_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;   // 1x1 rgba16f fallback (no upstream)
+  int          motion_w = 0;
+  int          motion_h = 0;
+  bool         initialized = false;
+
+  // --- Schema-mirrored params (standard) ---
+  float density               = 0.4f;
+  float traverse_speed        = 0.7f;
+  float traverse_speed_jitter = 0.5f;
+  float drift                 = 0.0f;
+  // Signed [-1,+1]. Biases the spawn distribution so trajectories pass nearer
+  // the viewport center (-1, bell concentrated on the center-streamline) or
+  // out toward the periphery (+1). 0 = uniform.
+  float center_bias           = 0.0f;
+  // Signed [-1,+1]. Curves trajectories radially about the center: +1 bulges
+  // them OUTWARD (fish-eye / onion), -1 pinches them INWARD. 0 = straight.
+  // Magnitude is the strength (how strongly paths follow the onion).
+  float arc_bias              = 0.0f;
+  // Onion size — the deflection cylinder's radius in cover-square units.
+  // Larger = a bigger onion (the bow extends further from center).
+  float arc_scale             = 0.5f;
+  float motion_strength       = 1.0f;
+  // Size of the emitted motion footprint relative to the blob, 1→0. 1 = full
+  // blob extent (default); 0.5 = vectors reach only ~50% of the blob, focused
+  // on its center.
+  float motion_extent         = 1.0f;
+  float shadow_darkness       = 0.0f;
+  float shadow_tint_r         = 0.0f;
+  float shadow_tint_g         = 0.0f;
+  float shadow_tint_b         = 0.0f;
+  float blob_size             = 0.12f;
+  int   spawn_edge            = EDGE_TOP;
+  // --- Tuning ---
+  int   blob_count_max        = 8;
+  float blob_size_jitter      = 0.3f;
+  float drift_jitter          = 0.1f;
+  float softness_curve        = 4.0f;
+  bool  spawn_edge_random     = false;
+  int   seed                  = 0x82C00;
+  // --- Debug ---
+  bool  debug_show_blobs      = false;
+
+  // --- Runtime ---
+  CpuBlob  blobs[MAX_BLOBS];
+  uint32_t spawn_rng      = 0x82C00LU;
+  // Cover-square aspect half-extents, cached from render() so spawn (which
+  // runs in tick, before render) can place blobs fully outside the viewport
+  // including their soft halo. Overwritten on the first render; spawning is
+  // held off until then.
+  float aspect_x     = 0.5f;
+  float aspect_y     = 0.5f;
+  bool  aspect_ready = false;
+};
+
+// Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Buffer     s_blob_buf;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;
-static int             s_motion_w = 0;
-static int             s_motion_h = 0;
-static bool            s_initialized = false;
-
-// --- Schema-mirrored params (standard) ---
-static float s_density               = 0.4f;
-static float s_traverse_speed        = 0.7f;
-static float s_traverse_speed_jitter = 0.5f;
-static float s_drift                 = 0.0f;
-// Signed [-1,+1]. Biases the spawn distribution so trajectories pass nearer
-// the viewport center (-1, bell concentrated on the center-streamline) or
-// out toward the periphery (+1). 0 = uniform.
-static float s_center_bias           = 0.0f;
-// Signed [-1,+1]. Curves trajectories radially about the center: +1 bulges
-// them OUTWARD (fish-eye / onion), -1 pinches them INWARD. 0 = straight.
-// Magnitude is the strength (how strongly paths follow the onion).
-static float s_arc_bias              = 0.0f;
-// Onion size — the deflection cylinder's radius in cover-square units.
-// Larger = a bigger onion (the bow extends further from center).
-static float s_arc_scale             = 0.5f;
-static float s_motion_strength       = 1.0f;
-// Size of the emitted motion footprint relative to the blob, 1→0. 1 = full
-// blob extent (default); 0.5 = vectors reach only ~50% of the blob, focused
-// on its center.
-static float s_motion_extent         = 1.0f;
-static float s_shadow_darkness       = 0.0f;
-static float s_shadow_tint_r         = 0.0f;
-static float s_shadow_tint_g         = 0.0f;
-static float s_shadow_tint_b         = 0.0f;
-static float s_blob_size             = 0.12f;
-static int   s_spawn_edge            = EDGE_TOP;
-// --- Tuning ---
-static int   s_blob_count_max        = 8;
-static float s_blob_size_jitter      = 0.3f;
-static float s_drift_jitter          = 0.1f;
-static float s_softness_curve        = 4.0f;
-static bool  s_spawn_edge_random     = false;
-static int   s_seed                  = 0x82C00L;
-// --- Debug ---
-static bool  s_debug_show_blobs      = false;
-
-// --- Runtime ---
-static CpuBlob s_blobs[MAX_BLOBS];
-static uint32_t s_spawn_rng = 0x82C00LU;
-// Cover-square aspect half-extents, cached from render() so spawn (which
-// runs in tick, before render) can place blobs fully outside the viewport
-// including their soft halo. Overwritten on the first render; spawning is
-// held off until then.
-static float s_aspect_x     = 0.5f;
-static float s_aspect_y     = 0.5f;
-static bool  s_aspect_ready = false;
 
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -148,8 +157,8 @@ static inline float lcg_signed(uint32_t& s) { return lcg_unit(s) * 2.0f - 1.0f; 
 // the edge. The halo reaches sqrt(ln(1/ε)/softness) ≈ sqrt(4/softness)
 // radii; +0.5 radius of slack. Converted from the cover-square radius to uv
 // via the aspect half-extent of that axis.
-static inline float halo_margin(float radius, float aspect_perp) {
-  float softness = s_softness_curve < 0.1f ? 0.1f : s_softness_curve;
+static inline float halo_margin(float radius, float aspect_perp, float softness_curve) {
+  float softness = softness_curve < 0.1f ? 0.1f : softness_curve;
   float clearance_radii = std::sqrt(4.0f / softness) + 0.5f;
   return clearance_radii * radius * aspect_perp;
 }
@@ -184,9 +193,11 @@ static inline float center_bias_warp(float u, float pivot, float cb) {
 // follow the onion independently of its size. Computed in cover-square space
 // so the bow is circular on screen. Output velocity is in uv/sec.
 static void field_velocity(float x, float y, float vx0, float vy0,
-                           float a2, float strength, float* ovx, float* ovy) {
+                           float a2, float strength,
+                           float aspect_x, float aspect_y,
+                           float* ovx, float* ovy) {
   if (strength < 1e-4f || (a2 > -1e-6f && a2 < 1e-6f)) { *ovx = vx0; *ovy = vy0; return; }
-  float ax = s_aspect_x, ay = s_aspect_y;
+  float ax = aspect_x, ay = aspect_y;
   float qx = (x - 0.5f) / ax;                 // position rel. center (cover-square)
   float qy = (y - 0.5f) / ay;
   float ucx = vx0 / ax, ucy = vy0 / ay;       // free-stream (cover-square)
@@ -236,17 +247,17 @@ static void field_velocity(float x, float y, float vx0, float vy0,
   *ovy = by * ay;
 }
 
-static void spawn_one(CpuBlob& b, bool scattered) {
+static void spawn_one(State& st, CpuBlob& b, bool scattered) {
   // The primary edge sets the flow ORIENTATION: traverse runs perpendicular
   // to it (into the canvas), drift runs parallel.
-  int edge = s_spawn_edge;
-  if (s_spawn_edge_random) {
-    edge = (int)(lcg_unit(s_spawn_rng) * 4.0f);
+  int edge = st.spawn_edge;
+  if (st.spawn_edge_random) {
+    edge = (int)(lcg_unit(st.spawn_rng) * 4.0f);
     if (edge > 3) edge = 3;
   }
-  float speed = s_traverse_speed * (1.0f + clampf(s_traverse_speed_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng));
-  float drift = s_drift + clampf(s_drift_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng);
-  float size  = s_blob_size * (1.0f + clampf(s_blob_size_jitter, 0.0f, 1.0f) * lcg_signed(s_spawn_rng));
+  float speed = st.traverse_speed * (1.0f + clampf(st.traverse_speed_jitter, 0.0f, 1.0f) * lcg_signed(st.spawn_rng));
+  float drift = st.drift + clampf(st.drift_jitter, 0.0f, 1.0f) * lcg_signed(st.spawn_rng);
+  float size  = st.blob_size * (1.0f + clampf(st.blob_size_jitter, 0.0f, 1.0f) * lcg_signed(st.spawn_rng));
   if (size < 1e-4f) size = 1e-4f;
 
   // Resolve the velocity (uv/sec) for this blob.
@@ -267,8 +278,8 @@ static void spawn_one(CpuBlob& b, bool scattered) {
   float fx = vx < 0.0f ? -vx : vx;        // flux through left/right (vertical) edges
   float fy = vy < 0.0f ? -vy : vy;        // flux through top/bottom (horizontal) edges
   float ftot = fx + fy;
-  float mx = halo_margin(size, s_aspect_x);
-  float my = halo_margin(size, s_aspect_y);
+  float mx = halo_margin(size, st.aspect_x, st.softness_curve);
+  float my = halo_margin(size, st.aspect_y, st.softness_curve);
 
   // `e` is where the blob should CROSS the edge (uniform along it). The
   // spawn point sits one halo-margin outside (perpendicular), and we
@@ -281,17 +292,17 @@ static void spawn_one(CpuBlob& b, bool scattered) {
   // the OPPOSITE side's margin, e.g. far to the right for a leftward flow —
   // the downstream-only cull in tick() is what keeps such still-approaching
   // blobs alive instead of killing them on frame one.)
-  float e_uniform = lcg_unit(s_spawn_rng);
+  float e_uniform = lcg_unit(st.spawn_rng);
 
   float sx, sy;
   bool enter_horizontal_edge = (ftot <= 1e-6f) ? true
-                             : (lcg_unit(s_spawn_rng) * ftot < fy);
+                             : (lcg_unit(st.spawn_rng) * ftot < fy);
   if (enter_horizontal_edge) {
     // Cross the top (moving down) or bottom (moving up) edge at x = e.
     // pivot = x where the center-streamline crosses this edge.
     float y_edge = (vy >= 0.0f) ? 0.0f : 1.0f;
     float pivot = (vy > 1e-5f || vy < -1e-5f) ? 0.5f + vx * (y_edge - 0.5f) / vy : 0.5f;
-    float e = center_bias_warp(e_uniform, pivot, s_center_bias);
+    float e = center_bias_warp(e_uniform, pivot, st.center_bias);
     float vperp = (vy >= 0.0f) ? vy : -vy;            // |vy|
     float t0 = (vperp > 1e-6f) ? my / vperp : 0.0f;   // spawn → crossing time
     sx = e - vx * t0;
@@ -301,7 +312,7 @@ static void spawn_one(CpuBlob& b, bool scattered) {
     // pivot = y where the center-streamline crosses this edge.
     float x_edge = (vx >= 0.0f) ? 0.0f : 1.0f;
     float pivot = (vx > 1e-5f || vx < -1e-5f) ? 0.5f + vy * (x_edge - 0.5f) / vx : 0.5f;
-    float e = center_bias_warp(e_uniform, pivot, s_center_bias);
+    float e = center_bias_warp(e_uniform, pivot, st.center_bias);
     float vperp = (vx >= 0.0f) ? vx : -vx;            // |vx|
     float t0 = (vperp > 1e-6f) ? mx / vperp : 0.0f;
     sy = e - vy * t0;
@@ -322,7 +333,7 @@ static void spawn_one(CpuBlob& b, bool scattered) {
     else if (vy > 1e-6f)  ty = (1.0f + my - sy) / vy;
     float t_exit = (tx < ty) ? tx : ty;
     if (t_exit < 0.0f) t_exit = 0.0f;
-    float age = lcg_unit(s_spawn_rng) * t_exit;
+    float age = lcg_unit(st.spawn_rng) * t_exit;
     sx += vx * age;
     sy += vy * age;
   }
@@ -336,19 +347,8 @@ static void spawn_one(CpuBlob& b, bool scattered) {
   b.alive = true;
 }
 
-void init() {
-  s_initialized = false;
-  s_motion_w = 0; s_motion_h = 0;
-  for (int i = 0; i < MAX_BLOBS; i++) {
-    s_blobs[i].alive = false;
-    s_blobs[i].x = s_blobs[i].y = 0.5f;
-    s_blobs[i].vx0 = s_blobs[i].vy0 = 0.0f;
-    s_blobs[i].vx = s_blobs[i].vy = 0.0f;
-    s_blobs[i].radius = 0.0f;
-    s_blobs[i].age = 0.0f;
-  }
-  s_spawn_rng = (uint32_t)s_seed ^ 0xBADBA110u;
-
+// Type-level setup: schema + the two shared compute PSOs.
+void module_init() {
   state::init("gen.motion_blobs", {1, 0, 0},
     state::Schema()
       // --- Standard ---
@@ -401,17 +401,58 @@ void init() {
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
       .uniform(2)
       .storage(3));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms),         gpu::BufferUsage::Uniform);
-  s_blob_buf    = gpu::Device::createBuffer(sizeof(GpuBlob) * MAX_BLOBS, gpu::BufferUsage::Storage);
-  s_initialized = true;
-  state::log("motion_blobs: initialized");
+
+  state::log("motion_blobs: module initialized");
 }
 
-void tick(double dt) {
-  if (!s_initialized) return;
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* st = new State();
+  st->blob_buf    = gpu::Device::createBuffer(sizeof(GpuBlob) * MAX_BLOBS, gpu::BufferUsage::Storage);
+  st->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return st;
+}
 
-  int cap = clampi(s_blob_count_max, 1, MAX_BLOBS);
-  int target_alive = (int)std::round(clampf(s_density, 0.0f, 1.0f) * (float)cap);
+void destroy(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->blob_buf.release();
+  st->uniform_buf.release();
+  st->motion_tex.release();
+  st->zero_motion_tex.release();
+  delete st;
+}
+
+// Per-instance init tail: reset params/pool + mark ready.
+void init(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  if (!st->blob_buf.valid() || !st->uniform_buf.valid()) return;
+
+  st->initialized = false;
+  st->motion_w = 0; st->motion_h = 0;
+  st->aspect_ready = false;
+  for (int i = 0; i < MAX_BLOBS; i++) {
+    st->blobs[i].alive = false;
+    st->blobs[i].x = st->blobs[i].y = 0.5f;
+    st->blobs[i].vx0 = st->blobs[i].vy0 = 0.0f;
+    st->blobs[i].vx = st->blobs[i].vy = 0.0f;
+    st->blobs[i].radius = 0.0f;
+    st->blobs[i].age = 0.0f;
+  }
+  st->spawn_rng = (uint32_t)st->seed ^ 0xBADBA110u;
+
+  st->initialized = true;
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->initialized) return;
+
+  int cap = clampi(s->blob_count_max, 1, MAX_BLOBS);
+  int target_alive = (int)std::round(clampf(s->density, 0.0f, 1.0f) * (float)cap);
   if (target_alive < 0) target_alive = 0;
 
   // 1. Integrate live blobs; cull when they've crossed the opposite side.
@@ -419,18 +460,19 @@ void tick(double dt) {
   float fdt = (float)dt;
   // Onion size from arc_scale (cylinder radius² in cover-square), signed by
   // arc_bias (+ bulge / − pinch); strength = |arc_bias|.
-  float arc_str  = s_arc_bias < 0.0f ? -s_arc_bias : s_arc_bias;
-  float arc_sign = s_arc_bias < 0.0f ? -1.0f : 1.0f;
-  float arc_a2   = arc_sign * s_arc_scale * s_arc_scale;
+  float arc_str  = s->arc_bias < 0.0f ? -s->arc_bias : s->arc_bias;
+  float arc_sign = s->arc_bias < 0.0f ? -1.0f : 1.0f;
+  float arc_a2   = arc_sign * s->arc_scale * s->arc_scale;
   for (int i = 0; i < cap; i++) {
-    CpuBlob& b = s_blobs[i];
+    CpuBlob& b = s->blobs[i];
     if (!b.alive) continue;
 
     // Current velocity = potential-flow field sampled at the blob, curving
     // the path around the center (== free-stream when strength/a2 == 0).
     // Storing it back into vx/vy means the cull's downstream test and the
     // uploaded motion vectors both follow the curved path.
-    field_velocity(b.x, b.y, b.vx0, b.vy0, arc_a2, arc_str, &b.vx, &b.vy);
+    field_velocity(b.x, b.y, b.vx0, b.vy0, arc_a2, arc_str,
+                   s->aspect_x, s->aspect_y, &b.vx, &b.vy);
     b.x += b.vx * fdt;
     b.y += b.vy * fdt;
     b.age += fdt;
@@ -443,8 +485,8 @@ void tick(double dt) {
     // all-sides cull would kill them on frame one — which is exactly what
     // left coverage stuck in the downstream corner. BLOB_MAX_AGE is the
     // safety net for a hard inward pinch that would otherwise orbit forever.
-    float mx = halo_margin(b.radius, s_aspect_x);
-    float my = halo_margin(b.radius, s_aspect_y);
+    float mx = halo_margin(b.radius, s->aspect_x, s->softness_curve);
+    float my = halo_margin(b.radius, s->aspect_y, s->softness_curve);
     bool exited = (b.vx > 0.0f && b.x > 1.0f + mx)
                || (b.vx < 0.0f && b.x < -mx)
                || (b.vy > 0.0f && b.y > 1.0f + my)
@@ -456,72 +498,79 @@ void tick(double dt) {
     }
     alive_count++;
   }
-  for (int i = cap; i < MAX_BLOBS; i++) s_blobs[i].alive = false;
+  for (int i = cap; i < MAX_BLOBS; i++) s->blobs[i].alive = false;
 
   // 2. Respawn dead blobs up to target_alive. Hold off until render() has
   // reported the viewport aspect — spawn placement depends on it, so
   // spawning before then could pop a blob in at the wrong distance.
-  if (!s_aspect_ready) return;
+  if (!s->aspect_ready) return;
   // Cold start (filling 2+ from an empty pool — i.e. init, or density
   // ramped up from 0): seed those scattered across the viewport so the
   // field doesn't march in as one synchronized wave. Steady-state single
   // replacements float in from the edge as usual.
   bool scattered = (alive_count == 0 && target_alive > 1);
   for (int i = 0; i < cap && alive_count < target_alive; i++) {
-    CpuBlob& b = s_blobs[i];
+    CpuBlob& b = s->blobs[i];
     if (b.alive) continue;
-    spawn_one(b, scattered);
+    spawn_one(*s, b, scattered);
     alive_count++;
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
 
-    if      (state::pathIs(path, plen, "density"))               s_density               = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "traverse_speed"))        s_traverse_speed        = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "traverse_speed_jitter")) s_traverse_speed_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "drift"))                 s_drift                 = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "center_bias"))           s_center_bias           = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "arc_bias"))              s_arc_bias              = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "arc_scale"))             s_arc_scale             = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_strength"))       s_motion_strength       = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "motion_extent"))         s_motion_extent         = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "shadow_darkness"))       s_shadow_darkness       = state::patchFloat(i);
+    if      (state::pathIs(path, plen, "density"))               s->density               = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "traverse_speed"))        s->traverse_speed        = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "traverse_speed_jitter")) s->traverse_speed_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "drift"))                 s->drift                 = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "center_bias"))           s->center_bias           = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "arc_bias"))              s->arc_bias              = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "arc_scale"))             s->arc_scale             = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_strength"))       s->motion_strength       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_extent"))         s->motion_extent         = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "shadow_darkness"))       s->shadow_darkness       = state::patchFloat(i);
     else if (state::pathIs(path, plen, "shadow_tint")) {
       auto v = state::patchVec3(i);
-      s_shadow_tint_r = v.x; s_shadow_tint_g = v.y; s_shadow_tint_b = v.z;
+      s->shadow_tint_r = v.x; s->shadow_tint_g = v.y; s->shadow_tint_b = v.z;
     }
-    else if (state::pathIs(path, plen, "blob_size"))             s_blob_size             = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "spawn_edge"))            s_spawn_edge            = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "blob_count_max"))        s_blob_count_max        = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "blob_size_jitter"))      s_blob_size_jitter      = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "drift_jitter"))          s_drift_jitter          = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "softness_curve"))        s_softness_curve        = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "spawn_edge_random"))     s_spawn_edge_random     = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(path, plen, "blob_size"))             s->blob_size             = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spawn_edge"))            s->spawn_edge            = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "blob_count_max"))        s->blob_count_max        = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "blob_size_jitter"))      s->blob_size_jitter      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "drift_jitter"))          s->drift_jitter          = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "softness_curve"))        s->softness_curve        = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spawn_edge_random"))     s->spawn_edge_random     = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "seed")) {
       int v = (int)state::patchFloat(i);
-      if (v != s_seed) {
-        s_seed = v;
-        s_spawn_rng = (uint32_t)v ^ 0xBADBA110u;
+      if (v != s->seed) {
+        s->seed = v;
+        s->spawn_rng = (uint32_t)v ^ 0xBADBA110u;
       }
     }
-    else if (state::pathIs(path, plen, "debug_show_blobs"))      s_debug_show_blobs      = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(path, plen, "debug_show_blobs"))      s->debug_show_blobs      = state::patchFloat(i) != 0.0f;
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   // Cache cover-square aspect for tick()'s spawn placement (runs before
   // textures are resolved so it survives a dangling-input frame).
   auto cs = fx::coverSquare(vp_w, vp_h);
-  s_aspect_x = cs.ax;
-  s_aspect_y = cs.ay;
-  s_aspect_ready = true;
+  s->aspect_x = cs.ax;
+  s->aspect_y = cs.ay;
+  s->aspect_ready = true;
 
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
@@ -530,31 +579,31 @@ void render(int vp_w, int vp_h) {
   // Pack blobs.
   GpuBlob gpu_blobs[MAX_BLOBS] = {};
   int active_count = 0;
-  int cap = clampi(s_blob_count_max, 1, MAX_BLOBS);
+  int cap = clampi(s->blob_count_max, 1, MAX_BLOBS);
   for (int i = 0; i < cap; i++) {
-    const CpuBlob& b = s_blobs[i];
+    const CpuBlob& b = s->blobs[i];
     if (!b.alive) continue;
     GpuBlob& g = gpu_blobs[active_count++];
     g.x = b.x; g.y = b.y;
     g.vx = b.vx; g.vy = b.vy;
     g.radius = b.radius;
   }
-  s_blob_buf.writeBytes(gpu_blobs, (int)sizeof(GpuBlob) * MAX_BLOBS);
+  s->blob_buf.writeBytes(gpu_blobs, (int)sizeof(GpuBlob) * MAX_BLOBS);
 
   // Uniforms (aspect-aware blob math). cs computed at the top of render().
   Uniforms u = {};
-  u.motion_strength = clampf(s_motion_strength, 0.0f, 4.0f);
-  u.shadow_darkness = clampf(s_shadow_darkness, 0.0f, 1.0f);
-  u.softness_curve  = clampf(s_softness_curve,  0.1f, 64.0f);
-  u.motion_extent   = clampf(s_motion_extent,   0.0f, 1.0f);
-  u.shadow_r = s_shadow_tint_r;
-  u.shadow_g = s_shadow_tint_g;
-  u.shadow_b = s_shadow_tint_b;
+  u.motion_strength = clampf(s->motion_strength, 0.0f, 4.0f);
+  u.shadow_darkness = clampf(s->shadow_darkness, 0.0f, 1.0f);
+  u.softness_curve  = clampf(s->softness_curve,  0.1f, 64.0f);
+  u.motion_extent   = clampf(s->motion_extent,   0.0f, 1.0f);
+  u.shadow_r = s->shadow_tint_r;
+  u.shadow_g = s->shadow_tint_g;
+  u.shadow_b = s->shadow_tint_b;
   u.aspect_x = cs.ax;
   u.aspect_y = cs.ay;
   u.active_count = (uint32_t)active_count;
-  u.debug_show_blobs = s_debug_show_blobs ? 1u : 0u;
-  s_uniform_buf.writeOne(u);
+  u.debug_show_blobs = s->debug_show_blobs ? 1u : 0u;
+  s->uniform_buf.writeOne(u);
 
   // Color pass — always run; with shadow_darkness == 0 it produces
   // tex_in unchanged.
@@ -563,37 +612,37 @@ void render(int vp_w, int vp_h) {
     cp.setPSO(s_pso_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_uniform_buf, 2);
-    cp.setBuffer(s_blob_buf,    3);
+    cp.setBuffer(s->uniform_buf, 2);
+    cp.setBuffer(s->blob_buf,    3);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
 
   // Motion pass — skip when nothing downstream is listening.
   if (state::isOutputConnected("render_outputs")) {
-    if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-      s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-      s_motion_w = vp_w;
-      s_motion_h = vp_h;
-      if (s_motion_tex.valid()) {
-        state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+    if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
+      s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+      s->motion_w = vp_w;
+      s->motion_h = vp_h;
+      if (s->motion_tex.valid()) {
+        state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
       }
     }
-    if (s_motion_tex.valid()) {
+    if (s->motion_tex.valid()) {
       auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
       if (!upstream.valid()) {
-        if (!s_zero_motion_tex.valid()) {
-          s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+        if (!s->zero_motion_tex.valid()) {
+          s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
         }
-        upstream = s_zero_motion_tex;
+        upstream = s->zero_motion_tex;
       }
       if (upstream.valid()) {
         auto cp = gpu::ComputePass::begin();
         cp.setPSO(s_pso_motion);
-        cp.setTexture(upstream,     0, 0);
-        cp.setTexture(s_motion_tex, 1, 1);
-        cp.setBuffer(s_uniform_buf, 2);
-        cp.setBuffer(s_blob_buf,    3);
+        cp.setTexture(upstream,      0, 0);
+        cp.setTexture(s->motion_tex, 1, 1);
+        cp.setBuffer(s->uniform_buf, 2);
+        cp.setBuffer(s->blob_buf,    3);
         cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
         cp.end();
       }

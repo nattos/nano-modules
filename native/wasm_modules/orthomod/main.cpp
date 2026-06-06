@@ -24,6 +24,12 @@
  * Outputs:
  *   tex_out         — colored bar pattern (off bits / outside inset pass through tex_in)
  *   ch1..ch4, env   — float rails for downstream effects to tap.
+ *
+ * Class-like instance model: module_init() compiles the shared compute
+ * PSO + publishes the schema once per type; each chain entry gets its own
+ * State (params, BeatTick, envelope/edge-state, cached pattern tables,
+ * per-instance uniform + page buffers) via create(). All instance
+ * callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -89,55 +95,100 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
 
-// --- GPU resources ---
-static gpu::ComputePSO s_pso;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Buffer     s_page_buf;            // 4 × hadamard_size uints
-static bool            s_initialized = false;
+// --- Per-instance state. One per chain entry. ---
+struct State {
+  // GPU resources (per-instance buffers).
+  gpu::Buffer uniform_buf;
+  gpu::Buffer page_buf;            // 4 × hadamard_size uints
+  bool        initialized = false;
 
-// --- Schema-mirrored params ---
-// Standard
-static int   s_beat_multiplier_id   = 2;       // index into the select table
-static float s_primary_hue          = 0.08f;
-static float s_saturation           = 0.9f;
-static float s_intensity            = 1.0f;
-static float s_decay_time_beats     = 1.0f;
-static float s_decay_curve          = 0.0f;    // signed [-1,+1] via fx::signedSliderToExp
-// Release phase — used after the gate is released. Decay is used while the
-// gate is held, and after a momentary trigger or beat crossing (which have
-// no held state). Separate half-life + curve, typically a faster fall.
-static float s_release_time_beats   = 0.5f;
-static float s_release_curve        = 0.0f;
-static float s_scatter_max          = 0.15f;
-static float s_channel_brightness_mod = 0.5f;
-// Signed power-curve slider shaping how much the envelope influences
-// overall bar brightness (via fx::signedSliderToExp on env). 0 = linear
-// (env used as-is). -1 → exp 8 → env crushed (bars dim fast / less
-// influence across most of the decay). +1 → exp 1/8 → env lifted (bars
-// stay bright longer / more sustained influence).
-static float s_env_brightness_curve = 0.0f;
-static float s_mod_rate_hz          = 15.0f;
-// Tuning
-static int   s_codebook             = CB_WALSH;
-// Start/end of the entropy-sorted page range the envelope sweeps, as
-// fractions of [0, P-1] (0 = orderly end, 1 = entropic end). The sweep
-// runs start→end as the envelope decays; set start > end to sweep in
-// REVERSE (entropic→orderly). keep_flash keeps the all-1s solid flash as
-// the first level regardless of the range.
-static float s_start                = 0.0f;
-static float s_end                  = 1.0f;
-static bool  s_keep_flash           = true;
-static int   s_hadamard_size        = 32;
-static int   s_render_bits          = 13;
-static float s_inset_top            = 0.0f;
-static float s_inset_bottom         = 0.0f;
-// Per-bar decay jitter (0..1). Biases each bar to cross code (page)
-// boundaries at a slightly offset envelope position so they don't all
-// flip codes in lockstep. Deliberately NOT linked to seed — uses a
-// fixed golden-ratio per-bar offset table. Subtractive (delays only) so
-// the env=1 solid flash stays intact.
-static float s_decay_jitter         = 0.0f;
-static int   s_seed                 = 1;
+  // --- Schema-mirrored params ---
+  // Standard
+  int   beat_multiplier_id   = 2;       // index into the select table
+  float primary_hue          = 0.08f;
+  float saturation           = 0.9f;
+  float intensity            = 1.0f;
+  float decay_time_beats     = 1.0f;
+  float decay_curve          = 0.0f;    // signed [-1,+1] via fx::signedSliderToExp
+  // Release phase — used after the gate is released. Decay is used while the
+  // gate is held, and after a momentary trigger or beat crossing (which have
+  // no held state). Separate half-life + curve, typically a faster fall.
+  float release_time_beats   = 0.5f;
+  float release_curve        = 0.0f;
+  float scatter_max          = 0.15f;
+  float channel_brightness_mod = 0.5f;
+  // Signed power-curve slider shaping how much the envelope influences
+  // overall bar brightness (via fx::signedSliderToExp on env). 0 = linear
+  // (env used as-is). -1 → exp 8 → env crushed (bars dim fast / less
+  // influence across most of the decay). +1 → exp 1/8 → env lifted (bars
+  // stay bright longer / more sustained influence).
+  float env_brightness_curve = 0.0f;
+  float mod_rate_hz          = 15.0f;
+  // Tuning
+  int   codebook             = CB_WALSH;
+  // Start/end of the entropy-sorted page range the envelope sweeps, as
+  // fractions of [0, P-1] (0 = orderly end, 1 = entropic end). The sweep
+  // runs start→end as the envelope decays; set start > end to sweep in
+  // REVERSE (entropic→orderly). keep_flash keeps the all-1s solid flash as
+  // the first level regardless of the range.
+  float start                = 0.0f;
+  float end                  = 1.0f;
+  bool  keep_flash           = true;
+  int   hadamard_size        = 32;
+  int   render_bits          = 13;
+  float inset_top            = 0.0f;
+  float inset_bottom         = 0.0f;
+  // Per-bar decay jitter (0..1). Biases each bar to cross code (page)
+  // boundaries at a slightly offset envelope position so they don't all
+  // flip codes in lockstep. Deliberately NOT linked to seed — uses a
+  // fixed golden-ratio per-bar offset table. Subtractive (delays only) so
+  // the env=1 solid flash stays intact.
+  float decay_jitter         = 0.0f;
+  int   seed                 = 1;
+
+  // --- Runtime state ---
+  fx::BeatTick tick;
+  double linear_env = 0.0;
+  double mod_phase  = 0.0;
+  // Manual trigger surface. Both gate (bool) and trigger (event) are
+  // momentary in the IDE — the value is 1 while held, 0 on release — and
+  // the executor replays that value every frame (style guide §8.2). So
+  // BOTH fire only on a 0→1 rising edge of their value; firing on mere
+  // patch presence would re-pin the envelope every frame (stuck-on bug).
+  bool   gate                = false;
+  bool   gate_prev           = false;
+  float  trigger_prev        = 0.0f;
+  // True while in the decay phase (gate held, or after a momentary fire);
+  // false after the gate is released → release phase. Picks which
+  // time/curve the envelope fall uses.
+  bool   gate_open           = false;
+
+  // --- Cached System A: rows sorted by complexity, columns shuffled by seed ---
+  uint8_t sys_a_rows[SYS_A_N][SYS_A_N];   // sorted+shuffled bits, 0/1
+  bool    sys_a_dirty   = true;
+  int     sys_a_seed    = -1;
+
+  // --- Cached System B: full Hadamard + entropy-sorted code order ---
+  // Each Hadamard row is a "code" (M bits indexed by segment). The columns
+  // are first cyclically rotated by a seed-derived offset (see rebuild) to
+  // move the all-ones DC column off segment 0. We then sort the M codes
+  // ascending by VISIBLE (windowed) horizontal entropy — the number of 0↔1
+  // transitions across the rendered segments — so sorted[0] is the all-1s
+  // solid code and sorted[M-1] is the busiest stripe pattern. Pages of 4
+  // consecutive sorted codes hold 4 same-ish-entropy codes; which of the 4
+  // lands on which bar is decided per-page by the seed at render time. The
+  // rotation makes the sort seed-dependent, so it caches on (M, render_bits,
+  // seed).
+  uint8_t sys_b_bits[MAX_HADAMARD][MAX_HADAMARD]; // rotated codes [code][segment]
+  int     sys_b_sorted[MAX_HADAMARD];             // code indices, ascending visible entropy
+  int     sys_b_size_cached = -1;
+  int     sys_b_rb_cached   = -1;                 // render_bits the sort assumes
+  int     sys_b_seed_cached = -1;                 // seed the rotation assumes
+  int     sys_b_cb_cached   = -1;                 // codebook the codes assume
+};
+
+// --- Type-shared GPU resources: compiled once in module_init(). ---
+static gpu::ComputePSO s_pso;
 
 // Map beat_multiplier_id → ticks per bar. Values match the selectField
 // option values. Id 5 = "Off" → 0, which disables beat-synced triggering
@@ -155,47 +206,7 @@ static inline float beat_multiplier_value(int id) {
   }
 }
 
-// --- Runtime state ---
-static fx::BeatTick s_tick;
-static double s_linear_env = 0.0;
-static double s_mod_phase  = 0.0;
-// Manual trigger surface. Both gate (bool) and trigger (event) are
-// momentary in the IDE — the value is 1 while held, 0 on release — and
-// the executor replays that value every frame (style guide §8.2). So
-// BOTH fire only on a 0→1 rising edge of their value; firing on mere
-// patch presence would re-pin the envelope every frame (stuck-on bug).
-static bool   s_gate                = false;
-static bool   s_gate_prev           = false;
-static float  s_trigger_prev        = 0.0f;
-// True while in the decay phase (gate held, or after a momentary fire);
-// false after the gate is released → release phase. Picks which
-// time/curve the envelope fall uses.
-static bool   s_gate_open           = false;
-
-// --- Cached System A: rows sorted by complexity, columns shuffled by seed ---
-static uint8_t s_sys_a_rows[SYS_A_N][SYS_A_N];   // sorted+shuffled bits, 0/1
-static bool    s_sys_a_dirty   = true;
-static int     s_sys_a_seed    = -1;
-
-// --- Cached System B: full Hadamard + entropy-sorted code order ---
-// Each Hadamard row is a "code" (M bits indexed by segment). The columns
-// are first cyclically rotated by a seed-derived offset (see rebuild) to
-// move the all-ones DC column off segment 0. We then sort the M codes
-// ascending by VISIBLE (windowed) horizontal entropy — the number of 0↔1
-// transitions across the rendered segments — so sorted[0] is the all-1s
-// solid code and sorted[M-1] is the busiest stripe pattern. Pages of 4
-// consecutive sorted codes hold 4 same-ish-entropy codes; which of the 4
-// lands on which bar is decided per-page by the seed at render time. The
-// rotation makes the sort seed-dependent, so it caches on (M, render_bits,
-// seed).
-static uint8_t s_sys_b_bits[MAX_HADAMARD][MAX_HADAMARD]; // rotated codes [code][segment]
-static int     s_sys_b_sorted[MAX_HADAMARD];             // code indices, ascending visible entropy
-static int     s_sys_b_size_cached = -1;
-static int     s_sys_b_rb_cached   = -1;                 // render_bits the sort assumes
-static int     s_sys_b_seed_cached = -1;                 // seed the rotation assumes
-static int     s_sys_b_cb_cached   = -1;                 // codebook the codes assume
-
-// --- Helpers ---
+// --- Pure stateless math helpers ---
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -254,12 +265,12 @@ static inline uint8_t cb_rand_bit(uint32_t seed, int i, int j) {
 // Fill `out` with M codes of M bits (UNrotated) for the selected codebook.
 // Every codebook yields M distinct M-bit codes; downstream rotation +
 // entropy sort + paging are identical regardless of which is chosen.
-static void gen_codebook(int cb, int M, uint8_t out[MAX_HADAMARD][MAX_HADAMARD]) {
+static void gen_codebook(State& s, int cb, int M, uint8_t out[MAX_HADAMARD][MAX_HADAMARD]) {
   int n = log2i(M);
   switch (cb) {
     case CB_RANDOM:
       for (int i = 0; i < M; i++)
-        for (int j = 0; j < M; j++) out[i][j] = cb_rand_bit((uint32_t)s_seed, i, j);
+        for (int j = 0; j < M; j++) out[i][j] = cb_rand_bit((uint32_t)s.seed, i, j);
       break;
 
     case CB_LFSR: {
@@ -267,7 +278,7 @@ static void gen_codebook(int cb, int M, uint8_t out[MAX_HADAMARD][MAX_HADAMARD])
       // so all bars share a single noise texture, just phase-offset.
       uint32_t taps = lfsr_taps(n);
       uint32_t mask = (n >= 32) ? 0xFFFFFFFFu : ((1u << n) - 1u);
-      uint32_t st = (uint32_t)s_seed & mask;
+      uint32_t st = (uint32_t)s.seed & mask;
       if (st == 0u) st = 1u;                       // all-zero state is illegal
       uint8_t base[MAX_HADAMARD];
       for (int k = 0; k < M; k++) {
@@ -323,11 +334,11 @@ static int sys_a_row_complexity(const uint8_t* row) {
 // transitions across the segments AS RENDERED. Segment r samples column
 // (r % M), so this matches exactly what the shader draws — codes that
 // look identical in the rendered window sort equally. All-1s → 0.
-static int code_window_transitions(int code, int M, int render_bits) {
+static int code_window_transitions(State& s, int code, int M, int render_bits) {
   int rb = render_bits < 1 ? 1 : render_bits;
   int t = 0;
   for (int r = 0; r + 1 < rb; r++) {
-    if (s_sys_b_bits[code][r % M] != s_sys_b_bits[code][(r + 1) % M]) t++;
+    if (s.sys_b_bits[code][r % M] != s.sys_b_bits[code][(r + 1) % M]) t++;
   }
   return t;
 }
@@ -344,7 +355,7 @@ static void make_perm4(uint32_t h, int perm[4]) {
   }
 }
 
-static void rebuild_sys_a() {
+static void rebuild_sys_a(State& s) {
   // 1. Generate raw 8x8 Hadamard.
   uint8_t raw[SYS_A_N][SYS_A_N];
   for (int i = 0; i < SYS_A_N; i++) {
@@ -367,7 +378,7 @@ static void rebuild_sys_a() {
   // 3. Fisher-Yates column permutation seeded from user seed.
   int col_perm[SYS_A_N];
   for (int i = 0; i < SYS_A_N; i++) col_perm[i] = i;
-  uint32_t rng = (uint32_t)s_seed ^ 0xA1B2C3D4u;
+  uint32_t rng = (uint32_t)s.seed ^ 0xA1B2C3D4u;
   lcg_next(rng);
   for (int i = SYS_A_N - 1; i > 0; i--) {
     uint32_t r = lcg_next(rng);
@@ -377,14 +388,14 @@ static void rebuild_sys_a() {
   // 4. Assemble sorted + shuffled output.
   for (int i = 0; i < SYS_A_N; i++) {
     for (int j = 0; j < SYS_A_N; j++) {
-      s_sys_a_rows[i][j] = raw[row_order[i]][col_perm[j]];
+      s.sys_a_rows[i][j] = raw[row_order[i]][col_perm[j]];
     }
   }
-  s_sys_a_seed = s_seed;
-  s_sys_a_dirty = false;
+  s.sys_a_seed = s.seed;
+  s.sys_a_dirty = false;
 }
 
-static void rebuild_sys_b(int M, int render_bits) {
+static void rebuild_sys_b(State& s, int M, int render_bits) {
   // Seed-derived cyclic column rotation. Sylvester-Hadamard column 0 is
   // all-ones (the DC term) — without this it renders as an always-lit
   // segment 0 shared by every code. Rotating all columns by a seed-derived
@@ -398,7 +409,7 @@ static void rebuild_sys_b(int M, int render_bits) {
   // instead of smoothly revealing a fixed one (which read as a "zip").
   // (For non-Walsh codebooks there's no DC column to hide, but the same
   // rotation is applied uniformly as a free, seed-driven phase shift.)
-  uint32_t hr = (uint32_t)s_seed * 2654435761u;
+  uint32_t hr = (uint32_t)s.seed * 2654435761u;
   hr ^= (uint32_t)render_bits * 0x9E3779B1u;
   hr ^= hr >> 15; hr *= 0x2C1B3C6Du; hr ^= hr >> 12;
   int rot = (int)(hr % (uint32_t)M);
@@ -407,9 +418,9 @@ static void rebuild_sys_b(int M, int render_bits) {
   // with the cyclic column rotation applied. `static` to keep the 4 KB
   // matrix off the stack — rebuild runs single-threaded and non-reentrant.
   static uint8_t code[MAX_HADAMARD][MAX_HADAMARD];
-  gen_codebook(s_codebook, M, code);
+  gen_codebook(s, s.codebook, M, code);
   for (int i = 0; i < M; i++) {
-    for (int j = 0; j < M; j++) s_sys_b_bits[i][j] = code[i][(j + rot) % M];
+    for (int j = 0; j < M; j++) s.sys_b_bits[i][j] = code[i][(j + rot) % M];
   }
   // Sort code indices ascending by visible (windowed) horizontal entropy.
   // Insertion sort, tie-break by code index for determinism. sorted[0] is
@@ -417,37 +428,37 @@ static void rebuild_sys_b(int M, int render_bits) {
   // the entropy order is fixed; only the per-page bar assignment is seeded.
   int ent[MAX_HADAMARD];
   for (int i = 0; i < M; i++) {
-    s_sys_b_sorted[i] = i;
-    ent[i] = code_window_transitions(i, M, render_bits);
+    s.sys_b_sorted[i] = i;
+    ent[i] = code_window_transitions(s, i, M, render_bits);
   }
   for (int i = 1; i < M; i++) {
-    int v = s_sys_b_sorted[i], ev = ent[v], j = i - 1;
+    int v = s.sys_b_sorted[i], ev = ent[v], j = i - 1;
     while (j >= 0) {
-      int oj = s_sys_b_sorted[j];
+      int oj = s.sys_b_sorted[j];
       if (ent[oj] > ev || (ent[oj] == ev && oj > v)) {
-        s_sys_b_sorted[j + 1] = s_sys_b_sorted[j]; j--;
+        s.sys_b_sorted[j + 1] = s.sys_b_sorted[j]; j--;
       } else break;
     }
-    s_sys_b_sorted[j + 1] = v;
+    s.sys_b_sorted[j + 1] = v;
   }
-  s_sys_b_size_cached = M;
-  s_sys_b_rb_cached = render_bits;
-  s_sys_b_seed_cached = s_seed;
-  s_sys_b_cb_cached = s_codebook;
+  s.sys_b_size_cached = M;
+  s.sys_b_rb_cached = render_bits;
+  s.sys_b_seed_cached = s.seed;
+  s.sys_b_cb_cached = s.codebook;
 }
 
-static void ensure_caches() {
+static void ensure_caches(State& s) {
   // Hadamard sizes constrained to powers of 2 in [4, MAX_HADAMARD].
-  int M = round_up_pow2(s_hadamard_size);
+  int M = round_up_pow2(s.hadamard_size);
   if (M < 4) M = 4;
   if (M > MAX_HADAMARD) M = MAX_HADAMARD;
-  if (M != s_hadamard_size) s_hadamard_size = M;
+  if (M != s.hadamard_size) s.hadamard_size = M;
 
-  int rb = clampi(s_render_bits, 1, 64);
-  if (s_sys_a_dirty || s_sys_a_seed != s_seed) rebuild_sys_a();
-  if (s_sys_b_size_cached != M || s_sys_b_rb_cached != rb
-      || s_sys_b_seed_cached != s_seed || s_sys_b_cb_cached != s_codebook)
-    rebuild_sys_b(M, rb);
+  int rb = clampi(s.render_bits, 1, 64);
+  if (s.sys_a_dirty || s.sys_a_seed != s.seed) rebuild_sys_a(s);
+  if (s.sys_b_size_cached != M || s.sys_b_rb_cached != rb
+      || s.sys_b_seed_cached != s.seed || s.sys_b_cb_cached != s.codebook)
+    rebuild_sys_b(s, M, rb);
 }
 
 // Sample the per-channel waveform for a 2-bit code.
@@ -463,24 +474,8 @@ static float channel_value(int code_msb, int code_lsb, double mod_phase) {
   return (float)std::fabs(std::sin(mod_phase * 2.0 * 3.14159265358979));
 }
 
-void init() {
-  s_initialized = false;
-  s_sys_a_dirty = true;
-  s_sys_a_seed = -1;
-  s_sys_b_size_cached = -1;
-  s_sys_b_rb_cached = -1;
-  s_sys_b_seed_cached = -1;
-  s_sys_b_cb_cached = -1;
-  s_linear_env = 0.0;
-  s_mod_phase = 0.0;
-  s_gate = false;
-  s_gate_prev = false;
-  s_trigger_prev = 0.0f;
-  s_gate_open = false;
-  s_tick.reset();
-  std::memset(s_sys_a_rows, 0, sizeof(s_sys_a_rows));
-  std::memset(s_sys_b_bits, 0, sizeof(s_sys_b_bits));
-
+// Type-level setup: schema + the shared compute PSO. Runs once per type.
+void module_init() {
   state::init("gen.orthomod", {1, 0, 0},
     state::Schema()
       // --- Standard ---
@@ -537,56 +532,105 @@ void init() {
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2)
       .storage(3));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  s_page_buf    = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_PAGE_BITS,
-                                            gpu::BufferUsage::Storage);
-  s_initialized = true;
+  state::log("orthomod: module initialized");
+}
+
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s->page_buf    = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_PAGE_BITS,
+                                             gpu::BufferUsage::Storage);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  s->page_buf.release();
+  delete s;
+}
+
+// Per-instance init tail: reset params/envelope/edge-state, re-arm the
+// BeatTick, and invalidate the cache keys so the pattern tables rebuild on
+// first use.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->initialized = false;
+  s->sys_a_dirty = true;
+  s->sys_a_seed = -1;
+  s->sys_b_size_cached = -1;
+  s->sys_b_rb_cached = -1;
+  s->sys_b_seed_cached = -1;
+  s->sys_b_cb_cached = -1;
+  s->linear_env = 0.0;
+  s->mod_phase = 0.0;
+  s->gate = false;
+  s->gate_prev = false;
+  s->trigger_prev = 0.0f;
+  s->gate_open = false;
+  s->tick.reset();
+  std::memset(s->sys_a_rows, 0, sizeof(s->sys_a_rows));
+  std::memset(s->sys_b_bits, 0, sizeof(s->sys_b_bits));
+
+  if (!s_pso.valid()) return;
+  if (!s->uniform_buf.valid() || !s->page_buf.valid()) return;
+  s->initialized = true;
   state::log("orthomod: initialized");
 }
 
-void tick(double dt) {
-  if (!s_initialized) return;
-  ensure_caches();
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->initialized) return;
+  ensure_caches(*s);
 
-  float beat_mult = beat_multiplier_value(s_beat_multiplier_id);
-  int crossings = s_tick.tick(beat_mult);   // 0 crossings when "Off" (mult 0)
-  if (crossings > 0) { s_linear_env = 1.0; s_gate_open = true; }  // beat → decay phase
+  float beat_mult = beat_multiplier_value(s->beat_multiplier_id);
+  int crossings = s->tick.tick(beat_mult);   // 0 crossings when "Off" (mult 0)
+  if (crossings > 0) { s->linear_env = 1.0; s->gate_open = true; }  // beat → decay phase
 
   // Fall: linear_env loses 1 unit over the active phase's time. Decay while
   // the gate is held (or after a momentary fire); release once let go.
   double bpm = host::bpm();
   if (bpm < 1.0) bpm = 120.0;
-  double phase_beats = s_gate_open ? (double)s_decay_time_beats
-                                   : (double)s_release_time_beats;
+  double phase_beats = s->gate_open ? (double)s->decay_time_beats
+                                    : (double)s->release_time_beats;
   double phase_seconds = phase_beats * 60.0 / bpm;
   if (phase_seconds > 1e-5) {
-    s_linear_env -= dt / phase_seconds;
-    if (s_linear_env < 0.0) s_linear_env = 0.0;
+    s->linear_env -= dt / phase_seconds;
+    if (s->linear_env < 0.0) s->linear_env = 0.0;
   }
 
   // §2.1 accumulator: phase advances regardless of rate changes.
-  if (s_mod_rate_hz > 0.0f) {
-    s_mod_phase += dt * (double)s_mod_rate_hz;
-    if (s_mod_phase > 1024.0) s_mod_phase -= std::floor(s_mod_phase);
+  if (s->mod_rate_hz > 0.0f) {
+    s->mod_phase += dt * (double)s->mod_rate_hz;
+    if (s->mod_phase > 1024.0) s->mod_phase -= std::floor(s->mod_phase);
   }
 }
 
 // Switch from decay to release phase (gate let go). Remap linear_env so the
 // OUTPUT env is continuous across the decay→release curve change — without
 // this the brightness pops at release whenever the two curves differ.
-static void enter_release() {
-  if (!s_gate_open) return;
-  float e_decay   = fx::signedSliderToExp(clampf(s_decay_curve,   -1.0f, 1.0f));
-  float e_release = fx::signedSliderToExp(clampf(s_release_curve, -1.0f, 1.0f));
-  if (s_linear_env > 0.0 && e_release > 1e-6f) {
-    double out = std::pow(s_linear_env, (double)e_decay);     // current output env
-    s_linear_env = std::pow(out, 1.0 / (double)e_release);    // matching linear for release curve
-    if (s_linear_env > 1.0) s_linear_env = 1.0;
+static void enter_release(State& s) {
+  if (!s.gate_open) return;
+  float e_decay   = fx::signedSliderToExp(clampf(s.decay_curve,   -1.0f, 1.0f));
+  float e_release = fx::signedSliderToExp(clampf(s.release_curve, -1.0f, 1.0f));
+  if (s.linear_env > 0.0 && e_release > 1e-6f) {
+    double out = std::pow(s.linear_env, (double)e_decay);     // current output env
+    s.linear_env = std::pow(out, 1.0 / (double)e_release);    // matching linear for release curve
+    if (s.linear_env > 1.0) s.linear_env = 1.0;
   }
-  s_gate_open = false;
+  s.gate_open = false;
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     const char* path = pb + off[i];
     int plen = len[i];
@@ -595,52 +639,52 @@ void on_state_patched(int n, const char* pb, const int* off, const int* len, con
     if (op == state::PatchReplace) {
       if (state::pathIs(path, plen, "gate")) {
         bool new_gate = state::patchFloat(i) != 0.0f;
-        if (new_gate && !s_gate_prev) {
-          s_linear_env = 1.0;     // attack → decay phase
-          s_gate_open = true;
-        } else if (!new_gate && s_gate_prev) {
-          enter_release();        // gate let go → release phase
+        if (new_gate && !s->gate_prev) {
+          s->linear_env = 1.0;     // attack → decay phase
+          s->gate_open = true;
+        } else if (!new_gate && s->gate_prev) {
+          enter_release(*s);       // gate let go → release phase
         }
-        s_gate = new_gate;
-        s_gate_prev = new_gate;
+        s->gate = new_gate;
+        s->gate_prev = new_gate;
       }
       else if (state::pathIs(path, plen, "trigger")) {
         // Momentary event value (1 held / 0 released), replayed every
         // frame — fire only on the 0→1 rising edge, exactly like gate.
         float v = state::patchFloat(i);
-        if (v != 0.0f && s_trigger_prev == 0.0f) { s_linear_env = 1.0; s_gate_open = true; }
-        s_trigger_prev = v;
+        if (v != 0.0f && s->trigger_prev == 0.0f) { s->linear_env = 1.0; s->gate_open = true; }
+        s->trigger_prev = v;
       }
-      else if (state::pathIs(path, plen, "beat_multiplier")) s_beat_multiplier_id   = (int)state::patchFloat(i);
-      else if (state::pathIs(path, plen, "primary_hue"))     s_primary_hue          = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "saturation"))      s_saturation           = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "intensity"))       s_intensity            = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "decay_time_beats"))s_decay_time_beats     = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "decay_curve"))     s_decay_curve          = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "release_time_beats")) s_release_time_beats = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "release_curve"))   s_release_curve        = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "scatter_max"))     s_scatter_max          = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "channel_brightness_mod")) s_channel_brightness_mod = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "env_brightness_curve")) s_env_brightness_curve = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "mod_rate_hz"))     s_mod_rate_hz          = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "codebook"))        s_codebook             = (int)state::patchFloat(i);
-      else if (state::pathIs(path, plen, "start"))           s_start                = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "end"))             s_end                  = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "keep_flash"))      s_keep_flash           = state::patchFloat(i) != 0.0f;
+      else if (state::pathIs(path, plen, "beat_multiplier")) s->beat_multiplier_id   = (int)state::patchFloat(i);
+      else if (state::pathIs(path, plen, "primary_hue"))     s->primary_hue          = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "saturation"))      s->saturation           = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "intensity"))       s->intensity            = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "decay_time_beats"))s->decay_time_beats     = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "decay_curve"))     s->decay_curve          = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "release_time_beats")) s->release_time_beats = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "release_curve"))   s->release_curve        = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "scatter_max"))     s->scatter_max          = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "channel_brightness_mod")) s->channel_brightness_mod = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "env_brightness_curve")) s->env_brightness_curve = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "mod_rate_hz"))     s->mod_rate_hz          = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "codebook"))        s->codebook             = (int)state::patchFloat(i);
+      else if (state::pathIs(path, plen, "start"))           s->start                = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "end"))             s->end                  = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "keep_flash"))      s->keep_flash           = state::patchFloat(i) != 0.0f;
       else if (state::pathIs(path, plen, "hadamard_size")) {
         int v = (int)state::patchFloat(i);
-        if (v != s_hadamard_size) { s_hadamard_size = v; s_sys_b_size_cached = -1; }
+        if (v != s->hadamard_size) { s->hadamard_size = v; s->sys_b_size_cached = -1; }
       }
-      else if (state::pathIs(path, plen, "render_bits"))     s_render_bits          = (int)state::patchFloat(i);
-      else if (state::pathIs(path, plen, "inset_top"))       s_inset_top            = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "inset_bottom"))    s_inset_bottom         = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "decay_jitter"))    s_decay_jitter         = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "render_bits"))     s->render_bits          = (int)state::patchFloat(i);
+      else if (state::pathIs(path, plen, "inset_top"))       s->inset_top            = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "inset_bottom"))    s->inset_bottom         = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "decay_jitter"))    s->decay_jitter         = state::patchFloat(i);
       else if (state::pathIs(path, plen, "seed")) {
         // Seed re-rolls System A's column shuffle, System B's column
         // rotation (rebuilt via ensure_caches' seed cache key) and System
         // B's per-page bar assignment (applied live in render).
         int v = (int)state::patchFloat(i);
-        if (v != s_seed) { s_seed = v; s_sys_a_dirty = true; }
+        if (v != s->seed) { s->seed = v; s->sys_a_dirty = true; }
       }
     }
   }
@@ -652,9 +696,11 @@ static void publish_output(const char* name, float value) {
   val::release(vh);
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
-  ensure_caches();
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->initialized || vp_w <= 0 || vp_h <= 0) return;
+  ensure_caches(*s);
 
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
@@ -662,9 +708,9 @@ void render(int vp_w, int vp_h) {
 
   // Compute env from linear_env with the active phase's curve (decay while
   // the gate is held / after a momentary fire, release once let go).
-  float linear = (float)s_linear_env;
+  float linear = (float)s->linear_env;
   if (linear < 0.0f) linear = 0.0f;
-  float phase_curve = s_gate_open ? s_decay_curve : s_release_curve;
+  float phase_curve = s->gate_open ? s->decay_curve : s->release_curve;
   float env = std::pow(linear, fx::signedSliderToExp(clampf(phase_curve, -1.0f, 1.0f)));
   if (env < 0.0f) env = 0.0f;
   if (env > 1.0f) env = 1.0f;
@@ -672,7 +718,7 @@ void render(int vp_w, int vp_h) {
   // System A — pick row by env.
   int idx_A = (int)std::floor((1.0f - env) * (float)SYS_A_N);
   idx_A = clampi(idx_A, 0, SYS_A_N - 1);
-  const uint8_t* rowA = s_sys_a_rows[idx_A];
+  const uint8_t* rowA = s->sys_a_rows[idx_A];
 
   // Per-bar 2-bit code → RAW channel waveform [0,1] (NOT pre-multiplied by
   // env). The global envelope enters brightness only through env_brightness
@@ -685,7 +731,7 @@ void render(int vp_w, int vp_h) {
   for (int b = 0; b < BARS; b++) {
     int code_msb = rowA[b * 2 + 0];
     int code_lsb = rowA[b * 2 + 1];
-    ch[b] = channel_value(code_msb, code_lsb, s_mod_phase);
+    ch[b] = channel_value(code_msb, code_lsb, s->mod_phase);
   }
 
   // System B — pick the entropy level by env.
@@ -698,18 +744,18 @@ void render(int vp_w, int vp_h) {
   // prepended as level 0 regardless of the range. Within a page the 4
   // codes are dealt to the 4 bars by a per-page seed-driven permutation,
   // so no bar has a fixed personality and every code can land on any bar.
-  int M = s_hadamard_size;
+  int M = s->hadamard_size;
   int P = M / 4;
   if (P < 1) P = 1;
 
-  float start_f = clampf(s_start, 0.0f, 1.0f);
-  float end_f   = clampf(s_end,   0.0f, 1.0f);
+  float start_f = clampf(s->start, 0.0f, 1.0f);
+  float end_f   = clampf(s->end,   0.0f, 1.0f);
   int pg_start = clampi((int)std::lround(start_f * (float)(P - 1)), 0, P - 1);
   int pg_end   = clampi((int)std::lround(end_f   * (float)(P - 1)), 0, P - 1);
   int step = (pg_end >= pg_start) ? 1 : -1;     // reversed range → sweep backwards
   int cropped = (pg_end >= pg_start ? pg_end - pg_start : pg_start - pg_end) + 1;
 
-  bool flash = s_keep_flash;
+  bool flash = s->keep_flash;
   int num_levels = cropped + (flash ? 1 : 0);
   if (num_levels < 1) num_levels = 1;
   float level_pos = (1.0f - env) * (float)num_levels;
@@ -725,7 +771,7 @@ void render(int vp_w, int vp_h) {
   uint32_t page_bits[MAX_PAGE_BITS];
   int debug_level = 0;
   for (int b = 0; b < BARS; b++) {
-    float jittered = level_pos - s_decay_jitter * BAR_JIT[b];
+    float jittered = level_pos - s->decay_jitter * BAR_JIT[b];
     int level_b = (int)std::floor(jittered);
     level_b = clampi(level_b, 0, num_levels - 1);
     if (b == 0) debug_level = level_b;            // for the scatter hash key
@@ -736,43 +782,43 @@ void render(int vp_w, int vp_h) {
       int crop_idx = flash ? (level_b - 1) : level_b;   // 0 .. cropped-1
       crop_idx = clampi(crop_idx, 0, cropped - 1);
       int page = pg_start + step * crop_idx;            // pg_start .. pg_end (either direction)
-      uint32_t h = ((uint32_t)s_seed * 2654435761u) ^ ((uint32_t)page * 40503u);
+      uint32_t h = ((uint32_t)s->seed * 2654435761u) ^ ((uint32_t)page * 40503u);
       int perm[4];
       make_perm4(h, perm);
-      int code = s_sys_b_sorted[page * 4 + perm[b]];
-      for (int c = 0; c < M; c++) page_bits[b * M + c] = (uint32_t)s_sys_b_bits[code][c];
+      int code = s->sys_b_sorted[page * 4 + perm[b]];
+      for (int c = 0; c < M; c++) page_bits[b * M + c] = (uint32_t)s->sys_b_bits[code][c];
     }
   }
-  s_page_buf.writeBytes(page_bits, (int)sizeof(uint32_t) * BARS * M);
+  s->page_buf.writeBytes(page_bits, (int)sizeof(uint32_t) * BARS * M);
 
   // Uniforms.
   Uniforms u = {};
   u.ch0 = ch[0]; u.ch1 = ch[1]; u.ch2 = ch[2]; u.ch3 = ch[3];
   u.env = env;
-  u.primary_hue = s_primary_hue;
-  u.saturation = s_saturation;
-  u.intensity = s_intensity;
-  u.scatter_max = s_scatter_max;
-  u.channel_brightness_mod = s_channel_brightness_mod;
-  u.inset_top = clampf(s_inset_top, 0.0f, 0.5f);
-  u.inset_bottom = clampf(s_inset_bottom, 0.0f, 0.5f);
+  u.primary_hue = s->primary_hue;
+  u.saturation = s->saturation;
+  u.intensity = s->intensity;
+  u.scatter_max = s->scatter_max;
+  u.channel_brightness_mod = s->channel_brightness_mod;
+  u.inset_top = clampf(s->inset_top, 0.0f, 0.5f);
+  u.inset_bottom = clampf(s->inset_bottom, 0.0f, 0.5f);
   u.hadamard_size = (uint32_t)M;
-  u.render_bits = (uint32_t)clampi(s_render_bits, 1, 64);
+  u.render_bits = (uint32_t)clampi(s->render_bits, 1, 64);
   u.page_idx = (uint32_t)debug_level;
-  u.seed = (uint32_t)s_seed;
+  u.seed = (uint32_t)s->seed;
   // Envelope shaped by the brightness power curve (style guide §1.3).
   // Only affects bar brightness in the shader — page selection, channels,
   // and scatter all still use the raw env.
-  u.env_brightness = std::pow(env, fx::signedSliderToExp(clampf(s_env_brightness_curve, -1.0f, 1.0f)));
-  s_uniform_buf.writeOne(u);
+  u.env_brightness = std::pow(env, fx::signedSliderToExp(clampf(s->env_brightness_curve, -1.0f, 1.0f)));
+  s->uniform_buf.writeOne(u);
 
   // Dispatch.
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(in,  0, 0);
   cp.setTexture(out, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
-  cp.setBuffer(s_page_buf,    3);
+  cp.setBuffer(s->uniform_buf, 2);
+  cp.setBuffer(s->page_buf,    3);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
   gpu::Device::submit();

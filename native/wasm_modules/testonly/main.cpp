@@ -29,7 +29,7 @@ namespace brightness_contrast { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
-NANO_DECLARE_LEGACY_EFFECT(video_blend)
+NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
 // ---- Test-only effects (never shipped) ----
 
@@ -42,37 +42,37 @@ NANO_DECLARE_INSTANCE_EFFECT(fuse_mul)
 
 NANO_DECLARE_INSTANCE_EFFECT(fuse_solid)
 
-NANO_DECLARE_LEGACY_EFFECT(env_lfo)
+NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 
-NANO_DECLARE_LEGACY_EFFECT(gpu_test)
+NANO_DECLARE_INSTANCE_EFFECT(gpu_test)
 
-NANO_DECLARE_LEGACY_EFFECT(spinningtris)
+NANO_DECLARE_INSTANCE_EFFECT(spinningtris)
 
-NANO_DECLARE_LEGACY_EFFECT(particles_emitter)
+NANO_DECLARE_INSTANCE_EFFECT(particles_emitter)
 
-NANO_DECLARE_LEGACY_EFFECT(particles_renderer)
+NANO_DECLARE_INSTANCE_EFFECT(particles_renderer)
 
 // Platform-feature smoke effects — each one exercises a single GPU-host
 // capability so the integration tests can detect regressions in the
 // platform layer (texture formats, atomics, RW textures, MRT, copy/clear,
 // 3D textures). Not user-facing.
-NANO_DECLARE_LEGACY_EFFECT(hdr_test)
+NANO_DECLARE_INSTANCE_EFFECT(hdr_test)
 
-NANO_DECLARE_LEGACY_EFFECT(atomic_test)
+NANO_DECLARE_INSTANCE_EFFECT(atomic_test)
 
-NANO_DECLARE_LEGACY_EFFECT(rw_storage_test)
+NANO_DECLARE_INSTANCE_EFFECT(rw_storage_test)
 
-NANO_DECLARE_LEGACY_EFFECT(clear_copy_test)
+NANO_DECLARE_INSTANCE_EFFECT(clear_copy_test)
 
-NANO_DECLARE_LEGACY_EFFECT(mrt_test)
+NANO_DECLARE_INSTANCE_EFFECT(mrt_test)
 
-NANO_DECLARE_LEGACY_EFFECT(lut3d_test)
+NANO_DECLARE_INSTANCE_EFFECT(lut3d_test)
 
-NANO_DECLARE_LEGACY_EFFECT(motion_rect)
+NANO_DECLARE_INSTANCE_EFFECT(motion_rect)
 
-NANO_DECLARE_LEGACY_EFFECT(motion_swarm)
+NANO_DECLARE_INSTANCE_EFFECT(motion_swarm)
 
-NANO_DECLARE_LEGACY_EFFECT(motion_static)
+NANO_DECLARE_INSTANCE_EFFECT(motion_static)
 
 NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
@@ -110,7 +110,7 @@ void nano_module_main() {
         "Blends two texture inputs with opacity control",
         "video",
         "blend,mix,composite,opacity",
-        NANO_LEGACY_LIFECYCLE(video_blend),
+        NANO_INSTANCE_LIFECYCLE(video_blend),
     });
 
     // Test-only fusion mappers (predictable per-pixel math for
@@ -155,7 +155,7 @@ void nano_module_main() {
         "Low frequency oscillator outputting a sine wave",
         "data",
         "oscillator,modulation,automation",
-        NANO_LEGACY_LIFECYCLE(env_lfo),
+        NANO_INSTANCE_LIFECYCLE(env_lfo),
     });
 
     nano::registerEffect({
@@ -165,7 +165,7 @@ void nano_module_main() {
         "GPU pipeline test rendering a solid color",
         "debug",
         "test,gpu,pipeline",
-        NANO_LEGACY_LIFECYCLE(gpu_test),
+        NANO_INSTANCE_LIFECYCLE(gpu_test),
     });
 
     nano::registerEffect({
@@ -175,7 +175,7 @@ void nano_module_main() {
         "Animated spinning triangles GPU demo",
         "generator",
         "demo,triangles,animation,generative",
-        NANO_LEGACY_LIFECYCLE(spinningtris),
+        NANO_INSTANCE_LIFECYCLE(spinningtris),
     });
 
     nano::registerEffect({
@@ -185,7 +185,7 @@ void nano_module_main() {
         "Emits a stream of 2D particles into a GPU storage buffer",
         "data",
         "particles,gpu,emit,physics",
-        NANO_LEGACY_LIFECYCLE(particles_emitter),
+        NANO_INSTANCE_LIFECYCLE(particles_emitter),
     });
 
     nano::registerEffect({
@@ -195,7 +195,7 @@ void nano_module_main() {
         "Renders quads for each particle in an input GPU buffer",
         "video",
         "particles,gpu,quads,instanced",
-        NANO_LEGACY_LIFECYCLE(particles_renderer),
+        NANO_INSTANCE_LIFECYCLE(particles_renderer),
     });
 
     // --- Platform-feature smoke effects ---
@@ -207,7 +207,7 @@ void nano_module_main() {
         "Verifies rgba16float storage textures via a 4x → 0.25x round trip",
         "debug",
         "test,hdr,float,texture-format",
-        NANO_LEGACY_LIFECYCLE(hdr_test),
+        NANO_INSTANCE_LIFECYCLE(hdr_test),
     });
 
     nano::registerEffect({
@@ -217,7 +217,7 @@ void nano_module_main() {
         "Verifies atomic InterlockedAdd into a storage buffer via per-pixel histogram",
         "debug",
         "test,atomic,storage-buffer,histogram",
-        NANO_LEGACY_LIFECYCLE(atomic_test),
+        NANO_INSTANCE_LIFECYCLE(atomic_test),
     });
 
     nano::registerEffect({
@@ -227,7 +227,7 @@ void nano_module_main() {
         "Verifies read_write access on r32float storage textures via in-place RMW",
         "debug",
         "test,rw,storage-texture,r32float",
-        NANO_LEGACY_LIFECYCLE(rw_storage_test),
+        NANO_INSTANCE_LIFECYCLE(rw_storage_test),
     });
 
     nano::registerEffect({
@@ -237,7 +237,7 @@ void nano_module_main() {
         "Verifies gpu::Device::clear and gpu::Device::copy via clear-then-copy round trip",
         "debug",
         "test,clear,copy,texture",
-        NANO_LEGACY_LIFECYCLE(clear_copy_test),
+        NANO_INSTANCE_LIFECYCLE(clear_copy_test),
     });
 
     nano::registerEffect({
@@ -247,7 +247,7 @@ void nano_module_main() {
         "Verifies multi-target render passes via fragment shader writing two color attachments",
         "debug",
         "test,mrt,render-target,fragment",
-        NANO_LEGACY_LIFECYCLE(mrt_test),
+        NANO_INSTANCE_LIFECYCLE(mrt_test),
     });
 
     nano::registerEffect({
@@ -257,7 +257,7 @@ void nano_module_main() {
         "Verifies 3D textures via an identity 16x16x16 color LUT",
         "debug",
         "test,3d,lut,texture-3d",
-        NANO_LEGACY_LIFECYCLE(lut3d_test),
+        NANO_INSTANCE_LIFECYCLE(lut3d_test),
     });
 
     nano::registerEffect({
@@ -267,7 +267,7 @@ void nano_module_main() {
         "Test producer for the canonical RenderOutputs rail. Overlays a moving colored rectangle and writes per-pixel velocity vectors.",
         "debug",
         "test,motion,render-outputs,producer",
-        NANO_LEGACY_LIFECYCLE(motion_rect),
+        NANO_INSTANCE_LIFECYCLE(motion_rect),
     });
 
     nano::registerEffect({
@@ -277,7 +277,7 @@ void nano_module_main() {
         "A swarm of randomly-coloured rectangles curling around the viewport center, each emitting its own velocity into render_outputs/motion. Test producer for non-uniform motion fields.",
         "debug",
         "test,motion,render-outputs,producer,swarm,curl",
-        NANO_LEGACY_LIFECYCLE(motion_swarm),
+        NANO_INSTANCE_LIFECYCLE(motion_swarm),
     });
 
     nano::registerEffect({
@@ -287,7 +287,7 @@ void nano_module_main() {
         "Per-pixel thresholded-noise motion field rotating around the viewport center. Stress test for fine-grained motion blur input. Opacity overlays an HSV-polar visualization of the motion vectors.",
         "debug",
         "test,motion,render-outputs,producer,noise,static",
-        NANO_LEGACY_LIFECYCLE(motion_static),
+        NANO_INSTANCE_LIFECYCLE(motion_static),
     });
 
     nano::registerEffect({

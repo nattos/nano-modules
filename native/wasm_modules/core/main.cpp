@@ -18,10 +18,9 @@ namespace brightness_contrast { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
-NANO_DECLARE_LEGACY_EFFECT(video_blend)
+NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
-NANO_DECLARE_LEGACY_EFFECT(paramlinker)
-namespace paramlinker { void on_resolume_param(long long param_id, double value); }
+NANO_DECLARE_INSTANCE_EFFECT(paramlinker)
 
 NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
@@ -48,20 +47,20 @@ NANO_DECLARE_INSTANCE_EFFECT(vibrance)
 
 NANO_DECLARE_INSTANCE_EFFECT(vignette)
 
-NANO_DECLARE_LEGACY_EFFECT(blur)
+NANO_DECLARE_INSTANCE_EFFECT(blur)
 
-NANO_DECLARE_LEGACY_EFFECT(fast_blur)
+NANO_DECLARE_INSTANCE_EFFECT(fast_blur)
 
-NANO_DECLARE_LEGACY_EFFECT(sharpen)
-namespace sharpen { int is_identity(); }
+NANO_DECLARE_INSTANCE_EFFECT(sharpen)
+namespace sharpen { int32_t is_identity(void* self); }
 
-NANO_DECLARE_LEGACY_EFFECT(edges)
-namespace edges { int is_identity(); }
+NANO_DECLARE_INSTANCE_EFFECT(edges)
+namespace edges { int32_t is_identity(void* self); }
 
-NANO_DECLARE_LEGACY_EFFECT(crop)
+NANO_DECLARE_INSTANCE_EFFECT(crop)
 
-NANO_DECLARE_LEGACY_EFFECT(transform)
-namespace transform { int is_identity(); }
+NANO_DECLARE_INSTANCE_EFFECT(transform)
+namespace transform { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(gradient)
 
@@ -103,7 +102,7 @@ void nano_module_main() {
         "Blends two texture inputs with opacity control",
         "video",
         "blend,mix,composite,opacity",
-        NANO_LEGACY_LIFECYCLE(video_blend),
+        NANO_INSTANCE_LIFECYCLE(video_blend),
     });
 
     nano::registerEffect({
@@ -113,16 +112,7 @@ void nano_module_main() {
         "Links two Resolume parameters together via learn mechanism",
         "utility",
         "resolume,parameter,link,automation",
-        nullptr,
-        []() -> void* { return (void*)1; },
-        [](void*) {},
-        [](void* self) { (void)self; paramlinker::init(); },
-        [](void* self, double dt) { (void)self; paramlinker::tick(dt); },
-        [](void* self, int w, int h) { (void)self; paramlinker::render(w, h); },
-        [](void* self, int n, const char* pb, const int* o, const int* l, const int* op) {
-            (void)self; paramlinker::on_state_patched(n, pb, o, l, op);
-        },
-        [](void* self, long long id, double v) { (void)self; paramlinker::on_resolume_param(id, v); },
+        NANO_INSTANCE_LIFECYCLE(paramlinker),
     });
 
     nano::registerEffect({
@@ -253,7 +243,7 @@ void nano_module_main() {
         "Single-pass Gaussian blur with adjustable radius",
         "video",
         "blur,gaussian,defocus,soften",
-        NANO_LEGACY_LIFECYCLE(blur),
+        NANO_INSTANCE_LIFECYCLE(blur),
     });
 
     nano::registerEffect({
@@ -263,7 +253,7 @@ void nano_module_main() {
         "Iterative dual-filter blur (CoD/SIGGRAPH 2014). Cheaper than Gaussian for large radii.",
         "video",
         "blur,bloom,dual-filter,downsample,upsample,fast",
-        NANO_LEGACY_LIFECYCLE(fast_blur),
+        NANO_INSTANCE_LIFECYCLE(fast_blur),
     });
 
     nano::registerEffect({
@@ -273,8 +263,8 @@ void nano_module_main() {
         "Discrete Laplacian sharpen with adjustable radius",
         "video",
         "sharpen,detail,laplacian",
-        NANO_LEGACY_LIFECYCLE(sharpen),
-        [](void* self) -> int32_t { (void)self; return sharpen::is_identity(); },
+        NANO_INSTANCE_LIFECYCLE(sharpen),
+        &sharpen::is_identity,
     });
 
     nano::registerEffect({
@@ -284,8 +274,8 @@ void nano_module_main() {
         "Sobel edges with adjustable threshold and overlay colours",
         "video",
         "edge,sobel,outline,detect",
-        NANO_LEGACY_LIFECYCLE(edges),
-        [](void* self) -> int32_t { (void)self; return edges::is_identity(); },
+        NANO_INSTANCE_LIFECYCLE(edges),
+        &edges::is_identity,
     });
 
     nano::registerEffect({
@@ -295,7 +285,7 @@ void nano_module_main() {
         "Soft-edged rectangular crop in cover-square coordinates",
         "video",
         "crop,mask,frame,window",
-        NANO_LEGACY_LIFECYCLE(crop),
+        NANO_INSTANCE_LIFECYCLE(crop),
     });
 
     nano::registerEffect({
@@ -305,8 +295,8 @@ void nano_module_main() {
         "2D affine resample (scale, rotate, translate around a pivot)",
         "video",
         "transform,scale,rotate,translate,affine",
-        NANO_LEGACY_LIFECYCLE(transform),
-        [](void* self) -> int32_t { (void)self; return transform::is_identity(); },
+        NANO_INSTANCE_LIFECYCLE(transform),
+        &transform::is_identity,
     });
 
     nano::registerEffect({

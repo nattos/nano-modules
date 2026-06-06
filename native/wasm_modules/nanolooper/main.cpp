@@ -3,6 +3,12 @@
  *
  * A 4-channel, 16-step looper sequencer with visual overlay.
  * Uses shared host API headers for all host function imports.
+ *
+ * Class-like instance model (v2 ABI): module_init() publishes the schema
+ * once per type; each chain entry gets its own State (sequencer core,
+ * transport, edge-state, timers, channel mapping) via create(). All
+ * instance callbacks take `self`. There is no GPU PSO — the visual overlay
+ * is drawn through the canvas API.
  */
 
 #include <host.h>
@@ -16,38 +22,11 @@
 namespace nanolooper {
 
 /* ======================================================================
- * State
+ * Constants
  * ====================================================================== */
-
-static LooperCore looper;
-static double phase = 0.0;
-static double prev_phase = 0.0;
-static double elapsed = 0.0;
-
-/* Per-channel state */
-static int trigger_held[NUM_CHANNELS];
-static int gate_down[NUM_CHANNELS];
-static float gate_timer[NUM_CHANNELS];
-static float flash[NUM_CHANNELS];
-
-/* Modifier keys */
-static int delete_held;
-static int delete_acted;           /* did delete+trigger happen during this press? */
-static int last_action_was_clear;  /* was the last standalone delete a clear-all? */
-static int mute_held;
-static int record_held;
-static int show_overlay;
-
-/* Connection state */
-static int ws_connected;
 
 /* Channel → clip mapping */
 #define MAX_CHANNEL_CLIPS 8
-static long long channel_clip_ids[NUM_CHANNELS][MAX_CHANNEL_CLIPS];
-static int channel_clip_count[NUM_CHANNELS];
-static char channel_names[NUM_CHANNELS][64];
-static int channel_thumb_tex[NUM_CHANNELS];
-static int channel_connected[NUM_CHANNELS];
 
 /* Channel colors (matching original) */
 static const float CH_R[4] = {1.0f, 0.33f, 1.0f, 0.33f};
@@ -73,7 +52,46 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_SYNTH_GAIN   11
 
 /* ======================================================================
- * Helpers
+ * State
+ * ====================================================================== */
+
+/* Per-instance state. One per chain entry. Holds every mutable var that
+ * used to live as a file-static in this module. */
+struct State {
+  LooperCore looper{};
+  double phase = 0.0;
+  double prev_phase = 0.0;
+  double elapsed = 0.0;
+
+  /* Per-channel state */
+  int trigger_held[NUM_CHANNELS] = {0};
+  int gate_down[NUM_CHANNELS] = {0};
+  float gate_timer[NUM_CHANNELS] = {0};
+  float flash[NUM_CHANNELS] = {0};
+
+  /* Modifier keys */
+  int delete_held = 0;
+  int delete_acted = 0;           /* did delete+trigger happen during this press? */
+  int last_action_was_clear = 0;  /* was the last standalone delete a clear-all? */
+  int mute_held = 0;
+  int record_held = 0;
+  int show_overlay = 0;
+
+  /* Connection state */
+  int ws_connected = 0;
+
+  /* Channel → clip mapping */
+  long long channel_clip_ids[NUM_CHANNELS][MAX_CHANNEL_CLIPS] = {{0}};
+  int channel_clip_count[NUM_CHANNELS] = {0};
+  char channel_names[NUM_CHANNELS][64] = {{0}};
+  int channel_thumb_tex[NUM_CHANNELS] = {0};
+  int channel_connected[NUM_CHANNELS] = {0};
+
+  bool initialized = false;
+};
+
+/* ======================================================================
+ * Pure helpers (no state)
  * ====================================================================== */
 
 static int str_len(const char* s) {
@@ -102,35 +120,9 @@ static void log_structured(int level, const char* msg, const char* json) {
   state_console_log_structured(level, msg, str_len(msg), json, str_len(json));
 }
 
-/* Publish the current sequencer grid state as JSON */
-static void publish_state(void) {
-  /* Build a JSON string representing the grid and playback state.
-   * Format: {"phase":N,"recording":B,"grid":[[steps],[steps],[steps],[steps]]}
-   * Keep it compact since this runs every tick. */
-  auto state = val::object();
-  val::set(state, "phase", val::number(phase));
-  val::set(state, "recording", val::boolean(record_held != 0));
-  val::set(state, "event_count", val::number(looper.event_count));
-
-  auto grid = val::array();
-  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    auto channel = val::array();
-    for (int s = 0; s < NUM_STEPS; s++) {
-      if (looper_has_event(&looper, ch, s)) {
-        val::push(channel, val::number(s));
-      }
-    }
-    val::push(grid, channel);
-  }
-  val::set(state, "grid", grid);
-
-  state::setVal(state);
-  val::release(state);
-}
-
 /* Quick JSON snippet builder for structured logs */
-static char _jbuf[128];
 static const char* json_ch_step(int ch, int step) {
+  static char _jbuf[128];
   int p = 0;
   _jbuf[p++] = '{'; _jbuf[p++] = '"'; _jbuf[p++] = 'c'; _jbuf[p++] = 'h'; _jbuf[p++] = '"'; _jbuf[p++] = ':';
   _jbuf[p++] = '0' + ch;
@@ -141,219 +133,152 @@ static const char* json_ch_step(int ch, int step) {
   return _jbuf;
 }
 
-static void gate_on(int ch) {
-  gate_down[ch] = 1;
-  gate_timer[ch] = 0.25f;
-  flash[ch] = 0.25f;
-  for (int i = 0; i < channel_clip_count[ch]; i++)
-    resolume_trigger_clip(channel_clip_ids[ch][i], 1);
+/* ======================================================================
+ * State-touching helpers
+ * ====================================================================== */
+
+/* Publish the current sequencer grid state as JSON */
+static void publish_state(State& s) {
+  /* Build a JSON string representing the grid and playback state.
+   * Format: {"phase":N,"recording":B,"grid":[[steps],[steps],[steps],[steps]]}
+   * Keep it compact since this runs every tick. */
+  auto state = val::object();
+  val::set(state, "phase", val::number(s.phase));
+  val::set(state, "recording", val::boolean(s.record_held != 0));
+  val::set(state, "event_count", val::number(s.looper.event_count));
+
+  auto grid = val::array();
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    auto channel = val::array();
+    for (int st = 0; st < NUM_STEPS; st++) {
+      if (looper_has_event(&s.looper, ch, st)) {
+        val::push(channel, val::number(st));
+      }
+    }
+    val::push(grid, channel);
+  }
+  val::set(state, "grid", grid);
+
+  state::setVal(state);
+  val::release(state);
+}
+
+static void gate_on(State& s, int ch) {
+  s.gate_down[ch] = 1;
+  s.gate_timer[ch] = 0.25f;
+  s.flash[ch] = 0.25f;
+  for (int i = 0; i < s.channel_clip_count[ch]; i++)
+    resolume_trigger_clip(s.channel_clip_ids[ch][i], 1);
   host_trigger_audio(ch);
 }
 
-static void gate_off(int ch) {
-  if (!gate_down[ch]) return;
-  gate_down[ch] = 0;
-  for (int i = 0; i < channel_clip_count[ch]; i++)
-    resolume_trigger_clip(channel_clip_ids[ch][i], 0);
+static void gate_off(State& s, int ch) {
+  if (!s.gate_down[ch]) return;
+  s.gate_down[ch] = 0;
+  for (int i = 0; i < s.channel_clip_count[ch]; i++)
+    resolume_trigger_clip(s.channel_clip_ids[ch][i], 0);
 }
 
-static void refresh_channels(void) {
+static void refresh_channels(State& s) {
   int clip_count = resolume_get_clip_count();
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    channel_clip_count[ch] = 0;
-    channel_names[ch][0] = 0;
-    channel_thumb_tex[ch] = -1;
-    channel_connected[ch] = 0;
+    s.channel_clip_count[ch] = 0;
+    s.channel_names[ch][0] = 0;
+    s.channel_thumb_tex[ch] = -1;
+    s.channel_connected[ch] = 0;
   }
   for (int i = 0; i < clip_count; i++) {
     int ch = resolume_get_clip_channel(i);
     if (ch < 0 || ch >= NUM_CHANNELS) continue;
-    if (channel_clip_count[ch] < MAX_CHANNEL_CLIPS) {
-      channel_clip_ids[ch][channel_clip_count[ch]++] = resolume_get_clip_id(i);
+    if (s.channel_clip_count[ch] < MAX_CHANNEL_CLIPS) {
+      s.channel_clip_ids[ch][s.channel_clip_count[ch]++] = resolume_get_clip_id(i);
     }
-    if (channel_clip_count[ch] == 1) {
-      resolume_get_clip_name(i, channel_names[ch], 64);
-      channel_connected[ch] = resolume_get_clip_connected(i);
-      channel_thumb_tex[ch] = resolume_load_thumbnail(i);
+    if (s.channel_clip_count[ch] == 1) {
+      resolume_get_clip_name(i, s.channel_names[ch], 64);
+      s.channel_connected[ch] = resolume_get_clip_connected(i);
+      s.channel_thumb_tex[ch] = resolume_load_thumbnail(i);
     }
   }
 }
 
-/* ======================================================================
- * Exports
- * ====================================================================== */
-
-void init(void) {
-  looper_init(&looper, (double)NUM_STEPS);
-  phase = 0;
-  prev_phase = 0;
-  elapsed = 0;
-  show_overlay = 1;
-  ws_connected = 0;
-
-  for (int i = 0; i < NUM_CHANNELS; i++) {
-    trigger_held[i] = 0;
-    gate_down[i] = 0;
-    gate_timer[i] = 0;
-    flash[i] = 0;
-    channel_clip_count[i] = 0;
-    channel_names[i][0] = 0;
-    channel_thumb_tex[i] = -1;
-    channel_connected[i] = 0;
-  }
-  delete_held = 0;
-  delete_acted = 0;
-  last_action_was_clear = 0;
-  mute_held = 0;
-  record_held = 0;
-
-  /* Register plugin with schema */
-  static const char id[] = "sequencer.nanolooper";
-  static const char schema[] =
-    "{\"fields\":{"
-    "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"
-    "\"trigger_2\":{\"type\":\"event\",\"io\":5,\"order\":1},"
-    "\"trigger_3\":{\"type\":\"event\",\"io\":5,\"order\":2},"
-    "\"trigger_4\":{\"type\":\"event\",\"io\":5,\"order\":3},"
-    "\"delete\":{\"type\":\"event\",\"io\":5,\"order\":4},"
-    "\"mute\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":5},"
-    "\"undo\":{\"type\":\"event\",\"io\":5,\"order\":6},"
-    "\"redo\":{\"type\":\"event\",\"io\":5,\"order\":7},"
-    "\"record\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":8},"
-    "\"show_overlay\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":9},"
-    "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
-    "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11}"
-    "}}";
-  state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
-
-  char key_buf[64];
-  int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
-  key_buf[key_len] = 0;
-
-  /* Build: "NanoLooper initialized as <key>" */
-  static char init_msg[128];
-  int p = 0;
-  const char* prefix = "NanoLooper initialized as ";
-  while (*prefix) init_msg[p++] = *prefix++;
-  for (int i = 0; i < key_len && p < 127; i++) init_msg[p++] = key_buf[i];
-  init_msg[p] = 0;
-
-  log_msg(LOG_INFO, init_msg);
-  publish_state();
-}
-
-void tick(double dt) {
-  elapsed += dt;
-
-  /* Advance phase from host bar phase */
-  double bar = host_get_bar_phase();
-  prev_phase = phase;
-  phase = bar * NUM_STEPS;
-
-  /* Advance looper — fire events */
-  int fired[NUM_CHANNELS];
-  int fired_count = 0;
-  looper_advance(&looper, prev_phase, phase, fired, &fired_count);
-  for (int i = 0; i < fired_count; i++) {
-    int ch = fired[i];
-    if (!mute_held || !trigger_held[ch]) {
-      gate_on(ch);
-    }
-  }
-
-  /* Decay gate timers */
-  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    if (gate_down[ch]) {
-      gate_timer[ch] -= (float)dt;
-      if (gate_timer[ch] <= 0) {
-        gate_off(ch);
-      }
-    }
-    if (flash[ch] > 0)
-      flash[ch] -= (float)dt;
-  }
-
-  publish_state();
-}
-
-void on_param_change(int index, double value) {
+static void on_param_change(State& s, int index, double value) {
   int pressed = (value >= 0.5);
 
   if (index >= PID_TRIGGER_1 && index <= PID_TRIGGER_4) {
     int ch = index - PID_TRIGGER_1;
-    int was = trigger_held[ch];
-    trigger_held[ch] = pressed;
+    int was = s.trigger_held[ch];
+    s.trigger_held[ch] = pressed;
 
     if (pressed && !was) {
       /* Rising edge */
-      if (delete_held) {
-        looper_clear_channel(&looper, ch);
-        delete_acted = 1;
-        last_action_was_clear = 0;
-        gate_off(ch);
+      if (s.delete_held) {
+        looper_clear_channel(&s.looper, ch);
+        s.delete_acted = 1;
+        s.last_action_was_clear = 0;
+        gate_off(s, ch);
         log_structured(LOG_INFO, "Clear channel", json_ch_step(ch + 1, -1));
-      } else if (mute_held) {
-        gate_off(ch);
+      } else if (s.mute_held) {
+        gate_off(s, ch);
       } else {
-        int step = (int)phase % NUM_STEPS;
-        last_action_was_clear = 0;
-        looper_trigger(&looper, ch, phase);
-        gate_on(ch);
+        int step = (int)s.phase % NUM_STEPS;
+        s.last_action_was_clear = 0;
+        looper_trigger(&s.looper, ch, s.phase);
+        gate_on(s, ch);
         log_structured(LOG_INFO, "Trigger", json_ch_step(ch + 1, step));
       }
     } else if (!pressed && was) {
       /* Falling edge */
-      gate_off(ch);
+      gate_off(s, ch);
     }
   } else if (index == PID_DELETE) {
     if (pressed) {
-      delete_held = 1;
-      delete_acted = 0;
-    } else if (delete_held) {
+      s.delete_held = 1;
+      s.delete_acted = 0;
+    } else if (s.delete_held) {
       /* Release: if no trigger was pressed during hold, do clear or undo */
-      if (!delete_acted) {
-        if (last_action_was_clear && looper.undo_count > 0) {
+      if (!s.delete_acted) {
+        if (s.last_action_was_clear && s.looper.undo_count > 0) {
           /* Double-tap delete = undo */
-          looper_undo(&looper);
-          last_action_was_clear = 0;
+          looper_undo(&s.looper);
+          s.last_action_was_clear = 0;
           log_msg(LOG_INFO, "Undo (double-tap delete)");
         } else {
-          looper_clear_all(&looper);
-          last_action_was_clear = 1;
+          looper_clear_all(&s.looper);
+          s.last_action_was_clear = 1;
           log_msg(LOG_INFO, "Clear all");
         }
-        for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+        for (int c = 0; c < NUM_CHANNELS; c++) gate_off(s, c);
       }
-      delete_held = 0;
+      s.delete_held = 0;
     }
   } else if (index == PID_MUTE) {
-    mute_held = pressed;
+    s.mute_held = pressed;
   } else if (index == PID_UNDO) {
     if (pressed) {
-      looper_undo(&looper);
-      last_action_was_clear = 0;
-      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+      looper_undo(&s.looper);
+      s.last_action_was_clear = 0;
+      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(s, c);
       log_msg(LOG_INFO, "Undo");
     }
   } else if (index == PID_REDO) {
     if (pressed) {
-      looper_redo(&looper);
-      last_action_was_clear = 0;
-      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(c);
+      looper_redo(&s.looper);
+      s.last_action_was_clear = 0;
+      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(s, c);
       log_msg(LOG_INFO, "Redo");
     }
   } else if (index == PID_RECORD) {
-    if (pressed && !record_held) {
-      last_action_was_clear = 0;
-      looper_begin_destructive_record(&looper);
+    if (pressed && !s.record_held) {
+      s.last_action_was_clear = 0;
+      looper_begin_destructive_record(&s.looper);
       log_msg(LOG_WARN, "Record mode ON");
-    } else if (!pressed && record_held) {
-      looper_end_destructive_record(&looper);
+    } else if (!pressed && s.record_held) {
+      looper_end_destructive_record(&s.looper);
       log_msg(LOG_INFO, "Record mode OFF");
     }
-    record_held = pressed;
+    s.record_held = pressed;
   } else if (index == PID_SHOW_OVERLAY) {
-    show_overlay = pressed;
+    s.show_overlay = pressed;
   }
 }
 
@@ -384,7 +309,7 @@ static JDocField grid_layout[NUM_CHANNELS] = {
   { 24, 7, JDOC_TYPE_ARRAY_I32, 3 * GRID_CH_SIZE, NUM_STEPS },
 };
 
-static void load_grid_from_state(void) {
+static void load_grid_from_state(State& s) {
   struct GridReadBuf buf;
   JDocResult results[NUM_CHANNELS];
 
@@ -403,9 +328,9 @@ static void load_grid_from_state(void) {
   if (!any_found) return;
 
   /* Rebuild looper events from the grid arrays */
-  looper.event_count = 0;
-  looper.undo_count = 0;
-  looper.redo_count = 0;
+  s.looper.event_count = 0;
+  s.looper.undo_count = 0;
+  s.looper.redo_count = 0;
 
   int32_t* channel_data[NUM_CHANNELS] = {
     buf.ch0_steps, buf.ch1_steps, buf.ch2_steps, buf.ch3_steps
@@ -420,10 +345,10 @@ static void load_grid_from_state(void) {
     if (count > NUM_STEPS) count = NUM_STEPS;
     for (int j = 0; j < count; j++) {
       int step = channel_data[ch][j];
-      if (step >= 0 && step < NUM_STEPS && looper.event_count < MAX_EVENTS) {
-        looper.events[looper.event_count].time = (double)step;
-        looper.events[looper.event_count].channel = ch;
-        looper.event_count++;
+      if (step >= 0 && step < NUM_STEPS && s.looper.event_count < MAX_EVENTS) {
+        s.looper.events[s.looper.event_count].time = (double)step;
+        s.looper.events[s.looper.event_count].channel = ch;
+        s.looper.event_count++;
       }
     }
   }
@@ -446,22 +371,153 @@ static int field_to_pid(const char* path, int pathLen) {
   return -1;
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+/* ======================================================================
+ * Exports (v2 instance ABI)
+ * ====================================================================== */
+
+/* Type-level setup: schema registration. Runs once per type. No GPU work. */
+void module_init() {
+  /* Register plugin with schema */
+  static const char id[] = "sequencer.nanolooper";
+  static const char schema[] =
+    "{\"fields\":{"
+    "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"
+    "\"trigger_2\":{\"type\":\"event\",\"io\":5,\"order\":1},"
+    "\"trigger_3\":{\"type\":\"event\",\"io\":5,\"order\":2},"
+    "\"trigger_4\":{\"type\":\"event\",\"io\":5,\"order\":3},"
+    "\"delete\":{\"type\":\"event\",\"io\":5,\"order\":4},"
+    "\"mute\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":5},"
+    "\"undo\":{\"type\":\"event\",\"io\":5,\"order\":6},"
+    "\"redo\":{\"type\":\"event\",\"io\":5,\"order\":7},"
+    "\"record\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":8},"
+    "\"show_overlay\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":9},"
+    "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
+    "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11}"
+    "}}";
+  state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
+}
+
+/* Per-instance construction: allocate State + one-time looper init. */
+void* create() {
+  auto* s = new State();
+  looper_init(&s->looper, (double)NUM_STEPS);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  delete s;
+}
+
+/* Per-instance init tail: reset the looper + transport / edge-state /
+ * timers and channel mapping, then publish initial state. */
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+
+  looper_init(&s->looper, (double)NUM_STEPS);
+  s->phase = 0;
+  s->prev_phase = 0;
+  s->elapsed = 0;
+  s->show_overlay = 1;
+  s->ws_connected = 0;
+
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    s->trigger_held[i] = 0;
+    s->gate_down[i] = 0;
+    s->gate_timer[i] = 0;
+    s->flash[i] = 0;
+    s->channel_clip_count[i] = 0;
+    s->channel_names[i][0] = 0;
+    s->channel_thumb_tex[i] = -1;
+    s->channel_connected[i] = 0;
+  }
+  s->delete_held = 0;
+  s->delete_acted = 0;
+  s->last_action_was_clear = 0;
+  s->mute_held = 0;
+  s->record_held = 0;
+
+  char key_buf[64];
+  int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
+  key_buf[key_len] = 0;
+
+  /* Build: "NanoLooper initialized as <key>" */
+  static char init_msg[128];
+  int p = 0;
+  const char* prefix = "NanoLooper initialized as ";
+  while (*prefix) init_msg[p++] = *prefix++;
+  for (int i = 0; i < key_len && p < 127; i++) init_msg[p++] = key_buf[i];
+  init_msg[p] = 0;
+
+  log_msg(LOG_INFO, init_msg);
+  publish_state(*s);
+
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+
+  s->elapsed += dt;
+
+  /* Advance phase from host bar phase */
+  double bar = host_get_bar_phase();
+  s->prev_phase = s->phase;
+  s->phase = bar * NUM_STEPS;
+
+  /* Advance looper — fire events */
+  int fired[NUM_CHANNELS];
+  int fired_count = 0;
+  looper_advance(&s->looper, s->prev_phase, s->phase, fired, &fired_count);
+  for (int i = 0; i < fired_count; i++) {
+    int ch = fired[i];
+    if (!s->mute_held || !s->trigger_held[ch]) {
+      gate_on(*s, ch);
+    }
+  }
+
+  /* Decay gate timers */
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    if (s->gate_down[ch]) {
+      s->gate_timer[ch] -= (float)dt;
+      if (s->gate_timer[ch] <= 0) {
+        gate_off(*s, ch);
+      }
+    }
+    if (s->flash[ch] > 0)
+      s->flash[ch] -= (float)dt;
+  }
+
+  publish_state(*s);
+}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+
   bool grid_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     int pid = field_to_pid(pb + off[i], len[i]);
     if (pid >= 0) {
-      on_param_change(pid, state::patchFloat(i));
+      on_param_change(*s, pid, state::patchFloat(i));
     } else if (state::pathIs(pb + off[i], len[i], "grid")) {
       grid_changed = true;
     }
   }
-  if (grid_changed) load_grid_from_state();
+  if (grid_changed) load_grid_from_state(*s);
 }
 
-void render(int vp_w, int vp_h) {
-  if (!show_overlay) return;
+void on_resolume_param(void*, long long, double) {}
+
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->show_overlay) return;
 
   /* Scale factor: base design at 1080p, scale proportionally */
   float scale = (float)vp_h / 1080.0f;
@@ -475,7 +531,7 @@ void render(int vp_w, int vp_h) {
 
   /* --- Title --- */
   text("Looper", margin, y, font_size, 0.9f, 0.9f, 0.9f, 0.9f);
-  if (record_held)
+  if (s->record_held)
     text("* REC", margin + gw * 8, y, font_size, 1, 0.2f, 0.2f, 1);
   y += lh + row_gap;
 
@@ -484,7 +540,7 @@ void render(int vp_w, int vp_h) {
     float dot_size = lh * 0.5f;
     float dot_y = y + (lh - dot_size) * 0.5f;
     float text_x = margin + dot_size + gw * 0.5f;
-    float t = (float)elapsed;
+    float t = (float)s->elapsed;
 
     float pulse = 0.3f + 0.7f * (0.5f + 0.5f * sinf(t * 8.0f));
     canvas_fill_rect(margin, dot_y, dot_size, dot_size,
@@ -503,8 +559,8 @@ void render(int vp_w, int vp_h) {
 
     for (int i = 0; i < NUM_CHANNELS; i++) {
       float cx = margin + i * (card_w + card_gap);
-      int has_content = (channel_clip_count[i] > 0);
-      int ch_active = (gate_down[i]);
+      int has_content = (s->channel_clip_count[i] > 0);
+      int ch_active = (s->gate_down[i]);
 
       float br, bg, bb, ba;
       if (ch_active) {
@@ -525,8 +581,8 @@ void render(int vp_w, int vp_h) {
       /* Thumbnail */
       float tw = card_w - border*2 - 2*scale;
       float th = thumb_h - border - 2*scale;
-      if (channel_thumb_tex[i] >= 0) {
-        canvas_draw_image(channel_thumb_tex[i],
+      if (s->channel_thumb_tex[i] >= 0) {
+        canvas_draw_image(s->channel_thumb_tex[i],
                           cx + border + scale, y + border + scale, tw, th);
       } else {
         canvas_fill_rect(cx + border + scale, y + border + scale,
@@ -534,7 +590,7 @@ void render(int vp_w, int vp_h) {
       }
 
       /* Clip name */
-      const char* name = channel_names[i];
+      const char* name = s->channel_names[i];
       if (name[0] == 0) name = "(empty)";
       float name_y = y + thumb_h + 2*scale;
       float name_size = font_size * 0.7f;
@@ -542,7 +598,7 @@ void render(int vp_w, int vp_h) {
            0.7f, 0.7f, 0.7f, 0.7f);
 
       /* Mute overlay */
-      if (mute_held && trigger_held[i]) {
+      if (s->mute_held && s->trigger_held[i]) {
         canvas_fill_rect(cx + border, y + border,
                          card_w - border*2, card_h - border*2,
                          0, 0, 0, 0.6f);
@@ -556,7 +612,7 @@ void render(int vp_w, int vp_h) {
   /* --- Beat markers --- */
   float cells_x = margin + gw * 2;
   float cell = lh + 4*scale;
-  int current_step = (int)floor(phase);
+  int current_step = (int)floor(s->phase);
   if (current_step >= NUM_STEPS) current_step = 0;
 
   {
@@ -573,20 +629,20 @@ void render(int vp_w, int vp_h) {
 
   /* --- Grid --- */
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    int is_muted = mute_held && trigger_held[ch];
+    int is_muted = s->mute_held && s->trigger_held[ch];
     float cr = CH_R[ch], cg = CH_G[ch], cb = CH_B[ch];
 
     char label[2] = { char('1' + ch), 0 };
     text(label, margin, y, font_size,
          is_muted ? cr*0.3f : cr, is_muted ? cg*0.3f : cg, is_muted ? cb*0.3f : cb, 1.0f);
 
-    int act_step = gate_down[ch] ? current_step : -1;
+    int act_step = s->gate_down[ch] ? current_step : -1;
 
-    for (int s = 0; s < NUM_STEPS; s++) {
-      float cx = cells_x + s * cell;
-      int has_event = looper_has_event(&looper, ch, s);
-      int cur = (s == current_step);
-      int playing = (s == act_step);
+    for (int st = 0; st < NUM_STEPS; st++) {
+      float cx = cells_x + st * cell;
+      int has_event = looper_has_event(&s->looper, ch, st);
+      int cur = (st == current_step);
+      int playing = (st == act_step);
 
       if (cur)
         canvas_fill_rect(cx - scale, y - scale, cell, cell, 0.5f, 0.5f, 0.5f, 0.25f);
@@ -615,13 +671,13 @@ void render(int vp_w, int vp_h) {
   /* --- Trigger indicators + modifiers --- */
   for (int i = 0; i < NUM_CHANNELS; i++) {
     float x = margin + i * gw * 3;
-    float alpha = flash[i] > 0 ? 1.0f : 0.3f;
+    float alpha = s->flash[i] > 0 ? 1.0f : 0.3f;
     char label[2] = { char('1' + i), 0 };
     text(label, x, y, font_size, CH_R[i], CH_G[i], CH_B[i], alpha);
   }
   float mod_x = margin + NUM_CHANNELS * gw * 3 + gw * 2;
-  text("D", mod_x, y, font_size, 1, 0.2f, 0.2f, delete_held ? 1.0f : 0.25f);
-  text("M", mod_x + gw * 2, y, font_size, 1, 1, 0.2f, mute_held ? 1.0f : 0.25f);
+  text("D", mod_x, y, font_size, 1, 0.2f, 0.2f, s->delete_held ? 1.0f : 0.25f);
+  text("M", mod_x + gw * 2, y, font_size, 1, 1, 0.2f, s->mute_held ? 1.0f : 0.25f);
   y += lh + row_gap;
 
   /* --- Background panel (drawn as first rect, will be behind due to draw order) --- */

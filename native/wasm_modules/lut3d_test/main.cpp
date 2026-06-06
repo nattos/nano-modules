@@ -17,6 +17,11 @@
  * Hand-authored WGSL — the existing HLSL pipeline doesn't carry storage-
  * texture dimension info portably, so writing the WGSL directly here is
  * the pragmatic path.
+ *
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (the per-instance 3D LUT texture + "lut built"
+ * flag) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -62,16 +67,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 static constexpr int LUT_DIM = 16;
 
+// Per-instance state. One per chain entry. Holds the per-instance 3D LUT
+// texture and its "built once" flag.
+struct State {
+  gpu::Texture lut;
+  bool lut_filled = false;
+  bool initialized = false;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso_init;
 static gpu::ComputePSO s_pso_apply;
-static gpu::Texture s_lut;
-static bool s_lut_filled = false;
-static bool s_initialized = false;
 
-void init() {
-  s_initialized = false;
-  s_lut_filled = false;
-
+// Type-level setup: schema + the two shared compute PSOs. Runs once per type.
+void module_init() {
   state::init("debug.lut3d_test", {1, 0, 0},
     state::Schema()
       .textureField("tex_in",  state::PrimaryInput)
@@ -90,40 +99,75 @@ void init() {
       .tex2d(0)
       .tex3d(1)
       .storageTex2d(2, gpu::TextureFormat::RGBA8));
-  s_lut = gpu::Device::createTexture3D(LUT_DIM, LUT_DIM, LUT_DIM, gpu::TextureFormat::RGBA8);
 
-  s_initialized = true;
+  state::log("lut3d_test: module initialized");
+}
+
+// Per-instance construction: allocate State + its own 3D LUT texture.
+void* create() {
+  auto* s = new State();
+  s->lut = gpu::Device::createTexture3D(LUT_DIM, LUT_DIM, LUT_DIM, gpu::TextureFormat::RGBA8);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->lut.release();
+  delete s;
+}
+
+// Per-instance init tail: reset so the LUT rebuilds; guard PSOs valid.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->lut_filled = false;
+  if (!s_pso_init.valid() || !s_pso_apply.valid()) return;
+  if (!s->lut.valid()) return;
+  s->initialized = true;
   state::log("lut3d_test: initialized");
 }
 
-void tick(double) {}
-void on_param_change(int, double) {}
-void on_state_patched(int, const char*, const int*, const int*, const int*) {}
+void tick(void* self, double) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+}
 
-void render(int w, int h) {
-  if (!s_initialized || w <= 0 || h <= 0) return;
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  (void)n; (void)pb; (void)off; (void)len; (void)ops;
+}
+
+void render(void* self, int w, int h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->initialized || w <= 0 || h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
-  if (!in.valid() || !out.valid() || !s_lut.valid()) return;
+  if (!in.valid() || !out.valid() || !s->lut.valid()) return;
 
   // First-frame LUT init. After that the LUT is constant — re-running it
   // would be wasted work.
-  if (!s_lut_filled) {
+  if (!s->lut_filled) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_init);
-    cp.setTexture(s_lut, 0, 1);  // storage write
+    cp.setTexture(s->lut, 0, 1);  // storage write
     cp.dispatch((LUT_DIM + 3) / 4, (LUT_DIM + 3) / 4, (LUT_DIM + 3) / 4);
     cp.end();
-    s_lut_filled = true;
+    s->lut_filled = true;
   }
 
   // Apply LUT to the input.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_apply);
-    cp.setTexture(in,    0, 0);  // sampled 2D
-    cp.setTexture(s_lut, 1, 0);  // sampled 3D
-    cp.setTexture(out,   2, 1);  // storage write 2D
+    cp.setTexture(in,     0, 0);  // sampled 2D
+    cp.setTexture(s->lut, 1, 0);  // sampled 3D
+    cp.setTexture(out,    2, 1);  // storage write 2D
     cp.dispatch((w + 7) / 8, (h + 7) / 8);
     cp.end();
   }

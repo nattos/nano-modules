@@ -10,6 +10,10 @@
  *   bg_color_r/g/b      filled where no edge is found. Default black.
  *   keep_input  [0, 1]  multiplied with line/bg result so non-edge pixels can
  *                       optionally fade back to the source image instead of bg.
+ *
+ * Class-like instance model: module_init() sets up the type-shared
+ * compute PSO + schema once; each chain entry gets its own State (params
+ * + uniform buffer) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -29,25 +33,23 @@ struct Uniforms {
   float _pad[2];
 };
 
-static float s_amount = 1.0f;
-static float s_threshold = 0.1f;
-static float s_keep_input = 0.0f;
-static float s_radius = 0.0f;
-static float s_line[3] = { 1.0f, 1.0f, 1.0f };
-static float s_bg[3]   = { 0.0f, 0.0f, 0.0f };
-static bool s_initialized = false;
+// Per-instance state. One per chain entry.
+struct State {
+  float amount = 1.0f;
+  float threshold = 0.1f;
+  float keep_input = 0.0f;
+  float radius = 0.0f;
+  float line[3] = { 1.0f, 1.0f, 1.0f };
+  float bg[3]   = { 0.0f, 0.0f, 0.0f };
+  bool initialized = false;
+  gpu::Buffer uniform_buf;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer s_uniform_buf;
 
-void init() {
-  s_amount = 1.0f;
-  s_threshold = 0.1f;
-  s_keep_input = 0.0f;
-  s_radius = 0.0f;
-  s_line[0] = s_line[1] = s_line[2] = 1.0f;
-  s_bg[0] = s_bg[1] = s_bg[2] = 0.0f;
-  s_initialized = false;
-
+// Type-level setup: schema + shared compute PSO. Runs once per type.
+void module_init() {
   state::init("video.edges", {1, 0, 0},
     state::Schema()
       .floatField("amount",     1.0f, 0.f, 1.f, state::PrimaryInput)
@@ -67,60 +69,93 @@ void init() {
   auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  s_initialized = true;
 }
 
-void tick(double dt) { (void)dt; }
-void on_param_change(int, double) {}
+// Per-instance construction: allocate State + its own uniform buffer.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+
+// Per-instance init tail: defaults + mark ready.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->amount = 1.0f;
+  s->threshold = 0.1f;
+  s->keep_input = 0.0f;
+  s->radius = 0.0f;
+  s->line[0] = s->line[1] = s->line[2] = 1.0f;
+  s->bg[0] = s->bg[1] = s->bg[2] = 0.0f;
+  s->initialized = false;
+
+  if (!s_pso.valid()) return;
+  if (!s->uniform_buf.valid()) return;
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) { (void)self; (void)dt; }
+
+void on_resolume_param(void*, long long, double) {}
+
+// Pure passthrough when amount == 0 (no edge contribution mixed in).
+int32_t is_identity(void* self) {
+  auto* s = static_cast<State*>(self);
+  return (s && s->amount == 0.0f) ? 1 : 0;
+}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off, const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "amount"))     s_amount = state::patchFloat(i);
-    else if (state::pathIs(p, l, "threshold"))  s_threshold = state::patchFloat(i);
-    else if (state::pathIs(p, l, "radius"))     s_radius = state::patchFloat(i);
-    else if (state::pathIs(p, l, "keep_input")) s_keep_input = state::patchFloat(i);
+    if      (state::pathIs(p, l, "amount"))     s->amount = state::patchFloat(i);
+    else if (state::pathIs(p, l, "threshold"))  s->threshold = state::patchFloat(i);
+    else if (state::pathIs(p, l, "radius"))     s->radius = state::patchFloat(i);
+    else if (state::pathIs(p, l, "keep_input")) s->keep_input = state::patchFloat(i);
     else if (state::pathIs(p, l, "line")) {
-      auto v = state::patchVec3(i); s_line[0] = v.x; s_line[1] = v.y; s_line[2] = v.z;
+      auto v = state::patchVec3(i); s->line[0] = v.x; s->line[1] = v.y; s->line[2] = v.z;
     }
     else if (state::pathIs(p, l, "bg")) {
-      auto v = state::patchVec3(i); s_bg[0] = v.x; s_bg[1] = v.y; s_bg[2] = v.z;
+      auto v = state::patchVec3(i); s->bg[0] = v.x; s->bg[1] = v.y; s->bg[2] = v.z;
     }
   }
 }
 
-// Passthrough when the edge result is fully mixed out: the shader ends
-// with out = lerp(src, detected, amount) (alpha preserved), so amount ==
-// 0 ⇒ out == src exactly, regardless of threshold/colors/keep_input.
-// Stateless, so the executor can skip the dispatch and alias input→output.
-int is_identity() { return s_amount == 0.0f ? 1 : 0; }
-
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto input = gpu::Device::textureForField("tex_in");
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
 
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
-  float radius_px = 1.0f + s_radius * (static_cast<float>(min_dim) * 0.025f);
+  float radius_px = 1.0f + s->radius * (static_cast<float>(min_dim) * 0.025f);
 
   Uniforms u = {};
-  u.amount = s_amount;
-  u.threshold = s_threshold;
-  u.keep_input = s_keep_input;
+  u.amount = s->amount;
+  u.threshold = s->threshold;
+  u.keep_input = s->keep_input;
   u.radius_px = radius_px;
-  u.line_r = s_line[0]; u.line_g = s_line[1]; u.line_b = s_line[2];
-  u.bg_r   = s_bg[0];   u.bg_g   = s_bg[1];   u.bg_b   = s_bg[2];
-  s_uniform_buf.writeOne(u);
+  u.line_r = s->line[0]; u.line_g = s->line[1]; u.line_b = s->line[2];
+  u.bg_r   = s->bg[0];   u.bg_g   = s->bg[1];   u.bg_b   = s->bg[2];
+  s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(input, 0, 0);
   cp.setTexture(output, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setBuffer(s->uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

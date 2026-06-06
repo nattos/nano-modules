@@ -3,6 +3,10 @@
  *
  * Links two Resolume parameters together. Uses a "learn" mechanism
  * to discover which parameters to link by observing changes.
+ *
+ * Class-like instance model: module_init() publishes the schema once per
+ * type; each chain entry gets its own State via create(). All instance
+ * callbacks take `self`. This is a data/tap effect — no GPU, no PSO.
  */
 
 #include <host.h>
@@ -43,25 +47,28 @@ typedef struct {
   int path_len;
 } SeenParam;
 
-static SeenParam seen[MAX_SEEN];
-static int seen_count;
-static int next_order;
+// Per-instance state. One per chain entry.
+struct State {
+  SeenParam seen[MAX_SEEN];
+  int seen_count;
+  int next_order;
 
-static int learning;
-static double learn_elapsed;   /* time since learn started */
-static int settled;            /* 1 after settle period */
+  int learning;
+  double learn_elapsed;   /* time since learn started */
+  int settled;            /* 1 after settle period */
 
-static long long input_id;
-static long long output_id;
-static char input_path[64];
-static int input_path_len;
-static char output_path[64];
-static int output_path_len;
-static double input_value;
-static double output_value;
+  long long input_id;
+  long long output_id;
+  char input_path[64];
+  int input_path_len;
+  char output_path[64];
+  int output_path_len;
+  double input_value;
+  double output_value;
 
-static int active;
-static double elapsed;
+  int active;
+  double elapsed;
+};
 
 /* ======================================================================
  * Helpers
@@ -85,52 +92,52 @@ static void log_msg(int level, const char* msg) {
 // Removed: decl_param — using schema-based declaration now
 
 /* Find a seen param by ID, returns index or -1 */
-static int find_seen(long long param_id) {
-  for (int i = 0; i < seen_count; i++) {
-    if (seen[i].param_id == param_id) return i;
+static int find_seen(State& s, long long param_id) {
+  for (int i = 0; i < s.seen_count; i++) {
+    if (s.seen[i].param_id == param_id) return i;
   }
   return -1;
 }
 
 /* Get the two most recent non-ignored params (for input/output assignment) */
-static void get_top_two(int* first, int* second) {
+static void get_top_two(State& s, int* first, int* second) {
   *first = -1;
   *second = -1;
   int best_order = -1;
   int second_order = -1;
 
-  for (int i = 0; i < seen_count; i++) {
-    if (seen[i].ignored) continue;
-    if (seen[i].order > best_order) {
+  for (int i = 0; i < s.seen_count; i++) {
+    if (s.seen[i].ignored) continue;
+    if (s.seen[i].order > best_order) {
       *second = *first;
       second_order = best_order;
       *first = i;
-      best_order = seen[i].order;
-    } else if (seen[i].order > second_order) {
+      best_order = s.seen[i].order;
+    } else if (s.seen[i].order > second_order) {
       *second = i;
-      second_order = seen[i].order;
+      second_order = s.seen[i].order;
     }
   }
 }
 
 /* Publish full state via val handles */
-static void publish_state(void) {
+static void publish_state(State& s) {
   auto state = val::object();
-  val::set(state, "learning", val::boolean(learning != 0));
-  val::set(state, "settled", val::boolean(settled != 0));
-  val::set(state, "active", val::boolean(active != 0));
-  val::set(state, "input_id", val::number(static_cast<double>(input_id)));
-  val::set(state, "output_id", val::number(static_cast<double>(output_id)));
-  val::set(state, "input_path", val::string(input_path, input_path_len));
-  val::set(state, "output_path", val::string(output_path, output_path_len));
+  val::set(state, "learning", val::boolean(s.learning != 0));
+  val::set(state, "settled", val::boolean(s.settled != 0));
+  val::set(state, "active", val::boolean(s.active != 0));
+  val::set(state, "input_id", val::number(static_cast<double>(s.input_id)));
+  val::set(state, "output_id", val::number(static_cast<double>(s.output_id)));
+  val::set(state, "input_path", val::string(s.input_path, s.input_path_len));
+  val::set(state, "output_path", val::string(s.output_path, s.output_path_len));
 
   auto seen_arr = val::array();
-  for (int i = 0; i < seen_count; i++) {
+  for (int i = 0; i < s.seen_count; i++) {
     auto entry = val::object();
-    val::set(entry, "id", val::number(static_cast<double>(seen[i].param_id)));
-    val::set(entry, "path", val::string(seen[i].path, seen[i].path_len));
-    val::set(entry, "ignored", val::boolean(seen[i].ignored != 0));
-    val::set(entry, "order", val::number(seen[i].order));
+    val::set(entry, "id", val::number(static_cast<double>(s.seen[i].param_id)));
+    val::set(entry, "path", val::string(s.seen[i].path, s.seen[i].path_len));
+    val::set(entry, "ignored", val::boolean(s.seen[i].ignored != 0));
+    val::set(entry, "order", val::number(s.seen[i].order));
     val::push(seen_arr, entry);
   }
   val::set(state, "seen", seen_arr);
@@ -139,25 +146,15 @@ static void publish_state(void) {
   val::release(state);
 }
 
+static void on_param_change(State& s, int index, double value);
+static void reload_assignment_from_state(State& s);
+
 /* ======================================================================
  * Exports
  * ====================================================================== */
 
-void init(void) {
-  seen_count = 0;
-  next_order = 0;
-  learning = 0;
-  learn_elapsed = 0;
-  settled = 0;
-  input_id = -1;
-  output_id = -1;
-  input_path_len = 0;
-  output_path_len = 0;
-  input_value = 0;
-  output_value = 0;
-  active = 1;
-  elapsed = 0;
-
+// Type-level setup: schema registration. Runs once per type. No GPU work.
+void module_init() {
   static const char id[] = "utility.paramlinker";
   static const char schema[] =
     "{\"fields\":{"
@@ -165,6 +162,38 @@ void init(void) {
     "\"active\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":1}"
     "}}";
   state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
+}
+
+// Per-instance construction. No GPU buffers.
+void* create() {
+  auto* s = new State();
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  delete s;
+}
+
+// Per-instance init tail: reset params / link tables / accumulators.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+
+  s->seen_count = 0;
+  s->next_order = 0;
+  s->learning = 0;
+  s->learn_elapsed = 0;
+  s->settled = 0;
+  s->input_id = -1;
+  s->output_id = -1;
+  s->input_path_len = 0;
+  s->output_path_len = 0;
+  s->input_value = 0;
+  s->output_value = 0;
+  s->active = 1;
+  s->elapsed = 0;
 
   char key_buf[64];
   int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
@@ -177,80 +206,83 @@ void init(void) {
   for (int i = 0; i < key_len && p < 127; i++) init_msg[p++] = key_buf[i];
   init_msg[p] = 0;
   log_msg(LOG_INFO, init_msg);
-  publish_state();
+  publish_state(*s);
 }
 
-void tick(double dt) {
-  elapsed += dt;
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
 
-  if (learning) {
-    learn_elapsed += dt;
+  s->elapsed += dt;
+
+  if (s->learning) {
+    s->learn_elapsed += dt;
 
     /* After settle time, mark all currently seen params as ignored */
-    if (!settled && learn_elapsed >= SETTLE_TIME) {
-      settled = 1;
-      for (int i = 0; i < seen_count; i++) {
-        seen[i].ignored = 1;
+    if (!s->settled && s->learn_elapsed >= SETTLE_TIME) {
+      s->settled = 1;
+      for (int i = 0; i < s->seen_count; i++) {
+        s->seen[i].ignored = 1;
       }
       log_msg(LOG_INFO, "Settle complete, automation marked");
     }
   }
 
   /* Active linking: forward input to output */
-  if (active && !learning && input_id >= 0 && output_id >= 0) {
-    double val = resolume_get_param(input_id);
-    if (fabs(val - input_value) > 1e-6) {
-      input_value = val;
-      output_value = val;
-      resolume_set_param(output_id, val);
+  if (s->active && !s->learning && s->input_id >= 0 && s->output_id >= 0) {
+    double val = resolume_get_param(s->input_id);
+    if (fabs(val - s->input_value) > 1e-6) {
+      s->input_value = val;
+      s->output_value = val;
+      resolume_set_param(s->output_id, val);
     }
   }
 
-  publish_state();
+  publish_state(*s);
 }
 
-void on_param_change(int index, double value) {
+static void on_param_change(State& s, int index, double value) {
   if (index == PID_LEARN) {
     /* Toggle on rising edge only */
     if (value < 0.5) return;
-    int was = learning;
-    learning = !was;
+    int was = s.learning;
+    s.learning = !was;
 
-    if (learning && !was) {
+    if (s.learning && !was) {
       /* Learn ON: reset and subscribe */
-      seen_count = 0;
-      next_order = 0;
-      learn_elapsed = 0;
-      settled = 0;
-      input_id = -1;
-      output_id = -1;
+      s.seen_count = 0;
+      s.next_order = 0;
+      s.learn_elapsed = 0;
+      s.settled = 0;
+      s.input_id = -1;
+      s.output_id = -1;
 
       /* Subscribe to all parameters */
       static const char query[] = "/*";
       resolume_subscribe_query(query, sizeof(query) - 1);
       log_msg(LOG_INFO, "Learn started — observing all params");
     }
-    else if (!learning && was) {
+    else if (!s.learning && was) {
       /* Learn OFF: assign input/output from last two non-ignored */
       int first, second;
-      get_top_two(&first, &second);
+      get_top_two(s, &first, &second);
 
       if (first >= 0 && second >= 0) {
         /* Earlier = input, later = output */
         int inp = second;  /* second has lower order = earlier */
         int out = first;   /* first has higher order = later */
 
-        input_id = seen[inp].param_id;
-        output_id = seen[out].param_id;
-        for (int i = 0; i < seen[inp].path_len; i++) input_path[i] = seen[inp].path[i];
-        input_path_len = seen[inp].path_len;
-        input_path[input_path_len] = 0;
-        for (int i = 0; i < seen[out].path_len; i++) output_path[i] = seen[out].path[i];
-        output_path_len = seen[out].path_len;
-        output_path[output_path_len] = 0;
+        s.input_id = s.seen[inp].param_id;
+        s.output_id = s.seen[out].param_id;
+        for (int i = 0; i < s.seen[inp].path_len; i++) s.input_path[i] = s.seen[inp].path[i];
+        s.input_path_len = s.seen[inp].path_len;
+        s.input_path[s.input_path_len] = 0;
+        for (int i = 0; i < s.seen[out].path_len; i++) s.output_path[i] = s.seen[out].path[i];
+        s.output_path_len = s.seen[out].path_len;
+        s.output_path[s.output_path_len] = 0;
 
-        input_value = resolume_get_param(input_id);
-        output_value = input_value;
+        s.input_value = resolume_get_param(s.input_id);
+        s.output_value = s.input_value;
 
         log_msg(LOG_INFO, "Learn complete");
       } else {
@@ -260,33 +292,36 @@ void on_param_change(int index, double value) {
   }
   else if (index == PID_ACTIVE) {
     if (value < 0.5) return;
-    active = !active;
+    s.active = !s.active;
   }
 }
 
-void on_resolume_param(long long param_id, double value) {
-  if (!learning) return;
+void on_resolume_param(void* self, long long param_id, double value) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
 
-  int idx = find_seen(param_id);
+  if (!s->learning) return;
+
+  int idx = find_seen(*s, param_id);
   if (idx >= 0) {
     /* Already seen — update value */
-    seen[idx].last_value = value;
+    s->seen[idx].last_value = value;
     return;
   }
 
   /* New parameter */
-  if (seen_count >= MAX_SEEN) return;
+  if (s->seen_count >= MAX_SEEN) return;
 
-  SeenParam* sp = &seen[seen_count++];
+  SeenParam* sp = &s->seen[s->seen_count++];
   sp->param_id = param_id;
   sp->last_value = value;
-  sp->ignored = settled ? 0 : 1; /* if not yet settled, mark as ignored immediately */
-  sp->order = next_order++;
+  sp->ignored = s->settled ? 0 : 1; /* if not yet settled, mark as ignored immediately */
+  sp->order = s->next_order++;
   sp->path_len = resolume_get_param_path(param_id, sp->path, sizeof(sp->path) - 1);
   sp->path[sp->path_len] = 0;
 }
 
-static void reload_assignment_from_state() {
+static void reload_assignment_from_state(State& s) {
   /* Read input_id and output_id from canonical state (may be set by editor) */
   static const char assign_paths[] =
     "/input_id\0"   /* offset 0, len 9 */
@@ -306,42 +341,49 @@ static void reload_assignment_from_state() {
     long long new_input = (long long)abuf.input_id_f;
     long long new_output = (long long)abuf.output_id_f;
 
-    if (new_input != input_id || new_output != output_id) {
-      input_id = new_input;
-      output_id = new_output;
+    if (new_input != s.input_id || new_output != s.output_id) {
+      s.input_id = new_input;
+      s.output_id = new_output;
 
       /* Look up paths */
-      if (input_id >= 0) {
-        input_path_len = resolume_get_param_path(input_id, input_path, sizeof(input_path) - 1);
-        input_path[input_path_len] = 0;
-        input_value = resolume_get_param(input_id);
+      if (s.input_id >= 0) {
+        s.input_path_len = resolume_get_param_path(s.input_id, s.input_path, sizeof(s.input_path) - 1);
+        s.input_path[s.input_path_len] = 0;
+        s.input_value = resolume_get_param(s.input_id);
       }
-      if (output_id >= 0) {
-        output_path_len = resolume_get_param_path(output_id, output_path, sizeof(output_path) - 1);
-        output_path[output_path_len] = 0;
-        output_value = resolume_get_param(output_id);
+      if (s.output_id >= 0) {
+        s.output_path_len = resolume_get_param_path(s.output_id, s.output_path, sizeof(s.output_path) - 1);
+        s.output_path[s.output_path_len] = 0;
+        s.output_value = resolume_get_param(s.output_id);
       }
 
-      if (input_id >= 0 && output_id >= 0) {
+      if (s.input_id >= 0 && s.output_id >= 0) {
         log_msg(LOG_INFO, "Assignment updated from editor");
       }
     }
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     float v = state::patchFloat(i);
     if (state::pathIs(pb + off[i], len[i], "learn"))
-      on_param_change(PID_LEARN, v);
+      on_param_change(*s, PID_LEARN, v);
     else if (state::pathIs(pb + off[i], len[i], "active"))
-      on_param_change(PID_ACTIVE, v);
+      on_param_change(*s, PID_ACTIVE, v);
   }
-  reload_assignment_from_state();
+  reload_assignment_from_state(*s);
 }
 
-void render(int vp_w, int vp_h) {
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+
   float scale = (float)vp_h / 1080.0f;
   float gw = 24.0f * scale;
   float lh = 28.0f * scale;
@@ -354,25 +396,25 @@ void render(int vp_w, int vp_h) {
 
   /* Title */
   text("ParamLinker", margin, y, font_size, 0.9f, 0.9f, 0.9f, 0.9f);
-  if (learning) {
+  if (s->learning) {
     float lx = margin + gw * 13;
-    float pulse = 0.5f + 0.5f * sinf((float)elapsed * 6.0f);
+    float pulse = 0.5f + 0.5f * sinf((float)s->elapsed * 6.0f);
     text("LEARN", lx, y, font_size, 1.0f, 0.4f, 0.2f, pulse);
   }
   y += lh + row_gap;
 
   /* Input/Output assignment */
-  if (input_id >= 0 && output_id >= 0 && !learning) {
+  if (s->input_id >= 0 && s->output_id >= 0 && !s->learning) {
     text("IN:", margin, y, small_font, 0.3f, 0.8f, 1.0f, 0.9f);
-    text(input_path, margin + gw * 4, y, small_font, 0.7f, 0.7f, 0.7f, 0.8f);
+    text(s->input_path, margin + gw * 4, y, small_font, 0.7f, 0.7f, 0.7f, 0.8f);
     y += lh;
 
     text("OUT:", margin, y, small_font, 1.0f, 0.6f, 0.2f, 0.9f);
-    text(output_path, margin + gw * 4, y, small_font, 0.7f, 0.7f, 0.7f, 0.8f);
+    text(s->output_path, margin + gw * 4, y, small_font, 0.7f, 0.7f, 0.7f, 0.8f);
     y += lh;
 
     /* Show active/inactive status */
-    if (active) {
+    if (s->active) {
       text("Active", margin, y, small_font, 0.2f, 0.9f, 0.2f, 0.7f);
     } else {
       text("Inactive", margin, y, small_font, 0.9f, 0.3f, 0.3f, 0.5f);
@@ -381,22 +423,22 @@ void render(int vp_w, int vp_h) {
   }
 
   /* During learn: show seen parameters list */
-  if (learning && seen_count > 0) {
+  if (s->learning && s->seen_count > 0) {
     text("Seen parameters:", margin, y, small_font, 0.6f, 0.6f, 0.6f, 0.7f);
     y += lh;
 
     /* Find top two candidates */
     int top1, top2;
-    get_top_two(&top1, &top2);
+    get_top_two(*s, &top1, &top2);
 
     /* Display newest first (highest order at top) */
     /* Simple approach: scan by descending order */
     int max_display = 20;
     int displayed = 0;
 
-    for (int ord = next_order - 1; ord >= 0 && displayed < max_display; ord--) {
-      for (int i = 0; i < seen_count; i++) {
-        if (seen[i].order != ord) continue;
+    for (int ord = s->next_order - 1; ord >= 0 && displayed < max_display; ord--) {
+      for (int i = 0; i < s->seen_count; i++) {
+        if (s->seen[i].order != ord) continue;
 
         float r, g, b, a;
         if (i == top1) {
@@ -405,7 +447,7 @@ void render(int vp_w, int vp_h) {
         } else if (i == top2) {
           /* Earlier candidate = input (cyan) */
           r = 0.3f; g = 0.8f; b = 1.0f; a = 1.0f;
-        } else if (seen[i].ignored) {
+        } else if (s->seen[i].ignored) {
           /* Ignored/automation (dim gray) */
           r = 0.4f; g = 0.4f; b = 0.4f; a = 0.4f;
         } else {
@@ -418,7 +460,7 @@ void render(int vp_w, int vp_h) {
         canvas_fill_rect(margin, y + 2*scale, bar_w, lh - 4*scale, r, g, b, a);
 
         /* Draw path text */
-        text(seen[i].path, margin + bar_w + gw * 0.5f, y, small_font, r, g, b, a);
+        text(s->seen[i].path, margin + bar_w + gw * 0.5f, y, small_font, r, g, b, a);
 
         y += lh * 0.85f;
         displayed++;
@@ -428,7 +470,7 @@ void render(int vp_w, int vp_h) {
   }
 
   /* When not learning and nothing assigned */
-  if (!learning && input_id < 0) {
+  if (!s->learning && s->input_id < 0) {
     text("No link configured", margin, y, small_font, 0.5f, 0.5f, 0.5f, 0.5f);
     text("Press Learn to start", margin, y + lh, small_font, 0.4f, 0.4f, 0.4f, 0.4f);
   }

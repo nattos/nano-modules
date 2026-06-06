@@ -24,6 +24,11 @@
  * any opacity. The motion pass always writes full-strength vectors
  * regardless of opacity, matching the convention in motion_rect /
  * motion_swarm.
+ *
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (params, stepping state, per-instance buffer/
+ * textures) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -43,47 +48,42 @@ struct Uniforms {
   float _pad1;
 };
 
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
+  int  motion_w = 0;
+  int  motion_h = 0;
+  bool initialized = false;
+
+  // Schema-mirrored params
+  float threshold = 0.95f;
+  float swirl     = 0.01f;
+  float jitter    = 0.2f;
+  int   seed      = 0;
+  float opacity   = 1.0f;
+  float vis_scale = 100.0f;
+
+  // Stepping state. The shader-facing seed is `seed + step_count`,
+  // so each step shifts the noise pattern by a "different seed" worth.
+  // `rate` controls automatic advancement (Hz). `step_accum` carries
+  // fractional-step time across frames so a slow rate doesn't get
+  // rounded away on fast tick loops. `step_value` mirrors the boolean
+  // `step` schema field — any toggle (either direction) advances the
+  // counter once.
+  float        rate       = 60.0f;
+  float        step_accum = 0.0f;
+  unsigned int step_count = 0;
+  bool         step_value = false;
+};
+
+// Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
-static int  s_motion_w = 0;
-static int  s_motion_h = 0;
-static bool s_initialized = false;
 
-static float s_threshold = 0.95f;
-static float s_swirl     = 0.01f;
-static float s_jitter    = 0.2f;
-static int   s_seed      = 0;
-static float s_opacity   = 1.0f;
-static float s_vis_scale = 100.0f;
-
-// Stepping state. The shader-facing seed is `s_seed + s_step_count`,
-// so each step shifts the noise pattern by a "different seed" worth.
-// `s_rate` controls automatic advancement (Hz). `s_step_accum` carries
-// fractional-step time across frames so a slow rate doesn't get
-// rounded away on fast tick loops. `s_step_value` mirrors the boolean
-// `step` schema field — any toggle (either direction) advances the
-// counter once.
-static float s_rate          = 60.0f;
-static float s_step_accum    = 0.0f;
-static unsigned int s_step_count = 0;
-static bool  s_step_value    = false;
-
-void init() {
-  s_threshold = 0.95f;
-  s_swirl     = 0.01f;
-  s_jitter    = 0.2f;
-  s_seed      = 0;
-  s_opacity   = 1.0f;
-  s_vis_scale = 100.0f;
-  s_rate      = 60.0f;
-  s_step_accum = 0.0f;
-  s_step_count = 0;
-  s_step_value = false;
-  s_initialized = false;
-
+// Type-level setup: schema + the two shared compute PSOs.
+void module_init() {
   state::init("debug.motion_static", {1, 0, 0},
     state::Schema()
       // 0..1 with default 0.95 — only the top 5% of pixels are
@@ -143,64 +143,108 @@ void init() {
       .uniform(1)
       .tex2d(2));  // upstream motion (zero fallback when unwired)
 
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-
-  s_initialized = true;
-  state::log("motion_static: initialized");
+  state::log("motion_static: module initialized");
 }
 
-void tick(double dt) {
-  if (s_rate <= 0.0f) return;
-  s_step_accum += float(dt);
-  float interval = 1.0f / s_rate;
+// Per-instance construction: allocate State + its own GPU buffer.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  s->motion_tex.release();
+  s->zero_motion_tex.release();
+  delete s;
+}
+
+// Per-instance init tail: reset params/stepping state + mark ready.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->threshold = 0.95f;
+  s->swirl     = 0.01f;
+  s->jitter    = 0.2f;
+  s->seed      = 0;
+  s->opacity   = 1.0f;
+  s->vis_scale = 100.0f;
+  s->rate      = 60.0f;
+  s->step_accum = 0.0f;
+  s->step_count = 0;
+  s->step_value = false;
+  s->initialized = false;
+  s->motion_w = 0;
+  s->motion_h = 0;
+
+  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  if (!s->uniform_buf.valid()) return;
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (s->rate <= 0.0f) return;
+  s->step_accum += float(dt);
+  float interval = 1.0f / s->rate;
   // Loop in case rate is high relative to dt (catches up across
   // multiple intervals if a frame is delayed). Cap to avoid an
   // unbounded burst after a long pause — beyond ~32 steps in one
   // frame the user can't perceive the difference anyway.
   int safety = 32;
-  while (s_step_accum >= interval && safety-- > 0) {
-    s_step_count++;
-    s_step_accum -= interval;
+  while (s->step_accum >= interval && safety-- > 0) {
+    s->step_count++;
+    s->step_accum -= interval;
   }
   // If we hit the cap, drop any leftover accumulator so we don't
   // wedge in a steady-state burst.
-  if (safety <= 0) s_step_accum = 0.0f;
+  if (safety <= 0) s->step_accum = 0.0f;
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
     if (state::pathIs(path, plen, "threshold")) {
-      s_threshold = state::patchFloat(i);
+      s->threshold = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "swirl")) {
-      s_swirl = state::patchFloat(i);
+      s->swirl = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "jitter")) {
-      s_jitter = state::patchFloat(i);
+      s->jitter = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "seed")) {
-      s_seed = (int)state::patchFloat(i);
+      s->seed = (int)state::patchFloat(i);
     } else if (state::pathIs(path, plen, "rate")) {
-      s_rate = state::patchFloat(i);
-      s_step_accum = 0.0f;  // restart accumulator on rate change
+      s->rate = state::patchFloat(i);
+      s->step_accum = 0.0f;  // restart accumulator on rate change
     } else if (state::pathIs(path, plen, "step")) {
       // Booleans patch as 0/1. Treat any toggle as a single advance
       // so the user can click the inspector checkbox to step.
       bool new_step = state::patchFloat(i) != 0.0f;
-      if (new_step != s_step_value) {
-        s_step_value = new_step;
-        s_step_count++;
+      if (new_step != s->step_value) {
+        s->step_value = new_step;
+        s->step_count++;
       }
     } else if (state::pathIs(path, plen, "opacity")) {
-      s_opacity = state::patchFloat(i);
+      s->opacity = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "vis_scale")) {
-      s_vis_scale = state::patchFloat(i);
+      s->vis_scale = state::patchFloat(i);
     }
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
@@ -210,12 +254,12 @@ void render(int vp_w, int vp_h) {
   // multiplier on the user seed widely separates user-seed slots
   // from step-driven patterns; without it adjacent user seeds and
   // step counts could collide.
-  float effective_seed = float(s_seed * 17 + int(s_step_count));
+  float effective_seed = float(s->seed * 17 + int(s->step_count));
   Uniforms u = {
-    s_threshold, s_swirl, s_jitter, effective_seed,
-    s_opacity, s_vis_scale, 0.f, 0.f,
+    s->threshold, s->swirl, s->jitter, effective_seed,
+    s->opacity, s->vis_scale, 0.f, 0.f,
   };
-  s_uniform_buf.writeOne(u);
+  s->uniform_buf.writeOne(u);
 
   // Pass 1 — color: tex_in → tex_out, optionally with motion-vector overlay.
   {
@@ -223,7 +267,7 @@ void render(int vp_w, int vp_h) {
     cp.setPSO(s_pso_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_uniform_buf, 2);
+    cp.setBuffer(s->uniform_buf, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -234,23 +278,23 @@ void render(int vp_w, int vp_h) {
     return;
   }
 
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+  if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
+    s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    s->motion_w = vp_w;
+    s->motion_h = vp_h;
+    if (s->motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
     }
   }
-  if (!s_motion_tex.valid()) return;
+  if (!s->motion_tex.valid()) return;
 
   // Resolve upstream motion (or 1x1 zero fallback when unwired).
   auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
   if (!upstream.valid()) {
-    if (!s_zero_motion_tex.valid()) {
-      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    if (!s->zero_motion_tex.valid()) {
+      s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
     }
-    upstream = s_zero_motion_tex;
+    upstream = s->zero_motion_tex;
   }
 
   // Pass 2 — motion: per-pixel velocity field, with upstream as the
@@ -258,8 +302,8 @@ void render(int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
-    cp.setTexture(s_motion_tex, 0, 1);
-    cp.setBuffer(s_uniform_buf, 1);
+    cp.setTexture(s->motion_tex, 0, 1);
+    cp.setBuffer(s->uniform_buf, 1);
     cp.setTexture(upstream, 2, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();

@@ -27,6 +27,12 @@
  *       corners — easier to read at a glance, and the motion-blur
  *       trail behind a side-traversing rect is straight-up
  *       horizontal/vertical.
+ *
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (params, animation accumulators, per-instance
+ * uniform buffer/textures) via create(). All instance callbacks take
+ * `self`.
  */
 
 #include <gpu.h>
@@ -60,42 +66,42 @@ enum Pattern : int {
   PATTERN_RECTILINEAR = 1,
 };
 
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;   // 1x1 rgba16float fallback bound when no upstream
+  int  motion_w = 0;
+  int  motion_h = 0;
+  bool initialized = false;
+
+  // Animation params (CPU-side). cx/cy are normalized to uv space [0, 1].
+  float size = 0.2f;
+  float speed = 1.0f;
+  float color_r = 1.0f;
+  float color_g = 0.4f;
+  float color_b = 0.8f;
+  float opacity = 1.0f;
+  int   pattern = PATTERN_LISSAJOUS;
+
+  double t = 0.0;
+  float cx = 0.5f;
+  float cy = 0.5f;
+  float cx_prev = 0.5f;
+  float cy_prev = 0.5f;
+  bool  have_prev = false;
+};
+
+// Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
-static int  s_motion_w = 0;
-static int  s_motion_h = 0;
-static bool s_initialized = false;
-
-// Animation params (CPU-side). cx/cy are normalized to uv space [0, 1].
-static float s_size = 0.2f;
-static float s_speed = 1.0f;
-static float s_color_r = 1.0f;
-static float s_color_g = 0.4f;
-static float s_color_b = 0.8f;
-static float s_opacity = 1.0f;
-static int   s_pattern = PATTERN_LISSAJOUS;
-
-static double s_t = 0.0;
-static float s_cx = 0.5f;
-static float s_cy = 0.5f;
-static float s_cx_prev = 0.5f;
-static float s_cy_prev = 0.5f;
-static bool  s_have_prev = false;
 
 static inline float lerp1(float a, float b, float t) {
   return a + (b - a) * t;
 }
 
-void init() {
-  s_initialized = false;
-  s_t = 0.0;
-  s_cx = 0.5f; s_cy = 0.5f;
-  s_cx_prev = 0.5f; s_cy_prev = 0.5f;
-  s_have_prev = false;
-
+// Type-level setup: schema + the two shared compute PSOs.
+void module_init() {
   state::init("debug.motion_rect", {1, 0, 0},
     state::Schema()
       .floatField("size",    0.2f, 0.02f, 0.5f, state::PrimaryInput)
@@ -139,18 +145,49 @@ void init() {
       .uniform(1)
       .tex2d(2));  // upstream motion texture (zero fallback when unwired)
 
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-
-  s_initialized = true;
-  state::log("motion_rect: initialized");
+  state::log("motion_rect: module initialized");
 }
 
-static void advance_lissajous(float w) {
-  s_cx = 0.5f + 0.35f * std::sin(w * 1.3f);
-  s_cy = 0.5f + 0.35f * std::sin(w * 0.9f + 0.7f);
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* st = new State();
+  st->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return st;
 }
 
-static void advance_rectilinear(float w) {
+void destroy(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->uniform_buf.release();
+  st->motion_tex.release();
+  st->zero_motion_tex.release();
+  delete st;
+}
+
+// Per-instance init tail: reset animation state + mark ready.
+void init(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->initialized = false;
+  st->t = 0.0;
+  st->cx = 0.5f; st->cy = 0.5f;
+  st->cx_prev = 0.5f; st->cy_prev = 0.5f;
+  st->have_prev = false;
+  st->motion_w = 0;
+  st->motion_h = 0;
+
+  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  if (!st->uniform_buf.valid()) return;
+
+  st->initialized = true;
+}
+
+static void advance_lissajous(State& st, float w) {
+  st.cx = 0.5f + 0.35f * std::sin(w * 1.3f);
+  st.cy = 0.5f + 0.35f * std::sin(w * 0.9f + 0.7f);
+}
+
+static void advance_rectilinear(State& st, float w) {
   // Inset square corners; rect cycles clockwise: top-left → top-right
   // → bottom-right → bottom-left → top-left. Phase parameter wraps
   // every 4 sides; each side traversal takes 1 phase unit.
@@ -159,60 +196,67 @@ static void advance_rectilinear(float w) {
   float phase = std::fmod(w, 4.0f);
   if (phase < 0.0f) phase += 4.0f;
   if (phase < 1.0f) {
-    s_cx = lerp1(LO, HI, phase);
-    s_cy = LO;
+    st.cx = lerp1(LO, HI, phase);
+    st.cy = LO;
   } else if (phase < 2.0f) {
-    s_cx = HI;
-    s_cy = lerp1(LO, HI, phase - 1.0f);
+    st.cx = HI;
+    st.cy = lerp1(LO, HI, phase - 1.0f);
   } else if (phase < 3.0f) {
-    s_cx = lerp1(HI, LO, phase - 2.0f);
-    s_cy = HI;
+    st.cx = lerp1(HI, LO, phase - 2.0f);
+    st.cy = HI;
   } else {
-    s_cx = LO;
-    s_cy = lerp1(HI, LO, phase - 3.0f);
+    st.cx = LO;
+    st.cy = lerp1(HI, LO, phase - 3.0f);
   }
 }
 
-void tick(double dt) {
-  if (!s_initialized) return;
-  s_t += dt;
-  s_cx_prev = s_cx;
-  s_cy_prev = s_cy;
-  float w = float(s_t) * s_speed;
-  if (s_pattern == PATTERN_RECTILINEAR) {
-    advance_rectilinear(w);
+void tick(void* self, double dt) {
+  auto* st = static_cast<State*>(self);
+  if (!st || !st->initialized) return;
+  st->t += dt;
+  st->cx_prev = st->cx;
+  st->cy_prev = st->cy;
+  float w = float(st->t) * st->speed;
+  if (st->pattern == PATTERN_RECTILINEAR) {
+    advance_rectilinear(*st, w);
   } else {
-    advance_lissajous(w);
+    advance_lissajous(*st, w);
   }
-  if (!s_have_prev) {
-    s_cx_prev = s_cx;
-    s_cy_prev = s_cy;
-    s_have_prev = true;
+  if (!st->have_prev) {
+    st->cx_prev = st->cx;
+    st->cy_prev = st->cy;
+    st->have_prev = true;
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
     if (state::pathIs(path, plen, "size")) {
-      s_size = state::patchFloat(i);
+      st->size = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "speed")) {
-      s_speed = state::patchFloat(i);
+      st->speed = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "opacity")) {
-      s_opacity = state::patchFloat(i);
+      st->opacity = state::patchFloat(i);
     } else if (state::pathIs(path, plen, "pattern")) {
-      s_pattern = (int)state::patchFloat(i);
+      st->pattern = (int)state::patchFloat(i);
     } else if (state::pathIs(path, plen, "color")) {
       auto v = state::patchVec3(i);
-      s_color_r = v.x; s_color_g = v.y; s_color_b = v.z;
+      st->color_r = v.x; st->color_g = v.y; st->color_b = v.z;
     }
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* st = static_cast<State*>(self);
+  if (!st || !st->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
@@ -221,13 +265,13 @@ void render(int vp_w, int vp_h) {
   // Color pass always runs (the rect overlay is independent of whether
   // anyone consumes our render_outputs side rail).
   Uniforms u = {
-    s_cx, s_cy,
-    s_cx_prev, s_cy_prev,
-    s_size * 0.5f, s_size * 0.5f,
+    st->cx, st->cy,
+    st->cx_prev, st->cy_prev,
+    st->size * 0.5f, st->size * 0.5f,
     0.f, 0.f,
-    s_color_r, s_color_g, s_color_b, s_opacity,
+    st->color_r, st->color_g, st->color_b, st->opacity,
   };
-  s_uniform_buf.writeOne(u);
+  st->uniform_buf.writeOne(u);
 
   // Pass 1 — color: tex_in → tex_out with rect overlay.
   {
@@ -235,7 +279,7 @@ void render(int vp_w, int vp_h) {
     cp.setPSO(s_pso_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_uniform_buf, 2);
+    cp.setBuffer(st->uniform_buf, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -252,15 +296,15 @@ void render(int vp_w, int vp_h) {
   // handle is published once per allocation; readers receive it via the
   // canonical `render_outputs` struct rail and the host's textureFields
   // map at "render_outputs/motion".
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+  if (!st->motion_tex.valid() || st->motion_w != vp_w || st->motion_h != vp_h) {
+    st->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    st->motion_w = vp_w;
+    st->motion_h = vp_h;
+    if (st->motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", st->motion_tex.id);
     }
   }
-  if (!s_motion_tex.valid()) return;
+  if (!st->motion_tex.valid()) return;
 
   // Resolve the upstream motion texture — when our render_outputs_in
   // input is connected and the producer has populated it, blend onto
@@ -268,10 +312,10 @@ void render(int vp_w, int vp_h) {
   // sample yields zero (and the binary mix collapses to local-only).
   auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
   if (!upstream.valid()) {
-    if (!s_zero_motion_tex.valid()) {
-      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    if (!st->zero_motion_tex.valid()) {
+      st->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
     }
-    upstream = s_zero_motion_tex;
+    upstream = st->zero_motion_tex;
   }
 
   // Pass 2 — motion: write velocity inside rect; outside the rect,
@@ -279,8 +323,8 @@ void render(int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
-    cp.setTexture(s_motion_tex, 0, 1);
-    cp.setBuffer(s_uniform_buf, 1);
+    cp.setTexture(st->motion_tex, 0, 1);
+    cp.setBuffer(st->uniform_buf, 1);
     cp.setTexture(upstream, 2, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();

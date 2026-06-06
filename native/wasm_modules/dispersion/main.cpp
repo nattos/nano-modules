@@ -8,6 +8,11 @@
  *
  * Deferred for v2: noise-distribution shape (uniform/Gaussian),
  * per-axis temporal rate split, mosaic vs noise vs solid block modes.
+ *
+ * Class-like instance model: module_init() compiles the shared compute
+ * PSO + publishes the schema once per type; each chain entry gets its
+ * own State (params, runtime accumulators, RNG, uniform buffer) via
+ * create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -33,31 +38,36 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
 
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Sampler sampler;
+  bool initialized = false;
+
+  // Schema-mirrored params
+  float vertical_block_norm   = 0.1f;
+  float horizontal_block_norm = 0.1f;
+  float offset_max            = 0.08f;
+  float intensity             = 1.0f;
+  float temporal_rate_hz      = 60.0f;
+  int   quant_v               = 16;
+  int   quant_h               = 16;
+  int   block_max_v           = 64;
+  int   block_max_h           = 64;
+  int   seed                  = 12345;
+
+  // Runtime state
+  int      last_block_w = -1;
+  int      last_block_h = -1;
+  int      start_x      = 0;
+  int      start_y      = 0;
+  int      tick_index   = 0;
+  double   tick_accum   = 0.0;
+  uint32_t init_lcg     = 0xDEAFBEEFu;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Sampler    s_sampler;
-static bool s_initialized = false;
-
-// Schema-mirrored params
-static float s_vertical_block_norm   = 0.1f;
-static float s_horizontal_block_norm = 0.1f;
-static float s_offset_max            = 0.08f;
-static float s_intensity             = 1.0f;
-static float s_temporal_rate_hz      = 60.0f;
-static int   s_quant_v               = 16;
-static int   s_quant_h               = 16;
-static int   s_block_max_v           = 64;
-static int   s_block_max_h           = 64;
-static int   s_seed                  = 12345;
-
-// Runtime state
-static int      s_last_block_w = -1;
-static int      s_last_block_h = -1;
-static int      s_start_x      = 0;
-static int      s_start_y      = 0;
-static int      s_tick_index   = 0;
-static double   s_tick_accum   = 0.0;
-static uint32_t s_init_lcg     = 0xDEAFBEEFu;
 
 static inline uint32_t lcg_next(uint32_t& s) {
   s = s * 1664525u + 1013904223u;
@@ -80,16 +90,8 @@ static int quantize_block(float norm, int levels, int max_block) {
   return block;
 }
 
-void init() {
-  s_initialized   = false;
-  s_last_block_w  = -1;
-  s_last_block_h  = -1;
-  s_start_x       = 0;
-  s_start_y       = 0;
-  s_tick_index    = 0;
-  s_tick_accum    = 0.0;
-  s_init_lcg      = 0xDEAFBEEFu;
-
+// Type-level setup: schema + the shared compute PSO. Runs once per type.
+void module_init() {
   state::init("fx.dispersion", {1, 0, 0},
     state::Schema()
       .floatField("vertical_block_norm",   0.1f,  0.0f, 1.0f, state::PrimaryInput)
@@ -117,82 +119,119 @@ void init() {
       .sampler(1)
       .storageTex2d(2, gpu::TextureFormat::RGBA8)
       .uniform(3));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  s_sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
 
-  s_initialized = true;
-  state::log("dispersion: initialized");
+  state::log("dispersion: module initialized");
 }
 
-void tick(double dt) {
-  if (s_temporal_rate_hz > 0.0f) {
-    s_tick_accum += dt * (double)s_temporal_rate_hz;
-    while (s_tick_accum >= 1.0) {
-      s_tick_index++;
-      s_tick_accum -= 1.0;
+// Per-instance construction: allocate State + its own uniform buffer + sampler.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  s->sampler.release();
+  delete s;
+}
+
+// Per-instance init tail: reset runtime accumulators + mark ready.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->last_block_w  = -1;
+  s->last_block_h  = -1;
+  s->start_x       = 0;
+  s->start_y       = 0;
+  s->tick_index    = 0;
+  s->tick_accum    = 0.0;
+  s->init_lcg      = 0xDEAFBEEFu;
+  if (!s_pso.valid()) return;
+  if (!s->uniform_buf.valid()) return;
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (s->temporal_rate_hz > 0.0f) {
+    s->tick_accum += dt * (double)s->temporal_rate_hz;
+    while (s->tick_accum >= 1.0) {
+      s->tick_index++;
+      s->tick_accum -= 1.0;
     }
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
-    if      (state::pathIs(path, plen, "vertical_block_norm"))   s_vertical_block_norm = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "horizontal_block_norm")) s_horizontal_block_norm = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "offset_max"))            s_offset_max = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "intensity"))             s_intensity = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "temporal_rate_hz"))      s_temporal_rate_hz = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "quantization_levels_vertical"))   s_quant_v = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "quantization_levels_horizontal")) s_quant_h = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "block_max_pixels_vertical"))      s_block_max_v = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "block_max_pixels_horizontal"))    s_block_max_h = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "seed"))                  s_seed = (int)state::patchFloat(i);
+    if      (state::pathIs(path, plen, "vertical_block_norm"))   s->vertical_block_norm = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "horizontal_block_norm")) s->horizontal_block_norm = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "offset_max"))            s->offset_max = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity"))             s->intensity = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "temporal_rate_hz"))      s->temporal_rate_hz = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "quantization_levels_vertical"))   s->quant_v = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "quantization_levels_horizontal")) s->quant_h = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "block_max_pixels_vertical"))      s->block_max_v = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "block_max_pixels_horizontal"))    s->block_max_h = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "seed"))                  s->seed = (int)state::patchFloat(i);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
   // Resolve block sizes via the discrete ladder. Anchor block_max to
   // the viewport so the slider scales sensibly when the canvas is small.
-  int max_v = (s_block_max_v < vp_h) ? s_block_max_v : vp_h;
-  int max_h = (s_block_max_h < vp_w) ? s_block_max_h : vp_w;
-  int block_h = quantize_block(s_vertical_block_norm,   s_quant_v, max_v);
-  int block_w = quantize_block(s_horizontal_block_norm, s_quant_h, max_h);
+  int max_v = (s->block_max_v < vp_h) ? s->block_max_v : vp_h;
+  int max_h = (s->block_max_h < vp_w) ? s->block_max_h : vp_w;
+  int block_h = quantize_block(s->vertical_block_norm,   s->quant_v, max_v);
+  int block_w = quantize_block(s->horizontal_block_norm, s->quant_h, max_h);
 
   // When block size changes across a quantization step, reroll the
   // start offset so the layout snaps fresh instead of sliding.
-  if (block_w != s_last_block_w) {
-    s_start_x = (int)(lcg_next(s_init_lcg) % (uint32_t)block_w);
-    s_last_block_w = block_w;
+  if (block_w != s->last_block_w) {
+    s->start_x = (int)(lcg_next(s->init_lcg) % (uint32_t)block_w);
+    s->last_block_w = block_w;
   }
-  if (block_h != s_last_block_h) {
-    s_start_y = (int)(lcg_next(s_init_lcg) % (uint32_t)block_h);
-    s_last_block_h = block_h;
+  if (block_h != s->last_block_h) {
+    s->start_y = (int)(lcg_next(s->init_lcg) % (uint32_t)block_h);
+    s->last_block_h = block_h;
   }
 
   Uniforms u = {};
   u.block_w    = block_w;
   u.block_h    = block_h;
-  u.start_x    = s_start_x;
-  u.start_y    = s_start_y;
-  u.tick_index = s_tick_index;
-  u.offset_max = s_offset_max;
-  u.intensity  = s_intensity;
-  u.seed       = s_seed;
-  s_uniform_buf.writeOne(u);
+  u.start_x    = s->start_x;
+  u.start_y    = s->start_y;
+  u.tick_index = s->tick_index;
+  u.offset_max = s->offset_max;
+  u.intensity  = s->intensity;
+  u.seed       = s->seed;
+  s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(in, 0, 0);
-  cp.setSampler(s_sampler, 1);
+  cp.setSampler(s->sampler, 1);
   cp.setTexture(out, 2, 1);
-  cp.setBuffer(s_uniform_buf, 3);
+  cp.setBuffer(s->uniform_buf, 3);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

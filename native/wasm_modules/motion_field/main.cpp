@@ -26,6 +26,12 @@
  * field. Set `vis_opacity > 0` to overlay an HSV-polar visualization
  * of the motion vectors on top of the input — useful while tuning,
  * leave at 0 in production.
+ *
+ * Class-like instance model: module_init() compiles the two shared
+ * compute PSOs + publishes the schema once per type; each chain entry
+ * gets its own State (params, time accumulator, per-instance uniform
+ * buffer + motion textures) via create(). All instance callbacks take
+ * `self`.
  */
 
 #include <gpu.h>
@@ -72,48 +78,52 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
 
-static gpu::ComputePSO s_pso_color;
-static gpu::ComputePSO s_pso_motion;
-static gpu::Buffer     s_uniform_buf;
-static gpu::Texture    s_motion_tex;
-static gpu::Texture    s_zero_motion_tex;  // 1x1 rgba16float fallback bound when no upstream
-static int  s_motion_w = 0;
-static int  s_motion_h = 0;
-static bool s_initialized = false;
-
-// --- Schema-mirrored state ---
-static float s_threshold      = 0.5f;
-static float s_softness       = 0.05f;
-static float s_magnitude      = 0.005f;
-static float s_mag_jitter     = 0.5f;
-static float s_mag_noise_scale = 16.0f;
-
-static float s_rotation_deg     = 0.0f;
-static float s_rotation_weight  = 1.0f;
-static float s_radial_weight    = 0.0f;
-static float s_radial_anchor_x  = 0.5f;
-static float s_radial_anchor_y  = 0.5f;
-static float s_gradient_weight  = 0.0f;
-static float s_gradient_bias_deg = 90.0f;
-
-static float s_angle_jitter     = 0.0f;
-static float s_angle_noise_scale = 16.0f;
-// Hz at which the noise field mutates. 0 = static (single snapshot
-// repeats forever). 1 = one full snapshot transition per second.
-// Higher values give faster, more chaotic flow.
-static float s_evolution_rate   = 0.0f;
-// Accumulated "noise time" — units of "noise snapshots". Advances
-// by `dt * evolution_rate` every tick. The integer part picks the
-// snapshot, the fractional part interpolates to the next.
-static float s_noise_time       = 0.0f;
-static float s_vis_opacity      = 0.0f;
-static float s_vis_scale        = 100.0f;
-
 static constexpr float DEG2RAD = 3.14159265358979323846f / 180.0f;
 
-void init() {
-  s_initialized = false;
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;   // 1x1 rgba16float fallback (no upstream)
+  int          motion_w = 0;
+  int          motion_h = 0;
+  bool         initialized = false;
 
+  // --- Schema-mirrored state ---
+  float threshold       = 0.5f;
+  float softness        = 0.05f;
+  float magnitude       = 0.005f;
+  float mag_jitter      = 0.5f;
+  float mag_noise_scale = 16.0f;
+
+  float rotation_deg     = 0.0f;
+  float rotation_weight  = 1.0f;
+  float radial_weight    = 0.0f;
+  float radial_anchor_x  = 0.5f;
+  float radial_anchor_y  = 0.5f;
+  float gradient_weight  = 0.0f;
+  float gradient_bias_deg = 90.0f;
+
+  float angle_jitter     = 0.0f;
+  float angle_noise_scale = 16.0f;
+  // Hz at which the noise field mutates. 0 = static (single snapshot
+  // repeats forever). 1 = one full snapshot transition per second.
+  // Higher values give faster, more chaotic flow.
+  float evolution_rate   = 0.0f;
+  // Accumulated "noise time" — units of "noise snapshots". Advances
+  // by `dt * evolution_rate` every tick. The integer part picks the
+  // snapshot, the fractional part interpolates to the next.
+  float noise_time       = 0.0f;
+  float vis_opacity      = 0.0f;
+  float vis_scale        = 100.0f;
+};
+
+// Type-shared: compiled once in module_init().
+static gpu::ComputePSO s_pso_color;
+static gpu::ComputePSO s_pso_motion;
+
+// Type-level setup: schema + the two shared compute PSOs.
+void module_init() {
   state::init("video.motion_field", {1, 0, 0},
     state::Schema()
       // Activation
@@ -182,85 +192,119 @@ void init() {
       .tex2d(3));                                     // upstream motion (zero
                                                       //  fallback when unwired)
 
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-
-  s_initialized = true;
-  state::log("motion_field: initialized");
+  state::log("motion_field: module initialized");
 }
 
-void tick(double dt) {
+// Per-instance construction: allocate State + its own GPU uniform buffer.
+void* create() {
+  auto* st = new State();
+  st->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return st;
+}
+
+void destroy(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->uniform_buf.release();
+  st->motion_tex.release();
+  st->zero_motion_tex.release();
+  delete st;
+}
+
+// Per-instance init tail: mark ready once the shared PSOs + this
+// instance's uniform buffer are valid.
+void init(void* self) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
+  st->initialized = false;
+  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  if (!st->uniform_buf.valid()) return;
+  st->motion_w = 0;
+  st->motion_h = 0;
+  st->initialized = true;
+}
+
+void tick(void* self, double dt) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
   // Advance the noise-field time accumulator. With evolution_rate=0
   // this is a no-op and the field stays put. With rate=1 we walk
   // through one integer-seed snapshot per second, interpolating
   // smoothly across the boundary via mf_value_noise_evolving.
-  if (s_evolution_rate > 0.0f) {
-    s_noise_time += float(dt) * s_evolution_rate;
+  if (st->evolution_rate > 0.0f) {
+    st->noise_time += float(dt) * st->evolution_rate;
   }
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* st = static_cast<State*>(self);
+  if (!st) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
-    if      (state::pathIs(path, plen, "threshold"))         s_threshold = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "softness"))          s_softness = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "magnitude"))         s_magnitude = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "mag_jitter"))        s_mag_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "mag_noise_scale"))   s_mag_noise_scale = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "rotation"))          s_rotation_deg = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "rotation_weight"))   s_rotation_weight = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "radial_weight"))     s_radial_weight = state::patchFloat(i);
+    if      (state::pathIs(path, plen, "threshold"))         st->threshold = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "softness"))          st->softness = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "magnitude"))         st->magnitude = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "mag_jitter"))        st->mag_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "mag_noise_scale"))   st->mag_noise_scale = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "rotation"))          st->rotation_deg = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "rotation_weight"))   st->rotation_weight = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "radial_weight"))     st->radial_weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "radial_anchor")) {
       auto v = state::patchVec2(i);
-      s_radial_anchor_x = v.x;
-      s_radial_anchor_y = v.y;
+      st->radial_anchor_x = v.x;
+      st->radial_anchor_y = v.y;
     }
-    else if (state::pathIs(path, plen, "gradient_weight"))   s_gradient_weight = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "gradient_bias"))     s_gradient_bias_deg = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "angle_jitter"))      s_angle_jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "angle_noise_scale")) s_angle_noise_scale = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "evolution_rate"))    s_evolution_rate = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "vis_opacity"))       s_vis_opacity = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "vis_scale"))         s_vis_scale = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "gradient_weight"))   st->gradient_weight = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "gradient_bias"))     st->gradient_bias_deg = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "angle_jitter"))      st->angle_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "angle_noise_scale")) st->angle_noise_scale = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "evolution_rate"))    st->evolution_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "vis_opacity"))       st->vis_opacity = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "vis_scale"))         st->vis_scale = state::patchFloat(i);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* st = static_cast<State*>(self);
+  if (!st || !st->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
   Uniforms u = {
-    s_threshold,
-    s_softness,
-    s_magnitude,
-    s_mag_jitter,
+    st->threshold,
+    st->softness,
+    st->magnitude,
+    st->mag_jitter,
 
-    s_mag_noise_scale,
-    s_rotation_deg * DEG2RAD,
-    s_rotation_weight,
-    s_radial_weight,
+    st->mag_noise_scale,
+    st->rotation_deg * DEG2RAD,
+    st->rotation_weight,
+    st->radial_weight,
 
-    s_radial_anchor_x,
-    s_radial_anchor_y,
-    s_gradient_weight,
-    s_gradient_bias_deg * DEG2RAD,
+    st->radial_anchor_x,
+    st->radial_anchor_y,
+    st->gradient_weight,
+    st->gradient_bias_deg * DEG2RAD,
 
-    s_angle_jitter,
-    s_angle_noise_scale,
-    s_vis_opacity,
-    s_vis_scale,
+    st->angle_jitter,
+    st->angle_noise_scale,
+    st->vis_opacity,
+    st->vis_scale,
 
     // Continuous time index into the noise field. The shader's
     // mf_value_noise_evolving interpolates between adjacent integer
     // snapshots based on this; per-stream phase offsets bake-in to
     // decorrelate the magnitude and angle noise.
-    s_noise_time,
+    st->noise_time,
     0.f, 0.f, 0.f,
   };
-  s_uniform_buf.writeOne(u);
+  st->uniform_buf.writeOne(u);
 
   // Pass 1 — color (identity copy + optional viz overlay).
   {
@@ -268,7 +312,7 @@ void render(int vp_w, int vp_h) {
     cp.setPSO(s_pso_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_uniform_buf, 2);
+    cp.setBuffer(st->uniform_buf, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
@@ -282,33 +326,33 @@ void render(int vp_w, int vp_h) {
   // (Re)allocate the motion texture for the current viewport. Publish
   // the handle once per allocation; matches the convention in
   // motion_rect / motion_swarm / motion_static.
-  if (!s_motion_tex.valid() || s_motion_w != vp_w || s_motion_h != vp_h) {
-    s_motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-    s_motion_w = vp_w;
-    s_motion_h = vp_h;
-    if (s_motion_tex.valid()) {
-      state::setGpuTexture("render_outputs/motion", s_motion_tex.id);
+  if (!st->motion_tex.valid() || st->motion_w != vp_w || st->motion_h != vp_h) {
+    st->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+    st->motion_w = vp_w;
+    st->motion_h = vp_h;
+    if (st->motion_tex.valid()) {
+      state::setGpuTexture("render_outputs/motion", st->motion_tex.id);
     }
   }
-  if (!s_motion_tex.valid()) return;
+  if (!st->motion_tex.valid()) return;
 
   // Resolve upstream motion (or 1x1 zero fallback when unwired).
   auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
   if (!upstream.valid()) {
-    if (!s_zero_motion_tex.valid()) {
-      s_zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+    if (!st->zero_motion_tex.valid()) {
+      st->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
     }
-    upstream = s_zero_motion_tex;
+    upstream = st->zero_motion_tex;
   }
 
   // Pass 2 — motion vectors.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_motion);
-    cp.setTexture(in,           0, 0);
-    cp.setTexture(s_motion_tex, 1, 1);
-    cp.setBuffer(s_uniform_buf, 2);
-    cp.setTexture(upstream,     3, 0);
+    cp.setTexture(in,            0, 0);
+    cp.setTexture(st->motion_tex, 1, 1);
+    cp.setBuffer(st->uniform_buf, 2);
+    cp.setTexture(upstream,      3, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

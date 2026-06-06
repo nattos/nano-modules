@@ -8,6 +8,11 @@
  *
  * Deferred: beat sync, region smoothness, transition fade, per-bar hue
  * offsets, external seed tap.
+ *
+ * Class-like instance model: module_init() sets up the type-shared
+ * compute PSO + schema once; each chain entry gets its own State (params
+ * + runtime state + uniform buffer) via create(). All instance callbacks
+ * take `self`.
  */
 
 #include <gpu.h>
@@ -33,30 +38,33 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
 
+// Per-instance state. One per chain entry.
+struct State {
+  // Schema-mirrored params
+  float r                 = 3.95f;
+  int   iterations        = 6;
+  float ping_pong_rate_hz = 0.5f;
+  float seed_low          = 0.1f;
+  float seed_high         = 0.9f;
+  float color_r           = 1.0f;
+  float color_g           = 1.0f;
+  float color_b           = 1.0f;
+  float intensity         = 1.0f;
+  float intensity_mod     = 0.0f;
+  int   bar_count         = 4;
+
+  // Runtime state
+  double elapsed = 0.0;
+
+  bool initialized = false;
+  gpu::Buffer uniform_buf;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer     s_uniform_buf;
-static bool s_initialized = false;
 
-// Schema-mirrored params
-static float s_r                 = 3.95f;
-static int   s_iterations        = 6;
-static float s_ping_pong_rate_hz = 0.5f;
-static float s_seed_low          = 0.1f;
-static float s_seed_high         = 0.9f;
-static float s_color_r           = 1.0f;
-static float s_color_g           = 1.0f;
-static float s_color_b           = 1.0f;
-static float s_intensity         = 1.0f;
-static float s_intensity_mod     = 0.0f;
-static int   s_bar_count         = 4;
-
-// Runtime state
-static double s_elapsed = 0.0;
-
-void init() {
-  s_elapsed = 0.0;
-  s_initialized = false;
-
+// Type-level setup: schema + shared compute PSO. Runs once per type.
+void module_init() {
   state::init("gen.strobe_channel", {1, 0, 0},
     state::Schema()
       .floatField("r",                 3.95f, 0.0f, 4.0f,  state::PrimaryInput)
@@ -82,83 +90,115 @@ void init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
-  s_initialized = true;
+  state::log("strobe_channel: module initialized");
+}
+
+// Per-instance construction: allocate State + its own uniform buffer.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+
+// Per-instance init tail: reset runtime state + guard on shared PSO.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->elapsed = 0.0;
+  s->initialized = false;
+  if (!s_pso.valid()) return;
+  if (!s->uniform_buf.valid()) return;
+  s->initialized = true;
   state::log("strobe_channel: initialized");
 }
 
-void tick(double dt) {
-  s_elapsed += dt;
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->elapsed += dt;
 }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
-    if      (state::pathIs(path, plen, "r"))                 s_r = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "iterations"))        s_iterations = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "ping_pong_rate_hz")) s_ping_pong_rate_hz = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "seed_low"))          s_seed_low = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "seed_high"))         s_seed_high = state::patchFloat(i);
+    if      (state::pathIs(path, plen, "r"))                 s->r = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "iterations"))        s->iterations = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "ping_pong_rate_hz")) s->ping_pong_rate_hz = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "seed_low"))          s->seed_low = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "seed_high"))         s->seed_high = state::patchFloat(i);
     else if (state::pathIs(path, plen, "flash_color")) {
       auto v = state::patchVec3(i);
-      s_color_r = v.x; s_color_g = v.y; s_color_b = v.z;
+      s->color_r = v.x; s->color_g = v.y; s->color_b = v.z;
     }
-    else if (state::pathIs(path, plen, "intensity"))         s_intensity = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "intensity_mod"))     s_intensity_mod = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "bar_count"))         s_bar_count = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity"))         s->intensity = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity_mod"))     s->intensity_mod = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "bar_count"))         s->bar_count = (int)state::patchFloat(i);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
   // Triangle-wave ping-pong of the seed.
-  float phase = (float)(s_elapsed * (double)s_ping_pong_rate_hz);
+  float phase = (float)(s->elapsed * (double)s->ping_pong_rate_hz);
   phase = phase - std::floor(phase);       // [0, 1)
   float tri = std::fabs(phase * 2.0f - 1.0f); // [0, 1] tent
-  float x = s_seed_low + (s_seed_high - s_seed_low) * tri;
+  float x = s->seed_low + (s->seed_high - s->seed_low) * tri;
 
   // Iterate the logistic map.
-  int iters = s_iterations;
+  int iters = s->iterations;
   if (iters < 1) iters = 1;
   if (iters > 32) iters = 32;
   for (int i = 0; i < iters; i++) {
-    x = s_r * x * (1.0f - x);
+    x = s->r * x * (1.0f - x);
   }
   if (!std::isfinite(x)) x = 0.5f;
   if (x < 0.0f) x = 0.0f;
   if (x >= 1.0f) x = 0.9999f;
 
-  int bars = s_bar_count;
+  int bars = s->bar_count;
   if (bars < 1) bars = 1;
   if (bars > 16) bars = 16;
   int active_bar = (int)std::floor(x * (float)bars);
   if (active_bar < 0) active_bar = 0;
   if (active_bar >= bars) active_bar = bars - 1;
 
-  float intensity = s_intensity + s_intensity_mod;
+  float intensity = s->intensity + s->intensity_mod;
   if (intensity < 0.0f) intensity = 0.0f;
 
   Uniforms u = {};
   u.active_bar = (uint32_t)active_bar;
   u.bar_count  = (uint32_t)bars;
   u.intensity  = intensity;
-  u.color_r    = s_color_r;
-  u.color_g    = s_color_g;
-  u.color_b    = s_color_b;
-  s_uniform_buf.writeOne(u);
+  u.color_r    = s->color_r;
+  u.color_g    = s->color_g;
+  u.color_b    = s->color_b;
+  s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(in,  0, 0);
   cp.setTexture(out, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setBuffer(s->uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

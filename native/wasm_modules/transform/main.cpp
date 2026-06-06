@@ -12,6 +12,10 @@
  *                            Default 0 = uniform.
  *   wrap_mode    int         0 = clamp to edge (default), 1 = transparent outside,
  *                            2 = repeat, 3 = mirror.
+ *
+ * Class-like instance model: module_init() sets up the type-shared compute
+ * PSO + schema once; each chain entry gets its own State (params + uniform
+ * buffer + sampler) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -33,26 +37,24 @@ struct Uniforms {
   float _pad;
 };
 
-static float s_scale = 0.0f;
-static float s_scale_aspect = 0.0f;
-static float s_rotation = 0.0f;
-static float s_tx = 0.0f, s_ty = 0.0f;
-static float s_px = 0.0f, s_py = 0.0f;
-static float s_wrap_mode = 0.0f;
-static bool s_initialized = false;
+// Per-instance state. One per chain entry.
+struct State {
+  float scale = 0.0f;
+  float scale_aspect = 0.0f;
+  float rotation = 0.0f;
+  float tx = 0.0f, ty = 0.0f;
+  float px = 0.0f, py = 0.0f;
+  float wrap_mode = 0.0f;
+  bool initialized = false;
+  gpu::Buffer uniform_buf;
+  gpu::Sampler sampler;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer s_uniform_buf;
-static gpu::Sampler s_sampler;
 
-void init() {
-  s_scale = 0.0f;
-  s_scale_aspect = 0.0f;
-  s_rotation = 0.0f;
-  s_tx = 0.0f; s_ty = 0.0f;
-  s_px = 0.0f; s_py = 0.0f;
-  s_wrap_mode = 0.0f;
-  s_initialized = false;
-
+// Type-level setup: schema + shared compute PSO. Runs once per type.
+void module_init() {
   state::init("video.transform", {1, 0, 0},
     state::Schema()
       .floatField("scale",        0.0f, -1.f, 1.f, state::PrimaryInput)
@@ -72,44 +74,76 @@ void init() {
   auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).sampler(2).uniform(3));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  // Bilinear filter, clamp-to-edge addressing. Wrap-mode logic still happens
-  // in the shader before sampling so the address mode here is just a fallback.
-  s_sampler = gpu::Device::createSampler(gpu::FilterMode::Linear,
-                                          gpu::AddressMode::ClampToEdge);
-  s_initialized = true;
 }
 
-void tick(double dt) { (void)dt; }
-void on_param_change(int, double) {}
+// Per-instance construction: allocate State + its own uniform buffer + sampler.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  // Bilinear filter, clamp-to-edge addressing. Wrap-mode logic still happens
+  // in the shader before sampling so the address mode here is just a fallback.
+  s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear,
+                                          gpu::AddressMode::ClampToEdge);
+  return s;
+}
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  s->sampler.release();
+  delete s;
+}
+
+// Per-instance init tail: defaults + ready guard.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->scale = 0.0f;
+  s->scale_aspect = 0.0f;
+  s->rotation = 0.0f;
+  s->tx = 0.0f; s->ty = 0.0f;
+  s->px = 0.0f; s->py = 0.0f;
+  s->wrap_mode = 0.0f;
+  s->initialized = false;
+
+  if (!s_pso.valid()) return;
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  (void)dt;
+}
+
+void on_resolume_param(void*, long long, double) {}
+
+// Pure passthrough at neutral transform (no scale/rotate/translate).
+int32_t is_identity(void* self) {
+  auto* s = static_cast<State*>(self);
+  return (s && s->scale == 0.0f && s->scale_aspect == 0.0f && s->rotation == 0.0f
+          && s->tx == 0.0f && s->ty == 0.0f) ? 1 : 0;
+}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off, const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "scale"))        s_scale = state::patchFloat(i);
-    else if (state::pathIs(p, l, "rotation"))     s_rotation = state::patchFloat(i);
-    else if (state::pathIs(p, l, "translate"))    { auto v = state::patchVec2(i); s_tx = v.x; s_ty = v.y; }
-    else if (state::pathIs(p, l, "pivot"))        { auto v = state::patchVec2(i); s_px = v.x; s_py = v.y; }
-    else if (state::pathIs(p, l, "scale_aspect")) s_scale_aspect = state::patchFloat(i);
-    else if (state::pathIs(p, l, "wrap_mode"))    s_wrap_mode = state::patchFloat(i);
+    if      (state::pathIs(p, l, "scale"))        s->scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "rotation"))     s->rotation = state::patchFloat(i);
+    else if (state::pathIs(p, l, "translate"))    { auto v = state::patchVec2(i); s->tx = v.x; s->ty = v.y; }
+    else if (state::pathIs(p, l, "pivot"))        { auto v = state::patchVec2(i); s->px = v.x; s->py = v.y; }
+    else if (state::pathIs(p, l, "scale_aspect")) s->scale_aspect = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wrap_mode"))    s->wrap_mode = state::patchFloat(i);
   }
 }
 
-// Passthrough when the affine is the identity: scale=0 (→ 4^0 = 1×),
-// scale_aspect=0 (→ uniform), rotation=0, translate=(0,0). Then every
-// output pixel samples its own texel centre, so the bilinear resample
-// reproduces the input exactly. pivot/wrap_mode are irrelevant at
-// identity (nothing is displaced or sampled out of bounds). Stateless —
-// skipping the dispatch and aliasing input→output is bit-exact (and
-// avoids the sampler's float round-trip entirely).
-int is_identity() {
-  return (s_scale == 0.0f && s_scale_aspect == 0.0f && s_rotation == 0.0f
-          && s_tx == 0.0f && s_ty == 0.0f) ? 1 : 0;
-}
-
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto input = gpu::Device::textureForField("tex_in");
   auto output = gpu::Device::textureForField("tex_out");
@@ -119,36 +153,36 @@ void render(int vp_w, int vp_h) {
   auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
 
   // Exponential scale: -1 → 1/4, 0 → 1, +1 → 4.
-  float base_scale = std::pow(4.0f, s_scale);
+  float base_scale = std::pow(4.0f, s->scale);
   // Aspect bias: -1 = x-only, +1 = y-only, 0 = uniform.
   // Re-distribute a multiplicative factor between the two axes.
-  float bias = std::pow(2.0f, s_scale_aspect);  // -1: 0.5, 0: 1, +1: 2
+  float bias = std::pow(2.0f, s->scale_aspect);  // -1: 0.5, 0: 1, +1: 2
   float sx = base_scale * bias;
   float sy = base_scale / bias;
 
   // Rotation: ±180° (=±π).
-  float angle = s_rotation * 3.14159265358979323846f;
+  float angle = s->rotation * 3.14159265358979323846f;
 
   Uniforms u = {};
   u.scale_x = sx;
   u.scale_y = sy;
   u.cos_r = std::cos(angle);
   u.sin_r = std::sin(angle);
-  u.translate_x = s_tx;
-  u.translate_y = s_ty;
-  u.pivot_x = s_px;
-  u.pivot_y = s_py;
+  u.translate_x = s->tx;
+  u.translate_y = s->ty;
+  u.pivot_x = s->px;
+  u.pivot_y = s->py;
   u.aspect_x = ax;
   u.aspect_y = ay;
-  u.wrap_mode = s_wrap_mode;
-  s_uniform_buf.writeOne(u);
+  u.wrap_mode = s->wrap_mode;
+  s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(input, 0, 0);
   cp.setTexture(output, 1, 1);
-  cp.setSampler(s_sampler, 2);
-  cp.setBuffer(s_uniform_buf, 3);
+  cp.setSampler(s->sampler, 2);
+  cp.setBuffer(s->uniform_buf, 3);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

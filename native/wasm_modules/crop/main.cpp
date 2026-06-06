@@ -17,9 +17,13 @@
  *   `fill`    — colour for the masked-out region. Default transparent.
  *
  * Demonstrates the schema-edit pattern: every parameter is registered
- * in init(); on_state_ready (fired after init + state replay) hides the
- * inactive mode's fields. Switching mode at runtime re-runs the same
- * visibility logic from on_state_patched.
+ * in module_init(); on_state_ready (fired after init + state replay)
+ * hides the inactive mode's fields. Switching mode at runtime re-runs the
+ * same visibility logic from on_state_patched.
+ *
+ * Class-like instance model: module_init() sets up the type-shared
+ * compute PSO + schema once; each chain entry gets its own State (params
+ * + uniform buffer) via create(). All instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -45,21 +49,28 @@ struct Uniforms {
   float _pad1, _pad2, _pad3;
 };
 
-static int   s_mode = ModeSpan;
-static float s_cx = 0.0f, s_cy = 0.0f;
-static float s_w = 1.0f, s_h = 1.0f;
-static float s_feather = 0.0f;
-static float s_fill[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-static float s_inset[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // l, r, t, b
-static bool s_initialized = false;
+// Per-instance state. One per chain entry.
+struct State {
+  int   mode = ModeSpan;
+  float cx = 0.0f, cy = 0.0f;
+  float w = 1.0f, h = 1.0f;
+  float feather = 0.0f;
+  float fill[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+  float inset[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // l, r, t, b
+  bool initialized = false;
+  gpu::Buffer uniform_buf;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso;
-static gpu::Buffer s_uniform_buf;
 
 /// Show only the fields that belong to the active mode. Called from
 /// on_state_ready (once after init + state replay) and from
 /// on_state_patched whenever `mode` changes — same code path either way.
-static void apply_mode_visibility() {
-  bool inset = (s_mode == ModeInset);
+/// Touches the type-shared schema, so it takes the active mode value
+/// rather than per-instance state.
+static void apply_mode_visibility(int mode) {
+  bool inset = (mode == ModeInset);
   // Span-only fields
   state::setFieldHidden("center",  inset);
   state::setFieldHidden("width",   inset);
@@ -73,15 +84,8 @@ static void apply_mode_visibility() {
 
 static void on_state_ready(void* self);
 
-void init() {
-  s_mode = ModeSpan;
-  s_cx = 0.0f; s_cy = 0.0f;
-  s_w = 1.0f; s_h = 1.0f;
-  s_feather = 0.0f;
-  s_fill[0] = s_fill[1] = s_fill[2] = s_fill[3] = 0.0f;
-  s_inset[0] = s_inset[1] = s_inset[2] = s_inset[3] = 0.0f;
-  s_initialized = false;
-
+// Type-level setup: schema + shared compute PSO. Runs once per type.
+void module_init() {
   state::init("video.crop", {1, 0, 0},
     state::Schema()
       // Mode selector — drives which downstream fields are visible.
@@ -116,45 +120,79 @@ void init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2));
-  s_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  s_initialized = true;
+}
+
+// Per-instance construction: allocate State + its own uniform buffer.
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  delete s;
+}
+
+// Per-instance init tail: reset defaults + mark ready (guarded on PSO +
+// per-instance buffer).
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->mode = ModeSpan;
+  s->cx = 0.0f; s->cy = 0.0f;
+  s->w = 1.0f; s->h = 1.0f;
+  s->feather = 0.0f;
+  s->fill[0] = s->fill[1] = s->fill[2] = s->fill[3] = 0.0f;
+  s->inset[0] = s->inset[1] = s->inset[2] = s->inset[3] = 0.0f;
+  s->initialized = false;
+
+  if (!s_pso.valid() || !s->uniform_buf.valid()) return;
+  s->initialized = true;
 }
 
 static void on_state_ready(void* self) {
-  (void)self;
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   // Fired after init + initial state replay. Whatever the mode landed
   // at, hide the inactive mode's fields so the IDE never paints the
   // intermediate "all fields visible" state.
-  apply_mode_visibility();
+  apply_mode_visibility(s->mode);
 }
 
-void tick(double dt) { (void)dt; }
-void on_param_change(int, double) {}
+void tick(void* self, double dt) { (void)self; (void)dt; }
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off, const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   bool mode_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "mode"))     { int m = (int)state::patchFloat(i); if (m != s_mode) { s_mode = m; mode_changed = true; } }
-    else if (state::pathIs(p, l, "center"))   { auto v = state::patchVec2(i); s_cx = v.x; s_cy = v.y; }
-    else if (state::pathIs(p, l, "width"))    s_w = state::patchFloat(i);
-    else if (state::pathIs(p, l, "height"))   s_h = state::patchFloat(i);
-    else if (state::pathIs(p, l, "inset_left"))   s_inset[0] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "inset_right"))  s_inset[1] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "inset_top"))    s_inset[2] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "inset_bottom")) s_inset[3] = state::patchFloat(i);
-    else if (state::pathIs(p, l, "feather"))  s_feather = state::patchFloat(i);
+    if      (state::pathIs(p, l, "mode"))     { int m = (int)state::patchFloat(i); if (m != s->mode) { s->mode = m; mode_changed = true; } }
+    else if (state::pathIs(p, l, "center"))   { auto v = state::patchVec2(i); s->cx = v.x; s->cy = v.y; }
+    else if (state::pathIs(p, l, "width"))    s->w = state::patchFloat(i);
+    else if (state::pathIs(p, l, "height"))   s->h = state::patchFloat(i);
+    else if (state::pathIs(p, l, "inset_left"))   s->inset[0] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "inset_right"))  s->inset[1] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "inset_top"))    s->inset[2] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "inset_bottom")) s->inset[3] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "feather"))  s->feather = state::patchFloat(i);
     else if (state::pathIs(p, l, "fill")) {
       auto v = state::patchVec4(i);
-      s_fill[0] = v.x; s_fill[1] = v.y; s_fill[2] = v.z; s_fill[3] = v.w;
+      s->fill[0] = v.x; s->fill[1] = v.y; s->fill[2] = v.z; s->fill[3] = v.w;
     }
   }
-  if (mode_changed) apply_mode_visibility();
+  if (mode_changed) apply_mode_visibility(s->mode);
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_initialized || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
   auto input = gpu::Device::textureForField("tex_in");
   auto output = gpu::Device::textureForField("tex_out");
@@ -163,21 +201,21 @@ void render(int vp_w, int vp_h) {
   auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
 
   Uniforms u = {};
-  u.center_x = s_cx; u.center_y = s_cy;
-  u.half_w = s_w; u.half_h = s_h;
-  u.feather = s_feather;
+  u.center_x = s->cx; u.center_y = s->cy;
+  u.half_w = s->w; u.half_h = s->h;
+  u.feather = s->feather;
   u.aspect_x = ax; u.aspect_y = ay;
-  u.fill_r = s_fill[0]; u.fill_g = s_fill[1]; u.fill_b = s_fill[2]; u.fill_a = s_fill[3];
-  u.inset_l = s_inset[0]; u.inset_r = s_inset[1];
-  u.inset_t = s_inset[2]; u.inset_b = s_inset[3];
-  u.mode = s_mode;
-  s_uniform_buf.writeOne(u);
+  u.fill_r = s->fill[0]; u.fill_g = s->fill[1]; u.fill_b = s->fill[2]; u.fill_a = s->fill[3];
+  u.inset_l = s->inset[0]; u.inset_r = s->inset[1];
+  u.inset_t = s->inset[2]; u.inset_b = s->inset[3];
+  u.mode = s->mode;
+  s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso);
   cp.setTexture(input, 0, 0);
   cp.setTexture(output, 1, 1);
-  cp.setBuffer(s_uniform_buf, 2);
+  cp.setBuffer(s->uniform_buf, 2);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

@@ -5,6 +5,12 @@
  * reused by future effects (bloom, glow, depth-of-field, soft shadows,
  * any "less local" operation). This file just owns the schema, plumbs
  * the two playable params, and delegates to the utility.
+ *
+ * Class-like instance model: module_init() publishes the schema +
+ * backend check once per type; each chain entry gets its own State
+ * (params + its own fx::GaussianBlur helper, which owns the PSO and all
+ * per-instance GPU scratch) via create(). All instance callbacks take
+ * `self`.
  */
 
 #include <gpu.h>
@@ -13,14 +19,19 @@
 
 namespace blur {
 
-static fx::GaussianBlur s_blur;
-static float s_radius = 0.25f;
-static float s_quality = 1.0f;
+// Per-instance state. One per chain entry. Holds the params and the
+// GaussianBlur helper BY VALUE — the helper owns the compiled PSO and all
+// per-instance GPU scratch (uniform/weights buffers + the lazy scratch
+// texture).
+struct State {
+  fx::GaussianBlur blur;
+  float radius = 0.25f;
+  float quality = 1.0f;
+  bool initialized = false;
+};
 
-void init() {
-  s_radius = 0.25f;
-  s_quality = 1.0f;
-
+// Type-level setup: publish the schema + backend check once per type.
+void module_init() {
   state::init("video.blur", {1, 0, 0},
     state::Schema()
       .floatField("radius",  0.25f, 0.f, 1.f, state::PrimaryInput)
@@ -29,27 +40,57 @@ void init() {
       .textureField("tex_out", state::PrimaryOutput)
   );
 
-  s_blur.init();
+  if (gpu::Device::backend() == gpu::Backend::None) return;
 }
 
-void tick(double dt) { (void)dt; }
-void on_param_change(int, double) {}
+// Per-instance construction. The helper's GPU resources (PSO + buffers)
+// are allocated in init() via blur.init(), which is idempotent.
+void* create() {
+  return new State();
+}
 
-void on_state_patched(int n, const char* pb, const int* off, const int* len, const int* ops) {
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  delete s;
+}
+
+// Per-instance init tail: defaults + allocate the helper's GPU resources.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->radius = 0.25f;
+  s->quality = 1.0f;
+
+  s->blur.init();
+  if (!s->blur.valid()) return;
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) { (void)self; (void)dt; }
+
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "radius"))  s_radius  = state::patchFloat(i);
-    else if (state::pathIs(p, l, "quality")) s_quality = state::patchFloat(i);
+    if      (state::pathIs(p, l, "radius"))  s->radius  = state::patchFloat(i);
+    else if (state::pathIs(p, l, "quality")) s->quality = state::patchFloat(i);
   }
 }
 
-void render(int vp_w, int vp_h) {
-  if (!s_blur.valid() || vp_w <= 0 || vp_h <= 0) return;
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->blur.valid() || vp_w <= 0 || vp_h <= 0) return;
   auto input  = gpu::Device::textureForField("tex_in");
   auto output = gpu::Device::textureForField("tex_out");
   if (!input.valid() || !output.valid()) return;
-  s_blur.applyWithRadius(input, output, vp_w, vp_h, s_radius, s_quality);
+  s->blur.applyWithRadius(input, output, vp_w, vp_h, s->radius, s->quality);
   gpu::Device::submit();
 }
 

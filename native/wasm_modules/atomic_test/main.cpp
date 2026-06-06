@@ -9,6 +9,11 @@
  *
  * Verifies both the host's read_write storage-buffer binding and the
  * round-trip of HLSL InterlockedAdd through naga's atomic codegen.
+ *
+ * Class-like instance model: module_init() compiles the two shared compute
+ * PSOs + publishes the schema once per type; each chain entry gets its own
+ * State (per-instance atomic bins + uniform buffer) via create(). All
+ * instance callbacks take `self`.
  */
 
 #include <gpu.h>
@@ -26,15 +31,19 @@ struct Uniforms {
   float _pad_z;
 };
 
+// Per-instance state. One per chain entry.
+struct State {
+  gpu::Buffer bins;      // 4 × int32 atomic counters
+  gpu::Buffer uniform;
+  bool initialized = false;
+};
+
+// Type-shared: compiled once in module_init(), reused by every instance.
 static gpu::ComputePSO s_pso_count;
 static gpu::ComputePSO s_pso_vis;
-static gpu::Buffer s_bins;     // 4 × int32 atomic counters
-static gpu::Buffer s_uniform;
-static bool s_initialized = false;
 
-void init() {
-  s_initialized = false;
-
+// Type-level setup: schema + the two shared compute PSOs. Runs once per type.
+void module_init() {
   state::init("debug.atomic_test", {1, 0, 0},
     state::Schema()
       .textureField("tex_in",  state::PrimaryInput)
@@ -64,36 +73,71 @@ void init() {
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .storage(2)
       .uniform(3));
-  s_bins      = gpu::Device::createBuffer(4 * sizeof(int32_t), gpu::BufferUsage::Storage);
-  s_uniform   = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
 
-  s_initialized = true;
+  state::log("atomic_test: module initialized");
+}
+
+// Per-instance construction: allocate State + its own GPU buffers.
+void* create() {
+  auto* s = new State();
+  s->bins    = gpu::Device::createBuffer(4 * sizeof(int32_t), gpu::BufferUsage::Storage);
+  s->uniform = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->bins.release();
+  s->uniform.release();
+  delete s;
+}
+
+// Per-instance init tail: mark ready once PSOs + buffers are valid.
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->initialized = false;
+  if (!s_pso_count.valid() || !s_pso_vis.valid()) return;
+  if (!s->bins.valid() || !s->uniform.valid()) return;
+  s->initialized = true;
   state::log("atomic_test: initialized");
 }
 
-void tick(double) {}
-void on_param_change(int, double) {}
-void on_state_patched(int, const char*, const int*, const int*, const int*) {}
+void tick(void* self, double) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+}
 
-void render(int w, int h) {
-  if (!s_initialized || w <= 0 || h <= 0) return;
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int, const char*, const int*,
+                      const int*, const int*) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+}
+
+void render(void* self, int w, int h) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s->initialized || w <= 0 || h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
   // Reset bins to zero before the count pass.
   int32_t zero[4] = {0, 0, 0, 0};
-  s_bins.write(zero, 4);
+  s->bins.write(zero, 4);
 
   Uniforms u = { 1.0f / static_cast<float>(w * h), 0, 0, 0 };
-  s_uniform.writeOne(u);
+  s->uniform.writeOne(u);
 
   // Pass 1 — atomicAdd into bins.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_count);
     cp.setTexture(in, 0, 0);
-    cp.setBuffer(s_bins, 1);
+    cp.setBuffer(s->bins, 1);
     cp.dispatch((w + 7) / 8, (h + 7) / 8);
     cp.end();
   }
@@ -105,8 +149,8 @@ void render(int w, int h) {
     cp.setPSO(s_pso_vis);
     cp.setTexture(in, 0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s_bins, 2);
-    cp.setBuffer(s_uniform, 3);
+    cp.setBuffer(s->bins, 2);
+    cp.setBuffer(s->uniform, 3);
     cp.dispatch((w + 7) / 8, (h + 7) / 8);
     cp.end();
   }
