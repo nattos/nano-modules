@@ -12,7 +12,7 @@ Texture2D<float4>   inputTex  : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
 cbuffer Uniforms : register(b2) {
-  float band_sat; float band_val; float intensity; float _pad;
+  float band_sat; float band_val; float intensity; float input_opacity;
 };
 
 struct SimState { float v[4]; float h[4]; float env; float pad[3]; };
@@ -42,6 +42,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   lin += float3(1.0, 0.85, 0.6) * spill;
 
   // Soft exposure rolloff (1 - e^-x): warm highlight shoulder, no hard clip.
-  float3 outc = base.rgb + (1.0 - exp(-lin));
+  // input_opacity fades the passed-through input (0 → render bars on black).
+  float3 outc = base.rgb * input_opacity + (1.0 - exp(-lin));
   outputTex[gid.xy] = float4(saturate(outc), base.a);
 }

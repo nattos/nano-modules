@@ -59,7 +59,7 @@ struct SimUniforms {
 };
 static_assert(sizeof(SimUniforms) == 80, "SimUniforms layout mismatch");
 
-struct ColorUniforms { float band_sat, band_val, intensity, _pad; };
+struct ColorUniforms { float band_sat, band_val, intensity, input_opacity; };
 static_assert(sizeof(ColorUniforms) == 16, "ColorUniforms layout mismatch");
 
 struct MatsBuf { float data[fx::DiffusionNetwork4::kMaxN * 48]; };
@@ -100,6 +100,7 @@ struct State {
   float band_sat          = 0.0f;
   float band_val          = 1.0f;
   float intensity         = 1.0f;
+  float input_opacity     = 1.0f;
   float auto_rate         = 0.3f;
 
   // --- Runtime state ---
@@ -190,6 +191,7 @@ void module_init() {
       .floatField("impulse_strength",    1.0f,  0.0f, 2.0f,      state::PrimaryInput)
       .rgbField  ("band_color",          1.0f, 0.92f, 0.78f,     state::PrimaryInput)
       .floatField("intensity",           1.0f, 0.0f, 10.0f,      state::PrimaryInput)
+      .floatField("input_opacity",       1.0f, 0.0f, 1.0f,       state::PrimaryInput)
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -362,6 +364,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
       update_band_hsv(*s);
     }
     else if (state::pathIs(path, plen, "intensity"))           s->intensity          = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "input_opacity"))       s->input_opacity      = state::patchFloat(i);
   }
 }
 
@@ -413,7 +416,8 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   // Pass 2 — color: read the post-step state, fill each bar's column.
-  ColorUniforms cu = { s->band_sat, s->band_val, clampf(s->intensity, 0.0f, 8.0f), 0.0f };
+  ColorUniforms cu = { s->band_sat, s->band_val, clampf(s->intensity, 0.0f, 10.0f),
+                       clampf(s->input_opacity, 0.0f, 1.0f) };
   s->color_uniform_buf.writeOne(cu);
   {
     auto cp = gpu::ComputePass::begin();

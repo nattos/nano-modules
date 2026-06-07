@@ -159,6 +159,26 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     expect(maxG(banded)).toBeGreaterThan(maxG(sampled) + 40);
   });
 
+  it('input_opacity fades the passed-through input', async () => {
+    // Grey input, no bars lit (engine off) → output tracks input_opacity.
+    const run = (input_opacity: number) => runGpuEffectTest({
+      module: 'bounce_resonator.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0.5, 0.5, 0.5, 1], renderEachTick: true,
+      ticks: 2,
+      params: [['auto_rate', 0.0], ['cycle_rate', 0.0], ['intensity', 0.0],
+               ['input_opacity', input_opacity]],
+      dumpName: `bounce_resonator_inop_${Math.round(input_opacity * 100)}`,
+    });
+    const opaque = await run(1.0);
+    const black = await run(0.0);
+    expect(opaque.success && black.success).toBe(true);
+    // With intensity 0 the bars add nothing, so the frame is just the faded
+    // input: ~grey at 1.0, ~black at 0.0.
+    const mid = (f: Frame) => { const p = f.pixelAt(W / 2, H / 2); return p.r + p.g + p.b; };
+    expect(mid(opaque)).toBeGreaterThan(300);
+    expect(mid(black)).toBeLessThan(15);
+  });
+
   it('feedback conserves vs decays total energy', async () => {
     const after = (feedback: number) => runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
