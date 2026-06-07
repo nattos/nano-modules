@@ -1,0 +1,142 @@
+/*
+ * fx.lights_sim — 4 vertical LED bars sampled from the input (Resolume-style).
+ *
+ * The input is split into 4 vertical quarters (one LED bar each). Each bar is
+ * divided into `segments` LED segments stacked vertically. A segment's colour
+ * is sampled from the input at the HORIZONTAL CENTRE of its quarter and the
+ * vertical centre of its segment (the standard fixture-sampling point). The
+ * bars are then rendered INSET into their quarters (separate horizontal /
+ * vertical inset), over the input faded by `input_opacity`.
+ *
+ * Stateless: a single compute pass, no persistent buffer, no readback. Class-
+ * like instance model (module_init compiles the PSO + schema once; each chain
+ * entry gets its own State via create()).
+ */
+
+#include <gpu.h>
+#include <host.h>
+#include "lights_sim_shaders.h"
+
+#include <cstdint>
+
+namespace lights_sim {
+
+struct Uniforms {
+  int32_t segments;
+  float   inset_h;
+  float   inset_v;
+  float   input_opacity;
+};
+static_assert(sizeof(Uniforms) == 16, "Uniforms layout mismatch");
+
+struct State {
+  gpu::Buffer  uniform_buf;
+  gpu::Sampler sampler;
+  bool initialized = false;
+
+  // Schema-mirrored params.
+  int   segments      = 16;
+  float inset_h       = 0.2f;
+  float inset_v       = 0.05f;
+  float input_opacity = 1.0f;
+};
+
+static gpu::ComputePSO s_pso;
+
+static inline float clampf(float v, float lo, float hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+void module_init() {
+  state::init("fx.lights_sim", {1, 0, 0},
+    state::Schema()
+      .intField  ("segments",      16, 1, 256,         state::PrimaryInput)
+      .floatField("inset_h",       0.2f,  0.0f, 1.0f,  state::PrimaryInput)
+      .floatField("inset_v",       0.05f, 0.0f, 1.0f,  state::PrimaryInput)
+      .floatField("input_opacity", 1.0f,  0.0f, 1.0f,  state::PrimaryInput)
+      .textureField("tex_in",  state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+  );
+
+  if (gpu::Device::backend() == gpu::Backend::None) return;
+
+  state::registerShaderSPV("lights_sim_render", RENDER_SPV, RENDER_SPV_SIZE);
+  auto cs = gpu::Device::createShaderModuleByName("lights_sim_render");
+  if (!cs) return;
+
+  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
+      .tex2d(0)
+      .sampler(1)
+      .storageTex2d(2, gpu::TextureFormat::RGBA8)
+      .uniform(3));
+
+  state::log("lights_sim: module initialized");
+}
+
+void* create() {
+  auto* s = new State();
+  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->uniform_buf.release();
+  s->sampler.release();
+  delete s;
+}
+
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s_pso.valid() || !s->uniform_buf.valid()) return;
+  s->initialized = true;
+}
+
+void tick(void*, double) {}
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* path = pb + off[i];
+    int plen = len[i];
+    if      (state::pathIs(path, plen, "segments"))      s->segments      = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "inset_h"))       s->inset_h       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "inset_v"))       s->inset_v       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "input_opacity")) s->input_opacity = state::patchFloat(i);
+  }
+}
+
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto in  = gpu::Device::textureForField("tex_in");
+  auto out = gpu::Device::textureForField("tex_out");
+  if (!in.valid() || !out.valid()) return;
+
+  Uniforms u = {};
+  u.segments      = s->segments < 1 ? 1 : s->segments;
+  u.inset_h       = clampf(s->inset_h, 0.0f, 1.0f);
+  u.inset_v       = clampf(s->inset_v, 0.0f, 1.0f);
+  u.input_opacity = clampf(s->input_opacity, 0.0f, 1.0f);
+  s->uniform_buf.writeOne(u);
+
+  auto cp = gpu::ComputePass::begin();
+  cp.setPSO(s_pso);
+  cp.setTexture(in, 0, 0);
+  cp.setSampler(s->sampler, 1);
+  cp.setTexture(out, 2, 1);
+  cp.setBuffer(s->uniform_buf, 3);
+  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+  cp.end();
+
+  gpu::Device::submit();
+}
+
+} // namespace lights_sim

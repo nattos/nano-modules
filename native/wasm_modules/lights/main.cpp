@@ -20,6 +20,7 @@ NANO_DECLARE_INSTANCE_EFFECT(orthomod)
 NANO_DECLARE_INSTANCE_EFFECT(bounce_resonator)
 NANO_DECLARE_INSTANCE_EFFECT(side_jet)
 NANO_DECLARE_INSTANCE_EFFECT(motion_blobs)
+NANO_DECLARE_INSTANCE_EFFECT(lights_sim)
 
 extern "C" {
 
@@ -103,6 +104,16 @@ void nano_module_main() {
         "lights",
         "blobs,motion,shadow,flyover,rain,bar",
         NANO_INSTANCE_LIFECYCLE(motion_blobs),
+    });
+
+    nano::registerEffect({
+        2,
+        "fx.lights_sim",
+        "Lights Sim",
+        "Samples the input into 4 vertical LED bars (Resolume-style fixture sampling). Each quarter of the input is one bar, divided into `segments` LED segments; a segment's colour is sampled at the horizontal centre of its quarter and the vertical centre of its segment. The bars render inset into their quarters (separate horizontal / vertical inset) over the input faded by input_opacity.",
+        "lights",
+        "led,bar,sample,resolume,fixture,segments",
+        NANO_INSTANCE_LIFECYCLE(lights_sim),
     });
 }
 

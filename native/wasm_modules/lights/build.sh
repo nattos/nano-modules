@@ -18,6 +18,7 @@ compile_shaders_compute_spv strobe_channel     render
 compile_shaders_compute_spv dispersion         render
 compile_shaders_compute_spv plasma_beam_cannon render
 compile_shaders_compute_spv orthomod           render
+compile_shaders_compute_spv lights_sim           render
 
 # soft_glow has two compute shaders — color (rgba8) and motion
 # (rgba16f). Separate variants because naga substitutes one storage-
@@ -66,6 +67,7 @@ wasm_build \
   ../orthomod/main.cpp \
   ../bounce_resonator/main.cpp \
   ../side_jet/main.cpp \
-  ../motion_blobs/main.cpp
+  ../motion_blobs/main.cpp \
+  ../lights_sim/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
