@@ -35,7 +35,10 @@ async function main() {
   const barrelUrl = params.get('barrel');
   const barrelMode = !!barrelUrl;
 
-  const { engine } = await boot({ barrelMode });
+  // Local mode simulates the sketch in-worker — render at full 1920×1080 (the
+  // boot default is a tiny 320×180). Barrel mode never simulates (the plugin
+  // renders), so the size is irrelevant there.
+  const { engine } = await boot({ width: 1920, height: 1080, barrelMode });
   appController.setBarrelMode(barrelMode);
 
   let debugSketchCreated = false;
