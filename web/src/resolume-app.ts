@@ -126,6 +126,18 @@ function connectBarrel(url: string) {
     });
   };
 
+  // Per-instance output values the barrel publishes for io.barrel_macros (the
+  // live macro knobs). Injected into a local sketch copy natively, so otherwise
+  // invisible to the web. Feeds engine.pluginStates so the effect's output trace
+  // cards (which read pluginStates[instanceKey][field]) show live values.
+  const ingestMacroOutputs = (jsonStr: any) => {
+    if (typeof jsonStr !== 'string') return;
+    let states: any;
+    try { states = JSON.parse(jsonStr); } catch { return; }
+    if (!states || typeof states !== 'object') return;
+    appController.applyPluginStatesDiff({ changed: states, removed: [] });
+  };
+
   barrel.onSnapshot('/', (data) => {
     (window as any).__barrelState = data;
     const plugins = data?.plugins ?? {};
@@ -144,7 +156,8 @@ function connectBarrel(url: string) {
     // schema was known.
     applyPluginSchemasFromSnapshot(pluginState.plugin_schemas);
     applySketchFromSnapshot(sketch);
-    ingestRailState(pluginState.sketch_state);  // seed rail telemetry if present
+    ingestRailState(pluginState.sketch_state);     // seed rail telemetry if present
+    ingestMacroOutputs(pluginState.macro_outputs); // seed macro output cards if present
     console.log(`[barrel] mirrored sketch from /plugins/${barrelPluginKey}/state/sketch`);
 
     // Now that we know the plugin key, register a snapshot handler for
@@ -230,6 +243,7 @@ function connectBarrel(url: string) {
     if (!barrelPluginKey) return;
     const sketchPath = `/plugins/${barrelPluginKey}/state/sketch`;
     const sketchStatePath = `/plugins/${barrelPluginKey}/state/sketch_state`;
+    const macroOutputsPath = `/plugins/${barrelPluginKey}/state/macro_outputs`;
     let sketchTouched = false;
     for (const op of ops) {
       const p = typeof op?.path === 'string' ? op.path : '';
@@ -239,6 +253,8 @@ function connectBarrel(url: string) {
         // Live rail telemetry: apply the value directly (no re-fetch needed —
         // it's a single string op carrying the whole snapshot).
         ingestRailState(op.value);
+      } else if (p === macroOutputsPath) {
+        ingestMacroOutputs(op.value);
       }
     }
     if (sketchTouched) barrel.get(sketchPath);

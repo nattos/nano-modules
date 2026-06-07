@@ -479,6 +479,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // sketch (write-tap a macro_N output onto a rail). Done on a local copy of
       // the JSON — the persisted sketch is untouched. macros_ is consistent
       // here (written under tick_mu_ by SetFloatParameter).
+      nlohmann::json macroOut = nlohmann::json::object();
       if (sketch_json.contains("instances") &&
           sketch_json["instances"].is_object()) {
         for (auto& [key, inst] : sketch_json["instances"].items()) {
@@ -488,10 +489,24 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           }
           auto& st = inst["state"];
           if (!st.is_object()) st = nlohmann::json::object();
+          nlohmann::json fields = nlohmann::json::object();
           for (unsigned int i = 0; i < N_MACROS; ++i) {
-            st["macro_" + std::to_string(i)] = (double)macros_[i];
+            double v = (double)macros_[i];
+            st["macro_" + std::to_string(i)] = v;
+            fields["macro_" + std::to_string(i)] = v;
           }
+          macroOut[key] = std::move(fields);
         }
+      }
+      // Publish the macros as per-instance "plugin state" so the editor's output
+      // trace cards show live values. The macros are injected into a LOCAL copy
+      // of the sketch (above), so without this the web — which mirrors only the
+      // persisted sketch — would never see them. One JSON string → one patch op;
+      // only while an editor is watching.
+      if (ws_server_ && ws_server_->has_open_clients() && !macroOut.empty()) {
+        bridge_core_.state_document().set_at(
+            "/plugins/" + barrel_plugin_key_ + "/state/macro_outputs",
+            macroOut.dump());
       }
       // Drain any preview-request changes the WS thread has signalled.
       // Doing the actual map rebuild here keeps it on the render thread
