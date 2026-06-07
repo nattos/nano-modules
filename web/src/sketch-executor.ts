@@ -434,6 +434,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return this.blendBlack;
   }
 
+  // Persistent transparent-black texture (with a gpuHost handle) handed to the
+  // next stage when a passthrough stage (bypass / opacity 0) has NO real input —
+  // e.g. a bypassed generator with nothing above it. Without this the next stage
+  // inherits handle -1, doesn't render, and shows whatever stale pixels are left
+  // in its reused pool slot (the generator's last frame). Zero-init = clean black.
+  private emptyInputTex?: GPUTexture;
+  private emptyInputHandle = -1;
+  private emptyInputW = 0;
+  private emptyInputH = 0;
+  private emptyInput(width: number, height: number): number {
+    if (!this.emptyInputTex || this.emptyInputW !== width || this.emptyInputH !== height) {
+      this.emptyInputTex?.destroy();
+      this.emptyInputTex = this.device.createTexture({
+        size: [width, height], format: this.format,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+             | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.emptyInputHandle = this.gpuHost.injectTexture(this.emptyInputTex);
+      this.emptyInputW = width;
+      this.emptyInputH = height;
+    }
+    return this.emptyInputHandle;
+  }
+
   /** Encode + submit a wet/dry opacity blend: outTex = mix(dry, fxTex, opacity). */
   private encodeWetDryBlend(
     dryHandle: number, fxTex: GPUTexture, outTex: GPUTexture,
@@ -689,11 +713,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           loaded.module.onActive?.(shouldBeActive);
         }
         if (bypass) {
-          // Passthrough: leave currentInputHandle unchanged for the next stage.
+          // Passthrough the input. If there is no real input (e.g. a bypassed
+          // generator with nothing above), emit a clean transparent frame so the
+          // next stage renders on black instead of a stale pool slot.
+          const out = currentInputHandle >= 0 ? currentInputHandle : this.emptyInput(width, height);
           this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
             input: currentInputHandle,
-            output: currentInputHandle,
+            output: out,
           });
+          currentInputHandle = out;
           continue;
         }
 
@@ -954,9 +982,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         if (opacity <= 0) {
           // Opacity 0: tick already advanced the sim; skip render and pass the
-          // column input straight through (no slot consumed).
+          // column input straight through (no slot consumed). No real input
+          // (bypassed/empty generator) → emit a clean transparent frame so the
+          // next stage doesn't read a stale pool slot.
           flushFusedRun();
-          effectiveOutputHandle = currentInputHandle;
+          effectiveOutputHandle = currentInputHandle >= 0
+            ? currentInputHandle : this.emptyInput(width, height);
         } else if (useFused) {
           loaded.host.firePrepare(width, height);
           const stage: FusionStage = {

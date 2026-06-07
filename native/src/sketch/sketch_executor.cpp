@@ -317,6 +317,13 @@ int32_t SketchExecutor::execute(
       // passthroughs just alias colInput (the next stage reads it directly).
       const bool isFinalStage = isLastCol && isLastGroupInCol;
       auto passthroughOutput = [&](int32_t src) -> int32_t {
+        // No real input (e.g. a bypassed generator with nothing above): emit a
+        // clean cleared frame so the next stage / column output isn't a stale
+        // pooled texture.
+        if (src < 0 && gpu_) {
+          src = nextIntermediate(W, H);
+          gpu_->clearTexture(src, 0.0f, 0.0f, 0.0f, 0.0f);
+        }
         if (isFinalStage && src != outputHandle && gpu_) {
           gpu_->copyTexture(src, outputHandle);
           return outputHandle;
@@ -334,7 +341,8 @@ int32_t SketchExecutor::execute(
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
-        finalHandle = out;   // colInput unchanged for next stage (mid-chain)
+        finalHandle = out;
+        colInput = out;   // next stage reads the passthrough result
         return;
       }
 
@@ -369,7 +377,8 @@ int32_t SketchExecutor::execute(
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
-        finalHandle = out;   // alias; colInput stays for the next stage
+        finalHandle = out;
+        colInput = out;   // next stage reads the passthrough result
         return;
       }
 
@@ -395,7 +404,8 @@ int32_t SketchExecutor::execute(
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
-        finalHandle = out;   // passthrough; colInput unchanged for next stage
+        finalHandle = out;
+        colInput = out;   // next stage reads the passthrough result
         return;
       }
 
