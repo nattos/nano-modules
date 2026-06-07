@@ -97,6 +97,13 @@ struct CpuSpark {
   bool  active;
 };
 
+// "One knob" drama mode — per-param multipliers blended across three throttle
+// phases. Applied on top of the user's values (1.0 = no change).
+struct DramaMods {
+  float sharp = 1, spacing = 1, bright = 1, shimmer = 1, kh = 1, crackle = 1,
+        crackle_hz = 1, length = 1, spread = 1, diamamp = 1, shear = 1, machdisk = 1;
+};
+
 struct State {
   // --- GPU resources (per-instance) ---
   gpu::Buffer  cell_buf;
@@ -114,9 +121,11 @@ struct State {
   float throttle          = 0.7f;
   float mixture           = 0.3f;
   float intensity         = 1.0f;
+  float drama             = 0.0f;   // "one knob" mode amount (0 = off)
 
   float spool_time        = 0.06f;
   float startup_overshoot = 0.4f;
+  float overshoot_time    = 0.18f;  // overshoot decay time constant (sec)
 
   float centerline_y      = 0.5f;
   float nozzle_radius     = 0.45f;
@@ -164,6 +173,9 @@ struct State {
   CpuSpark sparks[MAX_SPARKS];
   double   spark_accum = 0.0;   // continuous-spawn fractional accumulator
   uint32_t spawn_rng = 0xB16B00B5u;
+
+  // --- Drama-mode multipliers (recomputed each tick from throttle) ---
+  DramaMods dmod;
 };
 
 static gpu::ComputePSO s_pso_sim;
@@ -173,6 +185,16 @@ static gpu::ComputePSO s_pso_motion;
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
+
+// Soft-knee floor: returns ~x well above `floor`, then smoothly asymptotes
+// toward `floor` below it (heavy squash). Exact passthrough for
+// x >= floor + knee, so it only bites the region we want to protect.
+static inline float softFloor(float x, float floor, float knee) {
+  if (knee <= 1e-5f) return x > floor ? x : floor;
+  float d = x - floor;
+  if (d >= knee) return x;
+  return floor + knee * std::exp((d - knee) / knee);
+}
 static inline uint32_t lcg_next(uint32_t& s) {
   s = s * 1664525u + 1013904223u; return s;
 }
@@ -181,6 +203,39 @@ static inline float lcg_unit(uint32_t& s) {
 }
 static inline float lcg_signed(uint32_t& s) {
   return lcg_unit(s) * 2.0f - 1.0f;
+}
+
+// "One knob" drama: throttle sweeps through three phases, each a smooth bump
+// (centered at 0.17 / 0.50 / 0.83). Each param blends three per-phase target
+// multipliers (A,B,C) — chosen NON-monotonically so params go up→down→up,
+// giving the sweep distinct "character". The result is scaled by `drama` and
+// applied multiplicatively on top of the user's values.
+//
+//   Phase A (low)  — coiled & tense: sharp, tight/fast diamonds, fast shimmer.
+//   Phase B (mid)  — a breath: softens, diamonds widen/slow, brightness swells.
+//   Phase C (high) — full roar: sharpest, tightest fast diamonds, crackle bites.
+static DramaMods computeDrama(float throttle, float drama) {
+  DramaMods d;
+  float t  = clampf(throttle, 0.0f, 1.0f);
+  float dr = clampf(drama, 0.0f, 1.0f);
+  float a = (t - 0.17f) / 0.20f, b = (t - 0.50f) / 0.20f, c = (t - 0.83f) / 0.20f;
+  float wA = std::exp(-a * a), wB = std::exp(-b * b), wC = std::exp(-c * c);
+  float ws = wA + wB + wC + 1e-5f; wA /= ws; wB /= ws; wC /= ws;
+#define PH(A, B, C) (1.0f + dr * ((wA * (A) + wB * (B) + wC * (C)) - 1.0f))
+  d.sharp      = PH(1.50f, 0.62f, 1.95f);  // expand+sharpen → intensity (down then up)
+  d.spacing    = PH(0.55f, 1.70f, 0.42f);  // diamonds: fast → slow → fast
+  d.bright     = PH(0.85f, 1.25f, 1.60f);  // swell then bloom
+  d.shimmer    = PH(1.40f, 0.75f, 1.80f);  // shimmer rate
+  d.kh         = PH(1.20f, 0.85f, 1.50f);  // shear churn rate
+  d.crackle    = PH(0.40f, 0.80f, 1.70f);  // subtle, bites at the top
+  d.crackle_hz = PH(0.85f, 1.00f, 1.50f);
+  d.length     = PH(0.95f, 1.12f, 1.00f);  // gentle (per spec)
+  d.spread     = PH(0.90f, 1.20f, 1.00f);  // gentle (per spec)
+  d.diamamp    = PH(0.80f, 1.00f, 1.35f);
+  d.shear      = PH(0.85f, 1.00f, 1.35f);
+  d.machdisk   = PH(0.70f, 1.10f, 1.50f);
+#undef PH
+  return d;
 }
 
 static void spawn_sparks(State& s, int count) {
@@ -233,9 +288,11 @@ void module_init() {
       .floatField("throttle",          0.7f,  0.0f, 1.0f,        state::PrimaryInput)
       .floatField("mixture",           0.3f,  0.0f, 1.0f,        state::PrimaryInput)
       .floatField("intensity",         1.0f,  0.0f, 3.0f,        state::PrimaryInput)
+      .floatField("drama",             0.0f,  0.0f, 1.0f,        state::PrimaryInput)
       // --- Engine dynamics ---
       .floatField("spool_time",        0.06f, 0.01f, 1.0f,       state::PrimaryInput)
       .floatField("startup_overshoot", 0.4f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("overshoot_time",    0.18f, 0.02f, 2.0f,       state::PrimaryInput)
       // --- Geometry ---
       .floatField("centerline_y",      0.5f,  0.0f, 1.0f,        state::PrimaryInput)
       .floatField("nozzle_radius",     0.45f, 0.02f, 0.5f,       state::PrimaryInput)
@@ -362,14 +419,21 @@ void tick(void* self, double dt) {
   double alpha  = 1.0 - std::exp(-(double)fdt / (double)clampf(s->spool_time, 0.01f, 2.0f));
   s->chamberP += (target - s->chamberP) * alpha;
   // Startup overshoot decays back down (real engines overshoot then settle).
-  s->overshoot *= std::exp(-(double)fdt / 0.18);
+  s->overshoot *= std::exp(-(double)fdt / (double)clampf(s->overshoot_time, 0.02f, 5.0f));
   double effP = s->chamberP + s->overshoot;
   if (effP < 0.0) effP = 0.0;
 
-  // Phase accumulators.
-  s->shimmer_phase += (double)fdt * (double)s->shimmer_rate_hz;
-  s->kh_phase      += (double)fdt * (double)s->kh_rate_hz;
-  s->crackle_phase += (double)fdt * (double)s->crackle_rate_hz;
+  // Drama "one knob" multipliers driven by the EFFECTIVE engine power (effP =
+  // spool-lagged chamber pressure + startup overshoot), not the raw throttle
+  // param — so the spool ramp and the ignition overshoot sweep the curves too
+  // (the overshoot briefly pushes drama into the higher phase, then settles as
+  // it decays). effP can exceed 1; computeDrama clamps internally.
+  s->dmod = computeDrama((float)effP, s->drama);
+
+  // Phase accumulators (rate params modulated by drama).
+  s->shimmer_phase += (double)fdt * (double)s->shimmer_rate_hz * (double)s->dmod.shimmer;
+  s->kh_phase      += (double)fdt * (double)s->kh_rate_hz      * (double)s->dmod.kh;
+  s->crackle_phase += (double)fdt * (double)s->crackle_rate_hz * (double)s->dmod.crackle_hz;
 
   // Mach-disk position: pushes downstream with over-expansion.
   float pr = 1.0f + (float)effP * 2.0f * (0.5f + s->mixture);
@@ -423,8 +487,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "throttle"))         s->throttle         = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mixture"))          s->mixture          = state::patchFloat(i);
     else if (state::pathIs(path, plen, "intensity"))        s->intensity        = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "drama"))            s->drama            = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spool_time"))       s->spool_time       = state::patchFloat(i);
     else if (state::pathIs(path, plen, "startup_overshoot"))s->startup_overshoot= state::patchFloat(i);
+    else if (state::pathIs(path, plen, "overshoot_time"))   s->overshoot_time   = state::patchFloat(i);
     else if (state::pathIs(path, plen, "centerline_y"))     s->centerline_y     = state::patchFloat(i);
     else if (state::pathIs(path, plen, "nozzle_radius"))    s->nozzle_radius    = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spread"))           s->spread           = state::patchFloat(i);
@@ -494,9 +560,9 @@ void render(void* self, int vp_w, int vp_h) {
     su.maturityGrowth = su.exitVel * 4.0f / clampf(s->core_length, 0.2f, 5.0f);
     // Length-relative decay: plume length ≈ length_scale regardless of how
     // fast the flow fills it (b ~ exp(-x/length_scale) since coreDecay = u/L).
-    su.coreDecay = su.exitVel / clampf(s->length_scale, 0.1f, 3.0f);
+    su.coreDecay = su.exitVel / clampf(s->length_scale * s->dmod.length, 0.1f, 3.0f);
     su.flameSpeed = 30.0f;
-    su.diamondSpacing = clampf(s->diamond_spacing, 0.005f, 0.5f);
+    su.diamondSpacing = clampf(s->diamond_spacing * s->dmod.spacing, 0.005f, 0.5f);
     su.velRelax = 0.12f;
     s->sim_uniform_buf.writeOne(su);
 
@@ -540,22 +606,34 @@ void render(void* self, int vp_w, int vp_h) {
   u.intensity = clampf(s->intensity, 0.0f, 8.0f);
   u.centerline_y = clampf(s->centerline_y, 0.0f, 1.0f);
   u.nozzle_radius = clampf(s->nozzle_radius, 0.001f, 0.3f);
-  u.spread = clampf(s->spread, 0.0f, 2.0f);
-  u.radial_sharpness = clampf(s->radial_sharpness, 0.5f, 32.0f);
-  u.diamond_amp = clampf(s->diamond_amp, 0.0f, 1.0f);
+  u.spread = clampf(s->spread * s->dmod.spread, 0.0f, 2.0f);
+  // radial_sharpness below ~3 grows a large skirt that lets the noise layers
+  // flash and hijack the character. Soft-knee floor the DRAMA modulation at 3
+  // (or the user's base, if they deliberately chose lower) so the one-knob
+  // sweep can't drag it into skirt territory. The lift is drama-scaled, so
+  // drama=0 is exact passthrough.
+  {
+    float base  = s->radial_sharpness;
+    float raw   = base * s->dmod.sharp;
+    float floor = base < 3.0f ? base : 3.0f;
+    float lifted = softFloor(raw, floor, 1.2f);
+    float eff   = raw + (lifted - raw) * clampf(s->drama, 0.0f, 1.0f);
+    u.radial_sharpness = clampf(eff, 0.5f, 32.0f);
+  }
+  u.diamond_amp = clampf(s->diamond_amp * s->dmod.diamamp, 0.0f, 2.0f);
   u.mach_disk_x = s->mach_disk_x;
-  u.mach_disk_amp = clampf(s->mach_disk_amp, 0.0f, 4.0f);
+  u.mach_disk_amp = clampf(s->mach_disk_amp * s->dmod.machdisk, 0.0f, 4.0f);
   u.mach_disk_width = 0.03f;
   u.shimmer_phase = (float)((s->shimmer_phase - std::floor(s->shimmer_phase)) * 6.28318530718);
-  u.kh_amp = clampf(s->shear_turbulence, 0.0f, 2.0f);
+  u.kh_amp = clampf(s->shear_turbulence * s->dmod.shear, 0.0f, 2.0f);
   u.kh_scale = clampf(s->shear_scale, 1.0f, 64.0f);
   u.kh_phase = (float)s->kh_phase;
-  u.crackle_amp = clampf(s->crackle, 0.0f, 1.0f);
+  u.crackle_amp = clampf(s->crackle * s->dmod.crackle, 0.0f, 1.0f);
   u.crackle_phase = (float)s->crackle_phase;
   u.mixture = clampf(s->mixture, 0.0f, 1.0f);
   u.zoom = clampf(s->zoom, 1.0f, 16.0f);
   u.aspect = (float)vp_w / (float)vp_h;
-  u.core_brightness = clampf(s->core_brightness, 0.0f, 8.0f);
+  u.core_brightness = clampf(s->core_brightness * s->dmod.bright, 0.0f, 8.0f);
   u.cell_count = (uint32_t)NUM_CELLS;
   u.spark_count = (uint32_t)MAX_SPARKS;
   u.debug_show_axis = s->debug_show_axis ? 1u : 0u;
