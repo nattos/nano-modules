@@ -27,11 +27,12 @@ compile_shaders_compute_var_spv soft_glow motion
 _emit_spv_header_var soft_glow color motion
 echo "  soft_glow shaders compiled (SPV: color + motion)"
 
-# bounce_resonator also has color + motion passes — same pattern.
+# bounce_resonator: GPU-resident sim + color + motion passes.
+compile_shaders_compute_var_spv bounce_resonator sim
 compile_shaders_compute_var_spv bounce_resonator color
 compile_shaders_compute_var_spv bounce_resonator motion
-_emit_spv_header_var bounce_resonator color motion
-echo "  bounce_resonator shaders compiled (SPV: color + motion)"
+_emit_spv_header_var bounce_resonator sim color motion
+echo "  bounce_resonator shaders compiled (SPV: sim + color + motion)"
 
 compile_shaders_compute_var_spv side_jet sim
 compile_shaders_compute_var_spv side_jet color

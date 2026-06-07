@@ -215,6 +215,25 @@ public:
     return (i >= 0 && i < N && j >= 0 && j < N) ? M_[hop_idx_ % nc][i][j] : 0.0f;
   }
 
+  /// Number of floats exportMatrices() writes (pattern_count × 48).
+  int matrixFloatCount() const { return params_.pattern_count * N * N * 3; }
+
+  /// Export all cycled matrices for upload to a GPU shader that does the
+  /// stepping. Layout per pattern k (48 floats): M[16], cos(dHue)[16],
+  /// sin(dHue)[16], each row-major i*N+j. Builds the matrices if stale.
+  void exportMatrices(float* dst) {
+    if (matrix_dirty_) { rebuildMatrices(); matrix_dirty_ = false; }
+    for (int k = 0; k < params_.pattern_count; k++) {
+      int base = k * 48;
+      for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++) {
+          dst[base +  0 + i * N + j] = M_[k][i][j];
+          dst[base + 16 + i * N + j] = cd_[k][i][j];
+          dst[base + 32 + i * N + j] = sd_[k][i][j];
+        }
+    }
+  }
+
 private:
   Params params_;
   float  v_[N]            = {0.f, 0.f, 0.f, 0.f};

@@ -1,18 +1,20 @@
 import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 
 // Per-effect tests for gen.bounce_resonator — a 4-bar scalar diffusion
-// network with NO spatial structure. An internal 240 Hz loop multiplies
-// the 4-vector by a seeded mixing matrix (v ← M·v):
+// network with NO spatial structure. Each hop multiplies the 4-vector by a
+// seeded mixing matrix (v ← M·v), cycling through `pattern_count` matrices
+// at `cycle_rate` hops/sec:
 //   spread 0 → seeded random derangement (each bar dumps its full energy
-//              onto one other bar each step);
+//              onto one other bar each hop);
 //   spread 1 → fully random per-column distribution (energy fans out).
-//   feedback → per-second energy gain (1.0 conserves, <1 decays).
-// Rendering: each bar draws a centered band whose brightness is its value.
+//   feedback → per-hop energy gain (1.0 conserves, <1 decays).
+// Rendering: each bar fills its whole 1/4 column (hsv2rgb of its hue/value).
 //
-// Physics runs in tick() (CPU); the default "tick N then render once" path
-// snapshots frame N. A single rising-edge gate kick + auto_rate 0 makes
-// the trajectory deterministic. Tests are seed-agnostic — they assert on
-// conservation and concentration, not on which specific bar lights.
+// The sim is GPU-resident (state in a persistent buffer, stepped in a
+// compute shader), so these tests use `renderEachTick: true` — the hop
+// accumulator advances per tick and the buffer carries frame to frame.
+// A single rising-edge gate kick + auto_rate 0 keeps it deterministic;
+// tests assert on conservation/concentration, not which specific bar lights.
 
 describe('Bounce Resonator (diffusion) E2E', () => {
   jest.setTimeout(60000);
@@ -60,7 +62,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
   it('a kick lights the network', async () => {
     const frame = await runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1],
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 5, params: kickBar0([['feedback', 1.0], ['spread', 0.3]]),
       dumpName: 'bounce_resonator_kick',
     });
@@ -73,7 +75,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // vertical strip should be lit top-to-bottom, equally.
     const frame = await runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1],
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 8, params: kickBar0([['feedback', 1.0], ['spread', 0.0]]),
       dumpName: 'bounce_resonator_fill',
     });
@@ -104,7 +106,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // Pure green band_color → the freshly kicked (undiffused) bar is green.
     const frame = await runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1],
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 3,
       params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0]]),
                ['band_color', [0, 1, 0]]],
@@ -122,7 +124,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // lit bar drifts off pure green (gains red/blue).
     const lit = (hue_spread: number) => runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1],
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 40,
       params: [...kickBar0([['feedback', 1.0], ['spread', 0.2], ['hue_spread', hue_spread]]),
                ['band_color', [0, 1, 0]]],
@@ -137,10 +139,30 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     expect(offGreen(lots)).toBeGreaterThan(offGreen(none) + 30);
   });
 
+  it('sample_input takes the impulse colour from tex_in (not band_color)', async () => {
+    // RED input, GREEN band_color. In sample mode each bar samples the input
+    // (red); in gen mode the bars use band_color (green). So the green added
+    // by the bars is high in gen mode and ~0 in sample mode.
+    const run = (sample: number, targetAll: number) => runGpuEffectTest({
+      module: 'bounce_resonator.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0.8, 0, 0, 1], renderEachTick: true,
+      ticks: 3,
+      params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0],
+                            ['impulse_strength', 2.0]]),
+               ['band_color', [0, 1, 0]], ['sample_input', sample], ['bar_target_all', targetAll]],
+      dumpName: `bounce_resonator_sample_${sample}`,
+    });
+    const sampled = await run(1, 0);   // bars sample red from the input
+    const banded  = await run(0, 1);   // bars use the green band_color
+    expect(sampled.success && banded.success).toBe(true);
+    const maxG = (f: Frame) => Math.max(...[0, 1, 2, 3].map(k => barChan(f, k, 'g')));
+    expect(maxG(banded)).toBeGreaterThan(maxG(sampled) + 40);
+  });
+
   it('feedback conserves vs decays total energy', async () => {
     const after = (feedback: number) => runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1],
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 40, params: kickBar0([['feedback', feedback], ['spread', 0.5]]),
       dumpName: `bounce_resonator_fb_${Math.round(feedback * 100)}`,
     });
@@ -153,7 +175,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
   it('spread fans energy out across bars (concentration drops)', async () => {
     const at = (spread: number) => runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1],
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 30, params: kickBar0([['feedback', 1.0], ['spread', spread]]),
       dumpName: `bounce_resonator_spread_${Math.round(spread * 100)}`,
     });
