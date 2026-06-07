@@ -22,10 +22,11 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 import type { ColumnHost } from '../../widgets/columns-view';
-import type { ColumnGroupCallbacks } from '../../widgets/column-group';
+import type { ColumnGroupCallbacks, ColumnGroup } from '../../widgets/column-group';
 import type { FieldBinding } from '../../widgets/field-editor';
 import { editorRegistry } from '../../editor-registry';
 import { isTypingInEditable } from '../../utils/keyboard';
+import { PointerDragOp } from '../../utils/pointer-drag-op';
 
 import '../../widgets/columns-view';
 import '../../widgets/column-group';
@@ -35,6 +36,14 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
   private columnCache = new Map<number, HTMLElement>();
   private inspectorCache = new Map<string, HTMLElement>();
   private lastSketchId: string | null = null;
+
+  // Card drag-reorder state (single column → reorder within the chain).
+  private dragSketchId: string | null = null;
+  private dragSourceCol = -1;
+  private dragSourceIdx = -1;
+  private dragCardEl: HTMLElement | null = null;
+  private dragOp: PointerDragOp | null = null;
+  private dragHoverTarget: { type: 'zone'; colIdx: number; insertIdx: number } | null = null;
 
   static styles = css`
     :host {
@@ -90,10 +99,91 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
 
   // ---- ColumnGroupCallbacks ----
 
-  onCardPointerDown(_e: PointerEvent, _sketchId: string, _colIdx: number, _chainIdx: number): void {
-    // Single-column mode has no drag-reorder. Card selection (highlight)
-    // is handled by the column-group's own pointer-down logic via
-    // appController.select.
+  onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number): void {
+    if (e.button !== 0) return;
+    const header = e.currentTarget as HTMLElement;
+    const card = header.closest('.effect-card') as HTMLElement | null;
+    if (!card) return;
+
+    this.dragSketchId = sketchId;
+    this.dragSourceCol = colIdx;
+    this.dragSourceIdx = chainIdx;
+    this.dragCardEl = card;
+
+    this.dragOp = new PointerDragOp(e, header, {
+      threshold: 5,
+      move: (me) => {
+        card.setAttribute('dragging', '');
+        this.updateDragHover(me.clientX, me.clientY);
+      },
+      accept: () => this.commitDrop(),
+      cancel: () => this.cleanupDrag(),
+    });
+  }
+
+  /**
+   * Find the closest insertion point to the pointer (within the single column)
+   * and show the marker. Single-column → no placeholder/new-column drops.
+   */
+  private updateDragHover(px: number, py: number) {
+    for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
+    this.dragHoverTarget = null;
+
+    let bestDist = Infinity;
+    let bestPoint: { colIdx: number; insertIdx: number; x: number; y: number; element: HTMLElement } | null = null;
+    for (const [, el] of this.columnCache) {
+      const colGroup = el as ColumnGroup;
+      if (!colGroup.getInsertionPoints) continue;
+      for (const pt of colGroup.getInsertionPoints()) {
+        if (pt.isPlaceholder) continue;  // no new-column drops in single-column mode
+        const dx = px - pt.x, dy = py - pt.y, dist = dx * dx + dy * dy;
+        if (dist < bestDist) { bestDist = dist; bestPoint = { ...pt, element: el }; }
+      }
+    }
+    if (!bestPoint) return;
+
+    this.dragHoverTarget = { type: 'zone', colIdx: bestPoint.colIdx, insertIdx: bestPoint.insertIdx };
+    const colGroup = bestPoint.element as ColumnGroup;
+    const colEl = colGroup.renderRoot?.querySelector('.column') as HTMLElement | null;
+    if (colEl) {
+      const colRect = colEl.getBoundingClientRect();
+      colGroup.showInsertMarker(bestPoint.y - colRect.top);
+    }
+  }
+
+  /** Commit the drop — splice the dragged module to the hovered insert index. */
+  private commitDrop() {
+    if (!this.dragSketchId || !this.dragHoverTarget) { this.cleanupDrag(); return; }
+    const sketchId = this.dragSketchId;
+    const sketch = appState.database.sketches[sketchId];
+    const sourceEntry = sketch?.columns[this.dragSourceCol]?.chain[this.dragSourceIdx];
+    if (!sketch || !sourceEntry || sourceEntry.type !== 'module') { this.cleanupDrag(); return; }
+
+    const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = this.dragHoverTarget;
+    const sourceCol = this.dragSourceCol;
+    const sourceIdx = this.dragSourceIdx;
+    this.cleanupDrag();
+
+    appController.mutate('Move effect', draft => {
+      const sk = draft.sketches[sketchId];
+      const srcCol = sk.columns[sourceCol];
+      const dstCol = sk.columns[targetColIdx] ?? srcCol;
+      const [removed] = srcCol.chain.splice(sourceIdx, 1);
+      let adjustedIdx = targetInsertIdx;
+      if (sourceCol === targetColIdx && targetInsertIdx > sourceIdx) adjustedIdx--;
+      dstCol.chain.splice(adjustedIdx, 0, removed);
+    });
+  }
+
+  private cleanupDrag() {
+    this.dragCardEl?.removeAttribute('dragging');
+    for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
+    this.dragSketchId = null;
+    this.dragSourceCol = -1;
+    this.dragSourceIdx = -1;
+    this.dragCardEl = null;
+    this.dragOp = null;
+    this.dragHoverTarget = null;
   }
 
   onGutterWidthChanged(): void {
