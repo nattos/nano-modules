@@ -839,10 +839,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             if (rail?.dataType === 'float' && rv.data !== undefined) {
               // Data tap read: apply the tap's range remapper (after read), then
-              // push the shaped value to the module.
+              // mix into the user's canonical (serialized) value per the tap's
+              // mix mode. `replace` ignores the canonical (today's behavior);
+              // add/mul/mix modulate from the value the user set in the UI.
+              // Read the canonical from the SERIALIZED state (not the plugin's
+              // runtime), so add/mul don't compound frame-over-frame.
               const shaped = applyTapMod(rv.data, tap.mod);
+              const canonical = instanceState[tap.fieldPath];
+              const combined = combineTap(
+                typeof canonical === 'number' ? canonical : undefined,
+                shaped, tap.combine, tap.mixFactor);
               loaded.host.notifyStatePatched(loaded.module, [
-                { op: 'replace', path: tap.fieldPath, value: shaped },
+                { op: 'replace', path: tap.fieldPath, value: combined },
               ]);
             } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
               // Texture tap read. Numeric fieldPath → positional input

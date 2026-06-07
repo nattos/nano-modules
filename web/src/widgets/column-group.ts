@@ -1697,11 +1697,12 @@ export class ColumnGroup extends MobxLitElement {
         fields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
       }
     }
-    if (tap.direction === 'write') {
-      fields.push({ type: 'select', label: 'Combine', path: 'combine', options: combineOpts, default: 'replace' });
-      if ((tap.combine ?? 'replace') === 'mix') {
-        fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
-      }
+    // Mix mode applies to both directions: write taps mix into the rail's
+    // current value; read taps mix the rail into the user's canonical value
+    // (replace = today's behavior; add/mul/mix modulate from the set value).
+    fields.push({ type: 'select', label: 'Mix Mode', path: 'combine', options: combineOpts, default: 'replace' });
+    if ((tap.combine ?? 'replace') === 'mix') {
+      fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
     }
 
     const binding = this.tapModBinding(sketchId, colIdx, chainIdx, tapIdx);

@@ -192,7 +192,9 @@ class SketchExecutor {
       const std::unordered_map<std::string, nlohmann::json>& railsById,
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railTextures,
-      const std::unordered_map<std::string, float>& railFloats);
+      const std::unordered_map<std::string, float>& railFloats,
+      const nlohmann::json& sketchInstances,
+      const std::string& instanceKey);
 
   void captureWriteTaps(
       effect_runtime::EffectInstance* inst,

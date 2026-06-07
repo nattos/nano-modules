@@ -395,7 +395,7 @@ int32_t SketchExecutor::execute(
       if (!willRender) {
         inst->setTextureField("tex_in", colInput);
         inst->setFieldConnected("tex_in", true, false);
-        applyReadTaps(inst, entry, railsById, railTextures, railFloats);
+        applyReadTaps(inst, entry, railsById, railTextures, railFloats, instances, instKey);
         markWriteTapOutputsConnected(inst, entry);
         inst->doTick(dt);
         captureWriteTaps(inst, entry, instKey, instances,
@@ -420,7 +420,7 @@ int32_t SketchExecutor::execute(
       inst->setFieldConnected("tex_in",  true,  false);
       inst->setFieldConnected("tex_out", false, true);
 
-      applyReadTaps(inst, entry, railsById, railTextures, railFloats);
+      applyReadTaps(inst, entry, railsById, railTextures, railFloats, instances, instKey);
       markWriteTapOutputsConnected(inst, entry);
 
       inst->doTick(dt);
@@ -665,8 +665,22 @@ void SketchExecutor::applyReadTaps(
     const std::unordered_map<std::string, json>& railsById,
     const std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railTextures,
-    const std::unordered_map<std::string, float>& railFloats) {
+    const std::unordered_map<std::string, float>& railFloats,
+    const json& sketchInstances,
+    const std::string& instanceKey) {
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
+  // The reader's canonical (user-set, serialized) state — the "before
+  // modulation" value a non-replace mix mode modulates from. Read from the
+  // serialized JSON (NOT the plugin's runtime), so add/mul don't compound
+  // frame-over-frame (applyState is cached, but this stays stable).
+  const json* canonState = nullptr;
+  if (sketchInstances.is_object()) {
+    auto iit = sketchInstances.find(instanceKey);
+    if (iit != sketchInstances.end() && iit->is_object()) {
+      auto sit = iit->find("state");
+      if (sit != iit->end() && sit->is_object()) canonState = &(*sit);
+    }
+  }
   for (const auto& tap : entry["taps"]) {
     if (tap.value("direction", std::string()) != "read") continue;
     const std::string railId    = tap.value("railId", std::string());
@@ -678,9 +692,20 @@ void SketchExecutor::applyReadTaps(
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
       auto fit = railFloats.find(railId);
       if (fit != railFloats.end()) {
-        // Apply the tap's range remapper (after read) before feeding the module.
+        // Apply the tap's range remapper (after read), then mix into the user's
+        // canonical value per the mix mode (replace ignores it; add/mul/mix
+        // modulate from it).
         float shaped = tap_mod::applyTapMod(fit->second, parseMod(tap));
-        inst->setParamFloat(fieldPath, shaped);
+        bool hasCanon = false;
+        float canon = 0.0f;
+        if (canonState && canonState->contains(fieldPath)) {
+          const auto& cv = (*canonState)[fieldPath];
+          if (cv.is_number())       { canon = (float)cv.get<double>(); hasCanon = true; }
+          else if (cv.is_boolean()) { canon = cv.get<bool>() ? 1.0f : 0.0f; hasCanon = true; }
+        }
+        float combined = tap_mod::combineTap(hasCanon, canon, shaped,
+            parseCombine(tap), tap.value("mixFactor", 1.0f));
+        inst->setParamFloat(fieldPath, combined);
         inst->setFieldConnected(fieldPath, true, false);
       }
       continue;
