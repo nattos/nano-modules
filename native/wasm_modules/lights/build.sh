@@ -33,10 +33,11 @@ compile_shaders_compute_var_spv bounce_resonator motion
 _emit_spv_header_var bounce_resonator color motion
 echo "  bounce_resonator shaders compiled (SPV: color + motion)"
 
+compile_shaders_compute_var_spv side_jet sim
 compile_shaders_compute_var_spv side_jet color
 compile_shaders_compute_var_spv side_jet motion
-_emit_spv_header_var side_jet color motion
-echo "  side_jet shaders compiled (SPV: color + motion)"
+_emit_spv_header_var side_jet sim color motion
+echo "  side_jet shaders compiled (SPV: sim + color + motion)"
 
 compile_shaders_compute_var_spv motion_blobs color
 compile_shaders_compute_var_spv motion_blobs motion

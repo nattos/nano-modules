@@ -80,6 +80,12 @@ export interface GpuEffectTestConfig {
   samplePoints?: [number, number][];
   dumpName?: string;
   fusionMode?: FusionMode;
+  /**
+   * Interleave tick()+render() per frame instead of ticking N times then
+   * rendering once. Required for effects whose render() accumulates
+   * persistent GPU state across frames (e.g. gen.side_jet's 1D solver).
+   */
+  renderEachTick?: boolean;
 }
 
 /** Config for a chain test: multiple modules executed in sequence. */
@@ -631,6 +637,7 @@ export async function runGpuEffectTest(config: GpuEffectTestConfig): Promise<Fra
     samplePoints: config.samplePoints || [],
     inputColor: config.inputColor,
     fusionMode: config.fusionMode,
+    renderEachTick: config.renderEachTick,
   }, config.dumpName || `effect_${config.module.replace('.wasm', '')}_${testCounter++}`);
 }
 

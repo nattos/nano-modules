@@ -62,7 +62,7 @@ lights | dispersion | fx.dispersion | Dispersion | instance | dispersion_render=
 lights | plasma_beam_cannon | gen.plasma_beam_cannon | Plasma Beam Cannon | instance | plasma_beam_cannon_render=render
 lights | orthomod | gen.orthomod | Orthomod | instance | orthomod_render=render
 lights | bounce_resonator | gen.bounce_resonator | Bounce Resonator | instance | bounce_resonator_color=color,bounce_resonator_motion=motion
-lights | side_jet | gen.side_jet | Side Jet | instance | side_jet_color=color,side_jet_motion=motion
+lights | side_jet | gen.side_jet | Side Jet | instance | side_jet_sim=sim,side_jet_color=color,side_jet_motion=motion
 lights | motion_blobs | gen.motion_blobs | Motion Blobs | instance | motion_blobs_color=color,motion_blobs_motion=motion
 nano | nanolooper | sequencer.nanolooper | Nano Looper | instance | 
 nano | motion_field | video.motion_field | Motion Field | instance | motion_field_color=color,motion_field_motion=motion

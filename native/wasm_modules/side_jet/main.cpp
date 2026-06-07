@@ -1,21 +1,23 @@
 /*
- * gen.side_jet — JPL-style horizontal jet trail.
+ * gen.side_jet — JPL-style engine-test plume.
  *
- * Trigger spawns a jet from one canvas edge; the procedural shape is
- * a diverging cone with Mach-diamond pulsation along the axis and
- * Fbm-modulated turbulent edges. Pool of up to 16 concurrent jets,
- * each with its own centerline_y, color_seed (phase offset on
- * diamonds + turbulence), and direction (LtoR / RtoL).
+ * The engine under test is FIXED at the left edge. When it lights and
+ * throttles up, a jet expands rightward; its entire structure is a live
+ * function of throttle / chamber pressure, so you feel the thrust in how
+ * the plume reacts. Designed for the LED bars AND for direct screen use.
  *
- * Per-pixel motion emission: pixels inside an active jet's cone get
- * the head's velocity (canvas-uv-per-sec) written into
- * render_outputs/motion, so the downstream video.motion_blur streaks
- * the head naturally without per-effect blur logic.
+ * Pipeline (all inside one render()):
+ *   Stage 1  sim.hlsl   — 1D axial solver, single workgroup, substepped.
+ *                          Two propagation speeds: pressure FAST (snappy
+ *                          structure), luminous material SLOW (physical
+ *                          transit). Writes the persistent cell buffer.
+ *   Stage 2  color.hlsl — 2D synthesis: potential core, shock diamonds,
+ *                          Mach disk, KH shear vortices, crackle, sparks.
+ *   Stage 2b motion.hlsl — analytic u(x) motion field for downstream blur.
  *
- * Class-like instance model: module_init() compiles the two shared
- * compute PSOs + publishes the schema once per type; each chain entry
- * gets its own State (params, jet pool, per-instance buffers/textures)
- * via create(). All instance callbacks take `self`.
+ * CPU control integrator (tick): throttle → spool-lagged chamber pressure
+ * → exit velocity / pressure ratio / ignition-front BC. Ignition rising
+ * edge sprays the low-frequency spark pool and kicks a startup overshoot.
  */
 
 #include <gpu.h>
@@ -23,122 +25,148 @@
 #include <effect_utils.h>
 #include "side_jet_shaders.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 
 namespace side_jet {
 
-enum Direction : int { DIR_LtoR = 0, DIR_RtoL = 1, DIR_RANDOM = 2 };
+static constexpr int NUM_CELLS  = 192;   // axial resolution (<= 256)
+static constexpr int MAX_SPARKS = 64;
 
-static constexpr int MAX_JETS = 16;
+struct GpuCell {
+  float u, p, b, m;
+  float kappa, phi, lit, _pad;
+};
+static_assert(sizeof(GpuCell) == 32, "GpuCell layout mismatch");
 
-struct CpuJet {
-  bool   active;
-  double start_time;          // host::time() when spawned
-  float  dir;                 // +1 or -1
-  float  centerline_y;
-  float  color_seed;          // [0, 1)
-  float  transit_seconds;
+struct GpuSpark {
+  float x, y;        // screen position (jet-uv space)
+  float vx, vy;      // screen velocity (for orientation / streaking)
+  float life, size;  // life = brightness, size = base radius
+  float _p0, _p1;
+};
+static_assert(sizeof(GpuSpark) == 32, "GpuSpark layout mismatch");
+
+struct SimUniforms {
+  float dt;
+  uint32_t substeps;
+  uint32_t W;
+  float dx;
+
+  float chamberP;
+  float exitVel;
+  float pressureRatio;
+  float litTarget;
+
+  float wavespeed;
+  float maturityGrowth;
+  float coreDecay;
+  float flameSpeed;
+
+  float diamondSpacing;
+  float velRelax;
+  float _pad0;
+  float _pad1;
+};
+static_assert(sizeof(SimUniforms) == 64, "SimUniforms layout mismatch");
+
+struct ColorUniforms {
+  float intensity, centerline_y, nozzle_radius, spread;
+  float radial_sharpness, diamond_amp, mach_disk_x, mach_disk_amp;
+  float mach_disk_width, shimmer_phase, kh_amp, kh_scale;
+  float kh_phase, crackle_amp, crackle_phase, mixture;
+  float zoom, _padc1, _padc2, aspect;
+  float _pade0, _pade1, _pade2, core_brightness;
+  uint32_t cell_count, spark_count, debug_show_axis;
+  float motion_scale;
+};
+static_assert(sizeof(ColorUniforms) == 112, "ColorUniforms layout mismatch");
+
+// Sparks live in a 3D world to suggest the (un-rendered) physical engine
+// cone: x = downstream, y = vertical, z = depth (+ toward viewer). They are
+// spawned around the nozzle RIM (a circle in the y-z plane) and projected to
+// screen with a slight 3/4 view, so the ring + perspective read as a real
+// cone mouth. A fraction spawn "bounced" — ricocheting off the structure.
+struct CpuSpark {
+  float px, py, pz;     // world position
+  float vx, vy, vz;     // world velocity
+  float life, max_life;
+  float size, bright;
+  bool  active;
 };
 
-struct GpuJet {
-  float head_x;
-  float dir;
-  float centerline_y;
-  float transit_seconds;
-  float color_seed;
-  float _pp0;
-  float _pp1;
-  float _pp2;
-};
-static_assert(sizeof(GpuJet) == 32, "GpuJet layout mismatch");
-
-struct Uniforms {
-  float intensity;
-  float head_width;
-  float cone_tan;
-  float trail_length;
-
-  float axial_decay_curve;
-  float radial_sharpness;
-  float diamond_amp;
-  float diamond_period;
-
-  float shimmer_phase;
-  float turb_amp;
-  float turb_scale;
-  float turb_phase;
-
-  float core_r;  float core_g;  float core_b;  float _pad0;
-  float edge_r;  float edge_g;  float edge_b;  float _pad1;
-
-  uint32_t active_count;
-  uint32_t debug_show_axis;
-  uint32_t _pad2;
-  uint32_t _pad3;
-};
-static_assert(sizeof(Uniforms) == 96, "Uniforms layout mismatch");
-
-// Per-instance state. One per chain entry.
 struct State {
   // --- GPU resources (per-instance) ---
-  gpu::Buffer     uniform_buf;
-  gpu::Buffer     jet_buf;
-  gpu::Texture    motion_tex;
-  gpu::Texture    zero_motion_tex;
-  int             motion_w = 0;
-  int             motion_h = 0;
-  bool            initialized = false;
+  gpu::Buffer  cell_buf;
+  gpu::Buffer  sim_uniform_buf;
+  gpu::Buffer  color_uniform_buf;
+  gpu::Buffer  spark_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;
+  int          motion_w = 0;
+  int          motion_h = 0;
+  bool         initialized = false;
 
-  // --- Schema-mirrored params (standard) ---
-  bool  gate                  = false;
-  float auto_rate             = 0.2f;
-  float transit_seconds       = 0.4f;
-  int   direction             = DIR_RANDOM;
-  float centerline_y          = 0.5f;
-  float centerline_y_jitter   = 0.1f;
-  float color_core_r          = 1.00f;
-  float color_core_g          = 0.95f;
-  float color_core_b          = 0.85f;
-  float color_edge_r          = 0.40f;
-  float color_edge_g          = 0.60f;
-  float color_edge_b          = 1.00f;
-  float intensity             = 1.0f;
-  // --- Tuning shape ---
-  float head_width            = 0.015f;
-  float cone_half_angle_deg   = 8.0f;
-  float trail_length          = 0.6f;
-  float axial_decay_curve     = 2.0f;
-  float radial_sharpness      = 4.0f;
-  // --- Tuning evolution ---
-  float diamond_amp           = 0.5f;
-  float diamond_period        = 0.05f;
-  float diamond_shimmer_rate_hz = 10.0f;
-  float turbulence_amp        = 0.3f;
-  float turbulence_scale      = 12.0f;
-  float turbulence_rate_hz    = 8.0f;
-  // --- Tuning pool ---
-  int   pool_size             = 4;
-  int   seed                  = 0x10A11;
-  // --- Debug ---
-  bool  debug_show_axis       = false;
+  // --- Schema-mirrored params ---
+  bool  ignition          = true;
+  float throttle          = 0.7f;
+  float mixture           = 0.3f;
+  float intensity         = 1.0f;
 
-  // --- Runtime ---
-  CpuJet  jets[MAX_JETS];
-  double  shimmer_phase = 0.0;       // accumulator (§2.1)
-  double  turb_phase    = 0.0;       // accumulator (§2.1)
-  // gate (bool) and trigger (event) are momentary in the IDE — value is 1
-  // while held, 0 on release, replayed every frame (style guide §8.2). Both
-  // spawn only on a 0→1 rising edge; firing on patch presence would spawn a
-  // jet every frame and saturate the pool.
-  bool    gate_prev     = false;
-  float   trigger_prev  = 0.0f;
-  uint32_t spawn_rng    = 0xB16B00B5u;
-  uint32_t autotrigger_rng = 0xCAFEBABEu;
+  float spool_time        = 0.06f;
+  float startup_overshoot = 0.4f;
+
+  float centerline_y      = 0.5f;
+  float nozzle_radius     = 0.45f;
+  float spread            = 0.15f;
+  float length_scale      = 1.0f;
+
+  float core_brightness   = 1.7f;
+  float radial_sharpness  = 5.0f;
+  float diamond_amp       = 0.6f;
+  float diamond_spacing   = 0.06f;
+  float mach_disk_amp     = 0.8f;
+  float core_length       = 1.0f;   // white potential-core extent along X
+
+  float shear_turbulence  = 0.5f;
+  float shear_scale       = 18.0f;
+  float crackle           = 0.3f;
+  float shimmer_rate_hz   = 9.0f;
+  float kh_rate_hz        = 6.0f;
+  float crackle_rate_hz   = 22.0f;
+
+  float zoom              = 1.0f;   // magnify, anchored at left-center
+
+  float propagation       = 0.6f;
+  int   substeps          = 128;
+  float motion_scale      = 0.5f;
+  float spark_amount      = 0.6f;   // ignition-burst size
+  float spark_rate        = 12.0f;  // continuous sparks/sec while firing
+  float spark_scale       = 1.0f;   // render-size multiplier
+  float spark_speed       = 1.6f;   // initial-velocity multiplier (ballistic)
+  int   seed              = 0x5A1E7;
+  bool  debug_show_axis   = false;
+
+  // --- CPU control integrator ---
+  double chamberP   = 0.0;     // spool-lagged chamber pressure
+  double overshoot  = 0.0;     // decaying startup transient
+  bool   ign_prev   = false;
+  float  mach_disk_x = 0.15f;
+
+  // --- Phase accumulators (§2.1) ---
+  double shimmer_phase = 0.0;
+  double kh_phase      = 0.0;
+  double crackle_phase = 0.0;
+
+  // --- Spark pool ---
+  CpuSpark sparks[MAX_SPARKS];
+  double   spark_accum = 0.0;   // continuous-spawn fractional accumulator
+  uint32_t spawn_rng = 0xB16B00B5u;
 };
 
-// --- Type-shared GPU resources: compiled once in module_init(). ---
+static gpu::ComputePSO s_pso_sim;
 static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
 
@@ -155,66 +183,91 @@ static inline float lcg_signed(uint32_t& s) {
   return lcg_unit(s) * 2.0f - 1.0f;
 }
 
-static void spawn_jet(State& s) {
-  int slot = -1;
-  int cap = s.pool_size;
-  if (cap < 1) cap = 1;
-  if (cap > MAX_JETS) cap = MAX_JETS;
-  for (int i = 0; i < cap; i++) {
-    if (!s.jets[i].active) { slot = i; break; }
-  }
-  if (slot < 0) return;        // pool full — drop the trigger
+static void spawn_sparks(State& s, int count) {
+  const float TAU = 6.2831853f;
+  float R = s.nozzle_radius * 1.05f;   // rim ~ visible nozzle mouth
+  for (int n = 0; n < count; n++) {
+    int slot = -1;
+    for (int i = 0; i < MAX_SPARKS; i++) if (!s.sparks[i].active) { slot = i; break; }
+    if (slot < 0) return;              // pool full
+    CpuSpark& sp = s.sparks[slot];
 
-  CpuJet& j = s.jets[slot];
-  j.active = true;
-  j.start_time = host::time();
-  // Direction.
-  float dir = +1.0f;
-  if (s.direction == DIR_LtoR) dir = +1.0f;
-  else if (s.direction == DIR_RtoL) dir = -1.0f;
-  else dir = (lcg_unit(s.spawn_rng) < 0.5f) ? +1.0f : -1.0f;
-  j.dir = dir;
-  // Centerline (with jitter).
-  float jitter = lcg_signed(s.spawn_rng) * clampf(s.centerline_y_jitter, 0.0f, 0.5f);
-  j.centerline_y = clampf(s.centerline_y + jitter, 0.0f, 1.0f);
-  j.color_seed = lcg_unit(s.spawn_rng);
-  j.transit_seconds = clampf(s.transit_seconds, 0.01f, 10.0f);
+    float th = lcg_unit(s.spawn_rng) * TAU;
+    float ct = std::cos(th), st = std::sin(th);
+    sp.px = 0.0f;                       // nozzle plane
+    sp.py = R * ct;                     // around the rim...
+    sp.pz = R * st;                     // ...as a circle in y-z
+    float oy = ct, oz = st;            // outward radial direction
+
+    bool bounced = lcg_unit(s.spawn_rng) < 0.30f;
+    if (!bounced) {
+      // Entrained by the jet — swept downstream, a little outward.
+      sp.vx = 0.25f + lcg_unit(s.spawn_rng) * 0.70f;
+      float out = 0.10f + lcg_unit(s.spawn_rng) * 0.25f;
+      sp.vy = oy * out + lcg_signed(s.spawn_rng) * 0.08f;
+      sp.vz = oz * out + lcg_signed(s.spawn_rng) * 0.08f;
+      sp.bright = 0.7f + lcg_unit(s.spawn_rng) * 0.3f;
+    } else {
+      // Ricochet — little downstream, strong outward + upward kick, as if it
+      // bounced off the (invisible) casing / test-stand structure.
+      sp.vx = -0.05f + lcg_unit(s.spawn_rng) * 0.25f;
+      float out = 0.35f + lcg_unit(s.spawn_rng) * 0.55f;
+      sp.vy = oy * out - 0.30f;        // bias up (world -y → screen up)
+      sp.vz = oz * out + lcg_signed(s.spawn_rng) * 0.20f;
+      sp.bright = 0.9f + lcg_unit(s.spawn_rng) * 0.4f;
+    }
+    // Ballistic launch — scale the whole initial velocity by spark_speed.
+    float spd = clampf(s.spark_speed, 0.05f, 8.0f);
+    sp.vx *= spd; sp.vy *= spd; sp.vz *= spd;
+    sp.life = sp.max_life = 0.5f + lcg_unit(s.spawn_rng) * 1.1f;
+    sp.size = 0.004f + lcg_unit(s.spawn_rng) * 0.006f;
+    sp.active = true;
+  }
 }
 
-// Type-level setup: schema + the two shared compute PSOs. Once per type.
 void module_init() {
-  state::init("gen.side_jet", {1, 0, 0},
+  state::init("gen.side_jet", {2, 0, 0},
     state::Schema()
-      // --- Standard trigger surface ---
-      .boolField ("gate",                false,                  state::PrimaryInput)
-      .eventField("trigger",                                     state::PrimaryInput)
-      .floatField("auto_rate",           0.2f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("transit_seconds",     0.4f,  0.05f, 3.0f,     state::PrimaryInput)
-      .selectField("direction",          DIR_RANDOM, state::PrimaryInput,
-                   {{"L to R", 0}, {"R to L", 1}, {"Random", 2}})
-      .floatField("centerline_y",        0.5f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("centerline_y_jitter", 0.1f,  0.0f, 0.5f,      state::PrimaryInput)
-      .rgbField  ("color_core",          1.00f, 0.95f, 0.85f,    state::PrimaryInput)
-      .rgbField  ("color_edge",          0.40f, 0.60f, 1.00f,    state::PrimaryInput)
-      .floatField("intensity",           1.0f,  0.0f, 2.0f,      state::PrimaryInput)
-      // --- Tuning shape ---
-      .floatField("head_width",          0.015f, 0.0f, 0.1f,     state::PrimaryInput)
-      .floatField("cone_half_angle_deg", 8.0f,  0.0f, 30.0f,     state::PrimaryInput)
-      .floatField("trail_length",        0.6f,  0.0f, 2.0f,      state::PrimaryInput)
-      .floatField("axial_decay_curve",   2.0f,  0.25f, 4.0f,     state::PrimaryInput)
-      .floatField("radial_sharpness",    4.0f,  1.0f, 16.0f,     state::PrimaryInput)
-      // --- Tuning evolution ---
-      .floatField("diamond_amp",         0.5f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("diamond_period",      0.05f, 0.005f, 0.3f,    state::PrimaryInput)
-      .floatField("diamond_shimmer_rate_hz", 10.0f, 0.0f, 30.0f, state::PrimaryInput)
-      .floatField("turbulence_amp",      0.3f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("turbulence_scale",    12.0f, 1.0f, 32.0f,     state::PrimaryInput)
-      .floatField("turbulence_rate_hz",  8.0f,  0.0f, 30.0f,     state::PrimaryInput)
-      // --- Tuning pool ---
-      .intField  ("pool_size",           4, 1, MAX_JETS,         state::PrimaryInput)
-      .intField  ("seed",                0x10A11, 0, 0x7FFFFFFF, state::PrimaryInput)
+      // --- Drive (performable) ---
+      .boolField ("ignition",          true,                     state::PrimaryInput)
+      .floatField("throttle",          0.7f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("mixture",           0.3f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("intensity",         1.0f,  0.0f, 3.0f,        state::PrimaryInput)
+      // --- Engine dynamics ---
+      .floatField("spool_time",        0.06f, 0.01f, 1.0f,       state::PrimaryInput)
+      .floatField("startup_overshoot", 0.4f,  0.0f, 1.0f,        state::PrimaryInput)
+      // --- Geometry ---
+      .floatField("centerline_y",      0.5f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("nozzle_radius",     0.45f, 0.02f, 0.5f,       state::PrimaryInput)
+      .floatField("spread",            0.15f, 0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("length_scale",      1.0f,  0.2f, 1.5f,        state::PrimaryInput)
+      // --- Plume structure ---
+      .floatField("core_brightness",   1.7f,  0.0f, 3.0f,        state::PrimaryInput)
+      .floatField("radial_sharpness",  5.0f,  1.0f, 16.0f,       state::PrimaryInput)
+      .floatField("diamond_amp",       0.6f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("diamond_spacing",   0.06f, 0.01f, 0.2f,       state::PrimaryInput)
+      .floatField("mach_disk_amp",     0.8f,  0.0f, 2.0f,        state::PrimaryInput)
+      .floatField("core_length",       1.0f,  0.2f, 3.0f,        state::PrimaryInput)
+      // --- Detail (screen) ---
+      .floatField("shear_turbulence",  0.5f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("shear_scale",       18.0f, 4.0f, 40.0f,       state::PrimaryInput)
+      .floatField("crackle",           0.3f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("shimmer_rate_hz",   9.0f,  0.0f, 30.0f,       state::PrimaryInput)
+      .floatField("kh_rate_hz",        6.0f,  0.0f, 30.0f,       state::PrimaryInput)
+      .floatField("crackle_rate_hz",   22.0f, 0.0f, 60.0f,       state::PrimaryInput)
+      // --- View ---
+      .floatField("zoom",              1.0f,  1.0f, 12.0f,       state::PrimaryInput)
+      // --- Solver / detail amount ---
+      .floatField("propagation",       0.6f,  0.0f, 1.0f,        state::PrimaryInput)
+      .intField  ("substeps",          128, 8, 256,              state::PrimaryInput)
+      .floatField("motion_scale",      0.5f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("spark_amount",      0.6f,  0.0f, 1.0f,        state::PrimaryInput)
+      .floatField("spark_rate",        12.0f, 0.0f, 60.0f,       state::PrimaryInput)
+      .floatField("spark_scale",       1.0f,  0.1f, 5.0f,        state::PrimaryInput)
+      .floatField("spark_speed",       1.6f,  0.1f, 5.0f,        state::PrimaryInput)
+      .intField  ("seed",              0x5A1E7, 0, 0x7FFFFFFF,   state::PrimaryInput)
       // --- Debug ---
-      .boolField ("debug_show_axis",     false,                  state::PrimaryInput)
+      .boolField ("debug_show_axis",   false,                    state::PrimaryInput)
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -224,18 +277,24 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("side_jet_color", COLOR_SPV, COLOR_SPV_SIZE);
+  state::registerShaderSPV("side_jet_sim",    SIM_SPV,    SIM_SPV_SIZE);
+  state::registerShaderSPV("side_jet_color",  COLOR_SPV,  COLOR_SPV_SIZE);
   state::registerShaderSPV("side_jet_motion", MOTION_SPV, MOTION_SPV_SIZE,
                            "rgba16float", "write");
+  auto cs_sim    = gpu::Device::createShaderModuleByName("side_jet_sim");
   auto cs_color  = gpu::Device::createShaderModuleByName("side_jet_color");
   auto cs_motion = gpu::Device::createShaderModuleByName("side_jet_motion");
-  if (!cs_color || !cs_motion) return;
+  if (!cs_sim || !cs_color || !cs_motion) return;
 
+  s_pso_sim = gpu::Device::createComputePSO(cs_sim, "main", gpu::Bindings()
+      .storageRW(0)
+      .uniform(1));
   s_pso_color = gpu::Device::createComputePSO(cs_color, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
       .uniform(2)
-      .storage(3));
+      .storage(3)
+      .storage(4));
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
@@ -245,91 +304,102 @@ void module_init() {
   state::log("side_jet: module initialized");
 }
 
-// Per-instance construction: allocate State + its own GPU buffers.
 void* create() {
   auto* s = new State();
-  s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
-  s->jet_buf     = gpu::Device::createBuffer(sizeof(GpuJet) * MAX_JETS, gpu::BufferUsage::Storage);
+  s->cell_buf         = gpu::Device::createBuffer(sizeof(GpuCell) * NUM_CELLS, gpu::BufferUsage::Storage);
+  s->sim_uniform_buf  = gpu::Device::createBuffer(sizeof(SimUniforms), gpu::BufferUsage::Uniform);
+  s->color_uniform_buf= gpu::Device::createBuffer(sizeof(ColorUniforms), gpu::BufferUsage::Uniform);
+  s->spark_buf        = gpu::Device::createBuffer(sizeof(GpuSpark) * MAX_SPARKS, gpu::BufferUsage::Storage);
   return s;
 }
 
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->uniform_buf.release();
-  s->jet_buf.release();
+  s->cell_buf.release();
+  s->sim_uniform_buf.release();
+  s->color_uniform_buf.release();
+  s->spark_buf.release();
   s->motion_tex.release();
   s->zero_motion_tex.release();
   delete s;
 }
 
-// Per-instance init tail: reset runtime state + mark ready.
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->initialized = false;
-  s->gate = false; s->gate_prev = false;
-  s->trigger_prev = 0.0f;
-  s->shimmer_phase = 0.0; s->turb_phase = 0.0;
+  s->chamberP = 0.0;
+  s->overshoot = 0.0;
+  s->ign_prev = false;
+  s->shimmer_phase = s->kh_phase = s->crackle_phase = 0.0;
   s->spawn_rng = (uint32_t)s->seed ^ 0xB16B00B5u;
-  s->autotrigger_rng = (uint32_t)s->seed ^ 0xCAFEBABEu;
-  for (int i = 0; i < MAX_JETS; i++) {
-    s->jets[i].active = false;
-    s->jets[i].start_time = 0.0;
-    s->jets[i].dir = 1.0f;
-    s->jets[i].centerline_y = 0.5f;
-    s->jets[i].color_seed = 0.0f;
-    s->jets[i].transit_seconds = 0.4f;
-  }
-  s->motion_w = 0; s->motion_h = 0;
+  s->mach_disk_x = 0.15f;
+  for (int i = 0; i < MAX_SPARKS; i++) s->sparks[i] = {};
+  s->spark_accum = 0.0;
+  s->motion_w = s->motion_h = 0;
 
-  if (!s_pso_color.valid() || !s_pso_motion.valid()) return;
+  // Zero the persistent cell field (ambient pressure = 1, dark, cold).
+  GpuCell zero[NUM_CELLS];
+  for (int i = 0; i < NUM_CELLS; i++) { zero[i] = {}; zero[i].p = 1.0f; }
+  if (s->cell_buf.valid()) s->cell_buf.writeBytes(zero, (int)sizeof(zero));
+
+  if (!s_pso_sim.valid() || !s_pso_color.valid() || !s_pso_motion.valid()) return;
   s->initialized = true;
   state::log("side_jet: initialized");
 }
 
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
-  if (!s) return;
-  if (!s->initialized) return;
+  if (!s || !s->initialized) return;
+  float fdt = (float)(dt > 0.1 ? 0.1 : dt);   // clamp pathological frames
 
-  // Phase accumulators (§2.1 — never elapsed*rate).
-  if (s->diamond_shimmer_rate_hz > 0.0f) {
-    s->shimmer_phase += dt * (double)s->diamond_shimmer_rate_hz;
-    if (s->shimmer_phase > 1024.0) s->shimmer_phase -= std::floor(s->shimmer_phase);
-  }
-  if (s->turbulence_rate_hz > 0.0f) {
-    s->turb_phase += dt * (double)s->turbulence_rate_hz;
-    if (s->turb_phase > 1024.0) s->turb_phase -= std::floor(s->turb_phase);
-  }
+  bool firing = s->ignition;
 
-  // Poisson auto-trigger.
-  if (s->auto_rate > 0.0f) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      float lambda = rate_hz * (float)dt;
-      float u = lcg_unit(s->autotrigger_rng);
-      if (u < 1.0f - std::exp(-lambda)) spawn_jet(*s);
+  // Spool-lagged chamber pressure (the engine's mechanical inertia → the
+  // performer-felt throttle delay).
+  double target = firing ? (double)clampf(s->throttle, 0.0f, 1.0f) : 0.0;
+  double alpha  = 1.0 - std::exp(-(double)fdt / (double)clampf(s->spool_time, 0.01f, 2.0f));
+  s->chamberP += (target - s->chamberP) * alpha;
+  // Startup overshoot decays back down (real engines overshoot then settle).
+  s->overshoot *= std::exp(-(double)fdt / 0.18);
+  double effP = s->chamberP + s->overshoot;
+  if (effP < 0.0) effP = 0.0;
+
+  // Phase accumulators.
+  s->shimmer_phase += (double)fdt * (double)s->shimmer_rate_hz;
+  s->kh_phase      += (double)fdt * (double)s->kh_rate_hz;
+  s->crackle_phase += (double)fdt * (double)s->crackle_rate_hz;
+
+  // Mach-disk position: pushes downstream with over-expansion.
+  float pr = 1.0f + (float)effP * 2.0f * (0.5f + s->mixture);
+  s->mach_disk_x = clampf(0.05f + 0.22f * std::sqrt(std::max(pr - 1.0f, 0.0f)), 0.02f, 0.85f);
+
+  // Sporadic spray off the rim while firing — occasional sparks, not a steady
+  // fountain. Poisson-ish: accumulate, release one at a time with a gate.
+  if (firing && s->spark_rate > 0.0f) {
+    s->spark_accum += (double)fdt * (double)s->spark_rate;
+    while (s->spark_accum >= 1.0) {
+      s->spark_accum -= 1.0;
+      if (lcg_unit(s->spawn_rng) < 0.8f) spawn_sparks(*s, 1);  // jittered timing
     }
   }
 
-  // Cull jets that have cleared the opposite edge by `trail_length`.
-  double now = host::time();
-  int cap = s->pool_size;
-  if (cap < 1) cap = 1;
-  if (cap > MAX_JETS) cap = MAX_JETS;
-  for (int i = 0; i < cap; i++) {
-    CpuJet& j = s->jets[i];
-    if (!j.active) continue;
-    float elapsed = (float)(now - j.start_time);
-    float progress = j.transit_seconds > 1e-3f ? elapsed / j.transit_seconds : 1.0f;
-    float head_x = (j.dir > 0.0f) ? progress : (1.0f - progress);
-    bool dead = (j.dir > 0.0f)
-        ? (head_x > 1.0f + s->trail_length)
-        : (head_x < -s->trail_length);
-    if (dead) j.active = false;
+  // Integrate sparks in 3D (ballistic, gravity, drag, decay). Note: world +y
+  // projects to screen-DOWN, so gravity ADDS to vy to fall down on screen.
+  for (int i = 0; i < MAX_SPARKS; i++) {
+    CpuSpark& sp = s->sparks[i];
+    if (!sp.active) continue;
+    sp.life -= fdt;
+    if (sp.life <= 0.0f) { sp.active = false; continue; }
+    sp.px += sp.vx * fdt;
+    sp.py += sp.vy * fdt;
+    sp.pz += sp.vz * fdt;
+    sp.vy += 0.7f * fdt;                // gravity (screen-down) → nice arc
+    float drag = 1.0f - 0.25f * fdt;    // low drag → ballistic, not floaty
+    sp.vx *= drag; sp.vy *= drag; sp.vz *= drag;
+    if (sp.px > 2.5f || sp.py > 1.6f || sp.py < -1.6f) sp.active = false;
   }
-  for (int i = cap; i < MAX_JETS; i++) s->jets[i].active = false;
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -339,149 +409,195 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   for (int i = 0; i < n; i++) {
     const char* path = pb + off[i];
     int plen = len[i];
-    int op = ops[i];
+    if (ops[i] != state::PatchReplace) continue;
 
-    if (op == state::PatchReplace) {
-      if (state::pathIs(path, plen, "gate")) {
-        bool new_gate = state::patchFloat(i) != 0.0f;
-        if (new_gate && !s->gate_prev) spawn_jet(*s);
-        s->gate = new_gate;
-        s->gate_prev = new_gate;
+    if (state::pathIs(path, plen, "ignition")) {
+      bool v = state::patchFloat(i) != 0.0f;
+      if (v && !s->ign_prev) {                 // rising edge → light up
+        s->overshoot += (double)clampf(s->startup_overshoot, 0.0f, 1.0f);
+        spawn_sparks(*s, (int)(s->spark_amount * MAX_SPARKS * 0.6f));  // ignition burst
       }
-      else if (state::pathIs(path, plen, "trigger")) {
-        // Momentary event value (1 held / 0 released), replayed every
-        // frame — spawn only on the 0→1 rising edge, exactly like gate.
-        float v = state::patchFloat(i);
-        if (v != 0.0f && s->trigger_prev == 0.0f) spawn_jet(*s);
-        s->trigger_prev = v;
-      }
-      else if (state::pathIs(path, plen, "auto_rate"))           s->auto_rate           = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "transit_seconds"))     s->transit_seconds     = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "direction"))           s->direction           = (int)state::patchFloat(i);
-      else if (state::pathIs(path, plen, "centerline_y"))        s->centerline_y        = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "centerline_y_jitter")) s->centerline_y_jitter = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "color_core")) {
-        auto v = state::patchVec3(i);
-        s->color_core_r = v.x; s->color_core_g = v.y; s->color_core_b = v.z;
-      }
-      else if (state::pathIs(path, plen, "color_edge")) {
-        auto v = state::patchVec3(i);
-        s->color_edge_r = v.x; s->color_edge_g = v.y; s->color_edge_b = v.z;
-      }
-      else if (state::pathIs(path, plen, "intensity"))           s->intensity           = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "head_width"))          s->head_width          = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "cone_half_angle_deg")) s->cone_half_angle_deg = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "trail_length"))        s->trail_length        = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "axial_decay_curve"))   s->axial_decay_curve   = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "radial_sharpness"))    s->radial_sharpness    = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "diamond_amp"))         s->diamond_amp         = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "diamond_period"))      s->diamond_period      = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "diamond_shimmer_rate_hz")) s->diamond_shimmer_rate_hz = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "turbulence_amp"))      s->turbulence_amp      = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "turbulence_scale"))    s->turbulence_scale    = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "turbulence_rate_hz"))  s->turbulence_rate_hz  = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "pool_size"))           s->pool_size           = (int)state::patchFloat(i);
-      else if (state::pathIs(path, plen, "seed")) {
-        int v = (int)state::patchFloat(i);
-        if (v != s->seed) {
-          s->seed = v;
-          s->spawn_rng = (uint32_t)v ^ 0xB16B00B5u;
-          s->autotrigger_rng = (uint32_t)v ^ 0xCAFEBABEu;
-        }
-      }
-      else if (state::pathIs(path, plen, "debug_show_axis"))     s->debug_show_axis     = state::patchFloat(i) != 0.0f;
+      s->ignition = v;
+      s->ign_prev = v;
     }
+    else if (state::pathIs(path, plen, "throttle"))         s->throttle         = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "mixture"))          s->mixture          = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity"))        s->intensity        = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spool_time"))       s->spool_time       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "startup_overshoot"))s->startup_overshoot= state::patchFloat(i);
+    else if (state::pathIs(path, plen, "centerline_y"))     s->centerline_y     = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "nozzle_radius"))    s->nozzle_radius    = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spread"))           s->spread           = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "length_scale"))     s->length_scale     = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "core_brightness"))  s->core_brightness  = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "radial_sharpness")) s->radial_sharpness = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "diamond_amp"))      s->diamond_amp      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "diamond_spacing"))  s->diamond_spacing  = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "mach_disk_amp"))    s->mach_disk_amp    = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "core_length"))      s->core_length      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "shear_turbulence")) s->shear_turbulence = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "shear_scale"))      s->shear_scale      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "crackle"))          s->crackle          = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "shimmer_rate_hz"))  s->shimmer_rate_hz  = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "kh_rate_hz"))       s->kh_rate_hz       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "crackle_rate_hz"))  s->crackle_rate_hz  = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "zoom"))             s->zoom             = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "propagation"))      s->propagation      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "substeps"))         s->substeps         = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "motion_scale"))     s->motion_scale     = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spark_amount"))     s->spark_amount     = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spark_rate"))       s->spark_rate       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spark_scale"))      s->spark_scale      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spark_speed"))      s->spark_speed      = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "seed")) {
+      int v = (int)state::patchFloat(i);
+      if (v != s->seed) { s->seed = v; s->spawn_rng = (uint32_t)v ^ 0xB16B00B5u; }
+    }
+    else if (state::pathIs(path, plen, "debug_show_axis"))  s->debug_show_axis  = state::patchFloat(i) != 0.0f;
   }
 }
 
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
-  if (!s) return;
-  if (!s->initialized || vp_w <= 0 || vp_h <= 0) return;
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // Pack active jets, compute live head_x.
-  double now = host::time();
-  GpuJet gpu_jets[MAX_JETS] = {};
-  int active_count = 0;
-  int cap = s->pool_size;
-  if (cap < 1) cap = 1;
-  if (cap > MAX_JETS) cap = MAX_JETS;
-  for (int i = 0; i < cap; i++) {
-    const CpuJet& j = s->jets[i];
-    if (!j.active) continue;
-    float elapsed = (float)(now - j.start_time);
-    float progress = j.transit_seconds > 1e-3f ? elapsed / j.transit_seconds : 1.0f;
-    float head_x = (j.dir > 0.0f) ? progress : (1.0f - progress);
-    GpuJet& g = gpu_jets[active_count++];
-    g.head_x = head_x;
-    g.dir = j.dir;
-    g.centerline_y = j.centerline_y;
-    g.transit_seconds = j.transit_seconds;
-    g.color_seed = j.color_seed;
-  }
-  s->jet_buf.writeBytes(gpu_jets, (int)sizeof(GpuJet) * MAX_JETS);
+  float fdt = (float)host::deltaTime();
+  if (fdt <= 0.0f) fdt = 1.0f / 60.0f;
+  if (fdt > 0.1f)  fdt = 0.1f;
 
-  // Uniforms.
-  float cone_rad = clampf(s->cone_half_angle_deg, 0.0f, 89.0f) * (3.14159265358979f / 180.0f);
-  Uniforms u = {};
+  double effP = s->chamberP + s->overshoot;
+  if (effP < 0.0) effP = 0.0;
+
+  // --- Stage 1: 1D axial solver. ---
+  {
+    SimUniforms su = {};
+    su.dt = fdt;
+    su.substeps = (uint32_t)(s->substeps < 1 ? 1 : (s->substeps > 256 ? 256 : s->substeps));
+    su.W = (uint32_t)NUM_CELLS;
+    su.dx = 1.0f / (float)(NUM_CELLS - 1);
+    su.chamberP = (float)effP;
+    // Supersonic exhaust — fast flow so the plume establishes in ~2 frames
+    // (it expands nearly instantly on light-up, not over a slow transit).
+    su.exitVel = 8.0f + 26.0f * (float)effP;                 // canvas-uv/sec
+    su.pressureRatio = 1.0f + (float)effP * 2.0f * (0.5f + s->mixture);
+    su.litTarget = s->ignition ? 1.0f : 0.0f;
+    // propagation maps to wavespeed (cells/frame). High → pressure crosses
+    // the jet structure in <1 frame.
+    su.wavespeed = (20.0f + 160.0f * clampf(s->propagation, 0.0f, 1.0f));
+    // Scale growth with flow speed so the breakdown distance is speed-
+    // independent (steady-state m(x) ≈ growth·x/u). core_length is the
+    // performer-facing inverse: a longer white potential core ⇔ slower
+    // maturity growth, so the white→blue handoff moves downstream.
+    su.maturityGrowth = su.exitVel * 4.0f / clampf(s->core_length, 0.2f, 5.0f);
+    // Length-relative decay: plume length ≈ length_scale regardless of how
+    // fast the flow fills it (b ~ exp(-x/length_scale) since coreDecay = u/L).
+    su.coreDecay = su.exitVel / clampf(s->length_scale, 0.1f, 3.0f);
+    su.flameSpeed = 30.0f;
+    su.diamondSpacing = clampf(s->diamond_spacing, 0.005f, 0.5f);
+    su.velRelax = 0.12f;
+    s->sim_uniform_buf.writeOne(su);
+
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_sim);
+    cp.setBuffer(s->cell_buf, 0);
+    cp.setBuffer(s->sim_uniform_buf, 1);
+    cp.dispatch(1, 1, 1);            // single workgroup; substeps loop inside
+    cp.end();
+  }
+
+  // --- Pack sparks: project 3D world → screen (jet-uv space, un-zoomed; the
+  //     color shader applies zoom). A slight 3/4 view turns the rim circle
+  //     into a thin tilted ellipse and gives near/far perspective. ---
+  const float P_AX = 0.55f;   // downstream world → uv-x
+  const float P_AY = 1.00f;   // vertical world → uv-y (rim ≈ nozzle mouth)
+  const float P_BX = 0.10f;   // depth → uv-x (gives the rim its ellipse width)
+  const float P_BY = -0.12f;  // depth → uv-y (tilt — viewed slightly off-axis)
+  const float P_PERSP = 0.5f; // near sparks (pz>0) render larger/brighter
+  float cy = clampf(s->centerline_y, 0.0f, 1.0f);
+  GpuSpark gs[MAX_SPARKS] = {};
+  for (int i = 0; i < MAX_SPARKS; i++) {
+    const CpuSpark& sp = s->sparks[i];
+    if (!sp.active || sp.life <= 0.0f) { gs[i].life = 0.0f; continue; }
+    float persp = clampf(1.0f + sp.pz * P_PERSP, 0.25f, 2.5f);
+    gs[i].x = sp.px * P_AX + sp.pz * P_BX;          // nozzle anchored at x=0
+    gs[i].y = cy + sp.py * P_AY + sp.pz * P_BY;
+    // Screen-space velocity (project the world velocity the same way) — the
+    // shader streaks the spark along this, so an arcing trajectory visibly
+    // rotates the spark as it flies.
+    gs[i].vx = sp.vx * P_AX + sp.vz * P_BX;
+    gs[i].vy = sp.vy * P_AY + sp.vz * P_BY;
+    gs[i].size = sp.size * persp * clampf(s->spark_scale, 0.05f, 10.0f);
+    gs[i].life = clampf(sp.life / sp.max_life, 0.0f, 1.0f) * sp.bright
+               * (0.5f + 0.5f * persp);
+  }
+  s->spark_buf.writeBytes(gs, (int)sizeof(gs));
+
+  // --- Shared color/motion uniforms. ---
+  ColorUniforms u = {};
   u.intensity = clampf(s->intensity, 0.0f, 8.0f);
-  u.head_width = clampf(s->head_width, 0.0f, 1.0f);
-  u.cone_tan = std::tan(cone_rad);
-  u.trail_length = clampf(s->trail_length, 0.001f, 4.0f);
-  u.axial_decay_curve = clampf(s->axial_decay_curve, 0.05f, 8.0f);
+  u.centerline_y = clampf(s->centerline_y, 0.0f, 1.0f);
+  u.nozzle_radius = clampf(s->nozzle_radius, 0.001f, 0.3f);
+  u.spread = clampf(s->spread, 0.0f, 2.0f);
   u.radial_sharpness = clampf(s->radial_sharpness, 0.5f, 32.0f);
   u.diamond_amp = clampf(s->diamond_amp, 0.0f, 1.0f);
-  u.diamond_period = clampf(s->diamond_period, 0.001f, 1.0f);
-  u.shimmer_phase = (float)(s->shimmer_phase - std::floor(s->shimmer_phase));
-  u.turb_amp = clampf(s->turbulence_amp, 0.0f, 1.0f);
-  u.turb_scale = clampf(s->turbulence_scale, 0.1f, 64.0f);
-  u.turb_phase = (float)(s->turb_phase - std::floor(s->turb_phase));
-  u.core_r = s->color_core_r; u.core_g = s->color_core_g; u.core_b = s->color_core_b;
-  u.edge_r = s->color_edge_r; u.edge_g = s->color_edge_g; u.edge_b = s->color_edge_b;
-  u.active_count = (uint32_t)active_count;
+  u.mach_disk_x = s->mach_disk_x;
+  u.mach_disk_amp = clampf(s->mach_disk_amp, 0.0f, 4.0f);
+  u.mach_disk_width = 0.03f;
+  u.shimmer_phase = (float)((s->shimmer_phase - std::floor(s->shimmer_phase)) * 6.28318530718);
+  u.kh_amp = clampf(s->shear_turbulence, 0.0f, 2.0f);
+  u.kh_scale = clampf(s->shear_scale, 1.0f, 64.0f);
+  u.kh_phase = (float)s->kh_phase;
+  u.crackle_amp = clampf(s->crackle, 0.0f, 1.0f);
+  u.crackle_phase = (float)s->crackle_phase;
+  u.mixture = clampf(s->mixture, 0.0f, 1.0f);
+  u.zoom = clampf(s->zoom, 1.0f, 16.0f);
+  u.aspect = (float)vp_w / (float)vp_h;
+  u.core_brightness = clampf(s->core_brightness, 0.0f, 8.0f);
+  u.cell_count = (uint32_t)NUM_CELLS;
+  u.spark_count = (uint32_t)MAX_SPARKS;
   u.debug_show_axis = s->debug_show_axis ? 1u : 0u;
-  s->uniform_buf.writeOne(u);
+  // [0,1] slider maps to an effective [0,0.025] — the flow is supersonic, so
+  // even a tiny scale is a strong streak; this gives usable resolution.
+  u.motion_scale = clampf(s->motion_scale, 0.0f, 1.0f) * 0.025f;
+  s->color_uniform_buf.writeOne(u);
 
-  // Color pass.
+  // --- Stage 2: color synthesis. ---
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_color);
     cp.setTexture(in,  0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s->uniform_buf, 2);
-    cp.setBuffer(s->jet_buf,     3);
+    cp.setBuffer(s->color_uniform_buf, 2);
+    cp.setBuffer(s->cell_buf, 3);
+    cp.setBuffer(s->spark_buf, 4);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
 
-  // Motion pass — skip when no downstream consumer.
+  // --- Stage 2b: motion emission (skip with no downstream consumer). ---
   if (state::isOutputConnected("render_outputs")) {
     if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
       s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-      s->motion_w = vp_w;
-      s->motion_h = vp_h;
-      if (s->motion_tex.valid()) {
-        state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
-      }
+      s->motion_w = vp_w; s->motion_h = vp_h;
+      if (s->motion_tex.valid()) state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
     }
     if (s->motion_tex.valid()) {
       auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
       if (!upstream.valid()) {
-        if (!s->zero_motion_tex.valid()) {
+        if (!s->zero_motion_tex.valid())
           s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
-        }
         upstream = s->zero_motion_tex;
       }
       if (upstream.valid()) {
         auto cp = gpu::ComputePass::begin();
         cp.setPSO(s_pso_motion);
-        cp.setTexture(upstream,     0, 0);
+        cp.setTexture(upstream, 0, 0);
         cp.setTexture(s->motion_tex, 1, 1);
-        cp.setBuffer(s->uniform_buf, 2);
-        cp.setBuffer(s->jet_buf,     3);
+        cp.setBuffer(s->color_uniform_buf, 2);
+        cp.setBuffer(s->cell_buf, 3);
         cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
         cp.end();
       }

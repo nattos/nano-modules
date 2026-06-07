@@ -83,6 +83,10 @@ const EFFECT_ID_BY_FILENAME = {
   'soft_glow.wasm': 'gen.soft_glow',
   'dispersion.wasm': 'fx.dispersion',
   'plasma_beam_cannon.wasm': 'gen.plasma_beam_cannon',
+  'orthomod.wasm': 'gen.orthomod',
+  'bounce_resonator.wasm': 'gen.bounce_resonator',
+  'side_jet.wasm': 'gen.side_jet',
+  'motion_blobs.wasm': 'gen.motion_blobs',
 };
 
 function resolveEffectId(moduleName) {
@@ -295,6 +299,36 @@ async function run() {
       wasmHost.frameState.viewportW = W;
       wasmHost.frameState.viewportH = H;
       wasmHost.frameState.bpm = 120;
+
+      // Multi-frame GPU effects (persistent compute state — e.g.
+      // gen.side_jet's 1D axial solver) accumulate their field across
+      // rendered frames. The default path ticks N times then renders
+      // once, which only advances such state a single frame. With
+      // renderEachTick we interleave tick()+render() so the field
+      // develops. Standalone (non-fused) single-effect path only.
+      if (config.renderEachTick) {
+        let inputHandle = -1;
+        if (si > 0 || config.inputColor) {
+          inputHandle = gpuHost.injectTexture(currentOutput);
+          wasmHost.inputTextureHandles = [inputHandle];
+          wasmHost.textureFields.set('tex_in', inputHandle);
+        }
+        const outputHandle = gpuHost.injectTexture(nextOutput);
+        wasmHost.textureFields.set('tex_out', outputHandle);
+        const n = Math.max(step.ticks || 1, 1);
+        for (let i = 0; i < n; i++) {
+          wasmHost.frameState.elapsedTime = (i + 1) * 0.016;
+          wasmHost.frameState.deltaTime = 0.016;
+          wasmHost.frameState.barPhase = ((i + 1) * 0.016 * 120 / 60 / 4) % 1.0;
+          wasmModule.tick(0.016);
+          wasmModule.render(W, H);
+        }
+        if (traceSteps.includes(si)) copyToTrace(nextOutput, si);
+        const tmp = currentOutput; currentOutput = nextOutput; nextOutput = tmp;
+        allConsoleLogs.push(...wasmHost.consoleLogs.map(l => l.message));
+        lastHost = wasmHost;
+        continue;
+      }
 
       const tickCount = step.ticks || 0;
       for (let i = 0; i < tickCount; i++) {
