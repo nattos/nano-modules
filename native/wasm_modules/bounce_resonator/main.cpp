@@ -27,6 +27,7 @@
 #include <effect_diffusion_network.h>
 #include "bounce_resonator_shaders.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -37,9 +38,10 @@ static constexpr int BARS = 4;
 
 struct Uniforms {
   float v0, v1, v2, v3;                 // per-bar values
-  float band_r, band_g, band_b, intensity;
+  float hue0, hue1, hue2, hue3;         // per-bar hues (turns)
+  float band_sat, band_val, intensity, _pad;
 };
-static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch");
 
 // Per-instance state. One per chain entry.
 struct State {
@@ -60,6 +62,8 @@ struct State {
   float spread            = 0.30f;
   float spread_contrast   = 0.0f;
   float decay_shaping     = 0.0f;
+  float hue_spread        = 0.0f;
+  float hue_converge      = 0.0f;
   int   seed              = 0;
   int   pattern_count     = 4;
   float cycle_rate        = 6.0f;
@@ -67,6 +71,10 @@ struct State {
   float color_r           = 1.0f;
   float color_g           = 0.92f;
   float color_b           = 0.78f;
+  // band_color decomposed: hue feeds impulses, sat/val feed the shader.
+  float band_hue          = 0.0f;
+  float band_sat          = 0.0f;
+  float band_val          = 1.0f;
   float intensity         = 1.0f;
   float auto_rate         = 0.3f;
 
@@ -91,6 +99,26 @@ static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// RGB → (hue turns, saturation, value). Matches nano_color.hlsl's HSV.
+static void rgb_to_hsv(float r, float g, float b, float& h, float& s, float& v) {
+  float mx = std::max(r, std::max(g, b));
+  float mn = std::min(r, std::min(g, b));
+  float d = mx - mn;
+  v = mx;
+  s = (mx > 1e-6f) ? d / mx : 0.0f;
+  h = 0.0f;
+  if (d > 1e-6f) {
+    if      (mx == r) h = (g - b) / d + (g < b ? 6.0f : 0.0f);
+    else if (mx == g) h = (b - r) / d + 2.0f;
+    else              h = (r - g) / d + 4.0f;
+    h /= 6.0f;
+  }
+}
+
+static void update_band_hsv(State& s) {
+  rgb_to_hsv(s.color_r, s.color_g, s.color_b, s.band_hue, s.band_sat, s.band_val);
+}
+
 // Queue an impulse (target resolved now, including the random pick) to be
 // injected after this frame's diffusion step.
 static void fire_impulse(State& s) {
@@ -110,10 +138,11 @@ static void fire_impulse(State& s) {
 }
 
 // Inject queued impulses into the network. Called after step(), before
-// render, so the flash is rendered solid (undiffused).
+// render, so the flash is rendered solid (undiffused). The injected hue is
+// always band_color's hue (for now).
 static void flush_impulses(State& s) {
   for (int b = 0; b < BARS; b++) {
-    if (s.pending[b] != 0.0f) { s.net.impulse(b, s.pending[b]); s.pending[b] = 0.0f; }
+    if (s.pending[b] != 0.0f) { s.net.impulse(b, s.pending[b], s.band_hue); s.pending[b] = 0.0f; }
   }
 }
 
@@ -133,6 +162,8 @@ void module_init() {
       .floatField("spread",              0.30f, 0.0f, 1.0f,      state::PrimaryInput)
       .floatField("spread_contrast",     0.0f, 0.0f, 1.0f,       state::PrimaryInput)
       .floatField("decay_shaping",       0.0f, -1.0f, 1.0f,      state::PrimaryInput)
+      .floatField("hue_spread",          0.0f, 0.0f, 1.0f,       state::PrimaryInput)
+      .floatField("hue_converge",        0.0f, 0.0f, 1.0f,       state::PrimaryInput)
       .intField  ("seed",                0, 0, 0x7FFFFFFF,       state::PrimaryInput)
       .intField  ("pattern_count",       4, 1, 16,               state::PrimaryInput)
       .floatField("cycle_rate",          6.0f, 0.0f, 60.0f,      state::PrimaryInput)
@@ -199,6 +230,7 @@ void init(void* self) {
   s->autotrigger_rng = 0xCAFEBABEu;
   s->target_rng = 0x1357BD13u;
   for (int b = 0; b < BARS; b++) s->pending[b] = 0.0f;
+  update_band_hsv(*s);
   s->motion_w = 0;
   s->motion_h = 0;
   s->net.reset();
@@ -234,6 +266,9 @@ void tick(void* self, double dt) {
   p.spread          = clampf(s->spread,   0.0f, 1.0f);
   p.spread_contrast = clampf(s->spread_contrast, 0.0f, 1.0f);
   p.decay_shaping   = clampf(s->decay_shaping, -1.0f, 1.0f);
+  p.hue_spread      = clampf(s->hue_spread, 0.0f, 1.0f);
+  p.hue_converge    = clampf(s->hue_converge, 0.0f, 1.0f);
+  p.home_hue        = s->band_hue;
   p.seed            = (uint32_t)s->seed;
   p.pattern_count   = s->pattern_count;
   p.rate            = clampf(s->cycle_rate, 0.0f, 60.0f);
@@ -275,6 +310,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
       else if (state::pathIs(path, plen, "spread"))              s->spread             = state::patchFloat(i);
       else if (state::pathIs(path, plen, "spread_contrast"))     s->spread_contrast    = state::patchFloat(i);
       else if (state::pathIs(path, plen, "decay_shaping"))       s->decay_shaping      = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "hue_spread"))          s->hue_spread         = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "hue_converge"))        s->hue_converge       = state::patchFloat(i);
       else if (state::pathIs(path, plen, "seed"))                s->seed               = (int)state::patchFloat(i);
       else if (state::pathIs(path, plen, "pattern_count"))       s->pattern_count      = (int)state::patchFloat(i);
       else if (state::pathIs(path, plen, "cycle_rate"))          s->cycle_rate         = state::patchFloat(i);
@@ -282,6 +319,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
       else if (state::pathIs(path, plen, "band_color")) {
         auto v = state::patchVec3(i);
         s->color_r = v.x; s->color_g = v.y; s->color_b = v.z;
+        update_band_hsv(*s);
       }
       else if (state::pathIs(path, plen, "intensity"))           s->intensity          = state::patchFloat(i);
     }
@@ -306,7 +344,9 @@ void render(void* self, int vp_w, int vp_h) {
   Uniforms u = {};
   u.v0 = s->net.value(0); u.v1 = s->net.value(1);
   u.v2 = s->net.value(2); u.v3 = s->net.value(3);
-  u.band_r = s->color_r; u.band_g = s->color_g; u.band_b = s->color_b;
+  u.hue0 = s->net.hue(0); u.hue1 = s->net.hue(1);
+  u.hue2 = s->net.hue(2); u.hue3 = s->net.hue(3);
+  u.band_sat = s->band_sat; u.band_val = s->band_val;
   u.intensity = s->intensity;
   s->uniform_buf.writeOne(u);
 

@@ -90,6 +90,53 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     expect(bot).toBeGreaterThan(mid * 0.9);
   });
 
+  // Sum a channel over a bar's column.
+  const barChan = (f: Frame, k: number, ch: 'r' | 'g' | 'b'): number => {
+    const x0 = Math.floor((k + 0.3) * W / 4), x1 = Math.floor((k + 0.7) * W / 4);
+    const y0 = Math.floor(H * 0.4), y1 = Math.floor(H * 0.6);
+    let s = 0, n = 0;
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) { s += f.pixelAt(x, y)[ch]; n++; }
+    return n > 0 ? s / n : 0;
+  };
+
+  it('a kick paints its bar with band_color’s hue', async () => {
+    // Pure green band_color → the freshly kicked (undiffused) bar is green.
+    const frame = await runGpuEffectTest({
+      module: 'bounce_resonator.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1],
+      ticks: 3,
+      params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0]]),
+               ['band_color', [0, 1, 0]]],
+      dumpName: 'bounce_resonator_hue_green',
+    });
+    expect(frame.success).toBe(true);
+    const lit = [0, 1, 2, 3].reduce((m, k) => barBrightness(frame, k) > barBrightness(frame, m) ? k : m, 0);
+    expect(barChan(frame, lit, 'g')).toBeGreaterThan(60);
+    expect(barChan(frame, lit, 'r')).toBeLessThan(20);
+    expect(barChan(frame, lit, 'b')).toBeLessThan(20);
+  });
+
+  it('hue_spread rotates hue away from band_color as it transfers', async () => {
+    // Kick green; with hue_spread the carried hue twists each hop, so the
+    // lit bar drifts off pure green (gains red/blue).
+    const lit = (hue_spread: number) => runGpuEffectTest({
+      module: 'bounce_resonator.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1],
+      ticks: 40,
+      params: [...kickBar0([['feedback', 1.0], ['spread', 0.2], ['hue_spread', hue_spread]]),
+               ['band_color', [0, 1, 0]]],
+      dumpName: `bounce_resonator_huespread_${Math.round(hue_spread * 100)}`,
+    });
+    const none = await lit(0.0);
+    const lots = await lit(0.8);
+    expect(none.success && lots.success).toBe(true);
+    // Off-green (red+blue) energy across all bars: hue_spread pushes it up.
+    const offGreen = (f: Frame) =>
+      [0, 1, 2, 3].reduce((s, k) => s + barChan(f, k, 'r') + barChan(f, k, 'b'), 0);
+    expect(offGreen(lots)).toBeGreaterThan(offGreen(none) + 30);
+  });
+
   it('feedback conserves vs decays total energy', async () => {
     const after = (feedback: number) => runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
