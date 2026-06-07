@@ -17,7 +17,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Tap, TapMod, TapCurve, TapCombine } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Tap, TapCurve, TapCombine } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
@@ -1662,19 +1662,6 @@ export class ColumnGroup extends MobxLitElement {
     });
   }
 
-  /** Merge a partial TapMod into a tap's `mod` (preserving other mod fields). */
-  private mergeTapMod(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number,
-                      cur: TapMod | undefined, patch: Partial<TapMod>) {
-    appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { mod: { ...(cur ?? {}), ...patch } });
-  }
-
-  /** Merge a partial remap into a tap's `mod.remap` (preserving other remap fields). */
-  private mergeTapRemap(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number,
-                        cur: TapMod | undefined, patch: Partial<NonNullable<TapMod['remap']>>) {
-    const curRemap = cur?.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
-    this.mergeTapMod(sketchId, colIdx, chainIdx, tapIdx, cur, { remap: { ...curRemap, ...patch } });
-  }
-
   /**
    * Modulation controls for a selected float-rail tap: a range remapper
    * (scale + remap with saturation and in/out shaping curves) applied after
@@ -1682,123 +1669,97 @@ export class ColumnGroup extends MobxLitElement {
    */
   private renderTapModInspector(sketchId: string, colIdx: number, chainIdx: number,
                                 tapIdx: number, tap: Tap) {
-    const mod = tap.mod;
-    const remap = mod?.remap;
+    const remap = tap.mod?.remap;
+    const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
     const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
     const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
-    const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
+    const curveOpts = CURVES.map(c => ({ label: c, value: c }));
+    const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
 
-    const inS = 'background:var(--app-bg-color2,#1a1a1a);border:1px solid var(--app-border-color,#333);color:var(--app-text-color1,#eaeaea);font-size:10px;padding:1px 3px;border-radius:2px';
+    // Build the field set conditionally, then render with the shared field
+    // editors (scalar-slider / field-toggle / field-tab-bar) via a FieldBinding —
+    // long edits, tap-layout registration, and styling come for free.
+    const fields: InspectorFieldDef[] = [
+      { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 },
+      { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
+    ];
+    if (remap) {
+      fields.push(
+        { type: 'slider', label: 'In min', path: 'remap.inMin', min: -1, max: 1, default: 0 },
+        { type: 'slider', label: 'In max', path: 'remap.inMax', min: -1, max: 1, default: 1 },
+        { type: 'slider', label: 'Out min', path: 'remap.outMin', min: -1, max: 1, default: 0 },
+        { type: 'slider', label: 'Out max', path: 'remap.outMax', min: -1, max: 1, default: 1 },
+        { type: 'boolean', label: 'Saturate', path: 'remap.saturate', default: false },
+        { type: 'select', label: 'Curve in', path: 'remap.curveIn', options: curveOpts, default: 'linear' },
+        { type: 'select', label: 'Curve out', path: 'remap.curveOut', options: curveOpts, default: 'linear' },
+      );
+      if (usesPower) {
+        fields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
+      }
+    }
+    if (tap.direction === 'write') {
+      fields.push({ type: 'select', label: 'Combine', path: 'combine', options: combineOpts, default: 'replace' });
+      if ((tap.combine ?? 'replace') === 'mix') {
+        fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
+      }
+    }
+
     const binding = this.tapModBinding(sketchId, colIdx, chainIdx, tapIdx);
-    // Numeric fields use the shared <scalar-slider> (drag, type, long edits)
-    // bound to the tap's mod fields; getValue returns undefined when unset so
-    // the slider falls back to `defaultValue`.
-    const slider = (path: string, def: number, min: number, max: number, step = 0.01, width = 112) => html`
-      <scalar-slider style=${`width:${width}px`}
-        .fieldPath=${path} .min=${min} .max=${max} .step=${step} .defaultValue=${def}
-        .binding=${binding}></scalar-slider>
-    `;
-    const sel = <T extends string>(val: T, opts: readonly T[], onChange: (v: T) => void) => html`
-      <select style=${inS + ';width:auto'} @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value as T)}>
-        ${opts.map(o => html`<option value=${o} ?selected=${o === val}>${o}</option>`)}
-      </select>
-    `;
-
     return html`
       <div class="inspector-separator"></div>
       <div class="section-header">Modulation</div>
-      <div class="inspector-field">
-        <span class="inspector-field-label">Scale</span>
-        ${slider('scale', 1, 0, 4)}
-      </div>
-      <div class="inspector-field">
-        <span class="inspector-field-label">Remap</span>
-        <input type="checkbox" ?checked=${!!remap}
-          @change=${(e: Event) => this.mergeTapMod(sketchId, colIdx, chainIdx, tapIdx, mod,
-            { remap: (e.target as HTMLInputElement).checked ? (remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined })} />
-      </div>
-      ${remap ? html`
-        <div class="inspector-field">
-          <span class="inspector-field-label">In</span>
-          ${slider('remap.inMin', 0, -1, 1, 0.01, 54)}
-          ${slider('remap.inMax', 1, -1, 1, 0.01, 54)}
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Out</span>
-          ${slider('remap.outMin', 0, -1, 1, 0.01, 54)}
-          ${slider('remap.outMax', 1, -1, 1, 0.01, 54)}
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Saturate</span>
-          <input type="checkbox" ?checked=${!!remap.saturate}
-            @change=${(e: Event) => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { saturate: (e.target as HTMLInputElement).checked })} />
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Curve in</span>
-          ${sel(remap.curveIn ?? 'linear', CURVES, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { curveIn: v }))}
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Curve out</span>
-          ${sel(remap.curveOut ?? 'linear', CURVES, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { curveOut: v }))}
-        </div>
-        ${usesPower ? html`
-          <div class="inspector-field">
-            <span class="inspector-field-label">Exponent</span>
-            ${slider('remap.exponent', 2, 0, 8, 0.1)}
-          </div>` : nothing}
-      ` : nothing}
-      ${tap.direction === 'write' ? html`
-        <div class="inspector-field">
-          <span class="inspector-field-label">Combine</span>
-          ${sel(tap.combine ?? 'replace', COMBINES, v => appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { combine: v }))}
-        </div>
-        ${tap.combine === 'mix' ? html`
-          <div class="inspector-field">
-            <span class="inspector-field-label">Mix factor</span>
-            ${slider('mixFactor', 1, 0, 1)}
-          </div>` : nothing}
-      ` : nothing}
+      ${createGenericInspector(fields)(binding)}
     `;
   }
 
   /**
-   * FieldBinding mapping synthetic paths ('scale', 'remap.inMin', 'mixFactor', …)
-   * to a tap's mod fields, so the shared <scalar-slider> can drive them with
-   * long (continuous) edits. getValue returns undefined for an unset field so the
-   * slider uses its defaultValue.
+   * FieldBinding mapping synthetic paths to a tap's mod fields, so the shared
+   * field editors can drive them with long edits. Handles numbers (scale,
+   * remap.in/out min/max, remap.exponent, mixFactor), booleans (remapEnabled,
+   * remap.saturate), and selects (remap.curveIn/curveOut, combine). getValue
+   * returns undefined for an unset numeric field so the slider uses its default.
    */
   private tapModBinding(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number): FieldBinding {
     const getTap = (): Tap | undefined => {
       const e = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
       return e?.type === 'module' ? e.taps?.[tapIdx] : undefined;
     };
-    const read = (path: string): number | undefined => {
+    const read = (path: string): any => {
       const tap = getTap();
       if (!tap) return undefined;
       if (path === 'scale') return tap.mod?.scale;
       if (path === 'mixFactor') return tap.mixFactor;
+      if (path === 'combine') return tap.combine ?? 'replace';
+      if (path === 'remapEnabled') return !!tap.mod?.remap;
       if (path.startsWith('remap.')) {
-        return (tap.mod?.remap as Record<string, number> | undefined)?.[path.slice(6)];
+        return (tap.mod?.remap as Record<string, any> | undefined)?.[path.slice(6)];
       }
       return undefined;
     };
     // Build a Partial<Tap> patch for a path+value, deep-merging mod/remap.
-    const patchFor = (path: string, v: number): Partial<Tap> => {
+    const patchFor = (path: string, v: any): Partial<Tap> => {
       const mod = getTap()?.mod ?? {};
-      if (path === 'scale') return { mod: { ...mod, scale: v } };
-      if (path === 'mixFactor') return { mixFactor: v };
+      if (path === 'scale') return { mod: { ...mod, scale: v as number } };
+      if (path === 'mixFactor') return { mixFactor: v as number };
+      if (path === 'combine') return { combine: v as TapCombine };
+      if (path === 'remapEnabled') {
+        return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
+      }
       const remap = mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
-      return { mod: { ...mod, remap: { ...remap, [path.slice(6)]: v } } };
+      const key = path.slice(6);
+      // field-toggle writes 0/1 for saturate; everything else is the typed value.
+      const val = key === 'saturate' ? !!v : v;
+      return { mod: { ...mod, remap: { ...remap, [key]: val } } };
     };
     return {
       instanceKey: `tap/${sketchId}/${colIdx}/${chainIdx}/${tapIdx}`,
       getValue: (path: string) => read(path),
       setValue: (path: string, v: any) =>
-        appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v as number)),
+        appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v)),
       beginContinuousEdit: (path: string, v: any): ContinuousEditHandle => {
-        const edit = appController.beginUpdateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v as number));
+        const edit = appController.beginUpdateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v));
         return {
-          update: (nv: any) => appController.updateUpdateTap(edit, sketchId, colIdx, chainIdx, tapIdx, patchFor(path, nv as number)),
+          update: (nv: any) => appController.updateUpdateTap(edit, sketchId, colIdx, chainIdx, tapIdx, patchFor(path, nv)),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
         };
