@@ -10,8 +10,8 @@
 // in `mats`), each hop carrying value AND hue (intensity-weighted circular
 // mean + per-edge hue shift). Then inject impulses AFTER the hops (so a
 // fresh trigger is a solid flash). In gen mode the impulse is band_color's
-// hue + a queued amount; in sample_input mode a trigger samples tex_in per
-// bar and uses its average colour/intensity.
+// hue + a queued amount; in tex_in mode a trigger samples tex_in per bar and
+// uses its average colour/intensity (scaled by tex_in_boost).
 
 #include "nano_color.hlsl"
 
@@ -31,9 +31,9 @@ StructuredBuffer<float> mats : register(t2);   // pattern_count × 48 floats
 
 cbuffer SimU : register(b3) {
   float feedback; float decay_shaping; float hue_converge; float home_hue;
-  int   pattern_count; int hop_idx_start; int n_hops; int mode;   // mode 1 = sample_input
+  int   pattern_count; int hop_idx_start; int n_hops; int mode;   // mode 1 = tex_in sampling
   float pending0; float pending1; float pending2; float pending3;
-  float band_hue; float impulse_strength; int trigger_fired; int do_reset;
+  float band_hue; float tex_in_boost; int trigger_fired; int do_reset;
   int   tex_w; int tex_h; int sample_nx; int sample_ny;
 };
 
@@ -128,7 +128,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float3 avg = sum / float(nx * ny);
       float3 hsv = nano_rgb_to_hsv(avg);
       float lum = dot(avg, float3(0.299, 0.587, 0.114));
-      injectBar(st, b, lum * impulse_strength, hsv.x);
+      injectBar(st, b, lum * tex_in_boost, hsv.x);
     }
   }
 

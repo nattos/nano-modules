@@ -43,8 +43,9 @@ describe('Bounce Resonator (diffusion) E2E', () => {
   // One rising-edge kick into bar 0 (gate 0→1), no auto-fire. Low strength
   // + intensity so brightness stays out of the 255 clamp. cycle_rate fixed
   // at 10 Hz so a given tick count maps to a known number of hops.
+  // impulse_mode: 0 tex_in, 1 one_bar, 2 random_bar, 3 all_bars.
   const kickBar0 = (extra: [string, number][]): [string, number][] => [
-    ['gate', 1], ['auto_rate', 0.0], ['bar_target', 0], ['bar_target_all', 0],
+    ['gate', 1], ['auto_rate', 0.0], ['impulse_mode', 1], ['one_bar_target', 0],
     ['impulse_strength', 0.6], ['intensity', 1.0],
     ['seed', 0], ['pattern_count', 4], ['cycle_rate', 10.0],
     ...extra,
@@ -139,21 +140,20 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     expect(offGreen(lots)).toBeGreaterThan(offGreen(none) + 30);
   });
 
-  it('sample_input takes the impulse colour from tex_in (not band_color)', async () => {
-    // RED input, GREEN band_color. In sample mode each bar samples the input
-    // (red); in gen mode the bars use band_color (green). So the green added
-    // by the bars is high in gen mode and ~0 in sample mode.
-    const run = (sample: number, targetAll: number) => runGpuEffectTest({
+  it('impulse_mode tex_in takes the impulse colour from tex_in (not band_color)', async () => {
+    // RED input, GREEN band_color. In tex_in mode each bar samples the input
+    // (red); in all_bars mode the bars use band_color (green). So the green
+    // added by the bars is high in all_bars mode and ~0 in tex_in mode.
+    const run = (mode: number, extra: [string, number][]) => runGpuEffectTest({
       module: 'bounce_resonator.wasm', bundle: 'lights',
       width: W, height: H, inputColor: [0.8, 0, 0, 1], renderEachTick: true,
       ticks: 3,
-      params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0],
-                            ['impulse_strength', 2.0]]),
-               ['band_color', [0, 1, 0]], ['sample_input', sample], ['bar_target_all', targetAll]],
-      dumpName: `bounce_resonator_sample_${sample}`,
+      params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0]]),
+               ['band_color', [0, 1, 0]], ['impulse_mode', mode], ...extra],
+      dumpName: `bounce_resonator_mode_${mode}`,
     });
-    const sampled = await run(1, 0);   // bars sample red from the input
-    const banded  = await run(0, 1);   // bars use the green band_color
+    const sampled = await run(0, [['tex_in_boost', 3.0]]);     // tex_in → red
+    const banded  = await run(3, [['impulse_strength', 2.0]]); // all_bars → green
     expect(sampled.success && banded.success).toBe(true);
     const maxG = (f: Frame) => Math.max(...[0, 1, 2, 3].map(k => barChan(f, k, 'g')));
     expect(maxG(banded)).toBeGreaterThan(maxG(sampled) + 40);

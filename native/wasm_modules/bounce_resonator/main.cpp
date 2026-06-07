@@ -8,10 +8,11 @@
  * a persistent GPU buffer — the CPU only builds + uploads the matrices and
  * the per-frame uniforms, so the sampled-input mode needs no readback.
  *
- * Impulse source (sample_input toggle):
- *   off → impulse at band_color's hue, queued amount per bar_target.
- *   on  → on trigger, each bar samples the average colour/intensity of its
- *         slice of tex_in and uses that as its impulse.
+ * Impulse source (impulse_mode enum):
+ *   one_bar / random_bar / all_bars → impulse at band_color's hue, amount =
+ *     impulse_strength, into the chosen bar(s).
+ *   tex_in → on trigger, each bar samples the average colour/intensity of its
+ *     slice of tex_in (scaled by tex_in_boost) and uses that as its impulse.
  *
  * Trigger semantics (style guide §8.1): gate (bool) + trigger (event) fire
  * on a 0→1 rising edge; auto_rate (Poisson) self-fires. Impulses are
@@ -40,6 +41,9 @@ static constexpr int BARS       = 4;
 static constexpr int SAMPLE_NX  = 24;     // per-bar tex_in sample grid (x)
 static constexpr int SAMPLE_NY  = 6;      // per-bar tex_in sample grid (y)
 
+// Where a trigger's impulse comes from / lands.
+enum ImpulseMode { MODE_TEX_IN = 0, MODE_ONE_BAR = 1, MODE_RANDOM = 2, MODE_ALL = 3 };
+
 // --- GPU-shared layouts (must match the HLSL structs) ---
 
 struct SimState {                         // persistent GPU sim state
@@ -54,7 +58,7 @@ struct SimUniforms {
   float   feedback, decay_shaping, hue_converge, home_hue;
   int32_t pattern_count, hop_idx_start, n_hops, mode;
   float   pending0, pending1, pending2, pending3;
-  float   band_hue, impulse_strength; int32_t trigger_fired, do_reset;
+  float   band_hue, tex_in_boost; int32_t trigger_fired, do_reset;
   int32_t tex_w, tex_h, sample_nx, sample_ny;
 };
 static_assert(sizeof(SimUniforms) == 80, "SimUniforms layout mismatch");
@@ -79,10 +83,9 @@ struct State {
 
   // --- Schema-mirrored params ---
   bool  gate              = false;
-  int   bar_target        = 0;
-  bool  bar_target_all    = false;
-  bool  bar_target_random = false;
-  bool  sample_input      = false;
+  int   impulse_mode      = MODE_ONE_BAR;
+  int   one_bar_target    = 0;     // only used when impulse_mode == one_bar
+  float tex_in_boost      = 1.0f;  // only used when impulse_mode == tex_in
   float feedback          = 0.90f;
   float spread            = 0.30f;
   float spread_contrast   = 0.0f;
@@ -149,22 +152,33 @@ static void update_band_hsv(State& s) {
   rgb_to_hsv(s.color_r, s.color_g, s.color_b, s.band_hue, s.band_sat, s.band_val);
 }
 
-// On any trigger: flag it (sample_input mode samples on the GPU), and in gen
-// mode queue the per-bar amount per the bar_target controls.
+// Show only the parameters relevant to the active impulse_mode.
+static void apply_mode_visibility(int mode) {
+  state::setFieldHidden("one_bar_target", mode != MODE_ONE_BAR);
+  state::setFieldHidden("tex_in_boost",   mode != MODE_TEX_IN);
+}
+
+// On any trigger: flag it (tex_in mode samples on the GPU), and in the bar
+// modes queue the per-bar amount per impulse_mode.
 static void fire_impulse(State& s) {
   s.trigger_fired = true;
-  if (s.sample_input) return;
+  if (s.impulse_mode == MODE_TEX_IN) return;   // sampled on the GPU
   float amt = clampf(s.impulse_strength, 0.0f, 8.0f);
-  if (s.bar_target_all) {
+  if (s.impulse_mode == MODE_ALL) {
     for (int b = 0; b < BARS; b++) s.pending[b] += amt;
-  } else if (s.bar_target_random) {
+  } else if (s.impulse_mode == MODE_RANDOM) {
     s.target_rng = s.target_rng * 1664525u + 1013904223u;
     int b = (int)((s.target_rng >> 8) % (uint32_t)BARS);
     s.pending[b] += amt;
-  } else {
-    int b = s.bar_target < 0 ? 0 : (s.bar_target > BARS - 1 ? BARS - 1 : s.bar_target);
+  } else {   // MODE_ONE_BAR
+    int b = s.one_bar_target < 0 ? 0 : (s.one_bar_target > BARS - 1 ? BARS - 1 : s.one_bar_target);
     s.pending[b] += amt;
   }
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) apply_mode_visibility(s->impulse_mode);
 }
 
 void module_init() {
@@ -174,10 +188,11 @@ void module_init() {
       .boolField ("gate",                false,                  state::PrimaryInput)
       .eventField("trigger",                                     state::PrimaryInput)
       .floatField("auto_rate",           0.3f,  0.0f, 1.0f,      state::PrimaryInput)
-      .boolField ("sample_input",        false,                  state::PrimaryInput)
-      .intField  ("bar_target",          0, 0, 3,                state::PrimaryInput)
-      .boolField ("bar_target_all",      false,                  state::PrimaryInput)
-      .boolField ("bar_target_random",   false,                  state::PrimaryInput)
+      .selectField("impulse_mode",       MODE_ONE_BAR,           state::PrimaryInput,
+                   {{"tex_in", MODE_TEX_IN}, {"one_bar", MODE_ONE_BAR},
+                    {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}})
+      .intField  ("one_bar_target",      0, 0, 3,                state::PrimaryInput)
+      .floatField("tex_in_boost",        1.0f, 0.0f, 10.0f,      state::PrimaryInput)
       // --- Diffusion network ---
       .floatField("feedback",            0.90f, 0.0f, 1.2f,      state::PrimaryInput)
       .floatField("spread",              0.30f, 0.0f, 1.0f,      state::PrimaryInput)
@@ -198,6 +213,7 @@ void module_init() {
       .renderOutputs(state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput,  "render_outputs_in")
   );
+  state::setOnStateReady(&on_state_ready);
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
@@ -344,10 +360,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
       s->trigger_prev = v;
     }
     else if (state::pathIs(path, plen, "auto_rate"))           s->auto_rate          = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "sample_input"))        s->sample_input       = state::patchFloat(i) != 0.0f;
-    else if (state::pathIs(path, plen, "bar_target"))          s->bar_target         = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "bar_target_all"))      s->bar_target_all     = state::patchFloat(i) != 0.0f;
-    else if (state::pathIs(path, plen, "bar_target_random"))   s->bar_target_random  = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(path, plen, "impulse_mode")) {
+      s->impulse_mode = (int)state::patchFloat(i);
+      apply_mode_visibility(s->impulse_mode);
+    }
+    else if (state::pathIs(path, plen, "one_bar_target"))      s->one_bar_target     = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "tex_in_boost"))        s->tex_in_boost       = state::patchFloat(i);
     else if (state::pathIs(path, plen, "feedback"))            s->feedback           = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spread"))              s->spread             = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spread_contrast"))     s->spread_contrast    = state::patchFloat(i);
@@ -390,11 +408,11 @@ void render(void* self, int vp_w, int vp_h) {
   su.pattern_count    = s->pattern_count < 1 ? 1 : s->pattern_count;
   su.hop_idx_start    = s->hop_idx_start;
   su.n_hops           = s->n_hops;
-  su.mode             = s->sample_input ? 1 : 0;
+  su.mode             = (s->impulse_mode == MODE_TEX_IN) ? 1 : 0;
   su.pending0 = s->pending[0]; su.pending1 = s->pending[1];
   su.pending2 = s->pending[2]; su.pending3 = s->pending[3];
   su.band_hue         = s->band_hue;
-  su.impulse_strength = clampf(s->impulse_strength, 0.0f, 8.0f);
+  su.tex_in_boost     = clampf(s->tex_in_boost, 0.0f, 10.0f);
   su.trigger_fired    = s->trigger_fired ? 1 : 0;
   su.do_reset         = s->needs_reset ? 1 : 0;
   su.tex_w            = vp_w;
