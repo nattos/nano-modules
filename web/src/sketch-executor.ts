@@ -911,6 +911,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         loaded.host.frameState.viewportH = height;
 
         // --- Set render target (each module gets its own slot) ---
+        // Grow the pool on demand: the upfront size assumes one slot per module,
+        // but a partial-opacity stage consumes two (fx + blend), so later stages
+        // can index past the initial allocation.
+        if (slotCounter.value >= intermediates.textures.length) {
+          this.ensureIntermediates(sketchId, slotCounter.value + 1, width, height);
+        }
         const outputHandle = intermediates.handles[slotCounter.value];
         const outputTex = intermediates.textures[slotCounter.value];
         this.gpuHost.setSurface(outputTex, width, height);
