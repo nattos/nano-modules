@@ -958,6 +958,14 @@ export class ColumnGroup extends MobxLitElement {
               selectOnPointerDown(e);
               if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
             }}>
+            <button
+              title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
+              style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => {
+                e.stopPropagation();
+                appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
+              }}>⏻</button>
             <div class="effect-card-name-wrapper" style=${isEditingType ? 'flex:1' : 'flex:0 1 auto'}>
               ${isEditingType ? html`
                 <smart-input
@@ -975,14 +983,6 @@ export class ColumnGroup extends MobxLitElement {
                 >${shortName(entry.module_type)}</span>
               `}
             </div>
-            <button
-              title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
-              style="margin-left:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
-              @pointerdown=${(e: Event) => e.stopPropagation()}
-              @click=${(e: Event) => {
-                e.stopPropagation();
-                appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
-              }}>⏻</button>
             <scalar-slider
               title=${`Opacity ${Math.round(opacity * 100)}%`}
               style="margin-left:auto;width:64px"
