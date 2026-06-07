@@ -17,7 +17,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Tap, TapMod, TapCurve, TapCombine } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
@@ -1648,6 +1648,9 @@ export class ColumnGroup extends MobxLitElement {
             <span class="inspector-field-label">Rail</span>
             <span class="inspector-field-value">${rail?.name ?? tap.railId}</span>
           </div>
+          ${rail?.dataType === 'float'
+            ? this.renderTapModInspector(sketchId, colIdx, chainIdx, tapIdx, tap)
+            : nothing}
           <div class="inspector-separator"></div>
           <button class="btn" style="width:100%;padding:6px"
             @click=${() => {
@@ -1657,6 +1660,100 @@ export class ColumnGroup extends MobxLitElement {
         `;
       },
     });
+  }
+
+  /** Merge a partial TapMod into a tap's `mod` (preserving other mod fields). */
+  private mergeTapMod(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number,
+                      cur: TapMod | undefined, patch: Partial<TapMod>) {
+    appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { mod: { ...(cur ?? {}), ...patch } });
+  }
+
+  /** Merge a partial remap into a tap's `mod.remap` (preserving other remap fields). */
+  private mergeTapRemap(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number,
+                        cur: TapMod | undefined, patch: Partial<NonNullable<TapMod['remap']>>) {
+    const curRemap = cur?.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
+    this.mergeTapMod(sketchId, colIdx, chainIdx, tapIdx, cur, { remap: { ...curRemap, ...patch } });
+  }
+
+  /**
+   * Modulation controls for a selected float-rail tap: a range remapper
+   * (scale + remap with saturation and in/out shaping curves) applied after
+   * read / before write, and — for write taps — a summation mode.
+   */
+  private renderTapModInspector(sketchId: string, colIdx: number, chainIdx: number,
+                                tapIdx: number, tap: Tap) {
+    const mod = tap.mod;
+    const remap = mod?.remap;
+    const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
+    const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
+    const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
+
+    const inS = 'width:52px;background:var(--app-bg-color2,#1a1a1a);border:1px solid var(--app-border-color,#333);color:var(--app-text-color1,#eaeaea);font-size:10px;padding:1px 3px;border-radius:2px';
+    const num = (val: number, onChange: (v: number) => void, step = 0.01) => html`
+      <input type="number" style=${inS} .value=${String(val)} step=${step}
+        @change=${(e: Event) => { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) onChange(v); }} />
+    `;
+    const sel = <T extends string>(val: T, opts: readonly T[], onChange: (v: T) => void) => html`
+      <select style=${inS + ';width:auto'} @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value as T)}>
+        ${opts.map(o => html`<option value=${o} ?selected=${o === val}>${o}</option>`)}
+      </select>
+    `;
+
+    return html`
+      <div class="inspector-separator"></div>
+      <div class="section-header">Modulation</div>
+      <div class="inspector-field">
+        <span class="inspector-field-label">Scale</span>
+        ${num(mod?.scale ?? 1, v => this.mergeTapMod(sketchId, colIdx, chainIdx, tapIdx, mod, { scale: v }))}
+      </div>
+      <div class="inspector-field">
+        <span class="inspector-field-label">Remap</span>
+        <input type="checkbox" ?checked=${!!remap}
+          @change=${(e: Event) => this.mergeTapMod(sketchId, colIdx, chainIdx, tapIdx, mod,
+            { remap: (e.target as HTMLInputElement).checked ? (remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined })} />
+      </div>
+      ${remap ? html`
+        <div class="inspector-field">
+          <span class="inspector-field-label">In</span>
+          ${num(remap.inMin, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { inMin: v }))}
+          ${num(remap.inMax, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { inMax: v }))}
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Out</span>
+          ${num(remap.outMin, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { outMin: v }))}
+          ${num(remap.outMax, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { outMax: v }))}
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Saturate</span>
+          <input type="checkbox" ?checked=${!!remap.saturate}
+            @change=${(e: Event) => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { saturate: (e.target as HTMLInputElement).checked })} />
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Curve in</span>
+          ${sel(remap.curveIn ?? 'linear', CURVES, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { curveIn: v }))}
+        </div>
+        <div class="inspector-field">
+          <span class="inspector-field-label">Curve out</span>
+          ${sel(remap.curveOut ?? 'linear', CURVES, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { curveOut: v }))}
+        </div>
+        ${usesPower ? html`
+          <div class="inspector-field">
+            <span class="inspector-field-label">Exponent</span>
+            ${num(remap.exponent ?? 2, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { exponent: v }), 0.1)}
+          </div>` : nothing}
+      ` : nothing}
+      ${tap.direction === 'write' ? html`
+        <div class="inspector-field">
+          <span class="inspector-field-label">Combine</span>
+          ${sel(tap.combine ?? 'replace', COMBINES, v => appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { combine: v }))}
+        </div>
+        ${tap.combine === 'mix' ? html`
+          <div class="inspector-field">
+            <span class="inspector-field-label">Mix factor</span>
+            ${num(tap.mixFactor ?? 1, v => appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { mixFactor: v }))}
+          </div>` : nothing}
+      ` : nothing}
+    `;
   }
 
   // ========================================================================
