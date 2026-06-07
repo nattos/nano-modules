@@ -468,6 +468,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // hand it to the shared executor. The executor owns the augmenter,
     // intermediate pool, and tap routing; the plugin's only job here
     // is the FFGL ↔ Metal interop around it.
+    // Compute this ONCE, OUTSIDE tick_mu_. has_open_clients() takes the WsServer
+    // mutex; acquiring it while holding tick_mu_ deadlocks against a WS
+    // disconnect (which holds the WsServer mutex and, in its close callback,
+    // wants tick_mu_). Reused for every "publish only when watched" gate below.
+    const bool hasClients = ws_server_ && ws_server_->has_open_clients();
+
     nlohmann::json sketch_json;
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
@@ -503,7 +509,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // of the sketch (above), so without this the web — which mirrors only the
       // persisted sketch — would never see them. One JSON string → one patch op;
       // only while an editor is watching.
-      if (ws_server_ && ws_server_->has_open_clients() && !macroOut.empty()) {
+      if (hasClients && !macroOut.empty()) {
         bridge_core_.state_document().set_at(
             "/plugins/" + barrel_plugin_key_ + "/state/macro_outputs",
             macroOut.dump());
@@ -521,8 +527,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // When off, the executor hooks early-return and publishPreviewFrames
     // never gets called — the cost of having an idle editor connected
     // (or no editor at all) is just this single check.
-    captures_enabled_ = ws_server_ && ws_server_->has_open_clients()
-                                   && !preview_requests_.empty();
+    captures_enabled_ = hasClients && !preview_requests_.empty();
     // Snapshots for the editor's preview push are gathered during the
     // executor's render via the chain-entry / sketch-output hooks bound
     // in initEffectRuntime. Clear them each frame so a request that's
@@ -542,7 +547,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // the native mirror of the web executor's /sketch_state publish. Only when
     // an editor is watching; stored as one JSON string so the state-doc diff
     // emits a single patch (and nothing at all while the rails are static).
-    if (executor_ && ws_server_ && ws_server_->has_open_clients()) {
+    if (executor_ && hasClients) {
       std::lock_guard<std::mutex> lock(tick_mu_);
       bridge_core_.state_document().set_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch_state",
