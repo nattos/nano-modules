@@ -958,7 +958,7 @@ export class ColumnGroup extends MobxLitElement {
               selectOnPointerDown(e);
               if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
             }}>
-            <div class="effect-card-name-wrapper">
+            <div class="effect-card-name-wrapper" style=${isEditingType ? 'flex:1' : 'flex:0 1 auto'}>
               ${isEditingType ? html`
                 <smart-input
                   .effects=${appState.local.availableEffects}
@@ -975,23 +975,23 @@ export class ColumnGroup extends MobxLitElement {
                 >${shortName(entry.module_type)}</span>
               `}
             </div>
-            <input type="range" min="0" max="1" step="0.01" .value=${String(opacity)}
-              title=${`Opacity ${Math.round(opacity * 100)}%`}
-              style="margin-left:auto;width:54px;accent-color:var(--app-accent-color, #4caf50)"
-              @pointerdown=${(e: Event) => e.stopPropagation()}
-              @click=${(e: Event) => e.stopPropagation()}
-              @change=${(e: Event) => {
-                const v = parseFloat((e.target as HTMLInputElement).value);
-                if (!isNaN(v)) appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__opacity__', v);
-              }}>
             <button
               title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
-              style="background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
+              style="margin-left:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
               @pointerdown=${(e: Event) => e.stopPropagation()}
               @click=${(e: Event) => {
                 e.stopPropagation();
                 appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
               }}>⏻</button>
+            <scalar-slider
+              title=${`Opacity ${Math.round(opacity * 100)}%`}
+              style="margin-left:auto;width:64px"
+              .fieldPath=${'__opacity__'}
+              .min=${0} .max=${1} .step=${0.01} .defaultValue=${1}
+              .binding=${this.deviceBinding(chainIdx, entry)}
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => e.stopPropagation()}
+            ></scalar-slider>
           </div>
           <div class="effect-card-divider"></div>
           <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"
@@ -1336,6 +1336,38 @@ export class ColumnGroup extends MobxLitElement {
     if (inputFields.length === 0) return nothing;
     const inspector = createGenericInspector(inputFields);
     return inspector(binding);
+  }
+
+  /**
+   * Binding for the per-effect device controls (reserved `__`-keys in instance
+   * state). Unlike buildFieldBinding it returns `undefined` for a missing value
+   * rather than 0, so a control falls back to its own `defaultValue` — old
+   * sketches with no `__opacity__` then read as full opacity (1), not 0. Writes
+   * go through the long-edit (continuous) path so a drag is one undo entry.
+   */
+  private deviceBinding(chainIdx: number, entry: ModuleEntry): FieldBinding {
+    return {
+      instanceKey: entry.instance_key,
+      getValue: (fieldPath: string) => {
+        const st = appState.database.sketches[this.sketchId]
+          ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
+        const v = st?.[fieldPath];
+        return typeof v === 'number' ? v : undefined;
+      },
+      setValue: (fieldPath: string, value: any) => {
+        appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+      },
+      beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
+        const edit = appController.beginSetEffectParam(
+          this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+        return {
+          update: (v: any) => appController.updateSetEffectParam(
+            edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
+          accept: () => edit.accept(),
+          cancel: () => edit.cancel(),
+        };
+      },
+    };
   }
 
   /** Shared FieldBinding builder — used by both the inputs body and the output trace cards. */
