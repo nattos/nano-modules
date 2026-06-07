@@ -969,15 +969,21 @@ export class AppController {
   /** Begin a continuous tap-mod edit (slider drag). No undo points during drag. */
   beginUpdateTap(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number,
                  patch: Partial<import('../sketch-types').Tap>): LongEdit {
-    return this.history.beginLongEdit(
+    const edit = this.history.beginLongEdit(
       `Edit tap mod`,
       this.tapPatchRecipe(sketchId, colIdx, chainIdx, tapIndex, patch));
+    // Taps live in the sketch (not the per-param row), so there's no setParam
+    // fast-path — push the previewed sketch to the worker so the drag renders
+    // live. (postRecordHook only syncs on the final commit.)
+    this.syncSketchesToEngine();
+    return edit;
   }
 
   /** Update a continuous tap-mod edit (drag in progress). */
   updateUpdateTap(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number,
                   tapIndex: number, patch: Partial<import('../sketch-types').Tap>) {
     edit.update(this.tapPatchRecipe(sketchId, colIdx, chainIdx, tapIndex, patch));
+    this.syncSketchesToEngine();
   }
 
   // --- Auto-tap helpers ---
