@@ -171,6 +171,7 @@ int32_t SketchExecutor::execute(
   intermediate_cursor_ = 0;
   int32_t finalHandle = inputHandle;
   bool anyDispatched = false;
+  railState_ = json::object();  // rebuilt per frame; published by the host
 
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
     const auto& col = columns[colIdx];
@@ -597,6 +598,19 @@ int32_t SketchExecutor::execute(
         // size 1 — non-eligible or single-eligible (no fusion savings)
         runStandalone(g.firstK, isLastGroupInCol);
       }
+    }
+
+    // Snapshot this column's float-rail values for editor telemetry. The host
+    // (barrel plugin) publishes lastRailState() so the web's rail spark charts
+    // can display live values — the native mirror of the web executor's
+    // /sketch_state publish (railValuesToJson). Keyed "columns/<col>" to match
+    // the web shape: sketchState[id]["columns/<col>"][railId].value.
+    if (!railFloats.empty()) {
+      json colRails = json::object();
+      for (const auto& [railId, v] : railFloats) {
+        colRails[railId] = json{{"value", (double)v}};
+      }
+      railState_["columns/" + std::to_string(colIdx)] = std::move(colRails);
     }
   }
   if (anyDispatched && sketchOutputHook_) {

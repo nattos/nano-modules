@@ -523,6 +523,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     gpu_->submit();
     rt_->drainConsoleLog();
 
+    // Publish this frame's float-rail values for the editor's spark charts —
+    // the native mirror of the web executor's /sketch_state publish. Only when
+    // an editor is watching; stored as one JSON string so the state-doc diff
+    // emits a single patch (and nothing at all while the rails are static).
+    if (executor_ && ws_server_ && ws_server_->has_open_clients()) {
+      std::lock_guard<std::mutex> lock(tick_mu_);
+      bridge_core_.state_document().set_at(
+          "/plugins/" + barrel_plugin_key_ + "/state/sketch_state",
+          executor_->lastRailState().dump());
+    }
+
     // After submit() returns the GPU work is fully complete; intermediates
     // and the output interop carry this frame's pixels. Publish any
     // requested previews before next frame's execute() rotates the pool.

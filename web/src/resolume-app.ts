@@ -112,6 +112,20 @@ function connectBarrel(url: string) {
     appController.setBarrelPlugins(remotePlugins);
   };
 
+  // Per-frame float-rail telemetry the barrel publishes (native mirror of the
+  // local executor's /sketch_state). Stored as a JSON string so it rides as one
+  // patch op; we parse it and feed engine.sketchState so the rail spark charts
+  // show live values in barrel mode (where the web never simulates).
+  const ingestRailState = (jsonStr: any) => {
+    if (typeof jsonStr !== 'string') return;
+    let railState: any;
+    try { railState = JSON.parse(jsonStr); } catch { return; }
+    if (!railState || typeof railState !== 'object') return;
+    appController.applySketchStateDiff({
+      changed: { [BARREL_SKETCH_ID]: railState }, removed: [],
+    });
+  };
+
   barrel.onSnapshot('/', (data) => {
     (window as any).__barrelState = data;
     const plugins = data?.plugins ?? {};
@@ -130,6 +144,7 @@ function connectBarrel(url: string) {
     // schema was known.
     applyPluginSchemasFromSnapshot(pluginState.plugin_schemas);
     applySketchFromSnapshot(sketch);
+    ingestRailState(pluginState.sketch_state);  // seed rail telemetry if present
     console.log(`[barrel] mirrored sketch from /plugins/${barrelPluginKey}/state/sketch`);
 
     // Now that we know the plugin key, register a snapshot handler for
@@ -214,9 +229,18 @@ function connectBarrel(url: string) {
   barrel.onPatch((ops) => {
     if (!barrelPluginKey) return;
     const sketchPath = `/plugins/${barrelPluginKey}/state/sketch`;
-    const sketchTouched = ops.some(
-      (op: any) => typeof op?.path === 'string' &&
-                   (op.path === sketchPath || op.path.startsWith(sketchPath + '/')));
+    const sketchStatePath = `/plugins/${barrelPluginKey}/state/sketch_state`;
+    let sketchTouched = false;
+    for (const op of ops) {
+      const p = typeof op?.path === 'string' ? op.path : '';
+      if (p === sketchPath || p.startsWith(sketchPath + '/')) {
+        sketchTouched = true;
+      } else if (p === sketchStatePath) {
+        // Live rail telemetry: apply the value directly (no re-fetch needed —
+        // it's a single string op carrying the whole snapshot).
+        ingestRailState(op.value);
+      }
+    }
     if (sketchTouched) barrel.get(sketchPath);
   });
 

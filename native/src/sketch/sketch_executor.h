@@ -131,6 +131,15 @@ class SketchExecutor {
                   int32_t inputHandle, int32_t outputHandle,
                   int W, int H, double dt);
 
+  /**
+   * The most recent frame's float-rail values, for editor telemetry. Shaped
+   * { "columns/<col>": { "<railId>": { "value": <float> } } } to match the web
+   * executor's /sketch_state publish. Rebuilt each execute(); the host publishes
+   * it (e.g. the barrel plugin → bridge state doc) so the web's rail spark
+   * charts can display live values in barrel mode. Empty when no float rails.
+   */
+  const nlohmann::json& lastRailState() const { return railState_; }
+
  private:
   effect_runtime::EffectRuntime* rt_;
   ModuleRegistry* registry_;
@@ -143,6 +152,9 @@ class SketchExecutor {
   int intermediates_w_ = 0;
   int intermediates_h_ = 0;
   int intermediate_cursor_ = 0;
+
+  // Per-frame float-rail values for editor telemetry (see lastRailState()).
+  nlohmann::json railState_;
 
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;
