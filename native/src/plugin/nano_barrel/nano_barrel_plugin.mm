@@ -161,17 +161,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     bridge_core_.set_client_patch_callback(
         [this](const std::string& key) {
           if (key != barrel_plugin_key_) return;
-          // Fired from the WS message thread. Stay lock-free here —
-          // taking tick_mu_ from this thread risks contending with the
-          // render thread for the entire duration of bridge_core_.tick()
-          // (which iterates send_cb_ → ws_server.send_to inside the
-          // tick_mu_ scope) and was the source of the reconnect hang.
-          // dirty_ + dirty_since_ms_ are written as benign races
-          // (single-word stores; the worst case is a one-frame jitter
-          // in the regen debounce). preview_requests_ needs a real
-          // refresh, but that mutates an unordered_map — racy from
-          // here. Park a dirty flag for ProcessOpenGL to consume under
-          // tick_mu_ where it's safe.
+          // Fired from inside bridge_core_.handle_message — now drained on the
+          // RENDER thread under tick_mu_ (WS messages are queued into ws_inbox_
+          // and processed in ProcessOpenGL), so this is already on the render
+          // thread. We still just park dirty flags rather than refresh inline:
+          // dirty_ / dirty_since_ms_ feed the debounced config regen, and
+          // preview_requests_ is refreshed by the existing dirty-flag path —
+          // keeping this a pure flag-flip avoids reentrancy with that machinery.
           dirty_ = true;
           dirty_since_ms_ = ::nano_barrel_log::now_ms();
           preview_requests_dirty_.store(true, std::memory_order_release);
@@ -416,8 +412,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     ++frame_;
     BARREL_CTX_FRAME(frame_);
 
+    // Drain WS events the WS thread queued lock-free, then process them on THIS
+    // (render) thread under tick_mu_ — so the WS thread never takes tick_mu_
+    // while ix holds the WsServer mutex (the disconnect-deadlock fix). The swap
+    // is done first under the leaf inbox lock, so tick_mu_ never nests it.
+    std::vector<WsInboxEvent> ws_events;
+    {
+      std::lock_guard<std::mutex> lk(ws_inbox_mu_);
+      ws_events.swap(ws_inbox_);
+    }
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
+      for (auto& e : ws_events) {
+        if (e.is_message) bridge_core_.handle_message(e.cid, e.msg);
+        else              bridge_core_.remove_client(e.cid);
+      }
       bridge_core_.tick();
     }
     maybeRegenerateConfig();
@@ -810,15 +819,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     for (int tries = 0; tries < kPortRetries; ++tries) {
       int p = next_port.fetch_add(1, std::memory_order_relaxed);
       auto srv = std::make_unique<bridge::WsServer>();
+      // Queue WS events lock-free (NO tick_mu_ here — see ws_inbox_ comment).
+      // ProcessOpenGL drains + processes them on the render thread under tick_mu_.
       srv->set_message_callback(
           [this](int cid, const std::string& msg) {
-            std::lock_guard<std::mutex> lock(tick_mu_);
-            bridge_core_.handle_message(cid, msg);
+            std::lock_guard<std::mutex> lk(ws_inbox_mu_);
+            ws_inbox_.push_back({cid, /*is_message=*/true, msg});
           });
       srv->set_disconnect_callback(
           [this](int cid) {
-            std::lock_guard<std::mutex> lock(tick_mu_);
-            bridge_core_.remove_client(cid);
+            std::lock_guard<std::mutex> lk(ws_inbox_mu_);
+            ws_inbox_.push_back({cid, /*is_message=*/false, std::string()});
           });
       if (srv->start(p)) {
         ws_server_ = std::move(srv);
@@ -1068,6 +1079,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // patch callback only flips the flag, never mutates the map directly.
   std::unordered_map<std::string, PreviewRequest> preview_requests_;
   std::atomic<bool> preview_requests_dirty_{false};
+
+  // Incoming WS messages + disconnects, queued lock-free by the WS thread and
+  // drained on the RENDER thread (under tick_mu_) at the top of ProcessOpenGL.
+  // The WS callbacks MUST NOT take tick_mu_ directly: ix invokes them while
+  // holding the WsServer mutex, while the render thread takes
+  // tick_mu_ → WsServer mutex (via bridge_core_.tick()'s send) — so a direct
+  // lock there deadlocks on disconnect. Deferring removes the WsServer→tick_mu_
+  // edge, breaking the cycle (same trick as the client-patch dirty flag above).
+  struct WsInboxEvent { int cid; bool is_message; std::string msg; };
+  std::mutex                ws_inbox_mu_;
+  std::vector<WsInboxEvent> ws_inbox_;
   // Outstanding async preview readbacks. Each `readbackTextureScaledAsync`
   // call increments before issuing; the send worker decrements after
   // the broadcast completes. The dtor drains this to zero before
