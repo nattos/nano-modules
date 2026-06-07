@@ -78,10 +78,20 @@ void main(uint3 gid : SV_GroupThreadID) {
 
   uint w = (W > 256u) ? 256u : W;
 
-  // Load persistent state from last frame into threadgroup memory.
+  // Load persistent state from last frame into threadgroup memory, SANITIZED.
+  // The buffer persists across frames, so a stray NaN (e.g. a pre-fix CFL
+  // blow-up) or uninitialized garbage would otherwise stick forever and
+  // freeze the tail. `x != x` catches NaN (portable — no isnan/isinf
+  // intrinsics, which this shader pipeline rejects); clamp maps ±Inf and any
+  // wild-but-finite value back into range. The field then re-propagates from
+  // the nozzle within a frame or two.
   for (uint k = 0u; k < w; ++k) {
     Cell c = cells[k];
-    s_u[k] = c.u; s_p[k] = c.p; s_b[k] = c.b; s_m[k] = c.m; s_lit[k] = c.lit;
+    s_u[k]   = (c.u   != c.u)   ? 0.0 : clamp(c.u,   0.0, 1000.0);
+    s_p[k]   = (c.p   != c.p)   ? 1.0 : clamp(c.p,   0.0, 100.0);
+    s_b[k]   = (c.b   != c.b)   ? 0.0 : clamp(c.b,   0.0, 100.0);
+    s_m[k]   = (c.m   != c.m)   ? 0.0 : saturate(c.m);
+    s_lit[k] = (c.lit != c.lit) ? 0.0 : saturate(c.lit);
   }
 
   float dts = dt / max((float)substeps, 1.0);
@@ -103,7 +113,7 @@ void main(uint3 gid : SV_GroupThreadID) {
     for (uint i = 1u; i < w; ++i) {
       float u = s_u[i], p = s_p[i], b = s_b[i], m = s_m[i], lit = s_lit[i];
 
-      float cfl_u = u * dts / cell_dx;                    // material Courant #
+      float cfl_u = clamp(u * dts / cell_dx, 0.0, 0.95);  // material Courant #
 
       // Velocity: upwind self-advection + relax to a maturity-decayed target.
       float u_target = exitVel * (1.0 - 0.3 * m);
