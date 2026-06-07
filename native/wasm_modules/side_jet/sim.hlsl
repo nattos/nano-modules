@@ -28,6 +28,8 @@
 // sweep that carries the previous cell's pre-update value in registers
 // (old_*L) is exactly a synchronous double-buffered step.
 
+#include "nano_sanitize.hlsl"
+
 struct Cell {
   float u;     // axial velocity (canvas-uv / sec)
   float p;     // pressure ratio (>1 over-expanded → shock diamonds)
@@ -81,17 +83,16 @@ void main(uint3 gid : SV_GroupThreadID) {
   // Load persistent state from last frame into threadgroup memory, SANITIZED.
   // The buffer persists across frames, so a stray NaN (e.g. a pre-fix CFL
   // blow-up) or uninitialized garbage would otherwise stick forever and
-  // freeze the tail. `x != x` catches NaN (portable — no isnan/isinf
-  // intrinsics, which this shader pipeline rejects); clamp maps ±Inf and any
-  // wild-but-finite value back into range. The field then re-propagates from
-  // the nozzle within a frame or two.
+  // freeze the tail. nano_sanitize maps NaN -> ambient and folds ±Inf/garbage
+  // back into range; the field then re-propagates from the nozzle in a frame
+  // or two.
   for (uint k = 0u; k < w; ++k) {
     Cell c = cells[k];
-    s_u[k]   = (c.u   != c.u)   ? 0.0 : clamp(c.u,   0.0, 1000.0);
-    s_p[k]   = (c.p   != c.p)   ? 1.0 : clamp(c.p,   0.0, 100.0);
-    s_b[k]   = (c.b   != c.b)   ? 0.0 : clamp(c.b,   0.0, 100.0);
-    s_m[k]   = (c.m   != c.m)   ? 0.0 : saturate(c.m);
-    s_lit[k] = (c.lit != c.lit) ? 0.0 : saturate(c.lit);
+    s_u[k]   = nano_sanitize(c.u,   0.0, 0.0, 1000.0);
+    s_p[k]   = nano_sanitize(c.p,   1.0, 0.0, 100.0);
+    s_b[k]   = nano_sanitize(c.b,   0.0, 0.0, 100.0);
+    s_m[k]   = nano_sanitize(c.m,   0.0, 0.0, 1.0);
+    s_lit[k] = nano_sanitize(c.lit, 0.0, 0.0, 1.0);
   }
 
   float dts = dt / max((float)substeps, 1.0);

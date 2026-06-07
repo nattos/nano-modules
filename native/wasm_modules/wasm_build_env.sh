@@ -88,6 +88,23 @@ _emit_shader_header() {
 # (etc.) — see wasm_modules/shaders_common/.
 SHADERS_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/shaders_common" && pwd)"
 
+# --- Shader hygiene gate ------------------------------------------------
+# Fail the build if any shader uses the isnan()/isinf() intrinsics. They
+# compile to SPIR-V but make the downstream PSO build fail SILENTLY at
+# runtime (the effect never initializes -> blank output, no build error).
+# Use `x != x` for NaN + clamp() for +/-Inf (shaders_common/nano_sanitize.hlsl).
+# Crude but comprehensive: scans every effect shader on each build. The regex
+# requires a "(" so prose like "isnan / isinf" in comments doesn't trip it.
+_WASM_MODULES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_forbidden_intrinsics="$(grep -rnE '\bis(nan|inf)[[:space:]]*\(' "$_WASM_MODULES_DIR" --include='*.hlsl' 2>/dev/null || true)"
+if [ -n "$_forbidden_intrinsics" ]; then
+  echo "ERROR: forbidden shader intrinsic isnan()/isinf() — these break PSO" >&2
+  echo "       compilation (the effect silently fails to initialize). Use" >&2
+  echo "       'x != x' for NaN and clamp() for +/-Inf (nano_sanitize.hlsl):" >&2
+  echo "$_forbidden_intrinsics" | sed 's/^/       /' >&2
+  exit 1
+fi
+
 # compile_shaders_compute_var <effect> <variant_name> <wgsl_storage_format>
 # [<access>] [<source_basename>]
 #
