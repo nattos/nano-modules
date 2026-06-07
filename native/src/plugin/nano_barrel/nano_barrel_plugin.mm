@@ -473,6 +473,26 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       std::lock_guard<std::mutex> lock(tick_mu_);
       sketch_json = bridge_core_.state_document().get_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch");
+      // Route the live macro knobs into any io.barrel_macros instance's state.
+      // The executor's write-tap capture reads scalar outputs from the sketch
+      // instance state, so this is what makes the FFGL macros usable inside a
+      // sketch (write-tap a macro_N output onto a rail). Done on a local copy of
+      // the JSON — the persisted sketch is untouched. macros_ is consistent
+      // here (written under tick_mu_ by SetFloatParameter).
+      if (sketch_json.contains("instances") &&
+          sketch_json["instances"].is_object()) {
+        for (auto& [key, inst] : sketch_json["instances"].items()) {
+          if (!inst.is_object()) continue;
+          if (inst.value("module_type", std::string()) != "io.barrel_macros") {
+            continue;
+          }
+          auto& st = inst["state"];
+          if (!st.is_object()) st = nlohmann::json::object();
+          for (unsigned int i = 0; i < N_MACROS; ++i) {
+            st["macro_" + std::to_string(i)] = (double)macros_[i];
+          }
+        }
+      }
       // Drain any preview-request changes the WS thread has signalled.
       // Doing the actual map rebuild here keeps it on the render thread
       // (single writer) so publishPreviewFrames can iterate later in

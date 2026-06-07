@@ -66,6 +66,7 @@ wasm_build \
   ../solid_color/main.cpp \
   ../video_blend/main.cpp \
   ../paramlinker/main.cpp \
+  ../barrel_macros/main.cpp \
   ../bake_alpha/main.cpp \
   ../curve/main.cpp \
   ../exposure/main.cpp \

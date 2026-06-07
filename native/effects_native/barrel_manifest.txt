@@ -33,7 +33,8 @@
 core | brightness_contrast | video.brightness_contrast | Brightness/Contrast | instance | compute,pixel | identity
 core | solid_color | generator.solid_color | Solid Color | instance | compute,pixel
 core | video_blend | video.blend | Video Blend | instance | compute
-core | paramlinker | utility.paramlinker | Param Linker | instance | 
+core | paramlinker | utility.paramlinker | Param Linker | instance |
+core | barrel_macros | io.barrel_macros | Barrel Macros | instance |  | identity
 core | bake_alpha | video.bake_alpha | Bake Alpha | instance | compute,pixel
 core | curve | video.curve | Curve | instance | compute,pixel
 core | exposure | video.exposure | Exposure | instance | compute,pixel | identity

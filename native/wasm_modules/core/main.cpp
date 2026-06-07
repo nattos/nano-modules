@@ -22,6 +22,9 @@ NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
 NANO_DECLARE_INSTANCE_EFFECT(paramlinker)
 
+NANO_DECLARE_INSTANCE_EFFECT(barrel_macros)
+namespace barrel_macros { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
 NANO_DECLARE_INSTANCE_EFFECT(curve)
@@ -113,6 +116,17 @@ void nano_module_main() {
         "utility",
         "resolume,parameter,link,automation",
         NANO_INSTANCE_LIFECYCLE(paramlinker),
+    });
+
+    nano::registerEffect({
+        2,
+        "io.barrel_macros",
+        "Barrel Macros",
+        "Exposes the NanoBarrel macro knobs as tappable float outputs",
+        "io",
+        "macro,knob,barrel,control,rail",
+        NANO_INSTANCE_LIFECYCLE(barrel_macros),
+        &barrel_macros::is_identity,
     });
 
     nano::registerEffect({
