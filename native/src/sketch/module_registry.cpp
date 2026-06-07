@@ -18,7 +18,8 @@ bool ModuleRegistry::registerEffect(
     void  (*render)(void*, int, int),
     void  (*on_state_patched)(void*, int, const char*, const int*,
                               const int*, const int*),
-    int32_t (*is_identity)(void*)) {
+    int32_t (*is_identity)(void*),
+    void  (*on_active)(void*, int32_t)) {
   if (entries_.count(moduleType)) return true;
   if (!rt_) return false;
 
@@ -33,6 +34,7 @@ bool ModuleRegistry::registerEffect(
   d.render           = render;
   d.on_state_patched = on_state_patched;
   d.is_identity      = is_identity;
+  d.on_active        = on_active;
   // registerEffect creates the type prototype and runs module_init()
   // (schema publish + shared GPU resources). Per-instance state is
   // created lazily per chain entry via EffectRuntime::instanceFor.

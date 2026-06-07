@@ -227,6 +227,12 @@ target_include_directories(test_composition_cache PRIVATE ${CMAKE_SOURCE_DIR}/sr
 target_link_libraries(test_composition_cache PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_composition_cache)
 
+# Tap-mod range remapper + summation math (header-only; lock-step with web).
+add_executable(test_tap_mod tests/test_tap_mod.cpp)
+target_include_directories(test_tap_mod PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_tap_mod PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_tap_mod)
+
 add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)

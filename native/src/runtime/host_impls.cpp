@@ -122,6 +122,11 @@ int state_is_field_connected(const char* path, int path_len, int direction) {
                           : inst->isOutputConnected(p)) ? 1 : 0;
 }
 
+int state_will_render() {
+  auto* inst = active();
+  return (inst && inst->willRender()) ? 1 : 0;
+}
+
 void state_set_on_state_ready(void (*fn)(void* self)) {
   auto* inst = active();
   if (!inst) return;

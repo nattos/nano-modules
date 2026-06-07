@@ -100,10 +100,52 @@ export interface Rail {
   dataType: RailDataType;
 }
 
+/**
+ * Shaping curve applied to a remap's normalized value. `linear` is identity;
+ * the rest are ease-in base curves (the `curveOut` slot mirrors them to ease-out
+ * — see web/src/tap-mod.ts / native/src/sketch/tap_mod.h for the exact, lock-step
+ * formulas that web and native MUST share for pixel parity). `foldback` is
+ * special: instead of clipping out-of-range input it reflects it back into range.
+ */
+export type TapCurve = 'linear' | 'quad' | 'circular' | 'power' | 'foldback';
+
+/**
+ * Per-tap range remapper. Applied to float-rail values only: BEFORE writing
+ * (write taps) or AFTER reading (read taps). All fields optional — an absent
+ * `mod` (or absent sub-field) means today's pass-through behavior.
+ */
+export interface TapMod {
+  /** Multiply from 0 (out = in * scale). Default 1. Applied before `remap`. */
+  scale?: number;
+  remap?: {
+    inMin: number;
+    inMax: number;
+    outMin: number;
+    outMax: number;
+    /** Clip the normalized input to [0,1] (ignored when `curveIn`/`curveOut` is `foldback`). */
+    saturate?: boolean;
+    /** Ease-in shaping on the input side. Default `linear`. */
+    curveIn?: TapCurve;
+    /** Ease-out shaping on the output side. Default `linear`. */
+    curveOut?: TapCurve;
+    /** Exponent for `power` curves. Default 2. */
+    exponent?: number;
+  };
+}
+
+/** How a write tap combines its (modded) value into the rail's current frame value. */
+export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
+
 /** Connects a module's field to a rail. */
 export interface Tap {
   railId: string;
   /** Field path in instance state (e.g. "params/0", "output", "texture_out/0"). */
   fieldPath: string;
   direction: 'read' | 'write';
+  /** Range remapper (float rails only). Read taps: after read; write taps: before write. */
+  mod?: TapMod;
+  /** Write taps only: how to combine into the rail (default `replace`). */
+  combine?: TapCombine;
+  /** Factor for `combine === 'mix'` (lerp toward the new value). Default 1. */
+  mixFactor?: number;
 }

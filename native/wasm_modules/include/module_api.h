@@ -74,6 +74,15 @@ struct EffectDesc_v2 {
     // many effects that don't supply one, and nullptr means "never
     // skippable".
     int32_t (*is_identity)(void* self);
+
+    // Optional: called when the host toggles this effect's "device" on/off
+    // (Resolume "bypass" / Live "on light"). `active` is 1 when the device
+    // is turned ON, 0 when turned OFF. Fired only on a transition, so the
+    // effect can release/reacquire heavy resources, reset simulations, or
+    // mute side-channels. While OFF the effect receives NO other calls
+    // (no tick/render/state) and the host aliases its input→output.
+    // Trailing + optional: nullptr means "don't care".
+    void (*on_active)(void* self, int32_t active);
 };
 
 /// Register an effect with the host.

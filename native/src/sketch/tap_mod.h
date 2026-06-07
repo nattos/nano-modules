@@ -1,0 +1,111 @@
+#pragma once
+/*
+ * tap_mod.h — Tap value transforms ("tap mods"): the range remapper + write-tap
+ * summation, applied to FLOAT rail values during sketch execution.
+ *
+ * This is one half of a LOCK-STEP pair: the math here MUST stay byte-identical to
+ * web/src/tap-mod.ts. The web executor reproduces native pixels exactly, so a tap
+ * that feeds a float into a render parameter would desync the image if the two
+ * sides shaped the value differently. Any change to a formula here must be mirrored
+ * there (and is covered by the shared goldens in web/src/tap-mod.test.ts and the
+ * native Catch2 mirror).
+ *
+ * Header-only and dependency-light (just <cmath>) so it compiles in both the native
+ * runtime and any wasm build without dragging in GPU/STL-heavy headers.
+ *
+ * Read taps run applyTapMod AFTER reading the rail (before feeding the module);
+ * write taps run applyTapMod BEFORE writing, then combineTap to fold the result
+ * into the rail's current value for this frame.
+ */
+
+#include <cmath>
+
+namespace tap_mod {
+
+enum class Curve { Linear, Quad, Circular, Power, Foldback };
+enum class Combine { Replace, Mix, Add, Mul };
+
+/// Parsed remap spec. `hasRemap` distinguishes "scale only" from "scale + remap".
+struct Mod {
+  float scale = 1.0f;
+  bool  hasRemap = false;
+  float inMin = 0.0f, inMax = 1.0f;
+  float outMin = 0.0f, outMax = 1.0f;
+  bool  saturate = false;
+  Curve curveIn = Curve::Linear;
+  Curve curveOut = Curve::Linear;
+  float exponent = 2.0f;
+};
+
+inline float clamp01(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
+
+/// Reflect x into [0,1] (period-2 triangle wave) — the "foldback" range handler.
+inline float fold01(float x) {
+  float m = std::fmod(x, 2.0f);
+  if (m < 0.0f) m += 2.0f;
+  return m <= 1.0f ? m : 2.0f - m;
+}
+
+/// Base (ease-in) shaping curve. power/circular use sign/range-preserving
+/// extensions so out-of-range input stays finite & deterministic; foldback
+/// reflects out-of-range input into [0,1].
+inline float baseCurve(float t, Curve curve, float exponent) {
+  switch (curve) {
+    case Curve::Quad:
+      return t * t;
+    case Curve::Circular: {
+      float s = 1.0f - t * t;
+      return 1.0f - std::sqrt(s > 0.0f ? s : 0.0f);
+    }
+    case Curve::Power:
+      return t >= 0.0f ? std::pow(t, exponent) : -std::pow(-t, exponent);
+    case Curve::Foldback:
+      return fold01(t);
+    case Curve::Linear:
+    default:
+      return t;
+  }
+}
+
+/// Ease-out is the mirror of the ease-in base curve (foldback is symmetric).
+inline float shapeOut(float t, Curve curve, float exponent) {
+  if (curve == Curve::Foldback) return fold01(t);
+  return 1.0f - baseCurve(1.0f - t, curve, exponent);
+}
+
+/// Apply a tap's range remapper to a scalar. Pipeline: scale → normalize to [0,1]
+/// → (saturate|foldback) → curveIn (ease-in) → curveOut (ease-out) → [outMin,outMax].
+inline float applyTapMod(float value, const Mod& mod) {
+  float v = value * mod.scale;
+  if (mod.hasRemap) {
+    float denom = mod.inMax - mod.inMin;
+    float t = denom != 0.0f ? (v - mod.inMin) / denom : 0.0f;
+
+    bool foldback = mod.curveIn == Curve::Foldback || mod.curveOut == Curve::Foldback;
+    if (foldback) t = fold01(t);
+    else if (mod.saturate) t = clamp01(t);
+
+    t = baseCurve(t, mod.curveIn, mod.exponent);
+    t = shapeOut(t, mod.curveOut, mod.exponent);
+
+    v = mod.outMin + t * (mod.outMax - mod.outMin);
+  }
+  return v;
+}
+
+/// Fold a write tap's (already modded) value into the rail's current frame value.
+/// The first writer this frame just seeds the rail (`hasExisting == false`),
+/// regardless of mode; subsequent writers combine per their own mode.
+inline float combineTap(bool hasExisting, float existing, float value,
+                        Combine combine, float mixFactor) {
+  if (!hasExisting) return value;
+  switch (combine) {
+    case Combine::Add: return existing + value;
+    case Combine::Mul: return existing * value;
+    case Combine::Mix: return existing + (value - existing) * mixFactor;
+    case Combine::Replace:
+    default:           return value;
+  }
+}
+
+}  // namespace tap_mod

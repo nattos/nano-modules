@@ -1,10 +1,13 @@
 #include "sketch/sketch_executor.h"
 
 #include "sketch/sketch_augment.h"
+#include "sketch/tap_mod.h"
+#include "sketch/host_blend.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/fusion_codegen.h"
 
+#include <memory>
 #include <utility>
 
 namespace sketch_executor {
@@ -32,6 +35,72 @@ void forEachRailLeafTexture(const json& dataType, F&& f) {
     sketch_augment::collectTextureLeaves(schema, "", leaves);
     for (auto& l : leaves) f(l);
   }
+}
+
+// --- Tap mod parsing (lock-step with web/src/tap-mod.ts via tap_mod.h) ---
+
+tap_mod::Curve parseCurve(const json& v) {
+  if (!v.is_string()) return tap_mod::Curve::Linear;
+  const std::string s = v.get<std::string>();
+  if (s == "quad")     return tap_mod::Curve::Quad;
+  if (s == "circular") return tap_mod::Curve::Circular;
+  if (s == "power")    return tap_mod::Curve::Power;
+  if (s == "foldback") return tap_mod::Curve::Foldback;
+  return tap_mod::Curve::Linear;
+}
+
+tap_mod::Combine parseCombine(const json& tap) {
+  const json& v = tap.contains("combine") ? tap["combine"] : json();
+  if (!v.is_string()) return tap_mod::Combine::Replace;
+  const std::string s = v.get<std::string>();
+  if (s == "add") return tap_mod::Combine::Add;
+  if (s == "mul") return tap_mod::Combine::Mul;
+  if (s == "mix") return tap_mod::Combine::Mix;
+  return tap_mod::Combine::Replace;
+}
+
+// Build a tap_mod::Mod from a tap's optional "mod" object. Absent fields keep
+// the struct's pass-through defaults.
+tap_mod::Mod parseMod(const json& tap) {
+  tap_mod::Mod m;
+  if (!tap.contains("mod") || !tap["mod"].is_object()) return m;
+  const json& mod = tap["mod"];
+  m.scale = mod.value("scale", 1.0f);
+  if (mod.contains("remap") && mod["remap"].is_object()) {
+    const json& r = mod["remap"];
+    m.hasRemap = true;
+    m.inMin    = r.value("inMin", 0.0f);
+    m.inMax    = r.value("inMax", 1.0f);
+    m.outMin   = r.value("outMin", 0.0f);
+    m.outMax   = r.value("outMax", 1.0f);
+    m.saturate = r.value("saturate", false);
+    m.exponent = r.value("exponent", 2.0f);
+    m.curveIn  = parseCurve(r.contains("curveIn")  ? r["curveIn"]  : json());
+    m.curveOut = parseCurve(r.contains("curveOut") ? r["curveOut"] : json());
+  }
+  return m;
+}
+
+// --- Reserved per-effect engine state keys (device on/off + opacity) ---
+
+bool readBypass(const json& instances, const std::string& instKey) {
+  if (!instances.is_object() || !instances.contains(instKey)) return false;
+  const auto& st = instances[instKey].value("state", json::object());
+  if (!st.is_object()) return false;
+  auto it = st.find("__bypass__");
+  if (it == st.end()) return false;
+  if (it->is_boolean()) return it->get<bool>();
+  if (it->is_number())  return it->get<double>() != 0.0;
+  return false;
+}
+
+float readOpacity(const json& instances, const std::string& instKey) {
+  if (!instances.is_object() || !instances.contains(instKey)) return 1.0f;
+  const auto& st = instances[instKey].value("state", json::object());
+  if (!st.is_object()) return 1.0f;
+  auto it = st.find("__opacity__");
+  if (it == st.end() || !it->is_number()) return 1.0f;
+  return (float)it->get<double>();
 }
 
 }  // namespace
@@ -177,6 +246,13 @@ int32_t SketchExecutor::execute(
               !entry["taps"].empty()) {
             e = false;
           }
+          // A bypassed stage goes dormant (aliases input→output) and a
+          // non-unity-opacity stage needs a standalone wet/dry blend pass —
+          // neither can participate in a fused dispatch.
+          if (e && (readBypass(instances, instKey) ||
+                    readOpacity(instances, instKey) != 1.0f)) {
+            e = false;
+          }
         }
         eligibleK[k] = e ? 1 : 0;
         isBarrier[k] = (barrierPredicate_
@@ -235,6 +311,33 @@ int32_t SketchExecutor::execute(
       auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
       if (!inst) return;
 
+      // For a passthrough stage that is the column's FINAL output, the result
+      // must land in `outputHandle` (the caller's bound output texture) — the
+      // barrel blits that texture, not an arbitrary intermediate. Mid-chain
+      // passthroughs just alias colInput (the next stage reads it directly).
+      const bool isFinalStage = isLastCol && isLastGroupInCol;
+      auto passthroughOutput = [&](int32_t src) -> int32_t {
+        if (isFinalStage && src != outputHandle && gpu_) {
+          gpu_->copyTexture(src, outputHandle);
+          return outputHandle;
+        }
+        return src;
+      };
+
+      // -- Device on/off ("bypass"): when off, fire the on_active transition
+      // then go fully dormant — no state, no taps, no tick/render — and alias
+      // the column input straight through as this stage's output. --
+      const bool bypass = readBypass(instances, instKey);
+      inst->doSetActive(!bypass);
+      if (bypass) {
+        int32_t out = passthroughOutput(colInput);
+        if (chainEntryHook_) {
+          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+        }
+        finalHandle = out;   // colInput unchanged for next stage (mid-chain)
+        return;
+      }
+
       // -- Zero stale per-field state from the previous frame --
       for (const auto& path : reg->inputTexturePaths) {
         inst->setTextureField(path, 0);
@@ -262,19 +365,48 @@ int32_t SketchExecutor::execute(
       const bool hasTaps = entry.contains("taps") && entry["taps"].is_array()
                            && !entry["taps"].empty();
       if (!hasTaps && inst->isIdentity()) {
+        int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
-          chainEntryHook_((int)colIdx, (int)i, colInput, colInput, W, H);
+          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
-        finalHandle = colInput;   // alias; colInput stays for the next stage
+        finalHandle = out;   // alias; colInput stays for the next stage
         return;
       }
 
-      const bool isFinalStage = isLastCol && isLastGroupInCol;
+      // -- Opacity (Resolume-style wet/dry) --
+      // 0   → skip render (alias input through), but tick() still runs so the
+      //       sim advances; the effect sees state::willRender()==false.
+      // 1   → normal full-strength render.
+      // 0<o<1 → render into a scratch texture, then host-blend it with the
+      //       column input: out = mix(colInput, fx, opacity).
+      const float opacity = readOpacity(instances, instKey);
+      const bool willRender = opacity > 0.0f;
+      inst->setWillRender(willRender);
+
+      if (!willRender) {
+        inst->setTextureField("tex_in", colInput);
+        inst->setFieldConnected("tex_in", true, false);
+        applyReadTaps(inst, entry, railsById, railTextures, railFloats);
+        markWriteTapOutputsConnected(inst, entry);
+        inst->doTick(dt);
+        captureWriteTaps(inst, entry, instKey, instances,
+                         railsById, railTextures, railFloats);
+        int32_t out = passthroughOutput(colInput);
+        if (chainEntryHook_) {
+          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+        }
+        finalHandle = out;   // passthrough; colInput unchanged for next stage
+        return;
+      }
+
       int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
+      // Partial opacity renders to a scratch texture first, then blends.
+      const bool partial = opacity < 1.0f;
+      int32_t fxHandle = partial ? nextIntermediate(W, H) : outHandle;
 
       // -- Wire primary channels --
       inst->setTextureField("tex_in",  colInput);
-      inst->setTextureField("tex_out", outHandle);
+      inst->setTextureField("tex_out", fxHandle);
       inst->setFieldConnected("tex_in",  true,  false);
       inst->setFieldConnected("tex_out", false, true);
 
@@ -286,6 +418,15 @@ int32_t SketchExecutor::execute(
 
       captureWriteTaps(inst, entry, instKey, instances,
                        railsById, railTextures, railFloats);
+
+      if (partial) {
+        if (!blend_) blend_ = std::make_unique<WetDryBlend>();
+        if (!blend_->encode(gpu_, colInput, fxHandle, outHandle, opacity, W, H)) {
+          // Couldn't build the blend pass — show the effect at full strength
+          // rather than nothing.
+          if (gpu_) gpu_->copyTexture(fxHandle, outHandle);
+        }
+      }
 
       if (chainEntryHook_) {
         chainEntryHook_((int)colIdx, (int)i, colInput, outHandle, W, H);
@@ -478,6 +619,9 @@ void SketchExecutor::applyState(
   for (auto it = state.begin(); it != state.end(); ++it) {
     const auto& v = it.value();
     const std::string& name = it.key();
+    // Reserved engine keys (e.g. __bypass__, __opacity__) are handled by the
+    // executor itself — never delivered to the effect as params.
+    if (name.size() >= 2 && name[0] == '_' && name[1] == '_') continue;
     // Per-field skip: only patch fields whose value differs from the last
     // applied state. Fields removed from `state` are intentionally left at
     // their last-applied value (the runtime has no "unset param").
@@ -524,7 +668,9 @@ void SketchExecutor::applyReadTaps(
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
       auto fit = railFloats.find(railId);
       if (fit != railFloats.end()) {
-        inst->setParamFloat(fieldPath, fit->second);
+        // Apply the tap's range remapper (after read) before feeding the module.
+        float shaped = tap_mod::applyTapMod(fit->second, parseMod(tap));
+        inst->setParamFloat(fieldPath, shaped);
         inst->setFieldConnected(fieldPath, true, false);
       }
       continue;
@@ -572,11 +718,20 @@ void SketchExecutor::captureWriteTaps(
                             .value("state", json::object());
         if (st.is_object() && st.contains(fieldPath)) {
           const auto& v = st[fieldPath];
-          if (v.is_number()) {
-            railFloats[railId] = (float)v.get<double>();
-            inst->setFieldConnected(fieldPath, false, true);
-          } else if (v.is_boolean()) {
-            railFloats[railId] = v.get<bool>() ? 1.0f : 0.0f;
+          bool hasScalar = false;
+          float raw = 0.0f;
+          if (v.is_number())       { raw = (float)v.get<double>(); hasScalar = true; }
+          else if (v.is_boolean()) { raw = v.get<bool>() ? 1.0f : 0.0f; hasScalar = true; }
+          if (hasScalar) {
+            // Apply the range remapper (before write), then fold into the rail's
+            // current frame value per the combine mode. The first writer this
+            // frame (railFloats has no entry yet) just seeds.
+            float shaped = tap_mod::applyTapMod(raw, parseMod(tap));
+            auto existing = railFloats.find(railId);
+            railFloats[railId] = tap_mod::combineTap(
+                existing != railFloats.end(),
+                existing != railFloats.end() ? existing->second : 0.0f,
+                shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
             inst->setFieldConnected(fieldPath, false, true);
           }
         }

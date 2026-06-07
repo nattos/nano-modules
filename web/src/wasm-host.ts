@@ -35,6 +35,12 @@ export interface WasmModule {
    * when the effect did not register an is_identity predicate.
    */
   isIdentity(): boolean;
+  /**
+   * Device on/off ("bypass") transition. `active` is true when turned ON,
+   * false when turned OFF. The executor calls this only on a change. Absent
+   * when the effect didn't register an on_active callback.
+   */
+  onActive?(active: boolean): void;
 }
 
 /** Metadata for an effect discovered via nano_module_main registration. */
@@ -54,6 +60,7 @@ export interface EffectInfo {
   _onStatePatchedIdx: number;
   _onResolumeParamIdx: number; // 0 = not supported
   _isIdentityIdx: number; // 0 = not supported (never skippable)
+  _onActiveIdx: number; // 0 = not supported (no device on/off callback)
 }
 
 export interface ConsoleEntry {
@@ -237,6 +244,11 @@ export class WasmHost {
   // the current sketch's wiring.
   fieldsWithWriter: Set<string> = new Set();
   fieldsWithReader: Set<string> = new Set();
+
+  // Per-stage "will this effect's output be drawn this frame" flag, exposed to
+  // the effect via state::willRender(). The executor sets it before each tick();
+  // false only when opacity is 0 (render skipped). Defaults true.
+  willRender: boolean = true;
 
   // textureFields keys installed by the executor's read-tap loop last
   // frame for NAMED (non-numeric) texture taps. Cleared and rewritten
@@ -718,6 +730,11 @@ export class WasmHost {
           if (direction === 1) return this.fieldsWithReader.has(path) ? 1 : 0;
           return 0;
         },
+        will_render: (): number => {
+          // False only when the executor is skipping render() this frame
+          // because opacity is 0 (tick still runs). Set per-stage before tick.
+          return this.willRender ? 1 : 0;
+        },
         set_on_state_ready: (fnIdx: number) => {
           // Effect's `init()` registers a callback to be fired once
           // after init + initial state replay. Stored as a function
@@ -1141,7 +1158,8 @@ export class WasmHost {
           //  +0 version, +4..+20 id/name/desc/category/keywords,
           //  +24 module_init, +28 create, +32 destroy, +36 init,
           //  +40 tick, +44 render, +48 on_state_patched, +52 on_resolume_param,
-          //  +56 is_identity (optional; 0/absent => never skippable).
+          //  +56 is_identity (optional; 0/absent => never skippable),
+          //  +60 on_active (optional device on/off transition callback).
           const idPtr = mem.getUint32(descPtr + 4, true);
           const namePtr = mem.getUint32(descPtr + 8, true);
           const descriptionPtr = mem.getUint32(descPtr + 12, true);
@@ -1157,6 +1175,7 @@ export class WasmHost {
           const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
           const onResolumeParamIdx = mem.getUint32(descPtr + 52, true);
           const isIdentityIdx = mem.getUint32(descPtr + 56, true);
+          const onActiveIdx = mem.getUint32(descPtr + 60, true);
 
           this.registeredEffects.push({
             id: this.readCString(idPtr),
@@ -1173,6 +1192,7 @@ export class WasmHost {
             _onStatePatchedIdx: onStatePatchedIdx,
             _onResolumeParamIdx: onResolumeParamIdx,
             _isIdentityIdx: isIdentityIdx,
+            _onActiveIdx: onActiveIdx,
           });
         },
       },
@@ -1241,6 +1261,15 @@ export class WasmHost {
         isIdentityFn = undefined;
       }
     }
+    // on_active is the next trailing/optional field (offset +60); same guard.
+    let onActiveFn: ((self: number, active: number) => void) | undefined;
+    if (effect._onActiveIdx !== 0) {
+      try {
+        onActiveFn = table.get(effect._onActiveIdx) as (self: number, active: number) => void;
+      } catch {
+        onActiveFn = undefined;
+      }
+    }
 
     // Call init immediately, threading the instance's self pointer.
     initFn(self);
@@ -1255,6 +1284,7 @@ export class WasmHost {
         ? (paramId: bigint, value: number) => onResolumeParamFn(self, paramId, value)
         : undefined,
       isIdentity: () => isIdentityFn ? (isIdentityFn(self) | 0) !== 0 : false,
+      onActive: onActiveFn ? (active: boolean) => onActiveFn!(self, active ? 1 : 0) : undefined,
     };
   }
 

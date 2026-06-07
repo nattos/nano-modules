@@ -77,6 +77,13 @@ extern "C" {
   // can call this any time after on_state_ready.
   __attribute__((import_module("state"), import_name("is_field_connected")))
   int state_is_field_connected(const char* path, int path_len, int direction);
+  // Non-zero when this effect's output WILL be drawn this frame. False when
+  // the host is skipping render() because the effect's opacity is 0 (the host
+  // aliases the input through). tick() still runs in that case, so the effect
+  // can read this during tick() to skip render-prep / heavy sim it won't need.
+  // Set by the executor before each tick(); defaults to true (1).
+  __attribute__((import_module("state"), import_name("will_render")))
+  int state_will_render();
   __attribute__((import_module("state"), import_name("set_on_state_ready")))
   void state_set_on_state_ready(void (*fn)(void* self));
   // Register a SPIR-V shader blob under a name. The host translates
@@ -874,6 +881,14 @@ inline bool isInputConnected(const char* path) {
 /// when no downstream effect reads render_outputs.
 inline bool isOutputConnected(const char* path) {
   return state_is_field_connected(path, std::strlen(path), 1) != 0;
+}
+
+/// True when this effect's output will actually be drawn this frame. False
+/// only when the host is skipping render() due to zero opacity (it aliases the
+/// input through instead). tick() still runs while "not rendering", so check
+/// this in tick() to skip render-prep / expensive simulation you won't need.
+inline bool willRender() {
+  return state_will_render() != 0;
 }
 
 // ========================================================================

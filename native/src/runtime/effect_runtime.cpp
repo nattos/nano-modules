@@ -74,6 +74,16 @@ void EffectInstance::doRender(int vp_w, int vp_h) {
   runtime_->setActive(nullptr);
 }
 
+void EffectInstance::doSetActive(bool active) {
+  if (active == active_) return;
+  active_ = active;
+  if (desc_.on_active) {
+    runtime_->setActive(this);
+    desc_.on_active(user_state_, active ? 1 : 0);
+    runtime_->setActive(nullptr);
+  }
+}
+
 void EffectInstance::doPrepare(int vp_w, int vp_h) {
   if (!fusion_info_.prepare) return;
   runtime_->setActive(this);
@@ -309,6 +319,7 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
     void  (*on_state_patched)(void*, int, const char*, const int*, const int*, const int*);
     void  (*on_resolume_param)(void*, long long, double);
     int32_t (*is_identity)(void*);
+    void  (*on_active)(void*, int32_t);
   };
   const auto* d = static_cast<const DescV2*>(desc_v2_ptr);
   if (!d || d->struct_version != 2) return;
@@ -327,6 +338,7 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
   desc.on_state_patched = d->on_state_patched;
   desc.on_resolume_param = d->on_resolume_param;
   desc.is_identity = d->is_identity;
+  desc.on_active = d->on_active;
   registerEffect(desc);
 }
 

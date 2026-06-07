@@ -51,6 +51,9 @@ struct EffectDesc {
   // the executor then skips its dispatch and aliases input→output. Only
   // valid for stateless effects.
   int32_t (*is_identity)(void* self) = nullptr;
+  // Optional device on/off transition callback (see nano::EffectDesc_v2::on_active).
+  // active=1 turned ON, 0 turned OFF. Fired only on a change.
+  void (*on_active)(void* self, int32_t active) = nullptr;
 };
 
 // One EffectInstance per (effect type, sketch instance_key). Each owns the
@@ -85,6 +88,16 @@ class EffectInstance {
   void doDestroy();
   void doTick(double dt);
   void doRender(int vp_w, int vp_h);
+  // Drive the device on/off ("bypass") state. Fires the descriptor's
+  // on_active callback only on a transition. New instances start active, so
+  // the first doSetActive(false) fires an OFF; re-enabling fires an ON.
+  void doSetActive(bool active);
+  bool active() const { return active_; }
+  // Per-frame "will this effect's output be drawn" flag, set by the executor
+  // before doTick(). False when opacity is 0 (render is skipped). Read by the
+  // effect via state::willRender().
+  void setWillRender(bool v) { will_render_ = v; }
+  bool willRender() const { return will_render_; }
   // Drive only the per-frame uniform-buffer write (no dispatch). The
   // fusion path uses this in place of doRender so the executor can
   // batch N effects' uniforms + a single compute dispatch. No-op if
@@ -175,6 +188,12 @@ class EffectInstance {
   // every instance-scoped callback as `self`. Null on the type prototype
   // (which only runs module_init) and on effects without a create().
   void* user_state_ = nullptr;
+
+  // Device on/off state. Starts active (true); doSetActive fires the
+  // on_active callback on transitions only.
+  bool active_ = true;
+  // Per-frame render-skip flag (see setWillRender). Defaults true.
+  bool will_render_ = true;
 
   std::string metadata_id_;
   std::string metadata_version_;

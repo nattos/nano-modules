@@ -924,6 +924,13 @@ export class ColumnGroup extends MobxLitElement {
     const effectPath = `effect/${this.sketchId}/${this.colIdx}/${chainIdx}`;
     const isSelected = appController.isSelected(effectPath);
 
+    // Per-effect device controls (reserved engine keys in instance state).
+    const reservedState = appState.database.sketches[this.sketchId]
+      ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
+    const bypass = reservedState?.__bypass__ === true || reservedState?.__bypass__ === 1;
+    const opacity = typeof reservedState?.__opacity__ === 'number'
+      ? reservedState!.__opacity__ as number : 1;
+
     // Register as selectable with inspector content
     this.registerEffectSelectable(effectPath, chainIdx, entry);
 
@@ -968,9 +975,27 @@ export class ColumnGroup extends MobxLitElement {
                 >${shortName(entry.module_type)}</span>
               `}
             </div>
+            <input type="range" min="0" max="1" step="0.01" .value=${String(opacity)}
+              title=${`Opacity ${Math.round(opacity * 100)}%`}
+              style="margin-left:auto;width:54px;accent-color:var(--app-accent-color, #4caf50)"
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => e.stopPropagation()}
+              @change=${(e: Event) => {
+                const v = parseFloat((e.target as HTMLInputElement).value);
+                if (!isNaN(v)) appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__opacity__', v);
+              }}>
+            <button
+              title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
+              style="background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => {
+                e.stopPropagation();
+                appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
+              }}>⏻</button>
           </div>
           <div class="effect-card-divider"></div>
-          <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}">
+          <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"
+            style=${bypass ? 'opacity:0.4;pointer-events:none' : ''}>
             ${this.renderFieldWidgets(chainIdx, entry)}
           </div>
           ${this.renderTraceCardRow(chainIdx, entry)}

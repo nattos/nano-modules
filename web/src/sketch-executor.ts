@@ -7,6 +7,7 @@ import type { BridgeCore } from './bridge-core';
 import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
 import type { ChainEntry, ModuleEntry, Sketch, SketchColumn, Rail, Tap } from './sketch-types';
+import { applyTapMod, combineTap } from './tap-mod';
 import {
   FusionDispatcher,
   FUSION_KIND_FREEFORM,
@@ -36,6 +37,12 @@ export type FusionMode = 'auto' | 'force-on' | 'force-off';
 interface LoadedModule {
   host: WasmHost;
   module: WasmModule;
+  /**
+   * Device on/off state from the previous frame (true = on). Persisted on the
+   * cached instance so the executor fires `onActive` only on a transition.
+   * Undefined until the first frame (treated as on).
+   */
+  active?: boolean;
 }
 
 function deepClone<T>(v: T): T {
@@ -65,6 +72,9 @@ export function instanceStateToParams(
   const patches: import('./wasm-host').PatchOp[] = [];
   const positional: number[] = [];
   for (const [key, value] of Object.entries(instanceState)) {
+    // Reserved engine keys (e.g. __bypass__, __opacity__) are handled by the
+    // executor itself — never delivered to the effect as params.
+    if (key.startsWith('__')) continue;
     if (typeof value === 'number') {
       positional.push(value);
       patches.push({ op: 'replace', path: key, value });
@@ -372,6 +382,89 @@ export class SketchExecutor {
     return entry;
   }
 
+  // --- Per-effect opacity wet/dry blend (mirrors native host_blend.h) ---
+  private blendPipeline?: GPUComputePipeline;
+  private blendUniform?: GPUBuffer;
+  private blendBlack?: GPUTexture;
+  private blendBlackW = 0;
+  private blendBlackH = 0;
+
+  private ensureBlendPipeline(): GPUComputePipeline {
+    if (this.blendPipeline) return this.blendPipeline;
+    // out = mix(dry, fx, opacity), full RGBA — byte-identical to the MSL in
+    // native/src/sketch/host_blend.h. Storage format matches the intermediate
+    // pool's format so the write is valid on this device.
+    const wgsl = `
+struct U { w: u32, h: u32, opacity: f32, pad: f32 };
+@group(0) @binding(0) var dry_tex: texture_2d<f32>;
+@group(0) @binding(1) var fx_tex: texture_2d<f32>;
+@group(0) @binding(2) var out_tex: texture_storage_2d<${this.format}, write>;
+@group(0) @binding(3) var<uniform> u: U;
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x >= u.w || gid.y >= u.h) { return; }
+  let c = vec2<i32>(i32(gid.x), i32(gid.y));
+  let a = textureLoad(dry_tex, c, 0);
+  let b = textureLoad(fx_tex, c, 0);
+  textureStore(out_tex, c, mix(a, b, u.opacity));
+}`;
+    const module = this.device.createShaderModule({ code: wgsl });
+    this.blendPipeline = this.device.createComputePipeline({
+      layout: 'auto',
+      compute: { module, entryPoint: 'main' },
+    });
+    this.blendUniform = this.device.createBuffer({
+      size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    return this.blendPipeline;
+  }
+
+  /** Zero-initialized (transparent black) texture used as the dry side when no
+   * input is connected (generator fade-out). WebGPU zero-inits new textures. */
+  private blackDry(width: number, height: number): GPUTexture {
+    if (!this.blendBlack || this.blendBlackW !== width || this.blendBlackH !== height) {
+      this.blendBlack?.destroy();
+      this.blendBlack = this.device.createTexture({
+        size: [width, height], format: this.format,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      this.blendBlackW = width;
+      this.blendBlackH = height;
+    }
+    return this.blendBlack;
+  }
+
+  /** Encode + submit a wet/dry opacity blend: outTex = mix(dry, fxTex, opacity). */
+  private encodeWetDryBlend(
+    dryHandle: number, fxTex: GPUTexture, outTex: GPUTexture,
+    opacity: number, width: number, height: number,
+  ) {
+    const pipeline = this.ensureBlendPipeline();
+    const dryTex = this.gpuHost.getTextureByHandle(dryHandle) ?? this.blackDry(width, height);
+    const u = new ArrayBuffer(16);
+    const dv = new DataView(u);
+    dv.setUint32(0, width, true);
+    dv.setUint32(4, height, true);
+    dv.setFloat32(8, opacity, true);
+    this.device.queue.writeBuffer(this.blendUniform!, 0, u);
+    const bind = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: dryTex.createView() },
+        { binding: 1, resource: fxTex.createView() },
+        { binding: 2, resource: outTex.createView() },
+        { binding: 3, resource: { buffer: this.blendUniform! } },
+      ],
+    });
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+  }
+
   /**
    * Execute all columns of a sketch left-to-right, with cross-cutting rails.
    * Returns the output handle of the last column that produced output.
@@ -581,6 +674,29 @@ export class SketchExecutor {
       {
         const loaded = await this.ensureInstance(entry);
 
+        // --- Device on/off ("bypass") ---
+        // Reserved engine key in instance state. When off, fire the on_active
+        // transition then alias input→output with NO state/taps/tick/render —
+        // the effect goes fully dormant (Resolume "bypass"). Fire onActive only
+        // on a change (the cached instance remembers the previous state).
+        const reservedState = sketch.instances?.[entry.instance_key]?.state as
+          Record<string, unknown> | undefined;
+        const bypass = reservedState?.__bypass__ === true || reservedState?.__bypass__ === 1;
+        const shouldBeActive = !bypass;
+        if (loaded.active === undefined) loaded.active = true;
+        if (loaded.active !== shouldBeActive) {
+          loaded.active = shouldBeActive;
+          loaded.module.onActive?.(shouldBeActive);
+        }
+        if (bypass) {
+          // Passthrough: leave currentInputHandle unchanged for the next stage.
+          this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+            input: currentInputHandle,
+            output: currentInputHandle,
+          });
+          continue;
+        }
+
         // --- Apply initial state from sketch instances (or legacy entry.params) ---
         const instanceState = sketch.instances?.[entry.instance_key]?.state ?? entry.params ?? {};
         const { patches: paramPatches, positional } =
@@ -694,9 +810,11 @@ export class SketchExecutor {
                       ?? sketch.rails?.find(r => r.id === tap.railId);
 
             if (rail?.dataType === 'float' && rv.data !== undefined) {
-              // Data tap read: push modulated value directly to the module
+              // Data tap read: apply the tap's range remapper (after read), then
+              // push the shaped value to the module.
+              const shaped = applyTapMod(rv.data, tap.mod);
               loaded.host.notifyStatePatched(loaded.module, [
-                { op: 'replace', path: tap.fieldPath, value: rv.data },
+                { op: 'replace', path: tap.fieldPath, value: shaped },
               ]);
             } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
               // Texture tap read. Numeric fieldPath → positional input
@@ -770,6 +888,13 @@ export class SketchExecutor {
         this.gpuHost.setSurface(outputTex, width, height);
         loaded.host.textureFields.set('tex_out', outputHandle);
 
+        // --- Per-effect opacity (reserved engine key) ---
+        // 0 → skip render (alias input), but tick still runs (the sim step);
+        // 1 → normal; 0<o<1 → render then host wet/dry blend with the input.
+        const rawOpacity = (instanceState as Record<string, unknown>).__opacity__;
+        const opacity = typeof rawOpacity === 'number' ? rawOpacity : 1;
+        loaded.host.willRender = opacity > 0;
+
         // --- Tick and render ---
         loaded.host.drawList = [];
         loaded.module.tick(frameState.deltaTime);
@@ -815,10 +940,24 @@ export class SketchExecutor {
         // input.
         const isMapperKind = loaded.host.fusionKind === FUSION_KIND_PER_PIXEL_MAPPER;
         const isStrictOutKind = loaded.host.fusionKind === FUSION_KIND_STRICT_OUTPUT;
+        // Opacity != 1 forces a standalone render + host blend, so it can't fuse
+        // (mirrors the native fusion-eligibility gate).
         const useFused = (this.fusionMode !== 'force-off')
+                         && opacity >= 1
                          && this.canFuseStage(entry, loaded.host)
                          && (isStrictOutKind || (isMapperKind && currentInputHandle >= 0));
-        if (useFused) {
+
+        // The handle this stage contributes downstream. For opacity 0 it's the
+        // passthrough input; for partial opacity it's the blend result.
+        let effectiveOutputHandle = outputHandle;
+        let extraSlots = 0;
+
+        if (opacity <= 0) {
+          // Opacity 0: tick already advanced the sim; skip render and pass the
+          // column input straight through (no slot consumed).
+          flushFusedRun();
+          effectiveOutputHandle = currentInputHandle;
+        } else if (useFused) {
           loaded.host.firePrepare(width, height);
           const stage: FusionStage = {
             effectId: entry.module_type,
@@ -856,6 +995,19 @@ export class SketchExecutor {
           flushFusedRun();
           loaded.module.render(width, height);
           this.debugStats.standaloneDispatches++;
+          if (opacity < 1) {
+            // Partial opacity: blend the effect's full-strength output (the slot
+            // texture, now submitted) with the column input into a fresh slot.
+            const blendSlot = slotCounter.value + 1;
+            if (blendSlot >= intermediates.textures.length) {
+              this.ensureIntermediates(sketchId, blendSlot + 1, width, height);
+            }
+            this.encodeWetDryBlend(
+              currentInputHandle, outputTex, intermediates.textures[blendSlot],
+              opacity, width, height);
+            effectiveOutputHandle = intermediates.handles[blendSlot];
+            extraSlots = 1;
+          }
         }
         this.debugStats.effectsExecuted++;
 
@@ -878,13 +1030,18 @@ export class SketchExecutor {
                          ?? instanceState[tap.fieldPath];
               if (value !== undefined) {
                 const existing = targetRailValues.get(tap.railId) ?? {};
-                existing.data = value;
+                // Apply the tap's range remapper (before write), then fold into
+                // the rail's current frame value per the tap's combine mode. The
+                // first writer this frame (existing.data === undefined) just seeds.
+                const shaped = applyTapMod(value as number, tap.mod);
+                existing.data = combineTap(existing.data, shaped, tap.combine, tap.mixFactor);
                 targetRailValues.set(tap.railId, existing);
               }
             } else if (rail?.dataType === 'texture') {
               // Texture tap write: the module's output texture goes onto the rail
+              // (the post-opacity result — passthrough at 0, blended at <1).
               const existing = targetRailValues.get(tap.railId) ?? {};
-              existing.texture = outputHandle;
+              existing.texture = effectiveOutputHandle;
               targetRailValues.set(tap.railId, existing);
             } else if (
               typeof rail?.dataType === 'object' &&
@@ -913,13 +1070,15 @@ export class SketchExecutor {
         if (!useFused) {
           this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
             input: currentInputHandle,
-            output: outputHandle,
+            output: effectiveOutputHandle,
           });
         }
 
         // --- Advance chain ---
-        currentInputHandle = outputHandle;
-        slotCounter.value++;
+        currentInputHandle = effectiveOutputHandle;
+        // Opacity 0 consumed no slot; partial opacity consumed an extra one
+        // (fx + blend); everything else consumes exactly one.
+        slotCounter.value += opacity <= 0 ? 0 : 1 + extraSlots;
       }
     }
 

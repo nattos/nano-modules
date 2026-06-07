@@ -948,6 +948,19 @@ export class AppController {
     });
   }
 
+  /**
+   * Shallow-merge a partial tap update (mod / combine / mixFactor) into a tap.
+   * Used by the tap "Modulation" inspector. Pass `undefined` for a key to clear it.
+   */
+  updateTap(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number,
+            patch: Partial<import('../sketch-types').Tap>) {
+    this.mutate(`Edit tap mod`, draft => {
+      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      const tap = entry?.type === 'module' ? entry.taps?.[tapIndex] : undefined;
+      if (tap) Object.assign(tap, patch);
+    });
+  }
+
   // --- Auto-tap helpers ---
 
   /**

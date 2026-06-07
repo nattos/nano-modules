@@ -36,6 +36,7 @@
 #include "sketch/module_registry.h"
 
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <vector>
@@ -48,6 +49,8 @@ class EffectInstance;
 }  // namespace effect_runtime
 
 namespace sketch_executor {
+
+class WetDryBlend;  // host-side opacity wet/dry blend (host_blend.h)
 
 class SketchExecutor {
  public:
@@ -170,6 +173,9 @@ class SketchExecutor {
   // Compiled shader modules backing those PSOs, kept alive so the
   // GPUBackend doesn't free them out from under us.
   std::vector<int32_t> fusedShaderModules_;
+
+  // Lazily-created host-side wet/dry blend pass for per-effect opacity.
+  std::unique_ptr<WetDryBlend> blend_;
 
   int32_t nextIntermediate(int W, int H);
 
