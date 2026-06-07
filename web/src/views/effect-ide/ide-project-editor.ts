@@ -145,7 +145,7 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
    * editor's handler — same behavior, same guards (no-op while typing).
    */
   private onGlobalKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
     const selection = appState.local.selection;
@@ -156,6 +156,19 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     const colIdx = parseInt(parts[2], 10);
     const chainIdx = parseInt(parts[3], 10);
     if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
+
+    if (e.key === '0') {
+      // Toggle the selected device on/off (bypass), mirroring the header light.
+      const entry = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      if (!entry || entry.type !== 'module') return;
+      const st = appState.database.sketches[sketchId]
+        ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
+      const bypass = st?.__bypass__ === true || st?.__bypass__ === 1;
+      e.preventDefault();
+      appController.setEffectParam(sketchId, colIdx, chainIdx, '__bypass__', !bypass);
+      return;
+    }
+
     e.preventDefault();
     appController.select(null);
     appController.removeEffectFromChain(sketchId, colIdx, chainIdx);
