@@ -954,11 +954,30 @@ export class AppController {
    */
   updateTap(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number,
             patch: Partial<import('../sketch-types').Tap>) {
-    this.mutate(`Edit tap mod`, draft => {
+    this.mutate(`Edit tap mod`, this.tapPatchRecipe(sketchId, colIdx, chainIdx, tapIndex, patch));
+  }
+
+  private tapPatchRecipe(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number,
+                         patch: Partial<import('../sketch-types').Tap>) {
+    return (draft: DatabaseState) => {
       const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
       const tap = entry?.type === 'module' ? entry.taps?.[tapIndex] : undefined;
       if (tap) Object.assign(tap, patch);
-    });
+    };
+  }
+
+  /** Begin a continuous tap-mod edit (slider drag). No undo points during drag. */
+  beginUpdateTap(sketchId: string, colIdx: number, chainIdx: number, tapIndex: number,
+                 patch: Partial<import('../sketch-types').Tap>): LongEdit {
+    return this.history.beginLongEdit(
+      `Edit tap mod`,
+      this.tapPatchRecipe(sketchId, colIdx, chainIdx, tapIndex, patch));
+  }
+
+  /** Update a continuous tap-mod edit (drag in progress). */
+  updateUpdateTap(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number,
+                  tapIndex: number, patch: Partial<import('../sketch-types').Tap>) {
+    edit.update(this.tapPatchRecipe(sketchId, colIdx, chainIdx, tapIndex, patch));
   }
 
   // --- Auto-tap helpers ---

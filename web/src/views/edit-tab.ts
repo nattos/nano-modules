@@ -17,7 +17,7 @@ import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { Sketch, Rail, Tap, TapMod, TapCurve, TapCombine } from '../sketch-types';
+import type { Sketch, Rail } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
 import type { FieldBinding } from '../widgets/field-editor';
@@ -467,9 +467,6 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
               <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1;"
                 @click=${() => appController.removeTap(sketchId, colIdx, chainIdx, tapIdx)}>×</button>
             </div>
-            ${rail?.dataType === 'float'
-              ? this.renderTapMod(sketchId, colIdx, chainIdx, tapIdx, tap)
-              : nothing}
           `;
         })}
         <!-- Show trace cards for connected rails -->
@@ -522,99 +519,6 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
         `)}
         <button class="btn" style="width:100%;text-align:center;padding:6px"
           @click=${() => this.createRailAndTap(sketchId, colIdx, chainIdx, fieldPath)}>+ New Rail</button>
-      </div>
-    `;
-  }
-
-  /** Merge a partial TapMod into a tap's `mod` (preserving other mod fields). */
-  private setTapModField(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number,
-                         cur: TapMod | undefined, patch: Partial<TapMod>) {
-    appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { mod: { ...(cur ?? {}), ...patch } });
-  }
-
-  /** Merge a partial remap into a tap's `mod.remap` (preserving other remap fields). */
-  private setRemapField(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number,
-                        cur: TapMod | undefined, patch: Partial<NonNullable<TapMod['remap']>>) {
-    const curRemap = cur?.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
-    this.setTapModField(sketchId, colIdx, chainIdx, tapIdx, cur, { remap: { ...curRemap, ...patch } });
-  }
-
-  /** Compact range-remapper + summation controls shown under a float-rail tap. */
-  private renderTapMod(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number, tap: Tap) {
-    const mod = tap.mod;
-    const remap = mod?.remap;
-    const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
-    const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
-    const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
-
-    const inS = 'width:48px;background:var(--app-bg-color2,#1a1a1a);border:1px solid var(--app-border-color,#333);color:var(--app-text-color);font-size:10px;padding:1px 3px;border-radius:2px';
-    const rowS = 'display:flex;align-items:center;gap:6px';
-    const lblS = 'width:52px;flex-shrink:0';
-
-    const num = (val: number, onChange: (v: number) => void, step = 0.01) => html`
-      <input type="number" .value=${String(val)} step=${step} style=${inS}
-        @change=${(e: Event) => { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) onChange(v); }} />
-    `;
-    const sel = <T extends string>(val: T, opts: readonly T[], onChange: (v: T) => void) => html`
-      <select style=${inS + ';width:auto'}
-        @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value as T)}>
-        ${opts.map(o => html`<option value=${o} ?selected=${o === val}>${o}</option>`)}
-      </select>
-    `;
-
-    return html`
-      <div style="padding:4px 0 8px 8px;border-left:2px solid var(--app-border-color,#333);margin:0 0 8px 4px;display:flex;flex-direction:column;gap:4px;font-size:10px;color:var(--app-text-color2)">
-        <label style=${rowS}>
-          <span style=${lblS}>Scale</span>
-          ${num(mod?.scale ?? 1, v => this.setTapModField(sketchId, colIdx, chainIdx, tapIdx, mod, { scale: v }))}
-        </label>
-        <label style=${rowS}>
-          <input type="checkbox" ?checked=${!!remap}
-            @change=${(e: Event) => this.setTapModField(sketchId, colIdx, chainIdx, tapIdx, mod,
-              { remap: (e.target as HTMLInputElement).checked ? (remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined })} />
-          <span>Remap range</span>
-        </label>
-        ${remap ? html`
-          <label style=${rowS}>
-            <span style=${lblS}>In min/max</span>
-            ${num(remap.inMin, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { inMin: v }))}
-            ${num(remap.inMax, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { inMax: v }))}
-          </label>
-          <label style=${rowS}>
-            <span style=${lblS}>Out min/max</span>
-            ${num(remap.outMin, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { outMin: v }))}
-            ${num(remap.outMax, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { outMax: v }))}
-          </label>
-          <label style=${rowS}>
-            <input type="checkbox" ?checked=${!!remap.saturate}
-              @change=${(e: Event) => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { saturate: (e.target as HTMLInputElement).checked })} />
-            <span>Saturate (clip input)</span>
-          </label>
-          <label style=${rowS}>
-            <span style=${lblS}>Curve in</span>
-            ${sel(remap.curveIn ?? 'linear', CURVES, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { curveIn: v }))}
-          </label>
-          <label style=${rowS}>
-            <span style=${lblS}>Curve out</span>
-            ${sel(remap.curveOut ?? 'linear', CURVES, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { curveOut: v }))}
-          </label>
-          ${usesPower ? html`
-            <label style=${rowS}>
-              <span style=${lblS}>Exponent</span>
-              ${num(remap.exponent ?? 2, v => this.setRemapField(sketchId, colIdx, chainIdx, tapIdx, mod, { exponent: v }), 0.1)}
-            </label>` : nothing}
-        ` : nothing}
-        ${tap.direction === 'write' ? html`
-          <label style=${rowS}>
-            <span style=${lblS}>Combine</span>
-            ${sel(tap.combine ?? 'replace', COMBINES, v => appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { combine: v }))}
-          </label>
-          ${tap.combine === 'mix' ? html`
-            <label style=${rowS}>
-              <span style=${lblS}>Mix factor</span>
-              ${num(tap.mixFactor ?? 1, v => appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { mixFactor: v }))}
-            </label>` : nothing}
-        ` : nothing}
       </div>
     `;
   }

@@ -1688,10 +1688,15 @@ export class ColumnGroup extends MobxLitElement {
     const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
     const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
 
-    const inS = 'width:52px;background:var(--app-bg-color2,#1a1a1a);border:1px solid var(--app-border-color,#333);color:var(--app-text-color1,#eaeaea);font-size:10px;padding:1px 3px;border-radius:2px';
-    const num = (val: number, onChange: (v: number) => void, step = 0.01) => html`
-      <input type="number" style=${inS} .value=${String(val)} step=${step}
-        @change=${(e: Event) => { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) onChange(v); }} />
+    const inS = 'background:var(--app-bg-color2,#1a1a1a);border:1px solid var(--app-border-color,#333);color:var(--app-text-color1,#eaeaea);font-size:10px;padding:1px 3px;border-radius:2px';
+    const binding = this.tapModBinding(sketchId, colIdx, chainIdx, tapIdx);
+    // Numeric fields use the shared <scalar-slider> (drag, type, long edits)
+    // bound to the tap's mod fields; getValue returns undefined when unset so
+    // the slider falls back to `defaultValue`.
+    const slider = (path: string, def: number, min: number, max: number, step = 0.01, width = 112) => html`
+      <scalar-slider style=${`width:${width}px`}
+        .fieldPath=${path} .min=${min} .max=${max} .step=${step} .defaultValue=${def}
+        .binding=${binding}></scalar-slider>
     `;
     const sel = <T extends string>(val: T, opts: readonly T[], onChange: (v: T) => void) => html`
       <select style=${inS + ';width:auto'} @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value as T)}>
@@ -1704,7 +1709,7 @@ export class ColumnGroup extends MobxLitElement {
       <div class="section-header">Modulation</div>
       <div class="inspector-field">
         <span class="inspector-field-label">Scale</span>
-        ${num(mod?.scale ?? 1, v => this.mergeTapMod(sketchId, colIdx, chainIdx, tapIdx, mod, { scale: v }))}
+        ${slider('scale', 1, 0, 4)}
       </div>
       <div class="inspector-field">
         <span class="inspector-field-label">Remap</span>
@@ -1715,13 +1720,13 @@ export class ColumnGroup extends MobxLitElement {
       ${remap ? html`
         <div class="inspector-field">
           <span class="inspector-field-label">In</span>
-          ${num(remap.inMin, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { inMin: v }))}
-          ${num(remap.inMax, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { inMax: v }))}
+          ${slider('remap.inMin', 0, -1, 1, 0.01, 54)}
+          ${slider('remap.inMax', 1, -1, 1, 0.01, 54)}
         </div>
         <div class="inspector-field">
           <span class="inspector-field-label">Out</span>
-          ${num(remap.outMin, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { outMin: v }))}
-          ${num(remap.outMax, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { outMax: v }))}
+          ${slider('remap.outMin', 0, -1, 1, 0.01, 54)}
+          ${slider('remap.outMax', 1, -1, 1, 0.01, 54)}
         </div>
         <div class="inspector-field">
           <span class="inspector-field-label">Saturate</span>
@@ -1739,7 +1744,7 @@ export class ColumnGroup extends MobxLitElement {
         ${usesPower ? html`
           <div class="inspector-field">
             <span class="inspector-field-label">Exponent</span>
-            ${num(remap.exponent ?? 2, v => this.mergeTapRemap(sketchId, colIdx, chainIdx, tapIdx, mod, { exponent: v }), 0.1)}
+            ${slider('remap.exponent', 2, 0, 8, 0.1)}
           </div>` : nothing}
       ` : nothing}
       ${tap.direction === 'write' ? html`
@@ -1750,10 +1755,55 @@ export class ColumnGroup extends MobxLitElement {
         ${tap.combine === 'mix' ? html`
           <div class="inspector-field">
             <span class="inspector-field-label">Mix factor</span>
-            ${num(tap.mixFactor ?? 1, v => appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, { mixFactor: v }))}
+            ${slider('mixFactor', 1, 0, 1)}
           </div>` : nothing}
       ` : nothing}
     `;
+  }
+
+  /**
+   * FieldBinding mapping synthetic paths ('scale', 'remap.inMin', 'mixFactor', …)
+   * to a tap's mod fields, so the shared <scalar-slider> can drive them with
+   * long (continuous) edits. getValue returns undefined for an unset field so the
+   * slider uses its defaultValue.
+   */
+  private tapModBinding(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number): FieldBinding {
+    const getTap = (): Tap | undefined => {
+      const e = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      return e?.type === 'module' ? e.taps?.[tapIdx] : undefined;
+    };
+    const read = (path: string): number | undefined => {
+      const tap = getTap();
+      if (!tap) return undefined;
+      if (path === 'scale') return tap.mod?.scale;
+      if (path === 'mixFactor') return tap.mixFactor;
+      if (path.startsWith('remap.')) {
+        return (tap.mod?.remap as Record<string, number> | undefined)?.[path.slice(6)];
+      }
+      return undefined;
+    };
+    // Build a Partial<Tap> patch for a path+value, deep-merging mod/remap.
+    const patchFor = (path: string, v: number): Partial<Tap> => {
+      const mod = getTap()?.mod ?? {};
+      if (path === 'scale') return { mod: { ...mod, scale: v } };
+      if (path === 'mixFactor') return { mixFactor: v };
+      const remap = mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
+      return { mod: { ...mod, remap: { ...remap, [path.slice(6)]: v } } };
+    };
+    return {
+      instanceKey: `tap/${sketchId}/${colIdx}/${chainIdx}/${tapIdx}`,
+      getValue: (path: string) => read(path),
+      setValue: (path: string, v: any) =>
+        appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v as number)),
+      beginContinuousEdit: (path: string, v: any): ContinuousEditHandle => {
+        const edit = appController.beginUpdateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v as number));
+        return {
+          update: (nv: any) => appController.updateUpdateTap(edit, sketchId, colIdx, chainIdx, tapIdx, patchFor(path, nv as number)),
+          accept: () => edit.accept(),
+          cancel: () => edit.cancel(),
+        };
+      },
+    };
   }
 
   // ========================================================================
