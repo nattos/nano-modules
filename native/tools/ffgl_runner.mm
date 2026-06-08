@@ -33,6 +33,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <chrono>
+#include <ctime>
 #include <thread>
 
 // Minimal send-only WebSocket client: connect, RFC6455 handshake, send ONE
@@ -369,7 +370,15 @@ int main(int argc, const char* argv[]) {
 
     // 6. Process N frames so timeline-driven effects (orbit phase
     // accumulators etc.) actually progress.
+    //
+    // Benchmark with THREAD-CPU time (CLOCK_THREAD_CPUTIME_ID), not wall: the
+    // FFGL GL↔Metal interop blocks the render thread on GPU completion every
+    // frame (resolution-independent), so wall time is GPU-wait-dominated and
+    // useless for CPU-side work. Thread-CPU excludes those blocks, so it
+    // isolates ProcessOpenGL's actual CPU cost (the executor walk, encode, etc.).
     double dt_ms = 1000.0 / 60.0;
+    timespec cpu0{}, cpu1{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu0);
     for (int f = 0; f < numFrames; ++f) {
       double t = f * dt_ms;
       plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
@@ -377,7 +386,12 @@ int main(int argc, const char* argv[]) {
                (FFMixed){.PointerValue = &ps}, instanceID);
       glFlush();
     }
-    std::cerr << "[ffgl_runner] processed " << numFrames << " frames\n";
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu1);
+    double cpuMs = (cpu1.tv_sec - cpu0.tv_sec) * 1e3 +
+                   (cpu1.tv_nsec - cpu0.tv_nsec) / 1e6;
+    std::cerr << "[ffgl_runner] processed " << numFrames << " frames; "
+              << "ProcessOpenGL thread-CPU " << cpuMs << " ms total, "
+              << (cpuMs / numFrames) << " ms/frame\n";
 
     // 7. Readback host FBO → RGBA.
     std::vector<uint8_t> pixels((size_t)width * height * 4);
