@@ -350,6 +350,11 @@ int main(int argc, char** argv) {
       {"pixelCount", pixels.size() / 4},
       {"pixelsBase64", base64Encode(pixels)},
       {"samples", samples},
+      // Fusion class the effect declared in init() (state::FusionKind:
+      // 0=Freeform, 1=PerPixelMapper, 2=StrictOutput). Lets a test confirm
+      // an effect still declares itself fusion-eligible before asserting it
+      // actually fused in a chain. Mirrors the web runner's `fusionKind`.
+      {"fusionKind", inst->fusionInfo().kind},
       {"consoleLog", rt.drainConsoleLog()},
       {"gpuErrors", nlohmann::json::array()},
       {"pluginState", nlohmann::json::object()},

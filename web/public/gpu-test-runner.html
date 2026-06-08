@@ -208,6 +208,13 @@ async function run() {
     // the LAST stage in a run gets its trace via copyTexture from
     // nextOutput post-flush, mirroring the standalone path.
     let runAcc = null;
+    // Count of fused-group dispatches that actually combined 2+ stages into a
+    // single kernel (a lone fusion-eligible stage still routes through the
+    // dispatcher in force-on for parity, but isn't a "fusion" in the sense the
+    // executor's planner means — so it doesn't count). Mirrors the native
+    // SketchExecutor::fusedRunCount semantics (group.fused == end>start) so
+    // `fusedRuns` is the same cross-backend signal: did real fusion happen.
+    let fusedRuns = 0;
     const copyToTrace = (srcTex, stepIdx) => {
       const dst = traceTextures.get(stepIdx);
       if (!dst) return;
@@ -238,6 +245,7 @@ async function run() {
       fusionDispatcher.dispatch(
         acc.stages, acc.inputHandle, acc.outputHandle, W, H,
         anyTraced ? perStageTraceHandles : undefined);
+      if (acc.stages.length >= 2) fusedRuns++;
       // The dispatch wrote to nextOutput (currentOutput pre-swap).
       // If the run's LAST stage is traced, snapshot from nextOutput
       // (its trace texture mirrors the run's outputHandle).
@@ -469,6 +477,11 @@ async function run() {
       pixelCount: pixels.length / 4,
       samples, pixelsBase64,
       tracePixelsBase64,
+      fusedRuns,
+      // Fusion class the LAST effect declared (state::FusionKind: 0=Freeform,
+      // 1=PerPixelMapper, 2=StrictOutput). For a single-effect run this is the
+      // effect under test. Mirrors the native runner's `fusionKind`.
+      fusionKind: lastHost?.fusionKind ?? 0,
       consoleLog: allConsoleLogs,
       gpuErrors: captured,
       pluginState: lastHost?.pluginState ?? {},
