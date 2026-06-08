@@ -13,14 +13,18 @@
  * refactored to render into a caller-provided GPUTexture.
  */
 
-// MSDF compositor (per-pixel compute). Matches the CPU golden
-// text_engine::Engine::rasterize; the native Metal path is now an instanced-quad
-// render pass (native/src/text/shaders/text_composite_quad_msl.h) that produces
-// the same pixels — this WGSL is the remaining compute compositor, pending a
-// matching quad port.
+// MSDF text compositor — instanced quads (vertex + fragment), one render pass:
+// bg fullscreen → boxes → glyphs, alpha-over, document order. Mirrors the native
+// Metal quad path (native/src/text/shaders/text_composite_quad_msl.h) and matches
+// the CPU golden text_engine::Engine::rasterize. Each glyph/box rasterizes only
+// its own pixels, so there is NO per-pixel loop over all glyphs (the former
+// compute kernel was O(canvas·glyphs)). The fragment's @builtin(position).xy IS
+// the pixel center (gid+0.5), so the per-fragment math equals the golden's
+// per-pixel math; instanced primitives blend in instance order, and we draw in
+// document order, so the alpha-over accumulation matches.
 const WGSL = `
 // 96-byte glyph: aux.x = atlas-array page (layer). clip/clipr = overflow:hidden
-// rounded rect (clip.z<=0 → none). ("meta" is a WGSL keyword.)
+// rounded rect (clip.z<=0 → none).
 struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32>, clip: vec4<f32>, clipr: vec4<f32> };
 // 112-byte background box: rect(x,y,w,h), rgba, radius(tl,tr,br,bl), clip+clipr,
 // bord(border_w,_,_,_), bcol(border rgba) — uniform solid border ring.
@@ -34,14 +38,12 @@ struct U {
 @group(0) @binding(1) var atlas_arr: texture_2d_array<f32>;
 @group(0) @binding(2) var bg_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
-@group(0) @binding(4) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var<uniform> u: U;
 @group(0) @binding(6) var<storage, read> boxes: array<Box>;
 
 fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c)); }
 // Signed distance (px) to a rounded box; radius = (tl,tr,br,bl), selected per
-// quadrant and clamped to half-extent. Matches the engine's CPU sdRoundBox, so
-// the GPU composite is byte-equal to the te_rasterize reference.
+// quadrant and clamped to half-extent. Matches the engine's CPU sdRoundBox.
 fn sd_round_box(p:vec2<f32>, c:vec2<f32>, h:vec2<f32>, rad:vec4<f32>) -> f32 {
   let d = p - c;
   let top = d.y < 0.0;
@@ -50,69 +52,116 @@ fn sd_round_box(p:vec2<f32>, c:vec2<f32>, h:vec2<f32>, rad:vec4<f32>) -> f32 {
   let q = abs(d) - h + vec2<f32>(r, r);
   return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
 }
-// overflow:hidden coverage mask for pixel p; clip.z<=0 → unclipped. clip rect is
-// in layout px (origin added like glyphs/boxes), same AA as the box fill.
+// overflow:hidden coverage mask for pixel p; clip.z<=0 → unclipped.
 fn clip_cov(p:vec2<f32>, clip:vec4<f32>, clipr:vec4<f32>) -> f32 {
   if (clip.z <= 0.0 || clip.w <= 0.0) { return 1.0; }
   let c = vec2<f32>(clip.x + u.origin_x + clip.z * 0.5, clip.y + u.origin_y + clip.w * 0.5);
   let sd = sd_round_box(p, c, vec2<f32>(clip.z * 0.5, clip.w * 0.5), clipr);
   return clamp(0.5 - sd, 0.0, 1.0);
 }
-// LINEAR-filtered sample of the glyph's atlas PAGE (array layer) — bilinear
-// distance-field interpolation = smooth, corner-sharp MSDF at any magnification.
-fn atlas_texel(uu:f32, vv:f32, page:i32) -> vec4<f32> {
-  return textureSampleLevel(atlas_arr, samp, vec2<f32>(uu, vv), page, 0.0);
+// Unit-quad corner for a 6-vertex (two-triangle) quad.
+fn quad_corner(vid:u32) -> vec2<f32> {
+  let x = select(0.0, 1.0, vid == 1u || vid == 3u || vid == 4u);
+  let y = select(0.0, 1.0, vid == 2u || vid == 4u || vid == 5u);
+  return vec2<f32>(x, y);
+}
+// pixel-space → clip space; y flips (framebuffer y-down → NDC y-up).
+fn px_to_clip(px:vec2<f32>) -> vec4<f32> {
+  return vec4<f32>(px.x / f32(u.canvas_w) * 2.0 - 1.0,
+                   1.0 - px.y / f32(u.canvas_h) * 2.0, 0.0, 1.0);
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x >= u.canvas_w || gid.y >= u.canvas_h) { return; }
-  let p = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
-  let bg_uv = p / vec2<f32>(f32(u.canvas_w), f32(u.canvas_h));
-  var col = textureSampleLevel(bg_tex, samp, bg_uv, 0.0).rgb;
-  // Background fills, behind the glyphs, in document order.
-  for (var b:u32 = 0u; b < u.box_count; b = b + 1u) {
-    let bq = boxes[b];
-    let c = vec2<f32>(bq.rect.x + u.origin_x + bq.rect.z * 0.5,
-                      bq.rect.y + u.origin_y + bq.rect.w * 0.5);
-    let sd = sd_round_box(p, c, vec2<f32>(bq.rect.z * 0.5, bq.rect.w * 0.5), bq.radius);
-    let clip = clip_cov(p, bq.clip, bq.clipr);
-    let shape = clamp(0.5 - sd, 0.0, 1.0);
-    // background fills the whole box; border = ring (SDF offset by border_w).
-    let bw = bq.bord.x;
-    let inner = select(shape, clamp(0.5 - (sd + bw), 0.0, 1.0), bw > 0.0);
-    let ring = max(shape - inner, 0.0);
-    // Fill the padding box (inner), not the full box, so the background doesn't
-    // bleed a light fringe past the border at the outer AA edge.
-    let af = inner * bq.rgba.a * clip;
-    col = bq.rgba.rgb * af + col * (1.0 - af);
-    let ar = ring * bq.bcol.a * clip;
-    col = bq.bcol.rgb * ar + col * (1.0 - ar);
+// ---- background (fullscreen) ----
+@vertex fn bg_vs(@builtin(vertex_index) vid:u32) -> @builtin(position) vec4<f32> {
+  let p = vec2<f32>(select(-1.0, 3.0, vid == 2u), select(-1.0, 3.0, vid == 1u));
+  return vec4<f32>(p, 0.0, 1.0);
+}
+@fragment fn bg_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+  // pos.xy is the pixel center (X+0.5,Y+0.5); alpha=1 → alpha-over == replace.
+  let uv = pos.xy / vec2<f32>(f32(u.canvas_w), f32(u.canvas_h));
+  return vec4<f32>(textureSampleLevel(bg_tex, samp, uv, 0.0).rgb, 1.0);
+}
+
+// ---- boxes (instanced rounded-rect fill + border) ----
+struct BoxOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) @interpolate(flat) rect: vec4<f32>,
+  @location(1) @interpolate(flat) rgba: vec4<f32>,
+  @location(2) @interpolate(flat) radius: vec4<f32>,
+  @location(3) @interpolate(flat) clip: vec4<f32>,
+  @location(4) @interpolate(flat) clipr: vec4<f32>,
+  @location(5) @interpolate(flat) bord: vec4<f32>,
+  @location(6) @interpolate(flat) bcol: vec4<f32>,
+};
+@vertex fn box_vs(@builtin(vertex_index) vid:u32, @builtin(instance_index) iid:u32) -> BoxOut {
+  let b = boxes[iid];
+  let corner = quad_corner(vid);
+  // Expand 1px on every side so the SDF AA edge is captured.
+  let ox = b.rect.x + u.origin_x - 1.0; let oy = b.rect.y + u.origin_y - 1.0;
+  let w = b.rect.z + 2.0; let h = b.rect.w + 2.0;
+  let px = vec2<f32>(ox + corner.x * w, oy + corner.y * h);
+  var o: BoxOut;
+  o.pos = px_to_clip(px);
+  o.rect = b.rect; o.rgba = b.rgba; o.radius = b.radius;
+  o.clip = b.clip; o.clipr = b.clipr; o.bord = b.bord; o.bcol = b.bcol;
+  return o;
+}
+@fragment fn box_fs(in: BoxOut) -> @location(0) vec4<f32> {
+  let p = in.pos.xy;
+  let c = vec2<f32>(in.rect.x + u.origin_x + in.rect.z * 0.5,
+                    in.rect.y + u.origin_y + in.rect.w * 0.5);
+  let sd = sd_round_box(p, c, vec2<f32>(in.rect.z * 0.5, in.rect.w * 0.5), in.radius);
+  let clip = clip_cov(p, in.clip, in.clipr);
+  let shape = clamp(0.5 - sd, 0.0, 1.0);
+  let bw = in.bord.x;
+  let inner = select(shape, clamp(0.5 - (sd + bw), 0.0, 1.0), bw > 0.0);
+  let ring = max(shape - inner, 0.0);
+  // Golden does fill-over then ring-over; fold both into one straight-alpha src.
+  let af = inner * in.rgba.a * clip;
+  let ar = ring * in.bcol.a * clip;
+  let srcA = 1.0 - (1.0 - af) * (1.0 - ar);
+  if (srcA <= 0.0) { discard; }
+  let premul = in.bcol.rgb * ar + in.rgba.rgb * af * (1.0 - ar);
+  return vec4<f32>(premul / srcA, srcA);
+}
+
+// ---- glyphs (instanced MSDF quads) ----
+struct GlyphOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) auv: vec2<f32>,
+  @location(1) @interpolate(flat) rgba: vec4<f32>,
+  @location(2) @interpolate(flat) page: f32,
+  @location(3) @interpolate(flat) spr: f32,
+  @location(4) @interpolate(flat) clip: vec4<f32>,
+  @location(5) @interpolate(flat) clipr: vec4<f32>,
+};
+@vertex fn glyph_vs(@builtin(vertex_index) vid:u32, @builtin(instance_index) iid:u32) -> GlyphOut {
+  let g = glyphs[iid];
+  let corner = quad_corner(vid);
+  let gx = g.rect.x + u.origin_x; let gy = g.rect.y + u.origin_y;
+  let px = vec2<f32>(gx + corner.x * g.rect.z, gy + corner.y * g.rect.w);
+  var o: GlyphOut;
+  o.pos = px_to_clip(px);
+  o.auv = vec2<f32>(mix(g.uv.x, g.uv.z, corner.x), mix(g.uv.y, g.uv.w, corner.y));
+  o.rgba = g.rgba;
+  o.page = g.aux.x;
+  let tile_h_px = (g.uv.w - g.uv.y) * f32(u.atlas_h);
+  o.spr = select(1.0, u.atlas_px_range * g.rect.w / tile_h_px, tile_h_px > 0.0);
+  o.clip = g.clip; o.clipr = g.clipr;
+  return o;
+}
+@fragment fn glyph_fs(in: GlyphOut) -> @location(0) vec4<f32> {
+  let texel = textureSampleLevel(atlas_arr, samp, in.auv, i32(in.page), 0.0);
+  var cov: f32;
+  if (u.atlas_kind == 0u) {
+    let sd = median3(texel.r, texel.g, texel.b);
+    cov = clamp(in.spr * (sd - 0.5) + 0.5, 0.0, 1.0);
+  } else {
+    cov = texel.a;
   }
-  for (var i:u32 = 0u; i < u.glyph_count; i = i + 1u) {
-    let g = glyphs[i];
-    let gx = g.rect.x + u.origin_x;
-    let gy = g.rect.y + u.origin_y;
-    if (p.x < gx || p.y < gy || p.x >= gx + g.rect.z || p.y >= gy + g.rect.w) { continue; }
-    let lu = (p.x - gx) / g.rect.z;
-    let lv = (p.y - gy) / g.rect.w;
-    let au = g.uv.x + lu * (g.uv.z - g.uv.x);
-    let av = g.uv.y + lv * (g.uv.w - g.uv.y);
-    let texel = atlas_texel(au, av, i32(g.aux.x));
-    var cov: f32;
-    if (u.atlas_kind == 0u) {
-      let tile_h_px = (g.uv.w - g.uv.y) * f32(u.atlas_h);
-      let spr = select(1.0, u.atlas_px_range * g.rect.w / tile_h_px, tile_h_px > 0.0);
-      let sd = median3(texel.r, texel.g, texel.b);
-      cov = clamp(spr * (sd - 0.5) + 0.5, 0.0, 1.0);
-    } else {
-      cov = texel.a;
-    }
-    cov = cov * clip_cov(p, g.clip, g.clipr);
-    let a = cov * g.rgba.a;
-    col = g.rgba.rgb * a + col * (1.0 - a);
-  }
-  textureStore(out_tex, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
+  cov = cov * clip_cov(in.pos.xy, in.clip, in.clipr);
+  let a = cov * in.rgba.a;
+  return vec4<f32>(in.rgba.rgb, a);
 }`;
 
 interface TEExports {
@@ -282,7 +331,14 @@ const G = globalThis as unknown as {
 export class TextEngine {
   private ex!: TEExports;
   private device!: GPUDevice;
-  private pipeline!: GPUComputePipeline;
+  // Quad compositor: one shader module + a shared bind-group layout, and render
+  // pipelines (bg/box/glyph) cached per target texture format (intermediates vs
+  // the canvas may differ). Built lazily in pipesFor().
+  private shaderModule!: GPUShaderModule;
+  private bindLayout!: GPUBindGroupLayout;
+  private pipeLayout!: GPUPipelineLayout;
+  private renderPipes = new Map<GPUTextureFormat,
+    { bg: GPURenderPipeline; box: GPURenderPipeline; glyph: GPURenderPipeline }>();
   private bgTex!: GPUTexture;
   private sampler!: GPUSampler;
   private atlasTex: GPUTexture | null = null;   // texture-array (one layer per atlas page)
@@ -380,10 +436,22 @@ export class TextEngine {
       catch (e) { console.warn(`text-engine: fallback font ${f.url} failed to load`, e); }
     }
 
-    this.pipeline = device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: device.createShaderModule({ code: WGSL }), entryPoint: 'main' },
+    this.shaderModule = device.createShaderModule({ code: WGSL });
+    // Shared bind-group layout for all three pipelines (each shader uses a
+    // subset). binding 0=glyphs(VS), 1=atlas(FS), 2=bg(FS), 3=sampler(FS),
+    // 5=uniforms(VS+FS), 6=boxes(VS).
+    const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT;
+    this.bindLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: F, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+        { binding: 2, visibility: F, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 3, visibility: F, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: V | F, buffer: { type: 'uniform' } },
+        { binding: 6, visibility: V, buffer: { type: 'read-only-storage' } },
+      ],
     });
+    this.pipeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.bindLayout] });
     this.bgTex = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: this.bgTex }, new Uint8Array([0, 0, 0, 255]), { bytesPerRow: 4 }, [1, 1]);
     // LINEAR filtering — required for MSDF distance-field interpolation.
@@ -675,6 +743,28 @@ export class TextEngine {
       bytes, { bytesPerRow: aw * 4, rowsPerImage: ah }, [aw, ah, 1]);
   }
 
+  /** Render pipelines (bg/box/glyph) for a target format; built once per format. */
+  private pipesFor(format: GPUTextureFormat) {
+    let p = this.renderPipes.get(format);
+    if (p) return p;
+    // Straight-alpha "alpha-over": color = src*src.a + dst*(1-src.a); alpha keeps
+    // the target opaque. Byte-identical to the native MetalBackend blend factors.
+    const blend: GPUBlendState = {
+      color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    };
+    const mk = (vs: string, fs: string): GPURenderPipeline =>
+      this.device.createRenderPipeline({
+        layout: this.pipeLayout,
+        vertex: { module: this.shaderModule, entryPoint: vs },
+        fragment: { module: this.shaderModule, entryPoint: fs, targets: [{ format, blend }] },
+        primitive: { topology: 'triangle-list' },
+      });
+    p = { bg: mk('bg_vs', 'bg_fs'), box: mk('box_vs', 'box_fs'), glyph: mk('glyph_vs', 'glyph_fs') };
+    this.renderPipes.set(format, p);
+    return p;
+  }
+
   /** Composite the laid-out text for `id` into `target` at (originX, originY). */
   render(id: number, target: GPUTexture, originX: number, originY: number,
          bg?: GPUTexture | null): void {
@@ -695,7 +785,7 @@ export class TextEngine {
       ex.free(gPtr);
     }
 
-    // Background boxes (80B each), drawn behind the glyphs by the shader.
+    // Background boxes (112B each), drawn behind the glyphs as instanced quads.
     const boxCount = ex.te_box_count(id);
     let boxesWritten = 0;
     let boxBytes = new Uint8Array(0);
@@ -749,27 +839,38 @@ export class TextEngine {
     const uniBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(uniBuf, 0, uni);
 
+    // Background behind the text: caller-supplied input (overlay) or the engine's
+    // 1×1 opaque-black fallback. It's SAMPLED while we render into `target`, so it
+    // must be a different texture (WebGPU forbids one texture as both).
+    const bgTex = (bg && bg !== target) ? bg : this.bgTex;
+    const pipes = this.pipesFor(target.format);
     const bind = device.createBindGroup({
-      layout: this.pipeline.getBindGroupLayout(0),
+      layout: this.bindLayout,
       entries: [
         { binding: 0, resource: { buffer: glyphBuf } },
         { binding: 1, resource: this.atlasTex.createView({ dimension: '2d-array' }) },
-        // Background behind the text: caller-supplied input (overlay) or the
-        // engine's 1×1 opaque-black fallback. Sampled at per-pixel UV, so a
-        // full-res input maps 1:1.
-        { binding: 2, resource: (bg ?? this.bgTex).createView() },
+        { binding: 2, resource: bgTex.createView() },
         { binding: 3, resource: this.sampler },
-        { binding: 4, resource: target.createView() },
         { binding: 5, resource: { buffer: uniBuf } },
         { binding: 6, resource: { buffer: boxBuf } },
       ],
     });
 
+    // One render pass onto `target`: bg fullscreen (replace) → boxes → glyphs,
+    // instanced quads, alpha-over, document order. Each glyph/box rasterizes only
+    // its own pixels — no per-pixel glyph loop.
     const encoder = device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(this.pipeline);
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: target.createView(),
+        loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: 'store',
+      }],
+    });
     pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(Math.ceil(cw / 8), Math.ceil(ch / 8));
+    pass.setPipeline(pipes.bg);
+    pass.draw(3, 1);
+    if (boxesWritten > 0) { pass.setPipeline(pipes.box); pass.draw(6, boxesWritten); }
+    if (written > 0)      { pass.setPipeline(pipes.glyph); pass.draw(6, written); }
     pass.end();
     device.queue.submit([encoder.finish()]);
   }
