@@ -83,23 +83,34 @@ tap_mod::Mod parseMod(const json& tap) {
 
 // --- Reserved per-effect engine state keys (device on/off + opacity) ---
 
+// Find an instance's "state" object WITHOUT copying it. `.value("state", {})`
+// deep-copies the whole state subtree (incl. multi-KB text fields) on every
+// call — at 60fps × per-entry that was a big slice of the JSON churn. These
+// return a pointer into `instances` (null if absent / not an object).
+const json* findState(const json& instances, const std::string& instKey) {
+  if (!instances.is_object()) return nullptr;
+  auto iit = instances.find(instKey);
+  if (iit == instances.end()) return nullptr;
+  auto sit = iit->find("state");
+  if (sit == iit->end() || !sit->is_object()) return nullptr;
+  return &*sit;
+}
+
 bool readBypass(const json& instances, const std::string& instKey) {
-  if (!instances.is_object() || !instances.contains(instKey)) return false;
-  const auto& st = instances[instKey].value("state", json::object());
-  if (!st.is_object()) return false;
-  auto it = st.find("__bypass__");
-  if (it == st.end()) return false;
+  const json* st = findState(instances, instKey);
+  if (!st) return false;
+  auto it = st->find("__bypass__");
+  if (it == st->end()) return false;
   if (it->is_boolean()) return it->get<bool>();
   if (it->is_number())  return it->get<double>() != 0.0;
   return false;
 }
 
 float readOpacity(const json& instances, const std::string& instKey) {
-  if (!instances.is_object() || !instances.contains(instKey)) return 1.0f;
-  const auto& st = instances[instKey].value("state", json::object());
-  if (!st.is_object()) return 1.0f;
-  auto it = st.find("__opacity__");
-  if (it == st.end() || !it->is_number()) return 1.0f;
+  const json* st = findState(instances, instKey);
+  if (!st) return 1.0f;
+  auto it = st->find("__opacity__");
+  if (it == st->end() || !it->is_number()) return 1.0f;
   return (float)it->get<double>();
 }
 
@@ -125,7 +136,7 @@ SketchExecutor::~SketchExecutor() {
 int32_t SketchExecutor::execute(
     const json& rawSketch,
     int32_t inputHandle, int32_t outputHandle,
-    int W, int H, double dt) {
+    int W, int H, double dt, bool sketchDirty) {
   if (!rawSketch.is_object() || !registry_ || !gpu_) return inputHandle;
 
   // Augment with implicit struct-rail connections. Schemas are
@@ -295,6 +306,11 @@ int32_t SketchExecutor::execute(
     auto maybeApplyState = [&](effect_runtime::EffectInstance* inst,
                                const std::string& instKey,
                                const json& state) {
+      // Persisted params only change when the sketch is edited. When the host
+      // tells us it didn't change, skip the per-instance whole-state compare
+      // (multi-KB for rich text) entirely — they were applied on the last dirty
+      // frame and read taps re-drive any modulated params separately below.
+      if (!sketchDirty) return;
       auto& cachedState = lastAppliedState_[instKey];
       if (cachedState == state) return;
       applyState(inst, cachedState, state);
@@ -356,11 +372,9 @@ int32_t SketchExecutor::execute(
         inst->setFieldConnected(path, false, false);
       }
 
-      // -- Apply persisted instance state from the sketch --
-      if (instances.is_object() && instances.contains(instKey)) {
-        const auto& instJson = instances[instKey];
-        const auto& state = instJson.value("state", json::object());
-        maybeApplyState(inst, instKey, state);
+      // -- Apply persisted instance state from the sketch (no-copy lookup) --
+      if (const json* st = findState(instances, instKey)) {
+        maybeApplyState(inst, instKey, *st);
       }
 
       // -- Identity skip: stateless passthrough → alias input as this
@@ -460,9 +474,8 @@ int32_t SketchExecutor::execute(
         const std::string instKey = entry.value("instance_key", std::string());
         auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
         if (!inst) { stagesOK = false; break; }
-        if (instances.is_object() && instances.contains(instKey)) {
-          const auto& state = instances[instKey].value("state", json::object());
-          maybeApplyState(inst, instKey, state);
+        if (const json* st = findState(instances, instKey)) {
+          maybeApplyState(inst, instKey, *st);
         }
         inst->doTick(dt);
         allStages.push_back(inst);

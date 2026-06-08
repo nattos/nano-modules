@@ -126,10 +126,18 @@ class SketchExecutor {
    * `W` / `H` are the render-pass dimensions. `dt` is the wall-clock
    * delta since the previous frame, forwarded to each effect's
    * `tick`.
+   *
+   * `sketchDirty` tells the executor whether `rawSketch` may have changed
+   * since the previous call. When false, the executor skips re-pushing each
+   * instance's persisted params (applyState) — they can only change when the
+   * sketch is edited, and re-applying means a whole-state JSON compare per
+   * instance every frame (multi-KB for rich text). The host knows this cheaply
+   * (the barrel re-fetches its sketch snapshot only on an editor patch / config
+   * change). Defaults to true so callers that don't track it stay correct.
    */
   int32_t execute(const nlohmann::json& rawSketch,
                   int32_t inputHandle, int32_t outputHandle,
-                  int W, int H, double dt);
+                  int W, int H, double dt, bool sketchDirty = true);
 
   /**
    * The most recent frame's float-rail values, for editor telemetry. Shaped

@@ -171,6 +171,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           dirty_ = true;
           dirty_since_ms_ = ::nano_barrel_log::now_ms();
           preview_requests_dirty_.store(true, std::memory_order_release);
+          // The sketch changed → drop the cached snapshot so the next frame
+          // re-fetches it (see the sketch_snapshot_ cache in ProcessOpenGL).
+          sketch_snapshot_dirty_.store(true, std::memory_order_release);
         });
 
     {
@@ -483,11 +486,23 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // wants tick_mu_). Reused for every "publish only when watched" gate below.
     const bool hasClients = ws_server_ && ws_server_->has_open_clients();
 
-    nlohmann::json sketch_json;
+    bool sketchRefetched = false;
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
-      sketch_json = bridge_core_.state_document().get_at(
-          "/plugins/" + barrel_plugin_key_ + "/state/sketch");
+      // Re-snapshot the sketch ONLY when it actually changed — an editor patch
+      // (client_patch_callback) or a Resolume config (applyConfigJson) flips
+      // sketch_snapshot_dirty_. get_at deep-copies the whole sketch subtree
+      // (every instance state, incl. multi-KB richtext html/css), which profiled
+      // as the bulk of per-frame JSON churn once the layout was cached. Caching
+      // the snapshot is the native analogue of the web's compile-once
+      // GraphDefinition: re-walk a stable object each frame instead of
+      // re-copying (and re-destroying) the entire sketch.
+      sketchRefetched =
+          sketch_snapshot_dirty_.exchange(false, std::memory_order_acq_rel);
+      if (sketchRefetched) {
+        sketch_snapshot_ = bridge_core_.state_document().get_at(
+            "/plugins/" + barrel_plugin_key_ + "/state/sketch");
+      }
       // Route the live macro knobs into any io.barrel_macros instance's state.
       // The executor's write-tap capture reads scalar outputs from the sketch
       // instance state, so this is what makes the FFGL macros usable inside a
@@ -495,9 +510,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // the JSON — the persisted sketch is untouched. macros_ is consistent
       // here (written under tick_mu_ by SetFloatParameter).
       nlohmann::json macroOut = nlohmann::json::object();
-      if (sketch_json.contains("instances") &&
-          sketch_json["instances"].is_object()) {
-        for (auto& [key, inst] : sketch_json["instances"].items()) {
+      if (sketch_snapshot_.contains("instances") &&
+          sketch_snapshot_["instances"].is_object()) {
+        for (auto& [key, inst] : sketch_snapshot_["instances"].items()) {
           if (!inst.is_object()) continue;
           if (inst.value("module_type", std::string()) != "io.barrel_macros") {
             continue;
@@ -544,9 +559,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // resurrect last frame's pixels.
     if (captures_enabled_) frame_captures_.clear();
     int32_t finalHandle = executor_
-        ? executor_->execute(sketch_json,
+        ? executor_->execute(sketch_snapshot_,
                               inputHandle, outputHandle,
-                              (int)W, (int)H, dt)
+                              (int)W, (int)H, dt, sketchRefetched)
         : inputHandle;
 
     gpu_->submit();
@@ -868,6 +883,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       state["sketch"] = sketch;
       bridge_core_.state_document().set_plugin_state(
           barrel_plugin_key_, state);
+      // Invalidate the render thread's cached sketch snapshot (set under
+      // tick_mu_ so ProcessOpenGL's locked fetch block sees it next frame).
+      sketch_snapshot_dirty_.store(true, std::memory_order_release);
     }
     {
       std::lock_guard<std::mutex> lock(g_cache_mu());
@@ -1147,6 +1165,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   bool    dirty_           = false;
   double  dirty_since_ms_  = 0.0;
   uint32_t trigger_seq_    = 0;
+
+  // Render-thread cache of the sketch JSON. Re-fetched from the state document
+  // only when sketch_snapshot_dirty_ is set (editor patch or Resolume config);
+  // otherwise the per-frame deep copy + destruction of the whole sketch (the
+  // dominant JSON cost after the richtext layout cache) is skipped entirely.
+  std::atomic<bool> sketch_snapshot_dirty_{true};
+  nlohmann::json    sketch_snapshot_;
 
   std::vector<char> config_return_buf_;
   char              port_return_buf_[16]{};
