@@ -114,6 +114,19 @@ float readOpacity(const json& instances, const std::string& instKey) {
   return (float)it->get<double>();
 }
 
+// Shared empty fallbacks + a no-copy subtree accessor. `value(key, default)`
+// deep-copies the matched subtree (and constructs the default container as a
+// temporary every call); refOr returns a reference instead.
+const json kEmptyArr = json::array();
+const json kEmptyObj = json::object();
+const json& refOr(const json& parent, const char* key, const json& fallback,
+                  bool wantArray) {
+  auto it = parent.find(key);
+  if (it == parent.end()) return fallback;
+  if (wantArray ? !it->is_array() : !it->is_object()) return fallback;
+  return *it;
+}
+
 }  // namespace
 
 SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
@@ -130,6 +143,55 @@ SketchExecutor::~SketchExecutor() {
   }
   for (int32_t sm : fusedShaderModules_) {
     if (sm > 0 && gpu_) gpu_->release(sm);
+  }
+}
+
+void SketchExecutor::buildPlan(const json& columns, const json& instances,
+                               const json& sketchRails) {
+  plan_.clear();
+  plan_.resize(columns.size());
+  for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
+    PlanColumn& pc = plan_[colIdx];
+    const json& col = columns[colIdx];
+    // Rail-by-id index: column-local then sketch-wide (sketch wins on id clash,
+    // matching the former per-frame build order).
+    auto indexRails = [&](const json& rails) {
+      if (!rails.is_array()) return;
+      for (const auto& r : rails) {
+        if (!r.is_object()) continue;
+        std::string id = r.value("id", std::string());
+        if (!id.empty()) pc.railsById[id] = r;
+      }
+    };
+    indexRails(refOr(col, "rails", kEmptyArr, true));
+    indexRails(sketchRails);
+
+    const json& chain = refOr(col, "chain", kEmptyArr, true);
+    for (size_t i = 0; i < chain.size(); ++i) {
+      const auto& entry = chain[i];
+      std::string mt = entry.value("module_type", std::string());
+      const RegisteredModule* reg = registry_->find(mt);
+      if (!reg) continue;  // unknown module_type → silent passthrough
+      std::string instKey = entry.value("instance_key", std::string());
+      // Fusion eligibility — structural (fusion kind/fragment/prepare, tap-free)
+      // plus bypass/opacity, which are sketch state and thus only change on a
+      // dirty frame. instanceFor materialises the per-key instance here.
+      auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
+      bool e = false;
+      if (inst) {
+        const auto& fi = inst->fusionInfo();
+        e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.prepare;
+        if (e && entry.contains("taps") && entry["taps"].is_array() &&
+            !entry["taps"].empty()) {
+          e = false;
+        }
+        if (e && (readBypass(instances, instKey) ||
+                  readOpacity(instances, instKey) != 1.0f)) {
+          e = false;
+        }
+      }
+      pc.resolvable.push_back({i, std::move(mt), std::move(instKey), reg, e});
+    }
   }
 }
 
@@ -160,24 +222,20 @@ int32_t SketchExecutor::execute(
   }
   const json& sketch = *sketchPtr;
 
-  // Avoid value()-returned copies of large sub-objects. `value(key,
-  // default)` deep-copies the matched subtree (and constructs the
-  // default container as a temporary every call) — at 60 fps × per-
-  // column × per-entry that adds up to a sizeable chunk of the
-  // remaining JSON copy/destroy time on the profile.
-  static const json EMPTY_ARR = json::array();
-  static const json EMPTY_OBJ = json::object();
-  auto refOr = [](const json& parent, const char* key, const json& fallback,
-                  bool wantArray) -> const json& {
-    auto it = parent.find(key);
-    if (it == parent.end()) return fallback;
-    if (wantArray  ? !it->is_array()  : !it->is_object()) return fallback;
-    return *it;
-  };
-  const json& columns      = refOr(sketch, "columns",   EMPTY_ARR, true);
+  const json& columns      = refOr(sketch, "columns",   kEmptyArr, true);
   if (columns.empty()) return inputHandle;
-  const json& instances    = refOr(sketch, "instances", EMPTY_OBJ, false);
-  const json& sketchRails  = refOr(sketch, "rails",     EMPTY_ARR, true);
+  const json& instances    = refOr(sketch, "instances", kEmptyObj, false);
+  const json& sketchRails  = refOr(sketch, "rails",     kEmptyArr, true);
+
+  // Compile-once: rebuild the structural plan only when the host says the sketch
+  // changed (or first run). In standalone / steady state nothing edits the
+  // sketch, so every frame after the first reuses the cached plan — no per-frame
+  // chain filtering, eligibility probing, registry lookups, rail indexing, or
+  // module_type/instance_key string churn. See buildPlan + the PlanColumn cache.
+  if (sketchDirty || !planValid_) {
+    buildPlan(columns, instances, sketchRails);
+    planValid_ = true;
+  }
 
   intermediate_cursor_ = 0;
   int32_t finalHandle = inputHandle;
@@ -185,42 +243,22 @@ int32_t SketchExecutor::execute(
   railState_ = json::object();  // rebuilt per frame; published by the host
 
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
+    // Cached structural plan for this column (resolvable entries + rail index).
+    const PlanColumn& pc = plan_[colIdx];
+    const std::vector<PlanEntry>& R = pc.resolvable;
+    if (R.empty()) continue;
     const auto& col = columns[colIdx];
-    const json& chain = refOr(col, "chain", EMPTY_ARR, true);
-    if (chain.empty()) continue;
+    const json& chain = refOr(col, "chain", kEmptyArr, true);
+    const std::unordered_map<std::string, json>& railsById = pc.railsById;
 
-    // Build per-column rail-by-id index (column-local + sketch-wide).
-    std::unordered_map<std::string, json> railsById;
-    auto indexRails = [&](const json& rails) {
-      if (!rails.is_array()) return;
-      for (const auto& r : rails) {
-        if (!r.is_object()) continue;
-        std::string id = r.value("id", std::string());
-        if (!id.empty()) railsById[id] = r;
-      }
-    };
-    indexRails(refOr(col, "rails", EMPTY_ARR, true));
-    indexRails(sketchRails);
-
-    // Per-column rail value tables. Texture handles keyed by leafPath
-    // (empty string for single-texture rails); float scalars keyed by
-    // railId.
+    // Per-column rail VALUE tables (rebuilt per frame — these change every
+    // frame). Texture handles keyed by leafPath (empty string for single-
+    // texture rails); float scalars keyed by railId.
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railTextures;
     std::unordered_map<std::string, float> railFloats;
 
     int32_t colInput = inputHandle;
-
-    // Filter the chain to entries we have a registered effect for.
-    // Unknown module_types are skipped silently (passthrough).
-    std::vector<size_t> resolvable;
-    for (size_t i = 0; i < chain.size(); ++i) {
-      const auto& entry = chain[i];
-      std::string mt = entry.value("module_type", std::string());
-      if (registry_->find(mt) != nullptr) resolvable.push_back(i);
-    }
-    if (resolvable.empty()) continue;
-
     const bool isLastCol = (colIdx == columns.size() - 1);
 
     // ----- Plan groups ---------------------------------------------
@@ -238,41 +276,20 @@ int32_t SketchExecutor::execute(
       // size cap is 28. Beyond that, the planner just starts a new
       // group; no observable behavior change.
       static constexpr size_t kMaxFusionStages = 28;
-      std::vector<char> eligibleK(resolvable.size(), 0);
-      std::vector<char> isBarrier(resolvable.size(), 0);
-      for (size_t k = 0; k < resolvable.size(); ++k) {
-        const auto& entry = chain[resolvable[k]];
-        const std::string mt = entry.value("module_type", std::string());
-        const std::string instKey = entry.value("instance_key", std::string());
-        // Lazily materialise the per-key instance so we can read its
-        // fusion info (registered in its init() with its own uniform
-        // buffer). Fusion kind/fragment are identical across instances
-        // of a type; the per-instance uniform buffer differs.
-        auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
-        bool e = false;
-        if (inst) {
-          const auto& fi = inst->fusionInfo();
-          // FusionKind::PerPixelMapper == 1 in state::FusionKind.
-          e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.prepare;
-          if (e && entry.contains("taps") && entry["taps"].is_array() &&
-              !entry["taps"].empty()) {
-            e = false;
-          }
-          // A bypassed stage goes dormant (aliases input→output) and a
-          // non-unity-opacity stage needs a standalone wet/dry blend pass —
-          // neither can participate in a fused dispatch.
-          if (e && (readBypass(instances, instKey) ||
-                    readOpacity(instances, instKey) != 1.0f)) {
-            e = false;
-          }
-        }
-        eligibleK[k] = e ? 1 : 0;
+      // Eligibility is cached in the plan (structural + bypass/opacity, all
+      // dirty-gated). Only the barrier predicate is re-evaluated per frame — the
+      // host flips it as preview-monitor subscriptions change, independent of any
+      // sketch edit — and group splitting is re-derived from both.
+      std::vector<char> eligibleK(R.size(), 0);
+      std::vector<char> isBarrier(R.size(), 0);
+      for (size_t k = 0; k < R.size(); ++k) {
+        eligibleK[k] = R[k].eligible ? 1 : 0;
         isBarrier[k] = (barrierPredicate_
                         && barrierPredicate_((int)colIdx,
-                                              (int)resolvable[k])) ? 1 : 0;
+                                              (int)R[k].chainIdx)) ? 1 : 0;
       }
       size_t start = 0;
-      while (start < resolvable.size()) {
+      while (start < R.size()) {
         if (!eligibleK[start]) {
           groups.push_back({start, start, false});
           ++start; continue;
@@ -281,7 +298,7 @@ int32_t SketchExecutor::execute(
         // Extend while the next entry is also eligible AND the current
         // entry isn't a barrier (a barrier forces its output into a
         // real texture, ending the group).
-        while (end + 1 < resolvable.size()
+        while (end + 1 < R.size()
                && !isBarrier[end]
                && eligibleK[end + 1]
                && (end + 1 - start + 1) <= kMaxFusionStages) {
@@ -318,13 +335,13 @@ int32_t SketchExecutor::execute(
     };
 
     auto runStandalone = [&](size_t k, bool isLastGroupInCol) {
-      size_t i = resolvable[k];
+      const PlanEntry& pe = R[k];
+      size_t i = pe.chainIdx;
       const auto& entry = chain[i];
-      const std::string mt      = entry.value("module_type", std::string());
-      const std::string instKey = entry.value("instance_key", std::string());
+      const std::string& mt      = pe.moduleType;
+      const std::string& instKey = pe.instanceKey;
 
-      const RegisteredModule* reg = registry_->find(mt);
-      if (!reg) return;
+      const RegisteredModule* reg = pe.reg;
       auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
       if (!inst) return;
 
@@ -469,10 +486,8 @@ int32_t SketchExecutor::execute(
       allStages.reserve(g.lastK - g.firstK + 1);
       bool stagesOK = true;
       for (size_t k = g.firstK; k <= g.lastK; ++k) {
-        const auto& entry = chain[resolvable[k]];
-        const std::string mt = entry.value("module_type", std::string());
-        const std::string instKey = entry.value("instance_key", std::string());
-        auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
+        const std::string& instKey = R[k].instanceKey;
+        auto* inst = rt_ ? rt_->instanceFor(R[k].moduleType, instKey) : nullptr;
         if (!inst) { stagesOK = false; break; }
         if (const json* st = findState(instances, instKey)) {
           maybeApplyState(inst, instKey, *st);
@@ -501,8 +516,7 @@ int32_t SketchExecutor::execute(
         auto* inst = allStages[idx];
         if (inst->isIdentity()) continue;
         if (!cacheKey.empty()) cacheKey += '|';
-        cacheKey += chain[resolvable[g.firstK + idx]]
-                        .value("module_type", std::string());
+        cacheKey += R[g.firstK + idx].moduleType;
         stages.push_back(inst);
         std::string msl;
         if (!rt_->lookupMSL(inst->fusionInfo().fragmentName, &msl)) {
@@ -517,10 +531,10 @@ int32_t SketchExecutor::execute(
       // Whole group is identity → passthrough.
       if (fragsOK && stages.empty()) {
         if (chainEntryHook_) {
-          chainEntryHook_((int)colIdx, (int)resolvable[g.firstK],
+          chainEntryHook_((int)colIdx, (int)R[g.firstK].chainIdx,
                           groupInput, groupInput, W, H);
           if (g.lastK != g.firstK) {
-            chainEntryHook_((int)colIdx, (int)resolvable[g.lastK],
+            chainEntryHook_((int)colIdx, (int)R[g.lastK].chainIdx,
                             groupInput, groupInput, W, H);
           }
         }
@@ -589,10 +603,10 @@ int32_t SketchExecutor::execute(
       // need a middle-stage preview should provoke a barrier via the
       // BarrierPredicate, which will split the group there.
       if (chainEntryHook_) {
-        chainEntryHook_((int)colIdx, (int)resolvable[g.firstK],
+        chainEntryHook_((int)colIdx, (int)R[g.firstK].chainIdx,
                         groupInput, /*output=*/-1, W, H);
         if (g.lastK != g.firstK) {
-          chainEntryHook_((int)colIdx, (int)resolvable[g.lastK],
+          chainEntryHook_((int)colIdx, (int)R[g.lastK].chainIdx,
                           /*input=*/-1, groupOutput, W, H);
         }
       }

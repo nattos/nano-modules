@@ -185,6 +185,36 @@ class SketchExecutor {
   // EffectRuntime::instanceFor), so the cache keys purely on instance_key.
   std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
 
+  // --- Compiled per-sketch plan (the native analogue of the web's compile-once
+  // GraphDefinition). Built once and reused until the host signals the sketch
+  // changed (execute()'s `sketchDirty`). It caches everything STRUCTURAL — which
+  // chain entries resolve to a registered effect, their module_type/instance_key
+  // strings + RegisteredModule pointer, per-stage fusion eligibility (which folds
+  // in bypass/opacity — both sketch state, so dirty-gated), and the rail-by-id
+  // index — so the per-frame loop stops re-walking nlohmann maps and rebuilding
+  // std::strings every frame. Only the changing VALUES (rail floats, tap inputs,
+  // textures) are read per frame; group splitting is re-derived per frame from
+  // the cached eligibility + the (host-driven) barrier predicate.
+  struct PlanEntry {
+    size_t chainIdx;             // index into the column's "chain" array
+    std::string moduleType;
+    std::string instanceKey;
+    const RegisteredModule* reg; // never null (only resolvable entries are kept)
+    bool eligible;               // fusion-eligible at plan-build time
+  };
+  struct PlanColumn {
+    std::vector<PlanEntry> resolvable;
+    std::unordered_map<std::string, nlohmann::json> railsById;  // column-local + sketch-wide
+  };
+  std::vector<PlanColumn> plan_;
+  bool planValid_ = false;
+
+  // (Re)build plan_ from the (augmented) sketch. Calls instanceFor for each
+  // resolvable entry, so instances are materialised here on a dirty frame.
+  void buildPlan(const nlohmann::json& columns,
+                 const nlohmann::json& instances,
+                 const nlohmann::json& sketchRails);
+
   // Cached compute PSOs for fused chains. Key is the ordered list of
   // module_types joined by '|'. Created lazily on first use; released
   // in the destructor (no host can hot-add effects today, so the cache
