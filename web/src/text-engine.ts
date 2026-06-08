@@ -7,10 +7,10 @@
  * (e.g. gen.text) call text::layout / text::render and the pixels land in their
  * output texture.
  *
- * The compositor (WGSL below) and the marshalling mirror, byte-for-byte, the
- * standalone harness (web/public/text-gpu-test.html) that was verified
- * pixel-identical to the native/CPU reference — this module is that proven logic
- * refactored to render into a caller-provided GPUTexture.
+ * The compositor (WGSL below) is the instanced-quad MSDF pipeline, byte-for-byte
+ * mirroring the native Metal quad path (text_composite_quad_msl.h) and the CPU
+ * golden text_engine::Engine::rasterize, rendering into a caller-provided
+ * GPUTexture.
  */
 
 // MSDF text compositor — instanced quads (vertex + fragment), one render pass:
