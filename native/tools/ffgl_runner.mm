@@ -310,28 +310,27 @@ int main(int argc, const char* argv[]) {
       std::cerr << "[ffgl_runner] ws-patch port=" << port << " sent=" << ok << "\n";
     }
 
-    // 4. Host FBO + color attachment for the plugin to render INTO.
-    GLuint fbo = 0, texColor = 0;
-    glGenFramebuffers(1, &fbo);
-    glGenTextures(1, &texColor);
-    glBindTexture(GL_TEXTURE_2D, texColor);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    // 4. Host FBO for the plugin to render INTO. Use an IOSurface-backed
+    // InteropTexture (createOpenGLFBO=true) rather than a plain GL texture, so
+    // the host's output surface is shared between OpenGL and Metal — exactly the
+    // shape Resolume hands us. That makes ffgl_runner a faithful test bed for the
+    // plugin adopting the host surface directly (skipping the GL↔Metal blit):
+    // both the input AND output it sees are now IOSurface-backed.
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    auto outputInterop = std::make_unique<InteropTexture>(
+        device, context, /*createOpenGLFBO=*/ true,
+        MTLPixelFormatBGRA8Unorm, width, height);
+    GLuint fbo = outputInterop->getOpenGLFBO();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                            GL_TEXTURE_2D, texColor, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-      std::cerr << "framebuffer incomplete\n"; return 1;
+      std::cerr << "host FBO (interop) incomplete\n"; return 1;
     }
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // 5. One InteropTexture as the plugin's input — filled with a
-    // horizontal red gradient so we can tell input handoff apart from
-    // pure-output cases.
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    // 5. One InteropTexture as the plugin's input (also IOSurface-backed) —
+    // filled with a horizontal red gradient so we can tell input handoff apart
+    // from pure-output cases.
     auto inputInterop = std::make_unique<InteropTexture>(
         device, context, /*createOpenGLFBO=*/ false,
         MTLPixelFormatBGRA8Unorm, width, height);
@@ -413,9 +412,7 @@ int main(int argc, const char* argv[]) {
     }
     std::cerr << "[ffgl_runner] wrote " << outPath << "\n";
 
-    // 8. Cleanup.
-    glDeleteTextures(1, &texColor);
-    glDeleteFramebuffers(1, &fbo);
+    // 8. Cleanup. (fbo + its color texture are owned by outputInterop.)
     plugMain(FF_DEINSTANTIATE_GL, (FFMixed){.PointerValue = nullptr},
              instanceID);
     plugMain(FF_DEINITIALISE, (FFMixed){.PointerValue = nullptr}, 0);
