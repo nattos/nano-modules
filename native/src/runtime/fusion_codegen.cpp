@@ -62,71 +62,63 @@ std::string extractAndRenameStruct(const std::string& src, int idx) {
   return out;
 }
 
-// Find `float4 fuse_transform(...)` (the first occurrence) and return
-// the full function definition with `fuse_transform` renamed to
-// `ft_<idx>` and references to `type_ConstantBuffer_FuseUniforms`
-// renamed to `FU_<idx>`.
-std::string extractAndRenameFunction(const std::string& src, int idx) {
-  size_t hdr = src.find("fuse_transform");
-  if (hdr == std::string::npos) return "";
-  // Walk backwards over the return-type / attribute soup to the start
-  // of the line so we keep the inline annotation.
-  size_t start = hdr;
-  // Look back ~256 bytes for the start of the declaration; the
-  // spirv-cross output puts `static inline __attribute__((always_inline))`
-  // (or similar) on the preceding line.
-  size_t lookback = start > 256 ? start - 256 : 0;
-  size_t lineStart = src.rfind("\n", start);
-  // Walk further back through any continuation lines that end with
-  // an identifier/`)` (attribute annotations).
-  while (lineStart != std::string::npos && lineStart > lookback) {
-    size_t prev = src.rfind("\n", lineStart - 1);
-    size_t scanFrom = (prev == std::string::npos) ? 0 : prev + 1;
-    std::string_view ln(src.data() + scanFrom, lineStart - scanFrom);
-    // Stop if this prior line is blank or contains `;` or `}` — it
-    // belongs to a different declaration.
-    bool blank = true;
-    for (char c : ln) {
-      if (c != ' ' && c != '\t') { blank = false; break; }
+// Word-boundary rename of every `from` occurrence in `s` to `to`.
+void renameIdent(std::string& s, const std::string& from, const std::string& to) {
+  if (from.empty()) return;
+  std::string out;
+  out.reserve(s.size());
+  size_t i = 0;
+  while (i < s.size()) {
+    if (i + from.size() <= s.size() && s.compare(i, from.size(), from) == 0) {
+      bool lhs = (i == 0)
+          || !(isalnum((unsigned char)s[i - 1]) || s[i - 1] == '_');
+      bool rhs = (i + from.size() == s.size())
+          || !(isalnum((unsigned char)s[i + from.size()])
+                || s[i + from.size()] == '_');
+      if (lhs && rhs) { out.append(to); i += from.size(); continue; }
     }
-    if (blank) break;
-    if (ln.find(';') != std::string_view::npos) break;
-    if (ln.find('}') != std::string_view::npos) break;
-    lineStart = (prev == std::string::npos) ? std::string::npos : prev;
+    out.push_back(s[i++]);
   }
-  start = (lineStart == std::string::npos) ? 0 : lineStart + 1;
+  s = std::move(out);
+}
 
-  size_t end = findBalancedBlockEnd(src, hdr);
-  if (end == std::string::npos) return "";
+// Extract ALL the helper functions PLUS `fuse_transform` from one effect's
+// pixel MSL — everything from the first `static inline` up to the `kernel void`
+// entry (which we drop; the fused kernel is generated separately). Each
+// user-defined function is suffixed with `_<idx>` so helpers of the same name in
+// different fused stages (e.g. two effects' `saturate_channel`) don't collide;
+// `fuse_transform` becomes `ft_<idx>` (the name the fused kernel calls), and the
+// uniform struct becomes `FU_<idx>`. spirv-cross emits each function as
+// `static inline __attribute__((always_inline))\n<ret> <name>(...)`.
+std::string extractAndRenameFunction(const std::string& src, int idx) {
+  size_t start = src.find("static inline");
+  if (start == std::string::npos) return "";
+  size_t end = src.find("kernel void");           // drop the compute entry
+  if (end == std::string::npos) end = src.size();
   std::string block = src.substr(start, end - start);
 
-  // Two rewrites: function name + struct name.
-  auto rename = [&](const std::string& from, const std::string& to) {
-    std::string out;
-    out.reserve(block.size());
-    size_t i = 0;
-    while (i < block.size()) {
-      if (i + from.size() <= block.size() &&
-          block.compare(i, from.size(), from) == 0) {
-        // Check word boundary so we don't rewrite a longer identifier
-        // that happens to contain `from` as a prefix/suffix.
-        bool lhsBoundary = (i == 0)
-            || !(isalnum((unsigned char)block[i - 1]) || block[i - 1] == '_');
-        bool rhsBoundary = (i + from.size() == block.size())
-            || !(isalnum((unsigned char)block[i + from.size()])
-                  || block[i + from.size()] == '_');
-        if (lhsBoundary && rhsBoundary) {
-          out.append(to);
-          i += from.size();
-          continue;
-        }
-      }
-      out.push_back(block[i++]);
-    }
-    block = std::move(out);
-  };
-  rename("fuse_transform", "ft_" + std::to_string(idx));
-  rename("type_ConstantBuffer_FuseUniforms", "FU_" + std::to_string(idx));
+  // Collect every user function name (the identifier just before the `(` that
+  // follows each `always_inline))` marker), so we can rename defs AND calls.
+  std::vector<std::string> funcNames;
+  for (size_t p = 0; (p = block.find("always_inline))", p)) != std::string::npos; ) {
+    size_t paren = block.find('(', p);
+    if (paren == std::string::npos) break;
+    size_t e = paren;
+    while (e > 0 && (block[e - 1] == ' ' || block[e - 1] == '\n' ||
+                     block[e - 1] == '\r' || block[e - 1] == '\t')) --e;
+    size_t s = e;
+    while (s > 0 && (isalnum((unsigned char)block[s - 1]) || block[s - 1] == '_')) --s;
+    if (e > s) funcNames.push_back(block.substr(s, e - s));
+    p = paren;
+  }
+
+  const std::string suffix = "_" + std::to_string(idx);
+  for (const auto& name : funcNames) {
+    if (name == "fuse_transform") continue;       // handled below → ft_<idx>
+    renameIdent(block, name, name + suffix);       // helper → helper_<idx>
+  }
+  renameIdent(block, "fuse_transform", "ft_" + std::to_string(idx));
+  renameIdent(block, "type_ConstantBuffer_FuseUniforms", "FU_" + std::to_string(idx));
   return block;
 }
 
