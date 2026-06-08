@@ -94,6 +94,16 @@ struct State {
   char  css[4096]  = GEN_RICHTEXT_DEFAULT_CSS;
   float scale = 1.0f;       // CSS px → device px (hidpi)
   bool  initialized = false;
+
+  // Cached Blitz layout. The HTML/CSS layout (Stylo cascade + Taffy + parley
+  // shaping) is by far the most expensive thing this effect does, but it's
+  // identical frame-to-frame unless the document or the output viewport
+  // changes. The web GraphExecutor already skips re-layout via dirty-tracking;
+  // the native FFGL chain calls render() every frame, so we memoize here: lay
+  // out only when dirty, then re-composite the cached glyphs (cheap) each frame.
+  text::Layout layoutId = 0;   // engine layout handle (>0), or 0 if none
+  int   lastW = 0, lastH = 0;  // viewport the cached layout was built for
+  bool  layoutDirty = true;    // html/css/scale changed → rebuild needed
 };
 
 // Append `src` to `dst` (at *pos, cap n) with JSON string escaping. ALL C0
@@ -137,7 +147,11 @@ void module_init() {
 }
 
 void* create() { return new State(); }
-void  destroy(void* self) { delete static_cast<State*>(self); }
+void  destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s && s->layoutId > 0) text::release(s->layoutId);  // free the cached layout
+  delete s;
+}
 void  init(void* self) { auto* s = static_cast<State*>(self); if (s) s->initialized = true; }
 void  tick(void*, double) {}
 void  on_resolume_param(void*, long long, double) {}
@@ -149,9 +163,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int pl = len[i];
-    if      (state::pathIs(p, pl, "html"))  state::patchString(i, s->html, sizeof(s->html));
-    else if (state::pathIs(p, pl, "css"))   state::patchString(i, s->css, sizeof(s->css));
-    else if (state::pathIs(p, pl, "scale")) s->scale = state::patchFloat(i);
+    if      (state::pathIs(p, pl, "html"))  { state::patchString(i, s->html, sizeof(s->html)); s->layoutDirty = true; }
+    else if (state::pathIs(p, pl, "css"))   { state::patchString(i, s->css, sizeof(s->css));   s->layoutDirty = true; }
+    else if (state::pathIs(p, pl, "scale")) { s->scale = state::patchFloat(i);                 s->layoutDirty = true; }
   }
 }
 
@@ -168,16 +182,32 @@ void render(void* self, int vp_w, int vp_h) {
   // fragment leaves block children (<h1>/<div>/<p>) with zero size, so they
   // lay out nothing (only inline/bare text flows). Structure (html) and
   // styling (css) are still edited as separate fields.
-  char spec[24576];
-  int pos = 0;
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos,
-      "{\"mode\":\"html\",\"html\":\"<!DOCTYPE html><html><head><style>");
-  appendEscaped(spec, pos, (int)sizeof(spec), s->css);
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</style></head><body>");
-  appendEscaped(spec, pos, (int)sizeof(spec), s->html);
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</body></html>");
-  pos += std::snprintf(spec + pos, sizeof(spec) - pos,
-      "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}", vp_w, vp_h, s->scale);
+  // Re-lay-out only when the document or the output viewport changed; otherwise
+  // reuse the cached layout (skips the whole Blitz parse/cascade/shape pipeline,
+  // ~15% of native frame time for a static doc). The composite below still runs
+  // every frame (the output texture is fresh each frame and the bg may animate).
+  if (s->layoutDirty || vp_w != s->lastW || vp_h != s->lastH || s->layoutId <= 0) {
+    char spec[24576];
+    int pos = 0;
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos,
+        "{\"mode\":\"html\",\"html\":\"<!DOCTYPE html><html><head><style>");
+    appendEscaped(spec, pos, (int)sizeof(spec), s->css);
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</style></head><body>");
+    appendEscaped(spec, pos, (int)sizeof(spec), s->html);
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</body></html>");
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos,
+        "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}", vp_w, vp_h, s->scale);
+
+    int id = text::layout(spec, pos);
+    if (id > 0) {
+      if (s->layoutId > 0) text::release(s->layoutId);  // drop the previous one
+      s->layoutId = id;
+      s->lastW = vp_w; s->lastH = vp_h;
+      s->layoutDirty = false;
+    }
+    // If layout failed (id<=0, e.g. fonts not yet installed) keep any prior
+    // layout and stay dirty so we retry next frame.
+  }
 
   // Output target: the executor binds our PrimaryOutput as "tex_out" (same as
   // every other effect). renderTarget() only works when a swapchain surface was
@@ -188,11 +218,9 @@ void render(void* self, int vp_w, int vp_h) {
   // show it through); an unconnected input is -1 → opaque-black background.
   int bg = gpu::Device::textureForField("tex_in").id;
 
-  int id = text::layout(spec, pos);
-  if (id > 0) {
+  if (s->layoutId > 0) {
     // The document is already positioned in viewport space → draw at the origin.
-    text::render(id, target, "{\"x\":0,\"y\":0}", bg);
-    text::release(id);
+    text::render(s->layoutId, target, "{\"x\":0,\"y\":0}", bg);
   }
   gpu::Device::submit();
 }
