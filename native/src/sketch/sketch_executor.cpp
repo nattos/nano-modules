@@ -546,7 +546,7 @@ int32_t SketchExecutor::execute(
       if (fragsOK) {
         auto it = fusedPSOs_.find(cacheKey);
         if (it != fusedPSOs_.end()) {
-          pso = it->second;
+          pso = it->second;   // may be -1: a previously-failed compile (cached!)
         } else {
           std::string src = fusion_codegen::generateFusedMSL(fragments);
           if (!src.empty()) {
@@ -554,9 +554,15 @@ int32_t SketchExecutor::execute(
             if (sm > 0) {
               fusedShaderModules_.push_back(sm);
               pso = gpu_->createComputePSO(sm, "fused_main");
-              if (pso > 0) fusedPSOs_[cacheKey] = pso;
             }
           }
+          // Cache the result for this group shape — SUCCESS *or* FAILURE. A
+          // failed fused codegen/compile is deterministic for a given cacheKey,
+          // so caching -1 makes us fall back to the per-stage path exactly once
+          // instead of re-running the (blocking, ~tens-of-ms) Metal shader
+          // compile every single frame. This was the dominant cost for any
+          // chain of 2+ fusion-eligible effects.
+          fusedPSOs_[cacheKey] = pso;
         }
       }
       if (pso <= 0) {
