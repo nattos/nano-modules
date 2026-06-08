@@ -6,12 +6,13 @@
  *   GlyphQuads + BoxQuads + MSDF atlas ──[Metal compute compositor]──► RGBA
  *
  * This is blitz_dump's twin, but instead of the CPU golden Engine::rasterize it
- * runs the SAME compositor math on the GPU via the MSL kernel in
- * src/text/shaders/text_composite_msl.h — the exact native code path the
- * `text.render` host impl will use inside the FFGL plugin. metal_parity.sh diffs
- * this composite against the CPU golden to prove the Metal compositor reproduces
- * the reference pixels (perceptual tolerance: GPU bilinear differs a few LSB,
- * same as the WebGPU path).
+ * runs the SAME compositor math on the GPU via the quad MSL pipelines in
+ * src/text/shaders/text_composite_quad_msl.h — the exact native code path the
+ * `text.render` host impl uses inside the FFGL plugin (instanced MSDF quads, one
+ * render pass: bg → boxes → glyphs, alpha-over). metal_parity.sh diffs this
+ * composite against the CPU golden to prove the Metal compositor reproduces the
+ * reference pixels (perceptual tolerance: GPU bilinear differs a few LSB, same
+ * as the WebGPU path).
  *
  *   blitz_metal <doc.html>   (env TE_FONT, TE_FALLBACK, TE_W, TE_H, TE_PNG, TE_RAW)
  */
@@ -22,7 +23,7 @@
 #include "text_blitz.h"
 #include "text_engine.h"
 #include "png_write.h"
-#include "shaders/text_composite_msl.h"
+#include "shaders/text_composite_quad_msl.h"
 
 #include <cmath>
 #include <cstdint>
@@ -46,6 +47,22 @@ struct UBO {
   float    _p1, _p2;
 };
 static_assert(sizeof(UBO) == 48, "uniform block must be 48 bytes");
+
+// Build an instanced render PSO (vs/fs entry pair) with alpha-over blend onto an
+// RGBA8 target — byte-identical blend factors to MetalBackend::createInstancedRenderPSO.
+static id<MTLRenderPipelineState> makeRenderPSO(id<MTLDevice> dev, id<MTLLibrary> lib,
+                                                NSString* vs, NSString* fs, NSError** err) {
+  MTLRenderPipelineDescriptor* d = [[MTLRenderPipelineDescriptor alloc] init];
+  d.vertexFunction = [lib newFunctionWithName:vs];
+  d.fragmentFunction = [lib newFunctionWithName:fs];
+  d.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+  d.colorAttachments[0].blendingEnabled = YES;
+  d.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+  d.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+  d.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  return [dev newRenderPipelineStateWithDescriptor:d error:err];
+}
 
 static std::vector<uint8_t> readFile(const char* path) {
   std::vector<uint8_t> out;
@@ -147,14 +164,17 @@ int main(int argc, char** argv) {
     if (!dev) { std::fprintf(stderr, "no Metal device\n"); return 1; }
 
     NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:kTextCompositeMSL];
+    NSString* src = [NSString stringWithUTF8String:kTextCompositeQuadMSL];
     id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
     if (!lib) { std::fprintf(stderr, "MSL compile failed: %s\n",
                              err.localizedDescription.UTF8String); return 1; }
-    id<MTLFunction> fn = [lib newFunctionWithName:@"text_composite"];
-    id<MTLComputePipelineState> pso = [dev newComputePipelineStateWithFunction:fn error:&err];
-    if (!pso) { std::fprintf(stderr, "PSO failed: %s\n",
-                             err.localizedDescription.UTF8String); return 1; }
+    id<MTLRenderPipelineState> bgPSO    = makeRenderPSO(dev, lib, @"bg_vs",    @"bg_fs",    &err);
+    id<MTLRenderPipelineState> boxPSO   = makeRenderPSO(dev, lib, @"box_vs",   @"box_fs",   &err);
+    id<MTLRenderPipelineState> glyphPSO = makeRenderPSO(dev, lib, @"glyph_vs", @"glyph_fs", &err);
+    if (!bgPSO || !boxPSO || !glyphPSO) {
+      std::fprintf(stderr, "render PSO failed: %s\n", err.localizedDescription.UTF8String);
+      return 1;
+    }
 
     // Atlas: rgba8unorm 2D array, one layer per page, sampled LINEAR.
     MTLTextureDescriptor* ad =
@@ -186,7 +206,7 @@ int main(int argc, char** argv) {
     MTLTextureDescriptor* od =
       [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                          width:cw height:ch mipmapped:NO];
-    od.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+    od.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     od.storageMode = MTLStorageModeShared;
     id<MTLTexture> out = [dev newTextureWithDescriptor:od];
 
@@ -219,18 +239,47 @@ int main(int argc, char** argv) {
 
     id<MTLCommandQueue> q = [dev newCommandQueue];
     id<MTLCommandBuffer> cb = [q commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-    [enc setComputePipelineState:pso];
-    [enc setBuffer:glyphBuf offset:0 atIndex:0];
-    [enc setBuffer:boxBuf  offset:0 atIndex:1];
-    [enc setBuffer:uniBuf  offset:0 atIndex:2];
-    [enc setTexture:atlas atIndex:0];
-    [enc setTexture:bg    atIndex:1];
-    [enc setTexture:out   atIndex:2];
-    [enc setSamplerState:samp atIndex:0];
-    MTLSize tg = MTLSizeMake(8, 8, 1);
-    MTLSize groups = MTLSizeMake((cw + 7) / 8, (ch + 7) / 8, 1);
-    [enc dispatchThreadgroups:groups threadsPerThreadgroup:tg];
+
+    // One render pass onto `out`: bg fullscreen (replace) → boxes → glyphs, all
+    // instanced quads, alpha-over, document order — the exact host text_render path.
+    MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+    rpd.colorAttachments[0].texture = out;
+    rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
+
+    // bg fill (fullscreen triangle; alpha=1 → alpha-over == replace).
+    [enc setRenderPipelineState:bgPSO];
+    [enc setVertexBuffer:uniBuf offset:0 atIndex:2];
+    [enc setFragmentBuffer:uniBuf offset:0 atIndex:2];
+    [enc setFragmentTexture:bg atIndex:1];
+    [enc setFragmentSamplerState:samp atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 instanceCount:1];
+
+    // background boxes (fill + border ring), document order.
+    if (boxesWritten > 0) {
+      [enc setRenderPipelineState:boxPSO];
+      [enc setVertexBuffer:boxBuf offset:0 atIndex:1];
+      [enc setFragmentBuffer:boxBuf offset:0 atIndex:1];
+      [enc setVertexBuffer:uniBuf offset:0 atIndex:2];
+      [enc setFragmentBuffer:uniBuf offset:0 atIndex:2];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
+              instanceCount:(NSUInteger)boxesWritten];
+    }
+
+    // glyphs (MSDF quads).
+    if (written > 0) {
+      [enc setRenderPipelineState:glyphPSO];
+      [enc setVertexBuffer:glyphBuf offset:0 atIndex:0];
+      [enc setFragmentBuffer:glyphBuf offset:0 atIndex:0];
+      [enc setVertexBuffer:uniBuf offset:0 atIndex:2];
+      [enc setFragmentBuffer:uniBuf offset:0 atIndex:2];
+      [enc setFragmentTexture:atlas atIndex:0];
+      [enc setFragmentSamplerState:samp atIndex:0];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
+              instanceCount:(NSUInteger)written];
+    }
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];

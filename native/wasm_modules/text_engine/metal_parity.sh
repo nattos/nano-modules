@@ -4,7 +4,7 @@
 #   HTML/CSS → text_blitz (Rust) → pre-shaped runs → text_engine (FreeType+msdfgen)
 #            → GlyphQuads + BoxQuads + MSDF atlas
 #            → CPU golden  Engine::rasterize        (blitz_dump)   → reference RGBA
-#            → Metal GPU   MSL text_composite kernel (blitz_metal) → GPU RGBA
+#            → Metal GPU   MSL quad compositor       (blitz_metal) → GPU RGBA
 #
 # Asserts the Metal composite matches the CPU golden (Engine::rasterize) within a
 # perceptual envelope. The difference is hardware-sampler precision: the GPU

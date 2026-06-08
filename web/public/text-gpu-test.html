@@ -18,8 +18,9 @@
 <script type="module">
 const ATLAS_RGBA_OFFSET_ALPHA = 24; // alpha in high byte of LE-packed RGBA8
 
-// Hand-authored WGSL mirroring native/src/text/shaders/text_composite.hlsl
-// (the production web path will auto-generate this from the HLSL via naga).
+// Hand-authored WGSL compute compositor — matches the CPU golden
+// text_engine::Engine::rasterize (the native Metal path is now an instanced-quad
+// render pass producing the same pixels).
 const WGSL = `
 struct Glyph { rect: vec4<f32>, uv: vec4<f32>, rgba: vec4<f32>, aux: vec4<f32> };
 struct U {

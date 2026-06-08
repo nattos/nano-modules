@@ -1,7 +1,7 @@
 #pragma once
 // text_composite_quad_msl.h — quad-based MSDF text compositor for the Metal
-// backend. Replaces the per-pixel compute kernel in text_composite_msl.h: that
-// one looped EVERY glyph for EVERY output pixel (O(canvas·glyphs)), which is the
+// backend. Replaces the former per-pixel compute kernel, which looped EVERY
+// glyph for EVERY output pixel (O(canvas·glyphs)), which is the
 // power-of-the-GPU done backwards. Here each glyph/box is an instanced QUAD that
 // only rasterizes its own pixels, so total fragment work ≈ ink area, not
 // canvas·glyphs. MSDF is preserved (the fragment samples the same atlas and runs
@@ -31,8 +31,8 @@
 //   fragment texture(0)=atlas_arr (2D array, LINEAR)  texture(1)=bg
 //   fragment sampler(0)=linear/clamp
 //
-// Record layouts are byte-identical to text_engine::GlyphQuad (96B) and
-// text_engine::BoxQuad (112B) and to the U block in text_composite_msl.h.
+// Record layouts are byte-identical to text_engine::GlyphQuad (96B),
+// text_engine::BoxQuad (112B), and the UBO in host_impls_text.cpp.
 
 static const char* kTextCompositeQuadMSL = R"MSL(
 #include <metal_stdlib>

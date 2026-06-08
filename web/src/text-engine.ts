@@ -13,7 +13,11 @@
  * refactored to render into a caller-provided GPUTexture.
  */
 
-// MSDF compositor — mirrors native/src/text/shaders/text_composite.hlsl.
+// MSDF compositor (per-pixel compute). Matches the CPU golden
+// text_engine::Engine::rasterize; the native Metal path is now an instanced-quad
+// render pass (native/src/text/shaders/text_composite_quad_msl.h) that produces
+// the same pixels — this WGSL is the remaining compute compositor, pending a
+// matching quad port.
 const WGSL = `
 // 96-byte glyph: aux.x = atlas-array page (layer). clip/clipr = overflow:hidden
 // rounded rect (clip.z<=0 → none). ("meta" is a WGSL keyword.)
