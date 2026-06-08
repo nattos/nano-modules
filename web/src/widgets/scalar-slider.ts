@@ -37,7 +37,12 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
 
   @state() private isDragging = false;
   @state() private isEditing = false;
-  @state() private tempValue = '';
+  // Commit buffer for the inline text editor. NOT @state and NOT bound to the
+  // input's `.value`: the <input> is uncontrolled while editing (the DOM is the
+  // source of truth, this just mirrors it for commit), so no re-render ever
+  // re-asserts `.value` — which is what keeps IME composition from being
+  // clobbered. Seeded imperatively when edit mode opens.
+  private tempValue = '';
 
   private startValue = 0;
   private rect: DOMRect | null = null;
@@ -191,7 +196,6 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
         <div class="control">
           <input
             type="text"
-            .value=${this.tempValue}
             @input=${this.handleInput}
             @keydown=${this.handleInputKeyDown}
             @blur=${this.commitEdit}
@@ -331,6 +335,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       await this.updateComplete;
       const input = this.shadowRoot?.querySelector('input');
       if (input) {
+        input.value = this.tempValue;  // uncontrolled input — seed it here
         input.focus();
         if (e.key === 'Enter') {
           input.select();
@@ -352,6 +357,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     await this.updateComplete;
     const input = this.shadowRoot?.querySelector('input');
     if (input) {
+      input.value = this.tempValue;  // uncontrolled input — seed it here
       input.focus();
       input.select();
     }
