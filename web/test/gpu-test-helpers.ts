@@ -21,6 +21,14 @@ import { spawnSync } from 'child_process';
 
 const DUMP_DIR = '/tmp/gpu-test-dumps';
 
+// Base URL of the Vite dev server serving the test runner pages. Defaults to
+// 5173, but Vite falls back to 5174+ when another workspace already holds 5173
+// — and a sibling checkout squatting on 5173 means the puppeteer tests would
+// silently run against the WRONG workspace's code. Override with
+// GPU_TEST_BASE_URL=http://localhost:5174 to pin this checkout's server.
+export const TEST_BASE_URL =
+  process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
+
 // Path to the native_test_runner CLI built by the native CMake project.
 // CMake's default build dir is native/build/; tests assume the binary
 // exists there (built once via `cmake --build native/build --target
@@ -144,13 +152,20 @@ export function forEachBackend(
   backends: Backend[] = ['puppeteer', 'metal'],
 ): void {
   for (const backend of backends) {
-    const prev = _ambientBackend;
-    _ambientBackend = backend;
-    try {
+    // Wrap each backend's tests in a describe whose beforeAll/afterAll set the
+    // ambient backend at EXECUTION time. Setting `_ambientBackend` only here in
+    // the loop body (registration time) is a no-op for the actual run: Jest
+    // registers every describe/it synchronously up front, but the async `it`
+    // bodies execute later — by which point this loop has restored the default,
+    // so EVERY test would dispatch on whatever backend was ambient last (i.e.
+    // 'puppeteer'). The metal pass would silently run on Puppeteer. The
+    // beforeAll re-establishes this group's backend right before its tests run;
+    // afterAll resets it so the next sibling group / test file starts clean.
+    describe(`[backend:${backend}]`, () => {
+      beforeAll(() => { _ambientBackend = backend; });
+      afterAll(() => { _ambientBackend = 'puppeteer'; });
       body(backend);
-    } finally {
-      _ambientBackend = prev;
-    }
+    });
   }
 }
 
@@ -269,6 +284,14 @@ export class Frame {
    */
   readonly fusedRuns?: number;
   /**
+   * Fusion class declared by the effect under test (single-effect runs) or
+   * the last chain stage (state::FusionKind: 0=Freeform, 1=PerPixelMapper,
+   * 2=StrictOutput). Lets a test confirm an effect still declares itself
+   * fusion-eligible before asserting it actually fused. Both backends report
+   * it. Undefined only on a failed run.
+   */
+  readonly fusionKind?: number;
+  /**
    * Per-step intermediate pixel buffers, populated when the test
    * config sets `traceSteps`. Keyed by step index. Each value is the
    * full rgba8 pixel buffer captured right after that step's work
@@ -290,6 +313,7 @@ export class Frame {
     this.error = raw.error;
     this.samples = raw.samples;
     this.fusedRuns = raw.fusedRuns;
+    this.fusionKind = raw.fusionKind;
     this.dumpPath = dumpPath;
     if (raw.tracePixelsBase64) {
       for (const [k, b64] of Object.entries(raw.tracePixelsBase64) as [string, string][]) {
@@ -466,7 +490,7 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
       samplePoints: config.samplePoints ?? [],
     }, config.dumpName || `${config.module.replace('.wasm', '')}_${testCounter++}`);
   }
-  await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+  await page.goto(`${TEST_BASE_URL}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
   const effectiveMode = config.fusionMode ?? _ambientFusionMode;
 
@@ -613,7 +637,7 @@ async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
       inputColor: cfg.inputColor,
     }, dumpName);
   }
-  await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+  await page.goto(`${TEST_BASE_URL}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
   // Explicit `fusionMode` on the cfg wins; otherwise inherit the
   // ambient mode from the enclosing forEachFusionMode block (or
