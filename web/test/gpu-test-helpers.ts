@@ -155,6 +155,18 @@ export function forEachBackend(
 }
 
 /**
+ * Set the active backend at EXECUTION time (use inside a beforeAll/afterAll).
+ * forEachBackend only sets it during describe REGISTRATION and restores it, so
+ * the ambient backend at the time an async `it` actually runs is the default —
+ * tests that must run on a specific backend should pin it in a beforeAll:
+ *   beforeAll(() => setBackend('metal'));
+ *   afterAll(() => setBackend('puppeteer'));
+ */
+export function setBackend(backend: Backend): void {
+  _ambientBackend = backend;
+}
+
+/**
  * Active fusion mode for the current `describe` block, set by
  * `forEachFusionMode`. Picked up by `runGpuEffectTest` (and friends)
  * so per-effect tests don't have to pass `fusionMode` on every call.
@@ -251,6 +263,12 @@ export class Frame {
   readonly error?: string;
   readonly samples: { x: number; y: number; r: number; g: number; b: number; a: number }[];
   /**
+   * Number of fused-group GPU dispatches the run actually issued (native chain
+   * mode only; undefined elsewhere). >0 proves a fusible run really fused rather
+   * than silently falling back to per-stage. See SketchExecutor::fusedRunCount.
+   */
+  readonly fusedRuns?: number;
+  /**
    * Per-step intermediate pixel buffers, populated when the test
    * config sets `traceSteps`. Keyed by step index. Each value is the
    * full rgba8 pixel buffer captured right after that step's work
@@ -271,6 +289,7 @@ export class Frame {
     this.success = raw.success;
     this.error = raw.error;
     this.samples = raw.samples;
+    this.fusedRuns = raw.fusedRuns;
     this.dumpPath = dumpPath;
     if (raw.tracePixelsBase64) {
       for (const [k, b64] of Object.entries(raw.tracePixelsBase64) as [string, string][]) {
@@ -567,11 +586,21 @@ function runMetalConfig(cfg: any, dumpName?: string): Frame {
 
 async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
   if (_ambientBackend === 'metal') {
-    // Chain configs not supported on the metal backend yet (Phase 1
-    // scope is per-effect only). Fail loudly if a chain test slips
-    // through forEachBackend.
+    // Chain configs run through native_test_runner's chain mode (the
+    // SketchExecutor + GPU fusion path). The fusion mode (force-off disables
+    // fusion; auto/force-on fuse) inherits the ambient forEachFusionMode block,
+    // and the native runner reports `fusedRuns` so a test can assert fusion
+    // actually happened (vs a silent fallback that still renders correctly).
     if (cfg.chain) {
-      throw new Error('runMetalConfig: chain tests not supported (Phase 1 = per-effect only)');
+      return runMetalConfig({
+        chain: cfg.chain,
+        fusionMode: cfg.fusionMode ?? _ambientFusionMode,
+        width: cfg.width ?? 64,
+        height: cfg.height ?? 64,
+        ticks: cfg.ticks ?? 0,
+        samplePoints: cfg.samplePoints ?? [],
+        inputColor: cfg.inputColor,
+      }, dumpName);
     }
     return runMetalConfig({
       module: cfg.module,
