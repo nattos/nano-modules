@@ -97,6 +97,11 @@ public:
   // so surface dims would be 0. Default 0 (unknown handle / unsupported).
   virtual int32_t getTextureWidth(int32_t textureHandle)  { (void)textureHandle; return 0; }
   virtual int32_t getTextureHeight(int32_t textureHandle) { (void)textureHandle; return 0; }
+  // TextureFormat enum (0=BGRA8,1=RGBA8,3=RGBA16F,4=R32F) of an existing
+  // texture, or -1 if unknown. Used by the text compositor to build a render
+  // PSO whose color attachment matches the executor-bound output texture
+  // (RGBA8 intermediates vs the BGRA8 output interop).
+  virtual int32_t getTextureFormat(int32_t textureHandle) { (void)textureHandle; return -1; }
   // Bind a SPECIFIC mip level of a multi-mip texture to a compute
   // slot. Required when one pass reads one mip and writes another of
   // the same texture (the default sampled view spans all mips and
@@ -171,6 +176,18 @@ public:
   // whichever stage uses it). Default no-op.
   virtual void renderSetBuffer(int32_t pass, int32_t buf, int32_t slot) {
     (void)pass; (void)buf; (void)slot;
+  }
+  // Bind a texture / sampler to the FRAGMENT stage of a render pass (the
+  // vertex stage of our procedural-quad pipelines never samples). `access`
+  // is accepted for symmetry with computeSetTexture but ignored (render
+  // targets are read-only sampled here). Default no-op. Used by the quad
+  // text compositor's MSDF/bg fragment shaders.
+  virtual void renderSetTexture(int32_t pass, int32_t textureHandle, int32_t slot,
+                                int32_t access) {
+    (void)pass; (void)textureHandle; (void)slot; (void)access;
+  }
+  virtual void renderSetSampler(int32_t pass, int32_t samplerHandle, int32_t slot) {
+    (void)pass; (void)samplerHandle; (void)slot;
   }
   virtual void renderDraw(int32_t pass, uint32_t vertexCount, uint32_t instanceCount) = 0;
   virtual void endRenderPass(int32_t pass) = 0;

@@ -627,6 +627,19 @@ public:
     [renderEncoder_ setFragmentBuffer:b offset:0 atIndex:slot];
   }
 
+  void renderSetTexture(int32_t pass, int32_t textureHandle, int32_t slot,
+                        int32_t access) override {
+    (void)pass; (void)access;
+    id<MTLTexture> t = getAs<id<MTLTexture>>(textureHandle);
+    if (t && renderEncoder_) [renderEncoder_ setFragmentTexture:t atIndex:slot];
+  }
+
+  void renderSetSampler(int32_t pass, int32_t samplerHandle, int32_t slot) override {
+    (void)pass;
+    id<MTLSamplerState> s = getAs<id<MTLSamplerState>>(samplerHandle);
+    if (s && renderEncoder_) [renderEncoder_ setFragmentSamplerState:s atIndex:slot];
+  }
+
   void renderDraw(int32_t pass, uint32_t vertexCount, uint32_t instanceCount) override {
     (void)pass;
     if (!renderEncoder_) return;
@@ -686,6 +699,17 @@ public:
   int32_t getTextureHeight(int32_t textureHandle) override {
     id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
     return tex ? (int32_t)[tex height] : 0;
+  }
+  int32_t getTextureFormat(int32_t textureHandle) override {
+    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    if (!tex) return -1;
+    switch ([tex pixelFormat]) {
+      case MTLPixelFormatBGRA8Unorm:  return 0;
+      case MTLPixelFormatRGBA8Unorm:  return 1;
+      case MTLPixelFormatRGBA16Float: return 3;
+      case MTLPixelFormatR32Float:    return 4;
+      default:                        return 1;
+    }
   }
 
   // --- Readback ---

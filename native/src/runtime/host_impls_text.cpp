@@ -21,12 +21,13 @@
 #include "gpu/gpu_backend.h"
 #include "text/text_engine.h"
 #include "text/text_blitz.h"
-#include "text/shaders/text_composite_msl.h"
+#include "text/shaders/text_composite_quad_msl.h"
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <unordered_map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -111,9 +112,16 @@ bool ensureFonts() {
 }
 
 // --- GPU compositor resource cache ------------------------------------------
+// Quad compositor PSOs are color-attachment-format-specific (unlike the old
+// compute kernel's format-agnostic storage write), so we cache one set per
+// target pixel-format enum: RGBA8 (=1) for intermediate textures, BGRA8 (=0)
+// for the output interop. Built once each, kept for the backend's lifetime.
+struct QuadPSOs { int bg = -1, box = -1, glyph = -1; };
+
 struct TextGpu {
   gpu::GPUBackend* backend = nullptr;  // cache is valid only for this backend
-  int shader = -1, pso = -1, sampler = -1, bg = -1;
+  int quadShader = -1, sampler = -1, bg = -1;
+  std::unordered_map<int, QuadPSOs> psos;  // keyed by TextureFormat enum
   int atlas = -1, atlasLayers = 0, atlasW = 0, atlasH = 0;
   int glyphBuf = -1; uint32_t glyphCap = 0;
   int boxBuf = -1;   uint32_t boxCap = 0;
@@ -121,7 +129,8 @@ struct TextGpu {
 
   void reset() {
     backend = nullptr;
-    shader = pso = sampler = bg = atlas = -1;
+    quadShader = sampler = bg = atlas = -1;
+    psos.clear();
     atlasLayers = atlasW = atlasH = 0;
     glyphBuf = boxBuf = uniBuf = -1; glyphCap = boxCap = 0;
   }
@@ -131,14 +140,16 @@ TextGpu g_gpu;
 // Format codes from wasm_modules/include/gpu.h: 1 == RGBA8Unorm.
 constexpr int kFmtRGBA8 = 1;
 
-// Ensure the immutable resources (shader/PSO/sampler/bg) exist on `b`.
-bool ensurePipeline(gpu::GPUBackend* b) {
+// Ensure the shared resources + the PSO set for target format `fmt` exist on
+// `b`. Returns the PSO set (rendered straight into the caller's target — no
+// scratch — since both intermediates and the output interop carry RenderTarget
+// usage). blendMode 0 = alpha-over; the bg pass writes alpha=1 so alpha-over ==
+// replace, initialising the frame from the background.
+const QuadPSOs* ensurePipeline(gpu::GPUBackend* b, int fmt) {
   if (g_gpu.backend != b) { g_gpu.reset(); g_gpu.backend = b; }
-  if (g_gpu.pso < 0) {
-    g_gpu.shader = b->createShaderModule(kTextCompositeMSL);
-    if (g_gpu.shader < 0) return false;
-    g_gpu.pso = b->createComputePSO(g_gpu.shader, "text_composite");
-    if (g_gpu.pso < 0) return false;
+  if (g_gpu.quadShader < 0) {
+    g_gpu.quadShader = b->createShaderModule(kTextCompositeQuadMSL);
+    if (g_gpu.quadShader < 0) return nullptr;
   }
   if (g_gpu.sampler < 0) g_gpu.sampler = b->createSampler(/*linear*/1, /*clamp*/0);
   if (g_gpu.bg < 0) {
@@ -146,7 +157,18 @@ bool ensurePipeline(gpu::GPUBackend* b) {
     const uint8_t black[4] = {0, 0, 0, 255};
     b->writeTexture(g_gpu.bg, 1, 1, black, 4);
   }
-  return g_gpu.pso >= 0 && g_gpu.sampler >= 0 && g_gpu.bg >= 0;
+  if (g_gpu.sampler < 0 || g_gpu.bg < 0) return nullptr;
+  auto it = g_gpu.psos.find(fmt);
+  if (it == g_gpu.psos.end()) {
+    QuadPSOs p;
+    int sh = g_gpu.quadShader;
+    p.bg    = b->createInstancedRenderPSO(sh, "bg_vs",    sh, "bg_fs",    fmt, 0);
+    p.box   = b->createInstancedRenderPSO(sh, "box_vs",   sh, "box_fs",   fmt, 0);
+    p.glyph = b->createInstancedRenderPSO(sh, "glyph_vs", sh, "glyph_fs", fmt, 0);
+    if (p.bg < 0 || p.box < 0 || p.glyph < 0) return nullptr;
+    it = g_gpu.psos.emplace(fmt, p).first;
+  }
+  return &it->second;
 }
 
 // (Re)build + upload the MSDF atlas array for `id`; returns the atlas handle.
@@ -306,7 +328,6 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   auto* rt = currentRuntime();
   gpu::GPUBackend* b = rt ? rt->gpu() : nullptr;
   if (!b) return;
-  if (!ensurePipeline(b)) return;
 
   // Transform: {"x":..,"y":..} layout-box origin offset (scale TODO).
   float originX = 0.0f, originY = 0.0f;
@@ -341,6 +362,13 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   if (cw <= 0 || ch <= 0) { cw = b->getSurfaceWidth(); ch = b->getSurfaceHeight(); }
   if (cw <= 0 || ch <= 0) return;
 
+  // PSOs must match the target's color-attachment format (BGRA8 output interop
+  // vs RGBA8 intermediates). We render straight into the target.
+  int fmt = b->getTextureFormat(target_tex);
+  if (fmt < 0) fmt = kFmtRGBA8;
+  const QuadPSOs* pso = ensurePipeline(b, fmt);
+  if (!pso) return;
+
   g_gpu.glyphBuf = ensureBuffer(b, g_gpu.glyphBuf, g_gpu.glyphCap,
                                 glyphs.data(),
                                 (uint32_t)written * sizeof(text_engine::GlyphQuad));
@@ -359,29 +387,45 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   uint32_t uniCap = sizeof(UBO);
   g_gpu.uniBuf = ensureBuffer(b, g_gpu.uniBuf, uniCap, &u, sizeof(UBO));
 
-  // Encode the compositor compute pass into the backend's current command
-  // buffer. NOT submitted here — the effect calls gpu::Device::submit().
-  int pass = b->beginComputePass();
-  b->computeSetPSO(pass, g_gpu.pso);
-  b->computeSetBuffer(pass, g_gpu.glyphBuf, 0, 0);
-  b->computeSetBuffer(pass, g_gpu.boxBuf, 0, 1);
-  b->computeSetBuffer(pass, g_gpu.uniBuf, 0, 2);
   // Background sampled behind the text: a caller-supplied input texture (overlay
-  // text on it), else the 1×1 opaque-black fallback. The compositor samples bg
-  // at the per-pixel normalized UV, so a full-res input maps 1:1.
+  // text on it), else the 1×1 opaque-black fallback. bg MUST differ from the
+  // target (the bg pass samples it while we render into target).
   int bg = (bg_tex >= 0 && bg_tex != target_tex) ? bg_tex : g_gpu.bg;
-  b->computeSetTexture(pass, atlas, 0, /*read*/0);
-  b->computeSetTexture(pass, bg, 1, /*read*/0);
-  b->computeSetTexture(pass, target_tex, 2, /*write*/1);
-  b->computeSetSampler(pass, g_gpu.sampler, 0);
-  b->computeDispatch(pass, (uint32_t)((cw + 7) / 8), (uint32_t)((ch + 7) / 8), 1);
-  b->endComputePass(pass);
+
+  // ONE render pass onto the target: bg fullscreen (replace) → boxes → glyphs,
+  // all instanced quads with alpha-over blend, in document order. Each glyph/box
+  // only rasterizes its own pixels — no per-pixel glyph loop. NOT submitted here;
+  // the effect calls gpu::Device::submit().
+  int pass = b->beginRenderPass(target_tex, 0.0f, 0.0f, 0.0f, 1.0f);
+  // bg fill (fullscreen triangle, alpha=1 → replaces the clear with the bg).
+  b->renderSetPSO(pass, pso->bg);
+  b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
+  b->renderSetTexture(pass, bg, 1, /*read*/0);
+  b->renderSetSampler(pass, g_gpu.sampler, 0);
+  b->renderDraw(pass, 3, 1);
+  // background boxes (fill + border ring), document order.
+  if (boxesWritten > 0) {
+    b->renderSetPSO(pass, pso->box);
+    b->renderSetBuffer(pass, g_gpu.boxBuf, 1);
+    b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
+    b->renderDraw(pass, 6, (uint32_t)boxesWritten);
+  }
+  // glyphs (MSDF quads).
+  if (written > 0) {
+    b->renderSetPSO(pass, pso->glyph);
+    b->renderSetBuffer(pass, g_gpu.glyphBuf, 0);
+    b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
+    b->renderSetTexture(pass, atlas, 0, /*read*/0);
+    b->renderSetSampler(pass, g_gpu.sampler, 0);
+    b->renderDraw(pass, 6, (uint32_t)written);
+  }
+  b->endRenderPass(pass);
 }
 
 int text_atlas(int layout_id) {
   auto* rt = currentRuntime();
   gpu::GPUBackend* b = rt ? rt->gpu() : nullptr;
-  if (!b || !ensurePipeline(b)) return -1;
+  if (!b || !ensurePipeline(b, kFmtRGBA8)) return -1;
   return ensureAtlas(b, layout_id);   // shared atlas-array texture handle
 }
 
