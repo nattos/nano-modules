@@ -148,9 +148,18 @@ def gen_registration(effects, tmp_dir):
     for e in effects:
         ns = e["ns"]
         w(f"  // {e['id']}  ({e['abi']})")
-        for regname, variant in e["shaders"]:
-            w(f'  rt.registerShaderMSL("{cstr(regname)}", {msl_macro(ns, variant)});')
         eid = cstr(e["id"])
+        for regname, variant in e["shaders"]:
+            # Bare name: consumed synchronously by THIS effect's module_init
+            # (createShaderModuleByName) before the next effect overwrites it.
+            w(f'  rt.registerShaderMSL("{cstr(regname)}", {msl_macro(ns, variant)});')
+            # Module-qualified alias: a STABLE per-effect key. The fusion path
+            # compiles its kernel lazily at render time — long after every effect
+            # has overwritten the bare names — so it must look the fragment up by
+            # "<module_type>::<name>" to get the right effect's fragment (else it
+            # fuses with whatever registered the bare name last). See
+            # SketchExecutor runFusedGroup.
+            w(f'  rt.registerShaderMSL("{eid}::{cstr(regname)}", {msl_macro(ns, variant)});')
         disp = cstr(e["display"])
         if e["abi"] == "instance":
             ident = f", &{ns}::is_identity" if e["identity"] else ""

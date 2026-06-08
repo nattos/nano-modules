@@ -518,8 +518,16 @@ int32_t SketchExecutor::execute(
         if (!cacheKey.empty()) cacheKey += '|';
         cacheKey += R[g.firstK + idx].moduleType;
         stages.push_back(inst);
+        // Resolve the fragment by a STABLE per-effect key first
+        // ("<module_type>::<name>"), falling back to the bare name. The bare
+        // names ("pixel") are shared across all effects and overwritten at
+        // registration, so a bare lookup here (render time) would return some
+        // OTHER effect's fragment — the cause of the fused kernel failing to
+        // compile. See gen_barrel_effects.py's qualified registerShaderMSL alias.
+        const std::string& fragName = inst->fusionInfo().fragmentName;
         std::string msl;
-        if (!rt_->lookupMSL(inst->fusionInfo().fragmentName, &msl)) {
+        if (!rt_->lookupMSL(R[g.firstK + idx].moduleType + "::" + fragName, &msl)
+            && !rt_->lookupMSL(fragName, &msl)) {
           fragsOK = false; break;
         }
         fragments.push_back(std::move(msl));
