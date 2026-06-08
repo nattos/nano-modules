@@ -107,6 +107,26 @@ class SketchExecutor {
   }
 
   /**
+   * Force-disable GPU fusion (every stage takes the standalone path). The
+   * production default is on (`auto`: any run of 2+ fusion-eligible effects
+   * fuses into one dispatch). Tests flip this to compare the standalone vs
+   * fused paths for byte-identity. Invalidates the compiled plan (eligibility
+   * is cached there).
+   */
+  void setFusionEnabled(bool enabled) {
+    if (fusionEnabled_ != enabled) { fusionEnabled_ = enabled; planValid_ = false; }
+  }
+
+  /**
+   * Number of fused-group GPU dispatches the LAST execute() actually issued
+   * (i.e. groups that compiled + dispatched as one kernel, not fell back to
+   * per-stage). 0 means nothing fused — the signal a fusion test asserts on so
+   * a silently-broken fused kernel (which still renders correctly via the
+   * fallback) is caught.
+   */
+  int fusedRunCount() const { return fusedRunCount_; }
+
+  /**
    * Execute one frame.
    *
    * `rawSketch` is the un-augmented graph (typically the editor's
@@ -208,6 +228,8 @@ class SketchExecutor {
   };
   std::vector<PlanColumn> plan_;
   bool planValid_ = false;
+  bool fusionEnabled_ = true;   // force-off disables GPU fusion (test hook)
+  int  fusedRunCount_ = 0;      // fused dispatches issued in the last execute()
 
   // (Re)build plan_ from the (augmented) sketch. Calls instanceFor for each
   // resolvable entry, so instances are materialised here on a dirty frame.

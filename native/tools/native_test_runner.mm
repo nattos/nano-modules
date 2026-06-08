@@ -39,6 +39,7 @@
 
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "sketch/sketch_executor.h"
 
 // Effect registration is generated from effects_native/barrel_manifest.txt
 // (gen_barrel_effects.py): namespace forward-decls + MSL + the
@@ -183,6 +184,77 @@ int main(int argc, char** argv) {
     // Registers every effect in barrel_manifest.txt (same set + path as the
     // NanoBarrel plugin), so the runner can render any of them by id.
     nano_barrel_gen::registerAllBarrelEffects(rt, registry);
+
+    // ----- Multi-effect CHAIN mode (exercises SketchExecutor + GPU fusion) ----
+    // cfg.chain = [ {module, params:[[path,val],...]}, ... ]. Runs the whole
+    // chain through the executor (the production fused/standalone path), reports
+    // pixels + `fusedRuns` (how many fused-kernel dispatches actually issued) so
+    // fusion tests can assert byte-identity AND that fusion really happened.
+    if (cfg.contains("chain") && cfg["chain"].is_array()) {
+      nlohmann::json chainArr = nlohmann::json::array();
+      nlohmann::json instances = nlohmann::json::object();
+      int ci = 0;
+      for (const auto& entry : cfg["chain"]) {
+        std::string mod = entry.value("module", entry.value("module_type", std::string()));
+        std::string key = "c" + std::to_string(ci++);
+        chainArr.push_back({{"module_type", resolveEffectId(mod)}, {"instance_key", key}});
+        nlohmann::json st = nlohmann::json::object();
+        if (entry.contains("params") && entry["params"].is_array()) {
+          for (const auto& p : entry["params"]) {
+            if (p.is_array() && p.size() >= 2 && p[0].is_string())
+              st[p[0].get<std::string>()] = p[1];
+          }
+        }
+        instances[key] = {{"state", st}};
+      }
+      nlohmann::json sketch = {
+        {"columns", nlohmann::json::array({ {{"chain", chainArr}} })},
+        {"instances", instances},
+      };
+
+      sketch_executor::SketchExecutor exec(&rt, &registry, gpu.get());
+      const std::string fmode = cfg.value("fusionMode", std::string("auto"));
+      if (fmode == "force-off") exec.setFusionEnabled(false);  // force-on/auto fuse
+
+      effect_runtime::setHostViewport(W, H);
+      effect_runtime::setHostBpm(120.0);
+      int tickCount = std::max(1, cfg.value("ticks", 1));
+      int32_t finalHandle = inputTex;
+      for (int i = 0; i < tickCount; ++i) {
+        double t = (i + 1) * 0.016;
+        effect_runtime::setHostTime(t);
+        effect_runtime::setHostDeltaTime(0.016);
+        finalHandle = exec.execute(sketch, inputTex, outputTex, W, H, 0.016, /*dirty=*/true);
+      }
+      gpu->submit();
+      auto pixels = gpu->readbackTexture(finalHandle >= 0 ? finalHandle : outputTex,
+                                         (uint32_t)W, (uint32_t)H);
+
+      std::vector<std::array<int, 2>> points;
+      if (cfg.contains("samplePoints") && cfg["samplePoints"].is_array() &&
+          !cfg["samplePoints"].empty()) {
+        for (const auto& p : cfg["samplePoints"])
+          points.push_back({p[0].get<int>(), p[1].get<int>()});
+      } else {
+        points = {{W/2, H/2}, {0, 0}, {W-1, 0}, {0, H-1}, {W-1, H-1}};
+      }
+      nlohmann::json samples = nlohmann::json::array();
+      for (auto& pt : points) {
+        int x = std::clamp(pt[0], 0, W - 1), y = std::clamp(pt[1], 0, H - 1);
+        size_t o = (size_t)(y * W + x) * 4;
+        samples.push_back({{"x", x}, {"y", y}, {"r", pixels[o]}, {"g", pixels[o+1]},
+                           {"b", pixels[o+2]}, {"a", pixels[o+3]}});
+      }
+      nlohmann::json result{
+        {"success", true}, {"width", W}, {"height", H},
+        {"pixelCount", pixels.size() / 4}, {"pixelsBase64", base64Encode(pixels)},
+        {"samples", samples}, {"fusedRuns", exec.fusedRunCount()},
+        {"consoleLog", rt.drainConsoleLog()}, {"gpuErrors", nlohmann::json::array()},
+        {"pluginState", nlohmann::json::object()}, {"params", nlohmann::json::array()},
+      };
+      std::cout << result.dump() << std::endl;
+      return 0;
+    }
 
     std::string moduleName = cfg.value("module", std::string("soft_glow.wasm"));
     std::string effectId = resolveEffectId(moduleName);

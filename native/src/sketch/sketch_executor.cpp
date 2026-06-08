@@ -190,6 +190,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
           e = false;
         }
       }
+      if (!fusionEnabled_) e = false;   // force-off (test hook)
       pc.resolvable.push_back({i, std::move(mt), std::move(instKey), reg, e});
     }
   }
@@ -240,6 +241,7 @@ int32_t SketchExecutor::execute(
   intermediate_cursor_ = 0;
   int32_t finalHandle = inputHandle;
   bool anyDispatched = false;
+  fusedRunCount_ = 0;           // counted in runFusedGroup; read by tests
   railState_ = json::object();  // rebuilt per frame; published by the host
 
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
@@ -626,6 +628,7 @@ int32_t SketchExecutor::execute(
       }
 
       anyDispatched = true;
+      ++fusedRunCount_;          // a real fused-kernel dispatch (not a fallback)
       finalHandle = groupOutput;
       colInput = groupOutput;
     };
