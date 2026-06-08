@@ -244,6 +244,16 @@ int32_t SketchExecutor::execute(
   fusedRunCount_ = 0;           // counted in runFusedGroup; read by tests
   railState_ = json::object();  // rebuilt per frame; published by the host
 
+  // Coalesce the whole frame's stages into ONE command buffer. Every effect's
+  // render() ends in gpu::submit() (commit + waitUntilCompleted) — left alone,
+  // an N-stage chain blocks the CPU on GPU completion N times per frame, the
+  // dominant cost for non-fusable chains (a 16-stage chain measured ~12 ms/frame
+  // wall, almost all of it parked in waitUntilCompleted). beginSubmitBatch makes
+  // those per-stage submits defer; endSubmitBatch commits + waits once. The
+  // chain-entry capture hooks only RECORD texture handles (readback is deferred
+  // to after execute()), so monitored intermediates stay correct.
+  gpu_->beginSubmitBatch();
+
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
     // Cached structural plan for this column (resolvable entries + rail index).
     const PlanColumn& pc = plan_[colIdx];
@@ -657,6 +667,13 @@ int32_t SketchExecutor::execute(
       railState_["columns/" + std::to_string(colIdx)] = std::move(colRails);
     }
   }
+
+  // Flush the batched frame: commit + wait once. All GPU work (including any
+  // monitored intermediate textures) is complete when this returns, so the
+  // host's downstream consumers — the output-hook readback below and the FFGL
+  // interop blit — see finished pixels exactly as they did under per-stage waits.
+  gpu_->endSubmitBatch();
+
   if (anyDispatched && sketchOutputHook_) {
     sketchOutputHook_(finalHandle, W, H);
   }

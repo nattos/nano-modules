@@ -195,6 +195,19 @@ public:
   // Submit + present
   virtual void submit() = 0;
 
+  // Frame-batching. When a host brackets a sequence of render stages with
+  // beginSubmitBatch()/endSubmitBatch(), the backend MAY coalesce the per-stage
+  // submit() calls into a single command buffer committed + waited once at
+  // endSubmitBatch(). This removes the N-1 CPU<->GPU round-trips an N-stage
+  // chain otherwise pays — every effect's render() ends in submit(), which by
+  // default commits AND blocks on completion, so a 16-effect chain blocks the
+  // CPU 16 times per frame. All GPU work is guaranteed complete when
+  // endSubmitBatch() returns, so downstream consumers (readback, interop blit)
+  // are unchanged. Nestable calls are NOT supported (one batch at a time).
+  // Default: no-op — submit() keeps its commit+wait behavior.
+  virtual void beginSubmitBatch() {}
+  virtual void endSubmitBatch() {}
+
   // Surface / render target
   virtual void setSurface(int32_t textureHandle, uint32_t w, uint32_t h) = 0;
   virtual int32_t getSurfaceTexture() = 0;

@@ -659,7 +659,19 @@ public:
 
   // --- Submit ---
 
+  void beginSubmitBatch() override { deferSubmit_ = true; }
+  void endSubmitBatch() override {
+    deferSubmit_ = false;
+    submit();  // commit + wait the single accumulated command buffer
+  }
+
   void submit() override {
+    // Inside a host submit-batch, defer: every effect's render() calls submit()
+    // expecting a flush, but we accumulate all of their encoders into one
+    // command buffer (the queue is serial + Metal hazard-tracks within a buffer,
+    // so stage N+1 correctly reads stage N's output) and commit+wait once at
+    // endSubmitBatch() instead of blocking per stage.
+    if (deferSubmit_) return;
     if (cmdBuffer_) {
       [cmdBuffer_ commit];
       [cmdBuffer_ waitUntilCompleted];
@@ -991,6 +1003,10 @@ private:
   id<MTLComputeCommandEncoder> computeEncoder_ = nil;
   id<MTLComputePipelineState> currentComputePSO_ = nil;
   id<MTLRenderCommandEncoder> renderEncoder_ = nil;
+
+  // When true (host opened a submit-batch), submit() defers — encoders pile
+  // into one command buffer committed+waited once at endSubmitBatch().
+  bool deferSubmit_ = false;
 
   // Bilinear downscale used by readbackTextureScaled. Lazily created so
   // backends that never preview pay nothing.
