@@ -662,31 +662,72 @@ public:
   void beginSubmitBatch() override { deferSubmit_ = true; }
   void endSubmitBatch() override {
     deferSubmit_ = false;
-    submit();  // commit + wait the single accumulated command buffer
+    if (!cmdBuffer_) return;
+    // Error logging for the scheduled-only path must be registered BEFORE
+    // commit (addCompletedHandler asserts otherwise); the blocking path checks
+    // status synchronously instead.
+    if (!waitCompleted_) attachErrorLogger(cmdBuffer_);
+    [cmdBuffer_ commit];
+    // The FFGL host consumes this frame's output through an IOSurface-backed
+    // GL texture. On a single GPU the driver orders cross-API IOSurface access
+    // by SUBMISSION, so the host's GL blit that reads our output only needs the
+    // command buffer SCHEDULED (enqueued on the GPU), not finished — the host's
+    // glFlush around the GL blit completes the cross-API ordering.
+    // waitUntilScheduled returns the instant the buffer is queued, so the render
+    // thread (Resolume's) overlaps with the GPU instead of parking on the whole
+    // chain's execution. CPU pixel consumers (test/preview readback) can't rely
+    // on scheduling alone, so readbackTexture() waits on lastCommitted_.
+    // (Override with NANO_WAIT_COMPLETED to A/B against the old blocking flush.)
+    if (waitCompleted_) {
+      [cmdBuffer_ waitUntilCompleted];
+      logCmdBufferError(cmdBuffer_);
+      lastCommitted_ = nil;
+    } else {
+      [cmdBuffer_ waitUntilScheduled];
+      lastCommitted_ = cmdBuffer_;
+    }
+    cmdBuffer_ = nil;
   }
 
   void submit() override {
     // Inside a host submit-batch, defer: every effect's render() calls submit()
     // expecting a flush, but we accumulate all of their encoders into one
     // command buffer (the queue is serial + Metal hazard-tracks within a buffer,
-    // so stage N+1 correctly reads stage N's output) and commit+wait once at
+    // so stage N+1 correctly reads stage N's output) and commit once at
     // endSubmitBatch() instead of blocking per stage.
     if (deferSubmit_) return;
     if (cmdBuffer_) {
+      // Standalone submit (no host batch open): keep the blocking flush — the
+      // caller may be a test / tool that reads pixels back right after.
       [cmdBuffer_ commit];
       [cmdBuffer_ waitUntilCompleted];
-      // Surface command-buffer errors loudly. A Metal validation
-      // failure during compute dispatch (e.g. binding mismatch, dead
-      // PSO) commits silently and leaves status==Error with no other
-      // signal — the dispatch just doesn't write, producing black
-      // output.
-      if ([cmdBuffer_ status] == MTLCommandBufferStatusError) {
-        NSError* err = [cmdBuffer_ error];
-        NSLog(@"[metal_backend] command buffer FAILED: %@",
-              err ? [err localizedDescription] : @"(unknown)");
-      }
+      logCmdBufferError(cmdBuffer_);
+      lastCommitted_ = nil;
       cmdBuffer_ = nil;
     }
+  }
+
+  // Synchronous error check (call after waitUntilCompleted). A Metal validation
+  // failure during dispatch (binding mismatch, dead PSO) commits silently and
+  // leaves status==Error with no other signal — the dispatch just doesn't
+  // write, producing black output — so surface it loudly.
+  static void logCmdBufferError(id<MTLCommandBuffer> cb) {
+    if ([cb status] == MTLCommandBufferStatusError) {
+      NSError* err = [cb error];
+      NSLog(@"[metal_backend] command buffer FAILED: %@",
+            err ? [err localizedDescription] : @"(unknown)");
+    }
+  }
+  // Async equivalent for the scheduled-only path, where status isn't known
+  // until the GPU finishes well after we've returned to the caller.
+  static void attachErrorLogger(id<MTLCommandBuffer> cb) {
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+      if ([done status] == MTLCommandBufferStatusError) {
+        NSError* err = [done error];
+        NSLog(@"[metal_backend] command buffer FAILED (async): %@",
+              err ? [err localizedDescription] : @"(unknown)");
+      }
+    }];
   }
 
   // --- Surface ---
@@ -730,6 +771,14 @@ public:
                                         uint32_t w, uint32_t h) override {
     id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
     if (!tex) return {};
+
+    // getBytes is a CPU read — it needs the producing GPU work COMPLETE, not
+    // just scheduled. When the last frame flush only waited for scheduling
+    // (the FFGL fast path), block on its completion here.
+    if (lastCommitted_) {
+      [lastCommitted_ waitUntilCompleted];
+      lastCommitted_ = nil;
+    }
 
     std::vector<uint8_t> pixels(w * h * 4);
     [tex getBytes:pixels.data()
@@ -1005,8 +1054,16 @@ private:
   id<MTLRenderCommandEncoder> renderEncoder_ = nil;
 
   // When true (host opened a submit-batch), submit() defers — encoders pile
-  // into one command buffer committed+waited once at endSubmitBatch().
+  // into one command buffer committed once at endSubmitBatch().
   bool deferSubmit_ = false;
+  // endSubmitBatch waits only for SCHEDULING (GL consumes the output via
+  // IOSurface, ordered by submission) unless this is set — forced on by
+  // NANO_WAIT_COMPLETED for A/B benchmarking against the old blocking flush.
+  bool waitCompleted_ = getenv("NANO_WAIT_COMPLETED") != nullptr;
+  // Last command buffer committed scheduled-only; a CPU pixel consumer
+  // (readbackTexture) waits on this for completion before getBytes. Nil once
+  // a blocking flush has already guaranteed completion.
+  id<MTLCommandBuffer> lastCommitted_ = nil;
 
   // Bilinear downscale used by readbackTextureScaled. Lazily created so
   // backends that never preview pay nothing.
