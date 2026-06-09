@@ -38,16 +38,20 @@ struct UpdateUniforms {
 };
 static_assert(sizeof(UpdateUniforms) == 96, "UpdateUniforms layout mismatch");
 
-struct RenderUniforms {
-  uint32_t count, pool_max, frame_index, debug_region;
-  float    intensity, hue, frame_alpha_jitter, alpha_curve;
-  uint32_t shape_kind; float shape_param, region_y_max, aspect;
-  float    _pad0, _pad1, _pad2, _pad3;
+struct PrefillUniforms { uint32_t debug_region; float region_y_max, _pad0, _pad1; };
+static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
+
+struct VsUniforms { float aspect_x, aspect_y, _pad0, _pad1; };
+static_assert(sizeof(VsUniforms) == 16, "VsUniforms layout mismatch");
+
+struct FsUniforms {
+  float    hue, intensity, frame_alpha_jitter, alpha_curve;
+  uint32_t shape_kind, frame_index; float shape_param, _pad;
 };
-static_assert(sizeof(RenderUniforms) == 64, "RenderUniforms layout mismatch");
+static_assert(sizeof(FsUniforms) == 32, "FsUniforms layout mismatch");
 
 struct State {
-  gpu::Buffer  part_buf, update_uniform_buf, render_uniform_buf;
+  gpu::Buffer  part_buf, update_uniform_buf, prefill_uniform_buf, vs_uniform_buf, fs_uniform_buf;
   gpu::Texture motion_tex, zero_motion_tex;
   int          motion_w = 0, motion_h = 0;
   bool         initialized = false;
@@ -102,7 +106,8 @@ struct State {
   uint32_t auto_rng = 0xCAFEBABEu;
 };
 
-static gpu::ComputePSO s_pso_update, s_pso_render, s_pso_motion;
+static gpu::ComputePSO s_pso_update, s_pso_prefill, s_pso_motion;
+static gpu::RenderPSO  s_pso_render_add;
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (v > hi ? hi : v); }
@@ -151,18 +156,27 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("tingle_top_update", UPDATE_SPV, UPDATE_SPV_SIZE);
-  state::registerShaderSPV("tingle_top_render", RENDER_SPV, RENDER_SPV_SIZE);
-  state::registerShaderSPV("tingle_top_motion", MOTION_SPV, MOTION_SPV_SIZE,
+  state::registerShaderSPV("tingle_top_update",  UPDATE_SPV,  UPDATE_SPV_SIZE);
+  state::registerShaderSPV("tingle_top_prefill", PREFILL_SPV, PREFILL_SPV_SIZE);
+  state::registerShaderSPV("tingle_top_vs",      VS_SPV,      VS_SPV_SIZE);
+  state::registerShaderSPV("tingle_top_fs",      FS_SPV,      FS_SPV_SIZE);
+  state::registerShaderSPV("tingle_top_motion",  MOTION_SPV,  MOTION_SPV_SIZE,
                            "rgba16float", "write");
-  auto cs_u = gpu::Device::createShaderModuleByName("tingle_top_update");
-  auto cs_r = gpu::Device::createShaderModuleByName("tingle_top_render");
-  auto cs_m = gpu::Device::createShaderModuleByName("tingle_top_motion");
-  if (!cs_u || !cs_r || !cs_m) return;
+  auto cs_u  = gpu::Device::createShaderModuleByName("tingle_top_update");
+  auto cs_pf = gpu::Device::createShaderModuleByName("tingle_top_prefill");
+  auto vs    = gpu::Device::createShaderModuleByName("tingle_top_vs");
+  auto fs    = gpu::Device::createShaderModuleByName("tingle_top_fs");
+  auto cs_m  = gpu::Device::createShaderModuleByName("tingle_top_motion");
+  if (!cs_u || !cs_pf || !vs || !fs || !cs_m) return;
 
-  s_pso_update = gpu::Device::createComputePSO(cs_u, "main", gpu::Bindings().storageRW(0).uniform(1));
-  s_pso_render = gpu::Device::createComputePSO(cs_r, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2).storage(3));
+  s_pso_update  = gpu::Device::createComputePSO(cs_u,  "main", gpu::Bindings().storageRW(0).uniform(1));
+  s_pso_prefill = gpu::Device::createComputePSO(cs_pf, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  // Instanced sparkle quads, additive over the pre-filled input.
+  s_pso_render_add = gpu::Device::createInstancedRenderPSO(
+      vs, "main", fs, "main", gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::Additive);
   s_pso_motion = gpu::Device::createComputePSO(cs_m, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
 
@@ -171,9 +185,11 @@ void module_init() {
 
 void* create() {
   auto* s = new State();
-  s->part_buf           = gpu::Device::createBuffer(sizeof(GpuParticle) * POOL_HARD_MAX, gpu::BufferUsage::Storage);
-  s->update_uniform_buf = gpu::Device::createBuffer(sizeof(UpdateUniforms), gpu::BufferUsage::Uniform);
-  s->render_uniform_buf = gpu::Device::createBuffer(sizeof(RenderUniforms), gpu::BufferUsage::Uniform);
+  s->part_buf            = gpu::Device::createBuffer(sizeof(GpuParticle) * POOL_HARD_MAX, gpu::BufferUsage::Storage);
+  s->update_uniform_buf  = gpu::Device::createBuffer(sizeof(UpdateUniforms),  gpu::BufferUsage::Uniform);
+  s->prefill_uniform_buf = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
+  s->vs_uniform_buf      = gpu::Device::createBuffer(sizeof(VsUniforms),      gpu::BufferUsage::Uniform);
+  s->fs_uniform_buf      = gpu::Device::createBuffer(sizeof(FsUniforms),      gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -182,7 +198,9 @@ void destroy(void* self) {
   if (!s) return;
   s->part_buf.release();
   s->update_uniform_buf.release();
-  s->render_uniform_buf.release();
+  s->prefill_uniform_buf.release();
+  s->vs_uniform_buf.release();
+  s->fs_uniform_buf.release();
   s->motion_tex.release();
   s->zero_motion_tex.release();
   delete s;
@@ -204,8 +222,9 @@ void init(void* self) {
   s->gate_prev = false;
   s->trigger_prev = 0.0f;
   s->auto_rng = 0xCAFEBABEu;
-  if (!s_pso_update.valid() || !s_pso_render.valid() || !s_pso_motion.valid()) return;
-  if (!s->part_buf.valid() || !s->update_uniform_buf.valid() || !s->render_uniform_buf.valid()) return;
+  if (!s_pso_update.valid() || !s_pso_prefill.valid() || !s_pso_render_add.valid() || !s_pso_motion.valid()) return;
+  if (!s->part_buf.valid() || !s->update_uniform_buf.valid() || !s->prefill_uniform_buf.valid()
+      || !s->vs_uniform_buf.valid() || !s->fs_uniform_buf.valid()) return;
   s->initialized = true;
 }
 
@@ -343,30 +362,43 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // Pass 2 — render.
-  RenderUniforms ru = {};
-  ru.count = (uint32_t)count;
-  ru.pool_max = (uint32_t)pool_max;
-  ru.frame_index = s->frame_index;
-  ru.debug_region = s->debug_show_region ? 1u : 0u;
-  ru.intensity = clampf(s->intensity, 0.0f, 2.0f);
-  ru.hue = s->hue;
-  ru.frame_alpha_jitter = clampf(s->frame_alpha_jitter, 0.0f, 1.0f);
-  ru.alpha_curve = clampf(s->alpha_curve, 0.25f, 4.0f);
-  ru.shape_kind = (uint32_t)clampi(s->shape_kind, 0, 2);
-  ru.shape_param = clampf(s->shape_param, 0.0f, 1.0f);
-  ru.region_y_max = clampf(s->region_y_max, 0.0f, 1.0f);
-  ru.aspect = (float)vp_w / (float)vp_h;
-  s->render_uniform_buf.writeOne(ru);
+  // Pass 2 — prefill tex_out with tex_in (so the additive quads blend over it).
+  PrefillUniforms pu = {};
+  pu.debug_region = s->debug_show_region ? 1u : 0u;
+  pu.region_y_max = clampf(s->region_y_max, 0.0f, 1.0f);
+  s->prefill_uniform_buf.writeOne(pu);
   {
     auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_render);
+    cp.setPSO(s_pso_prefill);
     cp.setTexture(in, 0, 0);
     cp.setTexture(out, 1, 1);
-    cp.setBuffer(s->render_uniform_buf, 2);
-    cp.setBuffer(s->part_buf, 3);
+    cp.setBuffer(s->prefill_uniform_buf, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
+  }
+
+  // Pass 3 — rasterize sparkles as instanced quads, additive over tex_out.
+  if (count > 0 && s->intensity > 0.0f) {
+    float mn = (float)(vp_w < vp_h ? vp_w : vp_h);
+    VsUniforms vu = {}; vu.aspect_x = mn / (float)vp_w; vu.aspect_y = mn / (float)vp_h;
+    s->vs_uniform_buf.writeOne(vu);
+    FsUniforms fu = {};
+    fu.hue = s->hue;
+    fu.intensity = clampf(s->intensity, 0.0f, 2.0f);
+    fu.frame_alpha_jitter = clampf(s->frame_alpha_jitter, 0.0f, 1.0f);
+    fu.alpha_curve = clampf(s->alpha_curve, 0.25f, 4.0f);
+    fu.shape_kind = (uint32_t)clampi(s->shape_kind, 0, 2);
+    fu.frame_index = s->frame_index;
+    fu.shape_param = clampf(s->shape_param, 0.0f, 1.0f);
+    s->fs_uniform_buf.writeOne(fu);
+
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(s_pso_render_add);
+    rp.setBuffer(s->part_buf, 0);
+    rp.setBuffer(s->vs_uniform_buf, 1);
+    rp.setBuffer(s->fs_uniform_buf, 2);
+    rp.draw(6, count);
+    rp.end();
   }
 
   // Pass 3 — motion passthrough.

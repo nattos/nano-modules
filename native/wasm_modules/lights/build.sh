@@ -53,10 +53,16 @@ _emit_spv_header_var block_dehance update render motion
 echo "  block_dehance shaders compiled (SPV: update + render + motion)"
 
 compile_shaders_compute_var_spv tingle_top update
-compile_shaders_compute_var_spv tingle_top render
+compile_shaders_compute_var_spv tingle_top prefill
 compile_shaders_compute_var_spv tingle_top motion
-_emit_spv_header_var tingle_top update render motion
-echo "  tingle_top shaders compiled (SPV: update + render + motion)"
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../tingle_top/vs.hlsl -Fo "$TMP_DIR/tingle_top_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../tingle_top/fs.hlsl -Fo "$TMP_DIR/tingle_top_fs.spv"
+_emit_spv_header_var tingle_top update prefill vs fs motion
+echo "  tingle_top shaders compiled (SPV: update + prefill + vs + fs + motion)"
 
 echo "=== Building WASM (lights) ==="
 
