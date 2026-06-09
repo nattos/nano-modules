@@ -21,7 +21,7 @@ All show effects ship under the **`com.nano.lights`** namespace. So the fully-qu
 Practical naming rules:
 - Effects prefixed `gen.*` are generators (the "atmosphere" + "cut-in" layers).
 - Effects prefixed `fx.*` are post-process (the "complicator" layer).
-- Shared helpers (`fx::BeatTick`, `fx::CoupledResonator4`, etc) live in headers and don't carry the namespace prefix — only registered effects do.
+- Shared helpers (`fx::BeatTick`, `fx::RandomLfo`, etc) live in headers and don't carry the namespace prefix — only registered effects do.
 
 ### Per-bar layout
 
@@ -967,54 +967,6 @@ Both outputs use the same blob field — set whichever combo of `motion_strength
 
 ---
 
-### fx.bounce_resonator
-
-Sister effect to `gen.bounce_resonator`. **Same coupled-oscillator model** (4 per-bar oscillators + seeded diffusion matrix + per-bar non-linear send filter + self-resonance cap) — but driven by **incoming pixel intensity** instead of discrete triggers.
-
-Each frame:
-1. For each bar, integrate input image energy: sample `tex_in` luma along the bar, weight by a window centered on the current `y_i`, accumulate into a per-bar "energy injection" signal.
-2. That signal acts as a continuous force input into the per-bar oscillator (added to `ÿ_i`).
-3. Run the same 8-sub-step Verlet + diffusion + send-filter + self-osc cap from `gen.bounce_resonator`.
-4. Render: original `tex_in` displaced vertically by `y_i * displacement_amount` (per bar), with optional bright band overlay showing the oscillator state.
-
-The result: bright pixels in the incoming image "kick" the resonator at their bar; the kick rings out and diffuses across bars; the visible image vibrates / ripples with the resonator state. Performer can crank Q to make the whole canvas self-oscillate based on whatever's in `tex_in`.
-
-#### Shared with gen.bounce_resonator
-
-Pull `fx::CoupledResonator4` out as a shared helper:
-- 4 oscillator states `(y_i, vy_i)`.
-- Seeded 4×4 diffusion matrix.
-- 4 send-filter biquad states + shared coefficients.
-- Verlet sub-stepping + self-osc cap.
-- `kick(bar, mode, strength)` for impulses.
-- `apply_force(bar, force)` for continuous drive.
-- `step(dt)` advances by one frame.
-
-`gen.bounce_resonator` calls `kick` on triggers. `fx.bounce_resonator` calls `apply_force` every frame with input-derived energy.
-
-#### Params
-
-Inherits the coupling / Q / send-filter / self-osc-cap / impulse params from `gen.bounce_resonator`. Adds:
-
-**Standard**
-- `input_gain` (0..4, default 1.0) — how strongly input pixel intensity drives the oscillator.
-- `input_window` (0..0.5 uv, default 0.15) — height of the per-bar luma-sampling window. Smaller = oscillator only "hears" pixels right at `y_i`; larger = bar-wide averaging.
-- `displacement_amount` (0..0.5 canvas-uv, default 0.1) — how far oscillator state shifts the rendered pixels.
-- `show_band` (bool, default false) — when true, additively overlay a bright band at `y_i` like the generator variant.
-
-(All other params — `Q`, `coupling`, `coupling_seed`, `cross_pregain`, `cross_filter_*`, `base_freq_hz`, `velocity_cap`, etc — match `gen.bounce_resonator`.)
-
-#### Open questions
-
-- **Displacement vs warping vs masking.** Three ways the oscillator can affect the image:
-  - (a) Vertical displacement (`out_uv.y = uv.y - y_i * displacement_amount`) — what I described. Simple, gives "image ripples" look.
-  - (b) Per-pixel brightness modulation (multiply input pixels by `1 + y_i * gain`) — image pulses with oscillator state. No spatial warp.
-  - (c) Both, with a balance knob.
-  - Default to (a) for v1; we'll feel the friction.
-- **Per-segment oscillators instead of per-bar.** The original `fx.bounce_resonator` draft assumed an oscillator per segment (so each segment of each bar rings independently). That's much more state (4 × 13 = 52 oscillators) but gives a true "wavefield" look. The per-bar version is dramatically simpler and shares all the diffusion machinery with the generator. Stick with per-bar for v1 unless it visually disappoints.
-
----
-
 ### fx.dispersion
 
 **Not chromatic aberration** (the obvious interpretation that was here previously) — instead, a **block-quantized UV-jitter sampler**: tiles the canvas into blocks, picks a stable random offset per block, samples the input at `(block_center + offset)`, fills the block with that single color. With small blocks → crunchy grain / fast blur. With large blocks → mosaic downres. Random offsets can be large enough to cross bar boundaries (pulls in colors from neighboring bars — the cross-pollination is the point).
@@ -1370,25 +1322,25 @@ Atmosphere first — establishes the bed everything else lives on:
 
 Then 2–3 cut-ins to validate the trigger model + per-bar conventions:
 3. `gen.plasma_beam_cannon` (most dramatic — proves the trigger / charge-release pattern)
-4. `gen.bounce_resonator` (proves the resonator core; reusable for the FX variant)
+4. `gen.bounce_resonator` (proves the resonator core)
 5. `gen.side_jet` (proves the per-bar traversal + motion-vector emission)
 
 Then complicators we know we'll lean on:
 6. `gen.motion_blobs` (absorbs three old placeholders: `fx.directional_blur`, `fx.zoom_blur`, and `fx.shadow_flyover`. Same blob pool drives both motion vectors and color darkening — pick modes via `motion_strength` + `shadow_darkness`. Stack `video.motion_blur` downstream when in motion mode for the visible smear.)
 7. `fx.dispersion` (cheap, broadly useful)
 8. `fx.block_dehance` (absorbs the original `fx.dropout` — black is just one of the three dehance modes; weights control mode mix per spawn)
-9. `fx.bounce_resonator` (reuses helper from step 4)
 
 Then the rest as time permits:
-10. `gen.tingle_top` (covers both the original tingle and the downward_sparkle preset via velocity params; bench against `flash_particles` to see if all three end up sharing enough machinery to extract a helper)
-11. `gen.strobe_channel`
-12. `fx.chrome_wave`
+9. `gen.tingle_top` (covers both the original tingle and the downward_sparkle preset via velocity params; bench against `flash_particles` to see if all three end up sharing enough machinery to extract a helper)
+10. `gen.strobe_channel`
+11. `fx.chrome_wave`
+
+(`fx.bounce_resonator` was dropped: `gen.bounce_resonator` became a GPU diffusion network, so the shared spring-oscillator helper no longer exists, and its `impulse_mode = tex_in` already samples the input image per bar — covering the audio-energy-driven gesture this slot was for.)
 
 ## Shared helpers we'll likely extract during this work
 
 - `fx::RandomLfo` (effect_random_lfo.h) — used by soft_glow. (strobe_channel was previously listed here but the revised spec doesn't need it — pure logistic-map math.)
 - `fx::BeatTick` (effect_beat_tick.h) — wraps the `barPhase` → dphase → tick-counter → trigger pattern with a `beat_multiplier` knob. Used by every beat-synced effect (orthomod first).
-- `fx::CoupledResonator4` (effect_coupled_resonator.h) — 4 coupled per-bar oscillators + seeded diffusion matrix + per-bar non-linear send filters + self-resonance soft cap. Used by gen.bounce_resonator + fx.bounce_resonator.
 - Bar layout helpers in `nano_bars.hlsl` — used by every bar-aware effect.
 - Possibly `fx::ParticleSystem` if tingle_top + flash_particles + block_dehance end up with too much duplicated structure.
 
