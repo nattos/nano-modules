@@ -21,7 +21,8 @@ cbuffer Uniforms : register(b3) {
   float dt; float mask_temperature; float life_s; float respawn_delay_s;
   float life_jitter; float rect_width; float rect_height; float rect_size_jitter;
   float mode_black_w; float mode_mosaic_w; float mode_noise_w; float mosaic_cell_size;
-  float mosaic_cell_jitter; uint mask_samples; uint seed; uint _pad0;
+  float mosaic_cell_jitter; uint mask_samples; uint seed; float move_chance;
+  float move_amount; float move_delay_max; float _pad0; float _pad1;
 };
 
 [numthreads(64, 1, 1)]
@@ -36,7 +37,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     Rect r;
     r.pos_size = float4(0.5, 0.5, 0.0, 0.0);
     r.state    = float4(0.0, 1.0, phase * max(respawn_delay_s, 1e-3), float(MODE_BLACK));
-    r.params   = float4(mosaic_cell_size, asfloat(bd_pcg2(i, seed)), asfloat(bd_pcg2(i + 0x9E37u, seed)), 0.0);
+    r.params   = float4(mosaic_cell_size, asfloat(bd_pcg2(i, seed)), asfloat(bd_pcg2(i + 0x9E37u, seed)), -1.0);
     rects[i] = r;
     return;
   }
@@ -49,6 +50,21 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   if (life_remain > 0.0) {
     r.state.x = life_remain - dt;
+    // One-time "glitch jump": once the scheduled delay elapses, the rect hops
+    // once by a small random offset. params.w holds the countdown: >= 0 means
+    // pending, < 0 means not-scheduled / already-moved.
+    float move_remain = r.params.w;
+    if (move_remain >= 0.0) {
+      move_remain -= dt;
+      if (move_remain < 0.0) {
+        uint  mh  = bd_pcg2(asuint(r.params.y), 0x2545F491u);
+        float ang = bd_unit(mh) * 6.28318530718;
+        float mag = move_amount * (0.5 + 0.5 * bd_unit(bd_pcg(mh ^ 0xA5A5u)));
+        r.pos_size.xy += float2(cos(ang), sin(ang)) * mag;
+        move_remain = -1.0;            // fire once
+      }
+      r.params.w = move_remain;
+    }
     rects[i] = r;
     return;
   }
@@ -112,8 +128,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   uint mode_seed    = bd_pcg2(i + 0x7F4A7C15u, frame_index);
   uint flicker_seed = bd_pcg2(i + 0x94D049BBu, frame_index);
 
+  // Roll the one-time move: scheduled (move_remain >= 0) with prob move_chance,
+  // firing after a random delay in [0, move_delay_max].
+  float move_remain = -1.0;
+  if (bd_unit(bd_pcg2(i + 0x6D2B79F5u, frame_index)) < move_chance) {
+    move_remain = bd_unit(bd_pcg2(i + 0x1B873593u, frame_index)) * max(move_delay_max, 0.0);
+  }
+
   r.pos_size = float4(best_uv, cw, ch);
   r.state    = float4(new_life, new_life, new_respawn, float(mode));
-  r.params   = float4(cell, asfloat(mode_seed), asfloat(flicker_seed), 0.0);
+  r.params   = float4(cell, asfloat(mode_seed), asfloat(flicker_seed), move_remain);
   rects[i] = r;
 }

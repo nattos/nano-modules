@@ -56,6 +56,34 @@ describe('Block Dehance Effect E2E', () => {
     frame.expectCoverage(c => Math.abs(luma(c) - 128) < 10, { min: 0.1 });
   });
 
+  it('move_chance makes a rect jump once after spawning', async () => {
+    // One black rect, fixed seed. The bright-seek + lifecycle are
+    // deterministic, so the ONLY difference between move 0 and move 1 is the
+    // one-time glitch jump — the dark rect's centroid shifts by ~move_amount.
+    const run = (move_chance: number) => runGpuEffectTest({
+      module: 'block_dehance.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0.5, 0.5, 0.5, 1], renderEachTick: true,
+      ticks: 24,
+      params: [['count', 1], ['pool_max', 8], ['life_s', 10.0], ['respawn_delay_s', 0.02],
+               ['rect_width', 0.1], ['rect_height', 0.1], ['seed', 3],
+               ['mode_black_weight', 1], ['mode_mosaic_weight', 0], ['mode_noise_weight', 0],
+               ['move_chance', move_chance], ['move_amount', 0.25], ['move_delay_max', 0.1]],
+      dumpName: `block_dehance_move_${move_chance}`,
+    });
+    const darkCentroid = (f: Frame) => {
+      let sx = 0, sy = 0, n = 0;
+      f.forEachPixel((c, x, y) => { if (luma(c) < 30) { sx += x; sy += y; n++; } });
+      return n > 0 ? { x: sx / n, y: sy / n } : null;
+    };
+    const still = await run(0.0);
+    const moved = await run(1.0);
+    expect(still.success && moved.success).toBe(true);
+    const a = darkCentroid(still), b = darkCentroid(moved);
+    expect(a && b).toBeTruthy();
+    const dist = Math.hypot(a!.x - b!.x, a!.y - b!.y);
+    expect(dist).toBeGreaterThan(8);
+  });
+
   it('noise mode replaces covered pixels with varied colour', async () => {
     const frame = await runGpuEffectTest({
       module: 'block_dehance.wasm', bundle: 'lights',

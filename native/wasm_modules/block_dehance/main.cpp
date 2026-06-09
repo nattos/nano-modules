@@ -36,9 +36,10 @@ struct UpdateUniforms {
   float    dt, mask_temperature, life_s, respawn_delay_s;
   float    life_jitter, rect_width, rect_height, rect_size_jitter;
   float    mode_black_w, mode_mosaic_w, mode_noise_w, mosaic_cell_size;
-  float    mosaic_cell_jitter; uint32_t mask_samples, seed, _pad0;
+  float    mosaic_cell_jitter; uint32_t mask_samples, seed; float move_chance;
+  float    move_amount, move_delay_max, _pad0, _pad1;
 };
-static_assert(sizeof(UpdateUniforms) == 80, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 96, "UpdateUniforms layout mismatch");
 
 struct RenderUniforms {
   uint32_t count, pool_max, tick_index, debug_show;
@@ -66,6 +67,9 @@ struct State {
   float rect_width           = 0.18f;
   float rect_height          = 0.06f;
   float rect_size_jitter     = 0.4f;
+  float move_chance          = 0.0f;
+  float move_amount          = 0.03f;
+  float move_delay_max       = 0.3f;
   float mask_temperature     = 0.5f;
   float mode_black_weight    = 0.33f;
   float mode_mosaic_weight   = 0.33f;
@@ -109,6 +113,9 @@ void module_init() {
       .floatField("rect_width",            0.18f, 0.005f, 1.0f, state::PrimaryInput)
       .floatField("rect_height",           0.06f, 0.005f, 1.0f, state::PrimaryInput)
       .floatField("rect_size_jitter",      0.4f, 0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("move_chance",           0.0f, 0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("move_amount",           0.03f, 0.0f, 0.5f,   state::PrimaryInput)
+      .floatField("move_delay_max",        0.3f, 0.0f, 5.0f,    state::PrimaryInput)
       .floatField("mask_temperature",      0.5f, 0.0f, 4.0f,    state::PrimaryInput)
       .floatField("mode_black_weight",     0.33f, 0.0f, 1.0f,   state::PrimaryInput)
       .floatField("mode_mosaic_weight",    0.33f, 0.0f, 1.0f,   state::PrimaryInput)
@@ -216,6 +223,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "rect_width"))           s->rect_width = state::patchFloat(i);
     else if (state::pathIs(path, plen, "rect_height"))          s->rect_height = state::patchFloat(i);
     else if (state::pathIs(path, plen, "rect_size_jitter"))     s->rect_size_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "move_chance"))          s->move_chance = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "move_amount"))          s->move_amount = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "move_delay_max"))       s->move_delay_max = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mask_temperature"))     s->mask_temperature = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mode_black_weight"))    s->mode_black_weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mode_mosaic_weight"))   s->mode_mosaic_weight = state::patchFloat(i);
@@ -278,6 +288,9 @@ void render(void* self, int vp_w, int vp_h) {
   uu.mosaic_cell_jitter = clampf(s->mosaic_cell_jitter, 0.0f, 1.0f);
   uu.mask_samples = (uint32_t)clampi(s->mask_samples, 4, 16);
   uu.seed = (uint32_t)s->seed;
+  uu.move_chance = clampf(s->move_chance, 0.0f, 1.0f);
+  uu.move_amount = clampf(s->move_amount, 0.0f, 0.5f);
+  uu.move_delay_max = clampf(s->move_delay_max, 0.0f, 5.0f);
   s->update_uniform_buf.writeOne(uu);
   {
     auto cp = gpu::ComputePass::begin();
