@@ -52,6 +52,12 @@ compile_shaders_compute_var_spv block_dehance motion
 _emit_spv_header_var block_dehance update render motion
 echo "  block_dehance shaders compiled (SPV: update + render + motion)"
 
+compile_shaders_compute_var_spv tingle_top update
+compile_shaders_compute_var_spv tingle_top render
+compile_shaders_compute_var_spv tingle_top motion
+_emit_spv_header_var tingle_top update render motion
+echo "  tingle_top shaders compiled (SPV: update + render + motion)"
+
 echo "=== Building WASM (lights) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -75,6 +81,7 @@ wasm_build \
   ../side_jet/main.cpp \
   ../motion_blobs/main.cpp \
   ../lights_sim/main.cpp \
-  ../block_dehance/main.cpp
+  ../block_dehance/main.cpp \
+  ../tingle_top/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

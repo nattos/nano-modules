@@ -67,6 +67,7 @@ lights | side_jet | gen.side_jet | Side Jet | instance | side_jet_sim=sim,side_j
 lights | motion_blobs | gen.motion_blobs | Motion Blobs | instance | motion_blobs_color=color,motion_blobs_motion=motion
 lights | lights_sim | fx.lights_sim | Lights Sim | instance | lights_sim_render=render
 lights | block_dehance | fx.block_dehance | Block Dehance | instance | block_dehance_update=update,block_dehance_render=render,block_dehance_motion=motion
+lights | tingle_top | gen.tingle_top | Tingle Top | instance | tingle_top_update=update,tingle_top_render=render,tingle_top_motion=motion
 nano | nanolooper | sequencer.nanolooper | Nano Looper | instance | 
 nano | motion_field | video.motion_field | Motion Field | instance | motion_field_color=color,motion_field_motion=motion
 nano | flash_particles | video.flash_particles | Flash Particles | instance | flash_particles_update=update,flash_particles_prefill_color=prefill,flash_particles_prefill_motion=prefill,flash_particles_vs=vs,flash_particles_fs_color=fs_color,flash_particles_fs_motion=fs_motion

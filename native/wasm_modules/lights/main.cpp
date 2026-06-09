@@ -22,6 +22,7 @@ NANO_DECLARE_INSTANCE_EFFECT(side_jet)
 NANO_DECLARE_INSTANCE_EFFECT(motion_blobs)
 NANO_DECLARE_INSTANCE_EFFECT(lights_sim)
 NANO_DECLARE_INSTANCE_EFFECT(block_dehance)
+NANO_DECLARE_INSTANCE_EFFECT(tingle_top)
 
 extern "C" {
 
@@ -125,6 +126,16 @@ void nano_module_main() {
         "lights",
         "glitch,dropout,mosaic,noise,dehance,block",
         NANO_INSTANCE_LIFECYCLE(block_dehance),
+    });
+
+    nano::registerEffect({
+        2,
+        "gen.tingle_top",
+        "Tingle Top",
+        "Sparkles bundled at the top of each bar while gated, released downward on an envelope when ungated. Particles live and die in place; the cascade is a spawn-region animation (region_y_max snaps to a thin top band while held, ramps to full bar on release). Single hue + jitter, per-frame alpha shimmer. Optional per-particle velocity unlocks the downward-sparkle fountain preset.",
+        "lights",
+        "sparkle,tingle,particles,cut-in,trigger,bar",
+        NANO_INSTANCE_LIFECYCLE(tingle_top),
     });
 }
 
