@@ -21,6 +21,7 @@ NANO_DECLARE_INSTANCE_EFFECT(bounce_resonator)
 NANO_DECLARE_INSTANCE_EFFECT(side_jet)
 NANO_DECLARE_INSTANCE_EFFECT(motion_blobs)
 NANO_DECLARE_INSTANCE_EFFECT(lights_sim)
+NANO_DECLARE_INSTANCE_EFFECT(block_dehance)
 
 extern "C" {
 
@@ -114,6 +115,16 @@ void nano_module_main() {
         "lights",
         "led,bar,sample,resolume,fixture,segments",
         NANO_INSTANCE_LIFECYCLE(lights_sim),
+    });
+
+    nano::registerEffect({
+        2,
+        "fx.block_dehance",
+        "Block Dehance",
+        "Glitch rectangles that 'dehance' the input in one of three modes — black-fill (dropout), mosaic downres, or noise — sampled probabilistically per rect at spawn, so one instance mixes all three. A GPU rect pool cycles continuously; each rect bright-seeks the mask for its position. Weights control the mode mix; optional per-rect hard-duty flicker for the aggressive glitch feel.",
+        "lights",
+        "glitch,dropout,mosaic,noise,dehance,block",
+        NANO_INSTANCE_LIFECYCLE(block_dehance),
     });
 }
 

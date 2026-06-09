@@ -46,6 +46,12 @@ compile_shaders_compute_var_spv motion_blobs motion
 _emit_spv_header_var motion_blobs color motion
 echo "  motion_blobs shaders compiled (SPV: color + motion)"
 
+compile_shaders_compute_var_spv block_dehance update
+compile_shaders_compute_var_spv block_dehance render
+compile_shaders_compute_var_spv block_dehance motion
+_emit_spv_header_var block_dehance update render motion
+echo "  block_dehance shaders compiled (SPV: update + render + motion)"
+
 echo "=== Building WASM (lights) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -68,6 +74,7 @@ wasm_build \
   ../bounce_resonator/main.cpp \
   ../side_jet/main.cpp \
   ../motion_blobs/main.cpp \
-  ../lights_sim/main.cpp
+  ../lights_sim/main.cpp \
+  ../block_dehance/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
