@@ -27,11 +27,14 @@ import './field-tab-bar';
 import './field-placeholder';
 import './field-vec';
 import './field-color';
+import './field-font';
 
 // --- Field definitions ---
 
 export type InspectorFieldDef =
   | { type: 'string'; label: string; path: string; placeholder?: string; default?: string; multiline?: boolean }
+  /// Font-family picker (searchable list with previews) for string `font` params.
+  | { type: 'font'; label: string; path: string; default?: string }
   | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number }
   | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number }
   | { type: 'boolean'; label: string; path: string; default?: boolean }
@@ -61,6 +64,15 @@ const renderString = (binding: FieldBinding, f: Extract<InspectorFieldDef, { typ
     .multiline=${f.multiline ?? false}
     .binding=${binding}
   ></field-text>
+`;
+
+const renderFont = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'font' }>) => html`
+  <field-font
+    .fieldPath=${f.path}
+    .label=${f.label}
+    .defaultValue=${f.default ?? ''}
+    .binding=${binding}
+  ></field-font>
 `;
 
 const renderNumber = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'number' }>) => html`
@@ -157,6 +169,7 @@ export const createGenericInspector = (fields: InspectorFieldDef[]) => {
         ${fields.map(field => {
           switch (field.type) {
             case 'string':      return renderString(binding, field);
+            case 'font':        return renderFont(binding, field);
             case 'number':      return renderNumber(binding, field);
             case 'slider':      return renderSlider(binding, field);
             case 'boolean':     return renderBoolean(binding, field);

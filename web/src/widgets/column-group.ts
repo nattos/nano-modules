@@ -78,6 +78,10 @@ function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
     case 1: // event
       return { type: 'button', label: p.name, path: p.name, text: p.name };
     case 100: // text
+      // A `font` text param gets the searchable font-family picker (gen.text).
+      if (/^font$/i.test(p.name)) {
+        return { type: 'font', label: p.name, path: p.name };
+      }
       // HTML/CSS fields (gen.richtext) get a multi-line editor so a whole
       // document can be pasted/edited; other text fields stay single-line.
       return { type: 'string', label: p.name, path: p.name,
