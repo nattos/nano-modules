@@ -252,27 +252,12 @@ export function faceKey(family: string, weight: number, italic: boolean): string
   return `${fam}\u0001${Math.round(weight)}${italic ? 'i' : ''}`;
 }
 
-/** Split a CSS-style font-family value into ordered family names (comma-split,
- *  trimmed, quotes stripped). MUST match parseFamilyList() in
- *  native/src/text/text_engine.cpp so the engine resolves the same list. */
-export function parseFamilyList(s: string): string[] {
-  const out: string[] = [];
-  for (let tok of s.split(',')) {
-    tok = tok.trim();
-    const q = tok[0];
-    if (tok.length >= 2 && (q === '"' || q === "'") && tok[tok.length - 1] === q) tok = tok.slice(1, -1);
-    if (tok) out.push(tok);
-  }
-  return out;
-}
-
-// CSS generic family keywords — resolved host-side (serif → bundled Noto Serif;
-// the rest fall through to the primary font), so we don't try to resolve them as
-// OS fonts via Local Font Access.
-const GENERIC_FAMILIES = new Set([
-  'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
-  'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong',
-]);
+// Pure CSS font-family list parse/format lives in font-list.ts (shared with the
+// UI). parseFamilyList MUST match parseFamilyList() in
+// native/src/text/text_engine.cpp so the engine resolves the same ordered list.
+// Re-exported here for back-compat with existing importers.
+import { parseFamilyList, GENERIC_FAMILIES } from './font-list';
+export { parseFamilyList, GENERIC_FAMILIES };
 
 // Bundled families guaranteed on the web side — the parity-guaranteed set, OFL
 // Noto faces fetched by web/scripts/fetch_fonts.sh (see FONTS.md). Their bytes
