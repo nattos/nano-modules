@@ -132,7 +132,7 @@ describe('video.shape_fold E2E', () => {
           commands: [
             { type: 'createSketch', sketchId: 'sf_ap_on',
               sketch: buildSketch({ frequency: 0.5, simplicity: 0.5, time_speed: 0.0,
-                                    autopilot: true, ap_speed: 2.5 }) },
+                                    autopilot: true, ap_speed: 1.0 }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_ap_on' } },
             ]},
@@ -167,5 +167,42 @@ describe('video.shape_fold E2E', () => {
     });
     expect(still.success).toBe(true);
     still.phases[1].trace('out').expectSameAs(still.phases[0].trace('out'), 2); // frozen → identical
+  });
+
+  it('snap with Hold=0 holds until the jump trigger fires', async () => {
+    // autopilot + snap, Hold=0 (no auto-jump), clock frozen. The held point must
+    // persist across frames, then change the moment the ap_jump trigger fires.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'sf_jump',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sf_jump',
+              sketch: buildSketch({ frequency: 0.5, simplicity: 0.5, time_speed: 0.0,
+                                    autopilot: true, ap_snap: true, ap_hold_period: 0.0,
+                                    ap_speed: 0.2 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_jump' } },
+            ]},
+          ],
+          waitFrames: 4, captureTraceIds: ['out'],
+        },
+        // No trigger: Hold=0 → the held point persists.
+        { waitFrames: 25, captureTraceIds: ['out'] },
+        // Fire the jump trigger → switch to a fresh point.
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'sf_jump', colIdx: 0, chainIdx: 1,
+              paramKey: 'ap_jump', value: 1.0 },
+          ],
+          waitFrames: 8, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectSameAs(r.phases[0].trace('out'), 2);        // held
+    r.phases[2].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 30); // jumped
   });
 });

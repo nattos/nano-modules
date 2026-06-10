@@ -49,6 +49,9 @@ static constexpr float kLoopSecs = 6.0f;   // time_speed=1 → ~6 s loop (testbe
 // motions, 90° out of phase, incommensurate rates → sweeps the annulus without
 // stalling at the centre.
 static constexpr float kApA = 0.29f, kApB = 0.16f, kApW2 = 0.382f, kApPhi = kPi * 0.5f;
+// Golden angle — used to advance the orbit on a snap/trigger jump so each new
+// point is well-spread and distinct even when the orbit is barely drifting.
+static constexpr float kGoldenAngle = 2.39996323f;
 
 // Uniform block — mirrors SF_UNIFORMS in common.hlsl (std140). 3 scalar rows
 // then the resolved terms (per term: (theta,mtheta,curv,freq)(phase,h,k,amp)
@@ -77,13 +80,13 @@ struct State {
   float simplicity          = 0.85f;
   float temporal_complexity = 0.66f;
   float scale               = 1.0f;    // domain zoom (>1 reveals beyond [-1,1])
-  float time_speed          = 1.0f;
+  float time_speed          = 0.58f;   // [0,1] quadratic → ~1.0 actual (≈6 s loop)
   float ease                = 0.0f;
   float birth_softness      = 0.45f;
   bool  autopilot           = false;
-  float ap_speed            = 0.6f;
+  float ap_speed            = 0.43f;   // [0,1] quadratic → ~0.6 actual
   bool  ap_snap             = false;
-  float ap_hold_period      = 2.0f;
+  float ap_hold_period      = 2.0f;    // seconds; 0 = no auto-jump (trigger only)
   float level_ease          = 0.25f;
   int   output_mode         = 1;       // 0 = Grayscale, 1 = Magma (default)
 
@@ -94,12 +97,15 @@ struct State {
   bool  held_valid = false;
   float held_x = 0.5f, held_y = 0.5f;
   float eff_x = 0.25f, eff_y = 0.85f;  // effective XY used for rendering
+  float ap_jump_prev = 0.0f;           // rising-edge state for the jump trigger
+  bool  ap_jump_pending = false;       // a trigger fired since the last tick
 };
 
 static void apply_visibility(bool autopilot, bool ap_snap) {
   state::setFieldHidden("ap_speed",       !autopilot);
   state::setFieldHidden("ap_snap",        !autopilot);
   state::setFieldHidden("ap_hold_period", !(autopilot && ap_snap));
+  state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
 }
 
 static void on_state_ready(void* self);
@@ -123,8 +129,9 @@ void module_init() {
       // more of the periodic field beyond the prototype's [-1,1] window.
       .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput)
       // --- Animation ---
-      // Autoplay clock speed (0 = frozen). 1 ≈ a 6 s loop.
-      .floatField("time_speed", 1.0f, 0.0f, 3.0f, state::PrimaryInput)
+      // Autoplay clock speed (0 = frozen). [0,1] with a quadratic bend onto the
+      // real 0..3 range, so the low end has fine control.
+      .floatField("time_speed", 0.58f, 0.0f, 1.0f, state::PrimaryInput)
       // Time-warp: 0 = uniform → 1 = rest at the loop point, surge through the
       // middle (bursts). τ(t) = t − (ease/2π)·sin(2π t).
       .floatField("ease", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
@@ -132,10 +139,15 @@ void module_init() {
       .floatField("birth_softness", 0.45f, 0.02f, 1.0f, state::PrimaryInput)
       // --- Autopilot (non-destructive XY override + broadcast) ---
       .boolField("autopilot", false, state::PrimaryInput)
-      .floatField("ap_speed", 0.6f, 0.05f, 3.0f, state::PrimaryInput)
-      // Snap: hold the current shape, then jump to the orbit every N seconds.
+      // Orbit speed. [0,1] with a quadratic bend onto the real 0.05..3 range.
+      .floatField("ap_speed", 0.43f, 0.0f, 1.0f, state::PrimaryInput)
+      // Snap: hold the current shape, then jump to a new point.
       .boolField("ap_snap", false, state::PrimaryInput)
-      .floatField("ap_hold_period", 2.0f, 0.25f, 8.0f, state::PrimaryInput)
+      // Hold seconds between auto-jumps. 0 = never auto-jump (hold until the
+      // jump trigger fires).
+      .floatField("ap_hold_period", 2.0f, 0.0f, 8.0f, state::PrimaryInput)
+      // Jump now — switch to a fresh point immediately (and reset the hold timer).
+      .eventField("ap_jump", state::PrimaryInput)
       // --- Auto-levels (histogram normalization, median → 0) ---
       // Below this contrast, taper the auto-levels boost so the field eases
       // toward black instead of flashing as it collapses to solid.
@@ -224,37 +236,60 @@ static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (
 static inline float lerpf(float a, float b, float f) { return a + (b - a) * f; }
 static inline int   clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-// Advance the internal clocks and compute the effective (broadcast) XY. The
-// autopilot epicycle is a port of app.js's RAF loop.
+// Epicycle position at a given orbit phase. Two summed circular motions, 90°
+// out of phase — sweeps the annulus without stalling at the centre. Clamped to
+// stay inside the pad. Port of app.js's autopilot.
+static inline void orbit_xy(float orbit, float& ox, float& oy) {
+  float a1 = orbit;
+  float a2 = orbit * kApW2 + kApPhi;
+  ox = clampf(0.5f + kApA * std::cos(a1) + kApB * std::cos(a2), 0.03f, 0.97f);
+  oy = clampf(0.5f + kApA * std::sin(a1) + kApB * std::sin(a2), 0.03f, 0.97f);
+}
+
+// Advance the internal clocks and compute the effective (broadcast) XY.
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   float fdt = (float)dt;
 
-  s->clock_t += fdt * s->time_speed / kLoopSecs;
+  // Quadratic speed response: the [0,1] params bend onto their real ranges
+  // (time 0..3, ap 0.05..3) so the low end has fine control.
+  float time_actual = s->time_speed * s->time_speed * 3.0f;
+  float ap_actual   = 0.05f + s->ap_speed * s->ap_speed * (3.0f - 0.05f);
+
+  s->clock_t += fdt * time_actual / kLoopSecs;
   s->clock_t -= std::floor(s->clock_t);
 
   if (s->autopilot) {
-    s->orbit += fdt * s->ap_speed;
-    float a1 = s->orbit;
-    float a2 = s->orbit * kApW2 + kApPhi;
-    float ox = clampf(0.5f + kApA * std::cos(a1) + kApB * std::cos(a2), 0.03f, 0.97f);
-    float oy = clampf(0.5f + kApA * std::sin(a1) + kApB * std::sin(a2), 0.03f, 0.97f);
+    s->orbit -= fdt * ap_actual;                 // clockwise drift
+
+    bool trig = s->ap_jump_pending;
+    s->ap_jump_pending = false;
+
     if (s->ap_snap) {
-      s->snap_accum += fdt;
-      if (!s->held_valid || s->snap_accum >= s->ap_hold_period) {
-        s->snap_accum = 0.0f;
-        s->held_x = ox; s->held_y = oy; s->held_valid = true;
+      bool jump = trig || !s->held_valid;        // trigger or first frame
+      if (s->ap_hold_period > 1e-4f) {           // auto-jump only when Hold > 0
+        s->snap_accum += fdt;
+        if (s->snap_accum >= s->ap_hold_period) jump = true;
+      }
+      if (jump) {
+        if (s->held_valid) s->orbit -= kGoldenAngle;   // fresh, well-spread point
+        orbit_xy(s->orbit, s->held_x, s->held_y);
+        s->held_valid = true;
+        s->snap_accum = 0.0f;                     // reset the hold timer
       }
       s->eff_x = s->held_x; s->eff_y = s->held_y;
     } else {
-      s->eff_x = ox; s->eff_y = oy;
+      if (trig) s->orbit -= kGoldenAngle;         // a manual switch in continuous too
+      orbit_xy(s->orbit, s->eff_x, s->eff_y);
+      s->held_valid = false;
     }
   } else {
     s->eff_x = s->frequency;
     s->eff_y = s->simplicity;
     s->held_valid = false;          // re-enabling snap jumps immediately
     s->snap_accum = 0.0f;
+    s->ap_jump_pending = false;     // ignore triggers while autopilot is off
   }
 
   // Broadcast the effective XY so the editor can show the live position.
@@ -288,6 +323,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "ap_speed"))            s->ap_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "ap_snap"))             { bool v = state::patchFloat(i) != 0.0f; if (v != s->ap_snap) { s->ap_snap = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "ap_hold_period"))      s->ap_hold_period = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "ap_jump")) {
+      float v = state::patchFloat(i);
+      if (v != 0.0f && s->ap_jump_prev == 0.0f) s->ap_jump_pending = true;  // rising edge
+      s->ap_jump_prev = v;
+    }
     else if (state::pathIs(path, plen, "level_ease"))          s->level_ease = state::patchFloat(i);
     else if (state::pathIs(path, plen, "output_mode"))         s->output_mode = (int)state::patchFloat(i);
   }

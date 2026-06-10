@@ -25,6 +25,7 @@ import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from '../
 import '../widgets/scalar-slider';
 import '../widgets/field-select';
 import '../widgets/field-toggle';
+import '../widgets/field-trigger';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -180,7 +181,7 @@ export class ShapeFoldInspector extends MobxLitElement {
 
       <div class="section">Animation</div>
       <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
-        .min=${0} .max=${3} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.58} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'birth_softness'} .label=${'Birth Soft'}
@@ -190,11 +191,12 @@ export class ShapeFoldInspector extends MobxLitElement {
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
-        .min=${0.05} .max=${3} .step=${0.01} .defaultValue=${0.6} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.43} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'ap_snap'} .label=${'Snap'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_hold_period'} .label=${'Hold (s)'}
-        .min=${0.25} .max=${8} .step=${0.25} .defaultValue=${2} .binding=${b}></scalar-slider>
+        .min=${0} .max=${8} .step=${0.25} .defaultValue=${2} .binding=${b}></scalar-slider>
+      <field-trigger .fieldPath=${'ap_jump'} .label=${'Jump'} .binding=${b}></field-trigger>
 
       <div class="section">Levels</div>
       <scalar-slider style="width: 100%;" .fieldPath=${'level_ease'} .label=${'Level Ease'}
