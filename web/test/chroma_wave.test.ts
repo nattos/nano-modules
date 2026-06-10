@@ -356,6 +356,25 @@ describe('Chroma Wave Effect E2E', () => {
     withRails.trace('out').expectDifferentFrom(withoutRails.trace('out'), 100);
   });
 
+  it('hue twist shifts the hue where it lands on a primary', async () => {
+    // A nearly-constant-hue blob parked at red (base_hue 0, tiny hue_span).
+    // hue_shift_r twists the wheel at the red point, so the bloom's mean hue
+    // moves away from red. (g/b shifts are 0, so off-red hues stay put.)
+    const run = (shiftR: number) => runGpuEffectTest({
+      module: 'chroma_wave.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 14, params: params([['default_gate_state', 1], ['charge_s', 0.2],
+                                  ['base_hue', 0.0], ['hue_span', 0.02],
+                                  ['grade_freq_hold', 0.5], ['saturation', 0.9],
+                                  ['hue_shift_r', shiftR]]),
+      dumpName: `chroma_wave_huetwist_${shiftR}`,
+    });
+    const off = await run(0.0);
+    const twisted = await run(0.33);
+    expect(off.success && twisted.success).toBe(true);
+    expect(hueDist(meanHue(off), meanHue(twisted))).toBeGreaterThan(0.1);
+  });
+
   it('intensity 0 renders passthrough even while charging', async () => {
     const frame = await runGpuEffectTest({
       module: 'chroma_wave.wasm', bundle: 'lights',

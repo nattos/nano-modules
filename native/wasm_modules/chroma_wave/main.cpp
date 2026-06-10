@@ -62,9 +62,9 @@ struct Uniforms {
   uint32_t voice_count;
   // row 3
   float    hue_interact;
-  float    _pad0;
-  float    _pad1;
-  float    _pad2;
+  float    hue_warp_a;   // shift(h) = a + b·cos(2πh) + c·sin(2πh)
+  float    hue_warp_b;
+  float    hue_warp_c;
 };
 static_assert(sizeof(Uniforms) == 64, "Uniforms layout mismatch");
 
@@ -156,6 +156,9 @@ struct State {
   float base_hue           = 0.55f;
   float hue_span           = 0.18f;
   float saturation         = 0.85f;
+  float hue_shift_r        = 0.0f;   // twist the hue wheel at the R/G/B points
+  float hue_shift_g        = 0.0f;
+  float hue_shift_b        = 0.0f;
   float grade_freq_hold    = 1.5f;
   float grade_freq_burst   = 7.0f;
   float fold_rate          = 1.5f;
@@ -426,6 +429,11 @@ void module_init() {
       .floatField("base_hue",           0.55f, 0.0f, 1.0f,      state::PrimaryInput)
       .floatField("hue_span",           0.18f, 0.0f, 1.0f,      state::PrimaryInput)
       .floatField("saturation",         0.85f, 0.0f, 1.0f,      state::PrimaryInput)
+      // Twist the hue wheel: shift the hue by these amounts where it lands on
+      // red / green / blue, smoothly interpolated around the wheel.
+      .floatField("hue_shift_r",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput)
+      .floatField("hue_shift_g",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput)
+      .floatField("hue_shift_b",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput)
       .floatField("grade_freq_hold",    1.5f,  0.0f, 8.0f,      state::PrimaryInput)
       .floatField("grade_freq_burst",   7.0f,  0.0f, 16.0f,     state::PrimaryInput)
       .floatField("fold_rate",          1.5f,  0.0f, 8.0f,      state::PrimaryInput)
@@ -594,6 +602,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       else if (state::pathIs(path, plen, "base_hue"))           s->base_hue = state::patchFloat(i);
       else if (state::pathIs(path, plen, "hue_span"))           s->hue_span = state::patchFloat(i);
       else if (state::pathIs(path, plen, "saturation"))         s->saturation = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "hue_shift_r"))        s->hue_shift_r = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "hue_shift_g"))        s->hue_shift_g = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "hue_shift_b"))        s->hue_shift_b = state::patchFloat(i);
       else if (state::pathIs(path, plen, "grade_freq_hold"))    s->grade_freq_hold = state::patchFloat(i);
       else if (state::pathIs(path, plen, "grade_freq_burst"))   s->grade_freq_burst = state::patchFloat(i);
       else if (state::pathIs(path, plen, "fold_rate"))          s->fold_rate = state::patchFloat(i);
@@ -657,6 +668,12 @@ void render(void* self, int vp_w, int vp_h) {
   u.color_b = s->color_b;
   u.voice_count = (uint32_t)count;
   u.hue_interact = s->hue_interact;
+  // Hue-wheel twist: the first Fourier harmonic that interpolates the R/G/B
+  // shifts exactly at hue 0, 1/3, 2/3 — smooth and periodic.
+  float R = s->hue_shift_r, G = s->hue_shift_g, B = s->hue_shift_b;
+  u.hue_warp_a = (R + G + B) / 3.0f;
+  u.hue_warp_b = (2.0f * R - G - B) / 3.0f;
+  u.hue_warp_c = (G - B) * 0.57735026918962576f;   // 1/sqrt(3)
   s->uniform_buf.writeOne(u);
 
   {

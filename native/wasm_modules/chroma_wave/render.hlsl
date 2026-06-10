@@ -38,9 +38,9 @@ cbuffer Uniforms : register(b2) {
   uint  voice_count;
   // row 3
   float hue_interact;   // 0 = average overlapping hues, →2 = accumulate/rotate
-  float _pad0;
-  float _pad1;
-  float _pad2;
+  float hue_warp_a;     // hue twist: shift(h) = a + b·cos(2πh) + c·sin(2πh)
+  float hue_warp_b;
+  float hue_warp_c;
 };
 
 static const float TAU = 6.28318530717958647692;
@@ -113,6 +113,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float bc   = sum_bc * inv;                     // presence-weighted band contrast
 
   float hue = base_hue + hoff + T * hue_span;
+  // Twist the hue wheel: shift by the R/G/B amounts where the hue lands on
+  // each primary, smoothly interpolated (first harmonic through hue 0,1/3,2/3).
+  float hw = frac(hue);
+  hue += hue_warp_a + hue_warp_b * cos(TAU * hw) + hue_warp_c * sin(TAU * hw);
+
   float band = 0.5 + 0.5 * cos(TAU * T);
   float band_w = lerp(1.0 - bc, 1.0, band);
 
