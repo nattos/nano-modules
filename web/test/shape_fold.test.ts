@@ -1,0 +1,143 @@
+import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
+import type { Sketch } from '../src/sketch-types';
+
+/**
+ * E2E coverage for video.shape_fold (nano bundle) — the evolving-shape
+ * generator. A baked atlas is resolved on the CPU to a few terms; the GPU
+ * evaluates the SDF field and auto-levels it every frame (minmax → hist →
+ * buildlut → present). This is the first real exercise of the WebGPU
+ * translation of the atomic storage-buffer auto-levels passes.
+ *
+ * Under test:
+ *  1. Registers + renders: a busy cell produces a non-solid auto-leveled field
+ *     (the four-pass pipeline dispatches cleanly on WebGPU).
+ *  2. output_mode: Grayscale vs Magma differ (same field, different encoding).
+ *  3. scale (domain zoom) changes the output — the periodic field reveals more
+ *     structure when zoomed out.
+ *  4. autopilot is a live, non-destructive override: with the time clock frozen
+ *     (time_speed=0) the output STILL animates across frames when autopilot is
+ *     on (the epicycle moves the effective XY) and is STATIC when it's off —
+ *     all without ever patching the frequency/simplicity inputs.
+ *  5. Broadcast wiring: autopilot_x / autopilot_y are declared as data_output
+ *     fields (kind=2) — the channel the custom XY-pad editor reads live.
+ *
+ * The generator ignores its input, so the chain is just
+ * texture_input → shape_fold → texture_output.
+ */
+function buildSketch(params: Record<string, unknown>): Sketch {
+  return {
+    anchor: null,
+    columns: [{
+      name: 'main',
+      chain: [
+        { type: 'texture_input', id: 'in' },
+        {
+          type: 'module',
+          module_type: 'video.shape_fold',
+          instance_key: 'sf@0',
+          params,
+        },
+        { type: 'texture_output', id: 'out' },
+      ],
+    }],
+  };
+}
+
+async function render(sketchId: string, params: Record<string, unknown>, dumpName: string,
+                      waitFrames = 6) {
+  const result = await runEngineTest({
+    width: 96, height: 96,
+    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    commands: [
+      { type: 'createSketch', sketchId, sketch: buildSketch(params) },
+      { type: 'setTracePoints', tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId } },
+      ]},
+    ],
+    waitFrames,
+    captureTraceIds: ['out'],
+    dumpName,
+  });
+  expect(result.success).toBe(true);
+  return result;
+}
+
+// A busy, high-contrast cell, frozen in time for determinism.
+const BUSY = { frequency: 0.7, simplicity: 0.35, time_speed: 0.0 };
+
+describe('video.shape_fold E2E', () => {
+  jest.setTimeout(60000);
+
+  it('registers and renders a non-solid auto-leveled field', async () => {
+    const result = await render('sf_smoke', BUSY, 'sf_smoke');
+    // The four-pass auto-levels pipeline produced a structured field.
+    result.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+
+    // Registration: the effect is present with its broadcast outputs declared.
+    const sf = result.state.plugins.find((p: any) => p.id === 'video.shape_fold');
+    expect(sf).toBeTruthy();
+    expect(sf.io.find((io: any) => io.name === 'autopilot_x' && io.kind === 2)).toBeTruthy();
+    expect(sf.io.find((io: any) => io.name === 'autopilot_y' && io.kind === 2)).toBeTruthy();
+  });
+
+  it('output_mode changes the encoding (Grayscale vs Magma)', async () => {
+    const gray = await render('sf_gray', { ...BUSY, output_mode: 0 }, 'sf_gray');
+    const magma = await render('sf_magma', { ...BUSY, output_mode: 1 }, 'sf_magma');
+    magma.trace('out').expectDifferentFrom(gray.trace('out'), 50);
+  });
+
+  it('scale (domain zoom) changes the output', async () => {
+    const near = await render('sf_scale1', { ...BUSY, scale: 1.0 }, 'sf_scale1');
+    const far  = await render('sf_scale4', { ...BUSY, scale: 4.0 }, 'sf_scale4');
+    far.trace('out').expectDifferentFrom(near.trace('out'), 40);
+  });
+
+  it('autopilot drives a live, non-destructive XY override (clock frozen)', async () => {
+    // time_speed=0 freezes the loop, so any change across phases is the
+    // autopilot epicycle moving the effective XY — never the inputs.
+    const moving = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'sf_ap_on',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sf_ap_on',
+              sketch: buildSketch({ frequency: 0.5, simplicity: 0.5, time_speed: 0.0,
+                                    autopilot: true, ap_speed: 2.5 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_ap_on' } },
+            ]},
+          ],
+          waitFrames: 2, captureTraceIds: ['out'],
+        },
+        { waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(moving.success).toBe(true);
+    moving.phases[1].trace('out').expectDifferentFrom(moving.phases[0].trace('out'), 30);
+
+    // Control: autopilot off + frozen clock → static across the same span.
+    const still = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'sf_ap_off',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sf_ap_off',
+              sketch: buildSketch({ frequency: 0.5, simplicity: 0.5, time_speed: 0.0,
+                                    autopilot: false }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_ap_off' } },
+            ]},
+          ],
+          waitFrames: 2, captureTraceIds: ['out'],
+        },
+        { waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(still.success).toBe(true);
+    still.phases[1].trace('out').expectSameAs(still.phases[0].trace('out'), 2); // frozen → identical
+  });
+});

@@ -86,6 +86,20 @@ compile_shaders_compute_var_spv height_from_gradient present
 _emit_spv_header_var height_from_gradient gradient divergence restrict jacobi prolong mm_seed mm_reduce present
 echo "  height_from_gradient shaders compiled (SPV: gradient+divergence+restrict+jacobi+prolong+mm_seed+mm_reduce+present)"
 
+# shape_fold — evolving-shape generator. CPU resolves a baked atlas to a few
+# terms; the GPU evaluates the SDF field and auto-levels it every frame
+# (sharing common.hlsl):
+#   minmax   — atomic field min/max over an SN×SN grid (storage buffer).
+#   hist     — atomic histogram over the same grid.
+#   buildlut — invert the histogram into a median→0 CLAHE remap LUT.
+#   present  — auto-leveled field → grayscale / magma, square-fit (rgba8).
+compile_shaders_compute_var_spv shape_fold minmax
+compile_shaders_compute_var_spv shape_fold hist
+compile_shaders_compute_var_spv shape_fold buildlut
+compile_shaders_compute_var_spv shape_fold present
+_emit_spv_header_var shape_fold minmax hist buildlut present
+echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -105,6 +119,7 @@ wasm_build \
   ../motion_field/main.cpp \
   ../flash_particles/main.cpp \
   ../local_delay/main.cpp \
-  ../height_from_gradient/main.cpp
+  ../height_from_gradient/main.cpp \
+  ../shape_fold/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
