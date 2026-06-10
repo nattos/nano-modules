@@ -136,6 +136,18 @@ float2 ld_align_at(Texture2D<float4> flowTex, uint2 gid, uint w, uint h, LdParam
   return lerp(c, aligned, saturate(P.align_amount));
 }
 
+// Twitch mask — a vignette anchored at an arbitrary (per-frame random)
+// point. Self-contained so it can be lifted straight into a standalone effect:
+// given cover-square coords `sq`, an `anchor`, a radius/softness falloff, a
+// bipolar `shape` (+ blacks the rim/outside, - blacks the centre/inside) and an
+// overall `strength` in [0,1], returns a [0,1] multiplier (1 = unaffected).
+float ld_twitch_mask(float2 sq, float2 anchor, float radius, float softness,
+                   float shape, float strength) {
+  float t = smoothstep(radius, radius + max(softness, 1e-4), length(sq - anchor));
+  float suppress = (shape >= 0.0) ? t : (1.0 - t);
+  return lerp(1.0, 1.0 - suppress, saturate(abs(shape) * strength));
+}
+
 // Spatial/stochastic mask — WHERE (and how much) the effect acts.
 //   noise term  : `noise_weight` is the PROBABILITY a pixel is affected by
 //                 noise (a clean binary selection). Affected pixels get a
@@ -149,8 +161,12 @@ float2 ld_align_at(Texture2D<float4> flowTex, uint2 gid, uint w, uint h, LdParam
 //                 each pixel flips on its own clock.
 //   vignette term: signed cover-square falloff. + suppresses OUTSIDE the
 //                 radius, - suppresses INSIDE it, 0 = no mask.
+//   twitch term   : a second vignette at a per-frame random `twitch_anchor`,
+//                 scaled by `twitch_strength` (amount × random intensity).
 // Gates both the color blend and the published motion vectors consistently.
-float ld_mask_at(uint2 gid, uint w, uint h, LdParams P, float noise_time) {
+float ld_mask_at(uint2 gid, uint w, uint h, LdParams P, float noise_time,
+                 float twitch_shape, float twitch_radius, float twitch_softness,
+                 float2 twitch_anchor, float twitch_strength) {
   float r    = ld_hash(gid, uint(P.seed)) * 4096.0;   // time-invariant per-pixel draw
   float toff = frac(r);                                // phase offset (staggers the flip)
   uint  base = (uint)r;                                // integer part = per-pixel base seed
@@ -167,7 +183,10 @@ float ld_mask_at(uint2 gid, uint w, uint h, LdParams P, float noise_time) {
                        length(sq));
   float suppress = (P.vignette >= 0.0) ? t : (1.0 - t);
   float vign_term = lerp(1.0, 1.0 - suppress, abs(P.vignette));
-  return noise_term * vign_term;
+
+  float twitch_term = ld_twitch_mask(sq, twitch_anchor, twitch_radius, twitch_softness,
+                                 twitch_shape, twitch_strength);
+  return noise_term * vign_term * twitch_term;
 }
 
 // Per-pixel temporal-lookup driver in [0,1] — how far (as a fraction of the

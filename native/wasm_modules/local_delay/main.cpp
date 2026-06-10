@@ -41,6 +41,7 @@
 #include "local_delay_shaders.h"
 
 #include <cmath>
+#include <cstdint>
 
 namespace local_delay {
 
@@ -76,8 +77,20 @@ struct Uniforms {
   float delay_steps;        // number of forward-advection steps (color pass)
   float noise_time;         // float noise clock (per-pixel staggered re-roll)
   float delay_dir;          // +1 = Past (advect with flow), -1 = Future (against)
+
+  // row 5: twitch (a roaming vignette — random anchor + intensity/frame)
+  float twitch_shape;         // -1..1: + blacks the rim, - blacks the centre
+  float twitch_radius;        // 0..1 cover-square radius of the twitch
+  float twitch_softness;      // 0..1 falloff width
+  float twitch_strength;      // amount × this frame's random intensity (0..1)
+
+  // row 6: twitch anchor (cover-square coords, chosen on the CPU each frame)
+  float twitch_anchor_x;
+  float twitch_anchor_y;
+  float _pad5;
+  float _pad6;
 };
-static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 112, "Uniforms layout mismatch");
 
 static constexpr int NUM_LEVELS = 3;   // luma pyramid: half, quarter, eighth
 
@@ -116,6 +129,13 @@ struct State {
   float vignette          = 0.0f;
   float vignette_radius   = 0.5f;
   float vignette_softness = 0.3f;
+  // Twitch — a vignette-like mask at a per-frame RANDOM anchor + intensity.
+  // (Designed to be lifted into a standalone effect; keep the math self-contained.)
+  float twitch_amount       = 0.0f;   // 0 = off; modulation depth into the mask
+  float twitch_shape        = 0.0f;   // -1..1 bipolar, like `vignette`
+  float twitch_radius       = 0.3f;
+  float twitch_softness     = 0.3f;
+  float twitch_position     = 0.0f;   // -1 → outer-oval spawn, +1 → centre spawn
   float squash            = 0.0f;
   float max_flow          = 0.03f;
   float weight_gain       = 0.5f;   // motion sensitivity (0..1 → ×2048 effective)
@@ -132,7 +152,16 @@ struct State {
 
   // Most recent frame dt (from tick) → frame-rate-independent history EMA.
   float        last_dt    = 1.0f / 60.0f;
+
+  // Per-instance PRNG for the twitch's random anchor + intensity.
+  uint32_t     rng        = 0x2545F491u;
 };
+
+// Per-instance uniform random in [0,1) (LCG).
+static inline float ld_rng_unit(State* s) {
+  s->rng = s->rng * 1664525u + 1013904223u;
+  return (float)((s->rng >> 8) & 0xFFFFFFu) / (float)0x1000000;
+}
 
 // Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_luma;
@@ -181,6 +210,16 @@ void module_init() {
       .floatField("vignette",          0.0f, -1.0f, 1.0f, state::PrimaryInput)
       .floatField("vignette_radius",   0.5f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("vignette_softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput)
+      // Twitch: a roaming vignette that picks a new random anchor +
+      // intensity EACH FRAME. `twitch_amount` is how strongly it modulates the
+      // motion weight (0 = off). `twitch_shape` is bipolar like `vignette`
+      // (+ blacks the rim, - blacks the centre). `twitch_position` biases WHERE
+      // it spawns: -1 = an oval around the outside, +1 = an oval in the centre.
+      .floatField("twitch_amount",       0.0f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("twitch_shape",        0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("twitch_radius",       0.3f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("twitch_softness",     0.3f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("twitch_position",     0.0f, -1.0f, 1.0f, state::PrimaryInput)
       // Power curve on the blend weight (-1 crush / +1 lift, §1.3).
       .floatField("squash",            0.0f, -1.0f, 1.0f, state::PrimaryInput)
       // --- Tuning ---
@@ -272,8 +311,13 @@ void module_init() {
   state::log("local_delay: module initialized");
 }
 
+// Distinct PRNG seed per instance (no wall-clock / RNG primitive needed).
+static uint32_t s_seed_counter = 0x9E3779B9u;
+
 void* create() {
   auto* s = new State();
+  s_seed_counter = s_seed_counter * 1664525u + 1013904223u;
+  s->rng = s_seed_counter ^ 0xC0FFEEu;
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   return s;
 }
@@ -356,6 +400,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "vignette"))          s->vignette = state::patchFloat(i);
     else if (state::pathIs(path, plen, "vignette_radius"))   s->vignette_radius = state::patchFloat(i);
     else if (state::pathIs(path, plen, "vignette_softness")) s->vignette_softness = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "twitch_amount"))       s->twitch_amount = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "twitch_shape"))        s->twitch_shape = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "twitch_radius"))       s->twitch_radius = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "twitch_softness"))     s->twitch_softness = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "twitch_position"))     s->twitch_position = state::patchFloat(i);
     else if (state::pathIs(path, plen, "squash"))            s->squash = state::patchFloat(i);
     else if (state::pathIs(path, plen, "max_flow"))          s->max_flow = state::patchFloat(i);
     else if (state::pathIs(path, plen, "weight_gain"))       s->weight_gain = state::patchFloat(i);
@@ -477,12 +526,29 @@ void render(void* self, int vp_w, int vp_h) {
   float gain_base = (s->flow_source == 0) ? 128.0f : 1.0f;
   float eff_motion_gain = (s->motion_gain * gain_base) / (1.0f - 0.8f * sm);
 
+  // Twitch: pick a NEW random anchor + intensity every frame (frame-rate-
+  // dependent for now). `twitch_position` biases the spawn radius: +1 → an oval
+  // near the centre, -1 → an oval ring around the outside. Anchor is in cover-
+  // square coords (isotropic there → an oval in the viewport via the aspect).
+  float twitch_ax = 0.0f, twitch_ay = 0.0f, twitch_strength = 0.0f;
+  if (s->twitch_amount > 0.0f) {
+    float ang  = ld_rng_unit(s) * 2.0f * 3.14159265358979f;
+    float base = 0.5f * (1.0f - s->twitch_position);   // +1 → 0 (centre), -1 → 1 (rim)
+    float rr   = base + (ld_rng_unit(s) - 0.5f) * 0.6f;   // bias toward base, soft spread
+    if (rr < 0.0f) rr = 0.0f;
+    twitch_ax = rr * std::cos(ang);
+    twitch_ay = rr * std::sin(ang);
+    twitch_strength = s->twitch_amount * ld_rng_unit(s);  // random per-frame intensity
+  }
+
   Uniforms u = {
     s->delay_amount, s->noise_weight, noise_seed, eff_weight_gain,
     s->vignette, s->vignette_radius, s->vignette_softness, s->squash,
     s->max_flow, s->align_amount, s->align_sharpness, s->have_history ? 1.0f : 0.0f,
     cs.ax, cs.ay, s->debug_show_motion ? 1.0f : 0.0f, history_alpha,
     eff_motion_gain, s->delay_steps, s->noise_time, s->delay_direction == 0 ? 1.0f : -1.0f,
+    s->twitch_shape, s->twitch_radius, s->twitch_softness, twitch_strength,
+    twitch_ax, twitch_ay, 0.0f, 0.0f,
   };
   s->uniform_buf.writeOne(u);
 

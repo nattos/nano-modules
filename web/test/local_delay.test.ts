@@ -157,6 +157,50 @@ describe('video.local_delay E2E', () => {
     withDelay.trace('out').expectDifferentFrom(noDelay.trace('out'), 100);
   });
 
+  it('twitch modulates the motion weight (suppresses a roaming region)', async () => {
+    // A roaming vignette at a random anchor each frame. twitch_shape=1 blacks the
+    // rim (suppresses motion OUTSIDE a small disk near the anchor), so with
+    // debug_show_motion the masked motion field differs strongly from twitch-off.
+    const buildChain = (twitchAmount: number): Sketch => ({
+      anchor: null,
+      columns: [{
+        name: 'main',
+        chain: [
+          { type: 'texture_input', id: 'in' },
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+            params: { color: [0.1, 0.1, 0.1] } },
+          { type: 'module', module_type: 'debug.motion_swarm', instance_key: 'swarm@0',
+            params: { count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
+                      randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7 } },
+          { type: 'module', module_type: 'video.local_delay', instance_key: 'ld@0',
+            params: {
+              delay_amount: 0.0, weight_gain: 0.1, max_flow: 0.05,
+              debug_show_motion: true,
+              twitch_amount: twitchAmount, twitch_shape: 1.0, twitch_radius: 0.2, twitch_softness: 0.2,
+            } },
+          { type: 'texture_output', id: 'out' },
+        ],
+      }],
+    });
+
+    const run = (id: string, amount: number) => runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(amount) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: id,
+    });
+
+    const off = await run('ld_twitch_off', 0.0);
+    const on  = await run('ld_twitch_on', 1.0);
+    expect(off.success && on.success).toBe(true);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 40);
+  });
+
   it('publishes modulated motion that drives a downstream motion_blur', async () => {
     const buildChain = (withRails: boolean): Sketch => ({
       anchor: null,

@@ -26,6 +26,8 @@ cbuffer Uniforms : register(b3) {
   float max_flow;      float align_amount;     float align_sharpness; float have_history;
   float aspect_x;      float aspect_y;         float debug_show_motion; float history_alpha;
   float motion_gain;   float delay_steps;      float noise_time;      float _pad3;
+  float twitch_shape;    float twitch_radius;      float twitch_softness;   float twitch_strength;
+  float twitch_anchor_x; float twitch_anchor_y;    float _pad5;           float _pad6;
 };
 
 [numthreads(8, 8, 1)]
@@ -41,7 +43,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float2 aligned  = ld_align_at(flowIn, gid.xy, w, h, P);
   float2 smoothed = lerp(flowPrev[gid.xy].xy, aligned, saturate(history_alpha));
-  float mask = ld_mask_at(gid.xy, w, h, P, noise_time);
+  float mask = ld_mask_at(gid.xy, w, h, P, noise_time,
+                          twitch_shape, twitch_radius, twitch_softness,
+                          float2(twitch_anchor_x, twitch_anchor_y), twitch_strength);
   float idx  = ld_index_at(smoothed, mask, P);
   flowOut[gid.xy] = float4(smoothed, idx, mask);
 }
