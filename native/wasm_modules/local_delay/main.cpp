@@ -132,7 +132,7 @@ struct State {
   // Twitch — a vignette-like mask at a per-frame RANDOM anchor + intensity.
   // (Designed to be lifted into a standalone effect; keep the math self-contained.)
   float twitch_amount       = 0.0f;   // 0 = off; modulation depth into the mask
-  float twitch_shape        = 0.0f;   // -1..1 bipolar, like `vignette`
+  float twitch_shape        = -0.5f;  // -1..1 bipolar (0 = identity), like `vignette`
   float twitch_radius       = 0.3f;
   float twitch_softness     = 0.3f;
   float twitch_position     = 0.0f;   // -1 → outer-oval spawn, +1 → centre spawn
@@ -216,7 +216,7 @@ void module_init() {
       // (+ blacks the rim, - blacks the centre). `twitch_position` biases WHERE
       // it spawns: -1 = an oval around the outside, +1 = an oval in the centre.
       .floatField("twitch_amount",       0.0f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("twitch_shape",        0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("twitch_shape",       -0.5f, -1.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_radius",       0.3f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_softness",     0.3f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_position",     0.0f, -1.0f, 1.0f, state::PrimaryInput)
@@ -528,14 +528,18 @@ void render(void* self, int vp_w, int vp_h) {
 
   // Twitch: pick a NEW random anchor + intensity every frame (frame-rate-
   // dependent for now). `twitch_position` biases the spawn radius: +1 → an oval
-  // near the centre, -1 → an oval ring around the outside. Anchor is in cover-
-  // square coords (isotropic there → an oval in the viewport via the aspect).
+  // near the centre, -1 → an oval ring around the outside. The whole spawn range
+  // scales out with `twitch_radius`, so a big twitch roams further — at max
+  // radius + position -1 the anchor is usually off-screen (its falloff still
+  // creeps in from the edges). Anchor is in cover-square coords (isotropic there
+  // → an oval in the viewport via the aspect).
   float twitch_ax = 0.0f, twitch_ay = 0.0f, twitch_strength = 0.0f;
   if (s->twitch_amount > 0.0f) {
     float ang  = ld_rng_unit(s) * 2.0f * 3.14159265358979f;
     float base = 0.5f * (1.0f - s->twitch_position);   // +1 → 0 (centre), -1 → 1 (rim)
     float rr   = base + (ld_rng_unit(s) - 0.5f) * 0.6f;   // bias toward base, soft spread
     if (rr < 0.0f) rr = 0.0f;
+    rr *= 1.0f + s->twitch_radius;                       // bigger twitch roams further out
     twitch_ax = rr * std::cos(ang);
     twitch_ay = rr * std::sin(ang);
     twitch_strength = s->twitch_amount * ld_rng_unit(s);  // random per-frame intensity
