@@ -407,6 +407,36 @@ export class AppController {
     this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
   }
 
+  // Recipe that writes SEVERAL params in one draft pass — for widgets (an XY
+  // pad) that drive multiple fields as a single edit. The history manager has
+  // only one active long edit, so two concurrent single-field continuous edits
+  // would cancel each other; this keeps them in one.
+  private setParamsRecipe(sketchId: string, instanceKey: string, values: Record<string, ParamValue>) {
+    return (draft: DatabaseState) => {
+      const inst = draft.sketches[sketchId]?.instances?.[instanceKey];
+      if (inst) { for (const k in values) inst.state[k] = values[k]; }
+    };
+  }
+
+  /** Begin a continuous edit over multiple params as one undo/long-edit. */
+  beginSetEffectParams(sketchId: string, colIdx: number, chainIdx: number, values: Record<string, ParamValue>): LongEdit {
+    const sketch = appState.database.sketches[sketchId];
+    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
+    const edit = this.history.beginLongEdit('Set params', this.setParamsRecipe(sketchId, instanceKey, values));
+    for (const k in values) this.engine?.setParam(sketchId, colIdx, chainIdx, k, values[k]);
+    return edit;
+  }
+
+  /** Update a multi-param continuous edit (XY-pad drag in progress). */
+  updateSetEffectParams(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, values: Record<string, ParamValue>) {
+    const sketch = appState.database.sketches[sketchId];
+    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
+    edit.update(this.setParamsRecipe(sketchId, instanceKey, values));
+    for (const k in values) this.engine?.setParam(sketchId, colIdx, chainIdx, k, values[k]);
+  }
+
   undo() { this.history.undo(); }
   redo() { this.history.redo(); }
 

@@ -33,6 +33,25 @@ export interface FieldBinding {
    * without creating undo points. Returns a handle for updating / finishing.
    */
   beginContinuousEdit(fieldPath: string, value: any): ContinuousEditHandle;
+
+  /**
+   * Begin a continuous edit over MULTIPLE field paths as a SINGLE long edit —
+   * for widgets that drive several fields at once (e.g. an XY pad controlling
+   * two scalars). Two separate `beginContinuousEdit` calls would cancel each
+   * other (only one long edit is active at a time), so this is required to edit
+   * more than one field per drag. Optional: widgets should fall back if absent.
+   */
+  beginContinuousEditMulti?(values: Record<string, any>): MultiContinuousEditHandle;
+}
+
+/** Handle for an in-progress multi-field continuous edit (XY pad, etc.). */
+export interface MultiContinuousEditHandle {
+  /** Update the values during the drag (no undo point). */
+  update(values: Record<string, any>): void;
+  /** Commit the final values as a single undo point. */
+  accept(): void;
+  /** Cancel and revert to the pre-drag values. */
+  cancel(): void;
 }
 
 /** Handle for an in-progress continuous edit (slider drag, etc.). */

@@ -21,7 +21,7 @@ import { html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
-import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from '../widgets/field-editor';
+import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from '../widgets/field-editor';
 import '../widgets/scalar-slider';
 import '../widgets/field-select';
 import '../widgets/field-toggle';
@@ -51,8 +51,10 @@ export class ShapeFoldXyPad extends MobxLitElement implements FieldEditorElement
   private dragging = false;
   private dragX = 0;
   private dragY = 0;
-  private editX: ContinuousEditHandle | null = null;
-  private editY: ContinuousEditHandle | null = null;
+  // frequency + simplicity must ride in ONE long edit — two separate continuous
+  // edits cancel each other (the history has a single active long edit), which
+  // is why a naïve two-edit pad snaps one axis back on release.
+  private edit: MultiContinuousEditHandle | null = null;
 
   static styles = css`
     :host { display: block; }
@@ -120,8 +122,11 @@ export class ShapeFoldXyPad extends MobxLitElement implements FieldEditorElement
     this.dragging = true;
     const [x, y] = this.xyFromEvent(e, pad);
     this.dragX = x; this.dragY = y;
-    this.editX = this.binding.beginContinuousEdit('frequency', x);
-    this.editY = this.binding.beginContinuousEdit('simplicity', y);
+    this.edit = this.binding.beginContinuousEditMulti?.({ frequency: x, simplicity: y }) ?? null;
+    if (!this.edit) {                                  // fallback: one-shot writes
+      this.binding.setValue('frequency', x);
+      this.binding.setValue('simplicity', y);
+    }
     this.syncHandle();
   }
   private onPointerMove(e: PointerEvent) {
@@ -129,15 +134,15 @@ export class ShapeFoldXyPad extends MobxLitElement implements FieldEditorElement
     const pad = e.currentTarget as HTMLElement;
     const [x, y] = this.xyFromEvent(e, pad);
     this.dragX = x; this.dragY = y;
-    this.editX?.update(x);
-    this.editY?.update(y);
+    if (this.edit) this.edit.update({ frequency: x, simplicity: y });
+    else { this.binding.setValue('frequency', x); this.binding.setValue('simplicity', y); }
     this.syncHandle();
   }
   private onPointerUp() {
     if (!this.dragging) return;
     this.dragging = false;
-    this.editX?.accept(); this.editX = null;
-    this.editY?.accept(); this.editY = null;
+    this.edit?.accept();
+    this.edit = null;
   }
 
   render() {

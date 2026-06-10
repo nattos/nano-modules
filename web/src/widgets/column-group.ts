@@ -18,7 +18,7 @@ import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Tap, TapCurve, TapCombine } from '../sketch-types';
-import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
+import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
 import { editorRegistry } from '../editor-registry';
@@ -1401,6 +1401,16 @@ export class ColumnGroup extends MobxLitElement {
         return {
           update: (v: any) => appController.updateSetEffectParam(
             edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
+          accept: () => edit.accept(),
+          cancel: () => edit.cancel(),
+        };
+      },
+      beginContinuousEditMulti: (values: Record<string, any>): MultiContinuousEditHandle => {
+        const edit = appController.beginSetEffectParams(
+          this.sketchId, this.colIdx, chainIdx, values);
+        return {
+          update: (v: Record<string, any>) => appController.updateSetEffectParams(
+            edit, this.sketchId, this.colIdx, chainIdx, v),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
         };
