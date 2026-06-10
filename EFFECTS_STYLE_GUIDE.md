@@ -236,6 +236,20 @@ void nano_module_main() {
 
 (`struct_version` is `2`. The macros live in `wasm_modules/include/module_api.h`.)
 
+### Skip whole stages on the host — don't early-out in the shader
+
+We are **not in ShaderToy land**. An effect isn't one fragment program that has to do everything every pixel — it's a host-driven graph of compute dispatches, and `render(self, w, h)` is plain C++ that decides, per frame, *which* dispatches to issue. A pipeline can have as many stages as it wants, and that count can be **dynamic** — gated on parameters, connectivity, or mode. Lean into that.
+
+So when a parameter setting makes some work unnecessary, the right move is to **not dispatch it** — branch in `render()` and skip the pass — rather than dispatch it anyway and `return` early inside the shader. A skipped dispatch costs nothing; a shader early-out still pays the launch, the bind-group setup, and one thread per pixel. More importantly it keeps the *cost model legible*: the work an effect does this frame is exactly the dispatches you can see it issue.
+
+Patterns, in order of preference:
+
+- **Gate optional producer passes on connectivity.** A `render_outputs/motion` (or any rail) pass should run only when something downstream reads it: `if (state::isOutputConnected("render_outputs")) { …dispatch motion pass… }`. No consumer → no dispatch.
+- **Branch the algorithm before dispatching.** When a `mode` / `source` selector changes the *shape* of the pipeline, pick the branch in `render()` and skip the stages the active mode doesn't need. (`video.local_delay`'s `flow_source` selector skips the entire pyramidal-Lucas-Kanade estimator — a luma pass, two downsamples, three LK levels, an upsample — when it's fed incoming vectors instead.)
+- **`is_identity` for a whole no-op effect** (see above) — the executor skips the dispatch and aliases input→output for you.
+
+The one caveat — producing `tex_out` when you skip the final pass. A stage still has to leave a valid output texture. The obvious move, `gpu::Device::copy(in, out)`, works **natively** but **not for mid-chain intermediates in the web executor**: that pool allocates intermediates `COPY_SRC` only (no `COPY_DST`), so `copyTextureToTexture` into `tex_out` is a validation error there. When you genuinely must write `tex_out` and `copy` isn't available, a thin one-read/one-write shader passthrough is the portable fallback — but you've still skipped the *expensive inner work* (the multi-step loop, the neighbor gathers), which is the real cost; the bare dispatch is noise. Skip whole *stages* freely on the host; only fall back to a shader passthrough for the single pass that has to emit the output.
+
 ---
 
 ## 0.1 Fusion-aware effects — opt in when you can
