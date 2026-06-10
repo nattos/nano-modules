@@ -119,8 +119,8 @@ void module_init() {
       // Temporal-complexity (z): 0 = hold still → 1 = animate as richly as the
       // shape allows (trilinear trajectory layer select).
       .floatField("temporal_complexity", 0.66f, 0.0f, 1.0f, state::PrimaryInput)
-      // Domain zoom. The SDFs are periodic, so >1 reveals structure beyond the
-      // [-1,1] window the prototype looked at; <1 zooms in.
+      // Zoom. Higher = zoom IN (bigger features); lower zooms out, revealing
+      // more of the periodic field beyond the prototype's [-1,1] window.
       .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput)
       // --- Animation ---
       // Autoplay clock speed (0 = frozen). 1 ≈ a 6 s loop.
@@ -385,7 +385,9 @@ void render(void* self, int vp_w, int vp_h) {
   u.res_x = (float)vp_w;
   u.res_y = (float)vp_h;
   u.birth_softness = s->birth_softness;
-  u.domain_scale = s->scale;
+  // `scale` is user-facing zoom (higher = zoom IN = bigger features), so the
+  // sampled domain shrinks: p = sq / scale.
+  u.domain_scale = (s->scale > 1e-4f) ? 1.0f / s->scale : 1.0f;
   u.level_ease = s->level_ease;
   u.output_mode = (float)s->output_mode;
   sample_terms(s, s->eff_x, s->eff_y, s->clock_t, u);
