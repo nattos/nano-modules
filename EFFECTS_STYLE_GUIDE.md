@@ -794,31 +794,39 @@ Standard three inputs (style guide §1.1 — expose lots of parameters):
 
 Why momentary gate (not synth-style hold-to-sustain): the inspector checkbox is the primary tuning surface, and a held checkbox can't be quickly tapped. Hold-to-sustain semantics confuse users who expect "click → cycle plays." For *true* hold-to-sustain (continuous level signal from upstream), wire that to a separate continuous-level field — don't overload `gate`.
 
-### 8.2 Event handlers — defend against state replay
+### 8.2 Event handlers — momentary, rising-edge detected
 
-The sketch-executor replays **every** instance-state value as `PatchReplace` patches **every frame**. Inspector hover and continuous-edit broadcasts can amplify this. An event handler that fires on every notification will re-arm itself forever:
+The sketch-executor replays **every** instance-state value as `PatchReplace` patches **every frame** (`sketch-executor.ts` rebuilds the patch set from the stored instance state each tick). Inspector hover and continuous-edit broadcasts can amplify this. An event field is **not** value-less — it round-trips through JSON like everything else, so its stored value is replayed too. Concretely, `event` fields are **momentary, on/off like a `bool` gate**: the inspector's trigger button sends `1` on press and `0` on release (`field-trigger.ts`), and whatever value last landed is what gets replayed.
+
+So an event handler that fires whenever a `trigger` patch *arrives* re-arms itself forever — even with `auto_rate` at 0, the replayed `trigger: 0` re-fires the cycle on every return to IDLE:
 
 ```cpp
-// ❌ BAD — re-fires every frame, freezes ADSR in sustain
+// ❌ BAD — fires on every replayed patch (any value), loops forever.
 if (state::pathIs(path, plen, "trigger")) {
-  s_trigger_pulse = true;
-  s_trigger_hold_remaining = pulse_duration;
+  s->trigger_pulse = true;
+  s->trigger_hold_remaining = pulse_duration;
+}
+
+// ❌ ALSO BAD — a phase guard is NOT a fix. The replayed patch still arrives
+// every frame; this just re-fires each time the effect lands back in IDLE.
+if (state::pathIs(path, plen, "trigger") && s->phase == PHASE_IDLE) { … }
+```
+
+**The fix: rising-edge detection on the value**, exactly like `gate` (via `s->gate_prev`). Treat the event as a momentary binary and act only on the `0 → 1` transition. Replays of a constant value (0 *or* 1) never re-fire:
+
+```cpp
+// ✅ Replay-safe. A fresh press (0→1) fires once; releases and replays don't.
+if (op == state::PatchReplace && state::pathIs(path, plen, "trigger")) {
+  bool tval = state::patchFloat(i) != 0.0f;
+  if (tval && !s->trigger_prev) {       // rising edge
+    s->trigger_pulse = true;
+    s->trigger_hold_remaining = pulse_duration;
+  }
+  s->trigger_prev = tval;
 }
 ```
 
-Two defenses:
-
-- **Edge detection** (like `gate` does, via `s_gate_prev`): only fire when the value *changes*. Works for fields with a meaningful "previous value."
-- **Phase guard** (used for `trigger` event): only honor the patch when the effect is in a safe state to re-fire. For ADSR effects:
-  ```cpp
-  // ✅ Fires once when idle, ignores replays during active phases.
-  if (state::pathIs(path, plen, "trigger") && s_phase == PHASE_IDLE) {
-    s_trigger_pulse = true;
-    s_trigger_hold_remaining = pulse_duration;
-  }
-  ```
-
-The cost of the phase guard: mid-cycle re-trigger via the event is disabled. Workaround: `gate` rising edge still cuts the active cycle short and restarts; `auto_rate` still fires when its Poisson draw lands during release.
+Store a `bool trigger_prev` in `State` (reset in `init`). Because the button is momentary (1→0 per click), repeated clicks are repeated rising edges → re-triggers work, including mid-cycle (same as a `gate` rising edge). If you genuinely want *idle-only* one-shots, you may AND in a `&& s->phase == PHASE_IDLE` — but that's a behavioral choice, **not** the replay defense. The rising edge is what makes it safe.
 
 ### 8.3 ADSR phase machine
 
@@ -939,7 +947,7 @@ Otherwise gate fires with default-value pulse durations and your test ends up in
 
 ### 8.12 Cross-cutting recipe — checklist for a new triggered effect
 
-- [ ] Three trigger inputs: `gate` (bool, rising edge), `trigger` (event, IDLE-only guard), `auto_rate` (Poisson, sensible default > 0).
+- [ ] Three trigger inputs: `gate` (bool, rising edge), `trigger` (event, momentary — rising-edge detected on its value, §8.2), `auto_rate` (Poisson, sensible default > 0).
 - [ ] Pulse duration = `attack + decay + sustain_s` (so one-shots auto-complete through sustain).
 - [ ] Per-phase `*_curve` params via `fx::signedSliderToExp`.
 - [ ] Tick/render: phase transition resets `time_in_phase = 0`, so the first render after transition sees `t = 0`. Tests need `ticks: 2` minimum to see in-phase visible state.

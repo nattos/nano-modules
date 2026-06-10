@@ -12,8 +12,8 @@
  *              `flicker_duty_end`).
  *
  * Triggered by `gate` (rising-edge synthesizes a one-shot pulse) or
- * `trigger` event (also one-shot, only fires when IDLE to defend
- * against state-replay re-arming).
+ * `trigger` event (momentary, on/off like gate; fires on the rising edge of
+ * its value, which is replay-safe — see §8.2).
  *
  * Hard-edge rendering throughout — no alpha, no fades. Break cells
  * either fully eat the beam (revert to input passthrough at that
@@ -174,6 +174,7 @@ struct State {
   Phase    phase          = PHASE_IDLE;
   double   time_in_phase  = 0.0;
   bool     gate_prev      = false;
+  bool     trigger_prev   = false;   // rising-edge detect for the event field
   bool     trigger_pulse  = false;
   double   trigger_hold_remaining = 0.0;
   uint32_t rng_state      = 0xCAFEBABEu;
@@ -561,6 +562,7 @@ void init(void* self) {
   s->phase = PHASE_IDLE;
   s->time_in_phase = 0.0;
   s->gate_prev = false;
+  s->trigger_prev = false;
   s->trigger_pulse = false;
   s->trigger_hold_remaining = 0.0;
   s->rng_state = 0xCAFEBABEu;
@@ -698,11 +700,19 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       else if (state::pathIs(path, plen, "flicker_freq_hz"))      s->flicker_freq_hz = state::patchFloat(i);
     }
 
-    // Event field — only fire when IDLE to defend against state-replay
-    // re-arming (the "stuck on" bug).
-    if (state::pathIs(path, plen, "trigger") && s->phase == PHASE_IDLE) {
-      s->trigger_pulse = true;
-      s->trigger_hold_remaining = (double)(s->attack_s + s->decay_s + s->sustain_s);
+    // Event field — momentary (on/off like gate; 1 on press, 0 on release).
+    // Fire on the rising edge of the VALUE. The executor replays the stored
+    // value every frame, so a value-less "any trigger patch fires" check
+    // re-arms forever (the "stuck on" loop); the rising edge is what makes it
+    // replay-safe (style guide §8.2). Like `gate`, a fresh edge re-triggers
+    // mid-cycle.
+    if (op == state::PatchReplace && state::pathIs(path, plen, "trigger")) {
+      bool tval = state::patchFloat(i) != 0.0f;
+      if (tval && !s->trigger_prev) {
+        s->trigger_pulse = true;
+        s->trigger_hold_remaining = (double)(s->attack_s + s->decay_s + s->sustain_s);
+      }
+      s->trigger_prev = tval;
     }
   }
 }

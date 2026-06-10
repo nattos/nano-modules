@@ -37,6 +37,25 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     frame.expectUniformColor({ r: 102, g: 102, b: 102, a: 255 }, 4);
   });
 
+  it('a trigger value of 0 never fires (rising-edge, replay-safe)', async () => {
+    // The executor replays every stored field — including `trigger` — every
+    // frame. The handler must fire only on a 0->1 rising edge of the value,
+    // not on any patch arrival, or the cycle re-arms forever. With trigger at
+    // 0 and auto_rate 0, the beam must never light: pristine passthrough.
+    const frame = await runGpuEffectTest({
+      module: 'plasma_beam_cannon.wasm',
+      bundle: 'lights',
+      width: 64, height: 64,
+      inputColor: [0.4, 0.4, 0.4, 1.0],
+      renderEachTick: true,
+      ticks: 20,
+      params: [['auto_rate', 0.0], ['trigger', 0]],
+      dumpName: 'plasma_beam_cannon_trigger0',
+    });
+    expect(frame.success).toBe(true);
+    frame.expectUniformColor({ r: 102, g: 102, b: 102, a: 255 }, 4);
+  });
+
   it('auto_rate fires without external trigger (IDE preview demo path)', async () => {
     // With auto_rate cranked, Poisson fires nearly every frame, so
     // within a few ticks the effect is reliably in a beam-visible
