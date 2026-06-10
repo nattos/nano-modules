@@ -110,6 +110,18 @@ describe('video.height_from_gradient E2E', () => {
     cont.expectDifferentFrom(hill, 50);
   });
 
+  it('Contours at density 0 are skipped → solid black', async () => {
+    const cont = await render('hfg_cont_d0', { present_mode: 3, contour_density: 0.0 }, 'hfg_cont_d0');
+    cont.expectUniformColor({ r: 0, g: 0, b: 0 }, 2);
+  });
+
+  it('line_width thins the contour lines (razor at the low end)', async () => {
+    const thin  = await render('hfg_cont_thin',  { present_mode: 3, contour_density: 0.4, line_width: 0.05 }, 'hfg_cont_thin');
+    const thick = await render('hfg_cont_thick', { present_mode: 3, contour_density: 0.4, line_width: 0.9 }, 'hfg_cont_thick');
+    thin.expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);   // still draws razor lines
+    thin.expectDifferentFrom(thick, 50);                 // width visibly changes coverage
+  });
+
   it('debug_show_gradient overlays the source gradient field', async () => {
     const normal = await render('hfg_dbg_off', { debug_show_gradient: false }, 'hfg_dbg_off');
     const debug  = await render('hfg_dbg_on',  { debug_show_gradient: true },  'hfg_dbg_on');

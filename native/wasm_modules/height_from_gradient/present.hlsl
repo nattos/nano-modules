@@ -64,10 +64,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float dist_lvl = min(frac(hs), 1.0 - frac(hs));       // [0,0.5] level units
     float lpp = (length(rawSlope) / range) * density;     // levels per pixel
     float dist_px = dist_lvl / max(lpp, 1e-6);
-    float W = max(line_width * 3.0, 0.5);
-    float lineMask = 1.0 - smoothstep(W, W + 1.0, dist_px);
-    float cell_px = 1.0 / max(lpp, 1e-6);                  // pixels between levels
-    float fade = saturate((cell_px - W) / (W + 1.0));      // 0 when sub-pixel-dense
+    // Exponential line half-width (px): razor-thin (sub-pixel, aliasing
+    // accepted) at the low end → a few px at the top, no floor. The AA span
+    // shrinks with W so thin lines actually stay thin instead of being held to
+    // a ~1px ramp.
+    float W = 0.02 * pow(200.0, line_width);
+    float aa = min(W, 0.5);
+    float lineMask = 1.0 - smoothstep(W, W + aa, dist_px);
+    float cell_px = 1.0 / max(lpp, 1e-6);                 // pixels between levels
+    // Fade only where levels pack tighter than the pixel grid can resolve (the
+    // steep-spot / over-dense artifact) — independent of line width, so thick
+    // lines still read as thick rather than vanishing.
+    float fade = saturate(cell_px - 1.0);
     rgb = lineMask * fade * float3(tint_r, tint_g, tint_b);
   } else if (present_mode > 1.5) {
     // Normals

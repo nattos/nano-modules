@@ -102,7 +102,7 @@ struct State {
   float height_offset   = 0.0f;
   // Contours mode.
   float contour_density = 0.2f;     // 0..1 → iso-level count
-  float line_width      = 0.25f;    // 0..1 → line thickness
+  float line_width      = 0.5f;     // 0..1 → line thickness (exponential)
   bool  debug_show_gradient = false;
 };
 
@@ -211,9 +211,10 @@ void module_init() {
       .floatField("height_scale", 1.0f, 0.0f, 8.0f, state::PrimaryInput)
       .floatField("height_offset", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
       // (Contours mode) Iso-level count (how finely the height is sliced) and
-      // line thickness. tint colors the lines.
+      // line thickness (exponential — low values are razor-thin). tint colors
+      // the lines. At density 0 the stage is skipped and the output is black.
       .floatField("contour_density", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("line_width", 0.25f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("line_width", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Debug (last) ---
       .boolField("debug_show_gradient", false, state::PrimaryInput)
       // --- I/O ---
@@ -466,6 +467,16 @@ void render(void* self, int vp_w, int vp_h) {
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
+
+  // Contours at density 0 = no iso-lines. Skip the entire solve + present and
+  // just clear black (style guide §0 — skip the stage rather than render a
+  // degenerate full-white fill). Debug overlay still wants the real pass.
+  if (s->present_mode == 3 && s->contour_density <= 0.0f && !s->debug_show_gradient) {
+    gpu::Device::clear(out, 0.0f, 0.0f, 0.0f, 1.0f);
+    gpu::Device::submit();
+    return;
+  }
+
   if (!ensure_textures(s, vp_w, vp_h)) return;
 
   auto cs = fx::coverSquare(vp_w, vp_h);
