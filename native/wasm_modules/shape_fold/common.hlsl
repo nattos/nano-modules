@@ -28,7 +28,7 @@
 cbuffer U : register(b0) {
   float res_x;      float res_y;          float n_terms;       float dc;
   float bold_gain;  float birth_softness; float domain_scale;  float level_ease;
-  float output_mode; float _sf_pad0;      float _sf_pad1;      float _sf_pad2;
+  float output_mode; float exposure;      float _sf_pad1;      float _sf_pad2;
   float4 terms[SF_MAX_TERMS * 3];
 };
 

@@ -51,7 +51,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float F0 = sf_field_at(p);
   float F = sf_apply_levels(F0, lo, hi);                 // leveled: median → 0, ~[-1,1]
   float levelStrength = smoothstep(0.0, max(level_ease, 1e-5), hi - lo);
-  float g = saturate((F * 0.5 + 0.5) * levelStrength);
+  // Exposure drives the median-centered value before grading: >1 pushes brights
+  // into the rolloff, <1 pulls toward mid.
+  float g = saturate((F * exposure * 0.5 + 0.5) * levelStrength);
   float3 rgb;
   if (output_mode < 0.5) {
     rgb = float3(g, g, g);                 // Grayscale — linear readout

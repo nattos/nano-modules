@@ -59,7 +59,7 @@ static constexpr float kGoldenAngle = 2.39996323f;
 struct Uniforms {
   float res_x, res_y, n_terms, dc;
   float bold_gain, birth_softness, domain_scale, level_ease;
-  float output_mode, _pad0, _pad1, _pad2;
+  float output_mode, exposure, _pad1, _pad2;
   float terms[SF_MAX_TERMS * 3 * 4];
 };
 static_assert(sizeof(Uniforms) == (12 + SF_MAX_TERMS * 3 * 4) * 4, "Uniforms layout");
@@ -89,6 +89,7 @@ struct State {
   float ap_hold_period      = 2.0f;    // seconds; 0 = no auto-jump (trigger only)
   float ap_hold_jitter      = 0.0f;    // 0..1 → randomize each hold interval ±fraction
   float level_ease          = 0.25f;
+  float exposure            = 1.0f;    // pre-grade value drive (boost / reduce)
   int   output_mode         = 1;       // 0 = Grayscale, 1 = Magma (default)
 
   // --- Internal clocks (advanced in tick) ---
@@ -160,6 +161,9 @@ void module_init() {
       // toward black instead of flashing as it collapses to solid.
       .floatField("level_ease", 0.25f, 0.0f, 0.5f, state::PrimaryInput)
       // --- Output ---
+      // Pre-grade value drive: >1 boosts (pushes brights into the rolloff),
+      // <1 reduces toward mid. 1 = unity.
+      .floatField("exposure", 1.0f, 0.0f, 4.0f, state::PrimaryInput)
       .selectField("output_mode", 1, state::PrimaryInput,
                    {{"Grayscale", 0}, {"Magma", 1}, {"Inferno", 2},
                     {"Viridis", 3}, {"Plasma", 4}, {"Turbo", 5}})
@@ -358,6 +362,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->ap_jump_prev = v;
     }
     else if (state::pathIs(path, plen, "level_ease"))          s->level_ease = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "exposure"))            s->exposure = state::patchFloat(i);
     else if (state::pathIs(path, plen, "output_mode"))         s->output_mode = (int)state::patchFloat(i);
   }
   if (mode_changed) apply_visibility(s->autopilot, s->ap_snap);
@@ -458,6 +463,7 @@ void render(void* self, int vp_w, int vp_h) {
   // sampled domain shrinks: p = sq / scale.
   u.domain_scale = (s->scale > 1e-4f) ? 1.0f / s->scale : 1.0f;
   u.level_ease = s->level_ease;
+  u.exposure = s->exposure;
   u.output_mode = (float)s->output_mode;
   sample_terms(s, s->eff_x, s->eff_y, s->clock_t, u);
   s->uniform_buf.writeOne(u);

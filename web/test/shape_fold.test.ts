@@ -127,6 +127,12 @@ describe('video.shape_fold E2E', () => {
     expect(rightLit).toBeGreaterThan(40);
   });
 
+  it('exposure drives the value before grading (boost vs reduce)', async () => {
+    const lo = await render('sf_exp_lo', { ...BUSY, exposure: 0.5 }, 'sf_exp_lo');
+    const hi = await render('sf_exp_hi', { ...BUSY, exposure: 2.5 }, 'sf_exp_hi');
+    hi.trace('out').expectDifferentFrom(lo.trace('out'), 50);
+  });
+
   it('scale (domain zoom) changes the output', async () => {
     const near = await render('sf_scale1', { ...BUSY, scale: 1.0 }, 'sf_scale1');
     const far  = await render('sf_scale4', { ...BUSY, scale: 4.0 }, 'sf_scale4');

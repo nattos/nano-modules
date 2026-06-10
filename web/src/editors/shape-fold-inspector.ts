@@ -205,6 +205,8 @@ export class ShapeFoldInspector extends MobxLitElement {
         .min=${0} .max=${0.5} .step=${0.005} .defaultValue=${0.25} .binding=${b}></scalar-slider>
 
       <div class="section">Output</div>
+      <scalar-slider style="width: 100%;" .fieldPath=${'exposure'} .label=${'Exposure'}
+        .min=${0} .max=${4} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
       <field-select .fieldPath=${'output_mode'} .label=${'Mode'}
         .options=${[{ label: 'Grayscale', value: 0 }, { label: 'Magma', value: 1 },
                     { label: 'Inferno', value: 2 }, { label: 'Viridis', value: 3 },
