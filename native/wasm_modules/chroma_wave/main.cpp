@@ -77,6 +77,18 @@ struct VoiceGpu {
 };
 static_assert(sizeof(VoiceGpu) == 64, "VoiceGpu layout mismatch");
 
+struct MotionUniforms {
+  float    cres_off;
+  float    motion_scale;
+  float    alpha_gamma;
+  float    band_tilt;
+  uint32_t voice_count;
+  float    motion_warp;
+  float    motion_edge_mask;
+  float    _p2;
+};
+static_assert(sizeof(MotionUniforms) == 32, "MotionUniforms layout mismatch");
+
 // One CPU envelope.
 struct Voice {
   bool   active   = false;
@@ -88,6 +100,8 @@ struct Voice {
   double hold_remaining = 0.0;   // one-shot auto-release timer
   float  smooth_radius  = 0.0f;
   bool   snap_radius    = true;
+  float  growth         = 0.0f;  // log radius rate ṙ/r (1/sec), for motion
+  float  fold_speed     = 0.0f;  // d(grade_phase)/dt (1/sec), for band motion
   double grade_phase    = 0.0;
   float  pos_x = 0.0f, pos_y = 0.0f;   // signed position captured at spawn
   float  hue_offset = 0.0f;
@@ -95,9 +109,14 @@ struct Voice {
 };
 
 struct State {
-  gpu::Buffer uniform_buf;
-  gpu::Buffer voice_buf;
-  bool        initialized = false;
+  gpu::Buffer  uniform_buf;
+  gpu::Buffer  voice_buf;
+  gpu::Buffer  motion_uniform_buf;
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;
+  int          motion_w = 0;
+  int          motion_h = 0;
+  bool         initialized = false;
 
   // --- Standard trigger surface ---
   bool  gate               = false;
@@ -149,6 +168,9 @@ struct State {
   float overlay_alpha_hold = 0.3f;
   float overlay_alpha_burst = 0.7f;
   float intensity          = 1.0f;
+  float motion_scale       = 1.0f;   // gain on the emitted motion vectors
+  float motion_warp        = 0.4f;   // damp lateral spread → coherent wavefront
+  float motion_edge_mask   = 0.0f;   // isolate motion to the bands' leading edges
 
   bool  debug_field = false;
 
@@ -163,6 +185,7 @@ struct State {
 };
 
 static gpu::ComputePSO s_pso;
+static gpu::ComputePSO s_pso_motion;
 
 static inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 static inline float clampf(float v, float lo, float hi) {
@@ -240,6 +263,22 @@ static int spawn_voice(State* s, bool held) {
   return idx;
 }
 
+// Anisotropy (x elongation / y compression) for the current phase. Shared by
+// the GPU packing and the motion extent-rate tracking so they never diverge.
+static void voice_elong_ycomp(State* s, const Voice& v, float& elong, float& ycomp) {
+  if (v.phase == PHASE_CHARGE) {
+    float strain = v.charge_t;
+    elong = 1.0f + s->squish_amount * strain;
+    ycomp = 1.0f / (1.0f + s->squish_amount * strain * 0.4f);
+  } else {
+    float bt = clampf(v.burst_t, 0.0f, 1.0f);
+    float be = std::pow(bt, fx::signedSliderToExp(s->release_curve));
+    float elong_rel = 1.0f + s->squish_amount * v.strain_at_release;
+    elong = lerpf(elong_rel, 1.0f, be);
+    ycomp = 1.0f;
+  }
+}
+
 static float voice_target_radius(State* s, const Voice& v) {
   if (v.phase == PHASE_CHARGE)
     return s->base_radius * lerpf(1.0f, s->charge_expand, v.charge_t);
@@ -269,6 +308,11 @@ static void advance_voice(State* s, Voice& v, double dt) {
     if (v.burst_t >= 1.0f) { v.active = false; return; }
   }
 
+  // Smoothed radius + its log growth rate ṙ/r (1/sec). The motion pass uses
+  // this as the expansion speed; direction comes from the field gradient. The
+  // spawn/retrigger snap frame emits zero rate so there's no velocity spike.
+  bool was_snap = v.snap_radius;
+  float old_r = v.smooth_radius;
   float tr = voice_target_radius(s, v);
   if (v.snap_radius || s->size_smoothing <= 1e-4f) {
     v.smooth_radius = tr; v.snap_radius = false;
@@ -276,12 +320,19 @@ static void advance_voice(State* s, Voice& v, double dt) {
     float a = 1.0f - std::exp(-fdt / s->size_smoothing);
     v.smooth_radius += (tr - v.smooth_radius) * a;
   }
+  if (was_snap || fdt <= 1e-6f) {
+    v.growth = 0.0f;
+  } else {
+    float r = v.smooth_radius > 1e-5f ? v.smooth_radius : 1e-5f;
+    v.growth = ((v.smooth_radius - old_r) / fdt) / r;
+  }
 
   float fold_speed = s->fold_rate * 0.15f;
   if (v.phase == PHASE_BURST) {
     float be = std::pow(clampf(v.burst_t, 0.0f, 1.0f), fx::signedSliderToExp(s->release_curve));
     fold_speed = s->fold_rate * (0.15f + be);
   }
+  v.fold_speed = fold_speed;
   v.grade_phase += (double)(fold_speed * fdt);
   if (v.grade_phase > 1024.0) v.grade_phase -= 1024.0;
 }
@@ -295,11 +346,15 @@ static void compute_voice_gpu(State* s, const Voice& v, VoiceGpu& o) {
   o.radius = v.smooth_radius;
   o.hue_offset = v.hue_offset;
   o.grade_phase = (float)v.grade_phase;
+  // Motion pass reads ṙ/r (_p0) and the grade-phase scroll speed (_p1) to
+  // compute the optical flow of the band field.
+  o._p0 = v.growth;
+  o._p1 = v.fold_speed;
+
+  voice_elong_ycomp(s, v, o.elong, o.ycomp);
 
   if (v.phase == PHASE_CHARGE) {
     float strain = v.charge_t;
-    o.elong = 1.0f + s->squish_amount * strain;
-    o.ycomp = 1.0f / (1.0f + s->squish_amount * strain * 0.4f);
     o.sharp = s->gaussian_sharp;
     o.plateau_p = 1.0f + s->plateau_amount * 1.2f * strain;
     o.cres = s->crescent_amount * smoothband(strain, 0.3f, 1.0f);
@@ -310,11 +365,8 @@ static void compute_voice_gpu(State* s, const Voice& v, VoiceGpu& o) {
     float bt = clampf(v.burst_t, 0.0f, 1.0f);
     float be = std::pow(bt, fx::signedSliderToExp(s->release_curve));
     float strain = v.strain_at_release;
-    float elong_rel = 1.0f + s->squish_amount * strain;
     float p_rel     = 1.0f + s->plateau_amount * 1.2f * strain;
     float cres_rel  = s->crescent_amount * smoothband(strain, 0.3f, 1.0f);
-    o.elong = lerpf(elong_rel, 1.0f, be);
-    o.ycomp = 1.0f;
     o.sharp = s->gaussian_sharp * lerpf(1.0f, 1.0f - s->burst_shallow, be);
     o.plateau_p = lerpf(p_rel, 1.0f, be);
     o.cres = lerpf(cres_rel, 0.0f, smoothband(bt, 0.0f, 0.4f));
@@ -386,22 +438,43 @@ void module_init() {
       // Crankable master gain; soft per-channel rolloff for juicy colour.
       .floatField("intensity",          1.0f,  0.0f, 32.0f,     state::PrimaryInput)
 
+      // --- Motion --- (the knob's [0,1] maps to an internal [0,0.25] gain;
+      // the raw optical-flow vectors are otherwise quite extreme.)
+      .floatField("motion_scale",       1.0f,  0.0f, 1.0f,      state::PrimaryInput)
+      // Perceptual wavefront warp: damp the lateral spread of the motion field
+      // so a squat/crescent blob reads as a coherent downward front, not rays
+      // fanning from the center. 0 = analytic, 1 = fully vertical.
+      .floatField("motion_warp",        0.4f,  0.0f, 1.0f,      state::PrimaryInput)
+      // Isolate the motion to the bands' OUTWARD (leading) edges: 0 = whole
+      // band, 1 = only the leading fronts (rippling-wavefront feel).
+      .floatField("motion_edge_mask",   0.0f,  0.0f, 1.0f,      state::PrimaryInput)
+
       // --- Debug ---
       .boolField ("debug_field",        false,                  state::PrimaryInput)
 
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .renderOutputs(state::PrimaryOutput)
+      .renderOutputs(state::PrimaryInput,  "render_outputs_in")
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   state::registerShaderSPV("chroma_wave_render", RENDER_SPV, RENDER_SPV_SIZE);
+  state::registerShaderSPV("chroma_wave_motion", MOTION_SPV, MOTION_SPV_SIZE,
+                           "rgba16float", "write");
   auto cs = gpu::Device::createShaderModuleByName("chroma_wave_render");
-  if (!cs) return;
+  auto cs_motion = gpu::Device::createShaderModuleByName("chroma_wave_motion");
+  if (!cs || !cs_motion) return;
 
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .uniform(2)
+      .storage(3));
+  s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
+      .tex2d(0)
+      .storageTex2d(1, gpu::TextureFormat::RGBA16F)
       .uniform(2)
       .storage(3));
 
@@ -412,6 +485,7 @@ void* create() {
   auto* s = new State();
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->voice_buf   = gpu::Device::createBuffer(sizeof(VoiceGpu) * MAX_VOICES, gpu::BufferUsage::Storage);
+  s->motion_uniform_buf = gpu::Device::createBuffer(sizeof(MotionUniforms), gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -420,6 +494,9 @@ void destroy(void* self) {
   if (!s) return;
   s->uniform_buf.release();
   s->voice_buf.release();
+  s->motion_uniform_buf.release();
+  s->motion_tex.release();
+  s->zero_motion_tex.release();
   delete s;
 }
 
@@ -433,7 +510,10 @@ void init(void* self) {
   s->rng_state = 0xC0FFEE11u;
   s->jitter_rng = 0x1234567u;
   s->spawn_counter = 0;
-  if (!s_pso.valid() || !s->uniform_buf.valid() || !s->voice_buf.valid()) return;
+  s->motion_w = 0;
+  s->motion_h = 0;
+  if (!s_pso.valid() || !s_pso_motion.valid() ||
+      !s->uniform_buf.valid() || !s->voice_buf.valid() || !s->motion_uniform_buf.valid()) return;
   s->initialized = true;
   state::log("chroma_wave: initialized");
 }
@@ -523,6 +603,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       else if (state::pathIs(path, plen, "overlay_alpha_hold")) s->overlay_alpha_hold = state::patchFloat(i);
       else if (state::pathIs(path, plen, "overlay_alpha_burst"))s->overlay_alpha_burst = state::patchFloat(i);
       else if (state::pathIs(path, plen, "intensity"))          s->intensity = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "motion_scale"))       s->motion_scale = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "motion_warp"))        s->motion_warp = state::patchFloat(i);
+      else if (state::pathIs(path, plen, "motion_edge_mask"))   s->motion_edge_mask = state::patchFloat(i);
       else if (state::pathIs(path, plen, "debug_field"))        s->debug_field = state::patchFloat(i) != 0.0f;
       else if (state::pathIs(path, plen, "blob_color")) {
         auto v = state::patchVec3(i);
@@ -576,14 +659,53 @@ void render(void* self, int vp_w, int vp_h) {
   u.hue_interact = s->hue_interact;
   s->uniform_buf.writeOne(u);
 
-  auto cp = gpu::ComputePass::begin();
-  cp.setPSO(s_pso);
-  cp.setTexture(in,  0, 0);
-  cp.setTexture(out, 1, 1);
-  cp.setBuffer(s->uniform_buf, 2);
-  cp.setBuffer(s->voice_buf,   3);
-  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-  cp.end();
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso);
+    cp.setTexture(in,  0, 0);
+    cp.setTexture(out, 1, 1);
+    cp.setBuffer(s->uniform_buf, 2);
+    cp.setBuffer(s->voice_buf,   3);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
+
+  // Motion pass — radial expansion velocity (uv/sec) of the bursting blobs,
+  // blended over upstream motion. Skip entirely when nothing downstream cares.
+  if (state::isOutputConnected("render_outputs")) {
+    if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
+      s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+      s->motion_w = vp_w;
+      s->motion_h = vp_h;
+      if (s->motion_tex.valid()) state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
+    }
+    if (s->motion_tex.valid()) {
+      auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
+      if (!upstream.valid()) {
+        if (!s->zero_motion_tex.valid())
+          s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+        upstream = s->zero_motion_tex;
+      }
+      MotionUniforms mu = {};
+      mu.cres_off = s->crescent_offset;
+      mu.motion_scale = s->motion_scale * 0.25f;   // [0,1] knob → [0,0.25] gain
+      mu.alpha_gamma = s->alpha_gamma;
+      mu.band_tilt = s->band_tilt;
+      mu.voice_count = (uint32_t)count;
+      mu.motion_warp = s->motion_warp;
+      mu.motion_edge_mask = s->motion_edge_mask;
+      s->motion_uniform_buf.writeOne(mu);
+
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_motion);
+      cp.setTexture(upstream, 0, 0);
+      cp.setTexture(s->motion_tex, 1, 1);
+      cp.setBuffer(s->motion_uniform_buf, 2);
+      cp.setBuffer(s->voice_buf, 3);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+    }
+  }
 
   gpu::Device::submit();
 }

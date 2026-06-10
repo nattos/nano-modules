@@ -554,7 +554,7 @@ public:
   /// Finalize the schema JSON and call the host function.
   void apply(const char* moduleId, Version version) const {
     // Close the JSON
-    char finalized[4096];
+    char finalized[16384];
     int flen = len_;
     if (flen > (int)sizeof(finalized) - 4) flen = (int)sizeof(finalized) - 4;
     for (int i = 0; i < flen; i++) finalized[i] = buf_[i];
@@ -566,7 +566,12 @@ public:
   }
 
 private:
-  char buf_[4096];
+  // Schema JSON accumulator. Sized generously so parameter-rich effects (the
+  // style guide encourages exposing lots of params) don't silently overflow —
+  // a truncated schema yields invalid JSON that the web's strict JSON.parse
+  // drops entirely, so the inspector shows NO parameters. Keep `finalized[]`
+  // in apply() the same size.
+  char buf_[16384];
   int len_ = 0;
   // Per-depth field count: index 0 = top-level fields, 1+ = nested objects.
   int objectFieldCounts_[8] = {0,0,0,0,0,0,0,0};

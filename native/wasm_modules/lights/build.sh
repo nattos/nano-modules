@@ -19,7 +19,6 @@ compile_shaders_compute_spv dispersion         render
 compile_shaders_compute_spv plasma_beam_cannon render
 compile_shaders_compute_spv orthomod           render
 compile_shaders_compute_spv lights_sim           render
-compile_shaders_compute_spv chroma_wave         render
 
 # soft_glow has two compute shaders — color (rgba8) and motion
 # (rgba16f). Separate variants because naga substitutes one storage-
@@ -52,6 +51,11 @@ compile_shaders_compute_var_spv block_dehance render
 compile_shaders_compute_var_spv block_dehance motion
 _emit_spv_header_var block_dehance update render motion
 echo "  block_dehance shaders compiled (SPV: update + render + motion)"
+
+compile_shaders_compute_var_spv chroma_wave render
+compile_shaders_compute_var_spv chroma_wave motion
+_emit_spv_header_var chroma_wave render motion
+echo "  chroma_wave shaders compiled (SPV: render + motion)"
 
 compile_shaders_compute_var_spv tingle_top update
 compile_shaders_compute_var_spv tingle_top prefill

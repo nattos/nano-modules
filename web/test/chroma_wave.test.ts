@@ -1,4 +1,6 @@
 import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runEngineTest } from './engine-test-helpers';
+import type { Sketch } from '../src/sketch-types';
 
 // Per-effect tests for gen.chroma_wave — a charge-and-burst prismatic blob
 // that grows from the top-center while gated, then bursts outward on release.
@@ -89,6 +91,22 @@ describe('Chroma Wave Effect E2E', () => {
     });
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('gen.chroma_wave');
+  });
+
+  it('schema JSON round-trips (not truncated past the buffer)', async () => {
+    // chroma_wave's ~40 params push the schema JSON well past the old 4 KB
+    // cap. On overflow the JSON truncates → strict JSON.parse fails → the host
+    // leaves params empty (the inspector shows NOTHING). metadata.id is set
+    // before the parse, so it can't catch this — assert the derived params.
+    const frame = await runGpuEffectTest({
+      module: 'chroma_wave.wasm', bundle: 'lights',
+      inputColor: [0, 0, 0, 1], dumpName: 'chroma_wave_schema',
+    });
+    expect(frame.success).toBe(true);
+    expect(frame.params.length).toBeGreaterThan(30);            // all fields present
+    const names = frame.params.map((p: any) => p.name);
+    expect(names).toContain('gate');                            // first field
+    expect(names).toContain('motion_warp');                     // last-added field
   });
 
   it('idle (no gate / trigger / auto) renders pure passthrough', async () => {
@@ -274,6 +292,68 @@ describe('Chroma Wave Effect E2E', () => {
     const high = await run(1.8);
     expect(lo.success && high.success).toBe(true);
     expect(hueVariance(high)).toBeGreaterThan(hueVariance(lo) + 0.03);
+  });
+
+  it('emits motion vectors that reshape a downstream motion_blur', async () => {
+    // Chain: black bg → chroma_wave → motion_blur. The bursting blobs expand,
+    // so chroma_wave publishes radial-outward velocity on render_outputs/motion.
+    // With the rail wired, motion_blur smears the bloom along those vectors;
+    // without it, it falls back to a pass-through. The two final frames must
+    // differ — proving chroma_wave emits motion AND motion_blur consumes it.
+    const buildChain = (withRails: boolean): Sketch => ({
+      anchor: null,
+      columns: [{
+        name: 'main',
+        rails: withRails ? [{
+          id: 'ro_rail', name: 'Render Outputs',
+          dataType: { kind: 'struct', schema: {
+            type: 'object',
+            fields: { depth: { type: 'texture' }, motion: { type: 'texture' } },
+          }},
+        }] : [],
+        chain: [
+          { type: 'texture_input', id: 'in' },
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+            params: { color: [0.0, 0.0, 0.0] } },
+          { type: 'module', module_type: 'gen.chroma_wave', instance_key: 'cw@0',
+            params: {
+              auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05, release_s: 0.5,
+              release_expand: 4.0, base_radius: 0.15, intensity: 2.0,
+              voice_pos_jitter: 0.3, voice_hue_jitter: 0.0, motion_scale: 1.0, seed: 3,
+            },
+            taps: withRails ? [{
+              railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'write',
+            }] : [],
+          },
+          { type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
+            params: { strength: 32.0, samples: 16, quality: 1 },
+            taps: withRails ? [{
+              railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'read',
+            }] : [],
+          },
+          { type: 'texture_output', id: 'out' },
+        ],
+      }],
+    });
+
+    const run = (id: string, withRails: boolean) => runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.lights', 'com.nattos.core'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(withRails) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 30,
+      captureTraceIds: ['out'],
+      dumpName: `chroma_wave_motion_${withRails ? 'with' : 'without'}_rails`,
+    });
+
+    const withRails = await run('cw_motion_with', true);
+    const withoutRails = await run('cw_motion_without', false);
+    expect(withRails.success && withoutRails.success).toBe(true);
+    withRails.trace('out').expectDifferentFrom(withoutRails.trace('out'), 100);
   });
 
   it('intensity 0 renders passthrough even while charging', async () => {
