@@ -187,22 +187,22 @@ void module_init() {
       .floatField("edge_threshold", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
       // (Level Curves, Proportional) Edge-strength → step-height scale.
       .floatField("edge_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      // Jacobi relaxation sweeps per pyramid level (solver tuning, all modes).
+      // More = closer to the true least-squares solution (smoother, more
+      // global), at linear cost.
+      .intField("iterations", 16, 1, 200, state::PrimaryInput)
       // How to visualize the reconstructed height. Contours draws iso-lines of
       // OUR reconstructed height — a contour map of the result.
       .selectField("present_mode", 0, state::PrimaryInput,
                    {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}, {"Contours", 3}})
+      // Cross-fade the visualization back toward the input image (all modes).
+      .floatField("mix", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
       // Hillshade light azimuth (0..1 → full circle) and elevation
       // (0..1 → horizon→overhead).
       .floatField("light_angle", 0.375f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("light_elevation", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // Relief steepness — scales the surface slope used to build the normal.
       .floatField("relief_scale", 0.4f, 0.0f, 1.0f, state::PrimaryInput)
-      // Cross-fade the visualization back toward the input image.
-      .floatField("mix", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      // --- Tuning ---
-      // Jacobi relaxation sweeps per pyramid level. More = closer to the true
-      // least-squares solution (smoother, more global), at linear cost.
-      .intField("iterations", 16, 1, 200, state::PrimaryInput)
       .floatField("light_gain", 1.0f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("ambient", 0.15f, 0.0f, 1.0f, state::PrimaryInput)
       .rgbField("tint", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
