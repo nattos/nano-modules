@@ -1,11 +1,11 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
 // Per-effect tests for `video.exposure` against `core`. amount [-1, +1]
-// maps to ±3 stops (gain 1/8 .. 8). Tint params (warmth, amount) shift
-// the per-channel gain when tint_amount > 0.
+// maps to ±3 stops (gain 1/8 .. 8). Warm/cool tinting moved to the
+// dedicated `video.color_temperature` effect.
 //
 // Param indices (declaration order):
-//   0 = amount, 1 = tint_warmth, 2 = tint_amount
+//   0 = amount
 
 describe('Exposure Effect E2E', () => {
   jest.setTimeout(30000);
@@ -21,7 +21,7 @@ describe('Exposure Effect E2E', () => {
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('video.exposure');
     const names = frame.params.map(p => p.name).sort();
-    expect(names).toEqual(['amount', 'tint_amount', 'tint_warmth']);
+    expect(names).toEqual(['amount']);
   });
 
   it('amount=0 passes through unchanged', async () => {
@@ -63,34 +63,5 @@ describe('Exposure Effect E2E', () => {
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 26, g: 26, b: 26, a: 255 }, 4);
-  });
-
-  it('warmth tint pushes red over blue when tint_amount > 0', async () => {
-    // amount=0, tint_warmth=+1, tint_amount=1 → r * 1.5, b * 0.5
-    // input grey 0.5 → R=192, G=128, B=64
-    const frame = await runGpuEffectTest({
-      module: 'exposure.wasm',
-      bundle: 'core',
-      inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 0.0], [1, 1.0], [2, 1.0]],
-      dumpName: 'exposure_warm',
-    });
-
-    expect(frame.success).toBe(true);
-    frame.expectPixelAt(32, 32, { r: 192, g: 128, b: 64 }, 6);
-  });
-
-  it('tint_amount=0 cancels the tint regardless of warmth', async () => {
-    // Warmth setting shouldn't matter when tint_amount = 0.
-    const frame = await runGpuEffectTest({
-      module: 'exposure.wasm',
-      bundle: 'core',
-      inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 0.0], [1, 1.0], [2, 0.0]],
-      dumpName: 'exposure_no_tint',
-    });
-
-    expect(frame.success).toBe(true);
-    frame.expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 4);
   });
 });

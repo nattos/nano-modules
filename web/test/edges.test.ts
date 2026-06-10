@@ -20,7 +20,6 @@ describe('Edge Detection Effect E2E', () => {
       module: 'edges.wasm',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 1.0]],  // amount = 1
       dumpName: 'edges_uniform',
     });
     expect(frame.success).toBe(true);
@@ -31,7 +30,7 @@ describe('Edge Detection Effect E2E', () => {
     const frame = await runGpuChainTest({
       chain: [
         { module: 'grid.wasm', params: [[0, 0.3], [1, 0.2]] },
-        { module: 'edges.wasm', params: [[0, 1.0], [1, 0.05]] },  // amount=1, threshold=0.05
+        { module: 'edges.wasm', params: [[0, 0.05]] },  // threshold=0.05
       ],
       bundle: 'core',
       width: 64, height: 64,

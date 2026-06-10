@@ -50,4 +50,43 @@ float nano_fbm2(float2 p, int oct) {
   return sum / max(total, 1e-4);
 }
 
+// Smoothed value noise on a 3D grid. Trilinear (smoothstep) interpolation
+// between the eight corner hashes. Use the third axis for time to get a
+// smoothly evolving 2D field.
+float nano_value_noise3(float3 p) {
+  float3 i = floor(p);
+  float3 f = frac(p);
+  float3 u = f * f * (3.0 - 2.0 * f);
+  float c000 = nano_hash31(i + float3(0, 0, 0));
+  float c100 = nano_hash31(i + float3(1, 0, 0));
+  float c010 = nano_hash31(i + float3(0, 1, 0));
+  float c110 = nano_hash31(i + float3(1, 1, 0));
+  float c001 = nano_hash31(i + float3(0, 0, 1));
+  float c101 = nano_hash31(i + float3(1, 0, 1));
+  float c011 = nano_hash31(i + float3(0, 1, 1));
+  float c111 = nano_hash31(i + float3(1, 1, 1));
+  float x00 = lerp(c000, c100, u.x);
+  float x10 = lerp(c010, c110, u.x);
+  float x01 = lerp(c001, c101, u.x);
+  float x11 = lerp(c011, c111, u.x);
+  return lerp(lerp(x00, x10, u.y), lerp(x01, x11, u.y), u.z);
+}
+
+// 3D fractal Brownian motion — the 3D analogue of nano_fbm2. `oct` is
+// clamped to [1, 6]. Higher octaves also evolve faster on the time axis.
+float nano_fbm3(float3 p, int oct) {
+  float sum = 0.0;
+  float amp = 0.5;
+  float freq = 1.0;
+  float total = 0.0;
+  for (int i = 0; i < 6; i++) {
+    if (i >= oct) break;
+    sum += amp * nano_value_noise3(p * freq);
+    total += amp;
+    freq *= 2.0;
+    amp *= 0.5;
+  }
+  return sum / max(total, 1e-4);
+}
+
 #endif

@@ -6,7 +6,6 @@ Texture2D<float4> inputTex : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
 cbuffer Uniforms : register(b2) {
-  float amount;
   float threshold;
   float keep_input;
   float radius_px;
@@ -16,7 +15,9 @@ cbuffer Uniforms : register(b2) {
   float bg_r;
   float bg_g;
   float bg_b;
-  float2 _pad;
+  float _pad0;
+  float _pad1;
+  float _pad2;
 };
 
 // (luminance helper provided by nano_color.hlsl)
@@ -61,7 +62,5 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float3 base = lerp(bg_col, src_rgb, keep_input);
   float3 detected = lerp(base, line_col, edge);
 
-  // amount mixes between source and detected result.
-  float3 outc = lerp(src_rgb, detected, amount);
-  outputTex[gid.xy] = float4(saturate(outc), inputTex[gid.xy].a);
+  outputTex[gid.xy] = float4(saturate(detected), inputTex[gid.xy].a);
 }

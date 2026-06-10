@@ -2,7 +2,6 @@
  * video.edges — Sobel edge detection over the luminance of the input.
  *
  * Standard params:
- *   amount      [0, 1]  output mix between input and detected edges.
  *   threshold   [0, 1]  gradient magnitude below this is discarded.
  *
  * Tuning params:
@@ -23,19 +22,17 @@
 namespace edges {
 
 struct Uniforms {
-  float amount;
   float threshold;
   float keep_input;
   float radius_px;
   float line_r, line_g, line_b;
   float bg_r;
   float bg_g, bg_b;
-  float _pad[2];
+  float _pad[3];
 };
 
 // Per-instance state. One per chain entry.
 struct State {
-  float amount = 1.0f;
   float threshold = 0.1f;
   float keep_input = 0.0f;
   float radius = 0.0f;
@@ -52,7 +49,6 @@ static gpu::ComputePSO s_pso;
 void module_init() {
   state::init("video.edges", {1, 0, 0},
     state::Schema()
-      .floatField("amount",     1.0f, 0.f, 1.f, state::PrimaryInput)
       .floatField("threshold",  0.1f, 0.f, 1.f, state::PrimaryInput)
       .floatField("radius",     0.0f, 0.f, 1.f, state::PrimaryInput)
       .floatField("keep_input", 0.0f, 0.f, 1.f, state::SecondaryInput)
@@ -89,7 +85,6 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->amount = 1.0f;
   s->threshold = 0.1f;
   s->keep_input = 0.0f;
   s->radius = 0.0f;
@@ -106,20 +101,13 @@ void tick(void* self, double dt) { (void)self; (void)dt; }
 
 void on_resolume_param(void*, long long, double) {}
 
-// Pure passthrough when amount == 0 (no edge contribution mixed in).
-int32_t is_identity(void* self) {
-  auto* s = static_cast<State*>(self);
-  return (s && s->amount == 0.0f) ? 1 : 0;
-}
-
 void on_state_patched(void* self, int n, const char* pb, const int* off, const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     auto* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "amount"))     s->amount = state::patchFloat(i);
-    else if (state::pathIs(p, l, "threshold"))  s->threshold = state::patchFloat(i);
+    if      (state::pathIs(p, l, "threshold"))  s->threshold = state::patchFloat(i);
     else if (state::pathIs(p, l, "radius"))     s->radius = state::patchFloat(i);
     else if (state::pathIs(p, l, "keep_input")) s->keep_input = state::patchFloat(i);
     else if (state::pathIs(p, l, "line")) {
@@ -143,7 +131,6 @@ void render(void* self, int vp_w, int vp_h) {
   float radius_px = 1.0f + s->radius * (static_cast<float>(min_dim) * 0.025f);
 
   Uniforms u = {};
-  u.amount = s->amount;
   u.threshold = s->threshold;
   u.keep_input = s->keep_input;
   u.radius_px = radius_px;

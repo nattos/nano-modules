@@ -65,6 +65,52 @@ describe('Noise Effect E2E', () => {
     expect(differingPixels).toBeGreaterThan(pixels.length / 4);
   });
 
+  it('value noise (algo=1) animates when speed > 0', async () => {
+    // Previously only "static" moved; smooth modes now evolve through time.
+    // param 6 = speed. Render at frame 0 vs after 30 ticks (0.48s of motion).
+    const t0 = await runGpuTest({
+      module: 'noise.wasm',
+      bundle: 'core',
+      width: 32, height: 32,
+      params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 1.0]],
+      ticks: 0,
+      dumpName: 'noise_motion_t0',
+    });
+    const t30 = await runGpuTest({
+      module: 'noise.wasm',
+      bundle: 'core',
+      width: 32, height: 32,
+      params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 1.0]],
+      ticks: 30,
+      dumpName: 'noise_motion_t30',
+    });
+    expect(t0.success && t30.success).toBe(true);
+    t30.expectDifferentFrom(t0, 50);
+  });
+
+  it('speed = 0 freezes all modes', async () => {
+    // value noise, speed=0 → identical regardless of how many ticks elapse.
+    const t0 = await runGpuTest({
+      module: 'noise.wasm',
+      bundle: 'core',
+      width: 32, height: 32,
+      params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 0.0]],
+      ticks: 0,
+      dumpName: 'noise_frozen_t0',
+    });
+    const t30 = await runGpuTest({
+      module: 'noise.wasm',
+      bundle: 'core',
+      width: 32, height: 32,
+      params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 0.0]],
+      ticks: 30,
+      dumpName: 'noise_frozen_t30',
+    });
+    expect(t0.success && t30.success).toBe(true);
+    // No motion → frames identical (within LSB-rounding tolerance).
+    t30.expectSameAs(t0, 2);
+  });
+
   it('seed change produces a different pattern', async () => {
     const a = await runGpuTest({
       module: 'noise.wasm',

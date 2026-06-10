@@ -38,6 +38,7 @@ core | barrel_macros | io.barrel_macros | Barrel Macros | instance |  | identity
 core | bake_alpha | video.bake_alpha | Bake Alpha | instance | compute,pixel
 core | curve | video.curve | Curve | instance | compute,pixel
 core | exposure | video.exposure | Exposure | instance | compute,pixel | identity
+core | color_temperature | video.color_temperature | Color Temperature | instance | compute,pixel | identity
 core | invert | video.invert | Invert | instance | compute,pixel
 core | posterize | video.posterize | Posterize | instance | compute,pixel
 core | levels | video.levels | Levels | instance | compute,pixel
@@ -50,7 +51,7 @@ core | vignette | video.vignette | Vignette | instance | compute,pixel
 core | blur | video.blur | Blur | instance | blur_compute=compute
 core | fast_blur | video.fast_blur | Fast Blur | instance | fast_blur_down=down,fast_blur_up=up
 core | sharpen | video.sharpen | Sharpen | instance | compute | identity
-core | edges | video.edges | Edge Detection | instance | compute | identity
+core | edges | video.edges | Edge Detection | instance | compute
 core | crop | video.crop | Crop | instance | compute
 core | transform | video.transform | Transform | instance | compute | identity
 core | gradient | generator.gradient | Gradient | instance | compute,pixel

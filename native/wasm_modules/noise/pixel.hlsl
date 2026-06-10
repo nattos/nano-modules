@@ -25,16 +25,23 @@ float channel_for(float2 sq, float chan_offset) {
   float cells = lerp(4.0, 64.0, u_fuse.scale);
   float2 p = sq * cells + float2(chan_offset, chan_offset * 1.7);
 
+  // static_phase accumulates at speed*30/s. Discrete modes (white/static)
+  // reroll on each integer crossing (up to ~30 Hz); smooth modes (value/fbm)
+  // evolve continuously through a time axis at a gentle speed/s.
+  float frame_id = floor(u_fuse.static_phase);
+  float t_cont   = u_fuse.static_phase * (1.0 / 30.0);
+
   if (u_fuse.algorithm == 0) {
-    return nano_hash21(floor(p * 256.0) + u_fuse.seed * 1024.0);
+    // White: spatial white noise rerolled each frame.
+    return nano_hash31(float3(floor(p * 256.0), frame_id) + u_fuse.seed * 1024.0);
   }
   if (u_fuse.algorithm == 1) {
-    return nano_value_noise2(p + u_fuse.seed * 16.0);
+    return nano_value_noise3(float3(p + u_fuse.seed * 16.0, t_cont));
   }
   if (u_fuse.algorithm == 2) {
-    return nano_fbm2(p + u_fuse.seed * 16.0, u_fuse.octaves);
+    return nano_fbm3(float3(p + u_fuse.seed * 16.0, t_cont), u_fuse.octaves);
   }
-  float frame_id = floor(u_fuse.static_phase);
+  // Static: TV-style per-frame reroll.
   return nano_hash31(float3(p, frame_id + u_fuse.seed * 16.0));
 }
 

@@ -14,6 +14,7 @@ compile_shaders_compute_spv video_blend
 compile_shaders_compute_fused_spv bake_alpha
 compile_shaders_compute_fused_spv curve
 compile_shaders_compute_fused_spv exposure
+compile_shaders_compute_fused_spv color_temperature
 compile_shaders_compute_fused_spv invert
 compile_shaders_compute_fused_spv posterize
 compile_shaders_compute_fused_spv levels
@@ -70,6 +71,7 @@ wasm_build \
   ../bake_alpha/main.cpp \
   ../curve/main.cpp \
   ../exposure/main.cpp \
+  ../color_temperature/main.cpp \
   ../invert/main.cpp \
   ../posterize/main.cpp \
   ../levels/main.cpp \

@@ -154,8 +154,9 @@ nonzero for that state. The executor then **skips the dispatch entirely** and
 aliases input→output: a standalone stage costs zero GPU work, and a fused group
 whose stages are *all* identity is dropped (a single identity stage inside a
 larger fused group is dropped from the fused kernel). Examples: `exposure` at
-`amount==0 && tint_amount==0`; `brightness_contrast` at `(0.5, 0.5)`; `transform`
-at neutral scale/rotation/translate; `sharpen`/`edges` at `amount==0`.
+`amount==0`; `color_temperature` at `temperature==0`; `brightness_contrast` at
+`(0.5, 0.5)`; `transform` at neutral scale/rotation/translate; `sharpen` at
+`amount==0`.
 
 Rules:
 - **Stateless only.** Never return nonzero from a stateful effect (particles,

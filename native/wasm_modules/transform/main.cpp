@@ -27,6 +27,14 @@
 
 namespace transform {
 
+// wrap_mode options — values must match the branch logic in compute.hlsl.
+enum WrapMode {
+  WrapClamp       = 0,  // clamp to edge
+  WrapTransparent = 1,  // transparent outside the source
+  WrapRepeat      = 2,  // tile
+  WrapMirror      = 3,  // mirror-tile
+};
+
 struct Uniforms {
   float scale_x, scale_y;
   float cos_r, sin_r;
@@ -62,7 +70,12 @@ void module_init() {
       .vec2Field("translate",     0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f)
       .vec2Field("pivot",         0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
       .floatField("scale_aspect", 0.0f, -1.f, 1.f, state::SecondaryInput)
-      .intField("wrap_mode",      0,    0,  3,    state::SecondaryInput)
+      .selectField("wrap_mode", WrapClamp, state::SecondaryInput, {
+          {"Clamp",       WrapClamp},
+          {"Transparent", WrapTransparent},
+          {"Repeat",      WrapRepeat},
+          {"Mirror",      WrapMirror},
+      })
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

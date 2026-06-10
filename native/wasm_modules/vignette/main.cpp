@@ -41,7 +41,7 @@ struct FuseUniforms {
   float aspect_y;
   float vp_w;
   float vp_h;
-  float _pad0;
+  float squash;   // signed [-1,+1]: -1 wider-than-tall, +1 taller-than-wide.
   float _pad1;
 };
 
@@ -53,6 +53,7 @@ struct State {
   float shape = 0.0f;
   float center_x = 0.0f;
   float center_y = 0.0f;
+  float squash = 0.0f;
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
@@ -69,7 +70,7 @@ void prepare(void* self, int vp_w, int vp_h) {
     s->center_x, s->center_y,
     ax, ay,
     static_cast<float>(vp_w), static_cast<float>(vp_h),
-    0.f, 0.f,
+    s->squash, 0.f,
   };
   s->uniform_buf.writeOne(u);
 }
@@ -83,6 +84,7 @@ void module_init() {
       .floatField("softness",  0.4f,  0.f, 1.f, state::PrimaryInput)
       .vec2Field("center", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
       .floatField("shape",     0.0f,  0.f, 1.f, state::SecondaryInput)
+      .floatField("squash",    0.0f, -1.f, 1.f, state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -121,6 +123,7 @@ void init(void* self) {
   s->shape = 0.0f;
   s->center_x = 0.0f;
   s->center_y = 0.0f;
+  s->squash = 0.0f;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
 
@@ -148,6 +151,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "radius"))   s->radius   = state::patchFloat(i);
     else if (state::pathIs(p, l, "softness")) s->softness = state::patchFloat(i);
     else if (state::pathIs(p, l, "shape"))    s->shape    = state::patchFloat(i);
+    else if (state::pathIs(p, l, "squash"))   s->squash   = state::patchFloat(i);
     else if (state::pathIs(p, l, "center")) {
       auto v = state::patchVec2(i); s->center_x = v.x; s->center_y = v.y;
     }

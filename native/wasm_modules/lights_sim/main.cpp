@@ -35,10 +35,10 @@ struct State {
   bool initialized = false;
 
   // Schema-mirrored params.
-  int   segments      = 16;
-  float inset_h       = 0.2f;
+  int   segments      = 13;
+  float inset_h       = 0.8f;
   float inset_v       = 0.05f;
-  float input_opacity = 1.0f;
+  float input_opacity = 0.25f;
 };
 
 static gpu::ComputePSO s_pso;
@@ -50,10 +50,10 @@ static inline float clampf(float v, float lo, float hi) {
 void module_init() {
   state::init("fx.lights_sim", {1, 0, 0},
     state::Schema()
-      .intField  ("segments",      16, 1, 256,         state::PrimaryInput)
-      .floatField("inset_h",       0.2f,  0.0f, 1.0f,  state::PrimaryInput)
+      .intField  ("segments",      13, 1, 256,         state::PrimaryInput)
+      .floatField("inset_h",       0.8f,  0.0f, 1.0f,  state::PrimaryInput)
       .floatField("inset_v",       0.05f, 0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("input_opacity", 1.0f,  0.0f, 1.0f,  state::PrimaryInput)
+      .floatField("input_opacity", 0.25f, 0.0f, 1.0f,  state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

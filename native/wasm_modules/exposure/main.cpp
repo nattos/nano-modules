@@ -11,8 +11,8 @@
  * straight in linear-ish RGB; if you need clean highlight roll-off,
  * pair this with `levels` or a tonemapping effect downstream.
  *
- * `tint_warmth` shifts the gain toward warm/cool, scaled by `tint_amount`
- * so a clean exposure adjustment with `tint_amount = 0` is unaffected.
+ * Warm/cool tinting lives in the dedicated `video.color_temperature`
+ * effect — exposure is a clean stops-only gain.
  *
  * Class-like instance model: module_init() sets up the type-shared
  * compute PSO + schema once; each chain entry gets its own State (params
@@ -34,8 +34,6 @@ struct FuseUniforms {
 // Per-instance state. One per chain entry.
 struct State {
   float amount = 0.0f;
-  float tint_warmth = 0.0f;
-  float tint_amount = 0.0f;
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
@@ -48,12 +46,7 @@ void prepare(void* self, int vp_w, int vp_h) {
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   // exposure: ±3 stops via the shared helper.
   float gain = fx::stops(s->amount);
-  // tint: simple R/B push, biased by warmth in [-1, +1].
-  // warmth = +1 → boost R, cut B. warmth = -1 → boost B, cut R.
-  float wr = 1.0f + s->tint_warmth * s->tint_amount * 0.5f;
-  float wg = 1.0f;
-  float wb = 1.0f - s->tint_warmth * s->tint_amount * 0.5f;
-  FuseUniforms u = { gain * wr, gain * wg, gain * wb, 0.0f };
+  FuseUniforms u = { gain, gain, gain, 0.0f };
   s->uniform_buf.writeOne(u);
 }
 
@@ -62,8 +55,6 @@ void module_init() {
   state::init("video.exposure", {1, 0, 0},
     state::Schema()
       .floatField("amount",      0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("tint_warmth", 0.0f, -1.f, 1.f, state::SecondaryInput)
-      .floatField("tint_amount", 0.0f,  0.f, 1.f, state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -97,8 +88,6 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->amount = 0.0f;
-  s->tint_warmth = 0.0f;
-  s->tint_amount = 0.0f;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
 
@@ -115,14 +104,11 @@ void tick(void* self, double dt) {
 
 void on_resolume_param(void*, long long, double) {}
 
-// Passthrough at neutral: gain = stops(amount) and the tint factors are
-// 1 ± warmth*tint_amount*0.5. So amount == 0 (gain = 1) AND tint_amount
-// == 0 (tint factors = 1) ⇒ all gains 1× ⇒ out == in (tint_warmth is
-// irrelevant when tint_amount is 0). Stateless — skippable, and the
-// fused group collapses if every stage is identity.
+// Passthrough at neutral: amount == 0 ⇒ gain = 1 ⇒ out == in. Stateless —
+// skippable, and the fused group collapses if every stage is identity.
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
-  return (s && s->amount == 0.0f && s->tint_amount == 0.0f) ? 1 : 0;
+  return (s && s->amount == 0.0f) ? 1 : 0;
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -133,10 +119,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     if (state::pathIs(pb + off[i], len[i], "amount"))
       s->amount = state::patchFloat(i);
-    else if (state::pathIs(pb + off[i], len[i], "tint_warmth"))
-      s->tint_warmth = state::patchFloat(i);
-    else if (state::pathIs(pb + off[i], len[i], "tint_amount"))
-      s->tint_amount = state::patchFloat(i);
   }
 }
 

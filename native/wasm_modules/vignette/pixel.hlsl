@@ -14,7 +14,7 @@ struct FuseUniforms {
   float aspect_y;
   float vp_w;     // written by prepare() — mapper fuse_transform has no
   float vp_h;     // viewport-size parameter, so we route it via uniform.
-  float _pad0;
+  float squash;   // signed [-1,+1]: -1 wider-than-tall, +1 taller-than-wide.
   float _pad1;
 };
 ConstantBuffer<FuseUniforms> u_fuse : register(b2);
@@ -29,6 +29,11 @@ float4 fuse_transform(uint2 gid, float4 c) {
   float2 metric = lerp(float2(1.0, 1.0),
                         float2(u_fuse.aspect_x, u_fuse.aspect_y) * 2.0,
                         u_fuse.shape);
+  // squash: reciprocal-symmetric ellipse aspect. +1 shrinks the y-metric so
+  // the bright region reaches further vertically (taller-than-wide); -1 the
+  // opposite. k = 2^squash, applied as (k, 1/k).
+  float k = exp2(u_fuse.squash);
+  metric *= float2(k, 1.0 / k);
   float dist = length(d * metric);
 
   float t = smoothstep(u_fuse.radius,

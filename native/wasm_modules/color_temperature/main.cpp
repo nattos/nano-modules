@@ -1,10 +1,13 @@
 /*
- * video.invert — Color inversion.
+ * video.color_temperature — Warm/cool white-balance shift.
  *
- * Full RGB inversion. Partial-strength mixing is handled by the
- * system-level per-effect alpha, so there's no `amount` knob. Alpha
- * inversion is opt-in via a separate toggle so most uses don't
- * accidentally flip the matte.
+ *   temperature -1.0  →  cool  (boost B, cut R)
+ *   temperature  0.0  →  neutral (pass-through)
+ *   temperature +1.0  →  warm  (boost R, cut B)
+ *
+ * A simple per-channel multiply on the orange/blue axis. Split out of
+ * `video.exposure` so exposure stays a clean stops-only gain. Pair with
+ * `exposure` upstream/downstream if you want both.
  *
  * Class-like instance model: module_init() sets up the type-shared
  * compute PSO + schema once; each chain entry gets its own State (params
@@ -13,20 +16,19 @@
 
 #include <gpu.h>
 #include <host.h>
-#include "invert_shaders.h"
+#include <effect_utils.h>
+#include "color_temperature_shaders.h"
 
-namespace invert {
+namespace color_temperature {
 
 struct FuseUniforms {
-  float invert_alpha;
-  float _pad0;
-  float _pad1;
-  float _pad2;
+  float mul_r, mul_g, mul_b;
+  float _pad;
 };
 
 // Per-instance state. One per chain entry.
 struct State {
-  bool invert_alpha = false;
+  float temperature = 0.0f;
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
@@ -37,15 +39,19 @@ static gpu::ComputePSO s_pso;
 void prepare(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
-  FuseUniforms u = { s->invert_alpha ? 1.0f : 0.0f, 0.f, 0.f, 0.f };
+  // warm = +1 → boost R, cut B. cool = -1 → boost B, cut R. Max ±0.5 push.
+  float mr = 1.0f + s->temperature * 0.5f;
+  float mg = 1.0f;
+  float mb = 1.0f - s->temperature * 0.5f;
+  FuseUniforms u = { mr, mg, mb, 0.0f };
   s->uniform_buf.writeOne(u);
 }
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.invert", {1, 0, 0},
+  state::init("video.color_temperature", {1, 0, 0},
     state::Schema()
-      .boolField("invert_alpha", false, state::SecondaryInput)
+      .floatField("temperature", 0.0f, -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -78,7 +84,7 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->invert_alpha = false;
+  s->temperature = 0.0f;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
 
@@ -95,14 +101,21 @@ void tick(void* self, double dt) {
 
 void on_resolume_param(void*, long long, double) {}
 
+// Passthrough at neutral: temperature == 0 ⇒ all multipliers 1× ⇒ out == in.
+// Stateless — skippable, and the fused group collapses if every stage is identity.
+int32_t is_identity(void* self) {
+  auto* s = static_cast<State*>(self);
+  return (s && s->temperature == 0.0f) ? 1 : 0;
+}
+
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
-    if (state::pathIs(pb + off[i], len[i], "invert_alpha"))
-      s->invert_alpha = state::patchFloat(i) > 0.5f;
+    if (state::pathIs(pb + off[i], len[i], "temperature"))
+      s->temperature = state::patchFloat(i);
   }
 }
 
@@ -127,4 +140,4 @@ void render(void* self, int vp_w, int vp_h) {
   gpu::Device::submit();
 }
 
-} // namespace invert
+} // namespace color_temperature

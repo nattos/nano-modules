@@ -32,6 +32,9 @@ NANO_DECLARE_INSTANCE_EFFECT(curve)
 NANO_DECLARE_INSTANCE_EFFECT(exposure)
 namespace exposure { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(color_temperature)
+namespace color_temperature { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(invert)
 
 NANO_DECLARE_INSTANCE_EFFECT(posterize)
@@ -58,7 +61,6 @@ NANO_DECLARE_INSTANCE_EFFECT(sharpen)
 namespace sharpen { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(edges)
-namespace edges { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(crop)
 
@@ -153,7 +155,7 @@ void nano_module_main() {
         2,
         "video.exposure",
         "Exposure",
-        "Multiplicative gain measured in stops, with an optional warmth tint",
+        "Multiplicative gain measured in stops",
         "video",
         "exposure,gain,brightness,stops",
         NANO_INSTANCE_LIFECYCLE(exposure),
@@ -162,9 +164,20 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
+        "video.color_temperature",
+        "Color Temperature",
+        "Warm/cool white-balance shift on the orange/blue axis",
+        "video",
+        "temperature,warmth,white-balance,tint,color",
+        NANO_INSTANCE_LIFECYCLE(color_temperature),
+        &color_temperature::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
         "video.invert",
         "Invert",
-        "Mixable color inversion with optional alpha invert",
+        "Color inversion with optional alpha invert",
         "video",
         "invert,negative,color",
         NANO_INSTANCE_LIFECYCLE(invert),
@@ -289,7 +302,6 @@ void nano_module_main() {
         "video",
         "edge,sobel,outline,detect",
         NANO_INSTANCE_LIFECYCLE(edges),
-        &edges::is_identity,
     });
 
     nano::registerEffect({

@@ -11,9 +11,11 @@
  * Tuning params:
  *   octaves     int        1..6 (only meaningful for fbm).
  *   color       [0, 1]     0 = greyscale, 1 = independent RGB hashes.
- *   speed       [0, 1]     0 = freezes "static" mode; 1 = ~30 Hz reroll.
+ *   speed       [0, 1]     animation rate. 0 = frozen. White and static
+ *                          reroll discretely (up to ~30 Hz); value and fbm
+ *                          evolve smoothly through a time axis.
  *
- * Uses an internal accumulator to advance the static phase, per the
+ * Uses an internal accumulator to advance the animation phase, per the
  * style guide's time-handling rule (no `elapsed * rate`).
  *
  * Class-like instance model: module_init() sets up the type-shared
@@ -27,6 +29,14 @@
 #include "noise_shaders.h"
 
 namespace noise {
+
+// algorithm options — values must match the branch logic in the shader.
+enum Algorithm {
+  AlgoWhite   = 0,  // uniform white noise
+  AlgoValue   = 1,  // value noise
+  AlgoFbm     = 2,  // simplex/perlin-style fbm
+  AlgoStatic  = 3,  // TV-style animated white
+};
 
 struct FuseUniforms {
   int   algorithm;
@@ -83,7 +93,12 @@ void prepare(void* self, int vp_w, int vp_h) {
 void module_init() {
   state::init("generator.noise", {1, 0, 0},
     state::Schema()
-      .intField("algorithm", 0,    0, 3,    state::PrimaryInput)
+      .selectField("algorithm", AlgoWhite, state::PrimaryInput, {
+          {"White",  AlgoWhite},
+          {"Value",  AlgoValue},
+          {"FBM",    AlgoFbm},
+          {"Static", AlgoStatic},
+      })
       .floatField("scale",   0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("contrast",0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("seed",    0.0f, 0.f, 1.f, state::PrimaryInput)
@@ -142,7 +157,8 @@ void init(void* self) {
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  // Advance the "static" phase as an accumulator. speed=0 freezes; speed=1 → 30 reroll/s.
+  // Advance the animation phase as an accumulator. speed=0 freezes; speed=1 →
+  // 30 reroll/s for the discrete modes (smooth modes derive a gentler time).
   s->static_phase += static_cast<float>(dt) * (s->speed * 30.0f);
   // Wrap to keep the value bounded (any large modulus is fine).
   if (s->static_phase > 1.0e6f) s->static_phase -= 1.0e6f;
