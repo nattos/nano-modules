@@ -267,13 +267,17 @@ void tick(void* self, double dt) {
     s->ap_jump_pending = false;
 
     if (s->ap_snap) {
+      bool hold_on = s->ap_hold_period > 1e-4f;
       bool jump = trig || !s->held_valid;        // trigger or first frame
-      if (s->ap_hold_period > 1e-4f) {           // auto-jump only when Hold > 0
+      if (hold_on) {                             // auto-jump only when Hold > 0
         s->snap_accum += fdt;
         if (s->snap_accum >= s->ap_hold_period) jump = true;
       }
       if (jump) {
-        if (s->held_valid) s->orbit -= kGoldenAngle;   // fresh, well-spread point
+        // Hold ON: snap to where the drifting orbit currently is — "where the
+        // continuous autopilot point would have been" (auto-jump AND trigger).
+        // Hold OFF: the trigger advances to a fresh random orbit point.
+        if (trig && !hold_on && s->held_valid) s->orbit -= kGoldenAngle;
         orbit_xy(s->orbit, s->held_x, s->held_y);
         s->held_valid = true;
         s->snap_accum = 0.0f;                     // reset the hold timer
