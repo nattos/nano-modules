@@ -72,17 +72,36 @@ describe('Tingle Top Effect E2E', () => {
     expect(brightBand(still, 0.4, 0.6)).toBeLessThan(0.002);
   });
 
-  it('released: the spawn region drains down to fill the bar', async () => {
-    // Released (default_gate_state false) → region ramps to 1.0, so sparkles
-    // spawn across the full height (region starts settled at 1.0).
+  it('idle (no note) spawns nothing', async () => {
+    // No gate / trigger / level / auto_rate and default_gate_state false → no
+    // voice → no spawns. (The trigger model now drives everything.)
     const frame = await runGpuEffectTest({
       module: 'tingle_top.wasm', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
-      ticks: 20, params: params([['default_gate_state', 0]]),
-      dumpName: 'tingle_top_released',
+      ticks: 10, params: params([]),
+      dumpName: 'tingle_top_idle',
     });
     expect(frame.success).toBe(true);
-    // Now the lower band carries sparkles too.
-    expect(brightBand(frame, 0.6, 1.0)).toBeGreaterThan(0.01);
+    frame.expectUniformColor({ r: 0, g: 0, b: 0, a: 255 }, 4);
+  });
+
+  it('release: a trigger sustains at top, then the wave descends on note-off', async () => {
+    // A trigger holds for min_sustain (sparkles at the top), then releases —
+    // the spawn distribution becomes a wave that bursts/accelerates downward.
+    const at = (ticks: number) => runGpuEffectTest({
+      module: 'tingle_top.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks,
+      params: [...params([['top_band_height', 0.1], ['min_sustain_s', 0.1],
+                          ['release_s', 0.6], ['release_curve', 1.5],
+                          ['particle_life_ms', 150], ['respawn_delay_ms', 5]]),
+               ['trigger', 1]],
+      dumpName: `tingle_top_release_${ticks}`,
+    });
+    const sustaining = await at(4);   // still held → bundled at the top
+    const released = await at(28);    // wave has moved down the bar
+    expect(sustaining.success && released.success).toBe(true);
+    expect(brightBand(sustaining, 0.0, 0.2)).toBeGreaterThan(0.01);
+    expect(brightBand(released, 0.5, 0.85)).toBeGreaterThan(0.01);
   });
 });

@@ -1,23 +1,27 @@
 /*
- * gen.tingle_top — sparkles bundled at the top of each bar while gated,
- * released downward on an envelope when ungated.
+ * gen.tingle_top — sparkles bundled at the top of each bar while a note is
+ * held, released downward as a "wave" when let go. POLYPHONIC: up to 4 voices.
  *
- * Particles don't move (unless given a velocity) — they live and die in
- * place. The visible "cascade" is a SPAWN-REGION animation: region_y_max (a
- * CPU envelope) is the lower edge of the spawn band. Gated → snaps to
- * top_band_height (a thin top slice); released → ramps to 1.0 over release_s,
- * so newly-born sparkles appear progressively lower and the cloud drains
- * downward. (Velocity unlocks the "downward_sparkle" preset.)
+ * A note-on (gate rising / trigger pulse / auto) allocates a SUSTAINING voice
+ * (spawns at the top band); note-off converts it to a RELEASE voice — a
+ * split-normal gaussian whose window bursts/accelerates downward and drains
+ * off screen, then the voice returns to the pool. Multiple releases overlap
+ * (the polyphony, since there's only one note to hold). Each voice is a spawn-
+ * y distribution; the fixed particle pool samples the weighted MIXTURE, so
+ * total density stays constant and splits across voices. Particles live + fade
+ * in place (optional per-particle velocity drift on top).
  *
- * GPU-resident particle pool (update + render + motion passthrough), instance
- * ABI. Trigger surface: gate / trigger / level / auto_rate, with
- * default_gate_state as the at-rest fallback.
+ * GPU-resident particle pool: update compute (samples the voice mixture) →
+ * prefill → instanced sparkle quads (additive) → motion passthrough. Trigger
+ * surface: gate / trigger / level / auto_rate, default_gate_state as the
+ * at-rest fallback (true = a permanently-sustaining voice).
  */
 
 #include <gpu.h>
 #include <host.h>
 #include "tingle_top_shaders.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -30,16 +34,17 @@ static_assert(sizeof(GpuParticle) == 48, "GpuParticle layout mismatch");
 
 struct UpdateUniforms {
   uint32_t count, pool_max, frame_index, do_reset;
-  float    dt, region_y_max, top_band_height, life_s;
-  float    respawn_delay_s, life_jitter, size, size_jitter;
+  float    dt, life_s, respawn_delay_s, size;
+  float    size_jitter, life_jitter, hue_jitter, _pad0;
   float    vel_x, vel_y, vel_x_jitter, vel_y_jitter;
-  float    hue_jitter; uint32_t bar_all, bar_target, respect_bounds;
-  uint32_t seed; float _pad0, _pad1, _pad2;
+  uint32_t bar_all, bar_target, respect_bounds, num_voices;
+  uint32_t seed; float _pad1, _pad2, _pad3;
+  float    voices[16];   // 4 × (y_peak, sigma_trail, sigma_lead, weight)
 };
-static_assert(sizeof(UpdateUniforms) == 96, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 160, "UpdateUniforms layout mismatch");
 
-struct PrefillUniforms { uint32_t debug_region; float region_y_max, _pad0, _pad1; };
-static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
+struct PrefillUniforms { uint32_t debug_region, _pad0; float _pad1, _pad2; float peaks[4]; };
+static_assert(sizeof(PrefillUniforms) == 32, "PrefillUniforms layout mismatch");
 
 struct VsUniforms { float aspect_x, aspect_y, _pad0, _pad1; };
 static_assert(sizeof(VsUniforms) == 16, "VsUniforms layout mismatch");
@@ -62,7 +67,8 @@ struct State {
   float auto_rate = 0.0f;
   float top_band_height = 0.1f;
   float release_s = 0.8f;
-  float release_curve = 1.5f;
+  float release_curve = 1.5f;   // trailing-edge acceleration exponent
+  float release_tilt = 0.0f;    // -1 peak at trailing (top), +1 at leading (bottom)
   float min_sustain_s = 0.3f;
   bool  default_gate_state = false;
   float intensity = 1.0f;
@@ -96,10 +102,12 @@ struct State {
   float    frame_dt = 0.0f;
   bool     needs_reset = true;
   int      last_pool_max = -1, last_seed = 0x7FFFFFFF;
-  // Envelope.
-  float    region_y_max = 1.0f;
+  // Polyphonic voices: a note-on allocates a sustaining voice; note-off
+  // converts it to a release wave. Up to 4 active at once.
+  struct Voice { bool active = false; bool sustaining = false; float t = 0.0f; };
+  Voice    voices[4];
+  int      sustain_idx = -1;
   bool     held_prev = false;
-  float    release_t = 1e9f;
   float    sustain_timer = 0.0f;
   bool     gate_prev = false;
   float    trigger_prev = 0.0f;
@@ -122,6 +130,7 @@ void module_init() {
       .floatField("top_band_height",     0.1f, 0.01f, 0.5f,    state::PrimaryInput)
       .floatField("release_s",           0.8f, 0.05f, 4.0f,    state::PrimaryInput)
       .floatField("release_curve",       1.5f, 0.25f, 4.0f,    state::PrimaryInput)
+      .floatField("release_tilt",        0.0f, -1.0f, 1.0f,    state::PrimaryInput)
       .floatField("min_sustain_s",       0.3f, 0.0f, 2.0f,     state::PrimaryInput)
       .boolField ("default_gate_state",  false,                state::PrimaryInput)
       .floatField("intensity",           1.0f, 0.0f, 2.0f,     state::PrimaryInput)
@@ -215,9 +224,9 @@ void init(void* self) {
   s->last_pool_max = -1;
   s->last_seed = 0x7FFFFFFF;
   s->motion_w = s->motion_h = 0;
-  s->region_y_max = 1.0f;
+  for (int v = 0; v < 4; v++) s->voices[v] = State::Voice{};
+  s->sustain_idx = -1;
   s->held_prev = false;
-  s->release_t = 1e9f;
   s->sustain_timer = 0.0f;
   s->gate_prev = false;
   s->trigger_prev = 0.0f;
@@ -249,17 +258,29 @@ void tick(void* self, double dt) {
   // Held this frame: gate priority > trigger pulse > level > default.
   bool held = s->gate || (s->sustain_timer > 0.0f) || (s->level >= 0.5f) || s->default_gate_state;
 
-  // Region envelope: snap to the top band while held, ramp to 1.0 on release.
-  float tbh = clampf(s->top_band_height, 0.01f, 0.5f);
-  if (held) {
-    s->region_y_max = tbh;
-  } else {
-    if (s->held_prev) s->release_t = 0.0f;          // just released
-    s->release_t += fdt;
-    float rs = clampf(s->release_s, 0.05f, 4.0f);
-    float pr = clampf(s->release_t / rs, 0.0f, 1.0f);
-    float shaped = std::pow(pr, clampf(s->release_curve, 0.25f, 4.0f));
-    s->region_y_max = tbh + (1.0f - tbh) * shaped;
+  // Note-on: allocate a sustaining voice (free slot, else steal oldest release).
+  if (held && !s->held_prev && s->sustain_idx < 0) {
+    int slot = -1;
+    for (int v = 0; v < 4; v++) if (!s->voices[v].active) { slot = v; break; }
+    if (slot < 0) {
+      float best = -1.0f;
+      for (int v = 0; v < 4; v++)
+        if (s->voices[v].active && !s->voices[v].sustaining && s->voices[v].t > best) { best = s->voices[v].t; slot = v; }
+    }
+    if (slot >= 0) { s->voices[slot] = State::Voice{}; s->voices[slot].active = true; s->voices[slot].sustaining = true; s->sustain_idx = slot; }
+  }
+  // Note-off: the sustaining voice becomes a release wave.
+  if (!held && s->held_prev && s->sustain_idx >= 0) {
+    s->voices[s->sustain_idx].sustaining = false;
+    s->voices[s->sustain_idx].t = 0.0f;
+    s->sustain_idx = -1;
+  }
+  // Advance voices; retire a release wave once it's run its course.
+  float rs = clampf(s->release_s, 0.05f, 4.0f);
+  for (int v = 0; v < 4; v++) {
+    if (!s->voices[v].active) continue;
+    s->voices[v].t += fdt;
+    if (!s->voices[v].sustaining && s->voices[v].t >= rs) s->voices[v].active = false;
   }
   s->held_prev = held;
 }
@@ -286,6 +307,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "top_band_height"))     s->top_band_height = state::patchFloat(i);
     else if (state::pathIs(path, plen, "release_s"))           s->release_s = state::patchFloat(i);
     else if (state::pathIs(path, plen, "release_curve"))       s->release_curve = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "release_tilt"))        s->release_tilt = state::patchFloat(i);
     else if (state::pathIs(path, plen, "min_sustain_s"))       s->min_sustain_s = state::patchFloat(i);
     else if (state::pathIs(path, plen, "default_gate_state"))  s->default_gate_state = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "intensity"))           s->intensity = state::patchFloat(i);
@@ -329,6 +351,40 @@ void render(void* self, int vp_w, int vp_h) {
     s->needs_reset = true; s->last_pool_max = pool_max; s->last_seed = s->seed;
   }
 
+  // Build each active voice's spawn-y distribution (the mixture the pool
+  // samples). Sustain → small gaussian at the top band. Release → split-normal
+  // gaussian whose window's leading edge bursts down (ease-out) while the
+  // trailing edge accelerates (power curve); the peak tilts forward/back.
+  const float kEdgeMargin = 0.25f;   // wave overshoots past the bottom
+  const float kSigmaFrac  = 0.42f;   // gaussian spread as a fraction of the window
+  float tbh    = clampf(s->top_band_height, 0.01f, 0.5f);
+  float relS   = clampf(s->release_s, 0.05f, 4.0f);
+  float accExp = clampf(s->release_curve, 0.25f, 4.0f);
+  float peakPos = clampf(0.5f + 0.5f * clampf(s->release_tilt, -1.0f, 1.0f), 0.0f, 1.0f);
+  float vparams[16] = {0};
+  float peaks[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+  int nv = 0;
+  for (int v = 0; v < 4; v++) {
+    if (!s->voices[v].active) continue;
+    float yp, st, sl;
+    if (s->voices[v].sustaining) {
+      yp = tbh * 0.5f; st = tbh * 0.5f; sl = tbh * 0.5f;
+    } else {
+      float p      = clampf(s->voices[v].t / relS, 0.0f, 1.0f);
+      float accel  = std::pow(p, accExp);             // trailing edge (top), slow→fast
+      float burst  = 1.0f - (1.0f - p) * (1.0f - p);  // leading edge (bottom), fast ease-out
+      float yTrail = tbh + (1.0f - tbh) * accel;
+      float yLead  = tbh + (1.0f - tbh + kEdgeMargin) * burst;
+      yp = yTrail + (yLead - yTrail) * peakPos;
+      st = std::max((yp - yTrail) * kSigmaFrac, 1e-4f);
+      sl = std::max((yLead - yp) * kSigmaFrac, 1e-4f);
+    }
+    vparams[nv * 4 + 0] = yp; vparams[nv * 4 + 1] = st;
+    vparams[nv * 4 + 2] = sl; vparams[nv * 4 + 3] = 1.0f;   // equal weight → constant density
+    peaks[nv] = yp;
+    nv++;
+  }
+
   // Pass 1 — update the pool.
   UpdateUniforms uu = {};
   uu.count = (uint32_t)count;
@@ -336,8 +392,6 @@ void render(void* self, int vp_w, int vp_h) {
   uu.frame_index = s->frame_index;
   uu.do_reset = s->needs_reset ? 1u : 0u;
   uu.dt = s->frame_dt;
-  uu.region_y_max = clampf(s->region_y_max, 0.0f, 1.0f);
-  uu.top_band_height = clampf(s->top_band_height, 0.01f, 0.5f);
   uu.life_s = clampf(s->particle_life_ms, 10.0f, 1000.0f) * 0.001f;
   uu.respawn_delay_s = clampf(s->respawn_delay_ms, 0.0f, 500.0f) * 0.001f;
   uu.life_jitter = clampf(s->life_jitter, 0.0f, 1.0f);
@@ -351,7 +405,9 @@ void render(void* self, int vp_w, int vp_h) {
   uu.bar_all = s->bar_target_all ? 1u : 0u;
   uu.bar_target = (uint32_t)clampi(s->bar_target, 0, 3);
   uu.respect_bounds = s->respect_position_bounds ? 1u : 0u;
+  uu.num_voices = (uint32_t)nv;
   uu.seed = (uint32_t)s->seed;
+  for (int k = 0; k < 16; k++) uu.voices[k] = vparams[k];
   s->update_uniform_buf.writeOne(uu);
   {
     auto cp = gpu::ComputePass::begin();
@@ -365,7 +421,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Pass 2 — prefill tex_out with tex_in (so the additive quads blend over it).
   PrefillUniforms pu = {};
   pu.debug_region = s->debug_show_region ? 1u : 0u;
-  pu.region_y_max = clampf(s->region_y_max, 0.0f, 1.0f);
+  for (int k = 0; k < 4; k++) pu.peaks[k] = peaks[k];
   s->prefill_uniform_buf.writeOne(pu);
   {
     auto cp = gpu::ComputePass::begin();
