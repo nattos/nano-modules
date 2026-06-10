@@ -4,10 +4,12 @@
  * Synthesizes a 2D gradient field from the input, takes its divergence, and
  * solves the Poisson equation laplacian(h) = div(g) for the least-squares
  * height whose gradient best matches g — then visualizes the reconstructed
- * surface as shaded 3D relief. v1 gradient source: Radial (outward from an
- * adjustable center, magnitude = luma). That field is generally non-
- * conservative (curl != 0), so there's usually no exact height; the Poisson
- * solve is the "best try."
+ * surface (hillshade / grayscale / normals / its own contour lines).
+ * Gradient sources: Radial (outward from an adjustable center, magnitude =
+ * luma) and Level Curves (treat the input as a contour map — the gradient is
+ * the across-curve normal, its uphill sign resolved by a global bias). The
+ * field is generally non-conservative (curl != 0), so there's usually no exact
+ * height; the Poisson solve is the "best try."
  *
  * Solver: coarse-to-fine multigrid cascade (FMG-lite). Build a pre-scaled
  * divergence pyramid, Jacobi-solve the coarsest level from zero, prolong
@@ -18,7 +20,7 @@
  * honor between dispatches in a single submit.
  *
  * Pass pipeline (shared common.hlsl):
- *   gradient   — input → RG gradient field g (radial × luma).
+ *   gradient   — input → RG gradient field g (Radial × luma, or Level Curves).
  *   divergence — g → F_0 = div(g) (central differences, level-0 spacing).
  *   restrict   — F_k → F_{k+1} (2x2 sum; builds the pre-scaled pyramid).
  *   jacobi     — one relaxation sweep h' = (hL+hR+hD+hU - F)/4 (reused/level).

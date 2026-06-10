@@ -1,13 +1,14 @@
 // video.height_from_gradient — present / visualization pass.
 //
-// Turns the reconstructed full-res height into the output image. Three modes:
+// Turns the reconstructed full-res height into the output image. Four modes:
 //   Hillshade (default) — Lambertian-shade the surface normal (built from the
 //                         height's local slope) against an adjustable light.
 //                         DC-invariant, so the Poisson null-space (height is
 //                         defined up to a constant) doesn't matter here.
-//   Grayscale           — raw height as brightness, scaled/offset by the user
-//                         (DC is ambiguous → user-dialed for now).
+//   Grayscale           — the height as brightness, normalized to its global
+//                         (min,max) range, with scale/offset fine-tuning.
 //   Normals             — RG-encoded surface normal (data/producer view).
+//   Contours            — iso-lines of the reconstructed (normalized) height.
 // `mix_amount` cross-fades the visualization back toward the input image.
 // `debug_show_gradient` overrides everything with the source gradient field.
 
