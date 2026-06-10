@@ -41,7 +41,7 @@ struct UpdateUniforms {
   float    size_jitter, life_jitter, hue_jitter, _pad0;
   float    vel_x, vel_y, vel_x_jitter, vel_y_jitter;
   uint32_t bar_mode, one_bar_target, respect_bounds, num_voices;
-  uint32_t seed; float _pad1, _pad2, _pad3;
+  uint32_t seed, voice_bars_packed; float _pad2, _pad3;   // 4 voice bars, 2 bits each
   float    voices[16];   // 4 × (y_peak, sigma_trail, sigma_lead, weight)
 };
 static_assert(sizeof(UpdateUniforms) == 160, "UpdateUniforms layout mismatch");
@@ -107,9 +107,10 @@ struct State {
   int      last_pool_max = -1, last_seed = 0x7FFFFFFF;
   // Polyphonic voices: a note-on allocates a sustaining voice; note-off
   // converts it to a release wave. Up to 4 active at once.
-  struct Voice { bool active = false; bool sustaining = false; float t = 0.0f; };
+  struct Voice { bool active = false; bool sustaining = false; float t = 0.0f; int bar = 0; };
   Voice    voices[4];
   int      sustain_idx = -1;
+  uint32_t voice_bar_rng = 0xB16B00B5u;   // per-voice random bar (random_bar mode)
   bool     held_prev = false;
   float    sustain_timer = 0.0f;
   bool     gate_prev = false;
@@ -239,6 +240,7 @@ void init(void* self) {
   s->motion_w = s->motion_h = 0;
   for (int v = 0; v < 4; v++) s->voices[v] = State::Voice{};
   s->sustain_idx = -1;
+  s->voice_bar_rng = 0xB16B00B5u;
   s->held_prev = false;
   s->sustain_timer = 0.0f;
   s->gate_prev = false;
@@ -280,7 +282,17 @@ void tick(void* self, double dt) {
       for (int v = 0; v < 4; v++)
         if (s->voices[v].active && !s->voices[v].sustaining && s->voices[v].t > best) { best = s->voices[v].t; slot = v; }
     }
-    if (slot >= 0) { s->voices[slot] = State::Voice{}; s->voices[slot].active = true; s->voices[slot].sustaining = true; s->sustain_idx = slot; }
+    if (slot >= 0) {
+      s->voices[slot] = State::Voice{};
+      s->voices[slot].active = true;
+      s->voices[slot].sustaining = true;
+      // Assign a random bar (used only in random_bar mode). Per-voice, so
+      // each note lands in one bar rather than spreading like all_bars.
+      s->voice_bar_rng = s->voice_bar_rng * 1664525u + 1013904223u;
+      uint32_t h = s->voice_bar_rng ^ ((uint32_t)s->seed * 0x9E3779B9u);
+      s->voices[slot].bar = (int)((h >> 13) & 3u);
+      s->sustain_idx = slot;
+    }
   }
   // Note-off: the sustaining voice becomes a release wave.
   if (!held && s->held_prev && s->sustain_idx >= 0) {
@@ -379,6 +391,7 @@ void render(void* self, int vp_w, int vp_h) {
   float peakPos = clampf(0.5f + 0.5f * clampf(s->release_tilt, -1.0f, 1.0f), 0.0f, 1.0f);
   float vparams[16] = {0};
   float peaks[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+  uint32_t voice_bars_packed = 0;
   int nv = 0;
   for (int v = 0; v < 4; v++) {
     if (!s->voices[v].active) continue;
@@ -398,6 +411,7 @@ void render(void* self, int vp_w, int vp_h) {
     vparams[nv * 4 + 0] = yp; vparams[nv * 4 + 1] = st;
     vparams[nv * 4 + 2] = sl; vparams[nv * 4 + 3] = 1.0f;   // equal weight → constant density
     peaks[nv] = yp;
+    voice_bars_packed |= (uint32_t)(s->voices[v].bar & 3) << (nv * 2);
     nv++;
   }
 
@@ -423,6 +437,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.respect_bounds = s->respect_position_bounds ? 1u : 0u;
   uu.num_voices = (uint32_t)nv;
   uu.seed = (uint32_t)s->seed;
+  uu.voice_bars_packed = voice_bars_packed;
   for (int k = 0; k < 16; k++) uu.voices[k] = vparams[k];
   s->update_uniform_buf.writeOne(uu);
   {

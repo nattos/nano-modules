@@ -21,12 +21,14 @@ cbuffer Uniforms : register(b1) {
   float size_jitter; float life_jitter; float hue_jitter; float _pad0;
   float vel_x; float vel_y; float vel_x_jitter; float vel_y_jitter;
   uint  bar_mode; uint one_bar_target; uint respect_bounds; uint num_voices;  // bar_mode: 0 one, 1 random, 2 all
-  uint  seed; float _pad1; float _pad2; float _pad3;
+  uint  seed; uint voice_bars_packed; float _pad2; float _pad3;   // 4 voice bars, 2 bits each
   float4 voices[4];   // x=y_peak, y=sigma_trail (up), z=sigma_lead (down), w=weight
 };
 
-// Sample a spawn y from the voice mixture. Returns -1 if no voice is active.
-float sampleVoiceY(uint i) {
+// Sample a spawn y from the voice mixture + report which voice (for its bar).
+// Returns -1 if no voice is active.
+float sampleVoiceY(uint i, out uint outVi) {
+  outVi = 0u;
   if (num_voices == 0u) return -1.0;
   float total = 0.0;
   for (uint v = 0u; v < num_voices; v++) total += voices[v].w;
@@ -35,6 +37,7 @@ float sampleVoiceY(uint i) {
   float r = tt_unit(tt_pcg3(i + 0x3C6EF35Fu, frame_index, seed)) * total;
   uint vi = 0u; float cum = 0.0;
   for (uint v = 0u; v < num_voices; v++) { cum += voices[v].w; if (r < cum) { vi = v; break; } vi = v; }
+  outVi = vi;
 
   // Standard normal (Box–Muller), then split-normal: spread up by sigma_trail
   // (toward the top), down by sigma_lead (toward the bottom).
@@ -48,13 +51,14 @@ float sampleVoiceY(uint i) {
 // Roll a fresh spawn into `p`. Leaves the particle DEAD (life 0, short respawn)
 // when there's no on-screen voice sample to place it.
 void respawn(inout Particle p, uint i) {
+  uint  vi;
+  float py = sampleVoiceY(i, vi);
   uint  bar;
-  if      (bar_mode == 0u) bar = min(one_bar_target, 3u);                        // one_bar
-  else if (bar_mode == 1u) bar = tt_pcg3(i + 0x2B1Au, frame_index, seed) & 3u;   // random_bar
-  else                     bar = i & 3u;                                         // all_bars (even spread)
+  if      (bar_mode == 0u) bar = min(one_bar_target, 3u);                  // one_bar
+  else if (bar_mode == 1u) bar = (voice_bars_packed >> (vi * 2u)) & 3u;    // random_bar (per voice)
+  else                     bar = i & 3u;                                   // all_bars (even spread)
   float rx  = tt_unit(tt_pcg3(i + 0xA17F2B91u, frame_index, 0x11u + seed));
   float px  = (float(bar) + rx) * 0.25;
-  float py  = sampleVoiceY(i);
 
   float sz = max(size * (1.0 + size_jitter * tt_signed(tt_pcg2(i + 0xC2B2AE3Du, frame_index))), 1e-5);
   float lt = max(life_s * (1.0 + life_jitter * tt_signed(tt_pcg2(i + 0x85EBCA77u, frame_index))), 1e-3);
