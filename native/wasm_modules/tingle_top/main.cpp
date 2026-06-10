@@ -27,7 +27,8 @@
 
 namespace tingle_top {
 
-static constexpr int POOL_HARD_MAX = 2048;
+static constexpr int POOL_HARD_MAX  = 2048;
+static constexpr int VOICES_PER_BAR = 4;     // polyphony per bar (16 total)
 
 // Which bars sparkles spawn into.
 enum BarTargetMode { BAR_ONE = 0, BAR_RANDOM = 1, BAR_ALL = 2 };
@@ -40,11 +41,11 @@ struct UpdateUniforms {
   float    dt, life_s, respawn_delay_s, size;
   float    size_jitter, life_jitter, hue_jitter, _pad0;
   float    vel_x, vel_y, vel_x_jitter, vel_y_jitter;
-  uint32_t bar_mode, one_bar_target, respect_bounds, num_voices;
-  uint32_t seed, voice_bars_packed; float _pad2, _pad3;   // 4 voice bars, 2 bits each
-  float    voices[16];   // 4 × (y_peak, sigma_trail, sigma_lead, weight)
+  uint32_t respect_bounds, seed, _pad1, _pad2;
+  uint32_t bar_nv[4];    // active voice count per bar
+  float    voices[64];   // [bar*4 + slot] × (y_peak, sigma_trail, sigma_lead, weight)
 };
-static_assert(sizeof(UpdateUniforms) == 160, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 352, "UpdateUniforms layout mismatch");
 
 struct PrefillUniforms { uint32_t debug_region, _pad0; float _pad1, _pad2; float peaks[4]; };
 static_assert(sizeof(PrefillUniforms) == 32, "PrefillUniforms layout mismatch");
@@ -107,13 +108,14 @@ struct State {
   int      last_pool_max = -1, last_seed = 0x7FFFFFFF;
   // Polyphonic voices: a note-on allocates a sustaining voice; note-off
   // converts it to a release wave. Up to 4 active at once.
+  // Per-bar voice pools: each bar has its own polyphony (VOICES_PER_BAR).
   // sustain_remaining: < 0 = a held voice (gate/level/default, released by the
   // held-edge logic); >= 0 = a discrete timed note that counts down then
   // releases. t = release-elapsed (only once sustaining is false).
-  struct Voice { bool active = false; bool sustaining = false; float t = 0.0f; int bar = 0; float sustain_remaining = 0.0f; };
-  Voice    voices[4];
-  int      held_idx = -1;                 // the one gate/level/default held voice
-  uint32_t voice_bar_rng = 0xB16B00B5u;   // per-voice random bar (random_bar mode)
+  struct Voice { bool active = false; bool sustaining = false; float t = 0.0f; float sustain_remaining = 0.0f; };
+  Voice    voices[4][VOICES_PER_BAR];     // [bar][slot]
+  int      held_idx[4] = { -1, -1, -1, -1 };   // per-bar held voice
+  uint32_t voice_bar_rng = 0xB16B00B5u;   // random bar pick (random_bar mode)
   bool     held_prev = false;
   bool     gate_prev = false;
   float    trigger_prev = 0.0f;
@@ -134,25 +136,50 @@ static void on_state_ready(void* self) {
   if (s) apply_mode_visibility(s->bar_target_mode);
 }
 
-// Allocate a voice (free slot, else steal the oldest release wave). Sets it
-// sustaining with a random bar; the CALLER sets sustain_remaining (-1 = held
-// until released; >= 0 = a timed note). Returns -1 if all slots are sustaining.
-static int alloc_voice(State* s) {
+// Allocate a voice in a specific bar's pool (free slot, else steal the oldest
+// release wave in THAT bar). Sets it sustaining; the CALLER sets
+// sustain_remaining (-1 = held; >= 0 = timed). Returns -1 if the bar is full
+// of sustaining voices.
+static int alloc_voice(State* s, int bar) {
   int slot = -1;
-  for (int v = 0; v < 4; v++) if (!s->voices[v].active) { slot = v; break; }
+  for (int k = 0; k < VOICES_PER_BAR; k++) if (!s->voices[bar][k].active) { slot = k; break; }
   if (slot < 0) {
     float best = -1.0f;
-    for (int v = 0; v < 4; v++)
-      if (s->voices[v].active && !s->voices[v].sustaining && s->voices[v].t > best) { best = s->voices[v].t; slot = v; }
+    for (int k = 0; k < VOICES_PER_BAR; k++)
+      if (s->voices[bar][k].active && !s->voices[bar][k].sustaining && s->voices[bar][k].t > best) { best = s->voices[bar][k].t; slot = k; }
   }
   if (slot < 0) return -1;
-  s->voices[slot] = State::Voice{};
-  s->voices[slot].active = true;
-  s->voices[slot].sustaining = true;
-  s->voice_bar_rng = s->voice_bar_rng * 1664525u + 1013904223u;
-  uint32_t h = s->voice_bar_rng ^ ((uint32_t)s->seed * 0x9E3779B9u);
-  s->voices[slot].bar = (int)((h >> 13) & 3u);
+  s->voices[bar][slot] = State::Voice{};
+  s->voices[bar][slot].active = true;
+  s->voices[bar][slot].sustaining = true;
   return slot;
+}
+
+// Which bar(s) a new note targets, per bar_target_mode. Fills `bars`, returns
+// the count (1 for one_bar/random_bar, 4 for all_bars).
+static int target_bars(State* s, int* bars) {
+  if (s->bar_target_mode == BAR_ONE) { bars[0] = clampi(s->one_bar_target, 0, 3); return 1; }
+  if (s->bar_target_mode == BAR_RANDOM) {
+    s->voice_bar_rng = s->voice_bar_rng * 1664525u + 1013904223u;
+    uint32_t h = s->voice_bar_rng ^ ((uint32_t)s->seed * 0x9E3779B9u);
+    bars[0] = (int)((h >> 13) & 3u);
+    return 1;
+  }
+  bars[0] = 0; bars[1] = 1; bars[2] = 2; bars[3] = 3; return 4;   // all_bars
+}
+
+// Fire a note (held or timed) into its target bar(s). `held` voices get -1
+// (released by the held-edge logic); timed get a min_sustain countdown.
+static void fire_note(State* s, bool held) {
+  int bars[4]; int nb = target_bars(s, bars);
+  float min_sustain = clampf(s->min_sustain_s, 0.0f, 2.0f);
+  for (int j = 0; j < nb; j++) {
+    int bar = bars[j];
+    int slot = alloc_voice(s, bar);
+    if (slot < 0) continue;
+    if (held) { s->voices[bar][slot].sustain_remaining = -1.0f; s->held_idx[bar] = slot; }
+    else      { s->voices[bar][slot].sustain_remaining = min_sustain; }
+  }
 }
 
 void module_init() {
@@ -261,8 +288,10 @@ void init(void* self) {
   s->last_pool_max = -1;
   s->last_seed = 0x7FFFFFFF;
   s->motion_w = s->motion_h = 0;
-  for (int v = 0; v < 4; v++) s->voices[v] = State::Voice{};
-  s->held_idx = -1;
+  for (int b = 0; b < 4; b++) {
+    for (int k = 0; k < VOICES_PER_BAR; k++) s->voices[b][k] = State::Voice{};
+    s->held_idx[b] = -1;
+  }
   s->voice_bar_rng = 0xB16B00B5u;
   s->held_prev = false;
   s->gate_prev = false;
@@ -288,38 +317,35 @@ void tick(void* self, double dt) {
     if (rate_hz > 0.0f) {
       s->auto_rng = s->auto_rng * 1664525u + 1013904223u;
       float u = (s->auto_rng >> 8) * (1.0f / (float)(1u << 24));
-      if (u < 1.0f - std::exp(-rate_hz * fdt)) {
-        int slot = alloc_voice(s);
-        if (slot >= 0) s->voices[slot].sustain_remaining = clampf(s->min_sustain_s, 0.0f, 2.0f);
-      }
+      if (u < 1.0f - std::exp(-rate_hz * fdt)) fire_note(s, false);   // a distinct timed note
     }
   }
 
-  // The continuous "held" sources drive one persistent held voice.
+  // The continuous "held" sources drive the per-bar held voice(s).
   bool held = s->gate || (s->level >= 0.5f) || s->default_gate_state;
-  if (held && !s->held_prev && s->held_idx < 0) {
-    int slot = alloc_voice(s);
-    if (slot >= 0) { s->voices[slot].sustain_remaining = -1.0f; s->held_idx = slot; }
-  }
-  if (!held && s->held_prev && s->held_idx >= 0) {
-    s->voices[s->held_idx].sustaining = false;       // → release wave
-    s->voices[s->held_idx].t = 0.0f;
-    s->held_idx = -1;
+  if (held && !s->held_prev) fire_note(s, true);
+  if (!held && s->held_prev) {                          // note-off → release held voices
+    for (int b = 0; b < 4; b++) if (s->held_idx[b] >= 0) {
+      s->voices[b][s->held_idx[b]].sustaining = false;
+      s->voices[b][s->held_idx[b]].t = 0.0f;
+      s->held_idx[b] = -1;
+    }
   }
 
   // Advance voices: timed notes count down then release; held voices wait for
   // the held-edge logic; release waves run out and retire to the pool.
   float rs = clampf(s->release_s, 0.05f, 4.0f);
-  for (int v = 0; v < 4; v++) {
-    if (!s->voices[v].active) continue;
-    if (s->voices[v].sustaining) {
-      if (s->voices[v].sustain_remaining >= 0.0f) {  // timed note
-        s->voices[v].sustain_remaining -= fdt;
-        if (s->voices[v].sustain_remaining <= 0.0f) { s->voices[v].sustaining = false; s->voices[v].t = 0.0f; }
+  for (int b = 0; b < 4; b++) for (int k = 0; k < VOICES_PER_BAR; k++) {
+    State::Voice& v = s->voices[b][k];
+    if (!v.active) continue;
+    if (v.sustaining) {
+      if (v.sustain_remaining >= 0.0f) {               // timed note
+        v.sustain_remaining -= fdt;
+        if (v.sustain_remaining <= 0.0f) { v.sustaining = false; v.t = 0.0f; }
       }
     } else {
-      s->voices[v].t += fdt;
-      if (s->voices[v].t >= rs) s->voices[v].active = false;
+      v.t += fdt;
+      if (v.t >= rs) v.active = false;
     }
   }
   s->held_prev = held;
@@ -339,10 +365,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->gate = state::patchFloat(i) != 0.0f; s->gate_prev = s->gate;
     } else if (state::pathIs(path, plen, "trigger")) {
       float v = state::patchFloat(i);
-      if (v != 0.0f && s->trigger_prev == 0.0f) {   // rising edge → a timed note
-        int slot = alloc_voice(s);
-        if (slot >= 0) s->voices[slot].sustain_remaining = clampf(s->min_sustain_s, 0.0f, 2.0f);
-      }
+      if (v != 0.0f && s->trigger_prev == 0.0f) fire_note(s, false);   // rising edge → a timed note
       s->trigger_prev = v;
     }
     else if (state::pathIs(path, plen, "level"))               s->level = state::patchFloat(i);
@@ -390,8 +413,9 @@ void render(void* self, int vp_w, int vp_h) {
   if (!in.valid() || !out.valid()) return;
 
   int pool_max = clampi(s->pool_max, 8, POOL_HARD_MAX);
-  int bars = (s->bar_target_mode == BAR_ONE) ? 1 : 4;
-  int count = clampi(clampi(s->density, 1, 400) * bars, 0, pool_max);
+  // Slot i belongs to bar (i & 3), so the pool is partitioned 1/4 per bar:
+  // density particles per bar. (one_bar leaves the other bars' slots idle.)
+  int count = clampi(clampi(s->density, 1, 400) * 4, 0, pool_max);
 
   if (pool_max != s->last_pool_max || s->seed != s->last_seed) {
     s->needs_reset = true; s->last_pool_max = pool_max; s->last_seed = s->seed;
@@ -407,30 +431,34 @@ void render(void* self, int vp_w, int vp_h) {
   float relS   = clampf(s->release_s, 0.05f, 4.0f);
   float accExp = clampf(s->release_curve, 0.25f, 4.0f);
   float peakPos = clampf(0.5f + 0.5f * clampf(s->release_tilt, -1.0f, 1.0f), 0.0f, 1.0f);
-  float vparams[16] = {0};
+  float vparams[64] = {0};
   float peaks[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
-  uint32_t voice_bars_packed = 0;
-  int nv = 0;
-  for (int v = 0; v < 4; v++) {
-    if (!s->voices[v].active) continue;
-    float yp, st, sl;
-    if (s->voices[v].sustaining) {
-      yp = tbh * 0.5f; st = tbh * 0.5f; sl = tbh * 0.5f;
-    } else {
-      float p      = clampf(s->voices[v].t / relS, 0.0f, 1.0f);
-      float accel  = std::pow(p, accExp);             // trailing edge (top), slow→fast
-      float burst  = 1.0f - (1.0f - p) * (1.0f - p);  // leading edge (bottom), fast ease-out
-      float yTrail = tbh + (1.0f - tbh) * accel;
-      float yLead  = tbh + (1.0f - tbh + kEdgeMargin) * burst;
-      yp = yTrail + (yLead - yTrail) * peakPos;
-      st = std::max((yp - yTrail) * kSigmaFrac, 1e-4f);
-      sl = std::max((yLead - yp) * kSigmaFrac, 1e-4f);
+  uint32_t bar_nv[4] = { 0, 0, 0, 0 };
+  for (int b = 0; b < 4; b++) {
+    int nvb = 0;
+    for (int k = 0; k < VOICES_PER_BAR; k++) {
+      State::Voice& vc = s->voices[b][k];
+      if (!vc.active) continue;
+      float yp, st, sl;
+      if (vc.sustaining) {
+        yp = tbh * 0.5f; st = tbh * 0.5f; sl = tbh * 0.5f;
+      } else {
+        float p      = clampf(vc.t / relS, 0.0f, 1.0f);
+        float accel  = std::pow(p, accExp);             // trailing edge (top), slow→fast
+        float burst  = 1.0f - (1.0f - p) * (1.0f - p);  // leading edge (bottom), fast ease-out
+        float yTrail = tbh + (1.0f - tbh) * accel;
+        float yLead  = tbh + (1.0f - tbh + kEdgeMargin) * burst;
+        yp = yTrail + (yLead - yTrail) * peakPos;
+        st = std::max((yp - yTrail) * kSigmaFrac, 1e-4f);
+        sl = std::max((yLead - yp) * kSigmaFrac, 1e-4f);
+      }
+      int idx = (b * VOICES_PER_BAR + nvb) * 4;
+      vparams[idx + 0] = yp; vparams[idx + 1] = st;
+      vparams[idx + 2] = sl; vparams[idx + 3] = 1.0f;     // equal weight → constant density
+      if (nvb == 0) peaks[b] = yp;                         // debug: leading voice per bar
+      nvb++;
     }
-    vparams[nv * 4 + 0] = yp; vparams[nv * 4 + 1] = st;
-    vparams[nv * 4 + 2] = sl; vparams[nv * 4 + 3] = 1.0f;   // equal weight → constant density
-    peaks[nv] = yp;
-    voice_bars_packed |= (uint32_t)(s->voices[v].bar & 3) << (nv * 2);
-    nv++;
+    bar_nv[b] = (uint32_t)nvb;
   }
 
   // Pass 1 — update the pool.
@@ -450,13 +478,10 @@ void render(void* self, int vp_w, int vp_h) {
   uu.vel_x_jitter = clampf(s->velocity_x_jitter, 0.0f, 1.0f);
   uu.vel_y_jitter = clampf(s->velocity_y_jitter, 0.0f, 1.0f);
   uu.hue_jitter = clampf(s->hue_jitter, 0.0f, 0.5f);
-  uu.bar_mode = (uint32_t)clampi(s->bar_target_mode, 0, 2);
-  uu.one_bar_target = (uint32_t)clampi(s->one_bar_target, 0, 3);
   uu.respect_bounds = s->respect_position_bounds ? 1u : 0u;
-  uu.num_voices = (uint32_t)nv;
   uu.seed = (uint32_t)s->seed;
-  uu.voice_bars_packed = voice_bars_packed;
-  for (int k = 0; k < 16; k++) uu.voices[k] = vparams[k];
+  for (int b = 0; b < 4; b++) uu.bar_nv[b] = bar_nv[b];
+  for (int k = 0; k < 64; k++) uu.voices[k] = vparams[k];
   s->update_uniform_buf.writeOne(uu);
   {
     auto cp = gpu::ComputePass::begin();

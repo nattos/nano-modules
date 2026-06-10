@@ -20,43 +20,41 @@ cbuffer Uniforms : register(b1) {
   float dt; float life_s; float respawn_delay_s; float size;
   float size_jitter; float life_jitter; float hue_jitter; float _pad0;
   float vel_x; float vel_y; float vel_x_jitter; float vel_y_jitter;
-  uint  bar_mode; uint one_bar_target; uint respect_bounds; uint num_voices;  // bar_mode: 0 one, 1 random, 2 all
-  uint  seed; uint voice_bars_packed; float _pad2; float _pad3;   // 4 voice bars, 2 bits each
-  float4 voices[4];   // x=y_peak, y=sigma_trail (up), z=sigma_lead (down), w=weight
+  uint  respect_bounds; uint seed; uint _pad1; uint _pad2;
+  uint4 bar_nv;          // active voice count per bar
+  float4 voices[16];     // [bar*4 + slot] = (y_peak, sigma_trail (up), sigma_lead (down), weight)
 };
 
-// Sample a spawn y from the voice mixture + report which voice (for its bar).
-// Returns -1 if no voice is active.
-float sampleVoiceY(uint i, out uint outVi) {
-  outVi = 0u;
-  if (num_voices == 0u) return -1.0;
+// Sample a spawn y from the particle's OWN bar's voice sub-pool. Per-bar, so
+// the loop length is still <= 4 voices. Returns -1 if that bar has no voice.
+float sampleVoiceY(uint i, uint bar) {
+  uint base = bar * 4u;
+  uint nv = (bar == 0u) ? bar_nv.x : (bar == 1u) ? bar_nv.y : (bar == 2u) ? bar_nv.z : bar_nv.w;
+  if (nv == 0u) return -1.0;
   float total = 0.0;
-  for (uint v = 0u; v < num_voices; v++) total += voices[v].w;
+  for (uint v = 0u; v < nv; v++) total += voices[base + v].w;
   if (total <= 1e-6) return -1.0;
 
   float r = tt_unit(tt_pcg3(i + 0x3C6EF35Fu, frame_index, seed)) * total;
   uint vi = 0u; float cum = 0.0;
-  for (uint v = 0u; v < num_voices; v++) { cum += voices[v].w; if (r < cum) { vi = v; break; } vi = v; }
-  outVi = vi;
+  for (uint v = 0u; v < nv; v++) { cum += voices[base + v].w; if (r < cum) { vi = v; break; } vi = v; }
+  uint idx = base + vi;
 
   // Standard normal (Box–Muller), then split-normal: spread up by sigma_trail
   // (toward the top), down by sigma_lead (toward the bottom).
   float u1 = tt_unit(tt_pcg3(i + 0x9E3779B9u, frame_index, 0x1u + seed));
   float u2 = tt_unit(tt_pcg3(i + 0x85EBCA6Bu, frame_index, 0x2u + seed));
   float z = sqrt(-2.0 * log(max(u1, 1e-7))) * cos(6.28318530718 * u2);
-  float y = voices[vi].x + (z < 0.0 ? z * voices[vi].y : z * voices[vi].z);
+  float y = voices[idx].x + (z < 0.0 ? z * voices[idx].y : z * voices[idx].z);
   return max(y, 0.0);          // never above the top; below-screen culled by caller
 }
 
-// Roll a fresh spawn into `p`. Leaves the particle DEAD (life 0, short respawn)
-// when there's no on-screen voice sample to place it.
+// Roll a fresh spawn into `p`. The particle's bar is its slot's partition
+// (i & 3); it samples only that bar's voices. Leaves the particle DEAD when
+// the bar has no on-screen voice sample.
 void respawn(inout Particle p, uint i) {
-  uint  vi;
-  float py = sampleVoiceY(i, vi);
-  uint  bar;
-  if      (bar_mode == 0u) bar = min(one_bar_target, 3u);                  // one_bar
-  else if (bar_mode == 1u) bar = (voice_bars_packed >> (vi * 2u)) & 3u;    // random_bar (per voice)
-  else                     bar = i & 3u;                                   // all_bars (even spread)
+  uint  bar = i & 3u;
+  float py  = sampleVoiceY(i, bar);
   float rx  = tt_unit(tt_pcg3(i + 0xA17F2B91u, frame_index, 0x11u + seed));
   float px  = (float(bar) + rx) * 0.25;
 
