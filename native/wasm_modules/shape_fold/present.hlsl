@@ -13,6 +13,17 @@
 StructuredBuffer<float> lut    : register(t1);   // [0..NB-1]=LUT, [NB]=lo, [NB+1]=hi, [NB+2]=blank
 RWTexture2D<float4>     outTex : register(u2);
 
+// Juicy magma rolloff: lift the mids, add an S-curve for contrast pop, and a
+// soft highlight shoulder so the bright ridges glow into the magma yellows
+// instead of clipping to flat white. Applied only on the magma path; grayscale
+// stays a faithful linear readout for downstream effects.
+float sf_juice(float x) {
+  x = saturate(x);
+  x = pow(x, 0.82);                            // lift mids — warmer, juicier
+  float s = x * x * (3.0 - 2.0 * x);           // smoothstep S-curve (rolls off both ends)
+  return saturate(lerp(x, s, 0.55));           // partial S → contrast without crushing
+}
+
 float sf_apply_levels(float F, float lo, float hi) {
   float t = saturate((F - lo) / max(hi - lo, 1e-5)) * float(SF_NB - 1u);
   uint i0 = (uint)floor(t);
@@ -41,6 +52,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float F = sf_apply_levels(F0, lo, hi);                 // leveled: median → 0, ~[-1,1]
   float levelStrength = smoothstep(0.0, max(level_ease, 1e-5), hi - lo);
   float g = saturate((F * 0.5 + 0.5) * levelStrength);
-  float3 rgb = (output_mode > 0.5) ? sf_magma(g) : float3(g, g, g);
+  float3 rgb = (output_mode > 0.5) ? sf_magma(sf_juice(g)) : float3(g, g, g);
   outTex[gid.xy] = float4(rgb, 1.0);
 }
