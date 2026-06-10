@@ -66,7 +66,7 @@ void nano_module_main() {
         2,
         "video.height_from_gradient",
         "Height From Gradient",
-        "Reconstructs a height field from a gradient field on the GPU. Synthesizes a 2D gradient — Radial (outward from an adjustable center, magnitude = luma) or Level Curves (treats the input as a contour map: the across-curve normal, sign-resolved by a global bias) — takes its divergence, and solves the Poisson equation laplacian(h)=div(g) with a coarse-to-fine multigrid (FMG-lite) cascade for the least-squares height. The field is generally non-conservative so there's no exact reconstruction, but the solve produces the best try. Visualizes the result as shaded hillshade relief, grayscale height, surface normals, or its own contour lines.",
+        "Reconstructs a height field from a gradient field on the GPU. The gradient comes from one of several sources — Radial (outward from a center, magnitude = luma), Level Curves (treats the input as a contour map: the across-curve normal, sign-resolved by a global bias), or an existing vector field: Motion Vectors (the incoming render_outputs/motion), a Normal Map, or a Gradient Field. It takes the divergence and solves the Poisson equation laplacian(h)=div(g) with a coarse-to-fine multigrid (FMG-lite) cascade for the least-squares height. The field is generally non-conservative so there's no exact reconstruction, but the solve produces the best try. Visualizes the result as shaded hillshade relief, grayscale height, surface normals, or its own contour lines.",
         "video",
         "height,gradient,poisson,reconstruction,relief,normals,multigrid,math",
         NANO_INSTANCE_LIFECYCLE(height_from_gradient),

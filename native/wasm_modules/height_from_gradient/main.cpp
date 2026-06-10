@@ -6,10 +6,12 @@
  * height whose gradient best matches g — then visualizes the reconstructed
  * surface (hillshade / grayscale / normals / its own contour lines).
  * Gradient sources: Radial (outward from an adjustable center, magnitude =
- * luma) and Level Curves (treat the input as a contour map — the gradient is
- * the across-curve normal, its uphill sign resolved by a global bias). The
- * field is generally non-conservative (curl != 0), so there's usually no exact
- * height; the Poisson solve is the "best try."
+ * luma), Level Curves (input as a contour map — the across-curve normal, its
+ * uphill sign resolved by a global bias), and three that integrate an existing
+ * vector field — Motion Vectors (the incoming render_outputs/motion rail),
+ * Normal Map (g = -n.xy / n.z), and Gradient Field (channels are the gradient).
+ * The field is generally non-conservative (curl != 0), so there's usually no
+ * exact height; the Poisson solve is the "best try."
  *
  * Solver: coarse-to-fine multigrid cascade (FMG-lite). Build a pre-scaled
  * divergence pyramid, Jacobi-solve the coarsest level from zero, prolong
@@ -20,7 +22,8 @@
  * honor between dispatches in a single submit.
  *
  * Pass pipeline (shared common.hlsl):
- *   gradient   — input → RG gradient field g (Radial × luma, or Level Curves).
+ *   gradient   — source → RG gradient field g (radial / level-curve / decoded
+ *                vector field, per `source`).
  *   divergence — g → F_0 = div(g) (central differences, level-0 spacing).
  *   restrict   — F_k → F_{k+1} (2x2 sum; builds the pre-scaled pyramid).
  *   jacobi     — one relaxation sweep h' = (hL+hR+hD+hU - F)/4 (reused/level).
