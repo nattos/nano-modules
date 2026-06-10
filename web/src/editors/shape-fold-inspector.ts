@@ -183,7 +183,7 @@ export class ShapeFoldInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.58} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+        .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'birth_softness'} .label=${'Birth Soft'}
         .min=${0.02} .max=${1} .step=${0.01} .defaultValue=${0.45} .binding=${b}></scalar-slider>
 
@@ -196,6 +196,8 @@ export class ShapeFoldInspector extends MobxLitElement {
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_hold_period'} .label=${'Hold (s)'}
         .min=${0} .max=${8} .step=${0.25} .defaultValue=${2} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'ap_hold_jitter'} .label=${'Hold Jit'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <field-trigger .fieldPath=${'ap_jump'} .label=${'Jump'} .binding=${b}></field-trigger>
 
       <div class="section">Levels</div>

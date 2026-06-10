@@ -87,6 +87,7 @@ struct State {
   float ap_speed            = 0.43f;   // [0,1] quadratic → ~0.6 actual
   bool  ap_snap             = false;
   float ap_hold_period      = 2.0f;    // seconds; 0 = no auto-jump (trigger only)
+  float ap_hold_jitter      = 0.0f;    // 0..1 → randomize each hold interval ±fraction
   float level_ease          = 0.25f;
   int   output_mode         = 1;       // 0 = Grayscale, 1 = Magma (default)
 
@@ -94,6 +95,8 @@ struct State {
   float clock_t   = 0.0f;              // loop phase 0..1
   float orbit     = 0.0f;              // autopilot epicycle phase
   float snap_accum = 0.0f;            // snap-mode hold timer
+  float next_hold  = 0.0f;            // jittered target for the current interval
+  uint32_t rng     = 0x2545F491u;     // per-instance PRNG state (seeded in create)
   bool  held_valid = false;
   float held_x = 0.5f, held_y = 0.5f;
   float eff_x = 0.25f, eff_y = 0.85f;  // effective XY used for rendering
@@ -105,6 +108,7 @@ static void apply_visibility(bool autopilot, bool ap_snap) {
   state::setFieldHidden("ap_speed",       !autopilot);
   state::setFieldHidden("ap_snap",        !autopilot);
   state::setFieldHidden("ap_hold_period", !(autopilot && ap_snap));
+  state::setFieldHidden("ap_hold_jitter", !(autopilot && ap_snap));
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
 }
 
@@ -132,9 +136,10 @@ void module_init() {
       // Autoplay clock speed (0 = frozen). [0,1] with a quadratic bend onto the
       // real 0..3 range, so the low end has fine control.
       .floatField("time_speed", 0.58f, 0.0f, 1.0f, state::PrimaryInput)
-      // Time-warp: 0 = uniform → 1 = rest at the loop point, surge through the
-      // middle (bursts). τ(t) = t − (ease/2π)·sin(2π t).
-      .floatField("ease", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      // Time-warp (bipolar). τ(t) = t − (ease/2π)·sin(2π t). +1 = rest at the
+      // loop point, surge through the middle; −1 = surge at the loop point, rest
+      // in the middle; 0 = uniform. |ease|≤1 keeps it monotone.
+      .floatField("ease", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
       // How gradually AND-edges fade in/out (the soft birth gate width).
       .floatField("birth_softness", 0.45f, 0.02f, 1.0f, state::PrimaryInput)
       // --- Autopilot (non-destructive XY override + broadcast) ---
@@ -146,6 +151,8 @@ void module_init() {
       // Hold seconds between auto-jumps. 0 = never auto-jump (hold until the
       // jump trigger fires).
       .floatField("ap_hold_period", 2.0f, 0.0f, 8.0f, state::PrimaryInput)
+      // Randomize each hold interval by ± this fraction of the base period.
+      .floatField("ap_hold_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
       // Jump now — switch to a fresh point immediately (and reset the hold timer).
       .eventField("ap_jump", state::PrimaryInput)
       // --- Auto-levels (histogram normalization, median → 0) ---
@@ -198,8 +205,13 @@ void module_init() {
   state::log("shape_fold: module initialized");
 }
 
+// Distinct PRNG seed per instance (no wall-clock / RNG primitive needed).
+static uint32_t s_seed_counter = 0x9E3779B9u;
+
 void* create() {
   auto* s = new State();
+  s_seed_counter = s_seed_counter * 1664525u + 1013904223u;
+  s->rng = s_seed_counter ^ 0xC0FFEEu;
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->stats_buf   = gpu::Device::createBuffer(kStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
   s->lut_buf     = gpu::Device::createBuffer(kLutFloats * sizeof(float), gpu::BufferUsage::Storage);
@@ -236,6 +248,12 @@ static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (
 static inline float lerpf(float a, float b, float f) { return a + (b - a) * f; }
 static inline int   clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+// Per-instance uniform random in [0,1) (LCG).
+static inline float rng_unit(State* s) {
+  s->rng = s->rng * 1664525u + 1013904223u;
+  return (float)((s->rng >> 8) & 0xFFFFFFu) / (float)0x1000000;
+}
+
 // Epicycle position at a given orbit phase. Two summed circular motions, 90°
 // out of phase — sweeps the annulus without stalling at the centre. Clamped to
 // stay inside the pad. Port of app.js's autopilot.
@@ -271,7 +289,7 @@ void tick(void* self, double dt) {
       bool jump = trig || !s->held_valid;        // trigger or first frame
       if (hold_on) {                             // auto-jump only when Hold > 0
         s->snap_accum += fdt;
-        if (s->snap_accum >= s->ap_hold_period) jump = true;
+        if (s->snap_accum >= s->next_hold) jump = true;
       }
       if (jump) {
         // Hold ON: snap to where the drifting orbit currently is — "where the
@@ -281,6 +299,10 @@ void tick(void* self, double dt) {
         orbit_xy(s->orbit, s->held_x, s->held_y);
         s->held_valid = true;
         s->snap_accum = 0.0f;                     // reset the hold timer
+        // Schedule the next interval, jittered ± a fraction of the base period.
+        float jit = s->ap_hold_jitter * (2.0f * rng_unit(s) - 1.0f);
+        s->next_hold = s->ap_hold_period * (1.0f + jit);
+        if (s->next_hold < 0.02f) s->next_hold = 0.02f;
       }
       s->eff_x = s->held_x; s->eff_y = s->held_y;
     } else {
@@ -327,6 +349,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "ap_speed"))            s->ap_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "ap_snap"))             { bool v = state::patchFloat(i) != 0.0f; if (v != s->ap_snap) { s->ap_snap = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "ap_hold_period"))      s->ap_hold_period = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "ap_hold_jitter"))      s->ap_hold_jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "ap_jump")) {
       float v = state::patchFloat(i);
       if (v != 0.0f && s->ap_jump_prev == 0.0f) s->ap_jump_pending = true;  // rising edge
