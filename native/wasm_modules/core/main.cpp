@@ -75,6 +75,9 @@ NANO_DECLARE_INSTANCE_EFFECT(noise)
 
 NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
+NANO_DECLARE_INSTANCE_EFFECT(auto_level)
+namespace auto_level { int32_t is_identity(void* self); }
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -363,6 +366,17 @@ void nano_module_main() {
         "video",
         "blur,motion,velocity,render-outputs",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
+    });
+
+    nano::registerEffect({
+        2,
+        "video.auto_level",
+        "Auto Level",
+        "Histogram auto-leveler: equalize the luminance distribution and/or pull the median toward a target, chroma-preserving",
+        "video",
+        "auto,level,histogram,equalize,contrast,exposure,median",
+        NANO_INSTANCE_LIFECYCLE(auto_level),
+        &auto_level::is_identity,
     });
 }
 

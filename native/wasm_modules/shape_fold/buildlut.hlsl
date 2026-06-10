@@ -7,14 +7,13 @@
 // LUT[0..NB-1] plus lo/hi and a blank flag for present.
 
 #include "common.hlsl"
+#include "nano_histogram.hlsl"
 
 static const float SF_LUT_GAUSSIAN = 0.7;   // linear-stretch ↔ hist-equalize mix
 static const float SF_LUT_CLIP     = 5.0;   // CLAHE flat-region bin cap (× mean)
 
 StructuredBuffer<int>     stats : register(t1);   // [0]=lo, [1]=hi, [2..]=hist[NB]
 RWStructuredBuffer<float> lut   : register(u2);   // [0..NB-1]=LUT, [NB]=lo, [NB+1]=hi, [NB+2]=blank
-
-groupshared float gCdf[SF_NB];
 
 [numthreads(1, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -31,34 +30,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
   lut[SF_NB + 2] = 0.0;
 
-  // CLAHE clip cap + redistribution. Clipping conserves mass, so the clipped
-  // total still equals `total` — cdf normalizes by `total` directly.
-  float total = 0.0;
-  for (uint i = 0u; i < SF_NB; i++) total += float(stats[2u + i]);
-  total = max(total, 1.0);
+  // CLAHE-clipped equalization CDF (shared) + two-sided percentiles.
+  float cdf[NANO_HIST_NB];
+  nano_hist_cdf(stats, 2u, SF_LUT_CLIP, cdf);
 
-  float cap = SF_LUT_CLIP * (total / float(SF_NB));
-  float excess = 0.0;
-  for (uint i = 0u; i < SF_NB; i++) excess += max(float(stats[2u + i]) - cap, 0.0);
-  float add = excess / float(SF_NB);
-
-  float acc = 0.0;
-  for (uint i = 0u; i < SF_NB; i++) {
-    float hc = min(float(stats[2u + i]), cap) + add;
-    acc += hc;
-    gCdf[i] = acc / total;
-  }
-
-  // Two-sided percentiles: median → 0, [2%,98%] → ±1. valAt(i) = lo + (i+0.5)/NB·range.
-  float range = hi - lo;
-  float median = hi, p02 = hi, p98 = hi;
-  bool gotM = false, got02 = false, got98 = false;
-  for (uint i = 0u; i < SF_NB; i++) {
-    float v = lo + (float(i) + 0.5) / float(SF_NB) * range;
-    if (!got02 && gCdf[i] >= 0.02) { p02 = v; got02 = true; }
-    if (!gotM  && gCdf[i] >= 0.5)  { median = v; gotM = true; }
-    if (!got98 && gCdf[i] >= 0.98) { p98 = v; got98 = true; }
-  }
+  // Two-sided percentiles: median → 0, [2%,98%] → ±1.
+  float range  = hi - lo;
+  float median = nano_hist_percentile(cdf, lo, hi, 0.5);
+  float p02    = nano_hist_percentile(cdf, lo, hi, 0.02);
+  float p98    = nano_hist_percentile(cdf, lo, hi, 0.98);
   float loSpread = max(median - p02, 1e-4);
   float hiSpread = max(p98 - median, 1e-4);
 
@@ -67,7 +47,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     int bin = (int)clamp(floor((v - lo) / (range + 1e-9) * float(SF_NB)), 0.0, float(SF_NB - 1u));
     float lin = (v >= median) ? (v - median) / hiSpread : (v - median) / loSpread;
     float linPos = 0.5 + 0.5 * clamp(lin, -1.0, 1.0);
-    float pos = linPos * (1.0 - SF_LUT_GAUSSIAN) + gCdf[bin] * SF_LUT_GAUSSIAN;
+    float pos = linPos * (1.0 - SF_LUT_GAUSSIAN) + cdf[bin] * SF_LUT_GAUSSIAN;
     lut[i] = 2.0 * pos - 1.0;            // median → 0, both sides span [-1, 1]
   }
 }

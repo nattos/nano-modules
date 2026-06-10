@@ -58,6 +58,7 @@ core | gradient | generator.gradient | Gradient | instance | compute,pixel
 core | grid | generator.grid | Grid | instance | compute,pixel
 core | noise | generator.noise | Noise | instance | compute,pixel
 core | motion_blur | video.motion_blur | Motion Blur | instance | reconstruct,pyramid_reduce
+core | auto_level | video.auto_level | Auto Level | instance | auto_level_minmax=minmax,auto_level_hist=hist,auto_level_buildlut=buildlut,auto_level_apply=apply | identity
 lights | strobe_channel | gen.strobe_channel | Strobe Channel | instance | strobe_channel_render=render
 lights | soft_glow | gen.soft_glow | Soft Glow | instance | soft_glow_color=color,soft_glow_motion=motion
 lights | dispersion | fx.dispersion | Dispersion | instance | dispersion_render=render

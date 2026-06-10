@@ -49,6 +49,15 @@ compile_shaders_compute_var_spv motion_blur pyramid_reduce
 _emit_spv_header_var motion_blur reconstruct pyramid_reduce
 echo "  motion_blur shaders compiled (SPV: reconstruct + pyramid_reduce)"
 
+# auto_level — histogram auto-leveler. minmax → hist → buildlut → apply,
+# sharing the histogram→CDF math in shaders_common/nano_histogram.hlsl.
+compile_shaders_compute_var_spv auto_level minmax
+compile_shaders_compute_var_spv auto_level hist
+compile_shaders_compute_var_spv auto_level buildlut
+compile_shaders_compute_var_spv auto_level apply
+_emit_spv_header_var auto_level minmax hist buildlut apply
+echo "  auto_level shaders compiled (SPV: minmax+hist+buildlut+apply)"
+
 echo "=== Building WASM (core) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -90,6 +99,7 @@ wasm_build \
   ../gradient/main.cpp \
   ../grid/main.cpp \
   ../noise/main.cpp \
-  ../motion_blur/main.cpp
+  ../motion_blur/main.cpp \
+  ../auto_level/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
