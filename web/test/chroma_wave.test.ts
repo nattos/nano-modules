@@ -76,6 +76,9 @@ describe('Chroma Wave Effect E2E', () => {
     ['auto_rate', 0], ['intensity', 1.5], ['saturation', 0.9],
     ['base_radius', 0.12], ['charge_expand', 2.2], ['position_y', -0.7],
     ['gaussian_sharpness', 4], ['overlay_alpha_hold', 0.5], ['seed', 7],
+    // Keep one-shot voices centered/clean so single-voice tests are
+    // deterministic; the polyphony test overrides these.
+    ['voice_pos_jitter', 0], ['voice_hue_jitter', 0],
     ...extra,
   ];
 
@@ -231,6 +234,46 @@ describe('Chroma Wave Effect E2E', () => {
     });
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ r: 0, g: 0, b: 0, a: 255 }, 4);
+  });
+
+  it('polyphony: a higher voice_limit yields more simultaneous bloom coverage', async () => {
+    // With auto_rate cranked, voices spawn faster than they die. voice_limit 8
+    // lets up to 8 overlap; limit 1 keeps only one alive at a time → markedly
+    // less total bright coverage. Spread them so they don't all stack.
+    const run = (limit: number) => runGpuEffectTest({
+      module: 'chroma_wave.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 45, params: params([['auto_rate', 0.9], ['charge_s', 0.1],
+                                  ['min_sustain_s', 0.05], ['release_s', 0.6],
+                                  ['voice_limit', limit], ['voice_pos_jitter', 0.7],
+                                  ['base_radius', 0.1]]),
+      dumpName: `chroma_wave_poly_${limit}`,
+    });
+    const one = await run(1);
+    const eight = await run(8);
+    expect(one.success && eight.success).toBe(true);
+    expect(brightBand(eight, 0.0, 1.0)).toBeGreaterThan(brightBand(one, 0.0, 1.0) + 0.02);
+  });
+
+  it('hue_interact rotates overlapping voices further (more hue spread)', async () => {
+    // Two co-located voices (a held one + a one-shot, no position jitter) fully
+    // overlap. At hue_interact 0 their band phases average → one blended hue;
+    // cranked up they SUM → the combined phase rotates further round the wheel
+    // → more distinct hues. (A lone voice is unaffected: avg == sum.)
+    const run = (hi: number) => runGpuEffectTest({
+      module: 'chroma_wave.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 16,
+      params: [...params([['default_gate_state', 1], ['charge_s', 0.1],
+                          ['grade_freq_hold', 3], ['hue_span', 0.3],
+                          ['band_contrast', 0.3], ['hue_interact', hi]]),
+               ['trigger', 1]],
+      dumpName: `chroma_wave_interact_${hi}`,
+    });
+    const lo = await run(0.0);
+    const high = await run(1.8);
+    expect(lo.success && high.success).toBe(true);
+    expect(hueVariance(high)).toBeGreaterThan(hueVariance(lo) + 0.03);
   });
 
   it('intensity 0 renders passthrough even while charging', async () => {
