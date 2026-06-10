@@ -23,6 +23,7 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_blobs)
 NANO_DECLARE_INSTANCE_EFFECT(lights_sim)
 NANO_DECLARE_INSTANCE_EFFECT(block_dehance)
 NANO_DECLARE_INSTANCE_EFFECT(tingle_top)
+NANO_DECLARE_INSTANCE_EFFECT(chroma_wave)
 
 extern "C" {
 
@@ -136,6 +137,16 @@ void nano_module_main() {
         "lights",
         "sparkle,tingle,particles,cut-in,trigger,bar",
         NANO_INSTANCE_LIFECYCLE(tingle_top),
+    });
+
+    nano::registerEffect({
+        2,
+        "gen.chroma_wave",
+        "Chroma Wave",
+        "Charge-and-burst prismatic wave bloom. A soft super-gaussian blob grows from the top-center while gated; as pressure builds the top flattens into a plateau, the blob elongates in X and hollows out at the top so the mass piles into a downward crescent (max pressure). On release it bursts — rapidly expanding while the colour-grade transfer folds, sending prismatic bands travelling down the density gradient (dominant) and washing back up the inner edge (secondary). Additive bloom composited over the input.",
+        "lights",
+        "chroma,prismatic,wave,bloom,trigger,charge,burst",
+        NANO_INSTANCE_LIFECYCLE(chroma_wave),
     });
 }
 
