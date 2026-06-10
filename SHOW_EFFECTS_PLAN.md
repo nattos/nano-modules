@@ -1056,6 +1056,16 @@ Implementation: an accumulator advances `tick_accum += dt * temporal_rate_hz`, i
 
 ### fx.chrome_wave
 
+> **SHIPPED (reimagined) as `gen.chroma_wave`.** The spec below (chromatic
+> aberration of the *input*) was superseded: the built effect GENERATES a
+> prismatic charge/burst "wave bloom" graded from its own density field and
+> composites it additively over the input — no input distortion. It is
+> polyphonic (up to 32 CPU-managed charge→burst voices that interact in the
+> band-phase domain so overlapping hues rotate further), and emits
+> `render_outputs/motion` as the optical flow of the band field (with
+> perceptual `motion_warp` / `motion_edge_mask` shaping). See
+> `native/wasm_modules/chroma_wave/`.
+
 **Charge-and-burst chroma-distortion bloom.** A large soft Gaussian-ish blob grows while gated, then expands rapidly and fades out on release. The blob's curve field drives radial chromatic aberration on the underlying input — gentle classical R/G/B separation while held, rainbow-banded foldback chaos during the release expansion. The blob itself is rendered as a soft light-leak overlay (semi-transparent additive bloom).
 
 The original "recolor input to a chrome ramp" interpretation was wrong — kept the slot, completely retitled.
@@ -1333,7 +1343,7 @@ Then complicators we know we'll lean on:
 Then the rest as time permits:
 9. `gen.tingle_top` (covers both the original tingle and the downward_sparkle preset via velocity params; bench against `flash_particles` to see if all three end up sharing enough machinery to extract a helper)
 10. `gen.strobe_channel`
-11. `fx.chrome_wave`
+11. `fx.chrome_wave` → **shipped as `gen.chroma_wave`** (reimagined: a self-rendered, polyphonic prismatic "wave bloom" generator rather than an input chroma-distorter — see the spec note below). All 11 effects above are now built.
 
 (`fx.bounce_resonator` was dropped: `gen.bounce_resonator` became a GPU diffusion network, so the shared spring-oscillator helper no longer exists, and its `impulse_mode = tex_in` already samples the input image per bar — covering the audio-energy-driven gesture this slot was for.)
 
