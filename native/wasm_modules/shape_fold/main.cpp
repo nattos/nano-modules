@@ -8,10 +8,11 @@
  * GPU evaluates the scalar SDF field from them. The atlas itself never touches
  * the GPU (it's CPU-only constant data in shape_fold_atlas.h).
  *
- * The field is histogram auto-leveled (median → 0) every frame and shown as
- * grayscale or magma — the raw field, no line/contour/shading modes (dropped on
- * purpose; downstream effects style it). The square field COVERS the viewport
- * uniformly (no bars) with a domain `scale` zoom.
+ * The field is histogram auto-leveled (median → 0) every frame, driven by an
+ * exposure, and shown as grayscale or one of several colormap grades (magma /
+ * inferno / viridis / plasma / turbo) — the raw field, no line/contour/shading
+ * modes (dropped on purpose; downstream effects style it). The square field
+ * COVERS the viewport uniformly (no bars) with a domain `scale` zoom.
  *
  * Autopilot spirals the (x,y) automatically via an epicycle. It is
  * NON-destructive: it overrides the effective XY internally for rendering but

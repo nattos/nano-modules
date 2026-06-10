@@ -77,7 +77,7 @@ void nano_module_main() {
         2,
         "video.shape_fold",
         "Shape Fold",
-        "Evolving-shape generator. A baked 3D atlas of resolved shape parameters — axes frequency (x), simplicity (y), and temporal complexity (z) — is interpolated each frame down to a few terms and evaluated as a scalar SDF field on the GPU. An internal clock animates a seamless loop (with an easing/time-warp lever and a soft 'birth' gate for fading edges); an optional autopilot spirals the XY automatically and broadcasts its live position (autopilot_x/y) without mutating the inputs. The field is histogram auto-leveled (median→0) every frame and output as grayscale or magma — the raw field, the square covering the viewport with a domain scale that reveals the periodic structure. Pure generator (no input).",
+        "Evolving-shape generator. A baked 3D atlas of resolved shape parameters — axes frequency (x), simplicity (y), and temporal complexity (z) — is interpolated each frame down to a few terms and evaluated as a scalar SDF field on the GPU. An internal clock animates a seamless loop (with an easing/time-warp lever and a soft 'birth' gate for fading edges); an optional autopilot spirals the XY automatically and broadcasts its live position (autopilot_x/y) without mutating the inputs. The field is histogram auto-leveled (median→0) every frame, driven by an exposure, and output as grayscale or a colormap grade (magma/inferno/viridis/plasma/turbo) — the raw field, the square covering the viewport with a domain scale that reveals the periodic structure. Pure generator (no input).",
         "video",
         "generator,sdf,shape,evolving,autopilot,procedural,math",
         NANO_INSTANCE_LIFECYCLE(shape_fold),

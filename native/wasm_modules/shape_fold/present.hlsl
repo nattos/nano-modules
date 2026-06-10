@@ -1,12 +1,12 @@
-// video.shape_fold — present: the auto-leveled field as grayscale or magma.
+// video.shape_fold — present: the auto-leveled field as grayscale or a grade.
 //
 // The square [-1,1]² field COVERS the (possibly non-square) viewport uniformly
 // — the long axis spans ±1, the short axis is cropped, no bars — then zoomed by
 // `domain_scale` (the SDFs are periodic, so there's always more to reveal; we
 // never mask anything out). The field is remapped through the auto-levels LUT
-// (median → 0), eased toward black at low contrast, and shown grayscale or
-// magma. No line / contour / shading modes — the raw field is the output
-// (downstream styles it).
+// (median → 0), driven by `exposure`, eased toward the grade's zero at low
+// contrast, and shown grayscale or a colormap grade. No line / contour /
+// shading modes — the raw field is the output (downstream styles it).
 
 #include "common.hlsl"
 
@@ -22,6 +22,18 @@ float sf_juice(float x) {
   x = pow(x, 0.82);                            // lift mids — warmer, juicier
   float s = x * x * (3.0 - 2.0 * x);           // smoothstep S-curve (rolls off both ends)
   return saturate(lerp(x, s, 0.55));           // partial S → contrast without crushing
+}
+
+// Map a graded value [0,1] to colour via the selected output_mode. Grayscale is
+// a linear readout; the colormaps share the juicy rolloff.
+float3 sf_grade(float g) {
+  if (output_mode < 0.5) return float3(g, g, g);
+  float j = sf_juice(g);
+  if      (output_mode < 1.5) return sf_magma(j);
+  else if (output_mode < 2.5) return sf_inferno(j);
+  else if (output_mode < 3.5) return sf_viridis(j);
+  else if (output_mode < 4.5) return sf_plasma(j);
+  return sf_turbo(j);
 }
 
 float sf_apply_levels(float F, float lo, float hi) {
@@ -45,7 +57,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float lo = lut[SF_NB + 0];
   float hi = lut[SF_NB + 1];
   float blank = lut[SF_NB + 2];
-  if (blank > 0.5) { outTex[gid.xy] = float4(0, 0, 0, 1); return; }
+  // Zero-contrast field: show the grade's ZERO colour (not hard black) so ramps
+  // that don't start at black don't pop. This matches the level-ease target
+  // below (which fades g → 0 as contrast vanishes).
+  if (blank > 0.5) { outTex[gid.xy] = float4(sf_grade(0.0), 1.0); return; }
 
   float2 p = sq * domain_scale;
   float F0 = sf_field_at(p);
@@ -54,16 +69,5 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Exposure drives the median-centered value before grading: >1 pushes brights
   // into the rolloff, <1 pulls toward mid.
   float g = saturate((F * exposure * 0.5 + 0.5) * levelStrength);
-  float3 rgb;
-  if (output_mode < 0.5) {
-    rgb = float3(g, g, g);                 // Grayscale — linear readout
-  } else {
-    float j = sf_juice(g);                 // shared juicy rolloff
-    if      (output_mode < 1.5) rgb = sf_magma(j);
-    else if (output_mode < 2.5) rgb = sf_inferno(j);
-    else if (output_mode < 3.5) rgb = sf_viridis(j);
-    else if (output_mode < 4.5) rgb = sf_plasma(j);
-    else                        rgb = sf_turbo(j);
-  }
-  outTex[gid.xy] = float4(rgb, 1.0);
+  outTex[gid.xy] = float4(sf_grade(g), 1.0);
 }
