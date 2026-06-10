@@ -610,6 +610,21 @@ RGB is an okay output space and a *terrible* control space. For anything that in
 
 A hue-rotation effect implemented in HSV is one line of math. The same effect in pure RGB is a 3×3 matrix that's hard to dial. Pick the right space.
 
+### 3.5 Many primitives — rasterize geometry, don't loop per-pixel
+
+To draw N particles / sprites / quads / splats, **do NOT loop over all of them inside a fragment or compute shader, one iteration per primitive per pixel.** That's `O(pixels × N)` — every pixel re-tests every particle even though each particle only covers a few pixels. It melts down the moment N or the resolution grows. This is *ShaderToy thinking* — ShaderToy can't emit geometry, so it fakes everything per-pixel. **We have real render stages. Push beyond it.** 😂
+
+**Generate geometry and let the rasterizer do the work.** An instanced quad render pass costs only the *covered* area (`O(Σ primitive area)`), and the fixed-function blend hardware composites for free:
+
+- An **update compute pass** owns the GPU-resident pool buffer (lifecycle, spawn, capture-at-spawn) — see §8.4 / §3.2.
+- A **prefill** pass copies `tex_in → tex_out` (so the additive/alpha quads blend over the input).
+- An **instanced render pass** draws 6 verts × `count` instances. The **vertex shader** reads the pool (`StructuredBuffer<Particle> : register(t0)`), looks up `SV_InstanceID`, and positions the quad at the particle's pos/size (use isotropic-uv so it's round on any aspect). **Dead particles collapse to a degenerate triangle outside clip space** (`pos = float4(2,2,2,1)`) so the rasterizer skips them — no compaction pass needed. The **fragment shader** shades only the covered fragments (mask, fade, color) and `discard`s out-of-mask pixels.
+- The PSO picks the blend: `gpu::Device::createInstancedRenderPSO(vs, "main", fs, "main", fmt, bindings, gpu::Device::BlendMode::Additive /* or AlphaOver */)`, drawn via `gpu::RenderPass::beginLoad(out) → rp.setPSO/setBuffer/draw(6, count) → rp.end()`.
+
+`wasm_modules/flash_particles/` (`vs.hlsl` + `fs_color.hlsl` + `fs_motion.hlsl`) and `wasm_modules/tingle_top/` (`vs.hlsl` + `fs.hlsl`) are the templates. Copy that shape for any pool.
+
+**The only time a per-pixel loop is acceptable:** a very small, *fixed* number of primitives (≈10 or fewer) that **overlap heavily**, OR where you need **precise per-pixel control over how that small set combines** that the fixed blend hardware can't express — custom order-independent compositing, `min`/`max` accumulation, signed/clamped sums, soft metaball field merges, etc. (e.g. `gen.bounce_resonator`'s 4 bands, `gen.soft_glow`'s handful of blobs). Even then, reach for rasterization first; only loop when the small count *and* the precise-blend requirement both hold.
+
 ---
 
 ## 4. Randomness and stochasticity
@@ -720,6 +735,7 @@ For `bool`-typed debug toggles, the `mute`-style schema entry works well:
 - [ ] No `time * rate` patterns — accumulators only.
 - [ ] Spatial parameters are aspect-aware. Pivots use the cover-square convention.
 - [ ] Compute pass uses appropriate texture format (consider `rgba16float` for accumulators).
+- [ ] Many primitives (particles/sprites/quads) are rasterized as instanced geometry, NOT a per-pixel loop over the pool (§3.5). Per-pixel looping only for a tiny, heavily-overlapping set needing precise blend control.
 - [ ] At least one tuning param exposes a debug-overlay layer if the effect has internal state worth visualizing.
 - [ ] Unit / integration tests in `web/test/<effect>.test.ts` covering metadata + a handful of param settings (see existing per-effect tests for the pattern).
 - [ ] The effect renders in the IDE at 1920×1080 without visible aspect-ratio issues. Drop a video on it and confirm it reads as natural and tweakable.
