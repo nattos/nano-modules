@@ -65,6 +65,25 @@ compile_shaders_compute_var_spv local_delay motion
 _emit_spv_header_var local_delay luma down lk upsample align color motion
 echo "  local_delay shaders compiled (SPV: luma+down+lk+upsample+align+color+motion)"
 
+# height_from_gradient — GPU gradient-domain height reconstruction. Multigrid
+# Poisson solve, sharing common.hlsl:
+#   gradient   — input → RG gradient field (radial × luma).
+#   divergence — g → F_0 = div(g).
+#   restrict   — pre-scaled divergence pyramid (2x2 sum).
+#   jacobi     — one relaxation sweep (reused across levels).
+#   prolong    — coarse height → fine initial guess (bilinear upsample).
+#   present    — hillshade / grayscale / normals.
+# gradient/divergence/restrict/jacobi/prolong write rgba16f (scalar in R);
+# present writes rgba8.
+compile_shaders_compute_var_spv height_from_gradient gradient
+compile_shaders_compute_var_spv height_from_gradient divergence
+compile_shaders_compute_var_spv height_from_gradient restrict
+compile_shaders_compute_var_spv height_from_gradient jacobi
+compile_shaders_compute_var_spv height_from_gradient prolong
+compile_shaders_compute_var_spv height_from_gradient present
+_emit_spv_header_var height_from_gradient gradient divergence restrict jacobi prolong present
+echo "  height_from_gradient shaders compiled (SPV: gradient+divergence+restrict+jacobi+prolong+present)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -83,6 +102,7 @@ wasm_build \
   ../nanolooper/core.cpp \
   ../motion_field/main.cpp \
   ../flash_particles/main.cpp \
-  ../local_delay/main.cpp
+  ../local_delay/main.cpp \
+  ../height_from_gradient/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

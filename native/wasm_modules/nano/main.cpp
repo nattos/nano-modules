@@ -16,6 +16,7 @@ NANO_DECLARE_INSTANCE_EFFECT(nanolooper)
 NANO_DECLARE_INSTANCE_EFFECT(motion_field)
 NANO_DECLARE_INSTANCE_EFFECT(flash_particles)
 NANO_DECLARE_INSTANCE_EFFECT(local_delay)
+NANO_DECLARE_INSTANCE_EFFECT(height_from_gradient)
 
 extern "C" {
 
@@ -59,6 +60,16 @@ void nano_module_main() {
         "video",
         "delay,echo,motion,vectors,flow,render-outputs,producer,stylized",
         NANO_INSTANCE_LIFECYCLE(local_delay),
+    });
+
+    nano::registerEffect({
+        2,
+        "video.height_from_gradient",
+        "Height From Gradient",
+        "Reconstructs a height field from a gradient field on the GPU. Synthesizes a 2D gradient (v1: radial outward from an adjustable center, magnitude = luma), takes its divergence, and solves the Poisson equation laplacian(h)=div(g) with a coarse-to-fine multigrid (FMG-lite) cascade for the least-squares height. The field is generally non-conservative so there's no exact reconstruction, but the solve produces the best try. Visualizes the result as shaded hillshade relief, raw grayscale height, or a normal map.",
+        "video",
+        "height,gradient,poisson,reconstruction,relief,normals,multigrid,math",
+        NANO_INSTANCE_LIFECYCLE(height_from_gradient),
     });
 }
 
