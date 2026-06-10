@@ -118,7 +118,7 @@ struct State {
   float vignette_softness = 0.3f;
   float squash            = 0.0f;
   float max_flow          = 0.03f;
-  float weight_gain       = 0.025f; // motion sensitivity (0..1 → ×2048 effective)
+  float weight_gain       = 0.5f;   // motion sensitivity (0..1 → ×2048 effective)
   float align_amount      = 0.5f;
   float align_sharpness   = 4.0f;
   float motion_gain       = 0.03f;  // published-motion scale (0..1 → ×128 effective)
@@ -189,7 +189,7 @@ void module_init() {
       // Motion sensitivity: scales |flow| into the temporal-lookup index
       // (higher = more delay/reach for the same motion). Normalized 0..1, with
       // an effective range of 0..2048 internally (typical flow is tiny).
-      .floatField("weight_gain",       0.025f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("weight_gain",       0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // Raw↔colinear-aligned flow lerp (a polish on the LK estimate).
       .floatField("align_amount",      0.5f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("align_sharpness",   4.0f,  1.0f, 16.0f, state::PrimaryInput)
