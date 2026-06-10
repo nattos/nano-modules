@@ -723,9 +723,12 @@ struct Device {
   }
 
   /// 1:1 copy between two textures of identical format and size. Both
-  /// textures must have COPY_SRC and COPY_DST usage (the default for
-  /// textures created via `createTexture`). Useful for ping-pong setups
-  /// without re-running a compute shader to "rebroadcast" data.
+  /// textures carry COPY_SRC and COPY_DST usage: `createTexture` textures,
+  /// and the executor's field textures (tex_in / tex_out, render targets)
+  /// all allocate the superset, so a stage can copy(in, out) to skip a
+  /// passthrough dispatch. Also useful for ping-pong "rebroadcast" without
+  /// re-running a compute shader. (Native blits regardless of usage; the
+  /// superset is what satisfies WebGPU's strict copy validation.)
   static void copy(Texture src, Texture dst) {
     gpu_copy_texture(src.id, dst.id);
   }

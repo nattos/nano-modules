@@ -353,8 +353,13 @@ export class SketchExecutor {
    */
   private ensureIntermediates(sketchId: string, needed: number, width: number, height: number): { textures: GPUTexture[]; handles: number[] } {
     let entry = this.sketchIntermediates.get(sketchId);
+    // Intermediate pool backs every stage's tex_out. Include COPY_DST (alongside
+    // COPY_SRC) so an effect can gpu::Device::copy(in, out) into its output — e.g.
+    // skipping a passthrough dispatch — matching the COPY_SRC|COPY_DST superset
+    // that effect-created textures (gpu-host createTexture) already get.
     const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
-                   | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC;
+                   | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
+                   | GPUTextureUsage.COPY_DST;
 
     if (!entry) {
       entry = { textures: [], handles: [] };

@@ -10,6 +10,8 @@
  */
 
 import { runGpuEffectTest } from './gpu-test-helpers';
+import { runEngineTest } from './engine-test-helpers';
+import type { Sketch } from '../src/sketch-types';
 
 describe('Platform features', () => {
   jest.setTimeout(30000);
@@ -139,6 +141,54 @@ describe('Platform features', () => {
       expect(frame.success).toBe(true);
       expect(frame.consoleLog).toContain('clear_copy_test: initialized');
       frame.expectUniformColor({ r: 128, g: 0, b: 255, a: 255 }, 2);
+    });
+
+    // The same copy, but routed through the sketch-executor (chain) path, whose
+    // intermediate pool backs tex_out. That pool was COPY_SRC-only, so a
+    // gpu::Device::copy(scratch, tex_out) was a silent WebGPU validation failure
+    // there (it only worked in the single-effect harness above, whose output has
+    // COPY_DST). Now the pool allocates the COPY_SRC|COPY_DST superset, so a
+    // stage can copy into its own output — e.g. to skip a passthrough dispatch.
+    it('copies into tex_out through the chain executor (intermediate-pool COPY_DST)', async () => {
+      const sketch: Sketch = {
+        anchor: null,
+        columns: [{
+          name: 'main',
+          chain: [
+            { type: 'texture_input', id: 'in' },
+            // Red bg that must be fully overwritten by the clear+copy.
+            {
+              type: 'module',
+              module_type: 'generator.solid_color',
+              instance_key: 'bg@0',
+              params: { color: [1.0, 0.0, 0.0] },
+            },
+            {
+              type: 'module',
+              module_type: 'debug.clear_copy_test',
+              instance_key: 'cc@0',
+            },
+            { type: 'texture_output', id: 'out' },
+          ],
+        }],
+      };
+
+      const result = await runEngineTest({
+        width: 64, height: 64,
+        modules: ['com.nattos.testonly'],
+        commands: [
+          { type: 'createSketch', sketchId: 'cc', sketch },
+          { type: 'setTracePoints', tracePoints: [
+            { id: 'out', target: { type: 'sketch_output', sketchId: 'cc' } },
+          ]},
+        ],
+        waitFrames: 4,
+        captureTraceIds: ['out'],
+        dumpName: 'clear_copy_chain',
+      });
+      expect(result.success).toBe(true);
+      // scratch cleared to (0.5, 0.0, 1.0) → copied verbatim into tex_out.
+      result.trace('out').expectUniformColor({ r: 128, g: 0, b: 255 }, 2);
     });
   });
 
