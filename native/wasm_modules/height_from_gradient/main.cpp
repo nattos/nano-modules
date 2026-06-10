@@ -39,7 +39,7 @@
 
 namespace height_from_gradient {
 
-// 28 floats = 7 std140 rows = 112 bytes. Mirrors HFG_UNIFORMS in common.hlsl;
+// 32 floats = 8 std140 rows = 128 bytes. Mirrors HFG_UNIFORMS in common.hlsl;
 // only the gradient + present passes bind it.
 struct Uniforms {
   float grad_gain;    float source;        float center_x;      float center_y;
@@ -49,8 +49,9 @@ struct Uniforms {
   float tint_r;       float tint_g;        float tint_b;        float debug_show_gradient;
   float core_radius;  float core_softness; float bias_mode;     float bias_x;
   float bias_y;       float edge_mode;     float edge_threshold; float edge_gain;
+  float contour_density; float line_width; float _pad0;         float _pad1;
 };
-static_assert(sizeof(Uniforms) == 112, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 128, "Uniforms layout mismatch");
 
 // full / half / quarter / eighth. More levels = the low-frequency shape
 // propagates globally in fewer fine-level iterations.
@@ -80,7 +81,7 @@ struct State {
   int   edge_mode       = 0;       // 0 = Uniform per contour, 1 = Proportional
   float edge_threshold  = 0.1f;    // (uniform) edge-energy cutoff
   float edge_gain       = 0.5f;    // (proportional) edge-strength scale
-  int   present_mode    = 0;        // 0 Hillshade, 1 Grayscale, 2 Normals
+  int   present_mode    = 0;        // 0 Hillshade, 1 Grayscale, 2 Normals, 3 Contours
   float light_angle     = 0.375f;   // azimuth 0..1 → 0..2π (default ≈135° NW)
   float light_elevation = 0.5f;     // 0..1 → 0..π/2
   float relief_scale    = 0.4f;
@@ -91,8 +92,48 @@ struct State {
   float tint_r          = 1.0f, tint_g = 1.0f, tint_b = 1.0f;
   float height_scale    = 1.0f;     // grayscale mode
   float height_offset   = 0.5f;
+  // Contours mode.
+  float contour_density = 0.3f;     // 0..1 → iso-level count
+  float line_width      = 0.25f;    // 0..1 → line thickness
   bool  debug_show_gradient = false;
 };
+
+// Show only the fields the active source + present mode actually use. Called
+// from on_state_ready (once after init + state replay) and from
+// on_state_patched whenever a mode field changes. Touches the type-shared
+// schema, so it takes the mode values rather than per-instance state.
+static void apply_visibility(int source, int present_mode, int bias_mode, int edge_mode) {
+  bool radial = (source == 0);
+  bool curves = (source == 1);
+  // Gradient-source params.
+  state::setFieldHidden("core_radius",    !radial);
+  state::setFieldHidden("core_softness",  !radial);
+  state::setFieldHidden("bias_mode",      !curves);
+  state::setFieldHidden("edge_mode",      !curves);
+  state::setFieldHidden("sweep_angle",    !(curves && bias_mode == 1));  // Linear bias
+  state::setFieldHidden("edge_threshold", !(curves && edge_mode == 0));  // Uniform
+  state::setFieldHidden("edge_gain",      !(curves && edge_mode == 1));  // Proportional
+
+  // Present-mode params (0 Hillshade, 1 Grayscale, 2 Normals, 3 Contours).
+  bool hill = (present_mode == 0);
+  bool gray = (present_mode == 1);
+  bool norm = (present_mode == 2);
+  bool cont = (present_mode == 3);
+  state::setFieldHidden("light_angle",     !hill);
+  state::setFieldHidden("light_elevation", !hill);
+  state::setFieldHidden("light_gain",      !hill);
+  state::setFieldHidden("ambient",         !hill);
+  state::setFieldHidden("relief_scale",    !(hill || norm));   // slope → normal
+  state::setFieldHidden("height_scale",    !gray);
+  state::setFieldHidden("height_offset",   !gray);
+  state::setFieldHidden("contour_density", !cont);
+  state::setFieldHidden("line_width",      !cont);
+  state::setFieldHidden("tint",            !(hill || gray || cont));  // not normals
+  // Always visible: source, center, grad_gain, present_mode, mix, iterations,
+  // debug_show_gradient.
+}
+
+static void on_state_ready(void* self);
 
 // Type-shared, compiled once in module_init().
 static gpu::ComputePSO s_pso_gradient;
@@ -136,9 +177,10 @@ void module_init() {
       .floatField("edge_threshold", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
       // (Level Curves, Proportional) Edge-strength → step-height scale.
       .floatField("edge_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
-      // How to visualize the reconstructed height.
+      // How to visualize the reconstructed height. Contours draws iso-lines of
+      // OUR reconstructed height — a contour map of the result.
       .selectField("present_mode", 0, state::PrimaryInput,
-                   {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}})
+                   {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}, {"Contours", 3}})
       // Hillshade light azimuth (0..1 → full circle) and elevation
       // (0..1 → horizon→overhead).
       .floatField("light_angle", 0.375f, 0.0f, 1.0f, state::PrimaryInput)
@@ -158,6 +200,10 @@ void module_init() {
       // so its DC is user-dialed here).
       .floatField("height_scale", 1.0f, 0.0f, 8.0f, state::PrimaryInput)
       .floatField("height_offset", 0.5f, -1.0f, 1.0f, state::PrimaryInput)
+      // (Contours mode) Iso-level count (how finely the height is sliced) and
+      // line thickness. tint colors the lines.
+      .floatField("contour_density", 0.3f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("line_width", 0.25f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Debug (last) ---
       .boolField("debug_show_gradient", false, state::PrimaryInput)
       // --- I/O ---
@@ -247,6 +293,15 @@ void init(void* self) {
       !s_pso_prolong.valid() || !s_pso_present.valid()) return;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
+  state::setOnStateReady(&on_state_ready);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  // Fired after init + the initial state replay — hide the inactive modes'
+  // fields so the IDE never paints a transient "all fields visible" frame.
+  apply_visibility(s->source, s->present_mode, s->bias_mode, s->edge_mode);
 }
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
@@ -257,11 +312,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool mode_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
-    if      (state::pathIs(path, plen, "source"))        s->source = (int)state::patchFloat(i);
+    if      (state::pathIs(path, plen, "source"))        { int v = (int)state::patchFloat(i); if (v != s->source) { s->source = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "center")) {
       auto v = state::patchVec2(i);
       s->center_x = v.x;
@@ -270,12 +326,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "grad_gain"))     s->grad_gain = state::patchFloat(i);
     else if (state::pathIs(path, plen, "core_radius"))   s->core_radius = state::patchFloat(i);
     else if (state::pathIs(path, plen, "core_softness")) s->core_softness = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "bias_mode"))     s->bias_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "bias_mode"))     { int v = (int)state::patchFloat(i); if (v != s->bias_mode) { s->bias_mode = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "sweep_angle"))   s->sweep_angle = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "edge_mode"))     s->edge_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "edge_mode"))     { int v = (int)state::patchFloat(i); if (v != s->edge_mode) { s->edge_mode = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "edge_threshold")) s->edge_threshold = state::patchFloat(i);
     else if (state::pathIs(path, plen, "edge_gain"))     s->edge_gain = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "present_mode"))  s->present_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "present_mode"))  { int v = (int)state::patchFloat(i); if (v != s->present_mode) { s->present_mode = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "light_angle"))   s->light_angle = state::patchFloat(i);
     else if (state::pathIs(path, plen, "light_elevation")) s->light_elevation = state::patchFloat(i);
     else if (state::pathIs(path, plen, "relief_scale"))  s->relief_scale = state::patchFloat(i);
@@ -291,8 +347,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     }
     else if (state::pathIs(path, plen, "height_scale"))  s->height_scale = state::patchFloat(i);
     else if (state::pathIs(path, plen, "height_offset")) s->height_offset = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "contour_density")) s->contour_density = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "line_width"))    s->line_width = state::patchFloat(i);
     else if (state::pathIs(path, plen, "debug_show_gradient")) s->debug_show_gradient = state::patchFloat(i) != 0.0f;
   }
+  if (mode_changed) apply_visibility(s->source, s->present_mode, s->bias_mode, s->edge_mode);
 }
 
 static inline int half_up(int x) { return (x + 1) / 2; }
@@ -393,6 +452,7 @@ void render(void* self, int vp_w, int vp_h) {
     s->tint_r, s->tint_g, s->tint_b, s->debug_show_gradient ? 1.0f : 0.0f,
     s->core_radius, s->core_softness, (float)s->bias_mode, bias_x,
     bias_y, (float)s->edge_mode, s->edge_threshold, s->edge_gain,
+    s->contour_density, s->line_width, 0.0f, 0.0f,
   };
   s->uniform_buf.writeOne(u);
 

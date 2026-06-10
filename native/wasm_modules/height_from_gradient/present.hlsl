@@ -35,14 +35,30 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float hD = heightTex[uint2(clamp(p + int2(0, -1), int2(0, 0), hi))].x;
   float hU = heightTex[uint2(clamp(p + int2(0,  1), int2(0, 0), hi))].x;
 
-  // Surface slope from central differences; relief_scale (0..1) steepens it.
-  // Typical reconstructed-height slopes are small, so map through a gain.
+  // Raw per-pixel slope from central differences (used by the normal AND the
+  // contour spacing); relief_scale (0..1) steepens the normal. Typical
+  // reconstructed-height slopes are small, so map through a gain.
+  float2 rawSlope = float2((hR - hL) * 0.5, (hU - hD) * 0.5);
   float s = relief_scale * 16.0;
-  float2 slope = float2((hR - hL) * 0.5, (hU - hD) * 0.5) * s;
-  float3 n = normalize(float3(-slope.x, -slope.y, 1.0));
+  float3 n = normalize(float3(-rawSlope.x * s, -rawSlope.y * s, 1.0));
 
   float3 rgb;
-  if (present_mode > 1.5) {
+  if (present_mode > 2.5) {
+    // Contours — iso-lines of OUR reconstructed height. A constant-width line
+    // wherever h crosses a level. We have no fragment derivatives in a compute
+    // pass, so the per-pixel rate of change is the manual height gradient:
+    // levels-per-pixel = |grad h| * density. Distance (in levels) to the
+    // nearest level / levels-per-pixel = distance in pixels → a crisp line.
+    float density = contour_density * 64.0;
+    float hs = hC * density;
+    float f = frac(hs);
+    float dist = min(f, 1.0 - f);                       // 0 at a level line
+    float lpp = max(length(rawSlope) * density, 1e-6);  // levels per pixel
+    float dist_px = dist / lpp;
+    float lw = max(line_width * 4.0, 0.5);
+    float lineMask = 1.0 - smoothstep(lw, lw + 1.0, dist_px);
+    rgb = lineMask * float3(tint_r, tint_g, tint_b);
+  } else if (present_mode > 1.5) {
     // Normals
     rgb = n * 0.5 + 0.5;
   } else if (present_mode > 0.5) {

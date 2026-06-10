@@ -101,6 +101,15 @@ describe('video.height_from_gradient E2E', () => {
     norm.expectDifferentFrom(hill, 50);
   });
 
+  it('Contours mode draws iso-lines of the reconstructed height', async () => {
+    // Contour lines are sparse (mostly black bg with thin tinted lines), so it
+    // differs strongly from the filled hillshade.
+    const hill = await render('hfg_cont_hill', { present_mode: 0, relief_scale: 0.7 }, 'hfg_cont_hill');
+    const cont = await render('hfg_cont', { present_mode: 3, contour_density: 0.4 }, 'hfg_cont');
+    cont.expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);   // some lines drawn
+    cont.expectDifferentFrom(hill, 50);
+  });
+
   it('debug_show_gradient overlays the source gradient field', async () => {
     const normal = await render('hfg_dbg_off', { debug_show_gradient: false }, 'hfg_dbg_off');
     const debug  = await render('hfg_dbg_on',  { debug_show_gradient: true },  'hfg_dbg_on');

@@ -49,7 +49,7 @@ float hfg_bil_r(Texture2D<float4> tex, float2 p, int2 dims) {
   return lerp(lerp(c00, c10, f.x), lerp(c01, c11, f.x), f.y);
 }
 
-// Shared uniform layout (28 floats = 7 std140 rows). Only the gradient and
+// Shared uniform layout (32 floats = 8 std140 rows). Only the gradient and
 // present passes read it; the solver passes (divergence/restrict/jacobi/
 // prolong) take no uniforms. Declared identically wherever it's bound so the
 // two passes can't drift on field order.
@@ -60,6 +60,7 @@ float hfg_bil_r(Texture2D<float4> tex, float2 p, int2 dims) {
   float ambient;     float mix_amount;    float height_scale;  float height_offset;    \
   float tint_r;      float tint_g;        float tint_b;        float debug_show_gradient; \
   float core_radius; float core_softness; float bias_mode;     float bias_x;           \
-  float bias_y;      float edge_mode;     float edge_threshold; float edge_gain;
+  float bias_y;      float edge_mode;     float edge_threshold; float edge_gain;       \
+  float contour_density; float line_width; float _pad0;        float _pad1;
 
 #endif
