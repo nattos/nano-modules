@@ -23,7 +23,9 @@
  *   restrict   — F_k → F_{k+1} (2x2 sum; builds the pre-scaled pyramid).
  *   jacobi     — one relaxation sweep h' = (hL+hR+hD+hU - F)/4 (reused/level).
  *   prolong    — coarse h → fine initial guess (bilinear upsample).
- *   present    — height → hillshade / grayscale / normals (rgba8).
+ *   mm_seed/mm_reduce — fold the height to its 1x1 global (min,max) so the
+ *                presenter can normalize the arbitrary Poisson scale.
+ *   present    — height → hillshade / grayscale / normals / contours (rgba8).
  *
  * Deterministic per-frame (no cross-frame state) → NO is_identity.
  * Freeform (multi-pass, pyramid, neighbor reads) → NO fusion.
@@ -57,6 +59,10 @@ static_assert(sizeof(Uniforms) == 128, "Uniforms layout mismatch");
 // propagates globally in fewer fine-level iterations.
 static constexpr int NUM_LEVELS = 4;
 
+// Max levels in the height min/max reduction chain (full res → 1x1). 20 levels
+// covers up to ~1M px on a side — far beyond any real viewport.
+static constexpr int MM_LEVELS = 20;
+
 static constexpr float kPi = 3.14159265358979323846f;
 
 struct State {
@@ -65,6 +71,8 @@ struct State {
   gpu::Texture div[NUM_LEVELS];        // pre-scaled divergence pyramid (R)
   gpu::Texture h_a[NUM_LEVELS];        // height ping-pong A (R)
   gpu::Texture h_b[NUM_LEVELS];        // height ping-pong B (R)
+  gpu::Texture mm[MM_LEVELS];          // height min/max reduction chain (RG)
+  int  mm_count = 0;                   // active levels in the mm chain
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
 
@@ -90,10 +98,10 @@ struct State {
   float light_gain      = 1.0f;
   float ambient         = 0.15f;
   float tint_r          = 1.0f, tint_g = 1.0f, tint_b = 1.0f;
-  float height_scale    = 1.0f;     // grayscale mode
-  float height_offset   = 0.5f;
+  float height_scale    = 1.0f;     // grayscale mode (height is normalized 0..1)
+  float height_offset   = 0.0f;
   // Contours mode.
-  float contour_density = 0.3f;     // 0..1 → iso-level count
+  float contour_density = 0.2f;     // 0..1 → iso-level count
   float line_width      = 0.25f;    // 0..1 → line thickness
   bool  debug_show_gradient = false;
 };
@@ -141,6 +149,8 @@ static gpu::ComputePSO s_pso_divergence;
 static gpu::ComputePSO s_pso_restrict;
 static gpu::ComputePSO s_pso_jacobi;
 static gpu::ComputePSO s_pso_prolong;
+static gpu::ComputePSO s_pso_mm_seed;
+static gpu::ComputePSO s_pso_mm_reduce;
 static gpu::ComputePSO s_pso_present;
 
 void module_init() {
@@ -199,10 +209,10 @@ void module_init() {
       // Grayscale-mode brightness mapping (height is defined up to a constant,
       // so its DC is user-dialed here).
       .floatField("height_scale", 1.0f, 0.0f, 8.0f, state::PrimaryInput)
-      .floatField("height_offset", 0.5f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("height_offset", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
       // (Contours mode) Iso-level count (how finely the height is sliced) and
       // line thickness. tint colors the lines.
-      .floatField("contour_density", 0.3f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("contour_density", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("line_width", 0.25f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Debug (last) ---
       .boolField("debug_show_gradient", false, state::PrimaryInput)
@@ -220,6 +230,8 @@ void module_init() {
   state::registerShaderSPV("height_from_gradient_restrict",   RESTRICT_SPV,   RESTRICT_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("height_from_gradient_jacobi",     JACOBI_SPV,     JACOBI_SPV_SIZE,     "rgba16float", "write");
   state::registerShaderSPV("height_from_gradient_prolong",    PROLONG_SPV,    PROLONG_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("height_from_gradient_mm_seed",    MM_SEED_SPV,    MM_SEED_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("height_from_gradient_mm_reduce",  MM_REDUCE_SPV,  MM_REDUCE_SPV_SIZE,  "rgba16float", "write");
   state::registerShaderSPV("height_from_gradient_present",    PRESENT_SPV,    PRESENT_SPV_SIZE);
 
   auto cs_gradient   = gpu::Device::createShaderModuleByName("height_from_gradient_gradient");
@@ -227,9 +239,11 @@ void module_init() {
   auto cs_restrict   = gpu::Device::createShaderModuleByName("height_from_gradient_restrict");
   auto cs_jacobi     = gpu::Device::createShaderModuleByName("height_from_gradient_jacobi");
   auto cs_prolong    = gpu::Device::createShaderModuleByName("height_from_gradient_prolong");
+  auto cs_mm_seed    = gpu::Device::createShaderModuleByName("height_from_gradient_mm_seed");
+  auto cs_mm_reduce  = gpu::Device::createShaderModuleByName("height_from_gradient_mm_reduce");
   auto cs_present    = gpu::Device::createShaderModuleByName("height_from_gradient_present");
   if (!cs_gradient || !cs_divergence || !cs_restrict || !cs_jacobi ||
-      !cs_prolong || !cs_present) return;
+      !cs_prolong || !cs_mm_seed || !cs_mm_reduce || !cs_present) return;
 
   s_pso_gradient = gpu::Device::createComputePSO(cs_gradient, "main", gpu::Bindings()
       .tex2d(0)                                       // input
@@ -253,12 +267,21 @@ void module_init() {
       .tex2d(0)                                       // coarse height
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)); // fine initial guess
 
+  s_pso_mm_seed = gpu::Device::createComputePSO(cs_mm_seed, "main", gpu::Bindings()
+      .tex2d(0)                                       // height
+      .storageTex2d(1, gpu::TextureFormat::RGBA16F)); // (min,max)
+
+  s_pso_mm_reduce = gpu::Device::createComputePSO(cs_mm_reduce, "main", gpu::Bindings()
+      .tex2d(0)                                       // finer (min,max)
+      .storageTex2d(1, gpu::TextureFormat::RGBA16F)); // coarser (min,max)
+
   s_pso_present = gpu::Device::createComputePSO(cs_present, "main", gpu::Bindings()
       .tex2d(0)                                       // height (level 0)
       .tex2d(1)                                       // gradient (debug)
       .tex2d(2)                                       // input (mix)
-      .storageTex2d(3, gpu::TextureFormat::RGBA8)     // tex_out
-      .uniform(4));
+      .tex2d(3)                                       // 1x1 (min,max)
+      .storageTex2d(4, gpu::TextureFormat::RGBA8)     // tex_out
+      .uniform(5));
 
   state::log("height_from_gradient: module initialized");
 }
@@ -279,6 +302,7 @@ void destroy(void* self) {
     s->h_a[l].release();
     s->h_b[l].release();
   }
+  for (int l = 0; l < MM_LEVELS; l++) s->mm[l].release();
   delete s;
 }
 
@@ -290,7 +314,8 @@ void init(void* self) {
   s->tex_h = 0;
   if (!s_pso_gradient.valid() || !s_pso_divergence.valid() ||
       !s_pso_restrict.valid() || !s_pso_jacobi.valid() ||
-      !s_pso_prolong.valid() || !s_pso_present.valid()) return;
+      !s_pso_prolong.valid() || !s_pso_mm_seed.valid() ||
+      !s_pso_mm_reduce.valid() || !s_pso_present.valid()) return;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
@@ -361,7 +386,8 @@ static inline int half_up(int x) { return (x + 1) / 2; }
 // coarse seed → prolong), so no clears are needed here.
 static bool ensure_textures(State* s, int vp_w, int vp_h) {
   if (s->tex_w == vp_w && s->tex_h == vp_h && s->grad_tex.valid() &&
-      s->div[0].valid() && s->h_a[0].valid() && s->h_b[0].valid())
+      s->div[0].valid() && s->h_a[0].valid() && s->h_b[0].valid() &&
+      s->mm[0].valid())
     return true;
 
   s->grad_tex.release();
@@ -370,6 +396,7 @@ static bool ensure_textures(State* s, int vp_w, int vp_h) {
     s->h_a[l].release();
     s->h_b[l].release();
   }
+  for (int l = 0; l < MM_LEVELS; l++) s->mm[l].release();
 
   s->grad_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
   if (!s->grad_tex.valid()) return false;
@@ -383,6 +410,18 @@ static bool ensure_textures(State* s, int vp_w, int vp_h) {
     lw = half_up(lw);
     lh = half_up(lh);
   }
+
+  // Min/max reduction chain: full res → 1x1 (each level a 2x2 fold).
+  int mw = vp_w, mh = vp_h, count = 0;
+  while (count < MM_LEVELS) {
+    s->mm[count] = gpu::Device::createTexture(mw, mh, gpu::TextureFormat::RGBA16F);
+    if (!s->mm[count].valid()) return false;
+    count++;
+    if (mw == 1 && mh == 1) break;
+    mw = half_up(mw);
+    mh = half_up(mh);
+  }
+  s->mm_count = count;
 
   s->tex_w = vp_w;
   s->tex_h = vp_h;
@@ -495,9 +534,35 @@ void render(void* self, int vp_w, int vp_h) {
     coarse = solve_level(s, k, lw[k], lh[k], iters);
   }
 
-  // 6 — present: visualize the reconstructed height.
-  disp(s_pso_present, vp_w, vp_h, &coarse, 0, &s->grad_tex, 1, &in, 2,
-       &out, 3, &s->uniform_buf, 4);
+  // 6 — min/max reduction: fold the reconstructed height to a 1x1 global range
+  //     so present can normalize the arbitrary Poisson scale.
+  disp(s_pso_mm_seed, vp_w, vp_h, &coarse, 0, &s->mm[0], 1,
+       nullptr, 0, nullptr, 0, nullptr, 0);
+  {
+    int mw = vp_w, mh = vp_h;
+    for (int k = 0; k + 1 < s->mm_count; k++) {
+      int nw = half_up(mw), nh = half_up(mh);
+      disp(s_pso_mm_reduce, nw, nh, &s->mm[k], 0, &s->mm[k + 1], 1,
+           nullptr, 0, nullptr, 0, nullptr, 0);
+      mw = nw; mh = nh;
+    }
+  }
+  const gpu::Texture& mm_global = s->mm[s->mm_count - 1];   // 1x1 (min,max)
+
+  // 7 — present: visualize the reconstructed height. Five textures, so dispatch
+  //     explicitly (the disp helper tops out at four).
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_present);
+    cp.setTexture(coarse, 0, 0);
+    cp.setTexture(s->grad_tex, 1, 0);
+    cp.setTexture(in, 2, 0);
+    cp.setTexture(mm_global, 3, 0);
+    cp.setTexture(out, 4, 1);
+    cp.setBuffer(s->uniform_buf, 5);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
 
   gpu::Device::submit();
 }

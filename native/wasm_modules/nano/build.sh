@@ -80,9 +80,11 @@ compile_shaders_compute_var_spv height_from_gradient divergence
 compile_shaders_compute_var_spv height_from_gradient restrict
 compile_shaders_compute_var_spv height_from_gradient jacobi
 compile_shaders_compute_var_spv height_from_gradient prolong
+compile_shaders_compute_var_spv height_from_gradient mm_seed
+compile_shaders_compute_var_spv height_from_gradient mm_reduce
 compile_shaders_compute_var_spv height_from_gradient present
-_emit_spv_header_var height_from_gradient gradient divergence restrict jacobi prolong present
-echo "  height_from_gradient shaders compiled (SPV: gradient+divergence+restrict+jacobi+prolong+present)"
+_emit_spv_header_var height_from_gradient gradient divergence restrict jacobi prolong mm_seed mm_reduce present
+echo "  height_from_gradient shaders compiled (SPV: gradient+divergence+restrict+jacobi+prolong+mm_seed+mm_reduce+present)"
 
 echo "=== Building WASM (nano) ==="
 
