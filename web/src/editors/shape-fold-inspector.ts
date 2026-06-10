@@ -22,7 +22,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from '../widgets/field-editor';
-import '../widgets/field-slider';
+import '../widgets/scalar-slider';
 import '../widgets/field-select';
 import '../widgets/field-toggle';
 
@@ -173,32 +173,32 @@ export class ShapeFoldInspector extends MobxLitElement {
       <div class="section">Shape</div>
       <shape-fold-xy-pad .label=${''} .binding=${b}></shape-fold-xy-pad>
 
-      <field-slider .fieldPath=${'temporal_complexity'} .label=${'Temporal'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.66} .binding=${b}></field-slider>
-      <field-slider .fieldPath=${'scale'} .label=${'Scale'}
-        .min=${0.1} .max=${8} .step=${0.05} .defaultValue=${1} .binding=${b}></field-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'temporal_complexity'} .label=${'Temporal'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.66} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'scale'} .label=${'Scale'}
+        .min=${0.1} .max=${8} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
 
       <div class="section">Animation</div>
-      <field-slider .fieldPath=${'time_speed'} .label=${'Speed'}
-        .min=${0} .max=${3} .step=${0.01} .defaultValue=${1} .binding=${b}></field-slider>
-      <field-slider .fieldPath=${'ease'} .label=${'Ease'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></field-slider>
-      <field-slider .fieldPath=${'birth_softness'} .label=${'Birth Soft'}
-        .min=${0.02} .max=${1} .step=${0.01} .defaultValue=${0.45} .binding=${b}></field-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
+        .min=${0} .max=${3} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'birth_softness'} .label=${'Birth Soft'}
+        .min=${0.02} .max=${1} .step=${0.01} .defaultValue=${0.45} .binding=${b}></scalar-slider>
 
       <div class="section">Autopilot</div>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
         .defaultValue=${0} .binding=${b}></field-toggle>
-      <field-slider .fieldPath=${'ap_speed'} .label=${'AP Speed'}
-        .min=${0.05} .max=${3} .step=${0.01} .defaultValue=${0.6} .binding=${b}></field-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
+        .min=${0.05} .max=${3} .step=${0.01} .defaultValue=${0.6} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'ap_snap'} .label=${'Snap'}
         .defaultValue=${0} .binding=${b}></field-toggle>
-      <field-slider .fieldPath=${'ap_hold_period'} .label=${'Hold (s)'}
-        .min=${0.25} .max=${8} .step=${0.25} .defaultValue=${2} .binding=${b}></field-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'ap_hold_period'} .label=${'Hold (s)'}
+        .min=${0.25} .max=${8} .step=${0.25} .defaultValue=${2} .binding=${b}></scalar-slider>
 
       <div class="section">Levels</div>
-      <field-slider .fieldPath=${'level_ease'} .label=${'Level Ease'}
-        .min=${0} .max=${0.5} .step=${0.005} .defaultValue=${0.25} .binding=${b}></field-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'level_ease'} .label=${'Level Ease'}
+        .min=${0} .max=${0.5} .step=${0.005} .defaultValue=${0.25} .binding=${b}></scalar-slider>
 
       <div class="section">Output</div>
       <field-select .fieldPath=${'output_mode'} .label=${'Mode'}
