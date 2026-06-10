@@ -29,6 +29,9 @@ namespace tingle_top {
 
 static constexpr int POOL_HARD_MAX = 2048;
 
+// Which bars sparkles spawn into.
+enum BarTargetMode { BAR_ONE = 0, BAR_RANDOM = 1, BAR_ALL = 2 };
+
 struct GpuParticle { float a[4], b[4], c[4]; };   // matches Particle (48 B)
 static_assert(sizeof(GpuParticle) == 48, "GpuParticle layout mismatch");
 
@@ -37,7 +40,7 @@ struct UpdateUniforms {
   float    dt, life_s, respawn_delay_s, size;
   float    size_jitter, life_jitter, hue_jitter, _pad0;
   float    vel_x, vel_y, vel_x_jitter, vel_y_jitter;
-  uint32_t bar_all, bar_target, respect_bounds, num_voices;
+  uint32_t bar_mode, one_bar_target, respect_bounds, num_voices;
   uint32_t seed; float _pad1, _pad2, _pad3;
   float    voices[16];   // 4 × (y_peak, sigma_trail, sigma_lead, weight)
 };
@@ -76,8 +79,8 @@ struct State {
   float hue_jitter = 0.08f;
   int   density = 60;
   // Tuning.
-  int   bar_target = 0;
-  bool  bar_target_all = true;
+  int   bar_target_mode = BAR_ALL;
+  int   one_bar_target = 0;       // only used when bar_target_mode == one_bar
   float particle_life_ms = 200.0f;
   float respawn_delay_ms = 30.0f;
   float life_jitter = 0.4f;
@@ -120,6 +123,14 @@ static gpu::RenderPSO  s_pso_render_add;
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (v > hi ? hi : v); }
 
+static void apply_mode_visibility(int mode) {
+  state::setFieldHidden("one_bar_target", mode != BAR_ONE);
+}
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) apply_mode_visibility(s->bar_target_mode);
+}
+
 void module_init() {
   state::init("gen.tingle_top", {1, 0, 0},
     state::Schema()
@@ -137,8 +148,9 @@ void module_init() {
       .floatField("hue",                 0.12f, 0.0f, 1.0f,    state::PrimaryInput)
       .floatField("hue_jitter",          0.08f, 0.0f, 0.5f,    state::PrimaryInput)
       .intField  ("density",             60, 1, 400,           state::PrimaryInput)
-      .intField  ("bar_target",          0, 0, 3,              state::PrimaryInput)
-      .boolField ("bar_target_all",      true,                 state::PrimaryInput)
+      .selectField("bar_target_mode",    BAR_ALL, state::PrimaryInput,
+                   {{"one_bar", BAR_ONE}, {"random_bar", BAR_RANDOM}, {"all_bars", BAR_ALL}})
+      .intField  ("one_bar_target",      0, 0, 3,              state::PrimaryInput)
       .floatField("particle_life_ms",    200.0f, 10.0f, 1000.0f, state::PrimaryInput)
       .floatField("respawn_delay_ms",    30.0f, 0.0f, 500.0f,  state::PrimaryInput)
       .floatField("life_jitter",         0.4f, 0.0f, 1.0f,     state::PrimaryInput)
@@ -162,6 +174,7 @@ void module_init() {
       .renderOutputs(state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
+  state::setOnStateReady(&on_state_ready);
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
@@ -314,8 +327,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "hue"))                 s->hue = state::patchFloat(i);
     else if (state::pathIs(path, plen, "hue_jitter"))          s->hue_jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "density"))             s->density = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "bar_target"))          s->bar_target = (int)state::patchFloat(i);
-    else if (state::pathIs(path, plen, "bar_target_all"))      s->bar_target_all = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(path, plen, "bar_target_mode")) {
+      s->bar_target_mode = (int)state::patchFloat(i);
+      apply_mode_visibility(s->bar_target_mode);
+    }
+    else if (state::pathIs(path, plen, "one_bar_target"))      s->one_bar_target = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "particle_life_ms"))    s->particle_life_ms = state::patchFloat(i);
     else if (state::pathIs(path, plen, "respawn_delay_ms"))    s->respawn_delay_ms = state::patchFloat(i);
     else if (state::pathIs(path, plen, "life_jitter"))         s->life_jitter = state::patchFloat(i);
@@ -344,7 +360,7 @@ void render(void* self, int vp_w, int vp_h) {
   if (!in.valid() || !out.valid()) return;
 
   int pool_max = clampi(s->pool_max, 8, POOL_HARD_MAX);
-  int bars = s->bar_target_all ? 4 : 1;
+  int bars = (s->bar_target_mode == BAR_ONE) ? 1 : 4;
   int count = clampi(clampi(s->density, 1, 400) * bars, 0, pool_max);
 
   if (pool_max != s->last_pool_max || s->seed != s->last_seed) {
@@ -402,8 +418,8 @@ void render(void* self, int vp_w, int vp_h) {
   uu.vel_x_jitter = clampf(s->velocity_x_jitter, 0.0f, 1.0f);
   uu.vel_y_jitter = clampf(s->velocity_y_jitter, 0.0f, 1.0f);
   uu.hue_jitter = clampf(s->hue_jitter, 0.0f, 0.5f);
-  uu.bar_all = s->bar_target_all ? 1u : 0u;
-  uu.bar_target = (uint32_t)clampi(s->bar_target, 0, 3);
+  uu.bar_mode = (uint32_t)clampi(s->bar_target_mode, 0, 2);
+  uu.one_bar_target = (uint32_t)clampi(s->one_bar_target, 0, 3);
   uu.respect_bounds = s->respect_position_bounds ? 1u : 0u;
   uu.num_voices = (uint32_t)nv;
   uu.seed = (uint32_t)s->seed;

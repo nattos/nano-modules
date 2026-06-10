@@ -72,6 +72,28 @@ describe('Tingle Top Effect E2E', () => {
     expect(brightBand(still, 0.4, 0.6)).toBeLessThan(0.002);
   });
 
+  it('bar_target_mode one_bar spawns only in the chosen bar', async () => {
+    const frame = await runGpuEffectTest({
+      module: 'tingle_top.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 12,
+      params: params([['default_gate_state', 1], ['bar_target_mode', 0], ['one_bar_target', 2]]),
+      dumpName: 'tingle_top_one_bar',
+    });
+    expect(frame.success).toBe(true);
+    // Bright coverage in bar k's column, top band.
+    const barCov = (k: number) => {
+      const x0 = Math.floor((k + 0.1) * W / 4), x1 = Math.floor((k + 0.9) * W / 4);
+      let bright = 0, n = 0;
+      for (let y = 0; y < Math.floor(H * 0.25); y++)
+        for (let x = x0; x < x1; x++) { if (luma(frame.pixelAt(x, y)) > 40) bright++; n++; }
+      return n > 0 ? bright / n : 0;
+    };
+    expect(barCov(2)).toBeGreaterThan(0.01);   // chosen bar lit
+    expect(barCov(0)).toBeLessThan(0.002);     // others stay dark
+    expect(barCov(3)).toBeLessThan(0.002);
+  });
+
   it('idle (no note) spawns nothing', async () => {
     // No gate / trigger / level / auto_rate and default_gate_state false → no
     // voice → no spawns. (The trigger model now drives everything.)

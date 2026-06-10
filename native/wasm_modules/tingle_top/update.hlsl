@@ -20,7 +20,7 @@ cbuffer Uniforms : register(b1) {
   float dt; float life_s; float respawn_delay_s; float size;
   float size_jitter; float life_jitter; float hue_jitter; float _pad0;
   float vel_x; float vel_y; float vel_x_jitter; float vel_y_jitter;
-  uint  bar_all; uint bar_target; uint respect_bounds; uint num_voices;
+  uint  bar_mode; uint one_bar_target; uint respect_bounds; uint num_voices;  // bar_mode: 0 one, 1 random, 2 all
   uint  seed; float _pad1; float _pad2; float _pad3;
   float4 voices[4];   // x=y_peak, y=sigma_trail (up), z=sigma_lead (down), w=weight
 };
@@ -48,7 +48,10 @@ float sampleVoiceY(uint i) {
 // Roll a fresh spawn into `p`. Leaves the particle DEAD (life 0, short respawn)
 // when there's no on-screen voice sample to place it.
 void respawn(inout Particle p, uint i) {
-  uint  bar = (bar_all != 0u) ? (i & 3u) : min(bar_target, 3u);
+  uint  bar;
+  if      (bar_mode == 0u) bar = min(one_bar_target, 3u);                        // one_bar
+  else if (bar_mode == 1u) bar = tt_pcg3(i + 0x2B1Au, frame_index, seed) & 3u;   // random_bar
+  else                     bar = i & 3u;                                         // all_bars (even spread)
   float rx  = tt_unit(tt_pcg3(i + 0xA17F2B91u, frame_index, 0x11u + seed));
   float px  = (float(bar) + rx) * 0.25;
   float py  = sampleVoiceY(i);
