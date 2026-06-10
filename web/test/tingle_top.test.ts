@@ -149,4 +149,17 @@ describe('Tingle Top Effect E2E', () => {
     expect(brightBand(sustaining, 0.0, 0.2)).toBeGreaterThan(0.01);
     expect(brightBand(released, 0.5, 0.85)).toBeGreaterThan(0.01);
   });
+
+  it('auto_rate fires notes on its own (distinct timed voices)', async () => {
+    // Each Poisson event is a discrete note held for min_sustain then released,
+    // so the effect self-animates with no gate wired.
+    const frame = await runGpuEffectTest({
+      module: 'tingle_top.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 30, params: params([['auto_rate', 0.6], ['min_sustain_s', 0.2]]),
+      dumpName: 'tingle_top_auto',
+    });
+    expect(frame.success).toBe(true);
+    expect(brightBand(frame, 0.0, 0.6)).toBeGreaterThan(0.005);
+  });
 });
