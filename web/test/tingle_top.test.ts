@@ -49,6 +49,29 @@ describe('Tingle Top Effect E2E', () => {
     expect(brightBand(frame, 0.6, 1.0)).toBeLessThan(0.003);     // bottom stays dark
   });
 
+  it('prewarm: velocity drifts particles down the bar on the very first frame', async () => {
+    // Region LOCKED at the top 5% (gated), but downward velocity. The analytic
+    // prewarm gives each particle a random age and drifts it by velocity×age,
+    // so the bar is already populated top-to-bottom on frame 1 — impossible
+    // without the velocity-based prewarm (fresh spawns would all be at the top).
+    const run = (velY: number) => runGpuEffectTest({
+      module: 'tingle_top.wasm', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 1,
+      params: params([['default_gate_state', 1], ['top_band_height', 0.05],
+                      ['particle_velocity_y', velY], ['particle_life_ms', 1500],
+                      ['respawn_delay_ms', 0]]),
+      dumpName: `tingle_top_prewarm_${velY}`,
+    });
+    const moving = await run(1.0);
+    const still = await run(0.0);
+    expect(moving.success && still.success).toBe(true);
+    // Mid-bar is populated on frame 1 only with velocity (drift); without it,
+    // everything is stuck in the top band.
+    expect(brightBand(moving, 0.4, 0.6)).toBeGreaterThan(0.01);
+    expect(brightBand(still, 0.4, 0.6)).toBeLessThan(0.002);
+  });
+
   it('released: the spawn region drains down to fill the bar', async () => {
     // Released (default_gate_state false) → region ramps to 1.0, so sparkles
     // spawn across the full height (region starts settled at 1.0).

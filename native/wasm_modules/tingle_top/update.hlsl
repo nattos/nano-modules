@@ -49,12 +49,25 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (i >= pool_max) return;
 
   if (do_reset != 0u) {
-    // Seed dead with a staggered respawn phase so the pool fades in.
-    float phase = tt_unit(tt_pcg2(i + 0x51EDu, seed));
+    // Analytic PREWARM: spawn each particle fresh, then advance it by a random
+    // elapsed age — life partially spent AND position drifted by its velocity
+    // — so the pool starts in steady state instead of fading in. A particle
+    // that would already have drifted out of bounds is left dead with a
+    // staggered respawn phase (it's "between" lives).
     Particle p;
-    p.a = float4(0.5, 0.5, size, 0.0);
-    p.b = float4(1.0, phase * max(respawn_delay_s, 1e-3), 0.0, 0.0);
-    p.c = float4(0.0, float(i & 3u), 0.0, 0.0);
+    respawn(p, i);
+    float life_total = p.b.x;
+    float age = tt_unit(tt_pcg2(i + 0x77EEAA11u, seed + 0xABCu)) * life_total;
+    p.a.x += p.b.w * age;          // drift x by vx
+    p.a.y += p.c.x * age;          // drift y by vy
+    p.a.w = life_total - age;      // remaining life
+    if (respect_bounds != 0u) {
+      float bar = p.c.y, bl = bar * 0.25, br = bl + 0.25;
+      if (p.a.x < bl || p.a.x > br || p.a.y < 0.0 || p.a.y > 1.0) {
+        p.a.w = 0.0;               // dead, waiting to respawn
+        p.b.y = tt_unit(tt_pcg2(i + 0x51EDu, seed)) * max(respawn_delay_s, 1e-3);
+      }
+    }
     parts[i] = p;
     return;
   }
