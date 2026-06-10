@@ -160,7 +160,9 @@ void module_init() {
       // toward black instead of flashing as it collapses to solid.
       .floatField("level_ease", 0.25f, 0.0f, 0.5f, state::PrimaryInput)
       // --- Output ---
-      .selectField("output_mode", 1, state::PrimaryInput, {{"Grayscale", 0}, {"Magma", 1}})
+      .selectField("output_mode", 1, state::PrimaryInput,
+                   {{"Grayscale", 0}, {"Magma", 1}, {"Inferno", 2},
+                    {"Viridis", 3}, {"Plasma", 4}, {"Turbo", 5}})
       // Broadcast: the effective XY (epicycle when autopilot is on, else the
       // input XY) so the custom editor can show the live position.
       .floatField("autopilot_x", 0.25f, 0.0f, 1.0f, state::SecondaryOutput)

@@ -206,7 +206,9 @@ export class ShapeFoldInspector extends MobxLitElement {
 
       <div class="section">Output</div>
       <field-select .fieldPath=${'output_mode'} .label=${'Mode'}
-        .options=${[{ label: 'Grayscale', value: 0 }, { label: 'Magma', value: 1 }]}
+        .options=${[{ label: 'Grayscale', value: 0 }, { label: 'Magma', value: 1 },
+                    { label: 'Inferno', value: 2 }, { label: 'Viridis', value: 3 },
+                    { label: 'Plasma', value: 4 }, { label: 'Turbo', value: 5 }]}
         .defaultValue=${1} .binding=${b}></field-select>
     `;
   }

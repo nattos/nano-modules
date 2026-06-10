@@ -13,10 +13,10 @@
 StructuredBuffer<float> lut    : register(t1);   // [0..NB-1]=LUT, [NB]=lo, [NB+1]=hi, [NB+2]=blank
 RWTexture2D<float4>     outTex : register(u2);
 
-// Juicy magma rolloff: lift the mids, add an S-curve for contrast pop, and a
-// soft highlight shoulder so the bright ridges glow into the magma yellows
-// instead of clipping to flat white. Applied only on the magma path; grayscale
-// stays a faithful linear readout for downstream effects.
+// Juicy rolloff: lift the mids, add an S-curve for contrast pop, and a soft
+// highlight shoulder so the bright ridges glow instead of clipping to flat
+// white. Applied on every colormap path; grayscale stays a faithful linear
+// readout for downstream effects.
 float sf_juice(float x) {
   x = saturate(x);
   x = pow(x, 0.82);                            // lift mids — warmer, juicier
@@ -52,6 +52,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float F = sf_apply_levels(F0, lo, hi);                 // leveled: median → 0, ~[-1,1]
   float levelStrength = smoothstep(0.0, max(level_ease, 1e-5), hi - lo);
   float g = saturate((F * 0.5 + 0.5) * levelStrength);
-  float3 rgb = (output_mode > 0.5) ? sf_magma(sf_juice(g)) : float3(g, g, g);
+  float3 rgb;
+  if (output_mode < 0.5) {
+    rgb = float3(g, g, g);                 // Grayscale — linear readout
+  } else {
+    float j = sf_juice(g);                 // shared juicy rolloff
+    if      (output_mode < 1.5) rgb = sf_magma(j);
+    else if (output_mode < 2.5) rgb = sf_inferno(j);
+    else if (output_mode < 3.5) rgb = sf_viridis(j);
+    else if (output_mode < 4.5) rgb = sf_plasma(j);
+    else                        rgb = sf_turbo(j);
+  }
   outTex[gid.xy] = float4(rgb, 1.0);
 }

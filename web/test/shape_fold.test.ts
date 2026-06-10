@@ -86,6 +86,19 @@ describe('video.shape_fold E2E', () => {
     magma.trace('out').expectDifferentFrom(gray.trace('out'), 50);
   });
 
+  it('colour grading modes are each distinct', async () => {
+    const names = ['gray', 'magma', 'inferno', 'viridis', 'plasma', 'turbo'];
+    const frames = [];
+    for (let m = 0; m < names.length; m++) {
+      const r = await render(`sf_cg_${names[m]}`, { ...BUSY, output_mode: m }, `sf_cg_${names[m]}`);
+      frames.push(r.trace('out'));
+    }
+    // Each colormap differs meaningfully from its neighbours.
+    for (let m = 1; m < frames.length; m++) {
+      frames[m].expectDifferentFrom(frames[m - 1], 40);
+    }
+  });
+
   it('covers a non-square viewport (no letterbox bars)', async () => {
     // 2:1 viewport. Under cover the square fills the full width (cropped
     // vertically), so the left/right edge columns show pattern — not the solid
