@@ -4,29 +4,47 @@
  * The headline control is an XY pad: a square showing the baked atlas montage
  * (backdrop.png) where the user drags to set frequency (x) and simplicity (y).
  *
+ * The pad is a real FieldEditorElement (controlledFields = frequency +
+ * simplicity), so the column-group field scanner registers it with the layout
+ * manager and tap indicators / rail attachment / selection line up on it just
+ * like the standard widgets. The other params use the normal field widgets.
+ *
  * Autopilot is a NON-destructive override: when it's on, the effect spirals the
- * effective XY internally without touching the frequency/simplicity inputs, and
- * broadcasts the live position on autopilot_x / autopilot_y. We poll those each
- * frame (requestAnimationFrame) and park the handle there — so the pad shows the
- * live autopilot motion even though the underlying inputs aren't changing. While
- * the user is actively dragging we show the drag position directly for snappy
- * feedback; otherwise the broadcast drives the handle.
+ * effective XY internally without touching the inputs, and broadcasts the live
+ * position on autopilot_x / autopilot_y. The pad polls those each frame
+ * (requestAnimationFrame) and parks the handle there — so it shows the live
+ * autopilot motion even though the inputs aren't changing. While the user is
+ * actively dragging we show the drag position for snappy feedback.
  */
 
 import { html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
-import type { FieldBinding, ContinuousEditHandle } from '../widgets/field-editor';
+import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from '../widgets/field-editor';
 import '../widgets/field-slider';
 import '../widgets/field-select';
 import '../widgets/field-toggle';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-@customElement('shape-fold-inspector')
-export class ShapeFoldInspector extends MobxLitElement {
+/**
+ * The draggable atlas XY pad. A multi-field FieldEditorElement controlling
+ * `frequency` (x) and `simplicity` (y) — so the framework treats it as a normal
+ * field (taps, layout, selection) even though it's a custom widget.
+ */
+@customElement('shape-fold-xy-pad')
+export class ShapeFoldXyPad extends MobxLitElement implements FieldEditorElement {
+  @property() fieldPath = 'frequency';   // primary controlled field
+  @property() label = 'Shape';
   @property({ attribute: false }) binding: FieldBinding | null = null;
+
+  get controlledFields() { return ['frequency', 'simplicity']; }
+  getControlElements(): HTMLElement[] {
+    const pad = this.renderRoot?.querySelector('.pad') as HTMLElement | null;
+    return pad ? [pad] : [];
+  }
+  bindInstance(binding: FieldBinding) { this.binding = binding; }
 
   private rafId = 0;
   private dragging = false;
@@ -37,17 +55,15 @@ export class ShapeFoldInspector extends MobxLitElement {
 
   static styles = css`
     :host { display: block; }
-    .section {
-      font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--app-text-color2, #b0b0b0); padding: 6px 0 2px; opacity: 0.7;
+    .group-label {
+      font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding-bottom: 2px;
     }
     .pad {
-      position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 4px 0 8px;
+      position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 2px 0 6px;
       border: 1px solid var(--app-border-color, #3a3346); border-radius: 4px;
       background-image: var(--sf-backdrop, url(/images/shape-fold-backdrop.png));
       background-size: 100% 100%; background-position: center;
-      image-rendering: auto; cursor: crosshair; touch-action: none;
-      user-select: none;
+      cursor: crosshair; touch-action: none; user-select: none;
     }
     .handle {
       position: absolute; width: 14px; height: 14px; border-radius: 50%;
@@ -56,7 +72,7 @@ export class ShapeFoldInspector extends MobxLitElement {
     }
     .pad-labels {
       display: flex; justify-content: space-between; font-size: 9px;
-      color: var(--app-text-color2, #8a8296); margin: -4px 0 6px;
+      color: var(--app-text-color2, #8a8296); margin: -4px 0 2px;
     }
   `;
 
@@ -124,10 +140,8 @@ export class ShapeFoldInspector extends MobxLitElement {
   }
 
   render() {
-    if (!this.binding) return html``;
-    const b = this.binding;
     return html`
-      <div class="section">Shape</div>
+      ${this.label ? html`<div class="group-label">${this.label}</div>` : ''}
       <div class="pad"
         @pointerdown=${(e: PointerEvent) => this.onPointerDown(e)}
         @pointermove=${(e: PointerEvent) => this.onPointerMove(e)}
@@ -136,6 +150,28 @@ export class ShapeFoldInspector extends MobxLitElement {
         <div class="handle"></div>
       </div>
       <div class="pad-labels"><span>← low freq</span><span>high freq →</span></div>
+    `;
+  }
+}
+
+@customElement('shape-fold-inspector')
+export class ShapeFoldInspector extends MobxLitElement {
+  @property({ attribute: false }) binding: FieldBinding | null = null;
+
+  static styles = css`
+    :host { display: block; }
+    .section {
+      font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--app-text-color2, #b0b0b0); padding: 6px 0 2px; opacity: 0.7;
+    }
+  `;
+
+  render() {
+    if (!this.binding) return html``;
+    const b = this.binding;
+    return html`
+      <div class="section">Shape</div>
+      <shape-fold-xy-pad .label=${''} .binding=${b}></shape-fold-xy-pad>
 
       <field-slider .fieldPath=${'temporal_complexity'} .label=${'Temporal'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.66} .binding=${b}></field-slider>
