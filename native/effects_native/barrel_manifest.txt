@@ -69,3 +69,4 @@ lights | lights_sim | fx.lights_sim | Lights Sim | instance | lights_sim_render=
 nano | nanolooper | sequencer.nanolooper | Nano Looper | instance | 
 nano | motion_field | video.motion_field | Motion Field | instance | motion_field_color=color,motion_field_motion=motion
 nano | flash_particles | video.flash_particles | Flash Particles | instance | flash_particles_update=update,flash_particles_prefill_color=prefill,flash_particles_prefill_motion=prefill,flash_particles_vs=vs,flash_particles_fs_color=fs_color,flash_particles_fs_motion=fs_motion
+nano | local_delay | video.local_delay | Local Delay | instance | local_delay_luma=luma,local_delay_down=down,local_delay_lk=lk,local_delay_upsample=upsample,local_delay_align=align,local_delay_color=color,local_delay_motion=motion

@@ -15,6 +15,7 @@
 NANO_DECLARE_INSTANCE_EFFECT(nanolooper)
 NANO_DECLARE_INSTANCE_EFFECT(motion_field)
 NANO_DECLARE_INSTANCE_EFFECT(flash_particles)
+NANO_DECLARE_INSTANCE_EFFECT(local_delay)
 
 extern "C" {
 
@@ -48,6 +49,16 @@ void nano_module_main() {
         "video",
         "particles,motion,vectors,render-outputs,producer,mask,jitter",
         NANO_INSTANCE_LIFECYCLE(flash_particles),
+    });
+
+    nano::registerEffect({
+        2,
+        "video.local_delay",
+        "Local Delay",
+        "Stylized motion-driven local delay. Keeps one frame of history, estimates a crude per-pixel flow, smooths it where locally colinear, then masks it by a stochastic-noise field and a signed center vignette. The masked magnitude is power-squashed into a blend weight that cross-fades current->history (moving/unmasked regions ghost toward the delayed frame) and modulates the motion vectors written on render_outputs/motion for a downstream motion blur to clean up.",
+        "video",
+        "delay,echo,motion,vectors,flow,render-outputs,producer,stylized",
+        NANO_INSTANCE_LIFECYCLE(local_delay),
     });
 }
 

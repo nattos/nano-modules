@@ -13,6 +13,13 @@ import { Frame, RGBA } from './gpu-test-helpers';
 
 const DUMP_DIR = '/tmp/gpu-test-dumps';
 
+// Base URL of the dev server hosting engine-test-runner.html. Defaults to
+// 5173, but override with GPU_TEST_BASE_URL when the dev server runs on a
+// different port (e.g. a second workspace's Vite picks 5174). Mirrors the
+// same env var used by gpu-test-helpers' TEST_BASE_URL.
+const ENGINE_TEST_BASE_URL =
+  process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
+
 export interface EngineTestConfig {
   width?: number;
   height?: number;
@@ -161,7 +168,7 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
   page.on('response', onResponse);
 
   try {
-    await page.goto('http://localhost:5173/engine-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${ENGINE_TEST_BASE_URL}/engine-test-runner.html`, { waitUntil: 'networkidle0' });
     await page.evaluate((cfg: any) => {
       (window as any).__engineTestConfig = cfg;
       (window as any).__engineTestRun();

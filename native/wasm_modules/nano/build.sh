@@ -44,6 +44,27 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var flash_particles update prefill vs fs_color fs_motion
 echo "  flash_particles shaders compiled (SPV: update + prefill + vs + fs_color + fs_motion)"
 
+# local_delay — stylized motion-driven local delay. Pyramidal Lucas-Kanade
+# flow + forward-advection lookup, sharing common.hlsl:
+#   luma     — input → half-res Rec.601 luma (downsample first).
+#   down     — 2x2 luma pyramid downsample (half→quarter→eighth).
+#   lk       — windowed structure-tensor Lucas-Kanade, one level (run 3x).
+#   upsample — half-res flow → full res.
+#   align    — colinear flow polish + temporal flow EMA + mask + index.
+#   color    — forward-advect along the flow, sample the input at the endpoint.
+#   motion   — modulated render_outputs/motion.
+# luma/down write r32float; lk/upsample/align/motion write rgba16f;
+# color writes rgba8.
+compile_shaders_compute_var_spv local_delay luma
+compile_shaders_compute_var_spv local_delay down
+compile_shaders_compute_var_spv local_delay lk
+compile_shaders_compute_var_spv local_delay upsample
+compile_shaders_compute_var_spv local_delay align
+compile_shaders_compute_var_spv local_delay color
+compile_shaders_compute_var_spv local_delay motion
+_emit_spv_header_var local_delay luma down lk upsample align color motion
+echo "  local_delay shaders compiled (SPV: luma+down+lk+upsample+align+color+motion)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -61,6 +82,7 @@ wasm_build \
   ../nanolooper/main.cpp \
   ../nanolooper/core.cpp \
   ../motion_field/main.cpp \
-  ../flash_particles/main.cpp
+  ../flash_particles/main.cpp \
+  ../local_delay/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
