@@ -33,6 +33,7 @@ compile_shaders_compute_spv sharpen
 compile_shaders_compute_spv edges
 compile_shaders_compute_spv crop
 compile_shaders_compute_spv transform
+compile_shaders_compute_spv twitch_mask
 compile_shaders_compute_fused_spv gradient
 compile_shaders_compute_fused_spv grid
 compile_shaders_compute_fused_spv noise
@@ -100,6 +101,7 @@ wasm_build \
   ../grid/main.cpp \
   ../noise/main.cpp \
   ../motion_blur/main.cpp \
-  ../auto_level/main.cpp
+  ../auto_level/main.cpp \
+  ../twitch_mask/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

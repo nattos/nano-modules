@@ -38,6 +38,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <effect_utils.h>
+#include <effect_twitch_mask.h>
 #include "local_delay_shaders.h"
 
 #include <cmath>
@@ -132,7 +133,7 @@ struct State {
   // Twitch — a vignette-like mask at a per-frame RANDOM anchor + intensity.
   // (Designed to be lifted into a standalone effect; keep the math self-contained.)
   float twitch_amount       = 0.0f;   // 0 = off; modulation depth into the mask
-  float twitch_shape        = -0.5f;  // -1..1 bipolar (0 = identity), like `vignette`
+  float twitch_shape        = -0.5f;  // -1..1 bipolar; |1| radial → |.5| linear → |0| solid
   float twitch_radius       = 0.3f;
   float twitch_softness     = 0.3f;
   float twitch_position     = 0.0f;   // -1 → outer-oval spawn, +1 → centre spawn
@@ -153,15 +154,9 @@ struct State {
   // Most recent frame dt (from tick) → frame-rate-independent history EMA.
   float        last_dt    = 1.0f / 60.0f;
 
-  // Per-instance PRNG for the twitch's random anchor + intensity.
-  uint32_t     rng        = 0x2545F491u;
+  // Roaming twitch vignette — owns its own per-instance PRNG.
+  fx::TwitchMask twitch;
 };
-
-// Per-instance uniform random in [0,1) (LCG).
-static inline float ld_rng_unit(State* s) {
-  s->rng = s->rng * 1664525u + 1013904223u;
-  return (float)((s->rng >> 8) & 0xFFFFFFu) / (float)0x1000000;
-}
 
 // Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_luma;
@@ -214,9 +209,10 @@ void module_init() {
       // intensity EACH FRAME. `twitch_amount` (0 = off): 0..0.5 ramps the
       // modulation depth in; 0.5..1 holds depth full and boosts the random
       // per-frame weight toward 1.0 (cuts motion harder, more often).
-      // `twitch_shape` is bipolar like `vignette` (+ blacks the rim, - blacks
-      // the centre). `twitch_position` biases WHERE it spawns: -1 = an oval
-      // around the outside, +1 = an oval in the centre.
+      // `twitch_shape` is bipolar: sign sets polarity (+ blacks the rim, -
+      // the centre); magnitude morphs |1| radial → |0.5| linear → |0| solid.
+      // `twitch_position` biases WHERE it spawns: -1 = an oval around the
+      // outside, +1 = an oval in the centre.
       .floatField("twitch_amount",       0.0f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_shape",       -0.5f, -1.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_radius",       0.3f,  0.0f, 1.0f, state::PrimaryInput)
@@ -319,7 +315,7 @@ static uint32_t s_seed_counter = 0x9E3779B9u;
 void* create() {
   auto* s = new State();
   s_seed_counter = s_seed_counter * 1664525u + 1013904223u;
-  s->rng = s_seed_counter ^ 0xC0FFEEu;
+  s->twitch.seed(s_seed_counter ^ 0xC0FFEEu);
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   return s;
 }
@@ -535,26 +531,9 @@ void render(void* self, int vp_w, int vp_h) {
   // radius + position -1 the anchor is usually off-screen (its falloff still
   // creeps in from the edges). Anchor is in cover-square coords (isotropic there
   // → an oval in the viewport via the aspect).
-  float twitch_ax = 0.0f, twitch_ay = 0.0f, twitch_strength = 0.0f;
-  if (s->twitch_amount > 0.0f) {
-    float ang  = ld_rng_unit(s) * 2.0f * 3.14159265358979f;
-    float base = 0.5f * (1.0f - s->twitch_position);   // +1 → 0 (centre), -1 → 1 (rim)
-    float rr   = base + (ld_rng_unit(s) - 0.5f) * 0.6f;   // bias toward base, soft spread
-    if (rr < 0.0f) rr = 0.0f;
-    rr *= 1.0f + s->twitch_radius;                       // bigger twitch roams further out
-    twitch_ax = rr * std::cos(ang);
-    twitch_ay = rr * std::sin(ang);
-    // twitch_amount remap. 0..0.5 = the old 0..1 amount (depth × a uniform random
-    // weight). 0.5..1 holds depth at full and BOOSTS the random weight (clamped),
-    // so the per-frame intensity skews toward 1.0 — cutting the motion harder,
-    // more often.
-    float a     = s->twitch_amount;
-    float depth = std::fmin(a * 2.0f, 1.0f);
-    float over  = std::fmax(a - 0.5f, 0.0f) * 2.0f;     // 0..1 over the top half
-    float boost = 1.0f + over * over * 15.0f;           // quadratic ramp, 1 → 16 at a=1.0
-    float intensity = std::fmin(ld_rng_unit(s) * boost, 1.0f);
-    twitch_strength = depth * intensity;
-  }
+  auto tw = s->twitch.update({ s->twitch_amount, s->twitch_shape, s->twitch_radius,
+                               s->twitch_softness, s->twitch_position });
+  float twitch_ax = tw.anchor_x, twitch_ay = tw.anchor_y, twitch_strength = tw.strength;
 
   Uniforms u = {
     s->delay_amount, s->noise_weight, noise_seed, eff_weight_gain,

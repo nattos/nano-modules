@@ -11,6 +11,7 @@
 
 #include "nano_curves.hlsl"   // nano_apply_curve (power-curve squash, §1.3)
 #include "nano_coords.hlsl"   // nano_pixel_to_cover_square (vignette, §1.5)
+#include "nano_twitch.hlsl"   // nano_twitch_mask (roaming twitch vignette)
 
 // PCG-style integer hash + pixel hash (from debug.motion_static) — the
 // stochastic mask is stable and seed-reproducible, no frac-sin banding.
@@ -136,17 +137,8 @@ float2 ld_align_at(Texture2D<float4> flowTex, uint2 gid, uint w, uint h, LdParam
   return lerp(c, aligned, saturate(P.align_amount));
 }
 
-// Twitch mask — a vignette anchored at an arbitrary (per-frame random)
-// point. Self-contained so it can be lifted straight into a standalone effect:
-// given cover-square coords `sq`, an `anchor`, a radius/softness falloff, a
-// bipolar `shape` (+ blacks the rim/outside, - blacks the centre/inside) and an
-// overall `strength` in [0,1], returns a [0,1] multiplier (1 = unaffected).
-float ld_twitch_mask(float2 sq, float2 anchor, float radius, float softness,
-                   float shape, float strength) {
-  float t = smoothstep(radius, radius + max(softness, 1e-4), length(sq - anchor));
-  float suppress = (shape >= 0.0) ? t : (1.0 - t);
-  return lerp(1.0, 1.0 - suppress, saturate(abs(shape) * strength));
-}
+// Twitch mask now lives in shaders_common/nano_twitch.hlsl as
+// nano_twitch_mask() (CPU side: fx::TwitchMask in effect_twitch_mask.h).
 
 // Spatial/stochastic mask — WHERE (and how much) the effect acts.
 //   noise term  : `noise_weight` is the PROBABILITY a pixel is affected by
@@ -184,7 +176,7 @@ float ld_mask_at(uint2 gid, uint w, uint h, LdParams P, float noise_time,
   float suppress = (P.vignette >= 0.0) ? t : (1.0 - t);
   float vign_term = lerp(1.0, 1.0 - suppress, abs(P.vignette));
 
-  float twitch_term = ld_twitch_mask(sq, twitch_anchor, twitch_radius, twitch_softness,
+  float twitch_term = nano_twitch_mask(sq, twitch_anchor, twitch_radius, twitch_softness,
                                  twitch_shape, twitch_strength);
   return noise_term * vign_term * twitch_term;
 }

@@ -78,6 +78,9 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 NANO_DECLARE_INSTANCE_EFFECT(auto_level)
 namespace auto_level { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(twitch_mask)
+namespace twitch_mask { int32_t is_identity(void* self); }
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -377,6 +380,17 @@ void nano_module_main() {
         "auto,level,histogram,equalize,contrast,exposure,median",
         NANO_INSTANCE_LIFECYCLE(auto_level),
         &auto_level::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "video.twitch_mask",
+        "Twitch Mask",
+        "Roaming vignette glitch: suppresses a random oval region each frame (bipolar shape blacks the rim or the centre)",
+        "video",
+        "twitch,glitch,vignette,flicker,mask,random",
+        NANO_INSTANCE_LIFECYCLE(twitch_mask),
+        &twitch_mask::is_identity,
     });
 }
 
