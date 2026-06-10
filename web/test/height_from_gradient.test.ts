@@ -107,3 +107,87 @@ describe('video.height_from_gradient E2E', () => {
     debug.expectDifferentFrom(normal, 50);
   });
 });
+
+// A static rectangle gives a clean closed CONTOUR (its border) — the input
+// shape a level-curves reconstruction is built for. Its edges should integrate
+// into a stepped height (a plateau), so the relief is non-flat.
+function buildContourSketch(sketchId: string, params: Record<string, unknown>): Sketch {
+  return {
+    anchor: null,
+    columns: [{
+      name: 'main',
+      chain: [
+        { type: 'texture_input', id: 'in' },
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.1, 0.1, 0.12] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_rect',
+          instance_key: 'rect@0',
+          // speed 0 → a static, centered rect: a deterministic closed contour.
+          params: { size: 0.45, speed: 0.0, color: [0.9, 0.9, 0.9] },
+        },
+        {
+          type: 'module',
+          module_type: 'video.height_from_gradient',
+          instance_key: 'hfg@0',
+          params,
+        },
+        { type: 'texture_output', id: 'out' },
+      ],
+    }],
+  };
+}
+
+async function renderContour(sketchId: string, params: Record<string, unknown>, dumpName: string) {
+  const result = await runEngineTest({
+    width: 64, height: 64,
+    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    commands: [
+      { type: 'createSketch', sketchId, sketch: buildContourSketch(sketchId, params) },
+      { type: 'setTracePoints', tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId } },
+      ]},
+    ],
+    waitFrames: 6,
+    captureTraceIds: ['out'],
+    dumpName,
+  });
+  expect(result.success).toBe(true);
+  return result.trace('out');
+}
+
+describe('video.height_from_gradient — Level Curves source', () => {
+  jest.setTimeout(40000);
+
+  it('reconstructs a stepped height from a contour (edges → relief)', async () => {
+    // source=1 (Level Curves). The rect's border is a contour; integrating its
+    // across-curve gradient yields a stepped plateau → non-flat relief.
+    const flat   = await renderContour('hfg_lc_flat',
+      { source: 1, relief_scale: 0.0, edge_threshold: 0.05 }, 'hfg_lc_flat');
+    flat.expectUniformColor({}, 4);
+    const relief = await renderContour('hfg_lc_relief',
+      { source: 1, relief_scale: 0.7, edge_threshold: 0.05 }, 'hfg_lc_relief');
+    relief.expectDifferentFrom(flat, 40);
+  });
+
+  it('Level Curves differs from Radial on the same input', async () => {
+    const radial = await renderContour('hfg_lc_radial',
+      { source: 0, relief_scale: 0.7 }, 'hfg_lc_radial');
+    const curves = await renderContour('hfg_lc_curves',
+      { source: 1, relief_scale: 0.7, edge_threshold: 0.05 }, 'hfg_lc_curves');
+    curves.expectDifferentFrom(radial, 40);
+  });
+
+  it('bias_mode (Radial vs Linear) changes the reconstruction', async () => {
+    const radialBias = await renderContour('hfg_lc_bias_r',
+      { source: 1, bias_mode: 0, relief_scale: 0.7, edge_threshold: 0.05 }, 'hfg_lc_bias_r');
+    const linearBias = await renderContour('hfg_lc_bias_l',
+      { source: 1, bias_mode: 1, sweep_angle: 0.0, relief_scale: 0.7, edge_threshold: 0.05 }, 'hfg_lc_bias_l');
+    linearBias.expectDifferentFrom(radialBias, 30);
+  });
+});

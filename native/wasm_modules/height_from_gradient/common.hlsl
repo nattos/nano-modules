@@ -29,6 +29,11 @@ float2 hfg_normalize2(float2 v) {
   return (l < 1e-7) ? float2(0.0, 0.0) : v / l;
 }
 
+// Clamped luma fetch at an integer texel (edge-extend boundary).
+float hfg_luma_at(Texture2D<float4> tex, int2 p, int2 hi) {
+  return nano_luminance(tex[uint2(clamp(p, int2(0, 0), hi))].rgb);
+}
+
 // Manual bilinear sample of the R channel in texel-index space (integer
 // coordinate = texel center). Used by the prolongation upsample.
 float hfg_bil_r(Texture2D<float4> tex, float2 p, int2 dims) {
@@ -44,16 +49,17 @@ float hfg_bil_r(Texture2D<float4> tex, float2 p, int2 dims) {
   return lerp(lerp(c00, c10, f.x), lerp(c01, c11, f.x), f.y);
 }
 
-// Shared uniform layout (24 floats = 6 std140 rows). Only the gradient and
+// Shared uniform layout (28 floats = 7 std140 rows). Only the gradient and
 // present passes read it; the solver passes (divergence/restrict/jacobi/
 // prolong) take no uniforms. Declared identically wherever it's bound so the
 // two passes can't drift on field order.
 #define HFG_UNIFORMS \
-  float grad_gain;   float source;       float center_x;   float center_y;        \
-  float aspect_x;    float aspect_y;     float present_mode; float relief_scale;   \
-  float light_x;     float light_y;      float light_z;    float light_gain;       \
-  float ambient;     float mix_amount;   float height_scale; float height_offset;  \
-  float tint_r;      float tint_g;       float tint_b;     float debug_show_gradient; \
-  float core_radius; float core_softness; float _pad0;     float _pad1;
+  float grad_gain;   float source;        float center_x;      float center_y;        \
+  float aspect_x;    float aspect_y;      float present_mode;  float relief_scale;     \
+  float light_x;     float light_y;       float light_z;       float light_gain;       \
+  float ambient;     float mix_amount;    float height_scale;  float height_offset;    \
+  float tint_r;      float tint_g;        float tint_b;        float debug_show_gradient; \
+  float core_radius; float core_softness; float bias_mode;     float bias_x;           \
+  float bias_y;      float edge_mode;     float edge_threshold; float edge_gain;
 
 #endif

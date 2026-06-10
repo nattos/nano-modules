@@ -39,17 +39,18 @@
 
 namespace height_from_gradient {
 
-// 24 floats = 6 std140 rows = 96 bytes. Mirrors HFG_UNIFORMS in common.hlsl;
+// 28 floats = 7 std140 rows = 112 bytes. Mirrors HFG_UNIFORMS in common.hlsl;
 // only the gradient + present passes bind it.
 struct Uniforms {
-  float grad_gain;    float source;        float center_x;     float center_y;
-  float aspect_x;     float aspect_y;      float present_mode; float relief_scale;
-  float light_x;      float light_y;       float light_z;      float light_gain;
-  float ambient;      float mix_amount;    float height_scale; float height_offset;
-  float tint_r;       float tint_g;        float tint_b;       float debug_show_gradient;
-  float core_radius;  float core_softness; float _pad0;        float _pad1;
+  float grad_gain;    float source;        float center_x;      float center_y;
+  float aspect_x;     float aspect_y;      float present_mode;  float relief_scale;
+  float light_x;      float light_y;       float light_z;       float light_gain;
+  float ambient;      float mix_amount;    float height_scale;  float height_offset;
+  float tint_r;       float tint_g;        float tint_b;        float debug_show_gradient;
+  float core_radius;  float core_softness; float bias_mode;     float bias_x;
+  float bias_y;       float edge_mode;     float edge_threshold; float edge_gain;
 };
-static_assert(sizeof(Uniforms) == 96, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 112, "Uniforms layout mismatch");
 
 // full / half / quarter / eighth. More levels = the low-frequency shape
 // propagates globally in fewer fine-level iterations.
@@ -67,12 +68,18 @@ struct State {
   bool initialized = false;
 
   // --- Schema-mirrored params ---
-  int   source          = 0;       // 0 = Radial (only mode today)
-  float center_x        = 0.0f;    // cover-square anchor
+  int   source          = 0;       // 0 = Radial, 1 = Level Curves
+  float center_x        = 0.0f;    // cover-square anchor (radial field / bias)
   float center_y        = 0.0f;
   float grad_gain       = 1.0f;
-  float core_radius     = 0.12f;   // smoothed-core size around the anchor
-  float core_softness   = 0.5f;    // transition feather of the core
+  float core_radius     = 0.12f;   // (radial) smoothed-core size around anchor
+  float core_softness   = 0.5f;    // (radial) transition feather of the core
+  // Level-curves params.
+  int   bias_mode       = 0;       // 0 = Radial bias, 1 = Linear sweep
+  float sweep_angle     = 0.0f;    // (linear bias) 0..1 → direction
+  int   edge_mode       = 0;       // 0 = Uniform per contour, 1 = Proportional
+  float edge_threshold  = 0.1f;    // (uniform) edge-energy cutoff
+  float edge_gain       = 0.5f;    // (proportional) edge-strength scale
   int   present_mode    = 0;        // 0 Hillshade, 1 Grayscale, 2 Normals
   float light_angle     = 0.375f;   // azimuth 0..1 → 0..2π (default ≈135° NW)
   float light_elevation = 0.5f;     // 0..1 → 0..π/2
@@ -99,22 +106,36 @@ void module_init() {
   state::init("video.height_from_gradient", {1, 0, 0},
     state::Schema()
       // --- Standard (live) ---
-      // Gradient source. v1: Radial — outward from `center`, magnitude = luma.
-      // The switch is the seam for future arbitrary-topology generators.
-      .selectField("source", 0, state::PrimaryInput, {{"Radial", 0}})
-      // Radial center (cover-square anchor, aspect-correct; (0,0)=viewport
-      // center, §1.5).
+      // Gradient source. Radial — outward from `center`, magnitude = luma.
+      // Level Curves — treat the input as a contour map and reconstruct the
+      // height whose iso-lines those curves are.
+      .selectField("source", 0, state::PrimaryInput, {{"Radial", 0}, {"Level Curves", 1}})
+      // Anchor (cover-square, aspect-correct; (0,0)=viewport center, §1.5).
+      // Radial source: the field center. Level Curves + Radial bias: the
+      // up/downhill reference point.
       .vec2Field("center", 0.0f, 0.0f, state::PrimaryInput, -1.0f, 1.0f)
-      // Gradient magnitude scale (× luma).
+      // Gradient magnitude scale (master).
       .floatField("grad_gain", 1.0f, 0.0f, 1.0f, state::PrimaryInput)
-      // Core smoothing — tames the 1/r divergence singularity at the radial
-      // anchor. `core_radius` sets the size of the flattened core (in cover-
-      // square units); the field magnitude ramps from zero across it, turning
-      // the spike into a smooth dome. 0 = off (raw spiky field).
+      // (Radial) Core smoothing — tames the 1/r divergence singularity at the
+      // anchor. `core_radius` sets the flattened-core size (cover-square
+      // units); the magnitude ramps from zero across it, turning the spike
+      // into a smooth dome. 0 = off (raw spiky field).
       .floatField("core_radius", 0.12f, 0.0f, 1.0f, state::PrimaryInput)
-      // How gradually the core's suppression feathers out (higher = wider,
-      // softer transition).
+      // (Radial) How gradually the core's suppression feathers out.
       .floatField("core_softness", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      // (Level Curves) How the uphill/downhill sign is resolved: Radial =
+      // height rises outward from `center` (great for nested closed contours);
+      // Linear = height rises along `sweep_angle`.
+      .selectField("bias_mode", 0, state::PrimaryInput, {{"Radial", 0}, {"Linear", 1}})
+      // (Level Curves, Linear bias) Sweep direction, 0..1 → full circle.
+      .floatField("sweep_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      // (Level Curves) Per-contour step: Uniform = every contour is one equal
+      // step (faithful topo map); Proportional = step ∝ edge strength.
+      .selectField("edge_mode", 0, state::PrimaryInput, {{"Uniform", 0}, {"Proportional", 1}})
+      // (Level Curves, Uniform) Edge-energy cutoff that counts as a contour.
+      .floatField("edge_threshold", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
+      // (Level Curves, Proportional) Edge-strength → step-height scale.
+      .floatField("edge_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // How to visualize the reconstructed height.
       .selectField("present_mode", 0, state::PrimaryInput,
                    {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}})
@@ -249,6 +270,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "grad_gain"))     s->grad_gain = state::patchFloat(i);
     else if (state::pathIs(path, plen, "core_radius"))   s->core_radius = state::patchFloat(i);
     else if (state::pathIs(path, plen, "core_softness")) s->core_softness = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "bias_mode"))     s->bias_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "sweep_angle"))   s->sweep_angle = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "edge_mode"))     s->edge_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "edge_threshold")) s->edge_threshold = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "edge_gain"))     s->edge_gain = state::patchFloat(i);
     else if (state::pathIs(path, plen, "present_mode"))  s->present_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "light_angle"))   s->light_angle = state::patchFloat(i);
     else if (state::pathIs(path, plen, "light_elevation")) s->light_elevation = state::patchFloat(i);
@@ -354,13 +380,19 @@ void render(void* self, int vp_w, int vp_h) {
   float ly = ce * std::sin(az);
   float lz = std::sin(el);
 
+  // Linear-sweep bias direction (level-curves sign disambiguation).
+  float sa = s->sweep_angle * 2.0f * kPi;
+  float bias_x = std::cos(sa);
+  float bias_y = std::sin(sa);
+
   Uniforms u = {
     s->grad_gain, (float)s->source, s->center_x, s->center_y,
     cs.ax, cs.ay, (float)s->present_mode, s->relief_scale,
     lx, ly, lz, s->light_gain,
     s->ambient, s->mix_amount, s->height_scale, s->height_offset,
     s->tint_r, s->tint_g, s->tint_b, s->debug_show_gradient ? 1.0f : 0.0f,
-    s->core_radius, s->core_softness, 0.0f, 0.0f,
+    s->core_radius, s->core_softness, (float)s->bias_mode, bias_x,
+    bias_y, (float)s->edge_mode, s->edge_threshold, s->edge_gain,
   };
   s->uniform_buf.writeOne(u);
 

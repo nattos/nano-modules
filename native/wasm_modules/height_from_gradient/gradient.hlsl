@@ -1,14 +1,24 @@
 // video.height_from_gradient — gradient generation pass.
 //
-// Synthesizes the source gradient field g(p) from the input. v1 source =
-// Radial: the gradient points radially outward from an adjustable center
-// (cover-square anchor), with magnitude equal to the input luma. The `source`
-// switch is the seam where future gradient generators (arbitrary topologies)
-// plug in without touching the solver or the presenter.
+// Synthesizes the source gradient field g(p) from the input. The `source`
+// switch is the seam where gradient generators plug in; the solver and
+// presenter never change.
 //
-// Output: RG = g (gx, gy) at full res, in height-per-pixel grid units. The
-// field is generally NON-conservative (curl != 0), so the Poisson solve is a
-// least-squares "best try" — there's usually no exact height for it.
+//   Radial       — g points outward from an adjustable center, magnitude =
+//                  luma. A bowl/cone field; core_radius tames the 1/r
+//                  divergence singularity at the anchor.
+//   Level Curves — treat the input as a contour map. A contour map IS a
+//                  sampled height field: g = ∇h is PERPENDICULAR to the level
+//                  curves, magnitude ∝ curve density. We recover the across-
+//                  curve normal from a structure tensor (sign-agnostic, so it
+//                  survives the gradient dipole at a thin line), resolve the
+//                  uphill/downhill SIGN with a global bias (radial or a linear
+//                  sweep), and set the magnitude per contour. Integrated by
+//                  the Poisson solve, each crossed contour becomes a height
+//                  step — a staircase the least-squares smoothing rounds off.
+//
+// Output: RG = g (gx, gy) at full res. Generally non-conservative, so the
+// Poisson solve is a least-squares best-fit.
 
 #include "common.hlsl"
 
@@ -23,31 +33,67 @@ void main(uint3 gid : SV_DispatchThreadID) {
   gradOut.GetDimensions(w, h);
   if (gid.x >= w || gid.y >= h) return;
 
-  float luma = nano_luminance(inputTex[gid.xy].rgb);
+  int2 hi = int2(int(w) - 1, int(h) - 1);
+  int2 p  = int2(gid.xy);
+  float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h),
+                                         float2(aspect_x, aspect_y));
 
   float2 g = float2(0.0, 0.0);
-  // source 0 = Radial (the only mode today). Direction = outward from the
-  // cover-square center; magnitude = luma. Cover-square keeps the center
-  // aspect-correct (§1.5).
-  {
-    float2 sq = nano_pixel_to_cover_square(float2(gid.xy), float2(w, h),
-                                           float2(aspect_x, aspect_y));
+
+  if (source < 0.5) {
+    // ---- Radial ----
+    float luma = nano_luminance(inputTex[gid.xy].rgb);
     float2 d = sq - float2(center_x, center_y);
     float r = length(d);
     float2 dir = hfg_normalize2(d);
 
-    // Core smoothing — kill the 1/r divergence singularity at the anchor.
-    // normalize(d) is undefined at the center and its divergence blows up, so
-    // we ramp the field MAGNITUDE smoothly from zero across `core_radius`. The
-    // field then grows ~linearly out of the anchor (smooth, finite divergence)
-    // instead of snapping to a unit vector in a discontinuous direction.
-    // `core_softness` raises the ramp to a falloff exponent so the suppressed
-    // region feathers wider. At core_radius≈0 this is a no-op (original field).
+    // Core smoothing — ramp the magnitude up from zero across core_radius so
+    // the field grows smoothly out of the anchor (finite divergence) instead
+    // of snapping to a unit vector. At core_radius≈0 this is a no-op.
     float radius = max(core_radius, 1e-5);
-    float ramp = smoothstep(0.0, radius, r);
-    ramp = pow(ramp, 1.0 + core_softness * 4.0);
+    float ramp = pow(smoothstep(0.0, radius, r), 1.0 + core_softness * 4.0);
 
     g = dir * luma * grad_gain * ramp;
+  } else {
+    // ---- Level Curves ----
+    // Structure tensor over a 3x3 window of central-difference luma gradients.
+    // J = sum( g g^T ). Its dominant eigenvector is the (undirected) across-
+    // curve normal; squaring the gradient makes it robust to the sign dipole a
+    // thin line produces.
+    float Jxx = 0.0, Jxy = 0.0, Jyy = 0.0;
+    [unroll] for (int dy = -1; dy <= 1; dy++)
+    [unroll] for (int dx = -1; dx <= 1; dx++) {
+      int2 q = p + int2(dx, dy);
+      float lx = 0.5 * (hfg_luma_at(inputTex, q + int2(1, 0), hi) -
+                        hfg_luma_at(inputTex, q + int2(-1, 0), hi));
+      float ly = 0.5 * (hfg_luma_at(inputTex, q + int2(0, 1), hi) -
+                        hfg_luma_at(inputTex, q + int2(0, -1), hi));
+      Jxx += lx * lx;
+      Jxy += lx * ly;
+      Jyy += ly * ly;
+    }
+    // Dominant eigenvalue/eigenvector of the symmetric 2x2 tensor.
+    float tr   = Jxx + Jyy;
+    float disc = sqrt(max(tr * tr * 0.25 - (Jxx * Jyy - Jxy * Jxy), 0.0));
+    float lam  = tr * 0.5 + disc;
+    float2 n = float2(Jxy, lam - Jxx);
+    if (dot(n, n) < 1e-12) n = float2(lam - Jyy, Jxy);   // degenerate fallback
+    n = hfg_normalize2(n);
+
+    // Resolve the uphill/downhill sign with a global bias.
+    float2 bias = (bias_mode < 0.5)
+        ? hfg_normalize2(sq - float2(center_x, center_y))   // Radial
+        : float2(bias_x, bias_y);                           // Linear sweep
+    if (dot(n, bias) < 0.0) n = -n;
+
+    // Per-contour magnitude: equal step (thresholded) or proportional to edge
+    // energy. sqrt(lam) ≈ local gradient strength.
+    float energy = sqrt(max(lam, 0.0));
+    float mag = (edge_mode < 0.5)
+        ? ((energy > edge_threshold) ? 1.0 : 0.0)   // Uniform per contour
+        : (energy * edge_gain * 8.0);               // Proportional
+
+    g = n * mag * grad_gain;
   }
 
   gradOut[gid.xy] = float4(g, 0.0, 1.0);
