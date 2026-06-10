@@ -211,10 +211,12 @@ void module_init() {
       .floatField("vignette_radius",   0.5f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("vignette_softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput)
       // Twitch: a roaming vignette that picks a new random anchor +
-      // intensity EACH FRAME. `twitch_amount` is how strongly it modulates the
-      // motion weight (0 = off). `twitch_shape` is bipolar like `vignette`
-      // (+ blacks the rim, - blacks the centre). `twitch_position` biases WHERE
-      // it spawns: -1 = an oval around the outside, +1 = an oval in the centre.
+      // intensity EACH FRAME. `twitch_amount` (0 = off): 0..0.5 ramps the
+      // modulation depth in; 0.5..1 holds depth full and boosts the random
+      // per-frame weight toward 1.0 (cuts motion harder, more often).
+      // `twitch_shape` is bipolar like `vignette` (+ blacks the rim, - blacks
+      // the centre). `twitch_position` biases WHERE it spawns: -1 = an oval
+      // around the outside, +1 = an oval in the centre.
       .floatField("twitch_amount",       0.0f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_shape",       -0.5f, -1.0f, 1.0f, state::PrimaryInput)
       .floatField("twitch_radius",       0.3f,  0.0f, 1.0f, state::PrimaryInput)
@@ -542,7 +544,16 @@ void render(void* self, int vp_w, int vp_h) {
     rr *= 1.0f + s->twitch_radius;                       // bigger twitch roams further out
     twitch_ax = rr * std::cos(ang);
     twitch_ay = rr * std::sin(ang);
-    twitch_strength = s->twitch_amount * ld_rng_unit(s);  // random per-frame intensity
+    // twitch_amount remap. 0..0.5 = the old 0..1 amount (depth × a uniform random
+    // weight). 0.5..1 holds depth at full and BOOSTS the random weight (clamped),
+    // so the per-frame intensity skews toward 1.0 — cutting the motion harder,
+    // more often.
+    float a     = s->twitch_amount;
+    float depth = std::fmin(a * 2.0f, 1.0f);
+    float over  = std::fmax(a - 0.5f, 0.0f) * 2.0f;     // 0..1 over the top half
+    float boost = 1.0f + over * over * 15.0f;           // quadratic ramp, 1 → 16 at a=1.0
+    float intensity = std::fmin(ld_rng_unit(s) * boost, 1.0f);
+    twitch_strength = depth * intensity;
   }
 
   Uniforms u = {
