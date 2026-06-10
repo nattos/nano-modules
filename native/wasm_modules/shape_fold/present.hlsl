@@ -1,11 +1,12 @@
 // video.shape_fold — present: the auto-leveled field as grayscale or magma.
 //
-// The square [-1,1]² field is fit uniformly into the (possibly non-square)
-// viewport — short axis = ±1, the remainder letterboxed black — then zoomed by
-// `domain_scale` (the SDFs are periodic, so >1 reveals structure beyond the old
-// boundary). The field is remapped through the auto-levels LUT (median → 0),
-// eased toward black at low contrast, and shown grayscale or magma. No line /
-// contour / shading modes — the raw field is the output (downstream styles it).
+// The square [-1,1]² field COVERS the (possibly non-square) viewport uniformly
+// — the long axis spans ±1, the short axis is cropped, no bars — then zoomed by
+// `domain_scale` (the SDFs are periodic, so there's always more to reveal; we
+// never mask anything out). The field is remapped through the auto-levels LUT
+// (median → 0), eased toward black at low contrast, and shown grayscale or
+// magma. No line / contour / shading modes — the raw field is the output
+// (downstream styles it).
 
 #include "common.hlsl"
 
@@ -24,10 +25,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 vp = float2(res_x, res_y);
   if (gid.x >= (uint)res_x || gid.y >= (uint)res_y) return;
 
-  // Uniform-scale fit of the unit square; outside → letterbox black.
-  float mn = min(vp.x, vp.y);
-  float2 sq = (float2(gid.xy) + 0.5 - 0.5 * vp) / (0.5 * mn);
-  if (abs(sq.x) > 1.0 || abs(sq.y) > 1.0) { outTex[gid.xy] = float4(0, 0, 0, 1); return; }
+  // Cover the viewport: uniform scale by the LONG axis, so the square fills the
+  // frame (short axis cropped) with no bars. The field is periodic, so the
+  // cropped overflow is just more pattern — nothing to mask.
+  float mx = max(vp.x, vp.y);
+  float2 sq = (float2(gid.xy) + 0.5 - 0.5 * vp) / (0.5 * mx);
 
   float lo = lut[SF_NB + 0];
   float hi = lut[SF_NB + 1];

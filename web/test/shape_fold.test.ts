@@ -86,6 +86,34 @@ describe('video.shape_fold E2E', () => {
     magma.trace('out').expectDifferentFrom(gray.trace('out'), 50);
   });
 
+  it('covers a non-square viewport (no letterbox bars)', async () => {
+    // 2:1 viewport. Under cover the square fills the full width (cropped
+    // vertically), so the left/right edge columns show pattern — not the solid
+    // black bars a letterbox/fit would leave there.
+    const result = await runEngineTest({
+      width: 128, height: 64,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'sf_wide', sketch: buildSketch(BUSY) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_wide' } },
+        ]},
+      ],
+      waitFrames: 6, captureTraceIds: ['out'], dumpName: 'sf_wide',
+    });
+    expect(result.success).toBe(true);
+    // Count lit pixels in the 6px-wide left/right edge bands. Under a letterbox
+    // these would be solid-black bars (~0 lit); under cover they show pattern.
+    let leftLit = 0, rightLit = 0;
+    result.trace('out').forEachPixel((c: any, x: number) => {
+      const lit = c.r > 12 || c.g > 12 || c.b > 12;
+      if (lit && x < 6) leftLit++;
+      if (lit && x >= 122) rightLit++;
+    });
+    expect(leftLit).toBeGreaterThan(40);
+    expect(rightLit).toBeGreaterThan(40);
+  });
+
   it('scale (domain zoom) changes the output', async () => {
     const near = await render('sf_scale1', { ...BUSY, scale: 1.0 }, 'sf_scale1');
     const far  = await render('sf_scale4', { ...BUSY, scale: 4.0 }, 'sf_scale4');

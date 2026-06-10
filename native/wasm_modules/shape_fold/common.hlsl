@@ -26,9 +26,9 @@
 // 3 std140 rows of scalars, then the resolved terms (per term:
 // (theta,mtheta,curv,freq)(phase,h,k,amp)(mix,spc,_,_)).
 cbuffer U : register(b0) {
-  float res_x;     float res_y;          float n_terms;       float dc;
-  float bold_gain; float birth_softness; float domain_scale;  float level_ease;
-  float gaussian;  float level_clip;     float output_mode;   float _sf_pad0;
+  float res_x;      float res_y;          float n_terms;       float dc;
+  float bold_gain;  float birth_softness; float domain_scale;  float level_ease;
+  float output_mode; float _sf_pad0;      float _sf_pad1;      float _sf_pad2;
   float4 terms[SF_MAX_TERMS * 3];
 };
 

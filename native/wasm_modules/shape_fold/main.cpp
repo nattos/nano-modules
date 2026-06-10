@@ -10,8 +10,8 @@
  *
  * The field is histogram auto-leveled (median → 0) every frame and shown as
  * grayscale or magma — the raw field, no line/contour/shading modes (dropped on
- * purpose; downstream effects style it). The square field is fit uniformly into
- * the viewport (letterboxed) with a domain `scale` zoom.
+ * purpose; downstream effects style it). The square field COVERS the viewport
+ * uniformly (no bars) with a domain `scale` zoom.
  *
  * Autopilot spirals the (x,y) automatically via an epicycle. It is
  * NON-destructive: it overrides the effective XY internally for rendering but
@@ -56,7 +56,7 @@ static constexpr float kApA = 0.29f, kApB = 0.16f, kApW2 = 0.382f, kApPhi = kPi 
 struct Uniforms {
   float res_x, res_y, n_terms, dc;
   float bold_gain, birth_softness, domain_scale, level_ease;
-  float gaussian, level_clip, output_mode, _pad0;
+  float output_mode, _pad0, _pad1, _pad2;
   float terms[SF_MAX_TERMS * 3 * 4];
 };
 static_assert(sizeof(Uniforms) == (12 + SF_MAX_TERMS * 3 * 4) * 4, "Uniforms layout");
@@ -84,10 +84,8 @@ struct State {
   float ap_speed            = 0.6f;
   bool  ap_snap             = false;
   float ap_hold_period      = 2.0f;
-  float gaussian            = 0.7f;
-  float level_clip          = 5.0f;
   float level_ease          = 0.25f;
-  int   output_mode         = 0;       // 0 = Grayscale, 1 = Magma
+  int   output_mode         = 1;       // 0 = Grayscale, 1 = Magma (default)
 
   // --- Internal clocks (advanced in tick) ---
   float clock_t   = 0.0f;              // loop phase 0..1
@@ -139,16 +137,11 @@ void module_init() {
       .boolField("ap_snap", false, state::PrimaryInput)
       .floatField("ap_hold_period", 2.0f, 0.25f, 8.0f, state::PrimaryInput)
       // --- Auto-levels (histogram normalization, median → 0) ---
-      // 0 = linear contrast stretch → 1 = histogram-equalized.
-      .floatField("gaussian", 0.7f, 0.0f, 1.0f, state::PrimaryInput)
-      // CLAHE flat-region suppression (low = a dominant plain region is pushed
-      // firmly to one side; high ≈ off).
-      .floatField("level_clip", 5.0f, 1.0f, 40.0f, state::PrimaryInput)
       // Below this contrast, taper the auto-levels boost so the field eases
       // toward black instead of flashing as it collapses to solid.
       .floatField("level_ease", 0.25f, 0.0f, 0.5f, state::PrimaryInput)
       // --- Output ---
-      .selectField("output_mode", 0, state::PrimaryInput, {{"Grayscale", 0}, {"Magma", 1}})
+      .selectField("output_mode", 1, state::PrimaryInput, {{"Grayscale", 0}, {"Magma", 1}})
       // Broadcast: the effective XY (epicycle when autopilot is on, else the
       // input XY) so the custom editor can show the live position.
       .floatField("autopilot_x", 0.25f, 0.0f, 1.0f, state::SecondaryOutput)
@@ -295,8 +288,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "ap_speed"))            s->ap_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "ap_snap"))             { bool v = state::patchFloat(i) != 0.0f; if (v != s->ap_snap) { s->ap_snap = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "ap_hold_period"))      s->ap_hold_period = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "gaussian"))            s->gaussian = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "level_clip"))          s->level_clip = state::patchFloat(i);
     else if (state::pathIs(path, plen, "level_ease"))          s->level_ease = state::patchFloat(i);
     else if (state::pathIs(path, plen, "output_mode"))         s->output_mode = (int)state::patchFloat(i);
   }
@@ -396,8 +387,6 @@ void render(void* self, int vp_w, int vp_h) {
   u.birth_softness = s->birth_softness;
   u.domain_scale = s->scale;
   u.level_ease = s->level_ease;
-  u.gaussian = s->gaussian;
-  u.level_clip = s->level_clip;
   u.output_mode = (float)s->output_mode;
   sample_terms(s, s->eff_x, s->eff_y, s->clock_t, u);
   s->uniform_buf.writeOne(u);

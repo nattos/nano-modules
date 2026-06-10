@@ -161,17 +161,13 @@ export class ShapeFoldInspector extends MobxLitElement {
         .min=${0.25} .max=${8} .step=${0.25} .defaultValue=${2} .binding=${b}></field-slider>
 
       <div class="section">Levels</div>
-      <field-slider .fieldPath=${'gaussian'} .label=${'Gaussian'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></field-slider>
-      <field-slider .fieldPath=${'level_clip'} .label=${'Clip'}
-        .min=${1} .max=${40} .step=${0.5} .defaultValue=${5} .binding=${b}></field-slider>
-      <field-slider .fieldPath=${'level_ease'} .label=${'Ease'}
+      <field-slider .fieldPath=${'level_ease'} .label=${'Level Ease'}
         .min=${0} .max=${0.5} .step=${0.005} .defaultValue=${0.25} .binding=${b}></field-slider>
 
       <div class="section">Output</div>
       <field-select .fieldPath=${'output_mode'} .label=${'Mode'}
         .options=${[{ label: 'Grayscale', value: 0 }, { label: 'Magma', value: 1 }]}
-        .defaultValue=${0} .binding=${b}></field-select>
+        .defaultValue=${1} .binding=${b}></field-select>
     `;
   }
 }
