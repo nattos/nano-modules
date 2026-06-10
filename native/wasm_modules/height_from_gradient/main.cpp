@@ -53,7 +53,7 @@ struct Uniforms {
   float tint_r;       float tint_g;        float tint_b;        float debug_show_gradient;
   float core_radius;  float core_softness; float bias_mode;     float bias_x;
   float bias_y;       float edge_mode;     float edge_threshold; float edge_gain;
-  float contour_density; float line_width; float _pad0;         float _pad1;
+  float contour_density; float line_width; float channel_mode;  float vector_sign;
 };
 static_assert(sizeof(Uniforms) == 128, "Uniforms layout mismatch");
 
@@ -74,12 +74,15 @@ struct State {
   gpu::Texture h_a[NUM_LEVELS];        // height ping-pong A (R)
   gpu::Texture h_b[NUM_LEVELS];        // height ping-pong B (R)
   gpu::Texture mm[MM_LEVELS];          // height min/max reduction chain (RG)
+  gpu::Texture zero_tex;               // 1x1 zero fallback (unwired motion rail)
   int  mm_count = 0;                   // active levels in the mm chain
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
 
   // --- Schema-mirrored params ---
-  int   source          = 0;       // 0 = Radial, 1 = Level Curves
+  // 0 = Radial, 1 = Level Curves, 2 = Motion Vectors, 3 = Normal Map,
+  // 4 = Gradient Field.
+  int   source          = 0;
   float center_x        = 0.0f;    // cover-square anchor (radial field / bias)
   float center_y        = 0.0f;
   float grad_gain       = 1.0f;
@@ -91,6 +94,9 @@ struct State {
   int   edge_mode       = 0;       // 0 = Uniform per contour, 1 = Proportional
   float edge_threshold  = 0.1f;    // (uniform) edge-energy cutoff
   float edge_gain       = 0.5f;    // (proportional) edge-strength scale
+  // Vector-source decode (Motion / Normal Map / Gradient Field).
+  int   channel_mode    = 0;       // 0 = RG, 1 = RG flip-Y, 2 = AG
+  int   vector_sign     = 0;       // 0 = signed (0=zero), 1 = unsigned (0.5=zero)
   int   present_mode    = 0;        // 0 Hillshade, 1 Grayscale, 2 Normals, 3 Contours
   float light_angle     = 0.375f;   // azimuth 0..1 → 0..2π (default ≈135° NW)
   float light_elevation = 0.5f;     // 0..1 → 0..π/2
@@ -115,7 +121,9 @@ struct State {
 static void apply_visibility(int source, int present_mode, int bias_mode, int edge_mode) {
   bool radial = (source == 0);
   bool curves = (source == 1);
+  bool vector = (source >= 2);   // Motion / Normal Map / Gradient Field
   // Gradient-source params.
+  state::setFieldHidden("center",         vector);          // unused by vector sources
   state::setFieldHidden("core_radius",    !radial);
   state::setFieldHidden("core_softness",  !radial);
   state::setFieldHidden("bias_mode",      !curves);
@@ -123,6 +131,8 @@ static void apply_visibility(int source, int present_mode, int bias_mode, int ed
   state::setFieldHidden("sweep_angle",    !(curves && bias_mode == 1));  // Linear bias
   state::setFieldHidden("edge_threshold", !(curves && edge_mode == 0));  // Uniform
   state::setFieldHidden("edge_gain",      !(curves && edge_mode == 1));  // Proportional
+  state::setFieldHidden("channel_mode",   !vector);
+  state::setFieldHidden("vector_sign",    !vector);
 
   // Present-mode params (0 Hillshade, 1 Grayscale, 2 Normals, 3 Contours).
   bool hill = (present_mode == 0);
@@ -160,9 +170,13 @@ void module_init() {
     state::Schema()
       // --- Standard (live) ---
       // Gradient source. Radial — outward from `center`, magnitude = luma.
-      // Level Curves — treat the input as a contour map and reconstruct the
-      // height whose iso-lines those curves are.
-      .selectField("source", 0, state::PrimaryInput, {{"Radial", 0}, {"Level Curves", 1}})
+      // Level Curves — treat the input as a contour map. Motion Vectors — use
+      // the incoming render_outputs/motion field. Normal Map — input is a
+      // surface-normal map (integrated). Gradient Field — input channels are
+      // the gradient directly.
+      .selectField("source", 0, state::PrimaryInput,
+                   {{"Radial", 0}, {"Level Curves", 1}, {"Motion Vectors", 2},
+                    {"Normal Map", 3}, {"Gradient Field", 4}})
       // Anchor (cover-square, aspect-correct; (0,0)=viewport center, §1.5).
       // Radial source: the field center. Level Curves + Radial bias: the
       // up/downhill reference point.
@@ -189,6 +203,15 @@ void module_init() {
       .floatField("edge_threshold", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
       // (Level Curves, Proportional) Edge-strength → step-height scale.
       .floatField("edge_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      // (Motion / Normal Map / Gradient Field) How the 2D vector is packed:
+      // RG, RG with the Y channel flipped (the GL↔DX normal gotcha), or AG
+      // (BC5/DXT5nm swizzle).
+      .selectField("channel_mode", 0, state::PrimaryInput,
+                   {{"RG", 0}, {"RG Flip-Y", 1}, {"AG", 2}})
+      // (Motion / Normal Map / Gradient Field) Zero convention: Signed = 0.0 is
+      // zero ([-1,1]); Unsigned = 0.5 is zero ([0,1], remapped).
+      .selectField("vector_sign", 0, state::PrimaryInput,
+                   {{"Signed", 0}, {"Unsigned", 1}})
       // Jacobi relaxation sweeps per pyramid level (solver tuning, all modes).
       // More = closer to the true least-squares solution (smoother, more
       // global), at linear cost.
@@ -222,6 +245,9 @@ void module_init() {
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      // Incoming render_outputs struct — the Motion Vectors source reads
+      // render_outputs_in/motion from it.
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
@@ -306,6 +332,7 @@ void destroy(void* self) {
     s->h_b[l].release();
   }
   for (int l = 0; l < MM_LEVELS; l++) s->mm[l].release();
+  s->zero_tex.release();
   delete s;
 }
 
@@ -359,6 +386,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "edge_mode"))     { int v = (int)state::patchFloat(i); if (v != s->edge_mode) { s->edge_mode = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "edge_threshold")) s->edge_threshold = state::patchFloat(i);
     else if (state::pathIs(path, plen, "edge_gain"))     s->edge_gain = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "channel_mode"))  s->channel_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "vector_sign"))   s->vector_sign = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "present_mode"))  { int v = (int)state::patchFloat(i); if (v != s->present_mode) { s->present_mode = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "light_angle"))   s->light_angle = state::patchFloat(i);
     else if (state::pathIs(path, plen, "light_elevation")) s->light_elevation = state::patchFloat(i);
@@ -504,7 +533,7 @@ void render(void* self, int vp_w, int vp_h) {
     s->tint_r, s->tint_g, s->tint_b, s->debug_show_gradient ? 1.0f : 0.0f,
     s->core_radius, s->core_softness, (float)s->bias_mode, bias_x,
     bias_y, (float)s->edge_mode, s->edge_threshold, s->edge_gain,
-    s->contour_density, s->line_width, 0.0f, 0.0f,
+    s->contour_density, s->line_width, (float)s->channel_mode, (float)s->vector_sign,
   };
   s->uniform_buf.writeOne(u);
 
@@ -520,8 +549,23 @@ void render(void* self, int vp_w, int vp_h) {
     lh[l] = half_up(lh[l - 1]);
   }
 
-  // 1 — gradient: input → RG gradient field.
-  disp(s_pso_gradient, vp_w, vp_h, &in, 0, &s->grad_tex, 1,
+  // 1 — gradient: source texture → RG gradient field. The Motion Vectors
+  //     source reads the incoming render_outputs/motion rail instead of the
+  //     input image (1x1 zero fallback when nothing's wired → flat → no-op).
+  gpu::Texture src_tex = in;
+  if (s->source == 2) {
+    auto motion = gpu::Device::textureForField("render_outputs_in/motion");
+    if (motion.valid()) {
+      src_tex = motion;
+    } else {
+      if (!s->zero_tex.valid()) {
+        s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+        gpu::Device::clear(s->zero_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+      }
+      src_tex = s->zero_tex;
+    }
+  }
+  disp(s_pso_gradient, vp_w, vp_h, &src_tex, 0, &s->grad_tex, 1,
        nullptr, 0, nullptr, 0, &s->uniform_buf, 2);
 
   // 2 — divergence: g → F_0 (finest level).

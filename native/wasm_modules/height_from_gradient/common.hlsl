@@ -34,6 +34,19 @@ float hfg_luma_at(Texture2D<float4> tex, int2 p, int2 hi) {
   return nano_luminance(tex[uint2(clamp(p, int2(0, 0), hi))].rgb);
 }
 
+// Decode a 2D vector from a texel for the Motion / Normal Map / Gradient Field
+// sources, which may be stored "strangely". channel_mode picks the layout
+// (0 = RG, 1 = RG with Y flipped — the GL↔DX normal-map gotcha, 2 = AG, the
+// BC5/DXT5nm swizzle). vector_sign: 0 = signed (0 is zero), 1 = unsigned
+// (0.5 is zero → remap [0,1]→[-1,1]).
+float2 hfg_decode_vec(float4 t, float channel_mode, float vector_sign) {
+  float2 v = (channel_mode > 1.5) ? float2(t.a, t.g)   // AG
+                                  : float2(t.r, t.g);  // RG (and RG flip-Y)
+  if (vector_sign > 0.5) v = v * 2.0 - 1.0;            // unsigned → signed
+  if (channel_mode > 0.5 && channel_mode < 1.5) v.y = -v.y;  // flip Y
+  return v;
+}
+
 // Manual bilinear sample of the R channel in texel-index space (integer
 // coordinate = texel center). Used by the prolongation upsample.
 float hfg_bil_r(Texture2D<float4> tex, float2 p, int2 dims) {
@@ -61,6 +74,6 @@ float hfg_bil_r(Texture2D<float4> tex, float2 p, int2 dims) {
   float tint_r;      float tint_g;        float tint_b;        float debug_show_gradient; \
   float core_radius; float core_softness; float bias_mode;     float bias_x;           \
   float bias_y;      float edge_mode;     float edge_threshold; float edge_gain;       \
-  float contour_density; float line_width; float _pad0;        float _pad1;
+  float contour_density; float line_width; float channel_mode; float vector_sign;
 
 #endif

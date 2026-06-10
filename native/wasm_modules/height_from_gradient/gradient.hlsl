@@ -16,6 +16,12 @@
 //                  sweep), and set the magnitude per contour. Integrated by
 //                  the Poisson solve, each crossed contour becomes a height
 //                  step — a staircase the least-squares smoothing rounds off.
+//   Motion / Normal Map / Gradient Field — the source already encodes a vector
+//                  field. The host binds the right texture (the incoming
+//                  render_outputs/motion rail for Motion, the input image
+//                  otherwise) and channel_mode/vector_sign decode it. Motion &
+//                  Gradient Field use the vector AS the gradient; Normal Map
+//                  integrates a surface normal: g = -n.xy / n.z.
 //
 // Output: RG = g (gx, gy) at full res. Generally non-conservative, so the
 // Poisson solve is a least-squares best-fit.
@@ -40,7 +46,22 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float2 g = float2(0.0, 0.0);
 
-  if (source < 0.5) {
+  if (source > 1.5) {
+    // ---- Vector sources: Motion (2) / Normal Map (3) / Gradient Field (4) ----
+    // inputTex is whatever the host bound (the motion rail for Motion, the
+    // input image otherwise). Decode the stored vector, then interpret it.
+    float2 v = hfg_decode_vec(inputTex[gid.xy], channel_mode, vector_sign);
+    if (abs(source - 3.0) < 0.5) {
+      // Normal Map → gradient of the height the normal encodes. Reconstruct z
+      // if it wasn't stored (a unit normal): n.z = sqrt(1 - |n.xy|^2).
+      float nz = sqrt(max(1.0 - dot(v, v), 1e-4));
+      g = -v / nz;
+    } else {
+      // Motion / Gradient Field: the vector IS the gradient.
+      g = v;
+    }
+    g *= grad_gain;
+  } else if (source < 0.5) {
     // ---- Radial ----
     float luma = nano_luminance(inputTex[gid.xy].rgb);
     float2 d = sq - float2(center_x, center_y);

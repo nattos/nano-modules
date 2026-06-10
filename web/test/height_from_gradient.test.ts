@@ -1,6 +1,11 @@
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
+const RENDER_OUTPUTS_SCHEMA = {
+  type: 'object',
+  fields: { depth: { type: 'texture' }, motion: { type: 'texture' } },
+};
+
 /**
  * E2E coverage for video.height_from_gradient (nano bundle) — GPU gradient-
  * domain height reconstruction (multigrid Poisson solve).
@@ -210,5 +215,87 @@ describe('video.height_from_gradient — Level Curves source', () => {
     const linearBias = await renderContour('hfg_lc_bias_l',
       { source: 1, bias_mode: 1, sweep_angle: 0.0, relief_scale: 0.7, edge_threshold: 0.05 }, 'hfg_lc_bias_l');
     linearBias.expectDifferentFrom(radialBias, 30);
+  });
+});
+
+describe('video.height_from_gradient — vector sources', () => {
+  jest.setTimeout(40000);
+
+  // Grayscale present normalizes the height, so any reconstructed structure is
+  // visible regardless of the source field's absolute magnitude.
+  it('Normal Map source integrates the input differently than Radial', async () => {
+    const radial = await renderContour('hfg_nm_radial', { source: 0, present_mode: 1 }, 'hfg_nm_radial');
+    const normal = await renderContour('hfg_nm',        { source: 3, present_mode: 1 }, 'hfg_nm');
+    normal.expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    normal.expectDifferentFrom(radial, 40);
+  });
+
+  it('Gradient Field source interprets the input differently than Normal Map', async () => {
+    const grad   = await renderContour('hfg_gf',    { source: 4, present_mode: 1 }, 'hfg_gf');
+    const normal = await renderContour('hfg_gf_nm', { source: 3, present_mode: 1 }, 'hfg_gf_nm');
+    grad.expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    grad.expectDifferentFrom(normal, 30);
+  });
+
+  it('vector_sign (Signed vs Unsigned) changes the decode', async () => {
+    // Hillshade present (NOT normalized) so the sign change shows: the unsigned
+    // remap (2v-1) shifts the gradient field, which changes the reconstructed
+    // slope → different shading. (Under grayscale's normalization a Gradient
+    // Field's affine remap would cancel out — a neat invariant — so test the
+    // slope-sensitive hillshade instead.)
+    const signed   = await renderContour('hfg_vs_s', { source: 4, vector_sign: 0, present_mode: 0, relief_scale: 0.7 }, 'hfg_vs_s');
+    const unsigned = await renderContour('hfg_vs_u', { source: 4, vector_sign: 1, present_mode: 0, relief_scale: 0.7 }, 'hfg_vs_u');
+    unsigned.expectDifferentFrom(signed, 40);
+  });
+
+  it('Motion Vectors source reads the incoming render_outputs/motion rail', async () => {
+    // debug.motion_rect publishes render_outputs/motion; height_from_gradient
+    // (source = Motion Vectors) integrates it. Rail wired vs not must differ:
+    // unwired → zero motion → flat height → uniform black grayscale.
+    const buildChain = (withRail: boolean): Sketch => ({
+      anchor: null,
+      columns: [{
+        name: 'main',
+        rails: withRail ? [{
+          id: 'render_outputs_rail',
+          name: 'Render Outputs',
+          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
+        }] : [],
+        chain: [
+          { type: 'texture_input', id: 'in' },
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0', params: { color: [0.05, 0.05, 0.1] } },
+          {
+            type: 'module', module_type: 'debug.motion_rect', instance_key: 'rect@0',
+            params: { size: 0.3, speed: 2.0, color: [0.9, 0.4, 0.8] },
+            taps: withRail ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }] : [],
+          },
+          {
+            type: 'module', module_type: 'video.height_from_gradient', instance_key: 'hfg@0',
+            params: { source: 2, present_mode: 1, grad_gain: 1.0 },
+            taps: withRail ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs_in', direction: 'read' }] : [],
+          },
+          { type: 'texture_output', id: 'out' },
+        ],
+      }],
+    });
+
+    const run = (id: string, withRail: boolean) => runEngineTest({
+      width: 64, height: 64,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(withRail) },
+        { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+      ],
+      waitFrames: 8, captureTraceIds: ['out'], dumpName: id,
+    });
+
+    const withRail = await run('hfg_motion_rail', true);
+    const noRail   = await run('hfg_motion_norail', false);
+    expect(withRail.success).toBe(true);
+    expect(noRail.success).toBe(true);
+    // No rail → zero motion → flat → uniform black.
+    noRail.trace('out').expectUniformColor({ r: 0, g: 0, b: 0 }, 4);
+    // Rail wired → the motion field integrates to a non-flat height.
+    withRail.trace('out').expectDifferentFrom(noRail.trace('out'), 30);
   });
 });
