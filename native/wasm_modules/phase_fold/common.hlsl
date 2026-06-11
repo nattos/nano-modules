@@ -41,10 +41,12 @@ cbuffer U : register(b0) {
   float res_x;   float res_y;   float extent;       float bias;
   float wind;    float n_bands; float contrast;     float flow_phase;
   float nearest_cell; float _pf_pad2; float stream_width; float cycle_width;
-  float backdrop_dim; float stream_alpha; float _pf_pad0; float _pf_pad1;
+  float backdrop_dim; float stream_alpha; float shading_mode; float _pf_pad1;
   float4 corners;   // 4 corner cell indices (as float)
   float4 weights;   // 4 convex blend weights (sum 1, or 0 over a hole)
 };
+
+#define PF_TWO_PI 6.28318530718
 
 // One line segment:
 //   a = (p0.x, p0.y, p1.x, p1.y)

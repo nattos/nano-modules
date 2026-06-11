@@ -67,7 +67,7 @@ struct Uniforms {
   float res_x, res_y, extent, bias;
   float wind, n_bands, contrast, flow_phase;
   float nearest_cell, _pad2, stream_width, cycle_width;
-  float backdrop_dim, stream_alpha, _pad0, _pad1;
+  float backdrop_dim, stream_alpha, shading_mode, _pad1;
   float corners[4];
   float weights[4];
 };
@@ -86,7 +86,9 @@ struct State {
   float lobedness    = 0.2f;   // XY pad y
   float wind         = 0.0f;   // z (non-potential force)
   float bias         = 0.0f;   // shifts the cycle level
+  float scale        = 1.0f;   // domain zoom (higher = zoom IN, like shape_fold)
   bool  interpolate  = true;   // blend H across 4 cells vs snap
+  int   shading_mode = 0;      // 0 = Bands (height field), 1 = Gradient (flow)
   float bands        = 13.0f;  // backdrop contour bands
   float contrast     = 1.6f;   // backdrop band contrast
   float backdrop_dim = 0.42f;  // backdrop colour strength (muting)
@@ -131,8 +133,12 @@ void module_init() {
       .floatField("wind", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
       // Bias shifts the cycle level → slides the limit cycle across contours.
       .floatField("bias", 0.0f, -0.6f, 0.6f, state::PrimaryInput)
+      // Domain zoom. Higher = zoom IN (bigger features); lower zooms out.
+      .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput)
       .boolField("interpolate", true, state::PrimaryInput)
-      // --- Backdrop (blended height field) ---
+      // --- Backdrop ---
+      // Shading: the height-field Bands (default) or the wind-aware flow Gradient.
+      .selectField("shading_mode", 0, state::PrimaryInput, {{"Bands", 0}, {"Gradient", 1}})
       .floatField("bands", 13.0f, 2.0f, 24.0f, state::PrimaryInput)
       .floatField("contrast", 1.6f, 0.4f, 4.0f, state::PrimaryInput)
       .floatField("backdrop_dim", 0.42f, 0.0f, 1.0f, state::PrimaryInput)
@@ -286,7 +292,7 @@ void tick(void* self, double dt) {
 
   if (s->autopilot) {
     float ap_actual = 0.05f + s->ap_speed * s->ap_speed * (1.6f - 0.05f);
-    s->orbit += fdt * ap_actual;
+    s->orbit -= fdt * ap_actual;   // clockwise drift
     orbit_xy(s->orbit, s->eff_x, s->eff_y);
   } else {
     s->eff_x = s->eccentricity;
@@ -316,7 +322,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "lobedness"))      s->lobedness = state::patchFloat(i);
     else if (state::pathIs(path, plen, "wind"))           s->wind = state::patchFloat(i);
     else if (state::pathIs(path, plen, "bias"))           s->bias = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "scale"))          s->scale = state::patchFloat(i);
     else if (state::pathIs(path, plen, "interpolate"))    s->interpolate = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(path, plen, "shading_mode"))   s->shading_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "bands"))          s->bands = state::patchFloat(i);
     else if (state::pathIs(path, plen, "contrast"))       s->contrast = state::patchFloat(i);
     else if (state::pathIs(path, plen, "backdrop_dim"))   s->backdrop_dim = state::patchFloat(i);
@@ -342,7 +350,9 @@ void render(void* self, int vp_w, int vp_h) {
   Uniforms u = {};
   u.res_x = (float)vp_w;
   u.res_y = (float)vp_h;
-  u.extent = PF_EXTENT;
+  // Domain zoom: higher scale → smaller visible extent → bigger features.
+  u.extent = PF_EXTENT / (s->scale > 1e-2f ? s->scale : 1e-2f);
+  u.shading_mode = (float)s->shading_mode;
   u.bias = s->bias;
   u.wind = s->wind;
   u.n_bands = s->bands;

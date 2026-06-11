@@ -23,6 +23,7 @@ import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from '../widgets/field-editor';
 import '../widgets/scalar-slider';
 import '../widgets/field-toggle';
+import '../widgets/field-select';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -173,6 +174,8 @@ export class PhaseFoldInspector extends MobxLitElement {
     return html`
       <div class="section">Shape</div>
       <phase-fold-xy-pad .label=${''} .binding=${b}></phase-fold-xy-pad>
+      <scalar-slider style="width: 100%;" .fieldPath=${'scale'} .label=${'Scale'}
+        .min=${0.1} .max=${8} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'interpolate'} .label=${'Interpolate'}
         .defaultValue=${1} .binding=${b}></field-toggle>
 
@@ -183,6 +186,9 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${-0.6} .max=${0.6} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>
 
       <div class="section">Backdrop</div>
+      <field-select .fieldPath=${'shading_mode'} .label=${'Shading'}
+        .options=${[{ label: 'Bands', value: 0 }, { label: 'Gradient', value: 1 }]}
+        .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'bands'} .label=${'Bands'}
         .min=${2} .max=${24} .step=${1} .defaultValue=${13} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'contrast'} .label=${'Contrast'}

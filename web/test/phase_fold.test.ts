@@ -95,6 +95,23 @@ describe('video.phase_fold E2E', () => {
     on.trace('out').expectDifferentFrom(off.trace('out'), 5);
   });
 
+  it('scale (domain zoom) changes the output', async () => {
+    const near = await render('pf_scale1', { ...BASE, scale: 1.0 }, 'pf_scale1');
+    const far = await render('pf_scale4', { ...BASE, scale: 4.0 }, 'pf_scale4');
+    far.trace('out').expectDifferentFrom(near.trace('out'), 30);
+  });
+
+  it('Gradient shading mode differs from Bands and is wind-aware', async () => {
+    // Backdrop only (lines off) so we isolate the shading mode.
+    const bands = await render('pf_bands', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0 }, 'pf_bands');
+    const grad = await render('pf_grad', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 1 }, 'pf_grad');
+    grad.trace('out').expectDifferentFrom(bands.trace('out'), 30);
+    // The Gradient reads the flow field (level-set flow + WIND), so adding wind
+    // must change it — Bands (height field, wind-independent) would not.
+    const gradWind = await render('pf_grad_wind', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 1, wind: 0.9 }, 'pf_grad_wind');
+    gradWind.trace('out').expectDifferentFrom(grad.trace('out'), 20);
+  });
+
   it('autopilot drives a live, non-destructive XY override (flow clock frozen)', async () => {
     // flow_speed=0 freezes the arrow/marker animation, so any change across
     // phases is the autopilot epicycle moving the effective XY — never inputs.
