@@ -141,12 +141,32 @@ export class TapsOverlay extends MobxLitElement {
     return null;
   }
 
-  /** Element to anchor the card's Y to: tap hit-box (taps mode), else the gutter tap dot. */
+  /** The field's option pip in the gutter (anchor when nothing else exists). */
+  private fieldOptionPip(fieldKey: string): HTMLElement | null {
+    const cvRoot = this.columnsRoot();
+    if (!cvRoot) return null;
+    for (const g of cvRoot.querySelectorAll('column-group')) {
+      const el = (g as HTMLElement).shadowRoot?.querySelector(
+        `.field-option-pip[data-field-key="${fieldKey}"]`) as HTMLElement | null;
+      if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Element to anchor the card's Y to: the tap hit-box (taps mode), else the
+   * selected gutter tap dot, else the field's option pip (so a pip click outside
+   * taps mode still anchors the card to the field row instead of (0,0)).
+   */
   private cardAnchorEl(fieldKey: string): HTMLElement | null {
     const hit = this.fieldHit(fieldKey);
     if (hit) return hit;
     const p = appState.local.selection?.path ?? '';
-    return p.startsWith('gtap/') ? this.gtapIndicator(p) : null;
+    if (p.startsWith('gtap/')) {
+      const g = this.gtapIndicator(p);
+      if (g) return g;
+    }
+    return this.fieldOptionPip(fieldKey);
   }
 
   private railRefs(sketch: Sketch): RailRef[] {
@@ -279,6 +299,8 @@ export class TapsOverlay extends MobxLitElement {
     let cardAnchorY = 0;
     if (card && fieldKey) {
       const hit = this.cardAnchorEl(fieldKey);
+      // Hide the card until we have an anchor, so it never flashes at (0,0).
+      card.style.visibility = hit ? 'visible' : 'hidden';
       if (hit) {
         const r = hit.getBoundingClientRect();
         const cw = card.offsetWidth, ch = card.offsetHeight;

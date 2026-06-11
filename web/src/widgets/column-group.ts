@@ -520,6 +520,32 @@ export class ColumnGroup extends MobxLitElement {
     .tap-indicator.write { background: var(--app-hi-color1, #ff4500); }
     .tap-indicator.read  { background: var(--app-hi-color2, #4169E1); }
     .tap-indicator:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
+    /* Engine-level field-option "light" by the field row. The ELEMENT is a
+       generous transparent hit box; the visible 6px green dot (the device-on
+       accent, distinct from the blue/red tap rails) is drawn via ::after so the
+       click target is the whole box, not just the dot. */
+    .field-option-pip {
+      position: absolute;
+      left: -3px;
+      width: 16px; height: 22px;
+      transform: translateY(-50%);
+      cursor: pointer;
+      z-index: 3;
+    }
+    .field-option-pip::after {
+      content: '';
+      position: absolute;
+      left: 6px; top: 50%; margin-top: -3px;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--app-accent-color, #4caf50);
+      box-shadow: 0 0 4px var(--app-accent-color, #4caf50);
+      pointer-events: none;
+    }
+    .field-option-pip:hover::after {
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-accent-color, #4caf50);
+    }
+    .field-option-pip[selected]::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.85); }
     .tap-indicator[selected] {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.8);
     }
@@ -723,6 +749,7 @@ export class ColumnGroup extends MobxLitElement {
       <div class="column-gutter" data-col=${this.colIdx}>
         ${this.renderRailLines(sketch, column)}
         ${this.renderGutterTaps(sketch, column)}
+        ${this.renderFieldOptionPips(column)}
       </div>
     `;
   }
@@ -1565,6 +1592,43 @@ export class ColumnGroup extends MobxLitElement {
     }
 
     return indicators;
+  }
+
+  /**
+   * A small "light" in the gutter (by where the tap would be) for any field
+   * that carries engine-level options — currently smoothing. Clicking it
+   * selects the field, which surfaces the floating field card.
+   */
+  private renderFieldOptionPips(column: SketchColumn): TemplateResult[] {
+    const pips: TemplateResult[] = [];
+    const gutterEl = this.renderRoot.querySelector(
+      `.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
+    if (!gutterEl) return pips;
+    const selKey = appController.selectedFieldKey();
+    for (let i = 0; i < column.chain.length; i++) {
+      const entry = column.chain[i];
+      if (entry.type !== 'module' || !entry.fieldOptions) continue;
+      const outputFieldNames = this.getOutputFieldNames(entry);
+      for (const [fieldPath, opts] of Object.entries(entry.fieldOptions)) {
+        // Extend this predicate as more engine-level options are added.
+        if (!opts?.smoothing?.enabled) continue;
+        const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${fieldPath}`;
+        const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
+        if (!rect) continue;
+        // Ensure the field selectable exists so clicking the pip actually shows
+        // the card — even outside taps mode and for fields with no taps.
+        this.registerFieldSelectable(fieldKey, i, entry, fieldPath, outputFieldNames.has(fieldPath));
+        const yCenter = rect.top + rect.height / 2;
+        pips.push(html`
+          <div class="field-option-pip" ?selected=${selKey === fieldKey}
+            data-field-key=${fieldKey}
+            style="top:${yCenter}px"
+            title="Smoothing on — click to edit"
+            @click=${(e: Event) => { e.stopPropagation(); appController.selectField(fieldKey); }}></div>
+        `);
+      }
+    }
+    return pips;
   }
 
   /** Register a gutter tap (visual wire connector) as a selectable. */
