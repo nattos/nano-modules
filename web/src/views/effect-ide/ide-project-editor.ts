@@ -30,6 +30,7 @@ import { PointerDragOp } from '../../utils/pointer-drag-op';
 
 import '../../widgets/columns-view';
 import '../../widgets/column-group';
+import '../../widgets/taps-overlay';
 
 // Custom inspector registrations (self-registering side-effect imports). The
 // effect IDE has its own module graph and does NOT load edit-tab.ts, where the
@@ -68,6 +69,12 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
       font-size: 11px;
       text-align: center;
       line-height: 1.6;
+    }
+    .columns-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      display: flex;
     }
     columns-view {
       flex: 1;
@@ -241,9 +248,15 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
    * editor's handler — same behavior, same guards (no-op while typing).
    */
   private onGlobalKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
+    // `T` toggles taps mode (global, when not typing).
+    if (e.key === 't' || e.key === 'T') {
+      e.preventDefault();
+      appController.setTappingMode(!appState.local.tappingMode);
+      return;
+    }
+    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     const selection = appState.local.selection;
     if (!selection) return;
     const parts = selection.path.split('/');
@@ -291,7 +304,15 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     // Key on sketchId so columns-view fully remounts when the selection
     // changes — keeps internal column-group caches in sync.
     return html`${keyed(id, html`
-      <columns-view .host=${this as ColumnHost}></columns-view>
+      <div class="columns-wrap">
+        <columns-view .host=${this as ColumnHost}
+          @click=${(e: Event) => {
+            // Deselect when clicking empty space (not handled by a child).
+            if (e.target === e.currentTarget) appController.select(null);
+          }}
+        ></columns-view>
+        <taps-overlay .sketchId=${id}></taps-overlay>
+      </div>
     `)}`;
   }
 }

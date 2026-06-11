@@ -841,12 +841,28 @@ export class AppController {
   setTappingMode(on: boolean) {
     runInAction(() => {
       appState.local.tappingMode = on;
-      if (!on) appState.local.selectedFieldPath = null;
     });
+    // Leaving taps mode clears a field/rail selection (but not an effect one).
+    if (!on) {
+      const p = appState.local.selection?.path;
+      if (p && (p.startsWith('field/') || p.startsWith('rail/'))) this.select(null);
+    }
   }
 
-  selectField(path: string | null) {
-    runInAction(() => { appState.local.selectedFieldPath = path; });
+  /**
+   * Select a field by its key `<sketchId>/<col>/<chain>/<fieldPath>`. Routed
+   * through the unified `Selectable` registry as a `field/…` path so field,
+   * rail, and effect selection are mutually exclusive (one at a time) and a
+   * background-click `select(null)` deselects fields too.
+   */
+  selectField(key: string | null) {
+    this.select(key ? `field/${key}` : null);
+  }
+
+  /** The selected field key (without the `field/` prefix), or null. */
+  selectedFieldKey(): string | null {
+    const p = appState.local.selection?.path;
+    return p && p.startsWith('field/') ? p.slice('field/'.length) : null;
   }
 
   // --- Selection / Inspector ---
@@ -945,6 +961,17 @@ export class AppController {
           }
         }
       }
+    });
+  }
+
+  /** Rename a rail (used by the rail inspector). */
+  renameRail(sketchId: string, scope: 'sketch' | number, railId: string, name: string) {
+    this.mutate('Rename rail', draft => {
+      const sketch = draft.sketches[sketchId];
+      if (!sketch) return;
+      const rails = scope === 'sketch' ? sketch.rails : sketch.columns[scope]?.rails;
+      const rail = rails?.find(r => r.id === railId);
+      if (rail) rail.name = name;
     });
   }
 
@@ -1183,6 +1210,31 @@ export class AppController {
         r.taps = r.taps ?? [];
         r.taps = r.taps.filter(t => !(t.fieldPath === reader.fieldPath && t.direction === 'read'));
         r.taps.push({ railId, fieldPath: reader.fieldPath, direction: 'read' });
+      }
+    });
+  }
+
+  /**
+   * Connect a single field directly to an existing rail (badge click / connect
+   * to a rail badge). Input fields get a read tap (replacing any existing read
+   * tap on that field, like `connectFields`); output fields get a write tap to
+   * the rail.
+   */
+  connectFieldToRail(field: FieldConnectInfo, railId: string) {
+    const sketch = appState.database.sketches[field.sketchId];
+    const entry = sketch?.columns[field.colIdx]?.chain[field.chainIdx];
+    if (entry?.type !== 'module') return;
+    this.mutate('Connect to rail', draft => {
+      const e = draft.sketches[field.sketchId]?.columns[field.colIdx]?.chain[field.chainIdx];
+      if (e?.type !== 'module') return;
+      e.taps = e.taps ?? [];
+      if (field.isOutput) {
+        const has = e.taps.some(t =>
+          t.fieldPath === field.fieldPath && t.direction === 'write' && t.railId === railId);
+        if (!has) e.taps.push({ railId, fieldPath: field.fieldPath, direction: 'write' });
+      } else {
+        e.taps = e.taps.filter(t => !(t.fieldPath === field.fieldPath && t.direction === 'read'));
+        e.taps.push({ railId, fieldPath: field.fieldPath, direction: 'read' });
       }
     });
   }

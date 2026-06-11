@@ -17,7 +17,7 @@ import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { Sketch, Rail } from '../sketch-types';
+import type { Sketch } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
 import type { FieldBinding } from '../widgets/field-editor';
@@ -26,6 +26,7 @@ import type { ColumnGroupCallbacks } from '../widgets/column-group';
 import type { ColumnGroup } from '../widgets/column-group';
 import '../widgets/columns-view';
 import '../widgets/column-group';
+import '../widgets/taps-overlay';
 import '../widgets/texture-monitor';
 import '../widgets/spark-chart';
 import { editorRegistry } from '../editor-registry';
@@ -99,9 +100,15 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
    * focus is in an editable element (so typing in inputs still works).
    */
   private handleGlobalKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
+    // `T` toggles taps mode (global, when not typing).
+    if (e.key === 't' || e.key === 'T') {
+      e.preventDefault();
+      appController.setTappingMode(!appState.local.tappingMode);
+      return;
+    }
+    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     const selection = appState.local.selection;
     if (!selection) return;
     const parts = selection.path.split('/');
@@ -133,6 +140,12 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       display: flex;
       flex: 1;
       min-height: 0;
+    }
+    .columns-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      display: flex;
     }
     .right-panel {
       width: 340px;
@@ -292,12 +305,15 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     });
 
     return html`
-      <columns-view .host=${this as ColumnHost}
-        @click=${(e: Event) => {
-          // Deselect when clicking on empty space (not handled by a child)
-          if (e.target === e.currentTarget) appController.select(null);
-        }}
-      ></columns-view>
+      <div class="columns-wrap">
+        <columns-view .host=${this as ColumnHost}
+          @click=${(e: Event) => {
+            // Deselect when clicking on empty space (not handled by a child)
+            if (e.target === e.currentTarget) appController.select(null);
+          }}
+        ></columns-view>
+        <taps-overlay .sketchId=${sketchId}></taps-overlay>
+      </div>
       ${this.renderRightPanel(sketchId, sketch)}
     `;
   }
@@ -417,9 +433,8 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   }
 
   /** Default inspector content when nothing specific is selected. */
-  private renderDefaultInspector(sketchId: string, sketch: Sketch) {
+  private renderDefaultInspector(_sketchId: string, _sketch: Sketch) {
     const tappingMode = appState.local.tappingMode;
-    const selectedPath = appState.local.selectedFieldPath;
 
     return html`
       <div class="section-header">Tools</div>
@@ -431,128 +446,14 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
         <button class="btn" ?disabled=${!appController.history.canRedo}
           @click=${() => appController.redo()}>Redo</button>
       </div>
-      ${tappingMode && selectedPath
-        ? this.renderTapConfig(sketchId, sketch, selectedPath)
-        : tappingMode
-          ? html`<div class="empty-state" style="padding:16px 0">Click a field to configure taps</div>`
-          : nothing}
+      ${tappingMode
+        ? html`<div class="empty-state" style="padding:16px 0">
+            Press <b>T</b> to toggle. Click a field to select it, then click a rail badge to connect.
+          </div>`
+        : nothing}
     `;
   }
 
-  private renderTapConfig(sketchId: string, sketch: Sketch, selectedPath: string) {
-    const parts = selectedPath.split('/');
-    if (parts.length < 4) return nothing;
-    const [_sid, colStr, chainStr, ...fieldParts] = parts;
-    const colIdx = parseInt(colStr);
-    const chainIdx = parseInt(chainStr);
-    const fieldPath = fieldParts.join('/');
-    const entry = sketch.columns[colIdx]?.chain[chainIdx];
-    if (!entry || entry.type !== 'module') return nothing;
-
-    const taps = (entry.taps ?? []).filter(t => t.fieldPath === fieldPath);
-    const allRails = this.collectRails(sketch, colIdx);
-    const sm = entry.fieldOptions?.[fieldPath]?.smoothing;
-
-    return html`
-      <div class="section-header">Smoothing for "${fieldPath}"</div>
-      <div class="tap-row">
-        <input type="checkbox" .checked=${sm?.enabled ?? false}
-          @change=${(e: Event) => appController.setFieldSmoothing(sketchId, colIdx, chainIdx, fieldPath,
-            { enabled: (e.target as HTMLInputElement).checked })}>
-        <span class="tap-row-name">Enable</span>
-        <input type="number" min="0" step="0.05" style="width:64px"
-          .value=${String(sm?.duration ?? 0.2)} ?disabled=${!sm?.enabled}
-          @change=${(e: Event) => appController.setFieldSmoothing(sketchId, colIdx, chainIdx, fieldPath,
-            { duration: parseFloat((e.target as HTMLInputElement).value) || 0 })}>
-        <span>s</span>
-      </div>
-
-      <div class="section-header" style="margin-top:12px">Taps for "${fieldPath}"</div>
-      ${taps.length > 0 ? html`
-        ${taps.map((tap) => {
-          const tapIdx = (entry.taps ?? []).indexOf(tap);
-          const rail = allRails.find(r => r.id === tap.railId);
-          return html`
-            <div class="tap-row">
-              <span class="tap-row-name">${rail?.name ?? tap.railId}</span>
-              <button class="dir-btn" ?active=${tap.direction === 'read'}
-                @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'read')}>R</button>
-              <button class="dir-btn" ?active=${tap.direction === 'write'}
-                @click=${() => appController.setTapDirection(sketchId, colIdx, chainIdx, tapIdx, 'write')}>W</button>
-              <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1;"
-                @click=${() => appController.removeTap(sketchId, colIdx, chainIdx, tapIdx)}>×</button>
-            </div>
-          `;
-        })}
-        <!-- Show trace cards for connected rails -->
-        <div class="section-header" style="margin-top:12px">Rail Values</div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
-          ${taps.map((tap) => {
-            const rail = allRails.find(r => r.id === tap.railId);
-            if (!rail) return nothing;
-            if (rail.dataType === 'texture') {
-              const traceId = `rail_${sketchId}/${colIdx}/${tap.railId}`;
-              // Rail texture traces would need to be registered — for now show placeholder
-              return html`
-                <texture-monitor
-                  .traceId=${traceId}
-                  .traceTarget=${null}
-                  .width=${96}
-                  .height=${54}
-                ></texture-monitor>
-              `;
-            }
-            // Float rails: show a spark chart (read from sketch state)
-            return html`
-              <spark-chart
-                .fieldPath=${tap.railId}
-                .binding=${{
-                  instanceKey: `rail_${tap.railId}`,
-                  getValue: () => {
-                    const ss = appState.local.engine.sketchState;
-                    const sketchSt = ss?.[sketchId];
-                    const colRails = sketchSt?.[`columns/${colIdx}`];
-                    return colRails?.[tap.railId]?.value ?? sketchSt?.rails?.[tap.railId]?.value ?? 0;
-                  },
-                  setValue: () => {},
-                }}
-                .width=${96}
-                .height=${32}
-              ></spark-chart>
-            `;
-          })}
-        </div>
-      ` : html`<div style="font-size:11px;color:var(--app-text-color2);margin-bottom:8px">No taps connected</div>`}
-
-      <div class="section-header" style="margin-top:12px">Connect to Rail</div>
-      <div class="rail-list">
-        ${allRails.map(rail => html`
-          <div class="rail-item"
-            @click=${() => appController.addTap(sketchId, colIdx, chainIdx, rail.id, fieldPath, 'read')}>
-            ${rail.name ?? rail.id} <span style="color:var(--app-text-color2);font-size:9px;margin-left:auto">${rail.dataType}</span>
-          </div>
-        `)}
-        <button class="btn" style="width:100%;text-align:center;padding:6px"
-          @click=${() => this.createRailAndTap(sketchId, colIdx, chainIdx, fieldPath)}>+ New Rail</button>
-      </div>
-    `;
-  }
-
-  private collectRails(sketch: Sketch, colIdx: number): Rail[] {
-    const rails: Rail[] = [];
-    if (sketch.rails) rails.push(...sketch.rails);
-    const col = sketch.columns[colIdx];
-    if (col?.rails) rails.push(...col.rails);
-    return rails;
-  }
-
-  private createRailAndTap(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string) {
-    const sketch = appState.database.sketches[sketchId];
-    const existingCount = (sketch?.columns[colIdx]?.rails?.length ?? 0) + (sketch?.rails?.length ?? 0);
-    const name = `Rail ${existingCount + 1}`;
-    const railId = appController.addRail(sketchId, colIdx, name, 'float');
-    appController.addTap(sketchId, colIdx, chainIdx, railId, fieldPath, 'write');
-  }
 
   // ========================================================================
   // Drag & Drop (PointerDragOp-based)

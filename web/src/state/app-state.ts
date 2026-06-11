@@ -39,7 +39,6 @@ export class AppState {
     editingSketchId: null,
     engine: { fps: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {}, debugConsoleLog: [] },
     tappingMode: false,
-    selectedFieldPath: null,
     selection: null,
     queuedSelectionPath: null,
     userSettings: defaultUserSettings(),

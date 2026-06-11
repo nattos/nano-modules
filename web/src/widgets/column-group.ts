@@ -14,6 +14,7 @@ import { html, css, nothing, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { reaction, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
+import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
@@ -25,31 +26,6 @@ import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
 import type { TracePoint } from '../engine-types';
 import type { ParamInfo } from '../engine-types';
-import { PointerDragOp } from '../utils/pointer-drag-op';
-
-/**
- * Pierce nested shadow roots looking for the topmost element at (x, y).
- * elementFromPoint at document level returns the shadow host; descending
- * into each shadowRoot gives us the actual pointer target inside.
- */
-function deepElementFromPoint(x: number, y: number): Element | null {
-  let el: Element | null = document.elementFromPoint(x, y);
-  while (el) {
-    const sr = (el as unknown as { shadowRoot: ShadowRoot | null }).shadowRoot;
-    if (!sr) break;
-    const inner = sr.elementFromPoint(x, y);
-    if (!inner || inner === el) break;
-    el = inner;
-  }
-  return el;
-}
-
-/** Find the tap-overlay-hit under the given viewport coordinates, if any. */
-function findTapOverlayHitAt(x: number, y: number): HTMLElement | null {
-  const leaf = deepElementFromPoint(x, y);
-  if (!leaf) return null;
-  return (leaf.closest?.('.tap-overlay-hit') as HTMLElement | null) ?? null;
-}
 
 // Import field widget elements
 import './field-slider';
@@ -907,14 +883,15 @@ export class ColumnGroup extends MobxLitElement {
     e: Event,
     chainIdx: number,
     fieldPath: string,
-    schemaDef: any | null,
+    _schemaDef: any | null,
     tappingMode: boolean,
   ) {
     e.stopPropagation();
     if (!tappingMode) return;
+    // Non-destructive: select the output field (no tap created). Connect via badges.
     const key = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
-    appController.autoCreateTapForOutputField(
-      this.sketchId, this.colIdx, chainIdx, fieldPath, schemaDef);
+    const entry = appState.database.sketches[this.sketchId]?.columns[this.colIdx]?.chain[chainIdx];
+    if (entry?.type === 'module') this.registerFieldSelectable(key, chainIdx, entry, fieldPath, true);
     appController.selectField(key);
   }
 
@@ -949,11 +926,13 @@ export class ColumnGroup extends MobxLitElement {
       <div class="effect-card" ?selected=${isSelected}
         @click=${(e: Event) => {
           if ((e.target as HTMLElement).closest('smart-input, .tab-area')) return;
-          // Stop propagation so the columns-view empty-space handler (which
-          // sees a retargeted event and thinks the click was on itself)
-          // doesn't immediately deselect us.
+          // Swallow clicks anywhere on the card so the columns-view empty-space
+          // handler (which sees a retargeted event and thinks the click was on
+          // itself) doesn't immediately deselect us. Selecting the EFFECT itself
+          // happens ONLY on the header (its pointerdown handler), so clicking a
+          // field editor in the body selects just that parameter — the card no
+          // longer steals selection out from under it.
           e.stopPropagation();
-          appController.select(effectPath);
         }}>
         ${this.renderDeviceTab('top', chainIdx)}
         <div class="effect-card-inner">
@@ -1165,7 +1144,7 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   private renderTapOverlay(chainIdx: number, entry: ModuleEntry) {
-    const selectedPath = appState.local.selectedFieldPath;
+    const selectedPath = appController.selectedFieldKey();
     // Anchor the overlay to the effect-card-inner so it can span both the
     // inputs body and the output trace-card row.
     const innerEl = this.renderRoot.querySelector(
@@ -1190,6 +1169,7 @@ export class ColumnGroup extends MobxLitElement {
       const isOutput = outputFieldNames.has(fieldPath);
       const isSelected = selectedPath === key;
       const schemaDef = (schema as any)[fieldPath] ?? null;
+      this.registerFieldSelectable(key, chainIdx, entry, fieldPath, isOutput);
 
       hits.push(html`
         <div class="tap-overlay-hit ${isOutput ? 'output' : ''}" ?selected=${isSelected}
@@ -1208,18 +1188,10 @@ export class ColumnGroup extends MobxLitElement {
     return html`<div class="tap-overlay-container">${hits}</div>`;
   }
 
-  /** Active drag-to-connect state (null when not dragging). */
-  private tapDragState: {
-    sourceInfo: FieldConnectInfo;
-    sourceEl: HTMLElement;
-    currentTargetEl: HTMLElement | null;
-  } | null = null;
-
   /**
-   * Start a potential drag-to-connect from a tap overlay hit. If the user
-   * moves past the threshold, we resolve the drop target on pointerup and
-   * ask the controller to create the tap connection. Short drags fall
-   * through to the normal click handler (single-field auto-tap).
+   * Start a drag-to-connect from a tap overlay hit, routed through the shared
+   * connect controller (draws the rubber-band line; can drop on a field or a
+   * rail badge). A short press (no drag) falls through to onTapOverlayClick.
    */
   private onTapHitPointerDown(
     e: PointerEvent,
@@ -1230,6 +1202,10 @@ export class ColumnGroup extends MobxLitElement {
     chainIdx: number,
   ) {
     if (e.button !== 0) return;
+    // A connect gesture is already in flight (e.g. click-to-connect): don't start
+    // a competing drag whose pointerup would cancel/clear it before the click
+    // can land the connection. Let onTapOverlayClick complete it.
+    if (tapsConnect.state) return;
     const sourceEl = e.currentTarget as HTMLElement;
     const rect = sourceEl.getBoundingClientRect();
     const sourceInfo: FieldConnectInfo = {
@@ -1241,69 +1217,11 @@ export class ColumnGroup extends MobxLitElement {
       viewportY: rect.top + rect.height / 2,
       schemaDef,
     };
-
-    new PointerDragOp(e, sourceEl, {
-      threshold: 5,
-      move: (me) => {
-        if (!this.tapDragState) {
-          sourceEl.setAttribute('tap-dragging', '');
-          this.tapDragState = { sourceInfo, sourceEl, currentTargetEl: null };
-        }
-        this.updateTapDragHover(me.clientX, me.clientY);
-      },
-      accept: (me) => {
-        const target = this.findTapDragTarget(me.clientX, me.clientY);
-        if (target && this.tapDragState) {
-          appController.connectFields(sourceInfo, target);
-        }
-        this.endTapDrag();
-      },
-      cancel: () => { this.endTapDrag(); },
-    });
-  }
-
-  private updateTapDragHover(x: number, y: number) {
-    if (!this.tapDragState) return;
-    const hitEl = findTapOverlayHitAt(x, y);
-    // Don't self-target the source.
-    const same = hitEl === this.tapDragState.sourceEl;
-    const newTarget = same ? null : hitEl;
-    if (this.tapDragState.currentTargetEl === newTarget) return;
-    this.tapDragState.currentTargetEl?.removeAttribute('tap-drop-target');
-    newTarget?.setAttribute('tap-drop-target', '');
-    this.tapDragState.currentTargetEl = newTarget;
-  }
-
-  private findTapDragTarget(x: number, y: number): FieldConnectInfo | null {
-    const hitEl = findTapOverlayHitAt(x, y);
-    if (!hitEl) return null;
-    if (this.tapDragState && hitEl === this.tapDragState.sourceEl) return null;
-
-    const sketchId = hitEl.dataset.sketchId ?? '';
-    const colIdx = parseInt(hitEl.dataset.colIdx ?? '-1');
-    const chainIdx = parseInt(hitEl.dataset.chainIdx ?? '-1');
-    const fieldPath = hitEl.dataset.fieldPath ?? '';
-    const isOutput = hitEl.dataset.isOutput === 'true';
-    if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
-
-    const sketch = appState.database.sketches[sketchId];
-    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
-    if (!entry || entry.type !== 'module') return null;
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-    const schemaDef = plugin?.schema?.[fieldPath] ?? null;
-    const rect = hitEl.getBoundingClientRect();
-    return {
-      sketchId, colIdx, chainIdx, fieldPath, isOutput,
-      viewportY: rect.top + rect.height / 2,
-      schemaDef,
-    };
-  }
-
-  private endTapDrag() {
-    if (!this.tapDragState) return;
-    this.tapDragState.sourceEl.removeAttribute('tap-dragging');
-    this.tapDragState.currentTargetEl?.removeAttribute('tap-drop-target');
-    this.tapDragState = null;
+    const key = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
+    // Drag-to-connect, routed through the shared connect controller so the
+    // rubber-band line draws and the drop can land on a field OR a rail badge.
+    // A short press (no drag) falls through to onTapOverlayClick (select).
+    tapsConnect.beginFromFieldDrag(e, sourceEl, this.sketchId, key, sourceInfo);
   }
 
   private onTapOverlayClick(
@@ -1313,12 +1231,21 @@ export class ColumnGroup extends MobxLitElement {
     schemaDef: any | null,
     chainIdx: number,
   ) {
-    if (isOutput) {
-      appController.autoCreateTapForOutputField(
-        this.sketchId, this.colIdx, chainIdx, fieldPath, schemaDef);
-    } else {
-      appController.autoCreateTapForInputField(
-        this.sketchId, this.colIdx, chainIdx, fieldPath, schemaDef);
+    // Swallow the synthetic click that trails a drag-to-connect gesture.
+    if (tapsConnect.consumeClickSuppression()) return;
+    // If a connect gesture is in flight, this click lands the connection here.
+    if (tapsConnect.state) { tapsConnect.completeOnField(key); return; }
+    // Non-destructive: first click SELECTS the field (no tap created). Clicking
+    // the already-selected field again picks it up for click-to-connect.
+    if (appController.selectedFieldKey() === key) {
+      const hit = this.renderRoot.querySelector(
+        `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
+      const r = hit?.getBoundingClientRect();
+      tapsConnect.beginFromFieldClick(this.sketchId, key, {
+        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath,
+        isOutput, viewportY: r ? r.top + r.height / 2 : 0, schemaDef,
+      });
+      return;
     }
     appController.selectField(key);
   }
@@ -1573,6 +1500,8 @@ export class ColumnGroup extends MobxLitElement {
         && seg.firstWriteY < seg.lastReadY;
       return html`
         <div class="rail-line"
+          data-rail-id=${rail.id}
+          data-col-idx=${this.colIdx}
           style="left:${x}px"
           title="${rail.name ?? rail.id}"></div>
         ${hasActive ? html`
@@ -1591,6 +1520,7 @@ export class ColumnGroup extends MobxLitElement {
     for (let i = 0; i < column.chain.length; i++) {
       const entry = column.chain[i];
       if (entry.type !== 'module' || !entry.taps?.length) continue;
+      const outputFieldNames = this.getOutputFieldNames(entry);
 
       for (let tapIdx = 0; tapIdx < entry.taps.length; tapIdx++) {
         const tap = entry.taps[tapIdx];
@@ -1605,6 +1535,10 @@ export class ColumnGroup extends MobxLitElement {
         const tapPath = `gtap/${this.sketchId}/${this.colIdx}/${i}/${tapIdx}`;
         const isSelected = appController.isSelected(tapPath);
         this.registerGutterTapSelectable(tapPath, i, tapIdx);
+        // Register the field selectable too, so selecting a tap (in either mode)
+        // can show the floating field card even when taps mode is off.
+        this.registerFieldSelectable(fieldKey, i, entry, tap.fieldPath,
+          outputFieldNames.has(tap.fieldPath));
 
         const onClick = (e: Event) => {
           e.stopPropagation();
@@ -1614,6 +1548,7 @@ export class ColumnGroup extends MobxLitElement {
         // Dot at the rail X position
         indicators.push(html`
           <div class="tap-indicator ${tap.direction}" ?selected=${isSelected}
+            data-tap-path=${tapPath}
             style="left:${railX}px;top:${yCenter}px"
             title="${tap.direction === 'write' ? 'Write' : 'Read'} tap → ${tap.fieldPath}"
             @click=${onClick}></div>
@@ -1622,6 +1557,7 @@ export class ColumnGroup extends MobxLitElement {
         // Horizontal line from gutter left edge (0) to the rail dot
         indicators.push(html`
           <div class="tap-indicator-line ${tap.direction}" ?selected=${isSelected}
+            data-tap-path=${tapPath}
             style="left:0;width:${railX - 3}px;top:${yCenter}px"
             @click=${onClick}></div>
         `);
@@ -1976,6 +1912,78 @@ export class ColumnGroup extends MobxLitElement {
         `;
       },
     });
+  }
+
+  /**
+   * Register a single field as a selectable. Its inspector content — the field
+   * editor, the engine-level smoothing option, and the taps wired to it — is
+   * shown in the right panel AND cloned into the floating field card (taps-overlay).
+   */
+  private registerFieldSelectable(
+    key: string, chainIdx: number, entry: ModuleEntry, fieldPath: string, isOutput: boolean) {
+    appController.defineSelectable({
+      path: `field/${key}`,
+      label: fieldPath,
+      renderInspectorContent: () => this.renderFieldInspector(chainIdx, entry, fieldPath, isOutput),
+    });
+  }
+
+  /** Inspector body for one field — reused by the right panel and the floating card. */
+  private renderFieldInspector(
+    chainIdx: number, entry: ModuleEntry, fieldPath: string, isOutput: boolean) {
+    const sId = this.sketchId, cI = this.colIdx;
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const binding = this.buildFieldBinding(chainIdx, entry, plugin);
+
+    // Single field editor (input fields only; pure outputs have no inline editor).
+    const fieldDef = this.buildInputFieldDefs(plugin).find(f => f.path === fieldPath);
+    const editor = fieldDef ? createGenericInspector([fieldDef])(binding) : nothing;
+
+    // Smoothing — engine-level option, scalar input floats.
+    const sm = entry.fieldOptions?.[fieldPath]?.smoothing;
+    const smoothing = isOutput ? nothing : html`
+      <div class="section-header" style="margin-top:8px">Smoothing</div>
+      <div class="tap-row">
+        <input type="checkbox" .checked=${sm?.enabled ?? false}
+          @change=${(e: Event) => appController.setFieldSmoothing(sId, cI, chainIdx, fieldPath,
+            { enabled: (e.target as HTMLInputElement).checked })}>
+        <span class="tap-row-name">Enable</span>
+        <input type="number" min="0" step="0.05" style="width:64px"
+          .value=${String(sm?.duration ?? 0.2)} ?disabled=${!sm?.enabled}
+          @change=${(e: Event) => appController.setFieldSmoothing(sId, cI, chainIdx, fieldPath,
+            { duration: parseFloat((e.target as HTMLInputElement).value) || 0 })}>
+        <span>s</span>
+      </div>`;
+
+    // Taps wired to this field.
+    const sketch = appState.database.sketches[this.sketchId];
+    const allRails = [...(sketch?.rails ?? []), ...(sketch?.columns[this.colIdx]?.rails ?? [])];
+    const taps = (entry.taps ?? []).map((t, i) => ({ t, i })).filter(({ t }) => t.fieldPath === fieldPath);
+
+    return html`
+      ${editor}
+      ${smoothing}
+      <div class="section-header" style="margin-top:8px">Taps</div>
+      ${taps.length === 0
+        ? html`<div style="font-size:11px;color:var(--app-text-color2)">No taps — use the rail badges to connect.</div>`
+        : taps.map(({ t, i }) => {
+            const rail = allRails.find(r => r.id === t.railId);
+            return html`
+              <div class="tap-row">
+                <span class="tap-row-name">${rail?.name ?? t.railId}</span>
+                <button class="dir-btn" ?active=${t.direction === 'read'}
+                  @click=${() => appController.setTapDirection(sId, cI, chainIdx, i, 'read')}>R</button>
+                <button class="dir-btn" ?active=${t.direction === 'write'}
+                  @click=${() => appController.setTapDirection(sId, cI, chainIdx, i, 'write')}>W</button>
+                <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1"
+                  @click=${() => appController.removeTap(sId, cI, chainIdx, i)}>×</button>
+              </div>
+              ${rail?.dataType === 'float'
+                ? this.renderTapModInspector(sId, cI, chainIdx, i, t)
+                : nothing}
+            `;
+          })}
+    `;
   }
 
   /**
