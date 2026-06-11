@@ -81,6 +81,10 @@ export interface UserSettings {
   scrollPositions: Record<string, number>;
   /** Whether the engine is paused. */
   paused: boolean;
+  /** Resolume sketch-IDE: last active top tab (create/organize/edit). */
+  activeTab: 'create' | 'organize' | 'edit';
+  /** Resolume sketch-IDE: the sketch currently open in the edit tab. */
+  editingSketchId: string | null;
 }
 
 // --- Local state (ephemeral, not in undo history) ---

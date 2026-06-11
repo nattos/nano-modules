@@ -21,6 +21,8 @@ import {
   isDefaultProjectId,
   isUserProjectId,
   isPersistableProjectId,
+  isResolumeSketchId,
+  RESOLUME_SKETCH_PREFIX,
   effectIdFromDefaultProjectId,
   defaultProjectIdForEffect,
   synthesizeDefaultProject,
@@ -446,6 +448,7 @@ export class AppController {
 
   setActiveTab(tab: 'create' | 'organize' | 'edit') {
     runInAction(() => { appState.local.activeTab = tab; });
+    this.setUserSetting('activeTab', tab);   // remember across reloads
   }
 
   /**
@@ -477,7 +480,13 @@ export class AppController {
    * Bypasses history — these are not undo/redo-able.
    */
   loadInitialUserSettings(settings: UserSettings) {
-    runInAction(() => { appState.local.userSettings = settings; });
+    runInAction(() => {
+      appState.local.userSettings = settings;
+      // Mirror the persisted resolume session into the live ephemeral state
+      // the sketch-app reads (active tab + the sketch open in the edit tab).
+      appState.local.activeTab = settings.activeTab ?? 'create';
+      appState.local.editingSketchId = settings.editingSketchId ?? null;
+    });
     // No save here — this IS the load. Persistence stays disabled until
     // boot finishes calling `enablePersistence()`.
   }
@@ -500,6 +509,12 @@ export class AppController {
         appState.database.sketches[id] = normalized;
         if (isPersistableProjectId(id) && !normalized.isTemplate) {
           this.projectsLastSavedJson.set(id, JSON.stringify(normalized));
+        }
+        // Seed the resolume `sketch_N` counter past any restored sketch so a
+        // freshly-created sketch can't collide with (and overwrite) a saved one.
+        if (isResolumeSketchId(id)) {
+          const n = parseInt(id.slice(RESOLUME_SKETCH_PREFIX.length), 10);
+          if (Number.isFinite(n) && n >= this.nextSketchId) this.nextSketchId = n + 1;
         }
       }
     });
@@ -1045,19 +1060,40 @@ export class AppController {
 
   // --- Field options (engine-level per-parameter options) ---
 
+  private fieldSmoothingRecipe(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string,
+                               patch: Partial<import('../sketch-types').ParamSmoothing>) {
+    return (draft: DatabaseState) => {
+      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      if (entry?.type !== 'module') return;
+      entry.fieldOptions ??= {};
+      const fo = (entry.fieldOptions[fieldPath] ??= {});
+      fo.smoothing = { enabled: false, duration: 0.2, ...fo.smoothing, ...patch };
+    };
+  }
+
   /**
    * Merge a partial smoothing config into a field's engine-level options.
    * Creates the `fieldOptions[fieldPath].smoothing` sub-tree on demand.
    */
   setFieldSmoothing(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string,
                     patch: Partial<import('../sketch-types').ParamSmoothing>) {
-    this.mutate('Edit smoothing', draft => {
-      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
-      if (entry?.type !== 'module') return;
-      entry.fieldOptions ??= {};
-      const fo = (entry.fieldOptions[fieldPath] ??= {});
-      fo.smoothing = { enabled: false, duration: 0.2, ...fo.smoothing, ...patch };
-    });
+    this.mutate('Edit smoothing', this.fieldSmoothingRecipe(sketchId, colIdx, chainIdx, fieldPath, patch));
+  }
+
+  /** Begin a continuous smoothing edit (slider drag). No undo points during the drag. */
+  beginSetFieldSmoothing(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string,
+                         patch: Partial<import('../sketch-types').ParamSmoothing>): LongEdit {
+    const edit = this.history.beginLongEdit(
+      'Edit smoothing', this.fieldSmoothingRecipe(sketchId, colIdx, chainIdx, fieldPath, patch));
+    this.syncSketchesToEngine();
+    return edit;
+  }
+
+  /** Update a continuous smoothing edit (drag in progress). */
+  updateSetFieldSmoothing(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number,
+                          fieldPath: string, patch: Partial<import('../sketch-types').ParamSmoothing>) {
+    edit.update(this.fieldSmoothingRecipe(sketchId, colIdx, chainIdx, fieldPath, patch));
+    this.syncSketchesToEngine();
   }
 
   // --- Auto-tap helpers ---
@@ -1554,6 +1590,11 @@ export class AppController {
 
   editSketch(id: string | null) {
     runInAction(() => { appState.local.editingSketchId = id; });
+    // Remember the open sketch across reloads, and re-scope execution: the
+    // resolume engine filter runs only `editingSketchId`, so changing it must
+    // re-sync. (No-op persistence/save until boot enables it.)
+    this.setUserSetting('editingSketchId', id);
+    this.syncSketchesToEngine();
     // Register/unregister the edit preview trace point via the trace controller.
     if (id) {
       // The receiving canvas (edit-tab.ts `#preview-canvas`) has HTML

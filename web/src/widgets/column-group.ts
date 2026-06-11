@@ -1939,21 +1939,39 @@ export class ColumnGroup extends MobxLitElement {
     const fieldDef = this.buildInputFieldDefs(plugin).find(f => f.path === fieldPath);
     const editor = fieldDef ? createGenericInspector([fieldDef])(binding) : nothing;
 
-    // Smoothing — engine-level option, scalar input floats.
+    // Smoothing — engine-level option, scalar input floats. Driven by the
+    // standard IDE field widgets via a small binding onto the smoothing sub-tree.
     const sm = entry.fieldOptions?.[fieldPath]?.smoothing;
+    const coerce = (k: string, v: any) => k === 'enabled' ? v > 0.5 : v;
+    const smBinding: FieldBinding = {
+      instanceKey: `${entry.instance_key}::smoothing::${fieldPath}`,
+      getValue: (k: string) => {
+        const s = entry.fieldOptions?.[fieldPath]?.smoothing;
+        return k === 'enabled' ? (s?.enabled ?? false) : (s?.duration ?? 0.2);
+      },
+      setValue: (k: string, v: any) =>
+        appController.setFieldSmoothing(sId, cI, chainIdx, fieldPath, { [k]: coerce(k, v) }),
+      beginContinuousEdit: (k: string, v: any): ContinuousEditHandle => {
+        const edit = appController.beginSetFieldSmoothing(
+          sId, cI, chainIdx, fieldPath, { [k]: coerce(k, v) });
+        return {
+          update: (nv: any) => appController.updateSetFieldSmoothing(
+            edit, sId, cI, chainIdx, fieldPath, { [k]: coerce(k, nv) }),
+          accept: () => edit.accept(),
+          cancel: () => edit.cancel(),
+        };
+      },
+    };
     const smoothing = isOutput ? nothing : html`
       <div class="section-header" style="margin-top:8px">Smoothing</div>
-      <div class="tap-row">
-        <input type="checkbox" .checked=${sm?.enabled ?? false}
-          @change=${(e: Event) => appController.setFieldSmoothing(sId, cI, chainIdx, fieldPath,
-            { enabled: (e.target as HTMLInputElement).checked })}>
-        <span class="tap-row-name">Enable</span>
-        <input type="number" min="0" step="0.05" style="width:64px"
-          .value=${String(sm?.duration ?? 0.2)} ?disabled=${!sm?.enabled}
-          @change=${(e: Event) => appController.setFieldSmoothing(sId, cI, chainIdx, fieldPath,
-            { duration: parseFloat((e.target as HTMLInputElement).value) || 0 })}>
-        <span>s</span>
-      </div>`;
+      <field-toggle style="width:100%"
+        .fieldPath=${'enabled'} .label=${'Enable'} .binding=${smBinding}></field-toggle>
+      ${sm?.enabled ? html`
+        <scalar-slider style="width:100%"
+          .fieldPath=${'duration'} .label=${'Duration (s)'}
+          .min=${0} .max=${5} .step=${0.05} .defaultValue=${0.2}
+          .binding=${smBinding}></scalar-slider>
+      ` : nothing}`;
 
     // Taps wired to this field.
     const sketch = appState.database.sketches[this.sketchId];

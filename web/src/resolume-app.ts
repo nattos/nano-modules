@@ -7,6 +7,7 @@
 
 import { boot } from './boot';
 import { appController } from './state/controller';
+import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
@@ -40,6 +41,13 @@ async function main() {
   // renders), so the size is irrelevant there.
   const { engine } = await boot({ width: 1920, height: 1080, barrelMode });
   appController.setBarrelMode(barrelMode);
+
+  // Local simulator: run ONLY the sketch open in the edit tab — not every
+  // sketch in the database (loaded effect-IDE projects, the debug demo, etc.).
+  // The filter reads `editingSketchId` fresh on each sync; `editSketch` re-syncs.
+  if (!barrelMode) {
+    appController.setEngineSketchFilter((id) => id === appState.local.editingSketchId);
+  }
 
   let debugSketchCreated = false;
   const baseHandler = engine.onEffectsDiscovered;

@@ -20,6 +20,8 @@ export function defaultUserSettings(): UserSettings {
     selectedProjectId: null,
     scrollPositions: {},
     paused: false,
+    activeTab: 'create',
+    editingSketchId: null,
   };
 }
 
