@@ -43,7 +43,7 @@ cbuffer U : register(b0) {
   float wind;    float n_bands; float contrast;     float flow_phase;
   float nearest_cell; float respawn; float stream_width; float cycle_width;
   float backdrop_dim; float stream_alpha; float shading_mode; float solve_steps;
-  float break_dist;   float _pf_pad0; float _pf_pad1; float _pf_pad2;
+  float break_dist;   float explore;  float spread;   float rand_seed;
   float4 corners;   // 4 corner cell indices (as float)
   float4 weights;   // 4 convex blend weights (sum 1, or 0 over a hole)
 };

@@ -71,7 +71,7 @@ struct Uniforms {
   float wind, n_bands, contrast, flow_phase;
   float nearest_cell, respawn, stream_width, cycle_width;
   float backdrop_dim, stream_alpha, shading_mode, solve_steps;
-  float break_dist, _pad0, _pad1, _pad2;
+  float break_dist, explore, spread, rand_seed;
   float corners[4];
   float weights[4];
 };
@@ -80,15 +80,17 @@ static_assert(sizeof(Uniforms) == 112, "Uniforms layout");
 struct State {
   gpu::Buffer uniform_buf;
   gpu::Buffer cell_buf;      // PF_CELLS, uploaded once
-  gpu::Buffer curve_buf;     // PF_CURVE (resting cycles), uploaded once — respawn seeds
-  gpu::Buffer particle_buf;  // STATEFUL cycle-solver ring (persists across frames)
-  gpu::Buffer stream_buf;    // streamline segments
-  gpu::Buffer cycle_buf;     // limit-cycle segments
+  gpu::Buffer curve_buf;      // PF_CURVE (resting cycles), uploaded once — respawn seeds
+  gpu::Buffer particle_buf[2]; // STATEFUL cycle-solver ring, double-buffered (ping-pong)
+  gpu::Buffer stream_buf;     // streamline segments
+  gpu::Buffer cycle_buf;      // limit-cycle segments
   bool initialized = false;
 
   // Stateful solver bookkeeping.
-  bool  particles_init = false;   // false until the first respawn seeds the ring
-  float respawn_accum  = 0.0f;    // seconds since the last respawn
+  bool     particles_init = false;  // false until the first respawn seeds the ring
+  float    respawn_accum  = 0.0f;   // seconds since the last respawn
+  int      particle_cur   = 0;      // which particle_buf holds the latest ring
+  uint32_t frame_counter  = 0;      // drives the per-frame random-walk seed
 
   // --- Schema-mirrored params ---
   float eccentricity = 0.2f;   // XY pad x
@@ -110,6 +112,8 @@ struct State {
   float solve_steps  = 4.0f;   // Newton relaxation iterations per frame (X)
   float break_dist   = 0.2f;   // max gap between particles before it's a break
   float respawn_time = 2.0f;   // hard re-seed timer (seconds)
+  float explore      = 0.3f;   // tangential random-walk amount (back and forth)
+  float spread       = 0.5f;   // neighbour-spacing gain (spread the ring out)
   bool  autopilot    = false;
   float ap_speed     = 0.35f;
 
@@ -171,6 +175,11 @@ void module_init() {
       .floatField("break_dist", 0.2f, 0.05f, 0.6f, state::PrimaryInput)
       // Hard re-seed timer — periodically respawn the ring on the resting cycle.
       .floatField("respawn_time", 2.0f, 0.1f, 10.0f, state::PrimaryInput)
+      // Exploration: how far particles random-walk back and forth along the
+      // contour each frame (jitters a true cycle, explores otherwise).
+      .floatField("explore", 0.3f, 0.0f, 1.0f, state::PrimaryInput)
+      // Spread: neighbour-spacing gain that keeps the ring evenly distributed.
+      .floatField("spread", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Autopilot (non-destructive XY override + broadcast) ---
       .boolField("autopilot", false, state::PrimaryInput)
       .floatField("ap_speed", 0.35f, 0.0f, 1.0f, state::PrimaryInput)
@@ -212,11 +221,14 @@ void module_init() {
       .storageRW(2));    // stream segments (write)
 
   // Stateful solver: relax the persistent particle ring onto the cycle.
+  // Double-buffered — reads last frame's ring, writes the next (race-free
+  // neighbour reads for the spacing term).
   s_pso_solve = gpu::Device::createComputePSO(cs_solve, "main", gpu::Bindings()
       .uniform(0)
       .storage(1)        // cells (read)
-      .storageRW(2)      // particles (read-write, persistent)
-      .storage(3));      // curve / resting-cycle respawn seeds (read)
+      .storageRW(2)      // particles_next (write)
+      .storage(3)        // curve / resting-cycle respawn seeds (read)
+      .storage(4));      // particles_prev (read, last frame)
 
   // Build + break-detect: relaxed particles → cycle segments.
   s_pso_cycle = gpu::Device::createComputePSO(cs_cycle, "main", gpu::Bindings()
@@ -245,7 +257,8 @@ void* create() {
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->cell_buf    = gpu::Device::createBuffer(kCellFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->curve_buf   = gpu::Device::createBuffer(kCurveFloats * sizeof(float), gpu::BufferUsage::Storage);
-  s->particle_buf = gpu::Device::createBuffer(kParticleFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->particle_buf[0] = gpu::Device::createBuffer(kParticleFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->particle_buf[1] = gpu::Device::createBuffer(kParticleFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->stream_buf  = gpu::Device::createBuffer(kStreamSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->cycle_buf   = gpu::Device::createBuffer(kCycleSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   return s;
@@ -257,7 +270,8 @@ void destroy(void* self) {
   s->uniform_buf.release();
   s->cell_buf.release();
   s->curve_buf.release();
-  s->particle_buf.release();
+  s->particle_buf[0].release();
+  s->particle_buf[1].release();
   s->stream_buf.release();
   s->cycle_buf.release();
   delete s;
@@ -270,13 +284,15 @@ void init(void* self) {
   if (!s_pso_backdrop.valid() || !s_pso_stream.valid() || !s_pso_solve.valid() ||
       !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_lines.valid()) return;
   if (!s->uniform_buf.valid() || !s->cell_buf.valid() || !s->curve_buf.valid() ||
-      !s->particle_buf.valid() || !s->stream_buf.valid() || !s->cycle_buf.valid()) return;
+      !s->particle_buf[0].valid() || !s->particle_buf[1].valid() ||
+      !s->stream_buf.valid() || !s->cycle_buf.valid()) return;
   // Upload the (immutable) atlas cell + resting-cycle buffers once. The particle
   // ring is left uninitialized — the first solve dispatch respawns it.
   s->cell_buf.write(PF_CELLS, kCellFloats);
   s->curve_buf.write(PF_CURVE, kCurveFloats);
   s->particles_init = false;
   s->respawn_accum = 0.0f;
+  s->particle_cur = 0;
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
 }
@@ -384,6 +400,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "solve_steps"))    s->solve_steps = state::patchFloat(i);
     else if (state::pathIs(path, plen, "break_dist"))     s->break_dist = state::patchFloat(i);
     else if (state::pathIs(path, plen, "respawn_time"))   s->respawn_time = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "explore"))        s->explore = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spread"))         s->spread = state::patchFloat(i);
     else if (state::pathIs(path, plen, "autopilot"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->autopilot) { s->autopilot = v; vis_changed = true; } }
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
   }
@@ -414,6 +432,9 @@ void render(void* self, int vp_w, int vp_h) {
   u.stream_alpha = s->line_opacity;
   u.solve_steps = s->solve_steps;
   u.break_dist = s->break_dist;
+  u.explore = s->explore;
+  u.spread = s->spread;
+  u.rand_seed = (float)(s->frame_counter++ & 0xFFFFu);
   compute_corners(s, s->eff_x, s->eff_y, u.corners, u.weights, nearest);
   // The stateful solver respawns onto the nearest cell's baked resting cycle.
   u.nearest_cell = (float)nearest;
@@ -457,17 +478,21 @@ void render(void* self, int vp_w, int vp_h) {
   // 3 — limit-cycle tracer: stateful solve → build/break → raster.
   if (s->show_limit_cycle) {
     int groups = (PF_PARTICLES + 63) / 64;
-    // 3a — relax the persistent particle ring onto the cycle (in place).
+    int prev = s->particle_cur;
+    int next = 1 - prev;
+    // 3a — relax + walk + spread the ring: read prev, write next (ping-pong).
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_solve);
       cp.setBuffer(s->uniform_buf, 0);
       cp.setBuffer(s->cell_buf, 1);
-      cp.setBuffer(s->particle_buf, 2);
+      cp.setBuffer(s->particle_buf[next], 2);
       cp.setBuffer(s->curve_buf, 3);
+      cp.setBuffer(s->particle_buf[prev], 4);
       cp.dispatch(groups, 1, 1);
       cp.end();
     }
+    s->particle_cur = next;   // the latest ring is now particle_buf[next]
     // 3b — build segments + detect breaks from the relaxed ring.
     {
       auto cp = gpu::ComputePass::begin();
@@ -475,7 +500,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setBuffer(s->uniform_buf, 0);
       cp.setBuffer(s->cell_buf, 1);
       cp.setBuffer(s->cycle_buf, 2);
-      cp.setBuffer(s->particle_buf, 3);
+      cp.setBuffer(s->particle_buf[next], 3);
       cp.dispatch(groups, 1, 1);
       cp.end();
     }

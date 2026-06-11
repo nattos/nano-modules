@@ -95,6 +95,31 @@ describe('video.phase_fold E2E', () => {
     on.trace('out').expectDifferentFrom(off.trace('out'), 5);
   });
 
+  it('limit-cycle solver explores — the ring jitters across frames', async () => {
+    // explore>0 random-walks the stateful ring tangentially each frame, so the
+    // cycle is NOT static even with a frozen flow clock and fixed XY.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'pf_jitter',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'pf_jitter',
+              sketch: buildSketch({ ...BASE, show_streamlines: false, show_limit_cycle: true, explore: 0.8 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'pf_jitter' } },
+            ]},
+          ],
+          waitFrames: 4, captureTraceIds: ['out'],
+        },
+        { waitFrames: 8, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 5);
+  });
+
   it('scale (domain zoom) changes the output', async () => {
     const near = await render('pf_scale1', { ...BASE, scale: 1.0 }, 'pf_scale1');
     const far = await render('pf_scale4', { ...BASE, scale: 4.0 }, 'pf_scale4');
@@ -126,6 +151,8 @@ describe('video.phase_fold E2E', () => {
   it('autopilot drives a live, non-destructive XY override (flow clock frozen)', async () => {
     // flow_speed=0 freezes the arrow/marker animation, so any change across
     // phases is the autopilot epicycle moving the effective XY — never inputs.
+    // show_limit_cycle off: the stateful solver random-walks every frame (by
+    // design), so we isolate the deterministic backdrop to test autopilot.
     const moving = await runEngineMultiPhaseTest({
       width: 96, height: 96,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
@@ -135,7 +162,7 @@ describe('video.phase_fold E2E', () => {
           commands: [
             { type: 'createSketch', sketchId: 'pf_ap_on',
               sketch: buildSketch({ eccentricity: 0.5, lobedness: 0.5, flow_speed: 0.0,
-                                    autopilot: true, ap_speed: 1.0 }) },
+                                    show_limit_cycle: false, autopilot: true, ap_speed: 1.0 }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'pf_ap_on' } },
             ]},
@@ -158,7 +185,7 @@ describe('video.phase_fold E2E', () => {
           commands: [
             { type: 'createSketch', sketchId: 'pf_ap_off',
               sketch: buildSketch({ eccentricity: 0.5, lobedness: 0.5, flow_speed: 0.0,
-                                    autopilot: false }) },
+                                    show_limit_cycle: false, autopilot: false }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'pf_ap_off' } },
             ]},
