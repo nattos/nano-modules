@@ -1016,6 +1016,23 @@ export class AppController {
     this.syncSketchesToEngine();
   }
 
+  // --- Field options (engine-level per-parameter options) ---
+
+  /**
+   * Merge a partial smoothing config into a field's engine-level options.
+   * Creates the `fieldOptions[fieldPath].smoothing` sub-tree on demand.
+   */
+  setFieldSmoothing(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string,
+                    patch: Partial<import('../sketch-types').ParamSmoothing>) {
+    this.mutate('Edit smoothing', draft => {
+      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      if (entry?.type !== 'module') return;
+      entry.fieldOptions ??= {};
+      const fo = (entry.fieldOptions[fieldPath] ??= {});
+      fo.smoothing = { enabled: false, duration: 0.2, ...fo.smoothing, ...patch };
+    });
+  }
+
   // --- Auto-tap helpers ---
 
   /**

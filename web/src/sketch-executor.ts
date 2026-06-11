@@ -8,6 +8,7 @@ import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
 import type { ChainEntry, ModuleEntry, Sketch, SketchColumn, Rail, Tap } from './sketch-types';
 import { applyTapMod, combineTap } from './tap-mod';
+import { initSmooth, advanceSmooth, type SmoothState } from './param-smoothing';
 import {
   FusionDispatcher,
   FUSION_KIND_FREEFORM,
@@ -43,6 +44,12 @@ interface LoadedModule {
    * Undefined until the first frame (treated as on).
    */
   active?: boolean;
+  /**
+   * Per-field parameter-smoothing timer state, keyed by fieldPath. Persisted on
+   * the cached instance so the linear ramp survives across frames; reset for
+   * free when the instance is dropped/recreated on a module-type change.
+   */
+  smoothing?: Map<string, SmoothState>;
 }
 
 function deepClone<T>(v: T): T {
@@ -732,6 +739,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         // --- Apply initial state from sketch instances (or legacy entry.params) ---
         const instanceState = sketch.instances?.[entry.instance_key]?.state ?? entry.params ?? {};
+        // Post-modulation effective scalar values, used as the target for any
+        // smoothing pass below. Seeded from the canonical scalars; read taps
+        // overwrite the fields they modulate (so smoothing layers on top).
+        const effectiveValues = new Map<string, number>();
+        for (const [k, v] of Object.entries(instanceState)) {
+          if (typeof v === 'number') effectiveValues.set(k, v);
+        }
         const { patches: paramPatches, positional } =
           instanceStateToParams(instanceState as Record<string, unknown>);
         // Positional floats feed legacy host::param(index) reads, in order.
@@ -857,6 +871,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: tap.fieldPath, value: combined },
               ]);
+              // Smoothing layers on top of modulation: track the post-tap value.
+              effectiveValues.set(tap.fieldPath, combined);
             } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
               // Texture tap read. Numeric fieldPath → positional input
               // slot (legacy `gpu::Device::inputTexture(N)` API used by
@@ -882,6 +898,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
               // texture leaves from the struct into the reader's lookup
               // maps so bufferForField / textureForField resolve locally.
               this.applyStructRead(loaded.host, loaded.module, tap.fieldPath, rv, rail.dataType.schema);
+            }
+          }
+        }
+
+        // --- Apply parameter smoothing (after read taps, the outermost layer) ---
+        // For each smoothing-enabled scalar field, linearly ramp toward the
+        // post-modulation target and emit a final shadow-state patch — the same
+        // mechanism read taps use, so the plugin sees the smoothed value while
+        // the canonical (serialized) state and the UI slider stay at the target.
+        const fieldOptions = entry.fieldOptions;
+        if (fieldOptions) {
+          loaded.smoothing ??= new Map();
+          for (const [fieldPath, fo] of Object.entries(fieldOptions)) {
+            const sm = fo.smoothing;
+            if (!sm?.enabled) {
+              loaded.smoothing.delete(fieldPath);
+              continue;
+            }
+            const target = effectiveValues.get(fieldPath);
+            if (typeof target !== 'number') continue;   // scalar floats only (v1)
+            let st = loaded.smoothing.get(fieldPath);
+            if (!st) {
+              st = initSmooth(target, sm.duration);
+              loaded.smoothing.set(fieldPath, st);
+            }
+            const v = advanceSmooth(st, target, sm.duration, frameState.deltaTime);
+            // Settled ⇒ the plugin already holds the target; skip the redundant patch.
+            if (v !== target) {
+              loaded.host.notifyStatePatched(loaded.module, [
+                { op: 'replace', path: fieldPath, value: v },
+              ]);
             }
           }
         }

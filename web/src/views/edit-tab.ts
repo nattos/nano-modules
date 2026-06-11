@@ -451,9 +451,23 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     const taps = (entry.taps ?? []).filter(t => t.fieldPath === fieldPath);
     const allRails = this.collectRails(sketch, colIdx);
+    const sm = entry.fieldOptions?.[fieldPath]?.smoothing;
 
     return html`
-      <div class="section-header">Taps for "${fieldPath}"</div>
+      <div class="section-header">Smoothing for "${fieldPath}"</div>
+      <div class="tap-row">
+        <input type="checkbox" .checked=${sm?.enabled ?? false}
+          @change=${(e: Event) => appController.setFieldSmoothing(sketchId, colIdx, chainIdx, fieldPath,
+            { enabled: (e.target as HTMLInputElement).checked })}>
+        <span class="tap-row-name">Enable</span>
+        <input type="number" min="0" step="0.05" style="width:64px"
+          .value=${String(sm?.duration ?? 0.2)} ?disabled=${!sm?.enabled}
+          @change=${(e: Event) => appController.setFieldSmoothing(sketchId, colIdx, chainIdx, fieldPath,
+            { duration: parseFloat((e.target as HTMLInputElement).value) || 0 })}>
+        <span>s</span>
+      </div>
+
+      <div class="section-header" style="margin-top:12px">Taps for "${fieldPath}"</div>
       ${taps.length > 0 ? html`
         ${taps.map((tap) => {
           const tapIdx = (entry.taps ?? []).indexOf(tap);

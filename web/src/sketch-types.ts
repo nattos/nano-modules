@@ -59,6 +59,30 @@ export interface ModuleEntry {
   params?: Record<string, number>;
   /** Rail connections for this module instance. */
   taps?: Tap[];
+  /** Engine-level per-parameter options (smoothing, …), keyed by field path. */
+  fieldOptions?: Record<string, FieldOptions>;
+}
+
+/**
+ * Engine-level options attached to a single input parameter — a generic region
+ * for per-field behaviors layered ON TOP of the parameter's value (and any tap
+ * modulation). `smoothing` is the first such option; future options sit beside it.
+ */
+export interface FieldOptions {
+  smoothing?: ParamSmoothing;
+}
+
+/**
+ * Linear smoothing of changes to a scalar-float parameter. Explicit timer: when
+ * the (post-modulation) target value changes, the timer resets and the effective
+ * value linearly interpolates from its current value to the new target over
+ * `duration` seconds, then HOLDS. Linear — not exponential — so it reaches the
+ * target in finite time without indefinite decay / subnormal drift / rubber-banding.
+ */
+export interface ParamSmoothing {
+  enabled: boolean;
+  /** Linear ramp duration in seconds. */
+  duration: number;
 }
 
 /**
