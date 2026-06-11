@@ -133,6 +133,7 @@ static gpu::ComputePSO s_pso_backdrop;
 static gpu::ComputePSO s_pso_stream;
 static gpu::ComputePSO s_pso_solve;
 static gpu::ComputePSO s_pso_cycle;
+static gpu::ComputePSO s_pso_select;
 static gpu::RenderPSO  s_pso_lines;
 
 void module_init() {
@@ -186,6 +187,7 @@ void module_init() {
   state::registerShaderSPV("phase_fold_stream",   STREAM_SPV,   STREAM_SPV_SIZE);
   state::registerShaderSPV("phase_fold_solve",    SOLVE_SPV,    SOLVE_SPV_SIZE);
   state::registerShaderSPV("phase_fold_cycle",    CYCLE_SPV,    CYCLE_SPV_SIZE);
+  state::registerShaderSPV("phase_fold_select",   SELECT_SPV,   SELECT_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_vs",  LINE_VS_SPV,  LINE_VS_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_fs",  LINE_FS_SPV,  LINE_FS_SPV_SIZE);
 
@@ -193,9 +195,11 @@ void module_init() {
   auto cs_stream   = gpu::Device::createShaderModuleByName("phase_fold_stream");
   auto cs_solve    = gpu::Device::createShaderModuleByName("phase_fold_solve");
   auto cs_cycle    = gpu::Device::createShaderModuleByName("phase_fold_cycle");
+  auto cs_select   = gpu::Device::createShaderModuleByName("phase_fold_select");
   auto vs_lines    = gpu::Device::createShaderModuleByName("phase_fold_line_vs");
   auto fs_lines    = gpu::Device::createShaderModuleByName("phase_fold_line_fs");
-  if (!cs_backdrop || !cs_stream || !cs_solve || !cs_cycle || !vs_lines || !fs_lines) return;
+  if (!cs_backdrop || !cs_stream || !cs_solve || !cs_cycle || !cs_select ||
+      !vs_lines || !fs_lines) return;
 
   s_pso_backdrop = gpu::Device::createComputePSO(cs_backdrop, "main", gpu::Bindings()
       .uniform(0)
@@ -220,6 +224,11 @@ void module_init() {
       .storage(1)        // cells (read, for the gradient-flip break check)
       .storageRW(2)      // cycle segments (write)
       .storage(3));      // particles (read)
+
+  // Keep only the longest contiguous run (single-thread O(N) scan).
+  s_pso_select = gpu::Device::createComputePSO(cs_select, "main", gpu::Bindings()
+      .uniform(0)
+      .storageRW(2));    // cycle segments (cull in place)
 
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_lines, "main", fs_lines, "main", gpu::TextureFormat::Surface,
@@ -259,7 +268,7 @@ void init(void* self) {
   if (!s) return;
   s->initialized = false;
   if (!s_pso_backdrop.valid() || !s_pso_stream.valid() || !s_pso_solve.valid() ||
-      !s_pso_cycle.valid() || !s_pso_lines.valid()) return;
+      !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_lines.valid()) return;
   if (!s->uniform_buf.valid() || !s->cell_buf.valid() || !s->curve_buf.valid() ||
       !s->particle_buf.valid() || !s->stream_buf.valid() || !s->cycle_buf.valid()) return;
   // Upload the (immutable) atlas cell + resting-cycle buffers once. The particle
@@ -470,7 +479,16 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch(groups, 1, 1);
       cp.end();
     }
-    // 3c — raster over the backdrop.
+    // 3c — keep only the longest contiguous run (single-thread cull).
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_select);
+      cp.setBuffer(s->uniform_buf, 0);
+      cp.setBuffer(s->cycle_buf, 2);
+      cp.dispatch(1, 1, 1);
+      cp.end();
+    }
+    // 3d — raster over the backdrop.
     {
       auto rp = gpu::RenderPass::beginLoad(out);
       rp.setPSO(s_pso_lines);
