@@ -110,6 +110,7 @@ echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present)"
 #   line_vs/line_fs — instanced soft-line raster over the backdrop.
 compile_shaders_compute_var_spv phase_fold backdrop
 compile_shaders_compute_var_spv phase_fold stream
+compile_shaders_compute_var_spv phase_fold solve
 compile_shaders_compute_var_spv phase_fold cycle
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
@@ -117,8 +118,8 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../phase_fold/line_fs.hlsl -Fo "$TMP_DIR/phase_fold_line_fs.spv"
-_emit_spv_header_var phase_fold backdrop stream cycle line_vs line_fs
-echo "  phase_fold shaders compiled (SPV: backdrop+stream+cycle+line_vs+line_fs)"
+_emit_spv_header_var phase_fold backdrop stream solve cycle line_vs line_fs
+echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+line_vs+line_fs)"
 
 echo "=== Building WASM (nano) ==="
 

@@ -211,6 +211,12 @@ export class PhaseFoldInspector extends MobxLitElement {
         .defaultValue=${1} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'cycle_width'} .label=${'Width'}
         .min=${0.004} .max=${0.06} .step=${0.001} .defaultValue=${0.02} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'solve_steps'} .label=${'Solve Steps'}
+        .min=${1} .max=${16} .step=${1} .defaultValue=${4} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'break_dist'} .label=${'Break Dist'}
+        .min=${0.05} .max=${0.6} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'respawn_time'} .label=${'Respawn (s)'}
+        .min=${0.1} .max=${10} .step=${0.1} .defaultValue=${2} .binding=${b}></scalar-slider>
 
       <div class="section">Autopilot</div>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}

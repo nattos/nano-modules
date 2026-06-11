@@ -63,10 +63,19 @@ float pf_blended_height(float2 p) {
   return d + (Wx * p.x + Wy * p.y);   // + along-wind force-potential tilt
 }
 
-// --- Vector field v = level-set flow + wind (for the tracers) --------------
+// --- Blended field sample: H, ∇H, level, mu, wind force (all 4-corner blended).
+// The shared core for the vector field AND the limit-cycle solver / break check.
+struct PfField {
+  float H;       // blended scalar field
+  float2 grad;   // ∇H
+  float lev;     // blended cycle level
+  float mu;      // blended attraction rate
+  float2 W;      // blended wind force (z * wmax * wdir)
+};
 
-float2 pf_velocity(float2 p) {
-  float H = 0.0, gx = 0.0, gy = 0.0, lev = 0.0, mu = 0.0, Wx = 0.0, Wy = 0.0;
+PfField pf_field(float2 p) {
+  PfField f;
+  f.H = 0.0; f.grad = float2(0, 0); f.lev = 0.0; f.mu = 0.0; f.W = float2(0, 0);
   [unroll] for (uint i = 0u; i < 4u; i++) {
     float wi = weights[i];
     if (wi <= 0.0) continue;
@@ -93,14 +102,21 @@ float2 pf_velocity(float2 p) {
       cgx += dHdrho * p.x / rho; cgy += dHdrho * p.y / rho;
     }
     uint wb = base + PF_WIND_OFF;
-    H += wi * h; gx += wi * cgx; gy += wi * cgy;
-    lev += wi * cells[base + 1u]; mu += wi * cells[base + 2u];
-    Wx += wi * wind * cells[wb + 2u] * cells[wb + 0u];
-    Wy += wi * wind * cells[wb + 2u] * cells[wb + 1u];
+    f.H += wi * h; f.grad += wi * float2(cgx, cgy);
+    f.lev += wi * cells[base + 1u]; f.mu += wi * cells[base + 2u];
+    f.W += wi * wind * cells[wb + 2u] * float2(cells[wb + 0u], cells[wb + 1u]);
   }
+  return f;
+}
+
+// --- Vector field v = level-set flow + wind (for the streamlines) -----------
+
+float2 pf_velocity(float2 p) {
+  PfField f = pf_field(p);
   // bias shifts the cycle level → moves the limit cycle to a different contour.
-  float s = -mu * (H - lev - bias);
-  return float2(-gy + s * gx + Wx, gx + s * gy + Wy);
+  float s = -f.mu * (f.H - f.lev - bias);
+  return float2(-f.grad.y + s * f.grad.x + f.W.x,
+                 f.grad.x + s * f.grad.y + f.W.y);
 }
 
 // RK2 (midpoint) with a capped displacement so the integration stays smooth.

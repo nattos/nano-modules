@@ -27,9 +27,10 @@
 #define PF_SL_STEPS  16      // integration steps per streamline = segments stored
 #define PF_SL_DT     0.05    // streamline step size
 #define PF_NOUT      96      // resting-cycle points per cell (limit-cycle seeds)
-#define PF_CYCLE_ARCS  PF_NOUT     // one parallel arc per resting-cycle point
-#define PF_ARC_STEPS   8           // integration steps per cycle arc (kept short)
-#define PF_TDT       0.02    // cycle arc step size
+#define PF_PARTICLES PF_NOUT // stateful limit-cycle solver particles (one per seed)
+#define PF_BREAK_SAMPLES 4   // gradient samples between consecutive particles
+#define PF_RELAX_CAP 0.10    // max per-iteration Newton step (solver stability)
+#define PF_TDT       0.02    // streamline-style step size
 #define PF_STEP_CAP  0.06    // per-step displacement clamp (keeps integration smooth)
 
 // Colour code packed into Segment.b.x — the fragment shader maps it to a palette
@@ -40,8 +41,9 @@
 cbuffer U : register(b0) {
   float res_x;   float res_y;   float extent;       float bias;
   float wind;    float n_bands; float contrast;     float flow_phase;
-  float nearest_cell; float _pf_pad2; float stream_width; float cycle_width;
-  float backdrop_dim; float stream_alpha; float shading_mode; float _pf_pad1;
+  float nearest_cell; float respawn; float stream_width; float cycle_width;
+  float backdrop_dim; float stream_alpha; float shading_mode; float solve_steps;
+  float break_dist;   float _pf_pad0; float _pf_pad1; float _pf_pad2;
   float4 corners;   // 4 corner cell indices (as float)
   float4 weights;   // 4 convex blend weights (sum 1, or 0 over a hole)
 };
