@@ -24,34 +24,37 @@
 #define PF_WIND_OFF 45u   // offset of (wdx, wdy, wmax) within a cell
 
 #define PF_NS        15      // streamline seed grid (NS x NS)
-#define PF_SL_STEPS  16      // integration steps per streamline
-#define PF_SL_SEGS   18      // segments stored per streamline (SL_STEPS + 2 arrow)
+#define PF_SL_STEPS  16      // integration steps per streamline = segments stored
 #define PF_SL_DT     0.05    // streamline step size
-#define PF_ARROW     0.045   // arrowhead barb length (phase-space)
-#define PF_NTRAJ     900     // limit-cycle trajectory steps
-#define PF_TDT       0.02    // trajectory step size
-#define PF_CYCLE_EXTRA 6     // extra segments for the animated marker on the cycle
+#define PF_NOUT      96      // resting-cycle points per cell (limit-cycle seeds)
+#define PF_CYCLE_ARCS  PF_NOUT     // one parallel arc per resting-cycle point
+#define PF_ARC_STEPS   8           // integration steps per cycle arc (kept short)
+#define PF_TDT       0.02    // cycle arc step size
 #define PF_STEP_CAP  0.06    // per-step displacement clamp (keeps integration smooth)
 
-// Colour codes packed into Segment.b.x — the fragment shader maps them to a
-// palette (matches the prototype's LINE_WGSL fs thresholds).
-#define PF_CODE_CYCLE  0.90   // gold limit-cycle / marker
-#define PF_CODE_ARROW  0.70   // bright moving arrowhead
+// Colour code packed into Segment.b.x — the fragment shader maps it to a palette
+// (streamline speed gradient below 0.58, gold limit cycle above 0.8).
+#define PF_CODE_CYCLE  0.90   // gold limit-cycle
 
 // Shared uniform block — identical layout in every pass (always register b0).
 cbuffer U : register(b0) {
   float res_x;   float res_y;   float extent;       float bias;
   float wind;    float n_bands; float contrast;     float flow_phase;
-  float seed_x;  float seed_y;  float stream_width;  float cycle_width;
+  float nearest_cell; float _pf_pad2; float stream_width; float cycle_width;
   float backdrop_dim; float stream_alpha; float _pf_pad0; float _pf_pad1;
   float4 corners;   // 4 corner cell indices (as float)
   float4 weights;   // 4 convex blend weights (sum 1, or 0 over a hole)
 };
 
-// One line segment: a=(p0.x,p0.y,p1.x,p1.y), b=(code, alpha, width, dead).
-// (The atlas cell buffer and the field/velocity helpers live in field.hlsl so
-// the line raster can include this header without the t1 cells binding.)
-struct Segment { float4 a; float4 b; };
+// One line segment:
+//   a = (p0.x, p0.y, p1.x, p1.y)
+//   b = (code, alpha, width, dead)
+//   c = (arc, stagger, _, _)   — arc ∈ [0,1) position along the line; stagger is
+//       a per-streamline phase offset. The fragment shader rides a continuous
+//       glow down the line via frac(arc - flow_phase + stagger) — no quantized
+//       arrowhead. (The atlas cell buffer + field helpers live in field.hlsl so
+//       the line raster can include this header without the t1 cells binding.)
+struct Segment { float4 a; float4 b; float4 c; };
 
 float pf_weight_sum() {
   return weights[0] + weights[1] + weights[2] + weights[3];

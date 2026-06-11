@@ -17,6 +17,7 @@ struct VsOut {
   // x unused, y = signed across-position ∈ [-1,1] for the rim falloff.
   float2 local  : TEXCOORD0;
   nointerpolation float2 meta : TEXCOORD1;  // code, alpha
+  nointerpolation float2 flow : TEXCOORD2;  // arc, stagger (continuous flow glow)
 };
 
 [shader("vertex")]
@@ -37,6 +38,7 @@ VsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
     o.pos = float4(2.0, 2.0, 2.0, 1.0);
     o.local = float2(0.0, 0.0);
     o.meta = float2(0.0, 0.0);
+    o.flow = float2(0.0, 0.0);
     return o;
   }
 
@@ -53,5 +55,6 @@ VsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   o.pos = float4(uv * 2.0 - 1.0, 0.0, 1.0);
   o.local = float2(c.x, c.y);
   o.meta = float2(s.b.x, s.b.y);
+  o.flow = float2(s.c.x, s.c.y);   // arc, stagger
   return o;
 }

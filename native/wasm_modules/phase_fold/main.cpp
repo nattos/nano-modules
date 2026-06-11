@@ -9,10 +9,15 @@
  *   backdrop (compute) — the blended scalar field H, banded as a muted
  *                        diverging colormap. Seeds tex_out.
  *   stream   (compute) — traces an NS×NS grid of streamlines through the blended
- *                        vector field v = level-set flow + WIND(z), with an
- *                        ANIMATED arrowhead flowing down each line (flow_phase).
- *   cycle    (compute) — integrates the limit cycle from a seed on the resting
- *                        orbit, with a marker riding it.
+ *                        vector field v = level-set flow + WIND(z); a continuous
+ *                        glow rides down each line (flow_phase), no quantized
+ *                        arrowhead.
+ *   cycle    (compute) — PARALLEL limit-cycle tracer: one thread per resting-
+ *                        cycle point (PF_CURVE seeds), each tracing a short arc
+ *                        through the blended field. Dense overlap draws a
+ *                        continuous gold cycle that deforms / dies with wind.
+ *                        (Replaces a single-thread 900-step serial integration
+ *                        that stalled the pipeline and backed up the GPU queue.)
  *   line raster (vs/fs) — draws the traced segments as soft anti-aliased quads,
  *                        blended over the backdrop. Streamlines and the limit-
  *                        cycle tracer are SEPARATE, independently toggleable
@@ -39,16 +44,17 @@
 namespace phase_fold {
 
 // Must match common.hlsl.
-static constexpr int   PF_NS         = 15;     // streamline seed grid
-static constexpr int   PF_SL_SEGS    = 18;     // segments stored per streamline
-static constexpr int   PF_NTRAJ      = 900;    // limit-cycle trajectory steps
-static constexpr int   PF_CYCLE_EXTRA = 6;     // marker segments
-static constexpr float PF_EXTENT     = 1.35f;  // phase window half-size
+static constexpr int   PF_NS          = 15;    // streamline seed grid
+static constexpr int   PF_SL_STEPS    = 16;    // segments stored per streamline
+static constexpr int   PF_CYCLE_ARCS  = PF_NOUT;  // parallel cycle arcs (one per seed)
+static constexpr int   PF_ARC_STEPS   = 8;     // steps (segments) per cycle arc
+static constexpr float PF_EXTENT      = 1.35f; // phase window half-size
 
-static constexpr int   kStreamSegs = PF_NS * PF_NS * PF_SL_SEGS;   // 4050
-static constexpr int   kCycleSegs  = PF_NTRAJ + PF_CYCLE_EXTRA;    // 906
-static constexpr int   kSegFloats  = 8;        // Segment = 2×float4
-static constexpr int   kCellFloats = PF_GRID * PF_GRID * PF_STRIDE;
+static constexpr int   kStreamSegs = PF_NS * PF_NS * PF_SL_STEPS;     // 3600
+static constexpr int   kCycleSegs  = PF_CYCLE_ARCS * PF_ARC_STEPS;    // 768
+static constexpr int   kSegFloats  = 12;       // Segment = 3×float4
+static constexpr int   kCellFloats  = PF_GRID * PF_GRID * PF_STRIDE;
+static constexpr int   kCurveFloats = PF_GRID * PF_GRID * PF_NOUT * 2;
 
 static constexpr float kPi = 3.14159265358979323846f;
 
@@ -60,7 +66,7 @@ static constexpr float kApA = 0.34f, kApB = 0.16f, kApW2 = 0.382f, kApPhi = kPi 
 struct Uniforms {
   float res_x, res_y, extent, bias;
   float wind, n_bands, contrast, flow_phase;
-  float seed_x, seed_y, stream_width, cycle_width;
+  float nearest_cell, _pad2, stream_width, cycle_width;
   float backdrop_dim, stream_alpha, _pad0, _pad1;
   float corners[4];
   float weights[4];
@@ -70,6 +76,7 @@ static_assert(sizeof(Uniforms) == 96, "Uniforms layout");
 struct State {
   gpu::Buffer uniform_buf;
   gpu::Buffer cell_buf;     // PF_CELLS, uploaded once
+  gpu::Buffer curve_buf;    // PF_CURVE (resting cycles), uploaded once — cycle seeds
   gpu::Buffer stream_buf;   // streamline segments
   gpu::Buffer cycle_buf;    // limit-cycle segments
   bool initialized = false;
@@ -175,7 +182,8 @@ void module_init() {
   s_pso_cycle = gpu::Device::createComputePSO(cs_cycle, "main", gpu::Bindings()
       .uniform(0)
       .storage(1)        // cells (read)
-      .storageRW(2));    // cycle segments (write)
+      .storageRW(2)      // cycle segments (write)
+      .storage(3));      // curve / resting-cycle seeds (read)
 
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_lines, "main", fs_lines, "main", gpu::TextureFormat::Surface,
@@ -191,6 +199,7 @@ void* create() {
   auto* s = new State();
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->cell_buf    = gpu::Device::createBuffer(kCellFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->curve_buf   = gpu::Device::createBuffer(kCurveFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->stream_buf  = gpu::Device::createBuffer(kStreamSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->cycle_buf   = gpu::Device::createBuffer(kCycleSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   return s;
@@ -201,6 +210,7 @@ void destroy(void* self) {
   if (!s) return;
   s->uniform_buf.release();
   s->cell_buf.release();
+  s->curve_buf.release();
   s->stream_buf.release();
   s->cycle_buf.release();
   delete s;
@@ -212,10 +222,11 @@ void init(void* self) {
   s->initialized = false;
   if (!s_pso_backdrop.valid() || !s_pso_stream.valid() ||
       !s_pso_cycle.valid() || !s_pso_lines.valid()) return;
-  if (!s->uniform_buf.valid() || !s->cell_buf.valid() ||
+  if (!s->uniform_buf.valid() || !s->cell_buf.valid() || !s->curve_buf.valid() ||
       !s->stream_buf.valid() || !s->cycle_buf.valid()) return;
-  // Upload the (immutable) atlas cell buffer once.
+  // Upload the (immutable) atlas cell + resting-cycle buffers once.
   s->cell_buf.write(PF_CELLS, kCellFloats);
+  s->curve_buf.write(PF_CURVE, kCurveFloats);
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
 }
@@ -342,9 +353,9 @@ void render(void* self, int vp_w, int vp_h) {
   u.backdrop_dim = s->backdrop_dim;
   u.stream_alpha = s->line_opacity;
   compute_corners(s, s->eff_x, s->eff_y, u.corners, u.weights, nearest);
-  // Limit-cycle seed = the nearest cell's stored resting-orbit point.
-  u.seed_x = PF_CELLS[nearest * PF_STRIDE + 48];
-  u.seed_y = PF_CELLS[nearest * PF_STRIDE + 49];
+  // The parallel cycle tracer seeds on the nearest cell's baked resting cycle
+  // (curve_buf), so it just needs the cell index.
+  u.nearest_cell = (float)nearest;
   s->uniform_buf.writeOne(u);
 
   // 1 — backdrop (seeds tex_out).
@@ -387,7 +398,8 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setBuffer(s->uniform_buf, 0);
       cp.setBuffer(s->cell_buf, 1);
       cp.setBuffer(s->cycle_buf, 2);
-      cp.dispatch(1, 1, 1);
+      cp.setBuffer(s->curve_buf, 3);
+      cp.dispatch((PF_CYCLE_ARCS + 63) / 64, 1, 1);
       cp.end();
     }
     {

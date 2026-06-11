@@ -116,11 +116,15 @@ def main():
         fh.write(f"static const int   PF_GRID    = {G};\n")
         fh.write(f"static const int   PF_KERNELS = {K};\n")
         fh.write(f"static const int   PF_RINGS   = {R};\n")
-        fh.write(f"static const int   PF_STRIDE  = {stride};\n\n")
+        fh.write(f"static const int   PF_STRIDE  = {stride};\n")
+        fh.write(f"static const int   PF_NOUT    = {n_out};\n\n")
         emit_float_array(fh, "PF_E_CENTERS", a["e_centers"])
         emit_float_array(fh, "PF_L_CENTERS", a["l_centers"])
         emit_float_array(fh, "PF_VALID", a["valid"])
         emit_float_array(fh, "PF_CELLS", cells)
+        # Resting cycles (z=0): GxG cells × n_out points × (x,y), row-major.
+        # Used to seed the parallel limit-cycle tracer (one short arc per point).
+        emit_float_array(fh, "PF_CURVE", a["curve"])
         fh.write("} // namespace phase_fold\n")
 
     print(f"wrote {args.out}: grid={G} K={K} R={R} stride={stride} cells={n} "

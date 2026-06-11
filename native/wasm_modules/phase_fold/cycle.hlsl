@@ -1,71 +1,58 @@
-// video.phase_fold — limit-cycle tracer (compute).
+// video.phase_fold — limit-cycle tracer (compute, PARALLEL).
 //
-// A single thread integrates a long trajectory from a seed on the resting cycle
-// (seed_x/seed_y, the nearest cell's stored cycle point, picked on the CPU) and
-// writes it as a run of gold line segments. Because the seed sits on the
-// attracting cycle, the trajectory traces it out (and, when wind kills the
-// cycle, spirals into the surviving fixed point). A small animated marker rides
-// the trajectory at the flow_phase index — slow where the cycle is slow (the
-// ghost). This is its own toggleable stage, separate from the streamlines. The
-// integration is inherently sequential (each step depends on the last), so it
-// runs on one thread; PF_NTRAJ is kept modest for that reason.
+// The old version integrated one long trajectory on a SINGLE GPU thread (~900
+// serial steps of heavy transcendental math every frame) — it stalled the
+// render pass and, under GPU contention, let the device queue back up until the
+// browser died. This version is fully parallel: one thread per resting-cycle
+// point (PF_NOUT seeds from the nearest cell's baked curve), each tracing a
+// SHORT arc (PF_ARC_STEPS) through the blended field. With wind=0 the seeds sit
+// on the attractor so the arcs retrace the cycle; with wind the arcs bend with
+// the deformed flow, and past the SNIC bifurcation they spiral toward the
+// surviving fixed point — exactly the research behaviour. The dense overlap of
+// short arcs draws a continuous gold cycle. Segment.c.x carries the seed's
+// position around the cycle so the FS can ride a moving highlight on it.
 
 #include "field.hlsl"
 
 RWStructuredBuffer<Segment> segs : register(u2);
+StructuredBuffer<float> curve : register(t3);   // PF_CURVE: cells × PF_NOUT × (x,y)
 
 void cy_dead(uint i) {
-  Segment s; s.a = float4(0, 0, 0, 0); s.b = float4(0, 0, 0, 1);
+  Segment s; s.a = float4(0, 0, 0, 0); s.b = float4(0, 0, 0, 1); s.c = float4(0, 0, 0, 0);
   segs[i] = s;
 }
-void cy_seg(uint i, float2 p0, float2 p1, float code, float width, float alpha) {
-  Segment s; s.a = float4(p0, p1); s.b = float4(code, alpha, width, 0);
+void cy_seg(uint i, float2 p0, float2 p1, float arc) {
+  Segment s;
+  s.a = float4(p0, p1);
+  s.b = float4(PF_CODE_CYCLE, 0.95, cycle_width, 0);
+  s.c = float4(arc, 0, 0, 0);
   segs[i] = s;
 }
 
-[numthreads(1, 1, 1)]
+[numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
-  if (tid.x != 0u) return;
-  uint total = (uint)PF_NTRAJ + (uint)PF_CYCLE_EXTRA;
+  uint i = tid.x;
+  if (i >= (uint)PF_CYCLE_ARCS) return;
+  uint base = i * (uint)PF_ARC_STEPS;
 
   if (pf_weight_sum() < 1e-4) {
-    for (uint d = 0u; d < total; d++) cy_dead(d);
+    for (uint d = 0u; d < (uint)PF_ARC_STEPS; d++) cy_dead(base + d);
     return;
   }
 
-  float2 t = float2(seed_x, seed_y);
-  if (nano_is_nan(t.x) || nano_is_nan(t.y)) t = float2(0.3, 0.0);   // NaN guard (no isfinite)
-  float2 prev = t;
+  // Seed at resting-cycle point i of the nearest cell.
+  uint co = ((uint)nearest_cell * (uint)PF_NOUT + i) * 2u;
+  float2 p = float2(curve[co], curve[co + 1u]);
+  if (nano_is_nan(p.x) || nano_is_nan(p.y)) p = float2(0.3, 0.0);
+  float arc = float(i) / float(PF_NOUT);   // position around the cycle (for the FS highlight)
 
-  uint target = (uint)(frac(flow_phase) * float(PF_NTRAJ));
-  float2 marker = t;
-  bool alive = true;
-
-  for (uint s = 0u; s < (uint)PF_NTRAJ; s++) {
-    if (alive) {
-      float2 q = pf_step(t, PF_TDT);
-      // NaN via nano_is_nan; ±Inf caught by length(q) > 3 (naga has no isfinite).
-      if (nano_is_nan(q.x) || nano_is_nan(q.y) || length(q) > 3.0) {
-        alive = false;
-      } else {
-        cy_seg(s, prev, q, PF_CODE_CYCLE, cycle_width, 0.95);
-        if (s <= target) marker = q;
-        prev = q; t = q;
-        continue;
-      }
+  for (uint s = 0u; s < (uint)PF_ARC_STEPS; s++) {
+    float2 q = pf_step(p, PF_TDT);
+    if (nano_is_nan(q.x) || nano_is_nan(q.y) || length(q) > 3.0) {
+      cy_dead(base + s);
+    } else {
+      cy_seg(base + s, p, q, arc);
+      p = q;
     }
-    cy_dead(s);
   }
-
-  // Animated marker: a small diamond riding the trajectory.
-  uint m0 = (uint)PF_NTRAJ;
-  float ds = 0.03;
-  float2 up = marker + float2(0, ds), rt = marker + float2(ds, 0);
-  float2 dn = marker + float2(0, -ds), lf = marker + float2(-ds, 0);
-  cy_seg(m0 + 0u, up, rt, PF_CODE_CYCLE, cycle_width, 1.0);
-  cy_seg(m0 + 1u, rt, dn, PF_CODE_CYCLE, cycle_width, 1.0);
-  cy_seg(m0 + 2u, dn, lf, PF_CODE_CYCLE, cycle_width, 1.0);
-  cy_seg(m0 + 3u, lf, up, PF_CODE_CYCLE, cycle_width, 1.0);
-  cy_dead(m0 + 4u);
-  cy_dead(m0 + 5u);
 }
