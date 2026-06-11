@@ -37,6 +37,7 @@ import '../../widgets/taps-overlay';
 // sketch shell registers these — so the custom field editors must be imported
 // here too, or they never appear in the IDE.
 import '../../editors/shape-fold-inspector';
+import '../../editors/phase-fold-inspector';
 
 @customElement('ide-project-editor')
 export class IdeProjectEditor extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {

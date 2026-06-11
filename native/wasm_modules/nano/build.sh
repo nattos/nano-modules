@@ -100,6 +100,26 @@ compile_shaders_compute_var_spv shape_fold present
 _emit_spv_header_var shape_fold minmax hist buildlut present
 echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present)"
 
+# phase_fold — emergent limit-cycle phase-portrait generator. A baked atlas of
+# limit-cycle fields is uploaded to the GPU; the field, streamline tracing,
+# arrow animation and limit-cycle integration all run as GPU compute passes,
+# rasterized as soft line quads (sharing common.hlsl/field.hlsl):
+#   backdrop — blended scalar field H, diverging bands (rgba8 storage tex).
+#   stream   — NS×NS streamline tracer + animated arrowheads (segment buffer).
+#   cycle    — limit-cycle integrator + marker (segment buffer).
+#   line_vs/line_fs — instanced soft-line raster over the backdrop.
+compile_shaders_compute_var_spv phase_fold backdrop
+compile_shaders_compute_var_spv phase_fold stream
+compile_shaders_compute_var_spv phase_fold cycle
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../phase_fold/line_vs.hlsl -Fo "$TMP_DIR/phase_fold_line_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../phase_fold/line_fs.hlsl -Fo "$TMP_DIR/phase_fold_line_fs.spv"
+_emit_spv_header_var phase_fold backdrop stream cycle line_vs line_fs
+echo "  phase_fold shaders compiled (SPV: backdrop+stream+cycle+line_vs+line_fs)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -120,6 +140,7 @@ wasm_build \
   ../flash_particles/main.cpp \
   ../local_delay/main.cpp \
   ../height_from_gradient/main.cpp \
-  ../shape_fold/main.cpp
+  ../shape_fold/main.cpp \
+  ../phase_fold/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

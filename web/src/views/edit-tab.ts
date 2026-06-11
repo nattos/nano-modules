@@ -35,6 +35,7 @@ import { isTypingInEditable } from '../utils/keyboard';
 // Import inspector registrations (self-registering)
 import '../editors/brightness-contrast-inspector';
 import '../editors/shape-fold-inspector';
+import '../editors/phase-fold-inspector';
 
 const EXTRA_COLUMNS = 2;
 

@@ -1,0 +1,146 @@
+import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
+import type { Sketch } from '../src/sketch-types';
+
+/**
+ * E2E coverage for video.phase_fold (nano bundle) — the limit-cycle phase-
+ * portrait generator. A baked atlas of level-set limit-cycle fields is uploaded
+ * to the GPU; the backdrop (blended height field), the streamline tracer (with
+ * animated arrows) and the limit-cycle integrator all run as GPU compute passes,
+ * rasterized as soft line quads. Streamlines and the limit cycle are separate,
+ * independently toggleable stages.
+ *
+ * Under test:
+ *  1. Registers + renders: a valid cell produces a non-solid banded backdrop
+ *     (the compute → raster pipeline dispatches cleanly on WebGPU) and the
+ *     autopilot_x/y broadcast outputs are declared (kind=2).
+ *  2. wind (z) changes the output — the non-potential force distorts the flow.
+ *  3. show_streamlines / show_limit_cycle each toggle a real, separable stage:
+ *     turning a stage off changes the output (its lines disappear).
+ *  4. autopilot is a live, non-destructive override: with the flow clock frozen
+ *     (flow_speed=0) the output STILL animates across frames when autopilot is
+ *     on (the epicycle moves the effective XY) and is STATIC when it's off.
+ *
+ * The generator ignores its input, so the chain is just
+ * texture_input → phase_fold → texture_output.
+ */
+function buildSketch(params: Record<string, unknown>): Sketch {
+  return {
+    anchor: null,
+    columns: [{
+      name: 'main',
+      chain: [
+        { type: 'texture_input', id: 'in' },
+        {
+          type: 'module',
+          module_type: 'video.phase_fold',
+          instance_key: 'pf@0',
+          params,
+        },
+        { type: 'texture_output', id: 'out' },
+      ],
+    }],
+  };
+}
+
+async function render(sketchId: string, params: Record<string, unknown>, dumpName: string,
+                      waitFrames = 6) {
+  const result = await runEngineTest({
+    width: 96, height: 96,
+    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    commands: [
+      { type: 'createSketch', sketchId, sketch: buildSketch(params) },
+      { type: 'setTracePoints', tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId } },
+      ]},
+    ],
+    waitFrames,
+    captureTraceIds: ['out'],
+    dumpName,
+  });
+  expect(result.success).toBe(true);
+  return result;
+}
+
+// A valid cell with both stages on, flow clock frozen for determinism.
+const BASE = { eccentricity: 0.5, lobedness: 0.3, flow_speed: 0.0 };
+
+describe('video.phase_fold E2E', () => {
+  jest.setTimeout(60000);
+
+  it('registers and renders a non-solid phase portrait', async () => {
+    const result = await render('pf_smoke', BASE, 'pf_smoke');
+    result.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+
+    const pf = result.state.plugins.find((p: any) => p.id === 'video.phase_fold');
+    expect(pf).toBeTruthy();
+    expect(pf.io.find((io: any) => io.name === 'autopilot_x' && io.kind === 2)).toBeTruthy();
+    expect(pf.io.find((io: any) => io.name === 'autopilot_y' && io.kind === 2)).toBeTruthy();
+  });
+
+  it('wind (z) changes the flow', async () => {
+    const calm = await render('pf_calm', { ...BASE, wind: 0.0 }, 'pf_calm');
+    const windy = await render('pf_windy', { ...BASE, wind: 0.9 }, 'pf_windy');
+    windy.trace('out').expectDifferentFrom(calm.trace('out'), 20);
+  });
+
+  it('show_streamlines toggles a separable stage', async () => {
+    const on = await render('pf_sl_on', { ...BASE, show_streamlines: true, show_limit_cycle: false }, 'pf_sl_on');
+    const off = await render('pf_sl_off', { ...BASE, show_streamlines: false, show_limit_cycle: false }, 'pf_sl_off');
+    on.trace('out').expectDifferentFrom(off.trace('out'), 10);
+  });
+
+  it('show_limit_cycle toggles a separable stage', async () => {
+    const on = await render('pf_lc_on', { ...BASE, show_streamlines: false, show_limit_cycle: true }, 'pf_lc_on');
+    const off = await render('pf_lc_off', { ...BASE, show_streamlines: false, show_limit_cycle: false }, 'pf_lc_off');
+    on.trace('out').expectDifferentFrom(off.trace('out'), 5);
+  });
+
+  it('autopilot drives a live, non-destructive XY override (flow clock frozen)', async () => {
+    // flow_speed=0 freezes the arrow/marker animation, so any change across
+    // phases is the autopilot epicycle moving the effective XY — never inputs.
+    const moving = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'pf_ap_on',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'pf_ap_on',
+              sketch: buildSketch({ eccentricity: 0.5, lobedness: 0.5, flow_speed: 0.0,
+                                    autopilot: true, ap_speed: 1.0 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'pf_ap_on' } },
+            ]},
+          ],
+          waitFrames: 2, captureTraceIds: ['out'],
+        },
+        { waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(moving.success).toBe(true);
+    moving.phases[1].trace('out').expectDifferentFrom(moving.phases[0].trace('out'), 20);
+
+    // Control: autopilot off + frozen flow → static across the same span.
+    const still = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'pf_ap_off',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'pf_ap_off',
+              sketch: buildSketch({ eccentricity: 0.5, lobedness: 0.5, flow_speed: 0.0,
+                                    autopilot: false }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'pf_ap_off' } },
+            ]},
+          ],
+          waitFrames: 2, captureTraceIds: ['out'],
+        },
+        { waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(still.success).toBe(true);
+    still.phases[1].trace('out').expectSameAs(still.phases[0].trace('out'), 2);
+  });
+});

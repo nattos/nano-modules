@@ -18,6 +18,7 @@ NANO_DECLARE_INSTANCE_EFFECT(flash_particles)
 NANO_DECLARE_INSTANCE_EFFECT(local_delay)
 NANO_DECLARE_INSTANCE_EFFECT(height_from_gradient)
 NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
+NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 
 extern "C" {
 
@@ -81,6 +82,16 @@ void nano_module_main() {
         "video",
         "generator,sdf,shape,evolving,autopilot,procedural,math",
         NANO_INSTANCE_LIFECYCLE(shape_fold),
+    });
+
+    nano::registerEffect({
+        2,
+        "video.phase_fold",
+        "Phase Fold",
+        "Emergent limit-cycle phase-portrait generator. The XY pad picks a cell in a baked atlas of level-set limit-cycle fields (x = eccentricity, y = lobedness); the blended scalar field H is shown as a muted diverging height-field backdrop. Over it, the GPU traces streamlines through the induced vector field v = level-set flow + WIND(z) with arrowheads that animate down each line, and integrates the limit cycle itself from a seed on the resting orbit — both as separate, independently toggleable stages. Wind (z) is a non-potential force that distorts the cycle and, past a SNIC bifurcation, kills it (the orbit collapses to a fixed point); bias slides the cycle across contours. An optional autopilot spirals the XY and broadcasts its live position (autopilot_x/y) without mutating the inputs. Pure generator (no input).",
+        "video",
+        "generator,phase-portrait,limit-cycle,streamlines,flow,vector-field,autopilot,procedural,math",
+        NANO_INSTANCE_LIFECYCLE(phase_fold),
     });
 }
 
