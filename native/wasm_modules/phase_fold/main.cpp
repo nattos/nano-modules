@@ -51,6 +51,8 @@ static constexpr int   PF_NS          = 15;    // streamline seed grid
 static constexpr int   PF_SL_STEPS    = 16;    // segments stored per streamline
 static constexpr int   PF_PARTICLES   = PF_NOUT;  // stateful cycle-solver particles
 static constexpr float PF_EXTENT      = 1.35f; // phase window half-size
+static constexpr float PF_STEP_MIN    = 0.001f; // step_size slider 0 → this
+static constexpr float PF_STEP_MAX    = 0.5f;   // step_size slider 1 → this
 
 static constexpr int   kStreamSegs = PF_NS * PF_NS * PF_SL_STEPS;     // 3600
 static constexpr int   kCycleSegs  = PF_PARTICLES;                    // one seg per pair
@@ -73,7 +75,7 @@ struct Uniforms {
   float backdrop_dim, stream_alpha, shading_mode, solve_steps;
   float break_dist, explore, spread, rand_seed;
   float step_size, momentum, morph_rate, respawn_arc;
-  float good_init, _pad0, _pad1, _pad2;
+  float good_init, break_turn_cos, _pad1, _pad2;
   float corners[4];
   float weights[4];
 };
@@ -118,10 +120,11 @@ struct State {
   float respawn_time = 2.0f;   // hard re-seed timer (seconds)
   float explore      = 0.3f;   // tangential random-walk amount (back and forth)
   float spread       = 0.5f;   // neighbour-spacing gain (spread the ring out)
-  float step_size    = 1.0f;   // how far each relaxation step pushes (force scale)
+  float step_size    = 0.75f;  // [0,1] exp-mapped to PF_STEP_MIN..MAX (force scale)
   float momentum     = 0.6f;   // velocity retention — higher = more wobble
   float morph_rate   = 0.1f;   // good-cycle lerp rate (toward live / resting)
   float respawn_arc  = 1.0f;   // respawn when broken & longest chain shorter than this
+  float break_turn   = 0.5f;   // [0,1] doubling-back sensitivity (0=off, 0.5=90°)
   bool  autopilot    = false;
   float ap_speed     = 0.35f;
 
@@ -179,7 +182,9 @@ void module_init() {
       // Newton relaxation steps per frame — how hard the ring solves onto the cycle.
       .floatField("solve_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
       // How far each relaxation step pushes (scales the per-step force).
-      .floatField("step_size", 1.0f, 0.1f, 2.0f, state::PrimaryInput)
+      // Exponential: the [0,1] slider maps to PF_STEP_MIN..PF_STEP_MAX
+      // (~0.001 .. 0.5) so the small end has fine control.
+      .floatField("step_size", 0.75f, 0.0f, 1.0f, state::PrimaryInput)
       // Velocity retention — particles carry momentum, so the ring wobbles
       // around the cycle (underdamped). 0 = no wobble, ~0.9 = very springy.
       .floatField("momentum", 0.6f, 0.0f, 0.95f, state::PrimaryInput)
@@ -189,6 +194,9 @@ void module_init() {
       // Respawn when the cycle is broken and its longest chain's arc length is
       // shorter than this (the discovery attempt has clearly failed).
       .floatField("respawn_arc", 1.0f, 0.0f, 4.0f, state::PrimaryInput)
+      // Doubling-back sensitivity: break the cycle where the polyline reverses.
+      // 0 = off; 0.5 = break turns sharper than 90°; 1 = very aggressive.
+      .floatField("break_turn", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // Break sensitivity: the max gap between adjacent particles before the
       // cycle is considered broken there (and that segment is dropped).
       .floatField("break_dist", 0.2f, 0.05f, 0.6f, state::PrimaryInput)
@@ -439,6 +447,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "momentum"))       s->momentum = state::patchFloat(i);
     else if (state::pathIs(path, plen, "morph_rate"))     s->morph_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "respawn_arc"))    s->respawn_arc = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "break_turn"))     s->break_turn = state::patchFloat(i);
     else if (state::pathIs(path, plen, "autopilot"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->autopilot) { s->autopilot = v; vis_changed = true; } }
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
   }
@@ -471,10 +480,13 @@ void render(void* self, int vp_w, int vp_h) {
   u.break_dist = s->break_dist;
   u.explore = s->explore;
   u.spread = s->spread;
-  u.step_size = s->step_size;
+  // Exponential step size: [0,1] slider → PF_STEP_MIN..PF_STEP_MAX.
+  u.step_size = PF_STEP_MIN * std::pow(PF_STEP_MAX / PF_STEP_MIN, clampf(s->step_size, 0.0f, 1.0f));
   u.momentum = s->momentum;
   u.morph_rate = s->morph_rate;
   u.respawn_arc = s->respawn_arc;
+  // Turn threshold: break_turn 0 → cos -1 (never), 0.5 → 0 (90°), 1 → ~1.
+  u.break_turn_cos = std::cos(kPi * (1.0f - clampf(s->break_turn, 0.0f, 1.0f)));
   u.good_init = s->particles_init ? 1.0f : 0.0f;
   u.rand_seed = (float)(s->frame_counter++ & 0xFFFFu);
   compute_corners(s, s->eff_x, s->eff_y, u.corners, u.weights, nearest);

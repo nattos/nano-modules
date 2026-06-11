@@ -214,7 +214,7 @@ export class PhaseFoldInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'solve_steps'} .label=${'Solve Steps'}
         .min=${1} .max=${16} .step=${1} .defaultValue=${4} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'step_size'} .label=${'Step Size'}
-        .min=${0.1} .max=${2} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.75} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'momentum'} .label=${'Momentum'}
         .min=${0} .max=${0.95} .step=${0.01} .defaultValue=${0.6} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'break_dist'} .label=${'Break Dist'}
@@ -223,6 +223,8 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${0.1} .max=${10} .step=${0.1} .defaultValue=${2} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'respawn_arc'} .label=${'Respawn Arc'}
         .min=${0} .max=${4} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'break_turn'} .label=${'Break Turn'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'morph_rate'} .label=${'Morph Rate'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.1} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'explore'} .label=${'Explore'}

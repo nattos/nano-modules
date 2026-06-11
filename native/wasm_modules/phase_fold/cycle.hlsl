@@ -45,6 +45,18 @@ void main(uint3 tid : SV_DispatchThreadID) {
   // Break 1: the pair drifted too far apart (the cycle opened here).
   if (length(pb - pa) > break_dist) { cy_dead(i); return; }
 
+  // Break 2: the polyline DOUBLES BACK here. If a particle fell out of order the
+  // index-connected line reverses sharply at pa; on a clean cycle the turn from
+  // the incoming edge to the outgoing edge is gentle. Cull the reversal so the
+  // longest-run select drops the spur.
+  float2 pprev = particles[(i + (uint)PF_PARTICLES - 1u) % (uint)PF_PARTICLES].xy;
+  float2 indir = pa - pprev;
+  float2 outdir = pb - pa;
+  float il = length(indir), ol = length(outdir);
+  if (il > 1e-5 && ol > 1e-5 && dot(indir / il, outdir / ol) < break_turn_cos) {
+    cy_dead(i); return;
+  }
+
   // Break 2: the gradient direction flips along the segment. On a clean cycle
   // the contour normal rotates smoothly between adjacent particles.
   float2 n0 = normalize(pf_field(pa).grad);
