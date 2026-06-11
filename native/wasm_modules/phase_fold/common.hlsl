@@ -30,6 +30,7 @@
 #define PF_PARTICLES PF_NOUT // stateful limit-cycle solver particles (one per seed)
 #define PF_BREAK_SAMPLES 4   // gradient samples between consecutive particles
 #define PF_RELAX_CAP 0.10    // max per-iteration Newton step (solver stability)
+#define PF_VEL_CAP   0.15    // max particle speed (momentum stability)
 #define PF_TDT       0.02    // streamline-style step size
 #define PF_STEP_CAP  0.06    // per-step displacement clamp (keeps integration smooth)
 
@@ -44,6 +45,7 @@ cbuffer U : register(b0) {
   float nearest_cell; float respawn; float stream_width; float cycle_width;
   float backdrop_dim; float stream_alpha; float shading_mode; float solve_steps;
   float break_dist;   float explore;  float spread;   float rand_seed;
+  float step_size;    float momentum; float _pf_pad0; float _pf_pad1;
   float4 corners;   // 4 corner cell indices (as float)
   float4 weights;   // 4 convex blend weights (sum 1, or 0 over a hole)
 };

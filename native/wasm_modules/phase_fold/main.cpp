@@ -72,10 +72,11 @@ struct Uniforms {
   float nearest_cell, respawn, stream_width, cycle_width;
   float backdrop_dim, stream_alpha, shading_mode, solve_steps;
   float break_dist, explore, spread, rand_seed;
+  float step_size, momentum, _pad0, _pad1;
   float corners[4];
   float weights[4];
 };
-static_assert(sizeof(Uniforms) == 112, "Uniforms layout");
+static_assert(sizeof(Uniforms) == 128, "Uniforms layout");
 
 struct State {
   gpu::Buffer uniform_buf;
@@ -114,6 +115,8 @@ struct State {
   float respawn_time = 2.0f;   // hard re-seed timer (seconds)
   float explore      = 0.3f;   // tangential random-walk amount (back and forth)
   float spread       = 0.5f;   // neighbour-spacing gain (spread the ring out)
+  float step_size    = 1.0f;   // how far each relaxation step pushes (force scale)
+  float momentum     = 0.6f;   // velocity retention — higher = more wobble
   bool  autopilot    = false;
   float ap_speed     = 0.35f;
 
@@ -170,6 +173,11 @@ void module_init() {
       .floatField("cycle_width", 0.02f, 0.004f, 0.06f, state::PrimaryInput)
       // Newton relaxation steps per frame — how hard the ring solves onto the cycle.
       .floatField("solve_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
+      // How far each relaxation step pushes (scales the per-step force).
+      .floatField("step_size", 1.0f, 0.1f, 2.0f, state::PrimaryInput)
+      // Velocity retention — particles carry momentum, so the ring wobbles
+      // around the cycle (underdamped). 0 = no wobble, ~0.9 = very springy.
+      .floatField("momentum", 0.6f, 0.0f, 0.95f, state::PrimaryInput)
       // Break sensitivity: the max gap between adjacent particles before the
       // cycle is considered broken there (and that segment is dropped).
       .floatField("break_dist", 0.2f, 0.05f, 0.6f, state::PrimaryInput)
@@ -402,6 +410,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "respawn_time"))   s->respawn_time = state::patchFloat(i);
     else if (state::pathIs(path, plen, "explore"))        s->explore = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spread"))         s->spread = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "step_size"))      s->step_size = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "momentum"))       s->momentum = state::patchFloat(i);
     else if (state::pathIs(path, plen, "autopilot"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->autopilot) { s->autopilot = v; vis_changed = true; } }
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
   }
@@ -434,6 +444,8 @@ void render(void* self, int vp_w, int vp_h) {
   u.break_dist = s->break_dist;
   u.explore = s->explore;
   u.spread = s->spread;
+  u.step_size = s->step_size;
+  u.momentum = s->momentum;
   u.rand_seed = (float)(s->frame_counter++ & 0xFFFFu);
   compute_corners(s, s->eff_x, s->eff_y, u.corners, u.weights, nearest);
   // The stateful solver respawns onto the nearest cell's baked resting cycle.
