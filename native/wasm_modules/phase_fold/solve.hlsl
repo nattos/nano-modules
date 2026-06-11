@@ -4,18 +4,17 @@
 // (xy) and VELOCITY (zw); the update is a little force/momentum integrator so
 // the ring WOBBLES around the cycle instead of snapping onto it. Each frame a
 // particle either RESPAWNS onto the nearest cell's resting-cycle point (timer /
-// first frame), or:
+// first frame), or is integrated for `solve_steps` sub-steps as a real 2D mass:
 //
-//   • WALK impulse — a random signed kick along the contour tangent (back and
-//     forth); momentum carries it so the ring shimmer-rotates / explores.
-//   • RELAXATION sub-steps — `solve_steps` Newton steps toward the wind-
-//     corrected cycle, but applied as a FORCE through velocity with `momentum`
-//     retention and `step_size` scale. Underdamped → the particle overshoots
-//     and wobbles around the cycle (intentional). step_size sets how far each
-//     step pushes; momentum sets how much it wobbles.
-//   • SPACING — a direct tangential nudge toward the midpoint of the two
-//     neighbours' OLD positions, keeping the ring evenly distributed (stable,
-//     outside the momentum loop so it doesn't oscillate).
+//     v = v*momentum + F*step_size;   p += v;
+//
+// ALL forces feed the SAME 2D velocity, so momentum applies FREELY IN XY (not
+// just radially). F = radial relaxation toward the wind-corrected cycle (a
+// Newton-scaled spring) + tangential (random WALK back-and-forth + a SPRING
+// toward the midpoint of the two neighbours' OLD positions, for even spacing).
+// Underdamped (momentum < 1) → the particle overshoots and wobbles like a mass
+// on springs. step_size scales how far each step pushes; momentum sets the
+// wobble. Velocity is clamped (PF_VEL_CAP) for stability.
 //
 // Reads the previous frame's ring (particles_prev) and writes the next
 // (particles_next), ping-ponged on the CPU, so neighbour reads are race-free.
@@ -45,45 +44,38 @@ void main(uint3 tid : SV_DispatchThreadID) {
     p = float2(curve[co], curve[co + 1u]);
     v = float2(0.0, 0.0);
   } else if (pf_weight_sum() >= 1e-4) {
-    // Tangent at the current position (for the walk impulse + spacing).
-    PfField f0 = pf_field(p);
-    float gl0 = length(f0.grad);
-    if (gl0 > 1e-3) {
-      float2 t0 = float2(-f0.grad.y, f0.grad.x) / gl0;
-      // Walk: random signed tangential velocity impulse — momentum sustains it.
-      float rnd = nano_hash21(float2(float(i), rand_seed)) * 2.0 - 1.0;
-      v += t0 * (rnd * explore * 0.04);
-    }
+    // Per-frame random value + the old-neighbour midpoint (for the spacing
+    // spring). Both fixed across the sub-steps.
+    float rnd = nano_hash21(float2(float(i), rand_seed)) * 2.0 - 1.0;
+    float2 mid = 0.5 * (particles_prev[(i + N - 1u) % N].xy +
+                        particles_prev[(i + 1u) % N].xy);
 
-    // Relaxation as a force, integrated with momentum (underdamped → wobble).
+    // ALL forces feed the single 2D velocity, so momentum applies freely in XY
+    // (not just radially): a radial relaxation spring toward the cycle, plus a
+    // tangential walk + spacing — the particle wobbles like a real mass.
     uint steps = (uint)max(solve_steps, 1.0);
     for (uint s = 0u; s < steps; s++) {
       PfField f = pf_field(p);
       float gl2 = dot(f.grad, f.grad);
-      float2 force = float2(0.0, 0.0);
+      float2 F = float2(0.0, 0.0);
       if (gl2 >= 1e-6) {
         float gl = sqrt(gl2);
-        float2 n = f.grad / gl;
+        float2 n = f.grad / gl;            // contour normal
+        float2 t = float2(-n.y, n.x);      // contour tangent
         float target = f.lev + bias + clamp(dot(f.W, n) / (f.mu * gl + 1e-3), -0.5, 0.5);
-        force = -(f.H - target) * f.grad / gl2;   // toward the cycle (Newton)
-        float fl = length(force);
-        if (fl > PF_RELAX_CAP) force *= PF_RELAX_CAP / fl;
+        // Radial: relaxation toward the cycle (Newton-scaled), clamped.
+        float2 Fr = -(f.H - target) * f.grad / gl2;
+        float fl = length(Fr);
+        if (fl > PF_RELAX_CAP) Fr *= PF_RELAX_CAP / fl;
+        // Tangential: random walk + spring toward even spacing.
+        float along = dot(mid - p, t);
+        float2 Ft = t * (rnd * explore * 0.04 + along * spread * 0.4);
+        F = Fr + Ft;
       }
-      v = v * momentum + force * step_size;
+      v = v * momentum + F * step_size;
       float vl = length(v);
       if (vl > PF_VEL_CAP) v *= PF_VEL_CAP / vl;
       p += v;
-    }
-
-    // Spacing: direct tangential nudge toward the old-neighbour midpoint.
-    PfField fs = pf_field(p);
-    float gls = length(fs.grad);
-    if (gls > 1e-3) {
-      float2 ts = float2(-fs.grad.y, fs.grad.x) / gls;
-      float2 pl = particles_prev[(i + N - 1u) % N].xy;
-      float2 pr = particles_prev[(i + 1u) % N].xy;
-      float along = dot(0.5 * (pl + pr) - p, ts);
-      p += ts * (along * spread * 0.5);
     }
   }
 
