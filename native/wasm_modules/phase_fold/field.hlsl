@@ -40,12 +40,14 @@ float pf_cellH(uint ci, float2 p) {
 // zero crossing of this is the limit cycle; the backdrop bands it.
 //
 // Wind awareness: wind is a non-potential FORCE, so no scalar height reproduces
-// the wind-distorted flow as a gradient. BUT the level-set flow runs ALONG the
-// contours of H — i.e. H acts as a STREAMFUNCTION — and a uniform wind W has a
-// linear streamfunction (Wx*y - Wy*x). Adding it tilts the terrace with the
-// wind so the zero band tracks the wind-deformed cycle (exact for the rotational
-// flow; only the mu normal-pull is approximated). Blended over the 4 corners
-// like everything else.
+// the wind-distorted flow exactly. But the real attractor is held near H=level
+// by the strong mu normal-pull, and that orbit BULGES DOWNWIND under wind (as
+// the integrated gold cycle shows). So tilt the banded terrace ALONG the wind by
+// the linear force-potential ramp W·p — the zero band then shifts downwind with
+// the cycle. (The pure streamfunction Wx*y - Wy*x would drift perpendicular —
+// the guiding-centre drift of the rotational flow alone — which reads as the
+// wrong direction once the normal-pull dominates.) Blended over the 4 corners;
+// zero at wind=0 so the calm look is unchanged.
 float pf_blended_height(float2 p) {
   float d = 0.0;
   float Wx = 0.0, Wy = 0.0;
@@ -58,7 +60,7 @@ float pf_blended_height(float2 p) {
     Wx += w * wind * cells[wb + 2u] * cells[wb + 0u];
     Wy += w * wind * cells[wb + 2u] * cells[wb + 1u];
   }
-  return d + (Wx * p.y - Wy * p.x);   // + uniform-wind streamfunction
+  return d + (Wx * p.x + Wy * p.y);   // + along-wind force-potential tilt
 }
 
 // --- Vector field v = level-set flow + wind (for the tracers) --------------

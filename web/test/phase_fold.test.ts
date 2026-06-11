@@ -101,9 +101,9 @@ describe('video.phase_fold E2E', () => {
     far.trace('out').expectDifferentFrom(near.trace('out'), 30);
   });
 
-  it('Bands shading is wind-aware (streamfunction tilt)', async () => {
-    // Bands now folds in the uniform-wind streamfunction, so the height-field
-    // terrace tilts with wind — turning wind up must change the Bands backdrop.
+  it('Bands shading is wind-aware (downwind force-potential tilt)', async () => {
+    // Bands folds in the along-wind force-potential ramp W·p, so the height-field
+    // terrace tilts downwind — turning wind up must change the Bands backdrop.
     const calm = await render('pf_bands_calm', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0, wind: 0.0 }, 'pf_bands_calm');
     const windy = await render('pf_bands_windy', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0, wind: 0.8 }, 'pf_bands_windy');
     windy.trace('out').expectDifferentFrom(calm.trace('out'), 30);
