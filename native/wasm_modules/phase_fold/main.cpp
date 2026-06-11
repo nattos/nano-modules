@@ -72,17 +72,20 @@ struct Uniforms {
   float nearest_cell, respawn, stream_width, cycle_width;
   float backdrop_dim, stream_alpha, shading_mode, solve_steps;
   float break_dist, explore, spread, rand_seed;
-  float step_size, momentum, _pad0, _pad1;
+  float step_size, momentum, morph_rate, respawn_arc;
+  float good_init, _pad0, _pad1, _pad2;
   float corners[4];
   float weights[4];
 };
-static_assert(sizeof(Uniforms) == 128, "Uniforms layout");
+static_assert(sizeof(Uniforms) == 144, "Uniforms layout");
 
 struct State {
   gpu::Buffer uniform_buf;
   gpu::Buffer cell_buf;      // PF_CELLS, uploaded once
   gpu::Buffer curve_buf;      // PF_CURVE (resting cycles), uploaded once — respawn seeds
   gpu::Buffer particle_buf[2]; // STATEFUL cycle-solver ring, double-buffered (ping-pong)
+  gpu::Buffer good_buf;       // last "good" cycle (respawn source), morphed each frame
+  gpu::Buffer status_buf;     // cycle health (PF_ST_*), shared solve<->select
   gpu::Buffer stream_buf;     // streamline segments
   gpu::Buffer cycle_buf;      // limit-cycle segments
   bool initialized = false;
@@ -117,6 +120,8 @@ struct State {
   float spread       = 0.5f;   // neighbour-spacing gain (spread the ring out)
   float step_size    = 1.0f;   // how far each relaxation step pushes (force scale)
   float momentum     = 0.6f;   // velocity retention — higher = more wobble
+  float morph_rate   = 0.1f;   // good-cycle lerp rate (toward live / resting)
+  float respawn_arc  = 1.0f;   // respawn when broken & longest chain shorter than this
   bool  autopilot    = false;
   float ap_speed     = 0.35f;
 
@@ -178,6 +183,12 @@ void module_init() {
       // Velocity retention — particles carry momentum, so the ring wobbles
       // around the cycle (underdamped). 0 = no wobble, ~0.9 = very springy.
       .floatField("momentum", 0.6f, 0.0f, 0.95f, state::PrimaryInput)
+      // Good-cycle morph rate — how fast the remembered cycle tracks the live
+      // one (when closed) or decays back to the resting cycle (when broken).
+      .floatField("morph_rate", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
+      // Respawn when the cycle is broken and its longest chain's arc length is
+      // shorter than this (the discovery attempt has clearly failed).
+      .floatField("respawn_arc", 1.0f, 0.0f, 4.0f, state::PrimaryInput)
       // Break sensitivity: the max gap between adjacent particles before the
       // cycle is considered broken there (and that segment is dropped).
       .floatField("break_dist", 0.2f, 0.05f, 0.6f, state::PrimaryInput)
@@ -236,7 +247,9 @@ void module_init() {
       .storage(1)        // cells (read)
       .storageRW(2)      // particles_next (write)
       .storage(3)        // curve / resting-cycle respawn seeds (read)
-      .storage(4));      // particles_prev (read, last frame)
+      .storage(4)        // particles_prev (read, last frame)
+      .storage(5)        // good ring (respawn source, read)
+      .storage(6));      // status (read PF_ST_RESPAWN)
 
   // Build + break-detect: relaxed particles → cycle segments.
   s_pso_cycle = gpu::Device::createComputePSO(cs_cycle, "main", gpu::Bindings()
@@ -245,10 +258,14 @@ void module_init() {
       .storageRW(2)      // cycle segments (write)
       .storage(3));      // particles (read)
 
-  // Keep only the longest contiguous run (single-thread O(N) scan).
+  // Longest-run cull + cycle health + good-cycle morph (single-thread).
   s_pso_select = gpu::Device::createComputePSO(cs_select, "main", gpu::Bindings()
       .uniform(0)
-      .storageRW(2));    // cycle segments (cull in place)
+      .storageRW(2)      // cycle segments (cull in place)
+      .storageRW(3)      // good ring (morphed)
+      .storageRW(4)      // status (written)
+      .storage(5)        // live ring (read)
+      .storage(6));      // curve / resting cycle (read)
 
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_lines, "main", fs_lines, "main", gpu::TextureFormat::Surface,
@@ -267,6 +284,8 @@ void* create() {
   s->curve_buf   = gpu::Device::createBuffer(kCurveFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->particle_buf[0] = gpu::Device::createBuffer(kParticleFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->particle_buf[1] = gpu::Device::createBuffer(kParticleFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->good_buf    = gpu::Device::createBuffer(kParticleFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->status_buf  = gpu::Device::createBuffer(4 * sizeof(float), gpu::BufferUsage::Storage);
   s->stream_buf  = gpu::Device::createBuffer(kStreamSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->cycle_buf   = gpu::Device::createBuffer(kCycleSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   return s;
@@ -280,6 +299,8 @@ void destroy(void* self) {
   s->curve_buf.release();
   s->particle_buf[0].release();
   s->particle_buf[1].release();
+  s->good_buf.release();
+  s->status_buf.release();
   s->stream_buf.release();
   s->cycle_buf.release();
   delete s;
@@ -293,11 +314,15 @@ void init(void* self) {
       !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_lines.valid()) return;
   if (!s->uniform_buf.valid() || !s->cell_buf.valid() || !s->curve_buf.valid() ||
       !s->particle_buf[0].valid() || !s->particle_buf[1].valid() ||
+      !s->good_buf.valid() || !s->status_buf.valid() ||
       !s->stream_buf.valid() || !s->cycle_buf.valid()) return;
   // Upload the (immutable) atlas cell + resting-cycle buffers once. The particle
-  // ring is left uninitialized — the first solve dispatch respawns it.
+  // and good rings are left uninitialized — the first frame seeds them. Clear
+  // the status buffer so the first solve doesn't see a garbage respawn flag.
   s->cell_buf.write(PF_CELLS, kCellFloats);
   s->curve_buf.write(PF_CURVE, kCurveFloats);
+  float zero_status[4] = {0, 0, 0, 0};
+  s->status_buf.write(zero_status, 4);
   s->particles_init = false;
   s->respawn_accum = 0.0f;
   s->particle_cur = 0;
@@ -412,6 +437,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "spread"))         s->spread = state::patchFloat(i);
     else if (state::pathIs(path, plen, "step_size"))      s->step_size = state::patchFloat(i);
     else if (state::pathIs(path, plen, "momentum"))       s->momentum = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "morph_rate"))     s->morph_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "respawn_arc"))    s->respawn_arc = state::patchFloat(i);
     else if (state::pathIs(path, plen, "autopilot"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->autopilot) { s->autopilot = v; vis_changed = true; } }
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
   }
@@ -446,6 +473,9 @@ void render(void* self, int vp_w, int vp_h) {
   u.spread = s->spread;
   u.step_size = s->step_size;
   u.momentum = s->momentum;
+  u.morph_rate = s->morph_rate;
+  u.respawn_arc = s->respawn_arc;
+  u.good_init = s->particles_init ? 1.0f : 0.0f;
   u.rand_seed = (float)(s->frame_counter++ & 0xFFFFu);
   compute_corners(s, s->eff_x, s->eff_y, u.corners, u.weights, nearest);
   // The stateful solver respawns onto the nearest cell's baked resting cycle.
@@ -501,6 +531,8 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setBuffer(s->particle_buf[next], 2);
       cp.setBuffer(s->curve_buf, 3);
       cp.setBuffer(s->particle_buf[prev], 4);
+      cp.setBuffer(s->good_buf, 5);
+      cp.setBuffer(s->status_buf, 6);
       cp.dispatch(groups, 1, 1);
       cp.end();
     }
@@ -516,12 +548,16 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch(groups, 1, 1);
       cp.end();
     }
-    // 3c — keep only the longest contiguous run (single-thread cull).
+    // 3c — longest-run cull + cycle health + good-cycle morph (single-thread).
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_select);
       cp.setBuffer(s->uniform_buf, 0);
       cp.setBuffer(s->cycle_buf, 2);
+      cp.setBuffer(s->good_buf, 3);
+      cp.setBuffer(s->status_buf, 4);
+      cp.setBuffer(s->particle_buf[next], 5);
+      cp.setBuffer(s->curve_buf, 6);
       cp.dispatch(1, 1, 1);
       cp.end();
     }

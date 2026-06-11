@@ -26,6 +26,8 @@
 RWStructuredBuffer<float4> particles_next : register(u2);   // write (xy=pos, zw=vel)
 StructuredBuffer<float>    curve          : register(t3);   // PF_CURVE resting cycles
 StructuredBuffer<float4>   particles_prev : register(t4);   // read (last frame)
+StructuredBuffer<float4>   good_ring      : register(t5);   // last "good" cycle (respawn source)
+StructuredBuffer<float>    status         : register(t6);   // cycle health (PF_ST_*)
 
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
@@ -36,12 +38,21 @@ void main(uint3 tid : SV_DispatchThreadID) {
   float4 prev = particles_prev[i];
   float2 p = prev.xy;
   float2 v = prev.zw;
-  bool reseed = (respawn > 0.5) || nano_is_nan(p.x) || nano_is_nan(p.y) ||
+  // Respawn on the CPU timer / first frame, OR when the GPU flagged a broken
+  // short cycle last frame (PF_ST_RESPAWN), OR a stuck NaN.
+  bool reseed = (respawn > 0.5) || (status[PF_ST_RESPAWN] > 0.5) ||
+                nano_is_nan(p.x) || nano_is_nan(p.y) ||
                 nano_is_nan(v.x) || nano_is_nan(v.y);
 
   if (reseed) {
-    uint co = ((uint)nearest_cell * (uint)PF_NOUT + i) * 2u;
-    p = float2(curve[co], curve[co + 1u]);
+    // Clone the last good cycle; on the first frame (good not yet built) fall
+    // back to the cell's resting cycle.
+    if (good_init > 0.5) {
+      p = good_ring[i].xy;
+    } else {
+      uint co = ((uint)nearest_cell * (uint)PF_NOUT + i) * 2u;
+      p = float2(curve[co], curve[co + 1u]);
+    }
     v = float2(0.0, 0.0);
   } else if (pf_weight_sum() >= 1e-4) {
     // Per-frame random value + the old-neighbour midpoint (for the spacing
