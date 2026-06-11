@@ -101,6 +101,17 @@ describe('video.phase_fold E2E', () => {
     far.trace('out').expectDifferentFrom(near.trace('out'), 30);
   });
 
+  it('Bands shading is wind-aware (streamfunction tilt)', async () => {
+    // Bands now folds in the uniform-wind streamfunction, so the height-field
+    // terrace tilts with wind — turning wind up must change the Bands backdrop.
+    const calm = await render('pf_bands_calm', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0, wind: 0.0 }, 'pf_bands_calm');
+    const windy = await render('pf_bands_windy', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0, wind: 0.8 }, 'pf_bands_windy');
+    windy.trace('out').expectDifferentFrom(calm.trace('out'), 30);
+    // Visual sign-check dump: bands + cycle so the zero band can be compared to
+    // the integrated gold cycle.
+    await render('pf_bands_cyc', { ...BASE, show_streamlines: false, show_limit_cycle: true, shading_mode: 0, wind: 0.7 }, 'pf_bands_cyc');
+  });
+
   it('Gradient shading mode differs from Bands and is wind-aware', async () => {
     // Backdrop only (lines off) so we isolate the shading mode.
     const bands = await render('pf_bands', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0 }, 'pf_bands');

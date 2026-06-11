@@ -38,15 +38,27 @@ float pf_cellH(uint ci, float2 p) {
 
 // Height above each cell's OWN cycle level, blended over the 4 corners. The
 // zero crossing of this is the limit cycle; the backdrop bands it.
+//
+// Wind awareness: wind is a non-potential FORCE, so no scalar height reproduces
+// the wind-distorted flow as a gradient. BUT the level-set flow runs ALONG the
+// contours of H — i.e. H acts as a STREAMFUNCTION — and a uniform wind W has a
+// linear streamfunction (Wx*y - Wy*x). Adding it tilts the terrace with the
+// wind so the zero band tracks the wind-deformed cycle (exact for the rotational
+// flow; only the mu normal-pull is approximated). Blended over the 4 corners
+// like everything else.
 float pf_blended_height(float2 p) {
   float d = 0.0;
+  float Wx = 0.0, Wy = 0.0;
   [unroll] for (uint i = 0u; i < 4u; i++) {
     float w = weights[i];
     if (w <= 0.0) continue;
     uint ci = (uint)corners[i];
     d += w * (pf_cellH(ci, p) - cells[ci * PF_STRIDE + 1u]);
+    uint wb = ci * PF_STRIDE + PF_WIND_OFF;
+    Wx += w * wind * cells[wb + 2u] * cells[wb + 0u];
+    Wy += w * wind * cells[wb + 2u] * cells[wb + 1u];
   }
-  return d;
+  return d + (Wx * p.y - Wy * p.x);   // + uniform-wind streamfunction
 }
 
 // --- Vector field v = level-set flow + wind (for the tracers) --------------
