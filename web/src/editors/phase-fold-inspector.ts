@@ -191,7 +191,10 @@ export class PhaseFoldInspector extends MobxLitElement {
 
       <div class="section">Backdrop</div>
       <field-select .fieldPath=${'shading_mode'} .label=${'Shading'}
-        .options=${[{ label: 'Bands', value: 0 }, { label: 'Gradient', value: 1 }]}
+        .options=${[{ label: 'Bands', value: 0 }, { label: 'Gradient', value: 1 },
+                    { label: 'Magma', value: 2 }, { label: 'Inferno', value: 3 },
+                    { label: 'Viridis', value: 4 }, { label: 'Plasma', value: 5 },
+                    { label: 'Turbo', value: 6 }]}
         .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'bands'} .label=${'Bands'}
         .min=${2} .max=${24} .step=${1} .defaultValue=${13} .binding=${b}></scalar-slider>

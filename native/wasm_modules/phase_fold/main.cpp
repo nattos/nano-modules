@@ -227,8 +227,11 @@ void module_init() {
       .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput)
       .boolField("interpolate", true, state::PrimaryInput)
       // --- Backdrop ---
-      // Shading: the height-field Bands (default) or the wind-aware flow Gradient.
-      .selectField("shading_mode", 0, state::PrimaryInput, {{"Bands", 0}, {"Gradient", 1}})
+      // Shading: height-field Bands, the wind-aware flow Gradient, or a banded
+      // matplotlib colormap of the height field.
+      .selectField("shading_mode", 0, state::PrimaryInput,
+                   {{"Bands", 0}, {"Gradient", 1}, {"Magma", 2}, {"Inferno", 3},
+                    {"Viridis", 4}, {"Plasma", 5}, {"Turbo", 6}})
       .floatField("bands", 13.0f, 2.0f, 24.0f, state::PrimaryInput)
       .floatField("contrast", 1.6f, 0.4f, 4.0f, state::PrimaryInput)
       .floatField("backdrop_dim", 0.42f, 0.0f, 1.0f, state::PrimaryInput)
@@ -489,8 +492,9 @@ void tick(void* self, double dt) {
   if (!s) return;
   float fdt = (float)dt;
 
-  // Arrows flow down the streamlines (frozen at flow_speed = 0).
-  s->flow_phase += fdt * s->flow_speed * 0.4f;
+  // Arrows flow down the streamlines (frozen at flow_speed = 0). Quadratic map
+  // → fine control at the low end, up to ~30 cycles/s at the top (fast flicker).
+  s->flow_phase += fdt * s->flow_speed * s->flow_speed * 30.0f;
   s->flow_phase -= std::floor(s->flow_phase);
 
   // Hard re-seed timer for the stateful cycle solver.

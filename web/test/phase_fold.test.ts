@@ -183,6 +183,9 @@ describe('video.phase_fold E2E', () => {
     const bands = await render('pf_bands', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 0 }, 'pf_bands');
     const grad = await render('pf_grad', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 1 }, 'pf_grad');
     grad.trace('out').expectDifferentFrom(bands.trace('out'), 30);
+    // Matplotlib colormap (Magma) differs from the diverging Bands.
+    const magma = await render('pf_magma2', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 2 }, 'pf_magma2');
+    magma.trace('out').expectDifferentFrom(bands.trace('out'), 20);
     // The Gradient reads the flow field (level-set flow + WIND), so adding wind
     // must change it — Bands (height field, wind-independent) would not.
     const gradWind = await render('pf_grad_wind', { ...BASE, show_streamlines: false, show_limit_cycle: false, shading_mode: 1, wind: 0.9 }, 'pf_grad_wind');

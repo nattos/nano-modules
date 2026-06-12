@@ -29,7 +29,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float2 p = pf_pixel_to_p(float2(gid.xy), vp);
 
-  if (shading_mode > 0.5) {
+  if (shading_mode > 0.5 && shading_mode < 1.5) {
     // Gradient (flow field) — direction → hue, speed → brightness. WIND is
     // baked into pf_velocity, so this responds to the wind parameter.
     float2 v = pf_velocity(p);
@@ -42,10 +42,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
 
-  // Bands — height above the blended cycle level, discretized + diverging.
+  // Banded height — diverging (mode 0) or a matplotlib colormap (modes 2..6).
   float d = pf_blended_height(p);
   float bval = saturate(0.5 + (d - bias) * contrast);
   float band = floor(bval * n_bands) / max(n_bands - 1.0, 1.0);
-  float3 dim = lerp(float3(0.07, 0.07, 0.09), pf_diverging(band), backdrop_dim);
+  float3 dim = lerp(float3(0.07, 0.07, 0.09), pf_grade(band, shading_mode), backdrop_dim);
   outTex[gid.xy] = float4(dim, 1.0);
 }
