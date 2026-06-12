@@ -33,14 +33,15 @@ const PF: Record<string, unknown> = {
 
 // Swarm isolated over a black backdrop (input_alpha=0) so assertions key on
 // the particles themselves. Pure flow motion (no jitter/drag), captured color.
+// Gaussian shape at a visible size (size is now a quadratic [0,1] slider).
 const SWARM: Record<string, unknown> = {
-  count: 3000, size: 0.02, speed: 4.0, momentum: 0.0,
-  jitter: 0.0, drag: 0.0, life: 6.0, life_jitter: 0.2,
-  color_blend: 0.0, blend_mode: 0 /* Add */, opacity: 1.0,
-  input_alpha: 0.0, seed: 1,
+  count: 3000, mode: 0 /* Velocity */, shape_kind: 1 /* Gaussian */, size: 0.8,
+  speed: 4.0, momentum: 0.0, jitter: 0.0, drag: 0.0, life: 6.0, life_jitter: 0.2,
+  color_blend: 0.0, blend_mode: 0 /* Add */, opacity: 1.0, input_alpha: 0.0,
+  seed: 1,
 };
 
-function buildChain(withFlow: boolean): Sketch {
+function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {}): Sketch {
   return {
     anchor: null,
     columns: [{
@@ -65,7 +66,7 @@ function buildChain(withFlow: boolean): Sketch {
           type: 'module',
           module_type: 'video.flow_swarm',
           instance_key: 'sw@0',
-          params: SWARM,
+          params: { ...SWARM, ...swarm },
           taps: withFlow
             ? [{ railId: 'flow_rail', fieldPath: 'flow_field_in', direction: 'read' }]
             : [],
@@ -195,5 +196,78 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     });
     expect(r.success).toBe(true);
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 40);
+  });
+
+  it('force mode advects the swarm (field as acceleration on a mass)', async () => {
+    // mode=Force, light weight: particles integrate the field as acceleration.
+    // Confirm the chain runs and the swarm is live (drifts across frames).
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'flow_swarm_force',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'fs_force',
+              sketch: buildChain(true, { mode: 1, weight: 0.5, drag: 0.2 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_force' } },
+            ]},
+          ],
+          waitFrames: 8, captureTraceIds: ['out'],
+        },
+        { waitFrames: 30, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    expect(r.phases[1].trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 30);
+  });
+
+  it('undertow changes the look (depth-gated tint + reversed flow)', async () => {
+    // split=0 → no undertow (portrait-colored particles flowing forward).
+    // split=1 → all particles undertow: blue tint + reversed/curled motion.
+    const UNDERTOW = {
+      undertow_polarity: -1.0, undertow_curl: 1.0,
+      undertow_tint: [0.1, 0.4, 1.0], undertow_alpha: 1.0,
+      color_blend: 0.0,
+    };
+    const off = await runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'fs_ut_off',
+          sketch: buildChain(true, { ...UNDERTOW, undertow_split: 0.0 }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_ut_off' } },
+        ]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: 'flow_swarm_ut_off',
+    });
+    expect(off.success).toBe(true);
+
+    const on = await runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'fs_ut_on',
+          sketch: buildChain(true, { ...UNDERTOW, undertow_split: 1.0 }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_ut_on' } },
+        ]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: 'flow_swarm_ut_on',
+    });
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+
+    // Tint (blue) + reversed/curled motion → a clearly different frame.
+    on.trace('out').expectDifferentFrom(off.trace('out'), 80);
+    // The undertow tint is blue — the "on" frame should carry more blue-dominant
+    // pixels than the "off" frame (which is portrait-colored).
+    const blueish = (c: { r: number; g: number; b: number }) =>
+      c.b > 80 && c.b > c.r + 20 && c.b > c.g + 10;
+    expect(on.trace('out').countPixels(blueish))
+      .toBeGreaterThan(off.trace('out').countPixels(blueish) + 20);
   });
 });

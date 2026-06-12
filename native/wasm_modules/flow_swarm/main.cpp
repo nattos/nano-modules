@@ -34,6 +34,14 @@ namespace flow_swarm {
 // can be dialed up at runtime without reallocating; only fresh slots seed.
 static constexpr int MAX_PARTICLES = 1000000;
 
+// Quadratic size mapping: the schema `size` is a [0,1] slider (the IDE clips
+// floats to 2 decimals, so a small linear range is unusable); the on-GPU size
+// is SIZE_SCALE · slider² — fine control at the small end where the swarm
+// usually lives. Slider 1 → SIZE_SCALE uv; default ~0.3 → ~0.003 uv.
+static constexpr float SIZE_SCALE = 0.035f;
+// Point shape draws a fixed quad this many pixels across (size slider ignored).
+static constexpr float POINT_PX = 1.5f;
+
 // 2 vec4 = 32 bytes. Mirror of `Particle` in common.hlsl.
 struct GpuParticle {
   float a[4];   // a.xy=pos, a.z=life_remain, a.w=life_total
@@ -56,14 +64,27 @@ struct UpdateUniforms {
   float    size;
   float    size_jitter;
   uint32_t seed;
+
+  uint32_t mode;
+  float    weight;
+  float    undertow_split;
+  float    undertow_polarity;
+
+  float    undertow_curl;
+  float    _pad0;
+  float    _pad1;
+  float    _pad2;
 };
-static_assert(sizeof(UpdateUniforms) == 48, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 80, "UpdateUniforms layout mismatch");
 
 struct PrefillUniforms { float scale_r, scale_g, scale_b, scale_a; };
 static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
 
-struct VsUniforms { float aspect_x, aspect_y, _pad0, _pad1; };
-static_assert(sizeof(VsUniforms) == 16, "VsUniforms layout mismatch");
+struct VsUniforms {
+  float aspect_x, aspect_y, point_size, shape_kind;
+  float undertow_split, _pad0, _pad1, _pad2;
+};
+static_assert(sizeof(VsUniforms) == 32, "VsUniforms layout mismatch");
 
 struct ColorUniforms {
   float    color_blend;
@@ -78,13 +99,19 @@ struct ColorUniforms {
 
   uint32_t shape_kind;
   float    exposure;
+  float    undertow_alpha;
   float    _pad0;
+
+  float    undertow_tint_r;
+  float    undertow_tint_g;
+  float    undertow_tint_b;
   float    _pad1;
 };
-static_assert(sizeof(ColorUniforms) == 48, "ColorUniforms layout mismatch");
+static_assert(sizeof(ColorUniforms) == 64, "ColorUniforms layout mismatch");
 
 enum BlendMode : int { BLEND_ALPHA = 0, BLEND_ADD = 1 };
-enum ShapeKind : int { SHAPE_SOLID = 0, SHAPE_CIRCLE = 1, SHAPE_GAUSSIAN = 2 };
+enum ShapeKind : int { SHAPE_POINT = 0, SHAPE_GAUSSIAN = 1, SHAPE_CIRCLE = 2, SHAPE_SOLID = 3 };
+enum Mode      : int { MODE_VELOCITY = 0, MODE_FORCE = 1 };
 
 // Type-shared: compiled once in module_init().
 static gpu::ComputePSO s_pso_update;
@@ -105,12 +132,14 @@ struct State {
 
   // CPU mirrors of schema params.
   int   count        = 150000;
+  int   mode         = MODE_VELOCITY;
+  float speed        = 1.5f;
+  float momentum     = 0.0f;    // velocity mode: 0 = clean sim of the field
+  float weight       = 1.0f;    // force mode: particle mass
   float life         = 4.0f;
   float life_jitter  = 0.4f;
-  float size         = 0.004f;
+  float size         = 0.3f;    // [0,1] slider, quadratic → uv (SIZE_SCALE·size²)
   float size_jitter  = 0.5f;
-  float speed        = 1.5f;
-  float momentum     = 0.85f;
   float jitter       = 0.0f;
   float drag         = 0.1f;
   float color_blend  = 0.3f;
@@ -118,10 +147,18 @@ struct State {
   float solid_g      = 1.0f;
   float solid_b      = 1.0f;
   float tint_by_flow = 0.0f;
+  // Undertow: a depth-gated secondary flow behaviour.
+  float undertow_split    = 0.0f;   // 0 = none undertow, 1 = all
+  float undertow_polarity = 1.0f;   // 1 normal, -1 reverse, 2 = 2× speed
+  float undertow_curl     = 0.0f;   // -1 turn 90° left, +1 right
+  float undertow_alpha    = 1.0f;
+  float undertow_tint_r   = 0.2f;
+  float undertow_tint_g   = 0.45f;
+  float undertow_tint_b   = 1.0f;
   float opacity      = 1.0f;
   float alpha_curve  = 0.6f;
   float exposure     = 1.0f;
-  int   shape_kind   = SHAPE_GAUSSIAN;
+  int   shape_kind   = SHAPE_POINT;
   float shape_param  = 0.5f;
   int   blend_mode   = BLEND_ADD;
   float input_alpha  = 1.0f;
@@ -136,8 +173,12 @@ struct State {
 static inline uint32_t lcg_next(uint32_t& s) { s = s * 1664525u + 1013904223u; return s; }
 static inline float    lcg_unit(uint32_t& s) { return (lcg_next(s) >> 8) * (1.0f / float(1u << 24)); }
 
-static inline float pack_white() {
-  uint32_t packed = 0xFFFFFFu;   // r=g=b=255
+// Pack white rgb + an 8-bit depth into the particle's color slot (matches
+// fsw_pack_rgbd in common.hlsl). Only bit-reinterpreted, never float math.
+static inline float pack_white_depth(float depth) {
+  uint32_t d = (uint32_t)(depth * 255.0f + 0.5f);
+  if (d > 255u) d = 255u;
+  uint32_t packed = 0xFFFFFFu | (d << 24);
   float f;
   std::memcpy(&f, &packed, sizeof(f));
   return f;
@@ -149,7 +190,7 @@ static constexpr int INIT_CHUNK = 256;
 static void seed_initial_slots(State& s, int from, int to) {
   if (!s.initialized || from >= to) return;
   GpuParticle entries[INIT_CHUNK];
-  float white = pack_white();
+  float size_uv = SIZE_SCALE * s.size * s.size;   // quadratic mapping
   for (int chunk_start = from; chunk_start < to; chunk_start += INIT_CHUNK) {
     int chunk_end = chunk_start + INIT_CHUNK;
     if (chunk_end > to) chunk_end = to;
@@ -159,8 +200,9 @@ static void seed_initial_slots(State& s, int from, int to) {
       float ux = lcg_unit(s.init_lcg);
       float uy = lcg_unit(s.init_lcg);
       float life_remain = lcg_unit(s.init_lcg) * s.life;   // staggered start
+      float depth = lcg_unit(s.init_lcg);
       p.a[0] = ux; p.a[1] = uy; p.a[2] = life_remain; p.a[3] = s.life;
-      p.b[0] = 0.0f; p.b[1] = 0.0f; p.b[2] = s.size; p.b[3] = white;
+      p.b[0] = 0.0f; p.b[1] = 0.0f; p.b[2] = size_uv; p.b[3] = pack_white_depth(depth);
     }
     s.particle_buf.writeBytes(entries, int(sizeof(GpuParticle)) * n,
                               int(sizeof(GpuParticle)) * chunk_start);
@@ -176,17 +218,40 @@ static void apply_count_change(State& s) {
   }
 }
 
+// Hide the param the inactive acceleration mode doesn't use (style guide §0).
+static void apply_mode_visibility(const State& s) {
+  state::setFieldHidden("momentum", s.mode != MODE_VELOCITY);
+  state::setFieldHidden("weight",   s.mode != MODE_FORCE);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) apply_mode_visibility(*s);
+}
+
 void module_init() {
   state::init("video.flow_swarm", {1, 0, 0},
     state::Schema()
       // ---- Pool / advection (the live controls) ----
       .intField  ("count",        150000, 1, MAX_PARTICLES, state::PrimaryInput)
+      // Acceleration mode: Velocity treats the field as a velocity (momentum
+      // blends inertia in); Force treats it as a force/acceleration on a mass
+      // (weight), so the field becomes a hint and overshoot emerges.
+      .selectField("mode",        MODE_VELOCITY, state::PrimaryInput, {
+        {"Velocity", MODE_VELOCITY},
+        {"Force",    MODE_FORCE},
+      })
       .floatField("speed",        1.5f,  0.0f,  8.0f,  state::PrimaryInput)
-      .floatField("momentum",     0.85f, 0.0f,  0.99f, state::PrimaryInput)
+      // Velocity mode only: 0 = clean sim of the field, →1 = heavy inertia.
+      .floatField("momentum",     0.0f,  0.0f,  0.99f, state::PrimaryInput)
+      // Force mode only: particle mass (accel = field / weight).
+      .floatField("weight",       1.0f,  0.05f, 8.0f,  state::PrimaryInput)
       .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput)
       // ---- Geometry / lifetime ----
-      .floatField("size",         0.004f, 0.0005f, 0.05f, state::PrimaryInput)
+      // size is a [0,1] slider mapped quadratically to a (small) uv size — the
+      // IDE clips to 2 decimals so a raw uv range was too coarse at the bottom.
+      .floatField("size",         0.3f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("size_jitter",  0.5f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("life",         4.0f,  0.1f,  30.0f, state::PrimaryInput)
       .floatField("life_jitter",  0.4f,  0.0f,  1.0f,  state::PrimaryInput)
@@ -194,6 +259,17 @@ void module_init() {
       .floatField("color_blend",  0.3f,  0.0f,  1.0f,  state::PrimaryInput)
       .rgbField  ("solid_color",  1.0f, 1.0f, 1.0f,    state::PrimaryInput)
       .floatField("tint_by_flow", 0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      // ---- Undertow: a depth-gated secondary flow ----
+      // Each particle gets a hidden depth ∈[0,1] at spawn. `split` softly
+      // selects which depths join the undertow stream (0 none → 1 all).
+      .floatField("undertow_split",    0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      // Members travel at `polarity` × the field (1 normal, -1 reverse, 2 = 2×).
+      .floatField("undertow_polarity", 1.0f, -2.0f,  2.0f,  state::PrimaryInput)
+      // Curl rotates the undertow direction: -1 = 90° left, +1 = 90° right.
+      .floatField("undertow_curl",     0.0f, -1.0f,  1.0f,  state::PrimaryInput)
+      // Members blend toward this tint by membership, with this alpha multiplier.
+      .rgbField  ("undertow_tint",     0.2f, 0.45f, 1.0f,   state::PrimaryInput)
+      .floatField("undertow_alpha",    1.0f,  0.0f,  2.0f,  state::PrimaryInput)
       // ---- Composite ----
       .selectField("blend_mode",  BLEND_ADD, state::PrimaryInput, {
         {"Add",   BLEND_ADD},
@@ -202,10 +278,11 @@ void module_init() {
       .floatField("opacity",      1.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("input_alpha",  1.0f,  0.0f,  1.0f,  state::PrimaryInput)
       // ---- Tuning / shape ----
-      .selectField("shape_kind",  SHAPE_GAUSSIAN, state::PrimaryInput, {
-        {"Solid",    SHAPE_SOLID},
-        {"Circle",   SHAPE_CIRCLE},
+      .selectField("shape_kind",  SHAPE_POINT, state::PrimaryInput, {
+        {"Point",    SHAPE_POINT},
         {"Gaussian", SHAPE_GAUSSIAN},
+        {"Circle",   SHAPE_CIRCLE},
+        {"Solid",    SHAPE_SOLID},
       })
       .floatField("shape_param",  0.5f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("alpha_curve",  0.6f,  0.25f, 4.0f,  state::PrimaryInput)
@@ -291,6 +368,7 @@ void init(void* self) {
   s->init_lcg     = 0x12345678u;
   s->initialized  = true;
   apply_count_change(*s);   // seed the initial pool
+  state::setOnStateReady(&on_state_ready);
 }
 
 void tick(void* self, double dt) { (void)self; (void)dt; }   // timing is GPU-side via dt uniform
@@ -305,8 +383,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const char* path = pb + off[i];
     int plen = len[i];
     if      (state::pathIs(path, plen, "count"))        { s->count = (int)state::patchFloat(i); apply_count_change(*s); }
+    else if (state::pathIs(path, plen, "mode"))         { int v = (int)state::patchFloat(i); if (v != s->mode) { s->mode = v; apply_mode_visibility(*s); } }
     else if (state::pathIs(path, plen, "speed"))        s->speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "momentum"))     s->momentum = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "weight"))       s->weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter"))       s->jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drag"))         s->drag = state::patchFloat(i);
     else if (state::pathIs(path, plen, "size"))         s->size = state::patchFloat(i);
@@ -318,7 +398,15 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       auto v = state::patchVec3(i);
       s->solid_r = v.x; s->solid_g = v.y; s->solid_b = v.z;
     }
-    else if (state::pathIs(path, plen, "tint_by_flow")) s->tint_by_flow = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "tint_by_flow"))      s->tint_by_flow = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "undertow_split"))    s->undertow_split = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "undertow_polarity")) s->undertow_polarity = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "undertow_curl"))     s->undertow_curl = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "undertow_tint")) {
+      auto v = state::patchVec3(i);
+      s->undertow_tint_r = v.x; s->undertow_tint_g = v.y; s->undertow_tint_b = v.z;
+    }
+    else if (state::pathIs(path, plen, "undertow_alpha"))    s->undertow_alpha = state::patchFloat(i);
     else if (state::pathIs(path, plen, "blend_mode"))   s->blend_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "opacity"))      s->opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "input_alpha"))  s->input_alpha = state::patchFloat(i);
@@ -351,39 +439,55 @@ void render(void* self, int vp_w, int vp_h) {
 
   s->frame_index++;
 
+  float size_uv = SIZE_SCALE * s->size * s->size;   // quadratic mapping
+
   UpdateUniforms uu = {};
-  uu.count       = (uint32_t)s->count;
-  uu.frame_index = s->frame_index;
-  uu.dt          = (float)host::deltaTime();
-  uu.speed       = s->speed;
-  uu.momentum    = s->momentum;
-  uu.jitter      = s->jitter;
-  uu.drag        = s->drag;
-  uu.life        = s->life;
-  uu.life_jitter = s->life_jitter;
-  uu.size        = s->size;
-  uu.size_jitter = s->size_jitter;
-  uu.seed        = (uint32_t)s->seed;
+  uu.count             = (uint32_t)s->count;
+  uu.frame_index       = s->frame_index;
+  uu.dt                = (float)host::deltaTime();
+  uu.speed             = s->speed;
+  uu.momentum          = s->momentum;
+  uu.jitter            = s->jitter;
+  uu.drag              = s->drag;
+  uu.life              = s->life;
+  uu.life_jitter       = s->life_jitter;
+  uu.size              = size_uv;
+  uu.size_jitter       = s->size_jitter;
+  uu.seed              = (uint32_t)s->seed;
+  uu.mode              = (uint32_t)s->mode;
+  uu.weight            = s->weight;
+  uu.undertow_split    = s->undertow_split;
+  uu.undertow_polarity = s->undertow_polarity;
+  uu.undertow_curl     = s->undertow_curl;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
   s->prefill_uniforms.writeOne(pu);
 
   float min_dim = float(vp_w < vp_h ? vp_w : vp_h);
-  VsUniforms vu = { min_dim / float(vp_w), min_dim / float(vp_h), 0.f, 0.f };
+  VsUniforms vu = {};
+  vu.aspect_x        = min_dim / float(vp_w);
+  vu.aspect_y        = min_dim / float(vp_h);
+  vu.point_size      = POINT_PX / min_dim;          // ~1.5px in isotropic uv
+  vu.shape_kind      = (float)s->shape_kind;
+  vu.undertow_split  = s->undertow_split;
   s->vs_uniforms.writeOne(vu);
 
   ColorUniforms cu = {};
-  cu.color_blend  = s->color_blend;
-  cu.solid_r      = s->solid_r;
-  cu.solid_g      = s->solid_g;
-  cu.solid_b      = s->solid_b;
-  cu.tint_by_flow = s->tint_by_flow;
-  cu.opacity      = s->opacity;
-  cu.alpha_curve  = s->alpha_curve;
-  cu.shape_param  = s->shape_param;
-  cu.shape_kind   = (uint32_t)s->shape_kind;
-  cu.exposure     = s->exposure;
+  cu.color_blend     = s->color_blend;
+  cu.solid_r         = s->solid_r;
+  cu.solid_g         = s->solid_g;
+  cu.solid_b         = s->solid_b;
+  cu.tint_by_flow    = s->tint_by_flow;
+  cu.opacity         = s->opacity;
+  cu.alpha_curve     = s->alpha_curve;
+  cu.shape_param     = s->shape_param;
+  cu.shape_kind      = (uint32_t)s->shape_kind;
+  cu.exposure        = s->exposure;
+  cu.undertow_alpha  = s->undertow_alpha;
+  cu.undertow_tint_r = s->undertow_tint_r;
+  cu.undertow_tint_g = s->undertow_tint_g;
+  cu.undertow_tint_b = s->undertow_tint_b;
   s->color_uniforms.writeOne(cu);
 
   // ---- Pass 1: update particles ----

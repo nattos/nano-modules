@@ -11,10 +11,15 @@
 StructuredBuffer<Particle> particles : register(t0);
 
 cbuffer VsUniforms : register(b1) {
-  float aspect_x;   // min(W,H)/W
-  float aspect_y;   // min(W,H)/H
+  float aspect_x;       // min(W,H)/W
+  float aspect_y;       // min(W,H)/H
+  float point_size;     // fixed isotropic-uv size for the Point shape (~1px)
+  float shape_kind;     // 0 point · 1 gaussian · 2 circle · 3 solid
+
+  float undertow_split; // mirrors the update pass so tint/alpha match motion
   float _pad0;
   float _pad1;
+  float _pad2;
 };
 
 [shader("vertex")]
@@ -37,7 +42,9 @@ VsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
     return o;
   }
 
-  float2 half_iso  = (p.b.z * 0.5).xx;
+  // Point shape ignores the per-particle size and draws a fixed ~1px quad.
+  float sz = (shape_kind < 0.5) ? point_size : p.b.z;
+  float2 half_iso  = (sz * 0.5).xx;
   float2 local     = c * half_iso;
   float2 offset_uv = float2(local.x * aspect_x, local.y * aspect_y);
   float2 world_uv  = p.a.xy + offset_uv;
@@ -45,12 +52,15 @@ VsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   float2 clip = world_uv * 2.0 - 1.0;
 
   float life_norm = saturate(p.a.z / max(p.a.w, 1e-5));
-  float3 col = fsw_unpack_rgb(asuint(p.b.w));
+  uint packed = asuint(p.b.w);
+  float3 col = fsw_unpack_rgb(packed);
   float spd  = length(p.b.xy);
+  // Undertow membership (same formula as the update pass) → tint/alpha in FS.
+  float u = fsw_undertow(fsw_unpack_depth(packed), undertow_split);
 
   o.pos      = float4(clip, 0.0, 1.0);
   o.corner   = c;
   o.col_life = float4(col, life_norm);
-  o.vel      = float4(p.b.xy, spd, 0.0);
+  o.vel      = float4(p.b.xy, spd, u);
   return o;
 }
