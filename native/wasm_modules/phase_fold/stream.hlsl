@@ -44,14 +44,17 @@ void main(uint3 tid : SV_DispatchThreadID) {
   uint gi = idx / (uint)PF_NS;
   uint gj = idx % (uint)PF_NS;
   float stagger = frac(float(gi) * 0.618 + float(gj) * 0.382);
-  float x = -extent + (float(gi) + 0.5) / float(PF_NS) * 2.0 * extent;
-  float y = -extent + (float(gj) + 0.5) / float(PF_NS) * 2.0 * extent;
+  // Seed grid spans ±(extent * stream_spread): >1 starts streamlines OUTSIDE the
+  // window so they flow inward and keep the frame dense (the flow converges).
+  float ext = extent * stream_spread;
+  float x = -ext + (float(gi) + 0.5) / float(PF_NS) * 2.0 * ext;
+  float y = -ext + (float(gj) + 0.5) / float(PF_NS) * 2.0 * ext;
 
   float spx[PF_SL_STEPS + 1];
   float spy[PF_SL_STEPS + 1];
   spx[0] = x; spy[0] = y;
   uint pn = 1u;
-  float lim = extent * 1.05;
+  float lim = ext * 1.05;   // allow roaming over the (possibly wider) seed region
   for (uint s = 0u; s < (uint)PF_SL_STEPS; s++) {
     float2 q = pf_step(float2(x, y), PF_SL_DT);
     // NaN via nano_is_nan; ±Inf and out-of-bounds via the magnitude check

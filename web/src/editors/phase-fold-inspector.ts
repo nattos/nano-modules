@@ -207,6 +207,8 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'stream_width'} .label=${'Width'}
         .min=${0.002} .max=${0.05} .step=${0.001} .defaultValue=${0.012} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'stream_spread'} .label=${'Spread'}
+        .min=${0.5} .max=${4} .step=${0.05} .defaultValue=${1.6} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'line_opacity'} .label=${'Opacity'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.55} .binding=${b}></scalar-slider>
 

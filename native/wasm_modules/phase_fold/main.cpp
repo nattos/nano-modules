@@ -78,7 +78,7 @@ struct Uniforms {
   float backdrop_dim, stream_alpha, shading_mode, solve_steps;
   float break_dist, explore, spread, rand_seed;
   float step_size, momentum, morph_rate, respawn_arc;
-  float good_init, break_turn_cos, _pad1, _pad2;
+  float good_init, break_turn_cos, stream_spread, _pad2;
   float corners[4];
   float weights[4];
 };
@@ -128,6 +128,7 @@ struct State {
   float backdrop_dim = 0.42f;  // backdrop colour strength (muting)
   bool  show_streamlines = true;
   float stream_width = 0.012f;
+  float stream_spread = 1.6f;  // seed-grid extent scale (>1 = start outside, flow in)
   float flow_speed   = 0.5f;   // arrow animation rate
   float line_opacity = 0.55f;
   bool  show_limit_cycle = true;
@@ -170,6 +171,7 @@ struct State {
 
 static void apply_visibility(const State* s) {
   state::setFieldHidden("stream_width", !s->show_streamlines);
+  state::setFieldHidden("stream_spread", !s->show_streamlines);
   state::setFieldHidden("flow_speed",   !s->show_streamlines);
   state::setFieldHidden("ap_speed",     !s->autopilot);
 
@@ -233,6 +235,9 @@ void module_init() {
       // --- Streamlines (toggleable stage) ---
       .boolField("show_streamlines", true, state::PrimaryInput)
       .floatField("stream_width", 0.012f, 0.002f, 0.05f, state::PrimaryInput)
+      // Seed-grid spread: >1 seeds streamlines outside the window so they flow in
+      // and keep the frame dense (the flow converges toward the centre).
+      .floatField("stream_spread", 1.6f, 0.5f, 4.0f, state::PrimaryInput)
       .floatField("flow_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("line_opacity", 0.55f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Limit-cycle tracer (toggleable stage) ---
@@ -587,6 +592,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "backdrop_dim"))   s->backdrop_dim = state::patchFloat(i);
     else if (state::pathIs(path, plen, "show_streamlines")) { bool v = state::patchFloat(i) != 0.0f; if (v != s->show_streamlines) { s->show_streamlines = v; vis_changed = true; } }
     else if (state::pathIs(path, plen, "stream_width"))   s->stream_width = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "stream_spread"))  s->stream_spread = state::patchFloat(i);
     else if (state::pathIs(path, plen, "flow_speed"))     s->flow_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "line_opacity"))   s->line_opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "show_limit_cycle")) { bool v = state::patchFloat(i) != 0.0f; if (v != s->show_limit_cycle) { s->show_limit_cycle = v; vis_changed = true; } }
@@ -808,6 +814,7 @@ void render(void* self, int vp_w, int vp_h) {
   u.contrast = s->contrast;
   u.flow_phase = s->flow_phase;
   u.stream_width = s->stream_width;
+  u.stream_spread = (s->stream_spread > 1e-2f) ? s->stream_spread : 1e-2f;
   u.cycle_width = s->cycle_width;
   u.backdrop_dim = s->backdrop_dim;
   u.stream_alpha = s->line_opacity;
