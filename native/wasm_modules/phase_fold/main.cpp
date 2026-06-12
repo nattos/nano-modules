@@ -93,6 +93,8 @@ struct State {
   gpu::Buffer status_buf;     // cycle health (PF_ST_*), shared solve<->select
   gpu::Buffer stream_buf;     // streamline segments
   gpu::Buffer cycle_buf;      // limit-cycle segments
+  gpu::Texture flow_tex;      // baked velocity field (flow_field output), viewport-sized
+  int  flow_w = 0, flow_h = 0;
   bool initialized = false;
 
   // Stateful solver bookkeeping.
@@ -219,6 +221,7 @@ static gpu::ComputePSO s_pso_stream;
 static gpu::ComputePSO s_pso_solve;
 static gpu::ComputePSO s_pso_cycle;
 static gpu::ComputePSO s_pso_select;
+static gpu::ComputePSO s_pso_flow;     // bakes the flow_field velocity texture
 static gpu::RenderPSO  s_pso_lines;
 static gpu::RenderPSO  s_pso_contour;
 
@@ -315,6 +318,10 @@ void module_init() {
       .floatField("autopilot_y", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- I/O: pure generator (no input) ---
       .textureField("tex_out", state::PrimaryOutput)
+      // Flow field: the induced vector field, baked to a velocity texture so a
+      // downstream swarm / flow modifier can consume it (separates the field
+      // from its rendering). Baked only when wired.
+      .flowField(state::PrimaryOutput)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
@@ -324,6 +331,7 @@ void module_init() {
   state::registerShaderSPV("phase_fold_solve",    SOLVE_SPV,    SOLVE_SPV_SIZE);
   state::registerShaderSPV("phase_fold_cycle",    CYCLE_SPV,    CYCLE_SPV_SIZE);
   state::registerShaderSPV("phase_fold_select",   SELECT_SPV,   SELECT_SPV_SIZE);
+  state::registerShaderSPV("phase_fold_flow",     FLOW_SPV,     FLOW_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_vs",  LINE_VS_SPV,  LINE_VS_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_fs",  LINE_FS_SPV,  LINE_FS_SPV_SIZE);
   state::registerShaderSPV("phase_fold_contour_vs", CONTOUR_VS_SPV, CONTOUR_VS_SPV_SIZE);
@@ -334,12 +342,13 @@ void module_init() {
   auto cs_solve    = gpu::Device::createShaderModuleByName("phase_fold_solve");
   auto cs_cycle    = gpu::Device::createShaderModuleByName("phase_fold_cycle");
   auto cs_select   = gpu::Device::createShaderModuleByName("phase_fold_select");
+  auto cs_flow     = gpu::Device::createShaderModuleByName("phase_fold_flow");
   auto vs_lines    = gpu::Device::createShaderModuleByName("phase_fold_line_vs");
   auto fs_lines    = gpu::Device::createShaderModuleByName("phase_fold_line_fs");
   auto vs_contour  = gpu::Device::createShaderModuleByName("phase_fold_contour_vs");
   auto fs_contour  = gpu::Device::createShaderModuleByName("phase_fold_contour_fs");
   if (!cs_backdrop || !cs_stream || !cs_solve || !cs_cycle || !cs_select ||
-      !vs_lines || !fs_lines || !vs_contour || !fs_contour) return;
+      !cs_flow || !vs_lines || !fs_lines || !vs_contour || !fs_contour) return;
 
   s_pso_backdrop = gpu::Device::createComputePSO(cs_backdrop, "main", gpu::Bindings()
       .uniform(0)
@@ -378,6 +387,12 @@ void module_init() {
       .storageRW(4)      // status (written)
       .storage(5)        // live ring (read)
       .storage(6));      // curve / resting cycle (read)
+
+  // Flow bake: evaluate pf_velocity per texel → rgba16float velocity texture.
+  s_pso_flow = gpu::Device::createComputePSO(cs_flow, "main", gpu::Bindings()
+      .uniform(0)
+      .storage(1)                                      // cells (read)
+      .storageTex2d(2, gpu::TextureFormat::RGBA16F));  // flow velocity (write)
 
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_lines, "main", fs_lines, "main", gpu::TextureFormat::Surface,
@@ -423,6 +438,7 @@ void destroy(void* self) {
   s->status_buf.release();
   s->stream_buf.release();
   s->cycle_buf.release();
+  s->flow_tex.release();
   delete s;
 }
 
@@ -431,8 +447,8 @@ void init(void* self) {
   if (!s) return;
   s->initialized = false;
   if (!s_pso_backdrop.valid() || !s_pso_stream.valid() || !s_pso_solve.valid() ||
-      !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_lines.valid() ||
-      !s_pso_contour.valid()) return;
+      !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_flow.valid() ||
+      !s_pso_lines.valid() || !s_pso_contour.valid()) return;
   if (!s->uniform_buf.valid() || !s->cell_buf.valid() || !s->curve_buf.valid() ||
       !s->particle_buf[0].valid() || !s->particle_buf[1].valid() ||
       !s->good_buf.valid() || !s->status_buf.valid() ||
@@ -1030,6 +1046,30 @@ void render(void* self, int vp_w, int vp_h) {
       rp.setBuffer(s->cycle_buf, 1);
       rp.draw(6, kCycleSegs);
       rp.end();
+    }
+  }
+
+  // 4 — flow_field: bake the induced velocity field into a texture for any
+  //     downstream consumer (swarm / flow modifier). Only when wired — a
+  //     phase_fold with no flow reader pays nothing for this. Uses the same
+  //     uniforms already written above, so the bake matches the live field.
+  if (state::isOutputConnected("flow_field")) {
+    if (!s->flow_tex.valid() || s->flow_w != vp_w || s->flow_h != vp_h) {
+      s->flow_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+      s->flow_w = vp_w;
+      s->flow_h = vp_h;
+      if (s->flow_tex.valid()) {
+        state::setGpuTexture("flow_field/velocity", s->flow_tex.id);  // on (re)alloc only
+      }
+    }
+    if (s->flow_tex.valid()) {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_flow);
+      cp.setBuffer(s->uniform_buf, 0);
+      cp.setBuffer(s->cell_buf, 1);
+      cp.setTexture(s->flow_tex, 2, 1);  // access 1 = storage write
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
     }
   }
 

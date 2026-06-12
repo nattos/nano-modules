@@ -466,6 +466,26 @@ public:
       .endObject();
   }
 
+  /// Continuous vector/advection FIELD passed between effects — the
+  /// generator-to-renderer seam for flows. A single rgba16float leaf,
+  /// `velocity`, sampled in screen-uv:
+  ///   velocity.xy = screen-uv velocity per second (advect a particle at
+  ///                 uv `p` by `p += velocity.xy * dt`),
+  ///   velocity.z  = speed |xy| (cheap magnitude for shading),
+  ///   velocity.w  = validity (1 inside the field, 0 over a hole).
+  /// Producer calls state::setGpuTexture("flow_field/velocity", id) (on
+  /// (re)allocation) gated on isOutputConnected("flow_field"); a consumer
+  /// reads gpu::Device::textureForField("flow_field_in/velocity") and
+  /// degrades to a zero (still) field when nothing is wired. The single-
+  /// leaf shape is DISTINCT from render_outputs (depth+motion), so the two
+  /// rail kinds never cross-auto-bind. Modifiers that process a flow
+  /// declare BOTH directions (default name in, a different name out).
+  Schema& flowField(int io = None, const char* name = "flow_field") {
+    return beginObject(name, io)
+      .textureField("velocity", None)
+      .endObject();
+  }
+
   /// Vec2/3/4 leaf with explicit component defaults. Stored as a flat
   /// JSON array of N floats. Optional `hint` selects an editor variant
   /// in the IDE — currently:

@@ -44,6 +44,18 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var flash_particles update prefill vs fs_color fs_motion
 echo "  flash_particles shaders compiled (SPV: update + prefill + vs + fs_color + fs_motion)"
 
+# flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
+compile_shaders_compute_var_spv flow_swarm update
+compile_shaders_compute_var_spv flow_swarm prefill
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../flow_swarm/vs.hlsl -Fo "$TMP_DIR/flow_swarm_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../flow_swarm/fs.hlsl -Fo "$TMP_DIR/flow_swarm_fs.spv"
+_emit_spv_header_var flow_swarm update prefill vs fs
+echo "  flow_swarm shaders compiled (SPV: update + prefill + vs + fs)"
+
 # local_delay — stylized motion-driven local delay. Pyramidal Lucas-Kanade
 # flow + forward-advection lookup, sharing common.hlsl:
 #   luma     — input → half-res Rec.601 luma (downsample first).
@@ -113,6 +125,7 @@ compile_shaders_compute_var_spv phase_fold stream
 compile_shaders_compute_var_spv phase_fold solve
 compile_shaders_compute_var_spv phase_fold cycle
 compile_shaders_compute_var_spv phase_fold select
+compile_shaders_compute_var_spv phase_fold flow
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../phase_fold/line_vs.hlsl -Fo "$TMP_DIR/phase_fold_line_vs.spv"
@@ -125,8 +138,8 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../phase_fold/contour_fs.hlsl -Fo "$TMP_DIR/phase_fold_contour_fs.spv"
-_emit_spv_header_var phase_fold backdrop stream solve cycle select line_vs line_fs contour_vs contour_fs
-echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+line+contour)"
+_emit_spv_header_var phase_fold backdrop stream solve cycle select flow line_vs line_fs contour_vs contour_fs
+echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+flow+line+contour)"
 
 echo "=== Building WASM (nano) ==="
 
@@ -149,6 +162,7 @@ wasm_build \
   ../local_delay/main.cpp \
   ../height_from_gradient/main.cpp \
   ../shape_fold/main.cpp \
-  ../phase_fold/main.cpp
+  ../phase_fold/main.cpp \
+  ../flow_swarm/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

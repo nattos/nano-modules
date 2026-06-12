@@ -19,6 +19,7 @@ NANO_DECLARE_INSTANCE_EFFECT(local_delay)
 NANO_DECLARE_INSTANCE_EFFECT(height_from_gradient)
 NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
 NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
+NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
 
 extern "C" {
 
@@ -92,6 +93,16 @@ void nano_module_main() {
         "video",
         "generator,phase-portrait,limit-cycle,streamlines,flow,vector-field,autopilot,procedural,math",
         NANO_INSTANCE_LIFECYCLE(phase_fold),
+    });
+
+    nano::registerEffect({
+        2,
+        "video.flow_swarm",
+        "Flow Swarm",
+        "Flow-field-driven GPU particle swarm. Consumes a flow_field rail (the canonical velocity texture produced by phase_fold or any flow generator / modifier) and advects a GPU-resident pool of up to a million particles along it: each particle chases the sampled field velocity with momentum (inertia), captures the input color where it spawns, and respawns at a fresh position when its lifetime expires or it drifts off-field. This separates field GENERATION from field RENDERING — drop a flow modifier between the generator and the swarm to reshape the motion. Particles rasterize as instanced soft quads (solid / circle / gaussian), additive or alpha-over, colored by the captured input blended with a tunable solid (optionally tinted by flow direction). With no flow wired the swarm still renders, drifting only by jitter.",
+        "video",
+        "particles,swarm,flow,vector-field,advection,gpu,instanced,generator,renderer",
+        NANO_INSTANCE_LIFECYCLE(flow_swarm),
     });
 }
 
