@@ -516,7 +516,10 @@ void tick(void* self, double dt) {
   // plus a perpendicular swirl, driven by two LFOs whose frequencies random-walk
   // (organic, non-repeating). Drive amplitude scales with `jitter`, so it settles
   // back to the base as jitter → 0. Light damping = it overshoots and flings.
-  float amt = clampf(s->jitter, 0.0f, 1.0f);
+  // Quadratic response: the slider's low end is gentle, the top still reaches
+  // full throw (0.5 → 0.25 of the old linear amount).
+  float jraw = clampf(s->jitter, 0.0f, 1.0f);
+  float amt = jraw * jraw;
   float flx = 0.0f, fly = 0.0f;
   {
     float spd = clampf(s->jitter_speed, 0.0f, 1.0f);

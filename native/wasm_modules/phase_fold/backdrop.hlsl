@@ -27,6 +27,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
 
+  // Backdrop strength 0 → skip the field entirely and just fill the mode's
+  // neutral base (the stream/cycle passes still LOAD-blend their lines on top).
+  if (backdrop_dim < 1e-4) {
+    float3 neutral = (shading_mode > 0.5 && shading_mode < 1.5)
+      ? float3(0.05, 0.05, 0.07) : float3(0.07, 0.07, 0.09);
+    outTex[gid.xy] = float4(neutral, 1.0);
+    return;
+  }
+
   float2 p = pf_pixel_to_p(float2(gid.xy), vp);
 
   if (shading_mode > 0.5 && shading_mode < 1.5) {
