@@ -318,6 +318,22 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
       waitFrames: frames, captureTraceIds: ['out'], dumpName: id,
     });
 
+  it('debug view renders the density buffer and reflects interaction_radius', async () => {
+    // With the density buffer actually accumulating, the heat map is non-empty
+    // and a bigger interaction_radius spreads/sums the halos → more coverage.
+    // (This is the regression guard for the additive-blend alpha fix: a broken
+    // splat leaves an empty buffer, so radius would have no effect.)
+    const base = { ...CROWD, debug_density: true };
+    const small = await runChain('fs_dbg_small', { ...base, interaction_radius: 0.008 }, 20);
+    const large = await runChain('fs_dbg_large', { ...base, interaction_radius: 0.06 }, 20);
+    expect(small.success).toBe(true);
+    expect(large.success).toBe(true);
+    const smallActive = small.trace('out').countPixels(isActive);
+    const largeActive = large.trace('out').countPixels(isActive);
+    expect(largeActive).toBeGreaterThan(200);
+    expect(largeActive).toBeGreaterThan(smallActive + 100);
+  });
+
   it('density death thins crowded regions (interactions)', async () => {
     // Same crowding setup; death culls particles where the density buffer says
     // it's crowded (they respawn elsewhere) → the frame changes vs death off.

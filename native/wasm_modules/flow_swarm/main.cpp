@@ -132,6 +132,7 @@ static gpu::ComputePSO s_pso_prefill;
 static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_render_add;
 static gpu::RenderPSO  s_pso_density;     // soft-halo additive splat → density buffer
+static gpu::ComputePSO s_pso_density_debug; // heat-map blit of the density buffer
 
 struct State {
   gpu::Buffer  particle_buf;
@@ -180,6 +181,7 @@ struct State {
   float density_death      = 0.0f;    // death-rate scale over threshold
   float avoid              = 0.0f;    // push away from neighbours
   float avoid_curl         = 0.0f;    // rotate the avoidance ±90°
+  bool  debug_density      = false;   // render the density buffer as a heat map
   float opacity      = 1.0f;
   float alpha_curve  = 0.6f;
   float exposure     = 1.0f;
@@ -253,6 +255,7 @@ static void apply_mode_visibility(const State& s) {
   state::setFieldHidden("density_death",      ix);
   state::setFieldHidden("avoid",              ix);
   state::setFieldHidden("avoid_curl",         ix);
+  state::setFieldHidden("debug_density",      ix);
 }
 
 static void on_state_ready(void* self) {
@@ -319,6 +322,8 @@ void module_init() {
       // rotates that push ±90° for a swirling avoidance.
       .floatField("avoid",               0.0f,   0.0f,  1.0f,  state::PrimaryInput)
       .floatField("avoid_curl",          0.0f,  -1.0f,  1.0f,  state::PrimaryInput)
+      // Debug: render the density buffer itself (heat map) instead of the swarm.
+      .boolField ("debug_density",       false,                state::PrimaryInput)
       // ---- Composite ----
       .selectField("blend_mode",  BLEND_ADD, state::PrimaryInput, {
         {"Add",   BLEND_ADD},
@@ -351,6 +356,7 @@ void module_init() {
   state::registerShaderSPV("flow_swarm_fs",         FS_SPV,         FS_SPV_SIZE);
   state::registerShaderSPV("flow_swarm_density_vs", DENSITY_VS_SPV, DENSITY_VS_SPV_SIZE);
   state::registerShaderSPV("flow_swarm_density_fs", DENSITY_FS_SPV, DENSITY_FS_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_density_debug", DENSITY_DEBUG_SPV, DENSITY_DEBUG_SPV_SIZE);
 
   auto cs_update   = gpu::Device::createShaderModuleByName("flow_swarm_update");
   auto cs_prefill  = gpu::Device::createShaderModuleByName("flow_swarm_prefill");
@@ -358,7 +364,8 @@ void module_init() {
   auto fs_module   = gpu::Device::createShaderModuleByName("flow_swarm_fs");
   auto vs_density  = gpu::Device::createShaderModuleByName("flow_swarm_density_vs");
   auto fs_density  = gpu::Device::createShaderModuleByName("flow_swarm_density_fs");
-  if (!cs_update || !cs_prefill || !vs_module || !fs_module || !vs_density || !fs_density) return;
+  auto cs_dbg      = gpu::Device::createShaderModuleByName("flow_swarm_density_debug");
+  if (!cs_update || !cs_prefill || !vs_module || !fs_module || !vs_density || !fs_density || !cs_dbg) return;
 
   s_pso_update = gpu::Device::createComputePSO(cs_update, "main", gpu::Bindings()
       .storageRW(0)   // particles[]
@@ -387,6 +394,12 @@ void module_init() {
       vs_density, "main", fs_density, "main", gpu::TextureFormat::RGBA16F,
       gpu::Bindings().storage(0).uniform(1),
       gpu::Device::BlendMode::Additive);
+
+  // Debug: heat-map the density buffer into tex_out.
+  s_pso_density_debug = gpu::Device::createComputePSO(cs_dbg, "main", gpu::Bindings()
+      .tex2d(0)
+      .sampler(1)
+      .storageTex2d(2, gpu::TextureFormat::RGBA8));
 
   state::log("flow_swarm: module initialized");
 }
@@ -425,7 +438,7 @@ void init(void* self) {
   if (!s) return;
   if (!s_pso_update.valid() || !s_pso_prefill.valid() ||
       !s_pso_render_alpha.valid() || !s_pso_render_add.valid() ||
-      !s_pso_density.valid()) return;
+      !s_pso_density.valid() || !s_pso_density_debug.valid()) return;
   if (!s->particle_buf.valid()) return;
 
   s->inited_count = 0;
@@ -479,6 +492,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "density_death"))     s->density_death = state::patchFloat(i);
     else if (state::pathIs(path, plen, "avoid"))            s->avoid = state::patchFloat(i);
     else if (state::pathIs(path, plen, "avoid_curl"))       s->avoid_curl = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "debug_density"))    s->debug_density = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "blend_mode"))   s->blend_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "opacity"))      s->opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "input_alpha"))  s->input_alpha = state::patchFloat(i);
@@ -617,8 +631,11 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
+  bool debug = ix && s->debug_density;
+
   // ---- Pass 3: instanced raster (blend over pre-filled tex_out) ----
-  if (s->opacity > 0.0f) {
+  // Skipped when debugging the density buffer (the blit below overwrites it).
+  if (s->opacity > 0.0f && !debug) {
     auto rp = gpu::RenderPass::beginLoad(out);
     auto pso = (s->blend_mode == BLEND_ADD) ? s_pso_render_add : s_pso_render_alpha;
     rp.setPSO(pso);
@@ -640,6 +657,17 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->density_uniforms, 1);
     rp.draw(6, s->count);
     rp.end();
+  }
+
+  // ---- Pass 5 (debug): heat-map this frame's density buffer into tex_out. ----
+  if (debug) {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_density_debug);
+    cp.setTexture(s->density_tex, 0, 0);
+    cp.setSampler(s->sampler, 1);
+    cp.setTexture(out, 2, 1);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
   }
 
   gpu::Device::submit();

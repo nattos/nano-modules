@@ -59,8 +59,9 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../flow_swarm/density_fs.hlsl -Fo "$TMP_DIR/flow_swarm_density_fs.spv"
-_emit_spv_header_var flow_swarm update prefill vs fs density_vs density_fs
-echo "  flow_swarm shaders compiled (SPV: update + prefill + vs + fs + density)"
+compile_shaders_compute_var_spv flow_swarm density_debug
+_emit_spv_header_var flow_swarm update prefill vs fs density_vs density_fs density_debug
+echo "  flow_swarm shaders compiled (SPV: update + prefill + vs + fs + density + debug)"
 
 # local_delay — stylized motion-driven local delay. Pyramidal Lucas-Kanade
 # flow + forward-advection lookup, sharing common.hlsl:

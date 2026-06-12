@@ -78,7 +78,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (interactions != 0u && life_remain > 0.0 && density_death > 1e-5) {
     float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
     float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
-    float knee = max(density_threshold * 0.5 + 0.5, 0.5);
+    // Soft knee around the threshold. Keep the knee narrow relative to the
+    // threshold so death is ~0 well below it (a wide knee leaks a constant
+    // baseline cull that's independent of actual density).
+    float knee = max(density_threshold * 0.2, 0.25);
     float excess = others - density_threshold;
     // Smooth max(0, excess); use the linear tail to avoid exp() overflow.
     float soft = (excess > knee * 20.0) ? excess : knee * log(1.0 + exp(excess / knee));
