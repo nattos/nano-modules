@@ -318,6 +318,17 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
       waitFrames: frames, captureTraceIds: ['out'], dumpName: id,
     });
 
+  it('noise scatters particles (anti-clump, survives pull)', async () => {
+    // CROWD has pull=1 (particles glued to the cycle). Positional noise is
+    // applied after the velocity update, so it still de-clumps them.
+    const off = await runChain('fs_noise_off', { ...CROWD, noise: 0.0 }, 24);
+    const on  = await runChain('fs_noise_on',  { ...CROWD, noise: 0.5 }, 24);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 40);
+  });
+
   it('debug view renders the density buffer and reflects interaction_radius', async () => {
     // With the density buffer actually accumulating, the heat map is non-empty
     // and a bigger interaction_radius spreads/sums the halos → more coverage.

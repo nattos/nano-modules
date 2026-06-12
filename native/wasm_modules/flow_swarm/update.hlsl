@@ -51,12 +51,17 @@ cbuffer Uniforms : register(b4) {
   float avoid;          // avoid/curl strength away from neighbours
   float avoid_curl;     // -1/+1 rotate the avoidance ±90° (swirl)
   float density_res;    // density buffer resolution (texels per axis)
+
+  float noise;          // positional random walk (anti-clump; survives pull)
+  float _pad_n0;
+  float _pad_n1;
+  float _pad_n2;
 };
 
 // Max settle rate (1/s) at pull = 1, used for a framerate-independent approach.
 static const float FSW_PULL_RATE  = 20.0;
 // Tuning scales for the interaction forces / death.
-static const float FSW_DEATH_RATE = 8.0;   // Poisson rate scale at density_death=1
+static const float FSW_DEATH_RATE = 4.0;   // MAX death rate (1/s) at density_death=1
 static const float FSW_AVOID_VEL  = 1.5;   // avoidance velocity scale (× speed)
 
 [numthreads(64, 1, 1)]
@@ -78,15 +83,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (interactions != 0u && life_remain > 0.0 && density_death > 1e-5) {
     float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
     float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
-    // Soft knee around the threshold. Keep the knee narrow relative to the
-    // threshold so death is ~0 well below it (a wide knee leaks a constant
-    // baseline cull that's independent of actual density).
-    float knee = max(density_threshold * 0.2, 0.25);
-    float excess = others - density_threshold;
-    // Smooth max(0, excess); use the linear tail to avoid exp() overflow.
-    float soft = (excess > knee * 20.0) ? excess : knee * log(1.0 + exp(excess / knee));
-    float lambda = density_death * FSW_DEATH_RATE * soft;
-    float pdie = 1.0 - exp(-lambda * dt);
+    // SATURATING soft knee: 0 below the threshold, ramping smoothly to 1 by
+    // threshold+knee. Bounded so dense regions can't insta-kill the whole
+    // swarm — density_death scales the MAX rate, the knee its onset.
+    float knee = max(density_threshold * 0.5, 1.0);
+    float factor = smoothstep(0.0, knee, others - density_threshold);
+    float lambda = density_death * FSW_DEATH_RATE * factor;   // 1/s
+    float pdie = 1.0 - exp(-lambda * dt);                     // dt-weighted
     float rr = fsw_unit(fsw_hash3(i + 0xDEAD0001u, frame_index, seed));
     if (rr < pdie) life_remain = 0.0;
   }
@@ -153,6 +156,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // Drag, then integrate.
     vel *= max(1.0 - drag * dt, 0.0);
     pos += vel * dt;
+
+    // Positional noise (anti-clump). Applied AFTER the velocity update so it
+    // survives `pull`/drag/momentum — a per-frame random walk on position that
+    // keeps even field-glued particles from stacking. dt-scaled, uv/s.
+    if (noise > 1e-6) {
+      uint nh = fsw_hash3(i + 0x51ED2701u, frame_index, seed);
+      float2 nv = float2(fsw_signed(nh), fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)));
+      pos += nv * noise * dt;
+    }
 
     p.a = float4(pos, life_remain - dt, life_total);
     p.b.xy = vel;

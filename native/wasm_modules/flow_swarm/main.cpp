@@ -84,8 +84,13 @@ struct UpdateUniforms {
   float    avoid;
   float    avoid_curl;
   float    density_res;
+
+  float    noise;
+  float    _pad_n0;
+  float    _pad_n1;
+  float    _pad_n2;
 };
-static_assert(sizeof(UpdateUniforms) == 96, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 112, "UpdateUniforms layout mismatch");
 
 struct PrefillUniforms { float scale_r, scale_g, scale_b, scale_a; };
 static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
@@ -160,6 +165,7 @@ struct State {
   float size         = 0.3f;    // [0,1] slider, quadratic → uv (SIZE_SCALE·size²)
   float size_jitter  = 0.5f;
   float jitter       = 0.0f;
+  float noise        = 0.08f;   // positional random walk, anti-clump (default on)
   float drag         = 0.1f;
   float color_blend  = 0.3f;
   float solid_r      = 1.0f;
@@ -285,6 +291,9 @@ void module_init() {
       // force-mode overshoot. 0 = free, 1 = strongly glued to the field.
       .floatField("pull",         0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      // Positional random walk (anti-clump). Survives `pull`/drag (unlike the
+      // velocity `jitter` above), so field-glued particles still spread out.
+      .floatField("noise",        0.08f, 0.0f,  1.0f,  state::PrimaryInput)
       .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput)
       // ---- Geometry / lifetime ----
       // size is a [0,1] slider mapped quadratically to a (small) uv size — the
@@ -467,6 +476,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "weight"))       s->weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "pull"))         s->pull = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter"))       s->jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "noise"))        s->noise = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drag"))         s->drag = state::patchFloat(i);
     else if (state::pathIs(path, plen, "size"))         s->size = state::patchFloat(i);
     else if (state::pathIs(path, plen, "size_jitter"))  s->size_jitter = state::patchFloat(i);
@@ -574,6 +584,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.avoid             = s->avoid;
   uu.avoid_curl        = s->avoid_curl;
   uu.density_res       = (float)DENSITY_RES;
+  uu.noise             = s->noise;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
