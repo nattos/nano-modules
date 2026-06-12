@@ -296,4 +296,48 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     expect(on.trace('out').countPixels(blueish))
       .toBeGreaterThan(off.trace('out').countPixels(blueish) + 20);
   });
+
+  // Pull glues particles onto the limit cycle → they crowd there, giving the
+  // interactions something to act on.
+  const CROWD = {
+    count: 4000, mode: 0, pull: 1.0, speed: 3.0, shape_kind: 1, size: 0.8,
+    color_blend: 0.0, input_alpha: 0.0, blend_mode: 0, opacity: 1.0, seed: 2,
+    interactions: true, interaction_radius: 0.03,
+  };
+
+  const runChain = (id: string, swarm: Record<string, unknown>, frames: number) =>
+    runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(true, swarm) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: frames, captureTraceIds: ['out'], dumpName: id,
+    });
+
+  it('density death thins crowded regions (interactions)', async () => {
+    // Same crowding setup; death culls particles where the density buffer says
+    // it's crowded (they respawn elsewhere) → the frame changes vs death off.
+    const off = await runChain('fs_death_off', { ...CROWD, density_death: 0.0 }, 28);
+    const on  = await runChain('fs_death_on',
+      { ...CROWD, density_death: 1.0, density_threshold: 1.0 }, 28);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 40);
+  });
+
+  it('avoid/curl pushes particles apart (interactions)', async () => {
+    // Avoidance reads the density gradient and pushes particles down it (curl
+    // swirls the push) → the swarm spreads, changing the frame vs avoid off.
+    const off = await runChain('fs_avoid_off', { ...CROWD, avoid: 0.0 }, 28);
+    const on  = await runChain('fs_avoid_on', { ...CROWD, avoid: 1.0, avoid_curl: 0.5 }, 28);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 40);
+  });
 });

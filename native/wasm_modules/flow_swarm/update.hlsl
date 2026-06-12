@@ -19,6 +19,7 @@ RWStructuredBuffer<Particle> particles    : register(u0);
 Texture2D<float4>            flowTex       : register(t1);  // flow_field velocity (uv/s)
 Texture2D<float4>            inputTex      : register(t2);  // color capture at spawn
 SamplerState                 linearSampler : register(s3);
+Texture2D<float4>            densityTex    : register(t5);  // last frame's crowding (.r)
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -43,12 +44,20 @@ cbuffer Uniforms : register(b4) {
 
   float undertow_curl;  // -1 = turn 90° left, 0 = unchanged, +1 = turn 90° right
   float pull;           // settle: pull velocity back toward the field flow [0,1]
-  float _pad1;
-  float _pad2;
+  uint  interactions;   // 0 = off (skip density read), 1 = on
+  float density_threshold; // crowding (≈ neighbour count) above which death kicks in
+
+  float density_death;  // death-rate scale when over threshold (soft knee)
+  float avoid;          // avoid/curl strength away from neighbours
+  float avoid_curl;     // -1/+1 rotate the avoidance ±90° (swirl)
+  float density_res;    // density buffer resolution (texels per axis)
 };
 
 // Max settle rate (1/s) at pull = 1, used for a framerate-independent approach.
-static const float FSW_PULL_RATE = 20.0;
+static const float FSW_PULL_RATE  = 20.0;
+// Tuning scales for the interaction forces / death.
+static const float FSW_DEATH_RATE = 8.0;   // Poisson rate scale at density_death=1
+static const float FSW_AVOID_VEL  = 1.5;   // avoidance velocity scale (× speed)
 
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -60,6 +69,24 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float life_remain = p.a.z;
   float life_total  = p.a.w;
   float2 vel = p.b.xy;
+
+  // Interaction 1 — density-gated probabilistic death. Where local crowding
+  // (≈ neighbour count, from last frame's splat) exceeds the threshold, give a
+  // per-frame death chance that grows with the excess (soft knee). Killed
+  // particles respawn elsewhere, so the swarm self-levels toward uniform
+  // density. life_remain = 0 falls through to the respawn branch below.
+  if (interactions != 0u && life_remain > 0.0 && density_death > 1e-5) {
+    float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
+    float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
+    float knee = max(density_threshold * 0.5 + 0.5, 0.5);
+    float excess = others - density_threshold;
+    // Smooth max(0, excess); use the linear tail to avoid exp() overflow.
+    float soft = (excess > knee * 20.0) ? excess : knee * log(1.0 + exp(excess / knee));
+    float lambda = density_death * FSW_DEATH_RATE * soft;
+    float pdie = 1.0 - exp(-lambda * dt);
+    float rr = fsw_unit(fsw_hash3(i + 0xDEAD0001u, frame_index, seed));
+    if (rr < pdie) life_remain = 0.0;
+  }
 
   bool oob = pos.x < -0.05 || pos.x > 1.05 || pos.y < -0.05 || pos.y > 1.05;
 
@@ -75,6 +102,24 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float2 rotv = float2(fv.x * ca - fv.y * sa, fv.x * sa + fv.y * ca);
     float2 under = rotv * undertow_polarity;
     float2 eff = lerp(fv, under, u) * speed;
+
+    // Interaction 2 — avoid / curl away from neighbours. The density gradient
+    // points toward higher crowding; push down it (curl rotates the push for a
+    // swirling avoidance). Folded into eff so both modes and `pull` cooperate.
+    if (interactions != 0u && avoid > 1e-5) {
+      float e = 2.0 / max(density_res, 1.0);
+      float dl = densityTex.SampleLevel(linearSampler, saturate(pos - float2(e, 0.0)), 0).r;
+      float dr = densityTex.SampleLevel(linearSampler, saturate(pos + float2(e, 0.0)), 0).r;
+      float dd = densityTex.SampleLevel(linearSampler, saturate(pos - float2(0.0, e)), 0).r;
+      float du = densityTex.SampleLevel(linearSampler, saturate(pos + float2(0.0, e)), 0).r;
+      float2 away = -float2(dr - dl, du - dd);            // away from crowding
+      float2 awayhat = away / (length(away) + 0.5);       // soft-normalised
+      float ang2 = avoid_curl * 1.5707963;
+      float ca2 = cos(ang2), sa2 = sin(ang2);
+      float2 av = float2(awayhat.x * ca2 - awayhat.y * sa2,
+                         awayhat.x * sa2 + awayhat.y * ca2);
+      eff += av * avoid * FSW_AVOID_VEL * speed;
+    }
 
     // Acceleration mode.
     if (mode == 1u) {

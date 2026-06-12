@@ -42,6 +42,11 @@ static constexpr float SIZE_SCALE = 0.035f;
 // Point shape draws a fixed quad this many pixels across (size slider ignored).
 static constexpr float POINT_PX = 1.5f;
 
+// Interaction density buffer — an abstract square proximity field, resolution
+// unrelated to the viewport. Particles splat soft halos into it (additive) and
+// the next frame's update reads local crowding back from it.
+static constexpr int DENSITY_RES = 256;
+
 // 2 vec4 = 32 bytes. Mirror of `Particle` in common.hlsl.
 struct GpuParticle {
   float a[4];   // a.xy=pos, a.z=life_remain, a.w=life_total
@@ -72,13 +77,21 @@ struct UpdateUniforms {
 
   float    undertow_curl;
   float    pull;
-  float    _pad1;
-  float    _pad2;
+  uint32_t interactions;
+  float    density_threshold;
+
+  float    density_death;
+  float    avoid;
+  float    avoid_curl;
+  float    density_res;
 };
-static_assert(sizeof(UpdateUniforms) == 80, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 96, "UpdateUniforms layout mismatch");
 
 struct PrefillUniforms { float scale_r, scale_g, scale_b, scale_a; };
 static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
+
+struct DensityUniforms { float radius, _pad0, _pad1, _pad2; };
+static_assert(sizeof(DensityUniforms) == 16, "DensityUniforms layout mismatch");
 
 struct VsUniforms {
   float aspect_x, aspect_y, point_size, shape_kind;
@@ -118,6 +131,7 @@ static gpu::ComputePSO s_pso_update;
 static gpu::ComputePSO s_pso_prefill;
 static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_render_add;
+static gpu::RenderPSO  s_pso_density;     // soft-halo additive splat → density buffer
 
 struct State {
   gpu::Buffer  particle_buf;
@@ -125,8 +139,11 @@ struct State {
   gpu::Buffer  prefill_uniforms;
   gpu::Buffer  vs_uniforms;
   gpu::Buffer  color_uniforms;
+  gpu::Buffer  density_uniforms;
   gpu::Sampler sampler;
-  gpu::Texture zero_flow_tex;   // 1×1 fallback when no flow upstream
+  gpu::Texture zero_flow_tex;     // 1×1 fallback when no flow upstream
+  gpu::Texture density_tex;       // persistent crowding buffer (1-frame delayed)
+  gpu::Texture zero_density_tex;  // 1×1 fallback when interactions are off
 
   bool initialized = false;
 
@@ -156,6 +173,13 @@ struct State {
   float undertow_tint_r   = 0.2f;
   float undertow_tint_g   = 0.45f;
   float undertow_tint_b   = 1.0f;
+  // Interactions (a 1-frame-delayed density buffer drives these).
+  bool  interactions       = false;
+  float interaction_radius = 0.015f;  // splat halo radius in density uv
+  float density_threshold  = 4.0f;    // crowding (≈ neighbours) before death
+  float density_death      = 0.0f;    // death-rate scale over threshold
+  float avoid              = 0.0f;    // push away from neighbours
+  float avoid_curl         = 0.0f;    // rotate the avoidance ±90°
   float opacity      = 1.0f;
   float alpha_curve  = 0.6f;
   float exposure     = 1.0f;
@@ -219,10 +243,16 @@ static void apply_count_change(State& s) {
   }
 }
 
-// Hide the param the inactive acceleration mode doesn't use (style guide §0).
+// Hide params the inactive mode / disabled interactions don't use (§0).
 static void apply_mode_visibility(const State& s) {
   state::setFieldHidden("momentum", s.mode != MODE_VELOCITY);
   state::setFieldHidden("weight",   s.mode != MODE_FORCE);
+  bool ix = !s.interactions;
+  state::setFieldHidden("interaction_radius", ix);
+  state::setFieldHidden("density_threshold",  ix);
+  state::setFieldHidden("density_death",      ix);
+  state::setFieldHidden("avoid",              ix);
+  state::setFieldHidden("avoid_curl",         ix);
 }
 
 static void on_state_ready(void* self) {
@@ -275,6 +305,20 @@ void module_init() {
       // Members blend toward this tint by membership, with this alpha multiplier.
       .rgbField  ("undertow_tint",     0.2f, 0.45f, 1.0f,   state::PrimaryInput)
       .floatField("undertow_alpha",    1.0f,  0.0f,  2.0f,  state::PrimaryInput)
+      // ---- Interactions (particle-vs-particle, via a density buffer) ----
+      // Splats particles to a 1-frame-delayed crowding buffer so they can react
+      // to each other. Off by default (an extra splat pass).
+      .boolField ("interactions",        false,                state::PrimaryInput)
+      // Halo radius in the density buffer — the interaction RANGE.
+      .floatField("interaction_radius",  0.015f, 0.002f, 0.08f, state::PrimaryInput)
+      // Density death: over `threshold` crowding (≈ neighbour count, soft knee)
+      // particles get a `death`-scaled chance to die & respawn → uniform density.
+      .floatField("density_threshold",   4.0f,   0.0f,  32.0f, state::PrimaryInput)
+      .floatField("density_death",       0.0f,   0.0f,  1.0f,  state::PrimaryInput)
+      // Avoidance: push down the density gradient (away from neighbours); curl
+      // rotates that push ±90° for a swirling avoidance.
+      .floatField("avoid",               0.0f,   0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("avoid_curl",          0.0f,  -1.0f,  1.0f,  state::PrimaryInput)
       // ---- Composite ----
       .selectField("blend_mode",  BLEND_ADD, state::PrimaryInput, {
         {"Add",   BLEND_ADD},
@@ -301,23 +345,28 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("flow_swarm_update",  UPDATE_SPV,  UPDATE_SPV_SIZE);
-  state::registerShaderSPV("flow_swarm_prefill", PREFILL_SPV, PREFILL_SPV_SIZE);
-  state::registerShaderSPV("flow_swarm_vs",      VS_SPV,      VS_SPV_SIZE);
-  state::registerShaderSPV("flow_swarm_fs",      FS_SPV,      FS_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_update",     UPDATE_SPV,     UPDATE_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_prefill",    PREFILL_SPV,    PREFILL_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_vs",         VS_SPV,         VS_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_fs",         FS_SPV,         FS_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_density_vs", DENSITY_VS_SPV, DENSITY_VS_SPV_SIZE);
+  state::registerShaderSPV("flow_swarm_density_fs", DENSITY_FS_SPV, DENSITY_FS_SPV_SIZE);
 
-  auto cs_update  = gpu::Device::createShaderModuleByName("flow_swarm_update");
-  auto cs_prefill = gpu::Device::createShaderModuleByName("flow_swarm_prefill");
-  auto vs_module  = gpu::Device::createShaderModuleByName("flow_swarm_vs");
-  auto fs_module  = gpu::Device::createShaderModuleByName("flow_swarm_fs");
-  if (!cs_update || !cs_prefill || !vs_module || !fs_module) return;
+  auto cs_update   = gpu::Device::createShaderModuleByName("flow_swarm_update");
+  auto cs_prefill  = gpu::Device::createShaderModuleByName("flow_swarm_prefill");
+  auto vs_module   = gpu::Device::createShaderModuleByName("flow_swarm_vs");
+  auto fs_module   = gpu::Device::createShaderModuleByName("flow_swarm_fs");
+  auto vs_density  = gpu::Device::createShaderModuleByName("flow_swarm_density_vs");
+  auto fs_density  = gpu::Device::createShaderModuleByName("flow_swarm_density_fs");
+  if (!cs_update || !cs_prefill || !vs_module || !fs_module || !vs_density || !fs_density) return;
 
   s_pso_update = gpu::Device::createComputePSO(cs_update, "main", gpu::Bindings()
       .storageRW(0)   // particles[]
       .tex2d(1)       // flow velocity
       .tex2d(2)       // input (color capture)
       .sampler(3)
-      .uniform(4));
+      .uniform(4)
+      .tex2d(5));     // density (last frame's crowding)
 
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
@@ -333,6 +382,12 @@ void module_init() {
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::Additive);
 
+  // Density splat: soft halos summed into the RGBA16F crowding buffer.
+  s_pso_density = gpu::Device::createInstancedRenderPSO(
+      vs_density, "main", fs_density, "main", gpu::TextureFormat::RGBA16F,
+      gpu::Bindings().storage(0).uniform(1),
+      gpu::Device::BlendMode::Additive);
+
   state::log("flow_swarm: module initialized");
 }
 
@@ -344,6 +399,7 @@ void* create() {
   s->prefill_uniforms = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
   s->vs_uniforms      = gpu::Device::createBuffer(sizeof(VsUniforms),      gpu::BufferUsage::Uniform);
   s->color_uniforms   = gpu::Device::createBuffer(sizeof(ColorUniforms),   gpu::BufferUsage::Uniform);
+  s->density_uniforms = gpu::Device::createBuffer(sizeof(DensityUniforms), gpu::BufferUsage::Uniform);
   s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   return s;
 }
@@ -356,8 +412,11 @@ void destroy(void* self) {
   s->prefill_uniforms.release();
   s->vs_uniforms.release();
   s->color_uniforms.release();
+  s->density_uniforms.release();
   s->sampler.release();
   s->zero_flow_tex.release();
+  s->density_tex.release();
+  s->zero_density_tex.release();
   delete s;
 }
 
@@ -365,7 +424,8 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   if (!s_pso_update.valid() || !s_pso_prefill.valid() ||
-      !s_pso_render_alpha.valid() || !s_pso_render_add.valid()) return;
+      !s_pso_render_alpha.valid() || !s_pso_render_add.valid() ||
+      !s_pso_density.valid()) return;
   if (!s->particle_buf.valid()) return;
 
   s->inited_count = 0;
@@ -413,6 +473,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->undertow_tint_r = v.x; s->undertow_tint_g = v.y; s->undertow_tint_b = v.z;
     }
     else if (state::pathIs(path, plen, "undertow_alpha"))    s->undertow_alpha = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "interactions"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->interactions) { s->interactions = v; apply_mode_visibility(*s); } }
+    else if (state::pathIs(path, plen, "interaction_radius")) s->interaction_radius = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "density_threshold")) s->density_threshold = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "density_death"))     s->density_death = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "avoid"))            s->avoid = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "avoid_curl"))       s->avoid_curl = state::patchFloat(i);
     else if (state::pathIs(path, plen, "blend_mode"))   s->blend_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "opacity"))      s->opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "input_alpha"))  s->input_alpha = state::patchFloat(i);
@@ -443,6 +509,28 @@ void render(void* self, int vp_w, int vp_h) {
     flow = s->zero_flow_tex;
   }
 
+  // Interactions: a persistent density buffer the update pass reads (built from
+  // LAST frame's particles → 1-frame delay). When off, bind a 1×1 zero buffer.
+  bool ix = s->interactions;
+  gpu::Texture density_in;
+  if (ix) {
+    if (!s->density_tex.valid()) {
+      s->density_tex = gpu::Device::createTexture(DENSITY_RES, DENSITY_RES,
+                                                  gpu::TextureFormat::RGBA16F);
+      gpu::Device::clear(s->density_tex, 0.0f, 0.0f, 0.0f, 0.0f);  // first read = empty
+    }
+    if (!s->density_tex.valid()) ix = false;
+  }
+  if (ix) {
+    density_in = s->density_tex;
+  } else {
+    if (!s->zero_density_tex.valid()) {
+      s->zero_density_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+      gpu::Device::clear(s->zero_density_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    density_in = s->zero_density_tex;
+  }
+
   s->frame_index++;
 
   float size_uv = SIZE_SCALE * s->size * s->size;   // quadratic mapping
@@ -466,6 +554,12 @@ void render(void* self, int vp_w, int vp_h) {
   uu.undertow_polarity = s->undertow_polarity;
   uu.undertow_curl     = s->undertow_curl;
   uu.pull              = s->pull;
+  uu.interactions      = ix ? 1u : 0u;
+  uu.density_threshold = s->density_threshold;
+  uu.density_death     = s->density_death;
+  uu.avoid             = s->avoid;
+  uu.avoid_curl        = s->avoid_curl;
+  uu.density_res       = (float)DENSITY_RES;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
@@ -506,6 +600,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(in,   2, 0);
     cp.setSampler(s->sampler, 3);
     cp.setBuffer(s->update_uniforms, 4);
+    cp.setTexture(density_in, 5, 0);
     int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();
@@ -530,6 +625,19 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->particle_buf, 0);
     rp.setBuffer(s->vs_uniforms,  1);
     rp.setBuffer(s->color_uniforms, 2);
+    rp.draw(6, s->count);
+    rp.end();
+  }
+
+  // ---- Pass 4: density splat (after update moved them) → next frame's read.
+  // RenderPass::begin clears the buffer to zero, then additive halos accumulate.
+  if (ix) {
+    DensityUniforms du = { s->interaction_radius, 0.f, 0.f, 0.f };
+    s->density_uniforms.writeOne(du);
+    auto rp = gpu::RenderPass::begin(s->density_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+    rp.setPSO(s_pso_density);
+    rp.setBuffer(s->particle_buf, 0);
+    rp.setBuffer(s->density_uniforms, 1);
     rp.draw(6, s->count);
     rp.end();
   }
