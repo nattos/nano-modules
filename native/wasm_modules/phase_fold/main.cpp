@@ -508,26 +508,32 @@ void tick(void* self, double dt) {
   // (organic, non-repeating). Drive amplitude scales with `jitter`, so it settles
   // back to the base as jitter → 0. Light damping = it overshoots and flings.
   float amt = clampf(s->jitter, 0.0f, 1.0f);
+  float flx = 0.0f, fly = 0.0f;
   {
-    float spd = 0.2f + clampf(s->jitter_speed, 0.0f, 1.0f) * 2.3f;
+    float spd = clampf(s->jitter_speed, 0.0f, 1.0f);
+    // The orbit's OWN frequency scales hard with speed: a slow weighty orbit at
+    // the bottom, a fast tight wobble near the top (k clamped for explicit-
+    // integration stability). The drive scales too so the chaos keeps up.
+    float k = 15.0f + spd * spd * 1500.0f;          // ω ≈ 3.9 .. 39 rad/s
+    float swirl = 8.0f + spd * 30.0f;
+    float drvspd = 0.5f + spd * spd * 10.0f;
+    float drive = 1.1f * (1.0f + spd * 5.0f);
+    float damp = std::exp(-fdt * (0.8f + spd * 3.0f));
     // random-walk the two drive rates (style guide §4.2)
-    s->jwalk += fdt * 0.6f * spd;
+    s->jwalk += fdt * 0.6f * drvspd;
     if (s->jwalk >= 1.0f) {
       s->jwalk -= std::floor(s->jwalk);
       s->jr1t = 0.5f + rng_unit(s) * 1.8f;
       s->jr2t = 0.5f + rng_unit(s) * 1.8f;
     }
-    float sm = 1.0f - std::exp(-fdt / 0.4f);
+    float sm = 1.0f - std::exp(-fdt / 0.3f);
     s->jr1 += (s->jr1t - s->jr1) * sm;
     s->jr2 += (s->jr2t - s->jr2) * sm;
-    s->jp1 += fdt * s->jr1 * spd;
-    s->jp2 += fdt * s->jr2 * spd;
+    s->jp1 += fdt * s->jr1 * drvspd;
+    s->jp2 += fdt * s->jr2 * drvspd;
     float tau = 2.0f * kPi;
     float dfx = std::sin(tau * s->jp1) + 0.6f * std::sin(tau * s->jp2 * 1.7f + 1.0f);
     float dfy = std::cos(tau * s->jp1 * 1.3f) + 0.6f * std::sin(tau * s->jp2);
-    // mass-spring-swirl with momentum
-    const float k = 22.0f, swirl = 11.0f, drive = 1.1f;
-    float damp = std::exp(-fdt * 0.8f);   // light damping → it coasts and flings
     float ax = -k * s->jox - swirl * s->joy + dfx * drive * amt;
     float ay = -k * s->joy + swirl * s->jox + dfy * drive * amt;
     s->jvx = (s->jvx + ax * fdt) * damp;
@@ -538,10 +544,17 @@ void tick(void* self, double dt) {
     float rmax = amt * 0.45f;
     float r = std::sqrt(s->jox * s->jox + s->joy * s->joy);
     if (r > rmax && r > 1e-6f) { float f = rmax / r; s->jox *= f; s->joy *= f; s->jvx *= f; s->jvy *= f; }
+    // Framerate flicker: a per-frame random kick (NOT through the spring, so it
+    // doesn't get low-passed) that ramps in at the top of the speed range — at
+    // max speed the XY flickers across cells every frame.
+    float ft = clampf((spd - 0.55f) / 0.45f, 0.0f, 1.0f);
+    float flick = ft * ft * (3.0f - 2.0f * ft) * amt * 0.5f;   // smoothstep
+    flx = (rng_unit(s) * 2.0f - 1.0f) * flick;
+    fly = (rng_unit(s) * 2.0f - 1.0f) * flick;
   }
 
-  s->eff_x = clampf(base_x + s->jox, 0.0f, 1.0f);
-  s->eff_y = clampf(base_y + s->joy, 0.0f, 1.0f);
+  s->eff_x = clampf(base_x + s->jox + flx, 0.0f, 1.0f);
+  s->eff_y = clampf(base_y + s->joy + fly, 0.0f, 1.0f);
 
   auto vx = val::number(s->eff_x);
   state::setValPath("autopilot_x", vx);
