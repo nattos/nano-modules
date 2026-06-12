@@ -258,6 +258,10 @@ export class PhaseFoldInspector extends MobxLitElement {
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.35} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'jitter'} .label=${'Jitter'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'jitter_speed'} .label=${'Jitter Speed'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
     `;
   }
 }

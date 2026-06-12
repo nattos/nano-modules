@@ -151,11 +151,21 @@ struct State {
   float break_turn   = 0.5f;   // [0,1] doubling-back sensitivity (0=off, 0.5=90°)
   bool  autopilot    = false;
   float ap_speed     = 0.35f;
+  float jitter       = 0.0f;    // chaotic, fling-ey orbit of the XY around its base
+  float jitter_speed = 0.5f;
 
   // --- Internal clocks (advanced in tick) ---
   float flow_phase = 0.0f;
   float orbit      = 0.0f;
   float eff_x = 0.2f, eff_y = 0.2f;   // effective XY used for rendering
+
+  // Jitter: a weighty/fling-ey chaotic orbit around the base XY. A 2D mass on a
+  // spring (stays near base) + swirl (orbits) + chaotically-walking drive freqs.
+  float jox = 0, joy = 0, jvx = 0, jvy = 0;   // offset + velocity (momentum)
+  float jp1 = 0, jp2 = 0;                      // drive LFO phases
+  float jr1 = 1, jr2 = 1, jr1t = 1, jr2t = 1;  // drive rates + walk targets
+  float jwalk = 0;                            // rate random-walk accumulator
+  uint32_t jrng = 0x9E3779B9u;                // per-instance PRNG for the rate walk
 };
 
 static void apply_visibility(const State* s) {
@@ -275,6 +285,9 @@ void module_init() {
       // --- Autopilot (non-destructive XY override + broadcast) ---
       .boolField("autopilot", false, state::PrimaryInput)
       .floatField("ap_speed", 0.35f, 0.0f, 1.0f, state::PrimaryInput)
+      // Jitter: chaotically orbit the (user or autopilot) XY — weighty, fling-ey.
+      .floatField("jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("jitter_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // Broadcast: effective XY so the custom editor shows the live position.
       .floatField("autopilot_x", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)
       .floatField("autopilot_y", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)
@@ -425,6 +438,12 @@ static void on_state_ready(void* self) {
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static inline int   clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+// Per-instance uniform random in [0,1) (LCG) — drives the jitter rate walk.
+static inline float rng_unit(State* s) {
+  s->jrng = s->jrng * 1664525u + 1013904223u;
+  return (float)((s->jrng >> 8) & 0xFFFFFFu) / (float)0x1000000;
+}
+
 // Port of app.js corners(): bilinear (smoothstep) 4-cell blend or nearest snap,
 // re-weighted by per-cell validity. Also returns the nearest cell (for the
 // limit-cycle seed) and whether any valid cell was hit.
@@ -472,14 +491,57 @@ void tick(void* self, double dt) {
   // Hard re-seed timer for the stateful cycle solver.
   s->respawn_accum += fdt;
 
+  // Base XY: autopilot epicycle, or the user's pad position.
+  float base_x, base_y;
   if (s->autopilot) {
     float ap_actual = 0.05f + s->ap_speed * s->ap_speed * (1.6f - 0.05f);
     s->orbit -= fdt * ap_actual;   // clockwise drift
-    orbit_xy(s->orbit, s->eff_x, s->eff_y);
+    orbit_xy(s->orbit, base_x, base_y);
   } else {
-    s->eff_x = s->eccentricity;
-    s->eff_y = s->lobedness;
+    base_x = s->eccentricity;
+    base_y = s->lobedness;
   }
+
+  // Jitter: a chaotic, weighty/fling-ey orbit of the effective XY around the
+  // base. A 2D mass (jox/joy with momentum jvx/jvy) on a spring back to base
+  // plus a perpendicular swirl, driven by two LFOs whose frequencies random-walk
+  // (organic, non-repeating). Drive amplitude scales with `jitter`, so it settles
+  // back to the base as jitter → 0. Light damping = it overshoots and flings.
+  float amt = clampf(s->jitter, 0.0f, 1.0f);
+  {
+    float spd = 0.2f + clampf(s->jitter_speed, 0.0f, 1.0f) * 2.3f;
+    // random-walk the two drive rates (style guide §4.2)
+    s->jwalk += fdt * 0.6f * spd;
+    if (s->jwalk >= 1.0f) {
+      s->jwalk -= std::floor(s->jwalk);
+      s->jr1t = 0.5f + rng_unit(s) * 1.8f;
+      s->jr2t = 0.5f + rng_unit(s) * 1.8f;
+    }
+    float sm = 1.0f - std::exp(-fdt / 0.4f);
+    s->jr1 += (s->jr1t - s->jr1) * sm;
+    s->jr2 += (s->jr2t - s->jr2) * sm;
+    s->jp1 += fdt * s->jr1 * spd;
+    s->jp2 += fdt * s->jr2 * spd;
+    float tau = 2.0f * kPi;
+    float dfx = std::sin(tau * s->jp1) + 0.6f * std::sin(tau * s->jp2 * 1.7f + 1.0f);
+    float dfy = std::cos(tau * s->jp1 * 1.3f) + 0.6f * std::sin(tau * s->jp2);
+    // mass-spring-swirl with momentum
+    const float k = 22.0f, swirl = 11.0f, drive = 1.1f;
+    float damp = std::exp(-fdt * 0.8f);   // light damping → it coasts and flings
+    float ax = -k * s->jox - swirl * s->joy + dfx * drive * amt;
+    float ay = -k * s->joy + swirl * s->jox + dfy * drive * amt;
+    s->jvx = (s->jvx + ax * fdt) * damp;
+    s->jvy = (s->jvy + ay * fdt) * damp;
+    s->jox += s->jvx * fdt;
+    s->joy += s->jvy * fdt;
+    // soft radius cap so the orbit stays on the pad
+    float rmax = amt * 0.45f;
+    float r = std::sqrt(s->jox * s->jox + s->joy * s->joy);
+    if (r > rmax && r > 1e-6f) { float f = rmax / r; s->jox *= f; s->joy *= f; s->jvx *= f; s->jvy *= f; }
+  }
+
+  s->eff_x = clampf(base_x + s->jox, 0.0f, 1.0f);
+  s->eff_y = clampf(base_y + s->joy, 0.0f, 1.0f);
 
   auto vx = val::number(s->eff_x);
   state::setValPath("autopilot_x", vx);
@@ -534,6 +596,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "break_turn"))     s->break_turn = state::patchFloat(i);
     else if (state::pathIs(path, plen, "autopilot"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->autopilot) { s->autopilot = v; vis_changed = true; } }
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "jitter"))         s->jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "jitter_speed"))   s->jitter_speed = state::patchFloat(i);
   }
   if (vis_changed) apply_visibility(s);
 }
