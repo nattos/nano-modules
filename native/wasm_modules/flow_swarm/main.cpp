@@ -71,7 +71,7 @@ struct UpdateUniforms {
   float    undertow_polarity;
 
   float    undertow_curl;
-  float    _pad0;
+  float    pull;
   float    _pad1;
   float    _pad2;
 };
@@ -136,6 +136,7 @@ struct State {
   float speed        = 1.5f;
   float momentum     = 0.0f;    // velocity mode: 0 = clean sim of the field
   float weight       = 1.0f;    // force mode: particle mass
+  float pull         = 0.0f;    // settle velocity toward the field flow (both modes)
   float life         = 4.0f;
   float life_jitter  = 0.4f;
   float size         = 0.3f;    // [0,1] slider, quadratic → uv (SIZE_SCALE·size²)
@@ -246,6 +247,10 @@ void module_init() {
       .floatField("momentum",     0.0f,  0.0f,  0.99f, state::PrimaryInput)
       // Force mode only: particle mass (accel = field / weight).
       .floatField("weight",       1.0f,  0.05f, 8.0f,  state::PrimaryInput)
+      // Settle (both modes): pull each particle's velocity back toward the
+      // field flow, keeping it in the stable zone (the limit cycle) and damping
+      // force-mode overshoot. 0 = free, 1 = strongly glued to the field.
+      .floatField("pull",         0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput)
       // ---- Geometry / lifetime ----
@@ -387,6 +392,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "speed"))        s->speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "momentum"))     s->momentum = state::patchFloat(i);
     else if (state::pathIs(path, plen, "weight"))       s->weight = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "pull"))         s->pull = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter"))       s->jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drag"))         s->drag = state::patchFloat(i);
     else if (state::pathIs(path, plen, "size"))         s->size = state::patchFloat(i);
@@ -459,6 +465,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.undertow_split    = s->undertow_split;
   uu.undertow_polarity = s->undertow_polarity;
   uu.undertow_curl     = s->undertow_curl;
+  uu.pull              = s->pull;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };

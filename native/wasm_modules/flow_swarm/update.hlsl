@@ -42,10 +42,13 @@ cbuffer Uniforms : register(b4) {
   float undertow_polarity; // 1 = normal dir, -1 = reverse, 2 = 2× speed, …
 
   float undertow_curl;  // -1 = turn 90° left, 0 = unchanged, +1 = turn 90° right
-  float _pad0;
+  float pull;           // settle: pull velocity back toward the field flow [0,1]
   float _pad1;
   float _pad2;
 };
+
+// Max settle rate (1/s) at pull = 1, used for a framerate-independent approach.
+static const float FSW_PULL_RATE = 20.0;
 
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -80,6 +83,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
     } else {
       // Velocity: chase eff with momentum (0 = clean field follow).
       vel = eff * (1.0 - momentum) + vel * momentum;
+    }
+
+    // Settle ("pull"): bleed the particle's velocity back toward the field's
+    // prescribed flow (eff) — deviation → 0. The field's streamlines spiral
+    // into the limit cycle, so this keeps particles in the stable zone and
+    // damps force-mode overshoot. Framerate-independent exponential approach;
+    // vanishes once a particle already matches the flow. Works in both modes.
+    if (pull > 1e-5) {
+      float a = 1.0 - exp(-pull * FSW_PULL_RATE * dt);
+      vel = lerp(vel, eff, a);
     }
 
     // Per-frame jitter kick (hash-based; not low-passed by the chase).

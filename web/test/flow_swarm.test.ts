@@ -224,6 +224,32 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 30);
   });
 
+  it('pull settles the swarm onto the field (force mode, pull on vs off)', async () => {
+    // Force mode lets particles overshoot the stable zone. `pull` bleeds their
+    // velocity back toward the field flow each frame, settling them onto the
+    // limit cycle — so the dynamics (and the resulting frame) clearly differ.
+    const force = { mode: 1, weight: 0.4, drag: 0.1, speed: 5.0 };
+    const run = (id: string, pull: number) => runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(true, { ...force, pull }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 28, captureTraceIds: ['out'], dumpName: id,
+    });
+
+    const free = await run('fs_pull_off', 0.0);
+    const glued = await run('fs_pull_on', 1.0);
+    expect(free.success).toBe(true);
+    expect(glued.success).toBe(true);
+    // Both render a live swarm; the pull changes where particles end up.
+    expect(glued.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    glued.trace('out').expectDifferentFrom(free.trace('out'), 50);
+  });
+
   it('undertow changes the look (depth-gated tint + reversed flow)', async () => {
     // split=0 → no undertow (portrait-colored particles flowing forward).
     // split=1 → all particles undertow: blue tint + reversed/curled motion.
