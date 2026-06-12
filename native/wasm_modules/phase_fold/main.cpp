@@ -53,6 +53,9 @@ static constexpr int   PF_PARTICLES   = PF_NOUT;  // stateful cycle-solver parti
 static constexpr float PF_EXTENT      = 1.35f; // phase window half-size
 static constexpr float PF_STEP_MIN    = 0.001f; // step_size slider 0 → this
 static constexpr float PF_STEP_MAX    = 0.5f;   // step_size slider 1 → this
+static constexpr int   PF_TRACE_MAX   = 400;   // tracer history cap (Tracer mode)
+static constexpr int   PF_TRACE_PER_FRAME = 4; // tracer steps advanced per frame
+static constexpr float PF_TRACE_DT    = 0.02f; // tracer integration step
 
 static constexpr int   kStreamSegs = PF_NS * PF_NS * PF_SL_STEPS;     // 3600
 static constexpr int   kCycleSegs  = PF_PARTICLES;                    // one seg per pair
@@ -98,6 +101,20 @@ struct State {
   int      particle_cur   = 0;      // which particle_buf holds the latest ring
   uint32_t frame_counter  = 0;      // drives the per-frame random-walk seed
 
+  // --- Tracer mode (CPU) state ---
+  bool  tr_init = false;            // tracer seeded yet
+  float tr_x = 0.0f, tr_y = 0.0f;   // tracer position
+  float tr_hx[PF_TRACE_MAX];        // tracer trajectory history
+  float tr_hy[PF_TRACE_MAX];
+  int   tr_count = 0;
+  int   tr_sink = 0;                // consecutive near-stationary steps (sink detect)
+  bool  loop_valid = false;         // a closed loop is currently detected
+  float loop_x[PF_PARTICLES];       // the detected loop, resampled to the ring count
+  float loop_y[PF_PARTICLES];
+  bool  ring_init = false;
+  float ring_x[PF_PARTICLES], ring_y[PF_PARTICLES];   // CPU ring positions
+  float ring_vx[PF_PARTICLES], ring_vy[PF_PARTICLES]; // CPU ring velocities (real momentum)
+
   // --- Schema-mirrored params ---
   float eccentricity = 0.2f;   // XY pad x
   float lobedness    = 0.2f;   // XY pad y
@@ -114,7 +131,11 @@ struct State {
   float flow_speed   = 0.5f;   // arrow animation rate
   float line_opacity = 0.55f;
   bool  show_limit_cycle = true;
+  int   cycle_mode   = 0;      // 0 = Relax (GPU solver), 1 = Tracer (CPU)
   float cycle_width  = 0.02f;
+  // --- Tracer mode (CPU) params ---
+  float arc_angle    = 0.0f;   // where on the resting cycle the tracer restarts
+  float trace_pull   = 0.05f;  // ring attraction force toward the detected loop
   float solve_steps  = 4.0f;   // Newton relaxation iterations per frame (X)
   float break_dist   = 0.2f;   // max gap between particles before it's a break
   float respawn_time = 2.0f;   // hard re-seed timer (seconds)
@@ -176,9 +197,16 @@ void module_init() {
       .floatField("stream_width", 0.012f, 0.002f, 0.05f, state::PrimaryInput)
       .floatField("flow_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("line_opacity", 0.55f, 0.0f, 1.0f, state::PrimaryInput)
-      // --- Limit-cycle tracer (toggleable stage; stateful solver) ---
+      // --- Limit-cycle tracer (toggleable stage) ---
       .boolField("show_limit_cycle", true, state::PrimaryInput)
+      // Algorithm: Relax = the GPU spring-solver ring; Tracer = a CPU flow tracer
+      // that detects a closed loop and pulls a momentum ring onto it.
+      .selectField("cycle_mode", 0, state::PrimaryInput, {{"Relax", 0}, {"Tracer", 1}})
       .floatField("cycle_width", 0.02f, 0.004f, 0.06f, state::PrimaryInput)
+      // Tracer: where on the resting cycle the tracer restarts (arc fraction).
+      .floatField("arc_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      // Tracer: how hard the ring accelerates toward the detected loop.
+      .floatField("trace_pull", 0.05f, 0.0f, 0.4f, state::PrimaryInput)
       // Newton relaxation steps per frame — how hard the ring solves onto the cycle.
       .floatField("solve_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
       // How far each relaxation step pushes (scales the per-step force).
@@ -437,7 +465,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "flow_speed"))     s->flow_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "line_opacity"))   s->line_opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "show_limit_cycle")) { bool v = state::patchFloat(i) != 0.0f; if (v != s->show_limit_cycle) { s->show_limit_cycle = v; vis_changed = true; } }
+    else if (state::pathIs(path, plen, "cycle_mode"))     { int v = (int)state::patchFloat(i); if (v != s->cycle_mode) { s->cycle_mode = v; s->particles_init = false; s->tr_init = false; s->ring_init = false; s->loop_valid = false; } }
     else if (state::pathIs(path, plen, "cycle_width"))    s->cycle_width = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "arc_angle"))      s->arc_angle = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "trace_pull"))     s->trace_pull = state::patchFloat(i);
     else if (state::pathIs(path, plen, "solve_steps"))    s->solve_steps = state::patchFloat(i);
     else if (state::pathIs(path, plen, "break_dist"))     s->break_dist = state::patchFloat(i);
     else if (state::pathIs(path, plen, "respawn_time"))   s->respawn_time = state::patchFloat(i);
@@ -452,6 +483,152 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
   }
   if (vis_changed) apply_visibility(s);
+}
+
+// ---- Tracer mode (CPU) — a different limit-cycle algorithm ----------------
+// A single tracer integrates the blended flow forward over many frames; when its
+// recent trajectory closes on itself we resample that loop and pull a momentum
+// ring onto it. If the tracer zooms off or stalls at a sink we restart it from a
+// point on the resting cycle (arc_angle). All on the CPU — the sequential trace
+// + loop detection is awkward on the GPU and cheap here.
+
+// Blended flow velocity at p (CPU port of pf_velocity in field.hlsl).
+static void cpu_velocity(const State* s, const float* corners, const float* weights,
+                         float px, float py, float& vx, float& vy) {
+  float H = 0, gx = 0, gy = 0, lev = 0, mu = 0, Wx = 0, Wy = 0;
+  for (int c = 0; c < 4; c++) {
+    float wi = weights[c];
+    if (wi <= 0.0f) continue;
+    int base = (int)corners[c] * PF_STRIDE;
+    float well = PF_CELLS[base];
+    float h = -0.5f * well * (px * px + py * py);
+    float cgx = -well * px, cgy = -well * py;
+    for (int k = 0; k < PF_KERNELS; k++) {
+      int o = base + 4 + k * 4;
+      float dx = px - PF_CELLS[o], dy = py - PF_CELLS[o + 1];
+      float sg = PF_CELLS[o + 2]; float s2 = sg * sg; if (s2 < 1e-6f) s2 = 1e-6f;
+      float e = PF_CELLS[o + 3] * std::exp(-(dx * dx + dy * dy) / (2 * s2));
+      h += e; cgx -= e * dx / s2; cgy -= e * dy / s2;
+    }
+    float rho = std::sqrt(px * px + py * py); if (rho < 1e-6f) rho = 1e-6f;
+    for (int j = 0; j < PF_RINGS; j++) {
+      int o = base + 4 + PF_KERNELS * 4 + j * 3;
+      float dr = rho - PF_CELLS[o]; float rs = PF_CELLS[o + 1]; float rs2 = rs * rs; if (rs2 < 1e-6f) rs2 = 1e-6f;
+      float e = PF_CELLS[o + 2] * std::exp(-dr * dr / (2 * rs2));
+      h += e; float dHdrho = e * (-dr / rs2);
+      cgx += dHdrho * px / rho; cgy += dHdrho * py / rho;
+    }
+    int wb = base + 45;
+    H += wi * h; gx += wi * cgx; gy += wi * cgy;
+    lev += wi * PF_CELLS[base + 1]; mu += wi * PF_CELLS[base + 2];
+    Wx += wi * s->wind * PF_CELLS[wb + 2] * PF_CELLS[wb + 0];
+    Wy += wi * s->wind * PF_CELLS[wb + 2] * PF_CELLS[wb + 1];
+  }
+  float sgn = -mu * (H - lev - s->bias);
+  vx = -gy + sgn * gx + Wx; vy = gx + sgn * gy + Wy;
+}
+
+// RK2 step; returns the displacement magnitude (for sink detection).
+static float cpu_step(const State* s, const float* c, const float* w, float& x, float& y, float dt) {
+  float v0x, v0y; cpu_velocity(s, c, w, x, y, v0x, v0y);
+  float v1x, v1y; cpu_velocity(s, c, w, x + 0.5f * dt * v0x, y + 0.5f * dt * v0y, v1x, v1y);
+  float sx = v1x * dt, sy = v1y * dt;
+  float m = std::sqrt(sx * sx + sy * sy); const float cap = 0.06f;
+  if (m > cap) { sx *= cap / m; sy *= cap / m; m = cap; }
+  x += sx; y += sy;
+  return m;
+}
+
+// Arc-length resample of the closed loop hx/hy[start .. start+n-1] to PF_PARTICLES.
+static void resample_loop(const float* hx, const float* hy, int start, int n,
+                          float* outx, float* outy) {
+  const int N = PF_PARTICLES;
+  if (n < 2) { for (int i = 0; i < N; i++) { outx[i] = hx[start]; outy[i] = hy[start]; } return; }
+  float cum[PF_TRACE_MAX + 1];
+  cum[0] = 0.0f;
+  for (int i = 0; i < n; i++) {
+    int a = start + i, b = start + ((i + 1) % n);
+    float dx = hx[b] - hx[a], dy = hy[b] - hy[a];
+    cum[i + 1] = cum[i] + std::sqrt(dx * dx + dy * dy);
+  }
+  float total = cum[n];
+  if (total < 1e-6f) { for (int i = 0; i < N; i++) { outx[i] = hx[start]; outy[i] = hy[start]; } return; }
+  int seg = 0;
+  for (int i = 0; i < N; i++) {
+    float t = (float)i / (float)N * total;
+    while (seg < n - 1 && cum[seg + 1] < t) seg++;
+    float segl = cum[seg + 1] - cum[seg];
+    float f = (segl > 1e-6f) ? (t - cum[seg]) / segl : 0.0f;
+    int a = start + seg, b = start + ((seg + 1) % n);
+    outx[i] = hx[a] + (hx[b] - hx[a]) * f;
+    outy[i] = hy[a] + (hy[b] - hy[a]) * f;
+  }
+}
+
+static void cpu_cycle_tracer(State* s, const float* corners, const float* weights, int nearest) {
+  const int N = PF_PARTICLES;
+  float wsum = weights[0] + weights[1] + weights[2] + weights[3];
+
+  auto restart = [&]() {
+    int idx = clampi((int)(clampf(s->arc_angle, 0.0f, 1.0f) * (PF_NOUT - 1)), 0, PF_NOUT - 1);
+    int co = (nearest * PF_NOUT + idx) * 2;
+    s->tr_x = PF_CURVE[co]; s->tr_y = PF_CURVE[co + 1];
+    s->tr_sink = 0;
+    s->loop_valid = false;
+    s->tr_hx[0] = s->tr_x; s->tr_hy[0] = s->tr_y; s->tr_count = 1;
+  };
+
+  if (!s->tr_init || wsum < 1e-4f) { restart(); s->tr_init = true; }
+  if (!s->ring_init) {
+    for (int i = 0; i < N; i++) {
+      int co = (nearest * PF_NOUT + i) * 2;
+      s->ring_x[i] = PF_CURVE[co]; s->ring_y[i] = PF_CURVE[co + 1];
+      s->ring_vx[i] = 0; s->ring_vy[i] = 0;
+    }
+    s->ring_init = true;
+  }
+  if (wsum < 1e-4f) return;   // hole
+
+  // --- advance the tracer, detect a closed loop, restart on failure ---
+  for (int st = 0; st < PF_TRACE_PER_FRAME; st++) {
+    float disp = cpu_step(s, corners, weights, s->tr_x, s->tr_y, PF_TRACE_DT);
+    if (s->tr_count < PF_TRACE_MAX) { s->tr_hx[s->tr_count] = s->tr_x; s->tr_hy[s->tr_count] = s->tr_y; s->tr_count++; }
+    s->tr_sink = (disp < 0.0015f) ? (s->tr_sink + 1) : 0;
+
+    bool zoom = std::sqrt(s->tr_x * s->tr_x + s->tr_y * s->tr_y) > 3.0f;
+    bool sink = s->tr_sink > 10;
+    bool timeout = s->tr_count >= PF_TRACE_MAX;
+    if (zoom || sink || timeout) { restart(); break; }
+
+    // loop detection: did we return near an older history point?
+    const float eps = 0.06f; const int mingap = 20;
+    int jf = -1;
+    for (int j = 0; j + mingap < s->tr_count; j++) {
+      float dx = s->tr_x - s->tr_hx[j], dy = s->tr_y - s->tr_hy[j];
+      if (dx * dx + dy * dy < eps * eps) { jf = j; break; }
+    }
+    if (jf >= 0) {
+      int n = s->tr_count - jf;
+      resample_loop(s->tr_hx, s->tr_hy, jf, n, s->loop_x, s->loop_y);
+      s->loop_valid = true;
+      // keep the closing lap as the new baseline so we re-detect the next one
+      for (int q = 0; q < n; q++) { s->tr_hx[q] = s->tr_hx[jf + q]; s->tr_hy[q] = s->tr_hy[jf + q]; }
+      s->tr_count = n;
+    }
+  }
+
+  // --- ring: real momentum. Pull toward the detected loop, else drift. ---
+  float damp = clampf(s->momentum, 0.0f, 0.98f);
+  for (int i = 0; i < N; i++) {
+    if (s->loop_valid) {
+      s->ring_vx[i] += (s->loop_x[i] - s->ring_x[i]) * s->trace_pull;
+      s->ring_vy[i] += (s->loop_y[i] - s->ring_y[i]) * s->trace_pull;
+    }
+    s->ring_vx[i] *= damp; s->ring_vy[i] *= damp;
+    float vm = std::sqrt(s->ring_vx[i] * s->ring_vx[i] + s->ring_vy[i] * s->ring_vy[i]);
+    if (vm > 0.15f) { s->ring_vx[i] *= 0.15f / vm; s->ring_vy[i] *= 0.15f / vm; }
+    s->ring_x[i] += s->ring_vx[i]; s->ring_y[i] += s->ring_vy[i];
+  }
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -529,51 +706,68 @@ void render(void* self, int vp_w, int vp_h) {
     }
   }
 
-  // 3 — limit-cycle tracer: stateful solve → build/break → raster.
+  // 3 — limit-cycle: fill cycle_buf via the Relax (GPU) or Tracer (CPU) algorithm,
+  //     then raster over the backdrop.
   if (s->show_limit_cycle) {
-    int groups = (PF_PARTICLES + 63) / 64;
-    int prev = s->particle_cur;
-    int next = 1 - prev;
-    // 3a — relax + walk + spread the ring: read prev, write next (ping-pong).
-    {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_solve);
-      cp.setBuffer(s->uniform_buf, 0);
-      cp.setBuffer(s->cell_buf, 1);
-      cp.setBuffer(s->particle_buf[next], 2);
-      cp.setBuffer(s->curve_buf, 3);
-      cp.setBuffer(s->particle_buf[prev], 4);
-      cp.setBuffer(s->good_buf, 5);
-      cp.setBuffer(s->status_buf, 6);
-      cp.dispatch(groups, 1, 1);
-      cp.end();
+    if (s->cycle_mode == 0) {
+      // --- Relax: stateful GPU solver → build/break → longest-run/morph ---
+      int groups = (PF_PARTICLES + 63) / 64;
+      int prev = s->particle_cur;
+      int next = 1 - prev;
+      {
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_solve);
+        cp.setBuffer(s->uniform_buf, 0);
+        cp.setBuffer(s->cell_buf, 1);
+        cp.setBuffer(s->particle_buf[next], 2);
+        cp.setBuffer(s->curve_buf, 3);
+        cp.setBuffer(s->particle_buf[prev], 4);
+        cp.setBuffer(s->good_buf, 5);
+        cp.setBuffer(s->status_buf, 6);
+        cp.dispatch(groups, 1, 1);
+        cp.end();
+      }
+      s->particle_cur = next;
+      {
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_cycle);
+        cp.setBuffer(s->uniform_buf, 0);
+        cp.setBuffer(s->cell_buf, 1);
+        cp.setBuffer(s->cycle_buf, 2);
+        cp.setBuffer(s->particle_buf[next], 3);
+        cp.dispatch(groups, 1, 1);
+        cp.end();
+      }
+      {
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_select);
+        cp.setBuffer(s->uniform_buf, 0);
+        cp.setBuffer(s->cycle_buf, 2);
+        cp.setBuffer(s->good_buf, 3);
+        cp.setBuffer(s->status_buf, 4);
+        cp.setBuffer(s->particle_buf[next], 5);
+        cp.setBuffer(s->curve_buf, 6);
+        cp.dispatch(1, 1, 1);
+        cp.end();
+      }
+      s->particles_init = true;
+      if (do_respawn) s->respawn_accum = 0.0f;
+    } else {
+      // --- Tracer (CPU): flow tracer + momentum ring → upload segments ---
+      cpu_cycle_tracer(s, u.corners, u.weights, nearest);
+      float seg[kCycleSegs * kSegFloats];
+      for (int i = 0; i < kCycleSegs; i++) {
+        int o = i * kSegFloats;
+        int n = (i + 1) % PF_PARTICLES;
+        seg[o + 0] = s->ring_x[i];  seg[o + 1] = s->ring_y[i];
+        seg[o + 2] = s->ring_x[n];  seg[o + 3] = s->ring_y[n];
+        seg[o + 4] = 0.90f; seg[o + 5] = 0.95f; seg[o + 6] = s->cycle_width; seg[o + 7] = 0.0f;
+        seg[o + 8] = (float)i / (float)PF_PARTICLES; seg[o + 9] = 0; seg[o + 10] = 0; seg[o + 11] = 0;
+      }
+      s->cycle_buf.write(seg, kCycleSegs * kSegFloats);
     }
-    s->particle_cur = next;   // the latest ring is now particle_buf[next]
-    // 3b — build segments + detect breaks from the relaxed ring.
-    {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_cycle);
-      cp.setBuffer(s->uniform_buf, 0);
-      cp.setBuffer(s->cell_buf, 1);
-      cp.setBuffer(s->cycle_buf, 2);
-      cp.setBuffer(s->particle_buf[next], 3);
-      cp.dispatch(groups, 1, 1);
-      cp.end();
-    }
-    // 3c — longest-run cull + cycle health + good-cycle morph (single-thread).
-    {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_select);
-      cp.setBuffer(s->uniform_buf, 0);
-      cp.setBuffer(s->cycle_buf, 2);
-      cp.setBuffer(s->good_buf, 3);
-      cp.setBuffer(s->status_buf, 4);
-      cp.setBuffer(s->particle_buf[next], 5);
-      cp.setBuffer(s->curve_buf, 6);
-      cp.dispatch(1, 1, 1);
-      cp.end();
-    }
-    // 3d — raster over the backdrop.
+
+    // raster (both algorithms)
     {
       auto rp = gpu::RenderPass::beginLoad(out);
       rp.setPSO(s_pso_lines);
@@ -582,9 +776,6 @@ void render(void* self, int vp_w, int vp_h) {
       rp.draw(6, kCycleSegs);
       rp.end();
     }
-    // The ring is seeded now; consume the respawn (reset the timer).
-    s->particles_init = true;
-    if (do_respawn) s->respawn_accum = 0.0f;
   }
 
   gpu::Device::submit();

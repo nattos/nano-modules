@@ -120,6 +120,14 @@ describe('video.phase_fold E2E', () => {
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 5);
   });
 
+  it('Tracer cycle mode renders a cycle (CPU flow tracer + momentum ring)', async () => {
+    // Give the CPU tracer time to trace a loop and pull the ring onto it.
+    const tracer = await render('pf_tracer', { ...BASE, show_streamlines: false, cycle_mode: 1 }, 'pf_tracer', 80);
+    tracer.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    const relax = await render('pf_relax', { ...BASE, show_streamlines: false, cycle_mode: 0 }, 'pf_relax', 12);
+    relax.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+  });
+
   it('scale (domain zoom) changes the output', async () => {
     const near = await render('pf_scale1', { ...BASE, scale: 1.0 }, 'pf_scale1');
     const far = await render('pf_scale4', { ...BASE, scale: 4.0 }, 'pf_scale4');

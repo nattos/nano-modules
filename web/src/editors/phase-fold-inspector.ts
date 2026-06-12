@@ -209,8 +209,15 @@ export class PhaseFoldInspector extends MobxLitElement {
       <div class="section">Limit Cycle</div>
       <field-toggle .fieldPath=${'show_limit_cycle'} .label=${'Show Limit Cycle'}
         .defaultValue=${1} .binding=${b}></field-toggle>
+      <field-select .fieldPath=${'cycle_mode'} .label=${'Algorithm'}
+        .options=${[{ label: 'Relax', value: 0 }, { label: 'Tracer', value: 1 }]}
+        .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'cycle_width'} .label=${'Width'}
         .min=${0.004} .max=${0.06} .step=${0.001} .defaultValue=${0.02} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'arc_angle'} .label=${'Arc Angle'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'trace_pull'} .label=${'Trace Pull'}
+        .min=${0} .max=${0.4} .step=${0.005} .defaultValue=${0.05} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'solve_steps'} .label=${'Solve Steps'}
         .min=${1} .max=${16} .step=${1} .defaultValue=${4} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'step_size'} .label=${'Step Size'}
