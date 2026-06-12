@@ -331,7 +331,13 @@ void module_init() {
   state::registerShaderSPV("phase_fold_solve",    SOLVE_SPV,    SOLVE_SPV_SIZE);
   state::registerShaderSPV("phase_fold_cycle",    CYCLE_SPV,    CYCLE_SPV_SIZE);
   state::registerShaderSPV("phase_fold_select",   SELECT_SPV,   SELECT_SPV_SIZE);
-  state::registerShaderSPV("phase_fold_flow",     FLOW_SPV,     FLOW_SPV_SIZE);
+  // The flow bake writes an rgba16float velocity texture. The shader's
+  // RWTexture2D<float4> defaults to rgba8unorm in SPIR-V, so register with the
+  // storage-format override (as flash_particles does for its motion prefill)
+  // to match the RGBA16F PSO binding — otherwise PSO creation fails the layout
+  // format check on Dawn.
+  state::registerShaderSPV("phase_fold_flow",     FLOW_SPV,     FLOW_SPV_SIZE,
+                           "rgba16float", "write");
   state::registerShaderSPV("phase_fold_line_vs",  LINE_VS_SPV,  LINE_VS_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_fs",  LINE_FS_SPV,  LINE_FS_SPV_SIZE);
   state::registerShaderSPV("phase_fold_contour_vs", CONTOUR_VS_SPV, CONTOUR_VS_SPV_SIZE);
