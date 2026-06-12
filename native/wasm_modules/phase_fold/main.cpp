@@ -133,9 +133,12 @@ struct State {
   bool  show_limit_cycle = true;
   int   cycle_mode   = 0;      // 0 = Relax (GPU solver), 1 = Tracer (CPU)
   float cycle_width  = 0.02f;
-  // --- Tracer mode (CPU) params ---
+  // --- Tracer / Trace mode (CPU) params ---
   float arc_angle    = 0.0f;   // where on the resting cycle the tracer restarts
   float trace_pull   = 0.05f;  // ring attraction force toward the detected loop
+  float trace_step   = 0.02f;  // tracer integration step size (lower = slower)
+  float trace_steps  = 4.0f;   // tracer steps advanced per frame
+  float trace_eps    = 0.06f;  // loop-close distance (how near to count as closed)
   float solve_steps  = 4.0f;   // Newton relaxation iterations per frame (X)
   float break_dist   = 0.2f;   // max gap between particles before it's a break
   float respawn_time = 2.0f;   // hard re-seed timer (seconds)
@@ -158,8 +161,32 @@ struct State {
 static void apply_visibility(const State* s) {
   state::setFieldHidden("stream_width", !s->show_streamlines);
   state::setFieldHidden("flow_speed",   !s->show_streamlines);
-  state::setFieldHidden("cycle_width",  !s->show_limit_cycle);
   state::setFieldHidden("ap_speed",     !s->autopilot);
+
+  // Limit-cycle params depend on the selected algorithm.
+  bool cyc   = s->show_limit_cycle;
+  bool relax = cyc && s->cycle_mode == 0;                       // GPU spring solver
+  bool ring  = cyc && s->cycle_mode == 1;                       // Tracer (drawn ring)
+  bool trace = cyc && (s->cycle_mode == 1 || s->cycle_mode == 2); // any flow tracer
+  state::setFieldHidden("cycle_mode",   !cyc);
+  state::setFieldHidden("cycle_width",  !cyc);
+  state::setFieldHidden("momentum",     !(relax || ring));
+  // Relax-only
+  state::setFieldHidden("solve_steps",  !relax);
+  state::setFieldHidden("step_size",    !relax);
+  state::setFieldHidden("break_dist",   !relax);
+  state::setFieldHidden("break_turn",   !relax);
+  state::setFieldHidden("respawn_time", !relax);
+  state::setFieldHidden("respawn_arc",  !relax);
+  state::setFieldHidden("morph_rate",   !relax);
+  state::setFieldHidden("explore",      !relax);
+  state::setFieldHidden("spread",       !relax);
+  // Tracer family
+  state::setFieldHidden("arc_angle",    !trace);
+  state::setFieldHidden("trace_step",   !trace);
+  state::setFieldHidden("trace_steps",  !trace);
+  state::setFieldHidden("trace_eps",    !trace);
+  state::setFieldHidden("trace_pull",   !ring);   // only the Tracer ring uses pull
 }
 
 static void on_state_ready(void* self);
@@ -199,14 +226,21 @@ void module_init() {
       .floatField("line_opacity", 0.55f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Limit-cycle tracer (toggleable stage) ---
       .boolField("show_limit_cycle", true, state::PrimaryInput)
-      // Algorithm: Relax = the GPU spring-solver ring; Tracer = a CPU flow tracer
-      // that detects a closed loop and pulls a momentum ring onto it.
-      .selectField("cycle_mode", 0, state::PrimaryInput, {{"Relax", 0}, {"Tracer", 1}})
+      // Algorithm: Relax = GPU spring-solver ring; Tracer = a CPU flow tracer that
+      // detects a closed loop and pulls a momentum ring onto it; Trace = the same
+      // tracer but draws the tracer's raw trajectory directly (debug viz).
+      .selectField("cycle_mode", 0, state::PrimaryInput, {{"Relax", 0}, {"Tracer", 1}, {"Trace", 2}})
       .floatField("cycle_width", 0.02f, 0.004f, 0.06f, state::PrimaryInput)
       // Tracer: where on the resting cycle the tracer restarts (arc fraction).
       .floatField("arc_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      // Tracer: how hard the ring accelerates toward the detected loop.
+      // Tracer ring: how hard the ring accelerates toward the detected loop.
       .floatField("trace_pull", 0.05f, 0.0f, 0.4f, state::PrimaryInput)
+      // Tracer integration step size (how far the tracer moves per step).
+      .floatField("trace_step", 0.02f, 0.002f, 0.06f, state::PrimaryInput)
+      // Tracer steps advanced per frame (how fast it traces).
+      .floatField("trace_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
+      // Loop-close distance — how near the tracer must return to count as closed.
+      .floatField("trace_eps", 0.06f, 0.01f, 0.2f, state::PrimaryInput)
       // Newton relaxation steps per frame — how hard the ring solves onto the cycle.
       .floatField("solve_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
       // How far each relaxation step pushes (scales the per-step force).
@@ -465,10 +499,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "flow_speed"))     s->flow_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "line_opacity"))   s->line_opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "show_limit_cycle")) { bool v = state::patchFloat(i) != 0.0f; if (v != s->show_limit_cycle) { s->show_limit_cycle = v; vis_changed = true; } }
-    else if (state::pathIs(path, plen, "cycle_mode"))     { int v = (int)state::patchFloat(i); if (v != s->cycle_mode) { s->cycle_mode = v; s->particles_init = false; s->tr_init = false; s->ring_init = false; s->loop_valid = false; } }
+    else if (state::pathIs(path, plen, "cycle_mode"))     { int v = (int)state::patchFloat(i); if (v != s->cycle_mode) { s->cycle_mode = v; s->particles_init = false; s->tr_init = false; s->ring_init = false; s->loop_valid = false; vis_changed = true; } }
     else if (state::pathIs(path, plen, "cycle_width"))    s->cycle_width = state::patchFloat(i);
     else if (state::pathIs(path, plen, "arc_angle"))      s->arc_angle = state::patchFloat(i);
     else if (state::pathIs(path, plen, "trace_pull"))     s->trace_pull = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "trace_step"))     s->trace_step = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "trace_steps"))    s->trace_steps = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "trace_eps"))      s->trace_eps = state::patchFloat(i);
     else if (state::pathIs(path, plen, "solve_steps"))    s->solve_steps = state::patchFloat(i);
     else if (state::pathIs(path, plen, "break_dist"))     s->break_dist = state::patchFloat(i);
     else if (state::pathIs(path, plen, "respawn_time"))   s->respawn_time = state::patchFloat(i);
@@ -590,10 +627,13 @@ static void cpu_cycle_tracer(State* s, const float* corners, const float* weight
   if (wsum < 1e-4f) return;   // hole
 
   // --- advance the tracer, detect a closed loop, restart on failure ---
-  for (int st = 0; st < PF_TRACE_PER_FRAME; st++) {
-    float disp = cpu_step(s, corners, weights, s->tr_x, s->tr_y, PF_TRACE_DT);
+  int steps = clampi((int)(s->trace_steps + 0.5f), 1, 16);
+  float dt = (s->trace_step > 1e-4f) ? s->trace_step : 1e-4f;
+  float sink_disp = 0.05f * dt;   // "barely moving" scales with the step size
+  for (int st = 0; st < steps; st++) {
+    float disp = cpu_step(s, corners, weights, s->tr_x, s->tr_y, dt);
     if (s->tr_count < PF_TRACE_MAX) { s->tr_hx[s->tr_count] = s->tr_x; s->tr_hy[s->tr_count] = s->tr_y; s->tr_count++; }
-    s->tr_sink = (disp < 0.0015f) ? (s->tr_sink + 1) : 0;
+    s->tr_sink = (disp < sink_disp) ? (s->tr_sink + 1) : 0;
 
     bool zoom = std::sqrt(s->tr_x * s->tr_x + s->tr_y * s->tr_y) > 3.0f;
     bool sink = s->tr_sink > 10;
@@ -601,7 +641,7 @@ static void cpu_cycle_tracer(State* s, const float* corners, const float* weight
     if (zoom || sink || timeout) { restart(); break; }
 
     // loop detection: did we return near an older history point?
-    const float eps = 0.06f; const int mingap = 20;
+    const float eps = clampf(s->trace_eps, 0.005f, 0.5f); const int mingap = 20;
     int jf = -1;
     for (int j = 0; j + mingap < s->tr_count; j++) {
       float dx = s->tr_x - s->tr_hx[j], dy = s->tr_y - s->tr_hy[j];
@@ -753,16 +793,39 @@ void render(void* self, int vp_w, int vp_h) {
       s->particles_init = true;
       if (do_respawn) s->respawn_accum = 0.0f;
     } else {
-      // --- Tracer (CPU): flow tracer + momentum ring → upload segments ---
+      // --- Tracer / Trace (CPU): run the flow tracer, then either draw the
+      //     momentum RING (Tracer) or the tracer's raw TRAJECTORY (Trace). ---
       cpu_cycle_tracer(s, u.corners, u.weights, nearest);
       float seg[kCycleSegs * kSegFloats];
-      for (int i = 0; i < kCycleSegs; i++) {
+      auto put = [&](int i, float x0, float y0, float x1, float y1, float arc, bool dead) {
         int o = i * kSegFloats;
-        int n = (i + 1) % PF_PARTICLES;
-        seg[o + 0] = s->ring_x[i];  seg[o + 1] = s->ring_y[i];
-        seg[o + 2] = s->ring_x[n];  seg[o + 3] = s->ring_y[n];
-        seg[o + 4] = 0.90f; seg[o + 5] = 0.95f; seg[o + 6] = s->cycle_width; seg[o + 7] = 0.0f;
-        seg[o + 8] = (float)i / (float)PF_PARTICLES; seg[o + 9] = 0; seg[o + 10] = 0; seg[o + 11] = 0;
+        seg[o + 0] = x0; seg[o + 1] = y0; seg[o + 2] = x1; seg[o + 3] = y1;
+        seg[o + 4] = 0.90f; seg[o + 5] = 0.95f; seg[o + 6] = s->cycle_width; seg[o + 7] = dead ? 1.0f : 0.0f;
+        seg[o + 8] = arc; seg[o + 9] = 0; seg[o + 10] = 0; seg[o + 11] = 0;
+      };
+      if (s->cycle_mode == 1) {
+        // Closed ring of N particles pulled onto the detected loop.
+        for (int i = 0; i < kCycleSegs; i++) {
+          int n = (i + 1) % PF_PARTICLES;
+          put(i, s->ring_x[i], s->ring_y[i], s->ring_x[n], s->ring_y[n],
+              (float)i / (float)PF_PARTICLES, false);
+        }
+      } else {
+        // Trace: the tracer's most recent raw trajectory (open polyline), so the
+        // actual step spacing is visible — long segments = stepping too fast.
+        int avail = s->tr_count - 1;
+        int K = avail < kCycleSegs ? avail : kCycleSegs;
+        if (K < 0) K = 0;
+        int start = s->tr_count - 1 - K;
+        for (int i = 0; i < kCycleSegs; i++) {
+          if (i < K) {
+            int a = start + i;
+            put(i, s->tr_hx[a], s->tr_hy[a], s->tr_hx[a + 1], s->tr_hy[a + 1],
+                (float)i / (float)(K > 0 ? K : 1), false);
+          } else {
+            put(i, 0, 0, 0, 0, 0, true);
+          }
+        }
       }
       s->cycle_buf.write(seg, kCycleSegs * kSegFloats);
     }

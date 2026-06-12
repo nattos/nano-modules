@@ -171,6 +171,10 @@ export class PhaseFoldInspector extends MobxLitElement {
   render() {
     if (!this.binding) return html``;
     const b = this.binding;
+    const mode = Number(b.getValue('cycle_mode') ?? 0);   // 0=Relax 1=Tracer 2=Trace
+    const isRelax = mode === 0;
+    const isTracer = mode === 1;          // tracer with a drawn ring
+    const isTrace = mode === 1 || mode === 2;  // any flow tracer
     return html`
       <div class="section">Shape</div>
       <phase-fold-xy-pad .label=${''} .binding=${b}></phase-fold-xy-pad>
@@ -210,34 +214,44 @@ export class PhaseFoldInspector extends MobxLitElement {
       <field-toggle .fieldPath=${'show_limit_cycle'} .label=${'Show Limit Cycle'}
         .defaultValue=${1} .binding=${b}></field-toggle>
       <field-select .fieldPath=${'cycle_mode'} .label=${'Algorithm'}
-        .options=${[{ label: 'Relax', value: 0 }, { label: 'Tracer', value: 1 }]}
+        .options=${[{ label: 'Relax', value: 0 }, { label: 'Tracer', value: 1 }, { label: 'Trace', value: 2 }]}
         .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'cycle_width'} .label=${'Width'}
         .min=${0.004} .max=${0.06} .step=${0.001} .defaultValue=${0.02} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'arc_angle'} .label=${'Arc Angle'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'trace_pull'} .label=${'Trace Pull'}
-        .min=${0} .max=${0.4} .step=${0.005} .defaultValue=${0.05} .binding=${b}></scalar-slider>
+      ${(isRelax || isTracer) ? html`
+      <scalar-slider style="width: 100%;" .fieldPath=${'momentum'} .label=${'Momentum'}
+        .min=${0} .max=${0.95} .step=${0.01} .defaultValue=${0.6} .binding=${b}></scalar-slider>` : ''}
+      ${isRelax ? html`
       <scalar-slider style="width: 100%;" .fieldPath=${'solve_steps'} .label=${'Solve Steps'}
         .min=${1} .max=${16} .step=${1} .defaultValue=${4} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'step_size'} .label=${'Step Size'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.75} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'momentum'} .label=${'Momentum'}
-        .min=${0} .max=${0.95} .step=${0.01} .defaultValue=${0.6} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'break_dist'} .label=${'Break Dist'}
         .min=${0.05} .max=${0.6} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'break_turn'} .label=${'Break Turn'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'respawn_time'} .label=${'Respawn (s)'}
         .min=${0.1} .max=${10} .step=${0.1} .defaultValue=${2} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'respawn_arc'} .label=${'Respawn Arc'}
         .min=${0} .max=${4} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'break_turn'} .label=${'Break Turn'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'morph_rate'} .label=${'Morph Rate'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.1} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'explore'} .label=${'Explore'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.3} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'spread'} .label=${'Spread'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>` : ''}
+      ${isTrace ? html`
+      <scalar-slider style="width: 100%;" .fieldPath=${'arc_angle'} .label=${'Arc Angle'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'trace_step'} .label=${'Trace Step'}
+        .min=${0.002} .max=${0.06} .step=${0.001} .defaultValue=${0.02} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'trace_steps'} .label=${'Trace Steps/Fr'}
+        .min=${1} .max=${16} .step=${1} .defaultValue=${4} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'trace_eps'} .label=${'Loop Eps'}
+        .min=${0.01} .max=${0.2} .step=${0.005} .defaultValue=${0.06} .binding=${b}></scalar-slider>` : ''}
+      ${isTracer ? html`
+      <scalar-slider style="width: 100%;" .fieldPath=${'trace_pull'} .label=${'Trace Pull'}
+        .min=${0} .max=${0.4} .step=${0.005} .defaultValue=${0.05} .binding=${b}></scalar-slider>` : ''}
 
       <div class="section">Autopilot</div>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}

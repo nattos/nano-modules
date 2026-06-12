@@ -126,6 +126,9 @@ describe('video.phase_fold E2E', () => {
     tracer.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
     const relax = await render('pf_relax', { ...BASE, show_streamlines: false, cycle_mode: 0 }, 'pf_relax', 12);
     relax.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    // Trace mode draws the tracer's raw trajectory directly.
+    const traceViz = await render('pf_traceviz', { ...BASE, show_streamlines: false, cycle_mode: 2 }, 'pf_traceviz', 40);
+    traceViz.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
   });
 
   it('scale (domain zoom) changes the output', async () => {
