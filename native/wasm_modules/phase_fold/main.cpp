@@ -658,11 +658,36 @@ static void cpu_cycle_tracer(State* s, const float* corners, const float* weight
   }
 
   // --- ring: real momentum. Pull toward the detected loop, else drift. ---
+  //
+  // The loop is a CLOSED curve with an arbitrary (and drifting) phase origin and
+  // winding, so pulling ring[i] → loop[i] by index is the classic broken shape
+  // morph — particles chase the wrong phase and never settle. Instead find the
+  // cyclic rotation k + winding dir that best aligns the loop to the current
+  // ring (min sum of squared index-wise distance, O(N²) with early-out), and
+  // pull along THAT correspondence so the ring actually converges onto the loop.
+  int bestK = 0, bestDir = 1;
+  if (s->loop_valid) {
+    float bestCost = 1e30f;
+    for (int dir = -1; dir <= 1; dir += 2) {
+      for (int k = 0; k < N; k++) {
+        float cost = 0.0f;
+        for (int i = 0; i < N; i++) {
+          int li = ((dir > 0 ? i : -i) + k) % N; if (li < 0) li += N;
+          float dx = s->ring_x[i] - s->loop_x[li], dy = s->ring_y[i] - s->loop_y[li];
+          cost += dx * dx + dy * dy;
+          if (cost >= bestCost) break;   // can't beat the best — prune
+        }
+        if (cost < bestCost) { bestCost = cost; bestK = k; bestDir = dir; }
+      }
+    }
+  }
+
   float damp = clampf(s->momentum, 0.0f, 0.98f);
   for (int i = 0; i < N; i++) {
     if (s->loop_valid) {
-      s->ring_vx[i] += (s->loop_x[i] - s->ring_x[i]) * s->trace_pull;
-      s->ring_vy[i] += (s->loop_y[i] - s->ring_y[i]) * s->trace_pull;
+      int li = ((bestDir > 0 ? i : -i) + bestK) % N; if (li < 0) li += N;
+      s->ring_vx[i] += (s->loop_x[li] - s->ring_x[i]) * s->trace_pull;
+      s->ring_vy[i] += (s->loop_y[li] - s->ring_y[i]) * s->trace_pull;
     }
     s->ring_vx[i] *= damp; s->ring_vy[i] *= damp;
     float vm = std::sqrt(s->ring_vx[i] * s->ring_vx[i] + s->ring_vy[i] * s->ring_vy[i]);
