@@ -208,7 +208,7 @@ void module_init() {
       .floatField("lobedness", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
       // Wind (z): the non-potential force that distorts the cycle and, past the
       // bifurcation, kills it (the orbit collapses to a fixed point).
-      .floatField("wind", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("wind", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
       // Bias shifts the cycle level → slides the limit cycle across contours.
       .floatField("bias", 0.0f, -0.6f, 0.6f, state::PrimaryInput)
       // Domain zoom. Higher = zoom IN (bigger features); lower zooms out.
