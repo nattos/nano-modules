@@ -186,6 +186,10 @@ export class PhaseFoldInspector extends MobxLitElement {
       <div class="section">Dynamics</div>
       <scalar-slider style="width: 100%;" .fieldPath=${'wind'} .label=${'Wind (z)'}
         .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'wind_jitter'} .label=${'Wind Jitter'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'wind_jitter_speed'} .label=${'Wind Jitter Speed'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'bias'} .label=${'Bias'}
         .min=${-0.6} .max=${0.6} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>
 

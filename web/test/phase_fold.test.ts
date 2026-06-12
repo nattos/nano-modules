@@ -161,6 +161,34 @@ describe('video.phase_fold E2E', () => {
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 20);
   });
 
+  it('wind jitter wobbles the field (output drifts across frames, XY jitter off)', async () => {
+    // wind_jitter chaotically modulates the wind value → the Bands backdrop tilt
+    // drifts across frames even with a frozen flow clock, static XY and no autopilot.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      dumpName: 'pf_jitterwind',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'pf_jitterwind',
+              sketch: buildSketch({ eccentricity: 0.5, lobedness: 0.5, flow_speed: 0.0,
+                                    show_streamlines: false, show_limit_cycle: false,
+                                    autopilot: false, jitter: 0.0,
+                                    wind_jitter: 0.8, wind_jitter_speed: 0.8 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'pf_jitterwind' } },
+            ]},
+          ],
+          waitFrames: 4, captureTraceIds: ['out'],
+        },
+        { waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 20);
+  });
+
   it('scale (domain zoom) changes the output', async () => {
     const near = await render('pf_scale1', { ...BASE, scale: 1.0 }, 'pf_scale1');
     const far = await render('pf_scale4', { ...BASE, scale: 4.0 }, 'pf_scale4');

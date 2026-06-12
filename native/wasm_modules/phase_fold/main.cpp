@@ -119,6 +119,8 @@ struct State {
   float eccentricity = 0.2f;   // XY pad x
   float lobedness    = 0.2f;   // XY pad y
   float wind         = 0.0f;   // z (non-potential force)
+  float wind_jitter  = 0.0f;   // chaotic, fling-ey wobble of the wind value
+  float wind_jitter_speed = 0.5f;
   float bias         = 0.0f;   // shifts the cycle level
   float scale        = 1.0f;   // domain zoom (higher = zoom IN, like shape_fold)
   bool  interpolate  = true;   // blend H across 4 cells vs snap
@@ -159,6 +161,7 @@ struct State {
   float flow_phase = 0.0f;
   float orbit      = 0.0f;
   float eff_x = 0.2f, eff_y = 0.2f;   // effective XY used for rendering
+  float eff_wind = 0.0f;              // effective wind (base + jitter) used for rendering
 
   // Jitter: a weighty/fling-ey chaotic orbit around the base XY. A 2D mass on a
   // spring (stays near base) + swirl (orbits) + chaotically-walking drive freqs.
@@ -167,6 +170,13 @@ struct State {
   float jr1 = 1, jr2 = 1, jr1t = 1, jr2t = 1;  // drive rates + walk targets
   float jwalk = 0;                            // rate random-walk accumulator
   uint32_t jrng = 0x9E3779B9u;                // per-instance PRNG for the rate walk
+
+  // Wind jitter: the 1D scalar analogue of the XY jitter (mass on a spring back
+  // to 0, no swirl), added to the wind value.
+  float wox = 0, wvx = 0;                       // offset + velocity (momentum)
+  float wp1 = 0, wp2 = 0;                        // drive LFO phases
+  float wr1 = 1, wr2 = 1, wr1t = 1, wr2t = 1;   // drive rates + walk targets
+  float wwalk = 0;                              // rate random-walk accumulator
 };
 
 static void apply_visibility(const State* s) {
@@ -221,6 +231,10 @@ void module_init() {
       // Wind (z): the non-potential force that distorts the cycle and, past the
       // bifurcation, kills it (the orbit collapses to a fixed point).
       .floatField("wind", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      // Wind jitter: a chaotic, weighty/fling-ey wobble of the wind value (the
+      // 1D analogue of the XY jitter) with its own speed.
+      .floatField("wind_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("wind_jitter_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // Bias shifts the cycle level → slides the limit cycle across contours.
       .floatField("bias", 0.0f, -0.6f, 0.6f, state::PrimaryInput)
       // Domain zoom. Higher = zoom IN (bigger features); lower zooms out.
@@ -568,6 +582,43 @@ void tick(void* self, double dt) {
   s->eff_x = clampf(base_x + s->jox + flx, 0.0f, 1.0f);
   s->eff_y = clampf(base_y + s->joy + fly, 0.0f, 1.0f);
 
+  // Wind jitter — the 1D scalar analogue of the XY orbit above (no swirl). Same
+  // quadratic response, chaotic LFO drive, momentum + light damping (overshoot)
+  // and a top-of-range framerate flicker. Added to the base wind.
+  {
+    float wjraw = clampf(s->wind_jitter, 0.0f, 1.0f);
+    float wamt = wjraw * wjraw;
+    float spd = clampf(s->wind_jitter_speed, 0.0f, 1.0f);
+    float k = 15.0f + spd * spd * 1500.0f;
+    float drvspd = 0.5f + spd * spd * 10.0f;
+    float drive = 1.1f * (1.0f + spd * 5.0f);
+    float damp = std::exp(-fdt * (0.8f + spd * 3.0f));
+    s->wwalk += fdt * 0.6f * drvspd;
+    if (s->wwalk >= 1.0f) {
+      s->wwalk -= std::floor(s->wwalk);
+      s->wr1t = 0.5f + rng_unit(s) * 1.8f;
+      s->wr2t = 0.5f + rng_unit(s) * 1.8f;
+    }
+    float sm = 1.0f - std::exp(-fdt / 0.3f);
+    s->wr1 += (s->wr1t - s->wr1) * sm;
+    s->wr2 += (s->wr2t - s->wr2) * sm;
+    s->wp1 += fdt * s->wr1 * drvspd;
+    s->wp2 += fdt * s->wr2 * drvspd;
+    float tau = 2.0f * kPi;
+    float df = std::sin(tau * s->wp1) + 0.6f * std::sin(tau * s->wp2 * 1.7f + 1.0f);
+    float ax = -k * s->wox + df * drive * wamt;
+    s->wvx = (s->wvx + ax * fdt) * damp;
+    s->wox += s->wvx * fdt;
+    // soft cap: wind is bipolar [-1,1], so allow up to a near-full-swing wobble.
+    float rmax = wamt * 0.9f;
+    float r = std::fabs(s->wox);
+    if (r > rmax && r > 1e-6f) { float f = rmax / r; s->wox *= f; s->wvx *= f; }
+    float ft = clampf((spd - 0.55f) / 0.45f, 0.0f, 1.0f);
+    float flick = ft * ft * (3.0f - 2.0f * ft) * wamt * 0.6f;   // smoothstep
+    float fwj = (rng_unit(s) * 2.0f - 1.0f) * flick;
+    s->eff_wind = clampf(s->wind + s->wox + fwj, -1.0f, 1.0f);
+  }
+
   auto vx = val::number(s->eff_x);
   state::setValPath("autopilot_x", vx);
   val::release(vx);
@@ -590,6 +641,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if      (state::pathIs(path, plen, "eccentricity"))   s->eccentricity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "lobedness"))      s->lobedness = state::patchFloat(i);
     else if (state::pathIs(path, plen, "wind"))           s->wind = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "wind_jitter"))    s->wind_jitter = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "wind_jitter_speed")) s->wind_jitter_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "bias"))           s->bias = state::patchFloat(i);
     else if (state::pathIs(path, plen, "scale"))          s->scale = state::patchFloat(i);
     else if (state::pathIs(path, plen, "interpolate"))    s->interpolate = state::patchFloat(i) != 0.0f;
@@ -664,8 +717,8 @@ static void cpu_velocity(const State* s, const float* corners, const float* weig
     int wb = base + 45;
     H += wi * h; gx += wi * cgx; gy += wi * cgy;
     lev += wi * PF_CELLS[base + 1]; mu += wi * PF_CELLS[base + 2];
-    Wx += wi * s->wind * PF_CELLS[wb + 2] * PF_CELLS[wb + 0];
-    Wy += wi * s->wind * PF_CELLS[wb + 2] * PF_CELLS[wb + 1];
+    Wx += wi * s->eff_wind * PF_CELLS[wb + 2] * PF_CELLS[wb + 0];
+    Wy += wi * s->eff_wind * PF_CELLS[wb + 2] * PF_CELLS[wb + 1];
   }
   float sgn = -mu * (H - lev - s->bias);
   vx = -gy + sgn * gx + Wx; vy = gx + sgn * gy + Wy;
@@ -816,7 +869,7 @@ void render(void* self, int vp_w, int vp_h) {
   u.extent = PF_EXTENT / (s->scale > 1e-2f ? s->scale : 1e-2f);
   u.shading_mode = (float)s->shading_mode;
   u.bias = s->bias;
-  u.wind = s->wind;
+  u.wind = s->eff_wind;
   u.n_bands = s->bands;
   u.contrast = s->contrast;
   u.flow_phase = s->flow_phase;
