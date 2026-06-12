@@ -84,13 +84,37 @@ void main(uint3 tid : SV_DispatchThreadID) {
   status[PF_ST_RESPAWN]  = respawnReq;
   status[PF_ST_COOLDOWN] = cooldown;
 
-  // --- morph the good cycle ---
+  // --- morph the good cycle (phase-aligned, like the Tracer ring) ---
+  // Index-wise lerp twists when the target's phase origin differs from good's
+  // (cell change → a different cell's resting cycle; a reordered live ring). So
+  // align the target to good by the best cyclic rotation + winding first.
   float r = saturate(morph_rate);
-  for (uint i = 0u; i < N; i++) {
-    float2 g = good[i].xy;
-    if (good_init < 0.5)      g = pf_curve_seed(i);        // first frame: snap
-    else if (closed)          g = lerp(g, live[i].xy, r);  // healthy: track live
-    else                      g = lerp(g, pf_curve_seed(i), r);  // broken: decay to rest
-    good[i] = float4(g, 0.0, 0.0);
+  if (good_init < 0.5) {
+    for (uint i = 0u; i < N; i++) good[i] = float4(pf_curve_seed(i), 0.0, 0.0);  // snap
+  } else {
+    // cache good + the morph target (live ring when closed, else resting cycle)
+    float2 g[PF_PARTICLES];
+    float2 tg[PF_PARTICLES];
+    for (uint i = 0u; i < N; i++) {
+      g[i] = good[i].xy;
+      tg[i] = closed ? live[i].xy : pf_curve_seed(i);
+    }
+    int bestK = 0, bestDir = 1; float bestCost = 1e30;
+    for (int dir = -1; dir <= 1; dir += 2) {
+      for (int k = 0; k < (int)N; k++) {
+        float cost = 0.0;
+        for (int i = 0; i < (int)N; i++) {
+          int li = ((dir > 0 ? i : -i) + k) % (int)N; if (li < 0) li += (int)N;
+          float2 d = g[i] - tg[li];
+          cost += dot(d, d);
+          if (cost >= bestCost) break;
+        }
+        if (cost < bestCost) { bestCost = cost; bestK = k; bestDir = dir; }
+      }
+    }
+    for (int i = 0; i < (int)N; i++) {
+      int li = ((bestDir > 0 ? i : -i) + bestK) % (int)N; if (li < 0) li += (int)N;
+      good[i] = float4(lerp(g[i], tg[li], r), 0.0, 0.0);
+    }
   }
 }
