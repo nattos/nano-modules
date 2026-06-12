@@ -45,7 +45,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Banded height — diverging (mode 0) or a matplotlib colormap (modes 2..6).
   float d = pf_blended_height(p);
   float bval = saturate(0.5 + (d - bias) * contrast);
-  float band = floor(bval * n_bands) / max(n_bands - 1.0, 1.0);
+  // At the max (24) skip quantization and draw a smooth gradient.
+  float band = (n_bands >= 23.5) ? bval : floor(bval * n_bands) / max(n_bands - 1.0, 1.0);
   float3 dim = lerp(float3(0.07, 0.07, 0.09), pf_grade(band, shading_mode), backdrop_dim);
   outTex[gid.xy] = float4(dim, 1.0);
 }
