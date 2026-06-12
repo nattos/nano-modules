@@ -119,8 +119,14 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../phase_fold/line_fs.hlsl -Fo "$TMP_DIR/phase_fold_line_fs.spv"
-_emit_spv_header_var phase_fold backdrop stream solve cycle select line_vs line_fs
-echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+line_vs+line_fs)"
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../phase_fold/contour_vs.hlsl -Fo "$TMP_DIR/phase_fold_contour_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../phase_fold/contour_fs.hlsl -Fo "$TMP_DIR/phase_fold_contour_fs.spv"
+_emit_spv_header_var phase_fold backdrop stream solve cycle select line_vs line_fs contour_vs contour_fs
+echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+line+contour)"
 
 echo "=== Building WASM (nano) ==="
 

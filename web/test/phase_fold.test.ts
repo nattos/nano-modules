@@ -129,6 +129,9 @@ describe('video.phase_fold E2E', () => {
     // Trace mode draws the tracer's raw trajectory directly.
     const traceViz = await render('pf_traceviz', { ...BASE, show_streamlines: false, cycle_mode: 2 }, 'pf_traceviz', 40);
     traceViz.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    // Contour mode draws the height field's zero level-set (no particles).
+    const contour = await render('pf_contour', { ...BASE, show_streamlines: false, cycle_mode: 3 }, 'pf_contour', 4);
+    contour.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
   });
 
   it('scale (domain zoom) changes the output', async () => {

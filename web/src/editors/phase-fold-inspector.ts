@@ -214,7 +214,7 @@ export class PhaseFoldInspector extends MobxLitElement {
       <field-toggle .fieldPath=${'show_limit_cycle'} .label=${'Show Limit Cycle'}
         .defaultValue=${1} .binding=${b}></field-toggle>
       <field-select .fieldPath=${'cycle_mode'} .label=${'Algorithm'}
-        .options=${[{ label: 'Relax', value: 0 }, { label: 'Tracer', value: 1 }, { label: 'Trace', value: 2 }]}
+        .options=${[{ label: 'Relax', value: 0 }, { label: 'Tracer', value: 1 }, { label: 'Trace', value: 2 }, { label: 'Contour', value: 3 }]}
         .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'cycle_width'} .label=${'Width'}
         .min=${0.004} .max=${0.06} .step=${0.001} .defaultValue=${0.02} .binding=${b}></scalar-slider>

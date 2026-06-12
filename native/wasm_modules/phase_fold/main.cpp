@@ -198,6 +198,7 @@ static gpu::ComputePSO s_pso_solve;
 static gpu::ComputePSO s_pso_cycle;
 static gpu::ComputePSO s_pso_select;
 static gpu::RenderPSO  s_pso_lines;
+static gpu::RenderPSO  s_pso_contour;
 
 void module_init() {
   state::init("video.phase_fold", {1, 0, 0},
@@ -228,8 +229,10 @@ void module_init() {
       .boolField("show_limit_cycle", true, state::PrimaryInput)
       // Algorithm: Relax = GPU spring-solver ring; Tracer = a CPU flow tracer that
       // detects a closed loop and pulls a momentum ring onto it; Trace = the same
-      // tracer but draws the tracer's raw trajectory directly (debug viz).
-      .selectField("cycle_mode", 0, state::PrimaryInput, {{"Relax", 0}, {"Tracer", 1}, {"Trace", 2}})
+      // tracer but draws its raw trajectory (debug viz); Contour = draw the height
+      // field's zero level-set directly (no particles).
+      .selectField("cycle_mode", 0, state::PrimaryInput,
+                   {{"Relax", 0}, {"Tracer", 1}, {"Trace", 2}, {"Contour", 3}})
       .floatField("cycle_width", 0.02f, 0.004f, 0.06f, state::PrimaryInput)
       // Tracer: where on the resting cycle the tracer restarts (arc fraction).
       .floatField("arc_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
@@ -288,6 +291,8 @@ void module_init() {
   state::registerShaderSPV("phase_fold_select",   SELECT_SPV,   SELECT_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_vs",  LINE_VS_SPV,  LINE_VS_SPV_SIZE);
   state::registerShaderSPV("phase_fold_line_fs",  LINE_FS_SPV,  LINE_FS_SPV_SIZE);
+  state::registerShaderSPV("phase_fold_contour_vs", CONTOUR_VS_SPV, CONTOUR_VS_SPV_SIZE);
+  state::registerShaderSPV("phase_fold_contour_fs", CONTOUR_FS_SPV, CONTOUR_FS_SPV_SIZE);
 
   auto cs_backdrop = gpu::Device::createShaderModuleByName("phase_fold_backdrop");
   auto cs_stream   = gpu::Device::createShaderModuleByName("phase_fold_stream");
@@ -296,8 +301,10 @@ void module_init() {
   auto cs_select   = gpu::Device::createShaderModuleByName("phase_fold_select");
   auto vs_lines    = gpu::Device::createShaderModuleByName("phase_fold_line_vs");
   auto fs_lines    = gpu::Device::createShaderModuleByName("phase_fold_line_fs");
+  auto vs_contour  = gpu::Device::createShaderModuleByName("phase_fold_contour_vs");
+  auto fs_contour  = gpu::Device::createShaderModuleByName("phase_fold_contour_fs");
   if (!cs_backdrop || !cs_stream || !cs_solve || !cs_cycle || !cs_select ||
-      !vs_lines || !fs_lines) return;
+      !vs_lines || !fs_lines || !vs_contour || !fs_contour) return;
 
   s_pso_backdrop = gpu::Device::createComputePSO(cs_backdrop, "main", gpu::Bindings()
       .uniform(0)
@@ -344,6 +351,14 @@ void module_init() {
           .storage(1),   // segment buffer (vertex)
       gpu::Device::BlendMode::AlphaOver);
 
+  // Contour mode: full-screen pass that draws the height field's zero level-set.
+  s_pso_contour = gpu::Device::createInstancedRenderPSO(
+      vs_contour, "main", fs_contour, "main", gpu::TextureFormat::Surface,
+      gpu::Bindings()
+          .uniform(0)    // shared uniforms
+          .storage(1),   // cells (fragment field eval)
+      gpu::Device::BlendMode::AlphaOver);
+
   state::log("phase_fold: module initialized");
 }
 
@@ -381,7 +396,8 @@ void init(void* self) {
   if (!s) return;
   s->initialized = false;
   if (!s_pso_backdrop.valid() || !s_pso_stream.valid() || !s_pso_solve.valid() ||
-      !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_lines.valid()) return;
+      !s_pso_cycle.valid() || !s_pso_select.valid() || !s_pso_lines.valid() ||
+      !s_pso_contour.valid()) return;
   if (!s->uniform_buf.valid() || !s->cell_buf.valid() || !s->curve_buf.valid() ||
       !s->particle_buf[0].valid() || !s->particle_buf[1].valid() ||
       !s->good_buf.valid() || !s->status_buf.valid() ||
@@ -771,9 +787,16 @@ void render(void* self, int vp_w, int vp_h) {
     }
   }
 
-  // 3 — limit-cycle: fill cycle_buf via the Relax (GPU) or Tracer (CPU) algorithm,
-  //     then raster over the backdrop.
-  if (s->show_limit_cycle) {
+  // 3 — limit-cycle: Contour draws the height field's zero directly; the others
+  //     fill cycle_buf (Relax GPU / Tracer CPU) and line-raster it.
+  if (s->show_limit_cycle && s->cycle_mode == 3) {
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(s_pso_contour);
+    rp.setBuffer(s->uniform_buf, 0);
+    rp.setBuffer(s->cell_buf, 1);
+    rp.draw(3, 1);   // full-screen triangle
+    rp.end();
+  } else if (s->show_limit_cycle) {
     if (s->cycle_mode == 0) {
       // --- Relax: stateful GPU solver → build/break → longest-run/morph ---
       int groups = (PF_PARTICLES + 63) / 64;
