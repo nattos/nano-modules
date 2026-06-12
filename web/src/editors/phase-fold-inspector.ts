@@ -178,6 +178,10 @@ export class PhaseFoldInspector extends MobxLitElement {
     return html`
       <div class="section">Shape</div>
       <phase-fold-xy-pad .label=${''} .binding=${b}></phase-fold-xy-pad>
+      <scalar-slider style="width: 100%;" .fieldPath=${'jitter'} .label=${'Jitter'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'jitter_speed'} .label=${'Jitter Speed'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'scale'} .label=${'Scale'}
         .min=${0.1} .max=${8} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'interpolate'} .label=${'Interpolate'}
@@ -267,10 +271,6 @@ export class PhaseFoldInspector extends MobxLitElement {
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.35} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'jitter'} .label=${'Jitter'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'jitter_speed'} .label=${'Jitter Speed'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
     `;
   }
 }
