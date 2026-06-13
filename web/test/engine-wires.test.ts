@@ -46,4 +46,51 @@ describe('Wire routing E2E', () => {
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(32, 32, { r: 128, g: 0, b: 128 }, 15);
   });
+
+  it('forward scalar wire from a passthrough modulation source', async () => {
+    // data.lfo declares NO output texture → it is a texture-passthrough
+    // modulation source: tick runs and publishes its scalar `output`, but it
+    // consumes no slot and leaves the image chain untouched. With rate=0 its
+    // phase stays 0 → output == 0.5 (constant, deterministic).
+    //
+    // Chain: white solid → lfo (passthrough) → brightness_contrast. A wire feeds
+    // lfo.output (0.5) into bc.brightness, OVERRIDING the stored brightness=1.0.
+    //   brightness 0.5 → shift 0; contrast 0.25 → scale 0.5; white(1) → 0.5 = gray.
+    // The three outcomes are distinct, so gray(128) proves BOTH mechanics at once:
+    //   • wire failed   → brightness stays 1.0 → (1+1)*0.5 = white(255)
+    //   • passthrough broke (lfo overwrote the chain with its empty image)
+    //                    → input black → (0+0)*0.5 = black(0)
+    //   • both work      → gray(128)  ✓
+    const sketch: Sketch = {
+      anchor: null,
+      columns: [{
+        name: 'main',
+        chain: [
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+            params: { color: [1.0, 1.0, 1.0] } },
+          { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+            params: { rate: 0.0, amplitude: 1.0 } },
+          { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+            params: { brightness: 1.0, contrast: 0.25 } },
+        ],
+      }],
+      wires: [
+        { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
+          dest: { instanceKey: 'bc@0', field: 'brightness' } },
+      ],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'],
+      commands: [{ type: 'createSketch', sketchId: 'wire_lfo', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_lfo' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'wire_lfo',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+  });
 });

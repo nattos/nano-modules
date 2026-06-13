@@ -1134,7 +1134,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let effectiveOutputHandle = outputHandle;
         let extraSlots = 0;
 
-        if (opacity <= 0) {
+        // Modulation source: an effect whose schema declares NO top-level output
+        // texture (a `texture` field with io & 2) produces only scalar/struct
+        // outputs. It lives in the stack purely to feed wires, contributing no
+        // image — so skip render, consume no slot, and pass the texture chain
+        // (currentInputHandle) through untouched. tick() already ran above to
+        // advance its sim and populate the outputs the publish block emits. Like
+        // identity skip, it does NOT flush an in-progress fused run.
+        let isTexturePassthrough = true;
+        {
+          const sch = loaded.host.schema;
+          for (const fn in sch) {
+            const d: any = sch[fn];
+            if (d?.type === 'texture' && (((d.io ?? 0) & 2) !== 0)) {
+              isTexturePassthrough = false;
+              break;
+            }
+          }
+        }
+
+        if (isTexturePassthrough) {
+          // Leave the texture chain exactly as-is (even if -1 = no input).
+          effectiveOutputHandle = currentInputHandle;
+        } else if (opacity <= 0) {
           // Opacity 0: tick already advanced the sim; skip render and pass the
           // column input straight through (no slot consumed). No real input
           // (bypassed/empty generator) → emit a clean transparent frame so the
@@ -1285,9 +1307,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         // --- Advance chain ---
         currentInputHandle = effectiveOutputHandle;
-        // Opacity 0 consumed no slot; partial opacity consumed an extra one
-        // (fx + blend); everything else consumes exactly one.
-        slotCounter.value += opacity <= 0 ? 0 : 1 + extraSlots;
+        // Opacity 0 and texture-passthrough modulation sources consume no slot;
+        // partial opacity consumes an extra one (fx + blend); everything else
+        // consumes exactly one.
+        slotCounter.value += (opacity <= 0 || isTexturePassthrough) ? 0 : 1 + extraSlots;
       }
     }
 
