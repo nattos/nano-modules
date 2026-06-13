@@ -107,6 +107,12 @@ function stripLeadingSlash(p: string): string {
   return p.startsWith('/') ? p.slice(1) : p;
 }
 
+/** A producer's published output for the wire system (one per consumed field). */
+type WireOutput =
+  | { kind: 'scalar'; value: number }
+  | { kind: 'texture'; handle: number }
+  | { kind: 'struct'; value: any; schema: Record<string, any>; dirty: boolean };
+
 /** Runtime value on a rail during a single frame's execution. */
 interface RailValue {
   data?: number;
@@ -394,6 +400,21 @@ export class SketchExecutor {
     return entry;
   }
 
+  // --- Wires (single-stack model; additive alongside legacy taps/rails) ---
+  // Each entry's published outputs this frame and last frame, keyed
+  // `${instanceKey}:${field}`, scoped per sketch. A wire reads the producer's
+  // THIS-frame output when the producer executes earlier (above) the consumer,
+  // or LAST-frame when it doesn't (also breaks cycles → feedback). Only outputs
+  // that a wire actually consumes are published, so a wire-free sketch costs
+  // nothing here.
+  private wirePrevBySketch = new Map<string, Map<string, WireOutput>>();
+  // Transient per-frame state set at the top of executeAllColumns.
+  private wireCur: Map<string, WireOutput> = new Map();
+  private wirePrev: Map<string, WireOutput> = new Map();
+  private wirePos: Map<string, number> = new Map();         // instanceKey → global exec index
+  private wiresByDest: Map<string, import('./sketch-types').Wire[]> = new Map();
+  private wireSrcFields: Set<string> = new Set();           // `${instanceKey}:${field}` consumed by a wire
+
   // --- Per-effect opacity wet/dry blend (mirrors native host_blend.h) ---
   private blendPipeline?: GPUComputePipeline;
   private blendUniform?: GPUBuffer;
@@ -518,6 +539,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Shared slot counter so each module across all columns gets a unique intermediate
     const slotCounter = { value: 0 };
 
+    // --- Wire frame setup (additive; no-op when sketch.wires is empty) ---
+    this.wirePrev = this.wirePrevBySketch.get(sketchId) ?? new Map();
+    this.wireCur = new Map();
+    this.wirePos = new Map();
+    this.wiresByDest = new Map();
+    this.wireSrcFields = new Set();
+    {
+      let order = 0;
+      for (const col of sketch.columns) {
+        for (const e of col.chain) {
+          if (e.type === 'module') this.wirePos.set(e.instance_key, order++);
+        }
+      }
+      for (const w of sketch.wires ?? []) {
+        const arr = this.wiresByDest.get(w.dest.instanceKey);
+        if (arr) arr.push(w); else this.wiresByDest.set(w.dest.instanceKey, [w]);
+        this.wireSrcFields.add(`${w.src.instanceKey}:${w.src.field}`);
+      }
+    }
+
     // Collect column-local rail values for publishing
     const allColumnRails: Map<string, RailValue>[] = [];
 
@@ -560,6 +601,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (Object.keys(sketchRailState).length > 0) {
       this.bridgeCore.setAt(`/sketch_state/${sketchId}`, sketchRailState);
     }
+
+    // This frame's published wire outputs become next frame's "previous"
+    // (for delayed/backward wires).
+    this.wirePrevBySketch.set(sketchId, this.wireCur);
 
     return lastOutput;
   }
@@ -902,6 +947,49 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           }
         }
 
+        // --- Resolve input wires (single-stack model; additive with read taps) ---
+        // Delay is positional: a producer that executes earlier (above) feeds
+        // this frame's value; otherwise the previous frame's (also breaks cycles).
+        {
+          const myPos = this.wirePos.get(entry.instance_key) ?? 0;
+          const inWires = this.wiresByDest.get(entry.instance_key);
+          if (inWires) {
+            for (const w of inWires) {
+              const srcPos = this.wirePos.get(w.src.instanceKey);
+              if (srcPos === undefined) continue;
+              const delayed = srcPos >= myPos;
+              const src = (delayed ? this.wirePrev : this.wireCur)
+                .get(`${w.src.instanceKey}:${w.src.field}`);
+              if (!src) continue;
+              if (src.kind === 'scalar') {
+                const shaped = applyTapMod(src.value, w.mod);
+                const canonical = instanceState[w.dest.field];
+                const combined = combineTap(
+                  typeof canonical === 'number' ? canonical : undefined,
+                  shaped, w.combine, w.mixFactor);
+                loaded.host.notifyStatePatched(loaded.module, [
+                  { op: 'replace', path: w.dest.field, value: combined },
+                ]);
+                effectiveValues.set(w.dest.field, combined);
+              } else if (src.kind === 'texture') {
+                if (delayed) continue;  // backward texture wire needs a retained copy (deferred)
+                const texIndex = parseInt(w.dest.field, 10);
+                if (!isNaN(texIndex) && String(texIndex) === w.dest.field) {
+                  while (inputTextures.length <= texIndex) inputTextures.push(-1);
+                  inputTextures[texIndex] = src.handle;
+                } else if (w.dest.field) {
+                  loaded.host.textureFields.set(w.dest.field, src.handle);
+                  loaded.host.tapInstalledTextureFields.add(w.dest.field);
+                }
+              } else if (src.kind === 'struct') {
+                if (delayed) continue;  // delayed struct deferred
+                this.applyStructRead(loaded.host, loaded.module, w.dest.field,
+                  { struct: src.value, dirty: src.dirty }, src.schema);
+              }
+            }
+          }
+        }
+
         // --- Apply parameter smoothing (after read taps, the outermost layer) ---
         // For each smoothing-enabled scalar field, linearly ramp toward the
         // post-modulation target and emit a final shadow-state patch — the same
@@ -1155,6 +1243,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
               existing.struct = snapshot.value;
               if (snapshot.dirty) existing.dirty = true;
               targetRailValues.set(tap.railId, existing);
+            }
+          }
+        }
+
+        // --- Publish this entry's wire-consumed outputs ---
+        // Only fields a wire actually reads are published (so a wire-free sketch
+        // does nothing here). Output bit (io & 2) required.
+        if (this.wireSrcFields.size > 0) {
+          const schema = loaded.host.schema;
+          for (const fname in schema) {
+            const key = `${entry.instance_key}:${fname}`;
+            if (!this.wireSrcFields.has(key)) continue;
+            const def: any = schema[fname];
+            const io = def?.io ?? 0;
+            if (!(io & 2)) continue;
+            if (def.type === 'texture') {
+              const h = (io & 4) ? effectiveOutputHandle : loaded.host.textureFields.get(fname);
+              if (h !== undefined && h >= 0) this.wireCur.set(key, { kind: 'texture', handle: h });
+            } else if (def.type === 'object' || def.type === 'array') {
+              const snap = this.snapshotStruct(loaded.host, fname, def);
+              this.wireCur.set(key, { kind: 'struct', value: snap.value, schema: def, dirty: snap.dirty });
+            } else {
+              const v = this.readFieldFromState(loaded.host, fname);
+              if (v !== undefined) this.wireCur.set(key, { kind: 'scalar', value: v });
             }
           }
         }
