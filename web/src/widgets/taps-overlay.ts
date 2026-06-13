@@ -29,6 +29,20 @@ interface RailRef { rail: Rail; scope: 'sketch' | number; }
 
 const BAND_TOP = 6;       // px from the overlay top to the badge band
 
+/**
+ * A gently arcing cubic-bezier path from `a` (writer) to `b` (reader). Both
+ * control points bow to the right (+x) so same-column connections read as a soft
+ * C; the bow scales mildly with vertical distance. Path direction a→b drives the
+ * marching-ants dash so the animation indicates data-flow direction.
+ */
+function arcPath(a: { x: number; y: number }, b: { x: number; y: number }): string {
+  const dy = b.y - a.y;
+  const bow = Math.min(Math.max(Math.abs(dy) * 0.25 + 26, 32), 90);
+  const c1x = a.x + bow, c1y = a.y + dy * 0.33;
+  const c2x = b.x + bow, c2y = b.y - dy * 0.33;
+  return `M ${a.x} ${a.y} C ${c1x} ${c1y} ${c2x} ${c2y} ${b.x} ${b.y}`;
+}
+
 @customElement('taps-overlay')
 export class TapsOverlay extends MobxLitElement {
   @property({ type: String }) sketchId = '';
@@ -61,6 +75,15 @@ export class TapsOverlay extends MobxLitElement {
       pointer-events: none; }
     .leader { stroke: var(--app-text-color2, #888); stroke-width: 1; opacity: 0.5; }
     .connect-line { stroke: var(--app-hi-color2, #4169E1); stroke-width: 2; stroke-dasharray: 4 3; }
+    /* Committed connections (taps via rails + explicit wires) drawn as gently
+     * arcing field→field curves while in tap/wire mode. The marching-ants dash
+     * flows from writer (path start) → reader (path end) to indicate direction.
+     * A design faux-pas by our usual standards, but acceptable behind the mode. */
+    .wire-arc { fill: none; stroke: var(--app-hi-color2, #4169E1); stroke-width: 1.5;
+      opacity: 0.5; stroke-dasharray: 5 4; stroke-linecap: round;
+      animation: wire-flow 0.7s linear infinite; }
+    .wire-arc.delayed { stroke: var(--app-text-color2, #999); opacity: 0.4; }
+    @keyframes wire-flow { to { stroke-dashoffset: -9; } }
     .badge {
       position: absolute; left: 0; top: 0;
       pointer-events: auto; cursor: pointer;
@@ -178,6 +201,59 @@ export class TapsOverlay extends MobxLitElement {
     return refs;
   }
 
+  /** Show arcing connection lines while in tap/wire mode. */
+  private get showArcs(): boolean { return appState.local.tappingMode; }
+
+  /**
+   * Field→field connections to visualize: each legacy tap pair (writer→reader
+   * sharing a rail) and each explicit wire (src→dest). Endpoints are field keys
+   * `${sketchId}/${col}/${chain}/${field}` (the format `fieldHit` consumes).
+   * `delayed` marks a wire whose source is at/below its dest (1-frame delay).
+   */
+  private connections(sketch: Sketch): { id: string; from: string; to: string; delayed: boolean }[] {
+    const sk = this.sketchId;
+    const out: { id: string; from: string; to: string; delayed: boolean }[] = [];
+
+    // instanceKey → "col/chain" + global stack position (for delay inference).
+    const loc = new Map<string, string>();
+    const pos = new Map<string, number>();
+    let order = 0;
+    sketch.columns.forEach((c, ci) => c.chain.forEach((e, chi) => {
+      if (e.type === 'module') { loc.set(e.instance_key, `${ci}/${chi}`); pos.set(e.instance_key, order++); }
+    }));
+
+    // Legacy taps, grouped by rail: every writer → every reader.
+    const writers = new Map<string, string[]>();
+    const readers = new Map<string, string[]>();
+    sketch.columns.forEach((c, ci) => c.chain.forEach((e, chi) => {
+      if (e.type !== 'module') return;
+      for (const t of e.taps ?? []) {
+        const key = `${sk}/${ci}/${chi}/${t.fieldPath}`;
+        const m = t.direction === 'write' ? writers : readers;
+        const arr = m.get(t.railId); if (arr) arr.push(key); else m.set(t.railId, [key]);
+      }
+    }));
+    for (const [railId, ws] of writers) {
+      for (const w of ws) for (const r of readers.get(railId) ?? []) {
+        out.push({ id: `tap:${railId}:${w}>${r}`, from: w, to: r, delayed: false });
+      }
+    }
+
+    // Explicit wires: source field → dest field (instanceKey-addressed).
+    for (const wire of sketch.wires ?? []) {
+      const sl = loc.get(wire.src.instanceKey), dl = loc.get(wire.dest.instanceKey);
+      if (!sl || !dl) continue;
+      const sp = pos.get(wire.src.instanceKey) ?? 0, dp = pos.get(wire.dest.instanceKey) ?? 0;
+      out.push({
+        id: `wire:${wire.id}`,
+        from: `${sk}/${sl}/${wire.src.field}`,
+        to: `${sk}/${dl}/${wire.dest.field}`,
+        delayed: sp >= dp,
+      });
+    }
+    return out;
+  }
+
   render() {
     const sketch = appState.database.sketches[this.sketchId];
     const fieldKey = this.cardFieldKey();
@@ -192,10 +268,13 @@ export class TapsOverlay extends MobxLitElement {
     const refs = showBadges ? this.railRefs(sketch!) : [];
     refs.forEach(r => this.registerRailSelectable(r));
     const selPath = appState.local.selection?.path ?? '';
+    const conns = (this.showArcs && sketch) ? this.connections(sketch) : [];
 
     return html`
       <svg class="lines">
         ${refs.map(r => html`<line class="leader" data-rail-id=${r.rail.id}></line>`)}
+        ${conns.map(cn => html`<path class="wire-arc ${cn.delayed ? 'delayed' : ''}"
+          data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`)}
         <line class="connect-line" style="display:none"></line>
       </svg>
       ${showBadges ? html`
@@ -345,8 +424,29 @@ export class TapsOverlay extends MobxLitElement {
         line.setAttribute('x2', String(rx));
         line.setAttribute('y2', String(BAND_TOP + 40));
       }
+      this.drawArcs(svg, overlayRect);
       this.drawConnectLine(svg, overlayRect, cardAnchorY);
     }
+  }
+
+  /** Update each committed connection's arc `d` from live field-port rects. */
+  private drawArcs(svg: SVGElement, overlayRect: DOMRect) {
+    for (const p of Array.from(svg.querySelectorAll('path.wire-arc')) as SVGPathElement[]) {
+      const a = this.fieldCenter(p.dataset.from ?? '', overlayRect);
+      const b = this.fieldCenter(p.dataset.to ?? '', overlayRect);
+      if (!a || !b) { p.style.display = 'none'; continue; }
+      p.style.display = '';
+      p.setAttribute('d', arcPath(a, b));
+    }
+  }
+
+  /** Overlay-relative center of a field's tap-port hit-box (manager-backed Y). */
+  private fieldCenter(key: string, overlayRect: DOMRect): { x: number; y: number } | null {
+    if (!key) return null;
+    const hit = this.fieldHit(key);
+    if (!hit) return null;
+    const r = hit.getBoundingClientRect();
+    return { x: r.left + r.width / 2 - overlayRect.left, y: r.top + r.height / 2 - overlayRect.top };
   }
 
   /** Live connection line while click/drag-to-connect is in progress (task #64). */
