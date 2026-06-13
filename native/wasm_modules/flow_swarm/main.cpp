@@ -89,8 +89,13 @@ struct UpdateUniforms {
   uint32_t substeps;
   float    dens_aspect_x;   // min/W, min/H — make the density isotropic in pixels
   float    dens_aspect_y;
+
+  float    stream;          // +align / -diverge velocity vs the group
+  float    stream_density;  // neighbour density for ~max stream effect
+  float    _pad_s0;
+  float    _pad_s1;
 };
-static_assert(sizeof(UpdateUniforms) == 112, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 128, "UpdateUniforms layout mismatch");
 
 struct PrefillUniforms { float scale_r, scale_g, scale_b, scale_a; };
 static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
@@ -188,6 +193,8 @@ struct State {
   float avoid              = 0.0f;    // push away from neighbours
   float avoid_curl         = 0.0f;    // rotate the avoidance ±90°
   float avoid_noise        = 0.08f;   // random jitter on avoidance (breaks clumps)
+  float stream             = 0.0f;    // +align / -diverge velocity vs the group
+  float stream_density     = 3.0f;    // neighbour density for ~max stream effect
   bool  debug_density      = false;   // render the density buffer as a heat map
   float opacity      = 1.0f;
   float alpha_curve  = 0.6f;
@@ -263,6 +270,8 @@ static void apply_mode_visibility(const State& s) {
   state::setFieldHidden("avoid",              ix);
   state::setFieldHidden("avoid_curl",         ix);
   state::setFieldHidden("avoid_noise",        ix);
+  state::setFieldHidden("stream",             ix);
+  state::setFieldHidden("stream_density",     ix);
   state::setFieldHidden("debug_density",      ix);
 }
 
@@ -340,6 +349,12 @@ void module_init() {
       // Random jitter on the avoidance so particles still scatter where the
       // density gradient is flat (a symmetric clump's centre). Default on.
       .floatField("avoid_noise",         0.08f,  0.0f,  1.0f,  state::PrimaryInput)
+      // Stream: align (+) or diverge (-) each particle's velocity DIRECTION with
+      // the local group's mean motion (read from the proximity texture's motion
+      // channels). stream_density scales how many proximate, motion-contributing
+      // neighbours are needed to reach ~maximum effect.
+      .floatField("stream",              0.0f,  -1.0f,  1.0f,  state::PrimaryInput)
+      .floatField("stream_density",      3.0f,   0.5f,  32.0f, state::PrimaryInput)
       // Debug: render the density buffer itself (heat map) instead of the swarm.
       .boolField ("debug_density",       false,                state::PrimaryInput)
       // ---- Composite ----
@@ -512,6 +527,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "avoid"))            s->avoid = state::patchFloat(i);
     else if (state::pathIs(path, plen, "avoid_curl"))       s->avoid_curl = state::patchFloat(i);
     else if (state::pathIs(path, plen, "avoid_noise"))      s->avoid_noise = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "stream"))           s->stream = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "stream_density"))   s->stream_density = state::patchFloat(i);
     else if (state::pathIs(path, plen, "debug_density"))    s->debug_density = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "blend_mode"))   s->blend_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "opacity"))      s->opacity = state::patchFloat(i);
@@ -602,6 +619,8 @@ void render(void* self, int vp_w, int vp_h) {
   float aspect_y = min_dim / float(vp_h);
   uu.dens_aspect_x     = aspect_x;
   uu.dens_aspect_y     = aspect_y;
+  uu.stream            = s->stream;
+  uu.stream_density    = s->stream_density;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
@@ -663,7 +682,8 @@ void render(void* self, int vp_w, int vp_h) {
   // particle into the crowding buffer, with overdraw). Only run it when
   // something actually reads the buffer this frame — death, avoid, or the debug
   // view. interactions-on-but-unused then costs nothing extra.
-  bool need_density = ix && (s->density_death > 0.0f || s->avoid > 0.0f || s->debug_density);
+  bool need_density = ix && (s->density_death > 0.0f || s->avoid > 0.0f ||
+                             s->stream != 0.0f || s->debug_density);
 
   // ---- Pass 3: instanced raster (blend over pre-filled tex_out) ----
   // Skipped when debugging the density buffer (the blit below overwrites it).

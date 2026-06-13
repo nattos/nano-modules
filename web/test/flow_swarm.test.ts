@@ -450,6 +450,24 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     expect(largeActive).toBeGreaterThan(smallActive + 100);
   });
 
+  it('stream aligns vs diverges velocities (boids-style)', async () => {
+    // A crowded swarm with velocity variety (jitter spray) + freedom to steer
+    // (low momentum, no pull). stream=+1 aligns headings to the group mean,
+    // stream=-1 amplifies divergence → the two frames clearly differ.
+    const sw = {
+      count: 4000, mode: 0, momentum: 0.3, pull: 0.0, speed: 3.0,
+      shape_kind: 1, size: 0.8, color_blend: 0.0, input_alpha: 0.0,
+      blend_mode: 0, opacity: 1.0, seed: 4, jitter: 0.3,
+      interactions: true, interaction_radius: 0.04, stream_density: 2.0,
+    };
+    const align   = await runChain('fs_align',   { ...sw, stream: 1.0 }, 28);
+    const diverge = await runChain('fs_diverge', { ...sw, stream: -1.0 }, 28);
+    expect(align.success).toBe(true);
+    expect(diverge.success).toBe(true);
+    expect(align.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    align.trace('out').expectDifferentFrom(diverge.trace('out'), 40);
+  });
+
   it('density death thins crowded regions (interactions)', async () => {
     // Same crowding setup; death culls particles where the density buffer says
     // it's crowded (they respawn elsewhere) → the frame changes vs death off.

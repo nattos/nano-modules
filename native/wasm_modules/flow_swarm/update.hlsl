@@ -56,6 +56,11 @@ cbuffer Uniforms : register(b4) {
   uint  substeps;       // integration substeps per frame (1 = single step)
   float dens_aspect_x;  // min/W, min/H — density is isotropic in pixels
   float dens_aspect_y;
+
+  float stream;         // +align / -diverge velocity vs the group; 0 = off
+  float stream_density; // neighbour density for ~max stream effect
+  float _pad_s0;
+  float _pad_s1;
 };
 
 // Max settle rate (1/s) at pull = 1, used for a framerate-independent approach.
@@ -64,6 +69,7 @@ static const float FSW_PULL_RATE  = 20.0;
 static const float FSW_DEATH_RATE = 4.0;   // MAX death rate (1/s) at density_death=1
 static const float FSW_AVOID_VEL  = 1.5;   // avoidance velocity scale (× speed)
 static const float FSW_NOISE_CIRC = 0.2;   // slight isotropic part of avoid noise
+static const float FSW_STREAM_RATE = 10.0; // MAX align/diverge rate (1/s) at |stream|=1
 
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -100,7 +106,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // and treat death + avoidance as a constant per-frame force across substeps.
   // (The EXTERNAL flow field IS re-sampled per substep below — it has no self-
   // shadow, and finer field integration is the whole point of substepping.)
-  float2 avoid_vec = float2(0.0, 0.0);
+  float2 avoid_vec  = float2(0.0, 0.0);
+  float2 stream_dir = float2(0.0, 0.0);   // group direction (soft-normalised)
+  float  stream_rate = 0.0;               // 1/s, gated by neighbour density
+  float  stream_sign = (stream >= 0.0) ? 1.0 : -1.0;
   if (interactions != 0u) {
     if (life_remain > 0.0 && density_death > 1e-5) {
       float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
@@ -142,6 +151,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
       // Pixel-space push → uv (so it's isotropic on screen, matching the field).
       avoid_vec = vec_iso * float2(dens_aspect_x, dens_aspect_y);
     }
+    // Stream: read the group's mean velocity (.gb = Σ halo·v, .r = Σ halo) and
+    // its direction. The per-substep steering toward/away from it is applied in
+    // the loop; here we just freeze the direction + a density-gated rate.
+    if (abs(stream) > 1e-4) {
+      float3 dv = densityTex.SampleLevel(linearSampler, saturate(pos), 0).rgb;
+      float2 gmean = dv.gb / max(dv.r, 1e-4);           // halo-weighted mean velocity
+      stream_dir = gmean / (length(gmean) + 1e-4);      // group direction
+      float others = max(dv.r - 1.0, 0.0);              // neighbours (excl. own halo peak)
+      float dfac = saturate(others / max(stream_density, 1e-3));
+      stream_rate = abs(stream) * FSW_STREAM_RATE * dfac;
+    }
   }
 
   for (uint sub = 0u; sub < nsub; sub++) {
@@ -175,6 +195,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
       if (pull > 1e-5) {
         float a = 1.0 - exp(-pull * FSW_PULL_RATE * dt_sub);
         vel = lerp(vel, eff, a);
+      }
+
+      // Stream: steer velocity toward (align, stream>0) or away from (diverge,
+      // stream<0) the frozen group direction, preserving own speed. dt-scaled.
+      if (stream_rate > 1e-5) {
+        float2 target = stream_dir * length(vel);   // group direction, own speed
+        float a = 1.0 - exp(-stream_rate * dt_sub);
+        vel += stream_sign * (target - vel) * a;
       }
 
       // Jitter as a forward SPRAY (not an isotropic cloud): mostly a random

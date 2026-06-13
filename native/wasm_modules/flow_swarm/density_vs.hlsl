@@ -21,6 +21,7 @@ cbuffer DensityUniforms : register(b1) {
 struct DOut {
   float4 pos    : SV_Position;
   float2 corner : TEXCOORD0;   // quad-local [-1,1]² → halo falloff in the FS
+  nointerpolation float2 vel : TEXCOORD1;   // particle velocity → motion channels
 };
 
 [shader("vertex")]
@@ -36,8 +37,10 @@ DOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   if (p.a.z <= 0.0) {   // dead → degenerate triangle (culled)
     o.pos = float4(2.0, 2.0, 2.0, 1.0);
     o.corner = float2(0.0, 0.0);
+    o.vel = float2(0.0, 0.0);
     return o;
   }
+  o.vel = p.b.xy;   // forward this particle's velocity to the motion channels
 
   // Aspect-correct the half-extent so the (square texture) halo is ROUND in
   // screen pixels: a uv radius of radius*aspect_x covers radius*min px on x, and
