@@ -142,6 +142,11 @@ export class SketchExecutor {
 
   private instances = new Map<string, LoadedModule>();
   private sketchIntermediates = new Map<string, { textures: GPUTexture[]; handles: number[] }>();
+  // Retained 1-frame texture copies for delayed/backward TEXTURE wires (feedback).
+  // Pool slots (sketchIntermediates) are recycled each frame, so a texture a
+  // delayed wire reads next frame must be copied into a stable texture here.
+  // Keyed: sketchId → (`${srcInstanceKey}:${srcField}` → {tex, handle}).
+  private delayedTexCache = new Map<string, Map<string, { tex: GPUTexture; handle: number }>>();
 
   /// Owns the WGSL composition + pipeline cache for fused runs.
   private fusionDispatcher: FusionDispatcher;
@@ -401,6 +406,27 @@ export class SketchExecutor {
     return entry;
   }
 
+  // Retained texture for a delayed/backward texture wire's source. Created (and
+  // resized) to match the intermediate pool's format so copyTexture's identical-
+  // format/size requirement holds. Survives across frames (never recycled).
+  private ensureDelayedTexCache(
+    sketchId: string, srcKey: string, width: number, height: number,
+  ): { tex: GPUTexture; handle: number } {
+    const texUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+                   | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
+                   | GPUTextureUsage.COPY_DST;
+    let bySketch = this.delayedTexCache.get(sketchId);
+    if (!bySketch) { bySketch = new Map(); this.delayedTexCache.set(sketchId, bySketch); }
+    let e = bySketch.get(srcKey);
+    if (!e || e.tex.width !== width || e.tex.height !== height) {
+      if (e) e.tex.destroy();
+      const tex = this.device.createTexture({ size: [width, height], format: this.format, usage: texUsage });
+      e = { tex, handle: this.gpuHost.injectTexture(tex) };
+      bySketch.set(srcKey, e);
+    }
+    return e;
+  }
+
   // --- Wires (single-stack model; additive alongside legacy taps/rails) ---
   // Each entry's published outputs this frame and last frame, keyed
   // `${instanceKey}:${field}`, scoped per sketch. A wire reads the producer's
@@ -609,7 +635,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // This frame's published wire outputs become next frame's "previous"
-    // (for delayed/backward wires).
+    // (for delayed/backward wires). Scalar/struct handles are stable, but
+    // texture POOL slots are recycled next frame — so for any source feeding a
+    // DELAYED texture wire, copy this frame's output into a retained texture and
+    // repoint the saved entry at the stable copy. (Same-frame texture wires read
+    // wireCur directly during the pass and need no copy.)
+    for (const w of sketch.wires ?? []) {
+      const srcPos = this.wirePos.get(w.src.instanceKey);
+      const dstPos = this.wirePos.get(w.dest.instanceKey);
+      if (srcPos === undefined || dstPos === undefined) continue;
+      if (srcPos < dstPos) continue;  // same-frame (forward) — no retained copy needed
+      const srcKey = `${w.src.instanceKey}:${w.src.field}`;
+      const out = this.wireCur.get(srcKey);
+      if (!out || out.kind !== 'texture' || out.handle < 0) continue;
+      const cache = this.ensureDelayedTexCache(sketchId, srcKey, width, height);
+      this.gpuHost.copyTexture(out.handle, cache.handle);
+      this.wireCur.set(srcKey, { kind: 'texture', handle: cache.handle });
+    }
     this.wirePrevBySketch.set(sketchId, this.wireCur);
 
     return lastOutput;
@@ -997,7 +1039,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 ]);
                 effectiveValues.set(w.dest.field, combined);
               } else if (src.kind === 'texture') {
-                if (delayed) continue;  // backward texture wire needs a retained copy (deferred)
+                // Delayed/backward texture wires read `src` from wirePrev, whose
+                // texture entries point at a retained 1-frame copy (made at the
+                // previous frame's end) — safe to install directly. On frame 0
+                // wirePrev is empty → `src` is undefined → skipped above.
                 const texIndex = parseInt(w.dest.field, 10);
                 if (!isNaN(texIndex) && String(texIndex) === w.dest.field) {
                   while (inputTextures.length <= texIndex) inputTextures.push(-1);
@@ -1657,5 +1702,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       for (const tex of entry.textures) tex.destroy();
     }
     this.sketchIntermediates.clear();
+    for (const bySketch of this.delayedTexCache.values()) {
+      for (const e of bySketch.values()) e.tex.destroy();
+    }
+    this.delayedTexCache.clear();
   }
 }

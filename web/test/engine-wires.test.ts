@@ -1,4 +1,4 @@
-import { runEngineTest } from './engine-test-helpers';
+import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
@@ -92,5 +92,66 @@ describe('Wire routing E2E', () => {
 
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+  });
+
+  it('delayed/backward texture wire = self-feedback accumulator', async () => {
+    // A backward texture wire reads the producer's PREVIOUS-frame output. The
+    // cleanest probe is a SELF-loop on the bottom (output) stage: acc@0.tex_out
+    // → acc@0.'1' (src pos == dest pos → delayed). Chain top→bottom: src@0 (a dim
+    // red, feeding acc's input A same-frame via the implicit texture flow), acc@0
+    // (video.blend, the output). With opacity 0.9:
+    //     out = 0.1*src + 0.9*(acc's PREVIOUS out)
+    // so the red channel ramps UP frame-over-frame toward src (≈102), converging
+    // only because each frame folds in the last frame's result. A monotonic rise
+    // proves the delayed wire is delivering frame N-1 (a broken/empty feedback
+    // would pin the output at 0.1*src every frame instead).
+    const sketch: Sketch = {
+      anchor: null,
+      columns: [{
+        name: 'main',
+        chain: [
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+            params: { color: [0.4, 0.0, 0.0] } },
+          { type: 'module', module_type: 'video.blend', instance_key: 'acc@0',
+            params: { opacity: 0.97 } },
+        ],
+      }],
+      wires: [
+        { id: 'fb', src: { instanceKey: 'acc@0', field: 'tex_out' },
+          dest: { instanceKey: 'acc@0', field: '1' } },
+      ],
+    } as Sketch;
+
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: ['generator.solid_color', 'video.blend'],
+      dumpName: 'wire_feedback',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'wire_fb', sketch },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'wire_fb' } },
+            ]},
+          ],
+          waitFrames: 1, captureTraceIds: ['out'],
+        },
+        { waitFrames: 6, captureTraceIds: ['out'] },
+        { waitFrames: 13, captureTraceIds: ['out'] },
+      ],
+    });
+
+    expect(r.success).toBe(true);
+    const r0 = r.phases[0].trace('out').pixelAt(32, 32).r;
+    const r1 = r.phases[1].trace('out').pixelAt(32, 32).r;
+    const r2 = r.phases[2].trace('out').pixelAt(32, 32).r;
+    // Accumulating toward src (~102), bounded by it. Without a working delayed
+    // wire the output would pin at the no-feedback floor (~0.03*src ≈ 3); a high
+    // floor + monotonic rise + clear net gain proves frame N-1 is fed back.
+    expect(r0).toBeGreaterThan(15);            // feedback present (>> ~3 floor)
+    expect(r1).toBeGreaterThanOrEqual(r0);     // non-decreasing
+    expect(r2).toBeGreaterThan(r1);            // still climbing at the end
+    expect(r2).toBeGreaterThan(r0 + 10);       // clear net accumulation
+    expect(r2).toBeLessThanOrEqual(110);       // never exceeds src
   });
 });
