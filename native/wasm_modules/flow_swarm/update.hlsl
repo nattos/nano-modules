@@ -53,7 +53,7 @@ cbuffer Uniforms : register(b4) {
   float density_res;    // density buffer resolution (texels per axis)
 
   float avoid_noise;    // random jitter on the avoidance (breaks flat clumps)
-  float _pad_n0;
+  uint  substeps;       // integration substeps per frame (1 = single step)
   float _pad_n1;
   float _pad_n2;
 };
@@ -71,49 +71,48 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (i >= count) return;
 
   Particle p = particles[i];
-  float2 pos = p.a.xy;
-  float life_remain = p.a.z;
-  float life_total  = p.a.w;
-  float2 vel = p.b.xy;
+  float2 pos         = p.a.xy;
+  float  life_remain = p.a.z;
+  float  life_total  = p.a.w;
+  float2 vel         = p.b.xy;
+  float  size_cur    = p.b.z;
+  uint   packed      = asuint(p.b.w);
 
-  // Interaction 1 — density-gated probabilistic death. Where local crowding
-  // (≈ neighbour count, from last frame's splat) exceeds the threshold, give a
-  // per-frame death chance that grows with the excess (soft knee). Killed
-  // particles respawn elsewhere, so the swarm self-levels toward uniform
-  // density. life_remain = 0 falls through to the respawn branch below.
-  if (interactions != 0u && life_remain > 0.0 && density_death > 1e-5) {
-    float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
-    float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
-    // SATURATING soft knee: 0 below the threshold, ramping smoothly to 1 by
-    // threshold+knee. Bounded so dense regions can't insta-kill the whole
-    // swarm — density_death scales the MAX rate, the knee its onset.
-    float knee = max(density_threshold * 0.5, 1.0);
-    float factor = smoothstep(0.0, knee, others - density_threshold);
-    float lambda = density_death * FSW_DEATH_RATE * factor;   // 1/s
-    float pdie = 1.0 - exp(-lambda * dt);                     // dt-weighted
-    float rr = fsw_unit(fsw_hash3(i + 0xDEAD0001u, frame_index, seed));
-    if (rr < pdie) life_remain = 0.0;
-  }
+  // Substepping: integrate the motion `nsub` times with dt/nsub, re-sampling
+  // the field at each refined position. Everything dt-scaled so the result is
+  // substep-invariant where it should be: death probability and drag are
+  // dt-weighted, `pull` is an exponential approach, velocity-mode momentum is a
+  // per-substep blend (msub), and stochastic kicks scale by 1/√nsub so their
+  // variance holds. nsub=1 reproduces the single-step path exactly (sub 0 reuses
+  // the original RNG seed and dt). The win: force mode + fast flow stop
+  // overshooting field/cycle features they used to jump over.
+  uint  nsub        = max(substeps, 1u);
+  float dt_sub      = dt / float(nsub);
+  float noise_scale = rsqrt(float(nsub));
+  float msub        = (momentum < 1e-6) ? 0.0 : pow(momentum, 1.0 / float(nsub));
 
-  bool oob = pos.x < -0.05 || pos.x > 1.05 || pos.y < -0.05 || pos.y > 1.05;
-
-  if (life_remain > 0.0 && !oob) {
-    float depth = fsw_unpack_depth(asuint(p.b.w));
-    float u = fsw_undertow(depth, undertow_split);
-
-    // Field, with undertow re-aim (curl rotates) + re-scale (polarity) for the
-    // members. lerp by membership so partial members partially undertow.
-    float2 fv = flowTex.SampleLevel(linearSampler, saturate(pos), 0).xy;
-    float ang = undertow_curl * 1.5707963;           // ±90° at ±1
-    float ca = cos(ang), sa = sin(ang);
-    float2 rotv = float2(fv.x * ca - fv.y * sa, fv.x * sa + fv.y * ca);
-    float2 under = rotv * undertow_polarity;
-    float2 eff = lerp(fv, under, u) * speed;
-
-    // Interaction 2 — avoid / curl away from neighbours. The density gradient
-    // points toward higher crowding; push down it (curl rotates the push for a
-    // swirling avoidance). Folded into eff so both modes and `pull` cooperate.
-    if (interactions != 0u && avoid > 1e-5) {
+  // --- Density interactions, frozen at the START position ---
+  // The density map is a per-frame snapshot (1-frame delayed), and a particle's
+  // own halo ("shadow") sits at its previous position. If we re-sampled the
+  // density at each substep's MOVED position, the particle would drift off its
+  // own shadow within the frame and the avoidance gradient would push it away
+  // from itself (self-curl / self-propulsion). So evaluate crowding ONCE here
+  // and treat death + avoidance as a constant per-frame force across substeps.
+  // (The EXTERNAL flow field IS re-sampled per substep below — it has no self-
+  // shadow, and finer field integration is the whole point of substepping.)
+  float2 avoid_vec = float2(0.0, 0.0);
+  if (interactions != 0u) {
+    if (life_remain > 0.0 && density_death > 1e-5) {
+      float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
+      float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
+      float knee = max(density_threshold * 0.5, 1.0);
+      float factor = smoothstep(0.0, knee, others - density_threshold);
+      float lambda = density_death * FSW_DEATH_RATE * factor;   // 1/s
+      float pdie = 1.0 - exp(-lambda * dt);                     // whole frame, once
+      float rr = fsw_unit(fsw_hash3(i + 0xDEAD0001u, frame_index, seed));
+      if (rr < pdie) life_remain = 0.0;
+    }
+    if (avoid > 1e-5) {
       float e = 2.0 / max(density_res, 1.0);
       float dl = densityTex.SampleLevel(linearSampler, saturate(pos - float2(e, 0.0)), 0).r;
       float dr = densityTex.SampleLevel(linearSampler, saturate(pos + float2(e, 0.0)), 0).r;
@@ -125,77 +124,87 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float ca2 = cos(ang2), sa2 = sin(ang2);
       float2 av = float2(awayhat.x * ca2 - awayhat.y * sa2,
                          awayhat.x * sa2 + awayhat.y * ca2);
-      eff += av * avoid * FSW_AVOID_VEL * speed;
-
-      // Avoidance noise: MOSTLY a random magnitude along the avoidance/curl
-      // direction `av` (a spray that spreads particles along the push), plus a
-      // SLIGHT isotropic term. `av` is soft-normalised → ~0 on a flat plateau,
-      // so there the directional spray vanishes and only the small circular
-      // kick remains to break the particle out of the stuck centre.
+      avoid_vec = av * avoid * FSW_AVOID_VEL * speed;
+      // Avoidance noise: mostly along `av` (a spray), slight isotropic part.
+      // Frozen per frame (coherent), so no per-substep variance scaling.
       if (avoid_noise > 1e-6) {
         uint nh = fsw_hash3(i + 0x51ED2701u, frame_index, seed);
         float mag  = fsw_unit(fsw_hash(nh));                          // [0,1] along +av
         float2 cir = float2(fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)),
                             fsw_signed(fsw_hash(nh ^ 0x85EBCA77u)));  // isotropic
         float2 nv = av * mag + cir * FSW_NOISE_CIRC;
-        eff += nv * avoid_noise * FSW_AVOID_VEL * speed;
+        avoid_vec += nv * avoid_noise * FSW_AVOID_VEL * speed;
       }
     }
-
-    // Acceleration mode.
-    if (mode == 1u) {
-      // Force: eff is an acceleration; integrate / mass.
-      vel += eff * dt / max(weight, 1e-3);
-    } else {
-      // Velocity: chase eff with momentum (0 = clean field follow).
-      vel = eff * (1.0 - momentum) + vel * momentum;
-    }
-
-    // Settle ("pull"): bleed the particle's velocity back toward the field's
-    // prescribed flow (eff) — deviation → 0. The field's streamlines spiral
-    // into the limit cycle, so this keeps particles in the stable zone and
-    // damps force-mode overshoot. Framerate-independent exponential approach;
-    // vanishes once a particle already matches the flow. Works in both modes.
-    if (pull > 1e-5) {
-      float a = 1.0 - exp(-pull * FSW_PULL_RATE * dt);
-      vel = lerp(vel, eff, a);
-    }
-
-    // Per-frame jitter kick (hash-based; not low-passed by the chase).
-    if (jitter > 1e-6) {
-      uint h = fsw_hash3(i + 0x9E3779B1u, frame_index, seed);
-      float2 kick = float2(fsw_signed(h), fsw_signed(fsw_hash(h ^ 0x68BC21EBu)));
-      vel += kick * jitter;
-    }
-
-    // Drag, then integrate.
-    vel *= max(1.0 - drag * dt, 0.0);
-    pos += vel * dt;
-
-    p.a = float4(pos, life_remain - dt, life_total);
-    p.b.xy = vel;
-    particles[i] = p;
-    return;
   }
 
-  // --- Respawn: fresh random uv, capture input color, roll depth/size/life ---
-  uint hp = fsw_hash3(i + 0x85EBCA77u, frame_index, seed);
-  float ux = float(hp & 0xFFFFu) * (1.0 / 65536.0);
-  float uy = float((hp >> 16u) & 0xFFFFu) * (1.0 / 65536.0);
-  float2 nuv = float2(ux, uy);
+  for (uint sub = 0u; sub < nsub; sub++) {
+    // sub 0 → fi == frame_index (identical RNG to the single-step path).
+    uint fi = frame_index + sub * 0x9E3779B9u;
 
-  float4 capt = inputTex.SampleLevel(linearSampler, nuv, 0);
-  float depth = fsw_unit(fsw_hash2(i + 0x9E3779B9u, frame_index + seed));
-  uint packed = fsw_pack_rgbd(capt.rgb, depth);
+    bool oob = pos.x < -0.05 || pos.x > 1.05 || pos.y < -0.05 || pos.y > 1.05;
 
-  float lj = fsw_signed(fsw_hash2(i + 0xC2B2AE3Du, frame_index + seed));
-  float new_life = max(life * (1.0 + life_jitter * lj), 1e-3);
-  float sj = fsw_signed(fsw_hash2(i + 0x27D4EB2Fu, frame_index + seed));
-  float new_size = max(size * (1.0 + size_jitter * sj), 1e-6);
+    if (life_remain > 0.0 && !oob) {
+      float depth = fsw_unpack_depth(packed);
+      float u = fsw_undertow(depth, undertow_split);
 
-  float2 field0 = flowTex.SampleLevel(linearSampler, nuv, 0).xy;
+      // Field, with undertow re-aim (curl rotates) + re-scale (polarity).
+      // Re-sampled every substep (external field, no self-shadow). The frozen
+      // avoidance is added on top.
+      float2 fv = flowTex.SampleLevel(linearSampler, saturate(pos), 0).xy;
+      float ang = undertow_curl * 1.5707963;           // ±90° at ±1
+      float ca = cos(ang), sa = sin(ang);
+      float2 rotv = float2(fv.x * ca - fv.y * sa, fv.x * sa + fv.y * ca);
+      float2 under = rotv * undertow_polarity;
+      float2 eff = lerp(fv, under, u) * speed + avoid_vec;
 
-  p.a = float4(nuv, new_life, new_life);
-  p.b = float4(field0 * speed, new_size, asfloat(packed));
+      // Acceleration mode.
+      if (mode == 1u) {
+        vel += eff * dt_sub / max(weight, 1e-3);          // force / mass
+      } else {
+        vel = eff * (1.0 - msub) + vel * msub;            // velocity chase, msub inertia
+      }
+
+      // Settle ("pull"): exponential approach toward the field flow (dt-scaled).
+      if (pull > 1e-5) {
+        float a = 1.0 - exp(-pull * FSW_PULL_RATE * dt_sub);
+        vel = lerp(vel, eff, a);
+      }
+
+      // Per-frame jitter kick (variance held across substeps via noise_scale).
+      if (jitter > 1e-6) {
+        uint h = fsw_hash3(i + 0x9E3779B1u, fi, seed);
+        float2 kick = float2(fsw_signed(h), fsw_signed(fsw_hash(h ^ 0x68BC21EBu)));
+        vel += kick * jitter * noise_scale;
+      }
+
+      // Drag, then integrate.
+      vel *= max(1.0 - drag * dt_sub, 0.0);
+      pos += vel * dt_sub;
+      life_remain -= dt_sub;
+    } else {
+      // --- Respawn: fresh random uv, capture color, roll depth/size/life ---
+      uint hp = fsw_hash3(i + 0x85EBCA77u, fi, seed);
+      float ux = float(hp & 0xFFFFu) * (1.0 / 65536.0);
+      float uy = float((hp >> 16u) & 0xFFFFu) * (1.0 / 65536.0);
+      float2 nuv = float2(ux, uy);
+
+      float4 capt = inputTex.SampleLevel(linearSampler, nuv, 0);
+      float depth = fsw_unit(fsw_hash2(i + 0x9E3779B9u, fi + seed));
+      packed = fsw_pack_rgbd(capt.rgb, depth);
+
+      float lj = fsw_signed(fsw_hash2(i + 0xC2B2AE3Du, fi + seed));
+      life_remain = max(life * (1.0 + life_jitter * lj), 1e-3);
+      life_total  = life_remain;
+      float sj = fsw_signed(fsw_hash2(i + 0x27D4EB2Fu, fi + seed));
+      size_cur = max(size * (1.0 + size_jitter * sj), 1e-6);
+
+      pos = nuv;
+      vel = flowTex.SampleLevel(linearSampler, nuv, 0).xy * speed;
+    }
+  }
+
+  p.a = float4(pos, life_remain, life_total);
+  p.b = float4(vel, size_cur, asfloat(packed));
   particles[i] = p;
 }

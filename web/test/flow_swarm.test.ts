@@ -259,6 +259,29 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 30);
   });
 
+  it('substeps refine the integration (force mode, 1 vs 8 substeps differ)', async () => {
+    // Force mode + fast flow overshoots with one big step; substepping
+    // re-samples the field along the path, so the trajectory (and frame) differ.
+    const force = { mode: 1, weight: 0.4, drag: 0.1, speed: 6.0, momentum: 0.0 };
+    const run = (id: string, substeps: number) => runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(true, { ...force, substeps }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 24, captureTraceIds: ['out'], dumpName: id,
+    });
+    const one  = await run('fs_sub1', 1);
+    const many = await run('fs_sub8', 8);
+    expect(one.success).toBe(true);
+    expect(many.success).toBe(true);
+    expect(many.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    many.trace('out').expectDifferentFrom(one.trace('out'), 40);
+  });
+
   it('pull settles the swarm onto the field (force mode, pull on vs off)', async () => {
     // Force mode lets particles overshoot the stable zone. `pull` bleeds their
     // velocity back toward the field flow each frame, settling them onto the

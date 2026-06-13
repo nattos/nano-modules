@@ -86,7 +86,7 @@ struct UpdateUniforms {
   float    density_res;
 
   float    avoid_noise;
-  float    _pad_n0;
+  uint32_t substeps;
   float    _pad_n1;
   float    _pad_n2;
 };
@@ -159,6 +159,7 @@ struct State {
   float speed        = 1.5f;
   float momentum     = 0.0f;    // velocity mode: 0 = clean sim of the field
   float weight       = 1.0f;    // force mode: particle mass
+  int   substeps     = 1;       // integration substeps per frame (finer = stabler)
   float pull         = 0.0f;    // settle velocity toward the field flow (both modes)
   float life         = 4.0f;
   float life_jitter  = 0.4f;
@@ -287,6 +288,10 @@ void module_init() {
       .floatField("momentum",     0.0f,  0.0f,  0.99f, state::PrimaryInput)
       // Force mode only: particle mass (accel = field / weight).
       .floatField("weight",       1.0f,  0.05f, 8.0f,  state::PrimaryInput)
+      // Integration substeps per frame: the motion is integrated this many times
+      // with dt/substeps, re-sampling the field each time. Higher = stabler /
+      // less overshoot for force mode & fast flow (at proportional GPU cost).
+      .intField  ("substeps",     1,     1,     16,    state::PrimaryInput)
       // Settle (both modes): pull each particle's velocity back toward the
       // field flow, keeping it in the stable zone (the limit cycle) and damping
       // force-mode overshoot. 0 = free, 1 = strongly glued to the field.
@@ -475,6 +480,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "speed"))        s->speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "momentum"))     s->momentum = state::patchFloat(i);
     else if (state::pathIs(path, plen, "weight"))       s->weight = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "substeps"))     s->substeps = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "pull"))         s->pull = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter"))       s->jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drag"))         s->drag = state::patchFloat(i);
@@ -586,6 +592,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.avoid_curl        = s->avoid_curl;
   uu.density_res       = (float)DENSITY_RES;
   uu.avoid_noise       = s->avoid_noise;
+  uu.substeps          = (uint32_t)(s->substeps < 1 ? 1 : (s->substeps > 16 ? 16 : s->substeps));
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
