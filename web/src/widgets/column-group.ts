@@ -12,13 +12,12 @@
 
 import { html, css, nothing, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { reaction, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Tap, TapCurve, TapCombine } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
@@ -142,38 +141,18 @@ export class ColumnGroup extends MobxLitElement {
   /** Each column-group owns its own layout manager for field position tracking. */
   public readonly layoutManager = new FieldLayoutManager();
 
-  /** Width per rail slot in the gutter. */
-  static readonly RAIL_SLOT_WIDTH = 16;
-  /** Base gutter width (with zero rails). */
-  static readonly GUTTER_BASE_WIDTH = 8;
-  /** Number of rails per quantized gutter block. */
-  static readonly RAILS_PER_BLOCK = 4;
-  /** Width of one quantized block. */
-  static readonly GUTTER_BLOCK_WIDTH = ColumnGroup.RAILS_PER_BLOCK * ColumnGroup.RAIL_SLOT_WIDTH;
+  /** Gutter width — holds the field-option pip + wire ports. Fixed now that
+   *  rails are gone (it used to grow per rail). */
+  static readonly GUTTER_WIDTH = 20;
 
-  /** Compute the number of rails in this column (column-scoped + sketch-scoped). */
-  getRailCount(): number {
-    const sketch = appState.database.sketches[this.sketchId];
-    if (!sketch || this.colIdx < 0 || this.colIdx >= sketch.columns.length) return 0;
-    const colRails = sketch.columns[this.colIdx]?.rails?.length ?? 0;
-    const sketchRails = sketch.rails?.length ?? 0;
-    return colRails + sketchRails;
-  }
-
-  /** Compute gutter width, growing in quantized jumps per RAILS_PER_BLOCK. */
   getGutterWidth(): number {
-    const railCount = this.getRailCount();
-    if (railCount === 0) return ColumnGroup.GUTTER_BASE_WIDTH;
-    const blocks = Math.ceil(railCount / ColumnGroup.RAILS_PER_BLOCK);
-    return ColumnGroup.GUTTER_BASE_WIDTH + blocks * ColumnGroup.GUTTER_BLOCK_WIDTH;
+    return ColumnGroup.GUTTER_WIDTH;
   }
 
   /** Which chain entry index is currently being type-edited (smart-input open), or -1 for none. */
   private editingTypeChainIdx = -1;
   /** The active LongEdit for type preview (null when not previewing). */
   private typeLongEdit: LongEdit | null = null;
-  /** Disposes the reaction that syncs rail positions. */
-  private railReactionDisposer: IReactionDisposer | null = null;
 
   static styles = css`
     :host {
@@ -507,19 +486,6 @@ export class ColumnGroup extends MobxLitElement {
       outline-color: var(--app-hi-color1, #ff4500);
       background: rgba(255, 69, 0, 0.35);
     }
-    /* --- Tap visualization (writes=red, reads=blue) --- */
-    .tap-indicator {
-      position: absolute;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 2;
-      cursor: pointer;
-    }
-    .tap-indicator.write { background: var(--app-hi-color1, #ff4500); }
-    .tap-indicator.read  { background: var(--app-hi-color2, #4169E1); }
-    .tap-indicator:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
     /* Engine-level field-option "light" by the field row. The ELEMENT is a
        generous transparent hit box; the visible 6px green dot (the device-on
        accent, distinct from the blue/red tap rails) is drawn via ::after so the
@@ -562,54 +528,6 @@ export class ColumnGroup extends MobxLitElement {
     .field-option-pip.wired.output:hover::after {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-hi-color1, #ff4500);
     }
-    .tap-indicator[selected] {
-      box-shadow: 0 0 0 2px rgba(255,255,255,0.8);
-    }
-    .tap-indicator-line {
-      position: absolute;
-      height: 2px;
-      transform: translateY(-50%);
-      z-index: 1;
-      cursor: pointer;
-    }
-    /* Invisible padding strip to enlarge the click hitbox above/below the 2px line. */
-    .tap-indicator-line::before {
-      content: '';
-      position: absolute;
-      left: 0; right: 0;
-      top: -5px; bottom: -5px;
-    }
-    .tap-indicator-line.write { background: var(--app-hi-color1, #ff4500); opacity: 0.6; }
-    .tap-indicator-line.read  { background: var(--app-hi-color2, #4169E1); opacity: 0.6; }
-    .tap-indicator-line:hover { opacity: 0.9; }
-    .tap-indicator-line[selected] { opacity: 1; }
-
-    /* --- Rail vertical lines ---
-     * A rail is drawn as a dim full-height backbone with a bright blue
-     * overlay covering just the "active" segment: from the first write
-     * tap's Y down to the last read tap's Y. The overlay is only rendered
-     * when the rail has at least one writer AND one reader. --- */
-    .rail-line {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      width: 2px;
-      transform: translateX(-50%);
-      background: rgba(255,255,255,0.08);
-      z-index: 0;
-    }
-    .rail-line:hover {
-      background: rgba(255,255,255,0.2);
-    }
-    .rail-line-active {
-      position: absolute;
-      width: 2px;
-      transform: translateX(-50%);
-      background: var(--app-hi-color2, #4169E1);
-      opacity: 0.85;
-      z-index: 1;
-      pointer-events: none;
-    }
 
     /* --- Inspector content (rendered into the right panel via Selectable) --- */
     .section-header {
@@ -631,32 +549,6 @@ export class ColumnGroup extends MobxLitElement {
     }
   `;
 
-  connectedCallback() {
-    super.connectedCallback();
-    // React to rail changes and recompute positions outside of render.
-    this.railReactionDisposer = reaction(
-      () => {
-        const sketch = appState.database.sketches[this.sketchId];
-        if (!sketch || this.colIdx < 0 || this.colIdx >= sketch.columns.length) return null;
-        const colRails = sketch.columns[this.colIdx]?.rails ?? [];
-        const sketchRails = sketch.rails ?? [];
-        return [...colRails.map(r => r.id), ...sketchRails.map(r => r.id)];
-      },
-      (railIds) => {
-        if (railIds) {
-          this.layoutManager.updateRailPositions(railIds, this.getGutterWidth());
-          // Notify parent to recalculate layout (gutter width changed)
-          this.callbacks?.onGutterWidthChanged?.();
-        }
-      },
-      { fireImmediately: true, equals: (a, b) => {
-        if (a === b) return true;
-        if (!a || !b || a.length !== b.length) return false;
-        return a.every((id, i) => id === b[i]);
-      }},
-    );
-  }
-
   updated() {
     // Set explicit widths via CSS custom properties on the host element.
     this.style.setProperty('--column-width', `${this.columnWidth}px`);
@@ -669,8 +561,6 @@ export class ColumnGroup extends MobxLitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    this.railReactionDisposer?.();
-    this.railReactionDisposer = null;
     this.layoutManager.dispose();
   }
 
@@ -763,8 +653,6 @@ export class ColumnGroup extends MobxLitElement {
         <div class="drag-insert-marker"></div>
       </div>
       <div class="column-gutter" data-col=${this.colIdx}>
-        ${this.renderRailLines(sketch, column)}
-        ${this.renderGutterTaps(sketch, column)}
         ${this.renderFieldOptionPips(column)}
       </div>
     `;
@@ -1488,129 +1376,6 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
 
   /**
-   * Render vertical rail lines in the gutter, plus a blue "active segment"
-   * overlay covering the range from the first write tap's Y down to the
-   * last read tap's Y. Only rails with both a writer AND a reader (in
-   * THIS column — rails can be multi-column but tap Y is per-column)
-   * get an active overlay.
-   */
-  private renderRailLines(sketch: Sketch, column: SketchColumn) {
-    const allRails = [
-      ...(column.rails ?? []),
-      ...(sketch.rails ?? []),
-    ];
-    if (allRails.length === 0) return nothing;
-
-    const gutterEl = this.renderRoot.querySelector(
-      `.column-gutter[data-col="${this.colIdx}"]`
-    ) as HTMLElement | null;
-
-    // Compute first-write / last-read Y for each rail. Iterate ONCE over
-    // the column's chain so large columns stay cheap.
-    const railActive = new Map<string, { firstWriteY: number; lastReadY: number }>();
-    if (gutterEl) {
-      const ensure = (id: string) => {
-        let e = railActive.get(id);
-        if (!e) {
-          e = { firstWriteY: Infinity, lastReadY: -Infinity };
-          railActive.set(id, e);
-        }
-        return e;
-      };
-      for (let i = 0; i < column.chain.length; i++) {
-        const entry = column.chain[i];
-        if (entry.type !== 'module' || !entry.taps?.length) continue;
-        for (const tap of entry.taps) {
-          const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${tap.fieldPath}`;
-          const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
-          if (!rect) continue;
-          const y = rect.top + rect.height / 2;
-          const a = ensure(tap.railId);
-          if (tap.direction === 'write') {
-            if (y < a.firstWriteY) a.firstWriteY = y;
-          } else {
-            if (y > a.lastReadY) a.lastReadY = y;
-          }
-        }
-      }
-    }
-
-    return allRails.map(rail => {
-      const x = this.layoutManager.getRailX(rail.id);
-      if (x === null) return nothing;
-      const seg = railActive.get(rail.id);
-      const hasActive = seg && seg.firstWriteY !== Infinity && seg.lastReadY !== -Infinity
-        && seg.firstWriteY < seg.lastReadY;
-      return html`
-        <div class="rail-line"
-          data-rail-id=${rail.id}
-          data-col-idx=${this.colIdx}
-          style="left:${x}px"
-          title="${rail.name ?? rail.id}"></div>
-        ${hasActive ? html`
-          <div class="rail-line-active"
-            style="left:${x}px;top:${seg!.firstWriteY}px;height:${seg!.lastReadY - seg!.firstWriteY}px"></div>
-        ` : nothing}
-      `;
-    });
-  }
-
-  private renderGutterTaps(sketch: Sketch, column: SketchColumn) {
-    const indicators: TemplateResult[] = [];
-    const gutterEl = this.renderRoot.querySelector(`.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
-    if (!gutterEl) return indicators;
-
-    for (let i = 0; i < column.chain.length; i++) {
-      const entry = column.chain[i];
-      if (entry.type !== 'module' || !entry.taps?.length) continue;
-      const outputFieldNames = this.getOutputFieldNames(entry);
-
-      for (let tapIdx = 0; tapIdx < entry.taps.length; tapIdx++) {
-        const tap = entry.taps[tapIdx];
-        const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${tap.fieldPath}`;
-        const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
-        if (!rect) continue;
-
-        const railX = this.layoutManager.getRailX(tap.railId);
-        if (railX === null) continue;
-
-        const yCenter = rect.top + rect.height / 2;
-        const tapPath = `gtap/${this.sketchId}/${this.colIdx}/${i}/${tapIdx}`;
-        const isSelected = appController.isSelected(tapPath);
-        this.registerGutterTapSelectable(tapPath, i, tapIdx);
-        // Register the field selectable too, so selecting a tap (in either mode)
-        // can show the floating field card even when taps mode is off.
-        this.registerFieldSelectable(fieldKey, i, entry, tap.fieldPath,
-          outputFieldNames.has(tap.fieldPath));
-
-        const onClick = (e: Event) => {
-          e.stopPropagation();
-          appController.select(tapPath);
-        };
-
-        // Dot at the rail X position
-        indicators.push(html`
-          <div class="tap-indicator ${tap.direction}" ?selected=${isSelected}
-            data-tap-path=${tapPath}
-            style="left:${railX}px;top:${yCenter}px"
-            title="${tap.direction === 'write' ? 'Write' : 'Read'} tap → ${tap.fieldPath}"
-            @click=${onClick}></div>
-        `);
-
-        // Horizontal line from gutter left edge (0) to the rail dot
-        indicators.push(html`
-          <div class="tap-indicator-line ${tap.direction}" ?selected=${isSelected}
-            data-tap-path=${tapPath}
-            style="left:0;width:${railX - 3}px;top:${yCenter}px"
-            @click=${onClick}></div>
-        `);
-      }
-    }
-
-    return indicators;
-  }
-
-  /**
    * A small "light" in the gutter (by the field row) for any field that carries
    * engine-level options (currently smoothing) OR has a wire connected to it.
    * Clicking it selects the field, which surfaces the floating field card (where
@@ -1664,157 +1429,6 @@ export class ColumnGroup extends MobxLitElement {
       }
     }
     return pips;
-  }
-
-  /** Register a gutter tap (visual wire connector) as a selectable. */
-  private registerGutterTapSelectable(path: string, chainIdx: number, tapIdx: number) {
-    const sketchId = this.sketchId;
-    const colIdx = this.colIdx;
-    appController.defineSelectable({
-      path,
-      label: 'Tap',
-      renderInspectorContent: () => {
-        const sketch = appState.database.sketches[sketchId];
-        const entry = sketch?.columns[colIdx]?.chain[chainIdx];
-        if (!entry || entry.type !== 'module') return undefined;
-        const tap = entry.taps?.[tapIdx];
-        if (!tap) return undefined;
-        const allRails = [
-          ...(sketch!.rails ?? []),
-          ...(sketch!.columns[colIdx]?.rails ?? []),
-        ];
-        const rail = allRails.find(r => r.id === tap.railId);
-        return html`
-          <div class="inspector-field">
-            <span class="inspector-field-label">Direction</span>
-            <span class="inspector-field-value">${tap.direction}</span>
-          </div>
-          <div class="inspector-field">
-            <span class="inspector-field-label">Field</span>
-            <span class="inspector-field-value">${tap.fieldPath}</span>
-          </div>
-          <div class="inspector-field">
-            <span class="inspector-field-label">Rail</span>
-            <span class="inspector-field-value">${rail?.name ?? tap.railId}</span>
-          </div>
-          ${rail?.dataType === 'float'
-            ? this.renderTapModInspector(sketchId, colIdx, chainIdx, tapIdx, tap)
-            : nothing}
-          <div class="inspector-separator"></div>
-          <button class="btn" style="width:100%;padding:6px"
-            @click=${() => {
-              appController.removeTap(sketchId, colIdx, chainIdx, tapIdx);
-              appController.select(null);
-            }}>Remove Tap</button>
-        `;
-      },
-    });
-  }
-
-  /**
-   * Modulation controls for a selected float-rail tap: a range remapper
-   * (scale + remap with saturation and in/out shaping curves) applied after
-   * read / before write, and — for write taps — a summation mode.
-   */
-  private renderTapModInspector(sketchId: string, colIdx: number, chainIdx: number,
-                                tapIdx: number, tap: Tap) {
-    const remap = tap.mod?.remap;
-    const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
-    const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
-    const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
-    const curveOpts = CURVES.map(c => ({ label: c, value: c }));
-    const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
-
-    // Build the field set conditionally, then render with the shared field
-    // editors (scalar-slider / field-toggle / field-tab-bar) via a FieldBinding —
-    // long edits, tap-layout registration, and styling come for free.
-    const fields: InspectorFieldDef[] = [
-      { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 },
-      { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
-    ];
-    if (remap) {
-      fields.push(
-        { type: 'slider', label: 'In min', path: 'remap.inMin', min: -1, max: 1, default: 0 },
-        { type: 'slider', label: 'In max', path: 'remap.inMax', min: -1, max: 1, default: 1 },
-        { type: 'slider', label: 'Out min', path: 'remap.outMin', min: -1, max: 1, default: 0 },
-        { type: 'slider', label: 'Out max', path: 'remap.outMax', min: -1, max: 1, default: 1 },
-        { type: 'boolean', label: 'Saturate', path: 'remap.saturate', default: false },
-        { type: 'select', label: 'Curve in', path: 'remap.curveIn', options: curveOpts, default: 'linear' },
-        { type: 'select', label: 'Curve out', path: 'remap.curveOut', options: curveOpts, default: 'linear' },
-      );
-      if (usesPower) {
-        fields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
-      }
-    }
-    // Mix mode applies to both directions: write taps mix into the rail's
-    // current value; read taps mix the rail into the user's canonical value
-    // (replace = today's behavior; add/mul/mix modulate from the set value).
-    fields.push({ type: 'select', label: 'Mix Mode', path: 'combine', options: combineOpts, default: 'replace' });
-    if ((tap.combine ?? 'replace') === 'mix') {
-      fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
-    }
-
-    const binding = this.tapModBinding(sketchId, colIdx, chainIdx, tapIdx);
-    return html`
-      <div class="inspector-separator"></div>
-      <div class="section-header">Modulation</div>
-      ${createGenericInspector(fields)(binding)}
-    `;
-  }
-
-  /**
-   * FieldBinding mapping synthetic paths to a tap's mod fields, so the shared
-   * field editors can drive them with long edits. Handles numbers (scale,
-   * remap.in/out min/max, remap.exponent, mixFactor), booleans (remapEnabled,
-   * remap.saturate), and selects (remap.curveIn/curveOut, combine). getValue
-   * returns undefined for an unset numeric field so the slider uses its default.
-   */
-  private tapModBinding(sketchId: string, colIdx: number, chainIdx: number, tapIdx: number): FieldBinding {
-    const getTap = (): Tap | undefined => {
-      const e = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
-      return e?.type === 'module' ? e.taps?.[tapIdx] : undefined;
-    };
-    const read = (path: string): any => {
-      const tap = getTap();
-      if (!tap) return undefined;
-      if (path === 'scale') return tap.mod?.scale;
-      if (path === 'mixFactor') return tap.mixFactor;
-      if (path === 'combine') return tap.combine ?? 'replace';
-      if (path === 'remapEnabled') return !!tap.mod?.remap;
-      if (path.startsWith('remap.')) {
-        return (tap.mod?.remap as Record<string, any> | undefined)?.[path.slice(6)];
-      }
-      return undefined;
-    };
-    // Build a Partial<Tap> patch for a path+value, deep-merging mod/remap.
-    const patchFor = (path: string, v: any): Partial<Tap> => {
-      const mod = getTap()?.mod ?? {};
-      if (path === 'scale') return { mod: { ...mod, scale: v as number } };
-      if (path === 'mixFactor') return { mixFactor: v as number };
-      if (path === 'combine') return { combine: v as TapCombine };
-      if (path === 'remapEnabled') {
-        return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
-      }
-      const remap = mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
-      const key = path.slice(6);
-      // field-toggle writes 0/1 for saturate; everything else is the typed value.
-      const val = key === 'saturate' ? !!v : v;
-      return { mod: { ...mod, remap: { ...remap, [key]: val } } };
-    };
-    return {
-      instanceKey: `tap/${sketchId}/${colIdx}/${chainIdx}/${tapIdx}`,
-      getValue: (path: string) => read(path),
-      setValue: (path: string, v: any) =>
-        appController.updateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v)),
-      beginContinuousEdit: (path: string, v: any): ContinuousEditHandle => {
-        const edit = appController.beginUpdateTap(sketchId, colIdx, chainIdx, tapIdx, patchFor(path, v));
-        return {
-          update: (nv: any) => appController.updateUpdateTap(edit, sketchId, colIdx, chainIdx, tapIdx, patchFor(path, nv)),
-          accept: () => edit.accept(),
-          cancel: () => edit.cancel(),
-        };
-      },
-    };
   }
 
   // ========================================================================
@@ -2072,12 +1686,9 @@ export class ColumnGroup extends MobxLitElement {
           .binding=${smBinding}></scalar-slider>
       ` : nothing}`;
 
-    // Taps wired to this field.
     const sketch = appState.database.sketches[this.sketchId];
-    const allRails = [...(sketch?.rails ?? []), ...(sketch?.columns[this.colIdx]?.rails ?? [])];
-    const taps = (entry.taps ?? []).map((t, i) => ({ t, i })).filter(({ t }) => t.fieldPath === fieldPath);
 
-    // Wires connected to this field (the new model). A field may be the source
+    // Wires connected to this field. A field may be the source
     // (output) or the dest (input) of a wire; show the other endpoint + remove.
     const myKey = entry.instance_key;
     const wires = (sketch?.wires ?? []).filter(w =>
@@ -2109,26 +1720,6 @@ export class ColumnGroup extends MobxLitElement {
       ${editor}
       ${smoothing}
       ${wiresSection}
-      <div class="section-header" style="margin-top:8px">Taps</div>
-      ${taps.length === 0
-        ? html`<div style="font-size:11px;color:var(--app-text-color2)">No taps — use the rail badges to connect.</div>`
-        : taps.map(({ t, i }) => {
-            const rail = allRails.find(r => r.id === t.railId);
-            return html`
-              <div class="tap-row">
-                <span class="tap-row-name">${rail?.name ?? t.railId}</span>
-                <button class="dir-btn" ?active=${t.direction === 'read'}
-                  @click=${() => appController.setTapDirection(sId, cI, chainIdx, i, 'read')}>R</button>
-                <button class="dir-btn" ?active=${t.direction === 'write'}
-                  @click=${() => appController.setTapDirection(sId, cI, chainIdx, i, 'write')}>W</button>
-                <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1"
-                  @click=${() => appController.removeTap(sId, cI, chainIdx, i)}>×</button>
-              </div>
-              ${rail?.dataType === 'float'
-                ? this.renderTapModInspector(sId, cI, chainIdx, i, t)
-                : nothing}
-            `;
-          })}
     `;
   }
 
