@@ -644,6 +644,11 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   bool debug = ix && s->debug_density;
+  // The density splat is the most expensive interaction pass (a draw over every
+  // particle into the crowding buffer, with overdraw). Only run it when
+  // something actually reads the buffer this frame — death, avoid, or the debug
+  // view. interactions-on-but-unused then costs nothing extra.
+  bool need_density = ix && (s->density_death > 0.0f || s->avoid > 0.0f || s->debug_density);
 
   // ---- Pass 3: instanced raster (blend over pre-filled tex_out) ----
   // Skipped when debugging the density buffer (the blit below overwrites it).
@@ -660,7 +665,7 @@ void render(void* self, int vp_w, int vp_h) {
 
   // ---- Pass 4: density splat (after update moved them) → next frame's read.
   // RenderPass::begin clears the buffer to zero, then additive halos accumulate.
-  if (ix) {
+  if (need_density) {
     DensityUniforms du = { s->interaction_radius, 0.f, 0.f, 0.f };
     s->density_uniforms.writeOne(du);
     auto rp = gpu::RenderPass::begin(s->density_tex, 0.0f, 0.0f, 0.0f, 0.0f);

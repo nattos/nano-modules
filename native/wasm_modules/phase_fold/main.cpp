@@ -1061,6 +1061,7 @@ void render(void* self, int vp_w, int vp_h) {
   //     uniforms already written above, so the bake matches the live field.
   if (state::isOutputConnected("flow_field")) {
     if (!s->flow_tex.valid() || s->flow_w != vp_w || s->flow_h != vp_h) {
+      s->flow_tex.release();   // free the old texture on viewport resize (no leak)
       s->flow_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
       s->flow_w = vp_w;
       s->flow_h = vp_h;
