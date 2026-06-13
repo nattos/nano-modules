@@ -297,7 +297,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
         <div class="inspector-separator"></div>
         <div class="section-header">Full Preview</div>
         <texture-monitor
-          .traceId=${'edit_preview'}
+          .traceId=${'edit_preview_inspector'}
           .traceTarget=${{ type: 'sketch_output', sketchId } as any}
           .width=${300}
           .height=${169}

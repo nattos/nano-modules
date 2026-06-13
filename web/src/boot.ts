@@ -59,6 +59,8 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   );
   engine.onFontRequest = (req) => requestFont(req);
 
+  (window as any).appController = appController;
+  (window as any).appState = appState;
   (window as any).debugDumpState = () => toJS(appState);
   (window as any).debugPrintState = () => {
     console.log(JSON.stringify(toJS(appState), undefined, 2));
