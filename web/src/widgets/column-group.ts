@@ -546,6 +546,14 @@ export class ColumnGroup extends MobxLitElement {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-accent-color, #4caf50);
     }
     .field-option-pip[selected]::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.85); }
+    /* A wired field's pip uses the wire accent (blue) instead of the option green. */
+    .field-option-pip.wired::after {
+      background: var(--app-hi-color2, #4169E1);
+      box-shadow: 0 0 4px var(--app-hi-color2, #4169E1);
+    }
+    .field-option-pip.wired:hover::after {
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-hi-color2, #4169E1);
+    }
     .tap-indicator[selected] {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.8);
     }
@@ -1595,9 +1603,12 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   /**
-   * A small "light" in the gutter (by where the tap would be) for any field
-   * that carries engine-level options — currently smoothing. Clicking it
-   * selects the field, which surfaces the floating field card.
+   * A small "light" in the gutter (by the field row) for any field that carries
+   * engine-level options (currently smoothing) OR has a wire connected to it.
+   * Clicking it selects the field, which surfaces the floating field card (where
+   * the options + connected wires are listed). Fields with no inline editor
+   * (e.g. pure outputs) have no gutter rect, so they get no pip — the wire arc
+   * still shows that connection.
    */
   private renderFieldOptionPips(column: SketchColumn): TemplateResult[] {
     const pips: TemplateResult[] = [];
@@ -1605,13 +1616,23 @@ export class ColumnGroup extends MobxLitElement {
       `.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
     if (!gutterEl) return pips;
     const selKey = appController.selectedFieldKey();
+    const wires = appState.database.sketches[this.sketchId]?.wires ?? [];
     for (let i = 0; i < column.chain.length; i++) {
       const entry = column.chain[i];
-      if (entry.type !== 'module' || !entry.fieldOptions) continue;
+      if (entry.type !== 'module') continue;
       const outputFieldNames = this.getOutputFieldNames(entry);
-      for (const [fieldPath, opts] of Object.entries(entry.fieldOptions)) {
-        // Extend this predicate as more engine-level options are added.
-        if (!opts?.smoothing?.enabled) continue;
+      // Collect fields needing a pip: smoothing-enabled (extend as more
+      // engine-level options arrive) plus any field a wire touches.
+      const wiredFields = new Set<string>();
+      const optionFields = new Set<string>();
+      for (const [fp, opts] of Object.entries(entry.fieldOptions ?? {})) {
+        if (opts?.smoothing?.enabled) optionFields.add(fp);
+      }
+      for (const w of wires) {
+        if (w.src.instanceKey === entry.instance_key) wiredFields.add(w.src.field);
+        if (w.dest.instanceKey === entry.instance_key) wiredFields.add(w.dest.field);
+      }
+      for (const fieldPath of new Set([...optionFields, ...wiredFields])) {
         const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${fieldPath}`;
         const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
         if (!rect) continue;
@@ -1619,11 +1640,15 @@ export class ColumnGroup extends MobxLitElement {
         // the card — even outside taps mode and for fields with no taps.
         this.registerFieldSelectable(fieldKey, i, entry, fieldPath, outputFieldNames.has(fieldPath));
         const yCenter = rect.top + rect.height / 2;
+        const isWired = wiredFields.has(fieldPath);
+        const title = isWired
+          ? 'Wired — click to view connections'
+          : 'Smoothing on — click to edit';
         pips.push(html`
-          <div class="field-option-pip" ?selected=${selKey === fieldKey}
+          <div class="field-option-pip ${isWired ? 'wired' : ''}" ?selected=${selKey === fieldKey}
             data-field-key=${fieldKey}
             style="top:${yCenter}px"
-            title="Smoothing on — click to edit"
+            title=${title}
             @click=${(e: Event) => { e.stopPropagation(); appController.selectField(fieldKey); }}></div>
         `);
       }
@@ -2042,9 +2067,38 @@ export class ColumnGroup extends MobxLitElement {
     const allRails = [...(sketch?.rails ?? []), ...(sketch?.columns[this.colIdx]?.rails ?? [])];
     const taps = (entry.taps ?? []).map((t, i) => ({ t, i })).filter(({ t }) => t.fieldPath === fieldPath);
 
+    // Wires connected to this field (the new model). A field may be the source
+    // (output) or the dest (input) of a wire; show the other endpoint + remove.
+    const myKey = entry.instance_key;
+    const wires = (sketch?.wires ?? []).filter(w =>
+      (w.src.instanceKey === myKey && w.src.field === fieldPath) ||
+      (w.dest.instanceKey === myKey && w.dest.field === fieldPath));
+    const wiresSection = html`
+      <div class="section-header" style="margin-top:8px">Wires</div>
+      ${wires.length === 0
+        ? html`<div style="font-size:11px;color:var(--app-text-color2)">No wires — drag field-to-field to connect.</div>`
+        : wires.map(w => {
+            const isSrc = w.src.instanceKey === myKey && w.src.field === fieldPath;
+            const other = isSrc ? w.dest : w.src;
+            const otherEntry = sketch?.columns.flatMap(c => c.chain)
+              .find(e => e.type === 'module' && e.instance_key === other.instanceKey) as ModuleEntry | undefined;
+            const otherName = otherEntry ? shortName(otherEntry.module_type) : other.instanceKey;
+            return html`
+              <div class="tap-row">
+                <span class="tap-row-name" title="${other.instanceKey}.${other.field}">
+                  ${isSrc ? '→' : '←'} ${otherName}.${other.field}</span>
+                <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1"
+                  title="Remove wire"
+                  @click=${() => appController.removeWire(sId, w.id)}>×</button>
+              </div>
+            `;
+          })}
+    `;
+
     return html`
       ${editor}
       ${smoothing}
+      ${wiresSection}
       <div class="section-header" style="margin-top:8px">Taps</div>
       ${taps.length === 0
         ? html`<div style="font-size:11px;color:var(--app-text-color2)">No taps — use the rail badges to connect.</div>`
