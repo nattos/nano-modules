@@ -1,12 +1,13 @@
 /**
- * Sketch executor — walks chains of virtual module instances,
- * piping textures and data between modules via sideband rails.
+ * Sketch executor — walks chains of virtual module instances (single-stack
+ * wire model), piping textures and structured data between modules via wires
+ * and struct auto-connect.
  */
 
 import type { BridgeCore } from './bridge-core';
 import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
-import type { ChainEntry, ModuleEntry, Sketch, SketchColumn, Rail, Tap } from './sketch-types';
+import type { ModuleEntry, Sketch } from './sketch-types';
 import { applyTapMod, combineTap } from './tap-mod';
 import { isRailCompatible } from './schema-compat';
 import { initSmooth, advanceSmooth, type SmoothState } from './param-smoothing';
@@ -114,22 +115,14 @@ type WireOutput =
   | { kind: 'texture'; handle: number }
   | { kind: 'struct'; value: any; schema: Record<string, any>; dirty: boolean };
 
-/** Runtime value on a rail during a single frame's execution. */
-interface RailValue {
-  data?: number;
-  texture?: number;  // GPU texture handle
-  /**
-   * Structural payload for struct rails. Captured from the writer's
-   * state subtree at write-tap time. Leaves that are textures or GPU
-   * arrays carry integer handles, not resource objects, exactly like
-   * scalar texture rails do today.
-   */
+/**
+ * A struct payload spliced into a reader's input by applyStructRead. `struct`
+ * is the writer's captured subtree (texture/GPU-array leaves carry integer
+ * handles, not resource objects); `dirty` is true when the writer announced a
+ * dirty GPU subtree this frame (forwarded as a "dirty" patch, not a "replace").
+ */
+interface StructRead {
   struct?: any;
-  /**
-   * True when the writer announced a dirty GPU subtree (markGpuDirty /
-   * setGpuBuffer) during this frame. The read tap forwards this as a
-   * "dirty" patch to the downstream module instead of a "replace".
-   */
   dirty?: boolean;
 }
 
@@ -276,17 +269,11 @@ export class SketchExecutor {
    * when (a) the engine is in a mode that allows fusion, (b) the
    * effect declared a non-Freeform fusion class, (c) it published a
    * fragment to compose against, (d) a uniform buffer to bind, and
-   * (e) the entry has no taps.
+   * (e) no wire consumes the stage's output.
    *
-   * Taps disqualify a stage because:
-   *   - read taps with texture rails introduce a second input texture
-   *     binding, which the composer doesn't expose.
-   *   - write taps that publish the stage's `tex_out` to a rail want
-   *     a real intermediate texture; in a fused run the intermediate
-   *     output of any non-final stage exists only in registers.
-   * (Both restrictions are loosened in later phases — write taps
-   * could route to trace textures; multi-input mapper stages would
-   * force a run split in the planner.)
+   * A wired output disqualifies a stage: it needs a real intermediate
+   * texture, but in a fused run the output of any non-final stage exists
+   * only in registers.
    */
   private canFuseStage(entry: ModuleEntry, host: WasmHost): boolean {
     if (this.fusionMode === 'force-off') return false;
@@ -299,7 +286,7 @@ export class SketchExecutor {
     // way the host knows how to resolve to fragment WGSL.
     if (!host.fusionFragmentWgsl && !host.fusionFragmentName) return false;
     if (host.fusionUniformBufferHandle <= 0) return false;
-    if (entry.taps && entry.taps.length > 0) return false;
+    if (this.wireSrcInstances.has(entry.instance_key)) return false;
     return true;
   }
 
@@ -367,8 +354,8 @@ export class SketchExecutor {
 
   /**
    * Ensure we have enough intermediate textures for a chain.
-   * With sideband rails, each module needs its own output texture
-   * (earlier outputs must remain valid for later rail reads).
+   * Each module needs its own output texture (earlier outputs must remain
+   * valid for later same-frame wire reads / struct auto-connect).
    */
   private ensureIntermediates(sketchId: string, needed: number, width: number, height: number): { textures: GPUTexture[]; handles: number[] } {
     let entry = this.sketchIntermediates.get(sketchId);
@@ -427,7 +414,7 @@ export class SketchExecutor {
     return e;
   }
 
-  // --- Wires (single-stack model; additive alongside legacy taps/rails) ---
+  // --- Wires (single-stack model) ---
   // Each entry's published outputs this frame and last frame, keyed
   // `${instanceKey}:${field}`, scoped per sketch. A wire reads the producer's
   // THIS-frame output when the producer executes earlier (above) the consumer,
@@ -441,10 +428,7 @@ export class SketchExecutor {
   private wirePos: Map<string, number> = new Map();         // instanceKey → global exec index
   private wiresByDest: Map<string, import('./sketch-types').Wire[]> = new Map();
   private wireSrcFields: Set<string> = new Set();           // `${instanceKey}:${field}` consumed by a wire
-  // New-model opt-in: true when the sketch declares a `wires` array (even empty).
-  // Gates struct auto-connect + unconditional struct-output publishing so legacy
-  // rail/tap sketches (which set no `wires`) keep byte-identical behavior.
-  private wireModeActive = false;
+  private wireSrcInstances: Set<string> = new Set();        // instanceKeys whose output a wire consumes
 
   // --- Per-effect opacity wet/dry blend (mirrors native host_blend.h) ---
   private blendPipeline?: GPUComputePipeline;
@@ -554,8 +538,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   /**
-   * Execute all columns of a sketch left-to-right, with cross-cutting rails.
-   * Returns the output handle of the last column that produced output.
+   * Execute all columns of a sketch left-to-right (sets up per-frame wire state,
+   * then runs each column). Returns the output handle of the last column that
+   * produced output.
    */
   async executeAllColumns(
     sketchId: string,
@@ -565,18 +550,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     width: number,
     height: number,
   ): Promise<number> {
-    // Cross-cutting rail values persist across all columns
-    const crossRailValues = new Map<string, RailValue>();
     // Shared slot counter so each module across all columns gets a unique intermediate
     const slotCounter = { value: 0 };
 
-    // --- Wire frame setup (additive; no-op when sketch.wires is empty) ---
+    // --- Wire frame setup ---
     this.wirePrev = this.wirePrevBySketch.get(sketchId) ?? new Map();
     this.wireCur = new Map();
     this.wirePos = new Map();
     this.wiresByDest = new Map();
     this.wireSrcFields = new Set();
-    this.wireModeActive = Array.isArray(sketch.wires);
+    this.wireSrcInstances = new Set();
     {
       let order = 0;
       for (const col of sketch.columns) {
@@ -588,50 +571,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const arr = this.wiresByDest.get(w.dest.instanceKey);
         if (arr) arr.push(w); else this.wiresByDest.set(w.dest.instanceKey, [w]);
         this.wireSrcFields.add(`${w.src.instanceKey}:${w.src.field}`);
+        this.wireSrcInstances.add(w.src.instanceKey);
       }
     }
-
-    // Collect column-local rail values for publishing
-    const allColumnRails: Map<string, RailValue>[] = [];
-
-    // Precompute per-rail tap-direction counts for the whole sketch.
-    // The connectedness API (state::isInputConnected / isOutputConnected)
-    // queries this — a write tap is "connected" iff at least one read
-    // tap exists on the same rail (and vice versa). Counts per scope
-    // because column-local rail IDs may collide with sketch-rail IDs;
-    // we mirror the executor's resolution order (column-first).
-    const railCounts = this.computeRailTapCounts(sketch);
 
     let lastOutput = inputTextureHandle;
     for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
       const column = sketch.columns[colIdx];
-      const colRails = new Map<string, RailValue>();
       const colOutput = await this.executeColumn(
         sketchId, sketch, colIdx, inputTextureHandle,
-        frameState, width, height, crossRailValues, slotCounter, colRails,
-        railCounts);
-      allColumnRails.push(colRails);
+        frameState, width, height, slotCounter);
       // Only update output if this column actually contains modules
       const hasModules = column.chain.some(e => e.type === 'module');
       if (hasModules) {
         lastOutput = colOutput;
       }
-    }
-
-    // Publish all rail values to /sketch_state/{sketchId} as one write
-    const sketchRailState: Record<string, any> = {};
-    // Column-local rails
-    for (let i = 0; i < allColumnRails.length; i++) {
-      if (allColumnRails[i].size > 0) {
-        sketchRailState[`columns/${i}`] = this.railValuesToJson(allColumnRails[i]);
-      }
-    }
-    // Cross-cutting rails
-    if (crossRailValues.size > 0) {
-      sketchRailState.rails = this.railValuesToJson(crossRailValues);
-    }
-    if (Object.keys(sketchRailState).length > 0) {
-      this.bridgeCore.setAt(`/sketch_state/${sketchId}`, sketchRailState);
     }
 
     // This frame's published wire outputs become next frame's "previous"
@@ -657,52 +611,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return lastOutput;
   }
 
-  /**
-   * Walk every tap in the sketch and count, per rail, how many read and
-   * write taps reference it. Used by the connectedness API to answer
-   * isInputConnected / isOutputConnected without re-walking on every
-   * effect query. Keys are scope-prefixed: column-local rails get
-   * `c<colIdx>:<railId>`, sketch-level rails get `s:<railId>`.
-   * Unresolvable rails (the tap references a missing rail) are dropped.
-   */
-  private computeRailTapCounts(
-    sketch: Sketch,
-  ): Map<string, { reads: number; writes: number }> {
-    const counts = new Map<string, { reads: number; writes: number }>();
-    for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
-      const column = sketch.columns[colIdx];
-      for (const entry of column.chain) {
-        if (entry.type !== 'module') continue;
-        for (const tap of entry.taps ?? []) {
-          const key = this.railKey(sketch, colIdx, tap.railId);
-          if (!key) continue;
-          let c = counts.get(key);
-          if (!c) { c = { reads: 0, writes: 0 }; counts.set(key, c); }
-          if (tap.direction === 'read') c.reads++;
-          else if (tap.direction === 'write') c.writes++;
-        }
-      }
-    }
-    return counts;
-  }
 
   /**
-   * Resolve a tap's railId to a scope-prefixed key. Mirrors the
-   * column-first / sketch-fallback lookup the executor uses everywhere.
-   */
-  private railKey(sketch: Sketch, colIdx: number, railId: string): string | null {
-    if (sketch.columns[colIdx]?.rails?.find(r => r.id === railId)) {
-      return `c${colIdx}:${railId}`;
-    }
-    if (sketch.rails?.find(r => r.id === railId)) {
-      return `s:${railId}`;
-    }
-    return null;
-  }
-
-  /**
-   * Execute a single column's chain with sideband rail routing.
-   * Cross-cutting rail values are shared across columns via crossRailValues.
+   * Execute a single column's chain (single-stack wire model). Wire state is
+   * set up per frame on the executor by executeAllColumns.
    */
   async executeColumn(
     sketchId: string,
@@ -712,10 +624,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     frameState: FrameState,
     width: number,
     height: number,
-    crossRailValues: Map<string, RailValue>,
     slotCounter: { value: number },
-    outColumnRails?: Map<string, RailValue>,
-    railCounts?: Map<string, { reads: number; writes: number }>,
   ): Promise<number> {
     const column = sketch.columns[colIdx];
     if (!column) return inputTextureHandle;
@@ -723,9 +632,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Count total module entries across all columns for intermediates
     const totalModules = sketch.columns.reduce((sum, c) => sum + c.chain.filter(e => e.type === 'module').length, 0);
     const intermediates = this.ensureIntermediates(sketchId, Math.max(totalModules, 2), width, height);
-
-    // Column-local rail values (scoped to this column's execution)
-    const columnRailValues = new Map<string, RailValue>();
 
     let currentInputHandle = inputTextureHandle;
     // nextSlot managed via shared slotCounter
@@ -940,38 +846,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Without this, a module that previously received data via a tap
         // keeps its cached scalar state and GPU buffer handle forever.
         // Deleting the tap should make the input appear empty / zeroed.
-        this.resetInactiveStructInputs(loaded.host, loaded.module, entry);
+        this.resetInactiveStructInputs(loaded.host, loaded.module);
 
         // --- Populate connection introspection state ---
-        // For each tap on this entry, decide whether the OPPOSITE
-        // direction has at least one tap on the same rail somewhere in
-        // the sketch. The effect can then call state::isInputConnected
-        // / isOutputConnected to skip work whose only purpose is
-        // producing or consuming an unwired side rail.
+        // A struct producer needs to know it's read BEFORE it runs (e.g.
+        // phase_fold gates its flow bake on isOutputConnected), but struct
+        // auto-connect compatibility is only resolved later at the consumer. So
+        // mark every struct output as read and every struct input as written,
+        // optimistically — a producer placed in the stack produces; the
+        // consumer's auto-connect then decides whether a texture is actually
+        // installed (else it falls back).
         loaded.host.fieldsWithReader.clear();
         loaded.host.fieldsWithWriter.clear();
-        if (entry.taps && railCounts) {
-          for (const tap of entry.taps) {
-            const key = this.railKey(sketch, colIdx, tap.railId);
-            if (!key) continue;
-            const c = railCounts.get(key);
-            if (!c) continue;
-            if (tap.direction === 'write' && c.reads >= 1) {
-              loaded.host.fieldsWithReader.add(tap.fieldPath);
-            } else if (tap.direction === 'read' && c.writes >= 1) {
-              loaded.host.fieldsWithWriter.add(tap.fieldPath);
-            }
-          }
-        }
-        // Wire-mode connectedness: a struct producer needs to know it's read
-        // BEFORE it runs (e.g. phase_fold gates its flow bake on
-        // isOutputConnected), but auto-connect compatibility is only resolved
-        // later at the consumer. So in wire mode mark every struct output as
-        // read and every struct input as written, optimistically — a producer
-        // placed in the stack produces; the consumer's auto-connect then decides
-        // whether a texture is actually installed (else it falls back). Explicit
-        // wires (wireSrcFields) also count.
-        if (this.wireModeActive) {
+        {
           const sch = loaded.host.schema;
           for (const fn in sch) {
             const d: any = sch[fn];
@@ -983,78 +870,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           }
         }
 
-        // --- Apply read taps (before tick/render) ---
         const inputTextures: number[] = currentInputHandle >= 0 ? [currentInputHandle] : [];
 
-        // Drop any named-texture-tap entries the executor installed
-        // last frame that aren't part of this frame's tap set. Without
-        // this, removing a tap leaves a stale handle in textureFields
-        // and the effect would keep resolving the freed/wrong texture.
-        // Producer-published entries (state::setGpuTexture) and struct-
-        // rail leaves are unaffected — they live outside this set.
+        // Drop any named-texture entries a wire installed last frame that
+        // aren't part of this frame's wire set. Without this, removing a wire
+        // leaves a stale handle in textureFields and the effect would keep
+        // resolving the freed/wrong texture. Producer-published entries
+        // (state::setGpuTexture) and struct leaves live outside this set.
         for (const key of loaded.host.tapInstalledTextureFields) {
           loaded.host.textureFields.delete(key);
         }
         loaded.host.tapInstalledTextureFields.clear();
 
-        if (entry.taps) {
-          for (const tap of entry.taps) {
-            if (tap.direction !== 'read') continue;
-            // Look up rail value from column-local rails first, then cross-cutting
-            const rv = columnRailValues.get(tap.railId) ?? crossRailValues.get(tap.railId);
-            if (!rv) continue;
-
-            // Look up rail definition from column, then sketch
-            const rail = column.rails?.find(r => r.id === tap.railId)
-                      ?? sketch.rails?.find(r => r.id === tap.railId);
-
-            if (rail?.dataType === 'float' && rv.data !== undefined) {
-              // Data tap read: apply the tap's range remapper (after read), then
-              // mix into the user's canonical (serialized) value per the tap's
-              // mix mode. `replace` ignores the canonical (today's behavior);
-              // add/mul/mix modulate from the value the user set in the UI.
-              // Read the canonical from the SERIALIZED state (not the plugin's
-              // runtime), so add/mul don't compound frame-over-frame.
-              const shaped = applyTapMod(rv.data, tap.mod);
-              const canonical = instanceState[tap.fieldPath];
-              const combined = combineTap(
-                typeof canonical === 'number' ? canonical : undefined,
-                shaped, tap.combine, tap.mixFactor);
-              loaded.host.notifyStatePatched(loaded.module, [
-                { op: 'replace', path: tap.fieldPath, value: combined },
-              ]);
-              // Smoothing layers on top of modulation: track the post-tap value.
-              effectiveValues.set(tap.fieldPath, combined);
-            } else if (rail?.dataType === 'texture' && rv.texture !== undefined) {
-              // Texture tap read. Numeric fieldPath → positional input
-              // slot (legacy `gpu::Device::inputTexture(N)` API used by
-              // video.blend etc). Named fieldPath → install directly
-              // under that name in textureFields, so the effect can
-              // resolve it via `gpu::Device::textureForField("<name>")`
-              // — same convention as struct-rail texture leaves.
-              const texIndex = parseInt(tap.fieldPath, 10);
-              if (!isNaN(texIndex) && String(texIndex) === tap.fieldPath) {
-                while (inputTextures.length <= texIndex) inputTextures.push(-1);
-                inputTextures[texIndex] = rv.texture;
-              } else if (tap.fieldPath) {
-                loaded.host.textureFields.set(tap.fieldPath, rv.texture);
-                loaded.host.tapInstalledTextureFields.add(tap.fieldPath);
-              }
-            } else if (
-              typeof rail?.dataType === 'object' &&
-              rail.dataType.kind === 'struct' &&
-              rv.struct !== undefined
-            ) {
-              // Structured tap read: splice the writer's subtree into the
-              // reader's state at `fieldPath`. Hoist any GPU buffer or
-              // texture leaves from the struct into the reader's lookup
-              // maps so bufferForField / textureForField resolve locally.
-              this.applyStructRead(loaded.host, loaded.module, tap.fieldPath, rv, rail.dataType.schema);
-            }
-          }
-        }
-
-        // --- Resolve input wires (single-stack model; additive with read taps) ---
+        // --- Resolve input wires (single-stack model) ---
         // Delay is positional: a producer that executes earlier (above) feeds
         // this frame's value; otherwise the previous frame's (also breaks cycles).
         {
@@ -1111,13 +939,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           }
         }
 
-        // --- Struct auto-connect (new-model default; generalizes the implicit
-        // linear texture flow to structured inputs) ---
+        // --- Struct auto-connect (generalizes the implicit linear texture flow
+        // to structured inputs) ---
         // An unwired structured input (object/array, io & 1) binds to the
         // nearest schema-compatible struct OUTPUT produced ABOVE it this frame.
-        // Gated on wire mode so legacy rail/tap sketches are untouched; an
-        // explicit wire or read tap on the field suppresses auto-connect.
-        if (this.wireModeActive) {
+        // An explicit wire on the field suppresses auto-connect.
+        {
           const myPos = this.wirePos.get(entry.instance_key) ?? 0;
           const schema = loaded.host.schema;
           const wiredDests = this.wiresByDest.get(entry.instance_key);
@@ -1128,9 +955,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (def.type !== 'object' && def.type !== 'array') continue;  // struct only
             // Explicit wire on this field wins.
             if (wiredDests?.some(w => w.dest.field === fname)) continue;
-            // Legacy read tap on this field wins (defensive; wire-mode sketches
-            // generally carry no taps).
-            if (entry.taps?.some(t => t.direction === 'read' && t.fieldPath === fname)) continue;
             // Nearest compatible struct producer above (largest pos < myPos).
             let best: Extract<WireOutput, { kind: 'struct' }> | null = null;
             let bestPos = -1;
@@ -1248,9 +1072,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // its input texture aliased as its output. Only valid for
         // STATELESS effects, which the predicate enforces.
         //
-        // Gated on !entryHasTaps to match the native executor: taps can
-        // drive params from rails or publish outputs, which the alias
-        // path doesn't handle.
+        // Disqualified when a wire consumes this stage's output: the alias
+        // path leaves no real texture for the wire to publish.
         //
         // Do NOT render, do NOT consume a slot, and do NOT flush an
         // in-progress fused run — a no-op stage can sit inside a fused
@@ -1258,8 +1081,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // input→output just leaves currentInputHandle unchanged for the
         // next stage; an all-identity chain then returns the original
         // input handle, which is the desired passthrough.
-        const entryHasTaps = Array.isArray(entry.taps) && entry.taps.length > 0;
-        if (!entryHasTaps && loaded.module.isIdentity()) {
+        const entryHasWiredOutput = this.wireSrcInstances.has(entry.instance_key);
+        if (!entryHasWiredOutput && loaded.module.isIdentity()) {
           this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
             input: currentInputHandle,
             output: currentInputHandle,
@@ -1379,63 +1202,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         this.debugStats.effectsExecuted++;
 
-        // --- Apply write taps (after tick/render) ---
-        if (entry.taps) {
-          for (const tap of entry.taps) {
-            if (tap.direction !== 'write') continue;
-
-            // Look up rail definition from column, then sketch
-            const rail = column.rails?.find(r => r.id === tap.railId)
-                      ?? sketch.rails?.find(r => r.id === tap.railId);
-            // Determine which rail value map to write to
-            const isColumnRail = !!column.rails?.find(r => r.id === tap.railId);
-            const targetRailValues = isColumnRail ? columnRailValues : crossRailValues;
-
-            if (rail?.dataType === 'float') {
-              // Read from pluginState (canonical source).
-              // Falls back to instance state if module hasn't published yet.
-              const value = this.readFieldFromState(loaded.host, tap.fieldPath)
-                         ?? instanceState[tap.fieldPath];
-              if (value !== undefined) {
-                const existing = targetRailValues.get(tap.railId) ?? {};
-                // Apply the tap's range remapper (before write), then fold into
-                // the rail's current frame value per the tap's combine mode. The
-                // first writer this frame (existing.data === undefined) just seeds.
-                const shaped = applyTapMod(value as number, tap.mod);
-                existing.data = combineTap(existing.data, shaped, tap.combine, tap.mixFactor);
-                targetRailValues.set(tap.railId, existing);
-              }
-            } else if (rail?.dataType === 'texture') {
-              // Texture tap write: the module's output texture goes onto the rail
-              // (the post-opacity result — passthrough at 0, blended at <1).
-              const existing = targetRailValues.get(tap.railId) ?? {};
-              existing.texture = effectiveOutputHandle;
-              targetRailValues.set(tap.railId, existing);
-            } else if (
-              typeof rail?.dataType === 'object' &&
-              rail.dataType.kind === 'struct'
-            ) {
-              // Structured tap write: snapshot the writer's subtree at
-              // `fieldPath`, capturing current GPU buffer handles alongside
-              // scalar leaves. Mark the rail dirty if the writer emitted
-              // any dirty notifications this frame under this subtree.
-              const snapshot = this.snapshotStruct(
-                loaded.host, tap.fieldPath, rail.dataType.schema,
-              );
-              const existing = targetRailValues.get(tap.railId) ?? {};
-              existing.struct = snapshot.value;
-              if (snapshot.dirty) existing.dirty = true;
-              targetRailValues.set(tap.railId, existing);
-            }
-          }
-        }
-
         // --- Publish this entry's outputs to wireCur ---
-        // A field is published when (a) a wire actually consumes it, or (b) we're
-        // in wire mode AND it's a struct output (so an unwired downstream input
-        // can auto-connect to it). A wire-free, non-wire-mode sketch does nothing
-        // here. Output bit (io & 2) required.
-        if (this.wireSrcFields.size > 0 || this.wireModeActive) {
+        // A field is published when (a) a wire consumes it, or (b) it's a struct
+        // output (so an unwired downstream input can auto-connect to it). Output
+        // bit (io & 2) required.
+        {
           const schema = loaded.host.schema;
           for (const fname in schema) {
             const key = `${entry.instance_key}:${fname}`;
@@ -1443,9 +1214,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             const io = def?.io ?? 0;
             if (!(io & 2)) continue;
             const isStruct = def.type === 'object' || def.type === 'array';
-            // Publish only consumed fields, plus struct outputs in wire mode
-            // (auto-connect targets). Skip everything else.
-            if (!this.wireSrcFields.has(key) && !(this.wireModeActive && isStruct)) continue;
+            // Publish only consumed fields, plus struct outputs (auto-connect
+            // targets). Skip everything else.
+            if (!this.wireSrcFields.has(key) && !isStruct) continue;
             if (def.type === 'texture') {
               const h = (io & 4) ? effectiveOutputHandle : loaded.host.textureFields.get(fname);
               if (h !== undefined && h >= 0) this.wireCur.set(key, { kind: 'texture', handle: h });
@@ -1484,24 +1255,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // last output handle is populated before the caller samples it.
     flushFusedRun();
 
-    // Copy column rail values to output param for publishing
-    if (outColumnRails) {
-      for (const [k, v] of columnRailValues) outColumnRails.set(k, v);
-    }
-
     return currentInputHandle;
-  }
-
-  private railValuesToJson(railValues: Map<string, RailValue>): Record<string, any> {
-    const result: Record<string, any> = {};
-    for (const [railId, rv] of railValues) {
-      if (rv.data !== undefined) {
-        result[railId] = { value: rv.data };
-      } else if (rv.texture !== undefined) {
-        result[railId] = { value: rv.texture, hasTexture: true };
-      }
-    }
-    return result;
   }
 
   /**
@@ -1612,7 +1366,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   private applyStructRead(
-    host: WasmHost, module: WasmModule, destPath: string, rv: RailValue,
+    host: WasmHost, module: WasmModule, destPath: string, rv: StructRead,
     schema: Record<string, any>,
   ): void {
     const patches: import('./wasm-host').PatchOp[] = [];
@@ -1666,38 +1420,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   /**
-   * Reset every struct-kind input port on `entry` that has no active read
-   * tap this frame. Walks the module's schema: for each top-level field
-   * marked Input whose type is object / array(gpu) / texture / vec, if no
-   * tap's fieldPath matches, emit reset patches for scalar leaves to
-   * their schema defaults, clear installed GPU buffer handles, clear
-   * texture handles, and fire a dirty patch at the subtree root so the
-   * module can react to the absence.
+   * Reset every struct-kind input port to its empty/default state, BEFORE wires
+   * and struct auto-connect run for this entry (they re-install whatever is
+   * actually connected this frame). Walks the module's schema: for each
+   * top-level Input field of type object / array(gpu), emit reset patches for
+   * scalar leaves to their schema defaults, clear installed GPU buffer handles,
+   * clear texture handles, and fire a dirty patch at the subtree root so the
+   * module reacts to the absence when nothing reconnects it.
    *
-   * Scalar input fields are not reset (they're owned by the UI, not the
-   * rail), nor are structured outputs (which are written by the module).
+   * Scalar input fields are not reset (they're user-edited params), nor are
+   * structured outputs (written by the module).
    */
-  private resetInactiveStructInputs(host: WasmHost, module: WasmModule, entry: ModuleEntry): void {
+  private resetInactiveStructInputs(host: WasmHost, module: WasmModule): void {
     const schema = host.schema ?? {};
     if (!schema || Object.keys(schema).length === 0) return;
 
-    const tappedReads = new Set<string>();
-    for (const tap of entry.taps ?? []) {
-      if (tap.direction === 'read') tappedReads.add(tap.fieldPath);
-    }
-
-    // Only reset fields whose contents are normally supplied by a rail
-    // (structured objects, GPU arrays). Scalar primitives and vector
-    // primitives at the top level are user-edited params; clearing them
-    // on every frame with no tap would wipe user input. Textures are
-    // handled separately (the textureFields map is rebuilt per frame).
     const patches: import('./wasm-host').PatchOp[] = [];
     for (const [name, def] of Object.entries(schema) as [string, any][]) {
       if (!def || typeof def !== 'object') continue;
       const io = def.io ?? 0;
       if (!(io & 1)) continue; // not an input port
       if (def.type !== 'object' && !(def.type === 'array' && def.gpu)) continue;
-      if (tappedReads.has(name)) continue; // still receiving data
       this.resetInputSubtree(host, name, def, patches);
     }
 

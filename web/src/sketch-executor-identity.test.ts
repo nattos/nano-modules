@@ -98,7 +98,7 @@ function makeExecutor(modulesByKey: Map<string, FakeModule>): {
   executor.wirePos = new Map();
   executor.wiresByDest = new Map();
   executor.wireSrcFields = new Set();
-  executor.wireModeActive = false;
+  executor.wireSrcInstances = new Set();
   executor.wirePrevBySketch = new Map();
   executor.delayedTexCache = new Map();
   executor.fusionMode = 'auto';
@@ -145,8 +145,7 @@ const FRAME = {
 async function runColumn(executor: any, sketch: Sketch, inputHandle: number) {
   const slotCounter = { value: 0 };
   const out = await executor.executeColumn(
-    'sketch0', sketch, 0, inputHandle, FRAME, 256, 256,
-    new Map(), slotCounter, undefined, undefined,
+    'sketch0', sketch, 0, inputHandle, FRAME, 256, 256, slotCounter,
   );
   return { out, finalSlot: slotCounter.value };
 }
@@ -219,31 +218,21 @@ describe('SketchExecutor identity skip', () => {
     expect(out).toBe(42);                     // == original input handle
   });
 
-  it('a tapped identity stage is NOT skipped (taps disqualify aliasing)', async () => {
-    const tapped = makeFakeModule(true);     // would be identity…
-    const modules = new Map([['tapped', tapped]]);
+  it('an identity stage whose output a wire consumes is NOT skipped', async () => {
+    const wired = makeFakeModule(true);      // would be identity…
+    const modules = new Map([['wired', wired]]);
     const { executor } = makeExecutor(modules);
+    // A wire consumes this stage's output. The alias path leaves no real
+    // texture for the wire to publish, so the executor must fall through to the
+    // normal render path. (wireSrcInstances is normally populated from
+    // sketch.wires by executeAllColumns; set it directly here.)
+    executor.wireSrcInstances = new Set(['wired']);
 
-    const sketch: Sketch = {
-      anchor: 'generator.test@0',
-      columns: [{
-        name: 'main',
-        chain: [{
-          type: 'module',
-          module_type: 'video.test',
-          instance_key: 'tapped',
-          // A write tap on a float rail: the alias path can't publish this,
-          // so the executor must fall through to the normal render path.
-          taps: [{ railId: 'r0', fieldPath: 'out', direction: 'write' }],
-        }],
-        rails: [{ id: 'r0', name: 'r0', dataType: 'float' }],
-      }],
-    };
-
+    const sketch = makeSketch(['wired']);
     const { out, finalSlot } = await runColumn(executor, sketch, /*input*/ 7);
 
-    // …but because it has a tap, it still renders and consumes a slot.
-    expect(tapped.renderCalls).toBe(1);
+    // …but because its output is wired, it still renders and consumes a slot.
+    expect(wired.renderCalls).toBe(1);
     expect(finalSlot).toBe(1);
     expect(executor.debugStats.identitySkipped).toBe(0);
     expect(executor.debugStats.standaloneDispatches).toBe(1);
