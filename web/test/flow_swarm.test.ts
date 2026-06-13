@@ -318,11 +318,12 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
       waitFrames: frames, captureTraceIds: ['out'], dumpName: id,
     });
 
-  it('noise scatters particles (anti-clump, survives pull)', async () => {
-    // CROWD has pull=1 (particles glued to the cycle). Positional noise is
-    // applied after the velocity update, so it still de-clumps them.
-    const off = await runChain('fs_noise_off', { ...CROWD, noise: 0.0 }, 24);
-    const on  = await runChain('fs_noise_on',  { ...CROWD, noise: 0.5 }, 24);
+  it('avoid_noise scatters particles where avoidance goes flat', async () => {
+    // avoid_noise lives inside the avoidance mechanism, so it needs avoid on.
+    // It adds a random kick that breaks up flat-gradient clumps.
+    const base = { ...CROWD, avoid: 1.0 };
+    const off = await runChain('fs_noise_off', { ...base, avoid_noise: 0.0 }, 24);
+    const on  = await runChain('fs_noise_on',  { ...base, avoid_noise: 0.6 }, 24);
     expect(off.success).toBe(true);
     expect(on.success).toBe(true);
     expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);

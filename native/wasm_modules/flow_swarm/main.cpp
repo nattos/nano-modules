@@ -85,7 +85,7 @@ struct UpdateUniforms {
   float    avoid_curl;
   float    density_res;
 
-  float    noise;
+  float    avoid_noise;
   float    _pad_n0;
   float    _pad_n1;
   float    _pad_n2;
@@ -165,7 +165,6 @@ struct State {
   float size         = 0.3f;    // [0,1] slider, quadratic → uv (SIZE_SCALE·size²)
   float size_jitter  = 0.5f;
   float jitter       = 0.0f;
-  float noise        = 0.08f;   // positional random walk, anti-clump (default on)
   float drag         = 0.1f;
   float color_blend  = 0.3f;
   float solid_r      = 1.0f;
@@ -187,6 +186,7 @@ struct State {
   float density_death      = 0.0f;    // death-rate scale over threshold
   float avoid              = 0.0f;    // push away from neighbours
   float avoid_curl         = 0.0f;    // rotate the avoidance ±90°
+  float avoid_noise        = 0.08f;   // random jitter on avoidance (breaks clumps)
   bool  debug_density      = false;   // render the density buffer as a heat map
   float opacity      = 1.0f;
   float alpha_curve  = 0.6f;
@@ -261,6 +261,7 @@ static void apply_mode_visibility(const State& s) {
   state::setFieldHidden("density_death",      ix);
   state::setFieldHidden("avoid",              ix);
   state::setFieldHidden("avoid_curl",         ix);
+  state::setFieldHidden("avoid_noise",        ix);
   state::setFieldHidden("debug_density",      ix);
 }
 
@@ -291,9 +292,6 @@ void module_init() {
       // force-mode overshoot. 0 = free, 1 = strongly glued to the field.
       .floatField("pull",         0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
-      // Positional random walk (anti-clump). Survives `pull`/drag (unlike the
-      // velocity `jitter` above), so field-glued particles still spread out.
-      .floatField("noise",        0.08f, 0.0f,  1.0f,  state::PrimaryInput)
       .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput)
       // ---- Geometry / lifetime ----
       // size is a [0,1] slider mapped quadratically to a (small) uv size — the
@@ -331,6 +329,9 @@ void module_init() {
       // rotates that push ±90° for a swirling avoidance.
       .floatField("avoid",               0.0f,   0.0f,  1.0f,  state::PrimaryInput)
       .floatField("avoid_curl",          0.0f,  -1.0f,  1.0f,  state::PrimaryInput)
+      // Random jitter on the avoidance so particles still scatter where the
+      // density gradient is flat (a symmetric clump's centre). Default on.
+      .floatField("avoid_noise",         0.08f,  0.0f,  1.0f,  state::PrimaryInput)
       // Debug: render the density buffer itself (heat map) instead of the swarm.
       .boolField ("debug_density",       false,                state::PrimaryInput)
       // ---- Composite ----
@@ -476,7 +477,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "weight"))       s->weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "pull"))         s->pull = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter"))       s->jitter = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "noise"))        s->noise = state::patchFloat(i);
     else if (state::pathIs(path, plen, "drag"))         s->drag = state::patchFloat(i);
     else if (state::pathIs(path, plen, "size"))         s->size = state::patchFloat(i);
     else if (state::pathIs(path, plen, "size_jitter"))  s->size_jitter = state::patchFloat(i);
@@ -502,6 +502,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "density_death"))     s->density_death = state::patchFloat(i);
     else if (state::pathIs(path, plen, "avoid"))            s->avoid = state::patchFloat(i);
     else if (state::pathIs(path, plen, "avoid_curl"))       s->avoid_curl = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "avoid_noise"))      s->avoid_noise = state::patchFloat(i);
     else if (state::pathIs(path, plen, "debug_density"))    s->debug_density = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "blend_mode"))   s->blend_mode = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "opacity"))      s->opacity = state::patchFloat(i);
@@ -584,7 +585,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.avoid             = s->avoid;
   uu.avoid_curl        = s->avoid_curl;
   uu.density_res       = (float)DENSITY_RES;
-  uu.noise             = s->noise;
+  uu.avoid_noise       = s->avoid_noise;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };

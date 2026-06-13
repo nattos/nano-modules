@@ -52,7 +52,7 @@ cbuffer Uniforms : register(b4) {
   float avoid_curl;     // -1/+1 rotate the avoidance ±90° (swirl)
   float density_res;    // density buffer resolution (texels per axis)
 
-  float noise;          // positional random walk (anti-clump; survives pull)
+  float avoid_noise;    // random jitter on the avoidance (breaks flat clumps)
   float _pad_n0;
   float _pad_n1;
   float _pad_n2;
@@ -125,6 +125,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float2 av = float2(awayhat.x * ca2 - awayhat.y * sa2,
                          awayhat.x * sa2 + awayhat.y * ca2);
       eff += av * avoid * FSW_AVOID_VEL * speed;
+
+      // Avoidance noise: a random kick so particles still scatter where the
+      // density gradient goes flat (the centre of a symmetric clump, where the
+      // avoidance push alone vanishes and they'd otherwise stay stuck).
+      if (avoid_noise > 1e-6) {
+        uint nh = fsw_hash3(i + 0x51ED2701u, frame_index, seed);
+        float2 nv = float2(fsw_signed(nh), fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)));
+        eff += nv * avoid_noise * FSW_AVOID_VEL * speed;
+      }
     }
 
     // Acceleration mode.
@@ -156,15 +165,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // Drag, then integrate.
     vel *= max(1.0 - drag * dt, 0.0);
     pos += vel * dt;
-
-    // Positional noise (anti-clump). Applied AFTER the velocity update so it
-    // survives `pull`/drag/momentum — a per-frame random walk on position that
-    // keeps even field-glued particles from stacking. dt-scaled, uv/s.
-    if (noise > 1e-6) {
-      uint nh = fsw_hash3(i + 0x51ED2701u, frame_index, seed);
-      float2 nv = float2(fsw_signed(nh), fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)));
-      pos += nv * noise * dt;
-    }
 
     p.a = float4(pos, life_remain - dt, life_total);
     p.b.xy = vel;
