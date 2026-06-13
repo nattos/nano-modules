@@ -19,14 +19,6 @@ import type { Sketch } from '../src/sketch-types';
  *     confirming the motion texture is actually published + transported.
  */
 
-const RENDER_OUTPUTS_SCHEMA = {
-  type: 'object',
-  fields: {
-    depth:  { type: 'texture' },
-    motion: { type: 'texture' },
-  },
-};
-
 describe('video.local_delay E2E', () => {
   jest.setTimeout(40000);
 
@@ -202,15 +194,16 @@ describe('video.local_delay E2E', () => {
   });
 
   it('publishes modulated motion that drives a downstream motion_blur', async () => {
-    const buildChain = (withRails: boolean): Sketch => ({
+    // Wire model: motion_blur's render_outputs input auto-connects to the
+    // nearest producer above. WITH local_delay present, that's local_delay's
+    // MODULATED motion; WITHOUT it, motion_blur binds motion_rect's RAW motion
+    // directly. So the two frames differ iff local_delay actually reshapes the
+    // field — a stronger check than mere presence.
+    const buildChain = (withLocalDelay: boolean): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: withRails ? [{
-          id: 'render_outputs_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-        }] : [],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -225,65 +218,58 @@ describe('video.local_delay E2E', () => {
             instance_key: 'rect@0',
             params: { size: 0.3, speed: 3.0, color: [1.0, 0.4, 0.8] },
           },
-          {
+          ...(withLocalDelay ? [{
             type: 'module',
             module_type: 'video.local_delay',
             instance_key: 'ld@0',
             params: { delay_amount: 0.5, weight_gain: 0.05, max_flow: 0.05 },
-            taps: withRails
-              ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }]
-              : [],
-          },
+          }] : []),
           {
             type: 'module',
             module_type: 'video.motion_blur',
             instance_key: 'blur@0',
             params: { strength: 24.0, samples: 12, quality: 1 },
-            taps: withRails
-              ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'read' }]
-              : [],
           },
           { type: 'texture_output', id: 'out' },
         ],
       }],
-    });
+    } as Sketch);
 
-    const withRails = await runEngineTest({
+    const withLD = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
       commands: [
-        { type: 'createSketch', sketchId: 'ld_rail', sketch: buildChain(true) },
+        { type: 'createSketch', sketchId: 'ld_with', sketch: buildChain(true) },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'ld_rail' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'ld_with' } },
         ]},
       ],
       waitFrames: 20,
       captureTraceIds: ['out'],
-      dumpName: 'local_delay_motion_rail',
+      dumpName: 'local_delay_motion_with',
     });
-    expect(withRails.success).toBe(true);
+    expect(withLD.success).toBe(true);
 
-    const withoutRails = await runEngineTest({
+    const withoutLD = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
       commands: [
-        { type: 'createSketch', sketchId: 'ld_norail', sketch: buildChain(false) },
+        { type: 'createSketch', sketchId: 'ld_without', sketch: buildChain(false) },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'ld_norail' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'ld_without' } },
         ]},
       ],
       waitFrames: 20,
       captureTraceIds: ['out'],
-      dumpName: 'local_delay_motion_norail',
+      dumpName: 'local_delay_motion_without',
     });
-    expect(withoutRails.success).toBe(true);
+    expect(withoutLD.success).toBe(true);
 
-    // The chains are identical except for the render_outputs rail. With
-    // it wired, motion_blur reads local_delay's modulated vectors and
-    // smears along them; without it, the blur falls back to a copy. The
-    // frames must differ — proof the motion texture was published and
-    // transported across the rail.
-    withRails.trace('out').expectDifferentFrom(withoutRails.trace('out'), 40);
+    // With local_delay present, motion_blur smears along its modulated vectors;
+    // without it, along motion_rect's raw vectors. The frames must differ —
+    // proof local_delay published a reshaped motion field that auto-connected
+    // downstream.
+    withLD.trace('out').expectDifferentFrom(withoutLD.trace('out'), 40);
   });
 
   it('delay_steps changes the advection trail length', async () => {
@@ -509,15 +495,16 @@ describe('video.local_delay E2E', () => {
     // render the echo footprint is isolated. The path is proven by the contrast:
     // rail wired → output differs from input (incoming vectors drove the echo);
     // no rail → output equals input (zero incoming flow → passthrough).
-    const buildChain = (withRail: boolean): Sketch => ({
+    // Wire model: local_delay (Incoming mode) reads its render_outputs_in via
+    // auto-connect from the nearest producer above. WITH a motion_swarm above,
+    // it echoes the incoming vectors; WITHOUT one (a plain solid_color in the
+    // same slot, keeping ld at chainIdx 3 and producing NO render_outputs), the
+    // incoming flow is zero → passthrough.
+    const buildChain = (withMotion: boolean): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: withRail ? [{
-          id: 'render_outputs_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-        }] : [],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -526,7 +513,7 @@ describe('video.local_delay E2E', () => {
             instance_key: 'bg@0',
             params: { color: [0.05, 0.05, 0.1] },
           },
-          {
+          withMotion ? {
             type: 'module',
             module_type: 'debug.motion_swarm',
             instance_key: 'swarm@0',
@@ -534,9 +521,12 @@ describe('video.local_delay E2E', () => {
               count: 24, size: 0.08, swirl: 1.5, radial: 0.0,
               randomness: 0.4, speed: 2.5, opacity: 1.0, seed: 7,
             },
-            taps: withRail
-              ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }]
-              : [],
+          } : {
+            // Same slot, no render_outputs producer → zero incoming flow.
+            type: 'module',
+            module_type: 'generator.solid_color',
+            instance_key: 'filler@0',
+            params: { color: [0.05, 0.05, 0.1] },
           },
           {
             type: 'module',
@@ -548,22 +538,16 @@ describe('video.local_delay E2E', () => {
             // small moving rects) and intermittent at any fixed pixel, so the
             // default EMA would average it toward zero — unlike the dense LK flow
             // in Estimate mode. With no smoothing the per-frame vectors drive the
-            // advection directly.
+            // advection directly. flow_source=1 = Incoming: reads the auto-
+            // connected render_outputs_in/motion.
             params: { flow_source: 1, smoothing: 0.0, delay_amount: 1.0, delay_steps: 32.0, weight_gain: 0.15 },
-            // Read tap fieldPath = the consumer's OWN input field name
-            // ("render_outputs_in"), which is where Incoming mode reads the flow
-            // (textureForField("render_outputs_in/motion")). The rail bridges the
-            // swarm's "render_outputs" writer to this by railId, not fieldPath.
-            taps: withRail
-              ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs_in', direction: 'read' }]
-              : [],
           },
           { type: 'texture_output', id: 'out' },
         ],
       }],
-    });
+    } as Sketch);
 
-    const withRail = await runEngineTest({
+    const withMotion = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
       commands: [
@@ -577,9 +561,9 @@ describe('video.local_delay E2E', () => {
       captureTraceIds: ['ld_in', 'ld_out'],
       dumpName: 'local_delay_incoming_on',
     });
-    expect(withRail.success).toBe(true);
+    expect(withMotion.success).toBe(true);
 
-    const noRail = await runEngineTest({
+    const noMotion = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
       commands: [
@@ -593,16 +577,16 @@ describe('video.local_delay E2E', () => {
       captureTraceIds: ['ld_in', 'ld_out'],
       dumpName: 'local_delay_incoming_off',
     });
-    expect(noRail.success).toBe(true);
+    expect(noMotion.success).toBe(true);
 
-    // Rail wired: the incoming swarm vectors drive a forward-advection echo, so
-    // local_delay's output departs from its input. The footprint is edge-limited
-    // (only pixels inside the moving rects advect, and a solid blob mostly
-    // samples its own color — only blob edges shift), but stable run-to-run
-    // (~45 px); 25 sits safely below that floor and far above the passthrough's
-    // 0, cleanly separating "incoming echo present" from "no echo".
-    withRail.trace('ld_out').expectDifferentFrom(withRail.trace('ld_in'), 25);
-    // No rail: zero incoming flow → the advection collapses → exact passthrough.
-    noRail.trace('ld_out').expectSameAs(noRail.trace('ld_in'));
+    // With motion above: the incoming swarm vectors drive a forward-advection
+    // echo, so local_delay's output departs from its input. The footprint is
+    // edge-limited (only pixels inside the moving rects advect, and a solid blob
+    // mostly samples its own color — only blob edges shift), but stable run-to-
+    // run (~45 px); 25 sits safely below that floor and far above the
+    // passthrough's 0, cleanly separating "incoming echo present" from "no echo".
+    withMotion.trace('ld_out').expectDifferentFrom(withMotion.trace('ld_in'), 25);
+    // No motion producer: zero incoming flow → the advection collapses → exact passthrough.
+    noMotion.trace('ld_out').expectSameAs(noMotion.trace('ld_in'));
   });
 });
