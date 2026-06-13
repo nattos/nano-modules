@@ -14,7 +14,7 @@
  * rendered reactively (MobxLitElement) when the rail set or selection changes.
  */
 
-import { html, css, nothing } from 'lit';
+import { html, css, nothing, svg } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
@@ -272,8 +272,8 @@ export class TapsOverlay extends MobxLitElement {
 
     return html`
       <svg class="lines">
-        ${refs.map(r => html`<line class="leader" data-rail-id=${r.rail.id}></line>`)}
-        ${conns.map(cn => html`<path class="wire-arc ${cn.delayed ? 'delayed' : ''}"
+        ${refs.map(r => svg`<line class="leader" data-rail-id=${r.rail.id}></line>`)}
+        ${conns.map(cn => svg`<path class="wire-arc ${cn.delayed ? 'delayed' : ''}"
           data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`)}
         <line class="connect-line" style="display:none"></line>
       </svg>
