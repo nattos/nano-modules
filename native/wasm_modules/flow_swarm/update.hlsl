@@ -63,6 +63,7 @@ static const float FSW_PULL_RATE  = 20.0;
 // Tuning scales for the interaction forces / death.
 static const float FSW_DEATH_RATE = 4.0;   // MAX death rate (1/s) at density_death=1
 static const float FSW_AVOID_VEL  = 1.5;   // avoidance velocity scale (× speed)
+static const float FSW_NOISE_CIRC = 0.2;   // slight isotropic part of avoid noise
 
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -126,12 +127,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
                          awayhat.x * sa2 + awayhat.y * ca2);
       eff += av * avoid * FSW_AVOID_VEL * speed;
 
-      // Avoidance noise: a random kick so particles still scatter where the
-      // density gradient goes flat (the centre of a symmetric clump, where the
-      // avoidance push alone vanishes and they'd otherwise stay stuck).
+      // Avoidance noise: MOSTLY a random magnitude along the avoidance/curl
+      // direction `av` (a spray that spreads particles along the push), plus a
+      // SLIGHT isotropic term. `av` is soft-normalised → ~0 on a flat plateau,
+      // so there the directional spray vanishes and only the small circular
+      // kick remains to break the particle out of the stuck centre.
       if (avoid_noise > 1e-6) {
         uint nh = fsw_hash3(i + 0x51ED2701u, frame_index, seed);
-        float2 nv = float2(fsw_signed(nh), fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)));
+        float mag  = fsw_unit(fsw_hash(nh));                          // [0,1] along +av
+        float2 cir = float2(fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)),
+                            fsw_signed(fsw_hash(nh ^ 0x85EBCA77u)));  // isotropic
+        float2 nv = av * mag + cir * FSW_NOISE_CIRC;
         eff += nv * avoid_noise * FSW_AVOID_VEL * speed;
       }
     }
