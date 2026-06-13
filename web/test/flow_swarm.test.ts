@@ -41,7 +41,8 @@ const SWARM: Record<string, unknown> = {
   seed: 1,
 };
 
-function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {}): Sketch {
+function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {},
+                   pf: Record<string, unknown> = {}): Sketch {
   return {
     anchor: null,
     columns: [{
@@ -57,7 +58,7 @@ function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {}): Ske
           type: 'module',
           module_type: 'video.phase_fold',
           instance_key: 'pf@0',
-          params: PF,
+          params: { ...PF, ...pf },
           taps: withFlow
             ? [{ railId: 'flow_rail', fieldPath: 'flow_field', direction: 'write' }]
             : [],
@@ -196,6 +197,40 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     });
     expect(r.success).toBe(true);
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 40);
+  });
+
+  it('phase_fold still feeds the swarm at opacity 0 (flow bake runs in tick)', async () => {
+    // phase_fold invisible (__opacity__=0 → render skipped) but used purely as a
+    // flow source. The bake moved to tick(), so flow is still produced; the
+    // swarm advects on it. Solid white particles so they're visible regardless
+    // of the (passthrough/black) input the invisible phase_fold leaves.
+    const sw = {
+      count: 3000, shape_kind: 1, size: 0.8, speed: 4.0, momentum: 0.0,
+      color_blend: 1.0, solid_color: [1, 1, 1], blend_mode: 0, opacity: 1.0,
+      input_alpha: 0.0, seed: 3,
+    };
+    const run = (id: string, withFlow: boolean) => runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id,
+          sketch: buildChain(withFlow, sw, { __opacity__: 0 }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 24, captureTraceIds: ['out'], dumpName: id,
+    });
+
+    const withFlow = await run('fs_op0_on', true);
+    const noFlow   = await run('fs_op0_off', false);
+    expect(withFlow.success).toBe(true);
+    expect(noFlow.success).toBe(true);
+    // The swarm renders (phase_fold's own pixels are gone — opacity 0).
+    expect(withFlow.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    // Flow produced at opacity 0 drives motion → differs from the zero-field
+    // fallback. If the bake hadn't moved to tick(), both would be identical.
+    withFlow.trace('out').expectDifferentFrom(noFlow.trace('out'), 40);
   });
 
   it('force mode advects the swarm (field as acceleration on a mass)', async () => {

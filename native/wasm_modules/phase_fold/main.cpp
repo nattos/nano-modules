@@ -94,6 +94,7 @@ struct State {
   gpu::Buffer stream_buf;     // streamline segments
   gpu::Buffer cycle_buf;      // limit-cycle segments
   gpu::Texture flow_tex;      // baked velocity field (flow_field output), viewport-sized
+  gpu::Buffer  flow_uniform_buf;  // separate uniforms for the tick-time flow bake
   int  flow_w = 0, flow_h = 0;
   bool initialized = false;
 
@@ -429,6 +430,7 @@ void* create() {
   s->status_buf  = gpu::Device::createBuffer(4 * sizeof(float), gpu::BufferUsage::Storage);
   s->stream_buf  = gpu::Device::createBuffer(kStreamSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->cycle_buf   = gpu::Device::createBuffer(kCycleSegs * kSegFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->flow_uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -445,6 +447,7 @@ void destroy(void* self) {
   s->stream_buf.release();
   s->cycle_buf.release();
   s->flow_tex.release();
+  s->flow_uniform_buf.release();
   delete s;
 }
 
@@ -521,6 +524,47 @@ static void compute_corners(const State* s, float sx, float sy,
 static inline void orbit_xy(float orbit, float& ox, float& oy) {
   ox = clampf(0.5f + kApA * std::cos(orbit) + kApB * std::cos(orbit * kApW2 + kApPhi), 0.01f, 0.99f);
   oy = clampf(0.5f + kApA * std::sin(orbit) + kApB * std::sin(orbit * kApW2 + kApPhi), 0.01f, 0.99f);
+}
+
+// Bake the induced velocity field into flow_tex for downstream consumers. This
+// lives in tick() (NOT render()) so it runs every frame even when the visual
+// render is skipped — at opacity 0 the executor calls tick but not render, and a
+// patch wiring phase_fold purely as a flow source still needs fresh data. Uses
+// its own minimal uniform buffer (pf_velocity only reads res/extent/bias/wind/
+// corners/weights) so it doesn't depend on render()'s full per-frame uniform.
+static void bake_flow_field(State* s) {
+  if (!state::isOutputConnected("flow_field") || !s_pso_flow.valid()) return;
+  int vw = host::viewportWidth();
+  int vh = host::viewportHeight();
+  if (vw <= 0 || vh <= 0) return;
+
+  if (!s->flow_tex.valid() || s->flow_w != vw || s->flow_h != vh) {
+    s->flow_tex.release();   // free the old texture on viewport resize (no leak)
+    s->flow_tex = gpu::Device::createTexture(vw, vh, gpu::TextureFormat::RGBA16F);
+    s->flow_w = vw;
+    s->flow_h = vh;
+    if (!s->flow_tex.valid()) return;
+    state::setGpuTexture("flow_field/velocity", s->flow_tex.id);  // on (re)alloc only
+  }
+
+  int nearest = 0;
+  Uniforms u = {};
+  u.res_x = (float)vw;
+  u.res_y = (float)vh;
+  u.extent = PF_EXTENT / (s->scale > 1e-2f ? s->scale : 1e-2f);
+  u.bias = s->bias;
+  u.wind = s->eff_wind;
+  compute_corners(s, s->eff_x, s->eff_y, u.corners, u.weights, nearest);
+  s->flow_uniform_buf.writeOne(u);
+
+  auto cp = gpu::ComputePass::begin();
+  cp.setPSO(s_pso_flow);
+  cp.setBuffer(s->flow_uniform_buf, 0);
+  cp.setBuffer(s->cell_buf, 1);
+  cp.setTexture(s->flow_tex, 2, 1);  // access 1 = storage write
+  cp.dispatch((vw + 7) / 8, (vh + 7) / 8);
+  cp.end();
+  gpu::Device::submit();
 }
 
 void tick(void* self, double dt) {
@@ -647,6 +691,10 @@ void tick(void* self, double dt) {
   auto vy = val::number(s->eff_y);
   state::setValPath("autopilot_y", vy);
   val::release(vy);
+
+  // Produce the flow field every frame — even when render() is skipped (opacity
+  // 0), so downstream consumers always see fresh data.
+  bake_flow_field(s);
 }
 
 void on_resolume_param(void*, long long, double) {}
@@ -1055,30 +1103,8 @@ void render(void* self, int vp_w, int vp_h) {
     }
   }
 
-  // 4 — flow_field: bake the induced velocity field into a texture for any
-  //     downstream consumer (swarm / flow modifier). Only when wired — a
-  //     phase_fold with no flow reader pays nothing for this. Uses the same
-  //     uniforms already written above, so the bake matches the live field.
-  if (state::isOutputConnected("flow_field")) {
-    if (!s->flow_tex.valid() || s->flow_w != vp_w || s->flow_h != vp_h) {
-      s->flow_tex.release();   // free the old texture on viewport resize (no leak)
-      s->flow_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
-      s->flow_w = vp_w;
-      s->flow_h = vp_h;
-      if (s->flow_tex.valid()) {
-        state::setGpuTexture("flow_field/velocity", s->flow_tex.id);  // on (re)alloc only
-      }
-    }
-    if (s->flow_tex.valid()) {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_flow);
-      cp.setBuffer(s->uniform_buf, 0);
-      cp.setBuffer(s->cell_buf, 1);
-      cp.setTexture(s->flow_tex, 2, 1);  // access 1 = storage write
-      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-      cp.end();
-    }
-  }
+  // (The flow_field bake lives in tick() now — see bake_flow_field — so it runs
+  // every frame even when this render() is skipped at opacity 0.)
 
   gpu::Device::submit();
 }
