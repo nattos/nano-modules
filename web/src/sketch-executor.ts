@@ -8,6 +8,7 @@ import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
 import type { ChainEntry, ModuleEntry, Sketch, SketchColumn, Rail, Tap } from './sketch-types';
 import { applyTapMod, combineTap } from './tap-mod';
+import { isRailCompatible } from './schema-compat';
 import { initSmooth, advanceSmooth, type SmoothState } from './param-smoothing';
 import {
   FusionDispatcher,
@@ -414,6 +415,10 @@ export class SketchExecutor {
   private wirePos: Map<string, number> = new Map();         // instanceKey → global exec index
   private wiresByDest: Map<string, import('./sketch-types').Wire[]> = new Map();
   private wireSrcFields: Set<string> = new Set();           // `${instanceKey}:${field}` consumed by a wire
+  // New-model opt-in: true when the sketch declares a `wires` array (even empty).
+  // Gates struct auto-connect + unconditional struct-output publishing so legacy
+  // rail/tap sketches (which set no `wires`) keep byte-identical behavior.
+  private wireModeActive = false;
 
   // --- Per-effect opacity wet/dry blend (mirrors native host_blend.h) ---
   private blendPipeline?: GPUComputePipeline;
@@ -545,6 +550,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     this.wirePos = new Map();
     this.wiresByDest = new Map();
     this.wireSrcFields = new Set();
+    this.wireModeActive = Array.isArray(sketch.wires);
     {
       let order = 0;
       for (const col of sketch.columns) {
@@ -875,6 +881,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
           }
         }
+        // Wire-mode connectedness: a struct producer needs to know it's read
+        // BEFORE it runs (e.g. phase_fold gates its flow bake on
+        // isOutputConnected), but auto-connect compatibility is only resolved
+        // later at the consumer. So in wire mode mark every struct output as
+        // read and every struct input as written, optimistically — a producer
+        // placed in the stack produces; the consumer's auto-connect then decides
+        // whether a texture is actually installed (else it falls back). Explicit
+        // wires (wireSrcFields) also count.
+        if (this.wireModeActive) {
+          const sch = loaded.host.schema;
+          for (const fn in sch) {
+            const d: any = sch[fn];
+            const fio = d?.io ?? 0;
+            const struct = d?.type === 'object' || d?.type === 'array';
+            if (!struct) continue;
+            if (fio & 2) loaded.host.fieldsWithReader.add(fn);
+            if (fio & 1) loaded.host.fieldsWithWriter.add(fn);
+          }
+        }
 
         // --- Apply read taps (before tick/render) ---
         const inputTextures: number[] = currentInputHandle >= 0 ? [currentInputHandle] : [];
@@ -986,6 +1011,46 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 this.applyStructRead(loaded.host, loaded.module, w.dest.field,
                   { struct: src.value, dirty: src.dirty }, src.schema);
               }
+            }
+          }
+        }
+
+        // --- Struct auto-connect (new-model default; generalizes the implicit
+        // linear texture flow to structured inputs) ---
+        // An unwired structured input (object/array, io & 1) binds to the
+        // nearest schema-compatible struct OUTPUT produced ABOVE it this frame.
+        // Gated on wire mode so legacy rail/tap sketches are untouched; an
+        // explicit wire or read tap on the field suppresses auto-connect.
+        if (this.wireModeActive) {
+          const myPos = this.wirePos.get(entry.instance_key) ?? 0;
+          const schema = loaded.host.schema;
+          const wiredDests = this.wiresByDest.get(entry.instance_key);
+          for (const fname in schema) {
+            const def: any = schema[fname];
+            const io = def?.io ?? 0;
+            if (!(io & 1)) continue;                                  // input only
+            if (def.type !== 'object' && def.type !== 'array') continue;  // struct only
+            // Explicit wire on this field wins.
+            if (wiredDests?.some(w => w.dest.field === fname)) continue;
+            // Legacy read tap on this field wins (defensive; wire-mode sketches
+            // generally carry no taps).
+            if (entry.taps?.some(t => t.direction === 'read' && t.fieldPath === fname)) continue;
+            // Nearest compatible struct producer above (largest pos < myPos).
+            let best: Extract<WireOutput, { kind: 'struct' }> | null = null;
+            let bestPos = -1;
+            for (const [k, out] of this.wireCur) {
+              if (out.kind !== 'struct') continue;
+              const prodKey = k.slice(0, k.lastIndexOf(':'));
+              const prodPos = this.wirePos.get(prodKey);
+              if (prodPos === undefined || prodPos >= myPos) continue;  // must be above
+              if (prodPos <= bestPos) continue;
+              if (!isRailCompatible(out.schema, def)) continue;
+              bestPos = prodPos;
+              best = out;
+            }
+            if (best) {
+              this.applyStructRead(loaded.host, loaded.module, fname,
+                { struct: best.value, dirty: best.dirty }, best.schema);
             }
           }
         }
@@ -1269,17 +1334,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           }
         }
 
-        // --- Publish this entry's wire-consumed outputs ---
-        // Only fields a wire actually reads are published (so a wire-free sketch
-        // does nothing here). Output bit (io & 2) required.
-        if (this.wireSrcFields.size > 0) {
+        // --- Publish this entry's outputs to wireCur ---
+        // A field is published when (a) a wire actually consumes it, or (b) we're
+        // in wire mode AND it's a struct output (so an unwired downstream input
+        // can auto-connect to it). A wire-free, non-wire-mode sketch does nothing
+        // here. Output bit (io & 2) required.
+        if (this.wireSrcFields.size > 0 || this.wireModeActive) {
           const schema = loaded.host.schema;
           for (const fname in schema) {
             const key = `${entry.instance_key}:${fname}`;
-            if (!this.wireSrcFields.has(key)) continue;
             const def: any = schema[fname];
             const io = def?.io ?? 0;
             if (!(io & 2)) continue;
+            const isStruct = def.type === 'object' || def.type === 'array';
+            // Publish only consumed fields, plus struct outputs in wire mode
+            // (auto-connect targets). Skip everything else.
+            if (!this.wireSrcFields.has(key) && !(this.wireModeActive && isStruct)) continue;
             if (def.type === 'texture') {
               const h = (io & 4) ? effectiveOutputHandle : loaded.host.textureFields.get(fname);
               if (h !== undefined && h >= 0) this.wireCur.set(key, { kind: 'texture', handle: h });

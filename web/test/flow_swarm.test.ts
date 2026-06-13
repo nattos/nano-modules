@@ -177,6 +177,63 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     withFlow.trace('out').expectDifferentFrom(noFlow.trace('out'), 60);
   });
 
+  it('struct auto-connect drives the swarm (wire model, no explicit wire/tap)', async () => {
+    // New single-stack WIRE model: the sketch opts in via `wires: []` (no
+    // rails, no taps). phase_fold sits ABOVE flow_swarm and publishes its
+    // `flow_field` struct; flow_swarm's unwired `flow_field_in` AUTO-CONNECTS
+    // to the nearest compatible struct producer above. The swarm advects.
+    //
+    // Compared against a swarm ALONE (no producer above → zero-field fallback,
+    // particles sit at their seeds). The two must diverge → auto-connect wired
+    // the flow with zero explicit connections.
+    const withProducer: Sketch = {
+      anchor: null,
+      columns: [{ name: 'main', chain: [
+        { type: 'module', module_type: 'video.phase_fold', instance_key: 'pf@0', params: PF },
+        { type: 'module', module_type: 'video.flow_swarm', instance_key: 'sw@0', params: SWARM },
+      ]}],
+      wires: [],
+    } as Sketch;
+    const swarmOnly: Sketch = {
+      anchor: null,
+      columns: [{ name: 'main', chain: [
+        { type: 'module', module_type: 'video.flow_swarm', instance_key: 'sw@0', params: SWARM },
+      ]}],
+      wires: [],
+    } as Sketch;
+
+    const auto = await runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'fs_auto', sketch: withProducer },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_auto' } },
+        ]},
+      ],
+      waitFrames: 24, captureTraceIds: ['out'], dumpName: 'flow_swarm_autoconnect',
+    });
+    expect(auto.success).toBe(true);
+    expect(auto.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+
+    const bare = await runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'fs_bare', sketch: swarmOnly },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_bare' } },
+        ]},
+      ],
+      waitFrames: 24, captureTraceIds: ['out'], dumpName: 'flow_swarm_bare',
+    });
+    expect(bare.success).toBe(true);
+    expect(bare.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+
+    // Auto-connected flow advected the particles → diverges from the static seed.
+    auto.trace('out').expectDifferentFrom(bare.trace('out'), 60);
+  });
+
   it('the swarm is live — output drifts across frames', async () => {
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
