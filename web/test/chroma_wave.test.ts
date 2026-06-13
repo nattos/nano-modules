@@ -300,60 +300,51 @@ describe('Chroma Wave Effect E2E', () => {
     // With the rail wired, motion_blur smears the bloom along those vectors;
     // without it, it falls back to a pass-through. The two final frames must
     // differ — proving chroma_wave emits motion AND motion_blur consumes it.
-    const buildChain = (withRails: boolean): Sketch => ({
+    // Wire model: motion_blur's render_outputs input auto-connects to the
+    // chroma_wave producer above it. The negative case omits the producer so the
+    // blur falls back to a pass-through (no motion to consume).
+    const buildChain = (withProducer: boolean): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: withRails ? [{
-          id: 'ro_rail', name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: {
-            type: 'object',
-            fields: { depth: { type: 'texture' }, motion: { type: 'texture' } },
-          }},
-        }] : [],
         chain: [
           { type: 'texture_input', id: 'in' },
           { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
             params: { color: [0.0, 0.0, 0.0] } },
-          { type: 'module', module_type: 'gen.chroma_wave', instance_key: 'cw@0',
+          ...(withProducer ? [{ type: 'module', module_type: 'gen.chroma_wave', instance_key: 'cw@0',
             params: {
               auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05, release_s: 0.5,
               release_expand: 4.0, base_radius: 0.15, intensity: 2.0,
               voice_pos_jitter: 0.3, voice_hue_jitter: 0.0, motion_scale: 1.0, seed: 3,
             },
-            taps: withRails ? [{
-              railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'write',
-            }] : [],
-          },
+          }] : []),
           { type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
             params: { strength: 32.0, samples: 16, quality: 1 },
-            taps: withRails ? [{
-              railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'read',
-            }] : [],
           },
           { type: 'texture_output', id: 'out' },
         ],
       }],
-    });
+    } as Sketch);
 
-    const run = (id: string, withRails: boolean) => runEngineTest({
+    const run = (id: string, withProducer: boolean) => runEngineTest({
       width: 128, height: 128,
       modules: ['com.nano.lights', 'com.nattos.core'],
       commands: [
-        { type: 'createSketch', sketchId: id, sketch: buildChain(withRails) },
+        { type: 'createSketch', sketchId: id, sketch: buildChain(withProducer) },
         { type: 'setTracePoints', tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: id } },
         ]},
       ],
       waitFrames: 30,
       captureTraceIds: ['out'],
-      dumpName: `chroma_wave_motion_${withRails ? 'with' : 'without'}_rails`,
+      dumpName: `chroma_wave_motion_${withProducer ? 'with' : 'without'}_producer`,
     });
 
-    const withRails = await run('cw_motion_with', true);
-    const withoutRails = await run('cw_motion_without', false);
-    expect(withRails.success && withoutRails.success).toBe(true);
-    withRails.trace('out').expectDifferentFrom(withoutRails.trace('out'), 100);
+    const withProducer = await run('cw_motion_with', true);
+    const noProducer = await run('cw_motion_without', false);
+    expect(withProducer.success && noProducer.success).toBe(true);
+    withProducer.trace('out').expectDifferentFrom(noProducer.trace('out'), 100);
   });
 
   it('hue twist shifts the hue where it lands on a primary', async () => {

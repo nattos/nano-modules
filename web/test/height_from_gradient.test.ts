@@ -1,11 +1,6 @@
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
-const RENDER_OUTPUTS_SCHEMA = {
-  type: 'object',
-  fields: { depth: { type: 'texture' }, motion: { type: 'texture' } },
-};
-
 /**
  * E2E coverage for video.height_from_gradient (nano bundle) — GPU gradient-
  * domain height reconstruction (multigrid Poisson solve).
@@ -252,38 +247,34 @@ describe('video.height_from_gradient — vector sources', () => {
     // debug.motion_rect publishes render_outputs/motion; height_from_gradient
     // (source = Motion Vectors) integrates it. Rail wired vs not must differ:
     // unwired → zero motion → flat height → uniform black grayscale.
-    const buildChain = (withRail: boolean): Sketch => ({
+    // Wire model: hfg's render_outputs_in auto-connects to the motion_rect
+    // producer above. Negative case omits the producer → zero motion → flat.
+    const buildChain = (withProducer: boolean): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: withRail ? [{
-          id: 'render_outputs_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-        }] : [],
         chain: [
           { type: 'texture_input', id: 'in' },
           { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0', params: { color: [0.05, 0.05, 0.1] } },
-          {
+          ...(withProducer ? [{
             type: 'module', module_type: 'debug.motion_rect', instance_key: 'rect@0',
             params: { size: 0.3, speed: 2.0, color: [0.9, 0.4, 0.8] },
-            taps: withRail ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }] : [],
-          },
+          }] : []),
           {
             type: 'module', module_type: 'video.height_from_gradient', instance_key: 'hfg@0',
             params: { source: 2, present_mode: 1, grad_gain: 1.0 },
-            taps: withRail ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs_in', direction: 'read' }] : [],
           },
           { type: 'texture_output', id: 'out' },
         ],
       }],
-    });
+    } as Sketch);
 
-    const run = (id: string, withRail: boolean) => runEngineTest({
+    const run = (id: string, withProducer: boolean) => runEngineTest({
       width: 64, height: 64,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
       commands: [
-        { type: 'createSketch', sketchId: id, sketch: buildChain(withRail) },
+        { type: 'createSketch', sketchId: id, sketch: buildChain(withProducer) },
         { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
       ],
       waitFrames: 8, captureTraceIds: ['out'], dumpName: id,

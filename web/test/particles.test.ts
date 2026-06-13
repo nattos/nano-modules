@@ -10,15 +10,6 @@ import type { Sketch } from '../src/sketch-types';
  * directly from that buffer in its vertex shader.
  */
 
-const PARTICLES_STRUCT_SCHEMA = {
-  type: 'object',
-  fields: {
-    count: { type: 'int' },
-    positions:  { type: 'array', gpu: true, elementType: { type: 'float' } },
-    velocities: { type: 'array', gpu: true, elementType: { type: 'float' } },
-  },
-};
-
 function buildParticleSketch(opts: {
   particleSize?: number;
   tint?: [number, number, number, number];
@@ -27,17 +18,13 @@ function buildParticleSketch(opts: {
   const tint = opts.tint ?? [1.0, 0.7, 0.2, 1.0];
   const size = opts.particleSize ?? 0.04;
   const gravity = opts.gravity ?? [0.0, -0.4];
+  // Wire model: the renderer's `particles_in` struct input (GPU array leaves)
+  // auto-connects to the emitter's `particles_out` produced above it. No rail.
   return {
     anchor: null,
+    wires: [],
     columns: [{
       name: 'main',
-      rails: [
-        {
-          id: 'particles_rail',
-          name: 'Particle Data',
-          dataType: { kind: 'struct', schema: PARTICLES_STRUCT_SCHEMA },
-        },
-      ],
       chain: [
         { type: 'texture_input', id: 'in' },
         {
@@ -46,23 +33,17 @@ function buildParticleSketch(opts: {
           instance_key: 'emit@0',
           // Initial state: feed gravity (vec2) and spawn_speed.
           params: { spawn_speed: 0.6, gravity },
-          taps: [
-            { railId: 'particles_rail', fieldPath: 'particles_out', direction: 'write' },
-          ],
         },
         {
           type: 'module',
           module_type: 'video.particles_renderer',
           instance_key: 'render@0',
           params: { particle_size: size, tint },
-          taps: [
-            { railId: 'particles_rail', fieldPath: 'particles_in', direction: 'read' },
-          ],
         },
         { type: 'texture_output', id: 'out' },
       ],
     }],
-  };
+  } as Sketch;
 }
 
 describe('Particles (struct rail + GPU array) E2E', () => {
