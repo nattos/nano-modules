@@ -1088,8 +1088,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                   while (inputTextures.length <= texIndex) inputTextures.push(-1);
                   inputTextures[texIndex] = src.handle;
                 } else if (w.dest.field) {
+                  // Install under the field name (effects reading via
+                  // textureForField, e.g. tex_in) AND feed the positional input
+                  // slot (effects reading inputTexture(N), e.g. video.blend's
+                  // tex_a/tex_b). The slot index is the field's order among the
+                  // schema's input-texture fields, so a UI wire that addresses
+                  // the field by its schema name still reaches inputTexture(N).
                   loaded.host.textureFields.set(w.dest.field, src.handle);
                   loaded.host.tapInstalledTextureFields.add(w.dest.field);
+                  const pi = this.textureInputIndex(loaded.host.schema, w.dest.field);
+                  if (pi >= 0) {
+                    while (inputTextures.length <= pi) inputTextures.push(-1);
+                    inputTextures[pi] = src.handle;
+                  }
                 }
               } else if (src.kind === 'struct') {
                 if (delayed) continue;  // delayed struct deferred
@@ -1580,6 +1591,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
    * destination path; a dirty patch is emitted for the subtree root so
    * the reader can do lazy work without reading the subtree contents.
    */
+  /**
+   * Positional index of a texture INPUT field (io & 1) among the schema's
+   * input-texture fields, in declaration order — i.e. the N that the effect's
+   * `gpu::Device::inputTexture(N)` reads. Returns -1 if `fieldName` is not a
+   * texture input. Lets a wire that addresses a texture input by its schema name
+   * (tex_a / tex_b) still reach the positional input slot.
+   */
+  private textureInputIndex(schema: Record<string, any>, fieldName: string): number {
+    if (!schema) return -1;
+    let idx = 0;
+    for (const fn in schema) {
+      const d: any = schema[fn];
+      if (d?.type === 'texture' && ((d.io ?? 0) & 1)) {
+        if (fn === fieldName) return idx;
+        idx++;
+      }
+    }
+    return -1;
+  }
+
   private applyStructRead(
     host: WasmHost, module: WasmModule, destPath: string, rv: RailValue,
     schema: Record<string, any>,

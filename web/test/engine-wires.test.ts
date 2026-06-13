@@ -47,6 +47,46 @@ describe('Wire routing E2E', () => {
     result.trace('out').expectPixelAt(32, 32, { r: 128, g: 0, b: 128 }, 15);
   });
 
+  it('texture wires by schema field name reach positional inputs (tex_a/tex_b)', async () => {
+    // The IDE addresses a texture input by its schema NAME (tex_a/tex_b), but
+    // video.blend reads inputTexture(0)/(1) positionally. A named texture wire
+    // must therefore also feed the positional slot (index = order among input-
+    // texture fields). Two solids above → blend; wired by name; opacity 0.5.
+    // Without the name→index mapping the wires are ignored and the output is just
+    // the implicit chain flow (the stage above) — here it'd show solid blue.
+    const sketch: Sketch = {
+      anchor: null,
+      columns: [{
+        name: 'main',
+        chain: [
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
+            params: { color: [1.0, 0.0, 0.0] } },
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
+            params: { color: [0.0, 0.0, 1.0] } },
+          { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
+            params: { opacity: 0.5 } },
+        ],
+      }],
+      wires: [
+        { id: 'wa', src: { instanceKey: 'red@0',  field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: 'tex_a' } },
+        { id: 'wb', src: { instanceKey: 'blue@0', field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: 'tex_b' } },
+      ],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['generator.solid_color', 'video.blend'],
+      commands: [{ type: 'createSketch', sketchId: 'wire_named', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_named' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'wire_named',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 128, g: 0, b: 128 }, 15);
+  });
+
   it('forward scalar wire from a passthrough modulation source', async () => {
     // data.lfo declares NO output texture → it is a texture-passthrough
     // modulation source: tick runs and publishes its scalar `output`, but it
