@@ -154,4 +154,51 @@ describe('Wire routing E2E', () => {
     expect(r2).toBeGreaterThan(r0 + 10);       // clear net accumulation
     expect(r2).toBeLessThanOrEqual(110);       // never exceeds src
   });
+
+  it('util.dashboard knob is both a wire sink and source', async () => {
+    // The dashboard is an executor-handled virtual knob bank (no WASM). knob_0
+    // is wired BOTH ways: lfo.output (0.5) drives INTO it (overriding the stored
+    // 1.0), and it drives OUT to brightness_contrast.brightness.
+    //   white input, brightness 0.5 → shift 0; contrast 0.25 → scale 0.5 → gray.
+    // gray(128) proves both directions: if the input wire failed the knob stays
+    // 1.0 → white; if the output wire failed brightness stays its stored 1.0 →
+    // white. Only knob=0.5 reaching brightness yields gray.
+    const sketch: Sketch = {
+      anchor: null,
+      columns: [{
+        name: 'main',
+        chain: [
+          { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+            params: { color: [1.0, 1.0, 1.0] } },
+          { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+            params: { rate: 0.0, amplitude: 1.0 } },
+          { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
+          { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+            params: { brightness: 1.0, contrast: 0.25 } },
+        ],
+      }],
+      instances: {
+        'dash@0': { module_type: 'util.dashboard', state: { knobCount: 1, knobs: [1.0] } },
+      },
+      wires: [
+        { id: 'win',  src: { instanceKey: 'lfo@0',  field: 'output' },
+          dest: { instanceKey: 'dash@0', field: 'knob_0' } },
+        { id: 'wout', src: { instanceKey: 'dash@0', field: 'knob_0' },
+          dest: { instanceKey: 'bc@0',   field: 'brightness' } },
+      ],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'],
+      commands: [{ type: 'createSketch', sketchId: 'wire_dash', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_dash' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'wire_dash',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+  });
 });

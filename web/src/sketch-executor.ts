@@ -800,6 +800,46 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       // which would resolveEffectId(undefined) and throw. Mirrors the
       // `type !== 'module'` filters elsewhere in this file.
       if (entry.type !== 'module') continue;
+
+      // --- util.dashboard: executor-handled virtual knob bank (no WASM) ---
+      // A texture passthrough exposing N scalar knobs that are BOTH wire sources
+      // (each `knob_i` published to wireCur) and wire sinks (an input wire on
+      // `knob_i` overrides the stored value for the frame). No render, no slot;
+      // the image chain flows past untouched. Handled before ensureInstance,
+      // which would try (and fail) to load a non-existent WASM module.
+      if (entry.module_type === 'util.dashboard') {
+        const dstate = (sketch.instances?.[entry.instance_key]?.state
+          ?? entry.params ?? {}) as Record<string, any>;
+        const knobs: number[] = Array.isArray(dstate.knobs) ? dstate.knobs : [];
+        const knobCount = typeof dstate.knobCount === 'number' ? dstate.knobCount : knobs.length;
+        const myPos = this.wirePos.get(entry.instance_key) ?? 0;
+        const inWires = this.wiresByDest.get(entry.instance_key);
+        for (let i = 0; i < knobCount; i++) {
+          const field = `knob_${i}`;
+          let value = typeof knobs[i] === 'number' ? knobs[i] : 0;
+          // Input wire(s) on this knob override the stored value for the frame,
+          // folded in stack order (same scalar resolution as input-wire reads).
+          if (inWires) {
+            for (const w of inWires) {
+              if (w.dest.field !== field) continue;
+              const srcPos = this.wirePos.get(w.src.instanceKey);
+              if (srcPos === undefined) continue;
+              const delayed = srcPos >= myPos;
+              const src = (delayed ? this.wirePrev : this.wireCur)
+                .get(`${w.src.instanceKey}:${w.src.field}`);
+              if (!src || src.kind !== 'scalar') continue;
+              value = combineTap(value, applyTapMod(src.value, w.mod), w.combine, w.mixFactor);
+            }
+          }
+          // Publish as a wire source for downstream consumers.
+          this.wireCur.set(`${entry.instance_key}:${field}`, { kind: 'scalar', value });
+        }
+        // Texture passthrough: leave the chain untouched, consume no slot.
+        this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+          input: currentInputHandle, output: currentInputHandle,
+        });
+        continue;
+      }
       {
         const loaded = await this.ensureInstance(entry);
 
