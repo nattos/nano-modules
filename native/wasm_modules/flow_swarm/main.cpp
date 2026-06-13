@@ -296,6 +296,9 @@ void module_init() {
       // field flow, keeping it in the stable zone (the limit cycle) and damping
       // force-mode overshoot. 0 = free, 1 = strongly glued to the field.
       .floatField("pull",         0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      // Jitter: a forward SPRAY — ±wobble on the forward speed plus a slight
+      // directional spread, scaled by the particle's own speed (rides the flow,
+      // not an isotropic cloud).
       .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
       .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput)
       // ---- Geometry / lifetime ----

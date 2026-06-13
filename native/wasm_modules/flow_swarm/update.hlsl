@@ -28,7 +28,7 @@ cbuffer Uniforms : register(b4) {
   float speed;          // multiplier on the sampled field
 
   float momentum;       // velocity mode: 0 = snap to field, →1 = heavy inertia
-  float jitter;         // per-frame random velocity kick (uv/s)
+  float jitter;         // forward spray: ±wobble on speed + slight direction
   float drag;           // velocity decay per second
   float life;           // base lifetime (s)
 
@@ -177,11 +177,20 @@ void main(uint3 gid : SV_DispatchThreadID) {
         vel = lerp(vel, eff, a);
       }
 
-      // Per-frame jitter kick (variance held across substeps via noise_scale).
+      // Jitter as a forward SPRAY (not an isotropic cloud): mostly a random
+      // magnitude along the direction of motion (speeds the particle up / slows
+      // it down), plus a slight directional spread. Scaled by the particle's own
+      // speed so it rides the flow — more spray, less cloud. fwd*mag works out to
+      // vel*(1 + mag·jitter), i.e. a ±jitter wobble on the forward magnitude.
       if (jitter > 1e-6) {
+        float vmag = length(vel);
+        float2 fwd = vel / (vmag + 1e-4);
         uint h = fsw_hash3(i + 0x9E3779B1u, fi, seed);
-        float2 kick = float2(fsw_signed(h), fsw_signed(fsw_hash(h ^ 0x68BC21EBu)));
-        vel += kick * jitter * noise_scale;
+        float mag  = fsw_signed(fsw_hash(h));                          // forward magnitude
+        float2 cir = float2(fsw_signed(fsw_hash(h ^ 0x68BC21EBu)),
+                            fsw_signed(fsw_hash(h ^ 0xA17F2B91u)));    // direction spread
+        float2 kick = fwd * mag + cir * FSW_NOISE_CIRC;
+        vel += kick * jitter * vmag * noise_scale;
       }
 
       // Drag, then integrate.

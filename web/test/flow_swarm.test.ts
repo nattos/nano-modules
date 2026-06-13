@@ -233,6 +233,33 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     withFlow.trace('out').expectDifferentFrom(noFlow.trace('out'), 40);
   });
 
+  it('jitter sprays along the flow (changes the live swarm)', async () => {
+    // Jitter is now a forward spray (wobble on speed + slight direction). With a
+    // moving, field-driven swarm it perturbs the trajectories → frame differs.
+    const sw = {
+      count: 3000, shape_kind: 1, size: 0.8, speed: 4.0, momentum: 0.2,
+      color_blend: 1.0, solid_color: [1, 1, 1], blend_mode: 0, opacity: 1.0,
+      input_alpha: 0.0, seed: 5,
+    };
+    const run = (id: string, jitter: number) => runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(true, { ...sw, jitter }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 24, captureTraceIds: ['out'], dumpName: id,
+    });
+    const off = await run('fs_jit_off', 0.0);
+    const on  = await run('fs_jit_on', 0.8);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 40);
+  });
+
   it('force mode advects the swarm (field as acceleration on a mass)', async () => {
     // mode=Force, light weight: particles integrate the field as acceleration.
     // Confirm the chain runs and the swarm is live (drifts across frames).
