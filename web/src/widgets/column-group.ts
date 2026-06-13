@@ -546,13 +546,21 @@ export class ColumnGroup extends MobxLitElement {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-accent-color, #4caf50);
     }
     .field-option-pip[selected]::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.85); }
-    /* A wired field's pip uses the wire accent (blue) instead of the option green. */
+    /* A wired field's pip follows the rail convention: blue for inputs, red for
+     * outputs (vs the option green). */
     .field-option-pip.wired::after {
       background: var(--app-hi-color2, #4169E1);
       box-shadow: 0 0 4px var(--app-hi-color2, #4169E1);
     }
     .field-option-pip.wired:hover::after {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-hi-color2, #4169E1);
+    }
+    .field-option-pip.wired.output::after {
+      background: var(--app-hi-color1, #ff4500);
+      box-shadow: 0 0 4px var(--app-hi-color1, #ff4500);
+    }
+    .field-option-pip.wired.output:hover::after {
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-hi-color1, #ff4500);
     }
     .tap-indicator[selected] {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.8);
@@ -1641,11 +1649,13 @@ export class ColumnGroup extends MobxLitElement {
         this.registerFieldSelectable(fieldKey, i, entry, fieldPath, outputFieldNames.has(fieldPath));
         const yCenter = rect.top + rect.height / 2;
         const isWired = wiredFields.has(fieldPath);
+        const isOutput = outputFieldNames.has(fieldPath);
         const title = isWired
           ? 'Wired — click to view connections'
           : 'Smoothing on — click to edit';
         pips.push(html`
-          <div class="field-option-pip ${isWired ? 'wired' : ''}" ?selected=${selKey === fieldKey}
+          <div class="field-option-pip ${isWired ? 'wired' : ''} ${isWired && isOutput ? 'output' : ''}"
+            ?selected=${selKey === fieldKey}
             data-field-key=${fieldKey}
             style="top:${yCenter}px"
             title=${title}
