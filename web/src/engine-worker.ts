@@ -113,6 +113,15 @@ const sketchOutputs = new Map<string, number>();
 // Render loop state
 let running = false;
 let frameInFlight = false;
+// GPU frames-in-flight cap. `frameInFlight` only serializes the JS half of a
+// frame; the GPU half (submitted command buffers) is never awaited, so under
+// load the queue grows unbounded — memory climbs and you get periodic catch-up
+// stalls. We record a completion fence per frame and, once more than this many
+// are outstanding, block the loop until the oldest (frame N-MAX) finishes
+// before issuing the next. This bounds queued GPU work to ~MAX frames and
+// paces the loop to the GPU's real throughput when it can't keep up.
+const MAX_FRAMES_IN_FLIGHT = 2;
+let inFlightFences: Array<Promise<unknown>> = [];
 let lastTime = 0;
 let elapsed = 0;
 let frameCount = 0;
@@ -459,6 +468,16 @@ async function frame() {
   if (stateGeneration !== lastBroadcastGeneration) {
     broadcastState();
     lastBroadcastGeneration = stateGeneration;
+  }
+
+  // Bound GPU frames-in-flight: record this frame's completion fence, and if
+  // more than MAX are outstanding, wait for the oldest (frame N-MAX) before
+  // the loop continues — so command buffers can't outrun the GPU.
+  if (gpuDevice) {
+    inFlightFences.push(gpuDevice.queue.onSubmittedWorkDone());
+    if (inFlightFences.length > MAX_FRAMES_IN_FLIGHT) {
+      await inFlightFences.shift();
+    }
   }
 
   frameInFlight = false;
