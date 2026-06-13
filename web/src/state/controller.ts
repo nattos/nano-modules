@@ -1821,12 +1821,14 @@ export class AppController {
     // it calls back into here to flush any waiting sketches.
     if (appState.local.availableEffects.length === 0) return;
 
-    const plugins = appState.local.plugins;
     const nowSynced = new Set<string>();
     for (const [id, sketch] of Object.entries(appState.database.sketches)) {
       if (this.engineSketchFilter && !this.engineSketchFilter(id)) continue;
       nowSynced.add(id);
-      const augmented = augmentSketchWithImplicitConnections(toJS(sketch), plugins);
+      // Plain deep clone (no MobX proxies → safe for postMessage). Struct
+      // connections are resolved by the executor's struct auto-connect; no
+      // implicit rail/tap augmentation is needed.
+      const augmented = JSON.parse(JSON.stringify(toJS(sketch)));
       this.engine.updateSketch(id, augmented);
     }
     // Anything previously synced but no longer eligible (deleted or filtered
@@ -1849,135 +1851,6 @@ export class AppController {
   setEngineSketchFilter(filter: ((sketchId: string) => boolean) | null) {
     this.engineSketchFilter = filter;
     this.syncSketchesToEngine();
-  }
-}
-
-/**
- * Produce a copy of `sketch` with implicit struct/gpu/vec auto-connections
- * added, without touching the caller's sketch. Scans each column for
- * structured inputs lacking a read tap and, for each, finds an earlier
- * module with a compatible structured output. If such a producer exists,
- * a synthesized rail (deterministic ID so repeated syncs stay stable) +
- * write tap + read tap are inserted into the returned sketch. The input
- * sketch is left unmodified, and these synthetic entries never land in
- * the user's schema or the UI.
- */
-export function augmentSketchWithImplicitConnections(
-  sketch: Sketch,
-  plugins: PluginInfo[],
-): Sketch {
-  // Deep clone so we can mutate freely without touching MobX-proxy state.
-  const clone: Sketch = JSON.parse(JSON.stringify(sketch));
-
-  for (let colIdx = 0; colIdx < clone.columns.length; colIdx++) {
-    augmentColumn(clone, colIdx, plugins);
-  }
-  return clone;
-}
-
-function augmentColumn(sketch: Sketch, colIdx: number, plugins: PluginInfo[]) {
-  const column = sketch.columns[colIdx];
-  if (!column) return;
-
-  // Deterministic implicit rail ID, so repeated syncs for the same
-  // producer emit the same rail. The key uniquely identifies "this
-  // producer's output feeds a compatible struct rail in this column".
-  const implicitRailId = (producerChainIdx: number, producerFieldPath: string) =>
-    `__implicit__/${colIdx}/${producerChainIdx}/${producerFieldPath}`;
-
-  const allRails = [
-    ...(column.rails ?? []),
-    ...(sketch.rails ?? []),
-  ];
-
-  // Existing explicit write taps in this column — consumers can reuse
-  // whatever rail a producer is already writing to.
-  const writeTapByProducer = new Map<string, { railId: string; dataType: import('../sketch-types').RailDataType }>();
-  for (let i = 0; i < column.chain.length; i++) {
-    const e = column.chain[i];
-    if (e.type !== 'module') continue;
-    for (const t of e.taps ?? []) {
-      if (t.direction !== 'write') continue;
-      const rail = allRails.find(r => r.id === t.railId);
-      if (!rail) continue;
-      writeTapByProducer.set(`${i}/${t.fieldPath}`, { railId: rail.id, dataType: rail.dataType });
-    }
-  }
-
-  for (let i = 0; i < column.chain.length; i++) {
-    const entry = column.chain[i];
-    if (entry.type !== 'module') continue;
-    const plugin = plugins.find(p => p.id === entry.module_type);
-    const schema = plugin?.schema;
-    if (!schema) continue;
-
-    for (const [fieldName, def] of Object.entries(schema)) {
-      const d: any = def;
-      const io = d?.io ?? 0;
-      if (!(io & 1)) continue;
-      if (!isStructuredSchemaTypeDef(d)) continue;
-
-      // User explicitly wired this input already? Leave it alone.
-      const hasRead = (entry.taps ?? []).some(
-        t => t.fieldPath === fieldName && t.direction === 'read');
-      if (hasRead) continue;
-
-      // Find the nearest earlier module with a compatible structured output.
-      let producerChainIdx = -1;
-      let producerFieldPath = '';
-      let producerSchema: any = null;
-      outer: for (let j = i - 1; j >= 0; j--) {
-        const pe = column.chain[j];
-        if (pe.type !== 'module') continue;
-        const pplug = plugins.find(p => p.id === pe.module_type);
-        const pschema = pplug?.schema ?? {};
-        for (const [pname, pdef] of Object.entries(pschema)) {
-          const pd: any = pdef;
-          if (!((pd?.io ?? 0) & 2)) continue;
-          if (!isStructuredSchemaTypeDef(pd)) continue;
-          if (!isRailCompatible(pd, d)) continue;
-          producerChainIdx = j;
-          producerFieldPath = pname;
-          producerSchema = pd;
-          break outer;
-        }
-      }
-      if (producerChainIdx < 0) continue;
-
-      // Prefer an existing explicit write tap (user-authored) on the
-      // producer — reuse its rail so behaviour stays consistent with
-      // manual routing. Otherwise synthesize a deterministic implicit
-      // rail and write tap pair.
-      const producerKey = `${producerChainIdx}/${producerFieldPath}`;
-      let produced = writeTapByProducer.get(producerKey);
-      if (!produced) {
-        const railId = implicitRailId(producerChainIdx, producerFieldPath);
-        // Deep-clone the schema: producerSchema points into the MobX-proxied
-        // plugins list, and structured-clone (postMessage) chokes on proxies.
-        const dataType: import('../sketch-types').RailDataType = {
-          kind: 'struct',
-          schema: JSON.parse(JSON.stringify(producerSchema)),
-        };
-        column.rails = column.rails ?? [];
-        column.rails.push({ id: railId, name: railId, dataType });
-        const producerEntry = column.chain[producerChainIdx];
-        if (producerEntry.type === 'module') {
-          producerEntry.taps = producerEntry.taps ?? [];
-          producerEntry.taps.push({ railId, fieldPath: producerFieldPath, direction: 'write' });
-        }
-        produced = { railId, dataType };
-        writeTapByProducer.set(producerKey, produced);
-      }
-
-      // Sanity: if the producer's existing rail isn't structurally
-      // compatible anymore (e.g. user reused it for something else),
-      // skip this consumer rather than create a broken tap.
-      if (typeof produced.dataType === 'string') continue;
-      if (!isRailCompatible((produced.dataType as any).schema, d)) continue;
-
-      entry.taps = entry.taps ?? [];
-      entry.taps.push({ railId: produced.railId, fieldPath: fieldName, direction: 'read' });
-    }
   }
 }
 
