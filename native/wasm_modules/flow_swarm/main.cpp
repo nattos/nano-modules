@@ -87,15 +87,15 @@ struct UpdateUniforms {
 
   float    avoid_noise;
   uint32_t substeps;
-  float    _pad_n1;
-  float    _pad_n2;
+  float    dens_aspect_x;   // min/W, min/H — make the density isotropic in pixels
+  float    dens_aspect_y;
 };
 static_assert(sizeof(UpdateUniforms) == 112, "UpdateUniforms layout mismatch");
 
 struct PrefillUniforms { float scale_r, scale_g, scale_b, scale_a; };
 static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
 
-struct DensityUniforms { float radius, _pad0, _pad1, _pad2; };
+struct DensityUniforms { float radius, aspect_x, aspect_y, _pad; };
 static_assert(sizeof(DensityUniforms) == 16, "DensityUniforms layout mismatch");
 
 struct VsUniforms {
@@ -593,15 +593,20 @@ void render(void* self, int vp_w, int vp_h) {
   uu.density_res       = (float)DENSITY_RES;
   uu.avoid_noise       = s->avoid_noise;
   uu.substeps          = (uint32_t)(s->substeps < 1 ? 1 : (s->substeps > 16 ? 16 : s->substeps));
+  // Isotropic-uv aspect (1 unit = min(W,H) px) — same factors the visual VS uses.
+  float min_dim = float(vp_w < vp_h ? vp_w : vp_h);
+  float aspect_x = min_dim / float(vp_w);
+  float aspect_y = min_dim / float(vp_h);
+  uu.dens_aspect_x     = aspect_x;
+  uu.dens_aspect_y     = aspect_y;
   s->update_uniforms.writeOne(uu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
   s->prefill_uniforms.writeOne(pu);
 
-  float min_dim = float(vp_w < vp_h ? vp_w : vp_h);
   VsUniforms vu = {};
-  vu.aspect_x        = min_dim / float(vp_w);
-  vu.aspect_y        = min_dim / float(vp_h);
+  vu.aspect_x        = aspect_x;
+  vu.aspect_y        = aspect_y;
   vu.point_size      = POINT_PX / min_dim;          // ~1.5px in isotropic uv
   vu.shape_kind      = (float)s->shape_kind;
   vu.undertow_split  = s->undertow_split;
@@ -673,7 +678,7 @@ void render(void* self, int vp_w, int vp_h) {
   // ---- Pass 4: density splat (after update moved them) → next frame's read.
   // RenderPass::begin clears the buffer to zero, then additive halos accumulate.
   if (need_density) {
-    DensityUniforms du = { s->interaction_radius, 0.f, 0.f, 0.f };
+    DensityUniforms du = { s->interaction_radius, aspect_x, aspect_y, 0.f };
     s->density_uniforms.writeOne(du);
     auto rp = gpu::RenderPass::begin(s->density_tex, 0.0f, 0.0f, 0.0f, 0.0f);
     rp.setPSO(s_pso_density);

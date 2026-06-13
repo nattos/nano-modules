@@ -54,8 +54,8 @@ cbuffer Uniforms : register(b4) {
 
   float avoid_noise;    // random jitter on the avoidance (breaks flat clumps)
   uint  substeps;       // integration substeps per frame (1 = single step)
-  float _pad_n1;
-  float _pad_n2;
+  float dens_aspect_x;  // min/W, min/H — density is isotropic in pixels
+  float dens_aspect_y;
 };
 
 // Max settle rate (1/s) at pull = 1, used for a framerate-independent approach.
@@ -113,18 +113,22 @@ void main(uint3 gid : SV_DispatchThreadID) {
       if (rr < pdie) life_remain = 0.0;
     }
     if (avoid > 1e-5) {
+      // Sample the gradient over EQUAL PIXEL distances (aspect-corrected eps), so
+      // the avoidance neighbourhood is round on screen, not squashed. The result
+      // is a pixel-space push direction; it's converted back to uv at the end.
       float e = 2.0 / max(density_res, 1.0);
-      float dl = densityTex.SampleLevel(linearSampler, saturate(pos - float2(e, 0.0)), 0).r;
-      float dr = densityTex.SampleLevel(linearSampler, saturate(pos + float2(e, 0.0)), 0).r;
-      float dd = densityTex.SampleLevel(linearSampler, saturate(pos - float2(0.0, e)), 0).r;
-      float du = densityTex.SampleLevel(linearSampler, saturate(pos + float2(0.0, e)), 0).r;
-      float2 away = -float2(dr - dl, du - dd);            // away from crowding
+      float ex = e * dens_aspect_x, ey = e * dens_aspect_y;
+      float dl = densityTex.SampleLevel(linearSampler, saturate(pos - float2(ex, 0.0)), 0).r;
+      float dr = densityTex.SampleLevel(linearSampler, saturate(pos + float2(ex, 0.0)), 0).r;
+      float dd = densityTex.SampleLevel(linearSampler, saturate(pos - float2(0.0, ey)), 0).r;
+      float du = densityTex.SampleLevel(linearSampler, saturate(pos + float2(0.0, ey)), 0).r;
+      float2 away = -float2(dr - dl, du - dd);            // away from crowding (px space)
       float2 awayhat = away / (length(away) + 0.5);       // soft-normalised
-      float ang2 = avoid_curl * 1.5707963;
+      float ang2 = avoid_curl * 1.5707963;                // true ±90° on screen
       float ca2 = cos(ang2), sa2 = sin(ang2);
       float2 av = float2(awayhat.x * ca2 - awayhat.y * sa2,
                          awayhat.x * sa2 + awayhat.y * ca2);
-      avoid_vec = av * avoid * FSW_AVOID_VEL * speed;
+      float2 vec_iso = av * avoid * FSW_AVOID_VEL * speed;
       // Avoidance noise: mostly along `av` (a spray), slight isotropic part.
       // Frozen per frame (coherent), so no per-substep variance scaling.
       if (avoid_noise > 1e-6) {
@@ -133,8 +137,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
         float2 cir = float2(fsw_signed(fsw_hash(nh ^ 0x9E3779B1u)),
                             fsw_signed(fsw_hash(nh ^ 0x85EBCA77u)));  // isotropic
         float2 nv = av * mag + cir * FSW_NOISE_CIRC;
-        avoid_vec += nv * avoid_noise * FSW_AVOID_VEL * speed;
+        vec_iso += nv * avoid_noise * FSW_AVOID_VEL * speed;
       }
+      // Pixel-space push → uv (so it's isotropic on screen, matching the field).
+      avoid_vec = vec_iso * float2(dens_aspect_x, dens_aspect_y);
     }
   }
 

@@ -388,6 +388,25 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     on.trace('out').expectDifferentFrom(off.trace('out'), 40);
   });
 
+  it('density debug renders at a non-square viewport (aspect path)', async () => {
+    // Exercises the aspect-corrected splat/gradient on a wide viewport (the
+    // density map used to look squashed; now the splat is round in pixels).
+    const r = await runEngineTest({
+      width: 160, height: 90,
+      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'fs_aspect',
+          sketch: buildChain(true, { ...CROWD, debug_density: true, interaction_radius: 0.04 }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_aspect' } },
+        ]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: 'fs_aspect',
+    });
+    expect(r.success).toBe(true);
+    expect(r.trace('out').countPixels(isActive)).toBeGreaterThan(200);
+  });
+
   it('debug view renders the density buffer and reflects interaction_radius', async () => {
     // With the density buffer actually accumulating, the heat map is non-empty
     // and a bigger interaction_radius spreads/sums the halos → more coverage.
