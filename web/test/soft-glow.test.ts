@@ -136,18 +136,14 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
     // reshape the downstream output. blob_count=4 + large blob_size
     // keeps the lit footprint big enough to make smearing visible at
     // the test viewport.
-    const buildSoftGlowChain = (withRails: boolean): Sketch => ({
+    // Wire model: motion_blur's render_outputs input auto-connects to the
+    // soft_glow producer above. Negative case omits soft_glow → no producer →
+    // motion_blur falls back to a copy of the black background.
+    const buildSoftGlowChain = (withProducer: boolean): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: withRails ? [{
-          id: 'ro_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: {
-            type: 'object',
-            fields: { depth: { type: 'texture' }, motion: { type: 'texture' } },
-          }},
-        }] : [],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -156,7 +152,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
             instance_key: 'bg@0',
             params: { color: [0.0, 0.0, 0.0] },
           },
-          {
+          ...(withProducer ? [{
             type: 'module',
             module_type: 'gen.soft_glow',
             instance_key: 'glow@0',
@@ -173,67 +169,60 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
               pulse_depth: 0.0, amp_drift_depth: 0.0,
               seed: 17,
             },
-            taps: withRails ? [{
-              railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'write',
-            }] : [],
-          },
+          }] : []),
           {
             type: 'module',
             module_type: 'video.motion_blur',
             instance_key: 'blur@0',
             params: { strength: 32.0, samples: 16, quality: 1 },
-            taps: withRails ? [{
-              railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'read',
-            }] : [],
           },
           { type: 'texture_output', id: 'out' },
         ],
       }],
-    });
+    } as Sketch);
 
-    const withRails = await runEngineTest({
+    const withProducer = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nano.lights', 'com.nattos.core'],
       commands: [
         {
           type: 'createSketch',
-          sketchId: 'glow_with_rails',
+          sketchId: 'glow_with_producer',
           sketch: buildSoftGlowChain(true),
         },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'glow_with_rails' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'glow_with_producer' } },
         ]},
       ],
       waitFrames: 30,
       captureTraceIds: ['out'],
-      dumpName: 'soft_glow_motion_with_rails',
+      dumpName: 'soft_glow_motion_with_producer',
     });
-    expect(withRails.success).toBe(true);
+    expect(withProducer.success).toBe(true);
 
-    const withoutRails = await runEngineTest({
+    const noProducer = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nano.lights', 'com.nattos.core'],
       commands: [
         {
           type: 'createSketch',
-          sketchId: 'glow_without_rails',
+          sketchId: 'glow_no_producer',
           sketch: buildSoftGlowChain(false),
         },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'glow_without_rails' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'glow_no_producer' } },
         ]},
       ],
       waitFrames: 30,
       captureTraceIds: ['out'],
-      dumpName: 'soft_glow_motion_without_rails',
+      dumpName: 'soft_glow_motion_no_producer',
     });
-    expect(withoutRails.success).toBe(true);
+    expect(noProducer.success).toBe(true);
 
-    // The two sketches differ only in whether the rail is wired. If
-    // soft_glow is emitting motion vectors AND motion_blur consumes
-    // them, the with-rails frame must differ from the without-rails
-    // baseline by a non-trivial number of pixels.
-    withRails.trace('out').expectDifferentFrom(withoutRails.trace('out'), 100);
+    // With soft_glow present, it emits motion vectors that auto-connect into
+    // motion_blur and smear the bloom; with no producer the blur copies the
+    // black background. The frames must differ by a non-trivial pixel count.
+    withProducer.trace('out').expectDifferentFrom(noProducer.trace('out'), 100);
   });
 
   it('motion_skew=1 (wavefront-only) differs from isotropic motion_skew=0', async () => {
@@ -243,18 +232,13 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
     // downstream motion_blur should smear asymmetrically vs. the
     // isotropic baseline. Asserting a frame-difference confirms the
     // skew param IS feeding through (not silently ignored).
+    // Both ends connected via auto-connect (soft_glow above motion_blur); only
+    // motion_skew differs between the two runs.
     const buildSkewChain = (skew: number): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: [{
-          id: 'ro_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: {
-            type: 'object',
-            fields: { depth: { type: 'texture' }, motion: { type: 'texture' } },
-          }},
-        }],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -272,17 +256,15 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
               pulse_depth: 0.0, amp_drift_depth: 0.0,
               seed: 23,
             },
-            taps: [{ railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'write' }],
           },
           {
             type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
             params: { strength: 32.0, samples: 16, quality: 1 },
-            taps: [{ railId: 'ro_rail', fieldPath: 'render_outputs', direction: 'read' }],
           },
           { type: 'texture_output', id: 'out' },
         ],
       }],
-    });
+    } as Sketch);
 
     const isotropic = await runEngineTest({
       width: 128, height: 128,
