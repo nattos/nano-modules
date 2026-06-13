@@ -2,28 +2,23 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for video.flow_swarm (nano bundle) + the new `flow_field`
- * struct rail. flow_swarm consumes a velocity field (produced here by
- * phase_fold) and advects a GPU particle pool along it.
+ * E2E coverage for video.flow_swarm (nano bundle) + the `flow_field` struct
+ * handoff. flow_swarm consumes a velocity field (produced here by phase_fold)
+ * and advects a GPU particle pool along it — connected via STRUCT AUTO-CONNECT
+ * (flow_swarm's unwired flow_field_in binds the phase_fold producer above it),
+ * not an explicit rail.
  *
- * Chain: texture_input → phase_fold (writes flow_field) → flow_swarm
- *        (reads flow_field_in) → texture_output.
+ * Chain: phase_fold (produces flow_field) → flow_swarm (flow_field_in).
  *
  * Under test:
- *  1. The rail transports the velocity texture end-to-end: a wired chain
- *     renders a particle swarm that differs from the bare phase_fold
- *     portrait (the swarm actually painted over it).
- *  2. The flow drives the swarm: a chain WITH the rail differs from one
- *     WITHOUT it — with flow the particles advect, without they sit frozen
- *     at their seed positions. (Same as render-outputs.test.ts's rail proof.)
+ *  1. The field transports end-to-end: a swarm over the auto-connected flow
+ *     differs from the bare phase_fold portrait (the swarm painted over it).
+ *  2. The flow drives the swarm: a chain WITH the phase_fold producer differs
+ *     from one WITHOUT — with flow the particles advect, without they sit at
+ *     their seed positions.
  *  3. The swarm is live: its output drifts across frames as particles flow.
- *  4. Unwired fallback: with no flow rail the swarm still renders (no crash).
+ *  4. No-producer fallback: with no flow producer the swarm still renders.
  */
-
-const FLOW_SCHEMA = {
-  type: 'object',
-  fields: { velocity: { type: 'texture' } },
-};
 
 // phase_fold cell with a clear limit cycle, flow clock frozen for determinism.
 const PF: Record<string, unknown> = {
@@ -41,40 +36,32 @@ const SWARM: Record<string, unknown> = {
   seed: 1,
 };
 
+// Wire model: flow_swarm's flow_field_in auto-connects to the phase_fold
+// producer above it. `withFlow` now gates the producer's PRESENCE — with it the
+// swarm advects along the auto-connected field; without it (no producer above)
+// the swarm falls back to its seed positions (zero field).
 function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {},
                    pf: Record<string, unknown> = {}): Sketch {
+  const chain: any[] = [{ type: 'texture_input', id: 'in' }];
+  if (withFlow) {
+    chain.push({
+      type: 'module',
+      module_type: 'video.phase_fold',
+      instance_key: 'pf@0',
+      params: { ...PF, ...pf },
+    });
+  }
+  chain.push({
+    type: 'module',
+    module_type: 'video.flow_swarm',
+    instance_key: 'sw@0',
+    params: { ...SWARM, ...swarm },
+  });
+  chain.push({ type: 'texture_output', id: 'out' });
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      rails: withFlow ? [{
-        id: 'flow_rail',
-        name: 'Flow',
-        dataType: { kind: 'struct', schema: FLOW_SCHEMA },
-      }] : [],
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'video.phase_fold',
-          instance_key: 'pf@0',
-          params: { ...PF, ...pf },
-          taps: withFlow
-            ? [{ railId: 'flow_rail', fieldPath: 'flow_field', direction: 'write' }]
-            : [],
-        },
-        {
-          type: 'module',
-          module_type: 'video.flow_swarm',
-          instance_key: 'sw@0',
-          params: { ...SWARM, ...swarm },
-          taps: withFlow
-            ? [{ railId: 'flow_rail', fieldPath: 'flow_field_in', direction: 'read' }]
-            : [],
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    wires: [],
+    columns: [{ name: 'main', chain }],
   };
 }
 
@@ -95,7 +82,7 @@ function buildGeneratorOnly(): Sketch {
 
 const isActive = (c: { r: number; g: number; b: number }) => c.r + c.g + c.b > 24;
 
-describe('video.flow_swarm + flow_field rail E2E', () => {
+describe('video.flow_swarm + flow_field auto-connect E2E', () => {
   jest.setTimeout(60000);
 
   it('renders a swarm over the flow_field (wired) distinct from the bare portrait', async () => {
@@ -137,10 +124,11 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
     swarm.trace('out').expectDifferentFrom(gen.trace('out'), 100);
   });
 
-  it('the flow rail drives the swarm (wired differs from unwired-fallback)', async () => {
-    // Same modules, params, frame count — the ONLY difference is whether the
-    // flow_field rail is wired. With flow the particles advect along the
-    // field; without (zero-field fallback) they sit at their seed positions.
+  it('the auto-connected flow drives the swarm (vs no-producer fallback)', async () => {
+    // The ONLY difference is whether a phase_fold producer sits above the swarm.
+    // With it, flow_swarm's flow_field_in auto-connects and the particles advect
+    // along the field; without it (no producer) they fall back to a zero field
+    // and sit at their seed positions.
     const withFlow = await runEngineTest({
       width: 96, height: 96,
       modules: ['com.nattos.testonly', 'com.nattos.nano'],
@@ -175,63 +163,6 @@ describe('video.flow_swarm + flow_field rail E2E', () => {
 
     // The flow moved the particles → the two frames diverge.
     withFlow.trace('out').expectDifferentFrom(noFlow.trace('out'), 60);
-  });
-
-  it('struct auto-connect drives the swarm (wire model, no explicit wire/tap)', async () => {
-    // New single-stack WIRE model: the sketch opts in via `wires: []` (no
-    // rails, no taps). phase_fold sits ABOVE flow_swarm and publishes its
-    // `flow_field` struct; flow_swarm's unwired `flow_field_in` AUTO-CONNECTS
-    // to the nearest compatible struct producer above. The swarm advects.
-    //
-    // Compared against a swarm ALONE (no producer above → zero-field fallback,
-    // particles sit at their seeds). The two must diverge → auto-connect wired
-    // the flow with zero explicit connections.
-    const withProducer: Sketch = {
-      anchor: null,
-      columns: [{ name: 'main', chain: [
-        { type: 'module', module_type: 'video.phase_fold', instance_key: 'pf@0', params: PF },
-        { type: 'module', module_type: 'video.flow_swarm', instance_key: 'sw@0', params: SWARM },
-      ]}],
-      wires: [],
-    } as Sketch;
-    const swarmOnly: Sketch = {
-      anchor: null,
-      columns: [{ name: 'main', chain: [
-        { type: 'module', module_type: 'video.flow_swarm', instance_key: 'sw@0', params: SWARM },
-      ]}],
-      wires: [],
-    } as Sketch;
-
-    const auto = await runEngineTest({
-      width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
-      commands: [
-        { type: 'createSketch', sketchId: 'fs_auto', sketch: withProducer },
-        { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_auto' } },
-        ]},
-      ],
-      waitFrames: 24, captureTraceIds: ['out'], dumpName: 'flow_swarm_autoconnect',
-    });
-    expect(auto.success).toBe(true);
-    expect(auto.trace('out').countPixels(isActive)).toBeGreaterThan(100);
-
-    const bare = await runEngineTest({
-      width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
-      commands: [
-        { type: 'createSketch', sketchId: 'fs_bare', sketch: swarmOnly },
-        { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'fs_bare' } },
-        ]},
-      ],
-      waitFrames: 24, captureTraceIds: ['out'], dumpName: 'flow_swarm_bare',
-    });
-    expect(bare.success).toBe(true);
-    expect(bare.trace('out').countPixels(isActive)).toBeGreaterThan(100);
-
-    // Auto-connected flow advected the particles → diverges from the static seed.
-    auto.trace('out').expectDifferentFrom(bare.trace('out'), 60);
   });
 
   it('the swarm is live — output drifts across frames', async () => {
