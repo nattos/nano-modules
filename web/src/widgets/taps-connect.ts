@@ -1,19 +1,18 @@
 /**
- * taps-connect — the shared click/drag-to-connect state machine for taps.
+ * wire-connect — the shared click/drag-to-connect state machine for wires.
  *
  * A single module-level controller drives "connect" gestures from a source
- * (a field hit-box or a rail badge) to a target (another field, a rail badge,
- * or the "+ New" badge). Two gestures enter it:
- *   - DRAG: press on a source and drag past a threshold (PointerDragOp). The
- *     connection commits to whatever is under the pointer on release.
- *   - CLICK: click an already-selected source to "pick it up"; the line then
- *     follows the cursor and the next click on a target commits (Esc / a
+ * field hit-box to a target field hit-box. Two gestures enter it:
+ *   - DRAG: press on a field and drag past a threshold (PointerDragOp). The
+ *     connection commits to whatever field is under the pointer on release.
+ *   - CLICK: click an already-selected field to "pick it up"; the line then
+ *     follows the cursor and the next click on a field commits (Esc / a
  *     background click cancels).
  *
  * While active, `state` holds the source + live pointer so <taps-overlay> can
  * draw the rubber-band line. Target resolution pierces shadow roots to find the
- * `.tap-overlay-hit` (fields, in the column-group roots) or `.badge` (rails, in
- * the overlay root) under the cursor.
+ * `.tap-overlay-hit` (field ports, in the column-group roots) under the cursor.
+ * A committed field→field gesture creates a Wire via controller.connectWire.
  */
 
 import { appState } from '../state/app-state';
@@ -21,22 +20,16 @@ import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
-export const NEW_BADGE_ID = '__new__';
-
 interface ConnectState {
-  sourceKind: 'field' | 'rail';
-  /** field key `<sketch>/<col>/<chain>/<field>` or railId. */
+  /** Field key `<sketch>/<col>/<chain>/<field>`. */
   sourceId: string;
   sketchId: string;
-  info?: FieldConnectInfo; // present for field sources
+  info: FieldConnectInfo;
   pointerX: number;
   pointerY: number;
 }
 
-type Target =
-  | { kind: 'field'; key: string; info: FieldConnectInfo }
-  | { kind: 'rail'; railId: string }
-  | { kind: 'new' };
+interface Target { key: string; info: FieldConnectInfo }
 
 /** Pierce shadow roots to find the deepest element at a viewport point. */
 function deepElementFromPoint(x: number, y: number): Element | null {
@@ -73,16 +66,9 @@ function resolveTargetAt(x: number, y: number): Target | null {
   const el = deepElementFromPoint(x, y);
   if (!el) return null;
   const hit = el.closest?.('.tap-overlay-hit') as HTMLElement | null;
-  if (hit) {
-    const info = hitToInfo(hit);
-    return info ? { kind: 'field', key: hitKey(hit), info } : null;
-  }
-  const badge = el.closest?.('.badge') as HTMLElement | null;
-  if (badge) {
-    const rid = badge.dataset.railId ?? '';
-    return rid === NEW_BADGE_ID ? { kind: 'new' } : { kind: 'rail', railId: rid };
-  }
-  return null;
+  if (!hit) return null;
+  const info = hitToInfo(hit);
+  return info ? { key: hitKey(hit), info } : null;
 }
 
 class TapsConnect {
@@ -93,7 +79,7 @@ class TapsConnect {
   private onDocKey = (e: KeyboardEvent) => { if (e.key === 'Escape') this.cancel(); };
   private onDocDown = (e: PointerEvent) => {
     // A click in CLICK mode: commit if over a target, else cancel. Element-level
-    // handlers (badge / field) also call complete*, so only act on background here.
+    // handlers (field) also call complete*, so only act on background here.
     const t = resolveTargetAt(e.clientX, e.clientY);
     if (!t) this.cancel();
   };
@@ -105,26 +91,14 @@ class TapsConnect {
 
   /** Pick up a field on a second click (CLICK mode). */
   beginFromFieldClick(sketchId: string, key: string, info: FieldConnectInfo) {
-    this.start({ sourceKind: 'field', sourceId: key, sketchId, info,
+    this.start({ sourceId: key, sketchId, info,
       pointerX: info.viewportY, pointerY: info.viewportY });
-    this.installClickListeners();
-  }
-
-  /** Pick up a rail badge on a click (CLICK mode). */
-  beginFromRailClick(sketchId: string, railId: string, x: number, y: number) {
-    this.start({ sourceKind: 'rail', sourceId: railId, sketchId, pointerX: x, pointerY: y });
     this.installClickListeners();
   }
 
   /** Start a DRAG-to-connect from a field hit-box. */
   beginFromFieldDrag(e: PointerEvent, srcEl: HTMLElement, sketchId: string, key: string, info: FieldConnectInfo) {
-    this.beginDrag(e, srcEl, { sourceKind: 'field', sourceId: key, sketchId, info,
-      pointerX: e.clientX, pointerY: e.clientY });
-  }
-
-  /** Start a DRAG-to-connect from a rail badge. */
-  beginFromRailDrag(e: PointerEvent, srcEl: HTMLElement, sketchId: string, railId: string) {
-    this.beginDrag(e, srcEl, { sourceKind: 'rail', sourceId: railId, sketchId,
+    this.beginDrag(e, srcEl, { sourceId: key, sketchId, info,
       pointerX: e.clientX, pointerY: e.clientY });
   }
 
@@ -185,32 +159,19 @@ class TapsConnect {
     this.state.pointerX = x;
     this.state.pointerY = y;
     const el = deepElementFromPoint(x, y);
-    const drop = (el?.closest?.('.tap-overlay-hit') ?? el?.closest?.('.badge')) as HTMLElement | null;
+    const drop = el?.closest?.('.tap-overlay-hit') as HTMLElement | null;
     if (drop === this.lastDropEl) return;
     this.lastDropEl?.removeAttribute('tap-drop-target');
-    this.lastDropEl?.removeAttribute('drop-target');
-    if (drop) drop.setAttribute(drop.classList.contains('badge') ? 'drop-target' : 'tap-drop-target', '');
+    if (drop) drop.setAttribute('tap-drop-target', '');
     this.lastDropEl = drop;
   }
 
-  // --- Completes (called from element handlers) ---
+  // --- Completes (called from field-hit element handlers) ---
 
   completeOnField(key: string) {
     if (!this.state) return;
     const t = this.fieldTargetByKey(key);
     if (t) this.commit(t);
-    this.end();
-  }
-
-  completeOnRail(railId: string) {
-    if (!this.state) return;
-    this.commit({ kind: 'rail', railId });
-    this.end();
-  }
-
-  completeOnNewRail() {
-    if (!this.state) return;
-    this.commit({ kind: 'new' });
     this.end();
   }
 
@@ -229,7 +190,7 @@ class TapsConnect {
       viewportY: this.state?.pointerY ?? 0, // pointer is over the target → good Y for same-dir
       schemaDef,
     };
-    return { kind: 'field', key, info };
+    return { key, info };
   }
 
   // --- Commit ---
@@ -237,29 +198,8 @@ class TapsConnect {
   private commit(target: Target) {
     const s = this.state;
     if (!s) return;
-    if (s.sourceKind === 'field') {
-      const info = s.info!;
-      if (target.kind === 'field') {
-        // New model: a field→field drag commits a Wire (not a rail+tap pair).
-        appController.connectWire(info, target.info);
-      } else if (target.kind === 'rail') {
-        appController.connectFieldToRail(info, target.railId);
-      } else {
-        // New rail + tap, scoped/typed from the source field.
-        if (info.isOutput) {
-          appController.autoCreateTapForOutputField(
-            info.sketchId, info.colIdx, info.chainIdx, info.fieldPath, info.schemaDef);
-        } else {
-          appController.autoCreateTapForInputField(
-            info.sketchId, info.colIdx, info.chainIdx, info.fieldPath, info.schemaDef);
-        }
-      }
-    } else {
-      // Rail source → only a field target makes sense.
-      if (target.kind === 'field') {
-        appController.connectFieldToRail(target.info, s.sourceId);
-      }
-    }
+    // A field→field gesture commits a Wire (writer/reader resolved in connectWire).
+    appController.connectWire(s.info, target.info);
   }
 
   cancel() { this.end(); }
@@ -267,7 +207,6 @@ class TapsConnect {
   private end() {
     this.state = null;
     this.lastDropEl?.removeAttribute('tap-drop-target');
-    this.lastDropEl?.removeAttribute('drop-target');
     this.lastDropEl = null;
     if (this.clickListenersActive) {
       this.clickListenersActive = false;
