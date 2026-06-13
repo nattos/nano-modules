@@ -4,9 +4,9 @@ import type { Sketch } from '../src/sketch-types';
 // Per-effect tests for `video.blend` against the shipping `core` bundle.
 // video.blend takes two texture inputs (tex_a, tex_b) and outputs
 // `tex_a * (1 - opacity) + tex_b * opacity`. The runner can't feed two
-// independent inputs through the chain ping-pong, so tests build a sketch
-// with two solid_color sources writing to texture rails that the blend
-// reads from.
+// independent inputs through the chain ping-pong, so tests build a sketch with
+// two solid_color sources WIRED into the blend's tex_a / tex_b inputs (named
+// texture wires resolve to inputTexture(0/1) positionally).
 
 function buildBlendSketch(opts: {
   sketchId: string;
@@ -14,44 +14,39 @@ function buildBlendSketch(opts: {
   colorB: { r: number; g: number; b: number };
   opacity: number;
 }): Sketch {
+  const a = `${opts.sketchId}_a`, b = `${opts.sketchId}_b`, blend = `${opts.sketchId}_blend`;
   return {
     anchor: null,
+    wires: [
+      { id: 'wa', src: { instanceKey: a, field: 'tex_out' }, dest: { instanceKey: blend, field: 'tex_a' } },
+      { id: 'wb', src: { instanceKey: b, field: 'tex_out' }, dest: { instanceKey: blend, field: 'tex_b' } },
+    ],
     columns: [{
       name: 'main',
-      rails: [
-        { id: 'tex_a', dataType: 'texture' },
-        { id: 'tex_b', dataType: 'texture' },
-      ],
       chain: [
         { type: 'texture_input', id: 'in' },
         {
           type: 'module',
           module_type: 'generator.solid_color',
-          instance_key: `${opts.sketchId}_a`,
+          instance_key: a,
           params: { color: [opts.colorA.r, opts.colorA.g, opts.colorA.b] },
-          taps: [{ railId: 'tex_a', fieldPath: 'texture_out/0', direction: 'write' }],
         },
         {
           type: 'module',
           module_type: 'generator.solid_color',
-          instance_key: `${opts.sketchId}_b`,
+          instance_key: b,
           params: { color: [opts.colorB.r, opts.colorB.g, opts.colorB.b] },
-          taps: [{ railId: 'tex_b', fieldPath: 'texture_out/0', direction: 'write' }],
         },
         {
           type: 'module',
           module_type: 'video.blend',
-          instance_key: `${opts.sketchId}_blend`,
+          instance_key: blend,
           params: { opacity: opts.opacity },
-          taps: [
-            { railId: 'tex_a', fieldPath: '0', direction: 'read' },
-            { railId: 'tex_b', fieldPath: '1', direction: 'read' },
-          ],
         },
         { type: 'texture_output', id: 'out' },
       ],
     }],
-  };
+  } as Sketch;
 }
 
 describe('Video Blend Effect E2E', () => {
