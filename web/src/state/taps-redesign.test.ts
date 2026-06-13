@@ -100,3 +100,74 @@ describe('renameRail', () => {
     expect(appState.database.sketches.sk.columns[0].rails!.find(r => r.id === 'rail_c')!.name).toBe('Renamed C');
   });
 });
+
+// Two-module column so writer/reader resolution has distinct endpoints.
+function seedWireSketch() {
+  runInAction(() => {
+    appState.database.sketches = {
+      sk: {
+        anchor: null,
+        columns: [{
+          name: 'c0',
+          chain: [
+            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+            { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
+          ],
+        }],
+      },
+    } as any;
+  });
+}
+const wires = () => (appState.database.sketches.sk.wires ?? []) as any[];
+
+describe('connectWire', () => {
+  it('creates a wire from the output field (src) to the input field (dest)', () => {
+    seedWireSketch();
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),   // lfo.output
+      field({ chainIdx: 1, fieldPath: 'brightness', isOutput: false }), // bc.brightness
+    );
+    expect(wires()).toHaveLength(1);
+    expect(wires()[0]).toMatchObject({
+      src: { instanceKey: 'lfo', field: 'output' },
+      dest: { instanceKey: 'bc', field: 'brightness' },
+    });
+  });
+
+  it('resolves writer/reader by stack position when both are same-direction', () => {
+    seedWireSketch();
+    // Neither flagged output: the higher one (lower viewportY) is the writer.
+    appController.connectWire(
+      field({ chainIdx: 1, fieldPath: 'brightness', viewportY: 200 }),
+      field({ chainIdx: 0, fieldPath: 'output', viewportY: 100 }),
+    );
+    expect(wires()[0]).toMatchObject({
+      src: { instanceKey: 'lfo', field: 'output' },
+      dest: { instanceKey: 'bc', field: 'brightness' },
+    });
+  });
+
+  it('replaces an existing wire into the same dest field (last wins)', () => {
+    seedWireSketch();
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),
+      field({ chainIdx: 1, fieldPath: 'brightness' }),
+    );
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'level', isOutput: true }),
+      field({ chainIdx: 1, fieldPath: 'brightness' }),
+    );
+    expect(wires()).toHaveLength(1);
+    expect(wires()[0].src.field).toBe('level');
+  });
+
+  it('removeWire drops the wire by id', () => {
+    seedWireSketch();
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),
+      field({ chainIdx: 1, fieldPath: 'brightness' }),
+    );
+    appController.removeWire('sk', wires()[0].id);
+    expect(wires()).toHaveLength(0);
+  });
+});

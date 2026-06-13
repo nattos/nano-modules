@@ -934,6 +934,71 @@ export class AppController {
     return appState.local.selection?.path === path;
   }
 
+  // --- Wire CRUD (single-stack model; replaces field→field taps) ---
+
+  private nextWireId = 0;
+
+  /**
+   * Connect two fields with a `Wire` (the new model). Writer = the output-bit
+   * field, or — if both are same-direction — the one higher in the stack;
+   * reader = the other. Endpoints are stored by `instance_key` + field so the
+   * wire survives reordering. Causality (same-frame vs 1-frame-delayed) is
+   * inferred from stack position by the executor — no flag stored here.
+   *
+   * Any existing wire targeting the same dest field is replaced (last
+   * connection wins), mirroring `connectFields`' read-tap overwrite. Declaring
+   * `sketch.wires` (even empty) opts the sketch into wire mode (struct
+   * auto-connect etc.); we always ensure the array exists.
+   */
+  connectWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    if (a.sketchId !== b.sketchId) return;
+    if (a.colIdx === b.colIdx && a.chainIdx === b.chainIdx && a.fieldPath === b.fieldPath) return;
+
+    let writer: FieldConnectInfo;
+    let reader: FieldConnectInfo;
+    if (a.isOutput !== b.isOutput) {
+      writer = a.isOutput ? a : b;
+      reader = a.isOutput ? b : a;
+    } else {
+      writer = a.viewportY <= b.viewportY ? a : b;
+      reader = a.viewportY <= b.viewportY ? b : a;
+    }
+
+    const sketchId = writer.sketchId;
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return;
+    const writerEntry = sketch.columns[writer.colIdx]?.chain[writer.chainIdx];
+    const readerEntry = sketch.columns[reader.colIdx]?.chain[reader.chainIdx];
+    if (writerEntry?.type !== 'module' || readerEntry?.type !== 'module') return;
+    const srcKey = writerEntry.instance_key;
+    const destKey = readerEntry.instance_key;
+    if (!srcKey || !destKey) return;
+
+    const id = `wire_${this.nextWireId++}`;
+    this.mutate('Connect wire', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      sk.wires = sk.wires ?? [];
+      // Replace any existing wire into the same dest field (last wins).
+      sk.wires = sk.wires.filter(
+        w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath));
+      sk.wires.push({
+        id,
+        src: { instanceKey: srcKey, field: writer.fieldPath },
+        dest: { instanceKey: destKey, field: reader.fieldPath },
+      });
+    });
+  }
+
+  /** Remove a wire by id. */
+  removeWire(sketchId: string, wireId: string) {
+    this.mutate('Remove wire', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk?.wires) return;
+      sk.wires = sk.wires.filter(w => w.id !== wireId);
+    });
+  }
+
   // --- Rail CRUD ---
 
   private nextRailId = 0;

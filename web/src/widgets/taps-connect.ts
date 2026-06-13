@@ -240,7 +240,8 @@ class TapsConnect {
     if (s.sourceKind === 'field') {
       const info = s.info!;
       if (target.kind === 'field') {
-        appController.connectFields(info, target.info);
+        // New model: a field→field drag commits a Wire (not a rail+tap pair).
+        appController.connectWire(info, target.info);
       } else if (target.kind === 'rail') {
         appController.connectFieldToRail(info, target.railId);
       } else {

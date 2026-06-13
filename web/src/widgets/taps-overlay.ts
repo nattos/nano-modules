@@ -84,6 +84,12 @@ export class TapsOverlay extends MobxLitElement {
       animation: wire-flow 0.7s linear infinite; }
     .wire-arc.delayed { stroke: var(--app-text-color2, #999); opacity: 0.4; }
     @keyframes wire-flow { to { stroke-dashoffset: -9; } }
+    /* Fat transparent companion that catches clicks (the visible arc is thin and
+     * dashed). pointer-events:stroke works even though the parent svg is
+     * pointer-events:none (a descendant may opt back in). Click removes the wire. */
+    .wire-hit { fill: none; stroke: transparent; stroke-width: 14;
+      pointer-events: stroke; cursor: pointer; }
+    .wire-hit:hover + .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
     .badge {
       position: absolute; left: 0; top: 0;
       pointer-events: auto; cursor: pointer;
@@ -210,9 +216,9 @@ export class TapsOverlay extends MobxLitElement {
    * `${sketchId}/${col}/${chain}/${field}` (the format `fieldHit` consumes).
    * `delayed` marks a wire whose source is at/below its dest (1-frame delay).
    */
-  private connections(sketch: Sketch): { id: string; from: string; to: string; delayed: boolean }[] {
+  private connections(sketch: Sketch): { id: string; from: string; to: string; delayed: boolean; wireId?: string }[] {
     const sk = this.sketchId;
-    const out: { id: string; from: string; to: string; delayed: boolean }[] = [];
+    const out: { id: string; from: string; to: string; delayed: boolean; wireId?: string }[] = [];
 
     // instanceKey → "col/chain" + global stack position (for delay inference).
     const loc = new Map<string, string>();
@@ -249,6 +255,7 @@ export class TapsOverlay extends MobxLitElement {
         from: `${sk}/${sl}/${wire.src.field}`,
         to: `${sk}/${dl}/${wire.dest.field}`,
         delayed: sp >= dp,
+        wireId: wire.id,
       });
     }
     return out;
@@ -273,8 +280,16 @@ export class TapsOverlay extends MobxLitElement {
     return html`
       <svg class="lines">
         ${refs.map(r => svg`<line class="leader" data-rail-id=${r.rail.id}></line>`)}
-        ${conns.map(cn => svg`<path class="wire-arc ${cn.delayed ? 'delayed' : ''}"
-          data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`)}
+        ${conns.map(cn => {
+          // Explicit wires get a fat click-to-remove hit path in front of the
+          // visible arc; tap-derived connections are removed via the tap UI.
+          const hit = cn.wireId
+            ? svg`<path class="arc-path wire-hit" data-from=${cn.from} data-to=${cn.to}
+                @click=${() => appController.removeWire(this.sketchId, cn.wireId!)}></path>`
+            : nothing;
+          return [hit, svg`<path class="arc-path wire-arc ${cn.delayed ? 'delayed' : ''}"
+            data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`];
+        })}
         <line class="connect-line" style="display:none"></line>
       </svg>
       ${showBadges ? html`
@@ -431,7 +446,7 @@ export class TapsOverlay extends MobxLitElement {
 
   /** Update each committed connection's arc `d` from live field-port rects. */
   private drawArcs(svg: SVGElement, overlayRect: DOMRect) {
-    for (const p of Array.from(svg.querySelectorAll('path.wire-arc')) as SVGPathElement[]) {
+    for (const p of Array.from(svg.querySelectorAll('path.arc-path')) as SVGPathElement[]) {
       const a = this.fieldCenter(p.dataset.from ?? '', overlayRect);
       const b = this.fieldCenter(p.dataset.to ?? '', overlayRect);
       if (!a || !b) { p.style.display = 'none'; continue; }

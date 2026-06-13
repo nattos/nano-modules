@@ -47,7 +47,10 @@ function makeFakeModule(identity: boolean): FakeModule {
 // no-op; fusionKind FREEFORM => canFuseStage false => standalone render path).
 function makeFakeHost(): any {
   return {
-    schema: {},
+    // A renderable video effect declares a primary texture output (io 6 =
+    // Output|Primary). Without it the executor would (correctly) treat the stage
+    // as a texture-passthrough modulation source and skip its render.
+    schema: { tex_out: { type: 'texture', io: 6 } },
     bridgeCore: undefined,
     pluginKey: undefined,
     fusionKind: 0 /* FUSION_KIND_FREEFORM */,
@@ -87,6 +90,17 @@ function makeExecutor(modulesByKey: Map<string, FakeModule>): {
   executor.sketchIntermediates = new Map();
   executor.chainEntryHandles = new Map();
   executor.tracedChainEntries = new Set();
+  // Wire transient state — normally seeded by executeAllColumns; this test calls
+  // executeColumn directly, so stub the empty (no-wires) shape the inline field
+  // initializers would otherwise provide.
+  executor.wireCur = new Map();
+  executor.wirePrev = new Map();
+  executor.wirePos = new Map();
+  executor.wiresByDest = new Map();
+  executor.wireSrcFields = new Set();
+  executor.wireModeActive = false;
+  executor.wirePrevBySketch = new Map();
+  executor.delayedTexCache = new Map();
   executor.fusionMode = 'auto';
   executor.debugStats = {
     effectsExecuted: 0, standaloneDispatches: 0,
