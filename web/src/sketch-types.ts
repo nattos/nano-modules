@@ -11,8 +11,18 @@ export const BUCKET_SKETCH_ID = '__unassigned__';
 export interface Sketch {
   anchor: string | null;
   columns: SketchColumn[];
-  /** Cross-cutting rails shared across all columns (sketch-scoped). */
+  /** Cross-cutting rails shared across all columns (sketch-scoped). @deprecated superseded by `wires`. */
   rails?: Rail[];
+  /**
+   * Direct field-to-field connections (the replacement for taps+rails). A wire
+   * connects a producer's output field to a consumer's input field, addressed by
+   * `instance_key` so it survives reordering. Causality is POSITIONAL: if the
+   * source executes before the dest (above it in the single stack) the value is
+   * read same-frame; otherwise it's read 1-frame-delayed (which also breaks
+   * cycles → feedback). Scalar wires may carry a `mod`/`combine` (reused from the
+   * tap-mod math). Texture/struct wires carry only the connection.
+   */
+  wires?: Wire[];
   /** Per-instance state, keyed by instance_key. Canonical source of truth for all field values. */
   instances?: Record<string, InstanceState>;
   /**
@@ -160,7 +170,27 @@ export interface TapMod {
 /** How a write tap combines its (modded) value into the rail's current frame value. */
 export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
 
-/** Connects a module's field to a rail. */
+/**
+ * A direct connection from a producer output field to a consumer input field —
+ * the replacement for taps+rails. Endpoints are addressed by `instance_key` +
+ * field path so wires survive reordering/insert/delete. Delay is inferred from
+ * execution position (see `Sketch.wires`); the UI indicates delayed wires.
+ */
+export interface Wire {
+  id: string;
+  /** Producer side: the instance whose output feeds the wire, and its output field. */
+  src: { instanceKey: string; field: string };
+  /** Consumer side: the instance receiving the value, and its input field. */
+  dest: { instanceKey: string; field: string };
+  /** Scalar wires only: range remap applied to the value (reuses tap-mod math). */
+  mod?: TapMod;
+  /** Scalar wires only: how to fold into the dest param when multiple wires target it. */
+  combine?: TapCombine;
+  /** Factor for `combine === 'mix'`. Default 1. */
+  mixFactor?: number;
+}
+
+/** Connects a module's field to a rail. @deprecated superseded by `Wire`. */
 export interface Tap {
   railId: string;
   /** Field path in instance state (e.g. "params/0", "output", "texture_out/0"). */
