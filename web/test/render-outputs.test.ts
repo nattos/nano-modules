@@ -2,11 +2,13 @@ import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for the canonical RenderOutputs struct rail. Verifies
- * the writer-side texture publication (`state::setGpuTexture` →
- * `materializeStructSnapshot`) and the reader-side hoist
- * (`applyStructRead` → `gpu::Device::textureForField`) are wired
- * end-to-end for an OPTIONAL texture leaf.
+ * E2E coverage for the canonical RenderOutputs struct handoff (single-stack
+ * wire model). Verifies the writer-side texture publication
+ * (`state::setGpuTexture` → `materializeStructSnapshot`) and the reader-side
+ * hoist (`applyStructRead` → `gpu::Device::textureForField`) are wired
+ * end-to-end for an OPTIONAL texture leaf — now via STRUCT AUTO-CONNECT (the
+ * consumer's unwired `render_outputs` input binds the nearest compatible struct
+ * producer above it) rather than an explicit rail.
  *
  * Producer:  `debug.motion_rect` — overlays a moving colored rect and
  *            writes per-pixel velocity into `render_outputs/motion`.
@@ -15,17 +17,12 @@ import type { Sketch } from '../src/sketch-types';
  *            blur. Pass-through when no upstream produces motion.
  */
 
-const RENDER_OUTPUTS_SCHEMA = {
-  type: 'object',
-  fields: {
-    depth:  { type: 'texture' },
-    motion: { type: 'texture' },
-  },
-};
-
+// Wire model: motion_blur's `render_outputs` input auto-connects to the nearest
+// compatible struct producer above it (motion_rect). With no producer above, it
+// falls back to a copy. `wires: []` opts the sketch into wire mode (auto-connect);
+// no rails or taps needed.
 function buildChain(opts: {
   withMotionRect: boolean;
-  withRails: boolean;
   quality?: number;
 }): Sketch {
   const chain: any[] = [
@@ -46,9 +43,6 @@ function buildChain(opts: {
       // test viewport — enough to drive a visible McGuire trail at
       // strength=4 (V_max ~12px) without smearing past the tile size.
       params: { size: 0.25, speed: 3.0, color: [1.0, 0.4, 0.8] },
-      taps: opts.withRails
-        ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }]
-        : [],
     });
   }
   chain.push({
@@ -65,75 +59,63 @@ function buildChain(opts: {
       samples: 16,
       quality: opts.quality ?? 1,
     },
-    taps: opts.withRails
-      ? [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'read' }]
-      : [],
   });
   chain.push({ type: 'texture_output', id: 'out' });
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      rails: opts.withRails ? [{
-        id: 'render_outputs_rail',
-        name: 'Render Outputs',
-        dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-      }] : [],
-      chain,
-    }],
+    columns: [{ name: 'main', chain }],
+    wires: [],
   };
 }
 
 describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
   jest.setTimeout(40000);
 
-  it('auto-routes motion vectors when the canonical rail is wired', async () => {
-    const withRails = await runEngineTest({
+  it('auto-connects motion vectors from the producer above (vs none)', async () => {
+    const withProducer = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nattos.testonly'],
       commands: [
         {
           type: 'createSketch',
-          sketchId: 'mb_with_rails',
-          sketch: buildChain({ withMotionRect: true, withRails: true }),
+          sketchId: 'mb_with_producer',
+          sketch: buildChain({ withMotionRect: true }),
         },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_with_rails' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_with_producer' } },
         ]},
       ],
       waitFrames: 30,
       captureTraceIds: ['out'],
-      dumpName: 'render_outputs_with_rails',
+      dumpName: 'render_outputs_with_producer',
     });
-    expect(withRails.success).toBe(true);
+    expect(withProducer.success).toBe(true);
 
-    const withoutRails = await runEngineTest({
+    const noProducer = await runEngineTest({
       width: 128, height: 128,
       modules: ['com.nattos.testonly'],
       commands: [
         {
           type: 'createSketch',
-          sketchId: 'mb_without_rails',
-          sketch: buildChain({ withMotionRect: true, withRails: false }),
+          sketchId: 'mb_no_producer',
+          sketch: buildChain({ withMotionRect: false }),
         },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_without_rails' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_no_producer' } },
         ]},
       ],
       waitFrames: 30,
       captureTraceIds: ['out'],
-      dumpName: 'render_outputs_without_rails',
+      dumpName: 'render_outputs_no_producer',
     });
-    expect(withoutRails.success).toBe(true);
+    expect(noProducer.success).toBe(true);
 
-    // The two sketches differ ONLY in whether the canonical rail is wired
-    // — same modules, same params, same tick count. With rails, the blur
-    // applies a sample-along-velocity kernel that mixes rect pixels with
-    // their neighbours; without rails, motion_blur falls back to a copy
-    // and the rect comes through sharp. The frames must be visibly
-    // different to confirm the rail actually transported the motion
-    // texture handle.
-    withRails.trace('out').expectDifferentFrom(withoutRails.trace('out'), 50);
+    // With a motion_rect producer above, motion_blur's `render_outputs` input
+    // auto-connects to it and applies a sample-along-velocity kernel that mixes
+    // rect pixels with their neighbours; with no producer above, it falls back
+    // to a copy (plain background). The frames must be visibly different to
+    // confirm auto-connect transported the motion texture handle.
+    withProducer.trace('out').expectDifferentFrom(noProducer.trace('out'), 50);
 
     // Stronger assertion that the McGuire reconstruction is actually
     // producing TRAIL pixels (not just any difference): count pixels
@@ -147,13 +129,13 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
       c.r > 70 && c.r < 230   // pinkish but not full rect
       && c.b > 60 && c.b < 200
       && c.r > c.g + 15;       // more pink than green (rules out background)
-    const withRailsTrail   = withRails.trace('out').countPixels(isTrailPixel);
-    const withoutRailsTrail = withoutRails.trace('out').countPixels(isTrailPixel);
+    const withProducerTrail = withProducer.trace('out').countPixels(isTrailPixel);
+    const noProducerTrail   = noProducer.trace('out').countPixels(isTrailPixel);
     // McGuire blur creates intermediate-color pixels along the rect's
-    // swept-line trail. The pass-through fallback only has hard rect
-    // edges (a few aliased pixels on the boundary), so with-rails
-    // should have many more trail pixels.
-    expect(withRailsTrail).toBeGreaterThan(withoutRailsTrail + 30);
+    // swept-line trail. The no-producer fallback has no rect at all (plain
+    // background), so the auto-connected frame should have many more trail
+    // pixels.
+    expect(withProducerTrail).toBeGreaterThan(noProducerTrail + 30);
   });
 
   it('falls back to pass-through when no upstream produces motion', async () => {
@@ -164,7 +146,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
         {
           type: 'createSketch',
           sketchId: 'mb_passthru',
-          sketch: buildChain({ withMotionRect: false, withRails: false }),
+          sketch: buildChain({ withMotionRect: false }),
         },
         { type: 'setTracePoints', tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'mb_passthru' } },
@@ -191,13 +173,9 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     // motion_rect doesn't touch.
     const sketch: Sketch = {
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: [{
-          id: 'render_outputs_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-        }],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -220,14 +198,12 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
               opacity: 1.0,
               seed: 7,
             },
-            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }],
           },
           {
             type: 'module',
             module_type: 'video.motion_blur',
             instance_key: 'blur@0',
             params: { strength: 16.0, samples: 12, quality: 1 },
-            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'read' }],
           },
           { type: 'texture_output', id: 'out' },
         ],
@@ -270,6 +246,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     // resulting visualization spans a wide range of hues.
     const sketch: Sketch = {
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
         chain: [
@@ -342,13 +319,9 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     // path doesn't crash when vis_opacity > 0.
     const sketch: Sketch = {
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: [{
-          id: 'render_outputs_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-        }],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -385,14 +358,12 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
               vis_opacity: 1.0,
               vis_scale: 200.0,
             },
-            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }],
           },
           {
             type: 'module',
             module_type: 'video.motion_blur',
             instance_key: 'blur@0',
             params: { strength: 24.0, samples: 12, quality: 1 },
-            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'read' }],
           },
           { type: 'texture_output', id: 'out' },
         ],
@@ -433,13 +404,9 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     // original pink-to-bg gradient line.
     const buildChromaChain = (chromaOn: boolean): Sketch => ({
       anchor: null,
+      wires: [],
       columns: [{
         name: 'main',
-        rails: [{
-          id: 'render_outputs_rail',
-          name: 'Render Outputs',
-          dataType: { kind: 'struct', schema: RENDER_OUTPUTS_SCHEMA },
-        }],
         chain: [
           { type: 'texture_input', id: 'in' },
           {
@@ -453,7 +420,6 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
             module_type: 'debug.motion_rect',
             instance_key: 'rect@0',
             params: { size: 0.25, speed: 3.0, color: [1.0, 0.4, 0.8] },
-            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'write' }],
           },
           {
             type: 'module',
@@ -472,7 +438,6 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
               chroma_g:  0.0,
               chroma_b: -0.4,
             },
-            taps: [{ railId: 'render_outputs_rail', fieldPath: 'render_outputs', direction: 'read' }],
           },
           { type: 'texture_output', id: 'out' },
         ],
