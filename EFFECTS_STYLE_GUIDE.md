@@ -251,6 +251,18 @@ Patterns, in order of preference:
 
 The one caveat — producing `tex_out` when you skip the final pass. A stage still has to leave a valid output texture. The obvious move, `gpu::Device::copy(in, out)`, works **natively** but **not for mid-chain intermediates in the web executor**: that pool allocates intermediates `COPY_SRC` only (no `COPY_DST`), so `copyTextureToTexture` into `tex_out` is a validation error there. When you genuinely must write `tex_out` and `copy` isn't available, a thin one-read/one-write shader passthrough is the portable fallback — but you've still skipped the *expensive inner work* (the multi-step loop, the neighbor gathers), which is the real cost; the bare dispatch is noise. Skip whole *stages* freely on the host; only fall back to a shader passthrough for the single pass that has to emit the output.
 
+### The frame loop paces to the GPU — don't fire-and-forget long jobs
+
+The web executor caps GPU **frames-in-flight** (`MAX_FRAMES_IN_FLIGHT`, currently 2, in `engine-worker.ts`). Each frame it records a `device.queue.onSubmittedWorkDone()` fence and, once more than the cap are outstanding, blocks the loop on the oldest before issuing the next. That's what stops a heavy effect from letting command buffers pile up faster than the GPU drains them — without it the queue (and memory) grows unbounded and you get periodic catch-up stalls; with it, a too-heavy frame just degrades the frame rate smoothly.
+
+The catch for effect authors: **`onSubmittedWorkDone()` awaits ALL work submitted to the queue, not just yours.** There is no separate "background" GPU lane. So you can't fire-and-forget a giant compute job and have it run out of lock-step with frames — whatever you submit in `render()` becomes part of the current frame's flight and is awaited by the pacing within ~2 frames. The runtime decides *when* to await; you only decide *what* to submit.
+
+Consequences:
+- **Keep per-frame GPU work bounded.** The cost model is exactly the dispatches you issue in `render()` this frame (§"Skip whole stages"). One huge submission stalls the loop for the whole column, not just your stage.
+- **Amortize heavy work across frames in bounded slices**, not one mega-dispatch. Do a fixed chunk per `render()` and carry the partial result on `State` — the particle pools and the multigrid solvers (`height_from_gradient`) already work this way (a fixed N steps per frame, never "iterate to convergence now"). This stays responsive *and* interruptible.
+- **Don't lean on async GPU completion racing ahead of the display.** There's no independent async path that escapes frame pacing.
+- **One-off precomputes** (atlas bake, LUT build) belong in `module_init` / `create` / `init`, cached on `State` — not repeated per frame. If a one-off must happen mid-run, expect that single frame to hitch and don't redo it.
+
 ---
 
 ## 0.1 Fusion-aware effects — opt in when you can
