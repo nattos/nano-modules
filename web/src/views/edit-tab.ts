@@ -31,6 +31,7 @@ import '../widgets/taps-overlay';
 import '../widgets/texture-monitor';
 import '../widgets/spark-chart';
 import { editorRegistry } from '../editor-registry';
+import { traceController } from '../state/trace-controller';
 import { isTypingInEditable } from '../utils/keyboard';
 
 // Import inspector registrations (self-registering)
@@ -43,6 +44,8 @@ const EXTRA_COLUMNS = 2;
 @customElement('edit-tab')
 export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
   private previewDisposer: IReactionDisposer | null = null;
+  private previewTargetDisposer: IReactionDisposer | null = null;
+  private lastPreviewTargetKey = '';
 
   // Cached column-group elements by column index
   private columnCache = new Map<number, HTMLElement>();
@@ -81,6 +84,34 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.drawImage(bitmap, 0, 0);
     });
+    // Keep the main monitor's `edit_preview` trace registered for the whole
+    // edit-tab lifetime, re-targeting it reactively: show the selected
+    // selectable's texture if it has one, else the sketch's final output. This
+    // is what makes the monitor fall back to the final output on deselect
+    // instead of going blank (the registration is never dropped, only retargeted).
+    this.previewTargetDisposer = autorun(() => {
+      const sketchId = appState.local.editingSketchId;
+      if (!sketchId) {
+        if (this.lastPreviewTargetKey) { traceController.unregister('edit_preview'); this.lastPreviewTargetKey = ''; }
+        return;
+      }
+      const rawTarget = appState.local.selection?.traceTarget
+        ?? { type: 'sketch_output', sketchId };
+      const key = JSON.stringify(rawTarget);
+      if (key === this.lastPreviewTargetKey) return;   // avoid redundant re-flush
+      this.lastPreviewTargetKey = key;
+      traceController.register({
+        id: 'edit_preview',
+        // Parse back from the JSON key → a plain object. The selection's
+        // traceTarget is a MobX proxy, which can't be structured-cloned across
+        // postMessage to the worker; this sanitizes it.
+        target: JSON.parse(key),
+        resolution: 'high',
+        // See controller.editSketch's old note: 640×360 covers the 320×180
+        // canvas at ~2× DPR without forcing a 1920×1080 barrel readback.
+        size: { width: 640, height: 360 },
+      });
+    });
     document.addEventListener('keydown', this.handleGlobalKeyDown);
   }
 
@@ -88,6 +119,9 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     super.disconnectedCallback();
     this.previewDisposer?.();
     this.previewDisposer = null;
+    this.previewTargetDisposer?.();
+    this.previewTargetDisposer = null;
+    if (this.lastPreviewTargetKey) { traceController.unregister('edit_preview'); this.lastPreviewTargetKey = ''; }
     document.removeEventListener('keydown', this.handleGlobalKeyDown);
     for (const [, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(

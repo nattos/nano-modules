@@ -1554,6 +1554,14 @@ export class ColumnGroup extends MobxLitElement {
     appController.defineSelectable({
       path,
       label: availEffect?.name ?? shortName(entry.module_type),
+      // Selecting an effect drives the main monitor to that effect's output.
+      traceTarget: {
+        type: 'chain_entry',
+        sketchId: this.sketchId,
+        colIdx: this.colIdx,
+        chainIdx,
+        side: 'output',
+      },
       renderInspectorContent: () => {
         const binding: FieldBinding = {
           instanceKey: entry.instance_key,
@@ -1852,6 +1860,8 @@ export class ColumnGroup extends MobxLitElement {
 
     appController.defineSelectable({
       path,
+      // Selecting a texture marker drives the main monitor to this texture.
+      traceTarget: previewAvailable ? target : undefined,
       label,
       renderInspectorContent: () => html`
         <div class="inspector-field">

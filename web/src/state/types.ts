@@ -44,6 +44,7 @@ export interface AvailableEffect {
 // --- Selectable system ---
 
 import type { TemplateResult } from 'lit';
+import type { TracePoint } from '../engine-types';
 
 /**
  * Anything the user can click to inspect. Each selectable has a unique path
@@ -56,6 +57,13 @@ export interface Selectable {
   label: string;
   /** Render the inspector panel content for this selection. */
   renderInspectorContent?(): TemplateResult | undefined;
+  /**
+   * The texture this selectable previews, if any. When selected, the main
+   * sketch monitor switches to show it; with none selected (or a selection that
+   * has no viewable texture, e.g. a scalar param), the monitor falls back to the
+   * sketch's final output. See edit-tab's `edit_preview` registration.
+   */
+  traceTarget?: TracePoint['target'];
 }
 
 // --- Database state (persisted, undo/redo-able) ---
