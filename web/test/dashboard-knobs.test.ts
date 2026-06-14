@@ -88,5 +88,24 @@ describe('util.dashboard knob bank', () => {
     await new Promise(r => setTimeout(r, 600));
     const tapping = await probeKnob2();
     expect(tapping.tapHit).toBe(true);
+
+    // Balanced wrap: force the editor width and count the distinct knob rows.
+    // 8 knobs split into divisor-of-8 rows — 4/4 wide, 2/2/2/2, then a column.
+    const rowsAtWidth = (w: number) => page.evaluate(`(async () => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      let ed = null; const knobs = [];
+      for (const el of walk(document)) {
+        if (el.tagName === 'DASHBOARD-EDITOR') ed = el;
+        if (el.tagName === 'SCALAR-KNOB') knobs.push(el);
+      }
+      ed.style.width = ${w} + 'px';
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const ys = new Set(knobs.map(k => Math.round(k.getBoundingClientRect().top)));
+      return ys.size;
+    })()`) as Promise<number>;
+
+    expect(await rowsAtWidth(320)).toBe(2);   // 4 / 4
+    expect(await rowsAtWidth(150)).toBe(4);   // 2 / 2 / 2 / 2
+    expect(await rowsAtWidth(80)).toBe(8);    // single column
   });
 });

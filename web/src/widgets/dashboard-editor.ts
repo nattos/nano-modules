@@ -30,13 +30,24 @@ export class DashboardEditor extends MobxLitElement {
   @property() instanceKey = '';
 
   static styles = css`
-    :host { display: block; }
+    /* The editor is a container so the knob grid can reflow on ITS width. */
+    :host { display: block; container-type: inline-size; }
+    /* Balanced wrap: 8 knobs in a divisor-of-8 column count, so rows are always
+     * equal — 4/4 when wide, 2/2/2/2 narrower, then a single column. Container
+     * queries pick the largest count that fits (each knob is ~44px). */
     .knob-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 2px;
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: repeat(4, max-content);
+      gap: 6px 8px;
+      justify-content: center;
+      justify-items: center;
       padding: 4px 2px;
+    }
+    @container (max-width: 199px) {
+      .knob-row { grid-template-columns: repeat(2, max-content); }
+    }
+    @container (max-width: 103px) {
+      .knob-row { grid-template-columns: max-content; }
     }
   `;
 
