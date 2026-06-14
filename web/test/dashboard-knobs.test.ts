@@ -108,4 +108,72 @@ describe('util.dashboard knob bank', () => {
     expect(await rowsAtWidth(150)).toBe(4);   // 2 / 2 / 2 / 2
     expect(await rowsAtWidth(80)).toBe(8);    // single column
   });
+
+  it('grays a knob with no outgoing wire, or one overridden by a replace input', async () => {
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    const setWires = (wires: string) => page.evaluate(`(() => {
+      window.appController.mutate('w', d => { d.sketches['sk_m'].wires = ${wires}; });
+    })()`);
+
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_m'] = {
+          anchor: null,
+          chain: [
+            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0' },
+            { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0',
+              params: {} },
+            { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0' },
+          ],
+          wires: [],
+          instances: {
+            'lfo@0': { module_type: 'data.lfo', state: {} },
+            'dash@0': { module_type: 'util.dashboard', state: { knobs: [0,0,0,0,0,0,0,0] } },
+            'bc@0': { module_type: 'video.brightness_contrast', state: { brightness: 1, contrast: 0.25 } },
+          },
+        };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_m');
+    })()`);
+    await new Promise(r => setTimeout(r, 1500));
+
+    const mutedOf = (i: number) => page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      for (const el of walk(document)) {
+        if (el.tagName === 'SCALAR-KNOB' && el.fieldPath === 'knob_${i}') return el.hasAttribute('muted');
+      }
+      return null;
+    })()`) as Promise<boolean | null>;
+
+    // No wires yet → every knob is inert.
+    expect(await mutedOf(0)).toBe(true);
+    expect(await mutedOf(2)).toBe(true);
+
+    // knob_2 drives bc.brightness → it now has effect (not grayed); knob_0 still inert.
+    await setWires(`[{ id:'o2', src:{instanceKey:'dash@0',field:'knob_2'}, dest:{instanceKey:'bc@0',field:'brightness'} }]`);
+    await new Promise(r => setTimeout(r, 400));
+    expect(await mutedOf(2)).toBe(false);
+    expect(await mutedOf(0)).toBe(true);
+
+    // Add a `replace` input wire into knob_2 → its stored value is clobbered → grayed again.
+    await setWires(`[
+      { id:'o2', src:{instanceKey:'dash@0',field:'knob_2'}, dest:{instanceKey:'bc@0',field:'brightness'} },
+      { id:'i2', src:{instanceKey:'lfo@0',field:'output'}, dest:{instanceKey:'dash@0',field:'knob_2'}, combine:'replace' }
+    ]`);
+    await new Promise(r => setTimeout(r, 400));
+    expect(await mutedOf(2)).toBe(true);
+
+    // Switch that input to a non-destructive `mix` → the knob matters again.
+    await setWires(`[
+      { id:'o2', src:{instanceKey:'dash@0',field:'knob_2'}, dest:{instanceKey:'bc@0',field:'brightness'} },
+      { id:'i2', src:{instanceKey:'lfo@0',field:'output'}, dest:{instanceKey:'dash@0',field:'knob_2'}, combine:'mix', mixFactor:0.5 }
+    ]`);
+    await new Promise(r => setTimeout(r, 400));
+    expect(await mutedOf(2)).toBe(false);
+  });
 });

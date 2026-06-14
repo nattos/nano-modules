@@ -33,6 +33,9 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
   @property({ type: Number }) max = 1;
   @property({ type: Number }) step = 0.01;
   @property({ type: Number }) defaultValue = 0;
+  /** Grayed-out: the control currently has no effect (e.g. a dashboard knob with
+   *  no outgoing wire, or overridden by a `replace` input wire). Still editable. */
+  @property({ type: Boolean, reflect: true }) muted = false;
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
@@ -72,6 +75,10 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
     :host([dragging]) .pointer { stroke: var(--app-hi-color2, #4169E1); }
     :host(:focus) { outline: none; }
     :host(:focus) .knob-hub { stroke: var(--app-hi-color2, #4169E1); }
+    /* No-effect knob: dimmed + desaturated so it reads as inert (still editable). */
+    :host([muted]) { opacity: 0.4; }
+    :host([muted]) .fill { stroke: var(--app-text-color2, #888); filter: none; }
+    :host([muted]) .pointer { stroke: var(--app-text-color2, #888); }
     .knob-hub { fill: rgba(0,0,0,0.35); stroke: rgba(255,255,255,0.14); }
     .dial:hover .knob-hub { stroke: var(--app-hi-color2, #4169E1); }
     .label { color: var(--app-text-color2, #b0b0b0); overflow: hidden; text-overflow: ellipsis;

@@ -75,6 +75,21 @@ export class DashboardEditor extends MobxLitElement {
     };
   }
 
+  /**
+   * A knob's stored value has no effect when it drives nothing (no outgoing
+   * wire) OR an input wire overrides it with a destructive `replace` combine
+   * (default when unset). Such knobs render grayed.
+   */
+  private isMuted(i: number): boolean {
+    const wires = appState.database.sketches[this.sketchId]?.wires ?? [];
+    const field = `knob_${i}`;
+    const key = this.instanceKey;
+    const hasOutgoing = wires.some(w => w.src.instanceKey === key && w.src.field === field);
+    const replacedIn = wires.some(w =>
+      w.dest.instanceKey === key && w.dest.field === field && (w.combine ?? 'replace') === 'replace');
+    return !hasOutgoing || replacedIn;
+  }
+
   render() {
     if (!this.sketchId || !this.instanceKey) return html``;
     const binding = this.binding();
@@ -86,6 +101,7 @@ export class DashboardEditor extends MobxLitElement {
             .fieldPath=${`knob_${i}`}
             .label=${String(i)}
             .min=${0} .max=${1} .step=${0.01} .defaultValue=${0}
+            .muted=${this.isMuted(i)}
             .binding=${binding}
           ></scalar-knob>
         `)}
