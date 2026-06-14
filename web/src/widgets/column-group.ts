@@ -17,7 +17,7 @@ import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine } from '../sketch-types';
 import { sketchChain, chainEntryAt } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -1697,6 +1697,13 @@ export class ColumnGroup extends MobxLitElement {
     const wires = (sketch?.wires ?? []).filter(w =>
       (w.src.instanceKey === myKey && w.src.field === fieldPath) ||
       (w.dest.instanceKey === myKey && w.dest.field === fieldPath));
+    // Modulation (scale/remap + combine) only applies to SCALAR wires — match
+    // the executor, which runs the tap-mod math only on the scalar path. A
+    // scalar field is a single number/bool; vectors/textures/structs carry only
+    // the connection.
+    const schemaType = (plugin?.schema?.[fieldPath] as { type?: string } | undefined)?.type;
+    const isScalar = schemaType === 'float' || schemaType === 'int' || schemaType === 'bool'
+      || fieldDef?.type === 'slider' || fieldDef?.type === 'number';
     const wiresSection = html`
       <div class="section-header" style="margin-top:8px">Wires</div>
       ${wires.length === 0
@@ -1715,6 +1722,7 @@ export class ColumnGroup extends MobxLitElement {
                   title="Remove wire"
                   @click=${() => appController.removeWire(sId, w.id)}>×</button>
               </div>
+              ${isScalar ? this.renderWireModInspector(w) : nothing}
             `;
           })}
     `;
@@ -1724,6 +1732,102 @@ export class ColumnGroup extends MobxLitElement {
       ${smoothing}
       ${wiresSection}
     `;
+  }
+
+  /**
+   * Modulation controls for one scalar wire: a range remapper (scale + optional
+   * remap with saturation and in/out shaping curves) applied to the value, and a
+   * `combine` mode for how it folds into the dest when several wires target it.
+   * Built from the shared field editors via a FieldBinding (so long edits +
+   * styling come for free) — the scalar twin of the old per-tap mod inspector.
+   */
+  private renderWireModInspector(wire: Wire) {
+    const remap = wire.mod?.remap;
+    const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
+    const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
+    const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
+    const curveOpts = CURVES.map(c => ({ label: c, value: c }));
+    const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
+
+    const fields: InspectorFieldDef[] = [
+      { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 },
+      { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
+    ];
+    if (remap) {
+      fields.push(
+        { type: 'slider', label: 'In min', path: 'remap.inMin', min: -1, max: 1, default: 0 },
+        { type: 'slider', label: 'In max', path: 'remap.inMax', min: -1, max: 1, default: 1 },
+        { type: 'slider', label: 'Out min', path: 'remap.outMin', min: -1, max: 1, default: 0 },
+        { type: 'slider', label: 'Out max', path: 'remap.outMax', min: -1, max: 1, default: 1 },
+        { type: 'boolean', label: 'Saturate', path: 'remap.saturate', default: false },
+        { type: 'select', label: 'Curve in', path: 'remap.curveIn', options: curveOpts, default: 'linear' },
+        { type: 'select', label: 'Curve out', path: 'remap.curveOut', options: curveOpts, default: 'linear' },
+      );
+      if (usesPower) {
+        fields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
+      }
+    }
+    fields.push({ type: 'select', label: 'Combine', path: 'combine', options: combineOpts, default: 'replace' });
+    if ((wire.combine ?? 'replace') === 'mix') {
+      fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
+    }
+
+    return html`<div style="margin:2px 0 6px 8px;padding-left:8px;border-left:2px solid rgba(255,255,255,0.08)">
+      ${createGenericInspector(fields)(this.wireModBinding(wire.id))}
+    </div>`;
+  }
+
+  /**
+   * FieldBinding mapping synthetic paths to a wire's mod fields, so the shared
+   * field editors can drive them with long edits. Numbers (scale, remap in/out
+   * min/max, exponent, mixFactor), booleans (remapEnabled, remap.saturate), and
+   * selects (remap.curveIn/curveOut, combine). Reads return undefined for unset
+   * numerics so sliders fall back to their default.
+   */
+  private wireModBinding(wireId: string): FieldBinding {
+    const sId = this.sketchId;
+    const getWire = (): Wire | undefined =>
+      appState.database.sketches[sId]?.wires?.find(w => w.id === wireId);
+    const read = (path: string): any => {
+      const wire = getWire();
+      if (!wire) return undefined;
+      if (path === 'scale') return wire.mod?.scale;
+      if (path === 'mixFactor') return wire.mixFactor;
+      if (path === 'combine') return wire.combine ?? 'replace';
+      if (path === 'remapEnabled') return !!wire.mod?.remap;
+      if (path.startsWith('remap.')) {
+        return (wire.mod?.remap as Record<string, any> | undefined)?.[path.slice(6)];
+      }
+      return undefined;
+    };
+    // Build a Partial<Wire> patch for a path+value, deep-merging mod/remap.
+    const patchFor = (path: string, v: any): Partial<Wire> => {
+      const mod = getWire()?.mod ?? {};
+      if (path === 'scale') return { mod: { ...mod, scale: v as number } };
+      if (path === 'mixFactor') return { mixFactor: v as number };
+      if (path === 'combine') return { combine: v as TapCombine };
+      if (path === 'remapEnabled') {
+        return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
+      }
+      const remap = mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
+      const key = path.slice(6);
+      // field-toggle writes 0/1 for saturate; everything else is the typed value.
+      const val = key === 'saturate' ? !!v : v;
+      return { mod: { ...mod, remap: { ...remap, [key]: val } } };
+    };
+    return {
+      instanceKey: `wire/${sId}/${wireId}`,
+      getValue: (path: string) => read(path),
+      setValue: (path: string, v: any) => appController.updateWire(sId, wireId, patchFor(path, v)),
+      beginContinuousEdit: (path: string, v: any): ContinuousEditHandle => {
+        const edit = appController.beginUpdateWire(sId, wireId, patchFor(path, v));
+        return {
+          update: (nv: any) => appController.updateUpdateWire(edit, sId, wireId, patchFor(path, nv)),
+          accept: () => edit.accept(),
+          cancel: () => edit.cancel(),
+        };
+      },
+    };
   }
 
   /**

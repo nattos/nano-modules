@@ -14,7 +14,7 @@ import { traceController } from './trace-controller';
 import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
-import type { Sketch, ChainEntry } from '../sketch-types';
+import type { Sketch, ChainEntry, Wire } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain } from '../sketch-types';
 import {
   isDefaultProjectId,
@@ -968,6 +968,34 @@ export class AppController {
       if (!sk?.wires) return;
       sk.wires = sk.wires.filter(w => w.id !== wireId);
     });
+  }
+
+  // --- Wire modulation (scalar wires: value remap + combine mode) ---
+
+  /** Recipe that shallow-merges a patch onto a wire's top-level fields
+   *  (`mod` / `combine` / `mixFactor`). Callers build the full `mod` sub-tree
+   *  in the patch, so a shallow assign replaces it wholesale. */
+  private wirePatchRecipe(sketchId: string, wireId: string, patch: Partial<Wire>) {
+    return (draft: DatabaseState) => {
+      const w = draft.sketches[sketchId]?.wires?.find(w => w.id === wireId);
+      if (!w) return;
+      Object.assign(w, patch);
+    };
+  }
+
+  /** Patch a wire's modulation (one undo point). */
+  updateWire(sketchId: string, wireId: string, patch: Partial<Wire>) {
+    this.mutate('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));
+  }
+
+  /** Begin a continuous wire-mod edit (slider drag). No undo points during drag. */
+  beginUpdateWire(sketchId: string, wireId: string, patch: Partial<Wire>): LongEdit {
+    return this.history.beginLongEdit('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));
+  }
+
+  /** Update a continuous wire-mod edit (drag in progress). */
+  updateUpdateWire(edit: LongEdit, sketchId: string, wireId: string, patch: Partial<Wire>) {
+    edit.update(this.wirePatchRecipe(sketchId, wireId, patch));
   }
 
   // --- Field options (engine-level per-parameter options) ---

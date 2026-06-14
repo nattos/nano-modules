@@ -112,3 +112,46 @@ describe('connectWire', () => {
     expect(wires()).toHaveLength(0);
   });
 });
+
+describe('updateWire (scalar wire modulation)', () => {
+  const connect = () => {
+    seedWireSketch();
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),
+      field({ chainIdx: 1, fieldPath: 'brightness' }),
+    );
+    return wires()[0].id as string;
+  };
+
+  it('patches scale into mod, leaving src/dest untouched', () => {
+    const id = connect();
+    appController.updateWire('sk', id, { mod: { scale: 2 } });
+    expect(wires()[0].mod).toEqual({ scale: 2 });
+    expect(wires()[0].src).toMatchObject({ instanceKey: 'lfo', field: 'output' });
+  });
+
+  it('sets combine + mixFactor as top-level fields', () => {
+    const id = connect();
+    appController.updateWire('sk', id, { combine: 'mix' });
+    appController.updateWire('sk', id, { mixFactor: 0.25 });
+    expect(wires()[0].combine).toBe('mix');
+    expect(wires()[0].mixFactor).toBe(0.25);
+  });
+
+  it('a later patch replaces mod wholesale (callers pre-merge the sub-tree)', () => {
+    const id = connect();
+    appController.updateWire('sk', id, { mod: { scale: 3, remap: { inMin: 0, inMax: 1, outMin: 0, outMax: 2 } } });
+    // Simulate the binding rebuilding the full mod from the current value.
+    const cur = wires()[0].mod;
+    appController.updateWire('sk', id, { mod: { ...cur, remap: { ...cur.remap, outMax: 5 } } });
+    expect(wires()[0].mod.scale).toBe(3);
+    expect(wires()[0].mod.remap.outMax).toBe(5);
+    expect(wires()[0].mod.remap.inMax).toBe(1);
+  });
+
+  it('is a no-op for an unknown wire id', () => {
+    connect();
+    expect(() => appController.updateWire('sk', 'nope', { mod: { scale: 9 } })).not.toThrow();
+    expect(wires()[0].mod).toBeUndefined();
+  });
+});
