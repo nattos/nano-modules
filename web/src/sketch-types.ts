@@ -11,10 +11,8 @@ export const BUCKET_SKETCH_ID = '__unassigned__';
 export interface Sketch {
   anchor: string | null;
   columns: SketchColumn[];
-  /** Cross-cutting rails shared across all columns (sketch-scoped). @deprecated superseded by `wires`. */
-  rails?: Rail[];
   /**
-   * Direct field-to-field connections (the replacement for taps+rails). A wire
+   * Direct field-to-field connections. A wire
    * connects a producer's output field to a consumer's input field, addressed by
    * `instance_key` so it survives reordering. Causality is POSITIONAL: if the
    * source executes before the dest (above it in the single stack) the value is
@@ -42,7 +40,7 @@ export interface InstanceState {
 }
 
 /**
- * A column is a linear chain of processing steps with sideband rails.
+ * A column is a linear chain of processing steps.
  *
  * Every column has an *implicit* texture input on top and an *implicit*
  * texture output on the bottom; they are NOT stored in `chain`. The
@@ -53,8 +51,6 @@ export interface InstanceState {
 export interface SketchColumn {
   name: string;
   chain: ChainEntry[];
-  /** Sideband rails available within this column. */
-  rails?: Rail[];
 }
 
 /** A single entry in a processing chain. Always a module. */
@@ -67,8 +63,6 @@ export interface ModuleEntry {
   instance_key: string;
   /** @deprecated Use sketch.instances[instance_key].state instead. */
   params?: Record<string, number>;
-  /** Rail connections for this module instance. */
-  taps?: Tap[];
   /** Engine-level per-parameter options (smoothing, …), keyed by field path. */
   fieldOptions?: Record<string, FieldOptions>;
 }
@@ -114,25 +108,7 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
   return { ...sketch, columns };
 }
 
-// --- Sideband Rails ---
-
-/**
- * Rail payload type. Scalar shorthands are preserved for backward compat;
- * structured payloads carry the writer's schema so readers can validate
- * assignability at tap-binding time and so struct handoff knows which
- * leaves are textures or GPU buffers.
- */
-export type RailDataType =
-  | 'float'
-  | 'texture'
-  | { kind: 'struct'; schema: Record<string, any> };
-
-/** A named data channel within a column. */
-export interface Rail {
-  id: string;
-  name?: string;
-  dataType: RailDataType;
-}
+// --- Wire modulation (mod / combine) ---
 
 /**
  * Shaping curve applied to a remap's normalized value. `linear` is identity;
@@ -144,9 +120,8 @@ export interface Rail {
 export type TapCurve = 'linear' | 'quad' | 'circular' | 'power' | 'foldback';
 
 /**
- * Per-tap range remapper. Applied to float-rail values only: BEFORE writing
- * (write taps) or AFTER reading (read taps). All fields optional — an absent
- * `mod` (or absent sub-field) means today's pass-through behavior.
+ * Range remapper applied to a scalar wire's value. All fields optional — an
+ * absent `mod` (or absent sub-field) means pass-through.
  */
 export interface TapMod {
   /** Multiply from 0 (out = in * scale). Default 1. Applied before `remap`. */
@@ -167,7 +142,8 @@ export interface TapMod {
   };
 }
 
-/** How a write tap combines its (modded) value into the rail's current frame value. */
+/** How a scalar wire's (modded) value folds into the dest param when multiple
+ *  wires target it. */
 export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
 
 /**
@@ -190,16 +166,3 @@ export interface Wire {
   mixFactor?: number;
 }
 
-/** Connects a module's field to a rail. @deprecated superseded by `Wire`. */
-export interface Tap {
-  railId: string;
-  /** Field path in instance state (e.g. "params/0", "output", "texture_out/0"). */
-  fieldPath: string;
-  direction: 'read' | 'write';
-  /** Range remapper (float rails only). Read taps: after read; write taps: before write. */
-  mod?: TapMod;
-  /** Write taps only: how to combine into the rail (default `replace`). */
-  combine?: TapCombine;
-  /** Factor for `combine === 'mix'` (lerp toward the new value). Default 1. */
-  mixFactor?: number;
-}

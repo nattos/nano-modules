@@ -294,7 +294,7 @@ function coerceSketch(remote: any): Sketch {
   const draft: Sketch = {
     anchor: typeof r.anchor === 'string' ? r.anchor : null,
     columns: Array.isArray(r.columns) ? r.columns : [],
-    rails: Array.isArray(r.rails) ? r.rails : undefined,
+    wires: Array.isArray(r.wires) ? r.wires : undefined,
     instances: (r.instances && typeof r.instances === 'object' && !Array.isArray(r.instances))
                   ? r.instances
                   : undefined,
