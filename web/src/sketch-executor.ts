@@ -7,9 +7,9 @@
 import type { BridgeCore } from './bridge-core';
 import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
-import type { ModuleEntry, Sketch } from './sketch-types';
+import type { ModuleEntry, Sketch, Wire } from './sketch-types';
 import { sketchChain } from './sketch-types';
-import { applyTapMod, combineTap } from './tap-mod';
+import { applyTapMod, combineTap, applyMagnitude } from './tap-mod';
 import { isRailCompatible } from './schema-compat';
 import { initSmooth, advanceSmooth, type SmoothState } from './param-smoothing';
 import {
@@ -332,6 +332,39 @@ export class SketchExecutor {
 
   getInstance(instanceKey: string): LoadedModule | undefined {
     return this.instances.get(instanceKey);
+  }
+
+  /**
+   * Fold one scalar wire's source value into the dest field's current value,
+   * honoring the wire's `magnitude` mode. `absolute` (and the legacy default for
+   * fields with no range) routes through the manual `applyTapMod` + `combineTap`;
+   * signed/unsigned/auto map the standard-range source into the dest's declared
+   * [min,max] via `applyMagnitude`. `destSchema` is the dest field's schema def
+   * (carries min/max); undefined → 0..1 (e.g. dashboard knobs).
+   */
+  private resolveScalarWire(
+    w: Wire, srcValue: number, existing: number | undefined, destSchema: any,
+  ): number {
+    const mag = w.magnitude ?? 'auto';
+    if (mag === 'absolute') {
+      return combineTap(existing, applyTapMod(srcValue, w.mod), w.combine, w.mixFactor);
+    }
+    // Resolve auto from the SOURCE output field's optional declaration; the
+    // source instance has already executed (it's above) so its host is loaded.
+    let resolved: 'signed' | 'unsigned';
+    if (mag === 'auto') {
+      const srcDecl = this.instances.get(w.src.instanceKey)?.host.schema?.[w.src.field]?.magnitude;
+      resolved = srcDecl === 'signed' ? 'signed' : 'unsigned';
+    } else {
+      resolved = mag;
+    }
+    const min = typeof destSchema?.min === 'number' ? destSchema.min : 0;
+    const max = typeof destSchema?.max === 'number' ? destSchema.max : 1;
+    const input = srcValue * (w.mod?.scale ?? 1);
+    // applyMagnitude needs a numeric base; seed from the field's neutral (min) if absent.
+    return applyMagnitude(
+      typeof existing === 'number' ? existing : min,
+      input, resolved, w.combine, w.mixFactor, min, max);
   }
 
   /** Iterate all loaded module hosts (for schema/io lookup). */
@@ -723,7 +756,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
               const src = (delayed ? this.wirePrev : this.wireCur)
                 .get(`${w.src.instanceKey}:${w.src.field}`);
               if (!src || src.kind !== 'scalar') continue;
-              value = combineTap(value, applyTapMod(src.value, w.mod), w.combine, w.mixFactor);
+              // Knobs have an implicit 0..1 range (no schema → destSchema undefined).
+              value = this.resolveScalarWire(w, src.value, value, undefined);
             }
           }
           // Publish as a wire source for downstream consumers.
@@ -886,11 +920,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 .get(`${w.src.instanceKey}:${w.src.field}`);
               if (!src) continue;
               if (src.kind === 'scalar') {
-                const shaped = applyTapMod(src.value, w.mod);
                 const canonical = instanceState[w.dest.field];
-                const combined = combineTap(
+                const combined = this.resolveScalarWire(
+                  w, src.value,
                   typeof canonical === 'number' ? canonical : undefined,
-                  shaped, w.combine, w.mixFactor);
+                  loaded.host.schema?.[w.dest.field]);
                 loaded.host.notifyStatePatched(loaded.module, [
                   { op: 'replace', path: w.dest.field, value: combined },
                 ]);

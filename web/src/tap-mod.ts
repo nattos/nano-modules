@@ -107,3 +107,49 @@ export function combineTap(
       return value;
   }
 }
+
+/**
+ * Range-aware fold for a scalar wire's `magnitude` mode (signed/unsigned) — the
+ * convenience alternative to `combineTap` that maps a standard-range source value
+ * into the DEST field's declared [min,max] per the combine mode, so a modulation
+ * source drives a parameter without hand-scaling.
+ *
+ * `input` is the source value already pre-multiplied by `mod.scale` (the manual
+ * `mod.remap` is only used in `absolute` mode, which routes through `combineTap`).
+ * `resolved` is the concrete interpretation ('signed' = bipolar −1..1, 'unsigned'
+ * = unipolar 0..1; `auto` is resolved by the caller from the source declaration).
+ *
+ * NOTE: a native twin of this is DEFERRED until the wire model is ported to the
+ * native barrel (the wire model is web-only today). `applyTapMod`/`combineTap`
+ * above stay byte-identical to native/src/sketch/tap_mod.h.
+ */
+export function applyMagnitude(
+  existing: number,
+  input: number,
+  resolved: 'signed' | 'unsigned',
+  combine: TapCombine | undefined,
+  mixFactor: number | undefined,
+  min: number,
+  max: number,
+): number {
+  const span = max - min;
+  const mid = (min + max) / 2;
+  // Where the input lands in [min,max] for a `replace`/`mix` fold.
+  const replaceVal = resolved === 'signed'
+    ? min + ((input + 1) / 2) * span   // −1→min, 0→mid, 1→max
+    : min + input * span;              //  0→min, 1→max
+  switch (combine ?? 'replace') {
+    case 'add':
+      // Identical for both: ±1 input pushes by ±100% of the field span.
+      return existing + input * span;
+    case 'mul':
+      return resolved === 'signed'
+        ? mid + (existing - mid) * input   // 1=identity, 0→mid, −1 flips delta
+        : min + (existing - min) * input;  // 1=identity, 0→min
+    case 'mix':
+      return existing + (replaceVal - existing) * (mixFactor ?? 1);
+    case 'replace':
+    default:
+      return replaceVal;
+  }
+}

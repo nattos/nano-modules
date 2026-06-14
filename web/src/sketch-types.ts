@@ -180,6 +180,22 @@ export interface TapMod {
 export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
 
 /**
+ * How a scalar wire interprets its source value relative to the DEST field's
+ * declared range — so a modulation source can drive a parameter without the
+ * user hand-scaling it. See `applyMagnitude` in tap-mod.ts for the exact math.
+ * - `auto` (default): pick signed/unsigned from the SOURCE output field's
+ *   optional `magnitude` schema declaration; unsigned when undeclared.
+ * - `signed`: source treated as bipolar −1..1.
+ * - `unsigned`: source treated as unipolar 0..1.
+ * - `absolute`: source is already in the dest's scale (legacy behavior — uses
+ *   the manual `mod.remap`).
+ *
+ * Output schema fields may optionally declare `magnitude: 'signed' | 'unsigned'`
+ * (read web-side from the schema; declared in the effects' C++ schema later).
+ */
+export type WireMagnitude = 'auto' | 'signed' | 'unsigned' | 'absolute';
+
+/**
  * A direct connection from a producer output field to a consumer input field —
  * the replacement for taps+rails. Endpoints are addressed by `instance_key` +
  * field path so wires survive reordering/insert/delete. Delay is inferred from
@@ -197,5 +213,8 @@ export interface Wire {
   combine?: TapCombine;
   /** Factor for `combine === 'mix'`. Default 1. */
   mixFactor?: number;
+  /** Scalar wires only: how the source value maps into the dest field's declared
+   *  range. Default `auto`. See {@link WireMagnitude}. */
+  magnitude?: WireMagnitude;
 }
 

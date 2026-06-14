@@ -17,7 +17,7 @@ import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
 import { appController, DASHBOARD_MODULE_TYPE, DASHBOARD_KNOB_COUNT } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude } from '../sketch-types';
 import { sketchChain, chainEntryAt } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -1783,14 +1783,22 @@ export class ColumnGroup extends MobxLitElement {
     const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
     const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
     const COMBINES: TapCombine[] = ['replace', 'mix', 'add', 'mul'];
+    const MAGNITUDES: WireMagnitude[] = ['auto', 'signed', 'unsigned', 'absolute'];
     const curveOpts = CURVES.map(c => ({ label: c, value: c }));
     const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
+    const magOpts = MAGNITUDES.map(m => ({ label: m, value: m }));
+    // Magnitude maps the source into the dest field's declared range; the manual
+    // Remap is the `absolute` mode's tool, so only offer it there.
+    const isAbsolute = (wire.magnitude ?? 'auto') === 'absolute';
 
     const fields: InspectorFieldDef[] = [
+      { type: 'select', label: 'Magnitude', path: 'magnitude', options: magOpts, default: 'auto' },
       { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 },
-      { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
     ];
-    if (remap) {
+    if (isAbsolute) {
+      fields.push({ type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false });
+    }
+    if (isAbsolute && remap) {
       fields.push(
         { type: 'slider', label: 'In min', path: 'remap.inMin', min: -1, max: 1, default: 0 },
         { type: 'slider', label: 'In max', path: 'remap.inMax', min: -1, max: 1, default: 1 },
@@ -1831,6 +1839,7 @@ export class ColumnGroup extends MobxLitElement {
       if (path === 'scale') return wire.mod?.scale;
       if (path === 'mixFactor') return wire.mixFactor;
       if (path === 'combine') return wire.combine ?? 'replace';
+      if (path === 'magnitude') return wire.magnitude ?? 'auto';
       if (path === 'remapEnabled') return !!wire.mod?.remap;
       if (path.startsWith('remap.')) {
         return (wire.mod?.remap as Record<string, any> | undefined)?.[path.slice(6)];
@@ -1843,6 +1852,7 @@ export class ColumnGroup extends MobxLitElement {
       if (path === 'scale') return { mod: { ...mod, scale: v as number } };
       if (path === 'mixFactor') return { mixFactor: v as number };
       if (path === 'combine') return { combine: v as TapCombine };
+      if (path === 'magnitude') return { magnitude: v as WireMagnitude };
       if (path === 'remapEnabled') {
         return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
       }

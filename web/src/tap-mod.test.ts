@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyTapMod, combineTap } from './tap-mod';
+import { applyTapMod, combineTap, applyMagnitude } from './tap-mod';
 import type { TapMod } from './sketch-types';
 
 // These goldens are the LOCK-STEP contract between web/src/tap-mod.ts and
@@ -101,5 +101,58 @@ describe('combineTap', () => {
     expect(combineTap(2, 3, 'mix', 1)).toBeCloseTo(3, 6);
     expect(combineTap(2, 3, 'mix')).toBeCloseTo(3, 6); // default factor 1
     expect(combineTap(2, 3, 'mix', 0)).toBeCloseTo(2, 6);
+  });
+});
+
+// Magnitude modes map a standard-range source value into the dest field's
+// declared [min,max]. Range 0..3 (span 3, mid 1.5) makes the mapping visible.
+describe('applyMagnitude', () => {
+  const MIN = 0, MAX = 3;   // span 3, mid 1.5
+
+  it('signed replace maps −1..1 → min..max', () => {
+    expect(applyMagnitude(0, -1, 'signed', 'replace', undefined, MIN, MAX)).toBeCloseTo(0, 6);
+    expect(applyMagnitude(0,  0, 'signed', 'replace', undefined, MIN, MAX)).toBeCloseTo(1.5, 6);
+    expect(applyMagnitude(0,  1, 'signed', 'replace', undefined, MIN, MAX)).toBeCloseTo(3, 6);
+  });
+
+  it('unsigned replace maps 0..1 → min..max', () => {
+    expect(applyMagnitude(0, 0, 'unsigned', 'replace', undefined, MIN, MAX)).toBeCloseTo(0, 6);
+    expect(applyMagnitude(0, 0.5, 'unsigned', 'replace', undefined, MIN, MAX)).toBeCloseTo(1.5, 6);
+    expect(applyMagnitude(0, 1, 'unsigned', 'replace', undefined, MIN, MAX)).toBeCloseTo(3, 6);
+  });
+
+  it('add pushes by ±input*span around the existing value (signed == unsigned)', () => {
+    expect(applyMagnitude(1, 1, 'signed', 'add', undefined, MIN, MAX)).toBeCloseTo(4, 6);    // +span
+    expect(applyMagnitude(1, -1, 'signed', 'add', undefined, MIN, MAX)).toBeCloseTo(-2, 6);  // −span
+    expect(applyMagnitude(1, 0, 'signed', 'add', undefined, MIN, MAX)).toBeCloseTo(1, 6);    // neutral
+    expect(applyMagnitude(1, 0.5, 'unsigned', 'add', undefined, MIN, MAX)).toBeCloseTo(2.5, 6);
+  });
+
+  it('signed mul scales the existing delta around the midpoint', () => {
+    const ex = 2;          // mid = 1.5, delta = +0.5
+    expect(applyMagnitude(ex, 1, 'signed', 'mul', undefined, MIN, MAX)).toBeCloseTo(2, 6);    // identity
+    expect(applyMagnitude(ex, 0, 'signed', 'mul', undefined, MIN, MAX)).toBeCloseTo(1.5, 6);  // → mid
+    expect(applyMagnitude(ex, -1, 'signed', 'mul', undefined, MIN, MAX)).toBeCloseTo(1, 6);   // flips delta
+  });
+
+  it('unsigned mul scales the existing value from the min', () => {
+    const ex = 2;          // min = 0
+    expect(applyMagnitude(ex, 1, 'unsigned', 'mul', undefined, MIN, MAX)).toBeCloseTo(2, 6);  // identity
+    expect(applyMagnitude(ex, 0, 'unsigned', 'mul', undefined, MIN, MAX)).toBeCloseTo(0, 6);  // → min
+    expect(applyMagnitude(ex, 0.5, 'unsigned', 'mul', undefined, MIN, MAX)).toBeCloseTo(1, 6);
+  });
+
+  it('mix blends the existing value toward the mapped replace value', () => {
+    // unsigned replace of input 1 → max (3); mix from existing 1 by 0.5 → 2.
+    expect(applyMagnitude(1, 1, 'unsigned', 'mix', 0.5, MIN, MAX)).toBeCloseTo(2, 6);
+    expect(applyMagnitude(1, 1, 'unsigned', 'mix', 1, MIN, MAX)).toBeCloseTo(3, 6);
+    expect(applyMagnitude(1, 1, 'unsigned', 'mix', 0, MIN, MAX)).toBeCloseTo(1, 6);
+    // signed replace of input 0 → mid (1.5); mix from 0 by 1 → 1.5.
+    expect(applyMagnitude(0, 0, 'signed', 'mix', 1, MIN, MAX)).toBeCloseTo(1.5, 6);
+  });
+
+  it('a 0..1 dest field makes unsigned replace a pass-through (== absolute)', () => {
+    // Why current 0..1-target wires are unaffected by the default Auto→unsigned.
+    expect(applyMagnitude(0.7, 0.5, 'unsigned', 'replace', undefined, 0, 1)).toBeCloseTo(0.5, 6);
   });
 });
