@@ -16,7 +16,7 @@ import { html, css, nothing, svg } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
-import { appController } from '../state/controller';
+import { appController, wireSelectablePath } from '../state/controller';
 import type { Sketch } from '../sketch-types';
 import { sketchChain } from '../sketch-types';
 import { layoutFloaters, type Floater } from './floating-layout';
@@ -177,25 +177,52 @@ export class TapsOverlay extends MobxLitElement {
     return out;
   }
 
+  /**
+   * Register each wire as a Selectable. Selecting a wire shows the same inspector
+   * as selecting its DEST (reader) field — the field whose value the wire feeds
+   * and modulates (including this wire's mod controls in the Wires section). The
+   * dest field's Selectable is registered by column-group; we just delegate to it.
+   */
+  private registerWireSelectables(sketch: Sketch) {
+    for (const wire of sketch.wires ?? []) {
+      const sId = this.sketchId;
+      const path = wireSelectablePath(sId, wire.id);
+      appController.defineSelectable({
+        path,
+        label: `Wire → ${wire.dest.field}`,
+        renderInspectorContent: () => {
+          const sk = appState.database.sketches[sId];
+          if (!sk) return undefined;
+          const idx = sketchChain(sk).findIndex(
+            e => e.type === 'module' && e.instance_key === wire.dest.instanceKey);
+          if (idx < 0) return undefined;
+          return appController.getSelectable(`field/${sId}/0/${idx}/${wire.dest.field}`)
+            ?.renderInspectorContent?.();
+        },
+      });
+    }
+  }
+
   render() {
     const sketch = appState.database.sketches[this.sketchId];
     const fieldKey = this.cardFieldKey();
     const cardContent = fieldKey
       ? appController.getSelectable(`field/${fieldKey}`)?.renderInspectorContent?.()
       : undefined;
+    if (this.showArcs && sketch) this.registerWireSelectables(sketch);
     const conns = (this.showArcs && sketch) ? this.connections(sketch) : [];
     if (conns.length === 0 && !cardContent) return html`<svg class="lines"></svg>`;
 
-    const selectedWire = appState.local.selectedWireId;
+    const selectedPath = appState.local.selection?.path ?? '';
     return html`
       <svg class="lines">
         ${conns.map(cn => {
           // Each wire has a fat companion hit path in front of the thin visible
           // arc: single click SELECTS the wire (so it isn't deleted by accident),
           // double click BREAKS it.
-          const sel = cn.wireId === selectedWire;
+          const sel = wireSelectablePath(this.sketchId, cn.wireId) === selectedPath;
           const hit = svg`<path class="arc-path wire-hit" data-from=${cn.from} data-to=${cn.to}
-            @click=${() => appController.selectWire(cn.wireId)}
+            @click=${() => appController.select(wireSelectablePath(this.sketchId, cn.wireId))}
             @dblclick=${() => appController.removeWire(this.sketchId, cn.wireId)}></path>`;
           return [hit, svg`<path class="arc-path wire-arc ${cn.delayed ? 'delayed' : ''} ${sel ? 'selected' : ''}"
             data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`];

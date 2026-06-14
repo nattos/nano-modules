@@ -50,23 +50,35 @@ describe('wire select / break', () => {
     })()`;
 
     const wireCount = () => page.evaluate(`(window.appState.database.sketches['sk_w'].wires || []).length`);
-    const selectedWire = () => page.evaluate(`window.appState.local.selectedWireId`);
+    const selectedPath = () => page.evaluate(`window.appState.local.selection?.path ?? null`);
+    // The right-panel inspector header text (the selected Selectable's label).
+    const inspectorHeader = () => page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      for (const el of walk(document)) {
+        if (el.tagName === 'EDIT-TAB') {
+          const h = el.shadowRoot.querySelector('.right-panel .section-header');
+          return h ? h.textContent.trim() : null;
+        }
+      }
+      return null;
+    })()`);
 
     // Sanity: the wire + its hit path exist.
     expect(await wireCount()).toBe(1);
-    const hasHit = await page.evaluate(`!!(${findHit})`);
-    expect(hasHit).toBe(true);
+    expect(await page.evaluate(`!!(${findHit})`)).toBe(true);
 
-    // Single click → selects, does NOT delete.
+    // Single click → selects (Selectable path), does NOT delete.
     await page.evaluate(`(${findHit}).dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
-    await new Promise(r => setTimeout(r, 300));
-    expect(await wireCount()).toBe(1);              // still there
-    expect(await selectedWire()).toBe('w0');        // selected
+    await new Promise(r => setTimeout(r, 400));
+    expect(await wireCount()).toBe(1);                       // still there
+    expect(await selectedPath()).toBe('wire/sk_w/w0');       // selected as a Selectable
+    // Inspector shows the DEST field's content (delegated): header is the wire's label.
+    expect(await inspectorHeader()).toBe('Wire → brightness');
 
     // Double click → breaks.
     await page.evaluate(`(${findHit}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 400));
     expect(await wireCount()).toBe(0);              // gone
-    expect(await selectedWire()).toBeNull();        // selection cleared
+    expect(await selectedPath()).toBeNull();        // selection cleared
   });
 });

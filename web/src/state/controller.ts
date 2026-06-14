@@ -30,6 +30,12 @@ import { saveUserSettings } from './user-settings';
 import { saveProject, deleteProject as idbDeleteProject } from './project-store';
 import { SketchInputManager } from './sketch-input-manager';
 
+/** Selectable path for a wire. Selecting it shows the dest (reader) field's
+ *  inspector — the field whose value the wire modulates. */
+export function wireSelectablePath(sketchId: string, wireId: string): string {
+  return `wire/${sketchId}/${wireId}`;
+}
+
 /** The executor-handled virtual knob-bank effect (no WASM module). */
 export const DASHBOARD_MODULE_TYPE = 'util.dashboard';
 /** Fixed knob count — create more dashboards if you need more knobs. */
@@ -940,8 +946,6 @@ export class AppController {
   /** Select a path. If the selectable is registered, activates immediately. Otherwise queues. */
   select(path: string | null) {
     runInAction(() => {
-      // Selecting anything (or clearing) drops a selected wire.
-      appState.local.selectedWireId = null;
       if (path === null) {
         appState.local.selection = null;
         appState.local.queuedSelectionPath = null;
@@ -955,15 +959,6 @@ export class AppController {
         appState.local.queuedSelectionPath = path;
         appState.local.selection = null;
       }
-    });
-  }
-
-  /** Select a wire (single click). Highlights it; double-click breaks it. */
-  selectWire(wireId: string) {
-    runInAction(() => {
-      appState.local.selection = null;
-      appState.local.queuedSelectionPath = null;
-      appState.local.selectedWireId = wireId;
     });
   }
 
@@ -1034,9 +1029,11 @@ export class AppController {
 
   /** Remove a wire by id. */
   removeWire(sketchId: string, wireId: string) {
-    if (appState.local.selectedWireId === wireId) {
-      runInAction(() => { appState.local.selectedWireId = null; });
+    // Drop the selection if it's this wire.
+    if (appState.local.selection?.path === wireSelectablePath(sketchId, wireId)) {
+      this.select(null);
     }
+    this.selectableRegistry.delete(wireSelectablePath(sketchId, wireId));
     this.mutate('Remove wire', draft => {
       const sk = draft.sketches[sketchId];
       if (!sk?.wires) return;

@@ -146,17 +146,16 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       return;
     }
     if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
-    // A selected wire breaks on Delete/Backspace (it was selected, not deleted,
-    // on click — so this is the deliberate removal).
-    const wireId = appState.local.selectedWireId;
-    if (wireId && (e.key === 'Delete' || e.key === 'Backspace')) {
-      e.preventDefault();
-      const sketchId = appState.local.editingSketchId;
-      if (sketchId) appController.removeWire(sketchId, wireId);
-      return;
-    }
     const selection = appState.local.selection;
     if (!selection) return;
+    // A selected wire (`wire/<sketchId>/<wireId>`) breaks on Delete/Backspace —
+    // it was selected, not deleted, on click, so this is the deliberate removal.
+    if (selection.path.startsWith('wire/') && (e.key === 'Delete' || e.key === 'Backspace')) {
+      e.preventDefault();
+      const parts = selection.path.split('/');
+      appController.removeWire(parts[1], parts.slice(2).join('/'));
+      return;
+    }
     const parts = selection.path.split('/');
     if (parts[0] !== 'effect' || parts.length < 4) return;
     const sketchId = parts[1];
