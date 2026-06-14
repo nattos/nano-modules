@@ -23,18 +23,43 @@ import { layoutFloaters, type Floater } from './floating-layout';
 import { tapsConnect } from './taps-connect';
 import './spark-chart';
 
+type Pt = { x: number; y: number };
+interface Bezier { p0: Pt; c1: Pt; c2: Pt; p3: Pt; }
+
 /**
- * A gently arcing cubic-bezier path from `a` (writer) to `b` (reader). Both
- * control points bow to the right (+x) so same-column connections read as a soft
- * C; the bow scales mildly with vertical distance. Path direction a→b drives the
+ * A gently arcing cubic bezier from `a` (writer) to `b` (reader). Both control
+ * points bow to the right (+x) so same-column connections read as a soft C; the
+ * bow scales mildly with vertical distance. Path direction a→b drives the
  * marching-ants dash so the animation indicates data-flow direction.
  */
-function arcPath(a: { x: number; y: number }, b: { x: number; y: number }): string {
+function arcBezier(a: Pt, b: Pt): Bezier {
   const dy = b.y - a.y;
   const bow = Math.min(Math.max(Math.abs(dy) * 0.25 + 26, 32), 90);
-  const c1x = a.x + bow, c1y = a.y + dy * 0.33;
-  const c2x = b.x + bow, c2y = b.y - dy * 0.33;
-  return `M ${a.x} ${a.y} C ${c1x} ${c1y} ${c2x} ${c2y} ${b.x} ${b.y}`;
+  return {
+    p0: a,
+    c1: { x: a.x + bow, y: a.y + dy * 0.33 },
+    c2: { x: b.x + bow, y: b.y - dy * 0.33 },
+    p3: b,
+  };
+}
+
+const bezPath = (z: Bezier): string =>
+  `M ${z.p0.x} ${z.p0.y} C ${z.c1.x} ${z.c1.y} ${z.c2.x} ${z.c2.y} ${z.p3.x} ${z.p3.y}`;
+
+function arcPath(a: Pt, b: Pt): string { return bezPath(arcBezier(a, b)); }
+
+const midpoint = (p: Pt, q: Pt): Pt => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+
+/** Split a cubic bezier at t=0.5 (de Casteljau) → two halves + the join point. */
+function splitBezier(z: Bezier): { first: Bezier; second: Bezier; mid: Pt } {
+  const a = midpoint(z.p0, z.c1), b = midpoint(z.c1, z.c2), c = midpoint(z.c2, z.p3);
+  const d = midpoint(a, b), e = midpoint(b, c);
+  const f = midpoint(d, e);
+  return {
+    first: { p0: z.p0, c1: a, c2: d, p3: f },
+    second: { p0: f, c1: e, c2: c, p3: z.p3 },
+    mid: f,
+  };
 }
 
 @customElement('taps-overlay')
@@ -75,18 +100,33 @@ export class TapsOverlay extends MobxLitElement {
     .wire-arc { fill: none; stroke: var(--app-hi-color2, #4169E1); stroke-width: 1.5;
       opacity: 0.5; stroke-dasharray: 5 4; stroke-linecap: round;
       animation: wire-flow 0.7s linear infinite; }
-    .wire-arc.delayed { stroke: var(--app-text-color2, #999); opacity: 0.4; }
+    /* 1-frame-delayed (feedback) wire: output-pip red, split into two halves that
+     * animate alternately (relay through the midpoint dot) so the delay reads
+     * visually. seg-a flows src→mid while seg-b holds, then they swap. */
+    .wire-arc.delayed { stroke: var(--app-hi-color1, #ff4500); opacity: 0.7; animation: none; }
+    .wire-arc.delayed.seg-a { animation: wire-relay-a 1.4s linear infinite; }
+    .wire-arc.delayed.seg-b { animation: wire-relay-b 1.4s linear infinite; }
+    .wire-dot { fill: var(--app-hi-color1, #ff4500); opacity: 0.9; }
     /* Selected wire: solid, bright, no marching ants — double-click to break. */
     .wire-arc.selected { stroke: var(--app-hi-color1, #ff4500); opacity: 1;
       stroke-width: 2.5; stroke-dasharray: none; animation: none; }
+    .wire-dot.selected { opacity: 1; }
     @keyframes wire-flow { to { stroke-dashoffset: -9; } }
+    /* Relay: each half marches during one half of the cycle and holds the other,
+     * with a brief shared pause at the dot for a clear hand-off beat. */
+    @keyframes wire-relay-a {
+      0% { stroke-dashoffset: 0; } 45% { stroke-dashoffset: -9; } 100% { stroke-dashoffset: -9; }
+    }
+    @keyframes wire-relay-b {
+      0% { stroke-dashoffset: 0; } 55% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -9; }
+    }
     /* Fat transparent companion that catches clicks (the visible arc is thin and
      * dashed). pointer-events:stroke works even though the parent svg is
      * pointer-events:none (a descendant may opt back in). Click selects the wire;
      * double-click breaks it. */
     .wire-hit { fill: none; stroke: transparent; stroke-width: 14;
       pointer-events: stroke; cursor: pointer; }
-    .wire-hit:hover + .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
+    .wire-group:hover .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
     .field-card {
       position: absolute; left: 0; top: 0;
       pointer-events: auto;
@@ -221,11 +261,27 @@ export class TapsOverlay extends MobxLitElement {
           // arc: single click SELECTS the wire (so it isn't deleted by accident),
           // double click BREAKS it.
           const sel = wireSelectablePath(this.sketchId, cn.wireId) === selectedPath;
+          const selCls = sel ? 'selected' : '';
           const hit = svg`<path class="arc-path wire-hit" data-from=${cn.from} data-to=${cn.to}
             @click=${() => appController.select(wireSelectablePath(this.sketchId, cn.wireId))}
             @dblclick=${() => appController.removeWire(this.sketchId, cn.wireId)}></path>`;
-          return [hit, svg`<path class="arc-path wire-arc ${cn.delayed ? 'delayed' : ''} ${sel ? 'selected' : ''}"
-            data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`];
+          // A 1-frame-delayed (feedback) wire: drawn in two halves that animate
+          // alternately, with a dot at the relay point — and in the output-pip red.
+          if (cn.delayed) {
+            return svg`<g class="wire-group">
+              ${hit}
+              <path class="arc-path wire-arc delayed seg-a ${selCls}" data-seg="0"
+                data-from=${cn.from} data-to=${cn.to}></path>
+              <path class="arc-path wire-arc delayed seg-b ${selCls}" data-seg="1"
+                data-from=${cn.from} data-to=${cn.to}></path>
+              <circle class="wire-dot ${selCls}" r="3" data-from=${cn.from} data-to=${cn.to}></circle>
+            </g>`;
+          }
+          return svg`<g class="wire-group">
+            ${hit}
+            <path class="arc-path wire-arc ${selCls}" data-conn-id=${cn.id}
+              data-from=${cn.from} data-to=${cn.to}></path>
+          </g>`;
         })}
         <line class="connect-line" style="display:none"></line>
       </svg>
@@ -317,7 +373,21 @@ export class TapsOverlay extends MobxLitElement {
       const b = this.fieldCenter(p.dataset.to ?? '', overlayRect);
       if (!a || !b) { p.style.display = 'none'; continue; }
       p.style.display = '';
-      p.setAttribute('d', arcPath(a, b));
+      // `data-seg` 0/1 → one half of a delayed wire's split bezier; absent → full arc.
+      const seg = p.dataset.seg;
+      if (seg === undefined) { p.setAttribute('d', arcPath(a, b)); continue; }
+      const split = splitBezier(arcBezier(a, b));
+      p.setAttribute('d', bezPath(seg === '0' ? split.first : split.second));
+    }
+    // Midpoint dot for delayed wires (the relay between the two animated halves).
+    for (const dot of Array.from(svg.querySelectorAll('circle.wire-dot')) as SVGCircleElement[]) {
+      const a = this.fieldCenter(dot.dataset.from ?? '', overlayRect);
+      const b = this.fieldCenter(dot.dataset.to ?? '', overlayRect);
+      if (!a || !b) { dot.style.display = 'none'; continue; }
+      dot.style.display = '';
+      const m = splitBezier(arcBezier(a, b)).mid;
+      dot.setAttribute('cx', String(m.x));
+      dot.setAttribute('cy', String(m.y));
     }
   }
 
