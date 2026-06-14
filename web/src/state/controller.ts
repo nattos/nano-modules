@@ -990,12 +990,31 @@ export class AppController {
 
   /** Begin a continuous wire-mod edit (slider drag). No undo points during drag. */
   beginUpdateWire(sketchId: string, wireId: string, patch: Partial<Wire>): LongEdit {
-    return this.history.beginLongEdit('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));
+    const edit = this.history.beginLongEdit('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));
+    this.pushSketchLive(sketchId);
+    return edit;
   }
 
   /** Update a continuous wire-mod edit (drag in progress). */
   updateUpdateWire(edit: LongEdit, sketchId: string, wireId: string, patch: Partial<Wire>) {
     edit.update(this.wirePatchRecipe(sketchId, wireId, patch));
+    this.pushSketchLive(sketchId);
+  }
+
+  /**
+   * Push one sketch's current (possibly long-edit-previewed) state to the
+   * engine for LIVE render feedback during a drag. The `longEditHook`
+   * deliberately skips engine sync during previews — device-param drags
+   * compensate with their own per-update `engine.setParam`; wire-mod edits
+   * live in `sketch.wires`, which has no targeted command, so we re-push the
+   * single edited sketch (same path `syncSketchesToEngine` uses on commit).
+   */
+  private pushSketchLive(sketchId: string) {
+    if (!this.engine || appState.local.availableEffects.length === 0) return;
+    if (this.engineSketchFilter && !this.engineSketchFilter(sketchId)) return;
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return;
+    this.engine.updateSketch(sketchId, JSON.parse(JSON.stringify(toJS(sketch))));
   }
 
   // --- Field options (engine-level per-parameter options) ---
