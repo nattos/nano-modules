@@ -105,13 +105,14 @@ function legacyColumnsChain(sketch: Sketch): ChainEntry[] {
 /**
  * Canonicalize a sketch into the single-`chain` model: flatten any legacy
  * `columns`, strip non-module entries (old explicit `texture_input` /
- * `texture_output`; texture I/O is implicit now), and prune DANGLING wires —
- * wires whose `src`/`dest` instance is no longer in the chain. A dangling wire
- * is a silent no-op in the executor (it skips a wire with no live source), so a
- * stale reference left by a removed instance would make its dest revert and any
- * mod controls appear inert; dropping it on ingest keeps the data honest.
- * Idempotent. Called on every sketch that enters `appState.database` from an
- * external source — IndexedDB load, remote NanoBarrel snapshot, fixture creation.
+ * `texture_output`; texture I/O is implicit now), prune DANGLING wires (whose
+ * `src`/`dest` instance is no longer in the chain — a silent executor no-op),
+ * and de-duplicate colliding wire ids. Selection + the mod binding key off
+ * `wire.id`, so two wires sharing an id select together and the editor patches
+ * the wrong one; reassigning duplicates on ingest self-heals sketches saved
+ * before ids were made collision-proof. Idempotent. Called on every sketch that
+ * enters `appState.database` from an external source — IndexedDB load, remote
+ * NanoBarrel snapshot, fixture creation.
  */
 export function normalizeSketchChains(sketch: Sketch): Sketch {
   const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
@@ -119,7 +120,16 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
   const result = { ...rest, chain } as Sketch;
   if (Array.isArray(result.wires)) {
     const keys = new Set(chain.map(e => e.instance_key));
-    result.wires = result.wires.filter(w => keys.has(w.src.instanceKey) && keys.has(w.dest.instanceKey));
+    const seen = new Set<string>();
+    result.wires = result.wires
+      .filter(w => keys.has(w.src.instanceKey) && keys.has(w.dest.instanceKey))
+      .map(w => {
+        if (!seen.has(w.id)) { seen.add(w.id); return w; }
+        let n = 2, nid = `${w.id}_${n}`;
+        while (seen.has(nid)) nid = `${w.id}_${++n}`;
+        seen.add(nid);
+        return { ...w, id: nid };
+      });
   }
   return result;
 }

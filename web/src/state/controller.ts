@@ -1020,7 +1020,12 @@ export class AppController {
     const destKey = readerEntry.instance_key;
     if (!srcKey || !destKey) return;
 
-    const id = `wire_${this.nextWireId++}`;
+    // Collision-proof id: the per-session counter alone resets to 0 on reload,
+    // so a fresh wire could reuse `wire_0` already held by a persisted wire —
+    // colliding ids make selection highlight BOTH and the mod binding edit the
+    // wrong (first-matching) wire. Pair the counter with the wall clock so ids
+    // stay unique across reloads.
+    const id = `wire_${Date.now().toString(36)}_${this.nextWireId++}`;
     this.mutate('Connect wire', draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;

@@ -146,6 +146,51 @@ describe('dangling wire cleanup', () => {
   });
 });
 
+describe('wire id collisions', () => {
+  it('connectWire does not reuse an existing wire id after a reload', () => {
+    // A persisted texture wire already holds `wire_0`; the per-session counter
+    // restarts at 0, so the old code would mint a colliding `wire_0`.
+    runInAction(() => {
+      appState.database.sketches = {
+        sk: {
+          anchor: null,
+          chain: [
+            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+            { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
+          ],
+          wires: [{ id: 'wire_0', src: { instanceKey: 'lfo', field: 'tex_out' }, dest: { instanceKey: 'bc', field: 'tex_b' } }],
+        },
+      } as any;
+    });
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),    // lfo.output
+      field({ chainIdx: 1, fieldPath: 'brightness', isOutput: false }), // bc.brightness
+    );
+    const ids = appState.database.sketches.sk.wires!.map(w => w.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);   // unique — no collision
+    expect(ids).toContain('wire_0');      // the existing one is untouched
+  });
+
+  it('normalizeSketchChains de-duplicates colliding wire ids', () => {
+    const sk = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'a', instance_key: 'a' },
+        { type: 'module', module_type: 'b', instance_key: 'b' },
+      ],
+      wires: [
+        { id: 'wire_0', src: { instanceKey: 'a', field: 'tex_out' }, dest: { instanceKey: 'b', field: 'tex_b' } },
+        { id: 'wire_0', src: { instanceKey: 'a', field: 'output' }, dest: { instanceKey: 'b', field: 'brightness' } },
+      ],
+    } as any;
+    const ids = normalizeSketchChains(sk).wires!.map(w => w.id);
+    expect(new Set(ids).size).toBe(2);   // both unique now
+    expect(ids[0]).toBe('wire_0');        // first keeps its id
+    expect(ids[1]).not.toBe('wire_0');    // second reassigned
+  });
+});
+
 describe('updateWire (scalar wire modulation)', () => {
   const connect = () => {
     seedWireSketch();
