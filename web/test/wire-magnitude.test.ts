@@ -17,7 +17,7 @@ import type { Sketch } from '../src/sketch-types';
 describe('Wire magnitude modes E2E', () => {
   jest.setTimeout(30000);
 
-  const build = (magnitude: 'absolute' | 'signed' | 'unsigned'): Sketch => ({
+  const build = (magnitude: 'absolute' | 'signed' | 'unsigned', mod?: any): Sketch => ({
     anchor: null,
     chain: [
       { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
@@ -30,14 +30,14 @@ describe('Wire magnitude modes E2E', () => {
     wires: [
       { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
         dest: { instanceKey: 'bc@0', field: 'brightness' },
-        combine: 'replace', magnitude },
+        combine: 'replace', magnitude, ...(mod ? { mod } : {}) },
     ],
   } as Sketch);
 
-  const run = (id: string, magnitude: 'absolute' | 'signed' | 'unsigned') => runEngineTest({
+  const run = (id: string, magnitude: 'absolute' | 'signed' | 'unsigned', mod?: any) => runEngineTest({
     width: 64, height: 64,
     modules: ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'],
-    commands: [{ type: 'createSketch', sketchId: id, sketch: build(magnitude) }],
+    commands: [{ type: 'createSketch', sketchId: id, sketch: build(magnitude, mod) }],
     tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
     captureTraceIds: ['out'],
     waitFrames: 20,
@@ -60,5 +60,23 @@ describe('Wire magnitude modes E2E', () => {
     expect(Math.abs(unsAvg.r - absAvg.r)).toBeLessThan(6);
     // signed treats 0.5 as bipolar → brightness 0.75 → distinctly brighter.
     expect(sgnAvg.r).toBeGreaterThan(absAvg.r + 20);
+  });
+
+  it('scale + remap shape the RAW input before the range adjustment (not absolute-only)', async () => {
+    // Source 0.5. Unmodded auto → brightness 0.5 → gray 128. Halving the value
+    // via either scale OR a remap to 0..0.5 must roughly halve it (~gray 64),
+    // proving scale/remap run in non-absolute modes on the raw input.
+    const plain = await run('mod_plain', 'unsigned');
+    const scaled = await run('mod_scale', 'unsigned', { scale: 0.5 });
+    const remapped = await run('mod_remap', 'unsigned', { remap: { inMin: 0, inMax: 1, outMin: 0, outMax: 0.5 } });
+    expect(plain.success && scaled.success && remapped.success).toBe(true);
+
+    const p = plain.trace('out').averageColor().r;
+    const s = scaled.trace('out').averageColor().r;
+    const r = remapped.trace('out').averageColor().r;
+    expect(p).toBeGreaterThan(100);          // ~128
+    expect(s).toBeLessThan(p - 30);          // scale halved it
+    expect(r).toBeLessThan(p - 30);          // remap halved it
+    expect(Math.abs(s - r)).toBeLessThan(10); // both reach ~the same lower value
   });
 });

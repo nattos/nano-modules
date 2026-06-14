@@ -335,19 +335,21 @@ export class SketchExecutor {
   }
 
   /**
-   * Fold one scalar wire's source value into the dest field's current value,
-   * honoring the wire's `magnitude` mode. `absolute` (and the legacy default for
-   * fields with no range) routes through the manual `applyTapMod` + `combineTap`;
-   * signed/unsigned/auto map the standard-range source into the dest's declared
-   * [min,max] via `applyMagnitude`. `destSchema` is the dest field's schema def
-   * (carries min/max); undefined → 0..1 (e.g. dashboard knobs).
+   * Fold one scalar wire's source value into the dest field's current value.
+   * The pipeline is: RAW source → `applyTapMod` (scale + remap/curves, shaping
+   * the value in its own range) → magnitude (maps the shaped value into the dest
+   * field's declared [min,max] per the combine mode). So scale/remap always run
+   * (operating on the raw input, BEFORE the range adjustment); `magnitude` is the
+   * final range mapping. `absolute` skips the range mapping entirely (legacy
+   * `combineTap`). `destSchema` carries min/max; undefined → 0..1 (dashboard knobs).
    */
   private resolveScalarWire(
     w: Wire, srcValue: number, existing: number | undefined, destSchema: any,
   ): number {
+    const shaped = applyTapMod(srcValue, w.mod);   // scale + remap on the raw input
     const mag = w.magnitude ?? 'auto';
     if (mag === 'absolute') {
-      return combineTap(existing, applyTapMod(srcValue, w.mod), w.combine, w.mixFactor);
+      return combineTap(existing, shaped, w.combine, w.mixFactor);
     }
     // Resolve auto from the SOURCE output field's optional declaration; the
     // source instance has already executed (it's above) so its host is loaded.
@@ -360,11 +362,10 @@ export class SketchExecutor {
     }
     const min = typeof destSchema?.min === 'number' ? destSchema.min : 0;
     const max = typeof destSchema?.max === 'number' ? destSchema.max : 1;
-    const input = srcValue * (w.mod?.scale ?? 1);
     // applyMagnitude needs a numeric base; seed from the field's neutral (min) if absent.
     return applyMagnitude(
       typeof existing === 'number' ? existing : min,
-      input, resolved, w.combine, w.mixFactor, min, max);
+      shaped, resolved, w.combine, w.mixFactor, min, max);
   }
 
   /** Iterate all loaded module hosts (for schema/io lookup). */

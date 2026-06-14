@@ -1787,18 +1787,16 @@ export class ColumnGroup extends MobxLitElement {
     const curveOpts = CURVES.map(c => ({ label: c, value: c }));
     const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
     const magOpts = MAGNITUDES.map(m => ({ label: m, value: m }));
-    // Magnitude maps the source into the dest field's declared range; the manual
-    // Remap is the `absolute` mode's tool, so only offer it there.
-    const isAbsolute = (wire.magnitude ?? 'auto') === 'absolute';
 
+    // Scale + Remap shape the RAW input value (in its own range); Magnitude then
+    // maps the shaped value into the dest field's declared range. So these always
+    // apply — Remap is not absolute-only.
     const fields: InspectorFieldDef[] = [
       { type: 'select', label: 'Magnitude', path: 'magnitude', options: magOpts, default: 'auto' },
       { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 },
+      { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
     ];
-    if (isAbsolute) {
-      fields.push({ type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false });
-    }
-    if (isAbsolute && remap) {
+    if (remap) {
       fields.push(
         { type: 'slider', label: 'In min', path: 'remap.inMin', min: -1, max: 1, default: 0 },
         { type: 'slider', label: 'In max', path: 'remap.inMax', min: -1, max: 1, default: 1 },

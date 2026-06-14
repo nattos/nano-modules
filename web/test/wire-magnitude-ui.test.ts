@@ -11,7 +11,7 @@ const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 describe('wire magnitude UI', () => {
   jest.setTimeout(50000);
 
-  it('shows a Magnitude control; Remap appears only in absolute mode', async () => {
+  it('shows a Magnitude control; Scale + Remap are always available', async () => {
     page.removeAllListeners('console');
     await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
@@ -44,30 +44,34 @@ describe('wire magnitude UI', () => {
 
     const probe = () => page.evaluate(`(() => {
       function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
-      let magVal = null, hasMag = false, hasRemap = false;
+      let magVal = null, hasMag = false, hasScale = false, hasRemap = false, hasInMin = false;
       for (const el of walk(document)) {
         if (el.tagName === 'FIELD-TAB-BAR' && el.fieldPath === 'magnitude') {
           hasMag = true;
           const active = el.shadowRoot.querySelector('button[active]');
           magVal = active ? active.textContent.trim() : null;
         }
+        if (el.tagName === 'SCALAR-SLIDER' && el.fieldPath === 'scale') hasScale = true;
         if (el.tagName === 'FIELD-TOGGLE' && el.label === 'Remap') hasRemap = true;
+        if (el.tagName === 'SCALAR-SLIDER' && el.fieldPath === 'remap.inMin') hasInMin = true;
       }
-      return { hasMag, magVal, hasRemap };
-    })()`) as Promise<{ hasMag: boolean; magVal: string | null; hasRemap: boolean }>;
+      return { hasMag, magVal, hasScale, hasRemap, hasInMin };
+    })()`) as Promise<{ hasMag: boolean; magVal: string | null; hasScale: boolean; hasRemap: boolean; hasInMin: boolean }>;
 
-    // Default auto: control present, no manual Remap.
+    // Default auto: Magnitude + Scale + Remap toggle all present (Remap is NOT
+    // absolute-only — it shapes the raw input before the range adjustment).
     const a = await probe();
     expect(a.hasMag).toBe(true);
     expect(a.magVal).toBe('auto');
-    expect(a.hasRemap).toBe(false);
+    expect(a.hasScale).toBe(true);
+    expect(a.hasRemap).toBe(true);
+    expect(a.hasInMin).toBe(false);   // collapsed until enabled
 
-    // Switch to absolute → the manual Remap toggle appears, control reflects it.
-    await page.evaluate(`window.appController.updateWire('sk_wm','w0',{ magnitude:'absolute' })`);
+    // Enabling Remap (in auto mode) reveals the remap sliders.
+    await page.evaluate(`window.appController.updateWire('sk_wm','w0',{ mod:{ remap:{ inMin:0, inMax:1, outMin:0, outMax:1 } } })`);
     await new Promise(r => setTimeout(r, 400));
     const b = await probe();
-    expect(b.magVal).toBe('absolute');
-    expect(b.hasRemap).toBe(true);
+    expect(b.hasInMin).toBe(true);
 
     // Click the 'signed' tab → patches wire.magnitude.
     await page.evaluate(`(() => {
