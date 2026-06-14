@@ -154,6 +154,12 @@ export interface LocalState {
    * When a component calls defineSelectable() with this path, the selection activates.
    */
   queuedSelectionPath: string | null;
+  /**
+   * Currently selected wire id (separate from `selection` — wires aren't
+   * Selectables). A single click on a wire selects it (highlight); double-click
+   * breaks it. Cleared when another wire or any Selectable is selected.
+   */
+  selectedWireId: string | null;
 
   // --- Effect IDE / cross-cutting persisted preferences ---
   /** UI preferences persisted to IndexedDB (never undo/redo-able). */

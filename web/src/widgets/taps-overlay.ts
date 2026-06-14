@@ -76,10 +76,14 @@ export class TapsOverlay extends MobxLitElement {
       opacity: 0.5; stroke-dasharray: 5 4; stroke-linecap: round;
       animation: wire-flow 0.7s linear infinite; }
     .wire-arc.delayed { stroke: var(--app-text-color2, #999); opacity: 0.4; }
+    /* Selected wire: solid, bright, no marching ants — double-click to break. */
+    .wire-arc.selected { stroke: var(--app-hi-color1, #ff4500); opacity: 1;
+      stroke-width: 2.5; stroke-dasharray: none; animation: none; }
     @keyframes wire-flow { to { stroke-dashoffset: -9; } }
     /* Fat transparent companion that catches clicks (the visible arc is thin and
      * dashed). pointer-events:stroke works even though the parent svg is
-     * pointer-events:none (a descendant may opt back in). Click removes the wire. */
+     * pointer-events:none (a descendant may opt back in). Click selects the wire;
+     * double-click breaks it. */
     .wire-hit { fill: none; stroke: transparent; stroke-width: 14;
       pointer-events: stroke; cursor: pointer; }
     .wire-hit:hover + .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
@@ -182,14 +186,18 @@ export class TapsOverlay extends MobxLitElement {
     const conns = (this.showArcs && sketch) ? this.connections(sketch) : [];
     if (conns.length === 0 && !cardContent) return html`<svg class="lines"></svg>`;
 
+    const selectedWire = appState.local.selectedWireId;
     return html`
       <svg class="lines">
         ${conns.map(cn => {
-          // Each wire gets a fat click-to-remove hit path in front of the
-          // visible arc.
+          // Each wire has a fat companion hit path in front of the thin visible
+          // arc: single click SELECTS the wire (so it isn't deleted by accident),
+          // double click BREAKS it.
+          const sel = cn.wireId === selectedWire;
           const hit = svg`<path class="arc-path wire-hit" data-from=${cn.from} data-to=${cn.to}
-            @click=${() => appController.removeWire(this.sketchId, cn.wireId)}></path>`;
-          return [hit, svg`<path class="arc-path wire-arc ${cn.delayed ? 'delayed' : ''}"
+            @click=${() => appController.selectWire(cn.wireId)}
+            @dblclick=${() => appController.removeWire(this.sketchId, cn.wireId)}></path>`;
+          return [hit, svg`<path class="arc-path wire-arc ${cn.delayed ? 'delayed' : ''} ${sel ? 'selected' : ''}"
             data-conn-id=${cn.id} data-from=${cn.from} data-to=${cn.to}></path>`];
         })}
         <line class="connect-line" style="display:none"></line>

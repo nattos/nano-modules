@@ -940,6 +940,8 @@ export class AppController {
   /** Select a path. If the selectable is registered, activates immediately. Otherwise queues. */
   select(path: string | null) {
     runInAction(() => {
+      // Selecting anything (or clearing) drops a selected wire.
+      appState.local.selectedWireId = null;
       if (path === null) {
         appState.local.selection = null;
         appState.local.queuedSelectionPath = null;
@@ -953,6 +955,15 @@ export class AppController {
         appState.local.queuedSelectionPath = path;
         appState.local.selection = null;
       }
+    });
+  }
+
+  /** Select a wire (single click). Highlights it; double-click breaks it. */
+  selectWire(wireId: string) {
+    runInAction(() => {
+      appState.local.selection = null;
+      appState.local.queuedSelectionPath = null;
+      appState.local.selectedWireId = wireId;
     });
   }
 
@@ -1023,6 +1034,9 @@ export class AppController {
 
   /** Remove a wire by id. */
   removeWire(sketchId: string, wireId: string) {
+    if (appState.local.selectedWireId === wireId) {
+      runInAction(() => { appState.local.selectedWireId = null; });
+    }
     this.mutate('Remove wire', draft => {
       const sk = draft.sketches[sketchId];
       if (!sk?.wires) return;
