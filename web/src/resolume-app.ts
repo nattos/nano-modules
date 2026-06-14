@@ -296,12 +296,13 @@ function coerceSketch(remote: any): Sketch {
     // Accept either the canonical `chain` or any legacy `columns` blob;
     // normalizeSketchChains flattens whichever is present into `chain`.
     chain: Array.isArray(r.chain) ? r.chain : undefined,
-    columns: Array.isArray(r.columns) ? r.columns : [],
     wires: Array.isArray(r.wires) ? r.wires : undefined,
     instances: (r.instances && typeof r.instances === 'object' && !Array.isArray(r.instances))
                   ? r.instances
                   : undefined,
   };
+  // Carry any legacy multi-column blob through untyped so normalize can flatten it.
+  if (!draft.chain && Array.isArray(r.columns)) (draft as any).columns = r.columns;
   // Strip any legacy explicit I/O chain entries — texture input/output
   // are implicit in the current model — and flatten to the single `chain`.
   return normalizeSketchChains(draft);

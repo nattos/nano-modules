@@ -1150,7 +1150,7 @@ async function instantiateEffect(effectId: string) {
     if (!sketches.has(BUCKET_SKETCH_ID)) {
       sketches.set(BUCKET_SKETCH_ID, {
         anchor: null,
-        columns: [],
+        chain: [],
         instances: {},
       });
     }

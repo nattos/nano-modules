@@ -45,19 +45,16 @@ describe('selection unification', () => {
   });
 });
 
-// Two-module column so writer/reader resolution has distinct endpoints.
+// Two-module chain so writer/reader resolution has distinct endpoints.
 function seedWireSketch() {
   runInAction(() => {
     appState.database.sketches = {
       sk: {
         anchor: null,
-        columns: [{
-          name: 'c0',
-          chain: [
-            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
-            { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
-          ],
-        }],
+        chain: [
+          { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+          { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
+        ],
       },
     } as any;
   });

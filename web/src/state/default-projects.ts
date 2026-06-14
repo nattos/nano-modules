@@ -64,12 +64,9 @@ export function synthesizeDefaultProject(
   const instanceKey = `${effectId}@default`;
   return {
     anchor: null,
-    columns: [{
-      name: effect.name,
-      chain: [
-        { type: 'module', module_type: effectId, instance_key: instanceKey },
-      ],
-    }],
+    chain: [
+      { type: 'module', module_type: effectId, instance_key: instanceKey },
+    ],
     instances: {
       [instanceKey]: { module_type: effectId, state: {} },
     },

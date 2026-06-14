@@ -11,15 +11,13 @@ export const BUCKET_SKETCH_ID = '__unassigned__';
 export interface Sketch {
   anchor: string | null;
   /**
-   * The single linear processing stack. Vertical position encodes causality:
-   * a producer above a consumer feeds it same-frame; at/below means 1-frame
-   * delay (which also breaks cycles → feedback). Canonical;
-   * `normalizeSketchChains` populates it, flattening any legacy `columns`.
+   * The single linear processing stack — the canonical store. Vertical position
+   * encodes causality: a producer above a consumer feeds it same-frame; at/below
+   * means 1-frame delay (which also breaks cycles → feedback).
+   * `normalizeSketchChains` populates it (flattening any legacy `columns` blob
+   * found on old persisted/remote JSON).
    */
   chain?: ChainEntry[];
-  /** @deprecated legacy multi-column layout; flattened into `chain` by
-   *  `normalizeSketchChains`. Only present on old persisted sketches now. */
-  columns?: SketchColumn[];
   /**
    * Direct field-to-field connections. A wire
    * connects a producer's output field to a consumer's input field, addressed by
@@ -49,13 +47,11 @@ export interface InstanceState {
 }
 
 /**
- * A column is a linear chain of processing steps.
- *
- * Every column has an *implicit* texture input on top and an *implicit*
- * texture output on the bottom; they are NOT stored in `chain`. The
- * chain holds only the modules in between. Older sketches that
- * persisted explicit `texture_input` / `texture_output` chain entries
- * are normalised on load (see `normalizeSketch`).
+ * A render-time view model over a sketch's single `chain` — NOT a stored shape.
+ * The old multi-column data model was collapsed into one linear stack; the
+ * `column-group` widget still renders against this `{ name, chain }` view, which
+ * `synthesizes from `sketchChain(sketch)`. Implicit texture input/output wrap
+ * the chain (they are not stored entries).
  */
 export interface SketchColumn {
   name: string;
@@ -98,31 +94,34 @@ export interface ParamSmoothing {
   duration: number;
 }
 
-/**
- * Strip any legacy `texture_input` / `texture_output` chain entries so a
- * sketch matches the implicit-I/O model. Idempotent. Called on every
- * sketch that enters `appState.database` from an external source —
- * IndexedDB load, remote NanoBarrel snapshot, fixture creation, etc.
- *
- * Mutates the column chains in place if `inPlace` is true; otherwise
- * returns a shallow-cloned sketch with cleaned chains.
- */
-export function normalizeSketchChains(sketch: Sketch): Sketch {
-  const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
-  // `chain` is canonical. `columns` is kept during the transition because the
-  // controller/UI still read it; the worker re-normalizes on every ingest so the
-  // executor's `chain` stays fresh after a columns mutation.
-  return { ...sketch, chain };
+/** Flatten a legacy multi-column blob (old persisted/remote JSON) into the flat
+ *  chain. `columns` is no longer part of the `Sketch` type, so we read it off
+ *  the untyped value. */
+function legacyColumnsChain(sketch: Sketch): ChainEntry[] {
+  const columns = (sketch as any).columns as { chain?: ChainEntry[] }[] | undefined;
+  return Array.isArray(columns) ? columns.flatMap(c => c?.chain ?? []) : [];
 }
 
 /**
- * The canonical single processing stack, flattening any legacy multi-column
- * layout. Use this instead of `sketch.columns` / `sketch.chain` directly so old
- * (columns-based) and new (chain-based) sketches both work.
+ * Canonicalize a sketch into the single-`chain` model: flatten any legacy
+ * `columns` and strip non-module entries (old explicit `texture_input` /
+ * `texture_output`; texture I/O is implicit now). Idempotent. Called on every
+ * sketch that enters `appState.database` from an external source — IndexedDB
+ * load, remote NanoBarrel snapshot, fixture creation, etc.
+ */
+export function normalizeSketchChains(sketch: Sketch): Sketch {
+  const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
+  const { columns, ...rest } = sketch as any;   // drop any legacy columns blob
+  return { ...rest, chain };
+}
+
+/**
+ * The canonical single processing stack. Reads `sketch.chain`, falling back to
+ * flattening a legacy `columns` blob so old persisted/remote sketches still load.
  */
 export function sketchChain(sketch: Sketch): ChainEntry[] {
   if (Array.isArray(sketch.chain)) return sketch.chain;
-  return (sketch.columns ?? []).flatMap(c => c.chain ?? []);
+  return legacyColumnsChain(sketch);
 }
 
 /**
@@ -132,7 +131,7 @@ export function sketchChain(sketch: Sketch): ChainEntry[] {
  */
 export function ensureChain(sketch: Sketch): ChainEntry[] {
   if (!Array.isArray(sketch.chain)) {
-    sketch.chain = (sketch.columns ?? []).flatMap(c => c.chain ?? []);
+    sketch.chain = legacyColumnsChain(sketch);
   }
   return sketch.chain;
 }
