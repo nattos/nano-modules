@@ -18,6 +18,7 @@ import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry } from '../sketch-types';
+import { sketchChain, chainEntryAt } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
@@ -635,11 +636,13 @@ export class ColumnGroup extends MobxLitElement {
     }
 
     const sketch = appState.database.sketches[this.sketchId];
-    if (!sketch || this.colIdx < 0 || this.colIdx >= sketch.columns.length) {
+    if (!sketch || this.colIdx !== 0) {
       return nothing;
     }
 
-    const column = sketch.columns[this.colIdx];
+    // Single linear stack: synthesize a column view over the canonical chain so
+    // the rest of this widget (built around SketchColumn) keeps working.
+    const column: SketchColumn = { name: 'main', chain: sketchChain(sketch) };
 
     // Touch layout generation for reactive updates
     const _layoutGen = this.layoutManager.generation;
@@ -821,7 +824,7 @@ export class ColumnGroup extends MobxLitElement {
     if (!tappingMode) return;
     // Non-destructive: select the output field (no tap created). Connect via badges.
     const key = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
-    const entry = appState.database.sketches[this.sketchId]?.columns[this.colIdx]?.chain[chainIdx];
+    const entry = chainEntryAt(appState.database.sketches[this.sketchId], chainIdx);
     if (entry?.type === 'module') this.registerFieldSelectable(key, chainIdx, entry, fieldPath, true);
     appController.selectField(key);
   }
@@ -1701,7 +1704,7 @@ export class ColumnGroup extends MobxLitElement {
         : wires.map(w => {
             const isSrc = w.src.instanceKey === myKey && w.src.field === fieldPath;
             const other = isSrc ? w.dest : w.src;
-            const otherEntry = sketch?.columns.flatMap(c => c.chain)
+            const otherEntry = (sketch ? sketchChain(sketch) : [])
               .find(e => e.type === 'module' && e.instance_key === other.instanceKey) as ModuleEntry | undefined;
             const otherName = otherEntry ? shortName(otherEntry.module_type) : other.instanceKey;
             return html`
@@ -1731,7 +1734,7 @@ export class ColumnGroup extends MobxLitElement {
    */
   private registerChainMarkerSelectable(path: string, label: string, side: 'input' | 'output') {
     const sketch = appState.database.sketches[this.sketchId];
-    const chainLen = sketch?.columns?.[this.colIdx]?.chain?.length ?? 0;
+    const chainLen = sketch ? sketchChain(sketch).length : 0;
     const chainIdx = side === 'input' ? 0 : Math.max(0, chainLen - 1);
     const traceId = `trace_${this.sketchId}/${this.colIdx}/${side}`;
     const target: TracePoint['target'] = {

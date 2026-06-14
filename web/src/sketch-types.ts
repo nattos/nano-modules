@@ -17,9 +17,9 @@ export interface Sketch {
    * `normalizeSketchChains` populates it, flattening any legacy `columns`.
    */
   chain?: ChainEntry[];
-  /** @deprecated legacy multi-column layout; flattened into `chain`. Still
-   *  required until the controller/UI finish migrating to `chain`. */
-  columns: SketchColumn[];
+  /** @deprecated legacy multi-column layout; flattened into `chain` by
+   *  `normalizeSketchChains`. Only present on old persisted sketches now. */
+  columns?: SketchColumn[];
   /**
    * Direct field-to-field connections. A wire
    * connects a producer's output field to a consumer's input field, addressed by
@@ -123,6 +123,23 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
 export function sketchChain(sketch: Sketch): ChainEntry[] {
   if (Array.isArray(sketch.chain)) return sketch.chain;
   return (sketch.columns ?? []).flatMap(c => c.chain ?? []);
+}
+
+/**
+ * Like {@link sketchChain} but for mutation: ensures `sketch.chain` exists
+ * (seeding it from any legacy `columns`) and returns the live array so callers
+ * can `push`/`splice` into the canonical stack. Use inside `mutate()` recipes.
+ */
+export function ensureChain(sketch: Sketch): ChainEntry[] {
+  if (!Array.isArray(sketch.chain)) {
+    sketch.chain = (sketch.columns ?? []).flatMap(c => c.chain ?? []);
+  }
+  return sketch.chain;
+}
+
+/** Read the chain entry at `chainIdx`, tolerating an undefined sketch. */
+export function chainEntryAt(sketch: Sketch | undefined, chainIdx: number): ChainEntry | undefined {
+  return sketch ? sketchChain(sketch)[chainIdx] : undefined;
 }
 
 // --- Wire modulation (mod / combine) ---

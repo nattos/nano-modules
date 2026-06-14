@@ -16,7 +16,7 @@ import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
 import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
-import { BUCKET_SKETCH_ID, normalizeSketchChains, type Sketch } from './sketch-types';
+import { BUCKET_SKETCH_ID, normalizeSketchChains, sketchChain, type Sketch } from './sketch-types';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -188,7 +188,7 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'changeInstanceType': {
       const sketch = sketches.get(cmd.sketchId);
       if (sketch && sketchExecutor) {
-        const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
+        const entry = sketchChain(sketch)[cmd.chainIdx];
         if (entry?.type === 'module') {
           // Update sketch data
           entry.module_type = cmd.newModuleType;
@@ -235,7 +235,7 @@ async function handleCommand(cmd: WorkerCommand) {
       if (barrelMode) break;
       const sketch = sketches.get(cmd.sketchId);
       if (sketch) {
-        const entry = sketch.columns[cmd.colIdx]?.chain[cmd.chainIdx];
+        const entry = sketchChain(sketch)[cmd.chainIdx];
         if (entry?.type === 'module') {
           // Update the instance state in the sketch (if instances map exists)
           if (sketch.instances?.[entry.instance_key]) {
@@ -325,8 +325,7 @@ async function handleCommand(cmd: WorkerCommand) {
       const instanceInfo: Record<string, any> = {};
       if (sketchExecutor) {
         for (const [id, sketch] of sketches) {
-          for (const col of sketch.columns) {
-            for (const entry of col.chain) {
+          for (const entry of sketchChain(sketch)) {
               if (entry.type === 'module') {
                 const loaded = sketchExecutor.getInstance(entry.instance_key);
                 instanceInfo[entry.instance_key] = {
@@ -337,7 +336,6 @@ async function handleCommand(cmd: WorkerCommand) {
                 };
               }
             }
-          }
         }
       }
 
@@ -579,13 +577,11 @@ async function simulateTick(dt: number) {
   // 1. Collect instance keys used by sketch chains so we don't double-render them
   const sketchInstanceKeys = new Set<string>();
   for (const [, sketch] of sketches) {
-    for (const col of sketch.columns) {
-      for (const entry of col.chain) {
+    for (const entry of sketchChain(sketch)) {
         if (entry.type === 'module') {
           sketchInstanceKeys.add(entry.instance_key);
         }
       }
-    }
   }
 
   // 2. Register real modules into the sketch executor so it reuses them
@@ -943,15 +939,13 @@ async function reloadWasmModule(wasmUrl: string) {
 
   if (sketchExecutor) {
     for (const [, sketch] of sketches) {
-      for (const col of sketch.columns) {
-        for (const entry of col.chain) {
+      for (const entry of sketchChain(sketch)) {
           if (entry.type === 'module' && matchesReloadedModule(entry.module_type)) {
             sketchExecutor.invalidateInstance(entry.instance_key);
             invalidatedCount++;
           }
         }
       }
-    }
   }
 
   // realModules holds direct-instantiation hosts (instantiateEffect
@@ -986,7 +980,7 @@ async function reloadWasmModule(wasmUrl: string) {
   if (invalidatedCount === 0 && realRebuilt === 0) {
     console.warn(`[wasm-hmr] reload of ${moduleType} matched 0 live instances. ` +
                  `If rendering looks unchanged, verify your sketch's module_type ` +
-                 `(${[...sketches.values()].flatMap(s => s.columns).flatMap(c => c.chain)
+                 `(${[...sketches.values()].flatMap(s => sketchChain(s))
                      .filter(e => e.type === 'module').map((e: any) => e.module_type).join(', ') || 'none'}) ` +
                  `against the reloaded effect ids (${[...effectIds].join(', ')}).`);
   } else {
@@ -1192,13 +1186,11 @@ function removeInstancesFromBucket(sketch: Sketch) {
   if (!bucket?.instances) return;
 
   // Remove any instance that's referenced in this sketch's chain entries
-  for (const col of sketch.columns) {
-    for (const entry of col.chain) {
+  for (const entry of sketchChain(sketch)) {
       if (entry.type === 'module') {
         delete bucket.instances[entry.instance_key];
       }
     }
-  }
   // Also remove any instance in this sketch's instances map
   if (sketch.instances) {
     for (const key of Object.keys(sketch.instances)) {

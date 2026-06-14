@@ -15,7 +15,7 @@ import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selec
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, ChainEntry } from '../sketch-types';
-import { normalizeSketchChains } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain } from '../sketch-types';
 import {
   isDefaultProjectId,
   isUserProjectId,
@@ -186,35 +186,31 @@ export class AppController {
 
     const instances: Record<string, import('../sketch-types').InstanceState> = {};
 
-    const columns = outInstances.map(out => {
-      // Texture I/O are implicit (always wrapped around the chain by
-      // the executor + the column-group widget); only the modules in
-      // between go into `chain`.
-      const chain: ChainEntry[] = [];
-      if (inInstances.length > 0) {
-        const inKey = inInstances[0].pluginKey;
-        chain.push({
-          type: 'module',
-          module_type: inInstances[0].moduleType,
-          instance_key: inKey,
-        });
-        instances[inKey] = { module_type: inInstances[0].moduleType, state: {} };
-      }
+    // Texture I/O are implicit (always wrapped around the chain by the executor
+    // + the column-group widget); only the modules in between go into `chain`.
+    // The single linear stack holds an optional input module followed by every
+    // output module.
+    const chain: ChainEntry[] = [];
+    if (inInstances.length > 0) {
+      const inKey = inInstances[0].pluginKey;
+      chain.push({
+        type: 'module',
+        module_type: inInstances[0].moduleType,
+        instance_key: inKey,
+      });
+      instances[inKey] = { module_type: inInstances[0].moduleType, state: {} };
+    }
+    for (const out of outInstances) {
       chain.push({
         type: 'module',
         module_type: out.moduleType,
         instance_key: out.pluginKey,
       });
       instances[out.pluginKey] = { module_type: out.moduleType, state: {} };
-      return { name: shortName(out.moduleType), chain };
-    });
-
-    if (columns.length === 0) {
-      columns.push({ name: 'main', chain: [] });
     }
 
     const anchor = outInstances[0]?.pluginKey ?? inInstances[0]?.pluginKey ?? null;
-    const sketch: Sketch = { anchor, columns, instances };
+    const sketch: Sketch = { anchor, chain, instances };
 
     this.mutate(`Create sketch ${sketchId}`, draft => {
       draft.sketches[sketchId] = sketch;
@@ -258,9 +254,7 @@ export class AppController {
     this.mutate(`Add ${shortName(moduleType)}`, draft => {
       const sketch = draft.sketches[sketchId];
       if (!sketch) return;
-      const column = sketch.columns[colIdx];
-      if (!column) return;
-      column.chain.splice(insertIdx, 0, {
+      ensureChain(sketch).splice(insertIdx, 0, {
         type: 'module',
         module_type: moduleType,
         instance_key: instanceKey,
@@ -276,7 +270,7 @@ export class AppController {
     this.mutate(`Change to ${shortName(newModuleType)}`, draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
-      const entry = sk.columns[colIdx]?.chain[chainIdx];
+      const entry = sketchChain(sk)[chainIdx];
       if (!entry || entry.type !== 'module') return;
       entry.module_type = newModuleType;
       sk.instances = sk.instances ?? {};
@@ -292,7 +286,7 @@ export class AppController {
     return (draft: DatabaseState) => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
-      const entry = sk.columns[colIdx]?.chain[chainIdx];
+      const entry = sketchChain(sk)[chainIdx];
       if (!entry || entry.type !== 'module') return;
       entry.module_type = newModuleType;
       sk.instances = sk.instances ?? {};
@@ -324,11 +318,10 @@ export class AppController {
     this.mutate('Remove effect', draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
-      const column = sk.columns[colIdx];
-      if (!column) return;
-      const entry = column.chain[chainIdx];
+      const chain = ensureChain(sk);
+      const entry = chain[chainIdx];
       if (entry?.type === 'module') {
-        column.chain.splice(chainIdx, 1);
+        chain.splice(chainIdx, 1);
         // Clean up instance state
         if (sk.instances) {
           delete sk.instances[entry.instance_key];
@@ -340,7 +333,7 @@ export class AppController {
   setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue) {
     // Find the instance key for this chain entry
     const sketch = appState.database.sketches[sketchId];
-    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
     if (!entry || entry.type !== 'module') return;
 
     this.mutate(`Set param ${paramKey}`, draft => {
@@ -369,7 +362,7 @@ export class AppController {
   /** Begin a continuous param edit (slider drag). No undo points during drag. */
   beginSetEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): LongEdit {
     const sketch = appState.database.sketches[sketchId];
-    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
     const edit = this.history.beginLongEdit(
       `Set ${paramKey}`,
@@ -382,7 +375,7 @@ export class AppController {
   /** Update a continuous param edit (slider drag in progress). */
   updateSetEffectParam(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue) {
     const sketch = appState.database.sketches[sketchId];
-    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
     edit.update(this.setParamRecipe(sketchId, instanceKey, paramKey, value));
     this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
@@ -402,7 +395,7 @@ export class AppController {
   /** Begin a continuous edit over multiple params as one undo/long-edit. */
   beginSetEffectParams(sketchId: string, colIdx: number, chainIdx: number, values: Record<string, ParamValue>): LongEdit {
     const sketch = appState.database.sketches[sketchId];
-    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
     const edit = this.history.beginLongEdit('Set params', this.setParamsRecipe(sketchId, instanceKey, values));
     for (const k in values) this.engine?.setParam(sketchId, colIdx, chainIdx, k, values[k]);
@@ -412,7 +405,7 @@ export class AppController {
   /** Update a multi-param continuous edit (XY-pad drag in progress). */
   updateSetEffectParams(edit: LongEdit, sketchId: string, colIdx: number, chainIdx: number, values: Record<string, ParamValue>) {
     const sketch = appState.database.sketches[sketchId];
-    const entry = sketch?.columns[colIdx]?.chain[chainIdx];
+    const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
     edit.update(this.setParamsRecipe(sketchId, instanceKey, values));
     for (const k in values) this.engine?.setParam(sketchId, colIdx, chainIdx, k, values[k]);
@@ -541,7 +534,7 @@ export class AppController {
           }
           continue;
         }
-        const moduleEntry = sk.columns?.[0]?.chain?.find(e => e.type === 'module');
+        const moduleEntry = sketchChain(sk).find(e => e.type === 'module');
         if (moduleEntry?.type !== 'module') continue;
         const newId = defaultProjectIdForEffect(moduleEntry.module_type);
         if (appState.database.sketches[newId]) continue;
@@ -945,8 +938,8 @@ export class AppController {
     const sketchId = writer.sketchId;
     const sketch = appState.database.sketches[sketchId];
     if (!sketch) return;
-    const writerEntry = sketch.columns[writer.colIdx]?.chain[writer.chainIdx];
-    const readerEntry = sketch.columns[reader.colIdx]?.chain[reader.chainIdx];
+    const writerEntry = sketchChain(sketch)[writer.chainIdx];
+    const readerEntry = sketchChain(sketch)[reader.chainIdx];
     if (writerEntry?.type !== 'module' || readerEntry?.type !== 'module') return;
     const srcKey = writerEntry.instance_key;
     const destKey = readerEntry.instance_key;
@@ -982,7 +975,8 @@ export class AppController {
   private fieldSmoothingRecipe(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string,
                                patch: Partial<import('../sketch-types').ParamSmoothing>) {
     return (draft: DatabaseState) => {
-      const entry = draft.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      const sk = draft.sketches[sketchId];
+      const entry = sk ? sketchChain(sk)[chainIdx] : undefined;
       if (entry?.type !== 'module') return;
       entry.fieldOptions ??= {};
       const fo = (entry.fieldOptions[fieldPath] ??= {});

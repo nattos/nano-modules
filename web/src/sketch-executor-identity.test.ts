@@ -126,14 +126,11 @@ function makeExecutor(modulesByKey: Map<string, FakeModule>): {
 function makeSketch(instanceKeys: string[]): Sketch {
   return {
     anchor: 'generator.test@0',
-    columns: [{
-      name: 'main',
-      chain: instanceKeys.map((key) => ({
-        type: 'module' as const,
-        module_type: 'video.test',
-        instance_key: key,
-      })),
-    }],
+    chain: instanceKeys.map((key) => ({
+      type: 'module' as const,
+      module_type: 'video.test',
+      instance_key: key,
+    })),
   };
 }
 

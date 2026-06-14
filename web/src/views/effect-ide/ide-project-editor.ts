@@ -25,6 +25,7 @@ import type { ColumnHost } from '../../widgets/columns-view';
 import type { ColumnGroupCallbacks, ColumnGroup } from '../../widgets/column-group';
 import type { FieldBinding } from '../../widgets/field-editor';
 import { editorRegistry } from '../../editor-registry';
+import { ensureChain, chainEntryAt } from '../../sketch-types';
 import { isTypingInEditable } from '../../utils/keyboard';
 import { PointerDragOp } from '../../utils/pointer-drag-op';
 
@@ -170,22 +171,23 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     if (!this.dragSketchId || !this.dragHoverTarget) { this.cleanupDrag(); return; }
     const sketchId = this.dragSketchId;
     const sketch = appState.database.sketches[sketchId];
-    const sourceEntry = sketch?.columns[this.dragSourceCol]?.chain[this.dragSourceIdx];
+    const sourceEntry = chainEntryAt(sketch, this.dragSourceIdx);
     if (!sketch || !sourceEntry || sourceEntry.type !== 'module') { this.cleanupDrag(); return; }
 
-    const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = this.dragHoverTarget;
-    const sourceCol = this.dragSourceCol;
+    const { insertIdx: targetInsertIdx } = this.dragHoverTarget;
     const sourceIdx = this.dragSourceIdx;
     this.cleanupDrag();
 
+    // Single linear stack: reorder within the one chain.
     appController.mutate('Move effect', draft => {
       const sk = draft.sketches[sketchId];
-      const srcCol = sk.columns[sourceCol];
-      const dstCol = sk.columns[targetColIdx] ?? srcCol;
-      const [removed] = srcCol.chain.splice(sourceIdx, 1);
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      const [removed] = chain.splice(sourceIdx, 1);
+      if (!removed) return;
       let adjustedIdx = targetInsertIdx;
-      if (sourceCol === targetColIdx && targetInsertIdx > sourceIdx) adjustedIdx--;
-      dstCol.chain.splice(adjustedIdx, 0, removed);
+      if (targetInsertIdx > sourceIdx) adjustedIdx--;
+      chain.splice(adjustedIdx, 0, removed);
     });
   }
 
@@ -269,7 +271,7 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
 
     if (e.key === '0') {
       // Toggle the selected device on/off (bypass), mirroring the header light.
-      const entry = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
       if (!entry || entry.type !== 'module') return;
       const st = appState.database.sketches[sketchId]
         ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;

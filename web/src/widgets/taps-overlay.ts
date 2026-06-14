@@ -18,6 +18,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { Sketch } from '../sketch-types';
+import { sketchChain } from '../sketch-types';
 import { layoutFloaters, type Floater } from './floating-layout';
 import { tapsConnect } from './taps-connect';
 import './spark-chart';
@@ -148,12 +149,14 @@ export class TapsOverlay extends MobxLitElement {
     const out: { id: string; from: string; to: string; delayed: boolean; wireId: string }[] = [];
 
     // instanceKey → "col/chain" + global stack position (for delay inference).
+    // Single linear stack now → col index is always 0 (kept in the key to match
+    // the DOM hit-box `data-col-idx`).
     const loc = new Map<string, string>();
     const pos = new Map<string, number>();
     let order = 0;
-    sketch.columns.forEach((c, ci) => c.chain.forEach((e, chi) => {
-      if (e.type === 'module') { loc.set(e.instance_key, `${ci}/${chi}`); pos.set(e.instance_key, order++); }
-    }));
+    sketchChain(sketch).forEach((e, chi) => {
+      if (e.type === 'module') { loc.set(e.instance_key, `0/${chi}`); pos.set(e.instance_key, order++); }
+    });
 
     for (const wire of sketch.wires ?? []) {
       const sl = loc.get(wire.src.instanceKey), dl = loc.get(wire.dest.instanceKey);

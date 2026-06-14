@@ -18,6 +18,7 @@
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
+import { chainEntryAt } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
 interface ConnectState {
@@ -54,7 +55,7 @@ function hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
   const chainIdx = parseInt(hit.dataset.chainIdx ?? '-1', 10);
   const fieldPath = hit.dataset.fieldPath ?? '';
   if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
-  const entry = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+  const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
   if (entry?.type !== 'module') return null;
   const schemaDef = appState.local.plugins.find(p => p.id === entry.module_type)?.schema?.[fieldPath] ?? null;
   const r = hit.getBoundingClientRect();
@@ -181,7 +182,7 @@ class TapsConnect {
     const [sketchId, colStr, chainStr, ...fp] = key.split('/');
     const colIdx = +colStr, chainIdx = +chainStr;
     const fieldPath = fp.join('/');
-    const entry = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+    const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
     if (entry?.type !== 'module') return null;
     const schemaDef = appState.local.plugins.find(p => p.id === entry.module_type)?.schema?.[fieldPath] ?? null;
     const info: FieldConnectInfo = {

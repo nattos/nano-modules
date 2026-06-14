@@ -137,8 +137,7 @@ export class IdeExplorer extends MobxLitElement {
       ${userIds.length === 0 ? nothing : html`
         <div class="section-header">User Projects</div>
         ${userIds.map(id => {
-          const sk = sketches[id];
-          const name = sk?.columns?.[0]?.name ?? id;
+          const name = id;
           return html`
             <div class="row" ?selected=${selectedId === id}
               @click=${() => this.openProject(id)}>

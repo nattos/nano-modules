@@ -283,9 +283,9 @@ function connectBarrel(url: string) {
  * shape. The barrel's persisted state is just opaque JSON from the
  * plugin's perspective — early bring-up sometimes leaves arbitrary
  * payloads in there (eg the `{hello:'world'}` round-trip test) that
- * would crash the edit tab's `sketch.columns.length` reads. We bridge
- * the gap by filling in defaults for any missing fields; the editor
- * then renders an empty sketch instead of throwing.
+ * would crash the edit tab's chain reads. We bridge the gap by filling
+ * in defaults for any missing fields; the editor then renders an empty
+ * sketch instead of throwing.
  */
 function coerceSketch(remote: any): Sketch {
   const r = (remote && typeof remote === 'object' && !Array.isArray(remote))
@@ -293,23 +293,17 @@ function coerceSketch(remote: any): Sketch {
               : {};
   const draft: Sketch = {
     anchor: typeof r.anchor === 'string' ? r.anchor : null,
+    // Accept either the canonical `chain` or any legacy `columns` blob;
+    // normalizeSketchChains flattens whichever is present into `chain`.
+    chain: Array.isArray(r.chain) ? r.chain : undefined,
     columns: Array.isArray(r.columns) ? r.columns : [],
     wires: Array.isArray(r.wires) ? r.wires : undefined,
     instances: (r.instances && typeof r.instances === 'object' && !Array.isArray(r.instances))
                   ? r.instances
                   : undefined,
   };
-  // If the remote blob didn't supply any real columns (eg the persisted
-  // value is `{}` or earlier round-trip garbage like `{hello:"world"}`),
-  // seed one empty Column 1 so the editor shows a real column with
-  // implicit input/output markers and a drop zone between them. Without
-  // this the edit tab renders only the EXTRA_COLUMNS placeholder slots
-  // ("Drop effects here") which have no I/O cards by design.
-  if (draft.columns.length === 0) {
-    draft.columns = [{ name: 'Column 1', chain: [] }];
-  }
   // Strip any legacy explicit I/O chain entries — texture input/output
-  // are implicit in the current model.
+  // are implicit in the current model — and flatten to the single `chain`.
   return normalizeSketchChains(draft);
 }
 
@@ -333,32 +327,25 @@ function createDebugParticleSketch() {
 
   const sketch: Sketch = {
     anchor: null,
-    columns: [{
-      name: 'Particles',
-      rails: [{
-        id: 'particles_rail',
-        name: 'Particle Data',
-        dataType: { kind: 'struct', schema: PARTICLES_SCHEMA },
-      }],
-      chain: [
-        {
-          type: 'module',
-          module_type: 'data.particles_emitter',
-          instance_key: emitterKey,
-          taps: [
-            { railId: 'particles_rail', fieldPath: 'particles_out', direction: 'write' },
-          ],
-        },
-        {
-          type: 'module',
-          module_type: 'video.particles_renderer',
-          instance_key: rendererKey,
-          taps: [
-            { railId: 'particles_rail', fieldPath: 'particles_in', direction: 'read' },
-          ],
-        },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'data.particles_emitter',
+        instance_key: emitterKey,
+      },
+      {
+        type: 'module',
+        module_type: 'video.particles_renderer',
+        instance_key: rendererKey,
+      },
+    ],
+    wires: [
+      {
+        id: 'particles_wire',
+        src: { instanceKey: emitterKey, field: 'particles_out' },
+        dest: { instanceKey: rendererKey, field: 'particles_in' },
+      },
+    ],
     instances: {
       [emitterKey]: {
         module_type: 'data.particles_emitter',

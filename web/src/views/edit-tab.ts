@@ -18,6 +18,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { Sketch } from '../sketch-types';
+import { sketchChain, ensureChain, chainEntryAt } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
 import type { FieldBinding } from '../widgets/field-editor';
@@ -63,7 +64,8 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     if (!sketchId) return 0;
     const sketch = appState.database.sketches[sketchId];
     if (!sketch) return 0;
-    return sketch.columns.length + EXTRA_COLUMNS;
+    // Single linear stack: always exactly one real column (index 0).
+    return 1 + EXTRA_COLUMNS;
   }
 
   connectedCallback() {
@@ -121,7 +123,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     if (e.key === '0') {
       // Toggle the selected device on/off (bypass), mirroring the header light.
-      const entry = appState.database.sketches[sketchId]?.columns[colIdx]?.chain[chainIdx];
+      const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
       if (!entry || entry.type !== 'module') return;
       const st = appState.database.sketches[sketchId]
         ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
@@ -287,8 +289,8 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
           <span class="inspector-field-value">${sketchId}</span>
         </div>
         <div class="inspector-field">
-          <span class="inspector-field-label">Columns</span>
-          <span class="inspector-field-value">${sketch.columns.length}</span>
+          <span class="inspector-field-label">Chain</span>
+          <span class="inspector-field-value">${sketchChain(sketch).length}</span>
         </div>
         <div class="inspector-field">
           <span class="inspector-field-label">Anchor</span>
@@ -329,7 +331,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     const sketchId = appState.local.editingSketchId ?? '';
     const sketch = appState.database.sketches[sketchId];
-    const isPlaceholder = !sketch || index >= sketch.columns.length;
+    const isPlaceholder = !sketch || index >= 1;
 
     const colGroup = document.createElement('column-group') as any;
     colGroup.colIdx = index;
@@ -523,7 +525,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       return;
     }
 
-    const sourceEntry = sketch.columns[this.dragSourceCol]?.chain[this.dragSourceIdx];
+    const sourceEntry = chainEntryAt(sketch, this.dragSourceIdx);
     if (!sourceEntry || sourceEntry.type !== 'module') {
       this.cleanupDrag();
       return;
@@ -531,69 +533,29 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     // Capture all drag state before cleanup clears it
     const hoverTarget = this.dragHoverTarget;
-    const sourceCol = this.dragSourceCol;
     const sourceIdx = this.dragSourceIdx;
-    const prevColumnCount = sketch.columns.length;
 
     // Clean up drag visual state first (markers, dragging attribute)
     this.cleanupDrag();
 
-    // Track target column(s) so we can auto-wire struct inputs post-mutation.
-    const affectedCols = new Set<number>([sourceCol]);
+    // Single linear stack: every drop is a reorder within the one chain. A
+    // `zone` drop inserts at the zone index; a `placeholder` drop (the extra
+    // drag-out columns) just moves the entry to the bottom of the stack.
+    appController.mutate('Move effect', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      const [removed] = chain.splice(sourceIdx, 1);
+      if (!removed) return;
 
-    // Now perform the mutation — MobX will re-render affected column-groups
-    if (hoverTarget.type === 'zone') {
-      const { colIdx: targetColIdx, insertIdx: targetInsertIdx } = hoverTarget;
-      affectedCols.add(targetColIdx);
-
-      appController.mutate('Move effect', draft => {
-        const sk = draft.sketches[sketchId];
-        const srcCol = sk.columns[sourceCol];
-        const dstCol = sk.columns[targetColIdx] ?? srcCol;
-
-        const [removed] = srcCol.chain.splice(sourceIdx, 1);
-
-        let adjustedIdx = targetInsertIdx;
-        if (sourceCol === targetColIdx && targetInsertIdx > sourceIdx) {
-          adjustedIdx--;
-        }
-
-        dstCol.chain.splice(adjustedIdx, 0, removed);
-      });
-
-    } else if (hoverTarget.type === 'placeholder') {
-      const colIdx = hoverTarget.colIdx;
-      affectedCols.add(colIdx);
-
-      appController.mutate('Move to new column', draft => {
-        const sk = draft.sketches[sketchId];
-        const [removed] = sk.columns[sourceCol].chain.splice(sourceIdx, 1);
-
-        while (sk.columns.length <= colIdx) {
-          sk.columns.push({
-            name: `Column ${sk.columns.length + 1}`,
-            chain: [],
-          });
-        }
-
-        // Implicit output marker is below the chain; new modules append
-        // to the bottom of `chain`.
-        const targetChain = sk.columns[colIdx].chain;
-        targetChain.push(removed);
-      });
-    }
-
-    void affectedCols; // implicit struct auto-connect is computed at sync time
-
-    // If the column count changed (placeholder drop created columns),
-    // invalidate cache for the new indices and notify columns-view
-    const newSketch = appState.database.sketches[sketchId];
-    if (newSketch && newSketch.columns.length !== prevColumnCount) {
-      // Invalidate all cached columns since indices may have shifted
-      this.columnCache.clear();
-      const columnsView = this.renderRoot.querySelector('columns-view') as any;
-      columnsView?.notifyColumnCountChanged?.();
-    }
+      if (hoverTarget.type === 'zone') {
+        let adjustedIdx = hoverTarget.insertIdx;
+        if (hoverTarget.insertIdx > sourceIdx) adjustedIdx--;
+        chain.splice(adjustedIdx, 0, removed);
+      } else {
+        chain.push(removed);
+      }
+    });
   }
 
   private cleanupDrag() {

@@ -349,8 +349,9 @@ describe('Engine Worker E2E', () => {
       const result = await runEngineTest({
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
-          // Trace the BC module's output (chainIdx=1 in the chain)
-          { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_ce', colIdx: 0, chainIdx: 1, side: 'output' } },
+          // Trace the BC module's output. Texture I/O are implicit (stripped on
+          // ingest), so the single module sits at chainIdx 0 in the flattened chain.
+          { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_ce', colIdx: 0, chainIdx: 0, side: 'output' } },
           { id: 'sketch_out', target: { type: 'sketch_output', sketchId: 'sk_ce' } },
         ],
         commands: [
@@ -397,8 +398,8 @@ describe('Engine Worker E2E', () => {
       const result = await runEngineTest({
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
-          { id: 'bc_in', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 1, side: 'input' } },
-          { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 1, side: 'output' } },
+          { id: 'bc_in', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 0, side: 'input' } },
+          { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 0, side: 'output' } },
         ],
         commands: [
           {
@@ -656,7 +657,7 @@ describe('Engine Worker E2E', () => {
               ]},
               // Simulate setEffectParam: mutate → updateSketch, then setParam
               { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol0WithParams },
-              { type: 'setParam', sketchId: 'sk_sp', colIdx: 0, chainIdx: 1, paramKey: 'contrast', value: 0.0 },
+              { type: 'setParam', sketchId: 'sk_sp', colIdx: 0, chainIdx: 0, paramKey: 'contrast', value: 0.0 },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],

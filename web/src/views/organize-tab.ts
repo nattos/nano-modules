@@ -7,6 +7,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
+import { sketchChain } from '../sketch-types';
 
 @customElement('organize-tab')
 export class OrganizeTab extends MobxLitElement {
@@ -83,7 +84,7 @@ export class OrganizeTab extends MobxLitElement {
                     <div class="sketch-card-name">${id}</div>
                     <div class="sketch-card-info">
                       Anchor: ${s.anchor ?? 'none'}
-                      · ${s.columns.length} column${s.columns.length !== 1 ? 's' : ''}
+                      · ${sketchChain(s).length} entr${sketchChain(s).length !== 1 ? 'ies' : 'y'}
                     </div>
                   </div>
                 `;
@@ -97,8 +98,7 @@ export class OrganizeTab extends MobxLitElement {
             <div class="section-header">Sketch: ${selectedId}</div>
             <div class="summary">
               <div>Anchor: ${selected.anchor ?? 'none'}</div>
-              <div>Columns: ${selected.columns.length}</div>
-              <div>Chain entries: ${selected.columns.reduce((s, c) => s + c.chain.length, 0)}</div>
+              <div>Chain entries: ${sketchChain(selected).length}</div>
             </div>
             <button class="btn" @click=${() => {
             appController.editSketch(selectedId);
