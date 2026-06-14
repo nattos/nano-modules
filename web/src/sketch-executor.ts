@@ -8,6 +8,7 @@ import type { BridgeCore } from './bridge-core';
 import type { GPUHost } from './gpu-host';
 import { WasmHost, WasmModule, FrameState } from './wasm-host';
 import type { ModuleEntry, Sketch } from './sketch-types';
+import { sketchChain } from './sketch-types';
 import { applyTapMod, combineTap } from './tap-mod';
 import { isRailCompatible } from './schema-compat';
 import { initSmooth, advanceSmooth, type SmoothState } from './param-smoothing';
@@ -187,13 +188,13 @@ export class SketchExecutor {
 
   /**
    * Per-chain-entry texture handles from the most recent frame.
-   * Keyed by `${sketchId}/${colIdx}/${chainIdx}`.
+   * Keyed by `${sketchId}/0/${chainIdx}`.
    * Populated during executeColumn(), consumed by engine-worker for chain_entry trace points.
    */
   public chainEntryHandles = new Map<string, { input: number; output: number }>();
 
   /**
-   * Set of `${sketchId}/${colIdx}/${chainIdx}` keys that currently
+   * Set of `${sketchId}/0/${chainIdx}` keys that currently
    * have an active trace point. Set per-frame by the engine worker
    * (derived from its `tracePoints` list). The fusion planner reads
    * this when flushing a fused run to decide which intermediate
@@ -562,10 +563,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     this.wireSrcInstances = new Set();
     {
       let order = 0;
-      for (const col of sketch.columns) {
-        for (const e of col.chain) {
-          if (e.type === 'module') this.wirePos.set(e.instance_key, order++);
-        }
+      for (const e of sketchChain(sketch)) {
+        if (e.type === 'module') this.wirePos.set(e.instance_key, order++);
       }
       for (const w of sketch.wires ?? []) {
         const arr = this.wiresByDest.get(w.dest.instanceKey);
@@ -576,16 +575,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let lastOutput = inputTextureHandle;
-    for (let colIdx = 0; colIdx < sketch.columns.length; colIdx++) {
-      const column = sketch.columns[colIdx];
-      const colOutput = await this.executeColumn(
-        sketchId, sketch, colIdx, inputTextureHandle,
-        frameState, width, height, slotCounter);
-      // Only update output if this column actually contains modules
-      const hasModules = column.chain.some(e => e.type === 'module');
-      if (hasModules) {
-        lastOutput = colOutput;
-      }
+    if (sketchChain(sketch).some(e => e.type === 'module')) {
+      lastOutput = await this.executeColumn(
+        sketchId, sketch, inputTextureHandle, frameState, width, height, slotCounter);
     }
 
     // This frame's published wire outputs become next frame's "previous"
@@ -613,24 +605,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 
   /**
-   * Execute a single column's chain (single-stack wire model). Wire state is
-   * set up per frame on the executor by executeAllColumns.
+   * Execute a sketch's chain (single-stack wire model). Wire state is set up
+   * per frame on the executor by executeAllColumns.
    */
   async executeColumn(
     sketchId: string,
     sketch: Sketch,
-    colIdx: number,
     inputTextureHandle: number,
     frameState: FrameState,
     width: number,
     height: number,
     slotCounter: { value: number },
   ): Promise<number> {
-    const column = sketch.columns[colIdx];
-    if (!column) return inputTextureHandle;
+    const chain = sketchChain(sketch);
 
-    // Count total module entries across all columns for intermediates
-    const totalModules = sketch.columns.reduce((sum, c) => sum + c.chain.filter(e => e.type === 'module').length, 0);
+    const totalModules = chain.filter(e => e.type === 'module').length;
     const intermediates = this.ensureIntermediates(sketchId, Math.max(totalModules, 2), width, height);
 
     let currentInputHandle = inputTextureHandle;
@@ -698,8 +687,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // chain[] holds only modules now — texture input/output are
     // implicit (the column's input handle on entry, the column's
     // output handle after the last stage flushes).
-    for (let chainIdx = 0; chainIdx < column.chain.length; chainIdx++) {
-      const entry = column.chain[chainIdx];
+    for (let chainIdx = 0; chainIdx < chain.length; chainIdx++) {
+      const entry = chain[chainIdx];
       // chain[] is module-only in current sketches, but tolerate legacy/explicit
       // texture_input / texture_output entries (the column's input/output are
       // implicit) — they carry no module_type and must not hit ensureInstance,
@@ -741,7 +730,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           this.wireCur.set(`${entry.instance_key}:${field}`, { kind: 'scalar', value });
         }
         // Texture passthrough: leave the chain untouched, consume no slot.
-        this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+        this.chainEntryHandles.set(`${sketchId}/0/${chainIdx}`, {
           input: currentInputHandle, output: currentInputHandle,
         });
         continue;
@@ -768,7 +757,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           // generator with nothing above), emit a clean transparent frame so the
           // next stage renders on black instead of a stale pool slot.
           const out = currentInputHandle >= 0 ? currentInputHandle : this.emptyInput(width, height);
-          this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+          this.chainEntryHandles.set(`${sketchId}/0/${chainIdx}`, {
             input: currentInputHandle,
             output: out,
           });
@@ -1083,7 +1072,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // input handle, which is the desired passthrough.
         const entryHasWiredOutput = this.wireSrcInstances.has(entry.instance_key);
         if (!entryHasWiredOutput && loaded.module.isIdentity()) {
-          this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+          this.chainEntryHandles.set(`${sketchId}/0/${chainIdx}`, {
             input: currentInputHandle,
             output: currentInputHandle,
           });
@@ -1162,7 +1151,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // fresh.
             flushFusedRun();
           }
-          const chainKey = `${sketchId}/${colIdx}/${chainIdx}`;
+          const chainKey = `${sketchId}/0/${chainIdx}`;
           const stageRecord = {
             chainKey,
             inputHandle: currentInputHandle,
@@ -1236,7 +1225,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // stages + the run's last stage, since untraced intermediate
         // outputs aren't actually written by the fused dispatch).
         if (!useFused) {
-          this.chainEntryHandles.set(`${sketchId}/${colIdx}/${chainIdx}`, {
+          this.chainEntryHandles.set(`${sketchId}/0/${chainIdx}`, {
             input: currentInputHandle,
             output: effectiveOutputHandle,
           });

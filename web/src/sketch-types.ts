@@ -10,6 +10,15 @@ export const BUCKET_SKETCH_ID = '__unassigned__';
 /** A sketch is a processing graph anchored to a real FFGL instance. */
 export interface Sketch {
   anchor: string | null;
+  /**
+   * The single linear processing stack. Vertical position encodes causality:
+   * a producer above a consumer feeds it same-frame; at/below means 1-frame
+   * delay (which also breaks cycles → feedback). Canonical;
+   * `normalizeSketchChains` populates it, flattening any legacy `columns`.
+   */
+  chain?: ChainEntry[];
+  /** @deprecated legacy multi-column layout; flattened into `chain`. Still
+   *  required until the controller/UI finish migrating to `chain`. */
   columns: SketchColumn[];
   /**
    * Direct field-to-field connections. A wire
@@ -99,13 +108,21 @@ export interface ParamSmoothing {
  * returns a shallow-cloned sketch with cleaned chains.
  */
 export function normalizeSketchChains(sketch: Sketch): Sketch {
-  const columns = sketch.columns.map(col => {
-    const cleaned = col.chain.filter(e => e && (e as any).type === 'module');
-    if (cleaned.length === col.chain.length) return col;
-    return { ...col, chain: cleaned as ChainEntry[] };
-  });
-  if (columns.every((c, i) => c === sketch.columns[i])) return sketch;
-  return { ...sketch, columns };
+  const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
+  // `chain` is canonical. `columns` is kept during the transition because the
+  // controller/UI still read it; the worker re-normalizes on every ingest so the
+  // executor's `chain` stays fresh after a columns mutation.
+  return { ...sketch, chain };
+}
+
+/**
+ * The canonical single processing stack, flattening any legacy multi-column
+ * layout. Use this instead of `sketch.columns` / `sketch.chain` directly so old
+ * (columns-based) and new (chain-based) sketches both work.
+ */
+export function sketchChain(sketch: Sketch): ChainEntry[] {
+  if (Array.isArray(sketch.chain)) return sketch.chain;
+  return (sketch.columns ?? []).flatMap(c => c.chain ?? []);
 }
 
 // --- Wire modulation (mod / combine) ---

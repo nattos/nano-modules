@@ -16,7 +16,7 @@ import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
 import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
-import { BUCKET_SKETCH_ID, type Sketch } from './sketch-types';
+import { BUCKET_SKETCH_ID, normalizeSketchChains, type Sketch } from './sketch-types';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -203,16 +203,22 @@ async function handleCommand(cmd: WorkerCommand) {
       }
       break;
     }
-    case 'createSketch':
-      sketches.set(cmd.sketchId, cmd.sketch);
-      removeInstancesFromBucket(cmd.sketch);
+    case 'createSketch': {
+      // Normalize on ingest → flattens any legacy `columns` into the canonical
+      // single `chain` the executor runs.
+      const s = normalizeSketchChains(cmd.sketch);
+      sketches.set(cmd.sketchId, s);
+      removeInstancesFromBucket(s);
       markDirty();
       break;
-    case 'updateSketch':
-      sketches.set(cmd.sketchId, cmd.sketch);
-      removeInstancesFromBucket(cmd.sketch);
+    }
+    case 'updateSketch': {
+      const s = normalizeSketchChains(cmd.sketch);
+      sketches.set(cmd.sketchId, s);
+      removeInstancesFromBucket(s);
       markDirty();
       break;
+    }
     case 'deleteSketch': {
       sketches.delete(cmd.sketchId);
       // Free any user-injected input texture; the GPU pool reclaims memory.

@@ -145,7 +145,7 @@ const FRAME = {
 async function runColumn(executor: any, sketch: Sketch, inputHandle: number) {
   const slotCounter = { value: 0 };
   const out = await executor.executeColumn(
-    'sketch0', sketch, 0, inputHandle, FRAME, 256, 256, slotCounter,
+    'sketch0', sketch, inputHandle, FRAME, 256, 256, slotCounter,
   );
   return { out, finalSlot: slotCounter.value };
 }
