@@ -23,26 +23,21 @@ function buildParticleSketch(opts: {
   return {
     anchor: null,
     wires: [],
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'data.particles_emitter',
-          instance_key: 'emit@0',
-          // Initial state: feed gravity (vec2) and spawn_speed.
-          params: { spawn_speed: 0.6, gravity },
-        },
-        {
-          type: 'module',
-          module_type: 'video.particles_renderer',
-          instance_key: 'render@0',
-          params: { particle_size: size, tint },
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'data.particles_emitter',
+        instance_key: 'emit@0',
+        // Initial state: feed gravity (vec2) and spawn_speed.
+        params: { spawn_speed: 0.6, gravity },
+      },
+      {
+        type: 'module',
+        module_type: 'video.particles_renderer',
+        instance_key: 'render@0',
+        params: { particle_size: size, tint },
+      },
+    ],
   } as Sketch;
 }
 

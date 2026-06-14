@@ -142,43 +142,38 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
     const buildSoftGlowChain = (withProducer: boolean): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.0, 0.0, 0.0] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.0, 0.0, 0.0] },
+        },
+        ...(withProducer ? [{
+          type: 'module',
+          module_type: 'gen.soft_glow',
+          instance_key: 'glow@0',
+          params: {
+            blob_count: 4,
+            blob_size: 0.5,
+            blob_size_jitter: 0.0,
+            intensity: 1.5,
+            drift_rate: 0.8,
+            motion_strength: 8.0,
+            motion_skew: 0.0,
+            hue: 0.0, hue_shift: 0.0, saturation: 1.0,
+            ramp_curve: 0.0, white_point: 1.0,
+            pulse_depth: 0.0, amp_drift_depth: 0.0,
+            seed: 17,
           },
-          ...(withProducer ? [{
-            type: 'module',
-            module_type: 'gen.soft_glow',
-            instance_key: 'glow@0',
-            params: {
-              blob_count: 4,
-              blob_size: 0.5,
-              blob_size_jitter: 0.0,
-              intensity: 1.5,
-              drift_rate: 0.8,
-              motion_strength: 8.0,
-              motion_skew: 0.0,
-              hue: 0.0, hue_shift: 0.0, saturation: 1.0,
-              ramp_curve: 0.0, white_point: 1.0,
-              pulse_depth: 0.0, amp_drift_depth: 0.0,
-              seed: 17,
-            },
-          }] : []),
-          {
-            type: 'module',
-            module_type: 'video.motion_blur',
-            instance_key: 'blur@0',
-            params: { strength: 32.0, samples: 16, quality: 1 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        }] : []),
+        {
+          type: 'module',
+          module_type: 'video.motion_blur',
+          instance_key: 'blur@0',
+          params: { strength: 32.0, samples: 16, quality: 1 },
+        },
+      ],
     } as Sketch);
 
     const withProducer = await runEngineTest({
@@ -237,33 +232,28 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
     const buildSkewChain = (skew: number): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
-            params: { color: [0.0, 0.0, 0.0] },
+      chain: [
+        {
+          type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+          params: { color: [0.0, 0.0, 0.0] },
+        },
+        {
+          type: 'module', module_type: 'gen.soft_glow', instance_key: 'glow@0',
+          params: {
+            blob_count: 4, blob_size: 0.5, blob_size_jitter: 0.0,
+            intensity: 1.5, drift_rate: 0.8,
+            motion_strength: 8.0, motion_skew: skew,
+            hue: 0.0, hue_shift: 0.0, saturation: 1.0,
+            ramp_curve: 0.0, white_point: 1.0,
+            pulse_depth: 0.0, amp_drift_depth: 0.0,
+            seed: 23,
           },
-          {
-            type: 'module', module_type: 'gen.soft_glow', instance_key: 'glow@0',
-            params: {
-              blob_count: 4, blob_size: 0.5, blob_size_jitter: 0.0,
-              intensity: 1.5, drift_rate: 0.8,
-              motion_strength: 8.0, motion_skew: skew,
-              hue: 0.0, hue_shift: 0.0, saturation: 1.0,
-              ramp_curve: 0.0, white_point: 1.0,
-              pulse_depth: 0.0, amp_drift_depth: 0.0,
-              seed: 23,
-            },
-          },
-          {
-            type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
-            params: { strength: 32.0, samples: 16, quality: 1 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+        {
+          type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
+          params: { strength: 32.0, samples: 16, quality: 1 },
+        },
+      ],
     } as Sketch);
 
     const isotropic = await runEngineTest({

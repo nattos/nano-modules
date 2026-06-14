@@ -74,25 +74,20 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
           sketchId: 'nl_sketch',
           sketch: {
             anchor: null,
-            columns: [{
-              name: 'main',
-              chain: [
-                { type: 'texture_input', id: 'in' },
-                {
-                  type: 'module',
-                  module_type: 'sequencer.nanolooper',
-                  instance_key: 'nl@0',
-                  // Start with record on so the trigger lands in the grid.
-                  params: { record: 1.0 },
-                },
-                { type: 'texture_output', id: 'out' },
-              ],
-            }],
+            chain: [
+              {
+                type: 'module',
+                module_type: 'sequencer.nanolooper',
+                instance_key: 'nl@0',
+                // Start with record on so the trigger lands in the grid.
+                params: { record: 1.0 },
+              },
+            ],
           },
         },
         {
           type: 'setParam',
-          sketchId: 'nl_sketch', colIdx: 0, chainIdx: 1,
+          sketchId: 'nl_sketch', colIdx: 0, chainIdx: 0,
           paramKey: 'trigger_1', value: 1.0,
         },
       ],

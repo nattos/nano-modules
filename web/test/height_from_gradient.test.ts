@@ -28,25 +28,20 @@ import type { Sketch } from '../src/sketch-types';
 function buildSketch(sketchId: string, params: Record<string, unknown>): Sketch {
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'generator.solid_color',
-          instance_key: 'bg@0',
-          params: { color: [0.4, 0.55, 0.7] },
-        },
-        {
-          type: 'module',
-          module_type: 'video.height_from_gradient',
-          instance_key: 'hfg@0',
-          params,
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'generator.solid_color',
+        instance_key: 'bg@0',
+        params: { color: [0.4, 0.55, 0.7] },
+      },
+      {
+        type: 'module',
+        module_type: 'video.height_from_gradient',
+        instance_key: 'hfg@0',
+        params,
+      },
+    ],
   };
 }
 
@@ -135,32 +130,27 @@ describe('video.height_from_gradient E2E', () => {
 function buildContourSketch(sketchId: string, params: Record<string, unknown>): Sketch {
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'generator.solid_color',
-          instance_key: 'bg@0',
-          params: { color: [0.1, 0.1, 0.12] },
-        },
-        {
-          type: 'module',
-          module_type: 'debug.motion_rect',
-          instance_key: 'rect@0',
-          // speed 0 → a static, centered rect: a deterministic closed contour.
-          params: { size: 0.45, speed: 0.0, color: [0.9, 0.9, 0.9] },
-        },
-        {
-          type: 'module',
-          module_type: 'video.height_from_gradient',
-          instance_key: 'hfg@0',
-          params,
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'generator.solid_color',
+        instance_key: 'bg@0',
+        params: { color: [0.1, 0.1, 0.12] },
+      },
+      {
+        type: 'module',
+        module_type: 'debug.motion_rect',
+        instance_key: 'rect@0',
+        // speed 0 → a static, centered rect: a deterministic closed contour.
+        params: { size: 0.45, speed: 0.0, color: [0.9, 0.9, 0.9] },
+      },
+      {
+        type: 'module',
+        module_type: 'video.height_from_gradient',
+        instance_key: 'hfg@0',
+        params,
+      },
+    ],
   };
 }
 
@@ -252,22 +242,17 @@ describe('video.height_from_gradient — vector sources', () => {
     const buildChain = (withProducer: boolean): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0', params: { color: [0.05, 0.05, 0.1] } },
-          ...(withProducer ? [{
-            type: 'module', module_type: 'debug.motion_rect', instance_key: 'rect@0',
-            params: { size: 0.3, speed: 2.0, color: [0.9, 0.4, 0.8] },
-          }] : []),
-          {
-            type: 'module', module_type: 'video.height_from_gradient', instance_key: 'hfg@0',
-            params: { source: 2, present_mode: 1, grad_gain: 1.0 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0', params: { color: [0.05, 0.05, 0.1] } },
+        ...(withProducer ? [{
+          type: 'module', module_type: 'debug.motion_rect', instance_key: 'rect@0',
+          params: { size: 0.3, speed: 2.0, color: [0.9, 0.4, 0.8] },
+        }] : []),
+        {
+          type: 'module', module_type: 'video.height_from_gradient', instance_key: 'hfg@0',
+          params: { source: 2, present_mode: 1, grad_gain: 1.0 },
+        },
+      ],
     } as Sketch);
 
     const run = (id: string, withProducer: boolean) => runEngineTest({

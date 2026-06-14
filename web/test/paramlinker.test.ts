@@ -75,25 +75,20 @@ describe('Param Linker Effect E2E', () => {
           sketchId: 'pl_sketch',
           sketch: {
             anchor: null,
-            columns: [{
-              name: 'main',
-              chain: [
-                { type: 'texture_input', id: 'in' },
-                {
-                  type: 'module',
-                  module_type: 'utility.paramlinker',
-                  instance_key: 'pl@0',
-                  // No initial state override — defaults stand.
-                },
-                { type: 'texture_output', id: 'out' },
-              ],
-            }],
+            chain: [
+              {
+                type: 'module',
+                module_type: 'utility.paramlinker',
+                instance_key: 'pl@0',
+                // No initial state override — defaults stand.
+              },
+            ],
           },
         },
         // Toggle learn on
         {
           type: 'setParam',
-          sketchId: 'pl_sketch', colIdx: 0, chainIdx: 1,
+          sketchId: 'pl_sketch', colIdx: 0, chainIdx: 0,
           paramKey: 'learn', value: 1.0,
         },
       ],

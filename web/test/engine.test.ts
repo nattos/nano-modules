@@ -108,19 +108,14 @@ describe('Engine Worker E2E', () => {
             sketchId: 'test_sketch',
             sketch: {
               anchor: 'generator.spinningtris@0',
-              columns: [{
-                name: 'main',
-                chain: [
-                  { type: 'texture_input', id: 'primary_in' },
-                  {
-                    type: 'module',
-                    module_type: 'video.brightness_contrast',
-                    instance_key: 'virtual_bc@0',
-                    params: { brightness: 0.5, contrast: 0.25 },  // neutral brightness, half contrast
-                  },
-                  { type: 'texture_output', id: 'primary_out' },
-                ],
-              }],
+              chain: [
+                {
+                  type: 'module',
+                  module_type: 'video.brightness_contrast',
+                  instance_key: 'virtual_bc@0',
+                  params: { brightness: 0.5, contrast: 0.25 },  // neutral brightness, half contrast
+                },
+              ],
             },
           },
         ],
@@ -157,19 +152,14 @@ describe('Engine Worker E2E', () => {
             sketchId: 'black_sketch',
             sketch: {
               anchor: 'generator.spinningtris@0',
-              columns: [{
-                name: 'main',
-                chain: [
-                  { type: 'texture_input', id: 'primary_in' },
-                  {
-                    type: 'module',
-                    module_type: 'video.brightness_contrast',
-                    instance_key: 'virtual_bc_black@0',
-                    params: { brightness: 0.5, contrast: 0.0 },  // contrast=0 → black
-                  },
-                  { type: 'texture_output', id: 'primary_out' },
-                ],
-              }],
+              chain: [
+                {
+                  type: 'module',
+                  module_type: 'video.brightness_contrast',
+                  instance_key: 'virtual_bc_black@0',
+                  params: { brightness: 0.5, contrast: 0.0 },  // contrast=0 → black
+                },
+              ],
             },
           },
         ],
@@ -243,18 +233,14 @@ describe('Engine Worker E2E', () => {
 
       const trisSketch = {
         anchor: 'generator.spinningtris@0',
-        columns: [{ name: 'main', chain: [
-          { type: 'texture_input', id: 'in' },
-          { type: 'texture_output', id: 'out' },
-        ]}],
+        chain: [
+        ],
       };
 
       const blueSketch = {
         anchor: 'debug.gpu_test@0',
-        columns: [{ name: 'main', chain: [
-          { type: 'texture_input', id: 'in' },
-          { type: 'texture_output', id: 'out' },
-        ]}],
+        chain: [
+        ],
       };
 
       const result = await runEngineMultiPhaseTest({
@@ -360,19 +346,14 @@ describe('Engine Worker E2E', () => {
             sketchId: 'sk_ce',
             sketch: {
               anchor: 'generator.spinningtris@0',
-              columns: [{
-                name: 'main',
-                chain: [
-                  { type: 'texture_input', id: 'in' },
-                  {
-                    type: 'module',
-                    module_type: 'video.brightness_contrast',
-                    instance_key: 'bc_ce@0',
-                    params: { brightness: 0.5, contrast: 0.0 },
-                  },
-                  { type: 'texture_output', id: 'out' },
-                ],
-              }],
+              chain: [
+                {
+                  type: 'module',
+                  module_type: 'video.brightness_contrast',
+                  instance_key: 'bc_ce@0',
+                  params: { brightness: 0.5, contrast: 0.0 },
+                },
+              ],
             },
           },
         ],
@@ -407,19 +388,14 @@ describe('Engine Worker E2E', () => {
             sketchId: 'sk_io',
             sketch: {
               anchor: 'generator.spinningtris@0',
-              columns: [{
-                name: 'main',
-                chain: [
-                  { type: 'texture_input', id: 'in' },
-                  {
-                    type: 'module',
-                    module_type: 'video.brightness_contrast',
-                    instance_key: 'bc_io@0',
-                    params: { brightness: 0.5, contrast: 0.0 },
-                  },
-                  { type: 'texture_output', id: 'out' },
-                ],
-              }],
+              chain: [
+                {
+                  type: 'module',
+                  module_type: 'video.brightness_contrast',
+                  instance_key: 'bc_io@0',
+                  params: { brightness: 0.5, contrast: 0.0 },
+                },
+              ],
             },
           },
         ],
@@ -444,54 +420,32 @@ describe('Engine Worker E2E', () => {
     });
   });
 
-  describe('column move preserves params', () => {
-    it('contrast=0 stays black after moving module between columns', async () => {
-      // Repro for bug: moving a module to a different column via updateSketch
-      // causes it to render with default params instead of the ones in the sketch.
+  describe('param persistence across sketch updates', () => {
+    it('contrast=0 stays black across repeated updateSketch calls', async () => {
+      // Repro for bug: re-sending a sketch via updateSketch caused its module to
+      // render with default params instead of the ones in the sketch.
 
-      const makeSketch = (colIdx: number) => ({
+      const makeSketch = () => ({
         anchor: 'generator.spinningtris@0',
-        columns: colIdx === 0
-          ? [{
-              name: 'col0',
-              chain: [
-                { type: 'texture_input', id: 'in' },
-                {
-                  type: 'module',
-                  module_type: 'video.brightness_contrast',
-                  instance_key: 'bc_move@0',
-                  params: { brightness: 0.5, contrast: 0.0 },
-                },
-                { type: 'texture_output', id: 'out' },
-              ],
-            }]
-          : [
-              { name: 'col0', chain: [
-                { type: 'texture_input', id: 'in' },
-                { type: 'texture_output', id: 'out' },
-              ]},
-              { name: 'col1', chain: [
-                { type: 'texture_input', id: 'in' },
-                {
-                  type: 'module',
-                  module_type: 'video.brightness_contrast',
-                  instance_key: 'bc_move@0',
-                  params: { brightness: 0.5, contrast: 0.0 },
-                },
-                { type: 'texture_output', id: 'out' },
-              ]},
-            ],
+        chain: [
+          {
+            type: 'module',
+            module_type: 'video.brightness_contrast',
+            instance_key: 'bc_move@0',
+            params: { brightness: 0.5, contrast: 0.0 },
+          },
+        ],
       });
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
-        dumpName: 'engine_column_move',
+        dumpName: 'engine_sketch_resend',
         phases: [
-          // Phase 0: contrast=0 in column 0 → should be black
+          // Phase 0: contrast=0 → should be black
           {
             commands: [
-              { type: 'createSketch', sketchId: 'sk_move', sketch: makeSketch(0) },
+              { type: 'createSketch', sketchId: 'sk_move', sketch: makeSketch() },
               { type: 'setTracePoints', tracePoints: [
                 { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_move' } },
               ]},
@@ -499,18 +453,18 @@ describe('Engine Worker E2E', () => {
             waitFrames: 20,
             captureTraceIds: ['out'],
           },
-          // Phase 1: move to column 1 → should still be black
+          // Phase 1: re-send the sketch → should still be black
           {
             commands: [
-              { type: 'updateSketch', sketchId: 'sk_move', sketch: makeSketch(1) },
+              { type: 'updateSketch', sketchId: 'sk_move', sketch: makeSketch() },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],
           },
-          // Phase 2: move back to column 0 → should still be black
+          // Phase 2: re-send again → should still be black
           {
             commands: [
-              { type: 'updateSketch', sketchId: 'sk_move', sketch: makeSketch(0) },
+              { type: 'updateSketch', sketchId: 'sk_move', sketch: makeSketch() },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],
@@ -531,9 +485,9 @@ describe('Engine Worker E2E', () => {
       p2.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
     });
 
-    it('empty trailing column does not override module output', async () => {
-      // Repro for the actual bug: module in column 0, empty column 1.
-      // The sketch output should come from column 0 (has module), not column 1 (empty passthrough).
+    it('single-module sketch output comes from the module, not the anchor', async () => {
+      // The sketch output should be the module's processed result, not the raw
+      // anchor passthrough.
       const result = await runEngineTest({
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
@@ -545,26 +499,12 @@ describe('Engine Worker E2E', () => {
             sketchId: 'sk_trailing',
             sketch: {
               anchor: 'generator.spinningtris@0',
-              columns: [
+              chain: [
                 {
-                  name: 'col0',
-                  chain: [
-                    { type: 'texture_input', id: 'in' },
-                    {
-                      type: 'module',
-                      module_type: 'video.brightness_contrast',
-                      instance_key: 'bc_trail@0',
-                      params: { brightness: 0.5, contrast: 0.0 },
-                    },
-                    { type: 'texture_output', id: 'out' },
-                  ],
-                },
-                {
-                  name: 'col1',
-                  chain: [
-                    { type: 'texture_input', id: 'in' },
-                    { type: 'texture_output', id: 'out' },
-                  ],
+                  type: 'module',
+                  module_type: 'video.brightness_contrast',
+                  instance_key: 'bc_trail@0',
+                  params: { brightness: 0.5, contrast: 0.0 },
                 },
               ],
             },
@@ -577,103 +517,72 @@ describe('Engine Worker E2E', () => {
 
       expect(result.success).toBe(true);
       const frame = result.trace('out');
-      // Should be black (contrast=0 from column 0), NOT the anchor's colorful output
+      // Should be black (contrast=0), NOT the anchor's colorful output
       frame.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
     });
 
-    it('params set via setParam persist after column move', async () => {
+    it('params set via setParam persist across updateSketch re-sends', async () => {
       // Simulates the real UI flow:
       // 1. Create sketch with empty params (like createSketch does)
       // 2. Set a param via setParam (like setEffectParam does)
-      // 3. Move module to column 1 via updateSketch
-      // 4. Move back to column 0 via updateSketch
+      // 3. Re-send the full sketch via updateSketch (like syncSketchesToEngine)
       // Verify output reflects the param change throughout.
 
-      const sketchInCol0Empty = {
+      const sketchEmpty = {
         anchor: 'generator.spinningtris@0',
-        columns: [{
-          name: 'col0',
-          chain: [
-            { type: 'texture_input', id: 'in' },
-            {
-              type: 'module',
-              module_type: 'video.brightness_contrast',
-              instance_key: 'bc_setparam@0',
-              params: {},  // Empty, like createSketch
-            },
-            { type: 'texture_output', id: 'out' },
-          ],
-        }],
+        chain: [
+          {
+            type: 'module',
+            module_type: 'video.brightness_contrast',
+            instance_key: 'bc_setparam@0',
+            params: {},  // Empty, like createSketch
+          },
+        ],
       };
 
-      const sketchInCol0WithParams = {
+      const sketchWithParams = {
         anchor: 'generator.spinningtris@0',
-        columns: [{
-          name: 'col0',
-          chain: [
-            { type: 'texture_input', id: 'in' },
-            {
-              type: 'module',
-              module_type: 'video.brightness_contrast',
-              instance_key: 'bc_setparam@0',
-              params: { brightness: 0.5, contrast: 0.0 },
-            },
-            { type: 'texture_output', id: 'out' },
-          ],
-        }],
-      };
-
-      const sketchInCol1WithParams = {
-        anchor: 'generator.spinningtris@0',
-        columns: [
-          { name: 'col0', chain: [
-            { type: 'texture_input', id: 'in' },
-            { type: 'texture_output', id: 'out' },
-          ]},
-          { name: 'col1', chain: [
-            { type: 'texture_input', id: 'in' },
-            {
-              type: 'module',
-              module_type: 'video.brightness_contrast',
-              instance_key: 'bc_setparam@0',
-              params: { brightness: 0.5, contrast: 0.0 },
-            },
-            { type: 'texture_output', id: 'out' },
-          ]},
+        chain: [
+          {
+            type: 'module',
+            module_type: 'video.brightness_contrast',
+            instance_key: 'bc_setparam@0',
+            params: { brightness: 0.5, contrast: 0.0 },
+          },
         ],
       };
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
-        dumpName: 'engine_setparam_move',
+        dumpName: 'engine_setparam_resend',
         phases: [
           // Phase 0: Create sketch with empty params, then set contrast=0
           {
             commands: [
-              { type: 'createSketch', sketchId: 'sk_sp', sketch: sketchInCol0Empty },
+              { type: 'createSketch', sketchId: 'sk_sp', sketch: sketchEmpty },
               { type: 'setTracePoints', tracePoints: [
                 { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_sp' } },
               ]},
               // Simulate setEffectParam: mutate → updateSketch, then setParam
-              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol0WithParams },
+              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchWithParams },
               { type: 'setParam', sketchId: 'sk_sp', colIdx: 0, chainIdx: 0, paramKey: 'contrast', value: 0.0 },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],
           },
-          // Phase 1: Move to column 1 (full sketch update like syncSketchesToEngine)
+          // Phase 1: re-send the full sketch (like syncSketchesToEngine)
           {
             commands: [
-              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol1WithParams },
+              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchWithParams },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],
           },
-          // Phase 2: Move back to column 0
+          // Phase 2: re-send again
           {
             commands: [
-              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchInCol0WithParams },
+              { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchWithParams },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],

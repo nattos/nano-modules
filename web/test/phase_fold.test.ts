@@ -26,19 +26,14 @@ import type { Sketch } from '../src/sketch-types';
 function buildSketch(params: Record<string, unknown>): Sketch {
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'video.phase_fold',
-          instance_key: 'pf@0',
-          params,
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'video.phase_fold',
+        instance_key: 'pf@0',
+        params,
+      },
+    ],
   };
 }
 

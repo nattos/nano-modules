@@ -27,19 +27,14 @@ import type { Sketch } from '../src/sketch-types';
 function buildSketch(params: Record<string, unknown>): Sketch {
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'video.shape_fold',
-          instance_key: 'sf@0',
-          params,
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'video.shape_fold',
+        instance_key: 'sf@0',
+        params,
+      },
+    ],
   };
 }
 
@@ -213,7 +208,7 @@ describe('video.shape_fold E2E', () => {
         // Fire the jump trigger → switch to a fresh point.
         {
           commands: [
-            { type: 'setParam', sketchId: 'sf_jump', colIdx: 0, chainIdx: 1,
+            { type: 'setParam', sketchId: 'sf_jump', colIdx: 0, chainIdx: 0,
               paramKey: 'ap_jump', value: 1.0 },
           ],
           waitFrames: 8, captureTraceIds: ['out'],

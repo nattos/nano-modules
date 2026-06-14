@@ -306,25 +306,20 @@ describe('Chroma Wave Effect E2E', () => {
     const buildChain = (withProducer: boolean): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
-            params: { color: [0.0, 0.0, 0.0] } },
-          ...(withProducer ? [{ type: 'module', module_type: 'gen.chroma_wave', instance_key: 'cw@0',
-            params: {
-              auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05, release_s: 0.5,
-              release_expand: 4.0, base_radius: 0.15, intensity: 2.0,
-              voice_pos_jitter: 0.3, voice_hue_jitter: 0.0, motion_scale: 1.0, seed: 3,
-            },
-          }] : []),
-          { type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
-            params: { strength: 32.0, samples: 16, quality: 1 },
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+        params: { color: [0.0, 0.0, 0.0] } },
+        ...(withProducer ? [{ type: 'module', module_type: 'gen.chroma_wave', instance_key: 'cw@0',
+          params: {
+            auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05, release_s: 0.5,
+            release_expand: 4.0, base_radius: 0.15, intensity: 2.0,
+            voice_pos_jitter: 0.3, voice_hue_jitter: 0.0, motion_scale: 1.0, seed: 3,
           },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        }] : []),
+        { type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
+          params: { strength: 32.0, samples: 16, quality: 1 },
+        },
+      ],
     } as Sketch);
 
     const run = (id: string, withProducer: boolean) => runEngineTest({

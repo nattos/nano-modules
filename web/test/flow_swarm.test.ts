@@ -42,7 +42,7 @@ const SWARM: Record<string, unknown> = {
 // the swarm falls back to its seed positions (zero field).
 function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {},
                    pf: Record<string, unknown> = {}): Sketch {
-  const chain: any[] = [{ type: 'texture_input', id: 'in' }];
+  const chain: any[] = [];
   if (withFlow) {
     chain.push({
       type: 'module',
@@ -57,11 +57,10 @@ function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {},
     instance_key: 'sw@0',
     params: { ...SWARM, ...swarm },
   });
-  chain.push({ type: 'texture_output', id: 'out' });
   return {
     anchor: null,
     wires: [],
-    columns: [{ name: 'main', chain }],
+    chain,
   };
 }
 
@@ -69,14 +68,9 @@ function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {},
 function buildGeneratorOnly(): Sketch {
   return {
     anchor: null,
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        { type: 'module', module_type: 'video.phase_fold', instance_key: 'pf@0', params: PF },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      { type: 'module', module_type: 'video.phase_fold', instance_key: 'pf@0', params: PF },
+    ],
   };
 }
 

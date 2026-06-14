@@ -26,7 +26,6 @@ function buildChain(opts: {
   quality?: number;
 }): Sketch {
   const chain: any[] = [
-    { type: 'texture_input', id: 'in' },
     {
       type: 'module',
       module_type: 'generator.solid_color',
@@ -60,10 +59,9 @@ function buildChain(opts: {
       quality: opts.quality ?? 1,
     },
   });
-  chain.push({ type: 'texture_output', id: 'out' });
   return {
     anchor: null,
-    columns: [{ name: 'main', chain }],
+    chain,
     wires: [],
   };
 }
@@ -174,40 +172,35 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.05, 0.05, 0.1] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.05, 0.05, 0.1] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_swarm',
+          instance_key: 'swarm@0',
+          params: {
+            count: 24,
+            size: 0.06,
+            swirl: 1.5,
+            radial: 0.0,
+            randomness: 0.4,
+            speed: 1.0,
+            opacity: 1.0,
+            seed: 7,
           },
-          {
-            type: 'module',
-            module_type: 'debug.motion_swarm',
-            instance_key: 'swarm@0',
-            params: {
-              count: 24,
-              size: 0.06,
-              swirl: 1.5,
-              radial: 0.0,
-              randomness: 0.4,
-              speed: 1.0,
-              opacity: 1.0,
-              seed: 7,
-            },
-          },
-          {
-            type: 'module',
-            module_type: 'video.motion_blur',
-            instance_key: 'blur@0',
-            params: { strength: 16.0, samples: 12, quality: 1 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+        {
+          type: 'module',
+          module_type: 'video.motion_blur',
+          instance_key: 'blur@0',
+          params: { strength: 16.0, samples: 12, quality: 1 },
+        },
+      ],
     };
 
     const result = await runEngineTest({
@@ -247,32 +240,27 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.0, 0.0, 0.0] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.0, 0.0, 0.0] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_static',
+          instance_key: 'static@0',
+          params: {
+            threshold: 0.95,
+            swirl: 0.01,
+            jitter: 0.0,
+            seed: 42,
+            opacity: 1.0,
+            vis_scale: 100,
           },
-          {
-            type: 'module',
-            module_type: 'debug.motion_static',
-            instance_key: 'static@0',
-            params: {
-              threshold: 0.95,
-              swirl: 0.01,
-              jitter: 0.0,
-              seed: 42,
-              opacity: 1.0,
-              vis_scale: 100,
-            },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+      ],
     };
 
     const result = await runEngineTest({
@@ -320,54 +308,49 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            // Bright enough to trip the default 0.5 threshold.
-            params: { color: [0.9, 0.7, 0.4] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          // Bright enough to trip the default 0.5 threshold.
+          params: { color: [0.9, 0.7, 0.4] },
+        },
+        {
+          type: 'module',
+          module_type: 'video.motion_field',
+          instance_key: 'mf@0',
+          params: {
+            threshold: 0.4,
+            softness: 0.05,
+            magnitude: 0.008,
+            mag_jitter: 0.4,
+            mag_noise_scale: 12.0,
+            rotation: 30.0,
+            rotation_weight: 1.0,
+            radial_weight: 0.0,
+            radial_anchor: [0.5, 0.5],
+            gradient_weight: 0.0,
+            gradient_bias: 90.0,
+            angle_jitter: 0.1,
+            angle_noise_scale: 24.0,
+            seed: 7,
+            // Visualization off — production usage. The motion
+            // vectors flow downstream regardless.
+            // Vis on so the smoke test sees per-pixel hue/value
+            // variation in the output even when tex_in is uniform —
+            // confirms the velocity field is actually being computed.
+            vis_opacity: 1.0,
+            vis_scale: 200.0,
           },
-          {
-            type: 'module',
-            module_type: 'video.motion_field',
-            instance_key: 'mf@0',
-            params: {
-              threshold: 0.4,
-              softness: 0.05,
-              magnitude: 0.008,
-              mag_jitter: 0.4,
-              mag_noise_scale: 12.0,
-              rotation: 30.0,
-              rotation_weight: 1.0,
-              radial_weight: 0.0,
-              radial_anchor: [0.5, 0.5],
-              gradient_weight: 0.0,
-              gradient_bias: 90.0,
-              angle_jitter: 0.1,
-              angle_noise_scale: 24.0,
-              seed: 7,
-              // Visualization off — production usage. The motion
-              // vectors flow downstream regardless.
-              // Vis on so the smoke test sees per-pixel hue/value
-              // variation in the output even when tex_in is uniform —
-              // confirms the velocity field is actually being computed.
-              vis_opacity: 1.0,
-              vis_scale: 200.0,
-            },
-          },
-          {
-            type: 'module',
-            module_type: 'video.motion_blur',
-            instance_key: 'blur@0',
-            params: { strength: 24.0, samples: 12, quality: 1 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+        {
+          type: 'module',
+          module_type: 'video.motion_blur',
+          instance_key: 'blur@0',
+          params: { strength: 24.0, samples: 12, quality: 1 },
+        },
+      ],
     };
 
     const result = await runEngineTest({
@@ -405,43 +388,38 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     const buildChromaChain = (chromaOn: boolean): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.05, 0.05, 0.05] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.05, 0.05, 0.05] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_rect',
+          instance_key: 'rect@0',
+          params: { size: 0.25, speed: 3.0, color: [1.0, 0.4, 0.8] },
+        },
+        {
+          type: 'module',
+          module_type: 'video.motion_blur',
+          instance_key: 'blur@0',
+          params: {
+            strength: 32.0,
+            samples: 16,
+            quality: 1,
+            chroma_delay: chromaOn,
+            // Modest offsets so chroma-shifted R/G/B stay within
+            // the rect's footprint (otherwise they sample
+            // background and the chroma effect becomes "rect goes
+            // black" instead of "rect splits into RGB trails").
+            chroma_r:  0.4,
+            chroma_g:  0.0,
+            chroma_b: -0.4,
           },
-          {
-            type: 'module',
-            module_type: 'debug.motion_rect',
-            instance_key: 'rect@0',
-            params: { size: 0.25, speed: 3.0, color: [1.0, 0.4, 0.8] },
-          },
-          {
-            type: 'module',
-            module_type: 'video.motion_blur',
-            instance_key: 'blur@0',
-            params: {
-              strength: 32.0,
-              samples: 16,
-              quality: 1,
-              chroma_delay: chromaOn,
-              // Modest offsets so chroma-shifted R/G/B stay within
-              // the rect's footprint (otherwise they sample
-              // background and the chroma effect becomes "rect goes
-              // black" instead of "rect splits into RGB trails").
-              chroma_r:  0.4,
-              chroma_g:  0.0,
-              chroma_b: -0.4,
-            },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+      ],
     });
 
     const off = await runEngineTest({

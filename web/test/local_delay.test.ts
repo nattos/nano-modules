@@ -25,27 +25,22 @@ describe('video.local_delay E2E', () => {
   it('passes a static input straight through (no motion → zero weight)', async () => {
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.3, 0.5, 0.8] },
-          },
-          {
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            // Crank delay + gain: even so, a static input has zero flow,
-            // so the weight is zero and the output equals the input.
-            params: { delay_amount: 1.0, weight_gain: 0.06 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.3, 0.5, 0.8] },
+        },
+        {
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          // Crank delay + gain: even so, a static input has zero flow,
+          // so the weight is zero and the output equals the input.
+          params: { delay_amount: 1.0, weight_gain: 0.06 },
+        },
+      ],
     };
 
     const result = await runEngineTest({
@@ -76,41 +71,36 @@ describe('video.local_delay E2E', () => {
     // previous frame, so the two frames differ across a wide band.
     const buildChain = (delay: number): Sketch => ({
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.1, 0.1, 0.1] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.1, 0.1, 0.1] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_swarm',
+          instance_key: 'swarm@0',
+          // Many moving blobs — used purely as moving IMAGE content (no
+          // rail tap), so local_delay must estimate the flow itself.
+          params: {
+            count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
+            randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
           },
-          {
-            type: 'module',
-            module_type: 'debug.motion_swarm',
-            instance_key: 'swarm@0',
-            // Many moving blobs — used purely as moving IMAGE content (no
-            // rail tap), so local_delay must estimate the flow itself.
-            params: {
-              count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
-              randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
-            },
+        },
+        {
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          params: {
+            delay_amount: delay,
+            weight_gain: 0.05,
+            max_flow: 0.05,
+            align_amount: 0.5,
           },
-          {
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            params: {
-              delay_amount: delay,
-              weight_gain: 0.05,
-              max_flow: 0.05,
-              align_amount: 0.5,
-            },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+      ],
     });
 
     const noDelay = await runEngineTest({
@@ -155,24 +145,19 @@ describe('video.local_delay E2E', () => {
     // debug_show_motion the masked motion field differs strongly from twitch-off.
     const buildChain = (twitchAmount: number): Sketch => ({
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
-            params: { color: [0.1, 0.1, 0.1] } },
-          { type: 'module', module_type: 'debug.motion_swarm', instance_key: 'swarm@0',
-            params: { count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
-                      randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7 } },
-          { type: 'module', module_type: 'video.local_delay', instance_key: 'ld@0',
-            params: {
-              delay_amount: 0.0, weight_gain: 0.1, max_flow: 0.05,
-              debug_show_motion: true,
-              twitch_amount: twitchAmount, twitch_shape: 1.0, twitch_radius: 0.2, twitch_softness: 0.2,
-            } },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+        params: { color: [0.1, 0.1, 0.1] } },
+        { type: 'module', module_type: 'debug.motion_swarm', instance_key: 'swarm@0',
+        params: { count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
+                  randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7 } },
+        { type: 'module', module_type: 'video.local_delay', instance_key: 'ld@0',
+        params: {
+          delay_amount: 0.0, weight_gain: 0.1, max_flow: 0.05,
+          debug_show_motion: true,
+          twitch_amount: twitchAmount, twitch_shape: 1.0, twitch_radius: 0.2, twitch_softness: 0.2,
+        } },
+      ],
     });
 
     const run = (id: string, amount: number) => runEngineTest({
@@ -202,37 +187,32 @@ describe('video.local_delay E2E', () => {
     const buildChain = (withLocalDelay: boolean): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.05, 0.05, 0.05] },
-          },
-          {
-            type: 'module',
-            module_type: 'debug.motion_rect',
-            instance_key: 'rect@0',
-            params: { size: 0.3, speed: 3.0, color: [1.0, 0.4, 0.8] },
-          },
-          ...(withLocalDelay ? [{
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            params: { delay_amount: 0.5, weight_gain: 0.05, max_flow: 0.05 },
-          }] : []),
-          {
-            type: 'module',
-            module_type: 'video.motion_blur',
-            instance_key: 'blur@0',
-            params: { strength: 24.0, samples: 12, quality: 1 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.05, 0.05, 0.05] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_rect',
+          instance_key: 'rect@0',
+          params: { size: 0.3, speed: 3.0, color: [1.0, 0.4, 0.8] },
+        },
+        ...(withLocalDelay ? [{
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          params: { delay_amount: 0.5, weight_gain: 0.05, max_flow: 0.05 },
+        }] : []),
+        {
+          type: 'module',
+          module_type: 'video.motion_blur',
+          instance_key: 'blur@0',
+          params: { strength: 24.0, samples: 12, quality: 1 },
+        },
+      ],
     } as Sketch);
 
     const withLD = await runEngineTest({
@@ -279,37 +259,32 @@ describe('video.local_delay E2E', () => {
     // forward-advection loop.
     const buildChain = (steps: number): Sketch => ({
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.1, 0.1, 0.1] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.1, 0.1, 0.1] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_swarm',
+          instance_key: 'swarm@0',
+          params: {
+            count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
+            randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
           },
-          {
-            type: 'module',
-            module_type: 'debug.motion_swarm',
-            instance_key: 'swarm@0',
-            params: {
-              count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
-              randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
-            },
+        },
+        {
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          params: {
+            delay_amount: 0.8, delay_steps: steps,
+            weight_gain: 0.05, max_flow: 0.05,
           },
-          {
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            params: {
-              delay_amount: 0.8, delay_steps: steps,
-              weight_gain: 0.05, max_flow: 0.05,
-            },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+      ],
     });
 
     const fewSteps = await runEngineTest({
@@ -355,34 +330,32 @@ describe('video.local_delay E2E', () => {
     // that this stage leaves its input pixels untouched.
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },                                    // chainIdx 0
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.1, 0.1, 0.1] },
-          },                                                                       // chainIdx 1
-          {
-            type: 'module',
-            module_type: 'debug.motion_swarm',
-            instance_key: 'swarm@0',
-            params: {
-              count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
-              randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
-            },
-          },                                                                       // chainIdx 2
-          {
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            params: { delay_amount: 0.0, weight_gain: 0.05, max_flow: 0.05 },
-          },                                                                       // chainIdx 3
-          { type: 'texture_output', id: 'out' },                                   // chainIdx 4
-        ],
-      }],
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.1, 0.1, 0.1] },
+        },
+        // chainIdx 0
+        {
+          type: 'module',
+          module_type: 'debug.motion_swarm',
+          instance_key: 'swarm@0',
+          params: {
+            count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
+            randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
+          },
+        },
+        // chainIdx 1
+        {
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          params: { delay_amount: 0.0, weight_gain: 0.05, max_flow: 0.05 },
+        },
+        // chainIdx 2
+      ],
     };
 
     const result = await runEngineTest({
@@ -391,8 +364,8 @@ describe('video.local_delay E2E', () => {
       commands: [
         { type: 'createSketch', sketchId: 'ld_pass', sketch },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'ld_in',  target: { type: 'chain_entry', sketchId: 'ld_pass', colIdx: 0, chainIdx: 3, side: 'input'  } },
-          { id: 'ld_out', target: { type: 'chain_entry', sketchId: 'ld_pass', colIdx: 0, chainIdx: 3, side: 'output' } },
+          { id: 'ld_in',  target: { type: 'chain_entry', sketchId: 'ld_pass', colIdx: 0, chainIdx: 2, side: 'input'  } },
+          { id: 'ld_out', target: { type: 'chain_entry', sketchId: 'ld_pass', colIdx: 0, chainIdx: 2, side: 'output' } },
         ]},
       ],
       waitFrames: 20,
@@ -416,37 +389,32 @@ describe('video.local_delay E2E', () => {
     // accumulator (the bug). The two outputs must differ.
     const buildChain = (motion: number): Sketch => ({
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.1, 0.1, 0.1] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.1, 0.1, 0.1] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.motion_swarm',
+          instance_key: 'swarm@0',
+          params: {
+            count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
+            randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
           },
-          {
-            type: 'module',
-            module_type: 'debug.motion_swarm',
-            instance_key: 'swarm@0',
-            params: {
-              count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
-              randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7,
-            },
+        },
+        {
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          params: {
+            delay_amount: 0.8, delay_steps: 12.0,
+            noise_weight: 1.0, noise_motion: motion, weight_gain: 0.05, max_flow: 0.05,
           },
-          {
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            params: {
-              delay_amount: 0.8, delay_steps: 12.0,
-              noise_weight: 1.0, noise_motion: motion, weight_gain: 0.05, max_flow: 0.05,
-            },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        },
+      ],
     });
 
     const frozen = await runEngineTest({
@@ -489,7 +457,7 @@ describe('video.local_delay E2E', () => {
     // → passthrough.
     //
     // We trace local_delay's OWN input and output in the SAME render (chain_entry
-    // input vs output, chainIdx 3) rather than comparing two separate captures:
+    // input vs output, chainIdx 2) rather than comparing two separate captures:
     // the swarm sim phase diverges run-to-run, so a cross-capture diff is
     // dominated by random swarm-position differences, not the echo. Within one
     // render the echo footprint is isolated. The path is proven by the contrast:
@@ -498,53 +466,48 @@ describe('video.local_delay E2E', () => {
     // Wire model: local_delay (Incoming mode) reads its render_outputs_in via
     // auto-connect from the nearest producer above. WITH a motion_swarm above,
     // it echoes the incoming vectors; WITHOUT one (a plain solid_color in the
-    // same slot, keeping ld at chainIdx 3 and producing NO render_outputs), the
+    // same slot, keeping ld at chainIdx 2 and producing NO render_outputs), the
     // incoming flow is zero → passthrough.
     const buildChain = (withMotion: boolean): Sketch => ({
       anchor: null,
       wires: [],
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'texture_input', id: 'in' },
-          {
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [0.05, 0.05, 0.1] },
+      chain: [
+        {
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [0.05, 0.05, 0.1] },
+        },
+        withMotion ? {
+          type: 'module',
+          module_type: 'debug.motion_swarm',
+          instance_key: 'swarm@0',
+          params: {
+            count: 24, size: 0.08, swirl: 1.5, radial: 0.0,
+            randomness: 0.4, speed: 2.5, opacity: 1.0, seed: 7,
           },
-          withMotion ? {
-            type: 'module',
-            module_type: 'debug.motion_swarm',
-            instance_key: 'swarm@0',
-            params: {
-              count: 24, size: 0.08, swirl: 1.5, radial: 0.0,
-              randomness: 0.4, speed: 2.5, opacity: 1.0, seed: 7,
-            },
-          } : {
-            // Same slot, no render_outputs producer → zero incoming flow.
-            type: 'module',
-            module_type: 'generator.solid_color',
-            instance_key: 'filler@0',
-            params: { color: [0.05, 0.05, 0.1] },
-          },
-          {
-            type: 'module',
-            module_type: 'video.local_delay',
-            instance_key: 'ld@0',
-            // Crank sensitivity/reach so the incoming-driven echo is well clear
-            // of the passthrough baseline. smoothing=0 disables the temporal flow
-            // EMA: the incoming swarm motion is sparse (nonzero only inside the
-            // small moving rects) and intermittent at any fixed pixel, so the
-            // default EMA would average it toward zero — unlike the dense LK flow
-            // in Estimate mode. With no smoothing the per-frame vectors drive the
-            // advection directly. flow_source=1 = Incoming: reads the auto-
-            // connected render_outputs_in/motion.
-            params: { flow_source: 1, smoothing: 0.0, delay_amount: 1.0, delay_steps: 32.0, weight_gain: 0.15 },
-          },
-          { type: 'texture_output', id: 'out' },
-        ],
-      }],
+        } : {
+          // Same slot, no render_outputs producer → zero incoming flow.
+          type: 'module',
+          module_type: 'generator.solid_color',
+          instance_key: 'filler@0',
+          params: { color: [0.05, 0.05, 0.1] },
+        },
+        {
+          type: 'module',
+          module_type: 'video.local_delay',
+          instance_key: 'ld@0',
+          // Crank sensitivity/reach so the incoming-driven echo is well clear
+          // of the passthrough baseline. smoothing=0 disables the temporal flow
+          // EMA: the incoming swarm motion is sparse (nonzero only inside the
+          // small moving rects) and intermittent at any fixed pixel, so the
+          // default EMA would average it toward zero — unlike the dense LK flow
+          // in Estimate mode. With no smoothing the per-frame vectors drive the
+          // advection directly. flow_source=1 = Incoming: reads the auto-
+          // connected render_outputs_in/motion.
+          params: { flow_source: 1, smoothing: 0.0, delay_amount: 1.0, delay_steps: 32.0, weight_gain: 0.15 },
+        },
+      ],
     } as Sketch);
 
     const withMotion = await runEngineTest({
@@ -553,8 +516,8 @@ describe('video.local_delay E2E', () => {
       commands: [
         { type: 'createSketch', sketchId: 'ld_inc_on', sketch: buildChain(true) },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'ld_in',  target: { type: 'chain_entry', sketchId: 'ld_inc_on', colIdx: 0, chainIdx: 3, side: 'input'  } },
-          { id: 'ld_out', target: { type: 'chain_entry', sketchId: 'ld_inc_on', colIdx: 0, chainIdx: 3, side: 'output' } },
+          { id: 'ld_in',  target: { type: 'chain_entry', sketchId: 'ld_inc_on', colIdx: 0, chainIdx: 2, side: 'input'  } },
+          { id: 'ld_out', target: { type: 'chain_entry', sketchId: 'ld_inc_on', colIdx: 0, chainIdx: 2, side: 'output' } },
         ]},
       ],
       waitFrames: 20,
@@ -569,8 +532,8 @@ describe('video.local_delay E2E', () => {
       commands: [
         { type: 'createSketch', sketchId: 'ld_inc_off', sketch: buildChain(false) },
         { type: 'setTracePoints', tracePoints: [
-          { id: 'ld_in',  target: { type: 'chain_entry', sketchId: 'ld_inc_off', colIdx: 0, chainIdx: 3, side: 'input'  } },
-          { id: 'ld_out', target: { type: 'chain_entry', sketchId: 'ld_inc_off', colIdx: 0, chainIdx: 3, side: 'output' } },
+          { id: 'ld_in',  target: { type: 'chain_entry', sketchId: 'ld_inc_off', colIdx: 0, chainIdx: 2, side: 'input'  } },
+          { id: 'ld_out', target: { type: 'chain_entry', sketchId: 'ld_inc_off', colIdx: 0, chainIdx: 2, side: 'output' } },
         ]},
       ],
       waitFrames: 20,

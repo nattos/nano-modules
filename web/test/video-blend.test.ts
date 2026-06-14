@@ -21,31 +21,26 @@ function buildBlendSketch(opts: {
       { id: 'wa', src: { instanceKey: a, field: 'tex_out' }, dest: { instanceKey: blend, field: 'tex_a' } },
       { id: 'wb', src: { instanceKey: b, field: 'tex_out' }, dest: { instanceKey: blend, field: 'tex_b' } },
     ],
-    columns: [{
-      name: 'main',
-      chain: [
-        { type: 'texture_input', id: 'in' },
-        {
-          type: 'module',
-          module_type: 'generator.solid_color',
-          instance_key: a,
-          params: { color: [opts.colorA.r, opts.colorA.g, opts.colorA.b] },
-        },
-        {
-          type: 'module',
-          module_type: 'generator.solid_color',
-          instance_key: b,
-          params: { color: [opts.colorB.r, opts.colorB.g, opts.colorB.b] },
-        },
-        {
-          type: 'module',
-          module_type: 'video.blend',
-          instance_key: blend,
-          params: { opacity: opts.opacity },
-        },
-        { type: 'texture_output', id: 'out' },
-      ],
-    }],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'generator.solid_color',
+        instance_key: a,
+        params: { color: [opts.colorA.r, opts.colorA.g, opts.colorA.b] },
+      },
+      {
+        type: 'module',
+        module_type: 'generator.solid_color',
+        instance_key: b,
+        params: { color: [opts.colorB.r, opts.colorB.g, opts.colorB.b] },
+      },
+      {
+        type: 'module',
+        module_type: 'video.blend',
+        instance_key: blend,
+        params: { opacity: opts.opacity },
+      },
+    ],
   } as Sketch;
 }
 

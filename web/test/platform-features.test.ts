@@ -152,25 +152,20 @@ describe('Platform features', () => {
     it('copies into tex_out through the chain executor (intermediate-pool COPY_DST)', async () => {
       const sketch: Sketch = {
         anchor: null,
-        columns: [{
-          name: 'main',
-          chain: [
-            { type: 'texture_input', id: 'in' },
-            // Red bg that must be fully overwritten by the clear+copy.
-            {
-              type: 'module',
-              module_type: 'generator.solid_color',
-              instance_key: 'bg@0',
-              params: { color: [1.0, 0.0, 0.0] },
-            },
-            {
-              type: 'module',
-              module_type: 'debug.clear_copy_test',
-              instance_key: 'cc@0',
-            },
-            { type: 'texture_output', id: 'out' },
-          ],
-        }],
+        chain: [
+          // Red bg that must be fully overwritten by the clear+copy.
+          {
+            type: 'module',
+            module_type: 'generator.solid_color',
+            instance_key: 'bg@0',
+            params: { color: [1.0, 0.0, 0.0] },
+          },
+          {
+            type: 'module',
+            module_type: 'debug.clear_copy_test',
+            instance_key: 'cc@0',
+          },
+        ],
       };
 
       const result = await runEngineTest({

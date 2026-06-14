@@ -16,17 +16,14 @@ describe('Wire routing E2E', () => {
     // the values are read same-frame. 50% blend of red+blue → purple.
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
-            params: { color: [1.0, 0.0, 0.0] } },
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
-            params: { color: [0.0, 0.0, 1.0] } },
-          { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
-            params: { opacity: 0.5 } },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
+        params: { color: [1.0, 0.0, 0.0] } },
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
+        params: { color: [0.0, 0.0, 1.0] } },
+        { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
+        params: { opacity: 0.5 } },
+      ],
       wires: [
         { id: 'w0', src: { instanceKey: 'red@0',  field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: '0' } },
         { id: 'w1', src: { instanceKey: 'blue@0', field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: '1' } },
@@ -56,17 +53,14 @@ describe('Wire routing E2E', () => {
     // the implicit chain flow (the stage above) — here it'd show solid blue.
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
-            params: { color: [1.0, 0.0, 0.0] } },
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
-            params: { color: [0.0, 0.0, 1.0] } },
-          { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
-            params: { opacity: 0.5 } },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
+        params: { color: [1.0, 0.0, 0.0] } },
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
+        params: { color: [0.0, 0.0, 1.0] } },
+        { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
+        params: { opacity: 0.5 } },
+      ],
       wires: [
         { id: 'wa', src: { instanceKey: 'red@0',  field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: 'tex_a' } },
         { id: 'wb', src: { instanceKey: 'blue@0', field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: 'tex_b' } },
@@ -103,17 +97,14 @@ describe('Wire routing E2E', () => {
     //   • both work      → gray(128)  ✓
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
-            params: { color: [1.0, 1.0, 1.0] } },
-          { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
-            params: { rate: 0.0, amplitude: 1.0 } },
-          { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-            params: { brightness: 1.0, contrast: 0.25 } },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        params: { color: [1.0, 1.0, 1.0] } },
+        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+        params: { rate: 0.0, amplitude: 1.0 } },
+        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        params: { brightness: 1.0, contrast: 0.25 } },
+      ],
       wires: [
         { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
           dest: { instanceKey: 'bc@0', field: 'brightness' } },
@@ -147,15 +138,12 @@ describe('Wire routing E2E', () => {
     // would pin the output at 0.1*src every frame instead).
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
-            params: { color: [0.4, 0.0, 0.0] } },
-          { type: 'module', module_type: 'video.blend', instance_key: 'acc@0',
-            params: { opacity: 0.97 } },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        params: { color: [0.4, 0.0, 0.0] } },
+        { type: 'module', module_type: 'video.blend', instance_key: 'acc@0',
+        params: { opacity: 0.97 } },
+      ],
       wires: [
         { id: 'fb', src: { instanceKey: 'acc@0', field: 'tex_out' },
           dest: { instanceKey: 'acc@0', field: '1' } },
@@ -205,18 +193,15 @@ describe('Wire routing E2E', () => {
     // white. Only knob=0.5 reaching brightness yields gray.
     const sketch: Sketch = {
       anchor: null,
-      columns: [{
-        name: 'main',
-        chain: [
-          { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
-            params: { color: [1.0, 1.0, 1.0] } },
-          { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
-            params: { rate: 0.0, amplitude: 1.0 } },
-          { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
-          { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-            params: { brightness: 1.0, contrast: 0.25 } },
-        ],
-      }],
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        params: { color: [1.0, 1.0, 1.0] } },
+        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+        params: { rate: 0.0, amplitude: 1.0 } },
+        { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
+        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        params: { brightness: 1.0, contrast: 0.25 } },
+      ],
       instances: {
         'dash@0': { module_type: 'util.dashboard', state: { knobCount: 1, knobs: [1.0] } },
       },
