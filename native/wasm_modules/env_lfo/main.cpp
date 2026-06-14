@@ -38,7 +38,8 @@ void module_init() {
     state::Schema()
       .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput)
+      // Unipolar [0,1] sine — declared so a wire's "Auto" magnitude maps it as unsigned.
+      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
   );
   state::log("LFO: init");
 }

@@ -339,7 +339,11 @@ public:
     appendRaw("{\"fields\":{");
   }
 
-  Schema& floatField(const char* name, float def, float min, float max, int io = None) {
+  // `magnitude` (optional) declares how an OUTPUT field's value should be
+  // interpreted by a wire's "Auto" magnitude mode: "signed" (bipolar -1..1) or
+  // "unsigned" (unipolar 0..1). Absent → the web defaults Auto to unsigned.
+  Schema& floatField(const char* name, float def, float min, float max, int io = None,
+                     const char* magnitude = nullptr) {
     beginField(name);
     appendRaw("\"type\":\"float\",\"default\":");
     appendFloat(def);
@@ -349,6 +353,11 @@ public:
     appendFloat(max);
     appendRaw(",\"io\":");
     appendInt(io);
+    if (magnitude) {
+      appendRaw(",\"magnitude\":\"");
+      appendRaw(magnitude);
+      appendRaw("\"");
+    }
     appendOrder();
     appendRaw("}");
     return *this;
