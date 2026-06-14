@@ -104,15 +104,24 @@ function legacyColumnsChain(sketch: Sketch): ChainEntry[] {
 
 /**
  * Canonicalize a sketch into the single-`chain` model: flatten any legacy
- * `columns` and strip non-module entries (old explicit `texture_input` /
- * `texture_output`; texture I/O is implicit now). Idempotent. Called on every
- * sketch that enters `appState.database` from an external source — IndexedDB
- * load, remote NanoBarrel snapshot, fixture creation, etc.
+ * `columns`, strip non-module entries (old explicit `texture_input` /
+ * `texture_output`; texture I/O is implicit now), and prune DANGLING wires —
+ * wires whose `src`/`dest` instance is no longer in the chain. A dangling wire
+ * is a silent no-op in the executor (it skips a wire with no live source), so a
+ * stale reference left by a removed instance would make its dest revert and any
+ * mod controls appear inert; dropping it on ingest keeps the data honest.
+ * Idempotent. Called on every sketch that enters `appState.database` from an
+ * external source — IndexedDB load, remote NanoBarrel snapshot, fixture creation.
  */
 export function normalizeSketchChains(sketch: Sketch): Sketch {
   const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
   const { columns, ...rest } = sketch as any;   // drop any legacy columns blob
-  return { ...rest, chain };
+  const result = { ...rest, chain } as Sketch;
+  if (Array.isArray(result.wires)) {
+    const keys = new Set(chain.map(e => e.instance_key));
+    result.wires = result.wires.filter(w => keys.has(w.src.instanceKey) && keys.has(w.dest.instanceKey));
+  }
+  return result;
 }
 
 /**

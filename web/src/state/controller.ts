@@ -342,10 +342,19 @@ export class AppController {
       const chain = ensureChain(sk);
       const entry = chain[chainIdx];
       if (entry?.type === 'module') {
+        const key = entry.instance_key;
         chain.splice(chainIdx, 1);
         // Clean up instance state
         if (sk.instances) {
-          delete sk.instances[entry.instance_key];
+          delete sk.instances[key];
+        }
+        // Drop any wires that referenced this instance. Otherwise they dangle:
+        // the executor silently skips a wire whose endpoint has no live source,
+        // so a later same-type effect (which gets a NEW instance_key) never
+        // re-attaches, and the orphaned wire looks like a broken connection.
+        if (sk.wires) {
+          sk.wires = sk.wires.filter(
+            w => w.src.instanceKey !== key && w.dest.instanceKey !== key);
         }
       }
     });

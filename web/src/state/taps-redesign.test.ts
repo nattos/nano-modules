@@ -3,6 +3,7 @@ import { runInAction } from 'mobx';
 import { appState } from './app-state';
 import { appController } from './controller';
 import type { FieldConnectInfo } from './controller';
+import { normalizeSketchChains } from '../sketch-types';
 
 const field = (over: Partial<FieldConnectInfo> = {}): FieldConnectInfo => ({
   sketchId: 'sk', colIdx: 0, chainIdx: 0, fieldPath: 'brightness',
@@ -110,6 +111,38 @@ describe('connectWire', () => {
     );
     appController.removeWire('sk', wires()[0].id);
     expect(wires()).toHaveLength(0);
+  });
+});
+
+describe('dangling wire cleanup', () => {
+  it('removeEffectFromChain drops wires that referenced the removed instance', () => {
+    seedWireSketch();   // chain: [lfo (0), bc (1)]
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),    // lfo.output
+      field({ chainIdx: 1, fieldPath: 'brightness', isOutput: false }), // bc.brightness
+    );
+    expect(wires()).toHaveLength(1);
+    // Removing the LFO must take its (now-orphaned) wire with it — otherwise it
+    // dangles and silently does nothing.
+    appController.removeEffectFromChain('sk', 0, 0);
+    expect(wires()).toHaveLength(0);
+  });
+
+  it('normalizeSketchChains prunes wires whose endpoints are not in the chain', () => {
+    const sk = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+        { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
+      ],
+      wires: [
+        { id: 'good', src: { instanceKey: 'lfo', field: 'output' }, dest: { instanceKey: 'bc', field: 'brightness' } },
+        { id: 'dead-src', src: { instanceKey: 'ghost', field: 'output' }, dest: { instanceKey: 'bc', field: 'brightness' } },
+        { id: 'dead-dest', src: { instanceKey: 'lfo', field: 'output' }, dest: { instanceKey: 'ghost', field: 'x' } },
+      ],
+    } as any;
+    const n = normalizeSketchChains(sk);
+    expect(n.wires?.map(w => w.id)).toEqual(['good']);
   });
 });
 
