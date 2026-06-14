@@ -28,10 +28,12 @@ describe('main sketch monitor fallback', () => {
           chain: [
             { type: 'module', module_type: 'generator.solid_color', instance_key: 'sc@0',
               params: { color: [0.9, 0.2, 0.5] } },
+            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0' },
             { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0' },
           ],
           instances: {
             'sc@0': { module_type: 'generator.solid_color', state: { color: [0.9, 0.2, 0.5] } },
+            'lfo@0': { module_type: 'data.lfo', state: {} },
             'bc@0': { module_type: 'video.brightness_contrast', state: { brightness: 1, contrast: 1 } },
           },
         };
@@ -63,12 +65,20 @@ describe('main sketch monitor fallback', () => {
     expect(initial.target).toBe('sketch_output');
     expect(initial.nonBlank).toBe(true);
 
-    // Select an effect → monitor follows it to that effect's output texture.
+    // Select an image effect → monitor follows it to that effect's output texture.
     await page.evaluate(`window.appController.select('effect/sk_mon/0/0')`);
     await new Promise(r => setTimeout(r, 1200));
     const selected = await probe();
     expect(selected.target).toBe('chain_entry');
     expect(selected.nonBlank).toBe(true);
+
+    // Select the LFO (a texture-passthrough node with no image output) → the
+    // monitor must NOT jump to the next stage's texture; it stays on final output.
+    await page.evaluate(`window.appController.select('effect/sk_mon/0/1')`);
+    await new Promise(r => setTimeout(r, 1200));
+    const passthrough = await probe();
+    expect(passthrough.target).toBe('sketch_output');
+    expect(passthrough.nonBlank).toBe(true);
 
     // Deselect → falls back to final output, still registered + painted (the bug).
     await page.evaluate(`window.appController.select(null)`);

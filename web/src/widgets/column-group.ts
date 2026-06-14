@@ -46,6 +46,23 @@ import type { Selectable } from '../state/types';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
+/**
+ * Whether an effect produces an image — i.e. its schema declares a `texture`
+ * field with the Output bit (io & 2). Mirrors the executor's texture-passthrough
+ * test (sketch-executor.ts): nodes WITHOUT a texture output (LFOs, data/
+ * modulation sources) render no image and pass their input through, so tracing
+ * "their output" would show the next stage's texture. Such nodes get no monitor
+ * trace target — selecting them leaves the monitor on the sketch's final output.
+ */
+function effectHasTextureOutput(schema: Record<string, any> | undefined): boolean {
+  if (!schema) return false;
+  for (const fn in schema) {
+    const d = schema[fn];
+    if (d?.type === 'texture' && (((d.io ?? 0) & 2) !== 0)) return true;
+  }
+  return false;
+}
+
 /** Map an engine ParamInfo to a generic inspector field definition. */
 function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
   switch (p.type) {
@@ -1554,14 +1571,13 @@ export class ColumnGroup extends MobxLitElement {
     appController.defineSelectable({
       path,
       label: availEffect?.name ?? shortName(entry.module_type),
-      // Selecting an effect drives the main monitor to that effect's output.
-      traceTarget: {
-        type: 'chain_entry',
-        sketchId: this.sketchId,
-        colIdx: this.colIdx,
-        chainIdx,
-        side: 'output',
-      },
+      // Selecting an effect drives the main monitor to that effect's output —
+      // but only if it actually renders an image. Texture-passthrough nodes
+      // (LFOs, data sources) have no texture output, so tracing "their output"
+      // would show the next stage's texture; leave the monitor on final output.
+      traceTarget: effectHasTextureOutput(plugin?.schema as any)
+        ? { type: 'chain_entry', sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, side: 'output' }
+        : undefined,
       renderInspectorContent: () => {
         const binding: FieldBinding = {
           instanceKey: entry.instance_key,
