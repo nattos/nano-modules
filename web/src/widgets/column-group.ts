@@ -15,7 +15,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
-import { appController } from '../state/controller';
+import { appController, DASHBOARD_MODULE_TYPE, DASHBOARD_KNOB_COUNT } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine } from '../sketch-types';
 import { sketchChain, chainEntryAt } from '../sketch-types';
@@ -36,6 +36,7 @@ import './field-select';
 import './field-placeholder';
 import './texture-monitor';
 import './spark-chart';
+import './dashboard-editor';
 import './smart-input';
 import './scalar-slider';
 import './output-trace-card';
@@ -1006,8 +1007,14 @@ export class ColumnGroup extends MobxLitElement {
    * params stay inputs regardless of how they're tapped.
    */
   private getOutputFieldNames(entry: ModuleEntry): Set<string> {
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
     const names = new Set<string>();
+    // Dashboard knobs are wire sources (and sinks); surface them as outputs so
+    // the gutter renders them on the producing side.
+    if (entry.module_type === DASHBOARD_MODULE_TYPE) {
+      for (let i = 0; i < DASHBOARD_KNOB_COUNT; i++) names.add(`knob_${i}`);
+      return names;
+    }
+    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
     // Schema io-declared outputs (io bit 2).
     const schema = plugin?.schema ?? {};
     for (const [name, def] of Object.entries(schema)) {
@@ -1202,6 +1209,12 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   private renderFieldWidgets(chainIdx: number, entry: ModuleEntry) {
+    // util.dashboard: a distinct kind of effect with a bespoke knob-row body.
+    if (entry.module_type === DASHBOARD_MODULE_TYPE) {
+      return html`<dashboard-editor
+        .sketchId=${this.sketchId} .instanceKey=${entry.instance_key}></dashboard-editor>`;
+    }
+
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
 
     const binding = this.buildFieldBinding(chainIdx, entry, plugin);

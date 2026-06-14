@@ -30,6 +30,11 @@ import { saveUserSettings } from './user-settings';
 import { saveProject, deleteProject as idbDeleteProject } from './project-store';
 import { SketchInputManager } from './sketch-input-manager';
 
+/** The executor-handled virtual knob-bank effect (no WASM module). */
+export const DASHBOARD_MODULE_TYPE = 'util.dashboard';
+/** Fixed knob count — create more dashboards if you need more knobs. */
+export const DASHBOARD_KNOB_COUNT = 8;
+
 /** Identifies one end of a drag-to-connect operation. */
 export interface FieldConnectInfo {
   sketchId: string;
@@ -243,13 +248,23 @@ export class AppController {
     return state;
   }
 
+  /**
+   * Initial instance state for a module by type — the seam where the
+   * executor-handled `util.dashboard` (a non-WASM knob bank) gets its
+   * `knobs` array seeded. Everything else defers to the plugin schema.
+   */
+  private initialStateForModule(moduleType: string): Record<string, any> {
+    if (moduleType === DASHBOARD_MODULE_TYPE) {
+      return { knobs: Array.from({ length: DASHBOARD_KNOB_COUNT }, () => 0) };
+    }
+    const plugin = appState.local.plugins.find(p => p.id === moduleType);
+    return plugin ? this.defaultStateForPlugin(plugin) : {};
+  }
+
   addEffectToChain(sketchId: string, colIdx: number, insertIdx: number, moduleType: string) {
     const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
 
-    const plugin = appState.local.plugins.find(p => p.id === moduleType);
-    const defaultState: Record<string, any> = plugin
-      ? this.defaultStateForPlugin(plugin)
-      : {};
+    const defaultState = this.initialStateForModule(moduleType);
 
     this.mutate(`Add ${shortName(moduleType)}`, draft => {
       const sketch = draft.sketches[sketchId];
@@ -275,7 +290,7 @@ export class AppController {
       entry.module_type = newModuleType;
       sk.instances = sk.instances ?? {};
       const inst = sk.instances[entry.instance_key];
-      if (inst) { inst.module_type = newModuleType; inst.state = {}; }
+      if (inst) { inst.module_type = newModuleType; inst.state = this.initialStateForModule(newModuleType); }
     });
     // Tell the engine worker to swap the instance directly
     this.engine?.changeInstanceType(sketchId, colIdx, chainIdx, newModuleType);
@@ -291,7 +306,7 @@ export class AppController {
       entry.module_type = newModuleType;
       sk.instances = sk.instances ?? {};
       const inst = sk.instances[entry.instance_key];
-      if (inst) { inst.module_type = newModuleType; inst.state = {}; }
+      if (inst) { inst.module_type = newModuleType; inst.state = this.initialStateForModule(newModuleType); }
     };
   }
 
@@ -409,6 +424,38 @@ export class AppController {
     const instanceKey = (entry && entry.type === 'module') ? entry.instance_key : '';
     edit.update(this.setParamsRecipe(sketchId, instanceKey, values));
     for (const k in values) this.engine?.setParam(sketchId, colIdx, chainIdx, k, values[k]);
+  }
+
+  // --- util.dashboard knobs (state.knobs[i], executor-handled) ---
+
+  /** Recipe that writes one knob value into a dashboard instance's `knobs` array. */
+  private dashboardKnobRecipe(sketchId: string, instanceKey: string, idx: number, value: number) {
+    return (draft: DatabaseState) => {
+      const inst = draft.sketches[sketchId]?.instances?.[instanceKey];
+      if (!inst) return;
+      const knobs = Array.isArray(inst.state.knobs) ? inst.state.knobs : [];
+      while (knobs.length <= idx) knobs.push(0);
+      knobs[idx] = value;
+      inst.state.knobs = knobs;
+    };
+  }
+
+  /** Set a dashboard knob (one undo point). */
+  setDashboardKnob(sketchId: string, instanceKey: string, idx: number, value: number) {
+    this.mutate('Set knob', this.dashboardKnobRecipe(sketchId, instanceKey, idx, value));
+  }
+
+  /** Begin a continuous knob edit (drag). Pushes live so wired consumers update. */
+  beginSetDashboardKnob(sketchId: string, instanceKey: string, idx: number, value: number): LongEdit {
+    const edit = this.history.beginLongEdit('Set knob', this.dashboardKnobRecipe(sketchId, instanceKey, idx, value));
+    this.pushSketchLive(sketchId);
+    return edit;
+  }
+
+  /** Update a continuous knob edit (drag in progress). */
+  updateSetDashboardKnob(edit: LongEdit, sketchId: string, instanceKey: string, idx: number, value: number) {
+    edit.update(this.dashboardKnobRecipe(sketchId, instanceKey, idx, value));
+    this.pushSketchLive(sketchId);
   }
 
   undo() { this.history.undo(); }
@@ -613,6 +660,19 @@ export class AppController {
         if (!existing.some(x => x.id === e.id)) {
           existing.push({ id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords });
         }
+      }
+      // Built-in, non-WASM effects. Injected alongside the first WASM batch so
+      // the "no effects until a module loads" invariant (syncSketchesToEngine)
+      // holds, but the picker still offers them.
+      if (!existing.some(x => x.id === DASHBOARD_MODULE_TYPE)) {
+        existing.push({
+          id: DASHBOARD_MODULE_TYPE,
+          name: 'Dashboard',
+          description: `A bank of ${DASHBOARD_KNOB_COUNT} knobs — each a wire source and sink for macro control.`,
+          category: 'Utility',
+          keywords: ['knob', 'macro', 'control', 'dashboard', 'util'],
+          kind: 'dashboard',
+        });
       }
     });
     // If a default project was selected before its effect was discovered

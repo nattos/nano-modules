@@ -39,6 +39,12 @@ export interface AvailableEffect {
   description: string;
   category: string;
   keywords: string[];
+  /**
+   * Effect kind. Defaults to a normal WASM-backed image `'effect'`. Distinct
+   * kinds (e.g. `'dashboard'`) are handled specially by the UI — different card
+   * rendering, no generic inspector. See column-group's util.dashboard case.
+   */
+  kind?: 'effect' | 'dashboard';
 }
 
 // --- Selectable system ---
