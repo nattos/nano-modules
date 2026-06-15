@@ -1122,6 +1122,32 @@ static void gpu_copy_texture(wasm_exec_env_t env, int32_t src, int32_t dst) {
   auto* g = get_gpu(env); if (g) g->copyTexture(src, dst);
 }
 
+// Instanced raster (particles / procedural-quad effects in lights/nano). The
+// binding layout is WebGPU-only; Metal binds by slot. vs/fs entries mapped.
+static int32_t gpu_create_instanced_render_pso_blend_layout(wasm_exec_env_t env,
+    int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
+    int32_t fs_len, int32_t format, int32_t binding_count, int32_t bindings_ptr,
+    int32_t blend_mode) {
+  (void)binding_count; (void)bindings_ptr;
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, vs_ptr, vs_len)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, fs_ptr, fs_len)) return -1;
+  char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
+  char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
+  if (!vse || !fse) return -1;
+  return g->createInstancedRenderPSO(vs, map_entry_name(g, vse, vs_len),
+                                     fs, map_entry_name(g, fse, fs_len),
+                                     format, blend_mode);
+}
+static int32_t gpu_begin_render_pass_load(wasm_exec_env_t env, int32_t tex) {
+  auto* g = get_gpu(env); return g ? g->beginRenderPassLoad(tex) : -1;
+}
+static void gpu_render_set_buffer(wasm_exec_env_t env, int32_t pass, int32_t buf, int32_t slot) {
+  auto* g = get_gpu(env); if (g) g->renderSetBuffer(pass, buf, slot);
+}
+
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
     {"create_shader_module", reinterpret_cast<void*>(gpu_create_shader_module), "(ii)i", nullptr},
@@ -1132,6 +1158,9 @@ static NativeSymbol gpu_symbols[] = {
     {"compute_set_texture_mip", reinterpret_cast<void*>(gpu_compute_set_texture_mip), "(iiiii)", nullptr},
     {"clear_texture", reinterpret_cast<void*>(gpu_clear_texture), "(iffff)", nullptr},
     {"copy_texture", reinterpret_cast<void*>(gpu_copy_texture), "(ii)", nullptr},
+    {"create_instanced_render_pso_blend_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_blend_layout), "(iiiiiiiiii)i", nullptr},
+    {"begin_render_pass_load", reinterpret_cast<void*>(gpu_begin_render_pass_load), "(i)i", nullptr},
+    {"render_set_buffer", reinterpret_cast<void*>(gpu_render_set_buffer), "(iii)", nullptr},
     {"create_compute_pso_layout", reinterpret_cast<void*>(gpu_create_compute_pso_layout), "(iiiii)i", nullptr},
     {"create_compute_pso_v2", reinterpret_cast<void*>(gpu_create_compute_pso_v2), "(iiiiiii)i", nullptr},
     {"create_buffer", reinterpret_cast<void*>(gpu_create_buffer), "(ii)i", nullptr},
