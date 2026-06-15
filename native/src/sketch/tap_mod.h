@@ -108,4 +108,34 @@ inline float combineTap(bool hasExisting, float existing, float value,
   }
 }
 
+/// Range-aware fold for a scalar wire's `magnitude` mode (the convenience
+/// alternative to combineTap that maps a standard-range source value into the
+/// DEST field's [min,max] per the combine mode). `input` is the value already
+/// shaped by applyTapMod. `isSigned` true = bipolar −1..1 source, false =
+/// unipolar 0..1. LOCK-STEP twin of web/src/tap-mod.ts applyMagnitude — keep
+/// byte-identical (covered by the shared tap-mod goldens).
+inline float applyMagnitude(float existing, float input, bool isSigned,
+                            Combine combine, float mixFactor,
+                            float minV, float maxV) {
+  const float span = maxV - minV;
+  const float mid = (minV + maxV) * 0.5f;
+  // Where the input lands in [min,max] for a replace/mix fold.
+  const float replaceVal = isSigned
+      ? minV + ((input + 1.0f) * 0.5f) * span   // −1→min, 0→mid, 1→max
+      : minV + input * span;                     //  0→min, 1→max
+  switch (combine) {
+    case Combine::Add:
+      // ±1 input pushes by ±100% of the field span (same for both signs).
+      return existing + input * span;
+    case Combine::Mul:
+      return isSigned ? mid + (existing - mid) * input    // 1=identity, 0→mid
+                      : minV + (existing - minV) * input; // 1=identity, 0→min
+    case Combine::Mix:
+      return existing + (replaceVal - existing) * mixFactor;
+    case Combine::Replace:
+    default:
+      return replaceVal;
+  }
+}
+
 }  // namespace tap_mod

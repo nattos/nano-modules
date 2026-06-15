@@ -276,6 +276,42 @@ int32_t SketchExecutor::execute(
         if (w.contains("mod")) rtap["mod"] = w["mod"];
         if (w.contains("combine")) rtap["combine"] = w["combine"];
         if (w.contains("mixFactor")) rtap["mixFactor"] = w["mixFactor"];
+        // Magnitude mapping (scalar wires only). The web's resolveScalarWire
+        // default is `auto`: map the shaped value into the DEST field's
+        // [min,max] per the source field's signed/unsigned declaration. Only
+        // `absolute` falls back to the plain combineTap fold. Resolve it here
+        // (registry available) and stash the concrete params on the read tap;
+        // applyReadTaps replays applyMagnitude with them. Texture wires skip it.
+        if (ftype == "float") {
+          std::string mag = w.value("magnitude", std::string("auto"));
+          if (mag != "absolute") {
+            // auto → the source output field's `magnitude` decl (default unsigned).
+            if (mag == "auto") {
+              std::string decl;
+              if (reg && reg->schemaFields.is_object()) {
+                auto fit = reg->schemaFields.find(srcField);
+                if (fit != reg->schemaFields.end() && fit->is_object())
+                  decl = fit->value("magnitude", std::string());
+              }
+              mag = (decl == "signed") ? "signed" : "unsigned";
+            }
+            // Dest field's [min,max] (default 0..1, e.g. dashboard knobs).
+            double dmin = 0.0, dmax = 1.0;
+            const RegisteredModule* dreg = registry_
+                ? registry_->find(chain[di->second].value("module_type", std::string()))
+                : nullptr;
+            if (dreg && dreg->schemaFields.is_object()) {
+              auto dfit = dreg->schemaFields.find(dstField);
+              if (dfit != dreg->schemaFields.end() && dfit->is_object()) {
+                dmin = dfit->value("min", 0.0);
+                dmax = dfit->value("max", 1.0);
+              }
+            }
+            rtap["magnitude"] = mag;   // "signed" | "unsigned"
+            rtap["destMin"] = dmin;
+            rtap["destMax"] = dmax;
+          }
+        }
         chain[di->second]["taps"].push_back(rtap);
       }
     }
@@ -874,8 +910,22 @@ void SketchExecutor::applyReadTaps(
           if (cv.is_number())       { canon = (float)cv.get<double>(); hasCanon = true; }
           else if (cv.is_boolean()) { canon = cv.get<bool>() ? 1.0f : 0.0f; hasCanon = true; }
         }
-        float combined = tap_mod::combineTap(hasCanon, canon, shaped,
-            parseCombine(tap), tap.value("mixFactor", 1.0f));
+        float combined;
+        // Wire magnitude mode (resolved during normalization). Present →
+        // range-aware fold into [destMin,destMax]; absent → legacy combineTap
+        // (the wire's `absolute` mode, or a plain rail tap). Mirrors web's
+        // resolveScalarWire: applyMagnitude seeds from min when no canonical.
+        if (tap.contains("magnitude")) {
+          const bool isSigned = tap.value("magnitude", std::string()) == "signed";
+          const float dmin = (float)tap.value("destMin", 0.0);
+          const float dmax = (float)tap.value("destMax", 1.0);
+          combined = tap_mod::applyMagnitude(
+              hasCanon ? canon : dmin, shaped, isSigned,
+              parseCombine(tap), tap.value("mixFactor", 1.0f), dmin, dmax);
+        } else {
+          combined = tap_mod::combineTap(hasCanon, canon, shaped,
+              parseCombine(tap), tap.value("mixFactor", 1.0f));
+        }
         inst->setParamFloat(fieldPath, combined);
         inst->setFieldConnected(fieldPath, true, false);
       }

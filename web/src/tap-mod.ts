@@ -119,9 +119,9 @@ export function combineTap(
  * `resolved` is the concrete interpretation ('signed' = bipolar −1..1, 'unsigned'
  * = unipolar 0..1; `auto` is resolved by the caller from the source declaration).
  *
- * NOTE: a native twin of this is DEFERRED until the wire model is ported to the
- * native barrel (the wire model is web-only today). `applyTapMod`/`combineTap`
- * above stay byte-identical to native/src/sketch/tap_mod.h.
+ * LOCK-STEP: native twin is native/src/sketch/tap_mod.h applyMagnitude (added
+ * when the wire model was ported to the barrel executor) — keep byte-identical,
+ * same as `applyTapMod`/`combineTap`.
  */
 export function applyMagnitude(
   existing: number,

@@ -104,3 +104,51 @@ TEST_CASE("combineTap mix lerps with the per-tap factor", "[tap_mod]") {
   REQUIRE_THAT(combineTap(true, 2, 3, Combine::Mix, 1.0f), WithinAbs(3.0, 1e-5));
   REQUIRE_THAT(combineTap(true, 2, 3, Combine::Mix, 0.0f), WithinAbs(2.0, 1e-5));
 }
+
+// --- applyMagnitude — mirrors web/src/tap-mod.test.ts describe('applyMagnitude').
+// MIN=0, MAX=3 (span 3, mid 1.5). isSigned: true = 'signed', false = 'unsigned'.
+namespace { constexpr float MN = 0.0f, MX = 3.0f; }
+
+TEST_CASE("applyMagnitude signed replace maps -1..1 -> min..max", "[tap_mod]") {
+  REQUIRE_THAT(applyMagnitude(0, -1, true, Combine::Replace, 1, MN, MX), WithinAbs(0.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(0,  0, true, Combine::Replace, 1, MN, MX), WithinAbs(1.5, 1e-5));
+  REQUIRE_THAT(applyMagnitude(0,  1, true, Combine::Replace, 1, MN, MX), WithinAbs(3.0, 1e-5));
+}
+
+TEST_CASE("applyMagnitude unsigned replace maps 0..1 -> min..max", "[tap_mod]") {
+  REQUIRE_THAT(applyMagnitude(0, 0.0f, false, Combine::Replace, 1, MN, MX), WithinAbs(0.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(0, 0.5f, false, Combine::Replace, 1, MN, MX), WithinAbs(1.5, 1e-5));
+  REQUIRE_THAT(applyMagnitude(0, 1.0f, false, Combine::Replace, 1, MN, MX), WithinAbs(3.0, 1e-5));
+}
+
+TEST_CASE("applyMagnitude add pushes by +/-input*span (signed == unsigned)", "[tap_mod]") {
+  REQUIRE_THAT(applyMagnitude(1,  1, true,  Combine::Add, 1, MN, MX), WithinAbs( 4.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(1, -1, true,  Combine::Add, 1, MN, MX), WithinAbs(-2.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(1,  0, true,  Combine::Add, 1, MN, MX), WithinAbs( 1.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(1, 0.5f, false, Combine::Add, 1, MN, MX), WithinAbs(2.5, 1e-5));
+}
+
+TEST_CASE("applyMagnitude signed mul scales delta around the midpoint", "[tap_mod]") {
+  const float ex = 2;  // mid 1.5, delta +0.5
+  REQUIRE_THAT(applyMagnitude(ex,  1, true, Combine::Mul, 1, MN, MX), WithinAbs(2.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(ex,  0, true, Combine::Mul, 1, MN, MX), WithinAbs(1.5, 1e-5));
+  REQUIRE_THAT(applyMagnitude(ex, -1, true, Combine::Mul, 1, MN, MX), WithinAbs(1.0, 1e-5));
+}
+
+TEST_CASE("applyMagnitude unsigned mul scales the existing value from min", "[tap_mod]") {
+  const float ex = 2;
+  REQUIRE_THAT(applyMagnitude(ex, 1.0f, false, Combine::Mul, 1, MN, MX), WithinAbs(2.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(ex, 0.0f, false, Combine::Mul, 1, MN, MX), WithinAbs(0.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(ex, 0.5f, false, Combine::Mul, 1, MN, MX), WithinAbs(1.0, 1e-5));
+}
+
+TEST_CASE("applyMagnitude mix blends existing toward the mapped replace value", "[tap_mod]") {
+  REQUIRE_THAT(applyMagnitude(1, 1, false, Combine::Mix, 0.5f, MN, MX), WithinAbs(2.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(1, 1, false, Combine::Mix, 1.0f, MN, MX), WithinAbs(3.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(1, 1, false, Combine::Mix, 0.0f, MN, MX), WithinAbs(1.0, 1e-5));
+  REQUIRE_THAT(applyMagnitude(0, 0, true,  Combine::Mix, 1.0f, MN, MX), WithinAbs(1.5, 1e-5));
+}
+
+TEST_CASE("applyMagnitude unsigned replace into 0..1 is a pass-through (== absolute)", "[tap_mod]") {
+  REQUIRE_THAT(applyMagnitude(0.7f, 0.5f, false, Combine::Replace, 1, 0.0f, 1.0f), WithinAbs(0.5, 1e-5));
+}
