@@ -5,6 +5,7 @@
 #include "sketch/host_blend.h"
 #include "sketch/exec_gpu.h"
 #include "sketch/effrt.h"
+#include "sketch/schema_util.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/fusion_codegen.h"
@@ -194,6 +195,24 @@ SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
                                gpu::GPUBackend* gpu)
   : rt_(rt), registry_(registry), gpu_(gpu) {}
 
+void SketchExecutor::registerModuleSchema(const std::string& moduleType,
+                                          const nlohmann::json& schemaFields) {
+  RegisteredModule rm;
+  rm.schemaFields = schemaFields;
+  schema_util::deriveTextureLeafPaths(rm.schemaFields, "",
+                                      rm.inputTexturePaths, rm.outputTexturePaths);
+  schema_util::deriveSlotInputTextureFields(rm.schemaFields,
+                                            rm.slotInputTextureFields);
+  moduleSchemas_[moduleType] = std::move(rm);
+  // The augmenter's {module_type: schemaFields} projection is now stale.
+  cachedSchemasValid_ = false;
+}
+
+const RegisteredModule* SketchExecutor::findSchema(const std::string& mt) const {
+  auto it = moduleSchemas_.find(mt);
+  return it == moduleSchemas_.end() ? nullptr : &it->second;
+}
+
 SketchExecutor::~SketchExecutor() {
   for (int32_t h : intermediates_) {
     if (h > 0 && gpu_) gpu_release(h);
@@ -235,7 +254,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
     for (size_t i = 0; i < chain.size(); ++i) {
       const auto& entry = chain[i];
       std::string mt = entry.value("module_type", std::string());
-      const RegisteredModule* reg = registry_->find(mt);
+      const RegisteredModule* reg = findSchema(mt);
       if (!reg) continue;  // unknown module_type → silent passthrough
       std::string instKey = entry.value("instance_key", std::string());
       // Fusion eligibility — structural (fusion kind/fragment/prepare, tap-free)
@@ -278,7 +297,21 @@ int32_t SketchExecutor::execute(
   // immutable after the host's one-shot registerEffect calls, so build
   // the map once and reuse.
   if (!cachedSchemasValid_) {
-    cachedSchemas_ = registry_->schemas();
+#ifndef __wasm__
+    // Native transitional seed: copy the registry's schemas into the executor's
+    // own cache (deriving slot/leaf paths). B1e replaces this with host pushes
+    // via registerModuleSchema before execute(); the wasm host pushes directly.
+    if (moduleSchemas_.empty() && registry_) {
+      for (const auto& kv : registry_->schemas()) {
+        registerModuleSchema(kv.first, kv.second);
+      }
+    }
+#endif
+    // Project the augmenter's {module_type: schemaFields} map from the cache.
+    cachedSchemas_.clear();
+    for (const auto& kv : moduleSchemas_) {
+      cachedSchemas_[kv.first] = kv.second.schemaFields;
+    }
     cachedSchemasValid_ = true;
   }
   // The augmenter deep-clones the whole sketch. For chains with only
@@ -331,9 +364,8 @@ int32_t SketchExecutor::execute(
         // texture → texture rail, object/array → struct rail (its texture
         // leaves flow, same as the augmenter's implicit struct connections —
         // explicit read taps below suppress auto-connect on the dest field).
-        const RegisteredModule* reg = registry_
-            ? registry_->find(chain[si->second].value("module_type", std::string()))
-            : nullptr;
+        const RegisteredModule* reg =
+            findSchema(chain[si->second].value("module_type", std::string()));
         std::string ftype;
         json srcDef;
         if (reg && reg->schemaFields.is_object()) {
@@ -392,9 +424,8 @@ int32_t SketchExecutor::execute(
             }
             // Dest field's [min,max] (default 0..1, e.g. dashboard knobs).
             double dmin = 0.0, dmax = 1.0;
-            const RegisteredModule* dreg = registry_
-                ? registry_->find(chain[di->second].value("module_type", std::string()))
-                : nullptr;
+            const RegisteredModule* dreg =
+                findSchema(chain[di->second].value("module_type", std::string()));
             if (dreg && dreg->schemaFields.is_object()) {
               auto dfit = dreg->schemaFields.find(dstField);
               if (dfit != dreg->schemaFields.end() && dfit->is_object()) {

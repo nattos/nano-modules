@@ -86,6 +86,16 @@ class SketchExecutor {
   SketchExecutor(const SketchExecutor&) = delete;
   SketchExecutor& operator=(const SketchExecutor&) = delete;
 
+  /**
+   * Register (or replace) a module's schema in the executor's own cache. The
+   * executor derives the texture-leaf paths + positional input-slot order from
+   * `schemaFields` and uses them for wire routing / slot binding — it does NOT
+   * consult the ModuleRegistry at run time. The native host seeds this from the
+   * registry; the wasm host pushes each effect's schema here before execute().
+   */
+  void registerModuleSchema(const std::string& moduleType,
+                            const nlohmann::json& schemaFields);
+
   /** Set (or clear with empty) the per-chain-entry capture hook. */
   void setChainEntryHook(ChainEntryHook hook) { chainEntryHook_ = std::move(hook); }
   /** Set (or clear with empty) the sketch-output hook. */
@@ -195,6 +205,14 @@ class SketchExecutor {
   // rebuilding ~the same map every frame, hot on the profile.
   std::unordered_map<std::string, nlohmann::json> cachedSchemas_;
   bool cachedSchemasValid_ = false;
+
+  // The executor's OWN schema cache (schemaFields + derived texture-leaf paths +
+  // positional input-slot order), keyed by module_type. Populated via
+  // registerModuleSchema (host push) or, natively, seeded from registry_ on the
+  // first execute(). find()/wire-routing read this, not the ModuleRegistry, so
+  // the executor can run with no registry in the wasm build.
+  std::unordered_map<std::string, RegisteredModule> moduleSchemas_;
+  const RegisteredModule* findSchema(const std::string& moduleType) const;
 
   // Per-instance state JSON from the previous frame. Two uses: (1) the
   // whole-state fast path — skip applyState entirely when nothing changed;
