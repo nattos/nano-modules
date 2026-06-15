@@ -109,3 +109,62 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
 
   host.shutdown();
 }
+
+TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effect_driver]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  // phase = t * (rate*10) * 2pi. With t=0.05, rate=0.5 (default) => phase=pi/2,
+  // so sin(phase)=1 and amplitude becomes observable in the output:
+  //   output = sin(phase)*amplitude*0.5 + 0.5.
+  FrameState fs;
+  fs.elapsed_time = 0.05;
+  host.set_frame_state(id, &fs);
+
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "data.lfo") { w = &e; break; }
+  }
+  REQUIRE(w != nullptr);
+
+  EffectDesc desc;
+  desc.id = w->id;
+  desc.wasm_host = &host;
+  desc.wasm_module_id = id;
+  desc.w_module_init = w->idx_module_init;
+  desc.w_create = w->idx_create;
+  desc.w_destroy = w->idx_destroy;
+  desc.w_init = w->idx_init;
+  desc.w_tick = w->idx_tick;
+  desc.w_on_state_patched = w->idx_on_state_patched;
+
+  EffectRuntime rt(nullptr);
+  rt.registerEffect(desc);
+  const std::string key = host.plugin_key(id);
+  REQUIRE(!key.empty());
+  EffectInstance* inst = rt.instanceFor("data.lfo", "k0");
+  REQUIRE(inst != nullptr);
+
+  // Defaults (amplitude 1.0): sin(pi/2)*1*0.5+0.5 = 1.0 (clamped).
+  inst->doTick(0.0);
+  CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
+        Catch::Approx(1.0).margin(1e-4));
+
+  // Patch amplitude -> 0.5: sin(pi/2)*0.5*0.5+0.5 = 0.75. Proves the patch
+  // marshalled into linear memory and on_state_patched applied it.
+  inst->setParamFloat("amplitude", 0.5f);
+  inst->doTick(0.0);
+  CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
+        Catch::Approx(0.75).margin(1e-4));
+
+  host.shutdown();
+}

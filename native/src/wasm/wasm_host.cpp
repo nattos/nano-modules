@@ -264,6 +264,28 @@ void WasmHost::set_effect_instance(int32_t module_id, void* inst) {
   if (m) m->context.effect_instance = inst;
 }
 
+uint32_t WasmHost::app_malloc(int32_t module_id, uint32_t size, void** out_native) {
+  if (out_native) *out_native = nullptr;
+  auto* m = find_module(module_id);
+  if (!m || size == 0) return 0;
+  void* native = nullptr;
+  uint64_t off = wasm_runtime_module_malloc(m->instance, size, &native);
+  if (out_native) *out_native = native;
+  return static_cast<uint32_t>(off);
+}
+
+void WasmHost::app_free(int32_t module_id, uint32_t app_offset) {
+  if (app_offset == 0) return;
+  auto* m = find_module(module_id);
+  if (m) wasm_runtime_module_free(m->instance, app_offset);
+}
+
+void WasmHost::set_pending_patches(int32_t module_id,
+                                   std::vector<nlohmann::json> patches) {
+  auto* m = find_module(module_id);
+  if (m) m->context.pending_patches = std::move(patches);
+}
+
 void WasmHost::set_draw_list(int32_t module_id, canvas::DrawList* dl) {
   auto* m = find_module(module_id);
   if (m) m->context.draw_list = dl;

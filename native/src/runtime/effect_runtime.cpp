@@ -234,10 +234,62 @@ void EffectInstance::setParamArray(const std::string& path,
 // — those resolve via the active instance + the in-scope val table.
 void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
   if (desc_.isWasm()) {
-    // TODO(barrel-wasm): marshal the patch buffer (pb/off/len/ops) into the
-    // module's linear memory and call_indirect(w_on_state_patched). Params
-    // therefore don't yet reach WASM effects — they run on init() defaults.
-    // Needed before GPU effects (whose params arrive via patches) are driven.
+    if (!desc_.w_on_state_patched || patches.empty()) return;
+    auto* h = desc_.wasm_host;
+    const int32_t mid = desc_.wasm_module_id;
+
+    // Build the packed path buffer + per-patch arrays (the on_state_patched
+    // ABI) and the {op,path,value} objects state.get_patch returns.
+    std::string pb;
+    std::vector<int32_t> off, len, ops;
+    off.reserve(patches.size());
+    len.reserve(patches.size());
+    ops.reserve(patches.size());
+    std::vector<nlohmann::json> pend;
+    pend.reserve(patches.size());
+    for (const auto& p : patches) {
+      off.push_back(static_cast<int32_t>(pb.size()));
+      len.push_back(static_cast<int32_t>(p.path.size()));
+      ops.push_back(p.op);
+      pb += p.path;
+      nlohmann::json obj;
+      obj["op"] = (p.op == 0 ? "add"
+                   : p.op == 1 ? "remove"
+                   : p.op == 2 ? "replace"
+                   : p.op == 3 ? "move"
+                               : "copy");
+      obj["path"] = p.path;
+      obj["value"] = nlohmann::json::parse(p.valueJson, nullptr, false);
+      pend.push_back(std::move(obj));
+    }
+    h->set_pending_patches(mid, std::move(pend));
+
+    // Copy the buffers into the module's linear memory; pass their offsets.
+    const uint32_t n = static_cast<uint32_t>(patches.size());
+    const uint32_t bytes = n * sizeof(int32_t);
+    void* nb = nullptr;
+    void* no = nullptr;
+    void* nl = nullptr;
+    void* np = nullptr;
+    uint32_t pb_off  = h->app_malloc(mid, static_cast<uint32_t>(pb.size()), &nb);
+    uint32_t off_off = h->app_malloc(mid, bytes, &no);
+    uint32_t len_off = h->app_malloc(mid, bytes, &nl);
+    uint32_t ops_off = h->app_malloc(mid, bytes, &np);
+    if (nb) std::memcpy(nb, pb.data(), pb.size());
+    if (no) std::memcpy(no, off.data(), bytes);
+    if (nl) std::memcpy(nl, len.data(), bytes);
+    if (np) std::memcpy(np, ops.data(), bytes);
+
+    uint32_t argv[6] = {wasmSelf(), n, pb_off, off_off, len_off, ops_off};
+    h->set_effect_instance(mid, this);
+    h->call_indirect(mid, desc_.w_on_state_patched, 6, argv);
+    h->set_effect_instance(mid, nullptr);
+
+    h->app_free(mid, pb_off);
+    h->app_free(mid, off_off);
+    h->app_free(mid, len_off);
+    h->app_free(mid, ops_off);
+    h->set_pending_patches(mid, {});
     return;
   }
   if (!desc_.on_state_patched) return;

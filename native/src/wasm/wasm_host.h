@@ -94,6 +94,18 @@ public:
   /// effect_runtime::EffectInstance* (opaque here to avoid an include cycle).
   void set_effect_instance(int32_t module_id, void* inst);
 
+  // --- Linear-memory allocation (for marshalling on_state_patched buffers). ---
+  /// Allocate `size` bytes in the module's linear memory. Returns the wasm app
+  /// offset (0 on failure); if `out_native` is non-null it receives the native
+  /// pointer to fill. Release with app_free.
+  uint32_t app_malloc(int32_t module_id, uint32_t size, void** out_native);
+  void app_free(int32_t module_id, uint32_t app_offset);
+
+  /// Set the patch list that state.get_patch returns during an on_state_patched
+  /// call (the {op,path,value} objects state::patchFloat/patchString read).
+  /// Pass an empty vector to clear after the call.
+  void set_pending_patches(int32_t module_id, std::vector<nlohmann::json> patches);
+
   /// Get the last error message.
   const std::string& last_error() const { return last_error_; }
 
