@@ -681,6 +681,7 @@ if(APPLE)
   add_library(sketch_executor STATIC
     src/sketch/module_registry.cpp
     src/sketch/sketch_executor.cpp
+    src/sketch/wasm_bundles.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sketch_executor PUBLIC
@@ -758,6 +759,18 @@ if(APPLE)
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     target_compile_options(test_effect_driver PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_driver)
+  endif()
+
+  # Bundle loader (barrel cutover). No Metal needed — schema publishes even
+  # when an effect's module_init skips shader compile on a null backend.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    add_executable(test_wasm_bundles tests/test_wasm_bundles.cpp)
+    target_link_libraries(test_wasm_bundles PRIVATE
+      sketch_executor wasm_host Catch2::Catch2WithMain)
+    target_compile_definitions(test_wasm_bundles PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_wasm_bundles PRIVATE -Wno-attributes)
+    catch_discover_tests(test_wasm_bundles)
   endif()
 
   # End-to-end GPU render of a WASM effect on a real Metal backend.
@@ -931,6 +944,22 @@ if(APPLE)
   else()
     message(STATUS "NanoBarrel: default.ttf not found — text effects will use the system UI font as primary")
   endif()
+
+  # Bundle the effect .wasm bundles into Resources/wasm/ for the barrel-loads-
+  # WASM path (NANO_BARREL_WASM_EFFECTS). Best-effort: built into ../build/wasm.
+  foreach(_b core lights nano)
+    set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
+    if(EXISTS "${_wsrc}")
+      add_custom_command(TARGET NanoBarrel POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/wasm"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_wsrc}"
+                "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/wasm/${_b}.wasm"
+        COMMENT "Bundling ${_b}.wasm into NanoBarrel.bundle/Resources/wasm"
+        VERBATIM)
+    endif()
+  endforeach()
 
   add_custom_command(TARGET NanoBarrel POST_BUILD
     COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh

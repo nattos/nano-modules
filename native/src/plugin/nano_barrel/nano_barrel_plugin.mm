@@ -54,6 +54,7 @@
 #include "runtime/effect_runtime.h"
 #include "runtime/text_host.h"
 #include "sketch/module_registry.h"
+#include "sketch/wasm_bundles.h"
 
 #include <dlfcn.h>
 #include "sketch/sketch_executor.h"
@@ -607,6 +608,22 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     return p;
   }
 
+  // Resolve an effect bundle .wasm path. NANO_BARREL_WASM_DIR overrides (for
+  // ffgl_runner / dev pointing at build/wasm); otherwise the bundled copy under
+  // Contents/Resources/wasm/. Empty if the bundle can't be located.
+  static std::string bundleWasmPath(const char* name) {
+    if (const char* dir = getenv("NANO_BARREL_WASM_DIR"); dir && *dir)
+      return std::string(dir) + "/" + name + ".wasm";
+    Dl_info info;
+    if (!dladdr(reinterpret_cast<const void*>(&bundleWasmPath), &info) ||
+        !info.dli_fname)
+      return "";
+    std::string p = info.dli_fname;
+    auto pos = p.find(".bundle/");
+    if (pos == std::string::npos) return "";
+    return p.substr(0, pos + 8) + "Contents/Resources/wasm/" + name + ".wasm";
+  }
+
   // -- Effect runtime setup -------------------------------------------
   // Builds the Metal-backed EffectRuntime, registers every shader MSL
   // string from the effects_native bundle by the name each effect
@@ -627,8 +644,45 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     rt_ = std::make_unique<effect_runtime::EffectRuntime>(gpu_.get());
     registry_ = std::make_unique<sketch_executor::ModuleRegistry>(rt_.get());
 
-    // Registers every effect listed in barrel_manifest.txt (shaders + types).
-    nano_barrel_gen::registerAllBarrelEffects(*rt_, *registry_);
+    // Effect registration. Default: the statically-linked generated
+    // registration (every effect in barrel_manifest.txt). When
+    // NANO_BARREL_WASM_EFFECTS is set, load the same effects from their .wasm
+    // bundles instead (barrel-loads-WASM). Env-gated so the static path stays
+    // the default until WASM pixel-parity is confirmed (A/B), and so a missing
+    // bundle can fall back gracefully.
+    bool wasm_effects = false;
+    if (const char* w = getenv("NANO_BARREL_WASM_EFFECTS"); w && *w && *w != '0') {
+      bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
+      if (bundles_->init()) {
+        bridge::StateDocument* sd = &bridge_core_.state_document();
+        int total = 0;
+        for (const char* name : {"core", "lights", "nano"}) {
+          std::string path = bundleWasmPath(name);
+          int n = path.empty() ? 0
+              : bundles_->loadBundleFile(path, *registry_, gpu_.get(), sd);
+          BARREL_LOG("initEffectRuntime",
+                     "wasm bundle '%s': %d effect(s) from %s",
+                     name, n, path.c_str());
+          total += n;
+        }
+        if (total > 0) {
+          wasm_effects = true;
+          BARREL_LOG("initEffectRuntime", "loaded %d WASM effect(s)", total);
+        } else {
+          BARREL_LOG("initEffectRuntime",
+                     "no WASM effects loaded; falling back to static");
+          bundles_.reset();
+        }
+      } else {
+        BARREL_LOG("initEffectRuntime",
+                   "WasmEffectBundles init failed; falling back to static");
+        bundles_.reset();
+      }
+    }
+    if (!wasm_effects) {
+      // Registers every effect listed in barrel_manifest.txt (shaders + types).
+      nano_barrel_gen::registerAllBarrelEffects(*rt_, *registry_);
+    }
 
     // Text effects. They need NO registerShaderMSL — the text.* host service
     // owns its MSDF compositor PSO. But the engine needs font BYTES: install the
@@ -1144,6 +1198,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // tap state.
   id<MTLDevice>                                            device_ = nil;
   std::unique_ptr<gpu::GPUBackend>                         gpu_;
+  // Owns the WasmHost backing WASM-loaded effects. Declared before rt_ so it is
+  // destroyed AFTER it: rt_'s EffectInstance destructors call_indirect into the
+  // WasmHost (and gpu_) to run each effect's destroy(). Null in static mode.
+  std::unique_ptr<sketch_executor::WasmEffectBundles>      bundles_;
   std::unique_ptr<effect_runtime::EffectRuntime>           rt_;
   std::unique_ptr<sketch_executor::ModuleRegistry>         registry_;
   std::unique_ptr<sketch_executor::SketchExecutor>         executor_;

@@ -123,7 +123,7 @@ class EffectInstance : public wasm::EffectHostSink {
   // before doTick(). False when opacity is 0 (render is skipped). Read by the
   // effect via state::willRender().
   void setWillRender(bool v) { will_render_ = v; }
-  bool willRender() const { return will_render_; }
+  bool willRender() const override { return will_render_; }
   // Drive only the per-frame uniform-buffer write (no dispatch). The
   // fusion path uses this in place of doRender so the executor can
   // batch N effects' uniforms + a single compute dispatch. No-op if
@@ -166,22 +166,22 @@ class EffectInstance : public wasm::EffectHostSink {
   // Texture/buffer wiring — populated externally before render. The
   // effect reads via `gpu::Device::textureForField(name)`, which the
   // runtime routes here.
-  void setTextureField(const std::string& path, int textureHandle);
-  void setBufferField(const std::string& path, int bufferHandle);
-  int  textureField(const std::string& path) const;
-  int  bufferField(const std::string& path) const;
+  void setTextureField(const std::string& path, int textureHandle) override;
+  void setBufferField(const std::string& path, int bufferHandle) override;
+  int  textureField(const std::string& path) const override;
+  int  bufferField(const std::string& path) const override;
   // For state::isOutputConnected / isInputConnected — runtime caller
   // (FFGL plugin / CLI) sets known-connected fields up-front.
   void setFieldConnected(const std::string& path, bool input, bool output);
-  bool isInputConnected(const std::string& path) const;
-  bool isOutputConnected(const std::string& path) const;
+  bool isInputConnected(const std::string& path) const override;
+  bool isOutputConnected(const std::string& path) const override;
 
   // --- host-import callback storage ---
   // Effects call these via host imports during init/tick/render. The
   // runtime sets `g_active` before calling into the effect so the
   // extern-C symbols route here.
-  void hostSetMetadata(std::string id, std::string version);
-  void hostSetSchema(std::string schemaJson);
+  void hostSetMetadata(std::string id, std::string version) override;
+  void hostSetSchema(std::string schemaJson) override;
   void hostRegisterShaderSpv(std::string_view name,
                              const unsigned char* spv, int spv_len,
                              std::string_view format,
