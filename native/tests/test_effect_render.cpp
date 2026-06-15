@@ -118,3 +118,47 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
 
   host.shutdown();
 }
+
+TEST_CASE("full core.wasm bundle registers every effect under Metal", "[effect_render]") {
+  // The barrel cutover gate: loading the bundle and registering ALL of its
+  // effects runs each one's module_init (schema publish + shader/PSO compile).
+  // None may trip on an unimplemented host import.
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  auto bytecode = load_file(CORE_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+  host.set_gpu_backend(id, backend.get());
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+
+  const size_t declared = host.registered_effects(id).size();
+  INFO("bundle declares " << declared << " effect(s)");
+  REQUIRE(declared > 1);
+
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  int n = registry.registerWasmBundle(host, id);
+  INFO("registered " << n);
+  CHECK(n == static_cast<int>(declared));
+
+  // Every registered effect published a non-empty schema → its module_init ran
+  // through state::init without trapping. (The render case above proves the
+  // shader/PSO path for a representative effect.)
+  auto schemas = registry.schemas();
+  int withSchema = 0;
+  for (const auto& kv : schemas) {
+    if (kv.second.is_object() && !kv.second.empty()) ++withSchema;
+  }
+  INFO("effects with non-empty schema: " << withSchema << "/" << n);
+  CHECK(withSchema == n);
+
+  host.shutdown();
+}

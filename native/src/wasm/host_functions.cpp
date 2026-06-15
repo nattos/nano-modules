@@ -1097,10 +1097,41 @@ static int32_t gpu_create_compute_pso_v2(wasm_exec_env_t env,
   return g->createComputePSO(shader, map_entry_name(g, e, entry_len));
 }
 
+// Remaining resource/pass ops — thin pass-throughs to the GPUBackend (which
+// provides Metal implementations / sensible defaults). Needed so a full effect
+// bundle's effects (samplers, mip pyramids, copies) load without trapping.
+static int32_t gpu_create_sampler(wasm_exec_env_t env, int32_t filter, int32_t address) {
+  auto* g = get_gpu(env); return g ? g->createSampler(filter, address) : -1;
+}
+static int32_t gpu_create_texture_mips(wasm_exec_env_t env, int32_t w, int32_t h,
+    int32_t fmt, int32_t mips) {
+  auto* g = get_gpu(env); return g ? g->createTextureWithMips(w, h, fmt, mips) : -1;
+}
+static void gpu_compute_set_sampler(wasm_exec_env_t env, int32_t pass, int32_t s, int32_t slot) {
+  auto* g = get_gpu(env); if (g) g->computeSetSampler(pass, s, slot);
+}
+static void gpu_compute_set_texture_mip(wasm_exec_env_t env, int32_t pass, int32_t tex,
+    int32_t slot, int32_t access, int32_t mip) {
+  auto* g = get_gpu(env); if (g) g->computeSetTextureMip(pass, tex, slot, access, mip);
+}
+static void gpu_clear_texture(wasm_exec_env_t env, int32_t tex,
+    float r, float g_, float b, float a) {
+  auto* g = get_gpu(env); if (g) g->clearTexture(tex, r, g_, b, a);
+}
+static void gpu_copy_texture(wasm_exec_env_t env, int32_t src, int32_t dst) {
+  auto* g = get_gpu(env); if (g) g->copyTexture(src, dst);
+}
+
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
     {"create_shader_module", reinterpret_cast<void*>(gpu_create_shader_module), "(ii)i", nullptr},
     {"create_shader_module_named", reinterpret_cast<void*>(gpu_create_shader_module_named), "(ii)i", nullptr},
+    {"create_sampler", reinterpret_cast<void*>(gpu_create_sampler), "(ii)i", nullptr},
+    {"create_texture_mips", reinterpret_cast<void*>(gpu_create_texture_mips), "(iiii)i", nullptr},
+    {"compute_set_sampler", reinterpret_cast<void*>(gpu_compute_set_sampler), "(iii)", nullptr},
+    {"compute_set_texture_mip", reinterpret_cast<void*>(gpu_compute_set_texture_mip), "(iiiii)", nullptr},
+    {"clear_texture", reinterpret_cast<void*>(gpu_clear_texture), "(iffff)", nullptr},
+    {"copy_texture", reinterpret_cast<void*>(gpu_copy_texture), "(ii)", nullptr},
     {"create_compute_pso_layout", reinterpret_cast<void*>(gpu_create_compute_pso_layout), "(iiiii)i", nullptr},
     {"create_compute_pso_v2", reinterpret_cast<void*>(gpu_create_compute_pso_v2), "(iiiiiii)i", nullptr},
     {"create_buffer", reinterpret_cast<void*>(gpu_create_buffer), "(ii)i", nullptr},
