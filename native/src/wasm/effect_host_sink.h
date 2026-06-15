@@ -42,6 +42,15 @@ class EffectHostSink {
   virtual int createShaderModuleByName(const std::string& name,
                                        gpu::GPUBackend* backend) = 0;
 
+  // Register fusion metadata (state.register_fusion_by_name). `prepareIdx` is a
+  // WASM function-table index (the per-frame uniform writer), call_indirect'd by
+  // doPrepare. The runtime stores it as FusionInfo so the executor fuses this
+  // effect exactly like a native one.
+  virtual void hostRegisterWasmFusion(int kind, std::string fragmentName,
+                                      int uniformBufferHandle,
+                                      int uniformSizeBytes,
+                                      uint32_t prepareIdx) = 0;
+
   // Named texture/buffer field wiring. The executor sets inputs before render;
   // the effect reads them via gpu.texture_for_field / buffer_for_field and
   // publishes outputs via state.set_gpu_texture / set_gpu_buffer.

@@ -149,7 +149,13 @@ class EffectInstance : public wasm::EffectHostSink {
     std::string fragmentName;            // shader-module name (the "pixel" SPV/MSL)
     int  uniformBufferHandle = 0;        // gpu buffer id the effect wrote on registration
     int  uniformSizeBytes = 0;
-    void (*prepare)(void*, int, int) = nullptr; // per-frame uniform writer; called by the fusion path instead of render()
+    void (*prepare)(void*, int, int) = nullptr; // native per-frame uniform writer
+    // WASM-backed effects supply `prepare` as a function-table index instead of
+    // a native pointer; doPrepare call_indirects it. 0 = none.
+    uint32_t wasmPrepareIdx = 0;
+    // True when this effect supplies a prepare callback (native or wasm) — the
+    // executor's fusion-eligibility gate.
+    bool hasPrepare() const { return prepare != nullptr || wasmPrepareIdx != 0; }
   };
   const FusionInfo& fusionInfo() const { return fusion_info_; }
   void setFusionInfo(FusionInfo info) { fusion_info_ = std::move(info); }
@@ -188,6 +194,9 @@ class EffectInstance : public wasm::EffectHostSink {
                              std::string_view access) override;
   int createShaderModuleByName(const std::string& name,
                                gpu::GPUBackend* backend) override;
+  void hostRegisterWasmFusion(int kind, std::string fragmentName,
+                              int uniformBufferHandle, int uniformSizeBytes,
+                              uint32_t prepareIdx) override;
   void hostSetOnStateReady(void (*fn)(void* self));
 
   // Patch reading — driven by setParam* methods. Held only for the

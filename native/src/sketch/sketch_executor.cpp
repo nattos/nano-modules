@@ -180,7 +180,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
       bool e = false;
       if (inst) {
         const auto& fi = inst->fusionInfo();
-        e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.prepare;
+        e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.hasPrepare();
         if (e && entry.contains("taps") && entry["taps"].is_array() &&
             !entry["taps"].empty()) {
           e = false;

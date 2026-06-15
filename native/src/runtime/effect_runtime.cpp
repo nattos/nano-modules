@@ -138,6 +138,13 @@ void EffectInstance::doSetActive(bool active) {
 }
 
 void EffectInstance::doPrepare(int vp_w, int vp_h) {
+  if (desc_.isWasm()) {
+    if (!fusion_info_.wasmPrepareIdx) return;
+    uint32_t argv[4] = {wasmSelf(), static_cast<uint32_t>(vp_w),
+                        static_cast<uint32_t>(vp_h)};
+    driveWasm(fusion_info_.wasmPrepareIdx, 3, argv);
+    return;
+  }
   if (!fusion_info_.prepare) return;
   runtime_->setActive(this);
   fusion_info_.prepare(user_state_, vp_w, vp_h);
@@ -205,6 +212,30 @@ void EffectInstance::hostRegisterShaderSpv(std::string_view name,
   slot.spv.assign(spv, spv + spv_len);
   slot.format = std::string(format);
   slot.access = std::string(access);
+  // Also publish the SPV→MSL under the runtime's "<moduleType>::<name>" key so
+  // the executor's fusion path (which looks up the "pixel" fragment MSL via
+  // EffectRuntime::lookupMSL, exactly as for native effects) finds it. Because
+  // spvToMsl mirrors the build-time conversion, the fused kernel is identical
+  // to the statically-baked one → pixel parity.
+  if (runtime_ && !desc_.id.empty()) {
+    std::string msl = spvToMsl(slot.spv.data(), slot.spv.size());
+    if (!msl.empty())
+      runtime_->registerShaderMSL(desc_.id + "::" + std::string(name), msl);
+  }
+}
+
+void EffectInstance::hostRegisterWasmFusion(int kind, std::string fragmentName,
+                                            int uniformBufferHandle,
+                                            int uniformSizeBytes,
+                                            uint32_t prepareIdx) {
+  FusionInfo info;
+  info.kind = kind;
+  info.fragmentName = std::move(fragmentName);
+  info.uniformBufferHandle = uniformBufferHandle;
+  info.uniformSizeBytes = uniformSizeBytes;
+  info.prepare = nullptr;          // native slot unused for WASM
+  info.wasmPrepareIdx = prepareIdx;
+  fusion_info_ = std::move(info);
 }
 int EffectInstance::createShaderModuleByName(const std::string& name,
                                              gpu::GPUBackend* backend) {

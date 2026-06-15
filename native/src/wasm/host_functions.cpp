@@ -576,13 +576,30 @@ static void state_register_shader_spv(wasm_exec_env_t env,
       std::string_view(fmt), std::string_view(acc));
 }
 
-// Fusion is an executor optimization; effects still render standalone without
-// it. Accept as no-ops so an effect's init() doesn't trap. TODO(barrel-wasm):
-// record the fragment + a wasm prepare-index to let WASM effects fuse.
+// register_fusion_by_name(kind, fragment_name, fragment_name_len,
+//   uniform_buf_handle, uniform_size_bytes, prepare_fn) — forward onto the
+// instance so the executor fuses this effect like a native one. prepare_fn is a
+// WASM function-table index (doPrepare call_indirects it).
+static void state_register_fusion_by_name(wasm_exec_env_t env,
+    int32_t kind, int32_t name_ptr, int32_t name_len,
+    int32_t uniform_buf, int32_t uniform_size, int32_t prepare_fn) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  std::string frag;
+  if (name_len > 0 && wasm_runtime_validate_app_addr(inst, name_ptr, name_len)) {
+    if (char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, name_ptr)))
+      frag.assign(p, name_len);
+  }
+  ctx->effect_instance->hostRegisterWasmFusion(
+      kind, std::move(frag), uniform_buf, uniform_size,
+      static_cast<uint32_t>(prepare_fn));
+}
+
+// Inline-WGSL/MSL fusion variant: effects use register_fusion_by_name (above)
+// almost universally. Accept as a no-op so the rare caller doesn't trap.
 static void state_register_fusion(wasm_exec_env_t, int32_t, int32_t, int32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t) {}
-static void state_register_fusion_by_name(wasm_exec_env_t, int32_t, int32_t,
-    int32_t, int32_t, int32_t, int32_t) {}
 
 static int32_t state_is_field_connected(wasm_exec_env_t env,
     int32_t path_ptr, int32_t path_len, int32_t direction) {
