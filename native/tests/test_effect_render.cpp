@@ -10,10 +10,14 @@
 #include <fstream>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "bridge/param_cache.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
+#include "sketch/sketch_executor.h"
+#include "sketch/wasm_bundles.h"
 #include "wasm/wasm_host.h"
 
 using bridge::ParamCache;
@@ -238,4 +242,73 @@ TEST_CASE("full core.wasm bundle registers every effect under Metal", "[effect_r
   CHECK(withSchema == n);
 
   host.shutdown();
+}
+
+// Positional-delay (feedback) wire through the full SketchExecutor. A wire
+// whose producer sits BELOW its consumer in the chain feeds the PREVIOUS
+// frame's value — the executor retains a 1-frame texture copy. Here a blend
+// accumulator mixes the constant input with its own delayed output:
+//   out_n = (1-O)*input + O*out_{n-1}   → converges to `input` over frames.
+// Without the delay path the wire (producer below) delivers nothing and blend
+// never accumulates, so observing monotonic convergence to the input proves
+// the retained-copy feedback delivers.
+TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 32, H = 32;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  const uint8_t IN = 160;
+  std::vector<uint8_t> inPix(W * H * 4, IN);
+  for (size_t i = 3; i < inPix.size(); i += 4) inPix[i] = 255;
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+  const double inMean = mean_rgb(inPix);  // 160
+
+  // acc(blend).tex_a = linear input; acc.tex_b = DELAYED feedback from fb's
+  // output (fb sits below acc → delayed). fb is a neutral brightness pass so
+  // fb.tex_out == acc's output. opacity 0.5 → frame-blend accumulator.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "video.blend", "instance_key": "acc" },
+      { "module_type": "video.brightness_contrast", "instance_key": "fb" }
+    ],
+    "instances": {
+      "acc": { "module_type": "video.blend", "state": { "opacity": 0.5 } },
+      "fb":  { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.5 } }
+    },
+    "wires": [
+      { "id": "wfb", "src": { "instanceKey": "fb", "field": "tex_out" },
+                     "dest": { "instanceKey": "acc", "field": "tex_b" } }
+    ]
+  })JSON");
+
+  double earlyMean = 0.0, lateMean = 0.0;
+  for (int frame = 0; frame < 30; ++frame) {
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                   /*sketchDirty=*/frame == 0);
+    backend->submit();
+    if (frame == 2) earlyMean = mean_rgb(backend->readbackTexture(out, W, H));
+    if (frame == 29) lateMean = mean_rgb(backend->readbackTexture(out, W, H));
+  }
+
+  INFO("input " << inMean << "  early(f3) " << earlyMean << "  late(f30) " << lateMean);
+  // Converged to the input within RGBA8 rounding.
+  CHECK(std::abs(lateMean - inMean) < 6.0);
+  // Still mid-transient early — well below the converged value. Proves the
+  // feedback is accumulating frame-over-frame (i.e. the delayed wire delivers).
+  CHECK(earlyMean < lateMean - 10.0);
 }

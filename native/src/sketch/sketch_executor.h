@@ -41,6 +41,7 @@
 #include <unordered_map>
 #include <vector>
 #include <string>
+#include <tuple>
 
 namespace gpu { class GPUBackend; }
 namespace effect_runtime {
@@ -249,7 +250,32 @@ class SketchExecutor {
   // Lazily-created host-side wet/dry blend pass for per-effect opacity.
   std::unique_ptr<WetDryBlend> blend_;
 
+  // --- Positional-delay (feedback) wire state, persisted across frames. ---
+  // A delayed wire's producer sits at/below its consumer in the chain, so the
+  // consumer (processed first) must read the PREVIOUS frame's value. Because
+  // the chain runs top-to-bottom, a single persistent map gives the 1-frame
+  // delay for free: the consumer reads, then the lower producer overwrites for
+  // next frame. Floats: read+write this map directly. Textures: the producer's
+  // output is a recycled intermediate, so retain a 1-frame COPY — reads bind
+  // the retained texture (last frame's content) and the copy is deferred to
+  // frame end (after every stage commits) to avoid a same-frame GPU read/write
+  // hazard, mirroring the web executor's wirePrev snapshot.
+  std::unordered_map<std::string, float> delayedRailFloats_;
+  std::unordered_map<std::string,
+      std::unordered_map<std::string, int32_t>> delayedRailTextures_;
+  // Pending retains gathered during this frame's capture, flushed at frame end:
+  // (railId, leaf, producer's current output handle).
+  std::vector<std::tuple<std::string, std::string, int32_t>> pendingDelayRetain_;
+  int delayTexW_ = 0, delayTexH_ = 0;  // dims of the retained textures (realloc on resize)
+
   int32_t nextIntermediate(int W, int H);
+
+  // Copy each delayed texture wire's producer output (gathered this frame in
+  // pendingDelayRetain_) into a persistent retained texture matching its format,
+  // so next frame's consumer reads a stable 1-frame-old copy. Releases + reallocs
+  // the retained textures when the viewport resizes. Encoded into the frame's
+  // submit batch (after every stage), then clears pendingDelayRetain_.
+  void flushDelayedTextureRetains(int W, int H);
 
   // Apply `state` to the instance, firing setParam* only for fields that
   // differ from `prevState` (pass an empty/non-object prevState to force a

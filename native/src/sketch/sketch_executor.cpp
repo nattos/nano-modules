@@ -144,6 +144,11 @@ SketchExecutor::~SketchExecutor() {
   for (int32_t sm : fusedShaderModules_) {
     if (sm > 0 && gpu_) gpu_->release(sm);
   }
+  for (auto& [_, leaves] : delayedRailTextures_) {
+    for (auto& [__, h] : leaves) {
+      if (h > 0 && gpu_) gpu_->release(h);
+    }
+  }
 }
 
 void SketchExecutor::buildPlan(const json& columns, const json& instances,
@@ -282,10 +287,18 @@ int32_t SketchExecutor::execute(
         } else {
           continue;  // unsupported source type — drop the wire
         }
+        // Positional causality (web's delayed flag): a producer at/below the
+        // consumer in the chain feeds the PREVIOUS frame's value (also how
+        // feedback cycles are broken). The executor processes top-to-bottom, so
+        // when si >= di the consumer reads before the producer writes — mark
+        // both taps delayed so they route through the persistent delay maps.
+        const bool delayed = si->second >= di->second;
         rails.push_back(json{{"id", wid}, {"dataType", railDataType}});
-        chain[si->second]["taps"].push_back(
-            json{{"direction", "write"}, {"railId", wid}, {"fieldPath", srcField}});
+        json wtap{{"direction", "write"}, {"railId", wid}, {"fieldPath", srcField}};
+        if (delayed) wtap["delayed"] = true;
+        chain[si->second]["taps"].push_back(std::move(wtap));
         json rtap{{"direction", "read"}, {"railId", wid}, {"fieldPath", dstField}};
+        if (delayed) rtap["delayed"] = true;
         // Tap-mod / combine / mix only meaningfully apply to scalar rails; the
         // texture path ignores them (carried through harmlessly).
         if (w.contains("mod")) rtap["mod"] = w["mod"];
@@ -367,6 +380,7 @@ int32_t SketchExecutor::execute(
   bool anyDispatched = false;
   fusedRunCount_ = 0;           // counted in runFusedGroup; read by tests
   railState_ = json::object();  // rebuilt per frame; published by the host
+  pendingDelayRetain_.clear();  // delayed texture retains gathered this frame
 
   // Coalesce the whole frame's stages into ONE command buffer. Every effect's
   // render() ends in gpu::submit() (commit + waitUntilCompleted) — left alone,
@@ -815,6 +829,11 @@ int32_t SketchExecutor::execute(
     }
   }
 
+  // Retain delayed (feedback) texture wires' outputs into stable copies BEFORE
+  // the batch commits, so the blit is ordered after the producers' renders in
+  // this command buffer and the copy is finished by the time next frame reads it.
+  flushDelayedTextureRetains(W, H);
+
   // Flush the batched frame: commit + wait once. All GPU work (including any
   // monitored intermediate textures) is complete when this returns, so the
   // host's downstream consumers — the output-hook readback below and the FFGL
@@ -840,6 +859,32 @@ int32_t SketchExecutor::nextIntermediate(int W, int H) {
     intermediates_.push_back(h);
   }
   return intermediates_[intermediate_cursor_++];
+}
+
+void SketchExecutor::flushDelayedTextureRetains(int W, int H) {
+  if (!gpu_) { pendingDelayRetain_.clear(); return; }
+  // On resize the retained textures are the wrong size — free + drop them
+  // (next frame reallocs at the new dims). Float delays are dimensionless.
+  if (W != delayTexW_ || H != delayTexH_) {
+    for (auto& [rid, leaves] : delayedRailTextures_)
+      for (auto& [leaf, h] : leaves)
+        if (h > 0) gpu_->release(h);
+    delayedRailTextures_.clear();
+    delayTexW_ = W; delayTexH_ = H;
+  }
+  for (const auto& [railId, leaf, src] : pendingDelayRetain_) {
+    if (src <= 0) continue;
+    int32_t& retained = delayedRailTextures_[railId][leaf];
+    if (retained <= 0) {
+      // Match the producer's format (RGBA8 tex_out vs rgba16float struct leaves)
+      // so the blit is a straight format-compatible copy.
+      int32_t fmt = gpu_->getTextureFormat(src);
+      if (fmt < 0) fmt = 1;
+      retained = gpu_->createTexture((uint32_t)W, (uint32_t)H, fmt);
+    }
+    if (retained > 0) gpu_->copyTexture(src, retained);
+  }
+  pendingDelayRetain_.clear();
 }
 
 void SketchExecutor::applyState(
@@ -911,9 +956,14 @@ void SketchExecutor::applyReadTaps(
     if (railIt == railsById.end()) continue;
     const auto& dataType = railIt->second.value("dataType", json());
 
+    // Delayed reads pull from the persistent maps (last frame's value); plain
+    // reads from this frame's local rails. See delayedRailFloats_ doc.
+    const bool delayed = tap.value("delayed", false);
+
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
-      auto fit = railFloats.find(railId);
-      if (fit != railFloats.end()) {
+      const auto& srcFloats = delayed ? delayedRailFloats_ : railFloats;
+      auto fit = srcFloats.find(railId);
+      if (fit != srcFloats.end()) {
         // Apply the tap's range remapper (after read), then mix into the user's
         // canonical value per the mix mode (replace ignores it; add/mul/mix
         // modulate from it).
@@ -947,8 +997,11 @@ void SketchExecutor::applyReadTaps(
       continue;
     }
 
-    auto texIt = railTextures.find(railId);
-    if (texIt == railTextures.end()) continue;
+    // Texture/struct read: delayed binds the retained 1-frame copy (empty until
+    // the producer has run for a full frame — frame 0 degrades to unbound).
+    const auto& srcTextures = delayed ? delayedRailTextures_ : railTextures;
+    auto texIt = srcTextures.find(railId);
+    if (texIt == srcTextures.end()) continue;
     forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
       auto lit = texIt->second.find(leaf);
       if (lit == texIt->second.end() || lit->second <= 0) return;
@@ -977,6 +1030,10 @@ void SketchExecutor::captureWriteTaps(
     auto railIt = railsById.find(railId);
     if (railIt == railsById.end()) continue;
     const auto& dataType = railIt->second.value("dataType", json());
+    // Delayed writes land in the persistent maps (float: write straight through
+    // — the consumer above already read last frame's value; texture: defer a
+    // retained copy to frame end). See delayedRailFloats_ doc.
+    const bool delayed = tap.value("delayed", false);
 
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
       // Producer's current scalar lives in the sketch's instance
@@ -997,16 +1054,32 @@ void SketchExecutor::captureWriteTaps(
             // Apply the range remapper (before write), then fold into the rail's
             // current frame value per the combine mode. The first writer this
             // frame (railFloats has no entry yet) just seeds.
+            auto& rf = delayed ? delayedRailFloats_ : railFloats;
             float shaped = tap_mod::applyTapMod(raw, parseMod(tap));
-            auto existing = railFloats.find(railId);
-            railFloats[railId] = tap_mod::combineTap(
-                existing != railFloats.end(),
-                existing != railFloats.end() ? existing->second : 0.0f,
+            auto existing = rf.find(railId);
+            rf[railId] = tap_mod::combineTap(
+                existing != rf.end(),
+                existing != rf.end() ? existing->second : 0.0f,
                 shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
             inst->setFieldConnected(fieldPath, false, true);
           }
         }
       }
+      continue;
+    }
+
+    if (delayed) {
+      // Texture/struct feedback: the producer's output is a recycled
+      // intermediate, so record its current handle and copy it into a retained
+      // texture at frame end (after every stage commits). The retained copy is
+      // what next frame's consumer reads.
+      forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
+        const std::string source = leaf.empty() ? fieldPath
+                                                : (fieldPath + "/" + leaf);
+        int32_t h = inst->textureField(source);
+        if (h > 0) pendingDelayRetain_.emplace_back(railId, leaf, h);
+      });
+      inst->setFieldConnected(fieldPath, false, true);
       continue;
     }
 
