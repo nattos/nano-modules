@@ -87,6 +87,40 @@ describe('Unified executor.wasm parity', () => {
     expect(Math.abs(tm - wm)).toBeLessThan(4);
   });
 
+  it('dashboard knob (sink + source) matches the TS executor', async () => {
+    // util.dashboard is a virtual knob bank — no WASM effect — ported into the
+    // C++ executor (buildPlan keeps it; runDashboard resolves knobs). knob_0 is
+    // wired BOTH ways: lfo.output (0.5) drives INTO it (overriding stored 1.0),
+    // and it drives OUT to brightness. white in, brightness 0.5 (neutral) +
+    // contrast 0.25 (×0.5) → gray. white (255) would mean a dead wire either way.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0', params: { color: [1, 1, 1] } },
+        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0', params: { rate: 0.0, amplitude: 1.0 } },
+        { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
+        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0', params: { brightness: 1.0, contrast: 0.25 } },
+      ],
+      instances: { 'dash@0': { module_type: 'util.dashboard', state: { knobCount: 1, knobs: [1.0] } } },
+      wires: [
+        { id: 'win', src: { instanceKey: 'lfo@0', field: 'output' }, dest: { instanceKey: 'dash@0', field: 'knob_0' } },
+        { id: 'wout', src: { instanceKey: 'dash@0', field: 'knob_0' }, dest: { instanceKey: 'bc@0', field: 'brightness' } },
+      ],
+    } as Sketch;
+    const modules = ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'];
+
+    const ts = await render('dash', sketch, modules, false);
+    const wasm = await render('dash', sketch, modules, true);
+    expect(ts.success).toBe(true);
+    expect(wasm.success).toBe(true);
+    const mean = (p: Uint8Array) => { let s = 0, n = 0; for (let i = 0; i + 3 < p.length; i += 4) { s += p[i] + p[i + 1] + p[i + 2]; n += 3; } return s / n; };
+    const tm = mean(ts.trace('out').pixels), wm = mean(wasm.trace('out').pixels);
+    console.log('[parity] dashboard ts mean', tm, 'wasm mean', wm);
+    expect(wm).toBeGreaterThan(100);   // both wire directions live → gray, not white
+    expect(wm).toBeLessThan(160);
+    expect(Math.abs(tm - wm)).toBeLessThan(4);
+  });
+
   it('texture-wire blend matches the TS executor', async () => {
     const sketch: Sketch = {
       anchor: null,

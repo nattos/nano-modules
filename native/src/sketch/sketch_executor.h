@@ -247,8 +247,9 @@ class SketchExecutor {
     size_t chainIdx;             // index into the column's "chain" array
     std::string moduleType;
     std::string instanceKey;
-    const RegisteredModule* reg; // never null (only resolvable entries are kept)
+    const RegisteredModule* reg; // non-null EXCEPT for dashboard entries
     bool eligible;               // fusion-eligible at plan-build time
+    bool dashboard = false;      // util.dashboard virtual knob bank (no effect/reg)
   };
   struct PlanColumn {
     std::vector<PlanEntry> resolvable;

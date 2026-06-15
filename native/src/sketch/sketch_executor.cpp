@@ -260,6 +260,16 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
     for (size_t i = 0; i < chain.size(); ++i) {
       const auto& entry = chain[i];
       std::string mt = entry.value("module_type", std::string());
+      // util.dashboard is a virtual knob bank — no effect, no schema. It's a
+      // texture passthrough that resolves its knobs (stored + input-wire
+      // overrides) and republishes them to its output wires. Keep it in the plan
+      // (a non-fusable dashboard entry) so runDashboard can process its taps.
+      if (mt == "util.dashboard") {
+        std::string instKey = entry.value("instance_key", std::string());
+        pc.resolvable.push_back({i, std::move(mt), std::move(instKey),
+                                 nullptr, false, true});
+        continue;
+      }
       const RegisteredModule* reg = findSchema(mt);
       if (!reg) continue;  // unknown module_type → silent passthrough
       std::string instKey = entry.value("instance_key", std::string());
@@ -370,8 +380,9 @@ int32_t SketchExecutor::execute(
         // texture → texture rail, object/array → struct rail (its texture
         // leaves flow, same as the augmenter's implicit struct connections —
         // explicit read taps below suppress auto-connect on the dest field).
-        const RegisteredModule* reg =
-            findSchema(chain[si->second].value("module_type", std::string()));
+        const std::string srcMt =
+            chain[si->second].value("module_type", std::string());
+        const RegisteredModule* reg = findSchema(srcMt);
         std::string ftype;
         json srcDef;
         if (reg && reg->schemaFields.is_object()) {
@@ -380,6 +391,11 @@ int32_t SketchExecutor::execute(
             srcDef = *fit;
             ftype = fit->value("type", std::string());
           }
+        }
+        // util.dashboard has no schema — its knob_i fields are 0..1 float
+        // sources (the runDashboard handler publishes them to the write-tap).
+        if (srcMt == "util.dashboard" && srcField.rfind("knob_", 0) == 0) {
+          ftype = "float";
         }
         json railDataType;
         if (ftype == "float" || ftype == "texture") {
@@ -586,6 +602,81 @@ int32_t SketchExecutor::execute(
       if (cachedState == state) return;
       applyState(inst.h, cachedState, state);
       cachedState = state;
+    };
+
+    // util.dashboard — virtual knob bank (no effect). A texture passthrough that
+    // resolves each knob (stored knobs[i], modulated by any INPUT wire on knob_i)
+    // and republishes it to its OUTPUT wires. Mirrors sketch-executor.ts's
+    // dashboard block (the float read-tap + write-tap math lifted from
+    // applyReadTaps / captureWriteTaps).
+    auto runDashboard = [&](size_t k) {
+      const PlanEntry& pe = R[k];
+      size_t i = pe.chainIdx;
+      const auto& entry = chain[i];
+
+      std::vector<float> knobs;
+      if (const json* st = findState(instances, pe.instanceKey)) {
+        auto kit = st->find("knobs");
+        if (kit != st->end() && kit->is_array())
+          for (const auto& v : *kit)
+            knobs.push_back(v.is_number() ? (float)v.get<double>() : 0.0f);
+      }
+      auto baseFor = [&](const std::string& field) -> float {
+        if (field.rfind("knob_", 0) != 0) return 0.0f;
+        int idx = std::atoi(field.c_str() + 5);
+        return (idx >= 0 && idx < (int)knobs.size()) ? knobs[idx] : 0.0f;
+      };
+
+      // INPUT wires (read taps) override the stored knob, modulating from it.
+      std::unordered_map<std::string, float> knobVal;
+      if (entry.contains("taps") && entry["taps"].is_array()) {
+        for (const auto& tap : entry["taps"]) {
+          if (tap.value("direction", std::string()) != "read") continue;
+          const std::string railId = tap.value("railId", std::string());
+          const std::string field  = tap.value("fieldPath", std::string());
+          const bool delayed = tap.value("delayed", false);
+          const auto& src = delayed ? delayedRailFloats_ : railFloats;
+          auto fit = src.find(railId);
+          if (fit == src.end()) continue;
+          float canon = knobVal.count(field) ? knobVal[field] : baseFor(field);
+          float shaped = tap_mod::applyTapMod(fit->second, parseMod(tap));
+          float combined;
+          if (tap.contains("magnitude")) {
+            const bool isSigned = tap.value("magnitude", std::string()) == "signed";
+            const float dmin = (float)tap.value("destMin", 0.0);
+            const float dmax = (float)tap.value("destMax", 1.0);
+            combined = tap_mod::applyMagnitude(canon, shaped, isSigned,
+                parseCombine(tap), tap.value("mixFactor", 1.0f), dmin, dmax);
+          } else {
+            combined = tap_mod::combineTap(true, canon, shaped,
+                parseCombine(tap), tap.value("mixFactor", 1.0f));
+          }
+          knobVal[field] = combined;
+        }
+      }
+
+      // OUTPUT wires (write taps) publish the resolved (or stored) knob value.
+      if (entry.contains("taps") && entry["taps"].is_array()) {
+        for (const auto& tap : entry["taps"]) {
+          if (tap.value("direction", std::string()) != "write") continue;
+          const std::string railId = tap.value("railId", std::string());
+          const std::string field  = tap.value("fieldPath", std::string());
+          const bool delayed = tap.value("delayed", false);
+          float v = knobVal.count(field) ? knobVal[field] : baseFor(field);
+          float shaped = tap_mod::applyTapMod(v, parseMod(tap));
+          auto& rf = delayed ? delayedRailFloats_ : railFloats;
+          auto existing = rf.find(railId);
+          rf[railId] = tap_mod::combineTap(existing != rf.end(),
+              existing != rf.end() ? existing->second : 0.0f,
+              shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
+        }
+      }
+
+      // Texture passthrough: the image chain flows past untouched, no slot.
+      if (chainEntryHook_) {
+        chainEntryHook_((int)colIdx, (int)i, colInput, colInput, W, H);
+      }
+      finalHandle = colInput;
     };
 
     auto runStandalone = [&](size_t k, bool isLastGroupInCol) {
@@ -911,6 +1002,8 @@ int32_t SketchExecutor::execute(
       const bool isLastGroupInCol = (gi == groups.size() - 1);
       if (g.fused) {
         runFusedGroup(g, isLastGroupInCol);
+      } else if (R[g.firstK].dashboard) {
+        runDashboard(g.firstK);   // virtual knob bank (always its own group)
       } else {
         // size 1 — non-eligible or single-eligible (no fusion savings)
         runStandalone(g.firstK, isLastGroupInCol);
