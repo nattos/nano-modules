@@ -54,6 +54,39 @@ describe('Unified executor.wasm parity', () => {
     expect(frac).toBeLessThan(0.01);
   });
 
+  it('scalar wire DRIVES the consumer (lfo.output → contrast)', async () => {
+    // gray 0.5 input; contrast PARAM = 0.0 (would render black) but WIRED from
+    // lfo.output (rate=0 → 0.5 = neutral contrast → passes gray through). A
+    // working scalar wire ⇒ gray (~128); a broken one ⇒ black (~0). This is the
+    // exact case that the wasm executor missed until executor-host mirrored each
+    // producer's live output scalars into the sketch state captureWriteTaps reads.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'g@0',
+          params: { color: [0.5, 0.5, 0.5] } },
+        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0', params: { rate: 0 } },
+        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+          params: { brightness: 0.5, contrast: 0.0 } },
+      ],
+      wires: [
+        { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' }, dest: { instanceKey: 'bc@0', field: 'contrast' } },
+      ],
+    } as Sketch;
+    const modules = ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'];
+
+    const ts = await render('scalar', sketch, modules, false);
+    const wasm = await render('scalar', sketch, modules, true);
+    expect(ts.success).toBe(true);
+    expect(wasm.success).toBe(true);
+    const mean = (p: Uint8Array) => { let s = 0, n = 0; for (let i = 0; i + 3 < p.length; i += 4) { s += p[i] + p[i + 1] + p[i + 2]; n += 3; } return s / n; };
+    const tm = mean(ts.trace('out').pixels), wm = mean(wasm.trace('out').pixels);
+    console.log('[parity] scalar-drive ts mean', tm, 'wasm mean', wm);
+    expect(tm).toBeGreaterThan(100);   // TS: wire delivers 0.5 → gray
+    expect(wm).toBeGreaterThan(100);   // wasm: must ALSO deliver → gray, not black
+    expect(Math.abs(tm - wm)).toBeLessThan(4);
+  });
+
   it('texture-wire blend matches the TS executor', async () => {
     const sketch: Sketch = {
       anchor: null,

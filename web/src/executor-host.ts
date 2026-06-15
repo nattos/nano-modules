@@ -236,13 +236,46 @@ export class WasmSketchExecutor {
     this.byHandle = [];
     this.handleByKey.clear();
 
-    // 3. Marshal the sketch JSON + drive. dirty rebuilds the plan; detect via
-    //    a JSON diff so a static sketch reuses the cached plan.
-    const json = JSON.stringify(sketch);
-    const dirty = json !== slot.lastJson;
-    slot.lastJson = json;
+    // 3. Mirror each instance's live published OUTPUT scalars (written via
+    //    state::set_val during last frame's tick) into the sketch state the
+    //    executor reads. Float write-taps (captureWriteTaps) source a producer's
+    //    scalar from instances[key].state[field], NOT the live runtime — so a
+    //    scalar wire (e.g. data.lfo.output → param) is invisible unless the
+    //    output is present here. 1-frame latency, matching the native barrel's
+    //    sketch-state mirroring. Built on a shallow copy; the input sketch and
+    //    the structural dirty check below are untouched.
+    let execInstances = sketch.instances;
+    let mirrored = false;
+    for (const entry of chain) {
+      const inst = this.instances.get(entry.instance_key);
+      const ps = inst?.host.pluginState;
+      const schema = inst?.host.schema;
+      if (!inst || !ps || typeof ps !== 'object' || !schema) continue;
+      const outs: Record<string, number> = {};
+      for (const fname in schema) {
+        const def: any = schema[fname];
+        if (!(((def?.io ?? 0) & 2))) continue;            // output fields only
+        if (def?.type === 'object' || def?.type === 'array' || def?.type === 'texture') continue;
+        const v = ps[fname];
+        if (typeof v === 'number') outs[fname] = v;
+        else if (typeof v === 'boolean') outs[fname] = v ? 1 : 0;
+      }
+      if (Object.keys(outs).length === 0) continue;
+      if (!mirrored) { execInstances = { ...(sketch.instances ?? {}) }; mirrored = true; }
+      const orig: any = (sketch.instances as any)?.[entry.instance_key] ?? { module_type: inst.moduleType };
+      execInstances![entry.instance_key] = { ...orig, state: { ...(orig.state ?? {}), ...outs } };
+    }
+    const execSketch = mirrored ? { ...sketch, instances: execInstances } : sketch;
+
+    // 4. Marshal the sketch JSON + drive. dirty rebuilds the plan; detect via a
+    //    STRUCTURAL diff (the input sketch, not the mirrored outputs) so an
+    //    animating producer doesn't force a plan rebuild every frame.
+    const structuralJson = JSON.stringify(sketch);
+    const dirty = structuralJson !== slot.lastJson;
+    slot.lastJson = structuralJson;
     const outTex = this.ensureOutputTexture(slot, width, height);
 
+    const json = JSON.stringify(execSketch);
     const jbytes = encoder.encode(json);
     const jptr = this.exports.malloc(jbytes.length);
     new Uint8Array(this.memory.buffer, jptr, jbytes.length).set(jbytes);
