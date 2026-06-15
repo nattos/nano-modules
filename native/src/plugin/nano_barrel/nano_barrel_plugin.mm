@@ -707,6 +707,16 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     executor_ = std::make_unique<sketch_executor::SketchExecutor>(
         rt_.get(), registry_.get(), gpu_.get());
 
+    // Force-disable GPU fusion when NANO_BARREL_FUSION=0. Production default is
+    // on (fuse runs of per-pixel effects into one dispatch). Useful for A/B
+    // diagnosis: WASM effects don't fuse yet (register_fusion is a no-op), so
+    // comparing WASM vs static with fusion OFF isolates the fusion difference
+    // from everything else.
+    if (const char* f = getenv("NANO_BARREL_FUSION"); f && (*f == '0')) {
+      executor_->setFusionEnabled(false);
+      BARREL_LOG("initEffectRuntime", "GPU fusion force-disabled");
+    }
+
     // Wire the executor's capture hooks into the per-frame snapshot map.
     // Hooks fire DURING execute() (between chain-entry encodes), so
     // we only record handles — actual readback happens later this frame,
