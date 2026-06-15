@@ -214,11 +214,29 @@ int32_t SketchExecutor::execute(
   // no-op anyway, so skip the clone entirely in that case. Detected
   // by `sketchNeedsAugmentation` walking the chain in O(N) and
   // checking whether any module's schema has a structured field.
+  // Normalize the editor's single-stack "chain" sketch into the legacy
+  // "columns" shape this executor walks: the top-level `chain` becomes one
+  // column. Editor/web sketches serialize as `{chain, instances, wires}` (the
+  // wire model); older persisted sketches carry `columns` and pass through
+  // unchanged. NOTE: the new `wires` array is NOT translated yet — a linear
+  // chain renders (each module feeds the next), but field-to-field wires are
+  // dropped until the executor is unified onto the wire model (Phase 2).
+  json normalizedStorage;
+  const json* rawPtr = &rawSketch;
+  if (!rawSketch.contains("columns") &&
+      rawSketch.contains("chain") && rawSketch["chain"].is_array()) {
+    normalizedStorage = rawSketch;
+    normalizedStorage["columns"] =
+        json::array({json{{"chain", rawSketch["chain"]}}});
+    rawPtr = &normalizedStorage;
+  }
+  const json& rawNorm = *rawPtr;
+
   json augmentedStorage;
-  const json* sketchPtr = &rawSketch;
-  if (sketch_augment::sketchNeedsAugmentation(rawSketch, cachedSchemas_)) {
+  const json* sketchPtr = &rawNorm;
+  if (sketch_augment::sketchNeedsAugmentation(rawNorm, cachedSchemas_)) {
     augmentedStorage = sketch_augment::augmentSketchWithImplicitConnections(
-        rawSketch, cachedSchemas_);
+        rawNorm, cachedSchemas_);
     sketchPtr = &augmentedStorage;
   }
   const json& sketch = *sketchPtr;
