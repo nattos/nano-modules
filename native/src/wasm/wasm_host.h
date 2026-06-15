@@ -87,6 +87,13 @@ public:
   /// Empty until then, or for an unknown id.
   std::string plugin_key(int32_t module_id);
 
+  /// Set the EffectInstance (chain entry) currently being driven, so the
+  /// executor-facing host imports route to it. The WASM effect driver sets this
+  /// before each lifecycle call_indirect and clears it after — the WASM
+  /// analogue of EffectRuntime::setActive. `inst` is an
+  /// effect_runtime::EffectInstance* (opaque here to avoid an include cycle).
+  void set_effect_instance(int32_t module_id, void* inst);
+
   /// Get the last error message.
   const std::string& last_error() const { return last_error_; }
 

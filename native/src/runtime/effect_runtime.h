@@ -23,6 +23,7 @@
 #include <vector>
 
 namespace gpu { class GPUBackend; }
+namespace wasm { class WasmHost; }
 
 namespace effect_runtime {
 
@@ -54,6 +55,29 @@ struct EffectDesc {
   // Optional device on/off transition callback (see nano::EffectDesc_v2::on_active).
   // active=1 turned ON, 0 turned OFF. Fired only on a change.
   void (*on_active)(void* self, int32_t active) = nullptr;
+
+  // --- WASM-backed dispatch (barrel-loads-WASM migration) ---
+  // When `wasm_host` is non-null this descriptor is WASM-backed: the
+  // EffectInstance drives the lifecycle through WasmHost::call_indirect on the
+  // `w_*` function-table indices below (captured from the bundle's
+  // EffectDesc_v2) instead of the native function pointers above, which stay
+  // null. `user_state_` then holds the wasm State* (a linear-memory offset)
+  // returned by create(). Host imports during these calls are served by
+  // host_functions.cpp and routed to this instance via
+  // WasmHost::set_effect_instance (the WASM analogue of setActive).
+  wasm::WasmHost* wasm_host = nullptr;
+  int32_t wasm_module_id = -1;
+  uint32_t w_module_init = 0;
+  uint32_t w_create = 0;
+  uint32_t w_destroy = 0;
+  uint32_t w_init = 0;
+  uint32_t w_tick = 0;
+  uint32_t w_render = 0;
+  uint32_t w_on_state_patched = 0;
+  uint32_t w_on_resolume_param = 0;
+  uint32_t w_is_identity = 0;
+  uint32_t w_on_active = 0;
+  bool isWasm() const { return wasm_host != nullptr; }
 };
 
 // One EffectInstance per (effect type, sketch instance_key). Each owns the
@@ -178,6 +202,18 @@ class EffectInstance {
 
  private:
   void firePatched(const std::vector<PendingPatch>& patches);
+
+  // --- WASM driver helpers (no-ops on native-backed descriptors) ---
+  // The current user_state_ as a wasm32 linear-memory offset (the State* an
+  // effect's create() returned), to pass as `self` to lifecycle calls.
+  uint32_t wasmSelf() const {
+    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(user_state_));
+  }
+  // Invoke a WASM lifecycle function by table index with packed argv, bracketed
+  // by set_effect_instance(this)/clear so host imports route here. No-op
+  // (returns 0) when fnIdx is 0 (function not supplied). Returns argv[0].
+  uint32_t driveWasm(uint32_t fnIdx, uint32_t argc, uint32_t argv[]);
+
   friend class EffectRuntime;
   friend struct HostBridge;
 

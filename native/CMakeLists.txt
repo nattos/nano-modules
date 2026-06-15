@@ -581,6 +581,7 @@ if(APPLE)
     gpu_backend
     text_engine
     text_blitz
+    wasm_host
     nlohmann_json::nlohmann_json
     # Core Text font provider (host_impls_font.mm).
     "-framework CoreText"
@@ -709,6 +710,18 @@ if(APPLE)
     "-framework Foundation"
   )
   target_compile_options(native_test_runner PRIVATE -Wno-attributes)
+
+  # WASM effect driver (barrel-loads-WASM): drive a WASM-backed EffectDesc
+  # through the EffectInstance/EffectRuntime path. Uses data.lfo (no GPU).
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    add_executable(test_effect_driver tests/test_effect_driver.cpp)
+    target_link_libraries(test_effect_driver PRIVATE
+      effect_runtime wasm_host Catch2::Catch2WithMain)
+    target_compile_definitions(test_effect_driver PRIVATE
+      TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    target_compile_options(test_effect_driver PRIVATE -Wno-attributes)
+    catch_discover_tests(test_effect_driver)
+  endif()
 
   # Runtime smoke test for the text effects (gen.text / gen.richtext) mapped into
   # the native bundle: register + module_init + Core Text fonts + render, the

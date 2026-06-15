@@ -5,10 +5,12 @@
 
 #include "runtime/effect_runtime.h"
 
+#include <cstring>
 #include <iostream>
 #include <nlohmann/json.hpp>
 
 #include "gpu/gpu_backend.h"
+#include "wasm/wasm_host.h"
 
 namespace effect_runtime {
 
@@ -33,16 +35,40 @@ EffectInstance::~EffectInstance() {
   if (user_state_) doDestroy();
 }
 
+uint32_t EffectInstance::driveWasm(uint32_t fnIdx, uint32_t argc, uint32_t argv[]) {
+  if (!fnIdx || !desc_.wasm_host) return 0;
+  desc_.wasm_host->set_effect_instance(desc_.wasm_module_id, this);
+  bool ok = desc_.wasm_host->call_indirect(desc_.wasm_module_id, fnIdx, argc, argv);
+  desc_.wasm_host->set_effect_instance(desc_.wasm_module_id, nullptr);
+  return ok ? argv[0] : 0u;
+}
+
 void EffectInstance::doModuleInit() {
   // Type-level setup: register shaders, create the shared PSO, publish
-  // the schema prototype. Routed to this (prototype) instance via the
-  // active pointer so state::* host calls land here.
+  // the schema prototype. Routed to this (prototype) instance so state::*
+  // host calls land here (setActive for native, effect_instance for WASM).
+  if (desc_.isWasm()) {
+    uint32_t argv[4] = {0};
+    driveWasm(desc_.w_module_init, 0, argv);
+    return;
+  }
   runtime_->setActive(this);
   if (desc_.module_init) desc_.module_init();
   runtime_->setActive(nullptr);
 }
 
 void EffectInstance::doCreate() {
+  if (desc_.isWasm()) {
+    // create() returns the State* (a wasm offset); init() applies defaults.
+    uint32_t argv[4] = {0};
+    user_state_ = reinterpret_cast<void*>(
+        static_cast<uintptr_t>(driveWasm(desc_.w_create, 0, argv)));
+    argv[0] = wasmSelf();
+    driveWasm(desc_.w_init, 1, argv);
+    // NOTE: on_state_ready for WASM effects is deferred — it arrives via the
+    // state.set_on_state_ready host import, part of the remaining ABI surface.
+    return;
+  }
   runtime_->setActive(this);
   if (desc_.create) user_state_ = desc_.create();
   // Per-instance init tail: defaults, fusion registration with THIS
@@ -56,6 +82,12 @@ void EffectInstance::doCreate() {
 
 void EffectInstance::doDestroy() {
   if (!user_state_) return;
+  if (desc_.isWasm()) {
+    uint32_t argv[4] = {wasmSelf()};
+    driveWasm(desc_.w_destroy, 1, argv);
+    user_state_ = nullptr;
+    return;
+  }
   runtime_->setActive(this);
   if (desc_.destroy) desc_.destroy(user_state_);
   runtime_->setActive(nullptr);
@@ -63,12 +95,25 @@ void EffectInstance::doDestroy() {
 }
 
 void EffectInstance::doTick(double dt) {
+  if (desc_.isWasm()) {
+    // tick(self, dt): self i32 @argv[0], dt f64 @argv[1..2] (packed).
+    uint32_t argv[4] = {wasmSelf()};
+    std::memcpy(&argv[1], &dt, sizeof(double));
+    driveWasm(desc_.w_tick, 3, argv);
+    return;
+  }
   runtime_->setActive(this);
   if (desc_.tick) desc_.tick(user_state_, dt);
   runtime_->setActive(nullptr);
 }
 
 void EffectInstance::doRender(int vp_w, int vp_h) {
+  if (desc_.isWasm()) {
+    uint32_t argv[4] = {wasmSelf(), static_cast<uint32_t>(vp_w),
+                        static_cast<uint32_t>(vp_h)};
+    driveWasm(desc_.w_render, 3, argv);
+    return;
+  }
   runtime_->setActive(this);
   if (desc_.render) desc_.render(user_state_, vp_w, vp_h);
   runtime_->setActive(nullptr);
@@ -77,6 +122,13 @@ void EffectInstance::doRender(int vp_w, int vp_h) {
 void EffectInstance::doSetActive(bool active) {
   if (active == active_) return;
   active_ = active;
+  if (desc_.isWasm()) {
+    if (desc_.w_on_active) {
+      uint32_t argv[4] = {wasmSelf(), static_cast<uint32_t>(active ? 1 : 0)};
+      driveWasm(desc_.w_on_active, 2, argv);
+    }
+    return;
+  }
   if (desc_.on_active) {
     runtime_->setActive(this);
     desc_.on_active(user_state_, active ? 1 : 0);
@@ -92,6 +144,11 @@ void EffectInstance::doPrepare(int vp_w, int vp_h) {
 }
 
 bool EffectInstance::isIdentity() {
+  if (desc_.isWasm()) {
+    if (!desc_.w_is_identity) return false;
+    uint32_t argv[4] = {wasmSelf()};
+    return driveWasm(desc_.w_is_identity, 1, argv) != 0;
+  }
   if (!desc_.is_identity) return false;
   // Set the active pointer for parity with the other lifecycle calls, in
   // case a predicate reads host state (e.g. isInputConnected). The
@@ -176,6 +233,13 @@ void EffectInstance::setParamArray(const std::string& path,
 // effect's callback may call state::getPatch(i) / val::asNumber etc.
 // — those resolve via the active instance + the in-scope val table.
 void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
+  if (desc_.isWasm()) {
+    // TODO(barrel-wasm): marshal the patch buffer (pb/off/len/ops) into the
+    // module's linear memory and call_indirect(w_on_state_patched). Params
+    // therefore don't yet reach WASM effects — they run on init() defaults.
+    // Needed before GPU effects (whose params arrive via patches) are driven.
+    return;
+  }
   if (!desc_.on_state_patched) return;
   runtime_->setActive(this);
 
