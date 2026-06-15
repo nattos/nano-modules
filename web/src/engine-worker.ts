@@ -14,6 +14,7 @@ import { GPUHost } from './gpu-host';
 import { TextEngine } from './text-engine';
 import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { SketchExecutor } from './sketch-executor';
+import { WasmSketchExecutor } from './executor-host';
 import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
 import { BUCKET_SKETCH_ID, normalizeSketchChains, sketchChain, type Sketch } from './sketch-types';
@@ -27,6 +28,23 @@ let canvas: OffscreenCanvas | null = null;
 let gpuContext: GPUCanvasContext | null = null;
 let sketchExecutor: SketchExecutor | null = null;
 let traceCapture: TraceCapture | null = null;
+
+// Unified executor.wasm path (B4). When active, sketch frames render through the
+// SAME C++ executor binary the native barrel runs (executor-host.ts) instead of
+// the TS SketchExecutor. Opt-in (?wasmExecutor=1 on the worker URL, or the
+// setWasmExecutor command) so it can be gated on pixel parity; the TS executor
+// stays the default and keeps serving editor support (trace points, state sync).
+let wasmExecutor: WasmSketchExecutor | null = null;
+let useWasmExecutor = false;
+
+async function ensureWasmExecutor(): Promise<WasmSketchExecutor | null> {
+  if (wasmExecutor) return wasmExecutor;
+  if (!bridgeCore || !gpuHost || !gpuDevice) return null;
+  const ex = new WasmSketchExecutor(bridgeCore, gpuHost, gpuDevice, 'rgba8unorm', findCompiledModule);
+  await ex.init();
+  wasmExecutor = ex;
+  return ex;
+}
 
 // True when the editor is bound to a remote NanoBarrel — the worker
 // becomes editor-only: no simulateTick, no warmupEffects, no
@@ -198,6 +216,7 @@ async function handleCommand(cmd: WorkerCommand) {
           }
           // Invalidate the executor's cached instance so it reloads with the new type
           sketchExecutor.invalidateInstance(entry.instance_key);
+          wasmExecutor?.invalidateInstance(entry.instance_key);
           markDirty();
         }
       }
@@ -309,6 +328,17 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'setFusionMode':
       if (sketchExecutor) sketchExecutor.setFusionMode(cmd.mode);
       break;
+    case 'setWasmExecutor':
+      // Runtime toggle for the unified executor.wasm path (parity testing).
+      if (cmd.on) {
+        await ensureWasmExecutor();
+        useWasmExecutor = !!wasmExecutor;
+      } else {
+        useWasmExecutor = false;
+      }
+      console.log('[engine-worker] wasm executor active:', useWasmExecutor);
+      markDirty();
+      break;
     case 'setDebugMode':
       debugMode = !!cmd.on;
       // Clear the console buffer on toggle so the UI doesn't flash
@@ -398,6 +428,17 @@ async function init(width: number, height: number) {
   // the worker's broadcast generation, so visibility edits show up in
   // the IDE on the next frame.
   sketchExecutor.onHostSchemaChanged = () => markDirty();
+
+  // B4: opt into the unified executor.wasm via ?wasmExecutor=1 on the worker URL.
+  try {
+    if (new URL(self.location.href).searchParams.get('wasmExecutor') === '1') {
+      await ensureWasmExecutor();
+      useWasmExecutor = !!wasmExecutor;
+      console.log('[engine-worker] wasm executor active:', useWasmExecutor);
+    }
+  } catch (e) {
+    console.warn('[engine-worker] wasm executor init failed:', e);
+  }
   traceCapture = new TraceCapture(gpuDevice, format);
 
   post({ type: 'ready' });
@@ -631,8 +672,9 @@ async function simulateTick(dt: number) {
     if (userInput) inputHandle = userInput.handle;
 
     try {
-      const outputHandle = await sketchExecutor.executeAllColumns(
-        sketchId, sketch, inputHandle, frameState, w, h);
+      const outputHandle = (useWasmExecutor && wasmExecutor)
+        ? await wasmExecutor.executeAllColumns(sketchId, sketch, inputHandle, frameState, w, h)
+        : await sketchExecutor.executeAllColumns(sketchId, sketch, inputHandle, frameState, w, h);
       // (debug) if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {
@@ -942,6 +984,12 @@ async function reloadWasmModule(wasmUrl: string) {
       for (const entry of sketchChain(sketch)) {
           if (entry.type === 'module' && matchesReloadedModule(entry.module_type)) {
             sketchExecutor.invalidateInstance(entry.instance_key);
+            wasmExecutor?.invalidateInstance(entry.instance_key);
+            // Bug fix: dropping the instance alone leaves a STALE fused pipeline
+            // (keyed by module-type sequence) in the dispatcher cache, so a fused
+            // stage keeps running the old shader after HMR. Evict it too.
+            sketchExecutor.invalidateFusionCacheFor(resolveEffectId(entry.module_type));
+            wasmExecutor?.invalidateFusionCacheFor(resolveEffectId(entry.module_type));
             invalidatedCount++;
           }
         }

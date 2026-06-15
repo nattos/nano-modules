@@ -78,6 +78,10 @@ interface PipelineEntry {
   // Always non-null — every pipeline now declares its bindings up
   // front. Empty array means "no bind groups".
   bindings: BindingDecl[];
+  // True for pipelines created with WebGPU 'layout: "auto"' (the unified
+  // executor.wasm's no-layout fused-chain PSO). Dispatch builds the bind
+  // group from whatever slots were set, against pipeline.getBindGroupLayout(0).
+  autoBindings?: boolean;
 }
 
 /// Read packed pipeline-creation-time constants from a wasm-side byte
@@ -381,6 +385,51 @@ export class GPUHost {
     return this.alloc('compute_pipeline', entry);
   }
 
+  /**
+   * Compute pipeline with WebGPU-derived layout ('layout: "auto"'). Used by the
+   * unified executor.wasm for fused-chain kernels: the host doesn't enumerate
+   * the binding set up front (it varies with stage count) — the bind group is
+   * built at dispatch from whatever slots were set (computeSet{Texture,Buffer}),
+   * against the pipeline's auto layout. Mirrors the no-layout createComputePSO
+   * the native Metal backend exposes. Returns -1 on compile failure (the
+   * executor caches that and falls back to per-stage rendering).
+   */
+  createComputePipelineAuto(shaderHandle: number, entryPoint: string): number {
+    const shaderModule = this.get(shaderHandle) as GPUShaderModule;
+    if (!shaderModule) return -1;
+    let pipeline: GPUComputePipeline;
+    try {
+      pipeline = this.device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModule, entryPoint },
+      });
+    } catch (e) {
+      console.error('[gpu] auto compute pipeline error:', e);
+      return -1;
+    }
+    const entry: PipelineEntry = {
+      pipeline, bindGroupLayout: null, bindings: [], autoBindings: true,
+    };
+    return this.alloc('compute_pipeline', entry);
+  }
+
+  /**
+   * Reverse of textureFormatFromCode — the format code of a live texture handle
+   * (executor.wasm queries this to match delayed-wire retention textures to
+   * their producer's format). -1 if the handle isn't a texture.
+   */
+  getTextureFormatCode(handle: number): number {
+    const tex = this.getTextureByHandle(handle);
+    if (!tex) return -1;
+    switch (tex.format) {
+      case 'bgra8unorm': return 0;
+      case 'rgba8unorm': return 1;
+      case 'rgba16float': return 3;
+      case 'r32float': return 4;
+      default: return 1;
+    }
+  }
+
   /// Translate a name-keyed constants map to an ID-keyed one by
   /// scanning the WGSL we stashed when the shader was created.
   /// Returns the original map if the WGSL isn't available (e.g.
@@ -628,6 +677,32 @@ export class GPUHost {
 
   computeDispatch(_pass: number, x: number, y: number, z: number) {
     if (!this.computePassEncoder || !this.computePassEntry) return;
+    // Auto-layout pipelines (executor.wasm fused kernels) build the bind group
+    // from whatever slots were set, against the pipeline's derived layout.
+    if (this.computePassEntry.autoBindings) {
+      const autoEntries: GPUBindGroupEntry[] = [];
+      for (const [slot, t] of this.computePassTextures) {
+        const view = t.mip !== undefined
+          ? t.texture.createView({ baseMipLevel: t.mip, mipLevelCount: 1,
+                                   dimension: t.texture.dimension === '3d' ? '3d' : '2d' })
+          : t.texture.createView();
+        autoEntries.push({ binding: slot, resource: view });
+      }
+      for (const [slot, buffer] of this.computePassBuffers) {
+        autoEntries.push({ binding: slot, resource: { buffer } });
+      }
+      for (const [slot, sampler] of this.computePassSamplers) {
+        autoEntries.push({ binding: slot, resource: sampler });
+      }
+      autoEntries.sort((a, b) => a.binding - b.binding);
+      const bindGroup = this.device.createBindGroup({
+        layout: (this.computePassEntry.pipeline as GPUComputePipeline).getBindGroupLayout(0),
+        entries: autoEntries,
+      });
+      this.computePassEncoder.setBindGroup(0, bindGroup);
+      this.computePassEncoder.dispatchWorkgroups(x, y, z);
+      return;
+    }
     const entries = this.buildBindGroupEntries(this.computePassEntry, /*forCompute=*/true);
     if (entries && this.computePassEntry.bindGroupLayout) {
       const bindGroup = this.device.createBindGroup({

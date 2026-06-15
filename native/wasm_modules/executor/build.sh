@@ -24,6 +24,7 @@ source ../wasm_build_env.sh
 WASM_COMMON_EXPORTS=()
 
 WASM_EXPORTS=(
+  -Wl,--export=__wasm_call_ctors
   -Wl,--export=executor_create
   -Wl,--export=executor_destroy
   -Wl,--export=executor_register_schema
