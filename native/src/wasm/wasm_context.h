@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "wasm/effect_host_sink.h"
+
 namespace canvas {
 struct DrawList;
 }
@@ -83,14 +85,14 @@ struct WasmContext {
   // One bundle may register many effects; the runtime drives each by index.
   std::vector<WasmEffectDesc> registered_effects;
 
-  // The EffectInstance (chain entry) currently being driven. The WASM driver
-  // sets this before each lifecycle call_indirect — the WASM analogue of
-  // EffectRuntime::setActive — so executor-facing host imports (schema, fusion,
-  // texture wiring, will_render) route to the right instance. One bundle's
-  // module instance is shared across its chain entries, so this rotates per
-  // call. Opaque (void*) to avoid an include cycle with the runtime;
-  // host_functions casts it back to effect_runtime::EffectInstance*.
-  void* effect_instance = nullptr;
+  // The effect (chain entry) currently being driven. The WASM driver sets this
+  // before each lifecycle call_indirect — the WASM analogue of
+  // EffectRuntime::setActive — so executor-facing host imports (schema, texture
+  // wiring, will_render, ...) route to the right instance. One bundle's module
+  // instance is shared across its chain entries, so this rotates per call. The
+  // abstract EffectHostSink keeps wasm decoupled from the runtime (no cycle);
+  // effect_runtime::EffectInstance implements it.
+  EffectHostSink* effect_instance = nullptr;
 
   // Input textures (injected by sketch executor for chaining)
   std::vector<int32_t> input_texture_handles;

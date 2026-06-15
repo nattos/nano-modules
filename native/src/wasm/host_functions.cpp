@@ -328,30 +328,45 @@ static NativeSymbol resolume_symbols[] = {
 // Module "state" — plugin metadata, logging, state access
 // ========================================================================
 
+// version_packed is (major<<16)|(minor<<8)|patch; render as "M.m.p".
+static std::string unpack_version(int32_t v) {
+  return std::to_string((v >> 16) & 0xFF) + "." +
+         std::to_string((v >> 8) & 0xFF) + "." +
+         std::to_string(v & 0xFF);
+}
+
 static void state_set_metadata(wasm_exec_env_t env,
     int32_t id_ptr, int32_t id_len, int32_t version_packed) {
   auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->state_doc) return;
+  if (!ctx) return;
 
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, id_ptr, id_len)) return;
   char* id_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, id_ptr));
   if (!id_str) return;
 
-  bridge::PluginMetadata meta;
-  meta.id = std::string(id_str, id_len);
-  meta.major = (version_packed >> 16) & 0xFF;
-  meta.minor = (version_packed >> 8) & 0xFF;
-  meta.patch = version_packed & 0xFF;
+  std::string id(id_str, id_len);
 
-  ctx->plugin_key = ctx->state_doc->register_plugin(meta);
+  // Barrel path: route to the effect instance the runtime is driving.
+  if (ctx->effect_instance)
+    ctx->effect_instance->hostSetMetadata(id, unpack_version(version_packed));
+
+  // bridge_server path: register with the state doc.
+  if (ctx->state_doc) {
+    bridge::PluginMetadata meta;
+    meta.id = id;
+    meta.major = (version_packed >> 16) & 0xFF;
+    meta.minor = (version_packed >> 8) & 0xFF;
+    meta.patch = version_packed & 0xFF;
+    ctx->plugin_key = ctx->state_doc->register_plugin(meta);
+  }
 }
 
 static void state_set_schema(wasm_exec_env_t env,
     int32_t id_ptr, int32_t id_len, int32_t version_packed,
     int32_t schema_ptr, int32_t schema_len) {
   auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->state_doc) return;
+  if (!ctx) return;
 
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, id_ptr, id_len)) return;
@@ -360,14 +375,25 @@ static void state_set_schema(wasm_exec_env_t env,
   char* schema_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, schema_ptr));
   if (!id_str || !schema_str) return;
 
-  bridge::PluginMetadata meta;
-  meta.id = std::string(id_str, id_len);
-  meta.major = (version_packed >> 16) & 0xFF;
-  meta.minor = (version_packed >> 8) & 0xFF;
-  meta.patch = version_packed & 0xFF;
-
+  std::string id(id_str, id_len);
   std::string schema_json(schema_str, schema_len);
-  ctx->plugin_key = ctx->state_doc->register_plugin_with_schema(meta, schema_json);
+
+  // Barrel path: publish onto the effect instance (id+version+schema all
+  // arrive here; set_metadata may not be called separately).
+  if (ctx->effect_instance) {
+    ctx->effect_instance->hostSetMetadata(id, unpack_version(version_packed));
+    ctx->effect_instance->hostSetSchema(schema_json);
+  }
+
+  // bridge_server path: register with the state doc.
+  if (ctx->state_doc) {
+    bridge::PluginMetadata meta;
+    meta.id = id;
+    meta.major = (version_packed >> 16) & 0xFF;
+    meta.minor = (version_packed >> 8) & 0xFF;
+    meta.patch = version_packed & 0xFF;
+    ctx->plugin_key = ctx->state_doc->register_plugin_with_schema(meta, schema_json);
+  }
 }
 
 static void state_declare_param(wasm_exec_env_t env,

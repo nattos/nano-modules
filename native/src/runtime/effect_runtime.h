@@ -22,6 +22,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "wasm/effect_host_sink.h"
+
 namespace gpu { class GPUBackend; }
 namespace wasm { class WasmHost; }
 
@@ -88,11 +90,11 @@ struct EffectDesc {
 // and is where module_init's host calls land; it has no user_state and
 // never renders. Per-key render instances come from EffectRuntime::
 // instanceFor().
-class EffectInstance {
+class EffectInstance : public wasm::EffectHostSink {
  public:
   // Owning runtime + effect descriptor are set at construction.
   EffectInstance(class EffectRuntime* rt, EffectDesc desc);
-  ~EffectInstance();
+  ~EffectInstance() override;
 
   const std::string& id() const { return desc_.id; }
   const std::string& schemaJson() const { return schema_json_; }

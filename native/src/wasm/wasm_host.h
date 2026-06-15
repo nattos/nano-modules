@@ -87,12 +87,12 @@ public:
   /// Empty until then, or for an unknown id.
   std::string plugin_key(int32_t module_id);
 
-  /// Set the EffectInstance (chain entry) currently being driven, so the
-  /// executor-facing host imports route to it. The WASM effect driver sets this
-  /// before each lifecycle call_indirect and clears it after — the WASM
-  /// analogue of EffectRuntime::setActive. `inst` is an
-  /// effect_runtime::EffectInstance* (opaque here to avoid an include cycle).
-  void set_effect_instance(int32_t module_id, void* inst);
+  /// Set the effect (chain entry) currently being driven, so the executor-
+  /// facing host imports route to it. The WASM effect driver sets this before
+  /// each lifecycle call_indirect and clears it after — the WASM analogue of
+  /// EffectRuntime::setActive. The sink is implemented by
+  /// effect_runtime::EffectInstance (abstract here to avoid an include cycle).
+  void set_effect_instance(int32_t module_id, EffectHostSink* inst);
 
   // --- Linear-memory allocation (for marshalling on_state_patched buffers). ---
   /// Allocate `size` bytes in the module's linear memory. Returns the wasm app

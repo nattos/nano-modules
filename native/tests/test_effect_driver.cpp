@@ -90,6 +90,11 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
   // registerEffect → doModuleInit (WASM): registers the schema + plugin key.
   EffectInstance* proto = rt.registerEffect(desc);
   REQUIRE(proto != nullptr);
+
+  // Schema forwarding: module_init's state.set_schema host call routed onto the
+  // instance (via the EffectHostSink), so the executor/registry can read it.
+  CHECK(proto->metadataId() == "data.lfo");
+  CHECK(!proto->schemaJson().empty());
   const std::string key = host.plugin_key(id);
   INFO("plugin_key: " << key);
   REQUIRE(!key.empty());

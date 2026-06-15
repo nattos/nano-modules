@@ -259,7 +259,7 @@ std::string WasmHost::plugin_key(int32_t module_id) {
   return m ? m->context.plugin_key : std::string();
 }
 
-void WasmHost::set_effect_instance(int32_t module_id, void* inst) {
+void WasmHost::set_effect_instance(int32_t module_id, EffectHostSink* inst) {
   auto* m = find_module(module_id);
   if (m) m->context.effect_instance = inst;
 }
