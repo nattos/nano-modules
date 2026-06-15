@@ -255,19 +255,34 @@ int32_t SketchExecutor::execute(
         auto si = byKey.find(src.value("instanceKey", std::string()));
         auto di = byKey.find(dst.value("instanceKey", std::string()));
         if (si == byKey.end() || di == byKey.end()) continue;
-        // Route by the producer field's schema type. Float and texture wires
-        // map onto float/texture rails; anything else is deferred.
+        // Route by the producer field's schema type. Float → float rail,
+        // texture → texture rail, object/array → struct rail (its texture
+        // leaves flow, same as the augmenter's implicit struct connections —
+        // explicit read taps below suppress auto-connect on the dest field).
         const RegisteredModule* reg = registry_
             ? registry_->find(chain[si->second].value("module_type", std::string()))
             : nullptr;
         std::string ftype;
+        json srcDef;
         if (reg && reg->schemaFields.is_object()) {
           auto fit = reg->schemaFields.find(srcField);
-          if (fit != reg->schemaFields.end() && fit->is_object())
+          if (fit != reg->schemaFields.end() && fit->is_object()) {
+            srcDef = *fit;
             ftype = fit->value("type", std::string());
+          }
         }
-        if (ftype != "float" && ftype != "texture") continue;
-        rails.push_back(json{{"id", wid}, {"dataType", ftype}});
+        json railDataType;
+        if (ftype == "float" || ftype == "texture") {
+          railDataType = ftype;  // string dataType
+        } else if (ftype == "object" || ftype == "array") {
+          // Struct rail: dataType {kind:"struct", schema:<producer field def>},
+          // matching sketch_augment's implicit struct rails so the shared
+          // forEachRailLeafTexture / collectTextureLeaves walk applies.
+          railDataType = json{{"kind", "struct"}, {"schema", srcDef}};
+        } else {
+          continue;  // unsupported source type — drop the wire
+        }
+        rails.push_back(json{{"id", wid}, {"dataType", railDataType}});
         chain[si->second]["taps"].push_back(
             json{{"direction", "write"}, {"railId", wid}, {"fieldPath", srcField}});
         json rtap{{"direction", "read"}, {"railId", wid}, {"fieldPath", dstField}};
