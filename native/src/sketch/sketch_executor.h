@@ -180,9 +180,13 @@ class SketchExecutor {
   const nlohmann::json& lastRailState() const { return railState_; }
 
  private:
+  // Native-only seed/runtime sources, used solely under #ifndef __wasm__
+  // (effrtSetRuntime + the schema seed). The executor drives the GPU + effect
+  // instances through the gpu/effrt free-function ABIs, NOT these pointers — so
+  // it links with no GPUBackend at all (the constructor's `gpu` arg is ignored;
+  // the gpu_* ABI resolves the backend globally via currentRuntime()).
   effect_runtime::EffectRuntime* rt_;
   ModuleRegistry* registry_;
-  gpu::GPUBackend* gpu_;
 
   // Intermediate Metal textures, walked from cursor 0 each frame.
   // Grown lazily up to (sketch's module count − 1); released on

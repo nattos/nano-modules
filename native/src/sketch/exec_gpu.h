@@ -40,6 +40,10 @@ EXEC_GPU_IMPORT("end_submit_batch")   void    gpu_end_submit_batch(void);
 EXEC_GPU_IMPORT("create_shader_module") int32_t gpu_create_shader_module(const char* src, int32_t src_len);
 EXEC_GPU_IMPORT("create_compute_pso")   int32_t gpu_create_compute_pso(int32_t shader, const char* entry, int32_t entry_len);
 
+// Small uniform buffers (the wet/dry opacity blend pass).
+EXEC_GPU_IMPORT("create_buffer") int32_t gpu_create_buffer(int32_t size, int32_t usage);
+EXEC_GPU_IMPORT("write_buffer")  void    gpu_write_buffer(int32_t buf, int32_t offset, const void* data, int32_t data_len);
+
 // Compute pass dispatch.
 EXEC_GPU_IMPORT("begin_compute_pass") int32_t gpu_begin_compute_pass(void);
 EXEC_GPU_IMPORT("compute_set_pso")    void    gpu_compute_set_pso(int32_t pass, int32_t pso);

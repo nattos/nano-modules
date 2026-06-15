@@ -192,7 +192,7 @@ const json& refOr(const json& parent, const char* key, const json& fallback,
 SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
                                ModuleRegistry* registry,
                                gpu::GPUBackend* gpu)
-  : rt_(rt), registry_(registry), gpu_(gpu) {}
+  : rt_(rt), registry_(registry) { (void)gpu; }
 
 void SketchExecutor::registerModuleSchema(const std::string& moduleType,
                                           const nlohmann::json& schemaFields) {
@@ -214,17 +214,17 @@ const RegisteredModule* SketchExecutor::findSchema(const std::string& mt) const 
 
 SketchExecutor::~SketchExecutor() {
   for (int32_t h : intermediates_) {
-    if (h > 0 && gpu_) gpu_release(h);
+    if (h > 0) gpu_release(h);
   }
   for (auto& [_, pso] : fusedPSOs_) {
-    if (pso > 0 && gpu_) gpu_release(pso);
+    if (pso > 0) gpu_release(pso);
   }
   for (int32_t sm : fusedShaderModules_) {
-    if (sm > 0 && gpu_) gpu_release(sm);
+    if (sm > 0) gpu_release(sm);
   }
   for (auto& [_, leaves] : delayedRailTextures_) {
     for (auto& [__, h] : leaves) {
-      if (h > 0 && gpu_) gpu_release(h);
+      if (h > 0) gpu_release(h);
     }
   }
 }
@@ -283,7 +283,7 @@ int32_t SketchExecutor::execute(
     const json& rawSketch,
     int32_t inputHandle, int32_t outputHandle,
     int W, int H, double dt, bool sketchDirty) {
-  if (!rawSketch.is_object() || !registry_ || !gpu_) return inputHandle;
+  if (!rawSketch.is_object()) return inputHandle;
 
 #ifndef __wasm__
   // Native: point the effrt_* instance ABI at this runtime and reset the frame's
@@ -601,11 +601,11 @@ int32_t SketchExecutor::execute(
         // No real input (e.g. a bypassed generator with nothing above): emit a
         // clean cleared frame so the next stage / column output isn't a stale
         // pooled texture.
-        if (src < 0 && gpu_) {
+        if (src < 0) {
           src = nextIntermediate(W, H);
           gpu_clear_texture(src, 0.0f, 0.0f, 0.0f, 0.0f);
         }
-        if (isFinalStage && src != outputHandle && gpu_) {
+        if (isFinalStage && src != outputHandle) {
           gpu_copy_texture(src, outputHandle);
           return outputHandle;
         }
@@ -723,7 +723,7 @@ int32_t SketchExecutor::execute(
         }
         inst.setInputTextureSlots(slots);
       }
-      if (gpu_) gpu_set_surface(fxHandle, W, H);
+      gpu_set_surface(fxHandle, W, H);
 
       inst.doTick(dt);
       inst.doRender(W, H);
@@ -733,10 +733,10 @@ int32_t SketchExecutor::execute(
 
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
-        if (!blend_->encode(gpu_, colInput, fxHandle, outHandle, opacity, W, H)) {
+        if (!blend_->encode(colInput, fxHandle, outHandle, opacity, W, H)) {
           // Couldn't build the blend pass — show the effect at full strength
           // rather than nothing.
-          if (gpu_) gpu_copy_texture(fxHandle, outHandle);
+          gpu_copy_texture(fxHandle, outHandle);
         }
       }
 
@@ -943,7 +943,7 @@ int32_t SketchExecutor::execute(
 
 int32_t SketchExecutor::nextIntermediate(int W, int H) {
   if (W != intermediates_w_ || H != intermediates_h_) {
-    for (int32_t h : intermediates_) { if (h > 0 && gpu_) gpu_release(h); }
+    for (int32_t h : intermediates_) { if (h > 0) gpu_release(h); }
     intermediates_.clear();
     intermediates_w_ = W; intermediates_h_ = H;
   }
@@ -957,7 +957,6 @@ int32_t SketchExecutor::nextIntermediate(int W, int H) {
 }
 
 void SketchExecutor::flushDelayedTextureRetains(int W, int H) {
-  if (!gpu_) { pendingDelayRetain_.clear(); return; }
   // On resize the retained textures are the wrong size — free + drop them
   // (next frame reallocs at the new dims). Float delays are dimensionless.
   if (W != delayTexW_ || H != delayTexH_) {

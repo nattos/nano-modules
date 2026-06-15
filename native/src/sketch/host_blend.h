@@ -14,7 +14,7 @@
  * shader source is MSL.
  */
 
-#include "gpu/gpu_backend.h"
+#include "sketch/exec_gpu.h"
 
 #include <cstdint>
 
@@ -43,69 +43,67 @@ class WetDryBlend {
  public:
   ~WetDryBlend() { releaseAll(); }
 
-  // Encode the blend into `b`'s current command buffer (NOT submitted — the
-  // executor submits once per frame). `dryTex` is the pre-effect image; pass
-  // <0 to fade against transparent black. Returns false if resources couldn't
-  // be created (caller should fall back to using `fxTex` directly).
-  bool encode(gpu::GPUBackend* b, int32_t dryTex, int32_t fxTex,
+  // Encode the blend into the current command buffer (NOT submitted — the
+  // executor submits once per frame), via the gpu ABI. `dryTex` is the
+  // pre-effect image; pass <0 to fade against transparent black. Returns false
+  // if resources couldn't be created (caller should fall back to using `fxTex`).
+  bool encode(int32_t dryTex, int32_t fxTex,
               int32_t outTex, float opacity, int W, int H) {
-    if (!b || outTex < 0 || fxTex < 0 || W <= 0 || H <= 0) return false;
-    if (!ensure(b)) return false;
-    const int32_t dry = dryTex >= 0 ? dryTex : blackTex(b, W, H);
+    if (outTex < 0 || fxTex < 0 || W <= 0 || H <= 0) return false;
+    if (!ensure()) return false;
+    const int32_t dry = dryTex >= 0 ? dryTex : blackTex(W, H);
     if (dry < 0) return false;
     struct U { uint32_t w, h; float opacity, pad; } u{
         (uint32_t)W, (uint32_t)H, opacity, 0.0f};
-    b->writeBuffer(uni_, 0, reinterpret_cast<const uint8_t*>(&u), sizeof(u));
-    int pass = b->beginComputePass();
-    b->computeSetPSO(pass, pso_);
-    b->computeSetBuffer(pass, uni_, 0, 0);
-    b->computeSetTexture(pass, dry,    0, /*read*/ 0);
-    b->computeSetTexture(pass, fxTex,  1, /*read*/ 0);
-    b->computeSetTexture(pass, outTex, 2, /*write*/ 1);
-    b->computeDispatch(pass, (uint32_t)((W + 7) / 8), (uint32_t)((H + 7) / 8), 1);
-    b->endComputePass(pass);
+    gpu_write_buffer(uni_, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
+    int32_t pass = gpu_begin_compute_pass();
+    gpu_compute_set_pso(pass, pso_);
+    gpu_compute_set_buffer(pass, uni_, 0, 0);
+    gpu_compute_set_texture(pass, dry,    0, /*read*/ 0);
+    gpu_compute_set_texture(pass, fxTex,  1, /*read*/ 0);
+    gpu_compute_set_texture(pass, outTex, 2, /*write*/ 1);
+    gpu_compute_dispatch(pass, (W + 7) / 8, (H + 7) / 8, 1);
+    gpu_end_compute_pass(pass);
     return true;
   }
 
  private:
   static constexpr int kFmtRGBA8 = 1;  // gpu.h format code
 
-  bool ensure(gpu::GPUBackend* b) {
-    if (backend_ != b) { releaseAll(); backend_ = b; }
+  bool ensure() {
     if (pso_ < 0) {
-      shader_ = b->createShaderModule(kWetDryBlendMSL);
+      shader_ = gpu_create_shader_module(kWetDryBlendMSL,
+                                         (int32_t)__builtin_strlen(kWetDryBlendMSL));
       if (shader_ < 0) return false;
-      pso_ = b->createComputePSO(shader_, "wet_dry_blend");
+      pso_ = gpu_create_compute_pso(shader_, "wet_dry_blend",
+                                    (int32_t)__builtin_strlen("wet_dry_blend"));
       if (pso_ < 0) return false;
     }
-    if (uni_ < 0) uni_ = b->createBuffer(16, 0);
+    if (uni_ < 0) uni_ = gpu_create_buffer(16, 0);
     return pso_ >= 0 && uni_ >= 0;
   }
 
   // A persistent W×H transparent-black texture used as the "dry" side when no
   // input is connected (generator fade-out). Recreated on size change.
-  int32_t blackTex(gpu::GPUBackend* b, int W, int H) {
+  int32_t blackTex(int W, int H) {
     if (black_ < 0 || blackW_ != W || blackH_ != H) {
-      if (black_ >= 0) b->release(black_);
-      black_ = b->createTexture((uint32_t)W, (uint32_t)H, kFmtRGBA8);
+      if (black_ >= 0) gpu_release(black_);
+      black_ = gpu_create_texture(W, H, kFmtRGBA8);
       blackW_ = W; blackH_ = H;
-      if (black_ >= 0) b->clearTexture(black_, 0.0f, 0.0f, 0.0f, 0.0f);
+      if (black_ >= 0) gpu_clear_texture(black_, 0.0f, 0.0f, 0.0f, 0.0f);
     }
     return black_;
   }
 
   void releaseAll() {
-    if (backend_) {
-      if (pso_ >= 0)    backend_->release(pso_);
-      if (shader_ >= 0) backend_->release(shader_);
-      if (uni_ >= 0)    backend_->release(uni_);
-      if (black_ >= 0)  backend_->release(black_);
-    }
+    if (pso_ >= 0)    gpu_release(pso_);
+    if (shader_ >= 0) gpu_release(shader_);
+    if (uni_ >= 0)    gpu_release(uni_);
+    if (black_ >= 0)  gpu_release(black_);
     pso_ = shader_ = uni_ = black_ = -1;
     blackW_ = blackH_ = 0;
   }
 
-  gpu::GPUBackend* backend_ = nullptr;
   int32_t shader_ = -1, pso_ = -1, uni_ = -1, black_ = -1;
   int blackW_ = 0, blackH_ = 0;
 };
