@@ -226,8 +226,56 @@ int32_t SketchExecutor::execute(
   if (!rawSketch.contains("columns") &&
       rawSketch.contains("chain") && rawSketch["chain"].is_array()) {
     normalizedStorage = rawSketch;
-    normalizedStorage["columns"] =
-        json::array({json{{"chain", rawSketch["chain"]}}});
+    json chain = rawSketch["chain"];
+    json rails = json::array();
+
+    // Translate the wire model's `wires` into the executor's read/write taps +
+    // float rails. FLOAT wires only for now (scalar param modulation, reusing
+    // the tap-mod math); texture/struct wires are dropped until the full
+    // wire-model port. Producer scalars are read from the sketch's instance
+    // state (the write-tap path), so no producer-runtime output plumbing is
+    // needed. Causality beyond same-frame (producer above consumer) is deferred.
+    if (rawSketch.contains("wires") && rawSketch["wires"].is_array()) {
+      std::unordered_map<std::string, size_t> byKey;
+      for (size_t i = 0; i < chain.size(); ++i)
+        if (chain[i].is_object())
+          byKey[chain[i].value("instance_key", std::string())] = i;
+      for (const auto& w : rawSketch["wires"]) {
+        if (!w.is_object()) continue;
+        const json src = w.value("src", json::object());
+        const json dst = w.value("dest", json::object());
+        const std::string srcField = src.value("field", std::string());
+        const std::string dstField = dst.value("field", std::string());
+        const std::string wid = w.value("id", std::string());
+        if (wid.empty()) continue;
+        auto si = byKey.find(src.value("instanceKey", std::string()));
+        auto di = byKey.find(dst.value("instanceKey", std::string()));
+        if (si == byKey.end() || di == byKey.end()) continue;
+        // Only float-typed sources (per the producer's schema) route for now.
+        const RegisteredModule* reg = registry_
+            ? registry_->find(chain[si->second].value("module_type", std::string()))
+            : nullptr;
+        std::string ftype;
+        if (reg && reg->schemaFields.is_object()) {
+          auto fit = reg->schemaFields.find(srcField);
+          if (fit != reg->schemaFields.end() && fit->is_object())
+            ftype = fit->value("type", std::string());
+        }
+        if (ftype != "float") continue;
+        rails.push_back(json{{"id", wid}, {"dataType", "float"}});
+        chain[si->second]["taps"].push_back(
+            json{{"direction", "write"}, {"railId", wid}, {"fieldPath", srcField}});
+        json rtap{{"direction", "read"}, {"railId", wid}, {"fieldPath", dstField}};
+        if (w.contains("mod")) rtap["mod"] = w["mod"];
+        if (w.contains("combine")) rtap["combine"] = w["combine"];
+        if (w.contains("mixFactor")) rtap["mixFactor"] = w["mixFactor"];
+        chain[di->second]["taps"].push_back(rtap);
+      }
+    }
+
+    json col{{"chain", std::move(chain)}};
+    if (!rails.empty()) col["rails"] = std::move(rails);
+    normalizedStorage["columns"] = json::array({std::move(col)});
     rawPtr = &normalizedStorage;
   }
   const json& rawNorm = *rawPtr;
