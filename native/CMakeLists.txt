@@ -682,6 +682,7 @@ if(APPLE)
     src/sketch/module_registry.cpp
     src/sketch/sketch_executor.cpp
     src/sketch/effrt_impls.cpp
+    src/sketch/executor_host.cpp
     src/sketch/wasm_bundles.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -689,6 +690,7 @@ if(APPLE)
     sketch_augment
     effect_runtime
     gpu_backend
+    wasm_host
     nlohmann_json::nlohmann_json
   )
 
@@ -785,6 +787,21 @@ if(APPLE)
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_effect_render PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_render)
+  endif()
+
+  # B3 end-to-end: drive executor.wasm through WAMR vs the native executor.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+     AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
+    add_executable(test_executor_wasm tests/test_executor_wasm.cpp)
+    target_link_libraries(test_executor_wasm PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_executor_wasm PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+      EXECUTOR_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
+    target_compile_options(test_executor_wasm PRIVATE -Wno-attributes)
+    catch_discover_tests(test_executor_wasm)
   endif()
 
   # Runtime smoke test for the text effects (gen.text / gen.richtext) mapped into

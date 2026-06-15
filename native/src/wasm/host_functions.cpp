@@ -1064,6 +1064,22 @@ static void gpu_release(wasm_exec_env_t env, int32_t handle) {
   auto* g = get_gpu(env); if (g) g->release(handle);
 }
 
+// Executor-only GPU ops (the unified executor.wasm; effects never call these):
+// per-stage render target, format query for delayed-wire texture retention, the
+// frame submit-batch coalescing, and a no-layout compute PSO for fused kernels.
+static void gpu_set_surface(wasm_exec_env_t env, int32_t tex, int32_t w, int32_t h) {
+  auto* g = get_gpu(env); if (g) g->setSurface(tex, (uint32_t)w, (uint32_t)h);
+}
+static int32_t gpu_get_texture_format(wasm_exec_env_t env, int32_t handle) {
+  auto* g = get_gpu(env); return g ? g->getTextureFormat(handle) : -1;
+}
+static void gpu_begin_submit_batch(wasm_exec_env_t env) {
+  auto* g = get_gpu(env); if (g) g->beginSubmitBatch();
+}
+static void gpu_end_submit_batch(wasm_exec_env_t env) {
+  auto* g = get_gpu(env); if (g) g->endSubmitBatch();
+}
+
 // MSL reserves "main"; spirv-cross renames our shaders' entry "main"→"main0".
 // Effects ask for "main" (matching WebGPU); map it for Metal — mirrors
 // gpu_impls::mapEntryName on the native static path.
@@ -1238,6 +1254,11 @@ static NativeSymbol gpu_symbols[] = {
     {"get_input_texture", reinterpret_cast<void*>(gpu_get_input_texture), "(i)i", nullptr},
     {"get_input_texture_count", reinterpret_cast<void*>(gpu_get_input_texture_count), "()i", nullptr},
     {"texture_for_field", reinterpret_cast<void*>(gpu_texture_for_field), "(ii)i", nullptr},
+    // Executor-only ops (executor.wasm).
+    {"set_surface", reinterpret_cast<void*>(gpu_set_surface), "(iii)", nullptr},
+    {"get_texture_format", reinterpret_cast<void*>(gpu_get_texture_format), "(i)i", nullptr},
+    {"begin_submit_batch", reinterpret_cast<void*>(gpu_begin_submit_batch), "()", nullptr},
+    {"end_submit_batch", reinterpret_cast<void*>(gpu_end_submit_batch), "()", nullptr},
 };
 
 // ========================================================================
