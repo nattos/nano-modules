@@ -13,6 +13,7 @@
 #include "bridge/param_cache.h"
 #include "bridge/state_document.h"
 #include "runtime/effect_runtime.h"
+#include "sketch/module_registry.h"
 #include "wasm/wasm_host.h"
 
 using bridge::ParamCache;
@@ -170,6 +171,35 @@ TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effec
   inst->doTick(0.0);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
         Catch::Approx(0.75).margin(1e-4));
+
+  host.shutdown();
+}
+
+TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_driver]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+
+  // No state doc: the schema reaches the registry purely through the
+  // EffectHostSink forwarding (set_schema -> EffectInstance -> schemaJson()).
+  EffectRuntime rt(nullptr);
+  sketch_executor::ModuleRegistry registry(&rt);
+  int n = registry.registerWasmBundle(host, id);
+  INFO("registered " << n << " effect(s)");
+  CHECK(n >= 1);
+
+  const sketch_executor::RegisteredModule* reg = registry.find("data.lfo");
+  REQUIRE(reg != nullptr);
+  // schemaFields parsed from the forwarded schema JSON.
+  CHECK(reg->schemaFields.contains("rate"));
+  CHECK(reg->schemaFields.contains("amplitude"));
+  CHECK(reg->schemaFields.contains("output"));
 
   host.shutdown();
 }

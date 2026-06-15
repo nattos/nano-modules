@@ -23,6 +23,11 @@ class EffectRuntime;
 class EffectInstance;
 }  // namespace effect_runtime
 
+namespace wasm {
+class WasmHost;
+struct WasmEffectDesc;
+}  // namespace wasm
+
 namespace sketch_executor {
 
 /**
@@ -88,6 +93,27 @@ class ModuleRegistry {
                                 const int*, const int*),
       int32_t (*is_identity)(void*) = nullptr,
       void  (*on_active)(void*, int32_t) = nullptr);
+
+  /**
+   * Register a WASM-backed effect TYPE (barrel-loads-WASM). `host` + `moduleId`
+   * identify the loaded bundle; `desc` is the captured EffectDesc_v2 (function-
+   * table indices). Builds a WASM-bound EffectDesc and runs module_init() like
+   * the native path — schema is published via the host-import forwarding onto
+   * the prototype instance, then parsed identically. The effect dispatches
+   * through WasmHost::call_indirect. Repeated registration of the same
+   * moduleType is a no-op. Returns false if the runtime rejected it.
+   */
+  bool registerWasmEffect(const std::string& moduleType,
+                          const std::string& displayName,
+                          wasm::WasmHost* host, int32_t moduleId,
+                          const wasm::WasmEffectDesc& desc);
+
+  /**
+   * Register every effect a bundle's nano_module_main captured (each effect's
+   * id becomes its editor module_type). Call after the bundle is loaded and
+   * nano_module_main has run. Returns the number newly registered.
+   */
+  int registerWasmBundle(wasm::WasmHost& host, int32_t moduleId);
 
   /** Look up by editor module_type. nullptr if not registered. */
   const RegisteredModule* find(const std::string& moduleType) const;

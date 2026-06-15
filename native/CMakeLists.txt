@@ -716,7 +716,7 @@ if(APPLE)
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     add_executable(test_effect_driver tests/test_effect_driver.cpp)
     target_link_libraries(test_effect_driver PRIVATE
-      effect_runtime wasm_host Catch2::Catch2WithMain)
+      effect_runtime sketch_executor wasm_host Catch2::Catch2WithMain)
     target_compile_definitions(test_effect_driver PRIVATE
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     target_compile_options(test_effect_driver PRIVATE -Wno-attributes)

@@ -1,6 +1,7 @@
 #include "sketch/module_registry.h"
 
 #include "runtime/effect_runtime.h"
+#include "wasm/wasm_host.h"
 
 namespace sketch_executor {
 
@@ -53,6 +54,64 @@ bool ModuleRegistry::registerEffect(
                           reg.outputTexturePaths);
   entries_[moduleType] = std::move(reg);
   return true;
+}
+
+bool ModuleRegistry::registerWasmEffect(
+    const std::string& moduleType, const std::string& displayName,
+    wasm::WasmHost* host, int32_t moduleId, const wasm::WasmEffectDesc& wd) {
+  if (entries_.count(moduleType)) return true;
+  if (!rt_ || !host) return false;
+
+  effect_runtime::EffectDesc d;
+  d.id   = moduleType;
+  d.name = displayName;
+  // WASM binding: dispatch the lifecycle through call_indirect on these indices.
+  d.wasm_host           = host;
+  d.wasm_module_id      = moduleId;
+  d.w_module_init       = wd.idx_module_init;
+  d.w_create            = wd.idx_create;
+  d.w_destroy           = wd.idx_destroy;
+  d.w_init              = wd.idx_init;
+  d.w_tick              = wd.idx_tick;
+  d.w_render            = wd.idx_render;
+  d.w_on_state_patched  = wd.idx_on_state_patched;
+  d.w_on_resolume_param = wd.idx_on_resolume_param;
+  d.w_is_identity       = wd.idx_is_identity;
+  d.w_on_active         = wd.idx_on_active;
+
+  // Runs module_init() — schema is published onto the prototype via the WASM
+  // host-import forwarding (EffectHostSink), then parsed below as for native.
+  auto* proto = rt_->registerEffect(d);
+  if (!proto) return false;
+
+  RegisteredModule reg;
+  auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
+  if (!parsed.is_discarded() && parsed.is_object()) {
+    reg.schemaFields = parsed.value("fields", nlohmann::json::object());
+  } else {
+    reg.schemaFields = nlohmann::json::object();
+  }
+  extractTextureLeafPaths(reg.schemaFields, "",
+                          reg.inputTexturePaths,
+                          reg.outputTexturePaths);
+  entries_[moduleType] = std::move(reg);
+  return true;
+}
+
+int ModuleRegistry::registerWasmBundle(wasm::WasmHost& host, int32_t moduleId) {
+  int count = 0;
+  // Copy the descriptors: registerWasmEffect → registerEffect can mutate the
+  // host's per-module state, so don't hold a reference into it across the loop.
+  const std::vector<wasm::WasmEffectDesc> effects =
+      host.registered_effects(moduleId);
+  for (const auto& e : effects) {
+    if (e.id.empty()) continue;
+    if (registerWasmEffect(e.id, e.name.empty() ? e.id : e.name,
+                           &host, moduleId, e)) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 const RegisteredModule* ModuleRegistry::find(const std::string& moduleType) const {
