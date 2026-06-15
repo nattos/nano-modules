@@ -86,9 +86,14 @@ export class WasmSketchExecutor {
 
   private slots = new Map<string, SketchSlot>();
 
-  // Parity with SketchExecutor's editor-support surface (inert under the flag).
+  // Editor-preview surface (same shape SketchExecutor exposes): per-frame chain
+  // entry texture handles + the set of monitored entries (forces a fused-group
+  // barrier so the requested intermediate lands in a real texture). The worker
+  // clears chainEntryHandles + fills tracedChainEntries each frame; the executor
+  // reports back through the "trace" host imports below.
   chainEntryHandles = new Map<string, { input: number; output: number }>();
   tracedChainEntries = new Set<string>();
+  private currentSketchId = '';
 
   constructor(
     private bridgeCore: BridgeCore,
@@ -106,6 +111,7 @@ export class WasmSketchExecutor {
       wasi_snapshot_preview1: createWasiShim(() => this.memory),
       gpu: this.buildGpuImports(),
       effrt: this.buildEffrtImports(),
+      trace: this.buildTraceImports(),
     };
     const { instance } = await WebAssembly.instantiate(bytes, importObject);
     this.exports = instance.exports as unknown as ExecutorExports;
@@ -201,6 +207,7 @@ export class WasmSketchExecutor {
   async executeAllColumns(
     sketchId: string, sketch: Sketch, inputHandle: number,
     frameState: FrameState, width: number, height: number): Promise<number> {
+    this.currentSketchId = sketchId;
     const slot = this.slotFor(sketchId);
     const chain = sketchChain(sketch);
 
@@ -392,6 +399,20 @@ export class WasmSketchExecutor {
           /@compute([\s\S]*?)fn main\(/, '@compute$1fn fused_main(');
         return this.writeStringInto(out, cap, src);
       },
+    };
+  }
+
+  // ---- trace host imports (editor preview: exec_trace.h) ----
+  private buildTraceImports(): WebAssembly.ModuleImports {
+    return {
+      chain_entry: (colIdx: number, chainIdx: number, input: number, output: number,
+                    _w: number, _h: number) => {
+        this.chainEntryHandles.set(`${this.currentSketchId}/${colIdx}/${chainIdx}`,
+                                   { input, output });
+      },
+      sketch_output: (_handle: number, _w: number, _h: number) => { /* return value already carries it */ },
+      is_barrier: (colIdx: number, chainIdx: number): number =>
+        this.tracedChainEntries.has(`${this.currentSketchId}/${colIdx}/${chainIdx}`) ? 1 : 0,
     };
   }
 

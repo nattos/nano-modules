@@ -121,6 +121,44 @@ describe('Unified executor.wasm parity', () => {
     expect(Math.abs(tm - wm)).toBeLessThan(4);
   });
 
+  it('mid-chain output trace captures the per-stage texture (splits fusion)', async () => {
+    // gray → brightness(+1 → white) → brightness(contrast 0 → black). Both stages
+    // fuse; tracing the MIDDLE stage's output must force a barrier so its real
+    // texture is captured. mid trace = white (255), sketch output = black (0) —
+    // proving the chain-entry trace + barrier predicate work via the "trace" ABI.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'g@0', params: { color: [0.5, 0.5, 0.5] } },
+        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'b1@0', params: { brightness: 1.0, contrast: 0.5 } },
+        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'b2@0', params: { brightness: 0.5, contrast: 0.0 } },
+      ],
+      wires: [],
+    } as Sketch;
+    const modules = ['generator.solid_color', 'video.brightness_contrast'];
+    const tracePoints = [
+      { id: 'mid', target: { type: 'chain_entry', sketchId: 's', colIdx: 0, chainIdx: 1, side: 'output' } },
+      { id: 'out', target: { type: 'sketch_output', sketchId: 's' } },
+    ];
+    const runT = (useWasm: boolean) => {
+      const commands: any[] = [{ type: 'createSketch', sketchId: 's', sketch }];
+      if (useWasm) commands.push({ type: 'setWasmExecutor', on: true });
+      return runEngineTest({ width: 64, height: 64, modules, commands, tracePoints,
+        captureTraceIds: ['mid', 'out'], waitFrames: 30, dumpName: `trace_${useWasm ? 'wasm' : 'ts'}` });
+    };
+    const mean = (p: Uint8Array) => { let s = 0, n = 0; for (let i = 0; i + 3 < p.length; i += 4) { s += p[i] + p[i + 1] + p[i + 2]; n += 3; } return s / n; };
+    const ts = await runT(false);
+    const wasm = await runT(true);
+    expect(ts.success).toBe(true);
+    expect(wasm.success).toBe(true);
+    const wMid = mean(wasm.trace('mid').pixels), wOut = mean(wasm.trace('out').pixels);
+    console.log('[parity] trace mid', wMid, 'out', wOut);
+    expect(wMid).toBeGreaterThan(200);   // intermediate stage output captured
+    expect(wOut).toBeLessThan(40);       // distinct from the final frame
+    expect(Math.abs(wMid - mean(ts.trace('mid').pixels))).toBeLessThan(4);
+    expect(Math.abs(wOut - mean(ts.trace('out').pixels))).toBeLessThan(4);
+  });
+
   it('texture-wire blend matches the TS executor', async () => {
     const sketch: Sketch = {
       anchor: null,

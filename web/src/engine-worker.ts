@@ -595,17 +595,21 @@ async function simulateTick(dt: number) {
     params: new Array(16).fill(0),
   };
 
+  // The active executor (TS default, or executor.wasm when toggled on) owns the
+  // editor-preview surface — chain-entry handles + the monitored-entry set.
+  const exec = (useWasmExecutor && wasmExecutor) ? wasmExecutor : sketchExecutor;
+
   // Clear per-frame chain entry handles before executing sketches
-  sketchExecutor.chainEntryHandles.clear();
+  exec.chainEntryHandles.clear();
 
   // Refresh the set of traced chain entries from this frame's
   // tracePoints so the fusion planner knows which intermediate
   // stages of fused runs need their pixels persisted to a real
   // texture (rather than collapsed into in-register chaining).
-  sketchExecutor.tracedChainEntries.clear();
+  exec.tracedChainEntries.clear();
   for (const tp of tracePoints) {
     if (tp.target.type === 'chain_entry') {
-      sketchExecutor.tracedChainEntries.add(
+      exec.tracedChainEntries.add(
         `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`);
     }
   }
@@ -672,9 +676,7 @@ async function simulateTick(dt: number) {
     if (userInput) inputHandle = userInput.handle;
 
     try {
-      const outputHandle = (useWasmExecutor && wasmExecutor)
-        ? await wasmExecutor.executeAllColumns(sketchId, sketch, inputHandle, frameState, w, h)
-        : await sketchExecutor.executeAllColumns(sketchId, sketch, inputHandle, frameState, w, h);
+      const outputHandle = await exec.executeAllColumns(sketchId, sketch, inputHandle, frameState, w, h);
       // (debug) if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {
@@ -734,7 +736,7 @@ async function simulateTick(dt: number) {
       handle = realOutputs.get(tp.target.pluginKey) ?? -1;
     } else if (tp.target.type === 'chain_entry') {
       const key = `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`;
-      const entry = sketchExecutor.chainEntryHandles.get(key);
+      const entry = exec.chainEntryHandles.get(key);
       if (entry) {
         handle = tp.target.side === 'input' ? entry.input : entry.output;
       }

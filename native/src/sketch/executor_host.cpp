@@ -90,6 +90,21 @@ int32_t w_fusion_kind(wasm_exec_env_t, int32_t h)             { return effrt_fus
 int32_t w_fusion_has_prepare(wasm_exec_env_t, int32_t h)      { return effrt_fusion_has_prepare(h); }
 int32_t w_fusion_uniform_buffer(wasm_exec_env_t, int32_t h)   { return effrt_fusion_uniform_buffer(h); }
 
+// --- "trace" namespace: editor-preview hooks. No-op on native — the barrel's
+// wasm-executor path doesn't drive previews (the in-process executor's
+// std::function hooks do); these just resolve the imports so the executor's
+// hook calls don't trap. ---
+void    w_trace_chain_entry(wasm_exec_env_t, int32_t, int32_t, int32_t, int32_t,
+                            int32_t, int32_t) {}
+void    w_trace_sketch_output(wasm_exec_env_t, int32_t, int32_t, int32_t) {}
+int32_t w_trace_is_barrier(wasm_exec_env_t, int32_t, int32_t) { return 0; }
+
+NativeSymbol g_trace_symbols[] = {
+    {"chain_entry", reinterpret_cast<void*>(w_trace_chain_entry), "(iiiiii)", nullptr},
+    {"sketch_output", reinterpret_cast<void*>(w_trace_sketch_output), "(iii)", nullptr},
+    {"is_barrier", reinterpret_cast<void*>(w_trace_is_barrier), "(ii)i", nullptr},
+};
+
 NativeSymbol g_effrt_symbols[] = {
     {"instance_for", reinterpret_cast<void*>(w_instance_for), "(iiii)i", nullptr},
     {"set_param_float", reinterpret_cast<void*>(w_set_param_float), "(iiif)", nullptr},
@@ -115,9 +130,13 @@ NativeSymbol g_effrt_symbols[] = {
 }  // namespace
 
 bool registerEffrtHostFunctions() {
-  return wasm_runtime_register_natives(
+  bool ok = wasm_runtime_register_natives(
       "effrt", g_effrt_symbols,
       sizeof(g_effrt_symbols) / sizeof(NativeSymbol));
+  ok = wasm_runtime_register_natives(
+           "trace", g_trace_symbols,
+           sizeof(g_trace_symbols) / sizeof(NativeSymbol)) && ok;
+  return ok;
 }
 
 }  // namespace sketch_executor

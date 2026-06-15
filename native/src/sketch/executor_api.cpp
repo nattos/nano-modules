@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "sketch/sketch_executor.h"
+#include "sketch/exec_trace.h"
 
 #ifdef __wasm__
 #define EXEC_EXPORT(nm) __attribute__((export_name(nm)))
@@ -30,7 +31,22 @@ SketchExecutor* executor_create() {
   // No native backend pointers — the wasm executor reaches its runtime through
   // the effrt/gpu imports; the #ifndef __wasm__ runtime-bind/seed in execute()
   // is compiled out.
-  return new SketchExecutor(nullptr, nullptr, nullptr);
+  SketchExecutor* ex = new SketchExecutor(nullptr, nullptr, nullptr);
+#ifdef __wasm__
+  // Route the editor-preview hooks to the "trace" host imports (natively the
+  // barrel sets these std::functions directly on its in-process executor).
+  ex->setChainEntryHook([](int colIdx, int chainIdx, int32_t in, int32_t out,
+                           int w, int h) {
+    trace_chain_entry(colIdx, chainIdx, in, out, w, h);
+  });
+  ex->setSketchOutputHook([](int32_t handle, int w, int h) {
+    trace_sketch_output(handle, w, h);
+  });
+  ex->setBarrierPredicate([](int colIdx, int chainIdx) -> bool {
+    return trace_is_barrier(colIdx, chainIdx) != 0;
+  });
+#endif
+  return ex;
 }
 
 EXEC_EXPORT("executor_destroy")
