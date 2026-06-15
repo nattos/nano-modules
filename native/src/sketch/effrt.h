@@ -71,4 +71,16 @@ EFFRT_IMPORT("fusion_uniform_buffer") int32_t effrt_fusion_uniform_buffer(int32_
 EFFRT_IMPORT("fusion_fragment_name")
 int32_t effrt_fusion_fragment_name(int32_t inst, char* out, int32_t cap);
 
+// Assemble the platform fused-chain compute shader SOURCE for the given ordered
+// non-identity stage handles, and write it into out[0..cap). Returns the full
+// source length (may exceed cap → caller grows + retries); 0 if the host can't
+// build it (a fragment's MSL/WGSL isn't registered). This is the one piece of
+// fusion that is platform-specific — the host resolves each stage's registered
+// fragment and runs the MSL (native) / WGSL (web) fused codegen. The executor
+// keeps the PSO cache + lifetime and builds the PSO from this source via the
+// gpu ABI.
+EFFRT_IMPORT("build_fused_source")
+int32_t effrt_build_fused_source(const int32_t* insts, int32_t count,
+                                 char* out, int32_t cap);
+
 }  // extern "C"

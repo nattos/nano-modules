@@ -8,7 +8,6 @@
 #include "sketch/schema_util.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
-#include "runtime/fusion_codegen.h"
 
 #include <memory>
 #include <string>
@@ -780,35 +779,20 @@ int32_t SketchExecutor::execute(
       // identical (point-op composition). If EVERY stage is identity the
       // group is a pure no-op → alias group input as output (no GPU work).
       std::string cacheKey;
-      std::vector<std::string> fragments;
       std::vector<EffectRef> stages;
-      bool fragsOK = true;
       for (size_t idx = 0; idx < allStages.size(); ++idx) {
         EffectRef inst = allStages[idx];
         if (inst.isIdentity()) continue;
         if (!cacheKey.empty()) cacheKey += '|';
         cacheKey += R[g.firstK + idx].moduleType;
         stages.push_back(inst);
-        // Resolve the fragment by a STABLE per-effect key first
-        // ("<module_type>::<name>"), falling back to the bare name. The bare
-        // names ("pixel") are shared across all effects and overwritten at
-        // registration, so a bare lookup here (render time) would return some
-        // OTHER effect's fragment — the cause of the fused kernel failing to
-        // compile. See gen_barrel_effects.py's qualified registerShaderMSL alias.
-        const std::string fragName = inst.fusionFragmentName();
-        std::string msl;
-        if (!rt_->lookupMSL(R[g.firstK + idx].moduleType + "::" + fragName, &msl)
-            && !rt_->lookupMSL(fragName, &msl)) {
-          fragsOK = false; break;
-        }
-        fragments.push_back(std::move(msl));
       }
 
       const bool isFinalStage = isLastCol && isLastGroupInCol;
       const int32_t groupInput = colInput;
 
       // Whole group is identity → passthrough.
-      if (fragsOK && stages.empty()) {
+      if (stages.empty()) {
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)R[g.firstK].chainIdx,
                           groupInput, groupInput, W, H);
@@ -822,14 +806,27 @@ int32_t SketchExecutor::execute(
       }
 
       int32_t pso = -1;
-      if (fragsOK) {
+      {
         auto it = fusedPSOs_.find(cacheKey);
         if (it != fusedPSOs_.end()) {
           pso = it->second;   // may be -1: a previously-failed compile (cached!)
         } else {
-          std::string src = fusion_codegen::generateFusedMSL(fragments);
-          if (!src.empty()) {
-            int32_t sm = gpu_create_shader_module(src.c_str(), (int32_t)src.size());
+          // Host assembles the platform fused-chain source (lookupMSL +
+          // generateFused — MSL native / WGSL web). The executor owns the PSO
+          // cache + lifetime; only the codegen crosses the ABI.
+          std::vector<int32_t> sh;
+          sh.reserve(stages.size());
+          for (auto s : stages) sh.push_back(s.h);
+          std::string src(8192, '\0');
+          int32_t len = effrt_build_fused_source(sh.data(), (int32_t)sh.size(),
+                                                 src.data(), (int32_t)src.size());
+          if (len > (int32_t)src.size()) {  // grew past the buffer — resize + retry
+            src.assign((size_t)len, '\0');
+            len = effrt_build_fused_source(sh.data(), (int32_t)sh.size(),
+                                           src.data(), (int32_t)src.size());
+          }
+          if (len > 0) {
+            int32_t sm = gpu_create_shader_module(src.data(), len);
             if (sm > 0) {
               fusedShaderModules_.push_back(sm);
               pso = gpu_create_compute_pso(sm, "fused_main", 10);

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "runtime/effect_runtime.h"
+#include "runtime/fusion_codegen.h"
 
 using effect_runtime::EffectInstance;
 using effect_runtime::EffectRuntime;
@@ -128,6 +129,37 @@ int32_t effrt_fusion_fragment_name(int32_t inst, char* out, int32_t cap) {
   int32_t len = static_cast<int32_t>(n.size());
   int32_t copy = len < cap ? len : cap;
   if (out && copy > 0) std::memcpy(out, n.data(), static_cast<size_t>(copy));
+  return len;
+}
+
+int32_t effrt_build_fused_source(const int32_t* insts, int32_t count,
+                                 char* out, int32_t cap) {
+  if (!g_rt || count <= 0) return 0;
+  // Resolve each stage's registered fragment MSL. Prefer the STABLE per-effect
+  // key "<module_type>::<name>" (the bare "pixel" name is shared and overwritten
+  // at registration, so a bare lookup could pull another effect's fragment),
+  // falling back to the bare name. A miss aborts (the executor falls back to the
+  // per-stage path).
+  std::vector<std::string> fragments;
+  fragments.reserve(static_cast<size_t>(count));
+  for (int32_t k = 0; k < count; ++k) {
+    EffectInstance* i = resolve(insts[k]);
+    if (!i) return 0;
+    const std::string& fragName = i->fusionInfo().fragmentName;
+    std::string msl;
+    if (!g_rt->lookupMSL(i->id() + "::" + fragName, &msl) &&
+        !g_rt->lookupMSL(fragName, &msl)) {
+      return 0;
+    }
+    fragments.push_back(std::move(msl));
+  }
+  // Platform fused codegen (MSL here; the web host emits WGSL).
+  std::string src = fusion_codegen::generateFusedMSL(fragments);
+  int32_t len = static_cast<int32_t>(src.size());
+  if (out && cap > 0) {
+    int32_t copy = len < cap ? len : cap;
+    if (copy > 0) std::memcpy(out, src.data(), static_cast<size_t>(copy));
+  }
   return len;
 }
 
