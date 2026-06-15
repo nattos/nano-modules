@@ -191,6 +191,69 @@ int32_t WasmHost::call_function_i32_i32(int32_t module_id, const char* func_name
   return 0;
 }
 
+bool WasmHost::call_export_v(int32_t module_id, const char* func_name,
+                             uint32_t argc, uint32_t argv[]) {
+  auto* m = find_module(module_id);
+  if (!m) { last_error_ = "Module not found"; return false; }
+
+  wasm_function_inst_t func = wasm_runtime_lookup_function(m->instance, func_name);
+  if (!func) { last_error_ = std::string("Function not found: ") + func_name; return false; }
+
+  if (!wasm_runtime_call_wasm(m->exec_env, func, argc, argv)) {
+    const char* exception = wasm_runtime_get_exception(m->instance);
+    last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
+    wasm_runtime_clear_exception(m->instance);
+    return false;
+  }
+  return true;
+}
+
+bool WasmHost::call_indirect(int32_t module_id, uint32_t func_idx,
+                             uint32_t argc, uint32_t argv[]) {
+  auto* m = find_module(module_id);
+  if (!m) { last_error_ = "Module not found"; return false; }
+
+  if (!wasm_runtime_call_indirect(m->exec_env, func_idx, argc, argv)) {
+    const char* exception = wasm_runtime_get_exception(m->instance);
+    last_error_ = std::string("Indirect call failed: ") + (exception ? exception : "unknown");
+    wasm_runtime_clear_exception(m->instance);
+    return false;
+  }
+  return true;
+}
+
+wasm_module_inst_t WasmHost::module_inst(int32_t module_id) {
+  auto* m = find_module(module_id);
+  return m ? m->instance : nullptr;
+}
+
+wasm_exec_env_t WasmHost::exec_env_for(int32_t module_id) {
+  auto* m = find_module(module_id);
+  return m ? m->exec_env : nullptr;
+}
+
+void* WasmHost::app_to_native(int32_t module_id, uint32_t app_addr, uint32_t size) {
+  auto* m = find_module(module_id);
+  if (!m || app_addr == 0) return nullptr;
+  if (!wasm_runtime_validate_app_addr(m->instance, app_addr, size)) return nullptr;
+  return wasm_runtime_addr_app_to_native(m->instance, app_addr);
+}
+
+std::string WasmHost::read_cstring(int32_t module_id, uint32_t app_addr) {
+  auto* m = find_module(module_id);
+  if (!m || app_addr == 0) return {};
+  if (!wasm_runtime_validate_app_str_addr(m->instance, app_addr)) return {};
+  const char* p = static_cast<const char*>(
+      wasm_runtime_addr_app_to_native(m->instance, app_addr));
+  return p ? std::string(p) : std::string();
+}
+
+const std::vector<WasmEffectDesc>& WasmHost::registered_effects(int32_t module_id) {
+  static const std::vector<WasmEffectDesc> kEmpty;
+  auto* m = find_module(module_id);
+  return m ? m->context.registered_effects : kEmpty;
+}
+
 void WasmHost::set_draw_list(int32_t module_id, canvas::DrawList* dl) {
   auto* m = find_module(module_id);
   if (m) m->context.draw_list = dl;

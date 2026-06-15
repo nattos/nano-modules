@@ -37,6 +37,31 @@ struct FrameState {
 
 using AudioTriggerCallback = void (*)(int channel, void* userdata);
 
+// A captured nano::EffectDesc_v2 from a bundle's nano_module_main →
+// `module.register_effect`. The function fields are WASM indirect-function-
+// table indices (invoke via WasmHost::call_indirect); 0 means "not provided".
+// The host reads the descriptor struct out of the module's linear memory at
+// registration time and stashes the resolved strings + indices here, so the
+// effect runtime can drive the lifecycle without re-touching wasm memory.
+struct WasmEffectDesc {
+  int32_t struct_version = 0;
+  std::string id;
+  std::string name;
+  std::string description;
+  std::string category;
+  std::string keywords;
+  uint32_t idx_module_init = 0;
+  uint32_t idx_create = 0;
+  uint32_t idx_destroy = 0;
+  uint32_t idx_init = 0;
+  uint32_t idx_tick = 0;
+  uint32_t idx_render = 0;
+  uint32_t idx_on_state_patched = 0;
+  uint32_t idx_on_resolume_param = 0;
+  uint32_t idx_is_identity = 0;
+  uint32_t idx_on_active = 0;
+};
+
 struct WasmContext {
   WasmHost* host = nullptr;
   canvas::DrawList* draw_list = nullptr;
@@ -53,6 +78,19 @@ struct WasmContext {
 
   // GPU backend
   gpu::GPUBackend* gpu_backend = nullptr;
+
+  // Effects this module's nano_module_main registered (EffectDesc_v2 capture).
+  // One bundle may register many effects; the runtime drives each by index.
+  std::vector<WasmEffectDesc> registered_effects;
+
+  // The EffectInstance (chain entry) currently being driven. The WASM driver
+  // sets this before each lifecycle call_indirect — the WASM analogue of
+  // EffectRuntime::setActive — so executor-facing host imports (schema, fusion,
+  // texture wiring, will_render) route to the right instance. One bundle's
+  // module instance is shared across its chain entries, so this rotates per
+  // call. Opaque (void*) to avoid an include cycle with the runtime;
+  // host_functions casts it back to effect_runtime::EffectInstance*.
+  void* effect_instance = nullptr;
 
   // Input textures (injected by sketch executor for chaining)
   std::vector<int32_t> input_texture_handles;

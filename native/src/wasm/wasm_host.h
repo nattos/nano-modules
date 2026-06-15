@@ -52,6 +52,36 @@ public:
   /// Call an exported function with two i32 arguments.
   int32_t call_function_i32_i32(int32_t module_id, const char* func_name, int32_t a, int32_t b);
 
+  // --- Generic dispatch primitives (for effect lifecycle, EffectDesc_v2). ---
+  // The fixed-signature call_function_* helpers above cover bridge_server's
+  // needs; effect modules need arbitrary-arity calls (on_state_patched has 6
+  // args) and calls by indirect-function-table index (the EffectDesc_v2 fn
+  // fields are table indices, not export names). These use WAMR's packed-argv
+  // convention: `argv` is a buffer of uint32 slots (an f64/i64 occupies two);
+  // arguments and results share it, so size it to max(arg_slots, result_slots)
+  // and read results back from argv[0..] on success.
+
+  /// Call an exported function by name with packed argv. Returns true on success.
+  bool call_export_v(int32_t module_id, const char* func_name, uint32_t argc, uint32_t argv[]);
+  /// Call a function by indirect-table index (an EffectDesc_v2 fn pointer).
+  bool call_indirect(int32_t module_id, uint32_t func_idx, uint32_t argc, uint32_t argv[]);
+
+  // --- Linear-memory access (for marshalling EffectDesc_v2 strings, patches). ---
+  /// The loaded module instance / exec env, for host-function code that holds a
+  /// module_id. nullptr if the id is unknown.
+  wasm_module_inst_t module_inst(int32_t module_id);
+  wasm_exec_env_t exec_env_for(int32_t module_id);
+  /// Validate + translate a wasm app address to a native pointer. nullptr if the
+  /// range is out of bounds or the address is 0.
+  void* app_to_native(int32_t module_id, uint32_t app_addr, uint32_t size);
+  /// Read a NUL-terminated string from linear memory. Empty on null/invalid.
+  std::string read_cstring(int32_t module_id, uint32_t app_addr);
+
+  /// Effects this module's nano_module_main registered (captured by the
+  /// `module.register_effect` host import). Empty for an unknown id or a module
+  /// whose nano_module_main hasn't been called yet.
+  const std::vector<WasmEffectDesc>& registered_effects(int32_t module_id);
+
   /// Get the last error message.
   const std::string& last_error() const { return last_error_; }
 

@@ -61,7 +61,11 @@ set(WAMR_BUILD_FAST_JIT 0)
 set(WAMR_BUILD_LIBC_BUILTIN 1)
 set(WAMR_BUILD_LIBC_WASI 1)
 set(WAMR_BUILD_SIMD 0)
-set(WAMR_BUILD_REF_TYPES 0)
+# Reference types ON: modern clang emits the reference-types encoding for the
+# indirect-function-table (call_indirect with a table-index immediate). The v2
+# effect ABI is function-pointer-heavy (EffectDesc_v2 fn table → call_indirect),
+# so effect bundles fail to load ("zero byte expected") without this.
+set(WAMR_BUILD_REF_TYPES 1)
 set(WAMR_BUILD_BULK_MEMORY 1)
 set(WAMR_BUILD_PLATFORM "darwin")
 
@@ -236,6 +240,17 @@ catch_discover_tests(test_tap_mod)
 add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)
+
+# Effect v2 ABI load path (barrel-loads-WASM migration). Requires testonly.wasm
+# (bundles data.lfo) to be built into ../build/wasm.
+if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+  add_executable(test_effect_abi tests/test_effect_abi.cpp)
+  target_link_libraries(test_effect_abi PRIVATE wasm_host Catch2::Catch2WithMain)
+  target_compile_definitions(test_effect_abi PRIVATE
+    TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm"
+  )
+  catch_discover_tests(test_effect_abi)
+endif()
 
 # NanoLooper WASM module integration test (requires nanolooper.wasm to be built)
 if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")

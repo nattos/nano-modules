@@ -942,6 +942,65 @@ static NativeSymbol gpu_symbols[] = {
 };
 
 // ========================================================================
+// Module "module" — effect registration (captures EffectDesc_v2)
+// ========================================================================
+
+// A bundle's nano_module_main() calls this once per effect it provides,
+// passing a pointer to a nano::EffectDesc_v2 in its linear memory. We read the
+// descriptor out — resolving the char* metadata + the 10 indirect-function-
+// table indices — and stash it on the context for the runtime to drive.
+static void module_register_effect(wasm_exec_env_t env, int32_t desc_ptr) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+
+  // EffectDesc_v2 is 16 contiguous i32 fields on wasm32: struct_version, 5
+  // char* (id/name/description/category/keywords), then 10 function-table
+  // indices (module_init, create, destroy, init, tick, render,
+  // on_state_patched, on_resolume_param, is_identity, on_active).
+  constexpr uint32_t kFieldCount = 16;
+  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, kFieldCount * 4)) return;
+  const uint32_t* d = static_cast<const uint32_t*>(
+      wasm_runtime_addr_app_to_native(inst, desc_ptr));
+  if (!d) return;
+
+  auto rd_str = [&](uint32_t app_ptr) -> std::string {
+    if (app_ptr == 0 || !wasm_runtime_validate_app_str_addr(inst, app_ptr)) return {};
+    const char* p = static_cast<const char*>(
+        wasm_runtime_addr_app_to_native(inst, app_ptr));
+    return p ? std::string(p) : std::string();
+  };
+
+  WasmEffectDesc desc;
+  desc.struct_version        = static_cast<int32_t>(d[0]);
+  desc.id                    = rd_str(d[1]);
+  desc.name                  = rd_str(d[2]);
+  desc.description           = rd_str(d[3]);
+  desc.category              = rd_str(d[4]);
+  desc.keywords              = rd_str(d[5]);
+  desc.idx_module_init       = d[6];
+  desc.idx_create            = d[7];
+  desc.idx_destroy           = d[8];
+  desc.idx_init              = d[9];
+  desc.idx_tick              = d[10];
+  desc.idx_render            = d[11];
+  desc.idx_on_state_patched  = d[12];
+  desc.idx_on_resolume_param = d[13];
+  desc.idx_is_identity       = d[14];
+  desc.idx_on_active         = d[15];
+
+  if (auto* host = get_host(env)) {
+    host->log("module.register_effect: " + desc.id +
+              " (v" + std::to_string(desc.struct_version) + ")");
+  }
+  ctx->registered_effects.push_back(std::move(desc));
+}
+
+static NativeSymbol module_symbols[] = {
+    {"register_effect", reinterpret_cast<void*>(module_register_effect), "(i)", nullptr},
+};
+
+// ========================================================================
 // Registration
 // ========================================================================
 
@@ -979,6 +1038,10 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "gpu", gpu_symbols,
       sizeof(gpu_symbols) / sizeof(NativeSymbol));
+
+  ok = ok && wasm_runtime_register_natives(
+      "module", module_symbols,
+      sizeof(module_symbols) / sizeof(NativeSymbol));
 
   return ok;
 }
