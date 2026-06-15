@@ -4,6 +4,17 @@
 #include <cstring>
 #include <mutex>
 
+// WAMR keeps a thread-local "current exec_env" and rejects ENTERING a different
+// exec_env while one is already active ("invalid exec env", wasm_runtime.c). That
+// is exactly the unified-executor shape: a host function invoked from one module
+// (executor.wasm's effrt_*/gpu_* imports) calls into ANOTHER module (the effect
+// bundles' lifecycle fns). These TLS getters/setters live in WAMR's internal
+// header; declare them here (they're regular exported symbols in vmlib).
+extern "C" {
+void wasm_runtime_set_exec_env_tls(wasm_exec_env_t exec_env);
+wasm_exec_env_t wasm_runtime_get_exec_env_tls(void);
+}
+
 namespace wasm {
 
 namespace {
@@ -17,6 +28,23 @@ namespace {
 // race (one instance ends up with no host functions → loads 0 effects).
 std::mutex g_runtime_mu;
 int g_runtime_refs = 0;
+
+// RAII guard for nested cross-module wasm calls (see TLS note above). Around a
+// call that enters `target`, if a DIFFERENT exec_env is the active TLS, clear it
+// so WAMR adopts `target`, then restore the outer one on scope exit. A no-op at
+// top level (prev == nullptr) and for same-module reentry (prev == target).
+struct NestedCallScope {
+  wasm_exec_env_t prev_;
+  bool swapped_;
+  explicit NestedCallScope(wasm_exec_env_t target)
+      : prev_(wasm_runtime_get_exec_env_tls()),
+        swapped_(prev_ && prev_ != target) {
+    if (swapped_) wasm_runtime_set_exec_env_tls(nullptr);
+  }
+  ~NestedCallScope() {
+    if (swapped_) wasm_runtime_set_exec_env_tls(prev_);
+  }
+};
 }  // namespace
 
 WasmHost::WasmHost(bridge::ParamCache& cache) : cache_(cache) {}
@@ -142,6 +170,7 @@ int32_t WasmHost::call_function(int32_t module_id, const char* func_name) {
     return -1;
   }
 
+  NestedCallScope scope(m->exec_env);
   if (!wasm_runtime_call_wasm(m->exec_env, func, 0, nullptr)) {
     const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
@@ -162,6 +191,7 @@ int32_t WasmHost::call_function_f64(int32_t module_id, const char* func_name, do
   wasm_val_t args[1] = {{.kind = WASM_F64, .of = {.f64 = arg}}};
   wasm_val_t results[1] = {};
 
+  NestedCallScope scope(m->exec_env);
   if (!wasm_runtime_call_wasm_a(m->exec_env, func, 0, results, 1, args)) {
     const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
@@ -185,6 +215,7 @@ int32_t WasmHost::call_function_i32_f64(int32_t module_id, const char* func_name
   };
   wasm_val_t results[1] = {};
 
+  NestedCallScope scope(m->exec_env);
   if (!wasm_runtime_call_wasm_a(m->exec_env, func, 0, results, 2, args)) {
     const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
@@ -208,6 +239,7 @@ int32_t WasmHost::call_function_i32_i32(int32_t module_id, const char* func_name
   };
   wasm_val_t results[1] = {};
 
+  NestedCallScope scope(m->exec_env);
   if (!wasm_runtime_call_wasm_a(m->exec_env, func, 0, results, 2, args)) {
     const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
@@ -225,6 +257,7 @@ bool WasmHost::call_export_v(int32_t module_id, const char* func_name,
   wasm_function_inst_t func = wasm_runtime_lookup_function(m->instance, func_name);
   if (!func) { last_error_ = std::string("Function not found: ") + func_name; return false; }
 
+  NestedCallScope scope(m->exec_env);
   if (!wasm_runtime_call_wasm(m->exec_env, func, argc, argv)) {
     const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Execution failed: ") + (exception ? exception : "unknown");
@@ -239,6 +272,7 @@ bool WasmHost::call_indirect(int32_t module_id, uint32_t func_idx,
   auto* m = find_module(module_id);
   if (!m) { last_error_ = "Module not found"; return false; }
 
+  NestedCallScope scope(m->exec_env);
   if (!wasm_runtime_call_indirect(m->exec_env, func_idx, argc, argv)) {
     const char* exception = wasm_runtime_get_exception(m->instance);
     last_error_ = std::string("Indirect call failed: ") + (exception ? exception : "unknown");

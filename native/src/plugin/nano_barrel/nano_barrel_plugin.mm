@@ -57,7 +57,17 @@
 #include "sketch/wasm_bundles.h"
 
 #include <dlfcn.h>
+#include <fstream>
 #include "sketch/sketch_executor.h"
+#include "sketch/executor_host.h"
+#include "wasm/wasm_host.h"
+#include "bridge/param_cache.h"
+
+// Defined in effrt_impls.cpp — binds the process-global EffectRuntime the
+// "effrt" host functions (and the in-process executor) drive. Must be called
+// before each frame the wasm executor runs (it clears the frame-local handle
+// table). Forward-declared here to avoid pulling effrt internals into the plugin.
+namespace sketch_executor { void effrtSetRuntime(effect_runtime::EffectRuntime*); }
 
 #import "InteropTexture.h"
 #include "barrel_log.h"
@@ -263,6 +273,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     send_cv_.notify_one();
     if (send_thread_.joinable()) send_thread_.join();
+    // Tear down the wasm executor while gpu_/rt_ are still alive — it frees its
+    // intermediate textures through the gpu/effrt ABI.
+    teardownWasmExecutor();
     stopBridge();
   }
 
@@ -559,11 +572,23 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // been removed (or whose chain entry no longer exists) doesn't
     // resurrect last frame's pixels.
     if (captures_enabled_) frame_captures_.clear();
-    int32_t finalHandle = executor_
-        ? executor_->execute(sketch_snapshot_,
-                              inputHandle, outputHandle,
-                              (int)W, (int)H, dt, sketchRefetched)
-        : inputHandle;
+    // Default: the in-process native SketchExecutor. With NANO_BARREL_WASM_EXECUTOR
+    // set, drive the unified executor.wasm through WAMR instead (same C++ source,
+    // compiled to WASM) — pixel-identical per test_executor_wasm. The wasm path
+    // does NOT fire the preview-capture hooks / rail-state publish (those are
+    // native-SketchExecutor callbacks, not part of the executor ABI), so editor
+    // previews are inert under the flag; the render itself is unaffected.
+    int32_t finalHandle;
+    if (wasm_executor_) {
+      finalHandle = executeViaWasm(inputHandle, outputHandle, W, H, dt,
+                                   sketchRefetched);
+    } else if (executor_) {
+      finalHandle = executor_->execute(sketch_snapshot_,
+                                       inputHandle, outputHandle,
+                                       (int)W, (int)H, dt, sketchRefetched);
+    } else {
+      finalHandle = inputHandle;
+    }
 
     gpu_->submit();
     rt_->drainConsoleLog();
@@ -572,7 +597,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // the native mirror of the web executor's /sketch_state publish. Only when
     // an editor is watching; stored as one JSON string so the state-doc diff
     // emits a single patch (and nothing at all while the rails are static).
-    if (executor_ && hasClients) {
+    if (executor_ && !wasm_executor_ && hasClients) {
       std::lock_guard<std::mutex> lock(tick_mu_);
       bridge_core_.state_document().set_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch_state",
@@ -781,9 +806,159 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // this exists.
     send_thread_ = std::thread([this] { runSendWorker(); });
 
+    // Optionally swap the in-process executor for executor.wasm (experimental).
+    if (const char* e = getenv("NANO_BARREL_WASM_EXECUTOR"); e && e[0] && e[0] != '0') {
+      setupWasmExecutor();
+    }
+
     rt_->drainConsoleLog();
     BARREL_LOG("initEffectRuntime",
-               "effects=%zu", registry_->size());
+               "effects=%zu wasm_executor=%d", registry_->size(),
+               (int)wasm_executor_);
+  }
+
+  // ---- Unified WASM executor (NANO_BARREL_WASM_EXECUTOR) --------------------
+  // Loads executor.wasm via WAMR and drives it instead of the in-process
+  // SketchExecutor. The wasm executor reaches the effects through the SAME
+  // native EffectRuntime via the "effrt" host functions, so it renders on the
+  // same Metal backend, pixel-identical to the native path. Falls back to the
+  // native executor (leaves wasm_executor_ false) on any setup failure.
+  void setupWasmExecutor() {
+    if (!rt_ || !gpu_) return;
+    std::string path = bundleWasmPath("executor");
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) {
+      BARREL_LOG("setupWasmExecutor", "executor.wasm not found at %s", path.c_str());
+      return;
+    }
+    auto size = f.tellg();
+    f.seekg(0);
+    std::vector<uint8_t> bytes((size_t)size);
+    f.read(reinterpret_cast<char*>(bytes.data()), size);
+
+    // The "effrt" host functions are process-global; register once. The "gpu"
+    // imports the executor needs are already covered by the standard gpu_symbols
+    // table registered on the first WasmHost::init (the effect bundles' host).
+    if (!sketch_executor::registerEffrtHostFunctions()) {
+      BARREL_LOG("setupWasmExecutor", "registerEffrtHostFunctions failed");
+      return;
+    }
+    exec_param_cache_ = std::make_unique<bridge::ParamCache>();
+    exec_host_ = std::make_unique<wasm::WasmHost>(*exec_param_cache_);
+    if (!exec_host_->init()) {
+      BARREL_LOG("setupWasmExecutor", "exec host init failed: %s",
+                 exec_host_->last_error().c_str());
+      exec_host_.reset();
+      return;
+    }
+    exec_module_ = exec_host_->load_module(bytes.data(), (uint32_t)bytes.size());
+    if (exec_module_ < 0) {
+      BARREL_LOG("setupWasmExecutor", "load_module failed: %s",
+                 exec_host_->last_error().c_str());
+      exec_host_.reset();
+      return;
+    }
+    exec_host_->set_gpu_backend(exec_module_, gpu_.get());
+
+    uint32_t argv[16] = {0};
+    if (!exec_host_->call_export_v(exec_module_, "executor_create", 0, argv) ||
+        !argv[0]) {
+      BARREL_LOG("setupWasmExecutor", "executor_create failed");
+      exec_host_.reset();
+      return;
+    }
+    exec_ptr_ = argv[0];
+
+    // Push every registered effect's schema into the wasm executor (it has no
+    // ModuleRegistry of its own — it walks schemas the host hands it).
+    int pushed = 0;
+    for (const auto& kv : registry_->schemas()) {
+      const std::string& mt = kv.first;
+      std::string schema = kv.second.dump();
+      uint32_t mtOff = execPush(mt.data(), mt.size());
+      uint32_t scOff = execPush(schema.data(), schema.size());
+      uint32_t a[5] = {exec_ptr_, mtOff, (uint32_t)mt.size(),
+                       scOff, (uint32_t)schema.size()};
+      exec_host_->call_export_v(exec_module_, "executor_register_schema", 5, a);
+      exec_host_->app_free(exec_module_, mtOff);
+      exec_host_->app_free(exec_module_, scOff);
+      ++pushed;
+    }
+    wasm_executor_ = true;
+    BARREL_LOG("setupWasmExecutor", "executor.wasm live; %d schema(s) pushed", pushed);
+  }
+
+  // Copy bytes into the executor module's linear memory; returns app offset.
+  uint32_t execPush(const void* data, size_t len) {
+    void* native = nullptr;
+    uint32_t off = exec_host_->app_malloc(exec_module_, (uint32_t)len, &native);
+    if (off && native && len) std::memcpy(native, data, len);
+    return off;
+  }
+
+  // Run one frame through executor.wasm. Marshals the (macro-injected) sketch
+  // snapshot into linear memory and calls executor_execute; returns the wasm
+  // executor's output texture handle (or the input handle on any failure).
+  int32_t executeViaWasm(int32_t inHandle, int32_t outHandle,
+                         unsigned int W, unsigned int H, double dt,
+                         bool sketchRefetched) {
+    // The wasm executor shares the native EffectRuntime through effrt; rebind it
+    // each frame (g_rt is process-global and the frame-local handle table is
+    // cleared on bind).
+    sketch_executor::effrtSetRuntime(rt_.get());
+
+    // Re-dump every frame: the macro injection above mutates sketch_snapshot_
+    // each tick even when the sketch itself didn't refetch, so the native path's
+    // live re-walk has no cached equivalent here. Reuse the app buffer; grow it.
+    exec_sketch_json_ = sketch_snapshot_.dump();
+    size_t len = exec_sketch_json_.size();
+    if (len + 1 > exec_sketch_cap_) {
+      if (exec_sketch_off_) {
+        exec_host_->app_free(exec_module_, exec_sketch_off_);
+        exec_sketch_off_ = 0;
+        exec_sketch_cap_ = 0;
+      }
+      void* native = nullptr;
+      exec_sketch_off_ = exec_host_->app_malloc(exec_module_,
+                                                (uint32_t)(len + 1), &native);
+      exec_sketch_cap_ = exec_sketch_off_ ? (uint32_t)(len + 1) : 0;
+    }
+    if (!exec_sketch_off_) return inHandle;
+    void* native = exec_host_->app_to_native(exec_module_, exec_sketch_off_,
+                                             (uint32_t)len);
+    if (!native) return inHandle;
+    std::memcpy(native, exec_sketch_json_.data(), len);
+
+    uint32_t a[10] = {0};
+    a[0] = exec_ptr_;
+    a[1] = exec_sketch_off_;
+    a[2] = (uint32_t)len;
+    a[3] = (uint32_t)inHandle;
+    a[4] = (uint32_t)outHandle;
+    a[5] = W;
+    a[6] = H;
+    std::memcpy(&a[7], &dt, sizeof(double));  // f64 dt occupies a[7..8]
+    a[9] = sketchRefetched ? 1u : 0u;         // dirty
+    if (!exec_host_->call_export_v(exec_module_, "executor_execute", 10, a)) {
+      BARREL_LOG("executeViaWasm", "executor_execute failed: %s",
+                 exec_host_->last_error().c_str());
+      return inHandle;
+    }
+    return (int32_t)a[0];
+  }
+
+  void teardownWasmExecutor() {
+    if (exec_host_ && exec_module_ >= 0 && exec_ptr_) {
+      uint32_t d[1] = {exec_ptr_};
+      exec_host_->call_export_v(exec_module_, "executor_destroy", 1, d);
+    }
+    exec_ptr_ = 0;
+    exec_module_ = -1;
+    exec_sketch_off_ = 0;
+    exec_sketch_cap_ = 0;
+    exec_host_.reset();
+    exec_param_cache_.reset();
+    wasm_executor_ = false;
   }
 
   void runSendWorker() {
@@ -1227,6 +1402,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   std::unique_ptr<effect_runtime::EffectRuntime>           rt_;
   std::unique_ptr<sketch_executor::ModuleRegistry>         registry_;
   std::unique_ptr<sketch_executor::SketchExecutor>         executor_;
+
+  // Unified WASM executor (NANO_BARREL_WASM_EXECUTOR). Declared after gpu_/rt_ so
+  // teardownWasmExecutor + exec_host_ destruction happen while they're alive.
+  bool                                  wasm_executor_ = false;
+  std::unique_ptr<bridge::ParamCache>   exec_param_cache_;
+  std::unique_ptr<wasm::WasmHost>       exec_host_;
+  int32_t                               exec_module_ = -1;
+  uint32_t                              exec_ptr_ = 0;       // SketchExecutor* in wasm
+  std::string                           exec_sketch_json_;   // reused dump buffer
+  uint32_t                              exec_sketch_off_ = 0;
+  uint32_t                              exec_sketch_cap_ = 0;
 
   // GL ↔ Metal interop.
   std::unique_ptr<InteropTexture>  input_interop_;

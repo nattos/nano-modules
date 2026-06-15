@@ -964,8 +964,10 @@ if(APPLE)
   endif()
 
   # Bundle the effect .wasm bundles into Resources/wasm/ for the barrel-loads-
-  # WASM path (NANO_BARREL_WASM_EFFECTS). Best-effort: built into ../build/wasm.
-  foreach(_b core lights nano)
+  # WASM path (NANO_BARREL_WASM_EFFECTS), plus the unified executor.wasm for the
+  # barrel-runs-WASM-executor path (NANO_BARREL_WASM_EXECUTOR). Best-effort:
+  # built into ../build/wasm.
+  foreach(_b core lights nano executor)
     set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
     if(EXISTS "${_wsrc}")
       add_custom_command(TARGET NanoBarrel POST_BUILD
