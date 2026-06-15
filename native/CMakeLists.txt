@@ -681,6 +681,7 @@ if(APPLE)
   add_library(sketch_executor STATIC
     src/sketch/module_registry.cpp
     src/sketch/sketch_executor.cpp
+    src/sketch/effrt_impls.cpp
     src/sketch/wasm_bundles.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)

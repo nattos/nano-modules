@@ -280,12 +280,12 @@ class SketchExecutor {
   // Apply `state` to the instance, firing setParam* only for fields that
   // differ from `prevState` (pass an empty/non-object prevState to force a
   // full apply). See lastAppliedState_.
-  void applyState(effect_runtime::EffectInstance* inst,
+  void applyState(int32_t inst,
                   const nlohmann::json& prevState,
                   const nlohmann::json& state);
 
   void applyReadTaps(
-      effect_runtime::EffectInstance* inst,
+      int32_t inst,
       const nlohmann::json& entry,
       const std::unordered_map<std::string, nlohmann::json>& railsById,
       const std::unordered_map<std::string,
@@ -295,7 +295,7 @@ class SketchExecutor {
       const std::string& instanceKey);
 
   void captureWriteTaps(
-      effect_runtime::EffectInstance* inst,
+      int32_t inst,
       const nlohmann::json& entry,
       const std::string& producerInstanceKey,
       const nlohmann::json& sketchInstances,
@@ -305,7 +305,7 @@ class SketchExecutor {
       std::unordered_map<std::string, float>& railFloats);
 
   void markWriteTapOutputsConnected(
-      effect_runtime::EffectInstance* inst,
+      int32_t inst,
       const nlohmann::json& entry);
 };
 

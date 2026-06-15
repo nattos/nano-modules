@@ -4,18 +4,77 @@
 #include "sketch/tap_mod.h"
 #include "sketch/host_blend.h"
 #include "sketch/exec_gpu.h"
+#include "sketch/effrt.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/fusion_codegen.h"
 
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace sketch_executor {
+
+// Native-only: point the effrt_* forwarders at this runtime + reset the frame's
+// handle table (effrt_impls.cpp). Under wasm the host owns the runtime, so the
+// shared executor never calls this (guarded #ifndef __wasm__ in execute()).
+void effrtSetRuntime(effect_runtime::EffectRuntime* rt);
 
 using nlohmann::json;
 
 namespace {
+
+// Thin handle wrapper: the executor drives effect instances purely through the
+// effrt.h ABI over an opaque int32 handle (no EffectInstance pointer), so the
+// same source compiles to executor.wasm. Methods mirror the old EffectInstance
+// surface 1:1 — call sites read the same, just `.` instead of `->`.
+struct EffectRef {
+  int32_t h = -1;
+  bool valid() const { return h >= 0; }
+  void setParamFloat(const std::string& p, float v) const {
+    effrt_set_param_float(h, p.data(), (int32_t)p.size(), v);
+  }
+  void setParamJson(const std::string& p, const std::string& j) const {
+    effrt_set_param_json(h, p.data(), (int32_t)p.size(), j.data(), (int32_t)j.size());
+  }
+  void setParamArray(const std::string& p, const std::vector<float>& c) const {
+    effrt_set_param_array(h, p.data(), (int32_t)p.size(), c.data(), (int32_t)c.size());
+  }
+  void setTextureField(const std::string& p, int32_t t) const {
+    effrt_set_texture_field(h, p.data(), (int32_t)p.size(), t);
+  }
+  int32_t textureField(const std::string& p) const {
+    return effrt_texture_field(h, p.data(), (int32_t)p.size());
+  }
+  void setInputTextureSlots(const std::vector<int32_t>& s) const {
+    effrt_set_input_texture_slots(h, s.data(), (int32_t)s.size());
+  }
+  void setFieldConnected(const std::string& p, bool in, bool out) const {
+    effrt_set_field_connected(h, p.data(), (int32_t)p.size(), in ? 1 : 0, out ? 1 : 0);
+  }
+  void setWillRender(bool v) const { effrt_set_will_render(h, v ? 1 : 0); }
+  void doTick(double dt) const { effrt_tick(h, dt); }
+  void doRender(int w, int hh) const { effrt_render(h, w, hh); }
+  void doPrepare(int w, int hh) const { effrt_prepare(h, w, hh); }
+  void doSetActive(bool a) const { effrt_set_active(h, a ? 1 : 0); }
+  bool isIdentity() const { return effrt_is_identity(h) != 0; }
+  int  fusionKind() const { return effrt_fusion_kind(h); }
+  bool fusionHasPrepare() const { return effrt_fusion_has_prepare(h) != 0; }
+  int  fusionUniformBuffer() const { return effrt_fusion_uniform_buffer(h); }
+  std::string fusionFragmentName() const {
+    char buf[128];
+    int32_t n = effrt_fusion_fragment_name(h, buf, (int32_t)sizeof(buf));
+    if (n > (int32_t)sizeof(buf)) n = (int32_t)sizeof(buf);
+    return std::string(buf, n > 0 ? n : 0);
+  }
+};
+
+// Acquire a handle for (module_type, instance_key) via the effrt ABI.
+EffectRef instanceRef(const std::string& mt, const std::string& key) {
+  return EffectRef{effrt_instance_for(mt.data(), (int32_t)mt.size(),
+                                      key.data(), (int32_t)key.size())};
+}
 
 /**
  * Visit each texture-leaf path in a rail's dataType. Texture rails
@@ -182,11 +241,11 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
       // Fusion eligibility — structural (fusion kind/fragment/prepare, tap-free)
       // plus bypass/opacity, which are sketch state and thus only change on a
       // dirty frame. instanceFor materialises the per-key instance here.
-      auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
+      EffectRef inst = instanceRef(mt, instKey);
       bool e = false;
-      if (inst) {
-        const auto& fi = inst->fusionInfo();
-        e = (fi.kind == 1) && !fi.fragmentName.empty() && fi.hasPrepare();
+      if (inst.valid()) {
+        e = (inst.fusionKind() == 1) && !inst.fusionFragmentName().empty() &&
+            inst.fusionHasPrepare();
         if (e && entry.contains("taps") && entry["taps"].is_array() &&
             !entry["taps"].empty()) {
           e = false;
@@ -207,6 +266,13 @@ int32_t SketchExecutor::execute(
     int32_t inputHandle, int32_t outputHandle,
     int W, int H, double dt, bool sketchDirty) {
   if (!rawSketch.is_object() || !registry_ || !gpu_) return inputHandle;
+
+#ifndef __wasm__
+  // Native: point the effrt_* instance ABI at this runtime and reset the frame's
+  // handle table (effrt_impls.cpp). The wasm build's host owns the runtime, so
+  // the shared executor doesn't do this there.
+  effrtSetRuntime(rt_);
+#endif
 
   // Augment with implicit struct-rail connections. Schemas are
   // immutable after the host's one-shot registerEffect calls, so build
@@ -471,7 +537,7 @@ int32_t SketchExecutor::execute(
     //      on_state_patched → val_blobs + json::dump cascade).
     // Each chain entry has its own EffectInstance, so the cache keys purely
     // on instance_key — no cross-instance file-static aliasing to guard.
-    auto maybeApplyState = [&](effect_runtime::EffectInstance* inst,
+    auto maybeApplyState = [&](EffectRef inst,
                                const std::string& instKey,
                                const json& state) {
       // Persisted params only change when the sketch is edited. When the host
@@ -481,7 +547,7 @@ int32_t SketchExecutor::execute(
       if (!sketchDirty) return;
       auto& cachedState = lastAppliedState_[instKey];
       if (cachedState == state) return;
-      applyState(inst, cachedState, state);
+      applyState(inst.h, cachedState, state);
       cachedState = state;
     };
 
@@ -493,8 +559,8 @@ int32_t SketchExecutor::execute(
       const std::string& instKey = pe.instanceKey;
 
       const RegisteredModule* reg = pe.reg;
-      auto* inst = rt_ ? rt_->instanceFor(mt, instKey) : nullptr;
-      if (!inst) return;
+      EffectRef inst = instanceRef(mt, instKey);
+      if (!inst.valid()) return;
 
       // For a passthrough stage that is the column's FINAL output, the result
       // must land in `outputHandle` (the caller's bound output texture) — the
@@ -520,7 +586,7 @@ int32_t SketchExecutor::execute(
       // then go fully dormant — no state, no taps, no tick/render — and alias
       // the column input straight through as this stage's output. --
       const bool bypass = readBypass(instances, instKey);
-      inst->doSetActive(!bypass);
+      inst.doSetActive(!bypass);
       if (bypass) {
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
@@ -533,11 +599,11 @@ int32_t SketchExecutor::execute(
 
       // -- Zero stale per-field state from the previous frame --
       for (const auto& path : reg->inputTexturePaths) {
-        inst->setTextureField(path, 0);
-        inst->setFieldConnected(path, false, false);
+        inst.setTextureField(path, 0);
+        inst.setFieldConnected(path, false, false);
       }
       for (const auto& path : reg->outputTexturePaths) {
-        inst->setFieldConnected(path, false, false);
+        inst.setFieldConnected(path, false, false);
       }
 
       // -- Apply persisted instance state from the sketch (no-copy lookup) --
@@ -555,7 +621,7 @@ int32_t SketchExecutor::execute(
       // after applyState so the predicate sees current params. --
       const bool hasTaps = entry.contains("taps") && entry["taps"].is_array()
                            && !entry["taps"].empty();
-      if (!hasTaps && inst->isIdentity()) {
+      if (!hasTaps && inst.isIdentity()) {
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
@@ -573,15 +639,15 @@ int32_t SketchExecutor::execute(
       //       column input: out = mix(colInput, fx, opacity).
       const float opacity = readOpacity(instances, instKey);
       const bool willRender = opacity > 0.0f;
-      inst->setWillRender(willRender);
+      inst.setWillRender(willRender);
 
       if (!willRender) {
-        inst->setTextureField("tex_in", colInput);
-        inst->setFieldConnected("tex_in", true, false);
-        applyReadTaps(inst, entry, railsById, railTextures, railFloats, instances, instKey);
-        markWriteTapOutputsConnected(inst, entry);
-        inst->doTick(dt);
-        captureWriteTaps(inst, entry, instKey, instances,
+        inst.setTextureField("tex_in", colInput);
+        inst.setFieldConnected("tex_in", true, false);
+        applyReadTaps(inst.h, entry, railsById, railTextures, railFloats, instances, instKey);
+        markWriteTapOutputsConnected(inst.h, entry);
+        inst.doTick(dt);
+        captureWriteTaps(inst.h, entry, instKey, instances,
                          railsById, railTextures, railFloats);
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
@@ -598,13 +664,13 @@ int32_t SketchExecutor::execute(
       int32_t fxHandle = partial ? nextIntermediate(W, H) : outHandle;
 
       // -- Wire primary channels --
-      inst->setTextureField("tex_in",  colInput);
-      inst->setTextureField("tex_out", fxHandle);
-      inst->setFieldConnected("tex_in",  true,  false);
-      inst->setFieldConnected("tex_out", false, true);
+      inst.setTextureField("tex_in",  colInput);
+      inst.setTextureField("tex_out", fxHandle);
+      inst.setFieldConnected("tex_in",  true,  false);
+      inst.setFieldConnected("tex_out", false, true);
 
-      applyReadTaps(inst, entry, railsById, railTextures, railFloats, instances, instKey);
-      markWriteTapOutputsConnected(inst, entry);
+      applyReadTaps(inst.h, entry, railsById, railTextures, railFloats, instances, instKey);
+      markWriteTapOutputsConnected(inst.h, entry);
 
       // -- Positional input slots + per-stage render target (slot-based GPU
       // ABI). Effects like video.blend read inputTexture(0/1) and
@@ -618,21 +684,21 @@ int32_t SketchExecutor::execute(
         slots.push_back(colInput);
         if (reg) {
           for (size_t pi = 0; pi < reg->slotInputTextureFields.size(); ++pi) {
-            int h = inst->textureField(reg->slotInputTextureFields[pi]);
+            int h = inst.textureField(reg->slotInputTextureFields[pi]);
             if (h > 0) {
               while (slots.size() <= pi) slots.push_back(-1);
               slots[pi] = h;
             }
           }
         }
-        inst->setInputTextureSlots(slots);
+        inst.setInputTextureSlots(slots);
       }
       if (gpu_) gpu_set_surface(fxHandle, W, H);
 
-      inst->doTick(dt);
-      inst->doRender(W, H);
+      inst.doTick(dt);
+      inst.doRender(W, H);
 
-      captureWriteTaps(inst, entry, instKey, instances,
+      captureWriteTaps(inst.h, entry, instKey, instances,
                        railsById, railTextures, railFloats);
 
       if (partial) {
@@ -656,17 +722,17 @@ int32_t SketchExecutor::execute(
     auto runFusedGroup = [&](const Group& g, bool isLastGroupInCol) {
       // Resolve every stage's instance and apply its state + tick FIRST,
       // so the identity predicate below sees current params.
-      std::vector<effect_runtime::EffectInstance*> allStages;
+      std::vector<EffectRef> allStages;
       allStages.reserve(g.lastK - g.firstK + 1);
       bool stagesOK = true;
       for (size_t k = g.firstK; k <= g.lastK; ++k) {
         const std::string& instKey = R[k].instanceKey;
-        auto* inst = rt_ ? rt_->instanceFor(R[k].moduleType, instKey) : nullptr;
-        if (!inst) { stagesOK = false; break; }
+        EffectRef inst = instanceRef(R[k].moduleType, instKey);
+        if (!inst.valid()) { stagesOK = false; break; }
         if (const json* st = findState(instances, instKey)) {
           maybeApplyState(inst, instKey, *st);
         }
-        inst->doTick(dt);
+        inst.doTick(dt);
         allStages.push_back(inst);
       }
       if (!stagesOK) {
@@ -684,11 +750,11 @@ int32_t SketchExecutor::execute(
       // group is a pure no-op → alias group input as output (no GPU work).
       std::string cacheKey;
       std::vector<std::string> fragments;
-      std::vector<effect_runtime::EffectInstance*> stages;
+      std::vector<EffectRef> stages;
       bool fragsOK = true;
       for (size_t idx = 0; idx < allStages.size(); ++idx) {
-        auto* inst = allStages[idx];
-        if (inst->isIdentity()) continue;
+        EffectRef inst = allStages[idx];
+        if (inst.isIdentity()) continue;
         if (!cacheKey.empty()) cacheKey += '|';
         cacheKey += R[g.firstK + idx].moduleType;
         stages.push_back(inst);
@@ -698,7 +764,7 @@ int32_t SketchExecutor::execute(
         // registration, so a bare lookup here (render time) would return some
         // OTHER effect's fragment — the cause of the fused kernel failing to
         // compile. See gen_barrel_effects.py's qualified registerShaderMSL alias.
-        const std::string& fragName = inst->fusionInfo().fragmentName;
+        const std::string fragName = inst.fusionFragmentName();
         std::string msl;
         if (!rt_->lookupMSL(R[g.firstK + idx].moduleType + "::" + fragName, &msl)
             && !rt_->lookupMSL(fragName, &msl)) {
@@ -761,7 +827,7 @@ int32_t SketchExecutor::execute(
       // has its own uniform buffer (created in its create()/init()), so
       // doPrepare writes a distinct buffer per stage; we bind those
       // directly to the fused dispatch below.
-      for (auto* inst : stages) inst->doPrepare(W, H);
+      for (auto inst : stages) inst.doPrepare(W, H);
 
       const int32_t groupOutput = isFinalStage
                                   ? outputHandle
@@ -773,7 +839,7 @@ int32_t SketchExecutor::execute(
       gpu_compute_set_texture(pass, groupOutput, 1, /*write*/ 1);
       for (size_t idx = 0; idx < stages.size(); ++idx) {
         // Each stage binds its own per-instance uniform buffer.
-        int32_t ub = stages[idx]->fusionInfo().uniformBufferHandle;
+        int32_t ub = stages[idx].fusionUniformBuffer();
         gpu_compute_set_buffer(pass, ub, 0, (int32_t)(2 + idx));
       }
       gpu_compute_dispatch(pass,
@@ -889,9 +955,10 @@ void SketchExecutor::flushDelayedTextureRetains(int W, int H) {
 }
 
 void SketchExecutor::applyState(
-    effect_runtime::EffectInstance* inst,
+    int32_t inst_handle,
     const json& prevState,
     const json& state) {
+  const EffectRef inst{inst_handle};
   if (!state.is_object()) return;
   const bool havePrev = prevState.is_object();
   for (auto it = state.begin(); it != state.end(); ++it) {
@@ -908,27 +975,27 @@ void SketchExecutor::applyState(
       if (pit != prevState.end() && *pit == v) continue;
     }
     if (v.is_number()) {
-      inst->setParamFloat(name, (float)v.get<double>());
+      inst.setParamFloat(name, (float)v.get<double>());
     } else if (v.is_boolean()) {
-      inst->setParamFloat(name, v.get<bool>() ? 1.0f : 0.0f);
+      inst.setParamFloat(name, v.get<bool>() ? 1.0f : 0.0f);
     } else if (v.is_array()) {
       std::vector<float> comps;
       for (const auto& x : v) {
         if (x.is_number()) comps.push_back((float)x.get<double>());
       }
-      if (!comps.empty()) inst->setParamArray(name, comps);
+      if (!comps.empty()) inst.setParamArray(name, comps);
     } else if (v.is_string()) {
       // dump() emits a properly-escaped JSON string literal. Naive quoting
       // ("\"" + s + "\"") produces invalid JSON the moment the value contains
       // a quote/backslash/newline — e.g. rich-text HTML (<h1 style="…">) — and
       // setParamJson then parses it as null (renders the literal "null").
-      inst->setParamJson(name, v.dump());
+      inst.setParamJson(name, v.dump());
     }
   }
 }
 
 void SketchExecutor::applyReadTaps(
-    effect_runtime::EffectInstance* inst,
+    int32_t inst_handle,
     const json& entry,
     const std::unordered_map<std::string, json>& railsById,
     const std::unordered_map<std::string,
@@ -936,6 +1003,7 @@ void SketchExecutor::applyReadTaps(
     const std::unordered_map<std::string, float>& railFloats,
     const json& sketchInstances,
     const std::string& instanceKey) {
+  const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   // The reader's canonical (user-set, serialized) state — the "before
   // modulation" value a non-replace mix mode modulates from. Read from the
@@ -992,8 +1060,8 @@ void SketchExecutor::applyReadTaps(
           combined = tap_mod::combineTap(hasCanon, canon, shaped,
               parseCombine(tap), tap.value("mixFactor", 1.0f));
         }
-        inst->setParamFloat(fieldPath, combined);
-        inst->setFieldConnected(fieldPath, true, false);
+        inst.setParamFloat(fieldPath, combined);
+        inst.setFieldConnected(fieldPath, true, false);
       }
       continue;
     }
@@ -1008,14 +1076,14 @@ void SketchExecutor::applyReadTaps(
       if (lit == texIt->second.end() || lit->second <= 0) return;
       const std::string target = leaf.empty() ? fieldPath
                                               : (fieldPath + "/" + leaf);
-      inst->setTextureField(target, lit->second);
+      inst.setTextureField(target, lit->second);
     });
-    inst->setFieldConnected(fieldPath, true, false);
+    inst.setFieldConnected(fieldPath, true, false);
   }
 }
 
 void SketchExecutor::captureWriteTaps(
-    effect_runtime::EffectInstance* inst,
+    int32_t inst_handle,
     const json& entry,
     const std::string& producerInstanceKey,
     const json& sketchInstances,
@@ -1023,6 +1091,7 @@ void SketchExecutor::captureWriteTaps(
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railTextures,
     std::unordered_map<std::string, float>& railFloats) {
+  const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   for (const auto& tap : entry["taps"]) {
     if (tap.value("direction", std::string()) != "write") continue;
@@ -1062,7 +1131,7 @@ void SketchExecutor::captureWriteTaps(
                 existing != rf.end(),
                 existing != rf.end() ? existing->second : 0.0f,
                 shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
-            inst->setFieldConnected(fieldPath, false, true);
+            inst.setFieldConnected(fieldPath, false, true);
           }
         }
       }
@@ -1077,10 +1146,10 @@ void SketchExecutor::captureWriteTaps(
       forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
         const std::string source = leaf.empty() ? fieldPath
                                                 : (fieldPath + "/" + leaf);
-        int32_t h = inst->textureField(source);
+        int32_t h = inst.textureField(source);
         if (h > 0) pendingDelayRetain_.emplace_back(railId, leaf, h);
       });
-      inst->setFieldConnected(fieldPath, false, true);
+      inst.setFieldConnected(fieldPath, false, true);
       continue;
     }
 
@@ -1088,20 +1157,21 @@ void SketchExecutor::captureWriteTaps(
     forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
       const std::string source = leaf.empty() ? fieldPath
                                               : (fieldPath + "/" + leaf);
-      int32_t h = inst->textureField(source);
+      int32_t h = inst.textureField(source);
       if (h > 0) texMap[leaf] = h;
     });
   }
 }
 
 void SketchExecutor::markWriteTapOutputsConnected(
-    effect_runtime::EffectInstance* inst,
+    int32_t inst_handle,
     const json& entry) {
+  const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   for (const auto& tap : entry["taps"]) {
     if (tap.value("direction", std::string()) != "write") continue;
     const std::string fieldPath = tap.value("fieldPath", std::string());
-    inst->setFieldConnected(fieldPath, false, true);
+    inst.setFieldConnected(fieldPath, false, true);
   }
 }
 
