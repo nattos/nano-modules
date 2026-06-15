@@ -159,6 +159,39 @@ describe('Unified executor.wasm parity', () => {
     expect(Math.abs(wOut - mean(ts.trace('out').pixels))).toBeLessThan(4);
   });
 
+  it('live plugin-state sync: producer output appears in pluginStates', async () => {
+    // The inspector readouts + wire/value spark charts read producer outputs from
+    // getPluginStates (web has no /sketch_state writer). data.lfo (rate 0) publishes
+    // output=0.5 via state::set_val; it must surface in the broadcast pluginStates
+    // under the wasm executor exactly as under the TS one.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'generator.solid_color', instance_key: 'g@0', params: { color: [0.5, 0.5, 0.5] } },
+        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0', params: { rate: 0.0, amplitude: 1.0 } },
+      ],
+      wires: [],
+    } as Sketch;
+    const modules = ['generator.solid_color', 'data.lfo'];
+    const runT = (useWasm: boolean) => {
+      const commands: any[] = [{ type: 'createSketch', sketchId: 's', sketch }];
+      if (useWasm) commands.push({ type: 'setWasmExecutor', on: true });
+      return runEngineTest({ width: 64, height: 64, modules, commands,
+        tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 's' } }],
+        captureTraceIds: ['out'], waitFrames: 30, dumpName: `state_${useWasm ? 'wasm' : 'ts'}` });
+    };
+    const ts = await runT(false);
+    const wasm = await runT(true);
+    expect(ts.success).toBe(true);
+    expect(wasm.success).toBe(true);
+    const tsLfo = ts.state.pluginStates?.['lfo@0'];
+    const wLfo = wasm.state.pluginStates?.['lfo@0'];
+    console.log('[parity] pluginState lfo ts', JSON.stringify(tsLfo), 'wasm', JSON.stringify(wLfo));
+    expect(wLfo).toBeDefined();
+    expect(typeof wLfo.output).toBe('number');
+    expect(Math.abs((wLfo.output ?? -9) - (tsLfo?.output ?? -1))).toBeLessThan(0.01);
+  });
+
   it('texture-wire blend matches the TS executor', async () => {
     const sketch: Sketch = {
       anchor: null,

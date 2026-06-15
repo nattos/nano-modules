@@ -37,6 +37,13 @@ let traceCapture: TraceCapture | null = null;
 let wasmExecutor: WasmSketchExecutor | null = null;
 let useWasmExecutor = false;
 
+// The executor currently driving frames — the TS SketchExecutor by default, or
+// executor.wasm when toggled on. Cross-cutting accessors (chain-entry handles,
+// live plugin state, console logs, debug stats) read from whichever is active.
+function activeExecutor(): SketchExecutor | WasmSketchExecutor | null {
+  return (useWasmExecutor && wasmExecutor) ? wasmExecutor : sketchExecutor;
+}
+
 async function ensureWasmExecutor(): Promise<WasmSketchExecutor | null> {
   if (wasmExecutor) return wasmExecutor;
   if (!bridgeCore || !gpuHost || !gpuDevice) return null;
@@ -706,10 +713,9 @@ async function simulateTick(dt: number) {
   // Drain console-log entries from sketch instances and real
   // modules into the engine-wide debug buffer. Cap the buffer so a
   // chatty effect can't blow memory; oldest entries fall off first.
-  if (sketchExecutor) {
-    for (const e of sketchExecutor.drainConsoleLogs()) {
-      debugConsoleBuffer.push(e);
-    }
+  {
+    const ex = activeExecutor();
+    if (ex) for (const e of ex.drainConsoleLogs()) debugConsoleBuffer.push(e);
   }
   for (const [key, { host }] of realModules) {
     if (host.consoleLogs.length === 0) continue;
@@ -814,9 +820,7 @@ function captureAndSendFrame() {
   const sketchStateFull = bridgeCore?.getAt('/sketch_state') ?? {};
 
   // Collect live pluginState for all instances (sketch executor + real modules)
-  const pluginStatesFull: Record<string, any> = sketchExecutor
-    ? sketchExecutor.getPluginStates()
-    : {};
+  const pluginStatesFull: Record<string, any> = activeExecutor()?.getPluginStates() ?? {};
   for (const [key, { host }] of realModules) {
     if (!(key in pluginStatesFull) && host.pluginState && Object.keys(host.pluginState).length > 0) {
       pluginStatesFull[key] = host.pluginState;
@@ -837,7 +841,7 @@ function captureAndSendFrame() {
   // flicker is both unreadable and the main remaining per-frame lit cost
   // when the panel is open. Throttling here keeps the panel responsive
   // without re-rendering it 60×/s.
-  const stats = sketchExecutor?.consumeDebugStats();
+  const stats = activeExecutor()?.consumeDebugStats();
   const sendDebug = debugMode && (++debugStatsTick % 6 === 0);
   const debugStats = sendDebug ? stats : undefined;
   // Same for the console buffer — drain unconditionally (so the cap

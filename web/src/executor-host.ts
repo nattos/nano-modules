@@ -176,10 +176,41 @@ export class WasmSketchExecutor {
     this.slots.clear();
   }
 
-  // Stubs matching the SketchExecutor surface the worker calls (editor support,
-  // inert under the flag — same as the native barrel's wasm-executor path).
-  drainConsoleLogs(): any[] { return []; }
-  getPluginStates(): Record<string, any> { return {}; }
+  // Live published state per instance (effect set_val outputs) — drives the
+  // inspector readouts and the wire/value spark charts (web reads producer
+  // outputs from here, not /sketch_state). Same as SketchExecutor.getPluginStates.
+  getPluginStates(): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, inst] of this.instances) {
+      const ps = inst.host.pluginState;
+      if (ps && Object.keys(ps).length > 0) result[key] = ps;
+    }
+    return result;
+  }
+
+  // Drain each instance's effect console output (state::log / console_log).
+  drainConsoleLogs(): import('./engine-types').DebugConsoleEntry[] {
+    const out: import('./engine-types').DebugConsoleEntry[] = [];
+    for (const [instanceKey, inst] of this.instances) {
+      const host = inst.host;
+      if (host.consoleLogs.length === 0) continue;
+      const moduleId = host.metadata?.id ?? instanceKey;
+      for (const e of host.consoleLogs) {
+        out.push({ instanceKey, moduleId, timestamp: e.timestamp,
+                   level: e.level, message: e.message, data: e.data });
+      }
+      host.consoleLogs = [];
+    }
+    return out;
+  }
+
+  // The executor.wasm doesn't surface per-frame counters across the ABI yet;
+  // report zeroes so the debug panel renders (rather than reading the stale TS
+  // executor's stats). TODO: expose fusedRunCount etc. via an export if wanted.
+  consumeDebugStats(): import('./engine-types').DebugStats {
+    return { effectsExecuted: 0, standaloneDispatches: 0, fusedRuns: 0,
+             fusedStages: 0, dispatchesSaved: 0, gpuDispatches: 0, identitySkipped: 0 };
+  }
 
   private slotFor(sketchId: string): SketchSlot {
     let slot = this.slots.get(sketchId);
