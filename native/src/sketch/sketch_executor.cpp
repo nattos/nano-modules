@@ -6,8 +6,15 @@
 #include "sketch/exec_gpu.h"
 #include "sketch/effrt.h"
 #include "sketch/schema_util.h"
+
+#ifndef __wasm__
+// Native-only: the seed (registry_->schemas()) + effrtSetRuntime arg type. The
+// wasm build drives everything through the gpu/effrt ABIs and never references
+// these — the #ifndef __wasm__ blocks in execute() are compiled out there.
+#include "sketch/module_registry.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#endif
 
 #include <memory>
 #include <string>

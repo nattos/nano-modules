@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sketch/registered_module.h"  // RegisteredModule (pure struct)
+
 namespace effect_runtime {
 class EffectRuntime;
 class EffectInstance;
@@ -29,41 +31,6 @@ struct WasmEffectDesc;
 }  // namespace wasm
 
 namespace sketch_executor {
-
-/**
- * Per-effect metadata + the EffectInstance pointer the executor
- * dispatches through. Built once at registerEffect() time by parsing
- * the schema the effect publishes from its init().
- */
-struct RegisteredModule {
-  /**
-   * Parsed schema `fields` sub-object. Passed to
-   * `sketch_augment::augmentSketchWithImplicitConnections()` each
-   * frame so the augmenter knows every module's structured I/O shape.
-   */
-  nlohmann::json schemaFields;
-  /**
-   * Slash-joined paths for every input texture leaf declared by the
-   * schema (excludes the primary "tex_in"). The executor zeroes
-   * these before each frame's tap routing so stale handles can't
-   * leak through when the current frame's config doesn't cover them.
-   */
-  std::vector<std::string> inputTexturePaths;
-  /** Output side — excludes "tex_out". Used to reset connection
-   *  markers each frame. The handle itself isn't zeroed; the producer
-   *  re-assigns via state::setGpuTexture during render. */
-  std::vector<std::string> outputTexturePaths;
-  /**
-   * Top-level input-texture field names in schema declaration order
-   * (by the "order" key), INCLUDING the slot-0 field (e.g. "tex_in" or
-   * "tex_a"). This is the positional mapping the slot-based GPU ABI
-   * (`gpu::Device::inputTexture(N)`) reads: index N is the Nth entry
-   * here. Distinct from `inputTexturePaths`, which excludes tex_in and
-   * is used only for stale-handle reset. Mirrors the web executor's
-   * `textureInputIndex()` ordering so multi-input effects (video.blend's
-   * tex_a/tex_b) resolve the same slots web-side and native-side. */
-  std::vector<std::string> slotInputTextureFields;
-};
 
 /**
  * Maps editor module_type strings (eg "video.brightness_contrast") to

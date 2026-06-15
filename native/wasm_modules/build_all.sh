@@ -19,7 +19,7 @@ cd "$(dirname "$0")"
 # reference shared bridge state at load time). `text_engine` is the shared
 # host text service (FreeType+msdfgen → text_engine.wasm); `text` is the
 # gen.text effect bundle that drives it.
-for bundle in bridge_core core testonly nano lights dxv_decoder text_engine text richtext; do
+for bundle in bridge_core executor core testonly nano lights dxv_decoder text_engine text richtext; do
   echo "--- Building $bundle ---"
   ( cd "$bundle" && ./build.sh )
 done

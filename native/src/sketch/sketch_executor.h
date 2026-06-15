@@ -33,7 +33,11 @@
 
 #pragma once
 
-#include "sketch/module_registry.h"
+// Only the pure RegisteredModule struct — NOT module_registry.h (which pulls
+// the ModuleRegistry class + native effect_runtime/wasm refs). The executor
+// forward-declares ModuleRegistry for its native-only constructor arg/member;
+// the .cpp includes the full header under #ifndef __wasm__ for the seed.
+#include "sketch/registered_module.h"
 
 #include <functional>
 #include <memory>
@@ -51,6 +55,7 @@ class EffectInstance;
 
 namespace sketch_executor {
 
+class ModuleRegistry;  // native registry (full def in module_registry.h)
 class WetDryBlend;  // host-side opacity wet/dry blend (host_blend.h)
 
 class SketchExecutor {
