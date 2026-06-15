@@ -3,6 +3,7 @@
 #include "sketch/sketch_augment.h"
 #include "sketch/tap_mod.h"
 #include "sketch/host_blend.h"
+#include "sketch/exec_gpu.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/fusion_codegen.h"
@@ -136,17 +137,17 @@ SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
 
 SketchExecutor::~SketchExecutor() {
   for (int32_t h : intermediates_) {
-    if (h > 0 && gpu_) gpu_->release(h);
+    if (h > 0 && gpu_) gpu_release(h);
   }
   for (auto& [_, pso] : fusedPSOs_) {
-    if (pso > 0 && gpu_) gpu_->release(pso);
+    if (pso > 0 && gpu_) gpu_release(pso);
   }
   for (int32_t sm : fusedShaderModules_) {
-    if (sm > 0 && gpu_) gpu_->release(sm);
+    if (sm > 0 && gpu_) gpu_release(sm);
   }
   for (auto& [_, leaves] : delayedRailTextures_) {
     for (auto& [__, h] : leaves) {
-      if (h > 0 && gpu_) gpu_->release(h);
+      if (h > 0 && gpu_) gpu_release(h);
     }
   }
 }
@@ -390,7 +391,7 @@ int32_t SketchExecutor::execute(
   // those per-stage submits defer; endSubmitBatch commits + waits once. The
   // chain-entry capture hooks only RECORD texture handles (readback is deferred
   // to after execute()), so monitored intermediates stay correct.
-  gpu_->beginSubmitBatch();
+  gpu_begin_submit_batch();
 
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
     // Cached structural plan for this column (resolvable entries + rail index).
@@ -506,10 +507,10 @@ int32_t SketchExecutor::execute(
         // pooled texture.
         if (src < 0 && gpu_) {
           src = nextIntermediate(W, H);
-          gpu_->clearTexture(src, 0.0f, 0.0f, 0.0f, 0.0f);
+          gpu_clear_texture(src, 0.0f, 0.0f, 0.0f, 0.0f);
         }
         if (isFinalStage && src != outputHandle && gpu_) {
-          gpu_->copyTexture(src, outputHandle);
+          gpu_copy_texture(src, outputHandle);
           return outputHandle;
         }
         return src;
@@ -626,7 +627,7 @@ int32_t SketchExecutor::execute(
         }
         inst->setInputTextureSlots(slots);
       }
-      if (gpu_) gpu_->setSurface(fxHandle, W, H);
+      if (gpu_) gpu_set_surface(fxHandle, W, H);
 
       inst->doTick(dt);
       inst->doRender(W, H);
@@ -639,7 +640,7 @@ int32_t SketchExecutor::execute(
         if (!blend_->encode(gpu_, colInput, fxHandle, outHandle, opacity, W, H)) {
           // Couldn't build the blend pass — show the effect at full strength
           // rather than nothing.
-          if (gpu_) gpu_->copyTexture(fxHandle, outHandle);
+          if (gpu_) gpu_copy_texture(fxHandle, outHandle);
         }
       }
 
@@ -731,10 +732,10 @@ int32_t SketchExecutor::execute(
         } else {
           std::string src = fusion_codegen::generateFusedMSL(fragments);
           if (!src.empty()) {
-            int32_t sm = gpu_->createShaderModule(src);
+            int32_t sm = gpu_create_shader_module(src.c_str(), (int32_t)src.size());
             if (sm > 0) {
               fusedShaderModules_.push_back(sm);
-              pso = gpu_->createComputePSO(sm, "fused_main");
+              pso = gpu_create_compute_pso(sm, "fused_main", 10);
             }
           }
           // Cache the result for this group shape — SUCCESS *or* FAILURE. A
@@ -766,19 +767,19 @@ int32_t SketchExecutor::execute(
                                   ? outputHandle
                                   : nextIntermediate(W, H);
 
-      int32_t pass = gpu_->beginComputePass();
-      gpu_->computeSetPSO(pass, pso);
-      gpu_->computeSetTexture(pass, groupInput,  0, /*read */ 0);
-      gpu_->computeSetTexture(pass, groupOutput, 1, /*write*/ 1);
+      int32_t pass = gpu_begin_compute_pass();
+      gpu_compute_set_pso(pass, pso);
+      gpu_compute_set_texture(pass, groupInput,  0, /*read */ 0);
+      gpu_compute_set_texture(pass, groupOutput, 1, /*write*/ 1);
       for (size_t idx = 0; idx < stages.size(); ++idx) {
         // Each stage binds its own per-instance uniform buffer.
         int32_t ub = stages[idx]->fusionInfo().uniformBufferHandle;
-        gpu_->computeSetBuffer(pass, ub, 0, (int32_t)(2 + idx));
+        gpu_compute_set_buffer(pass, ub, 0, (int32_t)(2 + idx));
       }
-      gpu_->computeDispatch(pass,
+      gpu_compute_dispatch(pass,
                             ((uint32_t)W + 7) / 8,
                             ((uint32_t)H + 7) / 8, 1);
-      gpu_->endComputePass(pass);
+      gpu_end_compute_pass(pass);
 
       // Hook firing for fused groups: only the LAST stage's output is
       // materialised, so we only fire its hook with output =
@@ -838,7 +839,7 @@ int32_t SketchExecutor::execute(
   // monitored intermediate textures) is complete when this returns, so the
   // host's downstream consumers — the output-hook readback below and the FFGL
   // interop blit — see finished pixels exactly as they did under per-stage waits.
-  gpu_->endSubmitBatch();
+  gpu_end_submit_batch();
 
   if (anyDispatched && sketchOutputHook_) {
     sketchOutputHook_(finalHandle, W, H);
@@ -848,14 +849,14 @@ int32_t SketchExecutor::execute(
 
 int32_t SketchExecutor::nextIntermediate(int W, int H) {
   if (W != intermediates_w_ || H != intermediates_h_) {
-    for (int32_t h : intermediates_) { if (h > 0 && gpu_) gpu_->release(h); }
+    for (int32_t h : intermediates_) { if (h > 0 && gpu_) gpu_release(h); }
     intermediates_.clear();
     intermediates_w_ = W; intermediates_h_ = H;
   }
   if (intermediate_cursor_ >= (int)intermediates_.size()) {
     // RGBA8 (format code 1) matches what every effect's compute
     // dispatch is writing today.
-    int32_t h = gpu_->createTexture((uint32_t)W, (uint32_t)H, 1);
+    int32_t h = gpu_create_texture((uint32_t)W, (uint32_t)H, 1);
     intermediates_.push_back(h);
   }
   return intermediates_[intermediate_cursor_++];
@@ -868,7 +869,7 @@ void SketchExecutor::flushDelayedTextureRetains(int W, int H) {
   if (W != delayTexW_ || H != delayTexH_) {
     for (auto& [rid, leaves] : delayedRailTextures_)
       for (auto& [leaf, h] : leaves)
-        if (h > 0) gpu_->release(h);
+        if (h > 0) gpu_release(h);
     delayedRailTextures_.clear();
     delayTexW_ = W; delayTexH_ = H;
   }
@@ -878,11 +879,11 @@ void SketchExecutor::flushDelayedTextureRetains(int W, int H) {
     if (retained <= 0) {
       // Match the producer's format (RGBA8 tex_out vs rgba16float struct leaves)
       // so the blit is a straight format-compatible copy.
-      int32_t fmt = gpu_->getTextureFormat(src);
+      int32_t fmt = gpu_get_texture_format(src);
       if (fmt < 0) fmt = 1;
-      retained = gpu_->createTexture((uint32_t)W, (uint32_t)H, fmt);
+      retained = gpu_create_texture((uint32_t)W, (uint32_t)H, fmt);
     }
-    if (retained > 0) gpu_->copyTexture(src, retained);
+    if (retained > 0) gpu_copy_texture(src, retained);
   }
   pendingDelayRetain_.clear();
 }

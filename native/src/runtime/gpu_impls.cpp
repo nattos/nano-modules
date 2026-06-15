@@ -289,6 +289,33 @@ void gpu_release(int handle) {
   if (b) b->release(handle);
 }
 
+// --- Executor-only GPU ops ---------------------------------------------------
+// The unified executor (sketch_executor → executor.wasm) drives the GPU through
+// the same "gpu" ABI as effects, but needs a few host ops effects never call:
+// per-stage render target (setSurface), format query for delayed-wire texture
+// retention, the frame submit-batch coalescing, and a no-layout compute PSO for
+// fused-chain kernels. Same backend() singleton routing as every gpu_* above.
+void gpu_set_surface(int tex, int w, int h) {
+  auto* b = backend();
+  if (b) b->setSurface(tex, (uint32_t)w, (uint32_t)h);
+}
+int gpu_get_texture_format(int handle) {
+  auto* b = backend();
+  return b ? b->getTextureFormat(handle) : -1;
+}
+void gpu_begin_submit_batch(void) {
+  auto* b = backend();
+  if (b) b->beginSubmitBatch();
+}
+void gpu_end_submit_batch(void) {
+  auto* b = backend();
+  if (b) b->endSubmitBatch();
+}
+int gpu_create_compute_pso(int shader, const char* entry, int entry_len) {
+  auto* b = backend();
+  return b ? b->createComputePSO(shader, std::string(entry, entry_len)) : -1;
+}
+
 int gpu_get_input_texture(int idx) {
   // Positional multi-input API (video.blend's inputTexture(0/1)). The executor
   // publishes the per-frame slots onto the active instance; effects that read
