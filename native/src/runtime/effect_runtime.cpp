@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "gpu/gpu_backend.h"
+#include "runtime/spv_to_msl.h"
 #include "wasm/wasm_host.h"
 
 namespace effect_runtime {
@@ -205,6 +206,19 @@ void EffectInstance::hostRegisterShaderSpv(std::string_view name,
   slot.format = std::string(format);
   slot.access = std::string(access);
 }
+int EffectInstance::createShaderModuleByName(const std::string& name,
+                                             gpu::GPUBackend* backend) {
+  if (!backend) return -1;
+  auto it = shaders_by_name_.find(name);
+  if (it == shaders_by_name_.end()) return -1;
+  const RegisteredShader& sh = it->second;
+  // WASM effects ship SPIR-V; translate to MSL at load time (the native static
+  // path uses build-time pre-baked MSL via EffectRuntime::lookupMSL instead).
+  std::string msl = spvToMsl(sh.spv.data(), sh.spv.size());
+  if (msl.empty()) return -1;
+  return backend->createShaderModule(msl);
+}
+
 void EffectInstance::hostSetOnStateReady(void (*fn)(void* self)) {
   on_state_ready_ = fn;
 }

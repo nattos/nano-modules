@@ -185,7 +185,9 @@ class EffectInstance : public wasm::EffectHostSink {
   void hostRegisterShaderSpv(std::string_view name,
                              const unsigned char* spv, int spv_len,
                              std::string_view format,
-                             std::string_view access);
+                             std::string_view access) override;
+  int createShaderModuleByName(const std::string& name,
+                               gpu::GPUBackend* backend) override;
   void hostSetOnStateReady(void (*fn)(void* self));
 
   // Patch reading — driven by setParam* methods. Held only for the

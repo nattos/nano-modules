@@ -17,6 +17,8 @@
 #include <string>
 #include <string_view>
 
+namespace gpu { class GPUBackend; }
+
 namespace wasm {
 
 class EffectHostSink {
@@ -32,6 +34,13 @@ class EffectHostSink {
                                      const unsigned char* spv, int spv_len,
                                      std::string_view format,
                                      std::string_view access) = 0;
+
+  // Compile a previously-registered SPV shader (by name) into a backend shader
+  // module, returning its handle (-1 on failure). The runtime owns the SPV and
+  // the SPV→MSL translation; for WASM effects this replaces the build-time
+  // pre-baked MSL that gpu::Device::createShaderModuleByName uses natively.
+  virtual int createShaderModuleByName(const std::string& name,
+                                       gpu::GPUBackend* backend) = 0;
 
   // Named texture/buffer field wiring. The executor sets inputs before render;
   // the effect reads them via gpu.texture_for_field / buffer_for_field and

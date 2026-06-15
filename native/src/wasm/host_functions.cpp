@@ -547,8 +547,104 @@ static void state_console_log_structured(wasm_exec_env_t env,
   ctx->state_doc->log(ctx->plugin_key, entry);
 }
 
+// state.register_shader_spv — forward onto the effect instance, which owns the
+// SPV bytes + SPV→MSL translation (EffectHostSink::createShaderModuleByName).
+static void state_register_shader_spv(wasm_exec_env_t env,
+    int32_t name_ptr, int32_t name_len, int32_t spv_ptr, int32_t spv_len,
+    int32_t fmt_ptr, int32_t fmt_len, int32_t acc_ptr, int32_t acc_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, name_ptr, name_len)) return;
+  if (spv_len <= 0 || !wasm_runtime_validate_app_addr(inst, spv_ptr, spv_len)) return;
+  const char* name = static_cast<const char*>(
+      wasm_runtime_addr_app_to_native(inst, name_ptr));
+  const auto* spv = static_cast<const unsigned char*>(
+      wasm_runtime_addr_app_to_native(inst, spv_ptr));
+  if (!name || !spv) return;
+  std::string fmt, acc;
+  if (fmt_len > 0 && wasm_runtime_validate_app_addr(inst, fmt_ptr, fmt_len)) {
+    if (char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fmt_ptr)))
+      fmt.assign(p, fmt_len);
+  }
+  if (acc_len > 0 && wasm_runtime_validate_app_addr(inst, acc_ptr, acc_len)) {
+    if (char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, acc_ptr)))
+      acc.assign(p, acc_len);
+  }
+  ctx->effect_instance->hostRegisterShaderSpv(
+      std::string_view(name, name_len), spv, spv_len,
+      std::string_view(fmt), std::string_view(acc));
+}
+
+// Fusion is an executor optimization; effects still render standalone without
+// it. Accept as no-ops so an effect's init() doesn't trap. TODO(barrel-wasm):
+// record the fragment + a wasm prepare-index to let WASM effects fuse.
+static void state_register_fusion(wasm_exec_env_t, int32_t, int32_t, int32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t) {}
+static void state_register_fusion_by_name(wasm_exec_env_t, int32_t, int32_t,
+    int32_t, int32_t, int32_t, int32_t) {}
+
+static int32_t state_is_field_connected(wasm_exec_env_t env,
+    int32_t path_ptr, int32_t path_len, int32_t direction) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return 0;
+  char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  if (!p) return 0;
+  std::string path(p, path_len);
+  // direction bit: 1=input, 2=output (mirrors the io bitfield).
+  bool connected = (direction & 1)
+      ? ctx->effect_instance->isInputConnected(path)
+      : ctx->effect_instance->isOutputConnected(path);
+  return connected ? 1 : 0;
+}
+
+static int32_t state_will_render(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  return (ctx && ctx->effect_instance && ctx->effect_instance->willRender()) ? 1 : 0;
+}
+
+// Effect publishes an output texture/buffer; route to the instance so the
+// executor can read it back as the stage's output.
+static void state_set_gpu_texture(wasm_exec_env_t env,
+    int32_t path_ptr, int32_t path_len, int32_t handle) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
+  char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  if (p) ctx->effect_instance->setTextureField(std::string(p, path_len), handle);
+}
+static void state_set_gpu_buffer(wasm_exec_env_t env,
+    int32_t path_ptr, int32_t path_len, int32_t handle) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
+  char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  if (p) ctx->effect_instance->setBufferField(std::string(p, path_len), handle);
+}
+
+// UI-visibility / dirty / post-restore hooks not needed for the barrel render
+// path; accept as no-ops so effects calling them don't trap. TODO(barrel-wasm):
+// set_on_state_ready should drive a wasm callback in doCreate.
+static void state_set_field_hidden(wasm_exec_env_t, int32_t, int32_t, int32_t) {}
+static void state_mark_gpu_dirty(wasm_exec_env_t, int32_t, int32_t) {}
+static void state_set_on_state_ready(wasm_exec_env_t, int32_t) {}
+
 static NativeSymbol state_symbols[] = {
     {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
+    {"register_shader_spv", reinterpret_cast<void*>(state_register_shader_spv), "(iiiiiiii)", nullptr},
+    {"register_fusion", reinterpret_cast<void*>(state_register_fusion), "(iiiiiiii)", nullptr},
+    {"register_fusion_by_name", reinterpret_cast<void*>(state_register_fusion_by_name), "(iiiiii)", nullptr},
+    {"is_field_connected", reinterpret_cast<void*>(state_is_field_connected), "(iii)i", nullptr},
+    {"will_render", reinterpret_cast<void*>(state_will_render), "()i", nullptr},
+    {"set_gpu_texture", reinterpret_cast<void*>(state_set_gpu_texture), "(iii)", nullptr},
+    {"set_gpu_buffer", reinterpret_cast<void*>(state_set_gpu_buffer), "(iii)", nullptr},
+    {"set_field_hidden", reinterpret_cast<void*>(state_set_field_hidden), "(iii)", nullptr},
+    {"mark_gpu_dirty", reinterpret_cast<void*>(state_mark_gpu_dirty), "(ii)", nullptr},
+    {"set_on_state_ready", reinterpret_cast<void*>(state_set_on_state_ready), "(i)", nullptr},
     {"set_schema", reinterpret_cast<void*>(state_set_schema), "(iiiii)", nullptr},
     {"declare_param", reinterpret_cast<void*>(state_declare_param), "(iiiif)", nullptr},
     {"get_key", reinterpret_cast<void*>(state_get_key), "(ii)i", nullptr},
@@ -896,6 +992,11 @@ static int32_t gpu_texture_for_field(wasm_exec_env_t env, int32_t path_ptr, int3
   char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
   if (!path) return -1;
   std::string field_path(path, path_len);
+  // Barrel path: the executor wires textures onto the effect instance.
+  if (ctx->effect_instance) {
+    int h = ctx->effect_instance->textureField(field_path);
+    if (h >= 0) return h;
+  }
   auto it = ctx->texture_fields.find(field_path);
   return it != ctx->texture_fields.end() ? it->second : -1;
 }
@@ -938,9 +1039,70 @@ static void gpu_release(wasm_exec_env_t env, int32_t handle) {
   auto* g = get_gpu(env); if (g) g->release(handle);
 }
 
+// MSL reserves "main"; spirv-cross renames our shaders' entry "main"→"main0".
+// Effects ask for "main" (matching WebGPU); map it for Metal — mirrors
+// gpu_impls::mapEntryName on the native static path.
+static std::string map_entry_name(gpu::GPUBackend* g, const char* entry, int len) {
+  std::string e(entry, len);
+  if (g && g->getBackend() == 0 /*Metal*/ && e == "main") return "main0";
+  return e;
+}
+
+// gpu.create_shader_module_named — resolve a SPV shader the effect registered
+// (state.register_shader_spv) into a backend module. The runtime owns the
+// SPV→MSL translation (EffectHostSink::createShaderModuleByName); for WASM
+// effects this replaces the build-time pre-baked MSL the native path uses.
+static int32_t gpu_create_shader_module_named(wasm_exec_env_t env,
+    int32_t name_ptr, int32_t name_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance || !ctx->gpu_backend) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, name_ptr, name_len)) return -1;
+  char* name = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, name_ptr));
+  if (!name) return -1;
+  return ctx->effect_instance->createShaderModuleByName(
+      std::string(name, name_len), ctx->gpu_backend);
+}
+
+// gpu.create_compute_pso_layout — the binding layout is for WebGPU's explicit
+// bind groups; Metal binds by [[texture(n)]]/[[buffer(n)]] in the MSL, so it's
+// ignored here. Entry name is mapped for Metal (main→main0).
+static int32_t gpu_create_compute_pso_layout(wasm_exec_env_t env,
+    int32_t shader, int32_t entry_ptr, int32_t entry_len,
+    int32_t binding_count, int32_t bindings_ptr) {
+  (void)binding_count; (void)bindings_ptr;
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
+  char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
+  if (!e) return -1;
+  return g->createComputePSO(shader, map_entry_name(g, e, entry_len));
+}
+
+// gpu.create_compute_pso_v2 — layout + packed spec constants. The constants
+// payload is ignored for now (no barrel effect needs them on the WASM path
+// yet). TODO(barrel-wasm): decode + createComputePSOWithConstants.
+static int32_t gpu_create_compute_pso_v2(wasm_exec_env_t env,
+    int32_t shader, int32_t entry_ptr, int32_t entry_len,
+    int32_t binding_count, int32_t bindings_ptr,
+    int32_t constants_ptr, int32_t constants_len) {
+  (void)binding_count; (void)bindings_ptr; (void)constants_ptr; (void)constants_len;
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
+  char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
+  if (!e) return -1;
+  return g->createComputePSO(shader, map_entry_name(g, e, entry_len));
+}
+
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
     {"create_shader_module", reinterpret_cast<void*>(gpu_create_shader_module), "(ii)i", nullptr},
+    {"create_shader_module_named", reinterpret_cast<void*>(gpu_create_shader_module_named), "(ii)i", nullptr},
+    {"create_compute_pso_layout", reinterpret_cast<void*>(gpu_create_compute_pso_layout), "(iiiii)i", nullptr},
+    {"create_compute_pso_v2", reinterpret_cast<void*>(gpu_create_compute_pso_v2), "(iiiiiii)i", nullptr},
     {"create_buffer", reinterpret_cast<void*>(gpu_create_buffer), "(ii)i", nullptr},
     {"create_texture", reinterpret_cast<void*>(gpu_create_texture), "(iii)i", nullptr},
     {"create_compute_pso", reinterpret_cast<void*>(gpu_create_compute_pso), "(iii)i", nullptr},

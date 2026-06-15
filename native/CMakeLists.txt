@@ -760,6 +760,19 @@ if(APPLE)
     catch_discover_tests(test_effect_driver)
   endif()
 
+  # End-to-end GPU render of a WASM effect on a real Metal backend.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    add_executable(test_effect_render tests/test_effect_render.cpp)
+    target_link_libraries(test_effect_render PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_effect_render PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_effect_render PRIVATE -Wno-attributes)
+    catch_discover_tests(test_effect_render)
+  endif()
+
   # Runtime smoke test for the text effects (gen.text / gen.richtext) mapped into
   # the native bundle: register + module_init + Core Text fonts + render, the
   # plugin-time path a compile check can't exercise.
