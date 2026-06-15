@@ -40,7 +40,9 @@ run() {  # $1=out_png  $2=static|wasm
     NANO_BARREL_WASM_EFFECTS=1 NANO_BARREL_WASM_DIR="$wasmdir" \
       "$runner" "$bundle" 64 64 8 "$1" --config "$sketch" >/dev/null 2>&1
   else
-    "$runner" "$bundle" 64 64 8 "$1" --config "$sketch" >/dev/null 2>&1
+    # WASM is the default now — force the statically-linked path explicitly.
+    NANO_BARREL_WASM_EFFECTS=0 \
+      "$runner" "$bundle" 64 64 8 "$1" --config "$sketch" >/dev/null 2>&1
   fi
 }
 

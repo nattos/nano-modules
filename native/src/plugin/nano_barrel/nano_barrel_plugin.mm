@@ -647,11 +647,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // Effect registration. Default: the statically-linked generated
     // registration (every effect in barrel_manifest.txt). When
     // NANO_BARREL_WASM_EFFECTS is set, load the same effects from their .wasm
-    // bundles instead (barrel-loads-WASM). Env-gated so the static path stays
-    // the default until WASM pixel-parity is confirmed (A/B), and so a missing
-    // bundle can fall back gracefully.
+    // bundles instead (barrel-loads-WASM). WASM is now the DEFAULT (pixel-parity
+    // confirmed across the effect library via tools/barrel_wasm_parity.sh);
+    // NANO_BARREL_WASM_EFFECTS=0 forces the statically-linked path. Either way,
+    // if the bundles can't be found/loaded we fall back to static gracefully.
     bool wasm_effects = false;
-    if (const char* w = getenv("NANO_BARREL_WASM_EFFECTS"); w && *w && *w != '0') {
+    const char* wflag = getenv("NANO_BARREL_WASM_EFFECTS");
+    const bool want_wasm = !(wflag && wflag[0] == '0');  // default ON; "0" = off
+    if (want_wasm) {
       bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
       if (bundles_->init()) {
         bridge::StateDocument* sd = &bridge_core_.state_document();
