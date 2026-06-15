@@ -643,9 +643,17 @@ static void state_set_gpu_buffer(wasm_exec_env_t env,
   if (p) ctx->effect_instance->setBufferField(std::string(p, path_len), handle);
 }
 
-// UI-visibility / dirty / post-restore hooks not needed for the barrel render
-// path; accept as no-ops so effects calling them don't trap. TODO(barrel-wasm):
-// set_on_state_ready should drive a wasm callback in doCreate.
+// Intentional no-ops on the barrel render path (accepted so effects calling
+// them don't trap):
+//  - set_field_hidden: inspector field visibility — editor/web concern only.
+//  - mark_gpu_dirty: buffer-dirty hint; the barrel re-applies state each dirty
+//    frame regardless.
+//  - set_on_state_ready: a post-init/post-restore hook effects register in
+//    module_init (type level). It only drives inspector field VISIBILITY (no
+//    render effect), and the native static path doesn't fire it on per-key
+//    render instances either (instanceFor copies the descriptor, not the
+//    prototype's on_state_ready_), so a no-op here MATCHES native — confirmed
+//    by pixel parity on the effects that use it (e.g. video.crop, AE=0).
 static void state_set_field_hidden(wasm_exec_env_t, int32_t, int32_t, int32_t) {}
 static void state_mark_gpu_dirty(wasm_exec_env_t, int32_t, int32_t) {}
 static void state_set_on_state_ready(wasm_exec_env_t, int32_t) {}
@@ -1098,20 +1106,46 @@ static int32_t gpu_create_compute_pso_layout(wasm_exec_env_t env,
 }
 
 // gpu.create_compute_pso_v2 — layout + packed spec constants. The constants
-// payload is ignored for now (no barrel effect needs them on the WASM path
-// yet). TODO(barrel-wasm): decode + createComputePSOWithConstants.
+// payload (u32 count; per entry: u32 name_len, name bytes, f64 value) MUST be
+// decoded and applied: shaders with [[function_constant(N)]] (e.g. motion_blur)
+// fail Metal PSO validation without their values set. Mirrors gpu_impls.
 static int32_t gpu_create_compute_pso_v2(wasm_exec_env_t env,
     int32_t shader, int32_t entry_ptr, int32_t entry_len,
     int32_t binding_count, int32_t bindings_ptr,
     int32_t constants_ptr, int32_t constants_len) {
-  (void)binding_count; (void)bindings_ptr; (void)constants_ptr; (void)constants_len;
+  (void)binding_count; (void)bindings_ptr;
   auto* g = get_gpu(env);
   if (!g) return -1;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
   char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
   if (!e) return -1;
-  return g->createComputePSO(shader, map_entry_name(g, e, entry_len));
+  std::string entry = map_entry_name(g, e, entry_len);
+
+  std::vector<gpu::GPUBackend::SpecConstant> consts;
+  if (constants_len >= 4 &&
+      wasm_runtime_validate_app_addr(inst, constants_ptr, constants_len)) {
+    const unsigned char* p = static_cast<const unsigned char*>(
+        wasm_runtime_addr_app_to_native(inst, constants_ptr));
+    if (p) {
+      int len = constants_len;
+      auto rd32 = [](const unsigned char* q) {
+        return (uint32_t)q[0] | ((uint32_t)q[1] << 8) |
+               ((uint32_t)q[2] << 16) | ((uint32_t)q[3] << 24);
+      };
+      uint32_t count = rd32(p); p += 4; len -= 4;
+      for (uint32_t i = 0; i < count && len >= 4; ++i) {
+        uint32_t nlen = rd32(p); p += 4; len -= 4;
+        if (len < (int)nlen + 8) break;
+        std::string name(reinterpret_cast<const char*>(p), nlen);
+        p += nlen; len -= (int)nlen;
+        double v = 0; std::memcpy(&v, p, 8); p += 8; len -= 8;
+        consts.push_back({std::move(name), v});
+      }
+    }
+  }
+  if (consts.empty()) return g->createComputePSO(shader, entry);
+  return g->createComputePSOWithConstants(shader, entry, consts);
 }
 
 // Remaining resource/pass ops — thin pass-throughs to the GPUBackend (which
