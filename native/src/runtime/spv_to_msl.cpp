@@ -1,0 +1,29 @@
+#include "runtime/spv_to_msl.h"
+
+#include <vector>
+
+#include <spirv_msl.hpp>
+
+namespace effect_runtime {
+
+std::string spvToMsl(const uint8_t* spv, size_t byteCount) {
+  if (!spv || byteCount < 4 || (byteCount % 4) != 0) return {};
+
+  const uint32_t* words = reinterpret_cast<const uint32_t*>(spv);
+  std::vector<uint32_t> ir(words, words + byteCount / 4);
+
+  try {
+    spirv_cross::CompilerMSL compiler(std::move(ir));
+    spirv_cross::CompilerMSL::Options opts;
+    // Match the build-time conversion (gen_barrel_effects.py):
+    //   spirv-cross --msl --msl-version 20000 --msl-decoration-binding
+    opts.set_msl_version(2, 0, 0);
+    opts.enable_decoration_binding = true;
+    compiler.set_msl_options(opts);
+    return compiler.compile();
+  } catch (const std::exception&) {
+    return {};
+  }
+}
+
+}  // namespace effect_runtime

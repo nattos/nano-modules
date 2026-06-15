@@ -74,6 +74,33 @@ add_library(vmlib STATIC ${WAMR_RUNTIME_LIB_SOURCE})
 target_include_directories(vmlib PUBLIC ${WAMR_ROOT_DIR}/core/iwasm/include)
 target_link_libraries(vmlib PUBLIC -lm -ldl ${CMAKE_THREAD_LIBS_INIT})
 
+# --- SPIRV-Cross (runtime SPV→MSL for dynamically-loaded WASM effects) ---
+# The static native build pre-bakes MSL at configure time (gen_barrel_effects
+# shells out to the spirv-cross CLI). Effects loaded as WASM ship SPIR-V and
+# must be translated to MSL at load time, so we link the library. Only core +
+# glsl + msl are needed (CompilerMSL derives from CompilerGLSL).
+set(SPIRV_CROSS_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_CLI           OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_HLSL   OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_CPP    OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_C_API  OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_UTIL   OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_SKIP_INSTALL  ON  CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_FORCE_PIC     ON  CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  spirv_cross
+  GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+  GIT_TAG vulkan-sdk-1.4.341.0
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(spirv_cross)
+
+# Runtime SPV→MSL helper (platform-agnostic; built everywhere).
+add_library(spv_to_msl STATIC src/runtime/spv_to_msl.cpp)
+target_include_directories(spv_to_msl PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(spv_to_msl PUBLIC spirv-cross-msl)
+
 # --- FFGL SDK ---
 set(FFGL_BUILD_EXAMPLE_PLUGINS OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/ffgl)
@@ -240,6 +267,15 @@ catch_discover_tests(test_tap_mod)
 add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)
+
+# Runtime SPV→MSL translation (barrel-loads-WASM). Uses a build-time .spv.
+if(EXISTS "${CMAKE_SOURCE_DIR}/build/tmp/brightness_contrast_compute.spv")
+  add_executable(test_spv_to_msl tests/test_spv_to_msl.cpp)
+  target_link_libraries(test_spv_to_msl PRIVATE spv_to_msl Catch2::Catch2WithMain)
+  target_compile_definitions(test_spv_to_msl PRIVATE
+    BRIGHTNESS_SPV_PATH="${CMAKE_SOURCE_DIR}/build/tmp/brightness_contrast_compute.spv")
+  catch_discover_tests(test_spv_to_msl)
+endif()
 
 # Effect v2 ABI load path (barrel-loads-WASM migration). Requires testonly.wasm
 # (bundles data.lfo) to be built into ../build/wasm.
@@ -582,6 +618,7 @@ if(APPLE)
     text_engine
     text_blitz
     wasm_host
+    spv_to_msl
     nlohmann_json::nlohmann_json
     # Core Text font provider (host_impls_font.mm).
     "-framework CoreText"
