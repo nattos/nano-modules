@@ -657,12 +657,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (want_wasm) {
       bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
       if (bundles_->init()) {
-        bridge::StateDocument* sd = &bridge_core_.state_document();
+        // Deliberately DO NOT give the WASM modules the bridge state doc. WASM
+        // effects' state.set_val would otherwise write to it on the RENDER
+        // thread (set_plugin_state → diff under the doc mutex) — which the
+        // statically-linked effects never do (they route state to the
+        // EffectInstance). That render-thread doc mutation deadlocks against the
+        // WS thread on a sketch change (tick_mu_ → doc mutex → WsServer mutex →
+        // tick_mu_ cycle): the symptom is the bridge going silent + render
+        // freezing when you add/change a device. Schemas still reach the editor
+        // — the barrel publishes them from registry_->schemas() (parsed off the
+        // EffectInstance via the host sink), independent of the doc.
         int total = 0;
         for (const char* name : {"core", "lights", "nano"}) {
           std::string path = bundleWasmPath(name);
           int n = path.empty() ? 0
-              : bundles_->loadBundleFile(path, *registry_, gpu_.get(), sd);
+              : bundles_->loadBundleFile(path, *registry_, gpu_.get(), nullptr);
           BARREL_LOG("initEffectRuntime",
                      "wasm bundle '%s': %d effect(s) from %s",
                      name, n, path.c_str());

@@ -2,8 +2,22 @@
 #include "wasm/host_functions.h"
 
 #include <cstring>
+#include <mutex>
 
 namespace wasm {
+
+namespace {
+// The WAMR runtime + its registered host functions are PROCESS-GLOBAL, but each
+// WasmHost has its own lifetime (the FFGL host — Resolume — creates and destroys
+// many plugin instances, sometimes on different threads). So init/destroy must
+// be reference-counted under a lock: only the first WasmHost initializes the
+// runtime + registers natives, and only the last one destroys it. Without this,
+// one instance's shutdown tears the runtime out from under the others (loaded
+// modules go invalid → "explodes, stops rendering"), and concurrent init()s
+// race (one instance ends up with no host functions → loads 0 effects).
+std::mutex g_runtime_mu;
+int g_runtime_refs = 0;
+}  // namespace
 
 WasmHost::WasmHost(bridge::ParamCache& cache) : cache_(cache) {}
 
@@ -14,15 +28,20 @@ WasmHost::~WasmHost() {
 bool WasmHost::init() {
   if (initialized_) return true;
 
-  if (!wasm_runtime_init()) {
-    last_error_ = "Failed to initialize WAMR runtime";
-    return false;
-  }
-
-  if (!register_host_functions()) {
-    last_error_ = "Failed to register host functions";
-    wasm_runtime_destroy();
-    return false;
+  {
+    std::lock_guard<std::mutex> lk(g_runtime_mu);
+    if (g_runtime_refs == 0) {
+      if (!wasm_runtime_init()) {
+        last_error_ = "Failed to initialize WAMR runtime";
+        return false;
+      }
+      if (!register_host_functions()) {
+        last_error_ = "Failed to register host functions";
+        wasm_runtime_destroy();
+        return false;
+      }
+    }
+    ++g_runtime_refs;
   }
 
   initialized_ = true;
@@ -32,12 +51,19 @@ bool WasmHost::init() {
 void WasmHost::shutdown() {
   if (!initialized_) return;
 
+  // Unload THIS host's modules first (its own runtime resources).
   for (auto& [id, m] : modules_) {
     cleanup_module(m);
   }
   modules_.clear();
 
-  wasm_runtime_destroy();
+  // Only the last live WasmHost tears down the shared runtime.
+  {
+    std::lock_guard<std::mutex> lk(g_runtime_mu);
+    if (g_runtime_refs > 0 && --g_runtime_refs == 0) {
+      wasm_runtime_destroy();
+    }
+  }
   initialized_ = false;
 }
 
