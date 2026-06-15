@@ -82,6 +82,11 @@ public:
   /// whose nano_module_main hasn't been called yet.
   const std::vector<WasmEffectDesc>& registered_effects(int32_t module_id);
 
+  /// The bridge_core plugin key the module's state writes land under (set when
+  /// the effect publishes its schema via state.set_schema in module_init).
+  /// Empty until then, or for an unknown id.
+  std::string plugin_key(int32_t module_id);
+
   /// Get the last error message.
   const std::string& last_error() const { return last_error_; }
 

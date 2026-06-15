@@ -6,16 +6,21 @@
 // data effect with no GPU dependency — the smallest end-to-end exercise.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
+#include <cstring>
 #include <fstream>
 #include <vector>
 
 #include "bridge/param_cache.h"
+#include "bridge/state_document.h"
 #include "wasm/wasm_host.h"
 
 using bridge::ParamCache;
+using bridge::StateDocument;
 using wasm::WasmHost;
 using wasm::WasmEffectDesc;
+using wasm::FrameState;
 
 static std::vector<uint8_t> load_file(const char* path) {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -69,6 +74,70 @@ TEST_CASE("testonly.wasm registers data.lfo via nano_module_main", "[effect_abi]
   CHECK(lfo->idx_create != 0);
   CHECK(lfo->idx_tick != 0);
   CHECK(lfo->idx_on_state_patched != 0);
+
+  host.shutdown();
+}
+
+TEST_CASE("data.lfo executes via call_indirect and writes output", "[effect_abi]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  INFO("last_error: " << host.last_error());
+  REQUIRE(id >= 0);
+
+  // Wire the per-instance host services the effect's lifecycle touches:
+  // a state doc (schema + output land here) and a frame clock.
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  FrameState fs;
+  fs.elapsed_time = 0.0;  // host::time()==0 => sin(0)==0 => output 0.5
+  host.set_frame_state(id, &fs);
+
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+
+  const WasmEffectDesc* lfo = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "data.lfo") { lfo = &e; break; }
+  }
+  REQUIRE(lfo != nullptr);
+
+  // WAMR packed-argv convention: a buffer of uint32 slots, f64 occupies two,
+  // results overwrite from argv[0]. This is exactly what the EffectInstance
+  // WASM driver will marshal; proving it here de-risks that wrapper.
+  uint32_t argv[8] = {0};
+
+  // module_init() — registers the schema (sets plugin_key) + state defaults.
+  REQUIRE(host.call_indirect(id, lfo->idx_module_init, 0, argv));
+  const std::string key = host.plugin_key(id);
+  INFO("plugin_key: " << key);
+  REQUIRE(!key.empty());
+
+  // create() -> self (a State* in the module's linear memory).
+  argv[0] = 0;
+  REQUIRE(host.call_indirect(id, lfo->idx_create, 0, argv));
+  const uint32_t self = argv[0];
+  REQUIRE(self != 0);
+
+  // init(self) — applies defaults (rate 0.5, amplitude 1.0).
+  argv[0] = self;
+  REQUIRE(host.call_indirect(id, lfo->idx_init, 1, argv));
+
+  // tick(self, dt): self i32 @argv[0], dt f64 @argv[1..2].
+  argv[0] = self;
+  double dt = 0.016;
+  std::memcpy(&argv[1], &dt, sizeof(double));
+  REQUIRE(host.call_indirect(id, lfo->idx_tick, 3, argv));
+
+  // tick wrote state::setValPath("output", ...) into the state doc.
+  auto state = doc.get_plugin_state(key);
+  INFO("state: " << state.dump());
+  REQUIRE(state.contains("output"));
+  CHECK(state["output"].get<double>() == Catch::Approx(0.5).margin(1e-6));
 
   host.shutdown();
 }

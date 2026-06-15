@@ -254,6 +254,11 @@ const std::vector<WasmEffectDesc>& WasmHost::registered_effects(int32_t module_i
   return m ? m->context.registered_effects : kEmpty;
 }
 
+std::string WasmHost::plugin_key(int32_t module_id) {
+  auto* m = find_module(module_id);
+  return m ? m->context.plugin_key : std::string();
+}
+
 void WasmHost::set_draw_list(int32_t module_id, canvas::DrawList* dl) {
   auto* m = find_module(module_id);
   if (m) m->context.draw_list = dl;
