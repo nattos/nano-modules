@@ -230,11 +230,15 @@ int32_t SketchExecutor::execute(
     json rails = json::array();
 
     // Translate the wire model's `wires` into the executor's read/write taps +
-    // float rails. FLOAT wires only for now (scalar param modulation, reusing
-    // the tap-mod math); texture/struct wires are dropped until the full
-    // wire-model port. Producer scalars are read from the sketch's instance
-    // state (the write-tap path), so no producer-runtime output plumbing is
-    // needed. Causality beyond same-frame (producer above consumer) is deferred.
+    // rails. FLOAT wires (scalar param modulation, reusing the tap-mod math)
+    // and TEXTURE wires (video routing — producer's output texture captured
+    // post-render, bound on the consumer pre-render) route here; struct wires
+    // are dropped until the full wire-model port. Float producer scalars are
+    // read from the sketch's instance state (the write-tap path); texture
+    // handles are pulled from the producer runtime via textureField(). Causality
+    // is same-frame only: the producer must sit above the consumer in the chain
+    // (the editor serializes in that order). Producer-below-consumer (delayed /
+    // feedback) wires are deferred.
     if (rawSketch.contains("wires") && rawSketch["wires"].is_array()) {
       std::unordered_map<std::string, size_t> byKey;
       for (size_t i = 0; i < chain.size(); ++i)
@@ -251,7 +255,8 @@ int32_t SketchExecutor::execute(
         auto si = byKey.find(src.value("instanceKey", std::string()));
         auto di = byKey.find(dst.value("instanceKey", std::string()));
         if (si == byKey.end() || di == byKey.end()) continue;
-        // Only float-typed sources (per the producer's schema) route for now.
+        // Route by the producer field's schema type. Float and texture wires
+        // map onto float/texture rails; anything else is deferred.
         const RegisteredModule* reg = registry_
             ? registry_->find(chain[si->second].value("module_type", std::string()))
             : nullptr;
@@ -261,11 +266,13 @@ int32_t SketchExecutor::execute(
           if (fit != reg->schemaFields.end() && fit->is_object())
             ftype = fit->value("type", std::string());
         }
-        if (ftype != "float") continue;
-        rails.push_back(json{{"id", wid}, {"dataType", "float"}});
+        if (ftype != "float" && ftype != "texture") continue;
+        rails.push_back(json{{"id", wid}, {"dataType", ftype}});
         chain[si->second]["taps"].push_back(
             json{{"direction", "write"}, {"railId", wid}, {"fieldPath", srcField}});
         json rtap{{"direction", "read"}, {"railId", wid}, {"fieldPath", dstField}};
+        // Tap-mod / combine / mix only meaningfully apply to scalar rails; the
+        // texture path ignores them (carried through harmlessly).
         if (w.contains("mod")) rtap["mod"] = w["mod"];
         if (w.contains("combine")) rtap["combine"] = w["combine"];
         if (w.contains("mixFactor")) rtap["mixFactor"] = w["mixFactor"];
@@ -532,6 +539,29 @@ int32_t SketchExecutor::execute(
 
       applyReadTaps(inst, entry, railsById, railTextures, railFloats, instances, instKey);
       markWriteTapOutputsConnected(inst, entry);
+
+      // -- Positional input slots + per-stage render target (slot-based GPU
+      // ABI). Effects like video.blend read inputTexture(0/1) and
+      // renderTarget() rather than textureForField. Slot 0 is the linear chain
+      // input; any wire-bound input field overrides its schema slot. Mirrors
+      // the web executor's inputTextures construction. setSurface points
+      // renderTarget() at this stage's output (the barrel never sets a surface
+      // otherwise, so this is also what makes renderTarget() valid at all). --
+      {
+        std::vector<int32_t> slots;
+        slots.push_back(colInput);
+        if (reg) {
+          for (size_t pi = 0; pi < reg->slotInputTextureFields.size(); ++pi) {
+            int h = inst->textureField(reg->slotInputTextureFields[pi]);
+            if (h > 0) {
+              while (slots.size() <= pi) slots.push_back(-1);
+              slots[pi] = h;
+            }
+          }
+        }
+        inst->setInputTextureSlots(slots);
+      }
+      if (gpu_) gpu_->setSurface(fxHandle, W, H);
 
       inst->doTick(dt);
       inst->doRender(W, H);

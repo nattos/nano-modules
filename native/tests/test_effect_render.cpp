@@ -119,6 +119,83 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
   host.shutdown();
 }
 
+// The slot-based GPU input ABI: video.blend reads its two inputs via
+// gpu::Device::inputTexture(0/1) and writes via renderTarget() — NOT
+// textureForField. This locks the executor↔host plumbing that feeds those
+// (EffectInstance::setInputTextureSlots → WasmContext::input_texture_handles,
+// and GPUBackend::setSurface → getSurfaceTexture). Without it the effect bails
+// to black; texture wires into multi-input effects depend on it.
+TEST_CASE("WASM slot-based input ABI blends two textures (video.blend)", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  auto bytecode = load_file(CORE_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+  host.set_gpu_backend(id, backend.get());
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "video.blend") { w = &e; break; }
+  }
+  REQUIRE(w != nullptr);
+
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(registry.registerWasmEffect("video.blend", "Blend", &host, id, *w));
+
+  EffectInstance* inst = rt.instanceFor("video.blend", "k0");
+  REQUIRE(inst != nullptr);
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int texA = backend->createTexture(W, H, RGBA8);   // dark
+  int texB = backend->createTexture(W, H, RGBA8);   // bright
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(texA >= 0); REQUIRE(texB >= 0); REQUIRE(outTex >= 0);
+
+  std::vector<uint8_t> aPix(W * H * 4, 40);
+  std::vector<uint8_t> bPix(W * H * 4, 200);
+  for (size_t i = 3; i < aPix.size(); i += 4) { aPix[i] = 255; bPix[i] = 255; }
+  backend->writeTexture(texA, W, H, aPix.data(), (uint32_t)aPix.size());
+  backend->writeTexture(texB, W, H, bPix.data(), (uint32_t)bPix.size());
+
+  // Slot 0 = A, slot 1 = B (mirrors the executor's per-stage publish).
+  inst->setInputTextureSlots({texA, texB});
+  backend->setSurface(outTex, W, H);  // renderTarget() resolves here
+
+  // opacity = 1 → output = B (bright).
+  inst->setParamFloat("opacity", 1.0f);
+  inst->doRender(W, H);
+  auto allB = backend->readbackTexture(outTex, W, H);
+  INFO("opacity=1 mean " << mean_rgb(allB) << " (expect ~200)");
+  CHECK(mean_rgb(allB) > 180.0);
+
+  // opacity = 0 → output = A (dark). Proves slot 0 is wired independently.
+  inst->setParamFloat("opacity", 0.0f);
+  inst->doRender(W, H);
+  auto allA = backend->readbackTexture(outTex, W, H);
+  INFO("opacity=0 mean " << mean_rgb(allA) << " (expect ~40)");
+  CHECK(mean_rgb(allA) < 60.0);
+
+  // opacity = 0.5 → midpoint of the two slots.
+  inst->setParamFloat("opacity", 0.5f);
+  inst->doRender(W, H);
+  auto mid = backend->readbackTexture(outTex, W, H);
+  INFO("opacity=0.5 mean " << mean_rgb(mid) << " (expect ~120)");
+  CHECK(std::abs(mean_rgb(mid) - 120.0) < 25.0);
+
+  host.shutdown();
+}
+
 TEST_CASE("full core.wasm bundle registers every effect under Metal", "[effect_render]") {
   // The barrel cutover gate: loading the bundle and registering ALL of its
   // effects runs each one's module_init (schema publish + shader/PSO compile).

@@ -53,6 +53,16 @@ struct RegisteredModule {
    *  markers each frame. The handle itself isn't zeroed; the producer
    *  re-assigns via state::setGpuTexture during render. */
   std::vector<std::string> outputTexturePaths;
+  /**
+   * Top-level input-texture field names in schema declaration order
+   * (by the "order" key), INCLUDING the slot-0 field (e.g. "tex_in" or
+   * "tex_a"). This is the positional mapping the slot-based GPU ABI
+   * (`gpu::Device::inputTexture(N)`) reads: index N is the Nth entry
+   * here. Distinct from `inputTexturePaths`, which excludes tex_in and
+   * is used only for stale-handle reset. Mirrors the web executor's
+   * `textureInputIndex()` ordering so multi-input effects (video.blend's
+   * tex_a/tex_b) resolve the same slots web-side and native-side. */
+  std::vector<std::string> slotInputTextureFields;
 };
 
 /**
@@ -143,6 +153,15 @@ class ModuleRegistry {
       const nlohmann::json& fields, const std::string& prefix,
       std::vector<std::string>& inputs,
       std::vector<std::string>& outputs);
+
+  /**
+   * Top-level input-texture field names ordered by the schema "order"
+   * key (NOT alphabetical / map order), INCLUDING the slot-0 field
+   * (tex_in / tex_a). Populates `RegisteredModule::slotInputTextureFields`.
+   * The positional contract behind `gpu::Device::inputTexture(N)`.
+   */
+  static void buildSlotInputTextureFields(
+      const nlohmann::json& fields, std::vector<std::string>& slots);
 };
 
 }  // namespace sketch_executor

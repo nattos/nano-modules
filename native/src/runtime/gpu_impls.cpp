@@ -289,11 +289,17 @@ void gpu_release(int handle) {
   if (b) b->release(handle);
 }
 
-int gpu_get_input_texture(int /*idx*/) {
-  // Legacy multi-input API — soft_glow uses textureForField instead.
-  return -1;
+int gpu_get_input_texture(int idx) {
+  // Positional multi-input API (video.blend's inputTexture(0/1)). The executor
+  // publishes the per-frame slots onto the active instance; effects that read
+  // by field name (textureForField) are unaffected.
+  auto* inst = active();
+  return inst ? inst->inputTextureSlot(idx) : -1;
 }
-int gpu_get_input_texture_count(void) { return 0; }
+int gpu_get_input_texture_count(void) {
+  auto* inst = active();
+  return inst ? inst->inputTextureSlotCount() : 0;
+}
 
 int gpu_texture_for_field(const char* path, int path_len) {
   auto* inst = active();

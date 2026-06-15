@@ -1,5 +1,8 @@
 #include "sketch/module_registry.h"
 
+#include <algorithm>
+#include <utility>
+
 #include "runtime/effect_runtime.h"
 #include "wasm/wasm_host.h"
 
@@ -52,6 +55,7 @@ bool ModuleRegistry::registerEffect(
   extractTextureLeafPaths(reg.schemaFields, "",
                           reg.inputTexturePaths,
                           reg.outputTexturePaths);
+  buildSlotInputTextureFields(reg.schemaFields, reg.slotInputTextureFields);
   entries_[moduleType] = std::move(reg);
   return true;
 }
@@ -94,6 +98,7 @@ bool ModuleRegistry::registerWasmEffect(
   extractTextureLeafPaths(reg.schemaFields, "",
                           reg.inputTexturePaths,
                           reg.outputTexturePaths);
+  buildSlotInputTextureFields(reg.schemaFields, reg.slotInputTextureFields);
   entries_[moduleType] = std::move(reg);
   return true;
 }
@@ -126,6 +131,28 @@ std::unordered_map<std::string, nlohmann::json> ModuleRegistry::schemas() const 
     out.emplace(kv.first, kv.second.schemaFields);
   }
   return out;
+}
+
+void ModuleRegistry::buildSlotInputTextureFields(
+    const nlohmann::json& fields, std::vector<std::string>& slots) {
+  slots.clear();
+  if (!fields.is_object()) return;
+  // (order, name) for every top-level input-texture field — no recursion
+  // (slot inputs are top-level only, matching web's textureInputIndex). The
+  // schema "order" key is the canonical positional sort; map iteration order
+  // (alphabetical for nlohmann) would mis-rank fields like tex_b before tex_a
+  // in effects that declare them out of alphabetical order.
+  std::vector<std::pair<int, std::string>> ordered;
+  for (auto it = fields.begin(); it != fields.end(); ++it) {
+    const auto& def = it.value();
+    if (!def.is_object()) continue;
+    if (def.value("type", std::string()) != "texture") continue;
+    if ((def.value("io", 0) & 1) == 0) continue;
+    ordered.emplace_back(def.value("order", 0), it.key());
+  }
+  std::stable_sort(ordered.begin(), ordered.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (auto& p : ordered) slots.push_back(std::move(p.second));
 }
 
 void ModuleRegistry::extractTextureLeafPaths(

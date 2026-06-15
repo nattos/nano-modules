@@ -290,6 +290,12 @@ void WasmHost::set_effect_instance(int32_t module_id, EffectHostSink* inst) {
   if (m) m->context.effect_instance = inst;
 }
 
+void WasmHost::set_input_texture_handles(int32_t module_id,
+                                         const std::vector<int32_t>& handles) {
+  auto* m = find_module(module_id);
+  if (m) m->context.input_texture_handles = handles;
+}
+
 uint32_t WasmHost::app_malloc(int32_t module_id, uint32_t size, void** out_native) {
   if (out_native) *out_native = nullptr;
   auto* m = find_module(module_id);

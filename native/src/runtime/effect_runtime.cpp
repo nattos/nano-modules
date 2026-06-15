@@ -108,6 +108,16 @@ void EffectInstance::doTick(double dt) {
   runtime_->setActive(nullptr);
 }
 
+void EffectInstance::setInputTextureSlots(const std::vector<int32_t>& handles) {
+  input_texture_slots_ = handles;
+  // WASM effects read the slots from their module's WasmContext (the host
+  // import gpu.get_input_texture indexes ctx->input_texture_handles). Native
+  // effects read input_texture_slots_ directly via active() in gpu_impls.
+  if (desc_.isWasm() && desc_.wasm_host) {
+    desc_.wasm_host->set_input_texture_handles(desc_.wasm_module_id, handles);
+  }
+}
+
 void EffectInstance::doRender(int vp_w, int vp_h) {
   if (desc_.isWasm()) {
     uint32_t argv[4] = {wasmSelf(), static_cast<uint32_t>(vp_w),

@@ -94,6 +94,15 @@ public:
   /// effect_runtime::EffectInstance (abstract here to avoid an include cycle).
   void set_effect_instance(int32_t module_id, EffectHostSink* inst);
 
+  /// Publish the positional input-texture handles for the effect about to
+  /// render. Backs the slot-based GPU ABI (`gpu::Device::inputTexture(N)` →
+  /// gpu.get_input_texture). The executor builds this each frame (slot 0 = the
+  /// linear chain input; wired fields override their schema slot). Cleared
+  /// implicitly by the next publish; safe to leave stale between frames since
+  /// every render republishes.
+  void set_input_texture_handles(int32_t module_id,
+                                 const std::vector<int32_t>& handles);
+
   // --- Linear-memory allocation (for marshalling on_state_patched buffers). ---
   /// Allocate `size` bytes in the module's linear memory. Returns the wasm app
   /// offset (0 on failure); if `out_native` is non-null it receives the native

@@ -114,6 +114,12 @@ class EffectInstance : public wasm::EffectHostSink {
   void doDestroy();
   void doTick(double dt);
   void doRender(int vp_w, int vp_h);
+  // Publish the positional input-texture slots for this frame's render. Slot N
+  // backs gpu::Device::inputTexture(N). For a WASM effect this forwards into
+  // the module's WasmContext; for a native effect it's a no-op (native effects
+  // resolve inputs via setActive/textureField). The executor calls this just
+  // before doRender (and doPrepareUniforms for the fused path).
+  void setInputTextureSlots(const std::vector<int32_t>& handles);
   // Drive the device on/off ("bypass") state. Fires the descriptor's
   // on_active callback only on a transition. New instances start active, so
   // the first doSetActive(false) fires an OFF; re-enabling fires an ON.
@@ -181,6 +187,14 @@ class EffectInstance : public wasm::EffectHostSink {
   void setFieldConnected(const std::string& path, bool input, bool output);
   bool isInputConnected(const std::string& path) const override;
   bool isOutputConnected(const std::string& path) const override;
+  // Positional input slot lookup (native static path reads this via the
+  // active() instance; the WASM path reads its WasmContext copy). Returns -1
+  // when the slot is unset, matching the gpu.get_input_texture contract.
+  int  inputTextureSlot(int idx) const {
+    return (idx >= 0 && idx < (int)input_texture_slots_.size())
+        ? input_texture_slots_[idx] : -1;
+  }
+  int  inputTextureSlotCount() const { return (int)input_texture_slots_.size(); }
 
   // --- host-import callback storage ---
   // Effects call these via host imports during init/tick/render. The
@@ -253,6 +267,9 @@ class EffectInstance : public wasm::EffectHostSink {
   std::unordered_map<std::string, int> buffer_fields_;
   std::unordered_map<std::string, bool> connected_inputs_;
   std::unordered_map<std::string, bool> connected_outputs_;
+  // Positional input texture slots (gpu::Device::inputTexture(N)). Republished
+  // by the executor each frame via setInputTextureSlots.
+  std::vector<int32_t> input_texture_slots_;
 
   // Set by hostRegisterShaderSpv — keyed by name, resolved by
   // gpu::Device::createShaderModuleByName.
