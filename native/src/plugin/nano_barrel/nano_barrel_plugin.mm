@@ -64,11 +64,11 @@
 #include "barrel_log.h"
 #include "barrel_codec.h"
 
-// gen.text / gen.richtext are NOT in barrel_manifest.txt — they're backed by
-// the text.* host service (no MSL shaders) and need a font install, so they're
-// absent from the generated barrel_effects.gen.h. Declare their entry points
-// here and register them explicitly alongside registerAllBarrelEffects (see
-// initEffectRuntime). The manifest effects are declared by the generated header.
+// gen.text / gen.richtext are native, TextEngine/MSDF-backed effects (no MSL
+// shaders; they need a font install). For now they are still linked statically
+// (from effects_native) and registered explicitly in initEffectRuntime — every
+// OTHER effect loads as a WASM bundle. (Migrating the text effects to their
+// text.wasm / richtext.wasm bundles is the remaining static-effect cleanup.)
 #define DECLARE_EFFECT_NS(ns)                                                 \
   namespace ns {                                                              \
     extern void  module_init();                                               \
@@ -90,13 +90,6 @@ namespace effect_runtime {
   void setHostDeltaTime(double dt);
   void setHostViewport(int w, int h);
 }
-
-// Effect registration is generated from effects_native/barrel_manifest.txt by
-// gen_barrel_effects.py (CMake custom command). This header forward-declares
-// every listed effect namespace, includes their MSL shader headers, and
-// defines nano_barrel_gen::registerAllBarrelEffects(rt, registry). Add an
-// effect to the barrel by adding a manifest line — no edits here.
-#include "barrel_effects.gen.h"
 
 namespace {
 
@@ -647,56 +640,34 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     rt_ = std::make_unique<effect_runtime::EffectRuntime>(gpu_.get());
     registry_ = std::make_unique<sketch_executor::ModuleRegistry>(rt_.get());
 
-    // Effect registration. Default: the statically-linked generated
-    // registration (every effect in barrel_manifest.txt). When
-    // NANO_BARREL_WASM_EFFECTS is set, load the same effects from their .wasm
-    // bundles instead (barrel-loads-WASM). WASM is now the DEFAULT (pixel-parity
-    // confirmed across the effect library via tools/barrel_wasm_parity.sh);
-    // NANO_BARREL_WASM_EFFECTS=0 forces the statically-linked path. Either way,
-    // if the bundles can't be found/loaded we fall back to static gracefully.
-    bool wasm_effects = false;
-    const char* wflag = getenv("NANO_BARREL_WASM_EFFECTS");
-    const bool want_wasm = !(wflag && wflag[0] == '0');  // default ON; "0" = off
-    if (want_wasm) {
-      bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
-      if (bundles_->init()) {
-        // Deliberately DO NOT give the WASM modules the bridge state doc. WASM
-        // effects' state.set_val would otherwise write to it on the RENDER
-        // thread (set_plugin_state → diff under the doc mutex) — which the
-        // statically-linked effects never do (they route state to the
-        // EffectInstance). That render-thread doc mutation deadlocks against the
-        // WS thread on a sketch change (tick_mu_ → doc mutex → WsServer mutex →
-        // tick_mu_ cycle): the symptom is the bridge going silent + render
-        // freezing when you add/change a device. Schemas still reach the editor
-        // — the barrel publishes them from registry_->schemas() (parsed off the
-        // EffectInstance via the host sink), independent of the doc.
-        int total = 0;
-        for (const char* name : {"core", "lights", "nano"}) {
-          std::string path = bundleWasmPath(name);
-          int n = path.empty() ? 0
-              : bundles_->loadBundleFile(path, *registry_, gpu_.get(), nullptr);
-          BARREL_LOG("initEffectRuntime",
-                     "wasm bundle '%s': %d effect(s) from %s",
-                     name, n, path.c_str());
-          total += n;
-        }
-        if (total > 0) {
-          wasm_effects = true;
-          BARREL_LOG("initEffectRuntime", "loaded %d WASM effect(s)", total);
-        } else {
-          BARREL_LOG("initEffectRuntime",
-                     "no WASM effects loaded; falling back to static");
-          bundles_.reset();
-        }
-      } else {
-        BARREL_LOG("initEffectRuntime",
-                   "WasmEffectBundles init failed; falling back to static");
-        bundles_.reset();
+    // Effect registration. Effects load from their WASM bundles (core/lights/
+    // nano, shipped in Resources/wasm/, each preferring its per-arch .aot
+    // sidecar) — the same artifacts the web loads, never linked statically. There
+    // is NO static fallback: a load failure means a broken install and is logged.
+    // Deliberately DO NOT give the WASM modules the bridge state doc — WASM
+    // effects' state.set_val would write to it on the RENDER thread (diff under
+    // the doc mutex), which deadlocks against the WS thread on a sketch change
+    // (tick_mu_ → doc mutex → WsServer mutex → tick_mu_). Schemas still reach the
+    // editor: the barrel publishes them from registry_->schemas() (parsed off the
+    // EffectInstance via the host sink), independent of the doc.
+    bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
+    int total = 0;
+    if (bundles_->init()) {
+      for (const char* name : {"core", "lights", "nano"}) {
+        std::string path = bundleWasmPath(name);
+        int n = path.empty() ? 0
+            : bundles_->loadBundleFile(path, *registry_, gpu_.get(), nullptr);
+        BARREL_LOG("initEffectRuntime", "wasm bundle '%s': %d effect(s) from %s",
+                   name, n, path.c_str());
+        total += n;
       }
     }
-    if (!wasm_effects) {
-      // Registers every effect listed in barrel_manifest.txt (shaders + types).
-      nano_barrel_gen::registerAllBarrelEffects(*rt_, *registry_);
+    if (total > 0) {
+      BARREL_LOG("initEffectRuntime", "loaded %d WASM effect(s)", total);
+    } else {
+      BARREL_LOG("initEffectRuntime",
+                 "ERROR: no WASM effects loaded (bundles missing from Resources/wasm/?)");
+      bundles_.reset();
     }
 
     // Text effects. They need NO registerShaderMSL — the text.* host service
