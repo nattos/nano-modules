@@ -59,7 +59,6 @@
 #include <dlfcn.h>
 #include <fstream>
 #include "sketch/sketch_executor.h"
-#include "sketch/wasm_executor_driver.h"
 
 #import "InteropTexture.h"
 #include "barrel_log.h"
@@ -265,9 +264,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     send_cv_.notify_one();
     if (send_thread_.joinable()) send_thread_.join();
-    // Tear down the wasm executor while gpu_/rt_ are still alive — it frees its
-    // intermediate textures through the gpu/effrt ABI.
-    teardownWasmExecutor();
     stopBridge();
   }
 
@@ -564,23 +560,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // been removed (or whose chain entry no longer exists) doesn't
     // resurrect last frame's pixels.
     if (captures_enabled_) frame_captures_.clear();
-    // Default: the in-process native SketchExecutor. With NANO_BARREL_WASM_EXECUTOR
-    // set, drive the unified executor.wasm through WAMR instead (same C++ source,
-    // compiled to WASM) — pixel-identical per test_executor_wasm. The wasm path
-    // does NOT fire the preview-capture hooks / rail-state publish (those are
-    // native-SketchExecutor callbacks, not part of the executor ABI), so editor
-    // previews are inert under the flag; the render itself is unaffected.
-    int32_t finalHandle;
-    if (wasm_executor_) {
-      finalHandle = executeViaWasm(inputHandle, outputHandle, W, H, dt,
-                                   sketchRefetched);
-    } else if (executor_) {
-      finalHandle = executor_->execute(sketch_snapshot_,
-                                       inputHandle, outputHandle,
-                                       (int)W, (int)H, dt, sketchRefetched);
-    } else {
-      finalHandle = inputHandle;
-    }
+    // The in-process native SketchExecutor — the same C++ source compiled to
+    // executor.wasm for the web, but linked natively here (interp/AOT through
+    // WAMR would be slower / need per-arch artifacts; see the migration notes).
+    int32_t finalHandle =
+        executor_ ? executor_->execute(sketch_snapshot_, inputHandle, outputHandle,
+                                       (int)W, (int)H, dt, sketchRefetched)
+                  : inputHandle;
 
     gpu_->submit();
     rt_->drainConsoleLog();
@@ -589,7 +575,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // the native mirror of the web executor's /sketch_state publish. Only when
     // an editor is watching; stored as one JSON string so the state-doc diff
     // emits a single patch (and nothing at all while the rails are static).
-    if (executor_ && !wasm_executor_ && hasClients) {
+    if (executor_ && hasClients) {
       std::lock_guard<std::mutex> lock(tick_mu_);
       bridge_core_.state_document().set_at(
           "/plugins/" + barrel_plugin_key_ + "/state/sketch_state",
@@ -798,57 +784,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // this exists.
     send_thread_ = std::thread([this] { runSendWorker(); });
 
-    // Optionally swap the in-process executor for executor.wasm (experimental).
-    if (const char* e = getenv("NANO_BARREL_WASM_EXECUTOR"); e && e[0] && e[0] != '0') {
-      setupWasmExecutor();
-    }
-
     rt_->drainConsoleLog();
-    BARREL_LOG("initEffectRuntime",
-               "effects=%zu wasm_executor=%d", registry_->size(),
-               (int)wasm_executor_);
-  }
-
-  // ---- Unified WASM executor (NANO_BARREL_WASM_EXECUTOR) --------------------
-  // Drives executor.wasm (via WasmExecutorDriver) instead of the in-process
-  // SketchExecutor. The wasm executor reaches the effects through the SAME
-  // native EffectRuntime via the "effrt" host functions, so it renders on the
-  // same Metal backend, pixel-identical to the native path. Falls back to the
-  // native executor (leaves wasm_executor_ false) on any setup failure. The same
-  // driver the benchmark uses (`benchmark_barrel --wasm`).
-  void setupWasmExecutor() {
-    if (!rt_ || !gpu_) return;
-    // bundleWasmPath gives ".../wasm/executor.wasm"; the driver wants the dir.
-    std::string path = bundleWasmPath("executor");
-    std::string dir = path;
-    auto slash = dir.find_last_of('/');
-    if (slash != std::string::npos) dir = dir.substr(0, slash);
-    wasm_driver_ = std::make_unique<sketch_executor::WasmExecutorDriver>();
-    if (!wasm_driver_->init(dir, rt_.get(), gpu_.get(), registry_->schemas())) {
-      BARREL_LOG("setupWasmExecutor", "executor.wasm setup failed (dir=%s)", dir.c_str());
-      wasm_driver_.reset();
-      return;
-    }
-    wasm_executor_ = true;
-    BARREL_LOG("setupWasmExecutor", "%s live",
-               wasm_driver_->usingAot() ? "executor.aot (AOT)" : "executor.wasm");
-  }
-
-  // Run one frame through executor.wasm. The macro injection mutates
-  // sketch_snapshot_ each tick even when the sketch didn't refetch, so re-dump
-  // every frame (the native path's live re-walk has no cached equivalent here).
-  int32_t executeViaWasm(int32_t inHandle, int32_t outHandle,
-                         unsigned int W, unsigned int H, double dt,
-                         bool sketchRefetched) {
-    if (!wasm_driver_) return inHandle;
-    return wasm_driver_->execute(rt_.get(), sketch_snapshot_.dump(),
-                                 inHandle, outHandle, (int)W, (int)H, dt,
-                                 sketchRefetched);
-  }
-
-  void teardownWasmExecutor() {
-    wasm_driver_.reset();
-    wasm_executor_ = false;
+    BARREL_LOG("initEffectRuntime", "effects=%zu", registry_->size());
   }
 
   void runSendWorker() {
@@ -1292,11 +1229,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   std::unique_ptr<effect_runtime::EffectRuntime>           rt_;
   std::unique_ptr<sketch_executor::ModuleRegistry>         registry_;
   std::unique_ptr<sketch_executor::SketchExecutor>         executor_;
-
-  // Unified WASM executor (NANO_BARREL_WASM_EXECUTOR). Declared after gpu_/rt_ so
-  // the driver (its WasmHost) is destroyed while gpu_/rt_ are still alive.
-  bool                                              wasm_executor_ = false;
-  std::unique_ptr<sketch_executor::WasmExecutorDriver> wasm_driver_;
 
   // GL ↔ Metal interop.
   std::unique_ptr<InteropTexture>  input_interop_;
