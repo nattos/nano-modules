@@ -13,7 +13,6 @@ import { BridgeCore } from './bridge-core';
 import { GPUHost } from './gpu-host';
 import { TextEngine } from './text-engine';
 import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
-import { SketchExecutor } from './sketch-executor';
 import { WasmSketchExecutor } from './executor-host';
 import { TraceCapture } from './trace-capture';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
@@ -26,31 +25,16 @@ let gpuHost: GPUHost | null = null;
 let gpuDevice: GPUDevice | null = null;
 let canvas: OffscreenCanvas | null = null;
 let gpuContext: GPUCanvasContext | null = null;
-let sketchExecutor: SketchExecutor | null = null;
+// The unified executor.wasm — the C++ sketch executor (the SAME binary the
+// native barrel runs, via executor-host.ts), and the sole web executor. It drives
+// sketch frames AND serves editor support (trace points, live plugin state,
+// console logs, debug stats). The TS SketchExecutor it replaced has been retired.
+let executor: WasmSketchExecutor | null = null;
 let traceCapture: TraceCapture | null = null;
 
-// Unified executor.wasm path (B4). When active, sketch frames render through the
-// SAME C++ executor binary the native barrel runs (executor-host.ts) instead of
-// the TS SketchExecutor. Opt-in (?wasmExecutor=1 on the worker URL, or the
-// setWasmExecutor command) so it can be gated on pixel parity; the TS executor
-// stays the default and keeps serving editor support (trace points, state sync).
-let wasmExecutor: WasmSketchExecutor | null = null;
-let useWasmExecutor = false;
-
-// The executor currently driving frames — the TS SketchExecutor by default, or
-// executor.wasm when toggled on. Cross-cutting accessors (chain-entry handles,
-// live plugin state, console logs, debug stats) read from whichever is active.
-function activeExecutor(): SketchExecutor | WasmSketchExecutor | null {
-  return (useWasmExecutor && wasmExecutor) ? wasmExecutor : sketchExecutor;
-}
-
-async function ensureWasmExecutor(): Promise<WasmSketchExecutor | null> {
-  if (wasmExecutor) return wasmExecutor;
-  if (!bridgeCore || !gpuHost || !gpuDevice) return null;
-  const ex = new WasmSketchExecutor(bridgeCore, gpuHost, gpuDevice, 'rgba8unorm', findCompiledModule);
-  await ex.init();
-  wasmExecutor = ex;
-  return ex;
+// Single accessor so cross-cutting reads stay terse.
+function activeExecutor(): WasmSketchExecutor | null {
+  return executor;
 }
 
 // True when the editor is bound to a remote NanoBarrel — the worker
@@ -212,7 +196,7 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     case 'changeInstanceType': {
       const sketch = sketches.get(cmd.sketchId);
-      if (sketch && sketchExecutor) {
+      if (sketch && executor) {
         const entry = sketchChain(sketch)[cmd.chainIdx];
         if (entry?.type === 'module') {
           // Update sketch data
@@ -222,8 +206,7 @@ async function handleCommand(cmd: WorkerCommand) {
             sketch.instances[entry.instance_key].state = {};
           }
           // Invalidate the executor's cached instance so it reloads with the new type
-          sketchExecutor.invalidateInstance(entry.instance_key);
-          wasmExecutor?.invalidateInstance(entry.instance_key);
+          executor.invalidateInstance(entry.instance_key);
           markDirty();
         }
       }
@@ -267,12 +250,11 @@ async function handleCommand(cmd: WorkerCommand) {
           if (sketch.instances?.[entry.instance_key]) {
             sketch.instances[entry.instance_key].state[cmd.paramKey] = cmd.value;
           }
-          // Update live instance immediately. Route through the ACTIVE executor
-          // so the direct-poke fast path works under executor.wasm too (its
-          // instances live on wasmExecutor, not the TS SketchExecutor).
-          const exec = activeExecutor();
-          if (exec) {
-            const loaded = exec.getInstance(entry.instance_key);
+          // Update the live instance immediately (direct-poke fast path: fire the
+          // patch + commit to bridge core now rather than waiting for the next
+          // frame's sketch-state applyState).
+          if (executor) {
+            const loaded = executor.getInstance(entry.instance_key);
             if (loaded) {
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: cmd.paramKey, value: cmd.value },
@@ -336,18 +318,7 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     }
     case 'setFusionMode':
-      if (sketchExecutor) sketchExecutor.setFusionMode(cmd.mode);
-      break;
-    case 'setWasmExecutor':
-      // Runtime toggle for the unified executor.wasm path (parity testing).
-      if (cmd.on) {
-        await ensureWasmExecutor();
-        useWasmExecutor = !!wasmExecutor;
-      } else {
-        useWasmExecutor = false;
-      }
-      console.log('[engine-worker] wasm executor active:', useWasmExecutor);
-      markDirty();
+      executor?.setFusionMode(cmd.mode);
       break;
     case 'setDebugMode':
       debugMode = !!cmd.on;
@@ -355,7 +326,7 @@ async function handleCommand(cmd: WorkerCommand) {
       // with stale entries from before the user opened the tab.
       debugConsoleBuffer.length = 0;
       // Drain any debug stats so the next frame starts clean.
-      sketchExecutor?.consumeDebugStats();
+      executor?.consumeDebugStats();
       break;
     case 'debugDump': {
       const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
@@ -434,22 +405,13 @@ async function init(width: number, height: number) {
       te.onFontRequest = (req) => post({ type: 'fontRequest', req });
     })
     .catch((e) => console.warn('[engine-worker] text engine init failed:', e));
-  sketchExecutor = new SketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
+  const ex = new WasmSketchExecutor(bridgeCore, gpuHost, gpuDevice, format, findCompiledModule);
+  await ex.init();
+  executor = ex;
   // Wire host-level schema-overlay changes (state::setFieldHidden) into
   // the worker's broadcast generation, so visibility edits show up in
   // the IDE on the next frame.
-  sketchExecutor.onHostSchemaChanged = () => markDirty();
-
-  // B4: opt into the unified executor.wasm via ?wasmExecutor=1 on the worker URL.
-  try {
-    if (new URL(self.location.href).searchParams.get('wasmExecutor') === '1') {
-      await ensureWasmExecutor();
-      useWasmExecutor = !!wasmExecutor;
-      console.log('[engine-worker] wasm executor active:', useWasmExecutor);
-    }
-  } catch (e) {
-    console.warn('[engine-worker] wasm executor init failed:', e);
-  }
+  executor.onHostSchemaChanged = () => markDirty();
   traceCapture = new TraceCapture(gpuDevice, format);
 
   post({ type: 'ready' });
@@ -591,7 +553,7 @@ function handleSetSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
  * Simulate one frame of the entire composition.
  */
 async function simulateTick(dt: number) {
-  if (!gpuHost || !gpuContext || !canvas || !sketchExecutor) return;
+  if (!gpuHost || !gpuContext || !canvas || !executor) return;
   const w = canvas.width;
   const h = canvas.height;
   if (w <= 0 || h <= 0) return;
@@ -606,9 +568,9 @@ async function simulateTick(dt: number) {
     params: new Array(16).fill(0),
   };
 
-  // The active executor (TS default, or executor.wasm when toggled on) owns the
-  // editor-preview surface — chain-entry handles + the monitored-entry set.
-  const exec = (useWasmExecutor && wasmExecutor) ? wasmExecutor : sketchExecutor;
+  // The executor owns the editor-preview surface — chain-entry handles + the
+  // monitored-entry set. (Non-null: guarded at the top of simulateTick.)
+  const exec = executor;
 
   // Clear per-frame chain entry handles before executing sketches
   exec.chainEntryHandles.clear();
@@ -990,17 +952,15 @@ async function reloadWasmModule(wasmUrl: string) {
     return resolved !== moduleType && effectIds.has(resolved);
   };
 
-  if (sketchExecutor) {
+  if (executor) {
     for (const [, sketch] of sketches) {
       for (const entry of sketchChain(sketch)) {
           if (entry.type === 'module' && matchesReloadedModule(entry.module_type)) {
-            sketchExecutor.invalidateInstance(entry.instance_key);
-            wasmExecutor?.invalidateInstance(entry.instance_key);
+            executor.invalidateInstance(entry.instance_key);
             // Bug fix: dropping the instance alone leaves a STALE fused pipeline
             // (keyed by module-type sequence) in the dispatcher cache, so a fused
             // stage keeps running the old shader after HMR. Evict it too.
-            sketchExecutor.invalidateFusionCacheFor(resolveEffectId(entry.module_type));
-            wasmExecutor?.invalidateFusionCacheFor(resolveEffectId(entry.module_type));
+            executor.invalidateFusionCacheFor(resolveEffectId(entry.module_type));
             invalidatedCount++;
           }
         }
@@ -1292,7 +1252,7 @@ function broadcastState() {
       // float fields with the Output flag. Merge ioDecls from the WasmHost
       // which correctly parses the schema on the JS side. Hosts may live in
       // either realModules (effects instantiated directly) or inside the
-      // sketchExecutor (effects created via type-change or sketch load), so
+      // the executor (effects created via type-change or sketch load), so
       // match by pluginKey across both sources.
       let io: any[] = entry.io ?? [];
       let matchedHost = realModules.get(entry.key)?.host ?? null;

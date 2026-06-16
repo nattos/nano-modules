@@ -42,14 +42,6 @@ export class EngineProxy {
       switch (event.type) {
         case 'ready':
           this._ready = true;
-          // B4: opt into the unified executor.wasm via ?wasmExecutor=1 on the
-          // PAGE url. The worker's own location doesn't carry the query string,
-          // so forward it as a command once the worker is initialized.
-          try {
-            if (new URLSearchParams(self.location.search).get('wasmExecutor') === '1') {
-              this.send({ type: 'setWasmExecutor', on: true });
-            }
-          } catch { /* no window.location (tests) — ignore */ }
           break;
         case 'state':
           this.onStateUpdate?.(event.state);

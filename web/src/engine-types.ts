@@ -145,7 +145,6 @@ export type WorkerCommand =
   // production defaults ('auto'). Used by per-effect tests to verify
   // byte-identity between the standalone and fused paths.
   | { type: 'setFusionMode'; mode: 'auto' | 'force-on' | 'force-off' }
-  | { type: 'setWasmExecutor'; on: boolean }
   // Toggle debug-stats collection. When on, the worker tracks
   // per-frame counters (effects executed, dispatches issued, fused
   // runs, dispatches saved) and ships them on each frame event.
