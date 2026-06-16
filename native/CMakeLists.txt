@@ -51,17 +51,19 @@ FetchContent_Declare(
 )
 FetchContent_Populate(wamr)
 
-# Configure WAMR: fast-interpreter by default. AOT loading is opt-in via
-# -DNANO_EXECUTOR_AOT=ON — it lets the runtime LOAD an executor.aot (produced by
-# native/wasm_modules/executor/build_aot.sh via wamrc) so the native barrel skips
-# the per-frame interpreter cost. INTERP stays on regardless (effect bundles +
-# the .wasm fallback are interpreted; web is JIT and unaffected). Default OFF
-# keeps the runtime build unchanged until AOT perf parity is measured (task #107).
-option(NANO_EXECUTOR_AOT "Build the WAMR runtime with AOT-module loading enabled" OFF)
+# Configure WAMR. INTERP is always on (the portable .wasm path + the universal
+# fallback). AOT *loading* is on by default (NANO_WASM_AOT): it lets the runtime
+# load a per-arch `<bundle>-<arch>.aot` sidecar when present — produced at build
+# time by build_aot.sh via wamrc — so CPU-heavy effects run at ~native speed. AOT
+# adds only the loader (no LLVM in the runtime). The `.aot` is OPTIONAL: every
+# bundle still ships its portable `.wasm`, and the bundle loader falls back to it
+# when no matching `.aot` exists. (Fast JIT is x86-64-only → unusable on arm64;
+# LLVM-JIT would link ~100MB LLVM; the EXECUTOR stays native — see migration notes.)
+option(NANO_WASM_AOT "Build the WAMR runtime with AOT-module loading enabled" ON)
 set(WAMR_ROOT_DIR ${wamr_SOURCE_DIR})
 set(WAMR_BUILD_INTERP 1)
 set(WAMR_BUILD_FAST_INTERP 1)
-if(NANO_EXECUTOR_AOT)
+if(NANO_WASM_AOT)
   set(WAMR_BUILD_AOT 1)
 else()
   set(WAMR_BUILD_AOT 0)
@@ -704,6 +706,11 @@ if(APPLE)
     wasm_host
     nlohmann_json::nlohmann_json
   )
+  # When AOT loading is built in, the bundle loader prefers a per-arch `.aot`
+  # sidecar over the `.wasm` (graceful fallback if absent).
+  if(NANO_WASM_AOT)
+    target_compile_definitions(sketch_executor PRIVATE NANO_WASM_AOT_ENABLED=1)
+  endif()
 
   # Effect source list derived from the manifest (column 2 = namespace).
   # Each effect's sources are wasm_modules/<namespace>/*.cpp (picks up
@@ -975,11 +982,14 @@ if(APPLE)
     message(STATUS "NanoBarrel: default.ttf not found — text effects will use the system UI font as primary")
   endif()
 
-  # Bundle the effect .wasm bundles into Resources/wasm/ for the barrel-loads-
-  # WASM path (NANO_BARREL_WASM_EFFECTS), plus the unified executor.wasm for the
-  # barrel-runs-WASM-executor path (NANO_BARREL_WASM_EXECUTOR). Best-effort:
-  # built into ../build/wasm.
-  foreach(_b core lights nano executor)
+  # Bundle the effect .wasm bundles into Resources/wasm/ (the barrel loads
+  # effects as WASM). For each, also bundle any per-arch `<bundle>-<arch>.aot`
+  # sidecars produced by wasm_modules/build_aot.sh — an OPTIONAL speed bonus the
+  # loader prefers; the portable `.wasm` is always the fallback. The `.aot` files
+  # must exist at CONFIGURE time (run build_aot.sh, then reconfigure) to be
+  # picked up. (executor.wasm is NOT bundled — the barrel runs the executor
+  # natively; executor.wasm is a web-only artifact.)
+  foreach(_b core lights nano)
     set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
     if(EXISTS "${_wsrc}")
       add_custom_command(TARGET NanoBarrel POST_BUILD
@@ -991,6 +1001,17 @@ if(APPLE)
         COMMENT "Bundling ${_b}.wasm into NanoBarrel.bundle/Resources/wasm"
         VERBATIM)
     endif()
+    foreach(_arch aarch64 x86_64)
+      set(_aot "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}-${_arch}.aot")
+      if(EXISTS "${_aot}")
+        add_custom_command(TARGET NanoBarrel POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_aot}"
+                  "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/wasm/${_b}-${_arch}.aot"
+          COMMENT "Bundling ${_b}-${_arch}.aot (AOT sidecar)"
+          VERBATIM)
+      endif()
+    endforeach()
   endforeach()
 
   add_custom_command(TARGET NanoBarrel POST_BUILD

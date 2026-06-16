@@ -1,11 +1,43 @@
 #include "sketch/wasm_bundles.h"
 
 #include <fstream>
+#include <string>
 #include <vector>
 
 #include "sketch/module_registry.h"
 
 namespace sketch_executor {
+
+namespace {
+// Optional per-arch AOT sidecar. Given a bundle's `<base>.wasm` path, return the
+// `<base>-<arch>.aot` next to it when AOT loading is compiled in AND that file
+// exists — it runs at ~native speed. Otherwise return the original `.wasm` (the
+// portable fallback, the only artifact a bundle must ship). The arch is the
+// compile-time target, so a universal binary's two slices each pick correctly.
+// WAMR auto-detects the module format from the bytes, so the caller just reads
+// whichever path this returns.
+std::string preferredBundlePath(const std::string& wasmPath) {
+#ifdef NANO_WASM_AOT_ENABLED
+#if defined(__aarch64__)
+  const char* arch = "aarch64";
+#elif defined(__x86_64__)
+  const char* arch = "x86_64";
+#else
+  const char* arch = nullptr;
+#endif
+  if (arch) {
+    std::string base = wasmPath;
+    const std::string ext = ".wasm";
+    if (base.size() > ext.size() &&
+        base.compare(base.size() - ext.size(), ext.size(), ext) == 0)
+      base.resize(base.size() - ext.size());
+    std::string aot = base + "-" + arch + ".aot";
+    if (std::ifstream(aot, std::ios::binary).good()) return aot;
+  }
+#endif
+  return wasmPath;
+}
+}  // namespace
 
 WasmEffectBundles::WasmEffectBundles() : host_(cache_) {}
 
@@ -39,7 +71,7 @@ int WasmEffectBundles::loadBundleFile(const std::string& path,
                                       ModuleRegistry& registry,
                                       gpu::GPUBackend* gpu,
                                       bridge::StateDocument* stateDoc) {
-  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  std::ifstream f(preferredBundlePath(path), std::ios::binary | std::ios::ate);
   if (!f) return 0;
   auto size = f.tellg();
   if (size <= 0) return 0;
