@@ -52,6 +52,15 @@ SketchExecutor* executor_create() {
 EXEC_EXPORT("executor_destroy")
 void executor_destroy(SketchExecutor* ex) { delete ex; }
 
+// Force-disable GPU fusion (every stage takes the standalone path). Mirrors the
+// web debug "fusion mode" toggle: force-off → 0, auto/force-on → 1. The native
+// barrel doesn't drive this; it exists so the web host's setFusionMode keeps
+// working once executor.wasm is the sole web executor.
+EXEC_EXPORT("executor_set_fusion_enabled")
+void executor_set_fusion_enabled(SketchExecutor* ex, int32_t enabled) {
+  if (ex) ex->setFusionEnabled(enabled != 0);
+}
+
 // Push (or replace) one module's schema. `schema` is the `fields` sub-object
 // JSON. Must be called for every effect the sketch references before execute().
 EXEC_EXPORT("executor_register_schema")

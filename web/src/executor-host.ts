@@ -57,6 +57,7 @@ interface ExecutorExports {
   executor_execute(ex: number, sketch: number, sketchLen: number,
                    inTex: number, outTex: number, w: number, h: number,
                    dt: number, dirty: number): number;
+  executor_set_fusion_enabled(ex: number, enabled: number): void;
 }
 
 // Per-sketch executor C++ instance: separate intermediate pool / delayed-wire
@@ -85,6 +86,18 @@ export class WasmSketchExecutor {
   private handleByKey = new Map<string, number>();
 
   private slots = new Map<string, SketchSlot>();
+
+  // Fusion on/off, applied to every executor slot (mirrors the web debug
+  // `setFusionMode` toggle). force-off → false; auto / force-on → true (the C++
+  // executor has no length-1 "force-on" mode — it fuses runs of 2+, so force-on
+  // collapses to auto). Applied to each slot when it's created + retroactively
+  // when the mode changes.
+  private fusionEnabled = true;
+
+  // Called when an effect host's schema changes at runtime (lazy registration
+  // after the first frame). The worker wires this to markDirty so the plugin
+  // defs re-broadcast. Mirrors SketchExecutor.onHostSchemaChanged.
+  onHostSchemaChanged?: () => void;
 
   // Editor-preview surface (same shape SketchExecutor exposes): per-frame chain
   // entry texture handles + the set of monitored entries (forces a fused-group
@@ -154,6 +167,7 @@ export class WasmSketchExecutor {
     const host = new WasmHost();
     host.bridgeCore = this.bridgeCore;
     host.gpuHost = this.gpuHost;
+    host.onSchemaChanged = this.onHostSchemaChanged;
     await host.load(found.compiled);
     const module = host.activateEffect(found.resolvedId);
     const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
@@ -240,11 +254,24 @@ export class WasmSketchExecutor {
   private slotFor(sketchId: string): SketchSlot {
     let slot = this.slots.get(sketchId);
     if (!slot) {
-      slot = { exPtr: this.exports.executor_create(), lastJson: '',
+      const exPtr = this.exports.executor_create();
+      // Apply the current fusion toggle to the fresh executor (default is on).
+      if (!this.fusionEnabled) this.exports.executor_set_fusion_enabled(exPtr, 0);
+      slot = { exPtr, lastJson: '',
                registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0 };
       this.slots.set(sketchId, slot);
     }
     return slot;
+  }
+
+  /** Debug fusion toggle (mirrors SketchExecutor.setFusionMode). force-off
+   *  disables GPU fusion; auto / force-on enable it. Applied to all live slots
+   *  + remembered for slots created later. */
+  setFusionMode(mode: 'auto' | 'force-on' | 'force-off'): void {
+    this.fusionEnabled = mode !== 'force-off';
+    for (const slot of this.slots.values()) {
+      this.exports.executor_set_fusion_enabled(slot.exPtr, this.fusionEnabled ? 1 : 0);
+    }
   }
 
   private ensureOutputTexture(slot: SketchSlot, w: number, h: number): number {

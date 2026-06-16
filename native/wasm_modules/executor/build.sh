@@ -29,6 +29,7 @@ WASM_EXPORTS=(
   -Wl,--export=executor_destroy
   -Wl,--export=executor_register_schema
   -Wl,--export=executor_execute
+  -Wl,--export=executor_set_fusion_enabled
   -Wl,--export=malloc
   -Wl,--export=free
 )
