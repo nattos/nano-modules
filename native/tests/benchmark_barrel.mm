@@ -45,23 +45,15 @@
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
+#include "sketch/wasm_bundles.h"
 #include "sketch/wasm_executor_driver.h"
 
 #include "plugin/nano_barrel/InteropTexture.h"
 
 // Effect entry points (these come out of the effects_native bundle the
-// barrel links against). Class-like instance ABI: instance callbacks
-// take an opaque per-instance self pointer.
-namespace brightness_contrast {
-void  module_init();
-void* create();
-void  destroy(void* self);
-void  init(void* self);
-void  tick(void* self, double);
-void  render(void* self, int, int);
-void  on_state_patched(void* self, int, const char*, const int*, const int*, const int*);
-int32_t is_identity(void* self);
-}
+// barrel links against). Effects load as WASM bundles (core.wasm) — the same
+// path the barrel uses — so the benchmark measures the production config (native
+// executor + wasm effects), never statically linking effect code.
 
 // Host-state setters live in runtime/host_impls.cpp but aren't declared
 // in any public header — every consumer forward-declares them. Match
@@ -72,8 +64,9 @@ void setHostDeltaTime(double dt);
 void setHostViewport(int w, int h);
 }
 
-// Generated MSL headers — same names the barrel uses.
-#include "brightness_contrast_msl.h"
+#ifndef CORE_WASM_PATH
+#error "CORE_WASM_PATH must be defined"
+#endif
 
 using nlohmann::json;
 using clock_type = std::chrono::steady_clock;
@@ -281,15 +274,15 @@ int runAssert() {
   auto gpu = gpu::createMetalBackend();
   if (!gpu) { std::fprintf(stderr, "assert: no Metal backend\n"); return 1; }
   auto rt = std::make_unique<effect_runtime::EffectRuntime>(gpu.get());
-  rt->registerShaderMSL("compute", BRIGHTNESS_CONTRAST_COMPUTE_MSL);
-  rt->registerShaderMSL("pixel",   BRIGHTNESS_CONTRAST_PIXEL_MSL);
   auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
-  registry->registerEffect(
-      "video.brightness_contrast", "Brightness Contrast",
-      &brightness_contrast::module_init, &brightness_contrast::create,
-      &brightness_contrast::destroy, &brightness_contrast::init,
-      &brightness_contrast::tick, &brightness_contrast::render,
-      &brightness_contrast::on_state_patched, &brightness_contrast::is_identity);
+  // Effects come from core.wasm (declared before `executor` so the bundle's
+  // WasmHost outlives the effect instances the executor drives).
+  auto bundles = std::make_unique<sketch_executor::WasmEffectBundles>();
+  if (!bundles->init() ||
+      bundles->loadBundleFile(CORE_WASM_PATH, *registry, gpu.get(), nullptr) < 1) {
+    std::fprintf(stderr, "assert: failed to load core.wasm effects\n");
+    return 1;
+  }
   auto executor = std::make_unique<sketch_executor::SketchExecutor>(
       rt.get(), registry.get(), gpu.get());
 
@@ -607,15 +600,15 @@ int main(int argc, char** argv) {
       return 1;
     }
     auto rt = std::make_unique<effect_runtime::EffectRuntime>(gpu.get());
-    rt->registerShaderMSL("compute", BRIGHTNESS_CONTRAST_COMPUTE_MSL);
-    rt->registerShaderMSL("pixel",   BRIGHTNESS_CONTRAST_PIXEL_MSL);
     auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
-    registry->registerEffect(
-        "video.brightness_contrast", "Brightness Contrast",
-        &brightness_contrast::module_init, &brightness_contrast::create,
-        &brightness_contrast::destroy, &brightness_contrast::init,
-        &brightness_contrast::tick, &brightness_contrast::render,
-        &brightness_contrast::on_state_patched);
+    // Effects come from core.wasm (declared before `executor` so the bundle's
+    // WasmHost outlives the effect instances the executor drives).
+    auto bundles = std::make_unique<sketch_executor::WasmEffectBundles>();
+    if (!bundles->init() ||
+        bundles->loadBundleFile(CORE_WASM_PATH, *registry, gpu.get(), nullptr) < 1) {
+      std::fprintf(stderr, "failed to load core.wasm effects\n");
+      return 1;
+    }
     auto executor = std::make_unique<sketch_executor::SketchExecutor>(
         rt.get(), registry.get(), gpu.get());
 

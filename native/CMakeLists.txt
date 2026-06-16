@@ -1038,7 +1038,6 @@ if(APPLE)
     ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
   )
   target_link_libraries(benchmark_barrel PRIVATE
-    effects_native
     sketch_executor
     nlohmann_json::nlohmann_json
     "-framework OpenGL"
@@ -1048,7 +1047,9 @@ if(APPLE)
     "-framework Foundation"
   )
   target_compile_options(benchmark_barrel PRIVATE -Wno-deprecated-declarations)
-  # Directory holding executor.aot / executor.wasm for the `--wasm` mode.
+  # Effects load from core.wasm (no static effect linking); EXECUTOR_WASM_DIR
+  # holds executor.aot / executor.wasm for the `--wasm` (wasm-executor) mode.
   target_compile_definitions(benchmark_barrel PRIVATE
+    CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
     EXECUTOR_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 endif()
