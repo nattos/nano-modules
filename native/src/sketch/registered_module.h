@@ -35,6 +35,12 @@ struct RegisteredModule {
    *  slot-0 field (tex_in / tex_a): the positional mapping the slot-based GPU
    *  ABI (inputTexture(N)) reads. Distinct from inputTexturePaths. */
   std::vector<std::string> slotInputTextureFields;
+  /** True when the schema declares at least one OUTPUT texture field (a `texture`
+   *  field with io & 2). False for a pure modulation source (e.g. data.lfo) that
+   *  only emits scalars/structs — such a node is a texture PASSTHROUGH: it ticks
+   *  to publish its outputs but never renders, leaving the image chain untouched.
+   *  Mirrors sketch-executor.ts's isTexturePassthrough check. */
+  bool hasTextureOutput = false;
 };
 
 }  // namespace sketch_executor

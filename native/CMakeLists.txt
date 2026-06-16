@@ -784,7 +784,8 @@ if(APPLE)
       Catch2::Catch2WithMain
       "-framework Metal" "-framework Foundation")
     target_compile_definitions(test_effect_render PRIVATE
-      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+      TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     target_compile_options(test_effect_render PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_render)
   endif()

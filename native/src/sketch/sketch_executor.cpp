@@ -253,6 +253,19 @@ void SketchExecutor::registerModuleSchema(const std::string& moduleType,
                                       rm.inputTexturePaths, rm.outputTexturePaths);
   schema_util::deriveSlotInputTextureFields(rm.schemaFields,
                                             rm.slotInputTextureFields);
+  // A node with NO output texture field (io & 2) emits only scalars/structs — a
+  // modulation source that passes the image chain through (see hasTextureOutput).
+  rm.hasTextureOutput = false;
+  if (rm.schemaFields.is_object()) {
+    for (auto it = rm.schemaFields.begin(); it != rm.schemaFields.end(); ++it) {
+      const auto& def = it.value();
+      if (def.is_object() && def.value("type", std::string()) == "texture" &&
+          (def.value("io", 0) & 2) != 0) {
+        rm.hasTextureOutput = true;
+        break;
+      }
+    }
+  }
   moduleSchemas_[moduleType] = std::move(rm);
   // The augmenter's {module_type: schemaFields} projection is now stale.
   cachedSchemasValid_ = false;
@@ -332,7 +345,9 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
       EffectRef inst = instanceRef(mt, instKey);
       bool e = false;
       if (inst.valid()) {
-        e = (inst.fusionKind() == 1) && !inst.fusionFragmentName().empty() &&
+        // A modulation source (no output texture) is a passthrough, never fused.
+        e = reg->hasTextureOutput &&
+            (inst.fusionKind() == 1) && !inst.fusionFragmentName().empty() &&
             inst.fusionHasPrepare();
         if (e && entry.contains("taps") && entry["taps"].is_array() &&
             !entry["taps"].empty()) {
@@ -558,17 +573,25 @@ int32_t SketchExecutor::execute(
         if (pit == e.end() || !pit->is_object() || pit->empty()) continue;
         const std::string key = e.value("instance_key", std::string());
         if (key.empty()) continue;
+        // Per-FIELD fallback: fill in each entry.params field the canonical state
+        // doesn't already have. Must NOT be all-or-nothing — the web host mirrors
+        // producers' live OUTPUT scalars into instances[key].state, so a producer
+        // (e.g. data.lfo) has partial state {output: ...}; an all-or-nothing skip
+        // would then drop its INPUT params (rate/amplitude) and the effect would
+        // run at schema defaults. (`*instancesPtr` stays == rawInstances for the
+        // whole scan; we only swap to mergedInstances after.)
         const json* st = findState(*instancesPtr, key);
-        if (st && !st->empty()) continue;  // canonical state wins
-        if (!merged) { mergedInstances = rawInstances; merged = true; }
-        json& slot = mergedInstances[key];
-        if (!slot.is_object()) slot = json::object();
-        if (!slot.contains("module_type"))
-          slot["module_type"] = e.value("module_type", std::string());
-        json& state = slot["state"];
-        if (!state.is_object()) state = json::object();
-        for (auto it = pit->begin(); it != pit->end(); ++it)
+        for (auto it = pit->begin(); it != pit->end(); ++it) {
+          if (st && st->contains(it.key())) continue;  // canonical/mirrored wins
+          if (!merged) { mergedInstances = rawInstances; merged = true; }
+          json& slot = mergedInstances[key];
+          if (!slot.is_object()) slot = json::object();
+          if (!slot.contains("module_type"))
+            slot["module_type"] = e.value("module_type", std::string());
+          json& state = slot["state"];
+          if (!state.is_object()) state = json::object();
           if (!state.contains(it.key())) state[it.key()] = it.value();
+        }
       }
     }
     if (merged) instancesPtr = &mergedInstances;
@@ -869,7 +892,13 @@ int32_t SketchExecutor::execute(
       // 0<o<1 → render into a scratch texture, then host-blend it with the
       //       column input: out = mix(colInput, fx, opacity).
       const float opacity = readOpacity(instances, instKey);
-      const bool willRender = opacity > 0.0f;
+      // A modulation source (no output texture, e.g. data.lfo) never renders an
+      // image — it ticks to publish its scalar/struct outputs and passes the
+      // texture chain through untouched. Same path as opacity 0 below. Without
+      // this it would render an empty (black) frame over the chain. Mirrors
+      // sketch-executor.ts's isTexturePassthrough.
+      const bool isModulationSource = reg && !reg->hasTextureOutput;
+      const bool willRender = opacity > 0.0f && !isModulationSource;
       inst.setWillRender(willRender);
 
       if (!willRender) {

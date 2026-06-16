@@ -484,3 +484,87 @@ TEST_CASE("entry.params + named/numeric input wires drive video.blend",
   CHECK(named[0] > 200.0);     // red present  ← the failing assertion
   CHECK(named[2] < 60.0);      // blue suppressed
 }
+
+// Gap #3 regression (task #106): the entry.params fallback must merge PER FIELD,
+// not all-or-nothing. The web host mirrors a producer's live OUTPUT scalars into
+// instances[key].state, leaving it partially populated; an all-or-nothing skip
+// then drops the entry.params INPUT fields (e.g. data.lfo's rate), so the effect
+// runs at schema defaults. Here bc carries a partial instances.state
+// {brightness:0.5} (the "mirrored" field) AND entry.params {contrast:0.0}. With
+// the per-field merge, contrast=0.0 is applied → black; with the old
+// all-or-nothing skip, contrast stays default 0.5 → the white passes through.
+TEST_CASE("entry.params merges per-field over partial instance state",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "video.brightness_contrast", "instance_key": "bc",
+        "params": { "brightness": 0.5, "contrast": 0.0 } }
+    ],
+    "instances": { "bc": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5 } } }
+  })JSON");
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+  double m = mean_rgb(px);
+  INFO("output mean " << m << " (expect ~0 black: contrast=0 from entry.params applied)");
+  CHECK(m < 30.0);
+}
+
+// Gap #3 repro of the EXACT web engine-wires "forward scalar wire" sketch:
+// white -> data.lfo(rate 0) -> brightness_contrast, wire lfo.output -> brightness.
+// lfo.output==0.5 (mirrored into instance state, as the web host does) -> brightness
+// must land 0.5 (neutral, magnitude auto/unsigned) -> output grey ~128.
+TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  // lfo.output mirrored to 0.5 in instance state (the web host injects producer
+  // outputs there; the native float write-tap reads them from the JSON).
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+      { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+    ],
+    "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+    "wires": [
+      { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
+    ]
+  })JSON");
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+  double m = mean_rgb(px);
+  INFO("output mean " << m << " (expect ~128 grey)");
+  CHECK(std::abs(m - 128.0) < 20.0);
+}
