@@ -1,16 +1,42 @@
-# `native/src/sketch/` — shared sketch render preparation + execution
+# `native/src/sketch/` — the unified sketch executor
 
-Host-agnostic C++ that turns a sketch JSON graph into rendered pixels.
-Two libraries; combined they're the entire "what does the editor's
-sketch *mean* at render time" layer:
+Host-agnostic C++ that turns a sketch JSON graph into rendered pixels. This is
+**one executor, two deployments**: the same source compiles to a native static
+lib AND to **`executor.wasm`** (built by `native/wasm_modules/executor/build.sh`,
+sibling to `bridge_core`). Both the native FFGL barrel and the web browser load
+that single binary, so there is exactly one frame-loop implementation — no
+TypeScript twin to drift against (the old `web/src/sketch-executor.ts` was
+retired; see "The two hosts" below).
 
 | Library | Purpose | Depends on |
 |---|---|---|
 | `sketch_augment` | Synthesises implicit struct-rail connections so a sketch's chain modules can find their producers' outputs without the user wiring rails by hand. Schema-only logic; no GPU. | `nlohmann_json` |
-| `sketch_executor` | Walks the augmented graph one frame at a time, dispatching effects through `EffectRuntime` and routing tap data between them. Owns the intermediate texture pool; touches `GPUBackend` only to allocate intermediates. | `sketch_augment`, `effect_runtime`, `gpu_backend` |
+| `sketch_executor` | Walks the augmented graph one frame at a time, driving effects + GPU purely through two **host-import ABIs** (`effrt.h` for effect lifecycle/params, `exec_gpu.h` for textures/dispatch) + `exec_trace.h` for editor previews. Owns the intermediate texture pool + compiled plan cache. | `sketch_augment`, `nlohmann_json` (+ the host's ABI impls) |
 
-Both libraries are **silent** (no logging) and **host-agnostic**
-(no FFGL, no bridge, no Resolume). The host wraps them.
+`sketch_executor` no longer depends on `EffectRuntime` / `GPUBackend` /
+`ModuleRegistry` directly — those are native types that can't compile to wasm.
+Instead it calls a small set of `effrt_*` / `gpu_*` imports the **host** provides
+(see the two-hosts section). Both libraries are **silent** (no logging) and
+**host-agnostic** (no FFGL, no bridge, no Resolume). The host wraps them.
+
+## The two hosts
+
+The executor is pure orchestration; the host owns the effect instances + GPU
+backend and services the `effrt_*` / `gpu_*` imports:
+
+- **Native** — `executor_host.cpp` + `effrt_impls.cpp` + `gpu_impls.cpp` register
+  WAMR native symbols that forward to the existing `EffectRuntime` /
+  `ModuleRegistry` / Metal `GPUBackend`. The barrel loads `executor.wasm` via WAMR
+  behind `NANO_BARREL_WASM_EXECUTOR` (a compiled-in C++ in-process `SketchExecutor`
+  is still the default until WAMR-AOT perf parity is confirmed).
+- **Web** — `web/src/executor-host.ts` (`WasmSketchExecutor`) instantiates
+  `executor.wasm` and implements the same imports over `WasmHost` (one effect
+  instance per chain entry) + `GPUHost` (WebGPU). It is the **sole** web executor:
+  `engine-worker.ts` creates one `WasmSketchExecutor` at init and drives every
+  frame through it. The web host mirrors each producer's live OUTPUT scalars into
+  the sketch's instance state before each `executor_execute`, so the executor's
+  float write-taps read them (the native float-output write-tap contract — see
+  Constraints).
 
 ---
 
@@ -24,9 +50,8 @@ The editor's sketch is a graph of modules connected by columns + rails
    `render_outputs/motion`; `soft_glow` produces it; without a rail
    they're disconnected.) The editor used to do this in
    `web/src/state/controller.ts`; it now lives here so every renderer
-   (the FFGL plugin today; the bridge_server dylib's render path
-   tomorrow; a future wasm-bound browser engine-worker) uses the same
-   logic.
+   — the FFGL barrel and the **web browser** (both via `executor.wasm`) —
+   uses the same logic.
 2. **Module-instance lookup** — module_type strings from the sketch
    (`"video.brightness_contrast"`) need to resolve to runtime
    instances of the corresponding effect.
@@ -71,14 +96,20 @@ texture leaves.
 
 ## `ModuleRegistry`
 
-Maps editor `module_type` strings to `RegisteredModule` records:
+Maps editor `module_type` strings to `RegisteredModule` records. NOTE: the
+executor keeps its **own** copy of these (`registered_module.h`, a pure struct
+that compiles to wasm) — the host pushes each effect's schema in via
+`executor_register_schema` / `registerModuleSchema`, and the executor derives the
+slot/leaf paths + flags itself via `schema_util.h`. `ModuleRegistry` is the
+native-host side that owns the actual effect instances.
 
 ```cpp
 struct RegisteredModule {
-  effect_runtime::EffectInstance* inst;
-  nlohmann::json schemaFields;            // for the augmenter
-  std::vector<std::string> inputTexturePaths;   // for per-frame zeroing
-  std::vector<std::string> outputTexturePaths;  // for connection markers
+  nlohmann::json schemaFields;            // for the augmenter + wire routing
+  std::vector<std::string> inputTexturePaths;   // non-primary input leaves (per-frame zeroing)
+  std::vector<std::string> outputTexturePaths;  // non-primary output leaves (connection markers)
+  std::vector<std::string> slotInputTextureFields; // positional inputTexture(N) order, incl. tex_in/tex_a
+  bool hasTextureOutput;                   // false ⇒ modulation source (passthrough, never renders)
 };
 ```
 
@@ -121,10 +152,10 @@ Owns:
 - per-frame tap routing state (constructed and discarded inside
   `execute()`).
 
-Doesn't own:
-- the `EffectRuntime`;
-- the `GPUBackend`;
-- the `ModuleRegistry`;
+Doesn't own (the host services these through the `effrt_*` / `gpu_*` imports):
+- the effect instances (native: `EffectRuntime`; web: per-key `WasmHost`);
+- the GPU backend (native: Metal `GPUBackend`; web: `GPUHost`/WebGPU);
+- the effect schemas (host pushes them via `registerModuleSchema`);
 - input/output texture handles (host passes them in each frame).
 
 ### Per-frame contract
@@ -133,11 +164,18 @@ Doesn't own:
 int32_t SketchExecutor::execute(
     const nlohmann::json& rawSketch,
     int32_t inputHandle, int32_t outputHandle,
-    int W, int H, double dt);
+    int W, int H, double dt, bool sketchDirty = true);
 ```
 
-- `rawSketch` — the editor's current sketch graph. The executor
-  augments internally.
+- `rawSketch` — the editor's current sketch graph (the wire-model
+  `{chain, instances, wires}` shape; legacy `{columns, rails, taps}` also
+  passes through). The executor normalises wires → rails/taps and augments
+  internally.
+- `sketchDirty` — whether the sketch may have changed since last frame. Gates
+  the per-instance state re-apply. The structural **plan** (which entries resolve,
+  their fusion eligibility, the rail index) is rebuilt only when an internal
+  topology *signature* changes — so a continuous slider drag (dirty every frame,
+  but only param VALUES change) reuses the cached plan instead of rebuilding it.
 - `inputHandle` — the upstream texture (typically a Metal handle the
   host adopted from a GL→Metal interop, or a real texture handle from
   a previous render pass). The executor reads but doesn't release it.
@@ -161,8 +199,19 @@ int32_t SketchExecutor::execute(
        leaking through when this frame's tap config doesn't cover it.
      - Apply persisted instance state from
        `sketch.instances[<key>].state` → `setParamFloat` /
-       `setParamArray` / `setParamJson`.
-     - Wire the primary `tex_in` / `tex_out` channels.
+       `setParamArray` / `setParamJson`. Falls back **per field** to the chain
+       entry's legacy `params` object for any field the instance state lacks
+       (the terse sketch format puts values there; matches the retired TS
+       executor). Skipped entirely when `!sketchDirty`.
+     - **Modulation-source passthrough**: a module whose schema declares no
+       output texture (`hasTextureOutput == false`, e.g. `data.lfo`) renders
+       NOTHING — it ticks to publish its scalar/struct outputs, then passes the
+       image chain through untouched. (Rendering it would clobber the chain with
+       an empty black frame.)
+     - Wire the primary `tex_in` / `tex_out` channels, and bind positional input
+       slots (`inputTexture(N)`): slot 0 is the chain input; a wire-bound input
+       overrides its slot, matched by the schema's NAMED field (`tex_a` → slot 0)
+       or a NUMERIC index (`"0"`/`"1"`).
      - **Apply read taps** before render: for each `direction: "read"`
        tap, look up the rail's dataType and route either a single
        texture, a float scalar, or every texture leaf in a struct
@@ -184,25 +233,22 @@ the rotating pool.
 
 ## Adding the executor to a new host
 
-Three steps:
+A host loads `executor.wasm` and services its imports:
 
-1. Set up an `EffectRuntime` and `GPUBackend`. Today only Metal is
-   wired up (`gpu::createMetalBackend()`).
-2. Build a `ModuleRegistry`; register every editor `module_type` you
-   want to support, mapping to the matching effect namespace's
-   `init / tick / render / on_state_patched`.
-3. Build a `SketchExecutor`. Per frame:
-   - Pull the sketch JSON from wherever it lives (a bridge state
-     document, a file, an in-memory cache).
-   - Adopt/prepare your input + output texture handles.
-   - Call `executor->execute(sketch, in, out, W, H, dt)`.
-   - Submit your GPU command buffer / release adopted handles / blit
-     the returned handle to wherever it needs to go.
+1. Implement the `effrt_*` (effect lifecycle/params/textures) and `gpu_*`
+   (texture alloc/dispatch/submit) imports over your effect runtime + GPU
+   backend. Native does this with WAMR native symbols (`executor_host.cpp`,
+   `effrt_impls.cpp`, `gpu_impls.cpp`); web does it in JS (`executor-host.ts`).
+   Optionally implement the `trace_*` imports (`exec_trace.h`) for editor previews.
+2. Push every effect's schema once via `executor_register_schema`
+   (`registerModuleSchema`) before the first frame.
+3. Per frame: marshal the sketch JSON in, adopt/prepare input + output texture
+   handles, call `executor_execute(sketch, in, out, W, H, dt, dirty)`, then submit
+   your GPU command buffer / blit the returned handle.
 
-The FFGL barrel plugin
-(`native/src/plugin/nano_barrel/nano_barrel_plugin.mm`) is the
-reference host today; the bridge_server dylib is the next planned
-consumer.
+The reference hosts are the FFGL barrel
+(`native/src/plugin/nano_barrel/nano_barrel_plugin.mm`, native WAMR) and the web
+engine worker (`web/src/engine-worker.ts` → `WasmSketchExecutor`).
 
 ---
 
@@ -215,11 +261,11 @@ consumer.
 - **No state persistence.** Host pulls the sketch JSON from
   somewhere and passes it in. The bridge keeps it persisted across
   composition save/reload; that's a host concern.
-- **No editor-side reactivity.** The web editor's `controller.ts`
-  also has logic for augmentation; *eventually* it should call the
-  wasm-compiled version of `sketch_augment` instead of duplicating
-  the logic in TypeScript. Until that lands the editor's renderer
-  still uses its TS copy.
+- **No editor-side reactivity.** The web editor's `controller.ts` has its own
+  augmentation logic for editor-graph display; the *render* path no longer
+  duplicates the executor — `executor.wasm` (this code) augments + renders for
+  both web and native. The retired `web/src/sketch-executor.ts` was the last TS
+  twin of this layer.
 - **No logging.** Library code is silent. Hosts wrap the calls if
   they want traces.
 
@@ -239,11 +285,13 @@ consumer.
 - **Within-column rails only.** Sketch-wide rails (cross-column) are
   indexed but not routed differently from column-local rails. Fine
   today since the editor doesn't really use cross-column flow.
-- **Float-rail scalar source is the sketch state.** The executor
-  reads from `sketch.instances[<producer>].state[<fieldPath>]`, not
-  from any "what's your live value right now" runtime API. So a
-  rail that captures from a producer's *output* of an animated field
-  will lag by however long it takes the editor's mirror to round-trip.
+- **Float-rail scalar source is the sketch state.** The executor reads a float
+  wire's producer value from `sketch.instances[<producer>].state[<fieldPath>]`,
+  not from a live runtime API. So the host must inject producers' live output
+  scalars into the sketch state before each frame: the native barrel surfaces
+  them via the bridge state document; the web host (`executor-host.ts`) mirrors
+  each instance's published `pluginState` outputs into the marshalled sketch.
+  A rail capturing an animated output therefore lags by one mirror round-trip.
 - **Asymmetric rail paths require explicit rails.** The auto-bridge
   matches by schema shape, but the routing names match by
   fieldPath. If producer and consumer name the same struct field

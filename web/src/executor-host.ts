@@ -8,8 +8,7 @@
  *
  *   - "effrt" (effrt.h): acquire an opaque instance handle for a (module_type,
  *     instance_key) and drive its params / textures / lifecycle. Here those map
- *     to web effect instances (one WasmHost + WasmModule per chain entry, exactly
- *     like sketch-executor.ts builds today).
+ *     to web effect instances (one WasmHost + WasmModule per chain entry).
  *   - "gpu" (exec_gpu.h): a focused subset of the effect GPU ABI plus a few
  *     executor-only ops (per-stage render target, format query, submit batching,
  *     no-layout fused-chain PSO). These map onto the shared GPUHost.

@@ -729,8 +729,8 @@ function ensureRenderTarget(key: string, w: number, h: number): { tex: GPUTextur
     const tex = gpuDevice!.createTexture({
       size: [w, h],
       format: 'rgba8unorm',
-      // COPY_SRC|COPY_DST superset so these can be copy endpoints (see the
-      // intermediate pool in sketch-executor.ts for the rationale).
+      // COPY_SRC|COPY_DST superset so these can be copy endpoints (the executor's
+      // intermediate pool copies into/out of these).
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
         | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
         | GPUTextureUsage.COPY_DST,

@@ -809,7 +809,7 @@ Why momentary gate (not synth-style hold-to-sustain): the inspector checkbox is 
 
 ### 8.2 Event handlers — momentary, rising-edge detected
 
-The sketch-executor replays **every** instance-state value as `PatchReplace` patches **every frame** (`sketch-executor.ts` rebuilds the patch set from the stored instance state each tick). Inspector hover and continuous-edit broadcasts can amplify this. An event field is **not** value-less — it round-trips through JSON like everything else, so its stored value is replayed too. Concretely, `event` fields are **momentary, on/off like a `bool` gate**: the inspector's trigger button sends `1` on press and `0` on release (`field-trigger.ts`), and whatever value last landed is what gets replayed.
+The executor replays **every** instance-state value as `PatchReplace` patches **every frame** (`executor.wasm`'s applyState rebuilds the patch set from the stored instance state each tick). Inspector hover and continuous-edit broadcasts can amplify this. An event field is **not** value-less — it round-trips through JSON like everything else, so its stored value is replayed too. Concretely, `event` fields are **momentary, on/off like a `bool` gate**: the inspector's trigger button sends `1` on press and `0` on release (`field-trigger.ts`), and whatever value last landed is what gets replayed.
 
 So an event handler that fires whenever a `trigger` patch *arrives* re-arms itself forever — even with `auto_rate` at 0, the replayed `trigger: 0` re-fires the cycle on every return to IDLE:
 

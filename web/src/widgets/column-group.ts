@@ -50,8 +50,8 @@ function shortName(id: string) { return id.split('.').pop() ?? id; }
 /**
  * Whether an effect produces an image — i.e. its schema declares a `texture`
  * field with the Output bit (io & 2). Mirrors the executor's texture-passthrough
- * test (sketch-executor.ts): nodes WITHOUT a texture output (LFOs, data/
- * modulation sources) render no image and pass their input through, so tracing
+ * test (RegisteredModule.hasTextureOutput): nodes WITHOUT a texture output (LFOs,
+ * data/modulation sources) render no image and pass their input through, so tracing
  * "their output" would show the next stage's texture. Such nodes get no monitor
  * trace target — selecting them leaves the monitor on the sketch's final output.
  */
