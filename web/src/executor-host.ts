@@ -165,6 +165,31 @@ export class WasmSketchExecutor {
     this.instances.delete(instanceKey);
   }
 
+  /** Live module for a chain-entry key (matches SketchExecutor.getInstance) —
+   *  lets the worker's setParam direct-poke fast path + debugDump reach the
+   *  effect instances when executor.wasm is the active executor. */
+  getInstance(instanceKey: string): WebEffectInstance | undefined {
+    return this.instances.get(instanceKey);
+  }
+
+  /** Iterate all loaded module hosts (schema / io-decl lookup after HMR). */
+  allHosts(): Iterable<WasmHost> {
+    const hosts: WasmHost[] = [];
+    for (const { host } of this.instances.values()) hosts.push(host);
+    return hosts;
+  }
+
+  /** Register an externally-loaded module (an anchor/real module that's also a
+   *  chain entry) so executeAllColumns reuses it instead of instantiating a
+   *  duplicate. Mirrors SketchExecutor.registerInstance; moduleType is recovered
+   *  from the host metadata so the change-detection in ensureInstance still
+   *  works and the sketch-state mirror / trace get the right effect id. */
+  registerInstance(instanceKey: string, host: WasmHost, module: WasmModule): void {
+    if (this.instances.has(instanceKey)) return;
+    const mt = host.metadata?.id ?? '';
+    this.instances.set(instanceKey, { host, module, moduleType: mt, resolvedId: mt });
+  }
+
   invalidateFusionCacheFor(_effectId: string): void {
     // The fused-PSO cache lives INSIDE executor.wasm (keyed by module-type
     // sequence). We can't selectively evict it from here, so on an HMR reload of

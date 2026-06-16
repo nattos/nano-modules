@@ -267,9 +267,12 @@ async function handleCommand(cmd: WorkerCommand) {
           if (sketch.instances?.[entry.instance_key]) {
             sketch.instances[entry.instance_key].state[cmd.paramKey] = cmd.value;
           }
-          // Update live instance immediately
-          if (sketchExecutor) {
-            const loaded = sketchExecutor.getInstance(entry.instance_key);
+          // Update live instance immediately. Route through the ACTIVE executor
+          // so the direct-poke fast path works under executor.wasm too (its
+          // instances live on wasmExecutor, not the TS SketchExecutor).
+          const exec = activeExecutor();
+          if (exec) {
+            const loaded = exec.getInstance(entry.instance_key);
             if (loaded) {
               loaded.host.notifyStatePatched(loaded.module, [
                 { op: 'replace', path: cmd.paramKey, value: cmd.value },
@@ -360,11 +363,12 @@ async function handleCommand(cmd: WorkerCommand) {
       for (const [id, sketch] of sketches) sketchRecord[id] = sketch;
 
       const instanceInfo: Record<string, any> = {};
-      if (sketchExecutor) {
+      const dumpExec = activeExecutor();
+      if (dumpExec) {
         for (const [id, sketch] of sketches) {
           for (const entry of sketchChain(sketch)) {
               if (entry.type === 'module') {
-                const loaded = sketchExecutor.getInstance(entry.instance_key);
+                const loaded = dumpExec.getInstance(entry.instance_key);
                 instanceInfo[entry.instance_key] = {
                   exists: !!loaded,
                   params: entry.params,
@@ -636,10 +640,11 @@ async function simulateTick(dt: number) {
       }
   }
 
-  // 2. Register real modules into the sketch executor so it reuses them
+  // 2. Register real modules into the ACTIVE executor so it reuses them instead
+  //    of instantiating a duplicate (matches under executor.wasm too).
   for (const [key, { host, module: mod }] of realModules) {
     if (sketchInstanceKeys.has(key)) {
-      sketchExecutor.registerInstance(key, host, mod);
+      exec.registerInstance(key, host, mod);
     }
   }
 
@@ -1291,8 +1296,9 @@ function broadcastState() {
       // match by pluginKey across both sources.
       let io: any[] = entry.io ?? [];
       let matchedHost = realModules.get(entry.key)?.host ?? null;
-      if (!matchedHost && sketchExecutor) {
-        for (const host of sketchExecutor.allHosts()) {
+      const hostExec = activeExecutor();
+      if (!matchedHost && hostExec) {
+        for (const host of hostExec.allHosts()) {
           if (host.pluginKey === entry.key) { matchedHost = host; break; }
         }
       }
