@@ -1,0 +1,5 @@
+# Local AOT tooling — reproduced via README.md, not committed.
+wamrc
+*.dylib
+*.tar.gz
+*.zip
