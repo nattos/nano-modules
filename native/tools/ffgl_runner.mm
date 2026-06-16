@@ -1,13 +1,13 @@
 // ffgl_runner.mm — minimal host that loads an FFGL bundle via dlopen,
 // drives `ProcessOpenGL` for N frames, reads back the result, and dumps
-// it as a PNG. Lets me iterate on StreakyBlobs (or any FFGL bundle here)
+// it as a PNG. Lets me iterate on NanoBarrel (or any FFGL bundle here)
 // without restarting Resolume each time.
 //
 // Adapted from /Users/nattos/Code/nano-ffglify/src/metal/ffgl-runner.mm
 // — same shape; simplified output (PNG file instead of base64 JSON so
 // it's easy to open from the terminal).
 
-#import "../src/plugin/streaky_blobs/InteropTexture.h"
+#import "../src/plugin/nano_barrel/InteropTexture.h"
 #import <AppKit/AppKit.h>
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>

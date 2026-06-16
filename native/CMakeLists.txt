@@ -87,10 +87,9 @@ target_include_directories(vmlib PUBLIC ${WAMR_ROOT_DIR}/core/iwasm/include)
 target_link_libraries(vmlib PUBLIC -lm -ldl ${CMAKE_THREAD_LIBS_INIT})
 
 # --- SPIRV-Cross (runtime SPV→MSL for dynamically-loaded WASM effects) ---
-# The static native build pre-bakes MSL at configure time (gen_barrel_effects
-# shells out to the spirv-cross CLI). Effects loaded as WASM ship SPIR-V and
-# must be translated to MSL at load time, so we link the library. Only core +
-# glsl + msl are needed (CompilerMSL derives from CompilerGLSL).
+# Effects load as WASM and ship SPIR-V, which must be translated to MSL at load
+# time, so we link the library (spv_to_msl.cpp). Only core + glsl + msl are
+# needed (CompilerMSL derives from CompilerGLSL).
 set(SPIRV_CROSS_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_CLI           OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_ENABLE_HLSL   OFF CACHE BOOL "" FORCE)
@@ -414,8 +413,8 @@ if(APPLE)
     LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
   )
 
-  # Codesign the bundle so Resolume / Gatekeeper accepts it. Same shape
-  # as StreakyBlobs (see further below); override the identity via
+  # Codesign the bundle so Resolume / Gatekeeper accepts it. Override the
+  # identity via
   #   cmake -DNANOPROBE_CODESIGN_IDENTITY="<Your Identity>" ..
   # Default `-` is ad-hoc; the helper script fails loudly if the named
   # identity isn't in the keychain.
@@ -494,8 +493,8 @@ if(APPLE)
   # websocket bridge so the sketch editor can connect. Links bridge_core
   # directly — no WASM loader at this layer (the user wants
   # bridge_core's code reused statically; WASM reload isn't a v0 need).
-  # NanoBarrel target is defined later, after the no-WASM native
-  # runtime block exposes effects_native / effect_runtime / gpu_backend.
+  # NanoBarrel target is defined later, after the native host-services
+  # block exposes effect_runtime / sketch_executor / gpu_backend.
 endif()
 
 # --- Bridge Harness (manual testing tool) ---
@@ -528,22 +527,18 @@ if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
 endif()
 
 # ============================================================================
-# No-WASM native effect runtime + dual-backend test runner (Phase 1)
+# Native host services for the WASM effect/executor runtime
 # ============================================================================
 #
-# Effects compile twice: as WASM (via wasm_modules/*/build.sh) for the
-# web runtime, AND as native C++ objects linked against the in-process
-# `effect_runtime` library for the no-WASM Metal path. This unblocks
-# both the dual-backend test runner (compare Puppeteer/WebGPU vs native
-# Metal pixel-for-pixel) and the StreakyBlobs FFGL plugin in Phase 3.
-#
-# Build depends on the WASM build having produced .spv files under
-# native/build/tmp/ — they're consumed by gen_barrel_effects.py (spirv-cross)
-# to emit per-effect MSL headers + the barrel registration. See
-# effects_native/barrel_manifest.txt.
+# Effects are WASM-only: each compiles to a `.wasm` bundle (wasm_modules/*/
+# build.sh) loaded at runtime — never statically linked into a native binary.
+# This block builds the HOST side those bundles run against: the text engine
+# (FreeType + msdfgen), the `effect_runtime` (host-import C symbols + GPU/SPV→MSL
+# services), `sketch_augment`/`sketch_executor`, and the native test/bench tools.
+# `EFFECTS_NATIVE_INC` is just the effect ABI header dir (host.h/gpu.h/...), used
+# by effect_runtime + the bench/test tools that include those headers.
 
 if(APPLE)
-  set(EFFECTS_NATIVE_TMP "${CMAKE_SOURCE_DIR}/build/tmp")
   set(EFFECTS_NATIVE_INC "${CMAKE_SOURCE_DIR}/wasm_modules/include")
 
   # ==========================================================================
@@ -608,9 +603,9 @@ if(APPLE)
   add_library(text_blitz STATIC IMPORTED GLOBAL)
   set_target_properties(text_blitz PROPERTIES IMPORTED_LOCATION "${TEXT_BLITZ_LIB}")
 
-  # The in-process runtime: implements every host-import C symbol the
-  # effects reference. Statically linked into both the test runner CLI
-  # and (Phase 3) the StreakyBlobs FFGL bundle.
+  # The in-process runtime: implements every host-import C symbol the WASM
+  # effects + executor reference (host/gpu/text/val/io services). Statically
+  # linked into the test runner CLI, the bench tools, and the NanoBarrel plugin.
   add_library(effect_runtime STATIC
     src/runtime/effect_runtime.cpp
     src/runtime/host_impls.cpp
@@ -623,7 +618,6 @@ if(APPLE)
   target_include_directories(effect_runtime PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${EFFECTS_NATIVE_INC}
-    ${EFFECTS_NATIVE_TMP}
   )
   target_link_libraries(effect_runtime PUBLIC
     gpu_backend
@@ -642,37 +636,6 @@ if(APPLE)
   # annotations on the effect host-import declarations.
   target_compile_options(effect_runtime PRIVATE -Wno-attributes)
 
-  # Barrel effect codegen. `barrel_manifest.txt` is the source of truth for
-  # which effects NanoBarrel exposes; gen_barrel_effects.py reads it and emits
-  # barrel_effects.gen.h (forward-decls + registerAllBarrelEffects) plus the
-  # per-effect MSL headers (SPV→MSL via spirv-cross). Inputs are the .spv files
-  # the WASM bundle build produced under build/tmp. Adding an effect = one
-  # manifest line (after its bundle's build.sh has run).
-  set(BARREL_MANIFEST ${CMAKE_SOURCE_DIR}/effects_native/barrel_manifest.txt)
-  # Re-run CMake configure when the manifest changes — the effects_native
-  # source list is derived from it at configure time, so a bare `make`
-  # after editing the manifest must reconfigure to pick up new sources.
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${BARREL_MANIFEST})
-  set(BARREL_GEN_HEADER ${EFFECTS_NATIVE_TMP}/barrel_effects.gen.h)
-  # Glob the WASM build's .spv so the codegen re-runs when shaders change.
-  file(GLOB _barrel_spv ${EFFECTS_NATIVE_TMP}/*.spv)
-  add_custom_command(
-    OUTPUT ${BARREL_GEN_HEADER}
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/effects_native/gen_barrel_effects.py
-            ${BARREL_MANIFEST} ${EFFECTS_NATIVE_TMP}
-    DEPENDS
-      ${CMAKE_SOURCE_DIR}/effects_native/gen_barrel_effects.py
-      ${BARREL_MANIFEST}
-      ${_barrel_spv}
-    COMMENT "Generating NanoBarrel effect registration (SPV→MSL via spirv-cross)"
-    VERBATIM
-  )
-  add_custom_target(effects_msl_headers DEPENDS ${BARREL_GEN_HEADER})
-
-  # Effects compiled as native objects. Each effect's main.cpp is the
-  # same source compiled for WASM; the namespace wrappers
-  # (namespace soft_glow { ... }, namespace motion_blur { ... })
-  # prevent symbol collisions.
   # --- Shared sketch-render preparation ---
   # Lives outside the effect runtime so any host (FFGL plugin, future
   # CLI, wasm-bound web engine-worker) consumes the same augmentation
@@ -712,43 +675,6 @@ if(APPLE)
   if(NANO_WASM_AOT)
     target_compile_definitions(sketch_executor PRIVATE NANO_WASM_AOT_ENABLED=1)
   endif()
-
-  # Effect source list derived from the manifest (column 2 = namespace).
-  # Each effect's sources are wasm_modules/<namespace>/*.cpp (picks up
-  # helpers like nanolooper/core.cpp alongside main.cpp).
-  file(STRINGS ${BARREL_MANIFEST} _manifest_lines)
-  set(_effect_sources "")
-  foreach(_line ${_manifest_lines})
-    # Data lines contain '|' and don't start with '#'. (Avoid continue()
-    # for portability across CMake versions.)
-    if(_line MATCHES "\\|" AND NOT _line MATCHES "^[ \t]*#")
-      string(REPLACE "|" ";" _cols "${_line}")
-      list(GET _cols 1 _ns)
-      string(STRIP "${_ns}" _ns)
-      file(GLOB _ns_srcs ${CMAKE_SOURCE_DIR}/wasm_modules/${_ns}/*.cpp)
-      list(APPEND _effect_sources ${_ns_srcs})
-    endif()
-  endforeach()
-  # The text effects (gen.text / gen.richtext) are NOT in barrel_manifest.txt —
-  # they're backed by the text.* host service (no MSL shaders) and registered
-  # explicitly in nano_barrel_plugin.mm — so add their sources directly.
-  list(APPEND _effect_sources
-    ${CMAKE_SOURCE_DIR}/wasm_modules/text/main.cpp
-    ${CMAKE_SOURCE_DIR}/wasm_modules/richtext/main.cpp)
-  list(REMOVE_DUPLICATES _effect_sources)
-
-  add_library(effects_native STATIC ${_effect_sources})
-  target_include_directories(effects_native PUBLIC
-    ${EFFECTS_NATIVE_INC}
-    ${EFFECTS_NATIVE_TMP}
-  )
-  target_link_libraries(effects_native PUBLIC effect_runtime)
-  # Same attribute-noise filter.
-  target_compile_options(effects_native PRIVATE -Wno-attributes)
-  # The .spv headers (soft_glow_shaders.h) are inputs to the native
-  # compile too. Add MSL header target as a build-order dep so it's
-  # generated before anything that consumes it.
-  add_dependencies(effects_native effects_msl_headers)
 
   # Config-driven CLI test runner — JSON config on stdin, JSON pixel
   # result on stdout. Mirrors web/public/gpu-test-runner.html for the
@@ -830,29 +756,17 @@ if(APPLE)
     catch_discover_tests(test_executor_wasm)
   endif()
 
-  # Runtime smoke test for the text effects (gen.text / gen.richtext) mapped into
-  # the native bundle: register + module_init + Core Text fonts + render, the
-  # plugin-time path a compile check can't exercise.
-  add_executable(text_effect_smoke tests/text_effect_smoke.mm)
-  target_include_directories(text_effect_smoke PRIVATE
-    ${CMAKE_SOURCE_DIR}/src ${EFFECTS_NATIVE_INC} ${EFFECTS_NATIVE_TMP})
-  target_link_libraries(text_effect_smoke PRIVATE
-    effects_native effect_runtime gpu_backend
-    nlohmann_json::nlohmann_json
-    "-framework Metal" "-framework Foundation")
-  target_compile_options(text_effect_smoke PRIVATE -Wno-attributes)
-  add_dependencies(text_effect_smoke effects_msl_headers)
-
   # --- ffgl_runner: standalone host that dlopens an FFGL bundle ---
-  # Lets me iterate on StreakyBlobs without restarting Resolume — feed
-  # it a bundle path, get back stderr logs + an output PNG.
+  # Headless FFGL host for iterating on NanoBarrel without Resolume — feed
+  # it a bundle path, get back stderr logs + an output PNG. Borrows the
+  # GL↔Metal InteropTexture from the nano_barrel plugin source.
   add_executable(ffgl_runner
     tools/ffgl_runner.mm
-    src/plugin/streaky_blobs/InteropTexture.m
+    src/plugin/nano_barrel/InteropTexture.m
   )
   target_include_directories(ffgl_runner PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/plugin/streaky_blobs
+    ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
   )
   target_link_libraries(ffgl_runner PRIVATE
     ffgl::sdk
@@ -865,62 +779,6 @@ if(APPLE)
     z
   )
   target_compile_options(ffgl_runner PRIVATE -Wno-attributes -Wno-deprecated-declarations)
-
-  # --- nano.StreakyBlobs FFGL bundle ---
-  # Standalone .bundle (alongside NanoRepatch / NanoLooper) — links
-  # effects_native + effect_runtime + gpu_backend statically. No
-  # bridge_server.dylib. The GL↔Metal interop comes from the
-  # InteropTexture borrowed from /Users/nattos/Code/nano-ffglify.
-  add_library(StreakyBlobs MODULE
-    src/plugin/streaky_blobs/streaky_blobs_plugin.mm
-    src/plugin/streaky_blobs/InteropTexture.m
-  )
-  target_include_directories(StreakyBlobs PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${EFFECTS_NATIVE_INC}
-    ${EFFECTS_NATIVE_TMP}
-    ${CMAKE_SOURCE_DIR}/src/plugin/streaky_blobs
-  )
-  target_link_libraries(StreakyBlobs PRIVATE
-    effects_native
-    effect_runtime
-    gpu_backend
-    ffgl::sdk
-    "-framework OpenGL"
-    "-framework Metal"
-    "-framework MetalKit"
-    "-framework CoreVideo"
-    "-framework AppKit"
-    "-framework Foundation"
-  )
-  target_compile_options(StreakyBlobs PRIVATE -Wno-attributes -Wno-deprecated-declarations)
-  set_target_properties(StreakyBlobs PROPERTIES
-    BUNDLE TRUE
-    BUNDLE_EXTENSION "bundle"
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
-    LINK_FLAGS "-undefined dynamic_lookup"
-  )
-
-  # Sign the bundle. STREAKYBLOBS_CODESIGN_IDENTITY can override at
-  # configure time — e.g. for a self-signed cert created via Keychain
-  # Access:
-  #   cmake -DSTREAKYBLOBS_CODESIGN_IDENTITY="Nano StreakyBlobs Self-Signed" ..
-  # Or for a notarizable build:
-  #   cmake -DSTREAKYBLOBS_CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)" ..
-  # Default is `-` (ad-hoc); the helper script fails loudly if the
-  # named identity isn't in the keychain rather than silently falling
-  # back to ad-hoc, which would force end-users to re-approve the
-  # plugin in System Settings after every rebuild.
-  if(NOT DEFINED STREAKYBLOBS_CODESIGN_IDENTITY)
-    set(STREAKYBLOBS_CODESIGN_IDENTITY "-")
-  endif()
-  add_custom_command(TARGET StreakyBlobs POST_BUILD
-    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
-            "${STREAKYBLOBS_CODESIGN_IDENTITY}"
-            $<TARGET_BUNDLE_DIR:StreakyBlobs>
-    COMMENT "Codesigning StreakyBlobs.bundle (identity=${STREAKYBLOBS_CODESIGN_IDENTITY})"
-    VERBATIM
-  )
 
   # --- NanoBarrel FFGL bundle ---
   # The full-fat barrel: one FFGL bundle that hosts a sketch + bridge
@@ -1037,7 +895,6 @@ if(APPLE)
   target_include_directories(benchmark_barrel PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${EFFECTS_NATIVE_INC}
-    ${EFFECTS_NATIVE_TMP}
     ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
   )
   target_link_libraries(benchmark_barrel PRIVATE
