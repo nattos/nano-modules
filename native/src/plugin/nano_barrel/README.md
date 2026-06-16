@@ -26,7 +26,7 @@ A single FFGL bundle that:
 | `nano_barrel_plugin.mm` | The `CFFGLPlugin` subclass + all FFGL/Metal interop glue. ~700 lines now that the executor was extracted. |
 | `barrel_codec.h` | Header-only base64 + the `nanobarrel://config?<base64>` wrapper format the FILE param uses. |
 | `barrel_log.h` | `BARREL_LOG(event, fmt, ...)` macro. Writes to `~/Library/Logs/NanoBarrel/run-<pid>-<ms>.log` and `os_log` subsystem `com.nano.NanoBarrel`. |
-| `InteropTexture.{h,m}` | CVPixelBuffer-backed GL↔Metal texture pair. Copied from `streaky_blobs/`; the same code in two places lets the two plugins evolve independently. |
+| `InteropTexture.{h,m}` | CVPixelBuffer-backed GL↔Metal texture pair. The canonical copy — `ffgl_runner` (the headless host) borrows this same source. |
 | `Info.plist.in` (via parent dir) | Boilerplate bundle metadata. |
 
 ## Parameter layout (always 18)
@@ -107,67 +107,80 @@ recreates the plugin instance to refresh Resolume's param surface —
 can repopulate the bridge state in the new instance's ctor before the
 host's restored `SetTextParameter` fires.
 
-## Effect registration — manifest-driven (automatic)
+## Effect loading — WASM bundles (no static linking)
+
+Effects are **never statically linked** into this plugin. Each effect compiles
+once to a `.wasm` bundle (the *same* artifact the web app loads) and the barrel
+loads those bundles at startup through WAMR.
 
 `initEffectRuntime()` (called from the ctor) bootstraps:
 
 1. `MTLCreateSystemDefaultDevice()`, `gpu::createMetalBackend()`,
    `effect_runtime::EffectRuntime`, `ModuleRegistry`.
-2. `nano_barrel_gen::registerAllBarrelEffects(rt, registry)` — generated
-   code that, per effect, registers its shader MSL then its type.
-3. `SketchExecutor` constructed against the runtime + registry + GPUBackend.
+2. `sketch_executor::WasmEffectBundles` — `init()` brings up the (refcounted,
+   process-global) WAMR runtime + registers the host-import namespaces, then
+   `loadBundleFile(...)` loads each bundle from `Contents/Resources/wasm/`:
+   **`core`, `lights`, `nano`, `text`, `richtext`**. Each bundle's
+   `nano_module_main` runs, registering every effect it carries into the
+   `ModuleRegistry` (schema publish + SPV→MSL shader compile + PSO build, on the
+   real Metal backend). There is **no static fallback** — a load failure means a
+   broken install and is logged.
+3. `effect_runtime::textInstallDefaultFonts(...)` — fonts are a host concern (see
+   *Text effects* below).
+4. `SketchExecutor` constructed against the runtime + registry + GPUBackend. The
+   executor itself runs **native in-process** here (it is NOT WASM on the
+   barrel — only the *effects* are; see `../../sketch/README.md` for why).
 
-The effect set is **not hand-maintained here**. `effects_native/barrel_manifest.txt`
-is the source of truth (one line per effect: bundle, namespace, id, display,
-abi, shaders). At build time `gen_barrel_effects.py` (a CMake custom command)
-reads it and emits, into `build/tmp/`:
+**Per-arch AOT sidecar.** When a `<bundle>-<arch>.aot` sits next to the `.wasm`
+in `Resources/wasm/` (produced at build time by `wasm_modules/build_aot.sh` via
+`wamrc`, gated on `NANO_WASM_AOT`), the loader prefers it — it runs at ~native
+speed. The portable `.wasm` is always the floor and the graceful fallback; AOT is
+an optional per-platform speed bonus (nothing ships per-user beyond the small
+`.aot` files). Text effects are the CPU-heavy case that benefits most.
 
-- `<effect>_msl.h` — SPV→MSL (spirv-cross) for each shader the effect declares;
-- `barrel_effects.gen.h` — namespace forward-decls + `registerAllBarrelEffects`,
-  which registers each effect's shader MSL immediately before registering the
-  effect. That **interleaving** is why effects can share bare shader names like
-  `compute`/`pixel`: each effect's PSO is compiled from its own MSL during
-  `module_init` (run synchronously inside `registerEffect`) before the next
-  effect overwrites the global MSL-name slot.
+**Schemas reach the editor independently of the bridge doc.** The WASM modules
+are deliberately given a NULL state document — a WASM effect's `state.set_val`
+would otherwise write to the doc on the *render* thread (diff under the doc
+mutex), deadlocking against the WS thread on a sketch change
+(`tick_mu_` → doc mutex → `WsServer` → `tick_mu_`). Schemas still publish: the
+barrel sends them from `registry_->schemas()` (parsed off each `EffectInstance`
+via the host sink), independent of the doc.
 
-CMake also derives the `effects_native` source list from the manifest
-(`wasm_modules/<namespace>/*.cpp`).
+**To add an effect:** write the WASM module under `wasm_modules/<name>/`, add it
+to a bundle's `build.sh`, rebuild that bundle (and optionally re-run
+`build_aot.sh`). No edits to this plugin or its CMake target — the bundle's
+`nano_module_main` registers it automatically on load.
 
-**To add an effect to the barrel:** add one manifest line (after its WASM
-bundle's `build.sh` has produced the effect's `.spv` under `build/tmp/`), then
-rebuild. No edits to this plugin or CMake.
+Per-instance state: each chain entry gets its own `EffectInstance`
+(`create()`-allocated `State` + uniform buffer) via
+`EffectRuntime::instanceFor(type, key)`, so multiple entries of the same effect
+render independently. An effect that exposes `is_identity()` is skipped (input
+aliased to output, dropped from any fused group) when it reports a pure
+passthrough — see EFFECTS_STYLE_GUIDE.md.
 
-`abi` is `instance` (class-like: `module_init`/`create`/`destroy` + self-taking
-lifecycle — each chain entry gets its own per-instance state via
-`EffectRuntime::instanceFor`, so multiple entries render independently) or
-`legacy` (old free-function effect, adapted by a generated native trampoline —
-file-static state, so correct only single-instance in a native chain; convert
-to the instance ABI for true per-instance behaviour).
+### Text effects
 
-An optional **7th `identity` column** marks an effect that exposes an
-`is_identity()` predicate (instance: `int32_t is_identity(void* self)`; legacy:
-`int is_identity()`). When it reports the current state is a pure passthrough,
-the executor skips that stage's dispatch and aliases input→output — and drops it
-from (or entirely skips) a fused group. Only for stateless effects; see
-EFFECTS_STYLE_GUIDE.md. Currently flagged: brightness_contrast, exposure,
-sharpen, edges, transform.
+`gen.text` / `gen.richtext` load from `text.wasm` / `richtext.wasm` like any
+other effect — they are **not** special-cased or statically linked. Their
+`text.*` imports (layout/measure/render/atlas/glyphs/release) resolve to the
+native `TextEngine` (FreeType + msdfgen + Blitz) through the **"text" WAMR
+bridge** registered by `WasmEffectBundles::init` → `registerTextHostFunctions`
+(`src/sketch/text_host_wasm.cpp`). The engine needs font BYTES, installed
+host-side via `textInstallDefaultFonts(bundleFontPath("default.ttf"))` — the
+parity-exact Latin primary (falling back to the system UI font), plus the OS's
+CJK faces as the fallback chain. No MSL shaders: the text.* service owns its MSDF
+compositor PSO.
 
-**Helper-class shaders.** Effects whose shaders live in a shared helper header
-(`fx::GaussianBlur` → `effect_blur.h`, `fx::FastBlur` → `effect_fast_blur.h`)
-register shader names from inside the helper, not from the effect's `main.cpp`.
-The manifest bootstrap only scans `main.cpp`, so those shaders must be added to
-the manifest by hand — list the names the helper passes to
-`registerShaderSPV` (e.g. `video.blur` → `blur_compute=compute`; `video.fast_blur`
-→ `fast_blur_down=down,fast_blur_up=up`). `video.blur` / `video.fast_blur` are
-wired this way and render correctly.
+### What works
 
-Render-pass effects work: the Metal backend implements instanced render
-pipelines (`createInstancedRenderPSO` with alpha-over / additive blend),
-load-action render passes (`beginRenderPassLoad`), stage-unified render buffer
-binding (`renderSetBuffer`), and multi-render-target pipelines + passes
+Render-pass effects render natively: the Metal backend implements instanced
+render pipelines (`createInstancedRenderPSO` with alpha-over / additive blend),
+load-action passes (`beginRenderPassLoad`), stage-unified render buffer binding
+(`renderSetBuffer`), and multi-render-target pipelines + passes
 (`createInstancedRenderPSOMRT` / `beginRenderPassMRT`, up to 8 attachments).
-`video.flash_particles` (compute particle sim + instanced raster) renders
-natively.
+`video.flash_particles` (compute particle sim + instanced raster) renders. GPU
+fusion of adjacent compute stages works across the WASM ABI (effects register SPV
+fragments by name; the host runs SPV→MSL fused codegen).
 
 **Known gap** (effect registers + appears in the inspector, but won't render
 correctly natively — degrades gracefully to passthrough/black, no crashes):
@@ -213,17 +226,14 @@ logs were used during bring-up and have been removed. Re-add ad-hoc
 
 ## Known limitations / future work
 
-- **Legacy effects not yet on the instance ABI** keep file-static state, which
-  only the sandboxed WASM path makes per-instance — they must be converted to
-  the class-like instance ABI before being used multiple times in a native
-  barrel chain. The three currently-registered effects are converted.
 - **No HTTP-serve of the editor JS bundle.** The editor is hosted
   elsewhere; the user opens
   `http://localhost:5173/resolume/?barrel=ws://localhost:<port>` to
   connect.
-- **Static effect link.** Effects are statically linked from
-  `effects_native`. WASM loading from inside the plugin is doable
-  later but not v0.
+- **Executor runs native in-process, not as WASM.** Only the *effects* are WASM
+  here. The per-frame executor loop is CPU-heavy and WAMR interp was measured
+  28–46× too slow; the same source still compiles to `executor.wasm` for the web
+  host. See `../../sketch/README.md`.
 - **Macros are not yet routed by the executor.** They're persisted to
   bridge state; the editor handles mapping to sketch fields. The
   executor honors whatever state the editor mirrors.

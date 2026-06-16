@@ -24,11 +24,17 @@ Instead it calls a small set of `effrt_*` / `gpu_*` imports the **host** provide
 The executor is pure orchestration; the host owns the effect instances + GPU
 backend and services the `effrt_*` / `gpu_*` imports:
 
-- **Native** — `executor_host.cpp` + `effrt_impls.cpp` + `gpu_impls.cpp` register
-  WAMR native symbols that forward to the existing `EffectRuntime` /
-  `ModuleRegistry` / Metal `GPUBackend`. The barrel loads `executor.wasm` via WAMR
-  behind `NANO_BARREL_WASM_EXECUTOR` (a compiled-in C++ in-process `SketchExecutor`
-  is still the default until WAMR-AOT perf parity is confirmed).
+- **Native** — the FFGL barrel runs `SketchExecutor` **native in-process** (the
+  same source, compiled to a static lib), driving the Metal `GPUBackend` +
+  `EffectRuntime` directly through the `effrt_*` / `gpu_*` impls. This is by
+  design, not a fallback: the per-frame executor loop is CPU-heavy and WAMR interp
+  was measured 28–46× too slow (and AOT means per-arch artifacts), so on native
+  the executor stays compiled-in. `executor.wasm` is still *built* and exercised on
+  native by `executor_host.cpp` + `WasmExecutorDriver` (the `test_executor_wasm`
+  parity test and `benchmark_barrel --wasm`), which register the same `effrt_*` /
+  `gpu_*` WAMR native symbols — but the shipping barrel never loads it. (The
+  *effects* the executor drives ARE WASM bundles either way — see
+  `../plugin/nano_barrel/README.md`.)
 - **Web** — `web/src/executor-host.ts` (`WasmSketchExecutor`) instantiates
   `executor.wasm` and implements the same imports over `WasmHost` (one effect
   instance per chain entry) + `GPUHost` (WebGPU). It is the **sole** web executor:
@@ -113,24 +119,28 @@ struct RegisteredModule {
 };
 ```
 
-Built once at startup by the host:
+Built once at startup by the host, by **loading WASM bundles** — effects are
+never statically linked:
 
 ```cpp
 auto rt = std::make_unique<effect_runtime::EffectRuntime>(gpuBackend.get());
 auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
-registry->registerEffect(
-    "video.brightness_contrast", "Brightness Contrast",
-    &brightness_contrast::module_init, &brightness_contrast::create,
-    &brightness_contrast::destroy, &brightness_contrast::init,
-    &brightness_contrast::tick, &brightness_contrast::render,
-    &brightness_contrast::on_state_patched);
+
+sketch_executor::WasmEffectBundles bundles;
+bundles.init();   // bring up WAMR + register host-import namespaces
+for (auto name : {"core", "lights", "nano", "text", "richtext"})
+  bundles.loadBundleFile(resourceWasmPath(name), *registry, gpuBackend.get(),
+                         /*stateDoc=*/nullptr);
 ```
 
-`registerEffect` registers the effect *type* and runs its `module_init()`
-synchronously — when it publishes its schema, registers shader modules, and
-creates the shared compute PSO. So the host must have called
-`rt->registerShaderMSL(name, ...)` for every shader the effect will ask for
-*before* `registerEffect` runs.
+`loadBundleFile` reads the bundle (preferring a per-arch `<name>-<arch>.aot`
+sidecar over the `.wasm` when present), runs its `nano_module_main`, and registers
+every effect the bundle carries via `registerWasmBundle`. Each effect's
+`module_init()` runs synchronously during registration — publishing its schema,
+registering its shaders (SPV→MSL at load time via SPIRV-Cross), and building its
+compute PSO. (`ModuleRegistry` still has a native-function-pointer `registerEffect`
+for the old statically-linked path, but no host uses it anymore — the WASM bundle
+path is the only one.)
 
 Per-instance state (uniform buffers, params) is created lazily per chain entry
 via `EffectRuntime::instanceFor(type, instance_key)` — each chain entry gets its
@@ -277,11 +287,12 @@ engine worker (`web/src/engine-worker.ts` → `WasmSketchExecutor`).
   gets its own `EffectInstance` (its own `create()`-allocated `State` +
   uniform buffer), keyed by `instance_key` through
   `EffectRuntime::instanceFor`. Two `brightness_contrast` entries with
-  different params render independently — the old file-static
-  single-instance-per-type collision is gone. (Effects still shipping via the
-  legacy trampoline keep file-static state, which is only correct on the
-  sandboxed WASM path; convert them to the instance ABI before relying on
-  multiple barrel instances of that type.)
+  different params render independently. Every effect now ships via the class-like
+  WASM ABI — `create()` returns a fresh per-entry `State` offset in the bundle's
+  linear memory (file-static *globals* stay type-shared across entries; only
+  immutable type-shared data belongs there). The old free-function path that kept
+  *mutable* state in file statics — which collided when a type appeared twice in a
+  chain — is gone.
 - **Within-column rails only.** Sketch-wide rails (cross-column) are
   indexed but not routed differently from column-local rails. Fine
   today since the editor doesn't really use cross-column flow.

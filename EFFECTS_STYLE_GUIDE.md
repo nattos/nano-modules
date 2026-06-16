@@ -165,11 +165,11 @@ Rules:
   off (`nullptr`) and nothing is skipped.
 - **Side-effect free.** It's a pure read of the current param state; the runtime
   may call it any number of times per frame.
-- **Wiring.** Instance effects pass `&ns::is_identity` as the trailing
-  descriptor field; legacy effects expose `int is_identity()` and the registrar
-  wraps it. In the native barrel, add the `identity` token as the 7th column of
-  the effect's `barrel_manifest.txt` line. Don't add the predicate to an effect
-  that has no genuine identity state.
+- **Wiring.** Export `is_identity` as part of the module's `EffectDesc_v2` (the
+  effect's trailing descriptor field). The bundle's `nano_module_main` captures
+  it when the `.wasm` loads, so it works identically on web and native — no
+  manifest or per-host registration. Don't add the predicate to an effect that
+  has no genuine identity state.
 - **Taps.** The executor only skips tap-free chain entries (taps can drive
   params from rails or publish outputs); a tapped entry always runs.
 
