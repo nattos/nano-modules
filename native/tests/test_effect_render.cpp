@@ -312,3 +312,96 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
   // feedback is accumulating frame-over-frame (i.e. the delayed wire delivers).
   CHECK(earlyMean < lateMean - 10.0);
 }
+
+// Plan-rebuild gating (#105): on a dirty frame the executor rebuilds its
+// structural plan ONLY when the chain topology actually changed, not on every
+// param edit. A continuous slider/knob drag sets the coarse value-dirty flag
+// each frame, but those edits change only effect param VALUES (read live via
+// applyState / read taps) — never the plan. This test reuses ONE SketchExecutor
+// across frames and asserts: (a) a param-only dirty frame applies the new value
+// WITHOUT bumping the buildPlan counter (cached plan reused), and (b) a topology
+// change (adding a chain entry) DOES force a rebuild.
+TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  std::vector<uint8_t> inPix(W * H * 4, 64);  // mid-gray
+  for (size_t i = 3; i < inPix.size(); i += 4) inPix[i] = 255;
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+  const double inMean = mean_rgb(inPix);  // 64
+
+  auto runFrame = [&](const nlohmann::json& sketch, bool dirty) {
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H,
+                                   1.0 / 60.0, dirty);
+    backend->submit();
+    return mean_rgb(backend->readbackTexture(out, W, H));
+  };
+
+  // Frame 0 (dirty): one brightness_contrast at 0.75 (> neutral 0.5) → lifts.
+  auto bright = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "bc" } ],
+    "instances": {
+      "bc": { "module_type": "video.brightness_contrast",
+              "state": { "brightness": 0.75, "contrast": 0.5 } }
+    }
+  })JSON");
+  double m0 = runFrame(bright, /*dirty=*/true);
+  const int afterFirst = executor.planBuildCountForTest();
+  REQUIRE(afterFirst >= 1);             // first frame builds the plan
+  CHECK(m0 > inMean + 20.0);            // brightened
+
+  // Frame 1 (dirty, PARAM-ONLY): same topology, brightness 0.25 (< neutral) →
+  // darkens. The structural signature is unchanged, so the plan must be REUSED
+  // (counter steady) even though the value-dirty flag is set, yet the new value
+  // must still take effect (applyState runs on the dirty flag).
+  auto dark = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "bc" } ],
+    "instances": {
+      "bc": { "module_type": "video.brightness_contrast",
+              "state": { "brightness": 0.25, "contrast": 0.5 } }
+    }
+  })JSON");
+  double m1 = runFrame(dark, /*dirty=*/true);
+  CHECK(executor.planBuildCountForTest() == afterFirst);  // NO rebuild
+  CHECK(m1 < inMean - 10.0);                              // value applied → darkened
+  CHECK(m1 < m0 - 30.0);
+
+  // Frame 2 (NOT dirty): steady state — no rebuild, output stable.
+  double m2 = runFrame(dark, /*dirty=*/false);
+  CHECK(executor.planBuildCountForTest() == afterFirst);  // still no rebuild
+  CHECK(std::abs(m2 - m1) < 4.0);
+
+  // Frame 3 (dirty, TOPOLOGY CHANGE): append a second brightness_contrast. The
+  // signature changes (new chain entry), so the plan MUST rebuild.
+  auto twoStage = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "video.brightness_contrast", "instance_key": "bc" },
+      { "module_type": "video.brightness_contrast", "instance_key": "bc2" }
+    ],
+    "instances": {
+      "bc":  { "module_type": "video.brightness_contrast",
+               "state": { "brightness": 0.25, "contrast": 0.5 } },
+      "bc2": { "module_type": "video.brightness_contrast",
+               "state": { "brightness": 0.75, "contrast": 0.5 } }
+    }
+  })JSON");
+  runFrame(twoStage, /*dirty=*/true);
+  CHECK(executor.planBuildCountForTest() == afterFirst + 1);  // rebuilt for topology
+}

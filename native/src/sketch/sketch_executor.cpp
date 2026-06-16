@@ -194,6 +194,49 @@ const json& refOr(const json& parent, const char* key, const json& fallback,
   return *it;
 }
 
+// Structural signature of everything buildPlan() consumes — used to decide
+// whether a dirty frame actually needs a plan REBUILD vs. just a state re-apply.
+// The plan depends only on chain TOPOLOGY (module_types, instance_keys, whether
+// an entry has any taps) + rail definitions + the two state-derived fusion
+// eligibility inputs (bypass, opacity). It does NOT depend on effect param
+// values — those are read live per frame (applyState / read taps). So a pure
+// param-slider drag produces an identical signature and skips the rebuild, while
+// add/remove/reorder, wire edits, and bypass/opacity toggles still change it.
+// (Tap CONTENT — mod/combine/magnitude — is read live each frame from the
+// sketch, never cached in the plan, so only taps-PRESENCE affects the plan.)
+std::string computeStructSig(const json& columns, const json& instances,
+                             const json& sketchRails) {
+  std::string sig;
+  sig.reserve(256);
+  sig += "R:";
+  sig += sketchRails.dump();
+  sig.push_back('\n');
+  for (size_t c = 0; c < columns.size(); ++c) {
+    const json& col = columns[c];
+    sig += "r:";
+    sig += refOr(col, "rails", kEmptyArr, true).dump();
+    sig.push_back('\n');
+    const json& chain = refOr(col, "chain", kEmptyArr, true);
+    for (size_t i = 0; i < chain.size(); ++i) {
+      const auto& e = chain[i];
+      sig += e.value("module_type", std::string());
+      sig.push_back('|');
+      const std::string key = e.value("instance_key", std::string());
+      sig += key;
+      sig.push_back('|');
+      const bool tapsNonEmpty = e.contains("taps") && e["taps"].is_array() &&
+                                !e["taps"].empty();
+      sig.push_back(tapsNonEmpty ? 'T' : 't');
+      sig.push_back('|');
+      sig.push_back(readBypass(instances, key) ? 'B' : 'b');
+      sig.push_back('|');
+      sig += std::to_string(readOpacity(instances, key));
+      sig.push_back('\n');
+    }
+  }
+  return sig;
+}
+
 }  // namespace
 
 SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
@@ -212,6 +255,14 @@ void SketchExecutor::registerModuleSchema(const std::string& moduleType,
   moduleSchemas_[moduleType] = std::move(rm);
   // The augmenter's {module_type: schemaFields} projection is now stale.
   cachedSchemasValid_ = false;
+  // Force a plan rebuild on the next frame. A (re-)registered schema can change
+  // fusion eligibility (kind/fragment/prepare) for an existing module_type — e.g.
+  // an effect HMR-reloaded under the same type — and that's NOT reflected in the
+  // structural signature (which keys on module_type, not schema contents). The
+  // sig-gated rebuild in execute() would otherwise skip it. registerModuleSchema
+  // runs only at setup / on reload (never per frame), so invalidating here is
+  // free and keeps the invariant: any buildPlan input change → rebuild.
+  planValid_ = false;
 }
 
 const RegisteredModule* SketchExecutor::findSchema(const std::string& mt) const {
@@ -238,6 +289,7 @@ SketchExecutor::~SketchExecutor() {
 
 void SketchExecutor::buildPlan(const json& columns, const json& instances,
                                const json& sketchRails) {
+  ++planBuildCount_;  // test-only instrumentation (planBuildCountForTest)
   plan_.clear();
   plan_.resize(columns.size());
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
@@ -485,14 +537,27 @@ int32_t SketchExecutor::execute(
   const json& instances    = refOr(sketch, "instances", kEmptyObj, false);
   const json& sketchRails  = refOr(sketch, "rails",     kEmptyArr, true);
 
-  // Compile-once: rebuild the structural plan only when the host says the sketch
-  // changed (or first run). In standalone / steady state nothing edits the
-  // sketch, so every frame after the first reuses the cached plan — no per-frame
-  // chain filtering, eligibility probing, registry lookups, rail indexing, or
-  // module_type/instance_key string churn. See buildPlan + the PlanColumn cache.
-  if (sketchDirty || !planValid_) {
+  // Compile-once: rebuild the structural plan only when the chain TOPOLOGY
+  // actually changed (or first run). `sketchDirty` is a coarse value-dirty flag —
+  // it's set on every frame of a continuous slider/knob drag, but those edits
+  // change only effect param VALUES, which the plan never caches (they're read
+  // live below via applyState + read taps). buildPlan depends purely on topology
+  // (module_types, instance_keys, taps-presence, rail defs) + bypass/opacity, all
+  // captured by computeStructSig. So we only pay buildPlan's cost (per-entry
+  // instanceFor + fusion probes) when that signature shifts — a real add/remove/
+  // reorder, wire edit, or bypass/opacity toggle — not on every drag frame. In
+  // standalone / steady state nothing edits the sketch and the cached plan is
+  // reused untouched. See buildPlan + the PlanColumn cache.
+  if (!planValid_) {
     buildPlan(columns, instances, sketchRails);
+    planStructSig_ = computeStructSig(columns, instances, sketchRails);
     planValid_ = true;
+  } else if (sketchDirty) {
+    std::string sig = computeStructSig(columns, instances, sketchRails);
+    if (sig != planStructSig_) {
+      buildPlan(columns, instances, sketchRails);
+      planStructSig_ = std::move(sig);
+    }
   }
 
   intermediate_cursor_ = 0;

@@ -133,6 +133,10 @@ class SketchExecutor {
     if (fusionEnabled_ != enabled) { fusionEnabled_ = enabled; planValid_ = false; }
   }
 
+  /** Test-only: total buildPlan() calls so far. A param-only dirty frame must
+   *  NOT bump this (cached plan reused); a topology change must. */
+  int planBuildCountForTest() const { return planBuildCount_; }
+
   /**
    * Number of fused-group GPU dispatches the LAST execute() actually issued
    * (i.e. groups that compiled + dispatched as one kernel, not fell back to
@@ -257,6 +261,15 @@ class SketchExecutor {
   };
   std::vector<PlanColumn> plan_;
   bool planValid_ = false;
+  // Structural signature of the sketch the cached plan_ was built from (chain
+  // topology + rail defs + bypass/opacity — NOT param values). On a dirty frame
+  // the plan is rebuilt only when this changes, so param-only slider/knob drags
+  // (which set the coarse value-dirty flag every frame) skip the rebuild.
+  std::string planStructSig_;
+  // Test-only: counts buildPlan() invocations so a unit test can assert that a
+  // param-only dirty frame reuses the cached plan while a topology change forces
+  // a rebuild. Has no effect on rendering.
+  int planBuildCount_ = 0;
   bool fusionEnabled_ = true;   // force-off disables GPU fusion (test hook)
   int  fusedRunCount_ = 0;      // fused dispatches issued in the last execute()
 
