@@ -51,11 +51,21 @@ FetchContent_Declare(
 )
 FetchContent_Populate(wamr)
 
-# Configure WAMR: interpreter only, no AOT/JIT
+# Configure WAMR: fast-interpreter by default. AOT loading is opt-in via
+# -DNANO_EXECUTOR_AOT=ON — it lets the runtime LOAD an executor.aot (produced by
+# native/wasm_modules/executor/build_aot.sh via wamrc) so the native barrel skips
+# the per-frame interpreter cost. INTERP stays on regardless (effect bundles +
+# the .wasm fallback are interpreted; web is JIT and unaffected). Default OFF
+# keeps the runtime build unchanged until AOT perf parity is measured (task #107).
+option(NANO_EXECUTOR_AOT "Build the WAMR runtime with AOT-module loading enabled" OFF)
 set(WAMR_ROOT_DIR ${wamr_SOURCE_DIR})
 set(WAMR_BUILD_INTERP 1)
 set(WAMR_BUILD_FAST_INTERP 1)
-set(WAMR_BUILD_AOT 0)
+if(NANO_EXECUTOR_AOT)
+  set(WAMR_BUILD_AOT 1)
+else()
+  set(WAMR_BUILD_AOT 0)
+endif()
 set(WAMR_BUILD_JIT 0)
 set(WAMR_BUILD_FAST_JIT 0)
 set(WAMR_BUILD_LIBC_BUILTIN 1)
@@ -683,6 +693,7 @@ if(APPLE)
     src/sketch/sketch_executor.cpp
     src/sketch/effrt_impls.cpp
     src/sketch/executor_host.cpp
+    src/sketch/wasm_executor_driver.cpp
     src/sketch/wasm_bundles.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -1016,4 +1027,7 @@ if(APPLE)
     "-framework Foundation"
   )
   target_compile_options(benchmark_barrel PRIVATE -Wno-deprecated-declarations)
+  # Directory holding executor.aot / executor.wasm for the `--wasm` mode.
+  target_compile_definitions(benchmark_barrel PRIVATE
+    EXECUTOR_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 endif()

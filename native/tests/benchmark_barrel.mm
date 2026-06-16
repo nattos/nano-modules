@@ -45,6 +45,7 @@
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
+#include "sketch/wasm_executor_driver.h"
 
 #include "plugin/nano_barrel/InteropTexture.h"
 
@@ -86,6 +87,7 @@ struct Args {
   int  height    = 1080;
   bool quiet     = false;
   bool assertMode = false;
+  bool wasm      = false;  // --wasm: drive executor.wasm instead of in-process
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -101,6 +103,7 @@ Args parseArgs(int argc, char** argv) {
     else if (!std::strcmp(k, "--height")) take(a.height);
     else if (!std::strcmp(k, "--quiet"))  a.quiet = true;
     else if (!std::strcmp(k, "--assert")) a.assertMode = true;
+    else if (!std::strcmp(k, "--wasm"))   a.wasm = true;
   }
   return a;
 }
@@ -616,6 +619,27 @@ int main(int argc, char** argv) {
     auto executor = std::make_unique<sketch_executor::SketchExecutor>(
         rt.get(), registry.get(), gpu.get());
 
+    // -- Optional: drive executor.wasm instead of the in-process executor.
+    // Same C++ source, run through WAMR (AOT if executor.aot was built, else
+    // interpreted). Lets `--wasm` vs the default measure the wasm overhead that
+    // gates retiring the in-process native executor (task #107).
+    sketch_executor::WasmExecutorDriver wasmDriver;
+    if (args.wasm) {
+      if (!wasmDriver.init(EXECUTOR_WASM_DIR, rt.get(), gpu.get(),
+                           registry->schemas())) {
+        std::fprintf(stderr,
+            "failed to load executor.wasm from %s\n", EXECUTOR_WASM_DIR);
+        return 1;
+      }
+      if (!args.quiet) {
+        std::printf("executor: %s (%s)\n",
+                    wasmDriver.usingAot() ? "executor.aot" : "executor.wasm",
+                    wasmDriver.usingAot() ? "AOT" : "interpreted");
+      }
+    } else if (!args.quiet) {
+      std::printf("executor: in-process native C++\n");
+    }
+
     // -- GL resources ------------------------------------------------
     GLuint inputTex = makeInputTexture(args.width, args.height);
     GLuint srcFbo = 0;
@@ -632,6 +656,9 @@ int main(int argc, char** argv) {
 
     // -- Sketch JSON -------------------------------------------------
     json sketch = buildSketch(args.effects);
+    // The sketch is constant across the run; the wasm path re-marshals this
+    // serialized form into linear memory each frame (as the barrel does).
+    std::string sketchJson = sketch.dump();
 
     // -- Frame loop --------------------------------------------------
     // We track per-frame total wall time plus sub-phase wall time.
@@ -667,9 +694,14 @@ int main(int argc, char** argv) {
       int32_t outputHandle = gpu->adoptExternalTexture(
           (__bridge void*)outputInterop->getMetalTexture());
 
-      int32_t finalHandle = executor->execute(
-          sketch, inputHandle, outputHandle,
-          args.width, args.height, 1.0 / 60.0);
+      // dirty only on the first frame — the sketch is constant, so steady state
+      // reuses the cached plan (both executors gate the plan rebuild on dirty).
+      const bool dirty = (f == 0);
+      int32_t finalHandle = args.wasm
+          ? wasmDriver.execute(rt.get(), sketchJson, inputHandle, outputHandle,
+                               args.width, args.height, 1.0 / 60.0, dirty)
+          : executor->execute(sketch, inputHandle, outputHandle,
+                              args.width, args.height, 1.0 / 60.0, dirty);
       gpu->submit();
       gpu->release(inputHandle);
       gpu->release(outputHandle);
