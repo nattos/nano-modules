@@ -58,13 +58,18 @@ bool WasmExecutorDriver::init(
   if (bytes.empty()) bytes = readFile(base + "executor.wasm");
   if (bytes.empty()) return false;
 
-  // effrt + trace imports are process-global; register once. WasmHost::init()
-  // registers the gpu/state/val/io/... imports the executor also needs.
-  if (!registerEffrtHostFunctions()) return false;
-
+  // WasmHost::init() initialises the WAMR runtime (refcounted; first host wins)
+  // and registers the gpu/state/val/io/... imports the executor needs. It MUST
+  // run before registerEffrtHostFunctions() — wasm_runtime_register_natives
+  // allocates from the runtime, which doesn't exist until init. (In the barrel
+  // the effect-bundles host inits the runtime first; the benchmark's in-process
+  // path has no prior host, so the driver must init it here.)
   paramCache_ = std::make_unique<bridge::ParamCache>();
   host_ = std::make_unique<wasm::WasmHost>(*paramCache_);
   if (!host_->init()) { host_.reset(); return false; }
+
+  // effrt + trace imports are process-global; register once (idempotent).
+  if (!registerEffrtHostFunctions()) { host_.reset(); return false; }
 
   module_ = host_->load_module(bytes.data(), static_cast<uint32_t>(bytes.size()));
   if (module_ < 0) { host_.reset(); return false; }
