@@ -16,6 +16,7 @@
 #include "runtime/effect_runtime.h"
 #endif
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -534,8 +535,45 @@ int32_t SketchExecutor::execute(
 
   const json& columns      = refOr(sketch, "columns",   kEmptyArr, true);
   if (columns.empty()) return inputHandle;
-  const json& instances    = refOr(sketch, "instances", kEmptyObj, false);
   const json& sketchRails  = refOr(sketch, "rails",     kEmptyArr, true);
+
+  // Legacy `entry.params` fallback. The canonical place for an effect's field
+  // values is instances[key].state, but the older/terser sketch format (and many
+  // tests) put them on the chain entry's `params` object instead. The TS executor
+  // falls back to entry.params when there's no instance state
+  // (sketch-executor.ts: `instances?.[key]?.state ?? entry.params ?? {}`); mirror
+  // that here so the unified executor applies them too. Build a merged instances
+  // map only when some entry actually needs the fallback (the common canonical
+  // case allocates nothing).
+  const json& rawInstances = refOr(sketch, "instances", kEmptyObj, false);
+  json mergedInstances;
+  const json* instancesPtr = &rawInstances;
+  {
+    bool merged = false;
+    for (const auto& col : columns) {
+      const json& chain = refOr(col, "chain", kEmptyArr, true);
+      for (const auto& e : chain) {
+        if (!e.is_object()) continue;
+        auto pit = e.find("params");
+        if (pit == e.end() || !pit->is_object() || pit->empty()) continue;
+        const std::string key = e.value("instance_key", std::string());
+        if (key.empty()) continue;
+        const json* st = findState(*instancesPtr, key);
+        if (st && !st->empty()) continue;  // canonical state wins
+        if (!merged) { mergedInstances = rawInstances; merged = true; }
+        json& slot = mergedInstances[key];
+        if (!slot.is_object()) slot = json::object();
+        if (!slot.contains("module_type"))
+          slot["module_type"] = e.value("module_type", std::string());
+        json& state = slot["state"];
+        if (!state.is_object()) state = json::object();
+        for (auto it = pit->begin(); it != pit->end(); ++it)
+          if (!state.contains(it.key())) state[it.key()] = it.value();
+      }
+    }
+    if (merged) instancesPtr = &mergedInstances;
+  }
+  const json& instances = *instancesPtr;
 
   // Compile-once: rebuild the structural plan only when the chain TOPOLOGY
   // actually changed (or first run). `sketchDirty` is a coarse value-dirty flag —
@@ -876,8 +914,17 @@ int32_t SketchExecutor::execute(
         std::vector<int32_t> slots;
         slots.push_back(colInput);
         if (reg) {
-          for (size_t pi = 0; pi < reg->slotInputTextureFields.size(); ++pi) {
-            int h = inst.textureField(reg->slotInputTextureFields[pi]);
+          // A wire-bound input overrides its schema slot. The dest field may be
+          // the schema's NAMED input field (e.g. "tex_a" → slot 0) or a NUMERIC
+          // positional index (e.g. "0"/"1") — the editor uses both, and the TS
+          // executor accepts either. Scan at least the schema's input fields,
+          // checking the named field first then the numeric index for that slot.
+          const size_t nSlots =
+              std::max<size_t>(reg->slotInputTextureFields.size(), 4);
+          for (size_t pi = 0; pi < nSlots; ++pi) {
+            int h = (pi < reg->slotInputTextureFields.size())
+                      ? inst.textureField(reg->slotInputTextureFields[pi]) : -1;
+            if (h <= 0) h = inst.textureField(std::to_string(pi));
             if (h > 0) {
               while (slots.size() <= pi) slots.push_back(-1);
               slots[pi] = h;

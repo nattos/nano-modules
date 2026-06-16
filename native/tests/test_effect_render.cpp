@@ -405,3 +405,82 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
   runFrame(twoStage, /*dirty=*/true);
   CHECK(executor.planBuildCountForTest() == afterFirst + 1);  // rebuilt for topology
 }
+
+// Gap #1 repro (task #106). Two parity fixes, both exercised here:
+//  (A) legacy `entry.params` fallback — the sketch carries field values on the
+//      chain entry's `params` (no instances[key].state); the executor must apply
+//      them (TS executor falls back to entry.params). Without it the solid_color
+//      sources render their DEFAULT grey and the blend is grey, not red/blue.
+//  (B) a texture wire whose DEST field is the schema's NAMED input slot
+//      (video.blend tex_a/tex_b) OR a NUMERIC positional index ('0'/'1') must
+//      both reach inputTexture(0/1). The editor uses both spellings.
+// Sketch: red(solid)→blue(solid)→blend, all params on entry.params, opacity 0 →
+// output == tex_a (red). Run once with named dests, once with numeric.
+TEST_CASE("entry.params + named/numeric input wires drive video.blend",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+  std::vector<uint8_t> blk(W * H * 4, 0);
+  for (size_t i = 3; i < blk.size(); i += 4) blk[i] = 255;
+  backend->writeTexture(inTex, W, H, blk.data(), (uint32_t)blk.size());
+
+  // chain: red(solid) -> blue(solid) -> blend; wires red.tex_out->blend.<destA>,
+  // blue.tex_out->blend.<destB>. Field values live on entry.params (NO instances
+  // map) to exercise the legacy fallback. opacity 0 -> output == tex_a (red).
+  auto sketchFor = [](const char* destA, const char* destB) {
+    return nlohmann::json::parse(std::string(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "red",  "params": { "color": [1.0, 0.0, 0.0] } },
+        { "module_type": "generator.solid_color", "instance_key": "blue", "params": { "color": [0.0, 0.0, 1.0] } },
+        { "module_type": "video.blend", "instance_key": "mix", "params": { "opacity": 0.0 } }
+      ],
+      "wires": [
+        { "id": "wa", "src": { "instanceKey": "red",  "field": "tex_out" }, "dest": { "instanceKey": "mix", "field": ")JSON")
+      + destA + R"JSON(" } },
+        { "id": "wb", "src": { "instanceKey": "blue", "field": "tex_out" }, "dest": { "instanceKey": "mix", "field": ")JSON"
+      + destB + R"JSON(" } }
+      ]
+    })JSON");
+  };
+
+  auto meanOf = [&](const nlohmann::json& sketch) {
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                   /*sketchDirty=*/true);
+    backend->submit();
+    auto px = backend->readbackTexture(out, W, H);
+    // Return per-channel mean of the center region.
+    double r = 0, g = 0, b = 0; int n = 0;
+    for (uint32_t y = 4; y < 12; ++y) for (uint32_t x = 4; x < 12; ++x) {
+      size_t i = (y * W + x) * 4; r += px[i]; g += px[i + 1]; b += px[i + 2]; ++n;
+    }
+    return std::array<double, 3>{r / n, g / n, b / n};
+  };
+
+  // Numeric dests already work today — sanity anchor.
+  auto numeric = meanOf(sketchFor("0", "1"));
+  INFO("numeric '0'/'1' rgb " << numeric[0] << "," << numeric[1] << "," << numeric[2]);
+  CHECK(numeric[0] > 200.0);   // red present
+  CHECK(numeric[2] < 60.0);    // blue suppressed (opacity 0 → tex_a)
+
+  // Named dests must behave identically.
+  auto named = meanOf(sketchFor("tex_a", "tex_b"));
+  INFO("named 'tex_a'/'tex_b' rgb " << named[0] << "," << named[1] << "," << named[2]);
+  CHECK(named[0] > 200.0);     // red present  ← the failing assertion
+  CHECK(named[2] < 60.0);      // blue suppressed
+}
