@@ -570,6 +570,83 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
   CHECK(std::abs(m - 128.0) < 20.0);
 }
 
+// Debug counters (Debug Info panel). fillDebugStats writes 7 int32s:
+// [effectsExecuted, standaloneDispatches, fusedRuns, fusedStages,
+//  dispatchesSaved, gpuDispatches, identitySkipped]. Exercise the three paths a
+// stage can take — fused, standalone, identity-skipped — and assert the derived
+// arithmetic (gpuDispatches = standalone + fusedRuns; dispatchesSaved =
+// fusedStages − fusedRuns) holds.
+TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> gray(W * H * 4, 64);
+  for (size_t i = 3; i < gray.size(); i += 4) gray[i] = 255;
+  backend->writeTexture(inTex, W, H, gray.data(), (uint32_t)gray.size());
+
+  auto run = [&](const nlohmann::json& sketch, int32_t out[7]) {
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, /*dirty=*/true);
+    backend->submit();
+    executor.fillDebugStats(out);
+  };
+
+  // Two non-identity brightness_contrast stages → fuse into ONE kernel.
+  auto twoFused = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "video.brightness_contrast", "instance_key": "a" },
+      { "module_type": "video.brightness_contrast", "instance_key": "b" }
+    ],
+    "instances": {
+      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.75, "contrast": 0.5 } },
+      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.25, "contrast": 0.5 } }
+    }
+  })JSON");
+  int32_t s[7];
+  run(twoFused, s);
+  INFO("fused stats: eff=" << s[0] << " std=" << s[1] << " fr=" << s[2]
+       << " fs=" << s[3] << " saved=" << s[4] << " gpu=" << s[5] << " id=" << s[6]);
+  REQUIRE(executor.fusedRunCount() == 1);   // confirms they actually fused
+  CHECK(s[0] == 2);                          // effectsExecuted
+  CHECK(s[1] == 0);                          // standaloneDispatches
+  CHECK(s[2] == 1);                          // fusedRuns
+  CHECK(s[3] == 2);                          // fusedStages
+  CHECK(s[4] == 1);                          // dispatchesSaved = 2 − 1
+  CHECK(s[5] == 1);                          // gpuDispatches  = 0 + 1
+  CHECK(s[6] == 0);                          // identitySkipped
+
+  // Single non-identity stage → one standalone dispatch (no fusion of size 1).
+  auto one = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "a" } ],
+    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.75, "contrast": 0.5 } } }
+  })JSON");
+  run(one, s);
+  CHECK(s[0] == 1);  // effectsExecuted
+  CHECK(s[1] == 1);  // standaloneDispatches
+  CHECK(s[2] == 0);  // fusedRuns
+  CHECK(s[5] == 1);  // gpuDispatches
+  CHECK(s[6] == 0);  // identitySkipped
+
+  // Single NEUTRAL brightness_contrast (0.5/0.5) → identity → skipped, no dispatch.
+  auto ident = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "a" } ],
+    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.5 } } }
+  })JSON");
+  run(ident, s);
+  CHECK(s[0] == 1);  // effectsExecuted (still processed)
+  CHECK(s[1] == 0);  // standaloneDispatches
+  CHECK(s[5] == 0);  // gpuDispatches — nothing hit the GPU
+  CHECK(s[6] == 1);  // identitySkipped
+}
+
 #ifdef TEXT_WASM_PATH
 // Text-effect migration (step #4): gen.text loads from text.wasm — the same
 // bundle path as every other effect — instead of being statically linked. Its

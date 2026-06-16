@@ -144,7 +144,26 @@ class SketchExecutor {
    * a silently-broken fused kernel (which still renders correctly via the
    * fallback) is caught.
    */
-  int fusedRunCount() const { return fusedRunCount_; }
+  int fusedRunCount() const { return stats_.fusedRuns; }
+
+  /**
+   * Per-frame debug counters for the LAST execute(). Drives the editor's "Debug
+   * Info" panel — the host reads these after each frame (web: via the
+   * `executor_debug_stats` export). Writes 7 int32s in this fixed order:
+   * [effectsExecuted, standaloneDispatches, fusedRuns, fusedStages,
+   *  dispatchesSaved, gpuDispatches, identitySkipped]. The last two are derived
+   * (gpuDispatches = standalone + fusedRuns; dispatchesSaved = fusedStages −
+   * fusedRuns) so the host doesn't recompute them.
+   */
+  void fillDebugStats(int32_t* out) const {
+    out[0] = stats_.effectsExecuted;
+    out[1] = stats_.standaloneDispatches;
+    out[2] = stats_.fusedRuns;
+    out[3] = stats_.fusedStages;
+    out[4] = stats_.fusedStages - stats_.fusedRuns;            // dispatchesSaved
+    out[5] = stats_.standaloneDispatches + stats_.fusedRuns;   // gpuDispatches
+    out[6] = stats_.identitySkipped;
+  }
 
   /**
    * Execute one frame.
@@ -271,7 +290,18 @@ class SketchExecutor {
   // a rebuild. Has no effect on rendering.
   int planBuildCount_ = 0;
   bool fusionEnabled_ = true;   // force-off disables GPU fusion (test hook)
-  int  fusedRunCount_ = 0;      // fused dispatches issued in the last execute()
+
+  // Per-frame debug counters, reset at the top of each execute() and surfaced
+  // via fillDebugStats() (see above). `fusedRuns` doubles as the fusion-test
+  // signal exposed by fusedRunCount().
+  struct DebugStats {
+    int effectsExecuted = 0;     // resolvable chain entries processed (all columns)
+    int standaloneDispatches = 0;// stages that ran their own render() dispatch
+    int fusedRuns = 0;           // fused-kernel dispatches actually issued
+    int fusedStages = 0;         // surviving (non-identity) stages folded into fused runs
+    int identitySkipped = 0;     // stages skipped via the identity predicate
+  };
+  DebugStats stats_;
 
   // (Re)build plan_ from the (augmented) sketch. Calls instanceFor for each
   // resolvable entry, so instances are materialised here on a dirty frame.

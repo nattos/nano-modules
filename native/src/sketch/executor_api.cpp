@@ -85,4 +85,14 @@ int32_t executor_execute(SketchExecutor* ex, const char* sketch, int32_t sketch_
   return ex->execute(j, inTex, outTex, W, H, dt, dirty != 0);
 }
 
+// Write the LAST execute()'s 7 debug counters into `out` (host-allocated, ≥7
+// int32s): [effectsExecuted, standaloneDispatches, fusedRuns, fusedStages,
+// dispatchesSaved, gpuDispatches, identitySkipped]. The web host reads these
+// into its per-frame DebugStats accumulator for the editor's Debug Info panel.
+EXEC_EXPORT("executor_debug_stats")
+void executor_debug_stats(SketchExecutor* ex, int32_t* out) {
+  if (!ex || !out) return;
+  ex->fillDebugStats(out);
+}
+
 }  // extern "C"

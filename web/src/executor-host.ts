@@ -37,6 +37,11 @@ interface FrameState {
   bpm: number;
 }
 
+function makeZeroStats(): import('./engine-types').DebugStats {
+  return { effectsExecuted: 0, standaloneDispatches: 0, fusedRuns: 0,
+           fusedStages: 0, dispatchesSaved: 0, gpuDispatches: 0, identitySkipped: 0 };
+}
+
 interface WebEffectInstance {
   host: WasmHost;
   module: WasmModule;
@@ -57,6 +62,7 @@ interface ExecutorExports {
                    inTex: number, outTex: number, w: number, h: number,
                    dt: number, dirty: number): number;
   executor_set_fusion_enabled(ex: number, enabled: number): void;
+  executor_debug_stats(ex: number, out: number): void;
 }
 
 // Per-sketch executor C++ instance: separate intermediate pool / delayed-wire
@@ -92,6 +98,17 @@ export class WasmSketchExecutor {
   // collapses to auto). Applied to each slot when it's created + retroactively
   // when the mode changes.
   private fusionEnabled = true;
+
+  // Per-frame debug counters, accumulated across every sketch's executor_execute
+  // and drained by consumeDebugStats() (called once per frame). The C++ executor
+  // resets its own counters at the top of each execute() and reports the last
+  // frame's via the `executor_debug_stats` export; summing here gives a true
+  // single-frame total across all sketches, matching the old TS executor.
+  private frameStats = makeZeroStats();
+  // Reused 7×i32 scratch in the executor's linear memory (lazily malloc'd) that
+  // executor_debug_stats writes into; the view is rebuilt each read since malloc
+  // can detach the ArrayBuffer.
+  private statsScratch = 0;
 
   // Called when an effect host's schema changes at runtime (lazy registration
   // after the first frame). The worker wires this to markDirty so the plugin
@@ -242,12 +259,15 @@ export class WasmSketchExecutor {
     return out;
   }
 
-  // The executor.wasm doesn't surface per-frame counters across the ABI yet;
-  // report zeroes so the debug panel renders (rather than reading the stale TS
-  // executor's stats). TODO: expose fusedRunCount etc. via an export if wanted.
+  // Drain the per-frame debug counters accumulated across this frame's
+  // executor_execute calls (fed by accumulateDebugStats) and reset for the next
+  // frame, so each sample is a true single-frame count. The worker calls this
+  // every frame (the reset bounds the counters) and ships it to the Debug Info
+  // panel on a throttle.
   consumeDebugStats(): import('./engine-types').DebugStats {
-    return { effectsExecuted: 0, standaloneDispatches: 0, fusedRuns: 0,
-             fusedStages: 0, dispatchesSaved: 0, gpuDispatches: 0, identitySkipped: 0 };
+    const s = this.frameStats;
+    this.frameStats = makeZeroStats();
+    return s;
   }
 
   private slotFor(sketchId: string): SketchSlot {
@@ -376,7 +396,25 @@ export class WasmSketchExecutor {
     } finally {
       this.exports.free(jptr);
     }
+    this.accumulateDebugStats(slot.exPtr);
     return outHandle;
+  }
+
+  // Read this executor's last-frame debug counters and fold them into the
+  // per-frame accumulator. One executor_execute per sketch per frame → summing
+  // across slots gives the whole-frame total consumeDebugStats() drains.
+  private accumulateDebugStats(exPtr: number): void {
+    if (!this.statsScratch) this.statsScratch = this.exports.malloc(7 * 4);
+    this.exports.executor_debug_stats(exPtr, this.statsScratch);
+    const a = new Int32Array(this.memory.buffer, this.statsScratch, 7);
+    const s = this.frameStats;
+    s.effectsExecuted += a[0];
+    s.standaloneDispatches += a[1];
+    s.fusedRuns += a[2];
+    s.fusedStages += a[3];
+    s.dispatchesSaved += a[4];
+    s.gpuDispatches += a[5];
+    s.identitySkipped += a[6];
   }
 
   // ---- effrt host imports (mirror native/src/sketch/effrt_impls.cpp) ----

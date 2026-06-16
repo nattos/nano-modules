@@ -624,7 +624,7 @@ int32_t SketchExecutor::execute(
   intermediate_cursor_ = 0;
   int32_t finalHandle = inputHandle;
   bool anyDispatched = false;
-  fusedRunCount_ = 0;           // counted in runFusedGroup; read by tests
+  stats_ = DebugStats{};        // per-frame debug counters (fillDebugStats / tests)
   railState_ = json::object();  // rebuilt per frame; published by the host
   pendingDelayRetain_.clear();  // delayed texture retains gathered this frame
 
@@ -876,6 +876,7 @@ int32_t SketchExecutor::execute(
       const bool hasTaps = entry.contains("taps") && entry["taps"].is_array()
                            && !entry["taps"].empty();
       if (!hasTaps && inst.isIdentity()) {
+        ++stats_.identitySkipped;
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
@@ -966,6 +967,7 @@ int32_t SketchExecutor::execute(
 
       inst.doTick(dt);
       inst.doRender(W, H);
+      ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
       captureWriteTaps(inst.h, entry, instKey, instances,
                        railsById, railTextures, railFloats);
@@ -1032,6 +1034,7 @@ int32_t SketchExecutor::execute(
 
       // Whole group is identity → passthrough.
       if (stages.empty()) {
+        stats_.identitySkipped += (int)allStages.size();
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)R[g.firstK].chainIdx,
                           groupInput, groupInput, W, H);
@@ -1133,7 +1136,12 @@ int32_t SketchExecutor::execute(
       }
 
       anyDispatched = true;
-      ++fusedRunCount_;          // a real fused-kernel dispatch (not a fallback)
+      ++stats_.fusedRuns;        // a real fused-kernel dispatch (not a fallback)
+      stats_.fusedStages += (int)stages.size();   // surviving stages folded in
+      // Identity stages dropped from THIS (successfully-fused) group are
+      // genuinely skipped. Counted here, not at the drop loop, so the pso<=0
+      // fallback (which re-runs each stage via runStandalone) doesn't double-count.
+      stats_.identitySkipped += (int)(allStages.size() - stages.size());
       finalHandle = groupOutput;
       colInput = groupOutput;
     };
@@ -1141,6 +1149,10 @@ int32_t SketchExecutor::execute(
     for (size_t gi = 0; gi < groups.size(); ++gi) {
       const Group& g = groups[gi];
       const bool isLastGroupInCol = (gi == groups.size() - 1);
+      // Every resolvable entry this group covers is "processed" exactly once,
+      // counted here (not in the lambdas) so a fused group that falls back to
+      // per-stage runStandalone doesn't double-count.
+      stats_.effectsExecuted += (int)(g.lastK - g.firstK + 1);
       if (g.fused) {
         runFusedGroup(g, isLastGroupInCol);
       } else if (R[g.firstK].dashboard) {
