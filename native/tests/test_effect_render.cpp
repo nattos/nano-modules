@@ -15,6 +15,7 @@
 #include "bridge/param_cache.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "runtime/text_host.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
@@ -568,3 +569,62 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
   INFO("output mean " << m << " (expect ~128 grey)");
   CHECK(std::abs(m - 128.0) < 20.0);
 }
+
+#ifdef TEXT_WASM_PATH
+// Text-effect migration (step #4): gen.text loads from text.wasm — the same
+// bundle path as every other effect — instead of being statically linked. Its
+// text.* imports (layout/measure/render/atlas/glyphs/release) must resolve to
+// the native TextEngine through the "text" WAMR namespace registered by
+// WasmEffectBundles::init → registerTextHostFunctions. This is the only test
+// that drives text.wasm on native; without the bridge the imports are unresolved
+// and the bundle fails to instantiate (or renders blank).
+//
+// Mirrors text_effect_smoke.mm's executor-overlay case but through the WASM
+// bundle: render "Hello" over a solid-red input via tex_in/tex_out, assert the
+// text texels brighten the output AND the red background shows through behind it.
+TEST_CASE("text.wasm renders gen.text via the native text bridge", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  // Fonts are a HOST concern (the text.* service owns the TextEngine); install
+  // the system UI font + CJK fallbacks before rendering — null primary path.
+  effect_runtime::textInstallDefaultFonts(nullptr);
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());  // also registers the "text" WAMR namespace
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TEXT_WASM_PATH, registry, backend.get(), nullptr) >= 1);
+
+  EffectInstance* inst = rt.instanceFor("gen.text", "k0");
+  REQUIRE(inst != nullptr);
+
+  const uint32_t W = 256, H = 128; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  inst->setParamJson("text", "\"Hello\"");
+  inst->setTextureField("tex_in", inTex);
+  inst->setTextureField("tex_out", outTex);
+  inst->setFieldConnected("tex_in",  /*input*/true,  /*output*/false);
+  inst->setFieldConnected("tex_out", /*input*/false, /*output*/true);
+
+  backend->clearTexture(inTex, 1, 0, 0, 1);   // red background
+  backend->clearTexture(outTex, 0, 0, 0, 1);
+  backend->submit();
+  inst->doRender(W, H);
+  auto px = backend->readbackTexture(outTex, W, H);
+  REQUIRE(px.size() == W * H * 4);
+
+  // Glyph texels: bright on all channels (text is white over red). Count them.
+  long glyph = 0, redBg = 0;
+  for (size_t i = 0; i + 3 < px.size(); i += 4) {
+    if (px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200) ++glyph;
+    else if (px[i] > 200 && px[i + 1] < 60 && px[i + 2] < 60) ++redBg;
+  }
+  INFO("glyph(white) px " << glyph << "  redBg px " << redBg);
+  CHECK(glyph > 50);                  // real glyph coverage drawn
+  CHECK(redBg > W * H / 2);           // input background composited through
+}
+#endif  // TEXT_WASM_PATH

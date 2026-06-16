@@ -8,6 +8,10 @@
 
 namespace sketch_executor {
 
+// text_host_wasm.cpp — registers the "text" WAMR namespace so text.wasm /
+// richtext.wasm resolve their text.* imports to the native TextEngine service.
+bool registerTextHostFunctions();
+
 namespace {
 // Optional per-arch AOT sidecar. Given a bundle's `<base>.wasm` path, return the
 // `<base>-<arch>.aot` next to it when AOT loading is compiled in AND that file
@@ -43,6 +47,11 @@ WasmEffectBundles::WasmEffectBundles() : host_(cache_) {}
 
 bool WasmEffectBundles::init() {
   initialized_ = host_.init();
+  // Register the "text" namespace once the WAMR runtime is up (host_.init
+  // refcounts wasm_runtime_full_init). Bundles that import text.* (text.wasm /
+  // richtext.wasm) need this before they instantiate; effect-only bundles ignore
+  // it. Idempotent + process-global, mirroring the effrt/gpu native tables.
+  if (initialized_) registerTextHostFunctions();
   return initialized_;
 }
 

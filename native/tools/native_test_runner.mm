@@ -39,6 +39,7 @@
 
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "runtime/text_host.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
@@ -180,14 +181,23 @@ int main(int argc, char** argv) {
 
     effect_runtime::EffectRuntime rt(gpu.get());
     sketch_executor::ModuleRegistry registry(&rt);
-    // Load effects from their WASM bundles (core/lights/nano) — the same
-    // artifacts the barrel + web load, never statically linked. `bundles` is
-    // declared here (outer scope) so its WasmHost outlives the executor below.
+    // Text effects (gen.text / gen.richtext) reach the host TextEngine via the
+    // text.* service; install the bundled fonts before any render so glyphs
+    // resolve (null primary → system UI font + CJK fallbacks). Host-side, exactly
+    // as the barrel does — the text.wasm bridge routes the effects' imports here.
+    effect_runtime::textInstallDefaultFonts(nullptr);
+
+    // Load effects from their WASM bundles — the same artifacts the barrel + web
+    // load, never statically linked. text/richtext resolve text.* through the
+    // bridge registered by bundles.init(). `bundles` is declared here (outer
+    // scope) so its WasmHost outlives the executor below.
     sketch_executor::WasmEffectBundles bundles;
     int loaded = bundles.init()
-        ? bundles.loadBundleFile(NANO_WASM_DIR "/core.wasm",   registry, gpu.get(), nullptr)
-        + bundles.loadBundleFile(NANO_WASM_DIR "/lights.wasm", registry, gpu.get(), nullptr)
-        + bundles.loadBundleFile(NANO_WASM_DIR "/nano.wasm",   registry, gpu.get(), nullptr)
+        ? bundles.loadBundleFile(NANO_WASM_DIR "/core.wasm",     registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/lights.wasm",   registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/nano.wasm",     registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/text.wasm",     registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/richtext.wasm", registry, gpu.get(), nullptr)
         : 0;
     if (loaded < 1) {
       std::fprintf(stderr, "failed to load effect bundles from %s\n", NANO_WASM_DIR);

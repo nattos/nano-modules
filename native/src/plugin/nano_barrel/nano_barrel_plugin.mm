@@ -64,27 +64,6 @@
 #include "barrel_log.h"
 #include "barrel_codec.h"
 
-// gen.text / gen.richtext are native, TextEngine/MSDF-backed effects (no MSL
-// shaders; they need a font install). For now they are still linked statically
-// (from effects_native) and registered explicitly in initEffectRuntime — every
-// OTHER effect loads as a WASM bundle. (Migrating the text effects to their
-// text.wasm / richtext.wasm bundles is the remaining static-effect cleanup.)
-#define DECLARE_EFFECT_NS(ns)                                                 \
-  namespace ns {                                                              \
-    extern void  module_init();                                               \
-    extern void* create();                                                    \
-    extern void  destroy(void* self);                                         \
-    extern void  init(void* self);                                            \
-    extern void  tick(void* self, double dt);                                 \
-    extern void  render(void* self, int vp_w, int vp_h);                      \
-    extern void  on_state_patched(void* self, int n, const char* pb,          \
-                                  const int* off, const int* len,             \
-                                  const int* ops);                            \
-  }
-DECLARE_EFFECT_NS(gen_text)
-DECLARE_EFFECT_NS(gen_richtext)
-#undef DECLARE_EFFECT_NS
-
 namespace effect_runtime {
   void setHostTime(double t);
   void setHostDeltaTime(double dt);
@@ -653,7 +632,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
     int total = 0;
     if (bundles_->init()) {
-      for (const char* name : {"core", "lights", "nano"}) {
+      for (const char* name : {"core", "lights", "nano", "text", "richtext"}) {
         std::string path = bundleWasmPath(name);
         int n = path.empty() ? 0
             : bundles_->loadBundleFile(path, *registry_, gpu_.get(), nullptr);
@@ -670,25 +649,15 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       bundles_.reset();
     }
 
-    // Text effects. They need NO registerShaderMSL — the text.* host service
-    // owns its MSDF compositor PSO. But the engine needs font BYTES: install the
-    // bundled default.ttf as the parity-exact Latin primary (falling back to the
-    // system UI font if absent), plus the OS's CJK faces as the fallback chain.
+    // Text effects (gen.text / gen.richtext) load from text.wasm / richtext.wasm
+    // in the bundle loop above — same as every other effect. They need NO
+    // registerShaderMSL (the text.* host service owns its MSDF compositor PSO),
+    // but the engine needs font BYTES: install the bundled default.ttf as the
+    // parity-exact Latin primary (falling back to the system UI font if absent),
+    // plus the OS's CJK faces as the fallback chain. This is host-side — the
+    // text.wasm bridge (WasmEffectBundles::init → registerTextHostFunctions)
+    // routes the effects' text.* imports to this same TextEngine.
     effect_runtime::textInstallDefaultFonts(bundleFontPath("default.ttf").c_str());
-    // init() sets the per-instance `initialized` flag the effects' render()
-    // gates on — it MUST be wired or render() early-returns (blank output).
-    registry_->registerEffect(
-        "gen.text", "Text",
-        &gen_text::module_init, &gen_text::create,
-        &gen_text::destroy, &gen_text::init,
-        &gen_text::tick, &gen_text::render,
-        &gen_text::on_state_patched);
-    registry_->registerEffect(
-        "gen.richtext", "Rich Text",
-        &gen_richtext::module_init, &gen_richtext::create,
-        &gen_richtext::destroy, &gen_richtext::init,
-        &gen_richtext::tick, &gen_richtext::render,
-        &gen_richtext::on_state_patched);
 
     executor_ = std::make_unique<sketch_executor::SketchExecutor>(
         rt_.get(), registry_.get(), gpu_.get());

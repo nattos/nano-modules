@@ -19,7 +19,7 @@ OUT_DIR="${OUT_DIR:-../../build/wasm}"
 WAMRC="${WAMRC:-../tools/wamrc/wamrc}"
 ARCHES="${ARCHES:-aarch64 x86_64}"
 BUNDLES=("$@")
-[ ${#BUNDLES[@]} -eq 0 ] && BUNDLES=(core lights nano)
+[ ${#BUNDLES[@]} -eq 0 ] && BUNDLES=(core lights nano text richtext)
 
 if [ ! -x "$WAMRC" ] && ! command -v "$WAMRC" >/dev/null 2>&1; then
   echo "ERROR: wamrc not found at '$WAMRC' (see native/tools/wamrc/README.md)."

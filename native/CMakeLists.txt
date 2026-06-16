@@ -697,6 +697,7 @@ if(APPLE)
     src/sketch/executor_host.cpp
     src/sketch/wasm_executor_driver.cpp
     src/sketch/wasm_bundles.cpp
+    src/sketch/text_host_wasm.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sketch_executor PUBLIC
@@ -803,6 +804,13 @@ if(APPLE)
     target_compile_definitions(test_effect_render PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    # text.wasm bridge (step #4): gen.text resolves text.* to the native
+    # TextEngine. Only define the path when the bundle exists so the test's
+    # text case compiles in conditionally.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/text.wasm")
+      target_compile_definitions(test_effect_render PRIVATE
+        TEXT_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/text.wasm")
+    endif()
     target_compile_options(test_effect_render PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_render)
   endif()
@@ -918,23 +926,19 @@ if(APPLE)
   # The full-fat barrel: one FFGL bundle that hosts a sketch + bridge
   # (FF_TYPE_FILE config persisted by Resolume + per-instance WS) AND
   # executes the sketch each frame via the Metal-backed effect runtime.
-  # Mirrors the StreakyBlobs link set — same effects_native / runtime /
-  # gpu_backend dependency, same InteropTexture for GL↔Metal.
+  # NO static effects: every effect (text included) loads as a WASM bundle
+  # from Resources/wasm/ via sketch_executor's WasmEffectBundles. InteropTexture
+  # supplies the GL↔Metal bridge.
   set(FFGL_BUNDLE_LINK_FLAGS_BARREL "-undefined dynamic_lookup")
   add_library(NanoBarrel MODULE
     src/plugin/nano_barrel/nano_barrel_plugin.mm
     src/plugin/nano_barrel/InteropTexture.m
   )
-  # NanoBarrel #includes the generated barrel_effects.gen.h.
-  add_dependencies(NanoBarrel effects_msl_headers)
   target_include_directories(NanoBarrel PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${EFFECTS_NATIVE_INC}
-    ${EFFECTS_NATIVE_TMP}
     ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
   )
   target_link_libraries(NanoBarrel PRIVATE
-    effects_native
     sketch_executor      # brings in sketch_augment + effect_runtime + gpu_backend
     bridge_core
     bridge_ws_server
@@ -988,7 +992,7 @@ if(APPLE)
   # must exist at CONFIGURE time (run build_aot.sh, then reconfigure) to be
   # picked up. (executor.wasm is NOT bundled — the barrel runs the executor
   # natively; executor.wasm is a web-only artifact.)
-  foreach(_b core lights nano)
+  foreach(_b core lights nano text richtext)
     set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
     if(EXISTS "${_wsrc}")
       add_custom_command(TARGET NanoBarrel POST_BUILD
