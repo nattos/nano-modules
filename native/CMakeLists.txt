@@ -753,15 +753,11 @@ if(APPLE)
   # result on stdout. Mirrors web/public/gpu-test-runner.html for the
   # dual-backend tests.
   add_executable(native_test_runner tools/native_test_runner.mm)
-  add_dependencies(native_test_runner effects_msl_headers)  # barrel_effects.gen.h
   target_include_directories(native_test_runner PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${EFFECTS_NATIVE_INC}
-    ${EFFECTS_NATIVE_TMP}
   )
   target_link_libraries(native_test_runner PRIVATE
-    effects_native
-    sketch_executor   # ModuleRegistry (used by the generated registration)
+    sketch_executor   # ModuleRegistry + WasmEffectBundles (loads core/lights/nano.wasm)
     effect_runtime
     gpu_backend
     nlohmann_json::nlohmann_json
@@ -769,6 +765,9 @@ if(APPLE)
     "-framework Foundation"
   )
   target_compile_options(native_test_runner PRIVATE -Wno-attributes)
+  # Effects load from their WASM bundles, never statically linked.
+  target_compile_definitions(native_test_runner PRIVATE
+    NANO_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 
   # WASM effect driver (barrel-loads-WASM): drive a WASM-backed EffectDesc
   # through the EffectInstance/EffectRuntime path. Uses data.lfo (no GPU).

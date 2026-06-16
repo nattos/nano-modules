@@ -39,14 +39,13 @@
 
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
+#include "sketch/wasm_bundles.h"
 
-// Effect registration is generated from effects_native/barrel_manifest.txt
-// (gen_barrel_effects.py): namespace forward-decls + MSL + the
-// registerAllBarrelEffects(rt, registry) entry point. Using it here means the
-// runner can render ANY effect the barrel exposes, by id — same set, same
-// registration path as the plugin.
-#include "barrel_effects.gen.h"
+#ifndef NANO_WASM_DIR
+#error "NANO_WASM_DIR must be defined"
+#endif
 
 namespace effect_runtime {
 // Setters defined in host_impls.cpp.
@@ -181,9 +180,19 @@ int main(int argc, char** argv) {
 
     effect_runtime::EffectRuntime rt(gpu.get());
     sketch_executor::ModuleRegistry registry(&rt);
-    // Registers every effect in barrel_manifest.txt (same set + path as the
-    // NanoBarrel plugin), so the runner can render any of them by id.
-    nano_barrel_gen::registerAllBarrelEffects(rt, registry);
+    // Load effects from their WASM bundles (core/lights/nano) — the same
+    // artifacts the barrel + web load, never statically linked. `bundles` is
+    // declared here (outer scope) so its WasmHost outlives the executor below.
+    sketch_executor::WasmEffectBundles bundles;
+    int loaded = bundles.init()
+        ? bundles.loadBundleFile(NANO_WASM_DIR "/core.wasm",   registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/lights.wasm", registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/nano.wasm",   registry, gpu.get(), nullptr)
+        : 0;
+    if (loaded < 1) {
+      std::fprintf(stderr, "failed to load effect bundles from %s\n", NANO_WASM_DIR);
+      return 1;
+    }
 
     // ----- Multi-effect CHAIN mode (exercises SketchExecutor + GPU fusion) ----
     // cfg.chain = [ {module, params:[[path,val],...]}, ... ]. Runs the whole
