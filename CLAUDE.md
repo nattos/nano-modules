@@ -8,14 +8,32 @@ Nano Repatch is a node-based visual programming environment for real-time audio/
 
 ## Commands
 
+The repo has two build trees: **`web/`** (the Vite web app + unit/e2e tests) and **`native/`**
+(the C++ barrel/executor, the WASM effect bundles, and Catch2 tests). There is no root
+`package.json` — run web commands from `web/`.
+
 ```bash
-npm run dev          # Start Vite dev server
-npm run build        # Type-check (tsc) then bundle (vite build)
-npm test             # Run Vitest unit tests (co-located in src/)
-npm run test:e2e     # Run Jest+Puppeteer E2E tests (in test/, requires dev server on port 5173)
+# Web (run from web/)
+npm run dev          # Vite dev server (config default port 5173)
+npm run build        # vite build
+npm test             # Vitest unit tests (--run), co-located as *.test.ts in src/
+npm run test:e2e     # Jest+Puppeteer e2e (web/test/**/*.test.ts); needs the dev server up
+
+# GPU e2e against a running dev server (point at whatever port it's on, e.g. 5174):
+GPU_TEST_BASE_URL=http://localhost:5174 npx jest <name>   # gpu-pipeline, platform-features, particles, ...
+
+# Native (run from native/)
+cmake --build build              # build the barrel lib + executor.wasm + tests
+ctest --test-dir build           # run Catch2 tests
+cd wasm_modules && ./build_all.sh # rebuild ALL effect .wasm bundles (or `cd <bundle> && ./build.sh` for one)
 ```
 
+VCS is **jj** (Jujutsu), not plain git: `jj commit -m "<msg>"`. Multiple workspaces share one repo
+(`default`, `text`, etc.), each with its own working-copy commit (`@`).
+
 No separate lint command — TypeScript strict mode (`strict: true`, `noImplicitAny: true`) is the primary static check.
+
+Effect shaders compile with **DXC** (`dxc` must be on PATH).
 
 ## Architecture
 
@@ -56,6 +74,45 @@ MobX proxies cannot cross `postMessage`. Always sanitize with `JSON.parse(JSON.s
 
 High-frequency visualization data (FFT, envelopes) bypasses MobX via a `ui` output property. Editor components poll `runtimeManager.uiStates.get(nodeId)` via `requestAnimationFrame`.
 
+### Native barrel + WASM effect bundles
+
+One C++ source (`sketch_executor.cpp`) builds into **both** the native barrel/FFGL lib **and**
+`executor.wasm` (web), driving effects through the `effrt` host ABI. Effects compile to per-bundle
+`.wasm` files (core/lights/nano/testonly/text/richtext) loaded via WAMR on native and in-browser on
+web. The web build serves the **same** `build/wasm/*.wasm` files, so rebuild bundles
+(`native/wasm_modules/build_all.sh`) before running web e2e — a stale bundle is a common false failure.
+
+### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
+
+Effects author each shader stage **once as HLSL**. The build (DXC) compiles HLSL → SPIR-V and bakes
+it into a C++ header (`<effect>_shaders.h` with `UPPER_SPV[]` / `UPPER_SPV_SIZE`) via
+`_emit_spv_header_var` (helpers in `wasm_modules/wasm_build_env.sh`). At load the host translates SPV
+→ **MSL** on native (SPIRV-Cross, `spv_to_msl.cpp`) or → **WGSL** on web (naga, via the dev-server
+naga bridge). Effect side:
+
+```cpp
+state::registerShaderSPV("my_shader", MY_SHADER_SPV, MY_SHADER_SPV_SIZE [, "<wgsl_fmt>", "<access>"]);
+auto mod = gpu::Device::createShaderModuleByName("my_shader");
+```
+
+There is **no inline-WGSL effect path** — the raw `gpu::Device::createShaderModule(source)` effect ABI
+was retired (the executor keeps its own raw-MSL path for blend/fusion; that's separate). See the
+`flash_particles/` and `flow_swarm/` bundles for the canonical instanced-quad-reading-a-storage-buffer
+template.
+
+Key rules:
+- **Binding indices are register numbers.** DXC maps HLSL `register(t1/b0/u2)` directly to the SPIR-V
+  binding number (shared across resource types). These must line up with the `gpu::Bindings()` order
+  AND the render-time `setBuffer`/`setTexture` slots, or you get silent mis-binds → black output.
+- **Storage-texture formats:** the `registerShaderSPV(...,fmt,access)` override rewrites naga's default
+  `rgba32float`. For a *second*, differently-formatted storage texture in one shader, pin it with
+  `[[vk::image_format("r32f")]]` (DXC bakes the format so the override's regex won't touch it).
+- **3D textures:** native `createTexture3D` exists, but querying a 3D texture's dimensions from a
+  shader is non-portable — use a compile-time-constant size + exact-N³ dispatch.
+- **Compute workgroup size:** MSL doesn't encode `[numthreads]`; `spv_to_msl.cpp` carries it as a
+  `// nano_threadgroup: X Y Z` comment that the Metal backend parses per-PSO. Don't reintroduce a
+  hardcoded `threadsPerThreadgroup`.
+
 ## Node Development
 
 Nodes are defined with `defineNode`/`definePrimitiveNode` from `src/structor/type-helpers.ts`:
@@ -69,8 +126,9 @@ Nodes are defined with `defineNode`/`definePrimitiveNode` from `src/structor/typ
 
 ## Testing
 
-- **Vitest** unit tests: co-located as `*.test.ts` in `src/`. Config in `vite.config.ts`.
-- **Jest+Puppeteer** E2E tests: in `test/` directory. Do not mix Jest/Vitest syntax.
+- **Vitest** unit tests: co-located as `*.test.ts` in `web/src/`. Config in `web/vite.config.ts`.
+- **Jest+Puppeteer** E2E tests: in `web/test/`. Do not mix Jest/Vitest syntax. GPU e2e point at a running dev server via `GPU_TEST_BASE_URL`.
+- **Catch2** native tests: `native/tests/` (e.g. `test_effect_render.cpp` drives effects through `SketchExecutor` and asserts pixels); run via `ctest --test-dir build`.
 - E2E tests use `window.testing.appController` for programmatic state setup. Use `page.evaluate()` for shadow DOM traversal.
 - Virtual inputs in tests: `executor.setNodeConfig(id, { values: { trigger: ... } })` — use the `values` sub-key.
 - Environment mocks (Canvas, MIDI, AudioContext, Monaco) configured in `src/vitest.setup.ts`.
@@ -83,3 +141,5 @@ Nodes are defined with `defineNode`/`definePrimitiveNode` from `src/structor/typ
 - AudioContext state must be mirrored from main thread to worker via explicit messages — don't trust worker's view
 - Nodes with dynamic ports need `shouldRecompileOnConfigChange` returning `true` to trigger topology updates
 - Feedback loops use `cycleBreakingPorts` + two-phase execution (`execute` then `consolidate`)
+- Native auto-connect (`sketch_augment`) **skips** chain entries lacking `"type":"module"` — a test sketch missing it silently generates no struct/texture rails (effect reads nothing). Web sketches already include it
+- After editing effect logic or shaders, rebuild the bundle before testing — both native and web load the built `.wasm`
