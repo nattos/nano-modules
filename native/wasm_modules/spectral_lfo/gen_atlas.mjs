@@ -21,7 +21,7 @@
  * t-SNE embedding differs. So control points are baked once.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -234,3 +234,45 @@ const scatterTs = [
 ].join('\n');
 writeFileSync(SCATTER_OUT, scatterTs);
 console.error(`Wrote ${SCATTER_OUT} (${scatterB64.length} b64 chars)`);
+
+// ─── Editor data asset: control points + triangulation (fetched binary) ──
+// The inspector draws the Delaunay mesh + active triangle on the pad and a
+// morphed-envelope preview below it — all client-side, like the web prototype.
+// That needs the control points (to evaluate source shapes) and the per-metric
+// triangulation. Ship it as one binary fetched lazily on first inspector mount
+// (kept out of the main JS bundle). Little-endian; the loader copies slices so
+// no alignment constraints. Layout:
+//   i32  [MAGIC, numMetrics, numEntries, totalCP]
+//   u32  entryOffset[numEntries]
+//   u16  entryNcp[numEntries]
+//   u16  cpX[totalCP]   (x * 65535)
+//   u8   cpY[totalCP]   (y * 255)
+//   u8   cpF[totalCP]   (f * 255)
+//   per metric: u32 [numPts, numTris]; f32 coords[numPts*2];
+//               u16 triToData[numPts]; u16 tris[numTris*3]
+const BIN_OUT = join(__dirname, '../../../web/public/data/spectral_lfo_editor.bin');
+mkdirSync(dirname(BIN_OUT), { recursive: true });
+
+const u8 = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+const u16 = (v) => Math.max(0, Math.min(65535, Math.round(v * 65535)));
+
+const sections = [];
+const pushTyped = (ta) => sections.push(Buffer.from(ta.buffer, ta.byteOffset, ta.byteLength));
+
+pushTyped(Int32Array.from([0x31464C53, metrics.length, N, cpX.length])); // 'SLF1'
+pushTyped(Uint32Array.from(entryOffset));
+pushTyped(Uint16Array.from(entryNcp));
+pushTyped(Uint16Array.from(cpX, u16));
+pushTyped(Uint8Array.from(cpY, u8));
+pushTyped(Uint8Array.from(cpF, u8));
+for (const m of metrics) {
+  const numPts = m.coords.length / 2;
+  const numTris = m.triangles.length / 3;
+  pushTyped(Uint32Array.from([numPts, numTris]));
+  pushTyped(Float32Array.from(m.coords));
+  pushTyped(Uint16Array.from(m.mapping));
+  pushTyped(Uint16Array.from(m.triangles));
+}
+const bin = Buffer.concat(sections);
+writeFileSync(BIN_OUT, bin);
+console.error(`Wrote ${BIN_OUT} (${bin.length} bytes)`);
