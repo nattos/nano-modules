@@ -4,6 +4,7 @@
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <map>
 #include <string>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -47,6 +48,9 @@ public:
       // even though spirv-cross emits them with anonymous numeric
       // indices like `TILE_SIZE_tmp [[function_constant(0)]]`.
       shaderConstIndices_[handle] = parseFunctionConstants(source);
+      // Compute threadgroup size (from the spvToMsl hint) so dispatch matches
+      // the shader's [numthreads], not a hardcoded 8×8×1.
+      shaderThreadgroup_[handle] = parseThreadgroup(source);
       return handle;
     }
   }
@@ -163,7 +167,9 @@ public:
         NSLog(@"Metal compute PSO error: %@", error);
         return -1;
       }
-      return alloc(ResourceType::ComputePSO, pso);
+      int32_t psoHandle = alloc(ResourceType::ComputePSO, pso);
+      recordPsoThreadgroup(psoHandle, shaderHandle);
+      return psoHandle;
     }
   }
 
@@ -243,7 +249,9 @@ public:
         NSLog(@"Metal compute PSO (constants) error: %@", error);
         return -1;
       }
-      return alloc(ResourceType::ComputePSO, pso);
+      int32_t psoHandle = alloc(ResourceType::ComputePSO, pso);
+      recordPsoThreadgroup(psoHandle, shaderHandle);
+      return psoHandle;
     }
   }
 
@@ -527,6 +535,9 @@ public:
                           pso, p, computeEncoder_);
     if (p && computeEncoder_) [computeEncoder_ setComputePipelineState:p];
     currentComputePSO_ = p;
+    auto it = psoThreadgroup_.find(pso);
+    currentComputeThreadgroup_ =
+        (it != psoThreadgroup_.end()) ? it->second : MTLSizeMake(8, 8, 1);
   }
 
   void computeSetBuffer(int32_t pass, int32_t buf, uint32_t offset, int32_t slot) override {
@@ -557,15 +568,11 @@ public:
                             computeEncoder_, currentComputePSO_);
       return;
     }
-    // Threads-per-group must match the shader's [numthreads(...)].
-    // All effects in the modules tree use [numthreads(8, 8, 1)], so
-    // hardcode here. The old 1D test shader (test_gpu_metal) over-
-    // dispatches but writes the same value to every slot, so it still
-    // passes. If we add effects with different threadgroup sizes,
-    // we'll need per-PSO threadgroup tracking — read [numthreads]
-    // from the MSL source at PSO creation, or expose an explicit
-    // setter on the GPU API.
-    MTLSize threadsPerGroup = MTLSizeMake(8, 8, 1);
+    // Threads-per-group must match the shader's [numthreads(...)]. MSL
+    // doesn't encode it, so it rides along as a `// nano_threadgroup:` hint
+    // (spvToMsl) parsed into per-PSO sizes; computeSetPSO binds the current
+    // one here. Defaults to 8×8×1 for raw-MSL kernels with no hint.
+    MTLSize threadsPerGroup = currentComputeThreadgroup_;
     MTLSize threadgroups = MTLSizeMake(x, y, z);
     [computeEncoder_ dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerGroup];
   }
@@ -1079,6 +1086,10 @@ private:
   id<MTLCommandBuffer> cmdBuffer_ = nil;
   id<MTLComputeCommandEncoder> computeEncoder_ = nil;
   id<MTLComputePipelineState> currentComputePSO_ = nil;
+  // Threads-per-threadgroup of the bound compute PSO (Metal supplies this at
+  // dispatch, not from the shader). Defaults to 8×8×1 so raw-MSL kernels with
+  // no `// nano_threadgroup:` hint behave as before.
+  MTLSize currentComputeThreadgroup_ = MTLSizeMake(8, 8, 1);
   id<MTLRenderCommandEncoder> renderEncoder_ = nil;
 
   // When true (host opened a submit-batch), submit() defers — encoders pile
@@ -1124,6 +1135,34 @@ private:
   // (uint vs int — types are mixed across motion_blur's constants).
   struct ConstInfo { int index; MTLDataType type; };
   std::map<int32_t, std::map<std::string, ConstInfo>> shaderConstIndices_;
+
+  // Per-shader / per-PSO compute threadgroup size, parsed from the
+  // `// nano_threadgroup: X Y Z` hint spvToMsl prepends (MSL can't express the
+  // original [numthreads]/@workgroup_size). Library handle → size at
+  // createShaderModule; copied to the PSO handle at createComputePSO; bound to
+  // currentComputeThreadgroup_ at computeSetPSO and used by computeDispatch.
+  std::map<int32_t, MTLSize> shaderThreadgroup_;
+  std::map<int32_t, MTLSize> psoThreadgroup_;
+
+  void recordPsoThreadgroup(int32_t psoHandle, int32_t shaderHandle) {
+    auto it = shaderThreadgroup_.find(shaderHandle);
+    psoThreadgroup_[psoHandle] =
+        (it != shaderThreadgroup_.end()) ? it->second : MTLSizeMake(8, 8, 1);
+  }
+
+  static MTLSize parseThreadgroup(const std::string& msl) {
+    // Default matches the historical hardcode (covers raw-MSL kernels).
+    MTLSize tg = MTLSizeMake(8, 8, 1);
+    const std::string tag = "// nano_threadgroup:";
+    auto p = msl.find(tag);
+    if (p == std::string::npos) return tg;
+    unsigned x = 0, y = 0, z = 0;
+    if (std::sscanf(msl.c_str() + p + tag.size(), "%u %u %u", &x, &y, &z) == 3
+        && x && y && z) {
+      tg = MTLSizeMake(x, y, z);
+    }
+    return tg;
+  }
 
   static std::map<std::string, ConstInfo>
   parseFunctionConstants(const std::string& msl) {
