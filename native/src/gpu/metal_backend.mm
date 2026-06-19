@@ -85,6 +85,34 @@ public:
     return alloc(ResourceType::Texture, tex);
   }
 
+  int32_t createTexture3D(uint32_t w, uint32_t h, uint32_t d,
+                          int32_t format) override {
+    // Same TextureFormat enum as createTexture (0=BGRA8,1=RGBA8,3=RGBA16F,
+    // 4=R32F). 3D LUTs are typically rgba8unorm.
+    MTLPixelFormat pf;
+    switch (format) {
+      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
+      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
+      case 3:  pf = MTLPixelFormatRGBA16Float; break;
+      case 4:  pf = MTLPixelFormatR32Float;    break;
+      default: pf = MTLPixelFormatRGBA8Unorm;  break;
+    }
+    MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
+    desc.textureType = MTLTextureType3D;
+    desc.width  = w;
+    desc.height = h;
+    desc.depth  = d;
+    desc.pixelFormat = pf;
+    // ShaderWrite enables storage-texture writes (the init pass fills the LUT
+    // via a texture_storage_3d binding); ShaderRead for the sampled lookup.
+    // RenderTarget isn't needed for a volume texture.
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    desc.storageMode = MTLStorageModeShared;  // CPU-readable for readback
+    id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
+    if (!tex) return -1;
+    return alloc(ResourceType::Texture, tex);
+  }
+
   int32_t createTextureArray(uint32_t w, uint32_t h,
                              int32_t format, int32_t layers) override {
     MTLPixelFormat pf;

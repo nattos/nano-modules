@@ -82,9 +82,10 @@ int gpu_create_texture_mips(int w, int h, int format, int mips) {
   return b->createTextureWithMips((uint32_t)w, (uint32_t)h, format, mips);
 }
 
-int gpu_create_texture_3d(int, int, int, int) {
-  unimplemented("create_texture_3d");
-  return -1;
+int gpu_create_texture_3d(int w, int h, int d, int format) {
+  auto* b = backend();
+  if (!b) return -1;
+  return b->createTexture3D((uint32_t)w, (uint32_t)h, (uint32_t)d, format);
 }
 
 int gpu_create_sampler(int filterMode, int addressMode) {

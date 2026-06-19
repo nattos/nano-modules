@@ -1188,6 +1188,10 @@ static int32_t gpu_create_texture_mips(wasm_exec_env_t env, int32_t w, int32_t h
     int32_t fmt, int32_t mips) {
   auto* g = get_gpu(env); return g ? g->createTextureWithMips(w, h, fmt, mips) : -1;
 }
+static int32_t gpu_create_texture_3d(wasm_exec_env_t env, int32_t w, int32_t h,
+    int32_t d, int32_t fmt) {
+  auto* g = get_gpu(env); return g ? g->createTexture3D(w, h, d, fmt) : -1;
+}
 static void gpu_compute_set_sampler(wasm_exec_env_t env, int32_t pass, int32_t s, int32_t slot) {
   auto* g = get_gpu(env); if (g) g->computeSetSampler(pass, s, slot);
 }
@@ -1323,6 +1327,7 @@ static NativeSymbol gpu_symbols[] = {
     {"create_shader_module_named", reinterpret_cast<void*>(gpu_create_shader_module_named), "(ii)i", nullptr},
     {"create_sampler", reinterpret_cast<void*>(gpu_create_sampler), "(ii)i", nullptr},
     {"create_texture_mips", reinterpret_cast<void*>(gpu_create_texture_mips), "(iiii)i", nullptr},
+    {"create_texture_3d", reinterpret_cast<void*>(gpu_create_texture_3d), "(iiii)i", nullptr},
     {"compute_set_sampler", reinterpret_cast<void*>(gpu_compute_set_sampler), "(iii)", nullptr},
     {"compute_set_texture_mip", reinterpret_cast<void*>(gpu_compute_set_texture_mip), "(iiiii)", nullptr},
     {"clear_texture", reinterpret_cast<void*>(gpu_clear_texture), "(iffff)", nullptr},

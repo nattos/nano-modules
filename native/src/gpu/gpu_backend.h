@@ -72,6 +72,16 @@ public:
     return createTexture(w, h, format);
   }
 
+  // Optional: 3D (volume) texture creation — w×h×d, one mip, sampled as
+  // `texture3d` and (with write usage) bound as a `texture_storage_3d`. Used by
+  // 3D-LUT effects. Default returns -1 (unsupported) so misuse is loud rather
+  // than silently binding the wrong texture type.
+  virtual int32_t createTexture3D(uint32_t w, uint32_t h, uint32_t d,
+                                  int32_t format) {
+    (void)w; (void)h; (void)d; (void)format;
+    return -1;
+  }
+
   // Optional: 2D-ARRAY texture creation (`layers` slices, all w×h, one mip),
   // sampled as `texture2d_array` in the shader. Used by the host text
   // compositor for the multi-page MSDF atlas. Default returns -1 (unsupported)
