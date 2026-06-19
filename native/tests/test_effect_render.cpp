@@ -618,6 +618,88 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
   CHECK(outFields["positions"].value("gpu", false) == true);
 }
 
+// Native functional coverage for the bindings-explicit render-PSO factory
+// (create_render_pso_layout). debug.gpu_test is SPV-shaded (cross-platform):
+// its module_init builds a render PSO via createRenderPSO(..., Bindings()), and
+// render() runs a compute pass that writes a fullscreen-quad vertex buffer, then
+// rasterizes it. The compute shader fills R=0, G=0.5, B=1.0 → a uniform
+// (0,128,255). This is the first NATIVE render through create_render_pso_layout
+// — web exercises it via gpu-pipeline.test.ts / gpu-host.ts; the native Metal
+// path had none (the effects calling these factories were assumed web-only).
+TEST_CASE("debug.gpu_test renders a solid color via create_render_pso_layout",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 32, H = 32; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "debug.gpu_test", "instance_key": "g" } ],
+    "instances": {}, "wires": []
+  })JSON");
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+
+  // Center pixel should be the compute-generated solid (0, 128, 255).
+  const size_t c = ((size_t)(H / 2) * W + (W / 2)) * 4;
+  INFO("center rgba = " << (int)px[c] << "," << (int)px[c+1] << ","
+                        << (int)px[c+2] << "," << (int)px[c+3]);
+  CHECK(std::abs((int)px[c + 0] -   0) <= 4);
+  CHECK(std::abs((int)px[c + 1] - 128) <= 6);
+  CHECK(std::abs((int)px[c + 2] - 255) <= 4);
+}
+
+// Native functional coverage for the MRT factories (create_instanced_render_pso
+// _mrt_layout + begin_render_pass_mrt). debug.mrt_test (SPV-shaded) renders a
+// fullscreen triangle into TWO color attachments — (1,0,0,1) to target0 and
+// (0,1,0,1) to target1 — then a combine compute merges (t0.r, t1.g, 0, 1). Both
+// attachments written → uniform YELLOW (255,255,0); if MRT silently degraded to
+// one attachment, target1 stays its black clear and the output is red. So this
+// both exercises the MRT host ABI natively and verifies real MRT behavior on
+// Metal (web covers it via platform-features.test.ts).
+TEST_CASE("debug.mrt_test writes both MRT attachments (native yellow round-trip)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 32, H = 32; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> black(W * H * 4, 0);
+  black[3] = 255;  // (the input is unused; mrt_test is a generator)
+  backend->writeTexture(inTex, W, H, black.data(), (uint32_t)black.size());
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "debug.mrt_test", "instance_key": "m" } ],
+    "instances": {}, "wires": []
+  })JSON");
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+
+  const size_t c = ((size_t)(H / 2) * W + (W / 2)) * 4;
+  INFO("center rgba = " << (int)px[c] << "," << (int)px[c+1] << ","
+                        << (int)px[c+2] << "," << (int)px[c+3] << " (yellow=MRT ok, red=degraded)");
+  CHECK(std::abs((int)px[c + 0] - 255) <= 4);   // R from target0
+  CHECK(std::abs((int)px[c + 1] - 255) <= 4);   // G from target1 — the MRT proof
+  CHECK(std::abs((int)px[c + 2] -   0) <= 4);
+}
+
 // Trap reporting: debug.trap_test's module_init publishes a schema then
 // deliberately traps. A trapped module_init can't be cleanly contained, so the
 // host instead flags it (EffectInstance::moduleInitTrapped, surfaced on the
