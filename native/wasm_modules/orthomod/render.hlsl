@@ -107,6 +107,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float hash_signed = hu * 2.0 - 1.0;
   float hue = primary_hue + hash_signed * scatter_amount;
 
-  float3 rgb = nano_hsv_to_rgb(float3(frac(hue), saturate(saturation), saturate(brightness * intensity)));
-  outputTex[gid.xy] = float4(rgb, base.a);
+  // Lit bars are additively blended over the input. The bar's emissive colour
+  // (value V = envelope-driven brightness × intensity, so it's effectively
+  // premultiplied by its own coverage) adds to the input RGB, and that same
+  // intensity adds to the input alpha — so the generator only ever INCREASES
+  // coverage (alpha goes up, never down) and contributes nothing as the
+  // envelope decays. Off / outside-inset pixels above already passthrough base.
+  float v = saturate(brightness * intensity);
+  float3 rgb = nano_hsv_to_rgb(float3(frac(hue), saturate(saturation), v));
+  outputTex[gid.xy] = float4(saturate(base.rgb + rgb), saturate(base.a + v));
 }
