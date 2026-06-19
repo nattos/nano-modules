@@ -220,4 +220,51 @@ describe('spectral_lfo custom inspector', () => {
     expect(info.orange).toBeGreaterThan(20);      // the satellite envelope is drawn in the preview
     expect(info.satMarkers).toBeGreaterThan(5);   // and a satellite marker on the pad
   });
+
+  it('hides Spread/Rotation until satellites are enabled, then reveals them', async () => {
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_vis'] = {
+          anchor: null,
+          chain: [{ type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' }],
+          wires: [],
+          instances: { 'slfo@0': { module_type: 'data.spectral_lfo', state: { satellites: false } } },
+        };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_vis');
+    })()`);
+    await new Promise(r => setTimeout(r, 1500));
+
+    const hasSatSliders = () => page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      const paths = new Set();
+      for (const el of walk(document)) {
+        if (el.tagName === 'SCALAR-SLIDER' && el.fieldPath) paths.add(el.fieldPath);
+      }
+      return { spread: paths.has('sat_spread'), rotation: paths.has('sat_rotation') };
+    })()`);
+
+    // Off → the controls that have no effect are not rendered.
+    const off = await hasSatSliders() as any;
+    expect(off.spread).toBe(false);
+    expect(off.rotation).toBe(false);
+
+    // Toggling satellites on reactively reveals them.
+    await page.evaluate(`(async () => {
+      window.appController.mutate('s', d => {
+        d.sketches['sk_vis'].instances['slfo@0'].state.satellites = true;
+      });
+    })()`);
+    await new Promise(r => setTimeout(r, 800));
+
+    const on = await hasSatSliders() as any;
+    expect(on.spread).toBe(true);
+    expect(on.rotation).toBe(true);
+  });
 });

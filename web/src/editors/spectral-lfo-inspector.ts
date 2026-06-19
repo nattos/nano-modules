@@ -472,10 +472,12 @@ export class SpectralLfoInspector extends MobxLitElement {
       <div class="section">Satellites</div>
       <field-toggle .fieldPath=${'satellites'} .label=${'Satellites'}
         .defaultValue=${0} .binding=${b}></field-toggle>
-      <scalar-slider style="width: 100%;" .fieldPath=${'sat_spread'} .label=${'Spread'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.3} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'sat_rotation'} .label=${'Rotation'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      ${Number(b.getValue('satellites') ?? 0) !== 0 ? html`
+        <scalar-slider style="width: 100%;" .fieldPath=${'sat_spread'} .label=${'Spread'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.3} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'sat_rotation'} .label=${'Rotation'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      ` : ''}
 
       <div class="section">Autopilot</div>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
