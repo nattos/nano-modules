@@ -92,9 +92,9 @@ export class IdeMonitor extends MobxLitElement {
           @click=${this.onTogglePause}>
         </ui-button>
         <ui-button
-          icon="la-redo"
-          title="Reset elapsed time"
-          @click=${this.onRestart}>
+          icon="la-step-forward"
+          title=${paused ? 'Step one frame' : 'Pause (then step)'}
+          @click=${this.onStepFrame}>
         </ui-button>
         <span class="stat">
           ${error ? `Error: ${error}` : `${fps} FPS`}
@@ -107,7 +107,13 @@ export class IdeMonitor extends MobxLitElement {
     appController.setPaused(!appState.local.userSettings.paused);
   };
 
-  private onRestart = () => {
-    appController.restartEngine();
+  // Frame-step: when running free, the first click pauses; subsequent clicks
+  // (now paused) advance one frame at a time.
+  private onStepFrame = () => {
+    if (appState.local.userSettings.paused) {
+      appController.stepFrame();
+    } else {
+      appController.setPaused(true);
+    }
   };
 }

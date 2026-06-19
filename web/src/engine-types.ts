@@ -143,7 +143,9 @@ export type WorkerCommand =
   | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: ParamValue }
   | { type: 'setTracePoints'; tracePoints: TracePoint[] }
   | { type: 'setPaused'; paused: boolean }
-  | { type: 'restart' }
+  // Advance exactly one frame (the IDE frame-step button). Meant to be sent
+  // while paused; the worker simulates one tick with a fixed nominal dt.
+  | { type: 'stepFrame' }
   | { type: 'setSketchInput'; sketchId: string; bitmap: ImageBitmap | null }
   | { type: 'reloadWasm'; wasmUrl: string }
   // Test-only: route fusion-eligible stages through the dispatcher

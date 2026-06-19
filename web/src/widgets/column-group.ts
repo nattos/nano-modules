@@ -253,13 +253,18 @@ export class ColumnGroup extends MobxLitElement {
       box-sizing: border-box;
       cursor: default;
       position: relative;
+      /* Contain inner z-indexes (e.g. the input marker's texture-drop-zone at
+       * z-index:10) to this device so they don't paint over the NEXT device's
+       * overlapping top tab and steal its clicks. Stacking between devices then
+       * follows DOM order, so a later device's tab still sits over the joint. */
+      isolation: isolate;
     }
     .effect-card[dragging] { opacity: 0.4; }
 
     /* Inner body of a device — border only on the LEFT and RIGHT so the
-     * outline of the whole shape (body + corner tabs) reads as one
-     * continuous path. Top/bottom borders are drawn by the middle-edge
-     * strips inside each .tab-area. */
+     * outline of the whole shape (body + tab joints) reads as one
+     * continuous path. The top/bottom edges are drawn by the .tab-area
+     * notch/tab pieces above and below the body. */
     .effect-card-inner, .chain-marker-inner {
       width: 100%;
       background: var(--device-bg);
@@ -346,12 +351,17 @@ export class ColumnGroup extends MobxLitElement {
       opacity: 0.9;
     }
 
-    /* --- Device tabs — left & right corner tabs that span the full card
-     * width. Each tab-area is a strip above or below the body that holds
-     * two 48px corner rectangles and a 1px middle-edge line tracing the
-     * body's top/bottom border between them. Together with the body's
-     * left/right borders this produces a single continuous outline around
-     * the whole card with no interior seams.
+    /* --- Device tabs — the joint between two stacked devices. Each device's
+     * TOP tab overlaps (margin-top:-8px) the BOTTOM tab of the device above it
+     * so the two share ONE 8px band:
+     *   · the upper device's bottom forms an inverted-U NOTCH — its two 48px
+     *     corners stay at body width (filled + bottom/outer-side border) while
+     *     the middle is recessed (empty);
+     *   · the lower device's top forms a TAB — a full-height middle block
+     *     (filled + top edge + two side walls) that rises into and fills that
+     *     notch, with empty corners so the notch's filled corners show through.
+     * Corners belong to the upper device, the tab to the lower one, and a
+     * single 1px border zig-zags around the joint as one solid object.
      * ---------------------------------------------------------------- */
     .tab-area {
       position: relative;
@@ -360,73 +370,80 @@ export class ColumnGroup extends MobxLitElement {
       flex-shrink: 0;
       cursor: pointer;
     }
+    /* Pull the top tab up over the bottom tab of the device above so they
+     * occupy the same band (the notch and the tab that fills it). z-index lifts
+     * it above this device's own body (contained by the card's isolation) so
+     * the enlarged hit target below can sit over the body's top padding. */
+    .tab-area.top { margin-top: -8px; z-index: 1; }
+    /* The visible tab is only 8px tall — too thin to click comfortably. This
+     * invisible pad enlarges the insert target downward into the device below,
+     * staying within the header's 6px top padding so it never covers the header
+     * controls. Clicks on it bubble to .tab-area's handler (same insert index). */
+    .tab-area.top::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 14px;
+    }
+
     .corner-tab {
       position: absolute;
       top: 0;
       width: 48px;
       height: 8px;
-      background: var(--device-bg);
       box-sizing: border-box;
     }
     .corner-tab.left  { left: 0; }
     .corner-tab.right { right: 0; }
 
-    /* Top tab-area: tab top/sides are stroked; the middle-edge draws the
-     * body's top border between the two corner tabs. */
-    .tab-area.top .corner-tab {
-      border-top: 1px solid var(--device-border);
-      border-bottom: none;
+    /* Bottom tab = inverted-U notch: filled corners with the device's bottom +
+     * outer-side border; recessed (empty) middle filled by the tab below. */
+    .tab-area.bottom .corner-tab {
+      background: var(--device-bg);
+      border-bottom: 1px solid var(--device-border);
     }
-    .tab-area.top .corner-tab.left  { border-left:  1px solid var(--device-border); border-right: none; }
-    .tab-area.top .corner-tab.right { border-right: 1px solid var(--device-border); border-left:  none; }
+    .tab-area.bottom .corner-tab.left  { border-left:  1px solid var(--device-border); }
+    .tab-area.bottom .corner-tab.right { border-right: 1px solid var(--device-border); }
+    .tab-area.bottom .middle-edge { display: none; }
+
+    /* Top tab = the tab fitting into the notch above: a full-height middle
+     * block (top edge + both side walls) with empty corners. */
+    .tab-area.top .corner-tab { background: none; }
     .tab-area.top .middle-edge {
       position: absolute;
       left: 48px;
       right: 48px;
-      bottom: 0;
-      height: 1px;
-      background: var(--device-border);
-    }
-
-    /* Bottom tab-area is mirrored. */
-    .tab-area.bottom .corner-tab {
-      border-bottom: 1px solid var(--device-border);
-      border-top: none;
-    }
-    .tab-area.bottom .corner-tab.left  { border-left:  1px solid var(--device-border); border-right: none; }
-    .tab-area.bottom .corner-tab.right { border-right: 1px solid var(--device-border); border-left:  none; }
-    .tab-area.bottom .middle-edge {
-      position: absolute;
-      left: 48px;
-      right: 48px;
       top: 0;
-      height: 1px;
-      background: var(--device-border);
+      bottom: 0;
+      background: var(--device-bg);
+      border-top:   1px solid var(--device-border);
+      border-left:  1px solid var(--device-border);
+      border-right: 1px solid var(--device-border);
+      box-sizing: border-box;
     }
 
-    /* Hover / selection for tabs. */
-    .tab-area:hover .corner-tab {
-      border-color: var(--device-sel-border);
-      background: rgba(65, 105, 225, 0.25);
-    }
-    .tab-area:hover .middle-edge {
-      background: var(--device-sel-border);
-    }
-    .tab-area[selected] .corner-tab {
-      border-color: var(--device-sel-border);
-      background: var(--device-sel-bg);
-    }
-    .tab-area[selected] .middle-edge {
-      background: var(--device-sel-border);
-    }
-    /* When the whole card is selected, its tabs follow the same blue. */
+    /* Hover / selection — light up whichever pieces this tab actually shows:
+     * the notch corners (bottom tab) or the tab block (top tab). */
+    .tab-area:hover .corner-tab,
+    .tab-area[selected] .corner-tab,
     .effect-card[selected] > .tab-area .corner-tab,
     .chain-marker[selected] > .tab-area .corner-tab {
       border-color: var(--device-sel-border);
     }
+    .tab-area.bottom:hover .corner-tab,
+    .tab-area.bottom[selected] .corner-tab,
+    .effect-card[selected] > .tab-area.bottom .corner-tab,
+    .chain-marker[selected] > .tab-area.bottom .corner-tab {
+      background: var(--device-sel-bg);
+    }
+    .tab-area:hover .middle-edge,
+    .tab-area[selected] .middle-edge,
     .effect-card[selected] > .tab-area .middle-edge,
     .chain-marker[selected] > .tab-area .middle-edge {
-      background: var(--device-sel-border);
+      border-color: var(--device-sel-border);
+      background: var(--device-sel-bg);
     }
 
     /* --- Drop zones (invisible hit regions inside tabs, used for drag-drop target discovery) --- */
@@ -1478,11 +1495,12 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
 
   /**
-   * Render a tab strip above or below a device. The strip spans the full
-   * card width with two 48px corner tabs at the left and right edges and
-   * a 1px "middle-edge" between them tracing the body's top/bottom
-   * border. Top and bottom strips of adjacent cards sit flush against
-   * each other with no vertical gap.
+   * Render a tab strip above or below a device — half of the interlocking
+   * joint between two stacked devices (see the .tab-area CSS for the full
+   * geometry). A 'bottom' strip is the inverted-U notch (filled corners,
+   * recessed middle); a 'top' strip is the tab that overlaps and fills the
+   * notch above it. The notch's `insertIdx` and the tab's below it resolve to
+   * the same chain index, so a click on either inserts at the same spot.
    *
    * The whole strip is one insert-point: click to select, double-click
    * to insert a new effect at `insertIdx`. Drop-zone covers the whole

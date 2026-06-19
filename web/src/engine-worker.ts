@@ -287,10 +287,8 @@ async function handleCommand(cmd: WorkerCommand) {
       // one-shot paused indicator so the next pause re-notifies the UI.
       if (!paused) { lastTime = performance.now() / 1000; pausedFramePosted = false; }
       break;
-    case 'restart':
-      elapsed = 0;
-      lastTime = performance.now() / 1000;
-      markDirty();
+    case 'stepFrame':
+      await stepOneFrame();
       break;
     case 'setSketchInput':
       // Phase 7 wires this to the GPU; for now we just stash the bitmap so
@@ -501,6 +499,39 @@ async function frame() {
 
   frameInFlight = false;
   requestAnimationFrame(frame);
+}
+
+// Advance exactly one frame on demand (the IDE's frame-step button, sent while
+// paused). Mirrors the live frame() body but uses a fixed nominal dt so a step
+// is deterministic regardless of the wall-clock gap between clicks, and does
+// NOT re-arm the rAF loop (the engine stays paused). Guarded by frameInFlight
+// so it can't overlap an in-flight rAF frame.
+async function stepOneFrame() {
+  if (!running || frameInFlight) return;
+  frameInFlight = true;
+  try {
+    const dt = 1 / 60;
+    elapsed += dt;
+
+    if (bridgeCore) bridgeCore.tick();
+
+    await simulateTick(dt);
+    captureAndSendFrame();
+
+    if (stateGeneration !== lastBroadcastGeneration) {
+      broadcastState();
+      lastBroadcastGeneration = stateGeneration;
+    }
+
+    if (gpuDevice) {
+      inFlightFences.push(gpuDevice.queue.onSubmittedWorkDone());
+      if (inFlightFences.length > MAX_FRAMES_IN_FLIGHT) {
+        await inFlightFences.shift();
+      }
+    }
+  } finally {
+    frameInFlight = false;
+  }
 }
 
 // ---- Sketch input frame source ----

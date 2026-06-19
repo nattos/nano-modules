@@ -117,7 +117,9 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   try {
     const settings = await loadUserSettings();
     appController.loadInitialUserSettings(settings);
-    if (settings.paused) engine.setPaused(true);
+    // Route through the controller so the engine AND the IDE video preview both
+    // start paused (the preview pump may begin in enablePersistence() below).
+    if (settings.paused) appController.setPaused(true);
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
   }

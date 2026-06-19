@@ -33,6 +33,7 @@ interface VideoPump {
   sketchId: string;
   clip: ClipHandle;
   playhead: Playhead;
+  service: VideoPlaybackService;
   width: number;
   height: number;
   rafId: number;
@@ -51,6 +52,17 @@ export class SketchInputManager {
    */
   private switchToken = 0;
   private pump: VideoPump | null = null;
+
+  // The IDE video preview is a UI-only mechanism (decoded on the main thread,
+  // pushed to the engine as bitmaps), so it must mirror the engine's pause /
+  // frame-step itself. Rather than the wall clock, the playhead runs off
+  // `videoClockMs`, a virtual clock that only advances while running (by real
+  // dt) or by one engine frame per `stepFrame()`. `lastWallMs` tracks real
+  // time between rAF ticks; it keeps updating while paused so resuming doesn't
+  // jump the playhead by the whole paused duration.
+  private paused = false;
+  private videoClockMs = 0;
+  private lastWallMs = 0;
 
   // Lazily-created main-thread GPU video stack. The service decodes DXV
   // (WASM) and any browser-playable format (<video>) into GPU textures on
@@ -181,6 +193,25 @@ export class SketchInputManager {
     this.pump = null;
   }
 
+  /** Mirror the engine's pause state: freeze the video preview on its current
+   *  frame (the playhead stops advancing and no new frames are pushed). */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+  }
+
+  /** Advance the video preview by exactly one engine frame. Awaited by the
+   *  caller so the new bitmap reaches the worker before the engine's own step
+   *  command (worker messages are processed in order). No-op without a pump. */
+  async stepFrame(): Promise<void> {
+    const session = this.pump;
+    if (!session || session.stopped || session.busy) return;
+    // One engine frame == 1/60 s, matching the executor's fixed step dt, so the
+    // video and sim stay in temporal lock-step regardless of the source fps.
+    this.videoClockMs += 1000 / 60;
+    session.busy = true;
+    await this.pumpFrame(session);
+  }
+
   /**
    * Drive a sketch's texture_input from the VideoPlaybackService. The
    * service handles DXV (WASM) and any browser-playable format
@@ -217,10 +248,14 @@ export class SketchInputManager {
     const fps = info.fps > 0 ? info.fps : PLAYBACK_FPS;
     const playhead = new Playhead(
       defaultParams('loop', info.frameCount, fps), info.frameCount);
-    playhead.start(performance.now());
+    // Run the playhead off the virtual clock (see `videoClockMs`), starting
+    // both at 0 so pause / frame-step are honoured.
+    playhead.start(0);
+    this.videoClockMs = 0;
+    this.lastWallMs = performance.now();
 
     const session: VideoPump = {
-      sketchId, clip, playhead,
+      sketchId, clip, playhead, service,
       width: info.width, height: info.height,
       rafId: 0, stopped: false, busy: false,
     };
@@ -229,17 +264,28 @@ export class SketchInputManager {
     const tick = () => {
       if (session.stopped) return;
       session.rafId = requestAnimationFrame(tick);
+      const wallNow = performance.now();
+      const wallDt = wallNow - this.lastWallMs;
+      this.lastWallMs = wallNow;
+      // Frozen while the engine is paused: keep the last frame and don't
+      // advance. Stepping while paused goes through stepFrame() instead.
+      if (this.paused) return;
+      this.videoClockMs += wallDt;
       if (session.busy) return;        // a previous pull is still decoding
       session.busy = true;
-      void this.pumpFrame(session, service);
+      void this.pumpFrame(session);
     };
+    // Push frame 0 right away so a preview that loads while paused shows the
+    // first frame instead of nothing (the rAF tick skips pumping while paused).
+    session.busy = true;
+    void this.pumpFrame(session);
     session.rafId = requestAnimationFrame(tick);
   }
 
-  private async pumpFrame(session: VideoPump, service: VideoPlaybackService) {
+  private async pumpFrame(session: VideoPump) {
     try {
-      const frameIdx = session.playhead.frameAt(performance.now());
-      const texHandle = await service.pull(session.clip, frameIdx);
+      const frameIdx = session.playhead.frameAt(this.videoClockMs);
+      const texHandle = await session.service.pull(session.clip, frameIdx);
       if (session.stopped || texHandle <= 0) return;
       const tex = this.gpuHost!.getTextureByHandle(texHandle);
       if (!tex) return;

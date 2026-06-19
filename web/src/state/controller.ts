@@ -1511,15 +1511,20 @@ export class AppController {
     this.engine?.setTracePoints(tracePoints);
   }
 
-  /** Pause/resume the engine. Stored in user settings so it persists. */
+  /** Pause/resume the engine. Stored in user settings so it persists. The IDE's
+   *  UI-only video preview mirrors the same state so it freezes too. */
   setPaused(paused: boolean) {
     this.setUserSetting('paused', paused);
     this.engine?.setPaused(paused);
+    this.inputManager.setPaused(paused);
   }
 
-  /** Reset elapsed time and force a redraw. */
-  restartEngine() {
-    this.engine?.restart();
+  /** Advance by a single frame (used while paused). Step the UI-driven video
+   *  preview first so its new frame reaches the worker before the engine's step
+   *  command — worker messages are processed in order. */
+  async stepFrame() {
+    await this.inputManager.stepFrame();
+    this.engine?.stepFrame();
   }
 
   /** Inject a frame source for a sketch's `texture_input`. Pass null to clear. */

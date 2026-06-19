@@ -127,8 +127,9 @@ export class EngineProxy {
     this.send({ type: 'setPaused', paused });
   }
 
-  restart() {
-    this.send({ type: 'restart' });
+  /** Advance exactly one frame (intended while paused). */
+  stepFrame() {
+    this.send({ type: 'stepFrame' });
   }
 
   /**
