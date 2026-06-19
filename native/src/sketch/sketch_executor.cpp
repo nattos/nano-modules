@@ -883,10 +883,13 @@ int32_t SketchExecutor::execute(
           const float dmax = (float)tap.value("destMax", 1.0);
           // Polarity prescale (identity unless the wire forces signed/unsigned
           // against an opposite EXPLICIT source decl — see normalization).
+          // Applied to the raw value BEFORE applyTapMod, so the conversion's
+          // affine bias is inside what `scale` multiplies — i.e. `scale` scales
+          // the converted swing around its neutral (0 for signed), not after it.
           const float preScale = (float)tap.value("preScale", 1.0);
           const float preBias  = (float)tap.value("preBias", 0.0);
           auto fold = [&](float railVal) -> float {
-            const float shaped = tap_mod::applyTapMod(railVal, mod) * preScale + preBias;
+            const float shaped = tap_mod::applyTapMod(railVal * preScale + preBias, mod);
             return hasMag
                 ? tap_mod::applyMagnitude(canon, shaped, isSigned, combine, mixFactor, dmin, dmax)
                 : tap_mod::combineTap(true, canon, shaped, combine, mixFactor);
@@ -1466,10 +1469,13 @@ void SketchExecutor::applyReadTaps(
         const float dmax = (float)tap.value("destMax", 1.0);
         // Polarity prescale (identity unless the wire forces signed/unsigned
         // against an opposite EXPLICIT source decl — see normalization).
+        // Applied to the raw value BEFORE applyTapMod, so the conversion's
+        // affine bias is inside what `scale` multiplies — i.e. `scale` scales
+        // the converted swing around its neutral (0 for signed), not after it.
         const float preScale = (float)tap.value("preScale", 1.0);
         const float preBias  = (float)tap.value("preBias", 0.0);
         auto fold = [&](float railVal) -> float {
-          const float shaped = tap_mod::applyTapMod(railVal, mod) * preScale + preBias;
+          const float shaped = tap_mod::applyTapMod(railVal * preScale + preBias, mod);
           return hasMag
               ? tap_mod::applyMagnitude(hasCanon ? canon : dmin, shaped, isSigned,
                                         combine, mixFactor, dmin, dmax)

@@ -676,6 +676,39 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +1 → range max
     CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // signed replace → midpoint
   }
+
+  // The polarity prescale must apply BEFORE `scale` (it's a reinterpretation of
+  // the source range), so `scale` scales the bipolar swing around its neutral
+  // (0 for signed). Regression: when the prescale ran AFTER applyTapMod, the
+  // affine bias landed outside `scale`, so a sub-1 scale dragged the effective
+  // value toward -1 instead of holding the add-neutral (the base value).
+  SECTION("scale on a forced-signed add wire holds the neutral, not -1") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": 0.25 } }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
+          "magnitude": "signed", "combine": "add", "mod": { "scale": 0.5 } }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    REQUIRE(md["bc"].contains("brightness"));
+    const auto& b = md["bc"]["brightness"];
+    // src 0.5 → bipolar 0 → *scale 0 → add 0: holds the base (0.5), not 0.0.
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));
+    CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // add → base
+    // Half-scale halves the swing symmetrically about the base: 0.5 ± 0.5.
+    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // src 0 → -0.5 → 0.0
+    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +0.5 → 1.0
+  }
 }
 
 // A trapping module_init must not poison the rest of the bundle. The native
