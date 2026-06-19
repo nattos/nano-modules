@@ -143,7 +143,7 @@ describe('Platform features', () => {
       frame.expectUniformColor({ r: 128, g: 0, b: 255, a: 255 }, 2);
     });
 
-    // The same copy, but routed through the sketch-executor (chain) path, whose
+    // The same copy, but routed through the chain executor path, whose
     // intermediate pool backs tex_out. That pool was COPY_SRC-only, so a
     // gpu::Device::copy(scratch, tex_out) was a silent WebGPU validation failure
     // there (it only worked in the single-effect harness above, whose output has
