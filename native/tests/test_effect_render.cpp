@@ -618,6 +618,37 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
   CHECK(outFields["positions"].value("gpu", false) == true);
 }
 
+// Trap reporting: debug.trap_test's module_init publishes a schema then
+// deliberately traps. A trapped module_init can't be cleanly contained, so the
+// host instead flags it (EffectInstance::moduleInitTrapped, surfaced on the
+// registry) and logs loudly — turning what was a silent, hours-to-diagnose
+// schema corruption into an obvious signal. trap_test is registered LAST so it
+// poisons nothing; this asserts the flag fires for it and NOT for a normal
+// effect, and that the real effects all registered intact.
+TEST_CASE("a trapping module_init is detected and flagged, not silent",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+
+  // trap_test is flagged as trapped, and still published its pre-trap schema.
+  const auto* trap = registry.find("debug.trap_test");
+  REQUIRE(trap != nullptr);
+  CHECK(trap->moduleInitTrapped);
+  CHECK(!trap->schemaFields.empty());
+
+  // A normal effect is NOT flagged and registered its schema. (Because trap_test
+  // is last, nothing it could poison comes after it — the whole bundle is clean.)
+  const auto* normal = registry.find("video.motion_blur");
+  REQUIRE(normal != nullptr);
+  CHECK_FALSE(normal->moduleInitTrapped);
+  CHECK(!normal->schemaFields.empty());
+}
+
 // Debug counters (Debug Info panel). fillDebugStats writes 7 int32s:
 // [effectsExecuted, standaloneDispatches, fusedRuns, fusedStages,
 //  dispatchesSaved, gpuDispatches, identitySkipped]. Exercise the three paths a

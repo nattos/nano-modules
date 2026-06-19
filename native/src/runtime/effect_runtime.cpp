@@ -50,7 +50,28 @@ void EffectInstance::doModuleInit() {
   // host calls land here (setActive for native, effect_instance for WASM).
   if (desc_.isWasm()) {
     uint32_t argv[4] = {0};
-    driveWasm(desc_.w_module_init, 0, argv);
+    desc_.wasm_host->set_effect_instance(desc_.wasm_module_id, this);
+    bool ok = desc_.wasm_host->call_indirect(desc_.wasm_module_id,
+                                             desc_.w_module_init, 0, argv);
+    desc_.wasm_host->set_effect_instance(desc_.wasm_module_id, nullptr);
+    if (!ok) {
+      // A trapped module_init can't be cleanly contained (WAMR doesn't unwind
+      // the C stack pointer on a trap, and effects keep type-level state — PSO
+      // handles etc. — in the shared instance, so re-instantiating to clear the
+      // leak would wipe earlier effects' setup). The realistic defense is to make
+      // the trap LOUD: this both fails this effect's own setup and poisons every
+      // effect registered after it in the same bundle (they trap on the leaked
+      // stack and silently publish empty schemas). The usual cause is an
+      // incomplete host ABI — an effect calling a gpu/state import the bundles
+      // host never registered. The exception text names the missing symbol.
+      module_init_trapped_ = true;
+      fprintf(stderr,
+              "[nano] WARNING: effect '%s' module_init trapped: %s\n"
+              "       Effects registered after it in this bundle may fail to "
+              "publish their schema. Likely an unregistered host import — "
+              "complete the bundles host ABI.\n",
+              desc_.id.c_str(), desc_.wasm_host->last_error().c_str());
+    }
     return;
   }
   runtime_->setActive(this);

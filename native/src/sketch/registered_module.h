@@ -48,6 +48,12 @@ struct RegisteredModule {
    *  (so it's a passthrough), but it must still render() so it can UPLOAD its
    *  buffers; the executor calls doRender for it in the passthrough branch. */
   bool hasBufferOutput = false;
+
+  /** True if this effect's WASM module_init trapped during registration (so its
+   *  schema may be partial/empty, and it likely poisoned later effects in the
+   *  bundle). Surfaced from EffectInstance::moduleInitTrapped() for diagnostics
+   *  and tests. */
+  bool moduleInitTrapped = false;
 };
 
 }  // namespace sketch_executor

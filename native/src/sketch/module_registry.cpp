@@ -90,6 +90,7 @@ bool ModuleRegistry::registerWasmEffect(
   if (!proto) return false;
 
   RegisteredModule reg;
+  reg.moduleInitTrapped = proto->moduleInitTrapped();
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());

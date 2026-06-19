@@ -105,6 +105,7 @@ wasm_build \
   ../motion_rect/main.cpp \
   ../motion_swarm/main.cpp \
   ../motion_static/main.cpp \
-  ../motion_blur/main.cpp
+  ../motion_blur/main.cpp \
+  ../trap_test/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

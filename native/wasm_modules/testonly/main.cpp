@@ -74,6 +74,9 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_swarm)
 
 NANO_DECLARE_INSTANCE_EFFECT(motion_static)
 
+// Deliberately traps in module_init — verifies aux-stack trap containment.
+NANO_DECLARE_INSTANCE_EFFECT(trap_test)
+
 NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
 extern "C" {
@@ -298,6 +301,22 @@ void nano_module_main() {
         "video",
         "blur,motion,velocity,render-outputs",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
+    });
+
+    // Registered LAST: trap_test's module_init deliberately traps. A trapped
+    // module_init can't be contained (it poisons the shared bundle instance's C
+    // stack), so it must come after every real effect — nothing is registered
+    // after it to be poisoned. The host logs the trap loudly and flags it
+    // (EffectInstance::moduleInitTrapped); the paired test asserts that flag.
+    // See trap_test/main.cpp.
+    nano::registerEffect({
+        2,
+        "debug.trap_test",
+        "Trap Test",
+        "Test-only effect whose module_init deliberately traps (trap-reporting check).",
+        "debug",
+        "test,trap,internal",
+        NANO_INSTANCE_LIFECYCLE(trap_test),
     });
 }
 

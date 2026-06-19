@@ -98,6 +98,12 @@ class EffectInstance : public wasm::EffectHostSink {
 
   const std::string& id() const { return desc_.id; }
   const std::string& schemaJson() const { return schema_json_; }
+  // True if this (prototype) effect's WASM module_init trapped during
+  // registration. A trapped module_init both fails to finish its own type-level
+  // setup AND poisons later effects in the same shared bundle instance (the C
+  // stack pointer is left un-unwound), so they trap too — surfacing this is the
+  // fast way to diagnose an incomplete host ABI. See doModuleInit.
+  bool moduleInitTrapped() const { return module_init_trapped_; }
   const std::string& metadataId() const { return metadata_id_; }
   const std::string& metadataVersion() const { return metadata_version_; }
 
@@ -261,6 +267,7 @@ class EffectInstance : public wasm::EffectHostSink {
   std::string metadata_id_;
   std::string metadata_version_;
   std::string schema_json_;
+  bool module_init_trapped_ = false;
   void (*on_state_ready_)(void* self) = nullptr;
 
   std::unordered_map<std::string, int> texture_fields_;
