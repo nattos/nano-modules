@@ -5,6 +5,7 @@
 // EffectInstance driver, and verifies the output pixels brighten.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <cmath>
 #include <fstream>
@@ -568,6 +569,81 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
   double m = mean_rgb(px);
   INFO("output mean " << m << " (expect ~128 grey)");
   CHECK(std::abs(m - 128.0) < 20.0);
+}
+
+// Modulation telemetry: the executor records, for every modulated scalar input,
+// the effective resolved value + the swing band the wire can drive it through
+// (lastModulationData(), the source of the editor's slider band). Same sketch
+// as the forward-wire repro: data.lfo(output 0.5) -> bc.brightness, magnitude
+// auto/unsigned/replace into brightness's [0,1]. The band must span the source's
+// declared [0,1] (sweeping lfo.output 0..1 → replaceVal 0..1) and the effective
+// value must be 0.5 (the live output mid-mapped). A `mod` remap on the wire must
+// narrow the band to the remap's output range.
+TEST_CASE("executor records modulated-input value + swing band", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  SECTION("plain wire — band spans the source's declared [0,1]") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    REQUIRE(md["bc"].contains("brightness"));
+    const auto& b = md["bc"]["brightness"];
+    CHECK(b["value"].get<double>() == Catch::Approx(0.5).margin(0.01));
+    CHECK(b["min"].get<double>()   == Catch::Approx(0.0).margin(0.01));
+    CHECK(b["max"].get<double>()   == Catch::Approx(1.0).margin(0.01));
+  }
+
+  SECTION("a remap on the wire narrows the band to the remap output range") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
+          "mod": { "remap": { "inMin": 0.0, "inMax": 1.0, "outMin": 0.25, "outMax": 0.75 } } }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    REQUIRE(md["bc"].contains("brightness"));
+    const auto& b = md["bc"]["brightness"];
+    CHECK(b["value"].get<double>() == Catch::Approx(0.5).margin(0.01));   // remap midpoint
+    CHECK(b["min"].get<double>()   == Catch::Approx(0.25).margin(0.01));
+    CHECK(b["max"].get<double>()   == Catch::Approx(0.75).margin(0.01));
+  }
 }
 
 // A trapping module_init must not poison the rest of the bundle. The native

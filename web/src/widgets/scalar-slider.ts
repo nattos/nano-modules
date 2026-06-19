@@ -18,6 +18,35 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { CancelReason, PointerDragOp } from '../utils/pointer-drag-op';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 
+/** A modulation band's geometry as percentages across a slider's [min, max]. */
+export interface ModBandGeometry {
+  /** Left edge of the band (0..100). */
+  lo: number;
+  /** Right edge of the band (0..100). */
+  hi: number;
+  /** Band width (0..100), = hi − lo. */
+  width: number;
+  /** Effective-value marker position (0..100). */
+  tick: number;
+}
+
+/**
+ * Map a modulation band `{ value, min, max }` (in field units) into slider-space
+ * percentages, clamped to [0,100]. Pure + exported so it can be unit-tested
+ * without mounting the element. `mod.min`/`mod.max` may arrive in either order.
+ */
+export function modBandGeometry(
+  min: number, max: number, mod: { value: number; min: number; max: number },
+): ModBandGeometry {
+  const norm = (v: number): number => {
+    if (!(Number.isFinite(min) && Number.isFinite(max) && max > min)) return 0;
+    return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+  };
+  const lo = norm(Math.min(mod.min, mod.max));
+  const hi = norm(Math.max(mod.min, mod.max));
+  return { lo, hi, width: Math.max(0, hi - lo), tick: norm(mod.value) };
+}
+
 @customElement('scalar-slider')
 export class ScalarSlider extends LitElement implements FieldEditorElement {
   @property() fieldPath = '';
@@ -285,22 +314,13 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
 
   /** Render the modulation band + effective-value tick over the bottom edge. */
   private renderModStrip(mod: { value: number; min: number; max: number }) {
-    const lo = this.modNorm(Math.min(mod.min, mod.max));
-    const hi = this.modNorm(Math.max(mod.min, mod.max));
-    const tick = this.modNorm(mod.value);
+    const g = modBandGeometry(this.min, this.max, mod);
     return html`
       <div class="mod-strip">
-        <div class="mod-band" style="left: ${lo}%; width: ${Math.max(0, hi - lo)}%"></div>
-        <div class="mod-tick" style="left: ${tick}%"></div>
+        <div class="mod-band" style="left: ${g.lo}%; width: ${g.width}%"></div>
+        <div class="mod-tick" style="left: ${g.tick}%"></div>
       </div>
     `;
-  }
-
-  /** Map a value into 0..100% across [min, max] (clamped). */
-  private modNorm(v: number): number {
-    if (!(Number.isFinite(this.min) && Number.isFinite(this.max) && this.max > this.min)) return 0;
-    const t = (v - this.min) / (this.max - this.min);
-    return Math.max(0, Math.min(100, t * 100));
   }
 
   private formatValue(val: number): string {
