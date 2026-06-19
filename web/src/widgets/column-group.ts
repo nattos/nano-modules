@@ -1287,6 +1287,11 @@ export class ColumnGroup extends MobxLitElement {
         if (ps && fieldPath in ps) return ps[fieldPath];
         return plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
       },
+      getModulation: (fieldPath: string) => {
+        const md = appState.local.engine.modulationData[entry.instance_key];
+        const m = md?.[fieldPath];
+        return m && typeof m.value === 'number' ? m : null;
+      },
       setValue: (fieldPath: string, value: any) => {
         appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
       },

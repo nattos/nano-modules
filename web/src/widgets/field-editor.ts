@@ -25,6 +25,15 @@ export interface FieldBinding {
   /** Read the current value of a field path from instance state. */
   getValue(fieldPath: string): any;
 
+  /**
+   * Live modulation telemetry for a field driven by a wire: the effective
+   * resolved `value` and the swing `[min, max]` band the modulation can reach
+   * (in the field's own units). Returns null when the field is not modulated.
+   * Lets a slider draw the band + effective marker over the user's base value.
+   * Optional — widgets must tolerate its absence.
+   */
+  getModulation?(fieldPath: string): { value: number; min: number; max: number } | null;
+
   /** Write a value to a field path in instance state (one-shot, creates undo point). */
   setValue(fieldPath: string, value: any): void;
 

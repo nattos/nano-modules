@@ -122,6 +122,37 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       opacity: 1;
     }
 
+    /* Modulation overlay — a thin strip along the bottom edge showing the
+       range a wire can drive this field through (.mod-band) and the current
+       effective value (.mod-tick), in a warm highlight distinct from the
+       blue base-value bar. */
+    .mod-strip {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 3px;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .mod-band {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: var(--app-mod-color, #e0a32a);
+      opacity: 0.6;
+      border-radius: 1px;
+    }
+    .mod-tick {
+      position: absolute;
+      top: -1px;
+      bottom: -1px;
+      width: 2px;
+      margin-left: -1px;
+      background: var(--app-mod-color, #e0a32a);
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.7);
+    }
+
     .value-display {
       position: relative;
       z-index: 1;
@@ -156,12 +187,37 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       this.setAttribute('tabindex', '0');
     }
     this.addEventListener('keydown', this.handleHostKeyDown);
+    this.startModPoll();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener('keydown', this.handleHostKeyDown);
     this.dragOp?.dispose();
+    if (this.modRaf !== 0) {
+      cancelAnimationFrame(this.modRaf);
+      this.modRaf = 0;
+    }
+  }
+
+  // Modulation values move every frame (an LFO etc.), but the slider isn't a
+  // MobX reactive element, so poll the binding each animation frame and only
+  // re-render when the band actually changes (or appears/disappears). One cheap
+  // lookup per frame when idle; no churn for unmodulated sliders.
+  private modRaf = 0;
+  private lastModKey = '';
+  private startModPoll() {
+    if (typeof requestAnimationFrame !== 'function' || this.modRaf !== 0) return;
+    const tick = () => {
+      this.modRaf = requestAnimationFrame(tick);
+      const m = this.binding?.getModulation?.(this.fieldPath) ?? null;
+      const key = m ? `${m.value}|${m.min}|${m.max}` : '';
+      if (key !== this.lastModKey) {
+        this.lastModKey = key;
+        this.requestUpdate();
+      }
+    };
+    this.modRaf = requestAnimationFrame(tick);
   }
 
   /** When a binding is present, read the current value from it. */
@@ -211,6 +267,8 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       barWidth = ((clamped - this.min) / (this.max - this.min)) * 100;
     }
 
+    const mod = this.binding?.getModulation?.(this.fieldPath) ?? null;
+
     return html`
       ${labelEl}
       <div class="control"
@@ -220,8 +278,29 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
         <div class="value-display">
           ${this.formatValue(val)}
         </div>
+        ${mod ? this.renderModStrip(mod) : nothing}
       </div>
     `;
+  }
+
+  /** Render the modulation band + effective-value tick over the bottom edge. */
+  private renderModStrip(mod: { value: number; min: number; max: number }) {
+    const lo = this.modNorm(Math.min(mod.min, mod.max));
+    const hi = this.modNorm(Math.max(mod.min, mod.max));
+    const tick = this.modNorm(mod.value);
+    return html`
+      <div class="mod-strip">
+        <div class="mod-band" style="left: ${lo}%; width: ${Math.max(0, hi - lo)}%"></div>
+        <div class="mod-tick" style="left: ${tick}%"></div>
+      </div>
+    `;
+  }
+
+  /** Map a value into 0..100% across [min, max] (clamped). */
+  private modNorm(v: number): number {
+    if (!(Number.isFinite(this.min) && Number.isFinite(this.max) && this.max > this.min)) return 0;
+    const t = (v - this.min) / (this.max - this.min);
+    return Math.max(0, Math.min(100, t * 100));
   }
 
   private formatValue(val: number): string {
