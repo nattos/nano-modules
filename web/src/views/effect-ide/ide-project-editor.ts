@@ -39,6 +39,7 @@ import '../../widgets/taps-overlay';
 // here too, or they never appear in the IDE.
 import '../../editors/shape-fold-inspector';
 import '../../editors/phase-fold-inspector';
+import '../../editors/spectral-lfo-inspector';
 
 @customElement('ide-project-editor')
 export class IdeProjectEditor extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
