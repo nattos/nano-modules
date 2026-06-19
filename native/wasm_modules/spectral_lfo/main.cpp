@@ -246,6 +246,10 @@ void module_init() {
       .floatField("output_a", 0.0f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       .floatField("output_b", 0.0f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       .floatField("output_c", 0.0f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
+      // A multi-channel modulation source: `output` plus the autopilot/phase/
+      // satellite scalar outputs are all selectable channels.
+      .capability(state::Capability::ModulationSource)
+      .capability(state::Capability::ModulationSourceMulti)
   );
   state::log("spectral_lfo: init");
 }

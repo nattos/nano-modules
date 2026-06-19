@@ -215,6 +215,11 @@ export class WasmHost {
   // Schema (populated by set_schema)
   schema: Record<string, any> = {};
 
+  // Declarative capability tags from the schema's top-level `capabilities`
+  // array (e.g. ['modulation_source', 'modulation_source_single']). Classifies
+  // what the effect is FOR; see host.h Capability. Empty when none declared.
+  capabilities: string[] = [];
+
   // Pending patches for the current on_state_patched call
   pendingPatches: PatchOp[] = [];
 
@@ -532,6 +537,9 @@ export class WasmHost {
           try {
             const schemaJson = JSON.parse(schemaStr);
             this.schema = schemaJson.fields ?? {};
+            this.capabilities = Array.isArray(schemaJson.capabilities)
+              ? schemaJson.capabilities.filter((c: any) => typeof c === 'string')
+              : [];
 
             // Derive params and ioDecls from schema for backward compat
             this.params = [];
@@ -588,6 +596,7 @@ export class WasmHost {
             }
           } catch {
             this.schema = {};
+            this.capabilities = [];
           }
 
           if (bc) {

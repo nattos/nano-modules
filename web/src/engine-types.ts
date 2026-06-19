@@ -28,6 +28,12 @@ export interface PluginInfo {
    * scalar ParamInfo model.
    */
   schema?: Record<string, any>;
+  /**
+   * Declarative capability tags from the schema's top-level `capabilities`
+   * array (e.g. `['modulation_source', 'modulation_source_single']`). Classifies
+   * what the effect is FOR. See `state::Capability` in host.h. Empty when none.
+   */
+  capabilities?: string[];
 }
 
 export interface ParamInfo {

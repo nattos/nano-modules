@@ -1311,6 +1311,7 @@ function broadcastState() {
         })),
         io,
         schema,
+        capabilities: matchedHost?.capabilities ?? [],
       });
     }
   }

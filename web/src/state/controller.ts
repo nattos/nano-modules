@@ -1213,6 +1213,8 @@ export class AppController {
         id: rp.id,
         version: rp.version ?? '0.0.0',
         params, io, schema,
+        // Forwarded by the barrel host when present; harmless [] otherwise.
+        capabilities: Array.isArray((rp as any).capabilities) ? (rp as any).capabilities : [],
       };
     });
 

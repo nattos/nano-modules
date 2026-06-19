@@ -42,6 +42,9 @@ void module_init() {
       // unsigned. min/max is the modulation-range contract: the UI band samples
       // this declared range, NOT the live amplitude-scaled swing (intentional).
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
+      // A single-channel modulation source: one canonical scalar output.
+      .capability(state::Capability::ModulationSource)
+      .capability(state::Capability::ModulationSourceSingle)
   );
   state::log("LFO: init");
 }

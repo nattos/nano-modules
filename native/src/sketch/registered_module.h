@@ -24,6 +24,11 @@ struct RegisteredModule {
   /** Parsed schema `fields` sub-object. Fed to the augmenter so it knows every
    *  module's structured I/O shape. */
   nlohmann::json schemaFields;
+  /** Declarative capability tags from the schema's top-level `capabilities`
+   *  array (e.g. "modulation_source", "modulation_source_single"). Classifies
+   *  what the effect is FOR; see state::Capability in host.h. Carried so the
+   *  barrel host can forward it to a remote editor. Empty when none declared. */
+  std::vector<std::string> capabilities;
   /** Slash-joined paths for every input texture leaf (excludes primary
    *  "tex_in"). Zeroed before each frame's tap routing so stale handles can't
    *  leak through. */

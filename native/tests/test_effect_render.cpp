@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <vector>
@@ -709,6 +710,40 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // src 0 → -0.5 → 0.0
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +0.5 → 1.0
   }
+}
+
+// Effects declare queryable "capabilities" — a top-level schema array, separate
+// from the per-field io flags. The two-tier vocabulary pairs an UMBRELLA tag
+// with an arity/channel-SPECIFIC one (channels themselves stay implicit: the
+// magnitude'd scalar outputs). A plain image effect declares none. This drives
+// the editor's modulation palettes. Exercises host.h .capability() emission →
+// schema JSON → native ModuleRegistry parse, end to end.
+TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+
+  // data.lfo (env_lfo lifecycle) → single-channel modulation source: declares
+  // both the umbrella and the single-channel specialization, not the multi one.
+  const auto* lfo = registry.find("data.lfo");
+  REQUIRE(lfo != nullptr);
+  const auto& caps = lfo->capabilities;
+  auto has = [&](const char* s) {
+    return std::find(caps.begin(), caps.end(), std::string(s)) != caps.end();
+  };
+  CHECK(has("modulation_source"));
+  CHECK(has("modulation_source_single"));
+  CHECK_FALSE(has("modulation_source_multi"));
+
+  // A plain image effect declares no capabilities (the array is absent).
+  const auto* bc = registry.find("video.brightness_contrast");
+  REQUIRE(bc != nullptr);
+  CHECK(bc->capabilities.empty());
 }
 
 // A trapping module_init must not poison the rest of the bundle. The native

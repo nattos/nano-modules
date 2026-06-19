@@ -333,6 +333,38 @@ struct Version {
 // Schema builder — unified module declaration
 // ========================================================================
 
+// Effect "capabilities": declarative, queryable tags that classify what an
+// effect is FOR, beyond its individual schema fields. They ride the schema JSON
+// as a top-level `capabilities` array (sibling to `fields`) and surface to the
+// editor unchanged. Additive over — and orthogonal to — the existing implicit
+// capability signals (`category` "generator.*", the `is_identity` predicate,
+// and `registerFusion*`), which are left as-is.
+//
+// Two-tier vocabulary: a general UMBRELLA tag plus an arity/channel-SPECIFIC
+// tag. An effect declares BOTH (e.g. a single-output LFO is a ModulationSource
+// AND a ModulationSourceSingle), so the editor can query the umbrella ("is this
+// any kind of modulation source?") or specialise on arity. Channels themselves
+// are NOT re-listed here — they are the effect's scalar output fields that carry
+// a `magnitude` declaration.
+enum class Capability {
+  ModulationSource,        // produces modulation signal(s) on scalar outputs
+  ModulationSourceSingle,  //   ...exactly one canonical channel (auto-wireable)
+  ModulationSourceMulti,   //   ...several channels; the user picks one
+  ModulationShaper,        // transforms modulation value(s): N in -> M out
+  ModulationShaperUnary,   //   ...1 in -> 1 out (e.g. the envelope remapper)
+};
+
+inline const char* capabilityName(Capability c) {
+  switch (c) {
+    case Capability::ModulationSource:       return "modulation_source";
+    case Capability::ModulationSourceSingle: return "modulation_source_single";
+    case Capability::ModulationSourceMulti:  return "modulation_source_multi";
+    case Capability::ModulationShaper:       return "modulation_shaper";
+    case Capability::ModulationShaperUnary:  return "modulation_shaper_unary";
+  }
+  return "";
+}
+
 class Schema {
 public:
   Schema() {
@@ -580,15 +612,36 @@ public:
     return *this;
   }
 
+  /// Declare an effect capability (a queryable classification tag — see the
+  /// Capability enum). Chainable and repeatable; declare BOTH the umbrella tag
+  /// and the arity/channel-specific tag. Emitted as a top-level `capabilities`
+  /// array sibling to `fields`.
+  Schema& capability(Capability c) {
+    const char* s = capabilityName(c);
+    if (capCount_ > 0 && capLen_ < (int)sizeof(capBuf_) - 1) capBuf_[capLen_++] = ',';
+    if (capLen_ < (int)sizeof(capBuf_) - 1) capBuf_[capLen_++] = '"';
+    while (*s && capLen_ < (int)sizeof(capBuf_) - 2) capBuf_[capLen_++] = *s++;
+    if (capLen_ < (int)sizeof(capBuf_) - 1) capBuf_[capLen_++] = '"';
+    capCount_++;
+    return *this;
+  }
+
   /// Finalize the schema JSON and call the host function.
   void apply(const char* moduleId, Version version) const {
     // Close the JSON
     char finalized[16384];
     int flen = len_;
-    if (flen > (int)sizeof(finalized) - 4) flen = (int)sizeof(finalized) - 4;
+    if (flen > (int)sizeof(finalized) - 64) flen = (int)sizeof(finalized) - 64;
     for (int i = 0; i < flen; i++) finalized[i] = buf_[i];
-    finalized[flen++] = '}';
-    finalized[flen++] = '}';
+    finalized[flen++] = '}';   // close "fields"
+    // Top-level `capabilities` array (sibling to "fields"), when any declared.
+    if (capCount_ > 0) {
+      const char* pfx = ",\"capabilities\":[";
+      for (const char* p = pfx; *p && flen < (int)sizeof(finalized) - 4; ++p) finalized[flen++] = *p;
+      for (int i = 0; i < capLen_ && flen < (int)sizeof(finalized) - 4; i++) finalized[flen++] = capBuf_[i];
+      if (flen < (int)sizeof(finalized) - 2) finalized[flen++] = ']';
+    }
+    finalized[flen++] = '}';   // close root
 
     state_set_schema(moduleId, std::strlen(moduleId), version.packed(),
                      finalized, flen);
@@ -602,6 +655,13 @@ private:
   // in apply() the same size.
   char buf_[16384];
   int len_ = 0;
+  // Capability tags, accumulated as the body of the top-level `capabilities`
+  // array (e.g. `"modulation_source","modulation_source_single"`) and emitted
+  // in apply(). Kept separate from buf_ because the `fields` object is still
+  // open while fields are declared.
+  char capBuf_[512];
+  int capLen_ = 0;
+  int capCount_ = 0;
   // Per-depth field count: index 0 = top-level fields, 1+ = nested objects.
   int objectFieldCounts_[8] = {0,0,0,0,0,0,0,0};
   int objectDepth_ = 0;

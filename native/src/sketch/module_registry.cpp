@@ -50,6 +50,9 @@ bool ModuleRegistry::registerEffect(
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());
+    if (parsed.contains("capabilities") && parsed["capabilities"].is_array())
+      for (const auto& c : parsed["capabilities"])
+        if (c.is_string()) reg.capabilities.push_back(c.get<std::string>());
   } else {
     reg.schemaFields = nlohmann::json::object();
   }
@@ -94,6 +97,9 @@ bool ModuleRegistry::registerWasmEffect(
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());
+    if (parsed.contains("capabilities") && parsed["capabilities"].is_array())
+      for (const auto& c : parsed["capabilities"])
+        if (c.is_string()) reg.capabilities.push_back(c.get<std::string>());
   } else {
     reg.schemaFields = nlohmann::json::object();
   }
