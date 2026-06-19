@@ -822,6 +822,45 @@ TEST_CASE("debug.lut3d_test round-trips colors through a native 3D LUT",
   CHECK(white[0] >= 253); CHECK(white[1] >= 253); CHECK(white[2] >= 253);
 }
 
+// Native coverage for read-write storage textures (createTexture R32F bound
+// read_write + an in-place RMW within one dispatch). debug.rw_storage_test (now
+// HLSL→SPV, no longer web-guarded) writes 0.25 to an r32float scratch, reads it
+// back, adds 0.5, reads again, and writes the 0.75 result to the rgba8 output —
+// so a passing run requires the binding to honor BOTH reads and writes on the
+// same r32float storage texture. 0.75 → round(0.75*255) = 191. First NATIVE
+// exercise of the Metal read-write storage path (web: platform-features).
+TEST_CASE("debug.rw_storage_test does an in-place r32f read-write RMW (native)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [ { "type": "module", "module_type": "debug.rw_storage_test", "instance_key": "rw" } ],
+    "instances": {}, "wires": []
+  })JSON");
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+
+  // Every pixel should be the uniform RMW result 0.75 → ~191.
+  const size_t c = ((size_t)(H / 2) * W + (W / 2)) * 4;
+  INFO("center rgba = " << (int)px[c] << "," << (int)px[c+1] << ","
+                        << (int)px[c+2] << "," << (int)px[c+3]);
+  CHECK(std::abs((int)px[c + 0] - 191) <= 2);
+  CHECK(std::abs((int)px[c + 1] - 191) <= 2);
+  CHECK(std::abs((int)px[c + 2] - 191) <= 2);
+}
+
 // Trap reporting: debug.trap_test's module_init publishes a schema then
 // deliberately traps. A trapped module_init can't be cleanly contained, so the
 // host instead flags it (EffectInstance::moduleInitTrapped, surfaced on the

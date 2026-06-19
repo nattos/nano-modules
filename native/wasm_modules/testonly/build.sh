@@ -51,6 +51,12 @@ echo "  atomic_test shaders compiled (SPV: count + visualize)"
 # and a combine compute pass.
 compile_shaders_full_spv mrt_test
 
+# rw_storage_test — read-write storage-texture round trip. Two storage
+# textures of different formats: an r32f read_write scratch (pinned via
+# [[vk::image_format]]) + an rgba8unorm write output (rewritten by the
+# registerShaderSPV override). Plain SPV — no build-time sed.
+compile_shaders_compute_spv rw_storage_test
+
 # lut3d_test — 3D-texture round trip. init fills a 16^3 identity LUT
 # (texture_storage_3d write), apply does a nearest-cell lookup (sampled
 # texture_3d + storage_2d output). Storage formats (rgba8unorm) are supplied

@@ -6,9 +6,11 @@
  * adds 0.5, writes back, then reads again — proving the binding really
  * supports both reads and writes within a dispatch.
  *
- * The shader is hand-authored WGSL because the project's HLSL pipeline
- * currently squashes all storage textures to rgba8unorm-write via sed.
- * It's only a few lines, so this is the path of least resistance.
+ * Authored as HLSL (compute.hlsl) → SPV → {MSL native, WGSL web}, the same
+ * cross-platform pipeline as every other effect. The two storage textures
+ * have different formats: the scratch is pinned to r32f via
+ * [[vk::image_format]] (read_write); the output is left at DXC's default and
+ * the registerShaderSPV("rgba8unorm","write") override rewrites only it on web.
  *
  * Class-like instance model: module_init() compiles the shared compute
  * PSO + publishes the schema once per type; each chain entry gets its own
@@ -18,27 +20,9 @@
 
 #include <gpu.h>
 #include <host.h>
+#include "rw_storage_test_shaders.h"
 
 namespace rw_storage_test {
-
-// Single shader: scratch[xy] = 0.25; scratch[xy] += 0.5; out = scratch[xy].
-// scratch is r32float read_write storage; out is rgba8unorm write storage.
-static const char COMPUTE_WGSL[] = R"WGSL(
-@group(0) @binding(0) var scratch  : texture_storage_2d<r32float, read_write>;
-@group(0) @binding(1) var outputTex: texture_storage_2d<rgba8unorm, write>;
-
-@compute @workgroup_size(8, 8, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = textureDimensions(outputTex);
-  if (gid.x >= dim.x || gid.y >= dim.y) { return; }
-  let p = vec2<i32>(i32(gid.x), i32(gid.y));
-  textureStore(scratch, p, vec4<f32>(0.25, 0.0, 0.0, 0.0));
-  let r0 = textureLoad(scratch, p).r;
-  textureStore(scratch, p, vec4<f32>(r0 + 0.5, 0.0, 0.0, 0.0));
-  let r1 = textureLoad(scratch, p).r;
-  textureStore(outputTex, p, vec4<f32>(r1, r1, r1, 1.0));
-}
-)WGSL";
 
 // Per-instance state. One per chain entry. Holds the lazily-(re)created
 // read-write scratch storage texture + its size trackers.
@@ -61,10 +45,14 @@ void module_init() {
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
-  // WebGPU only — Metal would need MSL, but tests run in browser.
-  if (gpu::Device::backend() != gpu::Backend::WebGPU) return;
 
-  auto cs = gpu::Device::createShaderModule(COMPUTE_WGSL);
+  // scratch is pinned to r32f,read_write in the shader; the override rewrites
+  // the output's default rgba32float,read_write → rgba8unorm,write on web
+  // (rgba8 can't be read_write in WebGPU). Native takes formats from the bound
+  // textures.
+  state::registerShaderSPV("rw_storage_test", COMPUTE_SPV, COMPUTE_SPV_SIZE,
+                           "rgba8unorm", "write");
+  auto cs = gpu::Device::createShaderModuleByName("rw_storage_test");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F)
