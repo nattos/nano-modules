@@ -1274,14 +1274,18 @@ export class ColumnGroup extends MobxLitElement {
     return {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
-        const ps = appState.local.engine.pluginStates[entry.instance_key];
-        if (ps && fieldPath in ps) return ps[fieldPath];
+        // Authored value (loaded/saved state + edits) wins. pluginStates is
+        // seeded with schema DEFAULTS for input fields the module never
+        // republishes (it only set_val()s its outputs), so trusting it first
+        // would shadow just-loaded state with defaults a frame after load.
         const sketch = appState.database.sketches[this.sketchId];
         const instState = sketch?.instances?.[entry.instance_key]?.state;
-        return instState?.[fieldPath]
-          ?? entry.params?.[fieldPath]
-          ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue
-          ?? 0;
+        if (instState && fieldPath in instState) return instState[fieldPath];
+        if (entry.params && fieldPath in entry.params) return entry.params[fieldPath];
+        // Live published value (effect outputs / broadcasts) from the engine.
+        const ps = appState.local.engine.pluginStates[entry.instance_key];
+        if (ps && fieldPath in ps) return ps[fieldPath];
+        return plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
       },
       setValue: (fieldPath: string, value: any) => {
         appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
@@ -1595,12 +1599,14 @@ export class ColumnGroup extends MobxLitElement {
         const binding: FieldBinding = {
           instanceKey: entry.instance_key,
           getValue: (fieldPath: string) => {
-            const ps = appState.local.engine.pluginStates[entry.instance_key];
-            if (ps && fieldPath in ps) return ps[fieldPath];
+            // Authored value wins over pluginStates (seeded with input defaults
+            // the module never republishes); see buildFieldBinding for why.
             const sketch = appState.database.sketches[this.sketchId];
             const instState = sketch?.instances?.[entry.instance_key]?.state;
-            return instState?.[fieldPath]
-              ?? plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
+            if (instState && fieldPath in instState) return instState[fieldPath];
+            const ps = appState.local.engine.pluginStates[entry.instance_key];
+            if (ps && fieldPath in ps) return ps[fieldPath];
+            return plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
           },
           setValue: (fieldPath: string, value: any) => {
             appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);

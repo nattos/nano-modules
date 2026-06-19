@@ -114,4 +114,51 @@ describe('spectral_lfo custom inspector', () => {
     expect(vals.x).toBeLessThan(0.45);   // moved left of center
     expect(vals.y).toBeGreaterThan(0.55); // moved up from center
   });
+
+  it('keeps loaded input values after the engine starts (no pop to defaults)', async () => {
+    // Regression: pluginStates is seeded with schema defaults for inputs the
+    // module never republishes, so the inspector briefly showed loaded values
+    // then popped to defaults a frame after the engine ticked. The binding must
+    // prefer the authored (loaded) value over the seeded default.
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_load'] = {
+          anchor: null,
+          chain: [{ type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' }],
+          wires: [],
+          instances: { 'slfo@0': { module_type: 'data.spectral_lfo',
+            state: { rate: 0.8, amplitude: 0.3, morph_x: 0.2, morph_y: 0.7, metric: 3 } } },
+        };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_load');
+    })()`);
+    // Wait well past the first engine ticks — the bug popped to defaults here.
+    await new Promise(r => setTimeout(r, 2500));
+
+    const read = await page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      for (const el of walk(document)) {
+        if (el.tagName === 'SPECTRAL-LFO-XY-PAD' && el.binding) {
+          const b = el.binding;
+          return { rate: b.getValue('rate'), amplitude: b.getValue('amplitude'),
+                   morph_x: b.getValue('morph_x'), morph_y: b.getValue('morph_y'),
+                   metric: b.getValue('metric') };
+        }
+      }
+      return null;
+    })()`) as any;
+
+    expect(read).toBeTruthy();
+    expect(read.rate).toBeCloseTo(0.8, 5);        // not the 0.4 default
+    expect(read.amplitude).toBeCloseTo(0.3, 5);   // not the 1.0 default
+    expect(read.morph_x).toBeCloseTo(0.2, 5);     // not the 0.5 default
+    expect(read.morph_y).toBeCloseTo(0.7, 5);
+    expect(Number(read.metric)).toBe(3);          // not the 0 default
+  });
 });
