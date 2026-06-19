@@ -645,6 +645,37 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     CHECK(b["min"].get<double>()   == Catch::Approx(0.25).margin(0.01));
     CHECK(b["max"].get<double>()   == Catch::Approx(0.75).margin(0.01));
   }
+
+  // Forcing `signed` on a source that EXPLICITLY declares unsigned [0,1]
+  // prescales the value to [-1,1] (0→-1, 1→1), so the band spans the FULL dest
+  // range. Without the prescale (the old face-value behavior), an unsigned 0..1
+  // value read as signed only reaches the upper half ([0.5,1.0]); the [0,1] band
+  // below proves the rescale is active. data.lfo.output declares "unsigned".
+  SECTION("forced signed on an explicit-unsigned source rescales to bipolar") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
+          "magnitude": "signed" }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    REQUIRE(md["bc"].contains("brightness"));
+    const auto& b = md["bc"]["brightness"];
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));  // 0.5→0 (bipolar) → mid
+    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // src 0 → -1 → range min
+    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +1 → range max
+    CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // signed replace → midpoint
+  }
 }
 
 // A trapping module_init must not poison the rest of the bundle. The native

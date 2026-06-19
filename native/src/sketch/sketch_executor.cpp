@@ -593,16 +593,29 @@ int32_t SketchExecutor::execute(
           rtap["srcMax"] = srcDef.is_object() ? srcDef.value("max", 1.0) : 1.0;
           std::string mag = w.value("magnitude", std::string("auto"));
           if (mag != "absolute") {
-            // auto → the source output field's `magnitude` decl (default unsigned).
-            if (mag == "auto") {
-              std::string decl;
-              if (reg && reg->schemaFields.is_object()) {
-                auto fit = reg->schemaFields.find(srcField);
-                if (fit != reg->schemaFields.end() && fit->is_object())
-                  decl = fit->value("magnitude", std::string());
-              }
-              mag = (decl == "signed") ? "signed" : "unsigned";
+            // Source output field's explicit `magnitude` decl ("" when absent).
+            std::string decl;
+            if (reg && reg->schemaFields.is_object()) {
+              auto fit = reg->schemaFields.find(srcField);
+              if (fit != reg->schemaFields.end() && fit->is_object())
+                decl = fit->value("magnitude", std::string());
             }
+            if (mag == "auto") {
+              // auto → take the source's declared polarity as-is (default unsigned).
+              mag = (decl == "signed") ? "signed" : "unsigned";
+            } else if (decl == "unsigned" && mag == "signed") {
+              // Source EXPLICITLY unipolar [0,1] forced bipolar: prescale the
+              // value to [-1,1] (0→-1, 1→1) so it spans the full signed range.
+              rtap["preScale"] = 2.0;
+              rtap["preBias"] = -1.0;
+            } else if (decl == "signed" && mag == "unsigned") {
+              // Source EXPLICITLY bipolar [-1,1] forced unipolar: prescale to
+              // [0,1] (−1→0, 1→1) so the negative half maps into range.
+              rtap["preScale"] = 0.5;
+              rtap["preBias"] = 0.5;
+            }
+            // (No explicit decl, or decl matches the forced mode → no prescale:
+            //  the forced polarity is taken at face value, as before.)
             // Dest field's [min,max] (default 0..1, e.g. dashboard knobs).
             double dmin = 0.0, dmax = 1.0;
             const RegisteredModule* dreg =
@@ -868,8 +881,12 @@ int32_t SketchExecutor::execute(
           const bool isSigned = tap.value("magnitude", std::string()) == "signed";
           const float dmin = (float)tap.value("destMin", 0.0);
           const float dmax = (float)tap.value("destMax", 1.0);
+          // Polarity prescale (identity unless the wire forces signed/unsigned
+          // against an opposite EXPLICIT source decl — see normalization).
+          const float preScale = (float)tap.value("preScale", 1.0);
+          const float preBias  = (float)tap.value("preBias", 0.0);
           auto fold = [&](float railVal) -> float {
-            const float shaped = tap_mod::applyTapMod(railVal, mod);
+            const float shaped = tap_mod::applyTapMod(railVal, mod) * preScale + preBias;
             return hasMag
                 ? tap_mod::applyMagnitude(canon, shaped, isSigned, combine, mixFactor, dmin, dmax)
                 : tap_mod::combineTap(true, canon, shaped, combine, mixFactor);
@@ -1447,8 +1464,12 @@ void SketchExecutor::applyReadTaps(
         const bool isSigned = tap.value("magnitude", std::string()) == "signed";
         const float dmin = (float)tap.value("destMin", 0.0);
         const float dmax = (float)tap.value("destMax", 1.0);
+        // Polarity prescale (identity unless the wire forces signed/unsigned
+        // against an opposite EXPLICIT source decl — see normalization).
+        const float preScale = (float)tap.value("preScale", 1.0);
+        const float preBias  = (float)tap.value("preBias", 0.0);
         auto fold = [&](float railVal) -> float {
-          const float shaped = tap_mod::applyTapMod(railVal, mod);
+          const float shaped = tap_mod::applyTapMod(railVal, mod) * preScale + preBias;
           return hasMag
               ? tap_mod::applyMagnitude(hasCanon ? canon : dmin, shaped, isSigned,
                                         combine, mixFactor, dmin, dmax)

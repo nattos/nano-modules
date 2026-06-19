@@ -204,10 +204,18 @@ export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
  * user hand-scaling it. See `applyMagnitude` in tap-mod.ts for the exact math.
  * - `auto` (default): pick signed/unsigned from the SOURCE output field's
  *   optional `magnitude` schema declaration; unsigned when undeclared.
- * - `signed`: source treated as bipolar −1..1.
- * - `unsigned`: source treated as unipolar 0..1.
+ * - `signed`: source treated as bipolar −1..1. If the source EXPLICITLY declares
+ *   the opposite (unsigned [0,1]), the value is prescaled 0..1 → −1..1 (0→−1,
+ *   1→1) so it spans the full bipolar range, rather than read at face value.
+ * - `unsigned`: source treated as unipolar 0..1. If the source EXPLICITLY
+ *   declares the opposite (signed −1..1), the value is prescaled −1..1 → 0..1
+ *   (−1→0, 1→1) so the negative half maps into range.
  * - `absolute`: source is already in the dest's scale (legacy behavior — uses
  *   the manual `mod.remap`).
+ *
+ * The signed/unsigned prescale (resolved + applied in the executor's wire
+ * normalization, so it's web/native identical) only fires against an EXPLICIT
+ * opposite declaration; an undeclared source is taken at face value.
  *
  * Output schema fields may optionally declare `magnitude: 'signed' | 'unsigned'`
  * (read web-side from the schema; declared in the effects' C++ schema later).
