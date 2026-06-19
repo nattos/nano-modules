@@ -113,6 +113,22 @@ Key rules:
   `// nano_threadgroup: X Y Z` comment that the Metal backend parses per-PSO. Don't reintroduce a
   hardcoded `threadsPerThreadgroup`.
 
+### Wire modulation + telemetry
+
+Wires modulate a scalar input from a producer output. The whole transform pipeline lives in ONE
+lock-step file `native/src/sketch/tap_mod.h` ↔ `web/src/tap-mod.ts` — keep them byte-identical
+(shared goldens: `test_tap_mod.cpp` + `tap-mod.test.ts`). Pipeline per wire: `applyTapMod` (remap
+curves, then `scale` applied **last** — in modulation space) → `applyMagnitude`/`combineTap` (fold
+into the dest field's `[min,max]` per the combine mode + signed/unsigned `magnitude`). An output's
+declared `floatField` min/max **is** its modulation-range contract (per-effect param changes like LFO
+amplitude are intentionally not reflected).
+
+To surface modulation in the UI, the executor records per modulated input `{value, min, max, neutral}`
+(`recordModBand` — samples the lock-step fold over the source range, so web≡native for free) into
+`lastModulationData()`. It rides a dedicated `modulationDataDiff` frame channel (cloned from
+`pluginStatesDiff`) to `appState.local.engine.modulationData`; sliders read it via
+`FieldBinding.getModulation()` and draw a band + neutral-anchored fill.
+
 ## Node Development
 
 Nodes are defined with `defineNode`/`definePrimitiveNode` from `src/structor/type-helpers.ts`:
