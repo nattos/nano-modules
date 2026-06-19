@@ -73,9 +73,11 @@ describe('applyTapMod', () => {
     expect(applyTapMod(5, mod)).toBeCloseTo(7, 6);
   });
 
-  it('applies scale before remap', () => {
-    const mod: TapMod = { scale: 2, remap: { inMin: 0, inMax: 10, outMin: 0, outMax: 1 } };
-    expect(applyTapMod(5, mod)).toBeCloseTo(1.0, 6); // 5*2=10 -> t=1 -> 1
+  it('applies scale AFTER remap (scales the modulation output, not the input)', () => {
+    // Non-zero outMin makes the order observable: remap(5)=150, then *2 = 300.
+    // (Old scale-first would be remap(5*2=10)=200.)
+    const mod: TapMod = { scale: 2, remap: { inMin: 0, inMax: 10, outMin: 100, outMax: 200 } };
+    expect(applyTapMod(5, mod)).toBeCloseTo(300, 6);
   });
 });
 

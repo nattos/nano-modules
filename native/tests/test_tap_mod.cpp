@@ -82,9 +82,11 @@ TEST_CASE("applyTapMod maps to outMin when inMin == inMax", "[tap_mod]") {
   REQUIRE_THAT(applyTapMod(5.0f, m), WithinAbs(7.0, 1e-5));
 }
 
-TEST_CASE("applyTapMod applies scale before remap", "[tap_mod]") {
-  Mod m = remap(0, 10, 0, 1); m.scale = 2.0f;
-  REQUIRE_THAT(applyTapMod(5.0f, m), WithinAbs(1.0, 1e-5));  // 5*2=10 -> 1
+TEST_CASE("applyTapMod applies scale AFTER remap", "[tap_mod]") {
+  // Non-zero outMin makes the order observable: remap(5)=150, then *2 = 300.
+  // (Old scale-first would be remap(5*2=10)=200.)
+  Mod m = remap(0, 10, 100, 200); m.scale = 2.0f;
+  REQUIRE_THAT(applyTapMod(5.0f, m), WithinAbs(300.0, 1e-4));
 }
 
 TEST_CASE("combineTap seeds the rail when there is no existing value", "[tap_mod]") {

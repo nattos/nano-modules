@@ -73,10 +73,13 @@ inline float shapeOut(float t, Curve curve, float exponent) {
   return 1.0f - baseCurve(1.0f - t, curve, exponent);
 }
 
-/// Apply a tap's range remapper to a scalar. Pipeline: scale → normalize to [0,1]
-/// → (saturate|foldback) → curveIn (ease-in) → curveOut (ease-out) → [outMin,outMax].
+/// Apply a tap's range remapper to a scalar. Pipeline: normalize to [0,1] →
+/// (saturate|foldback) → curveIn (ease-in) → curveOut (ease-out) → [outMin,outMax]
+/// → scale. `scale` is applied LAST (in parameter-modulation space, before the
+/// downstream magnitude unit-normalization) so it scales the modulation output
+/// around its neutral point rather than the raw input.
 inline float applyTapMod(float value, const Mod& mod) {
-  float v = value * mod.scale;
+  float v = value;
   if (mod.hasRemap) {
     float denom = mod.inMax - mod.inMin;
     float t = denom != 0.0f ? (v - mod.inMin) / denom : 0.0f;
@@ -90,7 +93,7 @@ inline float applyTapMod(float value, const Mod& mod) {
 
     v = mod.outMin + t * (mod.outMax - mod.outMin);
   }
-  return v;
+  return v * mod.scale;
 }
 
 /// Fold a write tap's (already modded) value into the rail's current frame value.

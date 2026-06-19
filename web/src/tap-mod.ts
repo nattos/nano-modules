@@ -56,12 +56,15 @@ function shapeOut(t: number, curve: TapCurve, exponent: number): number {
 
 /**
  * Apply a tap's range remapper to a scalar. Returns `value` unchanged when `mod`
- * is absent or empty. Pipeline: scale → normalize to [0,1] → (saturate|foldback)
- * → curveIn (ease-in) → curveOut (ease-out) → map to [outMin,outMax].
+ * is absent or empty. Pipeline: normalize to [0,1] → (saturate|foldback) →
+ * curveIn (ease-in) → curveOut (ease-out) → map to [outMin,outMax] → scale.
+ * `scale` is applied LAST (in parameter-modulation space, before the downstream
+ * magnitude unit-normalization) so it scales the modulation output around its
+ * neutral point rather than the raw input.
  */
 export function applyTapMod(value: number, mod?: TapMod): number {
   if (!mod) return value;
-  let v = value * (mod.scale ?? 1);
+  let v = value;
   const r = mod.remap;
   if (r) {
     const denom = r.inMax - r.inMin;
@@ -80,7 +83,7 @@ export function applyTapMod(value: number, mod?: TapMod): number {
 
     v = r.outMin + t * (r.outMax - r.outMin);
   }
-  return v;
+  return v * (mod.scale ?? 1);
 }
 
 /**
