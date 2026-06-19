@@ -20,23 +20,29 @@ import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './f
 
 /** A modulation band's geometry as percentages across a slider's [min, max]. */
 export interface ModBandGeometry {
-  /** Left edge of the band (0..100). */
+  /** Left edge of the full range band (0..100). */
   lo: number;
-  /** Right edge of the band (0..100). */
+  /** Right edge of the full range band (0..100). */
   hi: number;
-  /** Band width (0..100), = hi − lo. */
+  /** Full band width (0..100), = hi − lo. */
   width: number;
-  /** Effective-value marker position (0..100). */
-  tick: number;
+  /** Left edge of the filled portion (neutral→value), 0..100. */
+  fillLo: number;
+  /** Filled-portion width (0..100) — grows/shrinks with the live value. */
+  fillWidth: number;
 }
 
 /**
- * Map a modulation band `{ value, min, max }` (in field units) into slider-space
- * percentages, clamped to [0,100]. Pure + exported so it can be unit-tested
- * without mounting the element. `mod.min`/`mod.max` may arrive in either order.
+ * Map a modulation band `{ value, min, max, neutral }` (in field units) into
+ * slider-space percentages, clamped to [0,100]. The full band spans [min,max];
+ * the FILL spans from the neutral anchor to the live value, so the bar fills in
+ * from the neutral point instead of a lone moving tick. Pure + exported for unit
+ * testing. `mod.min`/`mod.max` may arrive in either order; `neutral` falls back
+ * to the value (zero-width fill) when absent.
  */
 export function modBandGeometry(
-  min: number, max: number, mod: { value: number; min: number; max: number },
+  min: number, max: number,
+  mod: { value: number; min: number; max: number; neutral?: number },
 ): ModBandGeometry {
   const norm = (v: number): number => {
     if (!(Number.isFinite(min) && Number.isFinite(max) && max > min)) return 0;
@@ -44,7 +50,12 @@ export function modBandGeometry(
   };
   const lo = norm(Math.min(mod.min, mod.max));
   const hi = norm(Math.max(mod.min, mod.max));
-  return { lo, hi, width: Math.max(0, hi - lo), tick: norm(mod.value) };
+  const v = norm(mod.value);
+  const n = norm(mod.neutral ?? mod.value);
+  return {
+    lo, hi, width: Math.max(0, hi - lo),
+    fillLo: Math.min(n, v), fillWidth: Math.abs(v - n),
+  };
 }
 
 @customElement('scalar-slider')
@@ -151,10 +162,11 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       opacity: 1;
     }
 
-    /* Modulation overlay — a thin strip along the bottom edge showing the
-       range a wire can drive this field through (.mod-band) and the current
-       effective value (.mod-tick), in a warm highlight distinct from the
-       blue base-value bar. */
+    /* Modulation overlay — a thin strip along the bottom edge. .mod-band is the
+       dim track showing the full range a wire can drive this field through;
+       .mod-fill is the bright bar that fills from the neutral anchor to the live
+       effective value, so fast modulation reads as a growing bar not a flickering
+       dot. Warm highlight, distinct from the blue base-value bar. */
     .mod-strip {
       position: absolute;
       left: 0;
@@ -169,17 +181,16 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       top: 0;
       bottom: 0;
       background: var(--app-mod-color, #e0a32a);
-      opacity: 0.6;
+      opacity: 0.28;
       border-radius: 1px;
     }
-    .mod-tick {
+    .mod-fill {
       position: absolute;
-      top: -1px;
-      bottom: -1px;
-      width: 2px;
-      margin-left: -1px;
+      top: 0;
+      bottom: 0;
+      min-width: 1px;
       background: var(--app-mod-color, #e0a32a);
-      box-shadow: 0 0 2px rgba(0, 0, 0, 0.7);
+      border-radius: 1px;
     }
 
     .value-display {
@@ -240,7 +251,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     const tick = () => {
       this.modRaf = requestAnimationFrame(tick);
       const m = this.binding?.getModulation?.(this.fieldPath) ?? null;
-      const key = m ? `${m.value}|${m.min}|${m.max}` : '';
+      const key = m ? `${m.value}|${m.min}|${m.max}|${m.neutral}` : '';
       if (key !== this.lastModKey) {
         this.lastModKey = key;
         this.requestUpdate();
@@ -312,13 +323,13 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     `;
   }
 
-  /** Render the modulation band + effective-value tick over the bottom edge. */
-  private renderModStrip(mod: { value: number; min: number; max: number }) {
+  /** Render the modulation range band + the filled neutral→value bar. */
+  private renderModStrip(mod: { value: number; min: number; max: number; neutral: number }) {
     const g = modBandGeometry(this.min, this.max, mod);
     return html`
       <div class="mod-strip">
         <div class="mod-band" style="left: ${g.lo}%; width: ${g.width}%"></div>
-        <div class="mod-tick" style="left: ${g.tick}%"></div>
+        <div class="mod-fill" style="left: ${g.fillLo}%; width: ${g.fillWidth}%"></div>
       </div>
     `;
   }

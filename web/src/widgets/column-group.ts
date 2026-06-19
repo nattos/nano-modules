@@ -1799,12 +1799,11 @@ export class ColumnGroup extends MobxLitElement {
     const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
     const magOpts = MAGNITUDES.map(m => ({ label: m, value: m }));
 
-    // Scale + Remap shape the RAW input value (in its own range); Magnitude then
-    // maps the shaped value into the dest field's declared range. So these always
-    // apply — Remap is not absolute-only.
+    // Remap shapes the RAW input value (in its own range); Scale then scales the
+    // result in modulation space (applied LAST, before Magnitude maps it into the
+    // dest field's declared range). Scale sits under Remap to match that order.
     const fields: InspectorFieldDef[] = [
       { type: 'select', label: 'Magnitude', path: 'magnitude', options: magOpts, default: 'auto' },
-      { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 },
       { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
     ];
     if (remap) {
@@ -1821,6 +1820,7 @@ export class ColumnGroup extends MobxLitElement {
         fields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
       }
     }
+    fields.push({ type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 });
     fields.push({ type: 'select', label: 'Combine', path: 'combine', options: combineOpts, default: 'replace' });
     if ((wire.combine ?? 'replace') === 'mix') {
       fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });

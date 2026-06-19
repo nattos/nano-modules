@@ -615,9 +615,10 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>() == Catch::Approx(0.5).margin(0.01));
-    CHECK(b["min"].get<double>()   == Catch::Approx(0.0).margin(0.01));
-    CHECK(b["max"].get<double>()   == Catch::Approx(1.0).margin(0.01));
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));
+    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));
+    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));
+    CHECK(b["neutral"].get<double>() == Catch::Approx(1.0).margin(0.01));  // replace → user's base brightness (1.0)
   }
 
   SECTION("a remap on the wire narrows the band to the remap output range") {

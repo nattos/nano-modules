@@ -27,12 +27,13 @@ export interface FieldBinding {
 
   /**
    * Live modulation telemetry for a field driven by a wire: the effective
-   * resolved `value` and the swing `[min, max]` band the modulation can reach
-   * (in the field's own units). Returns null when the field is not modulated.
-   * Lets a slider draw the band + effective marker over the user's base value.
+   * resolved `value`, the swing `[min, max]` band the modulation can reach, and
+   * the `neutral` fill anchor the band grows from (base value, or 0 for `mul`),
+   * all in the field's own units. Returns null when the field is not modulated.
+   * Lets a slider draw the band + a filled effective bar over the base value.
    * Optional — widgets must tolerate its absence.
    */
-  getModulation?(fieldPath: string): { value: number; min: number; max: number } | null;
+  getModulation?(fieldPath: string): { value: number; min: number; max: number; neutral: number } | null;
 
   /** Write a value to a field path in instance state (one-shot, creates undo point). */
   setValue(fieldPath: string, value: any): void;
