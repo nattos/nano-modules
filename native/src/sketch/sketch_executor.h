@@ -207,6 +207,18 @@ class SketchExecutor {
    */
   const nlohmann::json& lastRailState() const { return railState_; }
 
+  /**
+   * The most recent frame's modulation telemetry for editor UI: for each
+   * instance that has a modulated scalar INPUT (a read tap on a float field),
+   * the effective resolved value plus the swing band the modulation can reach.
+   * Shaped { "<instanceKey>": { "<field>": { value, min, max } } }. Rebuilt
+   * each execute() and exposed so a slider can draw the band + effective marker
+   * over the user's base value. Empty when nothing is modulated. The band is
+   * computed by re-running the lock-step tap_mod fold over the source output's
+   * declared range (recordModBand) — identical math native and web.
+   */
+  const nlohmann::json& lastModulationData() const { return modulationData_; }
+
  private:
   // Native-only seed/runtime sources, used solely under #ifndef __wasm__
   // (effrtSetRuntime + the schema seed). The executor drives the GPU + effect
@@ -226,6 +238,9 @@ class SketchExecutor {
 
   // Per-frame float-rail values for editor telemetry (see lastRailState()).
   nlohmann::json railState_;
+
+  // Per-frame modulation telemetry for editor UI (see lastModulationData()).
+  nlohmann::json modulationData_;
 
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;

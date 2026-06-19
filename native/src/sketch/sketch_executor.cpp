@@ -187,6 +187,28 @@ tap_mod::Mod parseMod(const json& tap) {
   return m;
 }
 
+// Modulation-band sampler. Re-runs the SAME per-tap fold (`fold`) used for a
+// modulated input's live value across the source output's declared range to
+// find the swing the value can take. Sampling (not interval arithmetic) so the
+// nonlinear / foldback tap_mod curves are reproduced exactly by the lock-step
+// functions — no parallel math to keep in sync. Records { value, min, max } at
+// modData[instanceKey][field] for editor telemetry (lastModulationData()).
+template <typename FoldFn>
+void recordModBand(json& modData, const std::string& instanceKey,
+                   const std::string& field, float live,
+                   float srcMin, float srcMax, FoldFn&& fold) {
+  constexpr int kBandSamples = 9;  // enough to capture foldback / non-monotone
+  float lo = live, hi = live;
+  for (int i = 0; i < kBandSamples; ++i) {
+    const float t = (float)i / (float)(kBandSamples - 1);
+    const float v = fold(srcMin + (srcMax - srcMin) * t);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  modData[instanceKey][field] = {
+      {"value", (double)live}, {"min", (double)lo}, {"max", (double)hi}};
+}
+
 // --- Reserved per-effect engine state keys (device on/off + opacity) ---
 
 // Find an instance's "state" object WITHOUT copying it. `.value("state", {})`
@@ -544,6 +566,11 @@ int32_t SketchExecutor::execute(
         // (registry available) and stash the concrete params on the read tap;
         // applyReadTaps replays applyMagnitude with them. Texture wires skip it.
         if (ftype == "float") {
+          // Source output's declared value range — the sweep range the editor's
+          // modulation band samples (Phase: modulationData). srcDef is the
+          // producer field def (empty for schema-less dashboard knobs → 0..1).
+          rtap["srcMin"] = srcDef.is_object() ? srcDef.value("min", 0.0) : 0.0;
+          rtap["srcMax"] = srcDef.is_object() ? srcDef.value("max", 1.0) : 1.0;
           std::string mag = w.value("magnitude", std::string("auto"));
           if (mag != "absolute") {
             // auto → the source output field's `magnitude` decl (default unsigned).
@@ -670,6 +697,7 @@ int32_t SketchExecutor::execute(
   bool anyDispatched = false;
   stats_ = DebugStats{};        // per-frame debug counters (fillDebugStats / tests)
   railState_ = json::object();  // rebuilt per frame; published by the host
+  modulationData_ = json::object();  // rebuilt per frame (modulated input bands)
   pendingDelayRetain_.clear();  // delayed texture retains gathered this frame
 
   // Coalesce the whole frame's stages into ONE command buffer. Every effect's
@@ -812,19 +840,25 @@ int32_t SketchExecutor::execute(
           auto fit = src.find(railId);
           if (fit == src.end()) continue;
           float canon = knobVal.count(field) ? knobVal[field] : baseFor(field);
-          float shaped = tap_mod::applyTapMod(fit->second, parseMod(tap));
-          float combined;
-          if (tap.contains("magnitude")) {
-            const bool isSigned = tap.value("magnitude", std::string()) == "signed";
-            const float dmin = (float)tap.value("destMin", 0.0);
-            const float dmax = (float)tap.value("destMax", 1.0);
-            combined = tap_mod::applyMagnitude(canon, shaped, isSigned,
-                parseCombine(tap), tap.value("mixFactor", 1.0f), dmin, dmax);
-          } else {
-            combined = tap_mod::combineTap(true, canon, shaped,
-                parseCombine(tap), tap.value("mixFactor", 1.0f));
-          }
+          // Shared fold (live value + band sweep) — see applyReadTaps.
+          const tap_mod::Mod mod = parseMod(tap);
+          const tap_mod::Combine combine = parseCombine(tap);
+          const float mixFactor = tap.value("mixFactor", 1.0f);
+          const bool hasMag = tap.contains("magnitude");
+          const bool isSigned = tap.value("magnitude", std::string()) == "signed";
+          const float dmin = (float)tap.value("destMin", 0.0);
+          const float dmax = (float)tap.value("destMax", 1.0);
+          auto fold = [&](float railVal) -> float {
+            const float shaped = tap_mod::applyTapMod(railVal, mod);
+            return hasMag
+                ? tap_mod::applyMagnitude(canon, shaped, isSigned, combine, mixFactor, dmin, dmax)
+                : tap_mod::combineTap(true, canon, shaped, combine, mixFactor);
+          };
+          const float combined = fold(fit->second);
           knobVal[field] = combined;
+          recordModBand(modulationData_, pe.instanceKey, field, combined,
+                        (float)tap.value("srcMin", 0.0),
+                        (float)tap.value("srcMax", 1.0), fold);
         }
       }
 
@@ -1372,7 +1406,6 @@ void SketchExecutor::applyReadTaps(
         // Apply the tap's range remapper (after read), then mix into the user's
         // canonical value per the mix mode (replace ignores it; add/mul/mix
         // modulate from it).
-        float shaped = tap_mod::applyTapMod(fit->second, parseMod(tap));
         bool hasCanon = false;
         float canon = 0.0f;
         if (canonState && canonState->contains(fieldPath)) {
@@ -1380,24 +1413,34 @@ void SketchExecutor::applyReadTaps(
           if (cv.is_number())       { canon = (float)cv.get<double>(); hasCanon = true; }
           else if (cv.is_boolean()) { canon = cv.get<bool>() ? 1.0f : 0.0f; hasCanon = true; }
         }
-        float combined;
         // Wire magnitude mode (resolved during normalization). Present →
         // range-aware fold into [destMin,destMax]; absent → legacy combineTap
         // (the wire's `absolute` mode, or a plain rail tap). Mirrors web's
         // resolveScalarWire: applyMagnitude seeds from min when no canonical.
-        if (tap.contains("magnitude")) {
-          const bool isSigned = tap.value("magnitude", std::string()) == "signed";
-          const float dmin = (float)tap.value("destMin", 0.0);
-          const float dmax = (float)tap.value("destMax", 1.0);
-          combined = tap_mod::applyMagnitude(
-              hasCanon ? canon : dmin, shaped, isSigned,
-              parseCombine(tap), tap.value("mixFactor", 1.0f), dmin, dmax);
-        } else {
-          combined = tap_mod::combineTap(hasCanon, canon, shaped,
-              parseCombine(tap), tap.value("mixFactor", 1.0f));
-        }
+        // The fold from a raw rail value to the dest value — shared by the live
+        // value AND the band sweep so the two can never diverge.
+        const tap_mod::Mod mod = parseMod(tap);
+        const tap_mod::Combine combine = parseCombine(tap);
+        const float mixFactor = tap.value("mixFactor", 1.0f);
+        const bool hasMag = tap.contains("magnitude");
+        const bool isSigned = tap.value("magnitude", std::string()) == "signed";
+        const float dmin = (float)tap.value("destMin", 0.0);
+        const float dmax = (float)tap.value("destMax", 1.0);
+        auto fold = [&](float railVal) -> float {
+          const float shaped = tap_mod::applyTapMod(railVal, mod);
+          return hasMag
+              ? tap_mod::applyMagnitude(hasCanon ? canon : dmin, shaped, isSigned,
+                                        combine, mixFactor, dmin, dmax)
+              : tap_mod::combineTap(hasCanon, canon, shaped, combine, mixFactor);
+        };
+        const float combined = fold(fit->second);
         inst.setParamFloat(fieldPath, combined);
         inst.setFieldConnected(fieldPath, true, false);
+        // Editor telemetry: the effective value + the swing band, sampled over
+        // the source output's declared range (default 0..1).
+        recordModBand(modulationData_, instanceKey, fieldPath, combined,
+                      (float)tap.value("srcMin", 0.0),
+                      (float)tap.value("srcMax", 1.0), fold);
       }
       continue;
     }

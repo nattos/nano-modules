@@ -230,8 +230,10 @@ void module_init() {
       // Autopilot — orbit the manifold and broadcast the live position.
       .boolField("autopilot", false, state::PrimaryInput)
       .floatField("ap_speed", 0.3f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("autopilot_x", 0.5f, 0.f, 1.f, state::SecondaryOutput)
-      .floatField("autopilot_y", 0.5f, 0.f, 1.f, state::SecondaryOutput)
+      // Manifold position broadcast as outputs — unipolar [0,1]. min/max is the
+      // modulation-range contract the UI band draws from (see env_lfo note).
+      .floatField("autopilot_x", 0.5f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
+      .floatField("autopilot_y", 0.5f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       // Satellites — three extra taps offset in a triangle around the center.
       .boolField("satellites", false, state::PrimaryInput)
       .floatField("sat_spread", 0.3f, 0.f, 1.f, state::PrimaryInput)    // triangle size
