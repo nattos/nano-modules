@@ -197,6 +197,8 @@ void module_init() {
       .floatField("ap_speed", 0.3f, 0.f, 1.f, state::PrimaryInput)
       .floatField("autopilot_x", 0.5f, 0.f, 1.f, state::SecondaryOutput)
       .floatField("autopilot_y", 0.5f, 0.f, 1.f, state::SecondaryOutput)
+      // Live LFO phase [0,1) — broadcast so the editor can draw a playhead.
+      .floatField("phase", 0.0f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       // Output — unipolar [0,1] LFO value.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
   );
@@ -263,6 +265,9 @@ void tick(void* self, double dt) {
   auto vy = val::number(s->eff_y);
   state::setValPath("autopilot_y", vy);
   val::release(vy);
+  auto vp = val::number((float)s->phase);
+  state::setValPath("phase", vp);
+  val::release(vp);
 }
 
 void on_resolume_param(void*, long long, double) {}
