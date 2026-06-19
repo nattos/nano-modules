@@ -64,6 +64,28 @@ describe('spectral_lfo custom inspector', () => {
     expect(padInfo.drawnPixels).toBeGreaterThan(100);   // the manifold scatter is painted
     expect(padInfo.hasHandle).toBe(true);
 
+    // The envelope preview renders the morphed curve (needs the fetched data
+    // asset). Count pixels that differ from the #111122 background.
+    const previewInfo = await page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      let pv = null;
+      for (const el of walk(document)) { if (el.tagName === 'SPECTRAL-LFO-PREVIEW') { pv = el; break; } }
+      if (!pv) return { found: false };
+      const canvas = pv.shadowRoot.querySelector('canvas');
+      if (!canvas || canvas.width === 0) return { found: true, canvasW: canvas?.width || 0, curvePixels: 0 };
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let curve = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        // bg is (17,17,34); count clearly-different pixels (the curve strokes).
+        if (Math.abs(data[i]-17) + Math.abs(data[i+1]-17) + Math.abs(data[i+2]-34) > 60) curve++;
+      }
+      return { found: true, canvasW: canvas.width, curvePixels: curve };
+    })()`) as any;
+
+    expect(previewInfo.found).toBe(true);
+    expect(previewInfo.canvasW).toBeGreaterThan(0);
+    expect(previewInfo.curvePixels).toBeGreaterThan(50);   // the envelope is drawn
+
     // Drag from center toward the top-left corner → morph_x down, morph_y up.
     const cx = padInfo.rect.x + padInfo.rect.w * 0.5;
     const cy = padInfo.rect.y + padInfo.rect.h * 0.5;
