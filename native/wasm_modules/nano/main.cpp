@@ -20,6 +20,7 @@ NANO_DECLARE_INSTANCE_EFFECT(height_from_gradient)
 NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
 NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
+NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
 
 extern "C" {
 
@@ -103,6 +104,16 @@ void nano_module_main() {
         "video",
         "particles,swarm,flow,vector-field,advection,gpu,instanced,generator,renderer",
         NANO_INSTANCE_LIFECYCLE(flow_swarm),
+    });
+
+    nano::registerEffect({
+        2,
+        "data.spectral_lfo",
+        "Spectral LFO",
+        "Spectral-morph LFO generator. A baked atlas of ~2178 Serum LFO shapes is laid out per metric by a t-SNE embedding; the manifold position (morph_x, morph_y) selects the surrounding Delaunay triangle and the 3 nearest shapes are spectrally morphed (FFT -> barycentric blend -> IFFT -> geometric straighten) into one LFO curve. A phase accumulator advances at 'rate' (exponential -> Hz; 0 freezes) and samples the curve, publishing a scalar 'output' in [0,1] scaled by amplitude. The 'metric' selector re-lays-out the manifold; 'interpolation' off snaps to a single shape. An optional autopilot orbits the manifold and broadcasts its live position (autopilot_x/y). Pure data module (no GPU, no input).",
+        "data",
+        "lfo,oscillator,modulation,automation,morph,spectral,generator",
+        NANO_INSTANCE_LIFECYCLE(spectral_lfo),
     });
 }
 

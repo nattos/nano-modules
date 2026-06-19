@@ -170,6 +170,7 @@ wasm_build \
   ../height_from_gradient/main.cpp \
   ../shape_fold/main.cpp \
   ../phase_fold/main.cpp \
-  ../flow_swarm/main.cpp
+  ../flow_swarm/main.cpp \
+  ../spectral_lfo/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
