@@ -570,6 +570,54 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
   CHECK(std::abs(m - 128.0) < 20.0);
 }
 
+// A trapping module_init must not poison the rest of the bundle. The native
+// bundles path runs EVERY effect's module_init eagerly at registration, all in
+// ONE shared wasm instance. If an effect traps mid-module_init (e.g. on an
+// unlinked gpu import), WAMR does NOT restore the aux-stack pointer, so every
+// effect registered AFTER it hits "out of bounds memory access" and silently
+// publishes an EMPTY schema. testonly.wasm exercises this: debug.gpu_test (and
+// the MRT debug effects) call bindings-explicit render-PSO factories that the
+// bundles host must implement. With the full gpu PSO surface registered, every
+// effect after gpu_test — including the high-index data.particles_emitter /
+// video.particles_renderer — registers its schema intact.
+//
+// (The particles render path itself is web-only: particles_renderer uses inline
+// WGSL shaders, which the native Metal backend's MSL-only createShaderModule
+// can't compile. The struct GPU-buffer rail it relies on is covered end-to-end
+// by web/test/particles.test.ts.)
+TEST_CASE("bundle registration survives a trapping module_init (full PSO surface)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+
+  // generator.spinningtris and the particles effects all register AFTER
+  // debug.gpu_test; before the PSO-surface fix their schemas came back empty.
+  auto requireSchema = [&](const char* mt) {
+    const auto* m = registry.find(mt);
+    INFO("module " << mt);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->schemaFields.is_object());
+    CHECK(!m->schemaFields.empty());
+  };
+  requireSchema("generator.spinningtris");
+  requireSchema("data.particles_emitter");
+  requireSchema("video.particles_renderer");
+
+  // The emitter's particles_out struct must carry its GPU-buffer leaves — the
+  // producer side of the struct buffer rail.
+  const auto& emitFields = registry.find("data.particles_emitter")->schemaFields;
+  REQUIRE(emitFields.contains("particles_out"));
+  const auto& outFields = emitFields["particles_out"].value("fields", nlohmann::json::object());
+  REQUIRE(outFields.contains("positions"));
+  CHECK(outFields["positions"].value("type", std::string()) == "array");
+  CHECK(outFields["positions"].value("gpu", false) == true);
+}
+
 // Debug counters (Debug Info panel). fillDebugStats writes 7 int32s:
 // [effectsExecuted, standaloneDispatches, fusedRuns, fusedStages,
 //  dispatchesSaved, gpuDispatches, identitySkipped]. Exercise the three paths a

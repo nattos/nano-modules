@@ -1025,6 +1025,20 @@ static int32_t gpu_texture_for_field(wasm_exec_env_t env, int32_t path_ptr, int3
   auto it = ctx->texture_fields.find(field_path);
   return it != ctx->texture_fields.end() ? it->second : -1;
 }
+// Counterpart to gpu_texture_for_field for GPU storage-buffer struct-rail leaves.
+// The executor binds a producer's published buffer handle onto the consumer
+// instance (effrt_set_buffer_field → EffectInstance::setBufferField); the
+// consumer effect resolves it here via gpu::bufferForField. 0 == unbound.
+static int32_t gpu_buffer_for_field(wasm_exec_env_t env, int32_t path_ptr, int32_t path_len) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return 0;
+  char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  if (!path) return 0;
+  int h = ctx->effect_instance->bufferField(std::string(path, path_len));
+  return h > 0 ? h : 0;
+}
 static void gpu_compute_dispatch(wasm_exec_env_t env, int32_t pass, int32_t x, int32_t y, int32_t z) {
   auto* g = get_gpu(env); if (g) g->computeDispatch(pass, x, y, z);
 }
@@ -1214,6 +1228,94 @@ static int32_t gpu_begin_render_pass_load(wasm_exec_env_t env, int32_t tex) {
 static void gpu_render_set_buffer(wasm_exec_env_t env, int32_t pass, int32_t buf, int32_t slot) {
   auto* g = get_gpu(env); if (g) g->renderSetBuffer(pass, buf, slot);
 }
+// Bindings-explicit render-PSO factories. The backend derives bindings from
+// shader reflection, so the binding layout args are ignored (as gpu_impls.cpp
+// does). These complete the effect gpu ABI in the bundles host — without them an
+// effect that calls one in module_init (e.g. debug.gpu_test,
+// video.particles_renderer) traps on an unlinked import, which leaks the wasm
+// aux-stack pointer and breaks every effect registered after it in the bundle.
+static int32_t gpu_create_render_pso_layout(wasm_exec_env_t env,
+    int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
+    int32_t fs_len, int32_t format, int32_t binding_count, int32_t bindings_ptr) {
+  (void)binding_count; (void)bindings_ptr;
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, vs_ptr, vs_len)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, fs_ptr, fs_len)) return -1;
+  char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
+  char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
+  if (!vse || !fse) return -1;
+  return g->createRenderPSO(vs, map_entry_name(g, vse, vs_len),
+                            fs, map_entry_name(g, fse, fs_len), format);
+}
+static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
+    int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
+    int32_t fs_len, int32_t format, int32_t binding_count, int32_t bindings_ptr) {
+  (void)binding_count; (void)bindings_ptr;
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, vs_ptr, vs_len)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, fs_ptr, fs_len)) return -1;
+  char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
+  char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
+  if (!vse || !fse) return -1;
+  return g->createInstancedRenderPSO(vs, map_entry_name(g, vse, vs_len),
+                                     fs, map_entry_name(g, fse, fs_len),
+                                     format, /*blend=*/0);
+}
+static int32_t gpu_create_instanced_render_pso(wasm_exec_env_t env,
+    int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
+    int32_t fs_len, int32_t format) {
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, vs_ptr, vs_len)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, fs_ptr, fs_len)) return -1;
+  char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
+  char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
+  if (!vse || !fse) return -1;
+  return g->createInstancedRenderPSO(vs, map_entry_name(g, vse, vs_len),
+                                     fs, map_entry_name(g, fse, fs_len),
+                                     format, /*blend=*/0);
+}
+static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
+    int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
+    int32_t fs_len, int32_t target_count, int32_t target_formats_ptr,
+    int32_t binding_count, int32_t bindings_ptr) {
+  (void)binding_count; (void)bindings_ptr;
+  auto* g = get_gpu(env);
+  if (!g || target_count < 0) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, vs_ptr, vs_len)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, fs_ptr, fs_len)) return -1;
+  if (!wasm_runtime_validate_app_addr(inst, target_formats_ptr,
+                                      target_count * (int32_t)sizeof(int32_t)))
+    return -1;
+  char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
+  char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
+  int* fmts = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, target_formats_ptr));
+  if (!vse || !fse || !fmts) return -1;
+  return g->createInstancedRenderPSOMRT(vs, map_entry_name(g, vse, vs_len),
+                                        fs, map_entry_name(g, fse, fs_len),
+                                        target_count, fmts);
+}
+static int32_t gpu_begin_render_pass_mrt(wasm_exec_env_t env, int32_t count,
+    int32_t texs_ptr, int32_t clears_ptr) {
+  auto* g = get_gpu(env);
+  if (!g || count < 0) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, texs_ptr, count * (int32_t)sizeof(int32_t)))
+    return -1;
+  if (!wasm_runtime_validate_app_addr(inst, clears_ptr,
+                                      count * 4 * (int32_t)sizeof(float)))
+    return -1;
+  int* texs = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, texs_ptr));
+  float* clears = static_cast<float*>(wasm_runtime_addr_app_to_native(inst, clears_ptr));
+  if (!texs || !clears) return -1;
+  return g->beginRenderPassMRT(count, texs, clears);
+}
 
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
@@ -1226,6 +1328,11 @@ static NativeSymbol gpu_symbols[] = {
     {"clear_texture", reinterpret_cast<void*>(gpu_clear_texture), "(iffff)", nullptr},
     {"copy_texture", reinterpret_cast<void*>(gpu_copy_texture), "(ii)", nullptr},
     {"create_instanced_render_pso_blend_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_blend_layout), "(iiiiiiiiii)i", nullptr},
+    {"create_render_pso_layout", reinterpret_cast<void*>(gpu_create_render_pso_layout), "(iiiiiiiii)i", nullptr},
+    {"create_instanced_render_pso_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_layout), "(iiiiiiiii)i", nullptr},
+    {"create_instanced_render_pso", reinterpret_cast<void*>(gpu_create_instanced_render_pso), "(iiiiiii)i", nullptr},
+    {"create_instanced_render_pso_mrt_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_mrt_layout), "(iiiiiiiiii)i", nullptr},
+    {"begin_render_pass_mrt", reinterpret_cast<void*>(gpu_begin_render_pass_mrt), "(iii)i", nullptr},
     {"begin_render_pass_load", reinterpret_cast<void*>(gpu_begin_render_pass_load), "(i)i", nullptr},
     {"render_set_buffer", reinterpret_cast<void*>(gpu_render_set_buffer), "(iii)", nullptr},
     {"create_compute_pso_layout", reinterpret_cast<void*>(gpu_create_compute_pso_layout), "(iiiii)i", nullptr},
@@ -1254,6 +1361,7 @@ static NativeSymbol gpu_symbols[] = {
     {"get_input_texture", reinterpret_cast<void*>(gpu_get_input_texture), "(i)i", nullptr},
     {"get_input_texture_count", reinterpret_cast<void*>(gpu_get_input_texture_count), "()i", nullptr},
     {"texture_for_field", reinterpret_cast<void*>(gpu_texture_for_field), "(ii)i", nullptr},
+    {"buffer_for_field", reinterpret_cast<void*>(gpu_buffer_for_field), "(ii)i", nullptr},
     // Executor-only ops (executor.wasm).
     {"set_surface", reinterpret_cast<void*>(gpu_set_surface), "(iii)", nullptr},
     {"get_texture_format", reinterpret_cast<void*>(gpu_get_texture_format), "(i)i", nullptr},
