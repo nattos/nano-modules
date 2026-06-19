@@ -59,6 +59,26 @@ function metricOf(b: FieldBinding): number {
   return m >= 0 && m < SCATTER_NUM_METRICS ? (m | 0) : 0;
 }
 
+// Satellite layout — must match satellite_xy() in the native module.
+const SAT_RADIUS_MAX = 0.45;
+const SAT_COLORS = ['#ff9944', '#44ccff', '#aaff44'];
+function satellitesEnabled(b: FieldBinding): boolean {
+  return Number(b.getValue('satellites') ?? 0) !== 0;
+}
+function satellitePositions(b: FieldBinding): [number, number][] {
+  const [cx, cy] = effPos(b);
+  const spread = Number(b.getValue('sat_spread') ?? 0.3);
+  const rotation = Number(b.getValue('sat_rotation') ?? 0);
+  const radius = spread * SAT_RADIUS_MAX;
+  const clampPad = (v: number) => (v < 0.02 ? 0.02 : v > 0.98 ? 0.98 : v);
+  const pts: [number, number][] = [];
+  for (let k = 0; k < 3; k++) {
+    const ang = rotation * Math.PI * 2 + k * ((Math.PI * 2) / 3);
+    pts.push([clampPad(cx + radius * Math.cos(ang)), clampPad(cy + radius * Math.sin(ang))]);
+  }
+  return pts;
+}
+
 /**
  * The draggable manifold XY pad — a multi-field FieldEditorElement controlling
  * `morph_x` (x) and `morph_y` (y). Static layer (scatter + Delaunay mesh) on one
@@ -187,25 +207,64 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
     const metric = metricOf(this.binding);
     const interp = this.interp();
     const [ex, ey] = this.dragging ? [this.dragX, this.dragY] : effPos(this.binding);
-    const key = `${metric}|${interp}|${sharedData ? 1 : 0}|${ex.toFixed(4)}|${ey.toFixed(4)}`;
+    const sats = satellitesEnabled(this.binding);
+    const satPts = sats ? satellitePositions(this.binding) : null;
+    // When dragging, recompute satellites from the live drag center.
+    if (sats && this.dragging && satPts) {
+      const spread = Number(this.binding.getValue('sat_spread') ?? 0.3);
+      const rotation = Number(this.binding.getValue('sat_rotation') ?? 0);
+      const radius = spread * SAT_RADIUS_MAX;
+      const cp = (v: number) => (v < 0.02 ? 0.02 : v > 0.98 ? 0.98 : v);
+      for (let k = 0; k < 3; k++) {
+        const ang = rotation * Math.PI * 2 + k * ((Math.PI * 2) / 3);
+        satPts[k] = [cp(ex + radius * Math.cos(ang)), cp(ey + radius * Math.sin(ang))];
+      }
+    }
+    const key = `${metric}|${interp}|${sharedData ? 1 : 0}|${ex.toFixed(4)}|${ey.toFixed(4)}` +
+      `|${sats ? satPts!.map(p => p[0].toFixed(3) + ',' + p[1].toFixed(3)).join(';') : '-'}`;
     if (key === this.ovKey) return;
     this.ovKey = key;
     const ctx = canvas.getContext('2d'); if (!ctx) return;
     ctx.clearRect(0, 0, w, h);
-    if (!sharedData || !interp) return;
-    const tri = sharedData.triangleAt(metric, ex, ey);
-    if (!tri) return;
     const sx = (p: [number, number]) => p[0] * w, sy = (p: [number, number]) => (1 - p[1]) * h;
-    ctx.beginPath();
-    ctx.moveTo(sx(tri[0]), sy(tri[0]));
-    ctx.lineTo(sx(tri[1]), sy(tri[1]));
-    ctx.lineTo(sx(tri[2]), sy(tri[2]));
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(120,120,230,0.18)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(150,150,235,0.7)';
-    ctx.lineWidth = Math.max(1, dpr);
-    ctx.stroke();
+
+    // Active triangle for the center tap.
+    if (sharedData && interp) {
+      const tri = sharedData.triangleAt(metric, ex, ey);
+      if (tri) {
+        ctx.beginPath();
+        ctx.moveTo(sx(tri[0]), sy(tri[0]));
+        ctx.lineTo(sx(tri[1]), sy(tri[1]));
+        ctx.lineTo(sx(tri[2]), sy(tri[2]));
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(120,120,230,0.18)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(150,150,235,0.7)';
+        ctx.lineWidth = Math.max(1, dpr);
+        ctx.stroke();
+      }
+    }
+
+    // Satellite taps — a faint triangle joining the three, plus colored markers.
+    if (sats && satPts) {
+      ctx.beginPath();
+      ctx.moveTo(sx(satPts[0]), sy(satPts[0]));
+      ctx.lineTo(sx(satPts[1]), sy(satPts[1]));
+      ctx.lineTo(sx(satPts[2]), sy(satPts[2]));
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.stroke();
+      const cxp = ex * w, cyp = (1 - ey) * h;
+      for (let k = 0; k < 3; k++) {
+        const px = sx(satPts[k]), py = sy(satPts[k]);
+        ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = Math.max(0.5, dpr * 0.5);
+        ctx.beginPath(); ctx.moveTo(cxp, cyp); ctx.lineTo(px, py); ctx.stroke();
+        ctx.beginPath(); ctx.arc(px, py, 4 * dpr, 0, Math.PI * 2);
+        ctx.fillStyle = SAT_COLORS[k]; ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = dpr; ctx.stroke();
+      }
+    }
   }
 
   private syncHandle() {
@@ -276,6 +335,7 @@ export class SpectralLfoPreview extends MobxLitElement {
   private rafId = 0;
   private key = '';
   private result: MorphResult | null = null;
+  private satCurves: Float32Array[] | null = null;
 
   static styles = css`
     :host { display: block; }
@@ -300,10 +360,16 @@ export class SpectralLfoPreview extends MobxLitElement {
     const metric = metricOf(this.binding);
     const interp = Number(this.binding.getValue('interpolation') ?? 1) !== 0;
     const [x, y] = effPos(this.binding);
-    const key = `${metric}|${interp}|${x.toFixed(4)}|${y.toFixed(4)}`;
+    const sats = satellitesEnabled(this.binding);
+    const satPts = sats ? satellitePositions(this.binding) : null;
+    const satKey = satPts ? satPts.map(p => p[0].toFixed(3) + ',' + p[1].toFixed(3)).join(';') : '-';
+    const key = `${metric}|${interp}|${x.toFixed(4)}|${y.toFixed(4)}|${satKey}`;
     if (key !== this.key) {
       this.key = key;
       this.result = sharedData.computeMorph(metric, x, y, interp);
+      this.satCurves = satPts
+        ? satPts.map(p => sharedData!.computeMorph(metric, p[0], p[1], interp).curve)
+        : null;
     }
     this.draw();
   }
@@ -338,6 +404,12 @@ export class SpectralLfoPreview extends MobxLitElement {
       }
       ctx.strokeStyle = style; ctx.lineWidth = lw; ctx.stroke();
     };
+
+    // Satellite envelopes — just the final curves (no source ghosts), drawn
+    // under the center curve in their pad-marker colors.
+    if (this.satCurves) {
+      for (let k = 0; k < this.satCurves.length; k++) stroke(this.satCurves[k], SAT_COLORS[k], 1.3 * dpr);
+    }
 
     if (r.single) {
       stroke(r.curve, '#4488ff', 2 * dpr);
@@ -392,6 +464,14 @@ export class SpectralLfoInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.4} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'amplitude'} .label=${'Amplitude'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+
+      <div class="section">Satellites</div>
+      <field-toggle .fieldPath=${'satellites'} .label=${'Satellites'}
+        .defaultValue=${0} .binding=${b}></field-toggle>
+      <scalar-slider style="width: 100%;" .fieldPath=${'sat_spread'} .label=${'Spread'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.3} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'sat_rotation'} .label=${'Rotation'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
 
       <div class="section">Autopilot</div>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}

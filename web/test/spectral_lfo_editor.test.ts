@@ -161,4 +161,63 @@ describe('spectral_lfo custom inspector', () => {
     expect(read.morph_y).toBeCloseTo(0.7, 5);
     expect(Number(read.metric)).toBe(3);          // not the 0 default
   });
+
+  it('draws the satellite envelopes in the preview when satellites are on', async () => {
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_sat'] = {
+          anchor: null,
+          chain: [{ type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' }],
+          wires: [],
+          instances: { 'slfo@0': { module_type: 'data.spectral_lfo',
+            state: { morph_x: 0.5, morph_y: 0.5, satellites: true, sat_spread: 0.6, sat_rotation: 0.1 } } },
+        };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_sat');
+    })()`);
+    await new Promise(r => setTimeout(r, 2500));   // mount + data fetch + rAF draw
+
+    // The first satellite curve strokes in bright orange (#ff9944 ≈ 255,153,68),
+    // a hue no other preview layer uses — its presence proves a satellite
+    // envelope is drawn (and only when satellites are enabled).
+    const info = await page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      let pv = null;
+      for (const el of walk(document)) { if (el.tagName === 'SPECTRAL-LFO-PREVIEW') { pv = el; break; } }
+      if (!pv) return { found: false };
+      const canvas = pv.shadowRoot.querySelector('canvas');
+      if (!canvas || canvas.width === 0) return { found: true, orange: 0, satMarkers: 0 };
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let orange = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i], g = data[i+1], b = data[i+2];
+        if (r > 200 && g > 110 && g < 195 && b < 120) orange++;   // satellite orange, not purple/blue/red
+      }
+      // Also confirm the XY pad overlay paints the satellite markers.
+      let pad = null;
+      for (const el of walk(document)) { if (el.tagName === 'SPECTRAL-LFO-XY-PAD') { pad = el; break; } }
+      let satMarkers = 0;
+      if (pad) {
+        const ov = pad.shadowRoot.querySelector('canvas.overlay');
+        if (ov && ov.width > 0) {
+          const od = ov.getContext('2d').getImageData(0, 0, ov.width, ov.height).data;
+          for (let i = 0; i < od.length; i += 4) {
+            const r = od[i], g = od[i+1], b = od[i+2];
+            if (od[i+3] > 0 && r > 200 && g > 110 && g < 195 && b < 120) satMarkers++;
+          }
+        }
+      }
+      return { found: true, orange, satMarkers };
+    })()`) as any;
+
+    expect(info.found).toBe(true);
+    expect(info.orange).toBeGreaterThan(20);      // the satellite envelope is drawn in the preview
+    expect(info.satMarkers).toBeGreaterThan(5);   // and a satellite marker on the pad
+  });
 });

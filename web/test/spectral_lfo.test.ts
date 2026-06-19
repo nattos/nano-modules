@@ -14,7 +14,7 @@ import type { Sketch } from '../src/sketch-types';
 
 const W = 64, H = 64;
 
-function buildSketch(lfoParams: Record<string, unknown>): Sketch {
+function buildSketch(lfoParams: Record<string, unknown>, outField = 'output'): Sketch {
   return {
     anchor: null,
     chain: [
@@ -26,7 +26,7 @@ function buildSketch(lfoParams: Record<string, unknown>): Sketch {
         params: { brightness: 1.0, contrast: 0.25 } },
     ],
     wires: [
-      { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
+      { id: 'w0', src: { instanceKey: 'lfo@0', field: outField },
         dest: { instanceKey: 'bc@0', field: 'brightness' } },
     ],
   } as Sketch;
@@ -54,8 +54,14 @@ describe('data.spectral_lfo', () => {
     expect(lfo.params.find((p: any) => p.name === 'output')).toBeTruthy();
 
     // Exposed controls are present.
-    for (const name of ['rate', 'amplitude', 'morph_x', 'morph_y', 'metric', 'interpolation']) {
+    for (const name of ['rate', 'amplitude', 'morph_x', 'morph_y', 'metric', 'interpolation',
+                        'satellites', 'sat_spread', 'sat_rotation']) {
       expect(lfo.params.find((p: any) => p.name === name)).toBeTruthy();
+    }
+
+    // The three satellite taps are data outputs (io kind=2).
+    for (const name of ['output_a', 'output_b', 'output_c']) {
+      expect(lfo.io.find((io: any) => io.name === name && io.kind === 2)).toBeTruthy();
     }
 
     // The autopilot live-position broadcasts are SecondaryOutputs, not inputs.
@@ -128,5 +134,53 @@ describe('data.spectral_lfo', () => {
       Math.abs(r.phases[i].trace('a').pixelAt(W / 2, H / 2).r
              - r.phases[i].trace('b').pixelAt(W / 2, H / 2).r)));
     expect(maxDiff).toBeGreaterThan(2);
+  });
+
+  it('satellites: output_a is live when off and selects an offset shape when on', async () => {
+    // Three sketches at the same center/rate. `center` taps `output`; `off`
+    // taps `output_a` with satellites OFF (mirrors the center curve — it must
+    // still be live, not stuck); `sat` taps `output_a` with satellites ON +
+    // wide spread (an offset manifold position → a different shape).
+    // (Cross-sketch phase isn't bit-exact, so we assert behavior over phases
+    // rather than per-frame equality — same idiom as the morph test above.)
+    const params = { rate: 0.5, morph_x: 0.5, morph_y: 0.5 };
+    const r = await runEngineMultiPhaseTest({
+      width: W, height: H,
+      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nattos.nano'],
+      dumpName: 'spectral_lfo_satellites',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sl_center',
+              sketch: buildSketch({ ...params }, 'output') },
+            { type: 'createSketch', sketchId: 'sl_off',
+              sketch: buildSketch({ ...params, satellites: false }, 'output_a') },
+            { type: 'createSketch', sketchId: 'sl_sat',
+              sketch: buildSketch({ ...params, satellites: true, sat_spread: 0.7, sat_rotation: 0.0 },
+                                  'output_a') },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'center', target: { type: 'sketch_output', sketchId: 'sl_center' } },
+              { id: 'off', target: { type: 'sketch_output', sketchId: 'sl_off' } },
+              { id: 'sat', target: { type: 'sketch_output', sketchId: 'sl_sat' } },
+            ]},
+          ],
+          waitFrames: 4, captureTraceIds: ['center', 'off', 'sat'],
+        },
+        { waitFrames: 8, captureTraceIds: ['center', 'off', 'sat'] },
+        { waitFrames: 12, captureTraceIds: ['center', 'off', 'sat'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+
+    const seq = (id: string) => [0, 1, 2].map(i => r.phases[i].trace(id).pixelAt(W / 2, H / 2).r);
+    const center = seq('center'), off = seq('off'), sat = seq('sat');
+    for (const v of [...center, ...off, ...sat]) { expect(v).toBeGreaterThanOrEqual(0); expect(v).toBeLessThanOrEqual(255); }
+
+    // Satellites off → output_a is published and tracks the live (moving) curve.
+    expect(Math.max(...off) - Math.min(...off)).toBeGreaterThan(2);
+
+    // Satellites on → the offset tap selects a different shape than the center.
+    const satDiff = Math.max(...[0, 1, 2].map(i => Math.abs(sat[i] - center[i])));
+    expect(satDiff).toBeGreaterThan(2);
   });
 });
