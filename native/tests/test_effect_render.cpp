@@ -1268,5 +1268,28 @@ TEST_CASE("text.wasm renders gen.text via the native text bridge", "[effect_rend
   INFO("glyph(white) px " << glyph << "  redBg px " << redBg);
   CHECK(glyph > 50);                  // real glyph coverage drawn
   CHECK(redBg > W * H / 2);           // input background composited through
+
+  // Second phase (#text-alpha), SAME backend + instance: disconnect tex_in.
+  // gen.text/richtext are generators, so with no input they must leave
+  // TRANSPARENCY between glyphs rather than paint opaque black. Folded into this
+  // test (not a separate TEST_CASE) on purpose: the text engine's GPU resources
+  // are a process-global singleton bound to the FIRST backend, so a second
+  // backend in another case would render against stale handles.
+  inst->setTextureField("tex_in", -1);
+  inst->setFieldConnected("tex_in", /*input*/false, /*output*/false);
+  backend->clearTexture(outTex, 0, 0, 1, 1);   // opaque blue → a transparent clear is provable
+  backend->submit();
+  inst->doRender(W, H);
+  auto px2 = backend->readbackTexture(outTex, W, H);
+  REQUIRE(px2.size() == W * H * 4);
+  long glyph2 = 0, transparent = 0;
+  for (size_t i = 0; i + 3 < px2.size(); i += 4) {
+    const uint8_t a = px2[i + 3];
+    if (a < 16) ++transparent;                                      // see-through
+    if (a > 200 && px2[i] > 150 && px2[i+1] > 150 && px2[i+2] > 150) ++glyph2;  // opaque white glyph
+  }
+  INFO("no-input: glyph " << glyph2 << "  transparent " << transparent << " / " << (W * H));
+  CHECK(glyph2 > 50);                 // glyphs still drawn (opaque)
+  CHECK(transparent > W * H / 2);     // mostly TRANSPARENT, not opaque black
 }
 #endif  // TEXT_WASM_PATH

@@ -73,7 +73,7 @@ void module_init() {
       .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput)
       .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput)
       .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput)
-      .textureField("tex_in",  state::PrimaryInput)   // overlay text on this; black if unconnected
+      .textureField("tex_in",  state::PrimaryInput)   // overlay text on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
   );
 }
@@ -139,7 +139,7 @@ void render(void* self, int vp_w, int vp_h) {
   int target = gpu::Device::textureForField("tex_out").id;
   if (target < 0) target = gpu::Device::renderTarget().id;
   // Overlay the text on the incoming texture (the host composites text over it);
-  // an unconnected input is -1 → opaque-black background.
+  // an unconnected input is -1 → the host leaves transparency between glyphs.
   int bg = gpu::Device::textureForField("tex_in").id;
 
   int id = text::layout(spec, pos);

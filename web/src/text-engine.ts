@@ -824,10 +824,14 @@ export class TextEngine {
     const uniBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(uniBuf, 0, uni);
 
-    // Background behind the text: caller-supplied input (overlay) or the engine's
-    // 1×1 opaque-black fallback. It's SAMPLED while we render into `target`, so it
-    // must be a different texture (WebGPU forbids one texture as both).
-    const bgTex = (bg && bg !== target) ? bg : this.bgTex;
+    // Background behind the text: a caller-supplied input to overlay text onto.
+    // When unconnected, gen.text/richtext are pure generators and must leave
+    // TRANSPARENCY where there's no text (the bg pass is skipped below). The bg
+    // is SAMPLED while we render into `target`, so it must be a different texture
+    // (WebGPU forbids one texture as both); the 1×1 fallback keeps the bind group
+    // valid even when the bg pass doesn't run.
+    const hasInput = !!(bg && bg !== target);
+    const bgTex = hasInput ? bg! : this.bgTex;
     const pipes = this.pipesFor(target.format);
     const bind = device.createBindGroup({
       layout: this.bindLayout,
@@ -841,19 +845,19 @@ export class TextEngine {
       ],
     });
 
-    // One render pass onto `target`: bg fullscreen (replace) → boxes → glyphs,
-    // instanced quads, alpha-over, document order. Each glyph/box rasterizes only
-    // its own pixels — no per-pixel glyph loop.
+    // One render pass onto `target`: [bg fullscreen (replace), only with an input]
+    // → boxes → glyphs, instanced quads, alpha-over, document order. Cleared to
+    // TRANSPARENT so an unconnected input leaves transparency between glyphs
+    // instead of the old opaque-black fallback.
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: target.createView(),
-        loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: 'store',
+        loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: 'store',
       }],
     });
     pass.setBindGroup(0, bind);
-    pass.setPipeline(pipes.bg);
-    pass.draw(3, 1);
+    if (hasInput) { pass.setPipeline(pipes.bg); pass.draw(3, 1); }
     if (boxesWritten > 0) { pass.setPipeline(pipes.box); pass.draw(6, boxesWritten); }
     if (written > 0)      { pass.setPipeline(pipes.glyph); pass.draw(6, written); }
     pass.end();

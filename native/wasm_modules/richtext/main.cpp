@@ -141,7 +141,7 @@ void module_init() {
       .textField   ("html",  GEN_RICHTEXT_DEFAULT_HTML, state::PrimaryInput)
       .textField   ("css",   GEN_RICHTEXT_DEFAULT_CSS,  state::PrimaryInput)
       .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput)
-      .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; black if unconnected
+      .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
   );
 }
@@ -215,7 +215,7 @@ void render(void* self, int vp_w, int vp_h) {
   int target = gpu::Device::textureForField("tex_out").id;
   if (target < 0) target = gpu::Device::renderTarget().id;
   // Overlay the document on the incoming texture (transparent areas of the doc
-  // show it through); an unconnected input is -1 → opaque-black background.
+  // show it through); an unconnected input is -1 → the host leaves transparency.
   int bg = gpu::Device::textureForField("tex_in").id;
 
   if (s->layoutId > 0) {

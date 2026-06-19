@@ -387,22 +387,28 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   uint32_t uniCap = sizeof(UBO);
   g_gpu.uniBuf = ensureBuffer(b, g_gpu.uniBuf, uniCap, &u, sizeof(UBO));
 
-  // Background sampled behind the text: a caller-supplied input texture (overlay
-  // text on it), else the 1×1 opaque-black fallback. bg MUST differ from the
-  // target (the bg pass samples it while we render into target).
-  int bg = (bg_tex >= 0 && bg_tex != target_tex) ? bg_tex : g_gpu.bg;
+  // Background sampled behind the text: a caller-supplied input texture to
+  // overlay text onto. When unconnected, gen.text/richtext are pure generators —
+  // they must leave TRANSPARENCY where there's no text, not paint opaque black.
+  // bg MUST differ from the target (the bg pass samples it while rendering into
+  // target).
+  const bool hasInput = (bg_tex >= 0 && bg_tex != target_tex);
 
-  // ONE render pass onto the target: bg fullscreen (replace) → boxes → glyphs,
-  // all instanced quads with alpha-over blend, in document order. Each glyph/box
-  // only rasterizes its own pixels — no per-pixel glyph loop. NOT submitted here;
-  // the effect calls gpu::Device::submit().
-  int pass = b->beginRenderPass(target_tex, 0.0f, 0.0f, 0.0f, 1.0f);
-  // bg fill (fullscreen triangle, alpha=1 → replaces the clear with the bg).
-  b->renderSetPSO(pass, pso->bg);
-  b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
-  b->renderSetTexture(pass, bg, 1, /*read*/0);
-  b->renderSetSampler(pass, g_gpu.sampler, 0);
-  b->renderDraw(pass, 3, 1);
+  // ONE render pass onto the target: [bg fullscreen (replace), only if an input
+  // is connected] → boxes → glyphs, all instanced quads with alpha-over blend,
+  // in document order. Cleared to TRANSPARENT so an unconnected input leaves
+  // transparency between glyphs instead of the old opaque-black fallback. NOT
+  // submitted here; the effect calls gpu::Device::submit().
+  int pass = b->beginRenderPass(target_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  // bg fill (fullscreen triangle, alpha=1 → replaces the clear with the input).
+  // Skipped with no input so the transparent clear shows through.
+  if (hasInput) {
+    b->renderSetPSO(pass, pso->bg);
+    b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
+    b->renderSetTexture(pass, bg_tex, 1, /*read*/0);
+    b->renderSetSampler(pass, g_gpu.sampler, 0);
+    b->renderDraw(pass, 3, 1);
+  }
   // background boxes (fill + border ring), document order.
   if (boxesWritten > 0) {
     b->renderSetPSO(pass, pso->box);
