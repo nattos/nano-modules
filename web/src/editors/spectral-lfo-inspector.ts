@@ -65,11 +65,10 @@ const SAT_COLORS = ['#ff9944', '#44ccff', '#aaff44'];
 function satellitesEnabled(b: FieldBinding): boolean {
   return Number(b.getValue('satellites') ?? 0) !== 0;
 }
-function satellitePositions(b: FieldBinding): [number, number][] {
-  const [cx, cy] = effPos(b);
-  const spread = Number(b.getValue('sat_spread') ?? 0.3);
-  const rotation = Number(b.getValue('sat_rotation') ?? 0);
-  const radius = spread * spread * SAT_RADIUS_MAX;   // quadratic; matches satellite_xy()
+// Three taps in a triangle around (cx, cy). Mirrors native satellite_xy():
+// quadratic spread → orbit radius, rotation a full turn, clamped to the pad.
+function satelliteLayout(cx: number, cy: number, spread: number, rotation: number): [number, number][] {
+  const radius = spread * spread * SAT_RADIUS_MAX;
   const clampPad = (v: number) => (v < 0.02 ? 0.02 : v > 0.98 ? 0.98 : v);
   const pts: [number, number][] = [];
   for (let k = 0; k < 3; k++) {
@@ -77,6 +76,10 @@ function satellitePositions(b: FieldBinding): [number, number][] {
     pts.push([clampPad(cx + radius * Math.cos(ang)), clampPad(cy + radius * Math.sin(ang))]);
   }
   return pts;
+}
+function satellitePositions(b: FieldBinding, center?: [number, number]): [number, number][] {
+  const [cx, cy] = center ?? effPos(b);
+  return satelliteLayout(cx, cy, Number(b.getValue('sat_spread') ?? 0.3), Number(b.getValue('sat_rotation') ?? 0));
 }
 
 /**
@@ -206,20 +209,10 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
 
     const metric = metricOf(this.binding);
     const interp = this.interp();
+    // Resolve from the live drag center while dragging, else the committed pos.
     const [ex, ey] = this.dragging ? [this.dragX, this.dragY] : effPos(this.binding);
     const sats = satellitesEnabled(this.binding);
-    const satPts = sats ? satellitePositions(this.binding) : null;
-    // When dragging, recompute satellites from the live drag center.
-    if (sats && this.dragging && satPts) {
-      const spread = Number(this.binding.getValue('sat_spread') ?? 0.3);
-      const rotation = Number(this.binding.getValue('sat_rotation') ?? 0);
-      const radius = spread * spread * SAT_RADIUS_MAX;   // quadratic; matches satellite_xy()
-      const cp = (v: number) => (v < 0.02 ? 0.02 : v > 0.98 ? 0.98 : v);
-      for (let k = 0; k < 3; k++) {
-        const ang = rotation * Math.PI * 2 + k * ((Math.PI * 2) / 3);
-        satPts[k] = [cp(ex + radius * Math.cos(ang)), cp(ey + radius * Math.sin(ang))];
-      }
-    }
+    const satPts = sats ? satellitePositions(this.binding, [ex, ey]) : null;
     const key = `${metric}|${interp}|${sharedData ? 1 : 0}|${ex.toFixed(4)}|${ey.toFixed(4)}` +
       `|${sats ? satPts!.map(p => p[0].toFixed(3) + ',' + p[1].toFixed(3)).join(';') : '-'}`;
     if (key === this.ovKey) return;
