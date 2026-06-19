@@ -51,6 +51,15 @@ echo "  atomic_test shaders compiled (SPV: count + visualize)"
 # and a combine compute pass.
 compile_shaders_full_spv mrt_test
 
+# lut3d_test — 3D-texture round trip. init fills a 16^3 identity LUT
+# (texture_storage_3d write), apply does a nearest-cell lookup (sampled
+# texture_3d + storage_2d output). Storage formats (rgba8unorm) are supplied
+# at registerShaderSPV time, so plain SPV variants suffice here.
+compile_shaders_compute_var_spv lut3d_test init
+compile_shaders_compute_var_spv lut3d_test apply
+_emit_spv_header_var lut3d_test init apply
+echo "  lut3d_test shaders compiled (SPV: init + apply)"
+
 # motion_rect has two compute shaders (color + motion) compiled from
 # separate .hlsl sources. The motion variant is registered with
 # rgba16float so the velocity texture survives [-1,1] writes.

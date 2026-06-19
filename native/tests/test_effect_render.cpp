@@ -764,6 +764,64 @@ TEST_CASE("debug.mrt_test writes both MRT attachments (native yellow round-trip)
   CHECK(std::abs((int)px[c + 2] -   0) <= 4);
 }
 
+// Native coverage for 3D textures (createTexture3D + storage-3D write +
+// sampled-3D read). debug.lut3d_test (now HLSL→SPV, no longer web-guarded)
+// fills a 16³ identity LUT (x/15, y/15, z/15) via a texture_storage_3d write,
+// then nearest-cell looks it up via a sampled texture_3d. An identity LUT
+// round-trips a uniform input within ~1 cell of quantization; midpoint colors
+// round-trip exact, and the 0/1 endpoints are exact. This is the first NATIVE
+// exercise of the Metal 3D-texture path (web covers it via
+// platform-features.test.ts).
+TEST_CASE("debug.lut3d_test round-trips colors through a native 3D LUT",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [ { "type": "module", "module_type": "debug.lut3d_test", "instance_key": "lut" } ],
+    "instances": {}, "wires": []
+  })JSON");
+
+  // Run a uniform input color through the LUT and read back the center pixel.
+  auto roundTrip = [&](uint8_t r, uint8_t g, uint8_t b) {
+    std::vector<uint8_t> in(W * H * 4);
+    for (size_t i = 0; i + 3 < in.size(); i += 4) {
+      in[i] = r; in[i + 1] = g; in[i + 2] = b; in[i + 3] = 255;
+    }
+    backend->writeTexture(inTex, W, H, in.data(), (uint32_t)in.size());
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+    backend->submit();
+    auto px = backend->readbackTexture(out, W, H);
+    const size_t c = ((size_t)(H / 2) * W + (W / 2)) * 4;
+    INFO("in (" << (int)r << "," << (int)g << "," << (int)b << ") -> out ("
+         << (int)px[c] << "," << (int)px[c+1] << "," << (int)px[c+2] << ")");
+    return std::array<int,3>{ px[c], px[c+1], px[c+2] };
+  };
+
+  // Midpoint color (0.4,0.6,0.8) → cells (6,9,12) → (6/15,9/15,12/15)*255
+  // ≈ (102,153,204). Identity LUT → near-exact round-trip.
+  auto mid = roundTrip(102, 153, 204);
+  CHECK(std::abs(mid[0] - 102) <= 3);
+  CHECK(std::abs(mid[1] - 153) <= 3);
+  CHECK(std::abs(mid[2] - 204) <= 3);
+
+  // Endpoints are exact (0 → 0, 1 → 1).
+  auto black = roundTrip(0, 0, 0);
+  CHECK(black[0] <= 2); CHECK(black[1] <= 2); CHECK(black[2] <= 2);
+  auto white = roundTrip(255, 255, 255);
+  CHECK(white[0] >= 253); CHECK(white[1] >= 253); CHECK(white[2] >= 253);
+}
+
 // Trap reporting: debug.trap_test's module_init publishes a schema then
 // deliberately traps. A trapped module_init can't be cleanly contained, so the
 // host instead flags it (EffectInstance::moduleInitTrapped, surfaced on the
