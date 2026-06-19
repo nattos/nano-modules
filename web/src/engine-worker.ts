@@ -458,6 +458,7 @@ async function frame() {
         tracedFrames: {},
         sketchStateDiff: { changed: {}, removed: [] },
         pluginStatesDiff: { changed: {}, removed: [] },
+        modulationDataDiff: { changed: {}, removed: [] },
       });
     }
     frameInFlight = false;
@@ -751,6 +752,7 @@ const traceHandles = new Map<string, number>();
 // whole state every frame.
 let lastSketchJson: Record<string, string> = {};
 let lastPluginJson: Record<string, string> = {};
+let lastModulationJson: Record<string, string> = {};
 
 /**
  * Diff `cur` (a flat map keyed by instance/plugin key) against `baseline`
@@ -802,6 +804,11 @@ function captureAndSendFrame() {
   const sketchStateDiff = diffMap(lastSketchJson, sketchStateFull);
   const pluginStatesDiff = diffMap(lastPluginJson, pluginStatesFull);
 
+  // Per-modulated-input effective value + swing band (executor-computed). Diffed
+  // like pluginStates; drives the slider modulation overlay.
+  const modulationDataFull: Record<string, any> = activeExecutor()?.getModulationData() ?? {};
+  const modulationDataDiff = diffMap(lastModulationJson, modulationDataFull);
+
   // Drain debug stats every frame so counters reset and each sample is a
   // true single-frame count. Forward to the UI only every 6th frame (~10
   // Hz): the Debug Info panel re-renders on each update, and 60 Hz stat
@@ -820,7 +827,7 @@ function captureAndSendFrame() {
   }
 
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, debugStats, debugConsoleLog }, []);
+    post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, []);
     return;
   }
 
@@ -840,7 +847,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, debugStats, debugConsoleLog }, transfers);
+  post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, transfers);
 }
 
 // ========================================================================

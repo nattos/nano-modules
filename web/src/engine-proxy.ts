@@ -17,6 +17,8 @@ export class EngineProxy {
   onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onSketchStateDiff: ((diff: import('./engine-types').StateDiff) => void) | null = null;
   onPluginStatesDiff: ((diff: import('./engine-types').StateDiff) => void) | null = null;
+  /// Per-frame modulation telemetry (modulated inputs → effective value + band).
+  onModulationDataDiff: ((diff: import('./engine-types').StateDiff) => void) | null = null;
   /// Per-frame debug counters (effects executed, dispatches, fused
   /// runs, etc.). Only fires when the worker is in debug mode.
   onDebugStats: ((stats: DebugStats) => void) | null = null;
@@ -54,6 +56,7 @@ export class EngineProxy {
           this.onTracedFrames?.(event.tracedFrames);
           this.onSketchStateDiff?.(event.sketchStateDiff);
           this.onPluginStatesDiff?.(event.pluginStatesDiff);
+          this.onModulationDataDiff?.(event.modulationDataDiff);
           if (event.debugStats) this.onDebugStats?.(event.debugStats);
           if (event.debugConsoleLog && event.debugConsoleLog.length > 0) {
             this.onDebugConsoleLog?.(event.debugConsoleLog);

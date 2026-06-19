@@ -123,6 +123,12 @@ export interface EngineStatus {
   /** Live plugin state per instance, keyed by instance key. Updated per-frame from the worker. */
   pluginStates: Record<string, any>;
   /**
+   * Per-frame modulation telemetry, keyed by instance key. For each modulated
+   * scalar INPUT field: `{ value, min, max }` — the effective resolved value and
+   * the swing band the modulation can reach. Drives the slider modulation band.
+   */
+  modulationData: Record<string, Record<string, { value: number; min: number; max: number }>>;
+  /**
    * Latest per-frame debug stats. Only populated while the Debug Info
    * sidebar tab is active (the tab toggles `engine.setDebugMode`).
    */

@@ -9,6 +9,7 @@
 // host, reached through the imports.
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -93,6 +94,26 @@ EXEC_EXPORT("executor_debug_stats")
 void executor_debug_stats(SketchExecutor* ex, int32_t* out) {
   if (!ex || !out) return;
   ex->fillDebugStats(out);
+}
+
+// Serialize the LAST execute()'s modulation telemetry (per-instance modulated
+// scalar inputs → { value, min, max }; see lastModulationData()) as JSON into
+// `out` (host-allocated, capacity `cap`). Returns the FULL byte length; if it
+// exceeds `cap` the host grows the buffer and retries. The web engine worker
+// diffs this and ships it as `modulationDataDiff` so sliders can draw the
+// effective value + swing band over the user's base value. `{}` when nothing
+// is modulated.
+EXEC_EXPORT("executor_modulation_json")
+int32_t executor_modulation_json(SketchExecutor* ex, char* out, int32_t cap) {
+  if (!ex) return 0;
+  static std::string buf;  // kept alive until the host copies it out (same frame)
+  buf = ex->lastModulationData().dump();
+  const int32_t n = (int32_t)buf.size();
+  if (out && cap > 0) {
+    const int32_t c = n < cap ? n : cap;
+    std::memcpy(out, buf.data(), (size_t)c);
+  }
+  return n;
 }
 
 }  // extern "C"

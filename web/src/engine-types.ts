@@ -183,7 +183,7 @@ export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
   | { type: 'effectsDiscovered'; effects: EffectInfo[] }
-  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
+  | { type: 'frame'; fps: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; modulationDataDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
   | { type: 'error'; message: string }
   // Worker → main: a text spec named a styled face the engine doesn't have;
   // asks the main thread to resolve it via Local Font Access and register it

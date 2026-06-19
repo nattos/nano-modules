@@ -63,6 +63,7 @@ interface ExecutorExports {
                    dt: number, dirty: number): number;
   executor_set_fusion_enabled(ex: number, enabled: number): void;
   executor_debug_stats(ex: number, out: number): void;
+  executor_modulation_json(ex: number, out: number, cap: number): number;
 }
 
 // Per-sketch executor C++ instance: separate intermediate pool / delayed-wire
@@ -239,6 +240,40 @@ export class WasmSketchExecutor {
     for (const [key, inst] of this.instances) {
       const ps = inst.host.pluginState;
       if (ps && Object.keys(ps).length > 0) result[key] = ps;
+    }
+    return result;
+  }
+
+  // Reusable scratch buffer in the executor's linear memory for the modulation
+  // JSON readback (grown on demand). malloc can detach the ArrayBuffer, so the
+  // pointer is re-validated by reading right after the call that fills it.
+  private modScratch = 0;
+  private modScratchCap = 0;
+
+  // Per-frame modulation telemetry (per modulated scalar input: effective value
+  // + swing band), merged across sketch slots. Keyed by instance_key, same shape
+  // as getPluginStates so the worker can diff it the same way. Drives the slider
+  // modulation band. Computed inside executor.wasm (executor_modulation_json) so
+  // the math is identical to native.
+  getModulationData(): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const slot of this.slots.values()) {
+      if (this.modScratchCap === 0) {
+        this.modScratchCap = 4096;
+        this.modScratch = this.exports.malloc(this.modScratchCap);
+      }
+      let n = this.exports.executor_modulation_json(slot.exPtr, this.modScratch, this.modScratchCap);
+      if (n > this.modScratchCap) {
+        this.exports.free(this.modScratch);
+        this.modScratchCap = n + 256;
+        this.modScratch = this.exports.malloc(this.modScratchCap);
+        n = this.exports.executor_modulation_json(slot.exPtr, this.modScratch, this.modScratchCap);
+      }
+      if (n <= 2) continue;  // "" or "{}" → nothing modulated in this slot
+      try {
+        const obj = JSON.parse(this.readString(this.modScratch, n));
+        for (const k in obj) result[k] = obj[k];
+      } catch { /* malformed dump — skip this frame */ }
     }
     return result;
   }

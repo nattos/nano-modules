@@ -104,6 +104,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
     engine.onSketchStateDiff = (diff) => appController.applySketchStateDiff(diff);
     engine.onPluginStatesDiff = (diff) => appController.applyPluginStatesDiff(diff);
+    engine.onModulationDataDiff = (diff) => appController.applyModulationDataDiff(diff);
     engine.onDebugStats = (stats) => appController.setDebugStats(stats);
     engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
     engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);

@@ -1438,6 +1438,17 @@ export class AppController {
     });
   }
 
+  applyModulationDataDiff(diff: import('../engine-types').StateDiff) {
+    if (!diff) return;
+    const changedKeys = Object.keys(diff.changed);
+    if (changedKeys.length === 0 && diff.removed.length === 0) return;
+    runInAction(() => {
+      const md = appState.local.engine.modulationData;
+      for (const k of diff.removed) mobxRemove(md as object, k);
+      for (const k of changedKeys) mobxSet(md as object, k, diff.changed[k]);
+    });
+  }
+
   setTracedFrames(frames: Record<string, ImageBitmap>) {
     runInAction(() => {
       // Close old bitmaps
