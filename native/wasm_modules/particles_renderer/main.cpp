@@ -25,52 +25,12 @@
 #include <gpu.h>
 #include <host.h>
 #include <val.h>
+#include "particles_renderer_shaders.h"
 #include <cstdint>
 
 namespace particles_renderer {
 
-static const char VERTEX_WGSL[] =
-"struct Uniforms {\n"
-"  size: vec2<f32>,\n"
-"  tint: vec4<f32>,\n"
-"};\n"
-"@group(0) @binding(0) var<uniform> u: Uniforms;\n"
-"@group(0) @binding(1) var<storage, read> positions: array<f32>;\n"
-"\n"
-"struct VsOut {\n"
-"  @builtin(position) pos: vec4<f32>,\n"
-"  @location(0) color: vec4<f32>,\n"
-"};\n"
-"\n"
-"@vertex\n"
-"fn main(@builtin(vertex_index) vid: u32,\n"
-"        @builtin(instance_index) iid: u32) -> VsOut {\n"
-"  // Quad corners — two triangles, vid in [0,6).\n"
-"  var corners = array<vec2<f32>, 6>(\n"
-"    vec2<f32>(-1.0, -1.0), vec2<f32>( 1.0, -1.0), vec2<f32>(-1.0, 1.0),\n"
-"    vec2<f32>( 1.0, -1.0), vec2<f32>( 1.0,  1.0), vec2<f32>(-1.0, 1.0)\n"
-"  );\n"
-"  let corner = corners[vid];\n"
-"  let px = positions[iid * 2u + 0u];\n"
-"  let py = positions[iid * 2u + 1u];\n"
-"  let world = vec2<f32>(px, py) + corner * u.size;\n"
-"  var out: VsOut;\n"
-"  out.pos = vec4<f32>(world, 0.0, 1.0);\n"
-"  out.color = u.tint;\n"
-"  return out;\n"
-"}\n";
-
-static const char FRAGMENT_WGSL[] =
-"struct VsOut {\n"
-"  @builtin(position) pos: vec4<f32>,\n"
-"  @location(0) color: vec4<f32>,\n"
-"};\n"
-"@fragment\n"
-"fn main(in: VsOut) -> @location(0) vec4<f32> {\n"
-"  return in.color;\n"
-"}\n";
-
-// WGSL std140-ish layout: vec2 occupies 8B but the following vec4
+// std140-ish layout: vec2 occupies 8B but the following vec4
 // must start at a 16B boundary, so we pad 8 bytes between them.
 struct Uniforms {
   float size_x, size_y;
@@ -110,8 +70,11 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  auto vs_mod = gpu::Device::createShaderModule(VERTEX_WGSL);
-  auto fs_mod = gpu::Device::createShaderModule(FRAGMENT_WGSL);
+  state::registerShaderSPV("particles_renderer_vs", VERTEX_SPV, VERTEX_SPV_SIZE);
+  state::registerShaderSPV("particles_renderer_fs", FRAGMENT_SPV, FRAGMENT_SPV_SIZE);
+
+  auto vs_mod = gpu::Device::createShaderModuleByName("particles_renderer_vs");
+  auto fs_mod = gpu::Device::createShaderModuleByName("particles_renderer_fs");
   if (!vs_mod || !fs_mod) return;
 
   s_render_pso = gpu::Device::createInstancedRenderPSO(

@@ -581,10 +581,10 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
 // effect after gpu_test — including the high-index data.particles_emitter /
 // video.particles_renderer — registers its schema intact.
 //
-// (The particles render path itself is web-only: particles_renderer uses inline
-// WGSL shaders, which the native Metal backend's MSL-only createShaderModule
-// can't compile. The struct GPU-buffer rail it relies on is covered end-to-end
-// by web/test/particles.test.ts.)
+// (The particles render path is now cross-platform: particles_renderer is
+// HLSL→SPV shaded, so it renders on the native Metal backend too — covered by
+// the "particles_emitter → particles_renderer" render test below, in addition
+// to web/test/particles.test.ts.)
 TEST_CASE("bundle registration survives a trapping module_init (full PSO surface)",
           "[effect_render]") {
   auto backend = gpu::createMetalBackend();
@@ -616,6 +616,70 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
   REQUIRE(outFields.contains("positions"));
   CHECK(outFields["positions"].value("type", std::string()) == "array");
   CHECK(outFields["positions"].value("gpu", false) == true);
+}
+
+// Native pixel coverage for the GPU storage-buffer struct rail + the instanced
+// render-PSO factory (create_instanced_render_pso_layout) + buffer_for_field.
+// data.particles_emitter publishes positions/velocities into GPU storage
+// buffers exposed as a struct rail; video.particles_renderer (now HLSL→SPV,
+// no longer web-only) instances one quad per particle, reading positions[iid]
+// from the bound buffer in its vertex shader and outputting the tint. We run
+// enough frames for the emitter's CPU physics to lift particles into the frame,
+// then assert tinted (≈255,178,51) pixels appear over the dark clear. This is
+// the first NATIVE end-to-end exercise of the buffer rail — web covers it via
+// particles.test.ts; the native Metal path had none (the renderer used inline
+// WGSL, which the MSL-only backend couldn't compile).
+TEST_CASE("particles_emitter → particles_renderer draws tinted particles (buffer rail)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 64, H = 64; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  // Renderer's `particles_in` struct input auto-connects to the emitter's
+  // `particles_out` (the GPU-buffer + scalar leaves flow over the struct rail).
+  // `type:"module"` is required for the augmenter to auto-connect the struct
+  // rail (particles_in ← particles_out); without it the chain entries are
+  // skipped and no implicit taps are generated.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "data.particles_emitter",  "instance_key": "emit" },
+      { "type": "module", "module_type": "video.particles_renderer", "instance_key": "render" }
+    ],
+    "instances": {
+      "render": { "module_type": "video.particles_renderer",
+                  "state": { "particle_size": 0.05, "tint": [1.0, 0.7, 0.2, 1.0] } }
+    },
+    "wires": []
+  })JSON");
+
+  // Run frames so the emitter's per-tick physics carries particles up from the
+  // bottom spawn edge into the viewport (mirrors the web test's waitFrames=30).
+  std::vector<uint8_t> px;
+  for (int frame = 0; frame < 40; ++frame) {
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                   /*sketchDirty=*/frame == 0);
+    backend->submit();
+    if (frame == 39) px = backend->readbackTexture(out, W, H);
+  }
+
+  // Count tinted (≈255,178,51) pixels — same predicate as the web test.
+  size_t tinted = 0;
+  for (size_t i = 0; i + 3 < px.size(); i += 4) {
+    int r = px[i], g = px[i + 1], b = px[i + 2];
+    if (r > 120 && g > 60 && g < 220 && b < 120) ++tinted;
+  }
+  double coverage = double(tinted) / double(W * H);
+  INFO("tinted coverage = " << coverage << " (" << tinted << " px)");
+  CHECK(coverage >= 0.005);
 }
 
 // Native functional coverage for the bindings-explicit render-PSO factory

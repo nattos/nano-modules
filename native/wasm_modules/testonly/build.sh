@@ -20,6 +20,18 @@ compile_shaders_compute_fused_spv fuse_solid
 compile_shaders_full_spv gpu_test
 compile_shaders_full_spv spinningtris
 
+# particles_renderer — instanced quad VS reading a GPU storage buffer of
+# particle positions + a trivial passthrough FS. No compute stage, so we
+# invoke DXC directly for vs+ps (mirrors flash_particles in nano/build.sh).
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../particles_renderer/vertex.hlsl   -Fo "$TMP_DIR/particles_renderer_vertex.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../particles_renderer/fragment.hlsl -Fo "$TMP_DIR/particles_renderer_fragment.spv"
+_emit_spv_header_var particles_renderer vertex fragment
+echo "  particles_renderer shaders compiled (SPV: vertex + fragment)"
+
 # hdr_test compiles the same compute.hlsl twice; the SPV is identical
 # for both variants, but the runtime registers each under its own name
 # with a different storage-format hint so naga emits matching
