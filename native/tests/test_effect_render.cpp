@@ -1046,6 +1046,172 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
   CHECK(s[6] == 1);  // identitySkipped
 }
 
+// REPRO (#alpha): "when the first generator has alpha in (0,1), effects after
+// don't render / output is transparent". Drives a fractional-alpha texture into
+// a fusion-eligible chain and asserts the downstream effects still transform the
+// RGB exactly as they do for an opaque input — i.e. the executor does NOT gate
+// rendering on alpha. If this passes, the breakage is in compositing/display,
+// not the executor.
+TEST_CASE("fractional input alpha does not break downstream rendering", "[effect_render][alpha]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  // Two non-identity brightness stages → they fuse (no self-cancellation).
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "video.brightness_contrast", "instance_key": "a" },
+      { "module_type": "video.brightness_contrast", "instance_key": "b" }
+    ],
+    "instances": {
+      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.7, "contrast": 0.5 } },
+      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.7, "contrast": 0.5 } }
+    }
+  })JSON");
+
+  auto runWithAlpha = [&](uint8_t alpha, double& rgbMean, double& aMean) {
+    std::vector<uint8_t> px(W * H * 4, 64);          // RGB = 64
+    for (size_t i = 3; i < px.size(); i += 4) px[i] = alpha;
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    rgbMean = mean_rgb(o);
+    long s = 0, n = 0;
+    for (size_t i = 3; i < o.size(); i += 4) { s += o[i]; ++n; }
+    aMean = n ? (double)s / n : 0.0;
+  };
+
+  double rgbOpaque = 0, aOpaque = 0, rgbFrac = 0, aFrac = 0;
+  runWithAlpha(255, rgbOpaque, aOpaque);
+  runWithAlpha(96,  rgbFrac,   aFrac);
+
+  INFO("[texture alpha] opaque: rgb " << rgbOpaque << " a " << aOpaque
+       << "  | fractional(96): rgb " << rgbFrac << " a " << aFrac);
+  // The chain actually did something (RGB moved well off the input's 64).
+  CHECK(std::abs(rgbOpaque - 64.0) > 20.0);
+  // Downstream RGB is identical whether the input was opaque or not — the
+  // executor does NOT gate rendering on alpha — and the alpha is preserved.
+  CHECK(std::abs(rgbFrac - rgbOpaque) < 2.0);
+  CHECK(std::abs(aOpaque - 255.0) < 2.0);
+  CHECK(std::abs(aFrac - 96.0) < 2.0);
+
+  // ---- Now the __opacity__ partial path: first stage at opacity 0.5, then a
+  // second effect. Does the SECOND effect still render on the result? ----
+  auto partialFirst = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "video.brightness_contrast", "instance_key": "a" },
+      { "module_type": "video.brightness_contrast", "instance_key": "b" }
+    ],
+    "instances": {
+      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.9, "contrast": 0.5, "__opacity__": 0.5 } },
+      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.9, "contrast": 0.5 } }
+    }
+  })JSON");
+  {
+    std::vector<uint8_t> px(W * H * 4, 64);
+    for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+    int32_t out = executor.execute(partialFirst, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    int32_t s7[7]; executor.fillDebugStats(s7);
+    double m = mean_rgb(backend->readbackTexture(out, W, H));
+    INFO("[__opacity__ first=0.5] out rgb " << m << "  stats eff=" << s7[0]
+         << " std=" << s7[1] << " fr=" << s7[2] << " gpu=" << s7[5]);
+    // The downstream (second) brightness must still lift the result clearly
+    // above the input — i.e. effects after a partial-opacity stage DO render.
+    CHECK(m > 64.0 + 10.0);
+  }
+
+  // ---- The literal scenario: a GENERATOR first (strict output, no upstream
+  // input → inputHandle = -1), then a downstream effect. solid_color writes a
+  // known color; brightness must then transform it. ----
+  auto genFirst = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "generator.solid_color", "instance_key": "g" },
+      { "module_type": "video.brightness_contrast", "instance_key": "e" }
+    ],
+    "instances": {
+      "g": { "module_type": "generator.solid_color", "state": { "color": [0.25, 0.25, 0.25] } },
+      "e": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.5 } }
+    }
+  })JSON");
+  {
+    // NO upstream input — pass -1, the way a top-of-deck sketch runs.
+    int32_t out = executor.execute(genFirst, -1, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    int32_t s7[7]; executor.fillDebugStats(s7);
+    auto o = backend->readbackTexture(out, W, H);
+    double m = mean_rgb(o);
+    long sa = 0, na = 0; for (size_t i = 3; i < o.size(); i += 4) { sa += o[i]; ++na; }
+    double a = na ? (double)sa / na : 0.0;
+    INFO("[generator first, no input] out rgb " << m << " a " << a
+         << "  stats eff=" << s7[0] << " std=" << s7[1] << " fr=" << s7[2] << " gpu=" << s7[5]);
+    // The generator's 0.25 grey (~64) lifted by brightness 0.8 → well above it,
+    // and fully opaque. Downstream effect rendered on the generator's output.
+    CHECK(m > 64.0 + 10.0);
+    CHECK(a > 250.0);
+  }
+}
+
+// REPRO (#stuck): two generator.solid_color in series; the FIRST has partial
+// effect opacity (__opacity__ = 0.9). Changing the SECOND's color must update
+// the output every frame — the user reports it freezes at the last frame.
+TEST_CASE("partial-opacity first stage does not freeze downstream output", "[effect_render][alpha]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  auto frame = [&](double secondBlue, double firstOpacity) {
+    char buf[640];
+    std::snprintf(buf, sizeof(buf), R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "g1" },
+        { "module_type": "generator.solid_color", "instance_key": "g2" }
+      ],
+      "instances": {
+        "g1": { "module_type": "generator.solid_color", "state": { "color": [0.2, 0.2, 0.2], "__opacity__": %.3f } },
+        "g2": { "module_type": "generator.solid_color", "state": { "color": [0.0, 0.0, %.3f] } }
+      }
+    })JSON", firstOpacity, secondBlue);
+    auto sk = nlohmann::json::parse(buf);
+    int32_t out = executor.execute(sk, -1, outTex, (int)W, (int)H, 1.0/60.0, /*dirty=*/true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    long s = 0, n = 0; for (size_t i = 2; i < o.size(); i += 4) { s += o[i]; ++n; }  // mean BLUE
+    return n ? (double)s / n : 0.0;
+  };
+
+  // Control: first stage fully opaque → changing g2's blue clearly moves output.
+  double ctlLo = frame(0.2, 1.0);
+  double ctlHi = frame(0.9, 1.0);
+  INFO("control (op=1.0): blue lo " << ctlLo << "  hi " << ctlHi);
+  CHECK(ctlHi - ctlLo > 100.0);
+
+  // Bug case: first stage at opacity 0.9 → changing g2's blue must STILL move it.
+  double lo = frame(0.2, 0.9);
+  double hi = frame(0.9, 0.9);
+  INFO("partial (op=0.9): blue lo " << lo << "  hi " << hi);
+  CHECK(hi - lo > 100.0);
+}
+
 #ifdef TEXT_WASM_PATH
 // Text-effect migration (step #4): gen.text loads from text.wasm — the same
 // bundle path as every other effect — instead of being statically linked. Its

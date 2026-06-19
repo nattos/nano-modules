@@ -33,6 +33,11 @@ EXEC_GPU_IMPORT("clear_texture")   void    gpu_clear_texture(int32_t tex, float 
 // Executor-only host ops (see gpu_impls.cpp "Executor-only GPU ops").
 EXEC_GPU_IMPORT("set_surface")        void    gpu_set_surface(int32_t tex, int32_t w, int32_t h);
 EXEC_GPU_IMPORT("get_texture_format") int32_t gpu_get_texture_format(int32_t handle);
+// Live backend: 0 = Metal, 1 = WebGPU, -1 = none (gpu::Backend). Executor-side
+// shader sources (the wet/dry blend) pick MSL vs WGSL from this — the executor
+// runs as executor.wasm on BOTH backends, and create_shader_module compiles the
+// source verbatim in the host's native language.
+EXEC_GPU_IMPORT("get_backend")        int32_t gpu_get_backend(void);
 EXEC_GPU_IMPORT("begin_submit_batch") void    gpu_begin_submit_batch(void);
 EXEC_GPU_IMPORT("end_submit_batch")   void    gpu_end_submit_batch(void);
 

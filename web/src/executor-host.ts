@@ -596,6 +596,9 @@ export class WasmSketchExecutor {
         if (t) g.setSurface(t, w, h);
       },
       get_texture_format: (h: number): number => g.getTextureFormatCode(h),
+      // Live backend code (1 = WebGPU here). The executor's wet/dry blend picks
+      // WGSL vs MSL from this — without it the blend would feed MSL to WebGPU.
+      get_backend: (): number => g.getBackend(),
       // The executor batches the whole frame between begin/end_submit_batch.
       // GPUHost accumulates into one lazily-created encoder and never flushes
       // mid-frame on its own, so begin is a no-op and end flushes once.

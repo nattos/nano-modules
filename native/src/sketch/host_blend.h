@@ -8,10 +8,17 @@
  * mirrors the text compositor (host_impls_text.cpp): create a shader module +
  * compute PSO once, write a small uniform, encode one dispatch.
  *
- * The MSL math is kept in LOCK-STEP with the web WGSL blend in
- * web/src/sketch-executor.ts (both `mix(dry, fx, opacity)` over the full RGBA),
- * so the simulator reproduces native pixels. Native is Metal-only, so the
- * shader source is MSL.
+ * The executor runs as executor.wasm on BOTH backends, so the blend ships in
+ * two languages and picks one from gpu_get_backend() at PSO-build time: MSL on
+ * Metal (native), WGSL on WebGPU (web). `gpu_create_shader_module` compiles the
+ * source verbatim in the host's native language, so a single hardcoded language
+ * fails on the other backend (feeding MSL to WebGPU traps with "invalid
+ * character #include <metal_stdlib>", which broke partial opacity on web). The
+ * two sources are kept in LOCK-STEP: both `mix(dry, fx, opacity)` over the full
+ * RGBA. Bindings: dry = texture 0, fx = texture 1, out = texture 2 (write),
+ * uniform = slot 3 — textures first, then the uniform, matching the fused-kernel
+ * convention so WebGPU's auto-layout (one binding namespace per group) has no
+ * texture/buffer @binding collision.
  */
 
 #include "sketch/exec_gpu.h"
@@ -31,13 +38,32 @@ kernel void wet_dry_blend(
     texture2d<float, access::read>  dry_tex [[texture(0)]],
     texture2d<float, access::read>  fx_tex  [[texture(1)]],
     texture2d<float, access::write> out_tex [[texture(2)]],
-    constant U& u [[buffer(0)]]) {
+    constant U& u [[buffer(3)]]) {
   if (gid.x >= u.w || gid.y >= u.h) return;
   float4 a = dry_tex.read(gid);
   float4 b = fx_tex.read(gid);
   out_tex.write(mix(a, b, u.opacity), gid);
 }
 )MSL";
+
+// WGSL twin of kWetDryBlendMSL (WebGPU). Same math + binding layout: read
+// textures at @binding 0/1, an rgba8unorm write storage texture at @binding 2,
+// and the uniform at @binding 3 (after the textures — no auto-layout collision).
+inline constexpr const char* kWetDryBlendWGSL = R"WGSL(
+struct U { w: u32, h: u32, opacity: f32, pad: f32 };
+@group(0) @binding(0) var dry_tex: texture_2d<f32>;
+@group(0) @binding(1) var fx_tex:  texture_2d<f32>;
+@group(0) @binding(2) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var<uniform> u: U;
+@compute @workgroup_size(8, 8, 1)
+fn wet_dry_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x >= u.w || gid.y >= u.h) { return; }
+  let p = vec2<i32>(i32(gid.x), i32(gid.y));
+  let a = textureLoad(dry_tex, p, 0);
+  let b = textureLoad(fx_tex,  p, 0);
+  textureStore(out_tex, p, mix(a, b, u.opacity));
+}
+)WGSL";
 
 class WetDryBlend {
  public:
@@ -58,7 +84,7 @@ class WetDryBlend {
     gpu_write_buffer(uni_, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
     int32_t pass = gpu_begin_compute_pass();
     gpu_compute_set_pso(pass, pso_);
-    gpu_compute_set_buffer(pass, uni_, 0, 0);
+    gpu_compute_set_buffer(pass, uni_, 0, /*slot*/ 3);
     gpu_compute_set_texture(pass, dry,    0, /*read*/ 0);
     gpu_compute_set_texture(pass, fxTex,  1, /*read*/ 0);
     gpu_compute_set_texture(pass, outTex, 2, /*write*/ 1);
@@ -72,14 +98,17 @@ class WetDryBlend {
 
   bool ensure() {
     if (pso_ < 0) {
-      shader_ = gpu_create_shader_module(kWetDryBlendMSL,
-                                         (int32_t)__builtin_strlen(kWetDryBlendMSL));
+      // 1 = gpu::Backend::WebGPU → WGSL; anything else (Metal) → MSL.
+      const char* src = (gpu_get_backend() == 1) ? kWetDryBlendWGSL : kWetDryBlendMSL;
+      shader_ = gpu_create_shader_module(src, (int32_t)__builtin_strlen(src));
       if (shader_ < 0) return false;
       pso_ = gpu_create_compute_pso(shader_, "wet_dry_blend",
                                     (int32_t)__builtin_strlen("wet_dry_blend"));
       if (pso_ < 0) return false;
     }
-    if (uni_ < 0) uni_ = gpu_create_buffer(16, 0);
+    // usage 2 = gpu::BufferUsage::Uniform — required for the WebGPU
+    // var<uniform> binding (Metal ignores buffer usage flags).
+    if (uni_ < 0) uni_ = gpu_create_buffer(16, /*Uniform*/ 2);
     return pso_ >= 0 && uni_ >= 0;
   }
 
