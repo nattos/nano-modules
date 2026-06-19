@@ -69,7 +69,7 @@ function satellitePositions(b: FieldBinding): [number, number][] {
   const [cx, cy] = effPos(b);
   const spread = Number(b.getValue('sat_spread') ?? 0.3);
   const rotation = Number(b.getValue('sat_rotation') ?? 0);
-  const radius = spread * SAT_RADIUS_MAX;
+  const radius = spread * spread * SAT_RADIUS_MAX;   // quadratic; matches satellite_xy()
   const clampPad = (v: number) => (v < 0.02 ? 0.02 : v > 0.98 ? 0.98 : v);
   const pts: [number, number][] = [];
   for (let k = 0; k < 3; k++) {
@@ -213,7 +213,7 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
     if (sats && this.dragging && satPts) {
       const spread = Number(this.binding.getValue('sat_spread') ?? 0.3);
       const rotation = Number(this.binding.getValue('sat_rotation') ?? 0);
-      const radius = spread * SAT_RADIUS_MAX;
+      const radius = spread * spread * SAT_RADIUS_MAX;   // quadratic; matches satellite_xy()
       const cp = (v: number) => (v < 0.02 ? 0.02 : v > 0.98 ? 0.98 : v);
       for (let k = 0; k < 3; k++) {
         const ang = rotation * Math.PI * 2 + k * ((Math.PI * 2) / 3);
@@ -414,9 +414,13 @@ export class SpectralLfoPreview extends MobxLitElement {
     if (r.single) {
       stroke(r.curve, '#4488ff', 2 * dpr);
     } else {
-      const ghosts = ['rgba(255,102,102,0.27)', 'rgba(102,255,102,0.27)', 'rgba(102,102,255,0.27)'];
-      for (let v = 0; v < 3; v++) stroke(r.sources[v], ghosts[v], dpr);
-      stroke(r.raw, 'rgba(204,102,255,0.27)', dpr);
+      // Hide the interpolation-source ghosts when satellites are on — three
+      // extra curves plus the source shapes gets too noisy; keep it clean.
+      if (!this.satCurves) {
+        const ghosts = ['rgba(255,102,102,0.27)', 'rgba(102,255,102,0.27)', 'rgba(102,102,255,0.27)'];
+        for (let v = 0; v < 3; v++) stroke(r.sources[v], ghosts[v], dpr);
+        stroke(r.raw, 'rgba(204,102,255,0.27)', dpr);
+      }
       stroke(r.curve, '#cc66ff', 2 * dpr);
     }
 

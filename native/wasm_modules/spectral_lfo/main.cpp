@@ -52,14 +52,15 @@ static inline void orbit_xy(float orbit, float& ox, float& oy) {
 }
 
 // ─── satellites (three offset taps forming a triangle around the center) ─
-// spread ∈ [0,1] → orbit radius in t-SNE space; rotation ∈ [0,1] → full turn.
+// spread ∈ [0,1] → orbit radius in t-SNE space (quadratic for finer low-end
+// control: 0.5 → 0.25); rotation ∈ [0,1] → full turn.
 // NOTE: the web inspector mirrors this layout (spectral-lfo-inspector.ts).
 static const float kSatRadiusMax = 0.45f;
 static const float kTwoPi        = 6.2831853071795864f;
 static const float kThirdTurn    = 2.0943951023931953f;  // 2π/3
 static inline void satellite_xy(float cx, float cy, float spread, float rotation,
                                 int k, float& sx, float& sy) {
-  const float radius = spread * kSatRadiusMax;
+  const float radius = spread * spread * kSatRadiusMax;
   const float ang = rotation * kTwoPi + (float)k * kThirdTurn;
   sx = clampf(cx + radius * std::cos(ang), 0.02f, 0.98f);
   sy = clampf(cy + radius * std::sin(ang), 0.02f, 0.98f);
