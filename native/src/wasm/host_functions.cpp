@@ -936,15 +936,6 @@ static int32_t gpu_get_backend(wasm_exec_env_t env) {
   return g ? g->getBackend() : -1;
 }
 
-static int32_t gpu_create_shader_module(wasm_exec_env_t env, int32_t src_ptr, int32_t src_len) {
-  auto* g = get_gpu(env);
-  if (!g) return -1;
-  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
-  if (!wasm_runtime_validate_app_addr(inst, src_ptr, src_len)) return -1;
-  char* src = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, src_ptr));
-  return src ? g->createShaderModule(std::string(src, src_len)) : -1;
-}
-
 static int32_t gpu_create_buffer(wasm_exec_env_t env, int32_t size, int32_t usage) {
   auto* g = get_gpu(env);
   return g ? g->createBuffer(size, usage) : -1;
@@ -1323,7 +1314,6 @@ static int32_t gpu_begin_render_pass_mrt(wasm_exec_env_t env, int32_t count,
 
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
-    {"create_shader_module", reinterpret_cast<void*>(gpu_create_shader_module), "(ii)i", nullptr},
     {"create_shader_module_named", reinterpret_cast<void*>(gpu_create_shader_module_named), "(ii)i", nullptr},
     {"create_sampler", reinterpret_cast<void*>(gpu_create_sampler), "(ii)i", nullptr},
     {"create_texture_mips", reinterpret_cast<void*>(gpu_create_texture_mips), "(iiii)i", nullptr},

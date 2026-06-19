@@ -1050,7 +1050,6 @@ export class WasmHost {
           : {
               // Stubs if no GPU host
               get_backend: () => -1,
-              create_shader_module: () => -1,
               create_shader_module_named: () => -1,
               create_buffer: () => -1,
               create_texture: () => -1,

@@ -1037,8 +1037,11 @@ export class GPUHost {
     const memorySlice = (ptr: number, len: number): Uint8Array => readMemory(ptr, len);
     return {
       get_backend: () => this.getBackend(),
-      create_shader_module: (srcPtr: number, srcLen: number) =>
-        this.createShaderModule(readString(srcPtr, srcLen)),
+      // Effects no longer carry raw shader source — they register SPIR-V via
+      // state::registerShaderSPV and resolve it with
+      // create_shader_module_named (overridden on the WasmHost). The raw
+      // create_shader_module import was retired; the createShaderModule method
+      // remains as the internal SPV→WGSL→module primitive.
       create_buffer: (size: number, usage: number) =>
         this.createBuffer(size, usage),
       create_texture: (w: number, h: number, format: number) =>

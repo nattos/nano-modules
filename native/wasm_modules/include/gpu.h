@@ -7,7 +7,8 @@
  *
  * Usage:
  *   auto device = gpu::Device::create();
- *   auto shader = device.createShaderModule(source);
+ *   state::registerShaderSPV("my_cs", MY_CS_SPV, MY_CS_SPV_SIZE);
+ *   auto shader = device.createShaderModuleByName("my_cs");
  *   auto pso = device.createComputePSO(shader, "main");
  *   auto buffer = device.createBuffer(1024, gpu::BufferUsage::Storage);
  *
@@ -26,8 +27,6 @@
 extern "C" {
   __attribute__((import_module("gpu"), import_name("get_backend")))
   int gpu_get_backend(void);
-  __attribute__((import_module("gpu"), import_name("create_shader_module")))
-  int gpu_create_shader_module(const char* src, int src_len);
   // Look up a shader by name (registered via state::registerShaderSPV).
   // The host knows how to translate the SPIR-V to the platform-native
   // shader source — effects don't have to carry WGSL/MSL strings.
@@ -527,13 +526,6 @@ struct RenderPass {
 struct Device {
   static Backend backend() { return static_cast<Backend>(gpu_get_backend()); }
 
-  /// Create a shader module from a platform-native source string.
-  /// Deprecated: prefer `createShaderModuleByName(name)` after
-  /// registering the shader's SPIR-V via `state::registerShaderSPV`.
-  /// Effects shouldn't carry per-platform shader text.
-  static ShaderModule createShaderModule(const char* source) {
-    return ShaderModule(gpu_create_shader_module(source, std::strlen(source)));
-  }
   /// Look up a shader by name. The host owns the SPIR-V → platform
   /// translation (WGSL on the web, MSL on native Metal); the effect
   /// just references the name it registered earlier.
