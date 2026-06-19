@@ -82,6 +82,13 @@ int32_t effrt_texture_field(int32_t inst, const char* path, int32_t path_len) {
   auto* i = resolve(inst);
   return i ? i->textureField(std::string(path, path_len)) : -1;
 }
+void effrt_set_buffer_field(int32_t inst, const char* path, int32_t path_len, int32_t buf) {
+  if (auto* i = resolve(inst)) i->setBufferField(std::string(path, path_len), buf);
+}
+int32_t effrt_buffer_field(int32_t inst, const char* path, int32_t path_len) {
+  auto* i = resolve(inst);
+  return i ? i->bufferField(std::string(path, path_len)) : 0;
+}
 void effrt_set_input_texture_slots(int32_t inst, const int32_t* handles, int32_t n) {
   if (auto* i = resolve(inst))
     i->setInputTextureSlots(std::vector<int32_t>(handles, handles + n));

@@ -457,6 +457,18 @@ export class WasmSketchExecutor {
         const i = this.resolve(h); if (!i) return -1;
         return i.host.textureFields.get(this.readString(pathPtr, pathLen)) ?? -1;
       },
+      // GPU storage-buffer struct-rail leaves (mirror effrt_set_buffer_field /
+      // effrt_buffer_field). Read off the producer's gpuBufferFields (published
+      // by its state::setGpuBuffer) and bound onto the consumer's input field,
+      // which the consumer resolves via gpu::bufferForField.
+      set_buffer_field: (h: number, pathPtr: number, pathLen: number, buf: number) => {
+        const i = this.resolve(h); if (!i) return;
+        i.host.gpuBufferFields.set(this.readString(pathPtr, pathLen), buf);
+      },
+      buffer_field: (h: number, pathPtr: number, pathLen: number): number => {
+        const i = this.resolve(h); if (!i) return 0;
+        return i.host.gpuBufferFields.get(this.readString(pathPtr, pathLen)) ?? 0;
+      },
       set_input_texture_slots: (h: number, handlesPtr: number, n: number) => {
         const i = this.resolve(h); if (!i) return;
         i.host.inputTextureHandles = Array.from(new Int32Array(this.memory.buffer, handlesPtr, n));

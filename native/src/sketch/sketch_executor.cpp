@@ -55,6 +55,12 @@ struct EffectRef {
   int32_t textureField(const std::string& p) const {
     return effrt_texture_field(h, p.data(), (int32_t)p.size());
   }
+  void setBufferField(const std::string& p, int32_t b) const {
+    effrt_set_buffer_field(h, p.data(), (int32_t)p.size(), b);
+  }
+  int32_t bufferField(const std::string& p) const {
+    return effrt_buffer_field(h, p.data(), (int32_t)p.size());
+  }
   void setInputTextureSlots(const std::vector<int32_t>& s) const {
     effrt_set_input_texture_slots(h, s.data(), (int32_t)s.size());
   }
@@ -102,6 +108,38 @@ void forEachRailLeafTexture(const json& dataType, F&& f) {
     std::vector<std::string> leaves;
     sketch_augment::collectTextureLeaves(schema, "", leaves);
     for (auto& l : leaves) f(l);
+  }
+}
+
+/**
+ * Visit each GPU storage-buffer leaf of a struct rail. (Plain buffer rails
+ * don't exist — buffers only flow as struct leaves.) Yields slash-joined
+ * sub-paths, mirroring forEachRailLeafTexture.
+ */
+template <class F>
+void forEachRailLeafBuffer(const json& dataType, F&& f) {
+  if (dataType.is_object() &&
+      dataType.value("kind", std::string()) == "struct") {
+    const auto& schema = dataType.value("schema", json());
+    std::vector<std::string> leaves;
+    sketch_augment::collectGpuBufferLeaves(schema, "", leaves);
+    for (auto& l : leaves) f(l);
+  }
+}
+
+/**
+ * Visit each scalar leaf of a struct rail, with its schema default. The
+ * producer's output declaration is the value source (no runtime getter), so a
+ * struct rail flows the producer's declared count/flags onto the consumer.
+ */
+template <class F>
+void forEachRailLeafScalar(const json& dataType, F&& f) {
+  if (dataType.is_object() &&
+      dataType.value("kind", std::string()) == "struct") {
+    const auto& schema = dataType.value("schema", json());
+    std::vector<std::pair<std::string, double>> leaves;
+    sketch_augment::collectScalarLeaves(schema, "", leaves);
+    for (auto& l : leaves) f(l.first, l.second);
   }
 }
 
@@ -256,14 +294,20 @@ void SketchExecutor::registerModuleSchema(const std::string& moduleType,
   // A node with NO output texture field (io & 2) emits only scalars/structs — a
   // modulation source that passes the image chain through (see hasTextureOutput).
   rm.hasTextureOutput = false;
+  rm.hasBufferOutput = false;
   if (rm.schemaFields.is_object()) {
     for (auto it = rm.schemaFields.begin(); it != rm.schemaFields.end(); ++it) {
       const auto& def = it.value();
-      if (def.is_object() && def.value("type", std::string()) == "texture" &&
-          (def.value("io", 0) & 2) != 0) {
+      if (!def.is_object() || (def.value("io", 0) & 2) == 0) continue;
+      if (def.value("type", std::string()) == "texture") {
         rm.hasTextureOutput = true;
-        break;
       }
+      // An output struct/array may carry GPU storage-buffer leaves (e.g.
+      // particles_out/positions). Such a producer must still render() to upload
+      // its buffers even though it has no texture output.
+      std::vector<std::string> bufLeaves;
+      sketch_augment::collectGpuBufferLeaves(def, "", bufLeaves);
+      if (!bufLeaves.empty()) rm.hasBufferOutput = true;
     }
   }
   moduleSchemas_[moduleType] = std::move(rm);
@@ -649,10 +693,13 @@ int32_t SketchExecutor::execute(
 
     // Per-column rail VALUE tables (rebuilt per frame — these change every
     // frame). Texture handles keyed by leafPath (empty string for single-
-    // texture rails); float scalars keyed by railId.
+    // texture rails); float scalars keyed by railId; GPU storage-buffer handles
+    // keyed by leafPath (struct rails only — buffers flow as struct leaves).
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railTextures;
     std::unordered_map<std::string, float> railFloats;
+    std::unordered_map<std::string,
+      std::unordered_map<std::string, int32_t>> railBuffers;
 
     int32_t colInput = inputHandle;
     const bool isLastCol = (colIdx == columns.size() - 1);
@@ -905,11 +952,17 @@ int32_t SketchExecutor::execute(
       if (!willRender) {
         inst.setTextureField("tex_in", colInput);
         inst.setFieldConnected("tex_in", true, false);
-        applyReadTaps(inst.h, entry, railsById, railTextures, railFloats, instances, instKey);
+        applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
+                      railBuffers, instances, instKey);
         markWriteTapOutputsConnected(inst.h, entry);
         inst.doTick(dt);
+        // A buffer-producing modulation source (e.g. data.particles_emitter) has
+        // no texture output, but its render() UPLOADS its GPU buffers — run it so
+        // downstream readers see fresh data. It doesn't touch the chain texture,
+        // so the passthrough below still forwards colInput untouched.
+        if (reg && reg->hasBufferOutput) inst.doRender(W, H);
         captureWriteTaps(inst.h, entry, instKey, instances,
-                         railsById, railTextures, railFloats);
+                         railsById, railTextures, railFloats, railBuffers);
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
@@ -930,7 +983,8 @@ int32_t SketchExecutor::execute(
       inst.setFieldConnected("tex_in",  true,  false);
       inst.setFieldConnected("tex_out", false, true);
 
-      applyReadTaps(inst.h, entry, railsById, railTextures, railFloats, instances, instKey);
+      applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
+                    railBuffers, instances, instKey);
       markWriteTapOutputsConnected(inst.h, entry);
 
       // -- Positional input slots + per-stage render target (slot-based GPU
@@ -970,7 +1024,7 @@ int32_t SketchExecutor::execute(
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
       captureWriteTaps(inst.h, entry, instKey, instances,
-                       railsById, railTextures, railFloats);
+                       railsById, railTextures, railFloats, railBuffers);
 
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
@@ -1281,6 +1335,8 @@ void SketchExecutor::applyReadTaps(
     const std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railTextures,
     const std::unordered_map<std::string, float>& railFloats,
+    const std::unordered_map<std::string,
+      std::unordered_map<std::string, int32_t>>& railBuffers,
     const json& sketchInstances,
     const std::string& instanceKey) {
   const EffectRef inst{inst_handle};
@@ -1346,18 +1402,47 @@ void SketchExecutor::applyReadTaps(
       continue;
     }
 
-    // Texture/struct read: delayed binds the retained 1-frame copy (empty until
-    // the producer has run for a full frame — frame 0 degrades to unbound).
-    const auto& srcTextures = delayed ? delayedRailTextures_ : railTextures;
-    auto texIt = srcTextures.find(railId);
-    if (texIt == srcTextures.end()) continue;
-    forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
-      auto lit = texIt->second.find(leaf);
-      if (lit == texIt->second.end() || lit->second <= 0) return;
+    // Texture/struct read. A struct rail can carry any mix of texture, GPU
+    // buffer, and scalar leaves; each kind is routed independently (a struct
+    // with only buffer/scalar leaves has no entry in railTextures, so the
+    // texture bind must not gate the others).
+
+    // Scalar leaves: the producer's declared value (schema default) flows onto
+    // the consumer's nested input field — e.g. particles_out/count → the
+    // renderer's particles_in/count. Patched as a float; int/bool effects read
+    // it back through their own coercion.
+    forEachRailLeafScalar(dataType, [&](const std::string& leaf, double def) {
       const std::string target = leaf.empty() ? fieldPath
                                               : (fieldPath + "/" + leaf);
-      inst.setTextureField(target, lit->second);
+      inst.setParamFloat(target, (float)def);
     });
+
+    // GPU storage-buffer leaves: bind the producer's published handle (captured
+    // this frame). Persistent buffers, so no delayed-copy path.
+    auto bufIt = railBuffers.find(railId);
+    if (bufIt != railBuffers.end()) {
+      forEachRailLeafBuffer(dataType, [&](const std::string& leaf) {
+        auto lit = bufIt->second.find(leaf);
+        if (lit == bufIt->second.end() || lit->second <= 0) return;
+        const std::string target = leaf.empty() ? fieldPath
+                                                : (fieldPath + "/" + leaf);
+        inst.setBufferField(target, lit->second);
+      });
+    }
+
+    // Texture leaves: delayed binds the retained 1-frame copy (empty until the
+    // producer has run for a full frame — frame 0 degrades to unbound).
+    const auto& srcTextures = delayed ? delayedRailTextures_ : railTextures;
+    auto texIt = srcTextures.find(railId);
+    if (texIt != srcTextures.end()) {
+      forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
+        auto lit = texIt->second.find(leaf);
+        if (lit == texIt->second.end() || lit->second <= 0) return;
+        const std::string target = leaf.empty() ? fieldPath
+                                                : (fieldPath + "/" + leaf);
+        inst.setTextureField(target, lit->second);
+      });
+    }
     inst.setFieldConnected(fieldPath, true, false);
   }
 }
@@ -1370,7 +1455,9 @@ void SketchExecutor::captureWriteTaps(
     const std::unordered_map<std::string, json>& railsById,
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railTextures,
-    std::unordered_map<std::string, float>& railFloats) {
+    std::unordered_map<std::string, float>& railFloats,
+    std::unordered_map<std::string,
+      std::unordered_map<std::string, int32_t>>& railBuffers) {
   const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   for (const auto& tap : entry["taps"]) {
@@ -1440,6 +1527,19 @@ void SketchExecutor::captureWriteTaps(
       int32_t h = inst.textureField(source);
       if (h > 0) texMap[leaf] = h;
     });
+
+    // GPU storage-buffer leaves: record the producer's published handle so the
+    // consumer's read-tap can bind it. Buffers are producer-owned + persistent
+    // (no recycled-intermediate hazard), so there's no delayed-copy path.
+    bool hasBuf = false;
+    auto& bufMap = railBuffers[railId];
+    forEachRailLeafBuffer(dataType, [&](const std::string& leaf) {
+      const std::string source = leaf.empty() ? fieldPath
+                                              : (fieldPath + "/" + leaf);
+      int32_t h = inst.bufferField(source);
+      if (h > 0) { bufMap[leaf] = h; hasBuf = true; }
+    });
+    if (hasBuf) inst.setFieldConnected(fieldPath, false, true);
   }
 }
 

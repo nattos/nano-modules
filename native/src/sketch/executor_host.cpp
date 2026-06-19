@@ -58,6 +58,13 @@ int32_t w_texture_field(wasm_exec_env_t env, int32_t h, int32_t p, int32_t pl) {
   char* path = appBuf(env, p, pl);
   return path ? effrt_texture_field(h, path, pl) : -1;
 }
+void w_set_buffer_field(wasm_exec_env_t env, int32_t h, int32_t p, int32_t pl, int32_t buf) {
+  if (char* path = appBuf(env, p, pl)) effrt_set_buffer_field(h, path, pl, buf);
+}
+int32_t w_buffer_field(wasm_exec_env_t env, int32_t h, int32_t p, int32_t pl) {
+  char* path = appBuf(env, p, pl);
+  return path ? effrt_buffer_field(h, path, pl) : 0;
+}
 void w_set_input_texture_slots(wasm_exec_env_t env, int32_t h, int32_t handles, int32_t n) {
   if (char* hs = appBuf(env, handles, n * (int32_t)sizeof(int32_t)))
     effrt_set_input_texture_slots(h, reinterpret_cast<const int32_t*>(hs), n);
@@ -112,6 +119,8 @@ NativeSymbol g_effrt_symbols[] = {
     {"set_param_array", reinterpret_cast<void*>(w_set_param_array), "(iiiii)", nullptr},
     {"set_texture_field", reinterpret_cast<void*>(w_set_texture_field), "(iiii)", nullptr},
     {"texture_field", reinterpret_cast<void*>(w_texture_field), "(iii)i", nullptr},
+    {"set_buffer_field", reinterpret_cast<void*>(w_set_buffer_field), "(iiii)", nullptr},
+    {"buffer_field", reinterpret_cast<void*>(w_buffer_field), "(iii)i", nullptr},
     {"set_input_texture_slots", reinterpret_cast<void*>(w_set_input_texture_slots), "(iii)", nullptr},
     {"set_field_connected", reinterpret_cast<void*>(w_set_field_connected), "(iiiii)", nullptr},
     {"set_will_render", reinterpret_cast<void*>(w_set_will_render), "(ii)", nullptr},

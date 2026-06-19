@@ -98,6 +98,54 @@ void collectTextureLeaves(const json& schema,
   }
 }
 
+void collectGpuBufferLeaves(const json& schema,
+                            const std::string& prefix,
+                            std::vector<std::string>& out) {
+  if (!schema.is_object()) return;
+  const std::string type = schema.value("type", std::string());
+  if (type == "array" && schema.value("gpu", false)) {
+    out.push_back(prefix);
+    return;
+  }
+  if (type == "object") {
+    const auto& fields = schema.value("fields", json::object());
+    if (!fields.is_object()) return;
+    for (auto it = fields.begin(); it != fields.end(); ++it) {
+      const std::string child = prefix.empty()
+                                    ? it.key()
+                                    : (prefix + "/" + it.key());
+      collectGpuBufferLeaves(it.value(), child, out);
+    }
+  }
+}
+
+void collectScalarLeaves(const json& schema,
+                         const std::string& prefix,
+                         std::vector<std::pair<std::string, double>>& out) {
+  if (!schema.is_object()) return;
+  const std::string type = schema.value("type", std::string());
+  if (type == "int" || type == "float" || type == "bool") {
+    double def = 0.0;
+    auto dit = schema.find("default");
+    if (dit != schema.end()) {
+      if (dit->is_number())       def = dit->get<double>();
+      else if (dit->is_boolean()) def = dit->get<bool>() ? 1.0 : 0.0;
+    }
+    out.emplace_back(prefix, def);
+    return;
+  }
+  if (type == "object") {
+    const auto& fields = schema.value("fields", json::object());
+    if (!fields.is_object()) return;
+    for (auto it = fields.begin(); it != fields.end(); ++it) {
+      const std::string child = prefix.empty()
+                                    ? it.key()
+                                    : (prefix + "/" + it.key());
+      collectScalarLeaves(it.value(), child, out);
+    }
+  }
+}
+
 // ----- Augmentation -------------------------------------------------
 
 namespace {

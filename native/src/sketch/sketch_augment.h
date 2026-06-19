@@ -22,6 +22,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace sketch_augment {
 
@@ -90,5 +92,24 @@ bool sketchNeedsAugmentation(
 void collectTextureLeaves(const nlohmann::json& schema,
                           const std::string& prefix,
                           std::vector<std::string>& out);
+
+/**
+ * Like collectTextureLeaves, but for GPU storage-buffer leaves
+ * (`type:array` with `gpu:true`). Used when routing a struct rail that
+ * carries GPU-resident arrays (e.g. particle positions/velocities).
+ */
+void collectGpuBufferLeaves(const nlohmann::json& schema,
+                            const std::string& prefix,
+                            std::vector<std::string>& out);
+
+/**
+ * Like collectTextureLeaves, but for scalar leaves (`type` in
+ * int/float/bool). Yields each leaf path paired with its schema
+ * `default` (0 when absent). A struct rail flows these from the
+ * producer's output declaration to the consumer's input.
+ */
+void collectScalarLeaves(const nlohmann::json& schema,
+                         const std::string& prefix,
+                         std::vector<std::pair<std::string, double>>& out);
 
 }  // namespace sketch_augment

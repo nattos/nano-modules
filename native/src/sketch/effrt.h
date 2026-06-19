@@ -47,6 +47,15 @@ EFFRT_IMPORT("set_texture_field")
 void effrt_set_texture_field(int32_t inst, const char* path, int32_t path_len, int32_t tex);
 EFFRT_IMPORT("texture_field")
 int32_t effrt_texture_field(int32_t inst, const char* path, int32_t path_len);
+// GPU storage-buffer leaves of a struct rail. The producer publishes a handle
+// via state::setGpuBuffer (→ setBufferField); the executor reads it off the
+// producer and binds it onto the consumer's input field, which the consumer
+// effect resolves via gpu::bufferForField. Persistent (producer-owned) buffers,
+// so no per-frame copy — just the handle flows.
+EFFRT_IMPORT("set_buffer_field")
+void effrt_set_buffer_field(int32_t inst, const char* path, int32_t path_len, int32_t buf);
+EFFRT_IMPORT("buffer_field")
+int32_t effrt_buffer_field(int32_t inst, const char* path, int32_t path_len);
 EFFRT_IMPORT("set_input_texture_slots")
 void effrt_set_input_texture_slots(int32_t inst, const int32_t* handles, int32_t n);
 EFFRT_IMPORT("set_field_connected")

@@ -41,6 +41,13 @@ struct RegisteredModule {
    *  to publish its outputs but never renders, leaving the image chain untouched.
    *  Mirrors sketch-executor.ts's isTexturePassthrough check. */
   bool hasTextureOutput = false;
+
+  /** True when an OUTPUT field (io & 2) carries a GPU storage-buffer leaf
+   *  (`type:array`, `gpu:true`) — e.g. data.particles_emitter's
+   *  `particles_out/{positions,velocities}`. Such a node has no texture output
+   *  (so it's a passthrough), but it must still render() so it can UPLOAD its
+   *  buffers; the executor calls doRender for it in the passthrough branch. */
+  bool hasBufferOutput = false;
 };
 
 }  // namespace sketch_executor

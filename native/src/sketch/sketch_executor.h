@@ -362,6 +362,8 @@ class SketchExecutor {
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railTextures,
       const std::unordered_map<std::string, float>& railFloats,
+      const std::unordered_map<std::string,
+        std::unordered_map<std::string, int32_t>>& railBuffers,
       const nlohmann::json& sketchInstances,
       const std::string& instanceKey);
 
@@ -373,7 +375,9 @@ class SketchExecutor {
       const std::unordered_map<std::string, nlohmann::json>& railsById,
       std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railTextures,
-      std::unordered_map<std::string, float>& railFloats);
+      std::unordered_map<std::string, float>& railFloats,
+      std::unordered_map<std::string,
+        std::unordered_map<std::string, int32_t>>& railBuffers);
 
   void markWriteTapOutputsConnected(
       int32_t inst,
