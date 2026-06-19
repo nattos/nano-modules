@@ -28,8 +28,9 @@ export interface FieldBinding {
   /**
    * Live modulation telemetry for a field driven by a wire: the effective
    * resolved `value`, the swing `[min, max]` band the modulation can reach, and
-   * the `neutral` fill anchor the band grows from (base value, or 0 for `mul`),
-   * all in the field's own units. Returns null when the field is not modulated.
+   * the `neutral` fill anchor the band grows from (base value for add/mix; range
+   * min/midpoint for unsigned/signed replace; 0 for `mul`), all in the field's
+   * own units. Returns null when the field is not modulated.
    * Lets a slider draw the band + a filled effective bar over the base value.
    * Optional — widgets must tolerate its absence.
    */

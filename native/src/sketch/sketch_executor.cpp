@@ -193,9 +193,8 @@ tap_mod::Mod parseMod(const json& tap) {
 // nonlinear / foldback tap_mod curves are reproduced exactly by the lock-step
 // functions — no parallel math to keep in sync. Records { value, min, max } at
 // modData[instanceKey][field] for editor telemetry (lastModulationData()).
-// `neutral` is the fill anchor the editor's band grows from (base value for
-// add/mix/replace, 0 for mul) so a filled bar — not just a moving tick — tracks
-// the live value.
+// `neutral` is the fill anchor the editor's band grows from (see modNeutral) so
+// a filled bar — not just a moving tick — tracks the live value.
 template <typename FoldFn>
 void recordModBand(json& modData, const std::string& instanceKey,
                    const std::string& field, float live, float neutral,
@@ -213,10 +212,21 @@ void recordModBand(json& modData, const std::string& instanceKey,
       {"neutral", (double)neutral}};
 }
 
-// The fill anchor for a combine mode: mul grows from 0 (multiplicative origin),
-// every other mode grows from the user's base value.
-inline float modNeutral(tap_mod::Combine combine, float base) {
-  return combine == tap_mod::Combine::Mul ? 0.0f : base;
+// The fill anchor a modulation band grows from, per combine mode. This is the
+// effective value when the source input sits at its neutral (0):
+//   replace → min (unsigned) / midpoint (signed) — i.e. applyMagnitude's
+//             replaceVal at input 0;
+//   add / mix → the user's base value (input 0 contributes nothing);
+//   mul       → 0 (the multiplicative origin).
+inline float modNeutral(tap_mod::Combine combine, bool isSigned,
+                        float base, float dmin, float dmax) {
+  switch (combine) {
+    case tap_mod::Combine::Mul:     return 0.0f;
+    case tap_mod::Combine::Replace: return isSigned ? (dmin + dmax) * 0.5f : dmin;
+    case tap_mod::Combine::Add:
+    case tap_mod::Combine::Mix:
+    default:                        return base;
+  }
 }
 
 // --- Reserved per-effect engine state keys (device on/off + opacity) ---
@@ -867,7 +877,7 @@ int32_t SketchExecutor::execute(
           const float combined = fold(fit->second);
           knobVal[field] = combined;
           recordModBand(modulationData_, pe.instanceKey, field, combined,
-                        modNeutral(combine, canon),
+                        modNeutral(combine, isSigned, canon, dmin, dmax),
                         (float)tap.value("srcMin", 0.0),
                         (float)tap.value("srcMax", 1.0), fold);
         }
@@ -1451,7 +1461,7 @@ void SketchExecutor::applyReadTaps(
         // the source output's declared range (default 0..1). Fill anchor =
         // the base the fold modulates from (dmin seeds when no canonical).
         recordModBand(modulationData_, instanceKey, fieldPath, combined,
-                      modNeutral(combine, hasCanon ? canon : dmin),
+                      modNeutral(combine, isSigned, hasCanon ? canon : dmin, dmin, dmax),
                       (float)tap.value("srcMin", 0.0),
                       (float)tap.value("srcMax", 1.0), fold);
       }

@@ -126,7 +126,8 @@ export interface EngineStatus {
    * Per-frame modulation telemetry, keyed by instance key. For each modulated
    * scalar INPUT field: `{ value, min, max, neutral }` — the effective resolved
    * value, the swing band the modulation can reach, and the fill anchor the band
-   * grows from (base value, or 0 for `mul`). Drives the slider modulation band.
+   * grows from (base value for add/mix; range min/midpoint for unsigned/signed
+   * replace; 0 for `mul`). Drives the slider modulation band.
    */
   modulationData: Record<string, Record<string, { value: number; min: number; max: number; neutral: number }>>;
   /**
