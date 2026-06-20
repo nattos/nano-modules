@@ -853,6 +853,16 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(rhas("modulation_shaper_unary"));
   CHECK_FALSE(rhas("modulation_source"));
 
+  // mod.smooth (mod_smooth lifecycle) → also a unary modulation shaper.
+  const auto* smooth = registry.find("mod.smooth");
+  REQUIRE(smooth != nullptr);
+  const auto& scaps = smooth->capabilities;
+  auto shas = [&](const char* s) {
+    return std::find(scaps.begin(), scaps.end(), std::string(s)) != scaps.end();
+  };
+  CHECK(shas("modulation_shaper"));
+  CHECK(shas("modulation_shaper_unary"));
+
   // A plain image effect declares no capabilities (the array is absent) — and
   // is NOT a generator.
   const auto* bc = registry.find("video.brightness_contrast");

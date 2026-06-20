@@ -1,6 +1,11 @@
 /**
  * Parameter smoothing — the linear-ramp math for the engine-level `smoothing`
- * field option (web/src/sketch-types.ts `ParamSmoothing`).
+ * field option (web/src/sketch-types.ts `ParamSmoothing`) and the `mod.smooth`
+ * shaper effect.
+ *
+ * LOCK-STEP twin of native/src/sketch/param_smoothing.h — keep byte-identical
+ * (shared goldens: param-smoothing.test.ts + native test_param_smoothing.cpp),
+ * exactly like tap-mod.ts ↔ tap_mod.h.
  *
  * Pure + stateful-by-reference so the executor can keep one `SmoothState` per
  * (instance, fieldPath) across frames and the math stays independently unit-

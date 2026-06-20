@@ -46,6 +46,8 @@ NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
+
 NANO_DECLARE_INSTANCE_EFFECT(gpu_test)
 
 NANO_DECLARE_INSTANCE_EFFECT(spinningtris)
@@ -171,6 +173,16 @@ void nano_module_main() {
         "mod",
         "modulation,remap,shaper,curve,range,envelope",
         NANO_INSTANCE_LIFECYCLE(mod_remap),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.smooth",
+        "Modulation Smooth",
+        "Unary modulation shaper: linear smoothing over a duration (wire-identical smoothing)",
+        "mod",
+        "modulation,smooth,slew,ramp,glide,shaper,filter",
+        NANO_INSTANCE_LIFECYCLE(mod_smooth),
     });
 
     nano::registerEffect({
