@@ -95,7 +95,14 @@ function layout(p: AdsrParams): Layout {
   } else {
     raw.push({ x: timeToX(0), y: 1 });                 // instant attack → start at peak
   }
-  t += seconds(p.decay); raw.push({ x: timeToX(t), y: susLvl }); segKind.push('decay_curve');
+  t += seconds(p.decay);
+  // Decay-only mode special case: its single segment spans the whole height, so
+  // riding the saturating axis felt wild. Use a LINEAR axis centred so decay 0.5
+  // lands the handle dead-centre — even spread, predictable drag.
+  const decayX = p.mode === MODE_D
+    ? MIN_GAP + clamp01(p.decay) * (0.5 - MIN_GAP) * 2
+    : timeToX(t);
+  raw.push({ x: decayX, y: susLvl }); segKind.push('decay_curve');
   if (has.sustain) {
     t += SUS_TIME; raw.push({ x: timeToX(t), y: susLvl }); segKind.push('sustain');
     // ADS/ADSR show a release tail (ADS mirrors decay); D/AD already hit 0 at decay.
@@ -255,9 +262,16 @@ export class AdsrGraph extends MobxLitElement {
     const { w } = this.dims();
     let next = this.startVal;
     if (this.mode === 'node') {
-      // Relative x-drag → time. ~70% of the width sweeps the full 0..1 range, so
-      // a floored-to-zero handle grows from 0 the moment you drag right.
-      next = clamp01(this.startVal + (px - this.startPx) / (w - 2 * this.pad) * 1.4);
+      if (this.field === 'decay' && this.params().mode === MODE_D) {
+        // Decay-only uses a linear, invertible axis → track the cursor exactly
+        // (the same mapping `layout` draws), so it never feels wild.
+        const x = clamp01((px - this.pad) / (w - 2 * this.pad));
+        next = clamp01((x - MIN_GAP) / ((0.5 - MIN_GAP) * 2));
+      } else {
+        // Relative x-drag → time. ~70% of the width sweeps the full 0..1 range, so
+        // a floored-to-zero handle grows from 0 the moment you drag right.
+        next = clamp01(this.startVal + (px - this.startPx) / (w - 2 * this.pad) * 1.4);
+      }
     } else if (this.field === 'sustain') {
       next = this.yFromPx(py);                                   // absolute level
     } else {
