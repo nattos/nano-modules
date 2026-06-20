@@ -68,11 +68,11 @@ async function main() {
   // Barrel mode skips this — the worker never instantiates anything; the
   // plugin list comes from the barrel's WS state subtree (see connectBarrel).
   if (!barrelMode) {
-    appController.loadModule('com.nattos.core');
-    appController.loadModule('com.nattos.nano');
+    appController.loadModule('com.nano.core');
+    appController.loadModule('com.nano.nano');
     appController.loadModule('com.nano.lights');
-    appController.loadModule('com.nattos.text');      // gen.text
-    appController.loadModule('com.nattos.richtext');  // gen.richtext (Blitz HTML/CSS)
+    appController.loadModule('com.nano.text');      // gen.text
+    appController.loadModule('com.nano.richtext');  // gen.richtext (Blitz HTML/CSS)
   }
 
   if (barrelMode) connectBarrel(barrelUrl!);
@@ -88,7 +88,7 @@ async function main() {
  * The client is also exposed on `window.__barrel` / `window.__barrelState`
  * for ad-hoc devtools-console patching while we bring up the UI:
  *
- *   window.__barrel.patch('/plugins/com.nattos.nanobarrel@0/state',
+ *   window.__barrel.patch('/plugins/com.nano.nanobarrel@0/state',
  *                         [{op:'replace', path:'/sketch', value:{...}}])
  *
  * Editor-side mutations don't push back yet — that's the next slice.

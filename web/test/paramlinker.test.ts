@@ -13,7 +13,7 @@ describe('Param Linker Effect E2E', () => {
   it('declares metadata and schema', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         { type: 'instantiateEffect', effectId: 'utility.paramlinker' },
       ],
@@ -35,7 +35,7 @@ describe('Param Linker Effect E2E', () => {
   it('initial state has learn=false and no input/output linked', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         { type: 'instantiateEffect', effectId: 'utility.paramlinker' },
       ],
@@ -61,7 +61,7 @@ describe('Param Linker Effect E2E', () => {
   it('toggling learn rises into learning state', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         { type: 'instantiateEffect', effectId: 'utility.paramlinker' },
         // Once instantiated, set the learn param to 1.0 — paramlinker treats

@@ -38,7 +38,7 @@ describe('data.spectral_lfo', () => {
   it('declares the schema: data_output + metric/interpolation/morph params', async () => {
     const result = await runEngineTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nattos.nano'],
+      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
       commands: [{ type: 'createSketch', sketchId: 'sl_schema',
                    sketch: buildSketch({ rate: 0.0 }) }],
       waitFrames: 5,
@@ -74,7 +74,7 @@ describe('data.spectral_lfo', () => {
   it('oscillates over time when rate > 0 (phase accumulator advances)', async () => {
     const r = await runEngineMultiPhaseTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nattos.nano'],
+      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
       dumpName: 'spectral_lfo_osc',
       phases: [
         {
@@ -108,7 +108,7 @@ describe('data.spectral_lfo', () => {
     // sample three phases and require the two sequences to differ somewhere).
     const r = await runEngineMultiPhaseTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nattos.nano'],
+      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
       dumpName: 'spectral_lfo_morph',
       phases: [
         {
@@ -146,7 +146,7 @@ describe('data.spectral_lfo', () => {
     const params = { rate: 0.5, morph_x: 0.5, morph_y: 0.5 };
     const r = await runEngineMultiPhaseTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nattos.nano'],
+      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
       dumpName: 'spectral_lfo_satellites',
       phases: [
         {

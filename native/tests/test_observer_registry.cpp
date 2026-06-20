@@ -126,7 +126,7 @@ TEST_CASE("filter_patches '/' observer also gets everything", "[observer_registr
 
   std::vector<PatchOp> patches = {
     {"replace", "/plugins/m0/state/x", 1, {}},
-    {"replace", "/plugins/com.nattos.nanobarrel@0/state/macros/0", 0.5, {}},
+    {"replace", "/plugins/com.nano.nanobarrel@0/state/macros/0", 0.5, {}},
     {"add", "/global/plugins/-", {}, {}},
   };
 

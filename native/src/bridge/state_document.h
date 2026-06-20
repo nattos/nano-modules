@@ -13,7 +13,7 @@
 namespace bridge {
 
 struct PluginMetadata {
-  std::string id;    // e.g. "com.nattos.nanolooper"
+  std::string id;    // e.g. "com.nano.nanolooper"
   int major = 0;
   int minor = 0;
   int patch = 0;
@@ -69,7 +69,7 @@ public:
 
   StateDocument();
 
-  /// Register a plugin. Returns its key (e.g. "com.nattos.nanolooper@0").
+  /// Register a plugin. Returns its key (e.g. "com.nano.nanolooper@0").
   /// Keys are allocated per plugin type with an incrementing suffix.
   std::string register_plugin(const PluginMetadata& meta);
 

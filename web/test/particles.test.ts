@@ -47,7 +47,7 @@ describe('Particles (struct rail + GPU array) E2E', () => {
   it('renders particles from emitter into renderer output', async () => {
     const result = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         { type: 'createSketch', sketchId: 'particles_sketch', sketch: buildParticleSketch() },
         { type: 'setTracePoints', tracePoints: [
@@ -75,7 +75,7 @@ describe('Particles (struct rail + GPU array) E2E', () => {
   it('particle motion produces a different frame after more ticks', async () => {
     const result = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       dumpName: 'particles_motion',
       phases: [
         {
@@ -107,7 +107,7 @@ describe('Particles (struct rail + GPU array) E2E', () => {
   it('respects renderer tint (vec4) param', async () => {
     const result = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         {
           type: 'createSketch',

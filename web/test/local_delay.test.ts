@@ -45,7 +45,7 @@ describe('video.local_delay E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_static', sketch },
         { type: 'setTracePoints', tracePoints: [
@@ -105,7 +105,7 @@ describe('video.local_delay E2E', () => {
 
     const noDelay = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_off', sketch: buildChain(0.0) },
         { type: 'setTracePoints', tracePoints: [
@@ -120,7 +120,7 @@ describe('video.local_delay E2E', () => {
 
     const withDelay = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_on', sketch: buildChain(0.9) },
         { type: 'setTracePoints', tracePoints: [
@@ -162,7 +162,7 @@ describe('video.local_delay E2E', () => {
 
     const run = (id: string, amount: number) => runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(amount) },
         { type: 'setTracePoints', tracePoints: [
@@ -217,7 +217,7 @@ describe('video.local_delay E2E', () => {
 
     const withLD = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_with', sketch: buildChain(true) },
         { type: 'setTracePoints', tracePoints: [
@@ -232,7 +232,7 @@ describe('video.local_delay E2E', () => {
 
     const withoutLD = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_without', sketch: buildChain(false) },
         { type: 'setTracePoints', tracePoints: [
@@ -289,7 +289,7 @@ describe('video.local_delay E2E', () => {
 
     const fewSteps = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_s1', sketch: buildChain(1.0) },
         { type: 'setTracePoints', tracePoints: [
@@ -304,7 +304,7 @@ describe('video.local_delay E2E', () => {
 
     const manySteps = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_s16', sketch: buildChain(16.0) },
         { type: 'setTracePoints', tracePoints: [
@@ -360,7 +360,7 @@ describe('video.local_delay E2E', () => {
 
     const result = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_pass', sketch },
         { type: 'setTracePoints', tracePoints: [
@@ -419,7 +419,7 @@ describe('video.local_delay E2E', () => {
 
     const frozen = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_nm0', sketch: buildChain(0.0) },
         { type: 'setTracePoints', tracePoints: [
@@ -434,7 +434,7 @@ describe('video.local_delay E2E', () => {
 
     const moving = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_nm1', sketch: buildChain(0.9) },
         { type: 'setTracePoints', tracePoints: [
@@ -512,7 +512,7 @@ describe('video.local_delay E2E', () => {
 
     const withMotion = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_inc_on', sketch: buildChain(true) },
         { type: 'setTracePoints', tracePoints: [
@@ -528,7 +528,7 @@ describe('video.local_delay E2E', () => {
 
     const noMotion = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'ld_inc_off', sketch: buildChain(false) },
         { type: 'setTracePoints', tracePoints: [

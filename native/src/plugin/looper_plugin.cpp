@@ -22,7 +22,7 @@ static CFFGLPluginInfo PluginInfo(
     1, 0,                                   // Plugin version
     FF_EFFECT,                              // Plugin type
     "NanoLooper (WASM) step sequencer",     // Description
-    "nattos"                                // Author
+    "nano"                                // Author
 );
 
 LooperPlugin::LooperPlugin() : CFFGLPlugin(false) {

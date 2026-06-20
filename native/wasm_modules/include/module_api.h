@@ -38,7 +38,7 @@ struct EffectDesc_v2 {
     int32_t struct_version;     // Must be 2
 
     // Metadata
-    const char* id;             // Module identifier, e.g. "com.nattos.brightness_contrast"
+    const char* id;             // Module identifier, e.g. "com.nano.brightness_contrast"
     const char* name;           // Display name, e.g. "Brightness/Contrast"
     const char* description;    // Human-readable description
     const char* category;       // e.g. "Video", "Source", "Data"

@@ -134,7 +134,7 @@ Modules declare their identity, state fields, I/O, and parameters in a single `s
 #include <val.h>
 
 void init() {
-  state::init("com.nattos.brightness_contrast", {1, 0, 0},
+  state::init("com.nano.brightness_contrast", {1, 0, 0},
     state::Schema()
       .floatField("brightness", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("contrast", 0.5f, 0.f, 1.f, state::PrimaryInput)
@@ -186,7 +186,7 @@ Sketches define processing chains with sideband data routing:
 
 ```typescript
 const sketch: Sketch = {
-  anchor: 'com.nattos.spinningtris@0',
+  anchor: 'com.nano.spinningtris@0',
   rails: [                              // Cross-cutting (sketch-scoped)
     { id: 'lfo_out', dataType: 'float' },
   ],
@@ -197,10 +197,10 @@ const sketch: Sketch = {
     ],
     chain: [
       { type: 'texture_input', id: 'in' },
-      { type: 'module', module_type: 'com.nattos.env_lfo', instance_key: 'lfo@0',
+      { type: 'module', module_type: 'com.nano.env_lfo', instance_key: 'lfo@0',
         params: { rate: 0.5 },
         taps: [{ railId: 'lfo_out', fieldPath: 'output', direction: 'write' }] },
-      { type: 'module', module_type: 'com.nattos.solid_color', instance_key: 'color@0',
+      { type: 'module', module_type: 'com.nano.solid_color', instance_key: 'color@0',
         params: { red: 0.0 },
         taps: [{ railId: 'lfo_out', fieldPath: 'red', direction: 'read' }] },
       { type: 'texture_output', id: 'out' },

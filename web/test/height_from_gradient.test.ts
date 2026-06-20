@@ -48,7 +48,7 @@ function buildSketch(sketchId: string, params: Record<string, unknown>): Sketch 
 async function render(sketchId: string, params: Record<string, unknown>, dumpName: string) {
   const result = await runEngineTest({
     width: 64, height: 64,
-    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    modules: ['com.nano.testonly', 'com.nano.nano'],
     commands: [
       { type: 'createSketch', sketchId, sketch: buildSketch(sketchId, params) },
       { type: 'setTracePoints', tracePoints: [
@@ -157,7 +157,7 @@ function buildContourSketch(sketchId: string, params: Record<string, unknown>): 
 async function renderContour(sketchId: string, params: Record<string, unknown>, dumpName: string) {
   const result = await runEngineTest({
     width: 64, height: 64,
-    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    modules: ['com.nano.testonly', 'com.nano.nano'],
     commands: [
       { type: 'createSketch', sketchId, sketch: buildContourSketch(sketchId, params) },
       { type: 'setTracePoints', tracePoints: [
@@ -257,7 +257,7 @@ describe('video.height_from_gradient — vector sources', () => {
 
     const run = (id: string, withProducer: boolean) => runEngineTest({
       width: 64, height: 64,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(withProducer) },
         { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },

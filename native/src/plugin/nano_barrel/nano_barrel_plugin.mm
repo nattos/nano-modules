@@ -120,7 +120,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     initEffectRuntime();
 
     bridge::PluginMetadata meta;
-    meta.id    = "com.nattos.nanobarrel";
+    meta.id    = "com.nano.nanobarrel";
     meta.major = 0;
     meta.minor = 1;
     meta.patch = 0;
@@ -1213,4 +1213,4 @@ static CFFGLPluginInfo PluginInfo(
     FF_EFFECT,
     "Nano sketch barrel — runs the sketch's effects on Resolume's input "
     "and exposes its state over a local WebSocket",
-    "nattos");
+    "nano");

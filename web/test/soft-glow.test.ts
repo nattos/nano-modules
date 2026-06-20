@@ -178,7 +178,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
     const withProducer = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nano.lights', 'com.nattos.core'],
+      modules: ['com.nano.lights', 'com.nano.core'],
       commands: [
         {
           type: 'createSketch',
@@ -197,7 +197,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
     const noProducer = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nano.lights', 'com.nattos.core'],
+      modules: ['com.nano.lights', 'com.nano.core'],
       commands: [
         {
           type: 'createSketch',
@@ -258,7 +258,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
     const isotropic = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nano.lights', 'com.nattos.core'],
+      modules: ['com.nano.lights', 'com.nano.core'],
       commands: [
         { type: 'createSketch', sketchId: 'iso', sketch: buildSkewChain(0.0) },
         { type: 'setTracePoints', tracePoints: [
@@ -273,7 +273,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
     const wavefront = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nano.lights', 'com.nattos.core'],
+      modules: ['com.nano.lights', 'com.nano.core'],
       commands: [
         { type: 'createSketch', sketchId: 'wf', sketch: buildSkewChain(1.0) },
         { type: 'setTracePoints', tracePoints: [

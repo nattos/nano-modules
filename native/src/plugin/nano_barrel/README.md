@@ -82,7 +82,7 @@ written back to `port_str_` and surfaced via `RaiseParamEvent(P_PORT,
 FF_EVENT_FLAG_VALUE)` so the editor can read it.
 
 The barrel registers itself as a plugin in the bridge's state document
-under `com.nattos.nanobarrel@0`, with this initial state shape:
+under `com.nano.nanobarrel@0`, with this initial state shape:
 
 ```jsonc
 {

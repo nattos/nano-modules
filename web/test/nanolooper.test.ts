@@ -13,7 +13,7 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
   it('registers in the engine and reports its schema', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.nano'],
+      modules: ['com.nano.nano'],
       commands: [
         { type: 'instantiateEffect', effectId: 'sequencer.nanolooper' },
       ],
@@ -40,7 +40,7 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
   it('publishes initial pluginState with empty grid', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.nano'],
+      modules: ['com.nano.nano'],
       commands: [
         { type: 'instantiateEffect', effectId: 'sequencer.nanolooper' },
       ],
@@ -67,7 +67,7 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
     // The trigger is an event field; firing it once should record into channel 0.
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.nano'],
+      modules: ['com.nano.nano'],
       commands: [
         {
           type: 'createSketch',

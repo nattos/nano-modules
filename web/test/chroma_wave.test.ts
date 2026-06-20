@@ -324,7 +324,7 @@ describe('Chroma Wave Effect E2E', () => {
 
     const run = (id: string, withProducer: boolean) => runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nano.lights', 'com.nattos.core'],
+      modules: ['com.nano.lights', 'com.nano.core'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(withProducer) },
         { type: 'setTracePoints', tracePoints: [

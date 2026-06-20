@@ -82,7 +82,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
   it('renders a swarm over the flow_field (wired) distinct from the bare portrait', async () => {
     const swarm = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_wired', sketch: buildChain(true) },
         { type: 'setTracePoints', tracePoints: [
@@ -103,7 +103,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     // And it must NOT look like the bare phase_fold portrait.
     const gen = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_gen', sketch: buildGeneratorOnly() },
         { type: 'setTracePoints', tracePoints: [
@@ -125,7 +125,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     // and sit at their seed positions.
     const withFlow = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_on', sketch: buildChain(true) },
         { type: 'setTracePoints', tracePoints: [
@@ -140,7 +140,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
 
     const noFlow = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_off', sketch: buildChain(false) },
         { type: 'setTracePoints', tracePoints: [
@@ -162,7 +162,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
   it('the swarm is live — output drifts across frames', async () => {
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'flow_swarm_drift',
       phases: [
         {
@@ -193,7 +193,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     };
     const run = (id: string, withFlow: boolean) => runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id,
           sketch: buildChain(withFlow, sw, { __opacity__: 0 }) },
@@ -225,7 +225,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     };
     const run = (id: string, jitter: number) => runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(true, { ...sw, jitter }) },
         { type: 'setTracePoints', tracePoints: [
@@ -247,7 +247,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     // Confirm the chain runs and the swarm is live (drifts across frames).
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'flow_swarm_force',
       phases: [
         {
@@ -274,7 +274,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     const force = { mode: 1, weight: 0.4, drag: 0.1, speed: 6.0, momentum: 0.0 };
     const run = (id: string, substeps: number) => runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(true, { ...force, substeps }) },
         { type: 'setTracePoints', tracePoints: [
@@ -298,7 +298,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     const force = { mode: 1, weight: 0.4, drag: 0.1, speed: 5.0 };
     const run = (id: string, pull: number) => runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(true, { ...force, pull }) },
         { type: 'setTracePoints', tracePoints: [
@@ -327,7 +327,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     };
     const off = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_ut_off',
           sketch: buildChain(true, { ...UNDERTOW, undertow_split: 0.0 }) },
@@ -341,7 +341,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
 
     const on = await runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_ut_on',
           sketch: buildChain(true, { ...UNDERTOW, undertow_split: 1.0 }) },
@@ -375,7 +375,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
   const runChain = (id: string, swarm: Record<string, unknown>, frames: number) =>
     runEngineTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: id, sketch: buildChain(true, swarm) },
         { type: 'setTracePoints', tracePoints: [
@@ -402,7 +402,7 @@ describe('video.flow_swarm + flow_field auto-connect E2E', () => {
     // density map used to look squashed; now the splat is round in pixels).
     const r = await runEngineTest({
       width: 160, height: 90,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'fs_aspect',
           sketch: buildChain(true, { ...CROWD, debug_density: true, interaction_radius: 0.04 }) },

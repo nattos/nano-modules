@@ -33,7 +33,7 @@ describe('mod.spectral shaper node E2E', () => {
     const inputs = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
     const result = await runEngineMultiPhaseTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nattos.nano'],
+      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
       phases: [
         { commands: [
             { type: 'createSketch', sketchId: 'sp', sketch },

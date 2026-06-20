@@ -42,7 +42,7 @@ async function render(sketchId: string, params: Record<string, unknown>, dumpNam
                       waitFrames = 6) {
   const result = await runEngineTest({
     width: 96, height: 96,
-    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    modules: ['com.nano.testonly', 'com.nano.nano'],
     commands: [
       { type: 'createSketch', sketchId, sketch: buildSketch(params) },
       { type: 'setTracePoints', tracePoints: [
@@ -100,7 +100,7 @@ describe('video.shape_fold E2E', () => {
     // black bars a letterbox/fit would leave there.
     const result = await runEngineTest({
       width: 128, height: 64,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'sf_wide', sketch: buildSketch(BUSY) },
         { type: 'setTracePoints', tracePoints: [
@@ -139,7 +139,7 @@ describe('video.shape_fold E2E', () => {
     // autopilot epicycle moving the effective XY — never the inputs.
     const moving = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'sf_ap_on',
       phases: [
         {
@@ -162,7 +162,7 @@ describe('video.shape_fold E2E', () => {
     // Control: autopilot off + frozen clock → static across the same span.
     const still = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'sf_ap_off',
       phases: [
         {
@@ -188,7 +188,7 @@ describe('video.shape_fold E2E', () => {
     // persist across frames, then change the moment the ap_jump trigger fires.
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'sf_jump',
       phases: [
         {

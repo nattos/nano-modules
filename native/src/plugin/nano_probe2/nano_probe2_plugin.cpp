@@ -572,4 +572,4 @@ static CFFGLPluginInfo PluginInfo(
     1, 0,                         // Plugin version
     FF_EFFECT,
     "FFGL probe v2 — display name relabel + text payload size",
-    "nattos");
+    "nano");

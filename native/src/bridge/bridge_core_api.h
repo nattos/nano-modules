@@ -108,7 +108,7 @@ void bridge_core_set_at(BridgeCoreHandle h,
                          const char* path, int path_len,
                          const char* json_value, int json_len);
 
-// Get the plugin key for a registered plugin by its ID (e.g. "com.nattos.nanolooper").
+// Get the plugin key for a registered plugin by its ID (e.g. "com.nano.nanolooper").
 // Returns key length, or 0 if not found.
 int bridge_core_get_plugin_key(BridgeCoreHandle h,
                                 const char* id, int id_len,

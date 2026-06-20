@@ -72,7 +72,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
   it('auto-connects motion vectors from the producer above (vs none)', async () => {
     const withProducer = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         {
           type: 'createSketch',
@@ -91,7 +91,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const noProducer = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         {
           type: 'createSketch',
@@ -139,7 +139,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
   it('falls back to pass-through when no upstream produces motion', async () => {
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         {
           type: 'createSketch',
@@ -205,7 +205,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const result = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         { type: 'createSketch', sketchId: 'mb_swarm', sketch },
         { type: 'setTracePoints', tracePoints: [
@@ -265,7 +265,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const result = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         { type: 'createSketch', sketchId: 'mb_static', sketch },
         { type: 'setTracePoints', tracePoints: [
@@ -355,7 +355,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const result = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       commands: [
         { type: 'createSketch', sketchId: 'mf_chain', sketch },
         { type: 'setTracePoints', tracePoints: [
@@ -424,7 +424,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const off = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         { type: 'createSketch', sketchId: 'mb_chroma_off', sketch: buildChromaChain(false) },
         { type: 'setTracePoints', tracePoints: [
@@ -439,7 +439,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const on = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         { type: 'createSketch', sketchId: 'mb_chroma_on', sketch: buildChromaChain(true) },
         { type: 'setTracePoints', tracePoints: [
@@ -476,7 +476,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
     // PSO rebuild that fires when the `quality` field is patched.
     const low = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         {
           type: 'createSketch',
@@ -495,7 +495,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
 
     const high = await runEngineTest({
       width: 128, height: 128,
-      modules: ['com.nattos.testonly'],
+      modules: ['com.nano.testonly'],
       commands: [
         {
           type: 'createSketch',

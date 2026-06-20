@@ -561,4 +561,4 @@ static CFFGLPluginInfo PluginInfo(
     1, 0,
     FF_EFFECT,
     "FFGL probe v3 — FF_TYPE_FILE as data carrier",
-    "nattos");
+    "nano");

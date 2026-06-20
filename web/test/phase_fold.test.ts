@@ -41,7 +41,7 @@ async function render(sketchId: string, params: Record<string, unknown>, dumpNam
                       waitFrames = 6) {
   const result = await runEngineTest({
     width: 96, height: 96,
-    modules: ['com.nattos.testonly', 'com.nattos.nano'],
+    modules: ['com.nano.testonly', 'com.nano.nano'],
     commands: [
       { type: 'createSketch', sketchId, sketch: buildSketch(params) },
       { type: 'setTracePoints', tracePoints: [
@@ -95,7 +95,7 @@ describe('video.phase_fold E2E', () => {
     // cycle is NOT static even with a frozen flow clock and fixed XY.
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'pf_jitter',
       phases: [
         {
@@ -134,7 +134,7 @@ describe('video.phase_fold E2E', () => {
     // across frames even with a frozen flow clock and no autopilot.
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'pf_jitterxy',
       phases: [
         {
@@ -161,7 +161,7 @@ describe('video.phase_fold E2E', () => {
     // drifts across frames even with a frozen flow clock, static XY and no autopilot.
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'pf_jitterwind',
       phases: [
         {
@@ -222,7 +222,7 @@ describe('video.phase_fold E2E', () => {
     // design), so we isolate the deterministic backdrop to test autopilot.
     const moving = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'pf_ap_on',
       phases: [
         {
@@ -245,7 +245,7 @@ describe('video.phase_fold E2E', () => {
     // Control: autopilot off + frozen flow → static across the same span.
     const still = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nattos.testonly', 'com.nattos.nano'],
+      modules: ['com.nano.testonly', 'com.nano.nano'],
       dumpName: 'pf_ap_off',
       phases: [
         {

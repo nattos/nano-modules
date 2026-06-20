@@ -206,22 +206,22 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
  * Common-infra integration tests (engine.test, engine-rails.test, etc.)
  * use the `testonly` bundle so their output stays stable as the shipping
  * implementations evolve. Per-effect e2e tests should pass the matching
- * `com.nattos.<bundle>` directly via `modules:` so they run against the
+ * `com.nano.<bundle>` directly via `modules:` so they run against the
  * actual shipping code.
  *
- * Legacy aliases (`com.nattos.<short>` and bare effect ids) are still
+ * Legacy aliases (`com.nano.<short>` and bare effect ids) are still
  * accepted and resolved against `testonly` for backwards compat with the
  * existing test corpus.
  */
 const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
-  'com.nattos.spinningtris': 'generator.spinningtris',
-  'com.nattos.gpu_test': 'debug.gpu_test',
-  'com.nattos.brightness_contrast': 'video.brightness_contrast',
-  'com.nattos.solid_color': 'generator.solid_color',
-  'com.nattos.env_lfo': 'data.lfo',
-  'com.nattos.video_blend': 'video.blend',
-  'com.nattos.nanolooper': 'sequencer.nanolooper',
-  'com.nattos.paramlinker': 'utility.paramlinker',
+  'com.nano.spinningtris': 'generator.spinningtris',
+  'com.nano.gpu_test': 'debug.gpu_test',
+  'com.nano.brightness_contrast': 'video.brightness_contrast',
+  'com.nano.solid_color': 'generator.solid_color',
+  'com.nano.env_lfo': 'data.lfo',
+  'com.nano.video_blend': 'video.blend',
+  'com.nano.nanolooper': 'sequencer.nanolooper',
+  'com.nano.paramlinker': 'utility.paramlinker',
   // Also accept the effect IDs themselves so new-style tests work.
   'generator.spinningtris': 'generator.spinningtris',
   'debug.gpu_test': 'debug.gpu_test',
@@ -237,11 +237,11 @@ const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'utility.paramlinker': 'utility.paramlinker',
 };
 /** Default bundle for legacy/effect-id entries — locked against testonly. */
-const LEGACY_BUNDLE_MODULE_TYPE = 'com.nattos.testonly';
+const LEGACY_BUNDLE_MODULE_TYPE = 'com.nano.testonly';
 const BUNDLE_MODULE_TYPES = new Set([
-  'com.nattos.core',
-  'com.nattos.nano',
-  'com.nattos.testonly',
+  'com.nano.core',
+  'com.nano.nano',
+  'com.nano.testonly',
   'com.nano.lights',
 ]);
 

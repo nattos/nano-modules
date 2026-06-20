@@ -304,7 +304,7 @@ int main(int argc, const char* argv[]) {
       int port = portStr.empty() ? 0 : std::stoi(portStr);
       // key = meta.id@<instance>; each plugin's StateDocument counts from 0.
       std::string msg =
-        "{\"action\":\"patch\",\"target\":\"/plugins/com.nattos.nanobarrel@0/state\","
+        "{\"action\":\"patch\",\"target\":\"/plugins/com.nano.nanobarrel@0/state\","
         "\"ops\":[{\"op\":\"replace\",\"path\":\"/sketch\",\"value\":" + wsSketch + "}]}";
       bool ok = port && ws_send_text(port, msg);
       std::cerr << "[ffgl_runner] ws-patch port=" << port << " sent=" << ok << "\n";

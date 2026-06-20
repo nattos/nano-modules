@@ -52,7 +52,7 @@ describe('Video Blend Effect E2E', () => {
     // by inspecting the plugin metadata reported through engineState.
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         {
           type: 'createSketch',
@@ -82,7 +82,7 @@ describe('Video Blend Effect E2E', () => {
   it('opacity=0 passes texture A through unchanged', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         {
           type: 'createSketch',
@@ -110,7 +110,7 @@ describe('Video Blend Effect E2E', () => {
   it('opacity=1 passes texture B through unchanged', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         {
           type: 'createSketch',
@@ -138,7 +138,7 @@ describe('Video Blend Effect E2E', () => {
   it('opacity=0.5 produces an even mix', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         {
           type: 'createSketch',
@@ -170,7 +170,7 @@ describe('Video Blend Effect E2E', () => {
     //        = (0.75, 0.30, 0.20) → (191, 76, 51)
     const result = await runEngineTest({
       width: 32, height: 32,
-      modules: ['com.nattos.core'],
+      modules: ['com.nano.core'],
       commands: [
         {
           type: 'createSketch',

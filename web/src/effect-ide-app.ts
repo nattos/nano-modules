@@ -36,11 +36,11 @@ async function main() {
 
   // The IDE loads the shipping effect bundles. `testonly` is intentionally
   // not loaded here — it's reserved for integration tests.
-  appController.loadModule('com.nattos.core');
-  appController.loadModule('com.nattos.nano');
+  appController.loadModule('com.nano.core');
+  appController.loadModule('com.nano.nano');
   appController.loadModule('com.nano.lights');
-  appController.loadModule('com.nattos.text');
-  appController.loadModule('com.nattos.richtext');   // gen.richtext (Blitz HTML/CSS)
+  appController.loadModule('com.nano.text');
+  appController.loadModule('com.nano.richtext');   // gen.richtext (Blitz HTML/CSS)
 }
 
 main();

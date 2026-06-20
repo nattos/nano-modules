@@ -434,4 +434,4 @@ static CFFGLPluginInfo PluginInfo(
     1, 0,                     // Plugin version
     FF_EFFECT,                // Type
     "FFGL probe — dynamic param + plugin-set value experiment",
-    "nattos");
+    "nano");

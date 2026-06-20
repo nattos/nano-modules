@@ -170,7 +170,7 @@ describe('Platform features', () => {
 
       const result = await runEngineTest({
         width: 64, height: 64,
-        modules: ['com.nattos.testonly'],
+        modules: ['com.nano.testonly'],
         commands: [
           { type: 'createSketch', sketchId: 'cc', sketch },
           { type: 'setTracePoints', tracePoints: [

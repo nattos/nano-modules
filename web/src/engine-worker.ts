@@ -47,7 +47,7 @@ const realModules = new Map<string, { host: WasmHost; module: WasmModule }>();
 
 // Registry of compiled WASM modules and their available effects
 interface LoadedWasmModule {
-  moduleId: string;    // e.g. "com.nattos.core"
+  moduleId: string;    // e.g. "com.nano.core"
   compiled: WebAssembly.Module;
   effects: EffectInfo[];
 }
@@ -95,7 +95,7 @@ function makeBridgeVal(bc: BridgeCore, value: any): number | null {
 function resolveEffectId(id: string): string {
   // If it's already in the registry as-is, it's module-relative
   if (effectRegistry.has(id)) return id;
-  // Try stripping known module prefixes (e.g. "com.nattos.core.video.blend" → "video.blend")
+  // Try stripping known module prefixes (e.g. "com.nano.core.video.blend" → "video.blend")
   for (const entry of moduleRegistry.values()) {
     const prefix = entry.moduleId + '.';
     if (id.startsWith(prefix)) {
@@ -1004,7 +1004,7 @@ async function reloadWasmModule(wasmUrl: string) {
   // Sketch instances are keyed by entry.module_type, which the user
   // may have stored as either:
   //   - the registry-relative effect id ("video.motion_blur"), or
-  //   - the fully-qualified bundle form ("com.nattos.nano.video.motion_blur")
+  //   - the fully-qualified bundle form ("com.nano.nano.video.motion_blur")
   // depending on how the sketch was built (legacy expandModulesList
   // produces relative; new auto-discovered effects in the IDE
   // tend to qualify). The `effectIds` set holds RELATIVE ids
@@ -1094,7 +1094,7 @@ async function loadModule(moduleType: string) {
   if (!bridgeCore || !gpuHost) return;
 
   // Derive WASM filename from module type. We strip any
-  // `com.<vendor>.` prefix (matches `com.nattos.nano`, `com.nano.lights`,
+  // `com.<vendor>.` prefix (matches `com.nano.nano`, `com.nano.lights`,
   // etc) so the wasm file's short name is the last meaningful segment.
   const stripped = moduleType.replace(/^com\.[^.]+\./, '');
   const moduleName = stripped.replace(/\./g, '_');

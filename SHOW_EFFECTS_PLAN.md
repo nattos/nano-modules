@@ -16,7 +16,7 @@ Spec doc for the effects shipping for the first show. **Living document — fles
 
 ### Bundle + effect IDs
 
-All show effects ship under the **`com.nano.lights`** namespace. So the fully-qualified IDs are e.g. `com.nano.lights.gen.soft_glow`, `com.nano.lights.fx.block_dehance`. Throughout this doc the short form (`gen.soft_glow`, `fx.block_dehance`) is the **relative ID** that appears in C++ `state::init(...)`; the engine prefixes it with the bundle qualifier at registration time (same pattern as the existing `com.nattos.nano` / `com.nattos.core` bundles).
+All show effects ship under the **`com.nano.lights`** namespace. So the fully-qualified IDs are e.g. `com.nano.lights.gen.soft_glow`, `com.nano.lights.fx.block_dehance`. Throughout this doc the short form (`gen.soft_glow`, `fx.block_dehance`) is the **relative ID** that appears in C++ `state::init(...)`; the engine prefixes it with the bundle qualifier at registration time (same pattern as the existing `com.nano.nano` / `com.nano.core` bundles).
 
 Practical naming rules:
 - Effects prefixed `gen.*` are generators (the "atmosphere" + "cut-in" layers).

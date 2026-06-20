@@ -17,8 +17,8 @@ export interface EffectInfo {
 // --- Plugin info (read-only snapshot for UI) ---
 
 export interface PluginInfo {
-  key: string;          // "com.nattos.spinningtris@0"
-  id: string;           // "com.nattos.spinningtris"
+  key: string;          // "com.nano.spinningtris@0"
+  id: string;           // "com.nano.spinningtris"
   version: string;
   params: ParamInfo[];
   io: IOInfo[];

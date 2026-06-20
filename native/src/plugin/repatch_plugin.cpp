@@ -15,7 +15,7 @@ static CFFGLPluginInfo PluginInfo(
     1, 0,                               // Plugin version
     FF_EFFECT,                          // Plugin type
     "NanoRepatch bridge plugin",        // Description
-    "nattos"                            // Author
+    "nano"                            // Author
 );
 
 RepatchPlugin::RepatchPlugin() {
