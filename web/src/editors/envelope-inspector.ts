@@ -27,6 +27,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from '../widgets/field-editor';
 import { type EnvPoint, evalEnvelope, parseCurve, serializeCurve, clamp01 } from './envelope-math';
+import '../widgets/scalar-slider';
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -367,6 +368,12 @@ export class EnvelopeInspector extends MobxLitElement implements FieldEditorElem
         .onInteractionStart=${this.onStart}
         .onInteractionEnd=${this.onEnd}></envelope-graph>
       <div class="hint">double-click to add / remove a node · drag a segment to bend its easing</div>
+      <!-- The modulation input (the curve's x). Shown even when auto-connected so
+           it exposes a wire port AND lets you scrub it by hand for testing; when a
+           wire drives it the slider shows the live value + modulation band. -->
+      <scalar-slider style="width: 100%;" .fieldPath=${'input'} .label=${'Input'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0}
+        .binding=${this.binding}></scalar-slider>
     `;
   }
 }

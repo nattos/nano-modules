@@ -102,4 +102,49 @@ describe('mod.envelope custom inspector', () => {
     const eases = a!.filter((_: number, i: number) => i % 3 === 2);
     expect(eases.some((e: number) => Math.abs(e) > 0.05)).toBe(true);   // a segment got eased
   });
+
+  it('shows the input field editor and scrubbing it sets `input`', async () => {
+    await openEnvelope('sk_env_input');
+
+    // The inspector exposes a scalar-slider for the modulation `input` so it can
+    // be wired (port) or scrubbed by hand for testing — even though it auto-
+    // connects when a generator precedes it.
+    const slider = await page.evaluate(`(() => {
+      ${WALK}
+      let insp = null;
+      for (const el of walk(document)) { if (el.tagName === 'ENVELOPE-INSPECTOR') { insp = el; break; } }
+      if (!insp) return { found: false };
+      let s = null;
+      for (const el of walk(insp.shadowRoot)) {
+        if (el.tagName === 'SCALAR-SLIDER' && el.fieldPath === 'input') { s = el; break; }
+      }
+      if (!s) return { found: false };
+      const ctrl = s.shadowRoot.querySelector('.control');
+      const r = ctrl.getBoundingClientRect();
+      return { found: true, before: s.binding ? s.binding.getValue('input') : null,
+               rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
+    })()`) as any;
+
+    expect(slider.found).toBe(true);                    // the input editor is shown
+
+    // Drag the slider toward the right → input rises well above 0.
+    const y = slider.rect.y + slider.rect.h * 0.5;
+    await page.mouse.move(slider.rect.x + slider.rect.w * 0.1, y);
+    await page.mouse.down();
+    await page.mouse.move(slider.rect.x + slider.rect.w * 0.8, y, { steps: 6 });
+    await page.mouse.up();
+    await new Promise(r => setTimeout(r, 300));
+
+    const val = await page.evaluate(`(() => {
+      ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName === 'SCALAR-SLIDER' && el.fieldPath === 'input' && el.binding) {
+          return el.binding.getValue('input');
+        }
+      }
+      return null;
+    })()`) as any;
+    expect(typeof val).toBe('number');
+    expect(val).toBeGreaterThan(0.5);                   // scrubbing set the input value
+  });
 });
