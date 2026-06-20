@@ -32,7 +32,7 @@ import '../widgets/field-toggle';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-const METRIC_OPTIONS = [
+export const METRIC_OPTIONS = [
   { label: 'FFT Magnitude', value: 0 },
   { label: 'Phase Coherence', value: 1 },
   { label: 'Roughness', value: 2 },
@@ -324,6 +324,10 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
 @customElement('spectral-lfo-preview')
 export class SpectralLfoPreview extends MobxLitElement {
   @property({ attribute: false }) binding: FieldBinding | null = null;
+  // Playhead x ∈ [0,1]. When null the LFO's live `phase` output is used; a
+  // consumer (e.g. mod.spectral, which indexes the curve by its INPUT rather
+  // than time) can set this imperatively to park the head at that value.
+  cursor: number | null = null;
 
   private rafId = 0;
   private key = '';
@@ -417,8 +421,9 @@ export class SpectralLfoPreview extends MobxLitElement {
       stroke(r.curve, '#cc66ff', 2 * dpr);
     }
 
-    // Playhead at the module's live broadcast phase.
-    const ph = this.binding.getValue('phase');
+    // Playhead at the explicit cursor (mod.spectral's input index) or, when
+    // unset, the module's live broadcast phase (data.spectral_lfo).
+    const ph = this.cursor != null ? this.cursor : this.binding.getValue('phase');
     if (typeof ph === 'number') {
       const xph = clamp01(ph) * w;
       const i = Math.min(r.curve.length - 1, Math.round(clamp01(ph) * (r.curve.length - 1)));
