@@ -16,6 +16,8 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 
+import { computeHeadroom, TARGET_FPS_OPTIONS } from '../gpu-headroom';
+
 import '../../widgets/texture-monitor';
 import '../../widgets/ui-button';
 
@@ -26,8 +28,6 @@ const CAPTURE_H = 360;
 const ASPECT = CAPTURE_W / CAPTURE_H;
 /** Magnification when the zoom toggle is active. */
 const ZOOM_FACTOR = 4;
-/** Selectable target framerates for the headroom estimate. */
-const TARGET_FPS_OPTIONS = [30, 60, 120];
 
 @customElement('ide-monitor')
 export class IdeMonitor extends MobxLitElement {
@@ -236,18 +236,14 @@ export class IdeMonitor extends MobxLitElement {
    *  budget; headroom is what's left. Colour-coded by how close to the budget
    *  we are. Reads "—" until the first live sample (or while paused/idle). */
   private renderHeadroom(gpuMs: number, targetFps: number) {
-    if (gpuMs <= 0) {
+    const h = computeHeadroom(gpuMs, targetFps);
+    if (!h.measured) {
       return html`<span class="metric" title="No GPU timing yet">GPU —</span>`;
     }
-    const budgetMs = 1000 / targetFps;
-    const usage = gpuMs / budgetMs;
-    const headroomPct = Math.max(0, Math.round((1 - usage) * 100));
-    // green = comfortable, amber = tight, red = over budget.
-    const level = usage >= 1 ? 'over' : usage >= 0.8 ? 'tight' : 'ok';
     return html`<span
-      class="metric headroom ${level}"
-      title="Est. GPU ${gpuMs.toFixed(1)} ms of ${budgetMs.toFixed(1)} ms budget (${targetFps} FPS) — ${headroomPct}% headroom"
-      >GPU ${gpuMs.toFixed(1)}ms · ${headroomPct}% free</span
+      class="metric headroom ${h.level}"
+      title="Est. GPU ${h.gpuMs.toFixed(1)} ms of ${h.budgetMs.toFixed(1)} ms budget (${targetFps} FPS) — ${h.headroomPct}% headroom"
+      >GPU ${h.gpuMs.toFixed(1)}ms · ${h.headroomPct}% free</span
     >`;
   }
 

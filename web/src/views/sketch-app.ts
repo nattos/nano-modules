@@ -8,6 +8,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
+import { computeHeadroom, TARGET_FPS_OPTIONS } from './gpu-headroom';
 
 import './create-tab';
 import './organize-tab';
@@ -56,8 +57,31 @@ export class SketchApp extends MobxLitElement {
     }
     .tab-status {
       margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-size: 10px;
       color: var(--app-text-color2);
+    }
+    .tab-status .metric {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .tab-status .err {
+      color: #e06c6c;
+    }
+    /* GPU headroom colour ramp: comfortable / tight / over budget. */
+    .tab-status .headroom.ok { color: #6cc070; }
+    .tab-status .headroom.tight { color: #d6a13c; }
+    .tab-status .headroom.over { color: #e06c6c; }
+    .tab-status .target {
+      font-size: 10px;
+      color: var(--app-text-color2);
+      background: var(--app-bg-color1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 3px;
+      padding: 1px 2px;
+      cursor: pointer;
     }
     .app-content {
       display: flex;
@@ -84,11 +108,7 @@ export class SketchApp extends MobxLitElement {
         <button class="tab-btn" ?active=${tab === 'edit'}
           @click=${() => appController.setActiveTab('edit')}>Edit</button>
         <div class="tab-status">
-          ${appState.local.engine.error
-            ? `Error: ${appState.local.engine.error}`
-            : appState.local.engine.fps > 0
-              ? `${appState.local.engine.fps} FPS`
-              : ''}
+          ${this.renderStatus(barrelMode)}
         </div>
       </div>
       <div class="app-content">
@@ -98,4 +118,44 @@ export class SketchApp extends MobxLitElement {
       </div>
     `;
   }
+
+  /** FPS + (outside barrel mode) GPU headroom readout and target-fps picker.
+   *  Barrel mode renders frames from the native plugin, not the local WebGPU
+   *  loop, so there's no fence proxy to measure — show FPS only there. */
+  private renderStatus(barrelMode: boolean) {
+    const engine = appState.local.engine;
+    if (engine.error) {
+      return html`<span class="err">Error: ${engine.error}</span>`;
+    }
+    const fps = engine.fps;
+    if (barrelMode) {
+      return fps > 0 ? html`<span class="metric">${fps} FPS</span>` : '';
+    }
+    const targetFps = appState.local.userSettings.targetFps;
+    const h = computeHeadroom(engine.gpuTimeMs, targetFps);
+    return html`
+      ${fps > 0 ? html`<span class="metric">${fps} FPS</span>` : ''}
+      ${h.measured
+        ? html`<span
+            class="metric headroom ${h.level}"
+            title="Est. GPU ${h.gpuMs.toFixed(1)} ms of ${h.budgetMs.toFixed(1)} ms budget (${targetFps} FPS) — ${h.headroomPct}% headroom"
+            >GPU ${h.gpuMs.toFixed(1)}ms · ${h.headroomPct}% free</span
+          >`
+        : html`<span class="metric" title="No GPU timing yet">GPU —</span>`}
+      <select
+        class="target"
+        title="Target framerate (the GPU headroom budget)"
+        .value=${String(targetFps)}
+        @change=${this.onTargetChange}>
+        ${TARGET_FPS_OPTIONS.map(
+          (t) => html`<option value=${t} ?selected=${t === targetFps}>${t}↑</option>`,
+        )}
+      </select>
+    `;
+  }
+
+  private onTargetChange = (e: Event) => {
+    const v = parseInt((e.target as HTMLSelectElement).value, 10);
+    if (!Number.isNaN(v)) appController.setUserSetting('targetFps', v);
+  };
 }
