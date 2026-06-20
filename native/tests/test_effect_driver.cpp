@@ -209,6 +209,7 @@ TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_
   CHECK(reg->schemaFields.contains("amplitude"));
   CHECK(reg->schemaFields.contains("waveform"));
   CHECK(reg->schemaFields.contains("shape"));
+  CHECK(reg->schemaFields.contains("invert"));
   CHECK(reg->schemaFields.contains("output"));
 
   host.shutdown();
@@ -346,6 +347,20 @@ TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]")
     CHECK(inRange(v));
     CHECK(countAbove(v, 0.9) > 0);
     CHECK(countBelow(v, 0.1) > 0);
+  }
+  // Invert: a saw at shape 0 has value == phase, so inverting yields 1 - phase.
+  {
+    EffectInstance* inst = rt.instanceFor("data.lfo", "inv");
+    REQUIRE(inst != nullptr);
+    inst->setParamFloat("rate", static_cast<float>(kRate));
+    inst->setParamFloat("waveform", static_cast<float>(WfSaw));
+    inst->setParamFloat("shape", 0.0f);
+    inst->setParamFloat("invert", 1.0f);
+    for (int i = 1; i <= 20; i++) {
+      inst->doTick(kDt);
+      double v = doc.get_plugin_state(key)["output"].get<double>();
+      CHECK(v == Catch::Approx(1.0 - i * kDt).margin(1e-4));
+    }
   }
 
   host.shutdown();

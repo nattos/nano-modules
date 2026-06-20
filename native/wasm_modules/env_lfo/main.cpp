@@ -14,6 +14,7 @@
  *   waveform  (enum)             — Sine / Square / Triangle / Saw / Random Walk
  *                                  / Random FM
  *   shape     (0..1, default 0)  — morphs the active waveform (see below)
+ *   invert    (bool, default off) — flip the output (1 - value)
  *
  * `shape` per waveform:
  *   Sine        — sine → soft-clipped sine (tanh drive grows)
@@ -54,6 +55,7 @@ struct State {
   float amplitude = 1.0f;
   int waveform = ShapeSine;
   float shape = 0.0f;
+  bool invert = false;
   // Phase accumulator in cycles [0,1). Advanced by dt*rate every tick (style
   // guide §2.1) so turning the rate knob changes only the FUTURE speed — it
   // never retro-scales elapsed time into a phase jump the way time()*rate does.
@@ -61,7 +63,9 @@ struct State {
 
   // Per-instance RNG for the stochastic shapes (LCG; deterministic per run).
   uint32_t rng = 0x9E3779B9u;
-  // Random Walk: interpolate prev→target across each cycle, re-stepped on wrap.
+  // Random Walk: its own phase (advances at 10x the base rate so it scurries),
+  // interpolating prev→target and re-stepping on each wrap.
+  double rwPhase = 0.0;
   float rwPrev = 0.0f;
   float rwTarget = 0.0f;
   bool rwInit = false;
@@ -125,6 +129,8 @@ void module_init() {
                     {"Random FM", ShapeRandomFM}})
       // Morphs the active waveform (see file header for the per-shape meaning).
       .floatField("shape", 0.0f, 0.f, 1.f, state::PrimaryInput)
+      // Flip the output: 1 - value (stays in [0,1]).
+      .boolField("invert", false, state::PrimaryInput)
       // Unipolar [0,1] output — declared so a wire's "Auto" magnitude maps it as
       // unsigned. min/max is the modulation-range contract: the UI band samples
       // this declared range, NOT the live amplitude-scaled swing (intentional).
@@ -155,8 +161,10 @@ void init(void* self) {
   s->amplitude = 1.0f;
   s->waveform = ShapeSine;
   s->shape = 0.0f;
+  s->invert = false;
   s->phase = 0.0;
   s->rng = 0x9E3779B9u;
+  s->rwPhase = 0.0;
   s->rwPrev = 0.0f;
   s->rwTarget = 0.0f;
   s->rwInit = false;
@@ -201,21 +209,27 @@ void tick(void* self, double dt) {
     double p = s->phase;
 
     if (wf == ShapeRandomWalk) {
-      // Step to a new random target each cycle (or on the very first tick) and
-      // smooth-step across it; `shape` enlarges the step (walks further). The
-      // walk reflects off the [-1,1] walls so it stays in range yet keeps moving.
-      if (wrapped || !s->rwInit) {
+      // Walks on its own phase at 10x the base rate (rate is a slow LFO knob, but
+      // a random walk should scurry). Step to a new random target on each wrap
+      // (or the very first tick) and smooth-step across it; `shape` enlarges the
+      // step (walks further). The walk reflects off the [-1,1] walls so it stays
+      // in range yet keeps moving.
+      s->rwPhase += dt * rate * 10.0;
+      bool step = !s->rwInit || s->rwPhase >= 1.0;
+      s->rwPhase -= std::floor(s->rwPhase);
+      if (step) {
         s->rwInit = true;
         s->rwPrev = s->rwTarget;
-        float step = 0.15f + 0.85f * shape;
-        float t = s->rwTarget + (rand01(s) * 2.0f - 1.0f) * step;
+        float stepSize = 0.15f + 0.85f * shape;
+        float t = s->rwTarget + (rand01(s) * 2.0f - 1.0f) * stepSize;
         if (t > 1.0f) t = 2.0f - t;
         if (t < -1.0f) t = -2.0f - t;
         if (t > 1.0f) t = 1.0f;
         if (t < -1.0f) t = -1.0f;
         s->rwTarget = t;
       }
-      float f = static_cast<float>(p * p * (3.0 - 2.0 * p));  // smoothstep ease
+      double rp = s->rwPhase;
+      float f = static_cast<float>(rp * rp * (3.0 - 2.0 * rp));  // smoothstep ease
       w = s->rwPrev + (s->rwTarget - s->rwPrev) * f;
     } else {
       w = deterministicWave(wf, shape, p);
@@ -225,6 +239,7 @@ void tick(void* self, double dt) {
   float value = w * s->amplitude * 0.5f + 0.5f;
   if (value < 0.0f) value = 0.0f;
   if (value > 1.0f) value = 1.0f;
+  if (s->invert) value = 1.0f - value;  // flip in [0,1]
 
   // Write to instance state at /output
   auto vh = val::number(value);
@@ -248,6 +263,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->waveform = static_cast<int>(state::patchFloat(i));
     else if (state::pathIs(pb + off[i], len[i], "shape"))
       s->shape = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "invert"))
+      s->invert = state::patchFloat(i) != 0.0f;
   }
 }
 
