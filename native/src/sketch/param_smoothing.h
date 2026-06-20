@@ -2,11 +2,14 @@
 /*
  * param_smoothing.h — Linear-ramp parameter smoothing.
  *
- * This is one half of a LOCK-STEP pair: the math here MUST stay byte-identical to
- * web/src/param-smoothing.ts (shared goldens: test_param_smoothing.cpp +
- * param-smoothing.test.ts), exactly like tap_mod.h ↔ tap-mod.ts. It backs both
- * the engine-level `FieldOptions.smoothing` option and the `mod.smooth` shaper
- * effect, so any host running either must shape the ramp identically.
+ * This is the SOLE implementation of the smoothing math: the shared executor
+ * (sketch_executor.cpp) compiles to BOTH the native barrel AND executor.wasm, so
+ * the web runtime runs exactly this code. It backs both the engine-level
+ * `FieldOptions.smoothing` option (applied in the executor) and the `mod.smooth`
+ * shaper effect. Behavior is pinned by the Catch2 goldens in
+ * native/tests/test_param_smoothing.cpp. (A web/src/param-smoothing.ts twin
+ * existed from the old TS-executor era; it was removed once smoothing was wired
+ * into this executor — there is no separate TS port to keep in sync.)
  *
  * Linear, explicit-timer interpolation — NOT exponential. On a target change the
  * timer resets, the current value becomes the ramp start, and the value lerps to

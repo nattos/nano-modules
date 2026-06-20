@@ -165,9 +165,9 @@ export function chainEntryAt(sketch: Sketch | undefined, chainIdx: number): Chai
 /**
  * Shaping curve applied to a remap's normalized value. `linear` is identity;
  * the rest are ease-in base curves (the `curveOut` slot mirrors them to ease-out
- * — see web/src/tap-mod.ts / native/src/sketch/tap_mod.h for the exact, lock-step
- * formulas that web and native MUST share for pixel parity). `foldback` is
- * special: instead of clipping out-of-range input it reflects it back into range.
+ * — see native/src/sketch/tap_mod.h for the exact formulas; the executor runs that
+ * math on both web (executor.wasm) and native). `foldback` is special: instead of
+ * clipping out-of-range input it reflects it back into range.
  */
 export type TapCurve = 'linear' | 'quad' | 'circular' | 'power' | 'foldback';
 
@@ -201,7 +201,7 @@ export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
 /**
  * How a scalar wire interprets its source value relative to the DEST field's
  * declared range — so a modulation source can drive a parameter without the
- * user hand-scaling it. See `applyMagnitude` in tap-mod.ts for the exact math.
+ * user hand-scaling it. See `applyMagnitude` in native/src/sketch/tap_mod.h for the exact math.
  * - `auto` (default): pick signed/unsigned from the SOURCE output field's
  *   optional `magnitude` schema declaration; unsigned when undeclared.
  * - `signed`: source treated as bipolar −1..1. If the source EXPLICITLY declares

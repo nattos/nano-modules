@@ -3,12 +3,13 @@
  * tap_mod.h — Tap value transforms ("tap mods"): the range remapper + write-tap
  * summation, applied to FLOAT rail values during sketch execution.
  *
- * This is one half of a LOCK-STEP pair: the math here MUST stay byte-identical to
- * web/src/tap-mod.ts. The web executor reproduces native pixels exactly, so a tap
- * that feeds a float into a render parameter would desync the image if the two
- * sides shaped the value differently. Any change to a formula here must be mirrored
- * there (and is covered by the shared goldens in web/src/tap-mod.test.ts and the
- * native Catch2 mirror).
+ * This is the SOLE implementation of the tap-mod math: the shared executor
+ * (sketch_executor.cpp) compiles to BOTH the native barrel AND executor.wasm, so
+ * the web runtime runs exactly this code — there is no separate TS port to keep
+ * in sync. (There used to be a lock-step web/src/tap-mod.ts twin from when the web
+ * had its own TS executor; that executor was replaced by executor.wasm and the
+ * twin was removed.) Behavior is pinned by the Catch2 goldens in
+ * native/tests/test_tap_mod.cpp; the `mod.remap` effect reuses this verbatim.
  *
  * Header-only and dependency-light (just <cmath>) so it compiles in both the native
  * runtime and any wasm build without dragging in GPU/STL-heavy headers.
