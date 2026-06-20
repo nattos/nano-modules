@@ -5,7 +5,7 @@
  * Undo replays inverse patches; redo replays forward patches.
  */
 
-import { observable, action, runInAction } from 'mobx';
+import { observable, action, runInAction, makeObservable } from 'mobx';
 import { produce, Patch } from 'immer';
 import type { AppState } from './app-state';
 import type { DatabaseState } from './types';
@@ -96,7 +96,12 @@ export class HistoryManager {
    */
   /** @internal */ public longEditHook: PostRecordHook | null = null;
 
-  constructor(private appState: AppState) {}
+  constructor(private appState: AppState) {
+    // Required for the @observable/@action decorators above to take effect in
+    // MobX 6 — without it `history`/`redoStack` stay plain arrays and reads of
+    // canUndo/canRedo never track, so observers (e.g. the toolbar) don't react.
+    makeObservable(this);
+  }
 
   /** Apply a mutation recipe to the database state, recording history. */
   @action

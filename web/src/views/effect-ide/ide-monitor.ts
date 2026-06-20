@@ -2,7 +2,8 @@
  * <ide-monitor> — Right-panel monitor for the IDE.
  *
  * Renders the current project's `sketch_output` trace via the existing
- * `<texture-monitor>` widget, plus transport controls (pause / restart).
+ * `<texture-monitor>` widget, plus transport controls (undo / redo /
+ * pause / frame-step).
  *
  * Pause state lives in `userSettings.paused` so it survives reloads. The
  * engine command is sent through `appController.setPaused`, and `boot.ts`
@@ -87,6 +88,18 @@ export class IdeMonitor extends MobxLitElement {
       </div>
       <div class="transport">
         <ui-button
+          icon="la-undo"
+          title="Undo"
+          ?disabled=${!appController.history.canUndo}
+          @click=${this.onUndo}>
+        </ui-button>
+        <ui-button
+          icon="la-redo"
+          title="Redo"
+          ?disabled=${!appController.history.canRedo}
+          @click=${this.onRedo}>
+        </ui-button>
+        <ui-button
           .icon=${paused ? 'la-play' : 'la-pause'}
           title=${paused ? 'Resume engine' : 'Pause engine'}
           @click=${this.onTogglePause}>
@@ -102,6 +115,9 @@ export class IdeMonitor extends MobxLitElement {
       </div>
     `;
   }
+
+  private onUndo = () => appController.undo();
+  private onRedo = () => appController.redo();
 
   private onTogglePause = () => {
     appController.setPaused(!appState.local.userSettings.paused);
