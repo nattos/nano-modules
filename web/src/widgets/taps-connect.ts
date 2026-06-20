@@ -157,10 +157,28 @@ class TapsConnect {
 
   // --- Pointer / highlight ---
 
+  private dropRaf = 0;
+
   private updatePointer(x: number, y: number) {
     if (!this.state) return;
+    // Storing the coords is cheap and must happen every move so the rubber-band
+    // line tracks smoothly. The drop-target hit-test below is NOT cheap —
+    // deepElementFromPoint pierces every shadow root with elementFromPoint, and
+    // because the overlay's rAF mutates SVG paths each frame, each call forces a
+    // layout flush. pointermove can fire several times per frame, so running it
+    // per-event meant N forced reflows/frame → ~2 FPS during click-to-connect.
+    // Coalesce it to at most once per animation frame.
     this.state.pointerX = x;
     this.state.pointerY = y;
+    if (this.dropRaf) return;
+    this.dropRaf = requestAnimationFrame(() => {
+      this.dropRaf = 0;
+      if (!this.state) return;
+      this.refreshDropTarget(this.state.pointerX, this.state.pointerY);
+    });
+  }
+
+  private refreshDropTarget(x: number, y: number) {
     const el = deepElementFromPoint(x, y);
     const drop = el?.closest?.('.tap-overlay-hit') as HTMLElement | null;
     if (drop === this.lastDropEl) return;
@@ -209,6 +227,7 @@ class TapsConnect {
 
   private end() {
     this.state = null;
+    if (this.dropRaf) { cancelAnimationFrame(this.dropRaf); this.dropRaf = 0; }
     this.lastDropEl?.removeAttribute('tap-drop-target');
     this.lastDropEl = null;
     if (this.clickListenersActive) {

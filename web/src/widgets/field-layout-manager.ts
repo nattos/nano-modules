@@ -11,7 +11,7 @@
  * layout shifts.
  */
 
-import { observable, runInAction, makeObservable } from 'mobx';
+import { observable, runInAction, makeObservable, untracked } from 'mobx';
 import type { FieldEditorElement } from './field-editor';
 
 export interface FieldRect {
@@ -80,9 +80,23 @@ export class FieldLayoutManager {
     });
   }
 
-  /** Get the bounding rect of a field editor relative to an ancestor element. */
+  /**
+   * Keys of all registered editors, read WITHOUT subscribing to the observable
+   * `entries` map. Consumers (the wire overlay, pips, tap-hit boxes) read live
+   * positions during render but must re-render off `generation` — which bumps
+   * once per rAF in `recalculate()` — NOT off raw membership mutations. Reading
+   * `entries` reactively created a render → scan → register → render feedback
+   * loop (the scan runs in `updated()` and mutates `entries`), spinning the
+   * expensive DOM walk every frame.
+   */
+  keysUntracked(): string[] {
+    return untracked(() => Array.from(this.entries.keys()));
+  }
+
+  /** Get the bounding rect of a field editor relative to an ancestor element.
+   *  Reads `entries` untracked — see keysUntracked() for why. */
   getRelativeRect(key: string, ancestor: HTMLElement): FieldRect | null {
-    const entry = this.entries.get(key);
+    const entry = untracked(() => this.entries.get(key));
     if (!entry) return null;
     const elRect = entry.element.getBoundingClientRect();
     const ancRect = ancestor.getBoundingClientRect();

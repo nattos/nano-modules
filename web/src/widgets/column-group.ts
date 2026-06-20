@@ -1151,7 +1151,7 @@ export class ColumnGroup extends MobxLitElement {
     const hits: TemplateResult[] = [];
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
 
-    for (const [key] of this.layoutManager.entries) {
+    for (const key of this.layoutManager.keysUntracked()) {
       if (!key.startsWith(keyPrefix)) continue;
 
       const rect = this.layoutManager.getRelativeRect(key, innerEl);

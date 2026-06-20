@@ -366,23 +366,43 @@ export class TapsOverlay extends MobxLitElement {
     }
   }
 
-  /** Update each committed wire's arc `d` from live field-port rects. */
+  /**
+   * Update each committed wire's arc `d` from live field-port rects.
+   *
+   * Strictly two-phase — measure ALL endpoints first, then write ALL geometry —
+   * to avoid layout thrashing. Interleaving `getBoundingClientRect` (read) with
+   * `setAttribute('d')` (write) forces a synchronous reflow per wire; with the
+   * floating field card in the DOM (whenever a field is selected / picked up for
+   * click-to-connect) each of those reflows re-lays-out the heavy inspector
+   * card, which tanked the framerate. Batched, the whole pass costs one reflow.
+   */
   private drawArcs(svg: SVGElement, overlayRect: DOMRect) {
-    for (const p of Array.from(svg.querySelectorAll('path.arc-path')) as SVGPathElement[]) {
-      const a = this.fieldCenter(p.dataset.from ?? '', overlayRect);
-      const b = this.fieldCenter(p.dataset.to ?? '', overlayRect);
+    // READ phase — no DOM writes, so only the first rect query forces a reflow.
+    const paths = Array.from(svg.querySelectorAll('path.arc-path')) as SVGPathElement[];
+    const arcs = paths.map(p => ({
+      p,
+      a: this.fieldCenter(p.dataset.from ?? '', overlayRect),
+      b: this.fieldCenter(p.dataset.to ?? '', overlayRect),
+      seg: p.dataset.seg,
+    }));
+    const dots = Array.from(svg.querySelectorAll('circle.wire-dot')) as SVGCircleElement[];
+    const dotData = dots.map(dot => ({
+      dot,
+      a: this.fieldCenter(dot.dataset.from ?? '', overlayRect),
+      b: this.fieldCenter(dot.dataset.to ?? '', overlayRect),
+    }));
+
+    // WRITE phase.
+    for (const { p, a, b, seg } of arcs) {
       if (!a || !b) { p.style.display = 'none'; continue; }
       p.style.display = '';
       // `data-seg` 0/1 → one half of a delayed wire's split bezier; absent → full arc.
-      const seg = p.dataset.seg;
       if (seg === undefined) { p.setAttribute('d', arcPath(a, b)); continue; }
       const split = splitBezier(arcBezier(a, b));
       p.setAttribute('d', bezPath(seg === '0' ? split.first : split.second));
     }
     // Midpoint dot for delayed wires (the relay between the two animated halves).
-    for (const dot of Array.from(svg.querySelectorAll('circle.wire-dot')) as SVGCircleElement[]) {
-      const a = this.fieldCenter(dot.dataset.from ?? '', overlayRect);
-      const b = this.fieldCenter(dot.dataset.to ?? '', overlayRect);
+    for (const { dot, a, b } of dotData) {
       if (!a || !b) { dot.style.display = 'none'; continue; }
       dot.style.display = '';
       const m = splitBezier(arcBezier(a, b)).mid;
