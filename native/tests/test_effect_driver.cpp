@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <vector>
@@ -206,7 +207,146 @@ TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_
   // schemaFields parsed from the forwarded schema JSON.
   CHECK(reg->schemaFields.contains("rate"));
   CHECK(reg->schemaFields.contains("amplitude"));
+  CHECK(reg->schemaFields.contains("waveform"));
+  CHECK(reg->schemaFields.contains("shape"));
   CHECK(reg->schemaFields.contains("output"));
+
+  host.shutdown();
+}
+
+// Drive data.lfo through every waveform for one cycle and assert each has its
+// characteristic signature (style guide §2.1 shapes). All outputs must stay in
+// the declared [0,1] range; `shape` morphs the active waveform.
+TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  FrameState fs;
+  fs.elapsed_time = 0.0;
+  host.set_frame_state(id, &fs);
+
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "data.lfo") { w = &e; break; }
+  }
+  REQUIRE(w != nullptr);
+
+  EffectDesc desc;
+  desc.id = w->id;
+  desc.wasm_host = &host;
+  desc.wasm_module_id = id;
+  desc.w_module_init = w->idx_module_init;
+  desc.w_create = w->idx_create;
+  desc.w_destroy = w->idx_destroy;
+  desc.w_init = w->idx_init;
+  desc.w_tick = w->idx_tick;
+  desc.w_on_state_patched = w->idx_on_state_patched;
+
+  EffectRuntime rt(nullptr);
+  rt.registerEffect(desc);
+  const std::string key = host.plugin_key(id);
+  REQUIRE(!key.empty());
+
+  // env_lfo waveform selector values (mirror of the effect's Shape enum).
+  enum { WfSine = 0, WfSquare = 1, WfTriangle = 2, WfSaw = 3, WfRandomWalk = 4,
+         WfRandomFM = 5 };
+
+  // One full cycle: rate 0.1 → 1 Hz, dt 0.01 → 100 samples per cycle.
+  const double kRate = 0.1, kDt = 0.01;
+  const int kN = 100;
+  auto sweep = [&](const char* ikey, int waveform, float shape) {
+    EffectInstance* inst = rt.instanceFor("data.lfo", ikey);
+    REQUIRE(inst != nullptr);
+    inst->setParamFloat("rate", static_cast<float>(kRate));
+    inst->setParamFloat("waveform", static_cast<float>(waveform));
+    inst->setParamFloat("shape", shape);
+    std::vector<double> out;
+    for (int i = 0; i < kN; i++) {
+      inst->doTick(kDt);
+      out.push_back(doc.get_plugin_state(key)["output"].get<double>());
+    }
+    return out;
+  };
+  auto inRange = [](const std::vector<double>& v) {
+    for (double x : v)
+      if (x < -1e-6 || x > 1.0 + 1e-6) return false;
+    return true;
+  };
+  auto countAbove = [](const std::vector<double>& v, double t) {
+    int c = 0;
+    for (double x : v) if (x > t) c++;
+    return c;
+  };
+  auto countBelow = [](const std::vector<double>& v, double t) {
+    int c = 0;
+    for (double x : v) if (x < t) c++;
+    return c;
+  };
+
+  // Sine (shape 0): smooth, in range, reaches both rails.
+  {
+    auto v = sweep("sine", WfSine, 0.0f);
+    CHECK(inRange(v));
+    CHECK(countAbove(v, 0.95) > 0);
+    CHECK(countBelow(v, 0.05) > 0);
+  }
+  // Square (shape 0): bimodal ±1, ~50% duty, essentially no mid values.
+  {
+    auto v = sweep("sq", WfSquare, 0.0f);
+    CHECK(inRange(v));
+    int hi = countAbove(v, 0.99), lo = countBelow(v, 0.01);
+    CHECK(hi + lo >= kN - 2);
+    CHECK(hi > 30);
+    CHECK(hi < 70);
+  }
+  // Square (shape 0.8): duty narrows (0.5 → ~0.14) → fewer high samples.
+  {
+    auto v = sweep("sqn", WfSquare, 0.8f);
+    CHECK(countAbove(v, 0.99) < 30);
+  }
+  // Triangle (shape 0): peak near mid-cycle.
+  {
+    auto v = sweep("tri", WfTriangle, 0.0f);
+    CHECK(inRange(v));
+    size_t argmax = 0;
+    for (size_t i = 1; i < v.size(); i++)
+      if (v[i] > v[argmax]) argmax = i;
+    CHECK(argmax > 35);
+    CHECK(argmax < 65);
+  }
+  // Saw (shape 0): monotonic rising ramp (one drop at the wrap is allowed).
+  {
+    auto v = sweep("saw", WfSaw, 0.0f);
+    CHECK(inRange(v));
+    int rises = 0;
+    for (size_t i = 1; i < v.size(); i++)
+      if (v[i] >= v[i - 1] - 1e-6) rises++;
+    CHECK(rises >= static_cast<int>(v.size()) - 2);
+  }
+  // Random Walk: stays in range and actually moves.
+  {
+    auto v = sweep("rw", WfRandomWalk, 0.7f);
+    CHECK(inRange(v));
+    double lo = 2.0, hi = -2.0;
+    for (double x : v) { lo = std::min(lo, x); hi = std::max(hi, x); }
+    CHECK(hi - lo > 0.05);
+  }
+  // Random FM: sine carrier, stays in range and swings across both rails.
+  {
+    auto v = sweep("fm", WfRandomFM, 0.9f);
+    CHECK(inRange(v));
+    CHECK(countAbove(v, 0.9) > 0);
+    CHECK(countBelow(v, 0.1) > 0);
+  }
 
   host.shutdown();
 }
