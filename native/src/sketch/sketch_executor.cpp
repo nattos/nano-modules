@@ -173,6 +173,21 @@ tap_mod::Mod parseMod(const json& tap) {
   if (!tap.contains("mod") || !tap["mod"].is_object()) return m;
   const json& mod = tap["mod"];
   m.scale = mod.value("scale", 1.0f);
+  // Envelope: a flat number array [x0,y0,e0, x1,y1,e1, ...] (the same wire-format
+  // the mod.envelope effect uses; serialized by the envelope graph editor). Read
+  // it into the Mod's control points; applyTapMod evaluates it before the remap.
+  if (mod.contains("envelope") && mod["envelope"].is_array()) {
+    const json& e = mod["envelope"];
+    int n = 0;
+    for (size_t k = 0; k + 3 <= e.size() && n < envelope::kMaxPoints; k += 3) {
+      if (!e[k].is_number() || !e[k + 1].is_number() || !e[k + 2].is_number()) continue;
+      m.env[n].x    = e[k].get<float>();
+      m.env[n].y    = e[k + 1].get<float>();
+      m.env[n].ease = e[k + 2].get<float>();
+      ++n;
+    }
+    m.nEnv = n;
+  }
   if (mod.contains("remap") && mod["remap"].is_object()) {
     const json& r = mod["remap"];
     m.hasRemap = true;
@@ -491,6 +506,11 @@ int32_t SketchExecutor::execute(
     int32_t inputHandle, int32_t outputHandle,
     int W, int H, double dt, bool sketchDirty) {
   if (!rawSketch.is_object()) return inputHandle;
+
+  // Advance the shared modulation clock once per frame — the time base the wire
+  // delay lines (delayState_) push/read against (style guide §2.1: accumulate dt,
+  // never time*rate). Done before any tap processing this frame.
+  modClock_ += dt;
 
 #ifndef __wasm__
   // Native: point the effrt_* instance ABI at this runtime and reset the frame's
@@ -1058,7 +1078,11 @@ int32_t SketchExecutor::execute(
                 ? tap_mod::applyMagnitude(canon, shaped, isSigned, combine, mixFactor, dmin, dmax)
                 : tap_mod::combineTap(true, canon, shaped, combine, mixFactor);
           };
-          const float combined = fold(fit->second);
+          float combined = fold(fit->second);
+          // Wire DELAY stage (see applyReadTaps) — temporal, transitive.
+          const float delaySec = tap.contains("mod") && tap["mod"].is_object()
+              ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
+          combined = applyModDelay(pe.instanceKey, field, combined, delaySec);
           knobVal[field] = combined;
           recordModBand(modulationData_, pe.instanceKey, field, combined,
                         modNeutral(combine, isSigned, canon, dmin, dmax),
@@ -1654,7 +1678,18 @@ void SketchExecutor::applyReadTaps(
                                         combine, mixFactor, dmin, dmax)
               : tap_mod::combineTap(hasCanon, canon, shaped, combine, mixFactor);
         };
-        const float combined = fold(fit->second);
+        float combined = fold(fit->second);
+        // Wire DELAY stage — temporal, transitive. Applied AFTER the pure
+        // envelope/remap/scale + magnitude fold and BEFORE smoothing (so the
+        // smoothing target below is the delayed value). `delay` (seconds) rides
+        // the tap's mod object, a sibling of the pure remap/scale/envelope; it's
+        // read here rather than in parseMod because it's stateful, not part of
+        // the band-sampled `fold`. The band thus reflects the value's range
+        // (unchanged by a pure time-shift), while the live marker tracks the
+        // delayed value — which always lies within that range.
+        const float delaySec = tap.contains("mod") && tap["mod"].is_object()
+            ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
+        combined = applyModDelay(instanceKey, fieldPath, combined, delaySec);
         inst.setParamFloat(fieldPath, combined);
         inst.setFieldConnected(fieldPath, true, false);
         // Hand the smoothing pass this field's post-modulation target.
@@ -1713,6 +1748,24 @@ void SketchExecutor::applyReadTaps(
     }
     inst.setFieldConnected(fieldPath, true, false);
   }
+}
+
+float SketchExecutor::applyModDelay(const std::string& instanceKey,
+                                    const std::string& field,
+                                    float value, float delaySec) {
+  if (!(delaySec > 0.0f)) {
+    // Disabled / non-positive → pass-through. Drop any stale line so a later
+    // re-enable starts fresh (mirrors smoothing's erase-on-disable).
+    auto iit = delayState_.find(instanceKey);
+    if (iit != delayState_.end()) {
+      iit->second.erase(field);
+      if (iit->second.empty()) delayState_.erase(iit);
+    }
+    return value;
+  }
+  auto& line = delayState_[instanceKey][field];
+  line.push(modClock_, value);
+  return line.read(modClock_ - (double)delaySec);
 }
 
 void SketchExecutor::applySmoothing(

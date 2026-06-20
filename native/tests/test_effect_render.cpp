@@ -647,6 +647,64 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     CHECK(b["max"].get<double>()   == Catch::Approx(0.75).margin(0.01));
   }
 
+  // An ENVELOPE shaper on the wire reshapes the value the same way mod.envelope
+  // would. Curve (0,0.2)->(1,0.6) maps lfo.output 0.5 → 0.4, and narrows the band
+  // to the envelope's [0.2,0.6] output window (swept over the source's [0,1]).
+  SECTION("an envelope on the wire reshapes the value + band") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
+          "mod": { "envelope": [0.0, 0.2, 0.0, 1.0, 0.6, 0.0] } }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    const auto& b = md["bc"]["brightness"];
+    CHECK(b["value"].get<double>() == Catch::Approx(0.4).margin(0.01));   // env(0.5)=0.4
+    CHECK(b["min"].get<double>()   == Catch::Approx(0.2).margin(0.01));   // env(0)=0.2
+    CHECK(b["max"].get<double>()   == Catch::Approx(0.6).margin(0.01));   // env(1)=0.6
+  }
+
+  // A DELAY shaper on the wire lags the value: it's stateful across frames, so a
+  // generous (1s) delay still reads the FIRST frame's value after the source
+  // jumps on the second frame. Without the delay the value would track the source
+  // (0.8) immediately. Proves the executor's per-input delay line is wired in.
+  SECTION("a delay on the wire lags the value across frames") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.2 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
+          "mod": { "delay": 1.0 } }
+      ]
+    })JSON");
+    // Frame 1: source 0.2 — the delay underruns to the only (== current) sample.
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    CHECK(executor.lastModulationData()["bc"]["brightness"]["value"].get<double>()
+            == Catch::Approx(0.2).margin(0.02));
+    // Frame 2: source jumps to 0.8, but the 1s delay still reads frame 1's 0.2.
+    sketch["instances"]["lfo"]["state"]["output"] = 0.8;
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, false);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    CHECK(md["bc"]["brightness"]["value"].get<double>() == Catch::Approx(0.2).margin(0.05));
+  }
+
   // Forcing `signed` on a source that EXPLICITLY declares unsigned [0,1]
   // prescales the value to [-1,1] (0→-1, 1→1), so the band spans the FULL dest
   // range. Without the prescale (the old face-value behavior), an unsigned 0..1

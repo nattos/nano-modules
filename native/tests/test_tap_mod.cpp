@@ -20,6 +20,12 @@ Mod remap(float inMin, float inMax, float outMin, float outMax) {
   m.inMin = inMin; m.inMax = inMax; m.outMin = outMin; m.outMax = outMax;
   return m;
 }
+Mod withEnvelope(std::initializer_list<envelope::Point> pts) {
+  Mod m; int i = 0;
+  for (const auto& p : pts) if (i < envelope::kMaxPoints) m.env[i++] = p;
+  m.nEnv = i;
+  return m;
+}
 }  // namespace
 
 TEST_CASE("applyTapMod scales from 0", "[tap_mod]") {
@@ -87,6 +93,28 @@ TEST_CASE("applyTapMod applies scale AFTER remap", "[tap_mod]") {
   // (Old scale-first would be remap(5*2=10)=200.)
   Mod m = remap(0, 10, 100, 200); m.scale = 2.0f;
   REQUIRE_THAT(applyTapMod(5.0f, m), WithinAbs(300.0, 1e-4));
+}
+
+TEST_CASE("applyTapMod evaluates the envelope curve", "[tap_mod]") {
+  // Curve (0,0)->(0.5,0.8)->(1,1), linear segments.
+  Mod m = withEnvelope({{0, 0, 0}, {0.5f, 0.8f, 0}, {1, 1, 0}});
+  REQUIRE_THAT(applyTapMod(0.0f, m), WithinAbs(0.0, 1e-5));
+  REQUIRE_THAT(applyTapMod(0.25f, m), WithinAbs(0.4, 1e-5));   // half up the 0->0.8 leg
+  REQUIRE_THAT(applyTapMod(0.5f, m), WithinAbs(0.8, 1e-5));
+  REQUIRE_THAT(applyTapMod(1.0f, m), WithinAbs(1.0, 1e-5));
+}
+
+TEST_CASE("applyTapMod applies the envelope BEFORE remap and scale", "[tap_mod]") {
+  // Order is observable: envelope maps 0.5 -> 0.8, then remap(0,1 -> 0,10) = 8,
+  // then scale 2 = 16. (Any other order yields a different number.)
+  Mod m = withEnvelope({{0, 0, 0}, {0.5f, 0.8f, 0}, {1, 1, 0}});
+  m.hasRemap = true; m.inMin = 0; m.inMax = 1; m.outMin = 0; m.outMax = 10;
+  m.scale = 2.0f;
+  REQUIRE_THAT(applyTapMod(0.5f, m), WithinAbs(16.0, 1e-4));
+}
+
+TEST_CASE("applyTapMod with no envelope is unchanged (nEnv == 0)", "[tap_mod]") {
+  REQUIRE_THAT(applyTapMod(0.5f, scaleOnly(2.0f)), WithinAbs(1.0, 1e-5));
 }
 
 TEST_CASE("combineTap seeds the rail when there is no existing value", "[tap_mod]") {

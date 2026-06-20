@@ -205,6 +205,21 @@ export type TapCurve = 'linear' | 'quad' | 'circular' | 'power' | 'foldback';
 export interface TapMod {
   /** Multiply from 0 (out = in * scale). Default 1. Applied before `remap`. */
   scale?: number;
+  /**
+   * Optional drawn-curve shaper applied FIRST (before remap+scale), as a flat
+   * number array `[x0,y0,e0, x1,y1,e1, ...]` of (x, y, ease) control points — the
+   * same wire-format the mod.envelope effect uses. Edited with the shared
+   * envelope graph editor. Absent / empty → pass-through. Evaluated by the
+   * executor via envelope.h (see native/src/sketch/tap_mod.h).
+   */
+  envelope?: number[];
+  /**
+   * Optional temporal DELAY (seconds) applied to the final modulated value, AFTER
+   * the pure envelope/remap/scale + magnitude fold and before smoothing. Transitive
+   * (doesn't change the value's range). 0 / absent → pass-through. Stateful in the
+   * executor (a per-input delay line); shares the mod.delay effect's math.
+   */
+  delay?: number;
   remap?: {
     inMin: number;
     inMax: number;

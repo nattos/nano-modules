@@ -39,6 +39,7 @@
 // the .cpp includes the full header under #ifndef __wasm__ for the seed.
 #include "sketch/registered_module.h"
 #include "sketch/param_smoothing.h"
+#include "sketch/delay_line.h"
 
 #include <functional>
 #include <memory>
@@ -263,6 +264,20 @@ class SketchExecutor {
   std::unordered_map<std::string,
       std::unordered_map<std::string, param_smoothing::SmoothState>> smoothState_;
 
+  // Per-(instance,field) modulation DELAY lines (the wire's continuous-time
+  // `mod.delay`, seconds), persisted across frames. A wire shaper stage parallel
+  // to smoothing: it time-shifts a modulated input's final (post-fold) value by
+  // `delay` seconds via delay_line.h (the same math as the mod.delay effect).
+  // Transitive (doesn't change the value's range), so it runs after the pure
+  // envelope/remap/scale fold and before smoothing. Advanced by modClock_.
+  // NB: distinct from a tap's `delayed` flag, which is the 1-frame feedback delay
+  // used for cycle breaking — this is a user-set wall-clock delay.
+  std::unordered_map<std::string,
+      std::unordered_map<std::string, delay_line::DelayLine<512>>> delayState_;
+  // Monotonic modulation clock (seconds), advanced by `dt` once per execute().
+  // The shared time base the delay lines push/read against.
+  double modClock_ = 0.0;
+
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;
   BarrierPredicate barrierPredicate_;
@@ -405,6 +420,16 @@ class SketchExecutor {
       // When non-null, records each modulated FLOAT field's final post-fold
       // value (the target the smoothing pass ramps toward). See applySmoothing.
       std::unordered_map<std::string, float>* outModulatedScalars = nullptr);
+
+  // Apply a wire's continuous-time `delay` (seconds) to a modulated field's final
+  // post-fold `value`, via a per-(instance,field) delay line in delayState_. The
+  // line is fed one sample per frame at modClock_; the return is the value from
+  // `delaySec` seconds ago (linearly interpolated, underrun-clamped to the start
+  // value). `delaySec <= 0` is pass-through and forgets any stale line so a later
+  // re-enable starts settled. Transitive — runs after the pure fold, before
+  // smoothing. Shared by the standalone read-tap path and the dashboard path.
+  float applyModDelay(const std::string& instanceKey, const std::string& field,
+                      float value, float delaySec);
 
   // Apply the engine-level `FieldOptions.smoothing` option to this instance:
   // for each smoothing-enabled scalar field, linearly ramp the plugin-visible

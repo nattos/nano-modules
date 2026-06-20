@@ -42,6 +42,12 @@ export function serializeCurve(pts: EnvPoint[]): string {
   return JSON.stringify(pts.flatMap(p => [r4(p.x), r4(p.y), r4(p.ease)]));
 }
 
+/** Points → flat number array [x0,y0,e0, ...] (the wire `mod.envelope` format,
+ *  which stores the JSON array directly rather than a stringified copy). */
+export function curveToArray(pts: EnvPoint[]): number[] {
+  return pts.flatMap(p => [r4(p.x), r4(p.y), r4(p.ease)]);
+}
+
 /** Parse a flat number array (string or array) into points; falls back to identity. */
 export function parseCurve(raw: any): EnvPoint[] {
   let nums: number[] = [];

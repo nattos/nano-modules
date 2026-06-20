@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyEase, evalEnvelope, parseCurve, serializeCurve, type EnvPoint } from './envelope-math';
+import { applyEase, evalEnvelope, parseCurve, serializeCurve, curveToArray, type EnvPoint } from './envelope-math';
 
 // Mirrors native/tests/test_envelope.cpp — the TS draw-math must match the
 // effect's C++ eval (envelope.h) so the drawn curve reflects what runs.
@@ -68,5 +68,16 @@ describe('parseCurve / serializeCurve', () => {
   it('round-trips through serialize', () => {
     const pts = parseCurve('[0,0,0,0.3,0.9,-0.4,1,0.2,0]');
     expect(parseCurve(serializeCurve(pts))).toEqual(pts);
+  });
+
+  it('curveToArray emits the flat number array the wire mod.envelope stores', () => {
+    const pts = parseCurve('[0,0,0,0.3,0.9,-0.4,1,0.2,0]');
+    const arr = curveToArray(pts);
+    // A real array (not a JSON string) — the wire stores it inline so the
+    // executor reads it as a JSON array (parseMod in sketch_executor.cpp).
+    expect(Array.isArray(arr)).toBe(true);
+    expect(arr).toEqual([0, 0, 0, 0.3, 0.9, -0.4, 1, 0.2, 0]);
+    // Round-trips back through parseCurve identically to the string path.
+    expect(parseCurve(arr)).toEqual(pts);
   });
 });

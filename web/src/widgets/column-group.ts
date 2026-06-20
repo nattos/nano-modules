@@ -41,6 +41,7 @@ import './smart-input';
 import './scalar-slider';
 import './output-trace-card';
 import './texture-drop-zone';
+import '../editors/envelope-field';   // <envelope-field> for the wire Envelope stage
 
 import type { LongEdit } from '../state/history';
 import type { Selectable } from '../state/types';
@@ -1950,15 +1951,29 @@ export class ColumnGroup extends MobxLitElement {
     const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
     const magOpts = MAGNITUDES.map(m => ({ label: m, value: m }));
 
-    // Remap shapes the RAW input value (in its own range); Scale then scales the
-    // result in modulation space (applied LAST, before Magnitude maps it into the
-    // dest field's declared range). Scale sits under Remap to match that order.
-    const fields: InspectorFieldDef[] = [
+    // The shaper stages run in this order (matching native/src/sketch/tap_mod.h +
+    // the executor): ENVELOPE → REMAP → SCALE (pure value transforms) → DELAY
+    // (temporal, transitive) — with Magnitude folding the result into the dest
+    // field's range and Combine deciding how multiple wires stack. The panel is
+    // laid out in that order. Envelope's drawn-curve editor can't be a generic
+    // field, so it's rendered as a <envelope-field> between the head and tail
+    // generic blocks (both driven by the one shared wire binding).
+    const binding = this.wireModBinding(wire.id);
+    const envEnabled = !!(wire.mod?.envelope && wire.mod.envelope.length >= 6);
+
+    const headFields: InspectorFieldDef[] = [
       { type: 'select', label: 'Magnitude', path: 'magnitude', options: magOpts, default: 'auto' },
+      { type: 'boolean', label: 'Envelope', path: 'envelopeEnabled', default: false },
+    ];
+
+    // Remap shapes the value (in its own range); Scale then scales the result in
+    // modulation space (applied LAST among the pure stages, before Magnitude maps
+    // it into the dest field's declared range). Scale sits under Remap to match.
+    const tailFields: InspectorFieldDef[] = [
       { type: 'boolean', label: 'Remap', path: 'remapEnabled', default: false },
     ];
     if (remap) {
-      fields.push(
+      tailFields.push(
         { type: 'slider', label: 'In min', path: 'remap.inMin', min: -1, max: 1, default: 0 },
         { type: 'slider', label: 'In max', path: 'remap.inMax', min: -1, max: 1, default: 1 },
         { type: 'slider', label: 'Out min', path: 'remap.outMin', min: -1, max: 1, default: 0 },
@@ -1968,17 +1983,22 @@ export class ColumnGroup extends MobxLitElement {
         { type: 'select', label: 'Curve out', path: 'remap.curveOut', options: curveOpts, default: 'linear' },
       );
       if (usesPower) {
-        fields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
+        tailFields.push({ type: 'slider', label: 'Exponent', path: 'remap.exponent', min: 0, max: 8, step: 0.1, default: 2 });
       }
     }
-    fields.push({ type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 });
-    fields.push({ type: 'select', label: 'Combine', path: 'combine', options: combineOpts, default: 'replace' });
+    tailFields.push({ type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 4, step: 0.01, default: 1 });
+    // Delay: temporal time-shift (seconds), runs after the pure stages. Bounded by
+    // the executor's delay-line span (~8s @60fps); the slider caps at 2s.
+    tailFields.push({ type: 'slider', label: 'Delay (s)', path: 'delay', min: 0, max: 2, step: 0.01, default: 0 });
+    tailFields.push({ type: 'select', label: 'Combine', path: 'combine', options: combineOpts, default: 'replace' });
     if ((wire.combine ?? 'replace') === 'mix') {
-      fields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
+      tailFields.push({ type: 'slider', label: 'Mix', path: 'mixFactor', min: 0, max: 1, default: 1 });
     }
 
     return html`<div style="margin:2px 0 6px 8px;padding-left:8px;border-left:2px solid rgba(255,255,255,0.08)">
-      ${createGenericInspector(fields)(this.wireModBinding(wire.id))}
+      ${createGenericInspector(headFields)(binding)}
+      ${envEnabled ? html`<envelope-field .binding=${binding} .fieldPath=${'envelope'}></envelope-field>` : nothing}
+      ${createGenericInspector(tailFields)(binding)}
     </div>`;
   }
 
@@ -1997,9 +2017,12 @@ export class ColumnGroup extends MobxLitElement {
       const wire = getWire();
       if (!wire) return undefined;
       if (path === 'scale') return wire.mod?.scale;
+      if (path === 'delay') return wire.mod?.delay;
       if (path === 'mixFactor') return wire.mixFactor;
       if (path === 'combine') return wire.combine ?? 'replace';
       if (path === 'magnitude') return wire.magnitude ?? 'auto';
+      if (path === 'envelope') return wire.mod?.envelope;
+      if (path === 'envelopeEnabled') return !!(wire.mod?.envelope && wire.mod.envelope.length >= 6);
       if (path === 'remapEnabled') return !!wire.mod?.remap;
       if (path.startsWith('remap.')) {
         return (wire.mod?.remap as Record<string, any> | undefined)?.[path.slice(6)];
@@ -2010,9 +2033,16 @@ export class ColumnGroup extends MobxLitElement {
     const patchFor = (path: string, v: any): Partial<Wire> => {
       const mod = getWire()?.mod ?? {};
       if (path === 'scale') return { mod: { ...mod, scale: v as number } };
+      if (path === 'delay') return { mod: { ...mod, delay: v as number } };
       if (path === 'mixFactor') return { mixFactor: v as number };
       if (path === 'combine') return { combine: v as TapCombine };
       if (path === 'magnitude') return { magnitude: v as WireMagnitude };
+      if (path === 'envelope') return { mod: { ...mod, envelope: v as number[] } };
+      if (path === 'envelopeEnabled') {
+        // Toggle on → seed the identity curve [0,0,0, 1,1,0] (passthrough);
+        // off → drop the array. Matches remap's enable-seeds-default pattern.
+        return { mod: { ...mod, envelope: v ? (mod.envelope ?? [0, 0, 0, 1, 1, 0]) : undefined } };
+      }
       if (path === 'remapEnabled') {
         return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
       }

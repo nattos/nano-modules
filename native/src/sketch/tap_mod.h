@@ -21,12 +21,18 @@
 
 #include <cmath>
 
+#include "envelope.h"   // header-only, dependency-light — the Envelope stage
+
 namespace tap_mod {
 
 enum class Curve { Linear, Quad, Circular, Power, Foldback };
 enum class Combine { Replace, Mix, Add, Mul };
 
 /// Parsed remap spec. `hasRemap` distinguishes "scale only" from "scale + remap".
+/// The (optional) Envelope is a user-drawn remap curve applied FIRST, before the
+/// remap+scale, sharing the mod.envelope effect's math (envelope.h). `nEnv == 0`
+/// → no envelope (pass-through). This makes the WIRE config able to run the same
+/// shaper transforms (envelope/remap/scale) the standalone mod.* effects do.
 struct Mod {
   float scale = 1.0f;
   bool  hasRemap = false;
@@ -36,6 +42,9 @@ struct Mod {
   Curve curveIn = Curve::Linear;
   Curve curveOut = Curve::Linear;
   float exponent = 2.0f;
+  // Envelope curve (sorted control points). Applied before remap. Empty by default.
+  envelope::Point env[envelope::kMaxPoints];
+  int   nEnv = 0;
 };
 
 inline float clamp01(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
@@ -74,13 +83,19 @@ inline float shapeOut(float t, Curve curve, float exponent) {
   return 1.0f - baseCurve(1.0f - t, curve, exponent);
 }
 
-/// Apply a tap's range remapper to a scalar. Pipeline: normalize to [0,1] →
-/// (saturate|foldback) → curveIn (ease-in) → curveOut (ease-out) → [outMin,outMax]
-/// → scale. `scale` is applied LAST (in parameter-modulation space, before the
-/// downstream magnitude unit-normalization) so it scales the modulation output
-/// around its neutral point rather than the raw input.
+/// Apply a tap's shaper stages to a scalar. Pipeline: ENVELOPE (drawn curve) →
+/// REMAP (normalize to [0,1] → (saturate|foldback) → curveIn → curveOut →
+/// [outMin,outMax]) → SCALE. `scale` is applied LAST (in parameter-modulation
+/// space, before the downstream magnitude unit-normalization) so it scales the
+/// modulation output around its neutral point rather than the raw input. Envelope
+/// runs FIRST so the drawn curve reshapes the raw modulation value, then remap +
+/// scale operate on the result (matches the wire-config ordering Envelope→Remap→
+/// Scale). All three are PURE functions of `value`, so the executor's modulation-
+/// band sampler folds them for free; the temporal Delay/Smoothing stages live
+/// outside this function (stateful, applied in the executor).
 inline float applyTapMod(float value, const Mod& mod) {
   float v = value;
+  if (mod.nEnv > 0) v = envelope::eval(mod.env, mod.nEnv, v);
   if (mod.hasRemap) {
     float denom = mod.inMax - mod.inMin;
     float t = denom != 0.0f ? (v - mod.inMin) / denom : 0.0f;
