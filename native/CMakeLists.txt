@@ -290,6 +290,15 @@ target_include_directories(test_envelope PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_envelope PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_envelope)
 
+# Shared spectral-morph curve generator (reused by data.spectral_lfo +
+# mod.spectral). Compiles standalone (no wasm host deps); pulls in the 1.2MB atlas.
+add_executable(test_spectral_curve tests/test_spectral_curve.cpp
+               ${CMAKE_SOURCE_DIR}/wasm_modules/spectral_lfo/spectral_curve.cpp)
+target_include_directories(test_spectral_curve PRIVATE
+               ${CMAKE_SOURCE_DIR}/wasm_modules/spectral_lfo)
+target_link_libraries(test_spectral_curve PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_spectral_curve)
+
 add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)

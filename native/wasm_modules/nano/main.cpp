@@ -21,6 +21,7 @@ NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
 NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
 NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
+NANO_DECLARE_INSTANCE_EFFECT(mod_spectral)
 
 extern "C" {
 
@@ -114,6 +115,16 @@ void nano_module_main() {
         "data",
         "lfo,oscillator,modulation,automation,morph,spectral,generator",
         NANO_INSTANCE_LIFECYCLE(spectral_lfo),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.spectral",
+        "Spectral Curve",
+        "Unary modulation shaper: builds the same spectrally-morphed LFO curve as data.spectral_lfo (atlas of ~2178 Serum shapes, manifold position morph_x/morph_y + metric, FFT->barycentric blend->IFFT->geometric straighten), but indexes it by the 'input' modulation value instead of time. The morphed envelope becomes an arbitrary remapping curve. Pure data module.",
+        "mod",
+        "modulation,spectral,morph,remap,curve,shaper,envelope",
+        NANO_INSTANCE_LIFECYCLE(mod_spectral),
     });
 }
 
