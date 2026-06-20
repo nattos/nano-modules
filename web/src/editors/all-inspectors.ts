@@ -16,4 +16,5 @@ import './phase-fold-inspector';
 import './spectral-lfo-inspector';
 import './mod-spectral-inspector';
 import './envelope-inspector';
+import './adsr-inspector';
 import './paramlinker-editor';
