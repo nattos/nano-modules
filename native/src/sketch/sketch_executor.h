@@ -38,6 +38,7 @@
 // forward-declares ModuleRegistry for its native-only constructor arg/member;
 // the .cpp includes the full header under #ifndef __wasm__ for the seed.
 #include "sketch/registered_module.h"
+#include "sketch/param_smoothing.h"
 
 #include <functional>
 #include <memory>
@@ -253,6 +254,15 @@ class SketchExecutor {
   // Per-frame modulation telemetry for editor UI (see lastModulationData()).
   nlohmann::json modulationData_;
 
+  // Engine-level per-(instance,field) parameter-smoothing ramp state, persisted
+  // across frames (keyed [instanceKey][fieldPath]). The built-in
+  // `FieldOptions.smoothing` option linearly ramps a scalar field's final
+  // (post-modulation) value toward each new target over `duration` seconds, via
+  // param_smoothing.h (the lock-step twin of web/src/param-smoothing.ts). Applied
+  // on the standalone path after read taps; smoothing forces an entry standalone.
+  std::unordered_map<std::string,
+      std::unordered_map<std::string, param_smoothing::SmoothState>> smoothState_;
+
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;
   BarrierPredicate barrierPredicate_;
@@ -391,7 +401,24 @@ class SketchExecutor {
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railBuffers,
       const nlohmann::json& sketchInstances,
-      const std::string& instanceKey);
+      const std::string& instanceKey,
+      // When non-null, records each modulated FLOAT field's final post-fold
+      // value (the target the smoothing pass ramps toward). See applySmoothing.
+      std::unordered_map<std::string, float>* outModulatedScalars = nullptr);
+
+  // Apply the engine-level `FieldOptions.smoothing` option to this instance:
+  // for each smoothing-enabled scalar field, linearly ramp the plugin-visible
+  // value toward its target (the modulated value when a read tap drove it this
+  // frame — passed in `modulatedScalars` — else the canonical serialized
+  // scalar). Runs every frame on the standalone path, after applyReadTaps and
+  // before doTick. State persists in smoothState_. No-op without fieldOptions.
+  void applySmoothing(
+      int32_t inst,
+      const nlohmann::json& entry,
+      const std::string& instanceKey,
+      const nlohmann::json& sketchInstances,
+      const std::unordered_map<std::string, float>& modulatedScalars,
+      double dt);
 
   void captureWriteTaps(
       int32_t inst,

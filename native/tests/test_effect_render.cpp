@@ -806,6 +806,80 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
   }
 }
 
+// The engine-level `FieldOptions.smoothing` option linearly ramps a scalar
+// field's final value toward each new target over `duration` seconds (the same
+// param_smoothing math as mod.smooth). It's applied IN the executor (standalone
+// path, after read taps), so it works on web AND native. Probe: gray input ->
+// brightness_contrast (brightness 0.5/contrast 0.5 = identity = gray); step
+// brightness 0.5 -> 1.0. With smoothing a single dt=0.25 / 1s-ramp frame lands
+// only ~1/4 of the way (brightness ~0.625), markedly darker than the instant
+// jump to brightness 1.0; after enough frames it catches up.
+TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> gray(W * H * 4, 128);
+  for (size_t i = 3; i < gray.size(); i += 4) gray[i] = 255;
+  backend->writeTexture(inTex, W, H, gray.data(), (uint32_t)gray.size());
+
+  // bc entry with optional smoothing on `brightness`; `key` isolates the
+  // executor's per-instance ramp state between the smoothed and instant runs.
+  auto makeSketch = [](const char* key, bool smooth, double brightness) {
+    nlohmann::json entry = {
+      {"module_type", "video.brightness_contrast"},
+      {"instance_key", key},
+    };
+    if (smooth) {
+      entry["fieldOptions"] = {
+        {"brightness", {{"smoothing", {{"enabled", true}, {"duration", 1.0}}}}}
+      };
+    }
+    return nlohmann::json{
+      {"chain", nlohmann::json::array({entry})},
+      {"instances", {{key, {{"module_type", "video.brightness_contrast"},
+                            {"state", {{"brightness", brightness}, {"contrast", 0.5}}}}}}},
+    };
+  };
+  auto runMean = [&](const nlohmann::json& sk, double dt) {
+    executor.execute(sk, inTex, outTex, (int)W, (int)H, dt, true);
+    backend->submit();
+    return mean_rgb(backend->readbackTexture(outTex, W, H));
+  };
+
+  // Smoothed: settle at identity (gray), then step brightness -> 1.0 for ONE
+  // short frame (dt 0.25 of a 1s ramp).
+  double smSettled = runMean(makeSketch("bcS", true, 0.5), 1.0 / 60.0);
+  double smStep    = runMean(makeSketch("bcS", true, 1.0), 0.25);
+  // Instant (no smoothing): same step jumps straight to brightness 1.0.
+  double inSettled = runMean(makeSketch("bcI", false, 0.5), 1.0 / 60.0);
+  double inStep    = runMean(makeSketch("bcI", false, 1.0), 0.25);
+
+  INFO("smSettled=" << smSettled << " smStep=" << smStep
+       << " inSettled=" << inSettled << " inStep=" << inStep);
+  // Identity at brightness 0.5 → gray passes through (~128), both runs.
+  CHECK(smSettled == Catch::Approx(128.0).margin(8.0));
+  CHECK(inSettled == Catch::Approx(128.0).margin(8.0));
+  // Instant jumps fully bright; smoothed lands only partway.
+  CHECK(inStep > smStep + 15.0);   // smoothing visibly lagged the step
+  CHECK(smStep > smSettled + 2.0); // …but it did advance toward the target
+
+  // Keep stepping (target held at 1.0): the ramp finishes and catches up.
+  double smCaught = smStep;
+  for (int i = 0; i < 12; ++i) smCaught = runMean(makeSketch("bcS", true, 1.0), 0.25);
+  INFO("smCaught=" << smCaught << " inStep=" << inStep);
+  CHECK(smCaught == Catch::Approx(inStep).margin(6.0));
+}
+
 // Effects declare queryable "capabilities" — a top-level schema array, separate
 // from the per-field io flags. The two-tier vocabulary pairs an UMBRELLA tag
 // with an arity/channel-SPECIFIC one (channels themselves stay implicit: the

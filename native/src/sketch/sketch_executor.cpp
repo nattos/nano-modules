@@ -2,6 +2,7 @@
 
 #include "sketch/sketch_augment.h"
 #include "sketch/tap_mod.h"
+#include "sketch/param_smoothing.h"
 #include "sketch/host_blend.h"
 #include "sketch/exec_gpu.h"
 #include "sketch/effrt.h"
@@ -285,6 +286,23 @@ const json& refOr(const json& parent, const char* key, const json& fallback,
 // add/remove/reorder, wire edits, and bypass/opacity toggles still change it.
 // (Tap CONTENT — mod/combine/magnitude — is read live each frame from the
 // sketch, never cached in the plan, so only taps-PRESENCE affects the plan.)
+// True iff a chain entry has at least one engine-level `smoothing` option
+// enabled (entry.fieldOptions[field].smoothing.enabled). Smoothing layers a
+// per-frame linear ramp on top of a scalar field's final (post-modulation)
+// value, so a smoothed entry must run on the standalone path (where params are
+// applied per frame) — it disables fusion the same way a tap does.
+bool entryHasSmoothing(const json& entry) {
+  auto it = entry.find("fieldOptions");
+  if (it == entry.end() || !it->is_object()) return false;
+  for (auto f = it->begin(); f != it->end(); ++f) {
+    if (!f->is_object()) continue;
+    const auto sm = f->find("smoothing");
+    if (sm != f->end() && sm->is_object() && sm->value("enabled", false))
+      return true;
+  }
+  return false;
+}
+
 std::string computeStructSig(const json& columns, const json& instances,
                              const json& sketchRails) {
   std::string sig;
@@ -308,6 +326,10 @@ std::string computeStructSig(const json& columns, const json& instances,
       const bool tapsNonEmpty = e.contains("taps") && e["taps"].is_array() &&
                                 !e["taps"].empty();
       sig.push_back(tapsNonEmpty ? 'T' : 't');
+      sig.push_back('|');
+      // Smoothing toggles fusion eligibility (a smoothed entry is forced
+      // standalone), so it's structural — track it so toggling rebuilds the plan.
+      sig.push_back(entryHasSmoothing(e) ? 'S' : 's');
       sig.push_back('|');
       sig.push_back(readBypass(instances, key) ? 'B' : 'b');
       sig.push_back('|');
@@ -446,6 +468,11 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
             inst.fusionHasPrepare();
         if (e && entry.contains("taps") && entry["taps"].is_array() &&
             !entry["taps"].empty()) {
+          e = false;
+        }
+        // A smoothed field needs its ramp applied per frame on the standalone
+        // path (after read taps); fusion's per-stage uniform prep doesn't run it.
+        if (e && entryHasSmoothing(entry)) {
           e = false;
         }
         if (e && (readBypass(instances, instKey) ||
@@ -1093,7 +1120,11 @@ int32_t SketchExecutor::execute(
       // after applyState so the predicate sees current params. --
       const bool hasTaps = entry.contains("taps") && entry["taps"].is_array()
                            && !entry["taps"].empty();
-      if (!hasTaps && inst.isIdentity()) {
+      // A smoothed entry must run the standalone path EVERY frame so its ramp
+      // state stays seeded/advanced — even while the (smoothed) value is momentarily
+      // identity. Skipping here would leave the SmoothState unseeded, so the first
+      // non-identity frame would snap to the new target instead of ramping.
+      if (!hasTaps && !entryHasSmoothing(entry) && inst.isIdentity()) {
         ++stats_.identitySkipped;
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
@@ -1123,8 +1154,10 @@ int32_t SketchExecutor::execute(
       if (!willRender) {
         inst.setTextureField("tex_in", colInput);
         inst.setFieldConnected("tex_in", true, false);
+        std::unordered_map<std::string, float> modScalars;
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                      railBuffers, instances, instKey);
+                      railBuffers, instances, instKey, &modScalars);
+        applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
         markWriteTapOutputsConnected(inst.h, entry);
         inst.doTick(dt);
         // A buffer-producing modulation source (e.g. data.particles_emitter) has
@@ -1154,8 +1187,10 @@ int32_t SketchExecutor::execute(
       inst.setFieldConnected("tex_in",  true,  false);
       inst.setFieldConnected("tex_out", false, true);
 
+      std::unordered_map<std::string, float> modScalars;
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                    railBuffers, instances, instKey);
+                    railBuffers, instances, instKey, &modScalars);
+      applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
       markWriteTapOutputsConnected(inst.h, entry);
 
       // -- Positional input slots + per-stage render target (slot-based GPU
@@ -1509,7 +1544,8 @@ void SketchExecutor::applyReadTaps(
     const std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railBuffers,
     const json& sketchInstances,
-    const std::string& instanceKey) {
+    const std::string& instanceKey,
+    std::unordered_map<std::string, float>* outModulatedScalars) {
   const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   // The reader's canonical (user-set, serialized) state — the "before
@@ -1580,6 +1616,8 @@ void SketchExecutor::applyReadTaps(
         const float combined = fold(fit->second);
         inst.setParamFloat(fieldPath, combined);
         inst.setFieldConnected(fieldPath, true, false);
+        // Hand the smoothing pass this field's post-modulation target.
+        if (outModulatedScalars) (*outModulatedScalars)[fieldPath] = combined;
         // Editor telemetry: the effective value + the swing band, sampled over
         // the source output's declared range (default 0..1). Fill anchor =
         // the base the fold modulates from (dmin seeds when no canonical).
@@ -1633,6 +1671,61 @@ void SketchExecutor::applyReadTaps(
       });
     }
     inst.setFieldConnected(fieldPath, true, false);
+  }
+}
+
+void SketchExecutor::applySmoothing(
+    int32_t inst_handle,
+    const json& entry,
+    const std::string& instanceKey,
+    const json& sketchInstances,
+    const std::unordered_map<std::string, float>& modulatedScalars,
+    double dt) {
+  auto foIt = entry.find("fieldOptions");
+  const bool hasFO = foIt != entry.end() && foIt->is_object() && !foIt->empty();
+  if (!hasFO) {
+    // No smoothing config on this entry — drop any stale ramp state so a later
+    // re-enable starts settled at the current value (not mid-ramp).
+    smoothState_.erase(instanceKey);
+    return;
+  }
+  const EffectRef inst{inst_handle};
+  auto& states = smoothState_[instanceKey];
+  // Canonical serialized scalars — the target for a smoothed field with no read
+  // tap this frame (user param). Stable across frames (it's the persisted value).
+  const json* canon = findState(sketchInstances, instanceKey);
+  for (auto it = foIt->begin(); it != foIt->end(); ++it) {
+    const std::string& field = it.key();
+    const json& fo = it.value();
+    const json sm = fo.is_object() ? fo.value("smoothing", json()) : json();
+    if (!sm.is_object() || !sm.value("enabled", false)) {
+      states.erase(field);   // disabled → forget the ramp
+      continue;
+    }
+    const float duration = (float)sm.value("duration", 0.0);
+    // Target = the modulated value if a read tap drove it this frame, else the
+    // canonical serialized scalar. Skip fields with no defined target.
+    float target;
+    auto mit = modulatedScalars.find(field);
+    if (mit != modulatedScalars.end()) {
+      target = mit->second;
+    } else if (canon && canon->is_object() && canon->contains(field)) {
+      const auto& cv = (*canon)[field];
+      if (cv.is_number())       target = (float)cv.get<double>();
+      else if (cv.is_boolean()) target = cv.get<bool>() ? 1.0f : 0.0f;
+      else { states.erase(field); continue; }
+    } else {
+      states.erase(field);
+      continue;
+    }
+    auto sit = states.find(field);
+    if (sit == states.end()) {
+      // First frame for this field: seed settled at the target (no ramp from 0).
+      sit = states.emplace(field, param_smoothing::initSmooth(target, duration)).first;
+    }
+    const float v =
+        param_smoothing::advanceSmooth(sit->second, target, duration, (float)dt);
+    inst.setParamFloat(field, v);
   }
 }
 
