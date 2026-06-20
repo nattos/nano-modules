@@ -1161,6 +1161,11 @@ export class AppController {
         id,
         src: { instanceKey: srcKey, field: writer.fieldPath },
         dest: { instanceKey: destKey, field: reader.fieldPath },
+        // Default scalar wires to `add` — gentle, it rides on top of the dest's
+        // current value instead of overwriting it. (Ignored for texture rails.)
+        // `unset` still means `replace` everywhere else, so auto-connect and the
+        // dashboard mute heuristic are unaffected; we set it explicitly here.
+        combine: 'add',
       });
     });
   }
