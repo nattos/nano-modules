@@ -261,6 +261,21 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
   private onGlobalKeyDown = (e: KeyboardEvent) => {
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
+    // Copy / paste the selected effect (⌘/Ctrl+C / +V). The isTypingInEditable
+    // guard above means a genuine text copy/paste is never hijacked. We only
+    // preventDefault when there's actually something to do, so the browser's
+    // default still runs otherwise (e.g. ⌘C with nothing copyable selected).
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'c') {
+        if (appController.canCopy) { e.preventDefault(); appController.copySelection(); }
+        return;
+      }
+      if (k === 'v') {
+        if (appController.canPaste) { e.preventDefault(); appController.pasteClipboard(); }
+        return;
+      }
+    }
     // `T` toggles taps mode (global, when not typing).
     if (e.key === 't' || e.key === 'T') {
       e.preventDefault();

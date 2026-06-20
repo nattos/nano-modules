@@ -2,7 +2,7 @@
  * App state types for the sketch editor.
  */
 
-import type { Sketch } from '../sketch-types';
+import type { Sketch, FieldOptions } from '../sketch-types';
 
 // --- Plugin info (from engine worker) ---
 
@@ -77,7 +77,32 @@ export interface Selectable {
    * sketch's final output. See edit-tab's `edit_preview` registration.
    */
   traceTarget?: TracePoint['target'];
+  /**
+   * Optional copy/paste handlers, driven by the toolbar copy/paste buttons and
+   * the Cmd/Ctrl+C/V shortcuts. `copy` produces a clipboard payload (or null if
+   * this selectable can't be copied); `paste` inserts a previously-copied
+   * payload relative to this selectable — an effect card pastes AFTER itself, an
+   * insert tab pastes AT its slot. When nothing pasteable is selected the
+   * controller falls back to appending at the bottom of the active stack. Today
+   * only effect cards implement `copy`; effect cards and insert tabs `paste`.
+   */
+  copy?(): ClipboardPayload | null;
+  paste?(payload: ClipboardPayload): void;
 }
+
+/** A single effect card captured to the in-app clipboard. */
+export interface EffectClipboard {
+  kind: 'effect';
+  moduleType: string;
+  /** Deep-copied instance state (params + `__opacity__`/`__bypass__`), minus
+   *  UI-only view state like collapse. */
+  state: Record<string, any>;
+  /** Per-field engine options (smoothing, …), if the source had any. */
+  fieldOptions?: Record<string, FieldOptions>;
+}
+
+/** What the app clipboard can hold. Effect cards only, for now. */
+export type ClipboardPayload = EffectClipboard;
 
 // --- Database state (persisted, undo/redo-able) ---
 
@@ -178,6 +203,12 @@ export interface LocalState {
    * When a component calls defineSelectable() with this path, the selection activates.
    */
   queuedSelectionPath: string | null;
+  /**
+   * In-app clipboard for copy/paste of selectables (currently effect cards).
+   * Ephemeral — lives only for the session, drives the paste button's enabled
+   * state. Set by `copySelection`, consumed by `pasteClipboard`.
+   */
+  clipboard: ClipboardPayload | null;
 
   // --- Effect IDE / cross-cutting persisted preferences ---
   /** UI preferences persisted to IndexedDB (never undo/redo-able). */

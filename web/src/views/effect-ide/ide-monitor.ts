@@ -202,6 +202,18 @@ export class IdeMonitor extends MobxLitElement {
           @click=${this.onRedo}>
         </ui-button>
         <ui-button
+          icon="la-copy"
+          title="Copy effect (⌘C)"
+          ?disabled=${!appController.canCopy}
+          @click=${this.onCopy}>
+        </ui-button>
+        <ui-button
+          icon="la-paste"
+          title="Paste effect (⌘V)"
+          ?disabled=${!appController.canPaste}
+          @click=${this.onPaste}>
+        </ui-button>
+        <ui-button
           .icon=${paused ? 'la-play' : 'la-pause'}
           title=${paused ? 'Resume engine' : 'Pause engine'}
           @click=${this.onTogglePause}>
@@ -254,6 +266,8 @@ export class IdeMonitor extends MobxLitElement {
 
   private onUndo = () => appController.undo();
   private onRedo = () => appController.redo();
+  private onCopy = () => appController.copySelection();
+  private onPaste = () => appController.pasteClipboard();
 
   private onToggleZoom = () => {
     this.zoomed = !this.zoomed;

@@ -11,7 +11,7 @@ import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings } from './types';
+import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, ChainEntry, Wire, UiOnlyState } from '../sketch-types';
@@ -358,6 +358,92 @@ export class AppController {
         }
       }
     });
+  }
+
+  // ============================== Copy / Paste =============================
+  // Tied to the Selectable system: a selectable may expose `copy`/`paste`
+  // handlers (see types.ts). The toolbar buttons and Cmd/Ctrl+C/V call the two
+  // public entry points below; the effect-specific snapshot/insert helpers do
+  // the actual chain surgery and are also invoked by the selectables' handlers.
+
+  /** Build a clipboard payload from an effect instance, or null if it's gone.
+   *  Used by an effect card's `Selectable.copy`. Keyed by instance_key (stable
+   *  across reorders), and strips UI-only view state so the paste lands clean. */
+  snapshotEffect(sketchId: string, instanceKey: string): EffectClipboard | null {
+    const sk = appState.database.sketches[sketchId];
+    const inst = sk?.instances?.[instanceKey];
+    const entry = sk
+      ? sketchChain(sk).find(e => e.type === 'module' && e.instance_key === instanceKey)
+      : undefined;
+    if (!inst || !entry || entry.type !== 'module') return null;
+    const state = toJS(inst.state) as Record<string, any>;
+    delete state[UI_ONLY_KEY];
+    return {
+      kind: 'effect',
+      moduleType: inst.module_type,
+      state,
+      fieldOptions: entry.fieldOptions ? (toJS(entry.fieldOptions) as any) : undefined,
+    };
+  }
+
+  /** Insert a clipboard effect as a NEW instance at `insertIdx`, then select it.
+   *  Used by the effect-card / insert-tab `Selectable.paste` and the bottom-of-
+   *  stack fallback. A fresh instance_key keeps it independent of the original. */
+  insertEffectFromClipboard(sketchId: string, colIdx: number, insertIdx: number, payload: EffectClipboard) {
+    const instanceKey = `virtual_${shortName(payload.moduleType)}@${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const state = JSON.parse(JSON.stringify(payload.state));
+    const fieldOptions = payload.fieldOptions
+      ? JSON.parse(JSON.stringify(payload.fieldOptions))
+      : undefined;
+    this.mutate(`Paste ${shortName(payload.moduleType)}`, draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      ensureChain(sk).splice(insertIdx, 0, {
+        type: 'module',
+        module_type: payload.moduleType,
+        instance_key: instanceKey,
+        ...(fieldOptions ? { fieldOptions } : {}),
+      });
+      sk.instances = sk.instances ?? {};
+      sk.instances[instanceKey] = { module_type: payload.moduleType, state };
+    });
+    // Select the freshly pasted card (queues if it hasn't rendered yet).
+    this.select(`effect/${sketchId}/${colIdx}/${insertIdx}`);
+  }
+
+  /** Copy the current selection to the clipboard, if it's copyable. Re-resolves
+   *  the live selectable by path so re-registered (fresh-closure) cards win. */
+  copySelection() {
+    const path = appState.local.selection?.path;
+    const sel = path ? (this.selectableRegistry.get(path) ?? appState.local.selection) : null;
+    const payload = sel?.copy?.();
+    if (!payload) return;
+    runInAction(() => { appState.local.clipboard = payload; });
+  }
+
+  /** Paste the clipboard. Routes to the selected selectable's `paste` (effect →
+   *  after itself; tab → at its slot); with nothing pasteable selected, appends
+   *  at the bottom of the active project's stack. */
+  pasteClipboard() {
+    const payload = appState.local.clipboard;
+    if (!payload) return;
+    const path = appState.local.selection?.path;
+    const sel = path ? this.selectableRegistry.get(path) : undefined;
+    if (sel?.paste) { sel.paste(payload); return; }
+    const sketchId = appState.local.userSettings.selectedProjectId;
+    const sk = sketchId ? appState.database.sketches[sketchId] : undefined;
+    if (!sketchId || !sk) return;
+    this.insertEffectFromClipboard(sketchId, 0, sketchChain(sk).length, payload);
+  }
+
+  /** True when the current selection can be copied (drives the Copy button). */
+  get canCopy(): boolean {
+    return !!appState.local.selection?.copy;
+  }
+
+  /** True when there's a clipboard payload to paste (drives the Paste button). */
+  get canPaste(): boolean {
+    return !!appState.local.clipboard;
   }
 
   /**

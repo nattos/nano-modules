@@ -41,6 +41,7 @@ export class AppState {
     tappingMode: false,
     selection: null,
     queuedSelectionPath: null,
+    clipboard: null,
     userSettings: defaultUserSettings(),
     barrelMode: false,
   };

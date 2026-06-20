@@ -1653,6 +1653,11 @@ export class ColumnGroup extends MobxLitElement {
     appController.defineSelectable({
       path,
       label: 'Insert Point',
+      // Pasting onto a gap inserts the clipboard effect exactly at this slot.
+      paste: (payload) => {
+        if (payload.kind !== 'effect') return;
+        appController.insertEffectFromClipboard(this.sketchId, this.colIdx, insertIdx, payload);
+      },
       renderInspectorContent: () => html`
         <div class="inspector-field">
           <span class="inspector-field-label">Column</span>
@@ -1731,6 +1736,14 @@ export class ColumnGroup extends MobxLitElement {
       traceTarget: effectHasTextureOutput(plugin?.schema as any)
         ? { type: 'chain_entry', sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, side: 'output' }
         : undefined,
+      // Copy this card's instance state; paste drops the clipboard effect
+      // immediately AFTER this one (chainIdx + 1). Keyed by instance_key so
+      // copy survives reorders that may stale the captured chainIdx.
+      copy: () => appController.snapshotEffect(this.sketchId, entry.instance_key),
+      paste: (payload) => {
+        if (payload.kind !== 'effect') return;
+        appController.insertEffectFromClipboard(this.sketchId, this.colIdx, chainIdx + 1, payload);
+      },
       renderInspectorContent: () => {
         const binding: FieldBinding = {
           instanceKey: entry.instance_key,
