@@ -44,6 +44,8 @@ NANO_DECLARE_INSTANCE_EFFECT(fuse_solid)
 
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
+
 NANO_DECLARE_INSTANCE_EFFECT(gpu_test)
 
 NANO_DECLARE_INSTANCE_EFFECT(spinningtris)
@@ -159,6 +161,16 @@ void nano_module_main() {
         "data",
         "oscillator,modulation,automation",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.remap",
+        "Modulation Remap",
+        "Unary modulation shaper: range-remaps a modulation value (wire-identical remap)",
+        "mod",
+        "modulation,remap,shaper,curve,range,envelope",
+        NANO_INSTANCE_LIFECYCLE(mod_remap),
     });
 
     nano::registerEffect({

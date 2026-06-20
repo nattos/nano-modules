@@ -81,6 +81,8 @@ namespace auto_level { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(twitch_mask)
 namespace twitch_mask { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -391,6 +393,16 @@ void nano_module_main() {
         "twitch,glitch,vignette,flicker,mask,random",
         NANO_INSTANCE_LIFECYCLE(twitch_mask),
         &twitch_mask::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.remap",
+        "Modulation Remap",
+        "Unary modulation shaper: range-remaps a modulation value with the same curves as the wire remap (in/out window, ease-in/out, foldback, scale)",
+        "mod",
+        "modulation,remap,shaper,curve,range,envelope",
+        NANO_INSTANCE_LIFECYCLE(mod_remap),
     });
 }
 

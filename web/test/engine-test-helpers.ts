@@ -228,6 +228,7 @@ const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'video.brightness_contrast': 'video.brightness_contrast',
   'generator.solid_color': 'generator.solid_color',
   'data.lfo': 'data.lfo',
+  'mod.remap': 'mod.remap',
   'video.blend': 'video.blend',
   'sequencer.nanolooper': 'sequencer.nanolooper',
   'utility.paramlinker': 'utility.paramlinker',

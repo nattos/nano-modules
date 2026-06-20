@@ -747,6 +747,18 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   const auto& gcaps = solid->capabilities;
   CHECK(std::find(gcaps.begin(), gcaps.end(), std::string("generator")) != gcaps.end());
 
+  // mod.remap (mod_remap lifecycle) → unary modulation shaper: declares the
+  // umbrella shaper tag and the 1-in-1-out specialization, NOT the source tags.
+  const auto* remap = registry.find("mod.remap");
+  REQUIRE(remap != nullptr);
+  const auto& rcaps = remap->capabilities;
+  auto rhas = [&](const char* s) {
+    return std::find(rcaps.begin(), rcaps.end(), std::string(s)) != rcaps.end();
+  };
+  CHECK(rhas("modulation_shaper"));
+  CHECK(rhas("modulation_shaper_unary"));
+  CHECK_FALSE(rhas("modulation_source"));
+
   // A plain image effect declares no capabilities (the array is absent) — and
   // is NOT a generator.
   const auto* bc = registry.find("video.brightness_contrast");

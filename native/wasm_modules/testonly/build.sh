@@ -119,6 +119,7 @@ wasm_build \
   ../fuse_mul/main.cpp \
   ../fuse_solid/main.cpp \
   ../env_lfo/main.cpp \
+  ../mod_remap/main.cpp \
   ../gpu_test/main.cpp \
   ../spinningtris/main.cpp \
   ../particles_emitter/main.cpp \
