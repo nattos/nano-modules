@@ -10,9 +10,12 @@ import type { Sketch } from '../src/sketch-types';
  * brightness 0.5 → neutral shift → gray(128); higher brightness → brighter.
  *   - absolute / unsigned replace: input 0.5 → brightness 0.5 → gray(128)
  *     (for a 0..1 field, unsigned replace is a pass-through == absolute)
- *   - signed replace: input 0.5 treated as bipolar → (0.5+1)/2 = 0.75 →
- *     brightness 0.75 → distinctly brighter than gray.
- * So the signed run proves the standard-range remap actually ran in the executor.
+ *   - signed replace: data.lfo.output is declared *unsigned*, so forcing `signed`
+ *     RESCALES the source 0..1 → −1..1 (the polarity prescale). The midpoint 0.5
+ *     maps to bipolar 0 (neutral) → brightness 0.5 → gray, same as absolute. The
+ *     full-range span of that rescale is covered by the native "forced signed on
+ *     an explicit-unsigned source rescales to bipolar" test; here the 0.5 source
+ *     just lands on the neutral.
  */
 describe('Wire magnitude modes E2E', () => {
   jest.setTimeout(30000);
@@ -44,7 +47,7 @@ describe('Wire magnitude modes E2E', () => {
     dumpName: id,
   });
 
-  it('signed remaps the 0.5 source into the field range; unsigned == absolute for a 0..1 field', async () => {
+  it('signed rescales an explicit-unsigned 0.5 source to bipolar neutral; unsigned == absolute', async () => {
     const abs = await run('mag_abs', 'absolute');
     const uns = await run('mag_uns', 'unsigned');
     const sgn = await run('mag_sgn', 'signed');
@@ -58,8 +61,9 @@ describe('Wire magnitude modes E2E', () => {
     abs.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
     // unsigned replace on a 0..1 field is a pass-through → same as absolute.
     expect(Math.abs(unsAvg.r - absAvg.r)).toBeLessThan(6);
-    // signed treats 0.5 as bipolar → brightness 0.75 → distinctly brighter.
-    expect(sgnAvg.r).toBeGreaterThan(absAvg.r + 20);
+    // signed RESCALES the unsigned source (0..1 → −1..1): the midpoint 0.5 → 0
+    // (bipolar neutral) → brightness 0.5 → gray, matching absolute.
+    expect(Math.abs(sgnAvg.r - absAvg.r)).toBeLessThan(6);
   });
 
   it('scale + remap shape the RAW input before the range adjustment (not absolute-only)', async () => {

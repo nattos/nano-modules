@@ -365,6 +365,15 @@ void SketchExecutor::registerModuleSchema(const std::string& moduleType,
   planValid_ = false;
 }
 
+void SketchExecutor::registerModuleCapabilities(
+    const std::string& moduleType, std::vector<std::string> capabilities) {
+  // The schema entry is registered first; create it lazily if not (defensive).
+  moduleSchemas_[moduleType].capabilities = std::move(capabilities);
+  // Capabilities drive the modulation auto-connect, which rewrites the wire
+  // topology — rebuild the plan so a late capability push takes effect.
+  planValid_ = false;
+}
+
 const RegisteredModule* SketchExecutor::findSchema(const std::string& mt) const {
   auto it = moduleSchemas_.find(mt);
   return it == moduleSchemas_.end() ? nullptr : &it->second;
@@ -474,6 +483,12 @@ int32_t SketchExecutor::execute(
     if (moduleSchemas_.empty() && registry_) {
       for (const auto& kv : registry_->schemas()) {
         registerModuleSchema(kv.first, kv.second);
+        // Carry the registry's capability tags into the executor's own cache —
+        // the modulation auto-connect (below) gates on them, and the executor
+        // never consults the registry at run time (parity with the wasm host,
+        // which pushes caps via executor_register_capabilities).
+        if (const RegisteredModule* r = registry_->find(kv.first))
+          registerModuleCapabilities(kv.first, r->capabilities);
       }
     }
 #endif
@@ -514,12 +529,93 @@ int32_t SketchExecutor::execute(
     // is same-frame only: the producer must sit above the consumer in the chain
     // (the editor serializes in that order). Producer-below-consumer (delayed /
     // feedback) wires are deferred.
-    if (rawSketch.contains("wires") && rawSketch["wires"].is_array()) {
+    // Effective wire list = the user's explicit wires + implicit modulation
+    // auto-connects synthesised just below. Both route through the same
+    // wire→tap translation, so an implicit wire shapes/folds identically to one
+    // the user drew.
+    json effWires = rawSketch.value("wires", json::array());
+    if (!effWires.is_array()) effWires = json::array();
+
+    // --- Modulation auto-connect (by relative chain position) ---------------
+    // When a module that declares `modulation_shaper` sits directly after one
+    // that declares `modulation_source` (the nearest module entry above it),
+    // wire the source's modulation OUTPUT channel into the shaper's modulation
+    // INPUT channel in ABSOLUTE magnitude (value flows through untouched), so a
+    // dropped-in shaper "just works" without the user drawing the wire. This is
+    // the modulation analogue of sketch_augment's implicit STRUCT connections —
+    // there matched by structural type, here by capability + relative position.
+    // A "channel" is the magnitude'd scalar field (the same marker that names a
+    // source's output channels); we pick the PRIMARY one. Explicit wires win:
+    // an input that's already wired is left alone.
+    {
+      auto hasCap = [](const RegisteredModule* reg, const char* cap) -> bool {
+        if (!reg) return false;
+        for (const auto& c : reg->capabilities) if (c == cap) return true;
+        return false;
+      };
+      // The module's modulation channel for one io direction: the primary
+      // magnitude'd scalar float field (falls back to the first such field).
+      auto modChannel = [](const RegisteredModule* reg, int ioBit) -> std::string {
+        if (!reg || !reg->schemaFields.is_object()) return std::string();
+        std::string primary, any;
+        for (auto it = reg->schemaFields.begin(); it != reg->schemaFields.end(); ++it) {
+          const json& d = it.value();
+          if (!d.is_object()) continue;
+          if (d.value("type", std::string()) != "float") continue;
+          const int io = d.value("io", 0);
+          if (!(io & ioBit)) continue;
+          if (!d.contains("magnitude")) continue;     // channel marker
+          if (any.empty()) any = it.key();
+          if ((io & 4) && primary.empty()) primary = it.key();  // Primary bit
+        }
+        return primary.empty() ? any : primary;
+      };
+      for (size_t i = 0; i < chain.size(); ++i) {
+        if (!chain[i].is_object() || !chain[i].contains("instance_key")) continue;
+        const RegisteredModule* sreg =
+            findSchema(chain[i].value("module_type", std::string()));
+        if (!hasCap(sreg, "modulation_shaper")) continue;
+        const std::string inField = modChannel(sreg, 1);   // Input bit
+        if (inField.empty()) continue;
+        // Nearest module entry above (the "directly after" relation).
+        int p = -1;
+        for (int j = static_cast<int>(i) - 1; j >= 0; --j) {
+          if (chain[j].is_object() && chain[j].contains("module_type") &&
+              chain[j].contains("instance_key")) { p = j; break; }
+        }
+        if (p < 0) continue;
+        const RegisteredModule* greg =
+            findSchema(chain[p].value("module_type", std::string()));
+        if (!hasCap(greg, "modulation_source")) continue;
+        const std::string outField = modChannel(greg, 2);  // Output bit
+        if (outField.empty()) continue;
+        const std::string sKey = chain[i].value("instance_key", std::string());
+        const std::string gKey = chain[p].value("instance_key", std::string());
+        if (sKey.empty() || gKey.empty()) continue;
+        // Explicit wire on the shaper's input suppresses the auto-connect.
+        bool alreadyWired = false;
+        for (const auto& w : effWires) {
+          if (!w.is_object()) continue;
+          const json d = w.value("dest", json::object());
+          if (d.value("instanceKey", std::string()) == sKey &&
+              d.value("field", std::string()) == inField) { alreadyWired = true; break; }
+        }
+        if (alreadyWired) continue;
+        effWires.push_back(json{
+          {"id", "__modauto__/" + gKey + "/" + sKey + "/" + inField},
+          {"src",  {{"instanceKey", gKey}, {"field", outField}}},
+          {"dest", {{"instanceKey", sKey}, {"field", inField}}},
+          {"magnitude", "absolute"},
+        });
+      }
+    }
+
+    if (!effWires.empty()) {
       std::unordered_map<std::string, size_t> byKey;
       for (size_t i = 0; i < chain.size(); ++i)
         if (chain[i].is_object())
           byKey[chain[i].value("instance_key", std::string())] = i;
-      for (const auto& w : rawSketch["wires"]) {
+      for (const auto& w : effWires) {
         if (!w.is_object()) continue;
         const json src = w.value("src", json::object());
         const json dst = w.value("dest", json::object());

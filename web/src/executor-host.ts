@@ -58,6 +58,8 @@ interface ExecutorExports {
   executor_destroy(ex: number): void;
   executor_register_schema(ex: number, mt: number, mtLen: number,
                            schema: number, schemaLen: number): void;
+  executor_register_capabilities(ex: number, mt: number, mtLen: number,
+                                 caps: number, capsLen: number): void;
   executor_execute(ex: number, sketch: number, sketchLen: number,
                    inTex: number, outTex: number, w: number, h: number,
                    dt: number, dirty: number): number;
@@ -372,6 +374,19 @@ export class WasmSketchExecutor {
         this.exports.executor_register_schema(slot.exPtr, mtPtr, mtBytes.length, scPtr, scBytes.length);
         this.exports.free(mtPtr);
         this.exports.free(scPtr);
+        // Push the declarative capability tags alongside the schema — the
+        // executor gates modulation auto-connect on them (modulation_source /
+        // modulation_shaper). Separate call so the schema contract is untouched.
+        const caps = JSON.stringify(inst.host.capabilities ?? []);
+        const cMtBytes = encoder.encode(entry.module_type);
+        const cBytes = encoder.encode(caps);
+        const cMtPtr = this.exports.malloc(cMtBytes.length);
+        const cPtr = this.exports.malloc(cBytes.length);
+        new Uint8Array(this.memory.buffer, cMtPtr, cMtBytes.length).set(cMtBytes);
+        new Uint8Array(this.memory.buffer, cPtr, cBytes.length).set(cBytes);
+        this.exports.executor_register_capabilities(slot.exPtr, cMtPtr, cMtBytes.length, cPtr, cBytes.length);
+        this.exports.free(cMtPtr);
+        this.exports.free(cPtr);
         slot.registeredSchemas.add(entry.module_type);
       }
     }

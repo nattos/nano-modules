@@ -101,6 +101,17 @@ class SketchExecutor {
   void registerModuleSchema(const std::string& moduleType,
                             const nlohmann::json& schemaFields);
 
+  /**
+   * Attach a module's declarative `capabilities` tags to its cached schema
+   * entry (must be called after registerModuleSchema for that type). The
+   * executor gates modulation auto-connect on these (modulation_source /
+   * modulation_shaper). Native seeds them from the registry; the wasm host
+   * pushes them via executor_register_capabilities. Forces a plan rebuild
+   * since capabilities change the implicit-wire topology.
+   */
+  void registerModuleCapabilities(const std::string& moduleType,
+                                  std::vector<std::string> capabilities);
+
   /** Set (or clear with empty) the per-chain-entry capture hook. */
   void setChainEntryHook(ChainEntryHook hook) { chainEntryHook_ = std::move(hook); }
   /** Set (or clear with empty) the sketch-output hook. */

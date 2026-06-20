@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -71,6 +72,22 @@ void executor_register_schema(SketchExecutor* ex, const char* mt, int32_t mt_len
   auto fields = nlohmann::json::parse(std::string(schema, schema_len), nullptr, false);
   if (fields.is_discarded()) return;
   ex->registerModuleSchema(std::string(mt, mt_len), fields);
+}
+
+// Push (or replace) one module's declarative `capabilities` tags. `caps` is the
+// JSON string array from the schema's top-level `capabilities`. Call after
+// executor_register_schema for the same module type; the executor gates
+// modulation auto-connect on these (modulation_source / modulation_shaper).
+EXEC_EXPORT("executor_register_capabilities")
+void executor_register_capabilities(SketchExecutor* ex, const char* mt, int32_t mt_len,
+                                    const char* caps, int32_t caps_len) {
+  if (!ex) return;
+  auto parsed = nlohmann::json::parse(std::string(caps, caps_len), nullptr, false);
+  std::vector<std::string> tags;
+  if (parsed.is_array())
+    for (const auto& c : parsed)
+      if (c.is_string()) tags.push_back(c.get<std::string>());
+  ex->registerModuleCapabilities(std::string(mt, mt_len), std::move(tags));
 }
 
 // Render one frame. `sketch` is the {chain|columns, instances, wires} JSON.

@@ -80,8 +80,12 @@ void module_init() {
       // The signal to shape (wire target). Declared [0,1] so an unsigned source
       // passes straight through the default identity window; a signed source's
       // wire folds into this range like any consumer input (set in_min<0 to
-      // reshape a bipolar signal).
-      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput)
+      // reshape a bipolar signal). The `magnitude` decl marks this as THE
+      // modulation INPUT channel (the symmetric twin of a source's magnitude'd
+      // output) — that's how the executor's shaper auto-connect locates it among
+      // the tuning float params (in_min/out_max/...). The value ("unsigned") is
+      // just the channel's nominal polarity; it doesn't constrain wired sources.
+      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned")
       // Input window mapped to [0,1] before the curves.
       .floatField("in_min", 0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("in_max", 1.0f, -1.f, 1.f, state::PrimaryInput)

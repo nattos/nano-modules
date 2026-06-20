@@ -712,6 +712,100 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   }
 }
 
+// A modulation shaper (mod.remap) placed DIRECTLY after a modulation generator
+// (data.lfo) auto-connects in the executor: the generator's magnitude'd OUTPUT
+// channel feeds the shaper's magnitude'd INPUT channel in ABSOLUTE magnitude,
+// without the user drawing a wire. Gated on the capability tags (modulation_source
+// / modulation_shaper). Observed via lastModulationData(): the auto-connect records
+// a band on the shaper's `input`. Explicit wires win; a non-adjacent generator does
+// nothing. Same lfo(output 0.5) probe as the wire tests (hand-mirrored into state).
+TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  SECTION("adjacent generator -> shaper auto-connects (absolute) with NO wires") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } }
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("rm"));
+    REQUIRE(md["rm"].contains("input"));
+    const auto& in = md["rm"]["input"];
+    // Absolute passthrough of lfo.output (0.5); band spans the source decl [0,1].
+    CHECK(in["value"].get<double>() == Catch::Approx(0.5).margin(0.01));
+    CHECK(in["min"].get<double>()   == Catch::Approx(0.0).margin(0.01));
+    CHECK(in["max"].get<double>()   == Catch::Approx(1.0).margin(0.01));
+  }
+
+  SECTION("an explicit wire on the shaper input suppresses the auto-connect") {
+    // Explicit wire with a remap narrowing the band to [0.25,0.75]; if the
+    // absolute auto-connect had also fired (or overridden), the band would be
+    // [0,1]. The narrowed band proves the explicit wire is the only connection.
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "rm", "field": "input" },
+          "mod": { "remap": { "inMin": 0.0, "inMax": 1.0, "outMin": 0.25, "outMax": 0.75 } } }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("rm"));
+    REQUIRE(md["rm"].contains("input"));
+    const auto& in = md["rm"]["input"];
+    CHECK(in["min"].get<double>() == Catch::Approx(0.25).margin(0.01));
+    CHECK(in["max"].get<double>() == Catch::Approx(0.75).margin(0.01));
+  }
+
+  SECTION("a shaper NOT directly after a generator is left unconnected") {
+    // brightness_contrast sits between the lfo and the shaper, so the shaper's
+    // nearest predecessor is NOT a modulation source — no auto-connect.
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": 0.5 } },
+        { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+      ],
+      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } }
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    // No tap on rm.input → nothing recorded for it.
+    CHECK((!md.contains("rm") || !md["rm"].contains("input")));
+  }
+}
+
 // Effects declare queryable "capabilities" — a top-level schema array, separate
 // from the per-field io flags. The two-tier vocabulary pairs an UMBRELLA tag
 // with an arity/channel-SPECIFIC one (channels themselves stay implicit: the
