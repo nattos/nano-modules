@@ -22,6 +22,7 @@ export function defaultUserSettings(): UserSettings {
     paused: false,
     activeTab: 'create',
     editingSketchId: null,
+    targetFps: 60,
   };
 }
 

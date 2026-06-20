@@ -106,6 +106,8 @@ export interface UserSettings {
   activeTab: 'create' | 'organize' | 'edit';
   /** Resolume sketch-IDE: the sketch currently open in the edit tab. */
   editingSketchId: string | null;
+  /** Target framerate the GPU headroom estimate is measured against (FPS). */
+  targetFps: number;
 }
 
 // --- Local state (ephemeral, not in undo history) ---
@@ -120,6 +122,13 @@ export interface StagingInstance {
 
 export interface EngineStatus {
   fps: number;
+  /**
+   * Estimated GPU busy-time of the latest frame, in milliseconds. Currently a
+   * CPU-fence proxy (queue-completion lag, smoothed) — see engine-worker's
+   * `gpuTimeEma`. Compared against the target-frame budget (1000/targetFps) to
+   * show GPU usage / headroom. 0 when idle, paused, or unmeasured (barrel mode).
+   */
+  gpuTimeMs: number;
   error: string | null;
   /** Traced output frames keyed by trace point ID. */
   tracedFrames: Record<string, ImageBitmap | null>;

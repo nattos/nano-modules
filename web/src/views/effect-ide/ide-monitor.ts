@@ -26,6 +26,8 @@ const CAPTURE_H = 360;
 const ASPECT = CAPTURE_W / CAPTURE_H;
 /** Magnification when the zoom toggle is active. */
 const ZOOM_FACTOR = 4;
+/** Selectable target framerates for the headroom estimate. */
+const TARGET_FPS_OPTIONS = [30, 60, 120];
 
 @customElement('ide-monitor')
 export class IdeMonitor extends MobxLitElement {
@@ -91,8 +93,37 @@ export class IdeMonitor extends MobxLitElement {
     }
     .stat {
       margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-size: 10px;
       color: var(--app-text-color2);
+    }
+    .stat .metric {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat .err {
+      color: #e06c6c;
+    }
+    /* GPU headroom colour ramp: comfortable / tight / over budget. */
+    .stat .headroom.ok {
+      color: #6cc070;
+    }
+    .stat .headroom.tight {
+      color: #d6a13c;
+    }
+    .stat .headroom.over {
+      color: #e06c6c;
+    }
+    .stat .target {
+      font-size: 10px;
+      color: var(--app-text-color2);
+      background: var(--app-bg-color);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 3px;
+      padding: 1px 2px;
+      cursor: pointer;
     }
   `;
 
@@ -133,6 +164,8 @@ export class IdeMonitor extends MobxLitElement {
     const paused = appState.local.userSettings.paused;
     const fps = appState.local.engine.fps;
     const error = appState.local.engine.error;
+    const gpuMs = appState.local.engine.gpuTimeMs;
+    const targetFps = appState.local.userSettings.targetFps;
     const { w, h } = this.stageSize();
     return html`
       <div class="preview ${this.zoomed ? 'zoomed' : ''}">
@@ -179,11 +212,49 @@ export class IdeMonitor extends MobxLitElement {
           @click=${this.onStepFrame}>
         </ui-button>
         <span class="stat">
-          ${error ? `Error: ${error}` : `${fps} FPS`}
+          ${error
+            ? html`<span class="err">Error: ${error}</span>`
+            : html`
+                <span class="metric">${fps} FPS</span>
+                ${this.renderHeadroom(gpuMs, targetFps)}
+                <select
+                  class="target"
+                  title="Target framerate (the GPU headroom budget)"
+                  .value=${String(targetFps)}
+                  @change=${this.onTargetChange}>
+                  ${TARGET_FPS_OPTIONS.map(
+                    (t) => html`<option value=${t} ?selected=${t === targetFps}>${t}↑</option>`,
+                  )}
+                </select>
+              `}
         </span>
       </div>
     `;
   }
+
+  /** GPU usage / headroom badge. Usage = estimated GPU ms ÷ the target-frame
+   *  budget; headroom is what's left. Colour-coded by how close to the budget
+   *  we are. Reads "—" until the first live sample (or while paused/idle). */
+  private renderHeadroom(gpuMs: number, targetFps: number) {
+    if (gpuMs <= 0) {
+      return html`<span class="metric" title="No GPU timing yet">GPU —</span>`;
+    }
+    const budgetMs = 1000 / targetFps;
+    const usage = gpuMs / budgetMs;
+    const headroomPct = Math.max(0, Math.round((1 - usage) * 100));
+    // green = comfortable, amber = tight, red = over budget.
+    const level = usage >= 1 ? 'over' : usage >= 0.8 ? 'tight' : 'ok';
+    return html`<span
+      class="metric headroom ${level}"
+      title="Est. GPU ${gpuMs.toFixed(1)} ms of ${budgetMs.toFixed(1)} ms budget (${targetFps} FPS) — ${headroomPct}% headroom"
+      >GPU ${gpuMs.toFixed(1)}ms · ${headroomPct}% free</span
+    >`;
+  }
+
+  private onTargetChange = (e: Event) => {
+    const v = parseInt((e.target as HTMLSelectElement).value, 10);
+    if (!Number.isNaN(v)) appController.setUserSetting('targetFps', v);
+  };
 
   private onUndo = () => appController.undo();
   private onRedo = () => appController.redo();

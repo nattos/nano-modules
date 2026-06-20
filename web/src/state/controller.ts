@@ -1433,6 +1433,18 @@ export class AppController {
     runInAction(() => { appState.local.engine.fps = fps; });
   }
 
+  /**
+   * Estimated GPU busy-time (ms) for the latest frame. Rounded to 0.1 ms and
+   * skipped when unchanged so the observable — and the headroom readout that
+   * reads it — only updates when the displayed value would, keeping the frame
+   * loop off the main thread's mobx/lit path.
+   */
+  setEngineGpuTime(ms: number) {
+    const rounded = Math.round(ms * 10) / 10;
+    if (appState.local.engine.gpuTimeMs === rounded) return;
+    runInAction(() => { appState.local.engine.gpuTimeMs = rounded; });
+  }
+
   setEngineError(error: string | null) {
     runInAction(() => { appState.local.engine.error = error; });
   }

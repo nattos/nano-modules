@@ -14,6 +14,9 @@ export class EngineProxy {
   onStateUpdate: ((state: EngineState) => void) | null = null;
   onEffectsDiscovered: ((effects: EffectInfo[]) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
+  /// Estimated GPU busy-time this frame, in milliseconds (CPU-fence proxy).
+  /// Drives the headroom readout against the user's target framerate.
+  onGpuTime: ((ms: number) => void) | null = null;
   onTracedFrames: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onSketchStateDiff: ((diff: import('./engine-types').StateDiff) => void) | null = null;
   onPluginStatesDiff: ((diff: import('./engine-types').StateDiff) => void) | null = null;
@@ -53,6 +56,7 @@ export class EngineProxy {
           break;
         case 'frame':
           this.onFps?.(event.fps);
+          if (event.gpuTimeMs !== undefined) this.onGpuTime?.(event.gpuTimeMs);
           this.onTracedFrames?.(event.tracedFrames);
           this.onSketchStateDiff?.(event.sketchStateDiff);
           this.onPluginStatesDiff?.(event.pluginStatesDiff);

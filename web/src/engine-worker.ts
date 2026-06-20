@@ -136,6 +136,20 @@ let elapsed = 0;
 let frameCount = 0;
 let fpsTime = 0;
 let fps = 0;
+// --- GPU-busy estimate (CPU-fence proxy) ---
+// We can't yet read true GPU pass durations (no timestamp-query plumbing), so
+// we approximate GPU busy-time by timing how long the queue takes to signal
+// `onSubmittedWorkDone` from the moment we request the fence. Under the
+// in-flight cap this completion lag includes pipeline backlog, so it stays near
+// zero when the GPU is idle and climbs sharply toward (and past) the frame
+// budget as it saturates — a usable headroom signal. `gpuTimeEma` smooths the
+// raw samples; `gpuTimeReported` is refreshed at ~10 Hz (every 6th frame) so
+// the readout doesn't churn the UI at frame rate. The headroom % itself is
+// computed main-side against the user's target framerate. When real timestamp
+// queries land, replace the `sample` source and keep the same reported field.
+let gpuTimeEma = 0;
+let gpuTimeReported = 0;
+let gpuTimeTick = 0;
 let stateGeneration = 0;
 let lastBroadcastGeneration = -1;
 let paused = false;
@@ -450,9 +464,14 @@ async function frame() {
     if (!pausedFramePosted) {
       pausedFramePosted = true;
       fps = 0;
+      // No GPU work flows while paused — clear the estimate so the headroom
+      // readout reads idle instead of freezing at the last live sample.
+      gpuTimeEma = 0;
+      gpuTimeReported = 0;
       post({
         type: 'frame',
         fps: 0,
+        gpuTimeMs: 0,
         tracedFrames: {},
         sketchStateDiff: { changed: {}, removed: [] },
         pluginStatesDiff: { changed: {}, removed: [] },
@@ -491,11 +510,20 @@ async function frame() {
   // more than MAX are outstanding, wait for the oldest (frame N-MAX) before
   // the loop continues — so command buffers can't outrun the GPU.
   if (gpuDevice) {
-    inFlightFences.push(gpuDevice.queue.onSubmittedWorkDone());
+    const submitTime = performance.now();
+    const fence = gpuDevice.queue.onSubmittedWorkDone();
+    // GPU-busy proxy: smooth the queue-completion lag (see gpuTimeEma decl).
+    void fence.then(() => {
+      const sample = performance.now() - submitTime;
+      gpuTimeEma = gpuTimeEma === 0 ? sample : gpuTimeEma * 0.85 + sample * 0.15;
+    });
+    inFlightFences.push(fence);
     if (inFlightFences.length > MAX_FRAMES_IN_FLIGHT) {
       await inFlightFences.shift();
     }
   }
+  // Refresh the UI-facing GPU-time at ~10 Hz so the readout is stable.
+  if (++gpuTimeTick % 6 === 0) gpuTimeReported = gpuTimeEma;
 
   frameInFlight = false;
   requestAnimationFrame(frame);
@@ -858,7 +886,7 @@ function captureAndSendFrame() {
   }
 
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, []);
+    post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, []);
     return;
   }
 
@@ -878,7 +906,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, transfers);
+  post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, transfers);
 }
 
 // ========================================================================

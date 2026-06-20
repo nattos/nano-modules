@@ -101,6 +101,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   if (!barrelMode) {
     engine.onStateUpdate = (state) => appController.syncFromRemoteState(state);
     engine.onFps = (fps) => appController.setEngineFps(fps);
+    engine.onGpuTime = (ms) => appController.setEngineGpuTime(ms);
     engine.onTracedFrames = (frames) => appController.setTracedFrames(frames);
     engine.onSketchStateDiff = (diff) => appController.applySketchStateDiff(diff);
     engine.onPluginStatesDiff = (diff) => appController.applyPluginStatesDiff(diff);
