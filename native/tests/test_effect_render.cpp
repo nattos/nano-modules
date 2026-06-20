@@ -106,18 +106,18 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
 
   const double inMean = mean_rgb(inPixels);
 
-  // brightness 0.75 (> neutral 0.5) should lift the output above the input.
-  inst->setParamFloat("brightness", 0.75f);
-  inst->setParamFloat("contrast", 0.5f);
+  // brightness +0.5 (> neutral 0) should lift the output above the input.
+  inst->setParamFloat("brightness", 0.5f);
+  inst->setParamFloat("contrast", 0.0f);
   inst->doRender(W, H);  // effect calls gpu.submit() internally (commit+wait)
   auto bright = backend->readbackTexture(outTex, W, H);
   REQUIRE(bright.size() == W * H * 4);
   INFO("in mean " << inMean << "  bright mean " << mean_rgb(bright));
   CHECK(mean_rgb(bright) > inMean + 30.0);
 
-  // Neutral (0.5/0.5) is identity: output ~= input.
-  inst->setParamFloat("brightness", 0.5f);
-  inst->setParamFloat("contrast", 0.5f);
+  // Neutral (0/0) is identity: output ~= input.
+  inst->setParamFloat("brightness", 0.0f);
+  inst->setParamFloat("contrast", 0.0f);
   inst->doRender(W, H);
   auto ident = backend->readbackTexture(outTex, W, H);
   INFO("ident mean " << mean_rgb(ident));
@@ -291,7 +291,7 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
     ],
     "instances": {
       "acc": { "module_type": "video.blend", "state": { "opacity": 0.5 } },
-      "fb":  { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.5 } }
+      "fb":  { "module_type": "video.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } }
     },
     "wires": [
       { "id": "wfb", "src": { "instanceKey": "fb", "field": "tex_out" },
@@ -357,12 +357,12 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
     return mean_rgb(backend->readbackTexture(out, W, H));
   };
 
-  // Frame 0 (dirty): one brightness_contrast at 0.75 (> neutral 0.5) → lifts.
+  // Frame 0 (dirty): one brightness_contrast at +0.5 (> neutral 0) → lifts.
   auto bright = nlohmann::json::parse(R"JSON({
     "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "bc" } ],
     "instances": {
       "bc": { "module_type": "video.brightness_contrast",
-              "state": { "brightness": 0.75, "contrast": 0.5 } }
+              "state": { "brightness": 0.5, "contrast": 0.0 } }
     }
   })JSON");
   double m0 = runFrame(bright, /*dirty=*/true);
@@ -370,7 +370,7 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
   REQUIRE(afterFirst >= 1);             // first frame builds the plan
   CHECK(m0 > inMean + 20.0);            // brightened
 
-  // Frame 1 (dirty, PARAM-ONLY): same topology, brightness 0.25 (< neutral) →
+  // Frame 1 (dirty, PARAM-ONLY): same topology, brightness -0.5 (< neutral) →
   // darkens. The structural signature is unchanged, so the plan must be REUSED
   // (counter steady) even though the value-dirty flag is set, yet the new value
   // must still take effect (applyState runs on the dirty flag).
@@ -378,7 +378,7 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
     "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "bc" } ],
     "instances": {
       "bc": { "module_type": "video.brightness_contrast",
-              "state": { "brightness": 0.25, "contrast": 0.5 } }
+              "state": { "brightness": -0.5, "contrast": 0.0 } }
     }
   })JSON");
   double m1 = runFrame(dark, /*dirty=*/true);
@@ -400,9 +400,9 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
     ],
     "instances": {
       "bc":  { "module_type": "video.brightness_contrast",
-               "state": { "brightness": 0.25, "contrast": 0.5 } },
+               "state": { "brightness": -0.5, "contrast": 0.0 } },
       "bc2": { "module_type": "video.brightness_contrast",
-               "state": { "brightness": 0.75, "contrast": 0.5 } }
+               "state": { "brightness": 0.5, "contrast": 0.0 } }
     }
   })JSON");
   runFrame(twoStage, /*dirty=*/true);
@@ -493,9 +493,9 @@ TEST_CASE("entry.params + named/numeric input wires drive video.blend",
 // instances[key].state, leaving it partially populated; an all-or-nothing skip
 // then drops the entry.params INPUT fields (e.g. data.lfo's rate), so the effect
 // runs at schema defaults. Here bc carries a partial instances.state
-// {brightness:0.5} (the "mirrored" field) AND entry.params {contrast:0.0}. With
-// the per-field merge, contrast=0.0 is applied → black; with the old
-// all-or-nothing skip, contrast stays default 0.5 → the white passes through.
+// {brightness:0.0} (the "mirrored" field) AND entry.params {contrast:-1.0}. With
+// the per-field merge, contrast=-1.0 (0× scale) is applied → black; with the old
+// all-or-nothing skip, contrast stays default 0.0 (1×) → the white passes through.
 TEST_CASE("entry.params merges per-field over partial instance state",
           "[effect_render]") {
   auto backend = gpu::createMetalBackend();
@@ -517,22 +517,23 @@ TEST_CASE("entry.params merges per-field over partial instance state",
     "chain": [
       { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
       { "module_type": "video.brightness_contrast", "instance_key": "bc",
-        "params": { "brightness": 0.5, "contrast": 0.0 } }
+        "params": { "brightness": 0.0, "contrast": -1.0 } }
     ],
-    "instances": { "bc": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5 } } }
+    "instances": { "bc": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.0 } } }
   })JSON");
   int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
   backend->submit();
   auto px = backend->readbackTexture(out, W, H);
   double m = mean_rgb(px);
-  INFO("output mean " << m << " (expect ~0 black: contrast=0 from entry.params applied)");
+  INFO("output mean " << m << " (expect ~0 black: contrast=-1 from entry.params applied)");
   CHECK(m < 30.0);
 }
 
 // Gap #3 repro of the EXACT web engine-wires "forward scalar wire" sketch:
 // white -> data.lfo(rate 0) -> brightness_contrast, wire lfo.output -> brightness.
-// lfo.output==0.5 (mirrored into instance state, as the web host does) -> brightness
-// must land 0.5 (neutral, magnitude auto/unsigned) -> output grey ~128.
+// lfo.output==0.5 (mirrored into instance state, as the web host does) folds into
+// brightness's signed [-1,1] -> 0 (neutral, magnitude auto/unsigned). With
+// contrast -0.5 (0.5x scale) on white -> output grey ~128.
 TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
           "[effect_render]") {
   auto backend = gpu::createMetalBackend();
@@ -557,7 +558,7 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
     "chain": [
       { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
       { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-      { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
     ],
     "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
     "wires": [
@@ -576,10 +577,10 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
 // the effective resolved value + the swing band the wire can drive it through
 // (lastModulationData(), the source of the editor's slider band). Same sketch
 // as the forward-wire repro: data.lfo(output 0.5) -> bc.brightness, magnitude
-// auto/unsigned/replace into brightness's [0,1]. The band must span the source's
-// declared [0,1] (sweeping lfo.output 0..1 → replaceVal 0..1) and the effective
-// value must be 0.5 (the live output mid-mapped). A `mod` remap on the wire must
-// narrow the band to the remap's output range.
+// auto/unsigned/replace into brightness's signed [-1,1]. The band must span the
+// dest's [-1,1] (sweeping lfo.output 0..1 → replaceVal -1..1) and the effective
+// value must be 0.0 (the live output mid-mapped). A `mod` remap on the wire must
+// narrow the band to the remap's (folded) output range.
 TEST_CASE("executor records modulated-input value + swing band", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
@@ -597,12 +598,12 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   std::vector<uint8_t> white(W * H * 4, 255);
   backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
 
-  SECTION("plain wire — band spans the source's declared [0,1]") {
+  SECTION("plain wire — band spans the dest's declared [-1,1]") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
       "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
       "wires": [
@@ -616,10 +617,10 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));
-    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.0).margin(0.01));
+    CHECK(b["min"].get<double>()     == Catch::Approx(-1.0).margin(0.01));
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));
-    CHECK(b["neutral"].get<double>() == Catch::Approx(0.0).margin(0.01));  // replace + unsigned → range min (0)
+    CHECK(b["neutral"].get<double>() == Catch::Approx(-1.0).margin(0.01));  // replace + unsigned → range min (-1)
   }
 
   SECTION("a remap on the wire narrows the band to the remap output range") {
@@ -627,7 +628,7 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
       "chain": [
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
       "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
       "wires": [
@@ -642,9 +643,10 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>() == Catch::Approx(0.5).margin(0.01));   // remap midpoint
-    CHECK(b["min"].get<double>()   == Catch::Approx(0.25).margin(0.01));
-    CHECK(b["max"].get<double>()   == Catch::Approx(0.75).margin(0.01));
+    // remap out [0.25,0.75] folds into the signed [-1,1] dest → [-0.5,0.5].
+    CHECK(b["value"].get<double>() == Catch::Approx(0.0).margin(0.01));   // remap midpoint → 0
+    CHECK(b["min"].get<double>()   == Catch::Approx(-0.5).margin(0.01));
+    CHECK(b["max"].get<double>()   == Catch::Approx(0.5).margin(0.01));
   }
 
   // An ENVELOPE shaper on the wire reshapes the value the same way mod.envelope
@@ -715,7 +717,7 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
       "chain": [
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
       "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
       "wires": [
@@ -730,10 +732,10 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));  // 0.5→0 (bipolar) → mid
-    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // src 0 → -1 → range min
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.0).margin(0.01));  // 0.5→0 (bipolar) → mid
+    CHECK(b["min"].get<double>()     == Catch::Approx(-1.0).margin(0.01)); // src 0 → -1 → range min
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +1 → range max
-    CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // signed replace → midpoint
+    CHECK(b["neutral"].get<double>() == Catch::Approx(0.0).margin(0.01));  // signed replace → midpoint (0)
   }
 
   // The polarity prescale must apply BEFORE `scale` (it's a reinterpretation of
@@ -746,7 +748,7 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
       "chain": [
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": 0.25 } }
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": -0.5 } }
       ],
       "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
       "wires": [
@@ -761,12 +763,12 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    // src 0.5 → bipolar 0 → *scale 0 → add 0: holds the base (0.5), not 0.0.
+    // src 0.5 → bipolar 0 → *scale 0 → add 0: holds the base (0.5), not -1.0.
     CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));
     CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // add → base
-    // Half-scale halves the swing symmetrically about the base: 0.5 ± 0.5.
-    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // src 0 → -0.5 → 0.0
-    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +0.5 → 1.0
+    // Half-scale of the (now wider [-1,1]) swing about the base: 0.5 ± 1.0.
+    CHECK(b["min"].get<double>()     == Catch::Approx(-0.5).margin(0.01)); // src 0 → -1.0 → -0.5
+    CHECK(b["max"].get<double>()     == Catch::Approx(1.5).margin(0.01));  // src 1 → +1.0 → 1.5
   }
 }
 
@@ -850,7 +852,7 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
       "chain": [
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": 0.5 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.0, "contrast": 0.0 } },
         { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
       ],
       "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } }
@@ -919,7 +921,9 @@ TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
 // inherited the lfo's EXPLICIT unsigned, rescales 0..1→−1..1 (full bipolar band);
 // without a source feeding smooth's input the polarity is unknown, so the same
 // forced-signed wire is taken at face value (only the upper half). data.lfo.output
-// is "unsigned"; smooth/lfo outputs hand-mirrored into state.
+// is "unsigned"; smooth/lfo outputs hand-mirrored into state. The sink is
+// video.posterize.amount (an UNSIGNED [0,1] field) — the distinction only shows
+// on an unsigned dest, and brightness_contrast is now signed [-1,1].
 TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
@@ -943,23 +947,23 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
         { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "video.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
       ],
       "instances": {
         "lfo": { "module_type": "data.lfo",  "state": { "output": 0.5 } },
         "sm":  { "module_type": "mod.smooth","state": { "output": 0.5 } }
       },
       "wires": [
-        { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" }, "magnitude": "signed" }
+        { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "pz", "field": "amount" }, "magnitude": "signed" }
       ]
     })JSON");
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
     backend->submit();
     const auto& md = executor.lastModulationData();
     INFO("modulationData = " << md.dump());
-    REQUIRE(md.contains("bc"));
-    REQUIRE(md["bc"].contains("brightness"));
-    const auto& b = md["bc"]["brightness"];
+    REQUIRE(md.contains("pz"));
+    REQUIRE(md["pz"].contains("amount"));
+    const auto& b = md["pz"]["amount"];
     CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));  // 0.5→bipolar 0→mid
     CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // rescaled: full range
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));
@@ -973,22 +977,22 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
       "chain": [
         { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "video.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
       ],
       "instances": {
         "sm": { "module_type": "mod.smooth", "state": { "output": 0.5 } }
       },
       "wires": [
-        { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" }, "magnitude": "signed" }
+        { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "pz", "field": "amount" }, "magnitude": "signed" }
       ]
     })JSON");
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
     backend->submit();
     const auto& md = executor.lastModulationData();
     INFO("modulationData = " << md.dump());
-    REQUIRE(md.contains("bc"));
-    REQUIRE(md["bc"].contains("brightness"));
-    const auto& b = md["bc"]["brightness"];
+    REQUIRE(md.contains("pz"));
+    REQUIRE(md["pz"].contains("amount"));
+    const auto& b = md["pz"]["amount"];
     // 0.5 read as signed face value → (0.5+1)/2 = 0.75; band spans only [0.5,1].
     CHECK(b["value"].get<double>() == Catch::Approx(0.75).margin(0.01));
     CHECK(b["min"].get<double>()   == Catch::Approx(0.5).margin(0.01));
@@ -1000,9 +1004,9 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
 // field's final value toward each new target over `duration` seconds (the same
 // param_smoothing math as mod.smooth). It's applied IN the executor (standalone
 // path, after read taps), so it works on web AND native. Probe: gray input ->
-// brightness_contrast (brightness 0.5/contrast 0.5 = identity = gray); step
-// brightness 0.5 -> 1.0. With smoothing a single dt=0.25 / 1s-ramp frame lands
-// only ~1/4 of the way (brightness ~0.625), markedly darker than the instant
+// brightness_contrast (brightness 0/contrast 0 = identity = gray); step
+// brightness 0 -> 1.0. With smoothing a single dt=0.25 / 1s-ramp frame lands
+// only ~1/4 of the way (brightness ~0.25), markedly darker than the instant
 // jump to brightness 1.0; after enough frames it catches up.
 TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
           "[effect_render]") {
@@ -1037,7 +1041,7 @@ TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
     return nlohmann::json{
       {"chain", nlohmann::json::array({entry})},
       {"instances", {{key, {{"module_type", "video.brightness_contrast"},
-                            {"state", {{"brightness", brightness}, {"contrast", 0.5}}}}}}},
+                            {"state", {{"brightness", brightness}, {"contrast", 0.0}}}}}}},
     };
   };
   auto runMean = [&](const nlohmann::json& sk, double dt) {
@@ -1048,15 +1052,15 @@ TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
 
   // Smoothed: settle at identity (gray), then step brightness -> 1.0 for ONE
   // short frame (dt 0.25 of a 1s ramp).
-  double smSettled = runMean(makeSketch("bcS", true, 0.5), 1.0 / 60.0);
+  double smSettled = runMean(makeSketch("bcS", true, 0.0), 1.0 / 60.0);
   double smStep    = runMean(makeSketch("bcS", true, 1.0), 0.25);
   // Instant (no smoothing): same step jumps straight to brightness 1.0.
-  double inSettled = runMean(makeSketch("bcI", false, 0.5), 1.0 / 60.0);
+  double inSettled = runMean(makeSketch("bcI", false, 0.0), 1.0 / 60.0);
   double inStep    = runMean(makeSketch("bcI", false, 1.0), 0.25);
 
   INFO("smSettled=" << smSettled << " smStep=" << smStep
        << " inSettled=" << inSettled << " inStep=" << inStep);
-  // Identity at brightness 0.5 → gray passes through (~128), both runs.
+  // Identity at brightness 0 → gray passes through (~128), both runs.
   CHECK(smSettled == Catch::Approx(128.0).margin(8.0));
   CHECK(inSettled == Catch::Approx(128.0).margin(8.0));
   // Instant jumps fully bright; smoothed lands only partway.
@@ -1506,8 +1510,8 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
       { "module_type": "video.brightness_contrast", "instance_key": "b" }
     ],
     "instances": {
-      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.75, "contrast": 0.5 } },
-      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.25, "contrast": 0.5 } }
+      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.0 } },
+      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": -0.5, "contrast": 0.0 } }
     }
   })JSON");
   int32_t s[7];
@@ -1526,7 +1530,7 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
   // Single non-identity stage → one standalone dispatch (no fusion of size 1).
   auto one = nlohmann::json::parse(R"JSON({
     "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "a" } ],
-    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.75, "contrast": 0.5 } } }
+    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.0 } } }
   })JSON");
   run(one, s);
   CHECK(s[0] == 1);  // effectsExecuted
@@ -1535,10 +1539,10 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
   CHECK(s[5] == 1);  // gpuDispatches
   CHECK(s[6] == 0);  // identitySkipped
 
-  // Single NEUTRAL brightness_contrast (0.5/0.5) → identity → skipped, no dispatch.
+  // Single NEUTRAL brightness_contrast (0/0) → identity → skipped, no dispatch.
   auto ident = nlohmann::json::parse(R"JSON({
     "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "a" } ],
-    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.5 } } }
+    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } } }
   })JSON");
   run(ident, s);
   CHECK(s[0] == 1);  // effectsExecuted (still processed)
@@ -1574,8 +1578,8 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
       { "module_type": "video.brightness_contrast", "instance_key": "b" }
     ],
     "instances": {
-      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.7, "contrast": 0.5 } },
-      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.7, "contrast": 0.5 } }
+      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.4, "contrast": 0.0 } },
+      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.4, "contrast": 0.0 } }
     }
   })JSON");
 
@@ -1614,8 +1618,8 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
       { "module_type": "video.brightness_contrast", "instance_key": "b" }
     ],
     "instances": {
-      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.9, "contrast": 0.5, "__opacity__": 0.5 } },
-      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.9, "contrast": 0.5 } }
+      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.0, "__opacity__": 0.5 } },
+      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.0 } }
     }
   })JSON");
   {
@@ -1643,7 +1647,7 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
     ],
     "instances": {
       "g": { "module_type": "generator.solid_color", "state": { "color": [0.25, 0.25, 0.25] } },
-      "e": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.5 } }
+      "e": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.6, "contrast": 0.0 } }
     }
   })JSON");
   {

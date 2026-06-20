@@ -11,8 +11,10 @@ import type { Sketch } from '../src/sketch-types';
  * actually lags (temporal ramp).
  *
  * Probe: white solid → mod.smooth → brightness_contrast, with mod.smooth.output
- * wired into bc.brightness (auto/unsigned replace → pass-through). bc paints
- * gray(128) at brightness 0.5, black at 0, white at 1.
+ * wired into bc.brightness (auto/unsigned replace folds the source [0,1] into
+ * brightness's signed [-1,1]). With contrast -0.5 (0.5× scale) on white input,
+ * bc paints gray(128) at brightness 0 (source 0.5), black at -1 (source 0),
+ * white at +1 (source 1).
  */
 describe('mod.smooth shaper node E2E', () => {
   jest.setTimeout(40000);
@@ -30,7 +32,7 @@ describe('mod.smooth shaper node E2E', () => {
         { type: 'module', module_type: 'mod.smooth', instance_key: 'sm@0',
           params: { duration: 0.0 } },
         { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-          params: { brightness: 1.0, contrast: 0.25 } },
+          params: { brightness: 1.0, contrast: -0.5 } },
       ],
       // No wire into sm@0.input — the executor auto-connects lfo@0 -> sm@0.
       wires: [
@@ -65,7 +67,7 @@ describe('mod.smooth shaper node E2E', () => {
         { type: 'module', module_type: 'mod.smooth', instance_key: 'sm@0',
           params: { input: 0.0, duration } },
         { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-          params: { brightness: 1.0, contrast: 0.25 } },
+          params: { brightness: 1.0, contrast: -0.5 } },
       ],
       wires: [
         { id: 'w1', src: { instanceKey: 'sm@0', field: 'output' },

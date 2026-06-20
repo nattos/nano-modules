@@ -24,10 +24,12 @@ struct FuseUniforms {
   float _pad1;
 };
 
-// Per-instance state. One per chain entry.
+// Per-instance state. One per chain entry. Both params are signed with 0 as
+// the neutral point: brightness shifts by [-1,+1], contrast scales by
+// (contrast+1) ∈ [0,2] (1× at 0). See pixel.hlsl.
 struct State {
-  float brightness = 0.5f;
-  float contrast = 0.5f;
+  float brightness = 0.f;
+  float contrast = 0.f;
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
@@ -46,8 +48,8 @@ void prepare(void* self, int vp_w, int vp_h) {
 void module_init() {
   state::init("video.brightness_contrast", {1, 0, 0},
     state::Schema()
-      .floatField("brightness", 0.5f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("contrast", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("brightness", 0.f, -1.f, 1.f, state::PrimaryInput)
+      .floatField("contrast", 0.f, -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );
@@ -88,8 +90,8 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->brightness = 0.5f;
-  s->contrast = 0.5f;
+  s->brightness = 0.f;
+  s->contrast = 0.f;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
 
@@ -106,14 +108,14 @@ void tick(void* self, double dt) {
 
 void on_resolume_param(void*, long long, double) {}
 
-// Passthrough at neutral: pixel.hlsl shifts by (brightness-0.5)*2 and
-// scales by contrast*2, so brightness == 0.5 (no shift) AND contrast ==
-// 0.5 (1× scale) ⇒ out == in (the trailing saturate is a no-op on the
-// already-[0,1] input). Stateless — the executor skips this stage and,
-// if its whole fused group is identity, the group's dispatch entirely.
+// Passthrough at neutral: pixel.hlsl shifts by brightness and scales by
+// (contrast+1), so brightness == 0 (no shift) AND contrast == 0 (1× scale)
+// ⇒ out == in (the trailing saturate is a no-op on the already-[0,1] input).
+// Stateless — the executor skips this stage and, if its whole fused group is
+// identity, the group's dispatch entirely.
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
-  return (s && s->brightness == 0.5f && s->contrast == 0.5f) ? 1 : 0;
+  return (s && s->brightness == 0.f && s->contrast == 0.f) ? 1 : 0;
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,

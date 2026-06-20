@@ -8,8 +8,8 @@ import type { Sketch } from '../src/sketch-types';
  * defined (data model + inspector UI + math) but never wired into the unified
  * C++ executor; this verifies it's live again on the web path.
  *
- * Probe: gray solid → brightness_contrast (brightness 0.5 / contrast 0.5 =
- * identity = gray). Step brightness 0.5 → 1.0 (→ white). With a 5s smoothing
+ * Probe: gray solid → brightness_contrast (brightness 0 / contrast 0 =
+ * identity = gray). Step brightness 0 → 1.0 (→ white). With a 5s smoothing
  * ramp on `brightness`, a few frames in the output is still near gray; without
  * smoothing it jumps to white. Contrast instant-vs-smoothed so it's robust to
  * the harness's real-wall-clock dt (a few frames can't complete a 5s ramp).
@@ -20,7 +20,7 @@ describe('engine FieldOptions.smoothing E2E', () => {
   const runStep = (id: string, smoothDuration: number | null) => {
     const bc: any = {
       type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-      params: { brightness: 0.5, contrast: 0.5 },
+      params: { brightness: 0.0, contrast: 0.0 },
     };
     if (smoothDuration !== null) {
       bc.fieldOptions = { brightness: { smoothing: { enabled: true, duration: smoothDuration } } };
@@ -37,7 +37,7 @@ describe('engine FieldOptions.smoothing E2E', () => {
       width: 64, height: 64,
       modules: ['generator.solid_color', 'video.brightness_contrast'],
       phases: [
-        // Settle at brightness 0.5 (identity) → gray.
+        // Settle at brightness 0 (identity) → gray.
         { commands: [
             { type: 'createSketch', sketchId: id, sketch },
             { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
@@ -61,7 +61,7 @@ describe('engine FieldOptions.smoothing E2E', () => {
     const smSettled   = smoothed.phases[0].trace('out').averageColor().r;
     const smStep      = smoothed.phases[1].trace('out').averageColor().r;
 
-    // Both settle to gray at brightness 0.5 (identity).
+    // Both settle to gray at brightness 0 (identity).
     expect(instSettled).toBeGreaterThan(100);
     expect(instSettled).toBeLessThan(160);
     expect(smSettled).toBeGreaterThan(100);

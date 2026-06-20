@@ -139,18 +139,18 @@ json buildSketch(int effectCount) {
   std::vector<std::pair<float, float>> params;
   params.reserve(effectCount);
   for (int i = 0; i < effectCount; ++i) {
-    float b = 0.5f + 0.02f * (float)(i % 5 - 2);  // ~[0.46, 0.54]
-    params.emplace_back(b, 0.5f);
+    float b = 0.04f * (float)(i % 5 - 2);  // ~[-0.08, 0.08]
+    params.emplace_back(b, 0.0f);
   }
   return buildSketch(params);
 }
 
 // CPU reference for one brightness_contrast stage (matches pixel.hlsl
-// fuse_transform: shift by (b-0.5)*2, scale by c*2, saturate).
+// fuse_transform: signed shift by b, scale by (c+1), saturate).
 uint8_t bcStageChannel(uint8_t in, float b, float c) {
   float v = in / 255.0f;
-  v += (b - 0.5f) * 2.0f;
-  v *= c * 2.0f;
+  v += b;
+  v *= c + 1.0f;
   if (v < 0.f) v = 0.f;
   if (v > 1.f) v = 1.f;
   int o = (int)(v * 255.0f + 0.5f);
@@ -302,9 +302,9 @@ int runAssert() {
   gpu->writeTexture(inputTex, W, H, inPix.data(), (uint32_t)inPix.size());
 
   // Mild, distinct params so no stage saturates (which would mask a
-  // wrong-param bug). Last stage is identity (0.5, 0.5).
+  // wrong-param bug). Last stage is identity (0, 0).
   std::vector<std::pair<float, float>> params = {
-    {0.70f, 0.50f}, {0.35f, 0.60f}, {0.60f, 0.45f}, {0.50f, 0.50f},
+    {0.40f, 0.00f}, {-0.30f, 0.20f}, {0.20f, -0.10f}, {0.00f, 0.00f},
   };
   const int N = (int)params.size();
   json sketch = buildSketch(params);
@@ -392,7 +392,7 @@ int runAssert() {
   bool iok = true;
   {
     std::vector<std::pair<float, float>> p3 = {
-      {0.70f, 0.50f}, {0.50f, 0.50f}, {0.60f, 0.45f},
+      {0.40f, 0.00f}, {0.00f, 0.00f}, {0.20f, -0.10f},
     };
     const int N3 = (int)p3.size();
     json s3 = buildSketch(p3);
@@ -444,7 +444,7 @@ int runAssert() {
   bool fiok = true;
   {
     std::vector<std::pair<float, float>> p4 = {
-      {0.5f, 0.5f}, {0.5f, 0.5f}, {0.5f, 0.5f},
+      {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f},
     };
     json s4 = buildSketch(p4);
     executor->setBarrierPredicate([](int, int) { return false; });
@@ -471,7 +471,7 @@ int runAssert() {
   bool pok = true;
   {
     std::vector<std::pair<float, float>> p5 = {
-      {0.70f, 0.50f}, {0.50f, 0.50f}, {0.60f, 0.45f},
+      {0.40f, 0.00f}, {0.00f, 0.00f}, {0.20f, -0.10f},
     };
     json s5 = buildSketch(p5);
     executor->setBarrierPredicate([](int, int) { return false; });
@@ -502,8 +502,8 @@ int runAssert() {
   // texture at the seam. Verify both that the split happens (exactly 2 fused
   // groups → 2 materialized outputs) and that the pixels are still correct.
   //
-  // Params keep every stage's result an EXACT 8-bit value (contrast 0.5 →
-  // scale 1.0; brightness offset = (b-0.5)*2 = k/255 for integer k), so the
+  // Params keep every stage's result an EXACT 8-bit value (contrast 0 →
+  // scale 1.0; brightness offset = b = k/255 for integer k), so the
   // CPU reference (which rounds per stage) matches the GPU regardless of
   // where the fused path actually rounds (only at the 28-stage seam + end).
   bool xok = true;
@@ -512,7 +512,7 @@ int runAssert() {
     std::vector<std::pair<float, float>> big;
     for (int i = 0; i < BIG; ++i) {
       int k = 1 + (i % 2);                       // +1/255 or +2/255 per stage
-      big.emplace_back(0.5f + (float)k / 510.0f, 0.5f);
+      big.emplace_back((float)k / 255.0f, 0.0f);
     }
     json bigSketch = buildSketch(big);
 

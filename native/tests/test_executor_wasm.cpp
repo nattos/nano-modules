@@ -61,7 +61,7 @@ TEST_CASE("executor.wasm renders pixel-identical to the native executor", "[exec
   const std::string sketch = R"JSON({
     "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "k0" } ],
     "instances": { "k0": { "module_type": "video.brightness_contrast",
-                           "state": { "brightness": 0.8, "contrast": 0.5 } } },
+                           "state": { "brightness": 0.5, "contrast": 0.0 } } },
     "wires": []
   })JSON";
 
