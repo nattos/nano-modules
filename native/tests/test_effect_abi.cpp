@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -137,7 +138,12 @@ TEST_CASE("data.lfo executes via call_indirect and writes output", "[effect_abi]
   auto state = doc.get_plugin_state(key);
   INFO("state: " << state.dump());
   REQUIRE(state.contains("output"));
-  CHECK(state["output"].get<double>() == Catch::Approx(0.5).margin(1e-6));
+  // tick advances a phase accumulator by dt*rate (style guide §2.1) rather than
+  // reading time()*rate, so turning the rate knob never causes a phase jump.
+  // Default rate 0.5 → 5 Hz; one 16 ms tick advances phase to 0.08 cycles.
+  const double kPi = 3.14159265358979323846;
+  double expected = std::sin(0.08 * 2.0 * kPi) * 0.5 + 0.5;
+  CHECK(state["output"].get<double>() == Catch::Approx(expected).margin(1e-6));
 
   host.shutdown();
 }

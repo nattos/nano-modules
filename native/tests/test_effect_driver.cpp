@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <cmath>
 #include <fstream>
 #include <vector>
 
@@ -55,8 +56,8 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
   // and a frame clock. Wire them before module_init runs.
   StateDocument doc;
   host.set_state_doc(id, &doc);
-  FrameState fs;
-  fs.elapsed_time = 0.0;  // host::time()==0 => output 0.5
+  FrameState fs;  // present for the lifecycle's frame-clock imports; the LFO no
+  fs.elapsed_time = 0.0;  // longer reads it (phase is a dt accumulator now).
   host.set_frame_state(id, &fs);
 
   REQUIRE(host.call_function(id, "nano_module_main") == 0);
@@ -111,7 +112,11 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
   auto state = doc.get_plugin_state(key);
   INFO("state: " << state.dump());
   REQUIRE(state.contains("output"));
-  CHECK(state["output"].get<double>() == Catch::Approx(0.5).margin(1e-6));
+  // Phase is a dt accumulator (style guide §2.1): default rate 0.5 → 5 Hz, so a
+  // single 16 ms tick advances phase to 0.08 cycles → sin(0.08*2π)*0.5+0.5.
+  const double kPi = 3.14159265358979323846;
+  CHECK(state["output"].get<double>() ==
+        Catch::Approx(std::sin(0.08 * 2.0 * kPi) * 0.5 + 0.5).margin(1e-6));
 
   host.shutdown();
 }
@@ -128,11 +133,11 @@ TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effec
 
   StateDocument doc;
   host.set_state_doc(id, &doc);
-  // phase = t * (rate*10) * 2pi. With t=0.05, rate=0.5 (default) => phase=pi/2,
-  // so sin(phase)=1 and amplitude becomes observable in the output:
-  //   output = sin(phase)*amplitude*0.5 + 0.5.
+  // phase accumulates as dt*(rate*10) cycles. rate=0.5 (default) => 5 Hz, so a
+  // dt=0.05 tick advances phase to 0.25 cycles (=pi/2 in radians) => sin=1 and
+  // amplitude becomes observable: output = sin(phase*2π)*amplitude*0.5 + 0.5.
   FrameState fs;
-  fs.elapsed_time = 0.05;
+  fs.elapsed_time = 0.0;
   host.set_frame_state(id, &fs);
 
   REQUIRE(host.call_function(id, "nano_module_main") == 0);
@@ -160,13 +165,15 @@ TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effec
   EffectInstance* inst = rt.instanceFor("data.lfo", "k0");
   REQUIRE(inst != nullptr);
 
-  // Defaults (amplitude 1.0): sin(pi/2)*1*0.5+0.5 = 1.0 (clamped).
-  inst->doTick(0.0);
+  // Defaults (amplitude 1.0): advance phase to 0.25 cycles → sin(pi/2)*1*0.5+0.5
+  // = 1.0 (clamped).
+  inst->doTick(0.05);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
         Catch::Approx(1.0).margin(1e-4));
 
-  // Patch amplitude -> 0.5: sin(pi/2)*0.5*0.5+0.5 = 0.75. Proves the patch
-  // marshalled into linear memory and on_state_patched applied it.
+  // Patch amplitude -> 0.5, then a dt=0 tick holds phase at 0.25:
+  // sin(pi/2)*0.5*0.5+0.5 = 0.75. Proves the patch marshalled into linear memory
+  // and on_state_patched applied it.
   inst->setParamFloat("amplitude", 0.5f);
   inst->doTick(0.0);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==

@@ -30,6 +30,10 @@ namespace env_lfo {
 struct State {
   float rate = 0.5f;
   float amplitude = 1.0f;
+  // Phase accumulator in cycles [0,1). Advanced by dt*rate every tick (style
+  // guide §2.1) so turning the rate knob changes only the FUTURE speed — it
+  // never retro-scales elapsed time into a phase jump the way time()*rate does.
+  double phase = 0.0;
 };
 
 // Type-level setup: schema. Runs once per type.
@@ -66,16 +70,18 @@ void init(void* self) {
   if (!s) return;
   s->rate = 0.5f;
   s->amplitude = 1.0f;
+  s->phase = 0.0;
 }
 
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  (void)dt;
-  double t = host::time();
   double rate = s->rate * 10.0; // map 0-1 param to 0-10 Hz
-  double phase = t * rate * 2.0 * M_PI;
-  float value = static_cast<float>(std::sin(phase) * s->amplitude * 0.5 + 0.5);
+  // Accumulate phase rather than reading time()*rate — see State::phase.
+  s->phase += dt * rate;
+  s->phase -= std::floor(s->phase); // wrap to [0,1)
+  float value =
+      static_cast<float>(std::sin(s->phase * 2.0 * M_PI) * s->amplitude * 0.5 + 0.5);
 
   // Clamp to [0, 1]
   if (value < 0.0f) value = 0.0f;
