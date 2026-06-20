@@ -69,29 +69,47 @@ interface Layout {
   handles: { node: number; field: 'attack' | 'decay' | 'release' }[];
 }
 
-// Build the display layout from the params. Each visible phase gets at least
-// `minW` width (sqrt-compressed time otherwise) so its handle is always grabbable.
+// Fixed, NON-LINEAR time axis: every phase boundary sits at timeToX(cumulative
+// seconds), a saturating map that squishes longer times toward — but never onto —
+// the right edge. So growing `decay` slides its handle visibly rightward (it
+// asymptotes, never pinning at the edge), which makes "this node IS the decay
+// time" obvious — important for the default Decay mode where it's the only knob.
+// A MIN_GAP keeps a zero-duration phase's handle from collapsing onto its
+// neighbour (every region stays clickable).
+const TX_K = 0.6;            // timeToX reference: t/(t+K) → asymptotes to 1
+const SUS_TIME = 0.6;        // display seconds for the (gate-held) sustain plateau
+const MIN_GAP = 0.05;        // min x between consecutive handles
+const MAX_X = 0.97;          // headroom so the axis visibly never reaches the end
+const timeToX = (t: number) => t / (t + TX_K);
+
 function layout(p: AdsrParams): Layout {
   const has = phasesFor(p.mode);
-  const minW = 0.08, susW = 0.5;
-  const wA = has.attack ? Math.max(minW, Math.sqrt(seconds(p.attack))) : 0;
-  const wD = Math.max(minW, Math.sqrt(seconds(p.decay)));
-  const wS = has.sustain ? susW : 0;
-  // ADS/ADSR show a release tail (ADS mirrors decay); D/AD already hit 0 at decay.
-  const wR = has.sustain ? Math.max(minW, Math.sqrt(seconds(has.release ? p.release : p.decay))) : 0;
   const susLvl = has.sustain ? clamp01(p.sustain) : 0;
 
   const raw: Pt[] = [];
   const segKind: SegKind[] = [];
-  let x = 0;
-  if (has.attack) { raw.push({ x: 0, y: 0 }); x += wA; raw.push({ x, y: 1 }); segKind.push('attack_curve'); }
-  else raw.push({ x: 0, y: 1 });                       // instant attack → start at peak
-  x += wD; raw.push({ x, y: susLvl }); segKind.push('decay_curve');
-  if (has.sustain) { x += wS; raw.push({ x, y: susLvl }); segKind.push('sustain'); }
-  if (wR > 0) { x += wR; raw.push({ x, y: 0 }); segKind.push('release_curve'); }
+  let t = 0;
+  if (has.attack) {
+    raw.push({ x: timeToX(0), y: 0 });
+    t += seconds(p.attack); raw.push({ x: timeToX(t), y: 1 }); segKind.push('attack_curve');
+  } else {
+    raw.push({ x: timeToX(0), y: 1 });                 // instant attack → start at peak
+  }
+  t += seconds(p.decay); raw.push({ x: timeToX(t), y: susLvl }); segKind.push('decay_curve');
+  if (has.sustain) {
+    t += SUS_TIME; raw.push({ x: timeToX(t), y: susLvl }); segKind.push('sustain');
+    // ADS/ADSR show a release tail (ADS mirrors decay); D/AD already hit 0 at decay.
+    t += seconds(has.release ? p.release : p.decay);
+    raw.push({ x: timeToX(t), y: 0 }); segKind.push('release_curve');
+  }
 
-  const total = x > 0 ? x : 1;
-  const pts = raw.map(n => ({ x: n.x / total, y: n.y }));
+  // Keep handles grabbable (a zero-duration phase has coincident x) + leave the
+  // end headroom that shows the axis never reaches 1.
+  for (let i = 1; i < raw.length; i++)
+    if (raw[i].x < raw[i - 1].x + MIN_GAP) raw[i].x = raw[i - 1].x + MIN_GAP;
+  for (const n of raw) if (n.x > MAX_X) n.x = MAX_X;
+
+  const pts = raw;
   const segCurve = segKind.map(k =>
     k === 'attack_curve' ? p.aCurve : k === 'decay_curve' ? p.dCurve : k === 'release_curve' ? p.rCurve : 0);
 
@@ -243,7 +261,10 @@ export class AdsrGraph extends MobxLitElement {
     } else if (this.field === 'sustain') {
       next = this.yFromPx(py);                                   // absolute level
     } else {
-      next = clamp(this.startVal - (py - this.startPy) / 120, -1, 1);  // bend ease
+      // Drag up = bend the curve UP (toward higher values). A falling segment
+      // (decay/release) needs the opposite ease sign from the rising attack.
+      const dir = this.field === 'attack_curve' ? -1 : 1;
+      next = clamp(this.startVal + dir * (py - this.startPy) / 120, -1, 1);
     }
     this.edit?.update(next);
   }
