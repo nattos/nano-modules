@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rebuild every WASM bundle.
+# Rebuild every WASM bundle, then refresh the per-arch AOT sidecars.
 #
 # Use this when a shared header or shader-common file changes
 # (effect_blur.h, gpu.h, host.h, shaders_common/*.hlsl, etc.) since
@@ -11,6 +11,11 @@
 #
 # Output goes to ../../build/wasm/, which web/public/wasm symlinks to,
 # so the dev server's wasm-hmr plugin will pick the change up live.
+#
+# After the .wasm bundles, this also runs ./build_aot.sh to regenerate the
+# `<bundle>-<arch>.aot` sidecars, because the native barrel/tests prefer a stale
+# .aot over a freshly rebuilt .wasm (see the AOT note near the bottom). The web
+# path never touches the .aot, so this only matters for native runs.
 
 set -e
 cd "$(dirname "$0")"
@@ -26,3 +31,40 @@ done
 
 echo "--- All bundles built ---"
 ls -la ../../build/wasm/*.wasm
+
+# Refresh the per-arch AOT sidecars from the just-built .wasm. The native barrel
+# and the Catch2 tests prefer a `<bundle>-<arch>.aot` over the `.wasm`
+# (preferredBundlePath in sketch/wasm_bundles.cpp), so a stale .aot silently
+# shadows this rebuild — exactly the footgun that makes a fresh .wasm look
+# ineffective natively. AOT is OPTIONAL: it needs `wamrc`, and without it the
+# bundles still load as portable .wasm. (build_aot.sh stays the standalone
+# primitive for CI / the AOT-only fast path referenced from CMakeLists + the
+# barrel README.) Set SKIP_AOT=1 to skip entirely; WAMRC=... overrides the
+# compiler path (passed through).
+#
+# Crucially, when wamrc is MISSING we do NOT just skip: a stale .aot left next to
+# a freshly rebuilt .wasm is worse than no .aot, because the loader would keep
+# running the old AOT bytecode. So we DELETE the stale sidecars (forcing the
+# correct .wasm fallback) and warn loudly.
+WAMRC="${WAMRC:-../tools/wamrc/wamrc}"
+if [ "${SKIP_AOT:-}" = "1" ]; then
+  echo "--- Skipping AOT sidecars (SKIP_AOT=1) ---"
+elif [ -x "$WAMRC" ] || command -v "$WAMRC" >/dev/null 2>&1; then
+  echo "--- Regenerating AOT sidecars ---"
+  WAMRC="$WAMRC" ./build_aot.sh
+else
+  stale=( ../../build/wasm/*.aot )
+  echo "!!! ====================================================================== !!!"
+  echo "!!! wamrc NOT FOUND at '$WAMRC' — cannot regenerate AOT sidecars.           !!!"
+  echo "!!! The just-rebuilt .wasm bundles now have NO matching AOT, so any stale   !!!"
+  echo "!!! <bundle>-<arch>.aot would shadow them natively (preferredBundlePath).   !!!"
+  if [ -e "${stale[0]}" ]; then
+    echo "!!! DELETING stale sidecars so the native loader falls back to the .wasm:   !!!"
+    for a in "${stale[@]}"; do echo "!!!   rm $a"; done
+    rm -f "${stale[@]}"
+  else
+    echo "!!! (no .aot sidecars present — nothing to delete)                          !!!"
+  fi
+  echo "!!! Install wamrc (native/tools/wamrc/README.md) to restore AOT speed.      !!!"
+  echo "!!! ====================================================================== !!!"
+fi

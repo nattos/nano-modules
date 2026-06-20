@@ -11,6 +11,11 @@
 # Rosetta on Apple Silicon) cross-compiles every arch via --target, so a single
 # binary produces the whole universal set.
 #
+# `build_all.sh` invokes this automatically after rebuilding the .wasm bundles
+# (non-fatally — it warns if wamrc is missing). Run it directly for the AOT-only
+# fast path: regenerate sidecars without a full .wasm rebuild (e.g. at CMake
+# configure time, or after a wamrc update).
+#
 # Usage:  build_aot.sh [bundle...]      # default: the shipped effect bundles
 #   OUT_DIR=...  ARCHES="aarch64 x86_64"  WAMRC=/path/to/wamrc  build_aot.sh
 set -e
