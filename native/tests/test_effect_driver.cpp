@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 #include "bridge/param_cache.h"
@@ -361,6 +362,121 @@ TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]")
       double v = doc.get_plugin_state(key)["output"].get<double>();
       CHECK(v == Catch::Approx(1.0 - i * kDt).margin(1e-4));
     }
+  }
+
+  host.shutdown();
+}
+
+// Drive data.adsr through its phase machine: a Decay-mode pluck, a held-gate
+// ADSR that plateaus at the sustain level then releases, and the Reset-vs-Legato
+// retrigger distinction (Reset restarts the attack from 0; Legato does not).
+TEST_CASE("data.adsr envelope phases + retrigger", "[effect_driver]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  FrameState fs;
+  fs.elapsed_time = 0.0;
+  host.set_frame_state(id, &fs);
+
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "data.adsr") { w = &e; break; }
+  }
+  REQUIRE(w != nullptr);
+
+  EffectDesc desc;
+  desc.id = w->id;
+  desc.wasm_host = &host;
+  desc.wasm_module_id = id;
+  desc.w_module_init = w->idx_module_init;
+  desc.w_create = w->idx_create;
+  desc.w_destroy = w->idx_destroy;
+  desc.w_init = w->idx_init;
+  desc.w_tick = w->idx_tick;
+  desc.w_on_state_patched = w->idx_on_state_patched;
+
+  EffectRuntime rt(nullptr);
+  rt.registerEffect(desc);
+  const std::string key = host.plugin_key(id);
+  REQUIRE(!key.empty());
+
+  // Mode / retrigger selector values (mirror of the effect's enums).
+  enum { ModeD = 0, ModeAD = 1, ModeADS = 2, ModeADSR = 3 };
+  enum { RetrigReset = 0, RetrigLegato = 1, RetrigPoly = 2 };
+
+  const double kDt = 0.016;
+  auto out = [&]() { return doc.get_plugin_state(key)["output"].get<double>(); };
+  auto tickN = [&](EffectInstance* inst, int n) {
+    double last = 0.0;
+    for (int i = 0; i < n; i++) { inst->doTick(kDt); last = out(); }
+    return last;
+  };
+
+  // A — Decay mode: an event trigger gives an instant attack then a fall to 0.
+  {
+    EffectInstance* a = rt.instanceFor("data.adsr", "pluck");
+    REQUIRE(a != nullptr);
+    a->setParamFloat("auto_rate", 0.0f);   // silence the Poisson auto-trigger
+    a->setParamFloat("mode", static_cast<float>(ModeD));
+    a->setParamFloat("decay", 0.3f);       // ~0.36s
+    a->setParamFloat("trigger", 1.0f);     // rising edge → fire
+    a->doTick(kDt);
+    CHECK(out() > 0.9);                     // instant attack → ~1
+    CHECK(tickN(a, 45) < 0.05);            // > decay → fallen back to ~0
+  }
+
+  // B — Held-gate ADSR: rises, plateaus at the sustain level while held, then
+  // releases to 0 once the gate falls.
+  {
+    EffectInstance* b = rt.instanceFor("data.adsr", "gate");
+    REQUIRE(b != nullptr);
+    b->setParamFloat("auto_rate", 0.0f);
+    b->setParamFloat("mode", static_cast<float>(ModeADSR));
+    b->setParamFloat("attack", 0.1f);
+    b->setParamFloat("decay", 0.1f);
+    b->setParamFloat("sustain", 0.5f);
+    b->setParamFloat("release", 0.3f);
+    b->setParamFloat("gate", 1.0f);        // rising → held
+    double vs = tickN(b, 20);              // past attack+decay → sustain
+    CHECK(std::abs(vs - 0.5) < 0.03);
+    CHECK(std::abs(tickN(b, 30) - 0.5) < 0.03);   // holds while gated
+    b->setParamFloat("gate", 0.0f);        // falling → release
+    CHECK(tickN(b, 45) < 0.05);
+  }
+
+  // C — Retrigger: Reset restarts the attack from 0 (output dips); Legato
+  // re-gates without restarting (output keeps climbing).
+  auto midAttackRetrigger = [&](const char* ikey, int retrig) {
+    EffectInstance* inst = rt.instanceFor("data.adsr", ikey);
+    inst->setParamFloat("auto_rate", 0.0f);
+    inst->setParamFloat("mode", static_cast<float>(ModeAD));
+    inst->setParamFloat("attack", 0.4f);   // long attack so we land mid-ramp
+    inst->setParamFloat("decay", 0.5f);
+    inst->setParamFloat("retrigger", static_cast<float>(retrig));
+    inst->setParamFloat("trigger", 1.0f);
+    double mid = tickN(inst, 5);           // partway up the attack
+    inst->setParamFloat("trigger", 0.0f);
+    inst->setParamFloat("trigger", 1.0f);  // re-fire (rising edge)
+    inst->doTick(kDt);
+    return std::pair<double, double>(mid, out());
+  };
+  {
+    auto [mid, after] = midAttackRetrigger("retrig_reset", RetrigReset);
+    CHECK(mid > 0.02);
+    CHECK(after < mid);                     // Reset dropped back toward 0
+  }
+  {
+    auto [mid, after] = midAttackRetrigger("retrig_legato", RetrigLegato);
+    CHECK(after >= mid);                     // Legato kept rising
   }
 
   host.shutdown();

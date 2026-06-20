@@ -43,6 +43,7 @@ NANO_DECLARE_INSTANCE_EFFECT(fuse_mul)
 NANO_DECLARE_INSTANCE_EFFECT(fuse_solid)
 
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
+NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 
@@ -167,6 +168,16 @@ void nano_module_main() {
         "data",
         "oscillator,modulation,automation",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
+    });
+
+    nano::registerEffect({
+        2,
+        "data.adsr",
+        "ADSR",
+        "ADSR envelope generator modulation source",
+        "data",
+        "envelope,adsr,modulation,automation,trigger,generator",
+        NANO_INSTANCE_LIFECYCLE(env_adsr),
     });
 
     nano::registerEffect({
