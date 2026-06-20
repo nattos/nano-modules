@@ -34,12 +34,9 @@ import { editorRegistry } from '../editor-registry';
 import { traceController } from '../state/trace-controller';
 import { isTypingInEditable } from '../utils/keyboard';
 
-// Import inspector registrations (self-registering)
-import '../editors/brightness-contrast-inspector';
-import '../editors/shape-fold-inspector';
-import '../editors/phase-fold-inspector';
-import '../editors/spectral-lfo-inspector';
-import '../editors/envelope-inspector';
+// Import inspector registrations (self-registering) — single barrel shared with
+// the effects IDE so the lists can't drift.
+import '../editors/all-inspectors';
 
 const EXTRA_COLUMNS = 2;
 

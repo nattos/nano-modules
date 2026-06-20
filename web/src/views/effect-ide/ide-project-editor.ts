@@ -33,13 +33,10 @@ import '../../widgets/columns-view';
 import '../../widgets/column-group';
 import '../../widgets/taps-overlay';
 
-// Custom inspector registrations (self-registering side-effect imports). The
-// effect IDE has its own module graph and does NOT load edit-tab.ts, where the
-// sketch shell registers these — so the custom field editors must be imported
-// here too, or they never appear in the IDE.
-import '../../editors/shape-fold-inspector';
-import '../../editors/phase-fold-inspector';
-import '../../editors/spectral-lfo-inspector';
+// Custom inspector registrations — a single barrel shared with edit-tab.ts so
+// the effect IDE and the sketch shell can never disagree on which custom editors
+// exist (the lists used to drift, silently dropping mod.envelope from the IDE).
+import '../../editors/all-inspectors';
 
 @customElement('ide-project-editor')
 export class IdeProjectEditor extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
