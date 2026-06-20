@@ -944,6 +944,13 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(std::find(dcaps.begin(), dcaps.end(), std::string("modulation_shaper")) != dcaps.end());
   CHECK(std::find(dcaps.begin(), dcaps.end(), std::string("modulation_shaper_unary")) != dcaps.end());
 
+  // mod.envelope (mod_envelope lifecycle) → also a unary modulation shaper.
+  const auto* envp = registry.find("mod.envelope");
+  REQUIRE(envp != nullptr);
+  const auto& ecaps = envp->capabilities;
+  CHECK(std::find(ecaps.begin(), ecaps.end(), std::string("modulation_shaper")) != ecaps.end());
+  CHECK(std::find(ecaps.begin(), ecaps.end(), std::string("modulation_shaper_unary")) != ecaps.end());
+
   // A plain image effect declares no capabilities (the array is absent) — and
   // is NOT a generator.
   const auto* bc = registry.find("video.brightness_contrast");

@@ -87,6 +87,8 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_envelope)
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -427,6 +429,16 @@ void nano_module_main() {
         "mod",
         "modulation,delay,line,echo,offset,lag,shaper",
         NANO_INSTANCE_LIFECYCLE(mod_delay),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.envelope",
+        "Modulation Envelope",
+        "Unary modulation shaper: remaps a modulation value through an arbitrary drawn envelope curve (per-segment exponential easing)",
+        "mod",
+        "modulation,envelope,remap,curve,shaper,draw,easing",
+        NANO_INSTANCE_LIFECYCLE(mod_envelope),
     });
 }
 

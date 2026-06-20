@@ -231,6 +231,7 @@ const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'mod.remap': 'mod.remap',
   'mod.smooth': 'mod.smooth',
   'mod.delay': 'mod.delay',
+  'mod.envelope': 'mod.envelope',
   'video.blend': 'video.blend',
   'sequencer.nanolooper': 'sequencer.nanolooper',
   'utility.paramlinker': 'utility.paramlinker',
