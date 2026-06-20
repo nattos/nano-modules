@@ -213,8 +213,18 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     const factory = editorRegistry.getInspectorFactory(moduleType);
     if (!factory) return null;
     let el = this.inspectorCache.get(instanceKey);
+    // Recreate when the instance's module TYPE changed under the same key: the
+    // "add" flow inserts a default video.brightness_contrast and then changes the
+    // type (reusing the instanceKey), so a cache keyed only on instanceKey would
+    // keep showing the brightness_contrast inspector until a reload.
+    if (el && (el as any).moduleType !== moduleType) {
+      editorRegistry.getInspectorFactory((el as any).moduleType ?? '')?.destroy(el);
+      this.inspectorCache.delete(instanceKey);
+      el = undefined;
+    }
     if (!el) {
       el = factory.create(instanceKey, binding);
+      (el as any).moduleType = moduleType;
       this.inspectorCache.set(instanceKey, el);
     } else {
       (el as any).binding = binding;
