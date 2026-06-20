@@ -244,11 +244,22 @@ export class AppController {
   private defaultStateForPlugin(plugin: PluginInfo): Record<string, any> {
     const state: Record<string, any> = {};
     const schema = (plugin.schema ?? {}) as Record<string, any>;
+    // OUTPUT fields (io & Output) are live-published by the running effect, not
+    // authored. Seeding them into instance state at the schema default (0) bakes
+    // a stale 0 that shadows the engine's published value in the field binding —
+    // the output trace would read 0.0 forever. Skip them in BOTH loops (scalar
+    // outputs also appear in the legacy `params` list, which carries no io).
+    const outputs = new Set<string>();
+    for (const [name, field] of Object.entries(schema)) {
+      if (((field?.io ?? 0) & 2) !== 0) outputs.add(name);
+    }
     for (const [name, field] of Object.entries(schema)) {
       if (field?.type === 'texture') continue;            // wiring, not state
+      if (outputs.has(name)) continue;                    // live output, not state
       if (field?.default !== undefined) state[name] = field.default;
     }
     for (const p of plugin.params) {
+      if (outputs.has(p.name)) continue;
       if (!(p.name in state)) state[p.name] = p.defaultValue;
     }
     return state;

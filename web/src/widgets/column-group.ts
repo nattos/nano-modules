@@ -1309,16 +1309,23 @@ export class ColumnGroup extends MobxLitElement {
     return {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
-        // Authored value (loaded/saved state + edits) wins. pluginStates is
-        // seeded with schema DEFAULTS for input fields the module never
-        // republishes (it only set_val()s its outputs), so trusting it first
+        const ps = appState.local.engine.pluginStates[entry.instance_key];
+        // OUTPUT fields are LIVE-published by the running effect — pluginStates
+        // is authoritative. Prefer it, and crucially do NOT fall through to the
+        // authored state, which a freshly-created instance is seeded with at the
+        // schema default (0). That stale 0 would otherwise shadow the live value
+        // and pin the output trace at 0.0 forever (until save+reload dropped it).
+        const isOutput = (((plugin?.schema as any)?.[fieldPath]?.io ?? 0) & 2) !== 0;
+        if (isOutput && ps && fieldPath in ps) return ps[fieldPath];
+        // Input fields: authored value (loaded/saved state + edits) wins.
+        // pluginStates is seeded with schema DEFAULTS for input fields the module
+        // never republishes (it only set_val()s its outputs), so trusting it first
         // would shadow just-loaded state with defaults a frame after load.
         const sketch = appState.database.sketches[this.sketchId];
         const instState = sketch?.instances?.[entry.instance_key]?.state;
         if (instState && fieldPath in instState) return instState[fieldPath];
         if (entry.params && fieldPath in entry.params) return entry.params[fieldPath];
         // Live published value (effect outputs / broadcasts) from the engine.
-        const ps = appState.local.engine.pluginStates[entry.instance_key];
         if (ps && fieldPath in ps) return ps[fieldPath];
         return plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
       },
