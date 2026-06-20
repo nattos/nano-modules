@@ -28,7 +28,7 @@ describe('modulation shaper chaining E2E', () => {
       { type: 'module', module_type: 'mod.envelope', instance_key: 'env@0',
         params: { curve } },
       { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
     ],
     // Only the final hop is drawn; lfo→smooth and smooth→envelope auto-connect.
     wires: [

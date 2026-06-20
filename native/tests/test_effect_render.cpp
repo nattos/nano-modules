@@ -650,8 +650,9 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   }
 
   // An ENVELOPE shaper on the wire reshapes the value the same way mod.envelope
-  // would. Curve (0,0.2)->(1,0.6) maps lfo.output 0.5 → 0.4, and narrows the band
-  // to the envelope's [0.2,0.6] output window (swept over the source's [0,1]).
+  // would. Curve (0,0.2)->(1,0.6) maps lfo.output 0.5 → 0.4, narrowing the band
+  // to the envelope's [0.2,0.6] output window (swept over the source's [0,1]) —
+  // then folded into brightness's signed [-1,1] as [-0.6, 0.2] (2v-1).
   SECTION("an envelope on the wire reshapes the value + band") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
@@ -671,9 +672,9 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     INFO("modulationData = " << md.dump());
     REQUIRE(md.contains("bc"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>() == Catch::Approx(0.4).margin(0.01));   // env(0.5)=0.4
-    CHECK(b["min"].get<double>()   == Catch::Approx(0.2).margin(0.01));   // env(0)=0.2
-    CHECK(b["max"].get<double>()   == Catch::Approx(0.6).margin(0.01));   // env(1)=0.6
+    CHECK(b["value"].get<double>() == Catch::Approx(-0.2).margin(0.01));  // env(0.5)=0.4 → -0.2
+    CHECK(b["min"].get<double>()   == Catch::Approx(-0.6).margin(0.01));  // env(0)=0.2 → -0.6
+    CHECK(b["max"].get<double>()   == Catch::Approx(0.2).margin(0.01));   // env(1)=0.6 → 0.2
   }
 
   // A DELAY shaper on the wire lags the value: it's stateful across frames, so a
@@ -694,17 +695,19 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
       ]
     })JSON");
     // Frame 1: source 0.2 — the delay underruns to the only (== current) sample.
+    // Folded into brightness's signed [-1,1]: 2*0.2-1 = -0.6.
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
     backend->submit();
     CHECK(executor.lastModulationData()["bc"]["brightness"]["value"].get<double>()
-            == Catch::Approx(0.2).margin(0.02));
-    // Frame 2: source jumps to 0.8, but the 1s delay still reads frame 1's 0.2.
+            == Catch::Approx(-0.6).margin(0.02));
+    // Frame 2: source jumps to 0.8, but the 1s delay still reads frame 1's 0.2
+    // (folded -0.6); without the delay it would track 0.8 (folded +0.6).
     sketch["instances"]["lfo"]["state"]["output"] = 0.8;
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, false);
     backend->submit();
     const auto& md = executor.lastModulationData();
     INFO("modulationData = " << md.dump());
-    CHECK(md["bc"]["brightness"]["value"].get<double>() == Catch::Approx(0.2).margin(0.05));
+    CHECK(md["bc"]["brightness"]["value"].get<double>() == Catch::Approx(-0.6).margin(0.05));
   }
 
   // Forcing `signed` on a source that EXPLICITLY declares unsigned [0,1]

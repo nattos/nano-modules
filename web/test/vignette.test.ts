@@ -5,7 +5,7 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // corners are outside, which makes assertions straightforward.
 //
 // Schema: amount, radius, softness (primary scalars); center (vec2),
-// shape (secondary). center is a vec2 so tests refer to it by name.
+// shape + squash (secondary). center is a vec2 so tests refer to it by name.
 
 describe('Vignette Effect E2E', () => {
   jest.setTimeout(30000);
@@ -23,7 +23,7 @@ describe('Vignette Effect E2E', () => {
     const names = frame.params.map(p => p.name).sort();
     // `center` is a vec2 so it doesn't appear in the legacy scalar
     // params[] list — only scalars do.
-    expect(names).toEqual(['amount', 'radius', 'shape', 'softness']);
+    expect(names).toEqual(['amount', 'radius', 'shape', 'softness', 'squash']);
   });
 
   it('amount=0 leaves the image unchanged everywhere', async () => {

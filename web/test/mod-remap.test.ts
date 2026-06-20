@@ -28,7 +28,7 @@ describe('mod.remap shaper node E2E', () => {
       { type: 'module', module_type: 'mod.remap', instance_key: 'rm@0',
         params: remap },
       { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
     ],
     wires: [
       { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
@@ -97,7 +97,7 @@ describe('mod.remap generator->shaper auto-connect E2E', () => {
       { type: 'module', module_type: 'mod.remap', instance_key: 'rm@0',
         params: remap },
       { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
     ],
     // NOTE: no wire into rm@0.input — the executor auto-connects lfo@0 -> rm@0.
     wires: [

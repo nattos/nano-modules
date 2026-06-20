@@ -31,7 +31,7 @@ describe('mod.envelope shaper node E2E', () => {
           params: { color: [1.0, 1.0, 1.0] } },
         env,
         { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-          params: { brightness: 1.0, contrast: 0.25 } },
+          params: { brightness: 1.0, contrast: -0.5 } },
       ],
       wires: [
         { id: 'w1', src: { instanceKey: 'env@0', field: 'output' },

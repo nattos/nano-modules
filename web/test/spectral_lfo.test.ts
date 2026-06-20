@@ -23,7 +23,7 @@ function buildSketch(lfoParams: Record<string, unknown>, outField = 'output'): S
       { type: 'module', module_type: 'data.spectral_lfo', instance_key: 'lfo@0',
         params: lfoParams },
       { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
     ],
     wires: [
       { id: 'w0', src: { instanceKey: 'lfo@0', field: outField },

@@ -89,7 +89,8 @@ describe('Wire routing E2E', () => {
     //
     // Chain: white solid → lfo (passthrough) → brightness_contrast. A wire feeds
     // lfo.output (0.5) into bc.brightness, OVERRIDING the stored brightness=1.0.
-    //   brightness 0.5 → shift 0; contrast 0.25 → scale 0.5; white(1) → 0.5 = gray.
+    //   src 0.5 folds into brightness's [-1,1] → 0 (neutral shift); contrast -0.5
+    //   → scale 0.5; white(1) → 0.5 = gray.
     // The three outcomes are distinct, so gray(128) proves BOTH mechanics at once:
     //   • wire failed   → brightness stays 1.0 → (1+1)*0.5 = white(255)
     //   • passthrough broke (lfo overwrote the chain with its empty image)
@@ -103,7 +104,7 @@ describe('Wire routing E2E', () => {
         { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
         params: { rate: 0.0, amplitude: 1.0 } },
         { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
       ],
       wires: [
         { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
@@ -187,7 +188,7 @@ describe('Wire routing E2E', () => {
     // The dashboard is an executor-handled virtual knob bank (no WASM). knob_0
     // is wired BOTH ways: lfo.output (0.5) drives INTO it (overriding the stored
     // 1.0), and it drives OUT to brightness_contrast.brightness.
-    //   white input, brightness 0.5 → shift 0; contrast 0.25 → scale 0.5 → gray.
+    //   white input, src 0.5 folds to brightness 0 (neutral); contrast -0.5 → scale 0.5 → gray.
     // gray(128) proves both directions: if the input wire failed the knob stays
     // 1.0 → white; if the output wire failed brightness stays its stored 1.0 →
     // white. Only knob=0.5 reaching brightness yields gray.
@@ -200,7 +201,7 @@ describe('Wire routing E2E', () => {
         params: { rate: 0.0, amplitude: 1.0 } },
         { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
         { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
       ],
       instances: {
         'dash@0': { module_type: 'util.dashboard', state: { knobCount: 1, knobs: [1.0] } },

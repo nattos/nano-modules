@@ -25,12 +25,12 @@ describe('Brightness/Contrast Effect E2E', () => {
     });
 
     it('neutral settings pass through color unchanged', async () => {
-      // brightness=0.5 (neutral), contrast=0.5 (1x) should pass through
+      // brightness=0 (neutral), contrast=0 (1x) should pass through
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
         bundle: 'core',
         inputColor: [0.5, 0.25, 0.75, 1.0],
-        params: [[0, 0.5], [1, 0.5]],
+        params: [[0, 0.0], [1, 0.0]],
         dumpName: 'bc_neutral',
       });
 
@@ -39,13 +39,13 @@ describe('Brightness/Contrast Effect E2E', () => {
       frame.expectPixelAt(32, 32, { r: 128, g: 64, b: 191, a: 255 }, 10);
     });
 
-    it('contrast=0 produces black', async () => {
-      // contrast=0 means multiply by 0 → all black
+    it('contrast=-1 produces black', async () => {
+      // contrast=-1 means multiply by (c+1)=0 → all black
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
-        params: [[0, 0.5], [1, 0.0]],
+        params: [[0, 0.0], [1, -1.0]],
         dumpName: 'bc_contrast_zero',
       });
 
@@ -54,13 +54,13 @@ describe('Brightness/Contrast Effect E2E', () => {
     });
 
     it('contrast=1.0 doubles values', async () => {
-      // contrast=1.0 means multiply by 2.0
-      // Input: 0.25 → 0.25 * 2.0 = 0.5 → 128
+      // contrast=1.0 means multiply by (c+1)=2.0
+      // Input: 0.25 → 0.25 * 2.0 = 0.5 → 128 (brightness=0 neutral)
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
         bundle: 'core',
         inputColor: [0.25, 0.25, 0.25, 1.0],
-        params: [[0, 0.5], [1, 1.0]],
+        params: [[0, 0.0], [1, 1.0]],
         dumpName: 'bc_contrast_double',
       });
 
@@ -69,13 +69,13 @@ describe('Brightness/Contrast Effect E2E', () => {
     });
 
     it('brightness=1.0 maxes out white', async () => {
-      // brightness=1.0 adds +1.0 to RGB, then contrast=0.5 (1x)
+      // brightness=1.0 adds +1.0 to RGB, then contrast=0 (1x)
       // Input 0.0 + 1.0 = 1.0 → saturated white
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
         bundle: 'core',
         inputColor: [0.0, 0.0, 0.0, 1.0],
-        params: [[0, 1.0], [1, 0.5]],
+        params: [[0, 1.0], [1, 0.0]],
         dumpName: 'bc_brightness_max',
       });
 
@@ -83,14 +83,14 @@ describe('Brightness/Contrast Effect E2E', () => {
       frame.expectUniformColor({ r: 255, g: 255, b: 255, a: 255 }, 5);
     });
 
-    it('brightness=0 darkens by -1', async () => {
-      // brightness=0 adds -1.0 to RGB, then contrast=0.5 (1x)
+    it('brightness=-1 darkens by 1', async () => {
+      // brightness=-1 adds -1.0 to RGB, then contrast=0 (1x)
       // Input 0.5 + (-1.0) = -0.5 → saturated to 0
       const frame = await runGpuEffectTest({
         module: 'brightness_contrast.wasm',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
-        params: [[0, 0.0], [1, 0.5]],
+        params: [[0, -1.0], [1, 0.0]],
         dumpName: 'bc_brightness_min',
       });
 
@@ -118,14 +118,14 @@ describe('Brightness/Contrast Effect E2E', () => {
       const after = await runGpuChainTest({
         chain: [
           { module: 'spinningtris.wasm', params: [[0, 0.5]], ticks: 5 },
-          { module: 'brightness_contrast.wasm', params: [[0, 0.5], [1, 0.25]] },
+          { module: 'brightness_contrast.wasm', params: [[0, 0.0], [1, -0.5]] },
         ],
         width: 64, height: 64,
         dumpName: 'chain_half_contrast',
       });
       expect(after.success).toBe(true);
 
-      // With contrast=0.25 (multiply by 0.5), all pixel values should be halved
+      // With contrast=-0.5 (multiply by 0.5), all pixel values should be halved
       // So the average brightness should be noticeably lower
       const beforeAvg = before.averageColor();
       const afterAvg = after.averageColor();
@@ -137,11 +137,11 @@ describe('Brightness/Contrast Effect E2E', () => {
       after.expectDifferentFrom(before, 50);
     });
 
-    it('contrast=0 in chain produces black', async () => {
+    it('contrast=-1 in chain produces black', async () => {
       const frame = await runGpuChainTest({
         chain: [
           { module: 'spinningtris.wasm', params: [[0, 0.5]], ticks: 5 },
-          { module: 'brightness_contrast.wasm', params: [[0, 0.5], [1, 0.0]] },
+          { module: 'brightness_contrast.wasm', params: [[0, 0.0], [1, -1.0]] },
         ],
         width: 64, height: 64,
         dumpName: 'chain_black',

@@ -6,16 +6,14 @@ import type { Sketch } from '../src/sketch-types';
  * field's declared range per the combine mode, instead of feeding it raw.
  *
  * Probe: white solid → data.lfo (rate 0 → constant output 0.5) → brightness_contrast,
- * with lfo.output wired into bc.brightness (declared range 0..1). bc maps
- * brightness 0.5 → neutral shift → gray(128); higher brightness → brighter.
- *   - absolute / unsigned replace: input 0.5 → brightness 0.5 → gray(128)
- *     (for a 0..1 field, unsigned replace is a pass-through == absolute)
+ * with lfo.output wired into bc.brightness (now a SIGNED range −1..1). With
+ * contrast −0.5 (0.5× scale) on white, a neutral brightness (0) reads gray(128).
+ *   - absolute replace: feeds the raw 0.5 → shift +0.5 → (1+0.5)*0.5 = 0.75 → ~191.
+ *   - unsigned replace: folds 0.5 into [−1,1] → 0 (neutral) → gray(128). On a
+ *     SIGNED field this no longer equals absolute (it does for a 0..1 field).
  *   - signed replace: data.lfo.output is declared *unsigned*, so forcing `signed`
- *     RESCALES the source 0..1 → −1..1 (the polarity prescale). The midpoint 0.5
- *     maps to bipolar 0 (neutral) → brightness 0.5 → gray, same as absolute. The
- *     full-range span of that rescale is covered by the native "forced signed on
- *     an explicit-unsigned source rescales to bipolar" test; here the 0.5 source
- *     just lands on the neutral.
+ *     RESCALES the source 0..1 → −1..1 (the polarity prescale); the midpoint 0.5
+ *     maps to bipolar 0 (neutral) → gray(128), matching unsigned (NOT absolute).
  */
 describe('Wire magnitude modes E2E', () => {
   jest.setTimeout(30000);
@@ -28,7 +26,7 @@ describe('Wire magnitude modes E2E', () => {
       { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
         params: { rate: 0.0, amplitude: 1.0 } },
       { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
-        params: { brightness: 1.0, contrast: 0.25 } },
+        params: { brightness: 1.0, contrast: -0.5 } },
     ],
     wires: [
       { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
@@ -47,7 +45,7 @@ describe('Wire magnitude modes E2E', () => {
     dumpName: id,
   });
 
-  it('signed rescales an explicit-unsigned 0.5 source to bipolar neutral; unsigned == absolute', async () => {
+  it('absolute passes a 0.5 source raw; unsigned & signed fold it to the bipolar neutral', async () => {
     const abs = await run('mag_abs', 'absolute');
     const uns = await run('mag_uns', 'unsigned');
     const sgn = await run('mag_sgn', 'signed');
@@ -57,13 +55,15 @@ describe('Wire magnitude modes E2E', () => {
     const unsAvg = uns.trace('out').averageColor();
     const sgnAvg = sgn.trace('out').averageColor();
 
-    // absolute → brightness 0.5 → neutral gray.
-    abs.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
-    // unsigned replace on a 0..1 field is a pass-through → same as absolute.
-    expect(Math.abs(unsAvg.r - absAvg.r)).toBeLessThan(6);
-    // signed RESCALES the unsigned source (0..1 → −1..1): the midpoint 0.5 → 0
-    // (bipolar neutral) → brightness 0.5 → gray, matching absolute.
-    expect(Math.abs(sgnAvg.r - absAvg.r)).toBeLessThan(6);
+    // absolute feeds the raw 0.5 → shift +0.5 → (1+0.5)*0.5 = 0.75 → ~191.
+    abs.trace('out').expectPixelAt(32, 32, { r: 191, g: 191, b: 191 }, 15);
+    // unsigned replace folds 0.5 into the signed [-1,1] → 0 (neutral) → gray(128).
+    uns.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+    // signed rescales the unsigned source 0..1 → −1..1: midpoint 0.5 → 0 (neutral),
+    // matching unsigned (NOT absolute).
+    expect(Math.abs(sgnAvg.r - unsAvg.r)).toBeLessThan(6);
+    // absolute (raw 0.5) is clearly brighter than the folded-neutral gray.
+    expect(absAvg.r).toBeGreaterThan(unsAvg.r + 30);
   });
 
   it('scale + remap shape the RAW input before the range adjustment (not absolute-only)', async () => {

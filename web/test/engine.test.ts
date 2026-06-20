@@ -113,7 +113,7 @@ describe('Engine Worker E2E', () => {
                   type: 'module',
                   module_type: 'video.brightness_contrast',
                   instance_key: 'virtual_bc@0',
-                  params: { brightness: 0.5, contrast: 0.25 },  // neutral brightness, half contrast
+                  params: { brightness: 0.0, contrast: -0.5 },  // neutral brightness, half contrast
                 },
               ],
             },
@@ -140,7 +140,7 @@ describe('Engine Worker E2E', () => {
       processed.expectDifferentFrom(raw, 50);
     });
 
-    it('contrast=0 produces black', async () => {
+    it('contrast=-1 produces black', async () => {
       const result = await runEngineTest({
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
         tracePoints: [
@@ -157,7 +157,7 @@ describe('Engine Worker E2E', () => {
                   type: 'module',
                   module_type: 'video.brightness_contrast',
                   instance_key: 'virtual_bc_black@0',
-                  params: { brightness: 0.5, contrast: 0.0 },  // contrast=0 → black
+                  params: { brightness: 0.0, contrast: -1.0 },  // contrast=-1 → black
                 },
               ],
             },
@@ -351,7 +351,7 @@ describe('Engine Worker E2E', () => {
                   type: 'module',
                   module_type: 'video.brightness_contrast',
                   instance_key: 'bc_ce@0',
-                  params: { brightness: 0.5, contrast: 0.0 },
+                  params: { brightness: 0.0, contrast: -1.0 },
                 },
               ],
             },
@@ -367,7 +367,7 @@ describe('Engine Worker E2E', () => {
       const bcOut = result.trace('bc_out');
       const sketchOut = result.trace('sketch_out');
 
-      // Both should be black (contrast=0)
+      // Both should be black (contrast=-1)
       bcOut.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
       sketchOut.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
 
@@ -393,7 +393,7 @@ describe('Engine Worker E2E', () => {
                   type: 'module',
                   module_type: 'video.brightness_contrast',
                   instance_key: 'bc_io@0',
-                  params: { brightness: 0.5, contrast: 0.0 },
+                  params: { brightness: 0.0, contrast: -1.0 },
                 },
               ],
             },
@@ -412,7 +412,7 @@ describe('Engine Worker E2E', () => {
       // Input should be the spinningtris output (colorful)
       bcIn.expectNotSolidColor({ r: 0, g: 0, b: 0 });
 
-      // Output should be black (contrast=0)
+      // Output should be black (contrast=-1)
       bcOut.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
 
       // They should be different
@@ -421,7 +421,7 @@ describe('Engine Worker E2E', () => {
   });
 
   describe('param persistence across sketch updates', () => {
-    it('contrast=0 stays black across repeated updateSketch calls', async () => {
+    it('contrast=-1 stays black across repeated updateSketch calls', async () => {
       // Repro for bug: re-sending a sketch via updateSketch caused its module to
       // render with default params instead of the ones in the sketch.
 
@@ -432,7 +432,7 @@ describe('Engine Worker E2E', () => {
             type: 'module',
             module_type: 'video.brightness_contrast',
             instance_key: 'bc_move@0',
-            params: { brightness: 0.5, contrast: 0.0 },
+            params: { brightness: 0.0, contrast: -1.0 },
           },
         ],
       });
@@ -442,7 +442,7 @@ describe('Engine Worker E2E', () => {
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
         dumpName: 'engine_sketch_resend',
         phases: [
-          // Phase 0: contrast=0 → should be black
+          // Phase 0: contrast=-1 → should be black
           {
             commands: [
               { type: 'createSketch', sketchId: 'sk_move', sketch: makeSketch() },
@@ -479,7 +479,7 @@ describe('Engine Worker E2E', () => {
       const p1 = result.phases[1].trace('out');
       const p2 = result.phases[2].trace('out');
 
-      // All three phases should be black (contrast=0)
+      // All three phases should be black (contrast=-1)
       p0.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
       p1.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
       p2.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
@@ -504,7 +504,7 @@ describe('Engine Worker E2E', () => {
                   type: 'module',
                   module_type: 'video.brightness_contrast',
                   instance_key: 'bc_trail@0',
-                  params: { brightness: 0.5, contrast: 0.0 },
+                  params: { brightness: 0.0, contrast: -1.0 },
                 },
               ],
             },
@@ -517,7 +517,7 @@ describe('Engine Worker E2E', () => {
 
       expect(result.success).toBe(true);
       const frame = result.trace('out');
-      // Should be black (contrast=0), NOT the anchor's colorful output
+      // Should be black (contrast=-1), NOT the anchor's colorful output
       frame.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
     });
 
@@ -547,7 +547,7 @@ describe('Engine Worker E2E', () => {
             type: 'module',
             module_type: 'video.brightness_contrast',
             instance_key: 'bc_setparam@0',
-            params: { brightness: 0.5, contrast: 0.0 },
+            params: { brightness: 0.0, contrast: -1.0 },
           },
         ],
       };
@@ -557,7 +557,7 @@ describe('Engine Worker E2E', () => {
         modules: ['generator.spinningtris', 'video.brightness_contrast'],
         dumpName: 'engine_setparam_resend',
         phases: [
-          // Phase 0: Create sketch with empty params, then set contrast=0
+          // Phase 0: Create sketch with empty params, then set contrast=-1
           {
             commands: [
               { type: 'createSketch', sketchId: 'sk_sp', sketch: sketchEmpty },
@@ -566,7 +566,7 @@ describe('Engine Worker E2E', () => {
               ]},
               // Simulate setEffectParam: mutate → updateSketch, then setParam
               { type: 'updateSketch', sketchId: 'sk_sp', sketch: sketchWithParams },
-              { type: 'setParam', sketchId: 'sk_sp', colIdx: 0, chainIdx: 0, paramKey: 'contrast', value: 0.0 },
+              { type: 'setParam', sketchId: 'sk_sp', colIdx: 0, chainIdx: 0, paramKey: 'contrast', value: -1.0 },
             ],
             waitFrames: 20,
             captureTraceIds: ['out'],
@@ -597,7 +597,7 @@ describe('Engine Worker E2E', () => {
       const p1 = result.phases[1].trace('out');
       const p2 = result.phases[2].trace('out');
 
-      // All phases should be black (contrast=0)
+      // All phases should be black (contrast=-1)
       p0.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
       p1.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
       p2.expectUniformColor({ r: 0, g: 0, b: 0 }, 5);
