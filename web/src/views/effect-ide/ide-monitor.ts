@@ -11,7 +11,7 @@
  */
 
 import { html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
@@ -19,8 +19,25 @@ import { appController } from '../../state/controller';
 import '../../widgets/texture-monitor';
 import '../../widgets/ui-button';
 
+/** Fixed internal capture resolution of the monitor (the canvas/trace size).
+ *  Independent of the on-screen display size, which scales to fit. */
+const CAPTURE_W = 640;
+const CAPTURE_H = 360;
+const ASPECT = CAPTURE_W / CAPTURE_H;
+/** Magnification when the zoom toggle is active. */
+const ZOOM_FACTOR = 4;
+
 @customElement('ide-monitor')
 export class IdeMonitor extends MobxLitElement {
+  /** Content-box size of `.preview` (padding excluded), tracked via ResizeObserver. */
+  @state() private availW = 0;
+  @state() private availH = 0;
+
+  /** When active, the monitor pops in at ZOOM_FACTOR and the preview scrolls. */
+  @state() private zoomed = false;
+
+  private resizeObserver: ResizeObserver | null = null;
+
   static styles = css`
     :host {
       display: flex;
@@ -32,15 +49,26 @@ export class IdeMonitor extends MobxLitElement {
     .preview {
       flex: 1;
       display: flex;
-      align-items: center;
-      justify-content: center;
+      /* "safe" centering keeps the stage centered while it fits, but falls
+         back to start-alignment when it overflows (zoom) — otherwise the
+         top/left overflow is clipped and unreachable by the scrollbars. */
+      align-items: safe center;
+      justify-content: safe center;
       padding: 16px;
       background: #000;
       overflow: hidden;
+      min-height: 0;
+      min-width: 0;
     }
-    texture-monitor {
-      max-width: 100%;
-      max-height: 100%;
+    .preview.zoomed {
+      /* Pop-in mode: the stage is larger than the viewport, so scroll it. */
+      overflow: auto;
+    }
+    /* The stage is sized to the exact contain-fit (× zoom) box, so the
+       monitor inside fills it with no letterboxing. flex-shrink:0 keeps it
+       at full size while zoomed (so the flex container can scroll past it). */
+    .stage {
+      flex-shrink: 0;
     }
     .empty {
       flex: 1;
@@ -68,25 +96,66 @@ export class IdeMonitor extends MobxLitElement {
     }
   `;
 
+  firstUpdated() {
+    const preview = this.renderRoot.querySelector('.preview') as HTMLElement | null;
+    if (!preview) return;
+    this.resizeObserver = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (!box) return;
+      this.availW = box.width;
+      this.availH = box.height;
+    });
+    this.resizeObserver.observe(preview);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+  }
+
+  /** Largest box of the monitor's aspect ratio that fits the available area,
+   *  scaled by the active zoom factor. */
+  private stageSize(): { w: number; h: number } {
+    let w = this.availW;
+    let h = w / ASPECT;
+    if (h > this.availH) {
+      h = this.availH;
+      w = h * ASPECT;
+    }
+    const z = this.zoomed ? ZOOM_FACTOR : 1;
+    return { w: Math.max(1, Math.floor(w * z)), h: Math.max(1, Math.floor(h * z)) };
+  }
+
   render() {
     const sel = appState.local.userSettings.selectedProjectId;
     const sketch = sel ? appState.database.sketches[sel] : null;
     const paused = appState.local.userSettings.paused;
     const fps = appState.local.engine.fps;
     const error = appState.local.engine.error;
+    const { w, h } = this.stageSize();
     return html`
-      <div class="preview">
+      <div class="preview ${this.zoomed ? 'zoomed' : ''}">
         ${sel && sketch
-          ? html`<texture-monitor
-              .traceId=${`ide_preview:${sel}`}
-              .traceTarget=${{ type: 'sketch_output', sketchId: sel } as any}
-              .width=${640}
-              .height=${360}
-              resolution="high"
-            ></texture-monitor>`
+          ? html`<div class="stage" style="width:${w}px;height:${h}px">
+              <texture-monitor
+                fit
+                .traceId=${`ide_preview:${sel}`}
+                .traceTarget=${{ type: 'sketch_output', sketchId: sel } as any}
+                .width=${CAPTURE_W}
+                .height=${CAPTURE_H}
+                resolution="high"
+              ></texture-monitor>
+            </div>`
           : html`<div class="empty">No project selected.<br>Pick one in the explorer to begin.</div>`}
       </div>
       <div class="transport">
+        <ui-button
+          icon="la-search-plus"
+          title=${this.zoomed ? 'Zoom out' : `Zoom ${ZOOM_FACTOR}×`}
+          ?active=${this.zoomed}
+          @click=${this.onToggleZoom}>
+        </ui-button>
         <ui-button
           icon="la-undo"
           title="Undo"
@@ -118,6 +187,19 @@ export class IdeMonitor extends MobxLitElement {
 
   private onUndo = () => appController.undo();
   private onRedo = () => appController.redo();
+
+  private onToggleZoom = () => {
+    this.zoomed = !this.zoomed;
+    if (this.zoomed) {
+      // Center the scroll on the zoomed stage so the pop-in reveals the middle.
+      this.updateComplete.then(() => {
+        const preview = this.renderRoot.querySelector('.preview') as HTMLElement | null;
+        if (!preview) return;
+        preview.scrollLeft = (preview.scrollWidth - preview.clientWidth) / 2;
+        preview.scrollTop = (preview.scrollHeight - preview.clientHeight) / 2;
+      });
+    }
+  };
 
   private onTogglePause = () => {
     appController.setPaused(!appState.local.userSettings.paused);

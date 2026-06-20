@@ -21,11 +21,22 @@ export class TextureMonitor extends MobxLitElement {
   /** The trace target to capture. */
   @property({ attribute: false }) traceTarget: TracePoint['target'] | null = null;
 
-  /** Canvas display width in CSS pixels. */
+  /**
+   * Capture width in pixels — the internal canvas/trace resolution. In the
+   * default (non-`fit`) mode this is ALSO the CSS display width.
+   */
   @property({ type: Number }) width = 64;
 
-  /** Canvas display height in CSS pixels. */
+  /** Capture height in pixels — see `width`. */
   @property({ type: Number }) height = 36;
+
+  /**
+   * Fit mode. When set, the canvas fills the host (which fills its parent)
+   * and scales the captured bitmap with `object-fit: contain`, decoupling the
+   * on-screen size from the capture resolution (`width`/`height`). The parent
+   * sizes the host; `width`/`height` only drive the trace resolution.
+   */
+  @property({ type: Boolean, reflect: true }) fit = false;
 
   /**
    * Trace capture resolution. `'low'` snapshots a small thumbnail (128x72);
@@ -42,6 +53,17 @@ export class TextureMonitor extends MobxLitElement {
       /* line-height: 0 prevents inline-block descender alignment from
          adding a sub-pixel of whitespace below the canvas. */
       line-height: 0;
+    }
+    /* Fit mode: host fills its parent; the canvas scales to contain. */
+    :host([fit]) {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    :host([fit]) canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
     /* Photoshop-style transparency checkerboard. The canvas is drawn
        with alpha (default 2d context), so transparent pixels in the
@@ -121,6 +143,9 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   render() {
-    return html`<canvas style="width:${this.width}px;height:${this.height}px"></canvas>`;
+    // In fit mode the CSS sizing comes from the stylesheet (`:host([fit])`);
+    // otherwise the canvas is pinned to the capture dimensions.
+    const style = this.fit ? '' : `width:${this.width}px;height:${this.height}px`;
+    return html`<canvas style="${style}"></canvas>`;
   }
 }
