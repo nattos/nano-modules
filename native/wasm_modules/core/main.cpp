@@ -85,6 +85,8 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -415,6 +417,16 @@ void nano_module_main() {
         "mod",
         "modulation,smooth,slew,ramp,glide,shaper,filter",
         NANO_INSTANCE_LIFECYCLE(mod_smooth),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.delay",
+        "Modulation Delay",
+        "Unary modulation shaper: delays a modulation signal by a parameterized time via a delay line",
+        "mod",
+        "modulation,delay,line,echo,offset,lag,shaper",
+        NANO_INSTANCE_LIFECYCLE(mod_delay),
     });
 }
 

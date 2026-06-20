@@ -121,6 +121,7 @@ wasm_build \
   ../env_lfo/main.cpp \
   ../mod_remap/main.cpp \
   ../mod_smooth/main.cpp \
+  ../mod_delay/main.cpp \
   ../gpu_test/main.cpp \
   ../spinningtris/main.cpp \
   ../particles_emitter/main.cpp \

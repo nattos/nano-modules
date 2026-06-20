@@ -104,6 +104,7 @@ wasm_build \
   ../auto_level/main.cpp \
   ../twitch_mask/main.cpp \
   ../mod_remap/main.cpp \
-  ../mod_smooth/main.cpp
+  ../mod_smooth/main.cpp \
+  ../mod_delay/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

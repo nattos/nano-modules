@@ -280,6 +280,11 @@ target_include_directories(test_param_smoothing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_param_smoothing PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_param_smoothing)
 
+add_executable(test_delay_line tests/test_delay_line.cpp)
+target_include_directories(test_delay_line PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_delay_line PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_delay_line)
+
 add_executable(test_canvas_host tests/test_canvas_host.cpp)
 target_link_libraries(test_canvas_host PRIVATE wasm_host Catch2::Catch2WithMain)
 catch_discover_tests(test_canvas_host)

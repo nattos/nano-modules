@@ -937,6 +937,13 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(shas("modulation_shaper"));
   CHECK(shas("modulation_shaper_unary"));
 
+  // mod.delay (mod_delay lifecycle) → also a unary modulation shaper.
+  const auto* delay = registry.find("mod.delay");
+  REQUIRE(delay != nullptr);
+  const auto& dcaps = delay->capabilities;
+  CHECK(std::find(dcaps.begin(), dcaps.end(), std::string("modulation_shaper")) != dcaps.end());
+  CHECK(std::find(dcaps.begin(), dcaps.end(), std::string("modulation_shaper_unary")) != dcaps.end());
+
   // A plain image effect declares no capabilities (the array is absent) — and
   // is NOT a generator.
   const auto* bc = registry.find("video.brightness_contrast");
