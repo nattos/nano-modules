@@ -565,38 +565,42 @@ int32_t SketchExecutor::execute(
 
     // --- Modulation auto-connect (by relative chain position) ---------------
     // When a module that declares `modulation_shaper` sits directly after one
-    // that declares `modulation_source` (the nearest module entry above it),
-    // wire the source's modulation OUTPUT channel into the shaper's modulation
-    // INPUT channel in ABSOLUTE magnitude (value flows through untouched), so a
-    // dropped-in shaper "just works" without the user drawing the wire. This is
+    // that PRODUCES modulation — a `modulation_source` OR another
+    // `modulation_shaper` (the nearest module entry above it) — wire the
+    // producer's modulation OUTPUT channel into the shaper's modulation INPUT
+    // channel in ABSOLUTE magnitude (value flows through untouched), so a
+    // dropped-in shaper "just works" and shapers CHAIN without the user drawing
+    // wires. This is
     // the modulation analogue of sketch_augment's implicit STRUCT connections —
     // there matched by structural type, here by capability + relative position.
     // A "channel" is the magnitude'd scalar field (the same marker that names a
     // source's output channels); we pick the PRIMARY one. Explicit wires win:
     // an input that's already wired is left alone.
+    // Modulation channel helpers, shared by the auto-connect (below) and the
+    // "inherit" polarity resolution (in the wire loop).
+    auto hasCap = [](const RegisteredModule* reg, const char* cap) -> bool {
+      if (!reg) return false;
+      for (const auto& c : reg->capabilities) if (c == cap) return true;
+      return false;
+    };
+    // A module's modulation channel for one io direction: the primary
+    // magnitude'd scalar float field (falls back to the first such field).
+    auto modChannel = [](const RegisteredModule* reg, int ioBit) -> std::string {
+      if (!reg || !reg->schemaFields.is_object()) return std::string();
+      std::string primary, any;
+      for (auto it = reg->schemaFields.begin(); it != reg->schemaFields.end(); ++it) {
+        const json& d = it.value();
+        if (!d.is_object()) continue;
+        if (d.value("type", std::string()) != "float") continue;
+        const int io = d.value("io", 0);
+        if (!(io & ioBit)) continue;
+        if (!d.contains("magnitude")) continue;     // channel marker
+        if (any.empty()) any = it.key();
+        if ((io & 4) && primary.empty()) primary = it.key();  // Primary bit
+      }
+      return primary.empty() ? any : primary;
+    };
     {
-      auto hasCap = [](const RegisteredModule* reg, const char* cap) -> bool {
-        if (!reg) return false;
-        for (const auto& c : reg->capabilities) if (c == cap) return true;
-        return false;
-      };
-      // The module's modulation channel for one io direction: the primary
-      // magnitude'd scalar float field (falls back to the first such field).
-      auto modChannel = [](const RegisteredModule* reg, int ioBit) -> std::string {
-        if (!reg || !reg->schemaFields.is_object()) return std::string();
-        std::string primary, any;
-        for (auto it = reg->schemaFields.begin(); it != reg->schemaFields.end(); ++it) {
-          const json& d = it.value();
-          if (!d.is_object()) continue;
-          if (d.value("type", std::string()) != "float") continue;
-          const int io = d.value("io", 0);
-          if (!(io & ioBit)) continue;
-          if (!d.contains("magnitude")) continue;     // channel marker
-          if (any.empty()) any = it.key();
-          if ((io & 4) && primary.empty()) primary = it.key();  // Primary bit
-        }
-        return primary.empty() ? any : primary;
-      };
       for (size_t i = 0; i < chain.size(); ++i) {
         if (!chain[i].is_object() || !chain[i].contains("instance_key")) continue;
         const RegisteredModule* sreg =
@@ -613,7 +617,10 @@ int32_t SketchExecutor::execute(
         if (p < 0) continue;
         const RegisteredModule* greg =
             findSchema(chain[p].value("module_type", std::string()));
-        if (!hasCap(greg, "modulation_source")) continue;
+        // The predecessor must PRODUCE modulation: a source (generator) OR
+        // another shaper (so shapers chain — shaper.output → next shaper.input).
+        if (!hasCap(greg, "modulation_source") && !hasCap(greg, "modulation_shaper"))
+          continue;
         const std::string outField = modChannel(greg, 2);  // Output bit
         if (outField.empty()) continue;
         const std::string sKey = chain[i].value("instance_key", std::string());
@@ -642,6 +649,42 @@ int32_t SketchExecutor::execute(
       for (size_t i = 0; i < chain.size(); ++i)
         if (chain[i].is_object())
           byKey[chain[i].value("instance_key", std::string())] = i;
+      // Resolve a producer output field's effective polarity, following the
+      // shaper-only `magnitude:"inherit"` mode: a shaper's output mirrors the
+      // polarity of whatever drives its INPUT channel, walking back through the
+      // shaper chain to the originating source. Returns "signed"/"unsigned", or
+      // "" when unknown (the caller then defaults to unsigned). Depth-guarded
+      // against wire cycles.
+      std::function<std::string(const std::string&, const std::string&, int)>
+          resolvePolarity = [&](const std::string& key, const std::string& field,
+                                int depth) -> std::string {
+        if (depth > 16) return std::string();
+        auto kit = byKey.find(key);
+        if (kit == byKey.end()) return std::string();
+        const RegisteredModule* r =
+            findSchema(chain[kit->second].value("module_type", std::string()));
+        if (!r || !r->schemaFields.is_object()) return std::string();
+        std::string decl;
+        auto fit = r->schemaFields.find(field);
+        if (fit != r->schemaFields.end() && fit->is_object())
+          decl = fit->value("magnitude", std::string());
+        if (decl == "signed" || decl == "unsigned") return decl;
+        if (decl != "inherit") return std::string();
+        // Inherit: mirror whatever feeds this shaper's input channel.
+        const std::string inField = modChannel(r, 1);   // Input bit
+        if (inField.empty()) return std::string();
+        for (const auto& w : effWires) {
+          if (!w.is_object()) continue;
+          const json d = w.value("dest", json::object());
+          if (d.value("instanceKey", std::string()) == key &&
+              d.value("field", std::string()) == inField) {
+            const json s = w.value("src", json::object());
+            return resolvePolarity(s.value("instanceKey", std::string()),
+                                   s.value("field", std::string()), depth + 1);
+          }
+        }
+        return std::string();   // input unwired → unknown (defaults unsigned)
+      };
       for (const auto& w : effWires) {
         if (!w.is_object()) continue;
         const json src = w.value("src", json::object());
@@ -716,13 +759,11 @@ int32_t SketchExecutor::execute(
           rtap["srcMax"] = srcDef.is_object() ? srcDef.value("max", 1.0) : 1.0;
           std::string mag = w.value("magnitude", std::string("auto"));
           if (mag != "absolute") {
-            // Source output field's explicit `magnitude` decl ("" when absent).
-            std::string decl;
-            if (reg && reg->schemaFields.is_object()) {
-              auto fit = reg->schemaFields.find(srcField);
-              if (fit != reg->schemaFields.end() && fit->is_object())
-                decl = fit->value("magnitude", std::string());
-            }
+            // Source output field's effective polarity ("" when none). Follows a
+            // shaper output's `magnitude:"inherit"` back to the source that drives
+            // its input, so a polarity propagates down a chain of shapers.
+            const std::string decl = resolvePolarity(
+                src.value("instanceKey", std::string()), srcField, 0);
             if (mag == "auto") {
               // auto → take the source's declared polarity as-is (default unsigned).
               mag = (decl == "signed") ? "signed" : "unsigned";

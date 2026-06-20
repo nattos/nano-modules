@@ -806,6 +806,138 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
   }
 }
 
+// Shapers CHAIN: a shaper directly after ANOTHER shaper (not just a source)
+// auto-connects too, so data.lfo -> mod.smooth -> mod.remap wires up end to end
+// without the user drawing anything. Both intermediate inputs record a band
+// (observed via lastModulationData); the producer outputs are hand-mirrored into
+// instance state since the native test harness doesn't run the live mirror.
+TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+      { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
+      { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+    ],
+    "instances": {
+      "lfo": { "module_type": "data.lfo",  "state": { "output": 0.5 } },
+      "sm":  { "module_type": "mod.smooth","state": { "output": 0.7 } }
+    }
+  })JSON");
+  executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+  backend->submit();
+  const auto& md = executor.lastModulationData();
+  INFO("modulationData = " << md.dump());
+  // lfo -> smooth.input (absolute passthrough of lfo.output 0.5).
+  REQUIRE(md.contains("sm"));
+  REQUIRE(md["sm"].contains("input"));
+  CHECK(md["sm"]["input"]["value"].get<double>() == Catch::Approx(0.5).margin(0.01));
+  // smooth -> remap.input (absolute passthrough of smooth.output 0.7) — proves
+  // the SECOND hop (shaper->shaper) auto-connected.
+  REQUIRE(md.contains("rm"));
+  REQUIRE(md["rm"].contains("input"));
+  CHECK(md["rm"]["input"]["value"].get<double>() == Catch::Approx(0.7).margin(0.01));
+}
+
+// A shaper output declared `magnitude:"inherit"` (mod.smooth/mod.delay are
+// range-preserving) mirrors the polarity of whatever drives its input. Probe via
+// the prescale: forcing `signed` on a wire from smooth.output, when smooth
+// inherited the lfo's EXPLICIT unsigned, rescales 0..1→−1..1 (full bipolar band);
+// without a source feeding smooth's input the polarity is unknown, so the same
+// forced-signed wire is taken at face value (only the upper half). data.lfo.output
+// is "unsigned"; smooth/lfo outputs hand-mirrored into state.
+TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  SECTION("inherits the upstream source's unsigned (forced-signed rescales to full)") {
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": {
+        "lfo": { "module_type": "data.lfo",  "state": { "output": 0.5 } },
+        "sm":  { "module_type": "mod.smooth","state": { "output": 0.5 } }
+      },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" }, "magnitude": "signed" }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    REQUIRE(md["bc"].contains("brightness"));
+    const auto& b = md["bc"]["brightness"];
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));  // 0.5→bipolar 0→mid
+    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // rescaled: full range
+    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));
+    CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // signed replace
+  }
+
+  SECTION("unwired shaper input → unknown polarity → forced-signed taken at face value") {
+    // No source before smooth → its input is unconnected → inherit resolves to
+    // unknown, so forcing signed does NOT rescale (only the upper half).
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
+        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+      ],
+      "instances": {
+        "sm": { "module_type": "mod.smooth", "state": { "output": 0.5 } }
+      },
+      "wires": [
+        { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" }, "magnitude": "signed" }
+      ]
+    })JSON");
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("bc"));
+    REQUIRE(md["bc"].contains("brightness"));
+    const auto& b = md["bc"]["brightness"];
+    // 0.5 read as signed face value → (0.5+1)/2 = 0.75; band spans only [0.5,1].
+    CHECK(b["value"].get<double>() == Catch::Approx(0.75).margin(0.01));
+    CHECK(b["min"].get<double>()   == Catch::Approx(0.5).margin(0.01));
+    CHECK(b["max"].get<double>()   == Catch::Approx(1.0).margin(0.01));
+  }
+}
+
 // The engine-level `FieldOptions.smoothing` option linearly ramps a scalar
 // field's final value toward each new target over `duration` seconds (the same
 // param_smoothing math as mod.smooth). It's applied IN the executor (standalone

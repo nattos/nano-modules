@@ -45,9 +45,11 @@ void module_init() {
       // Linear ramp duration in seconds (the built-in smoothing's `duration`).
       // 0 ⇒ instant passthrough. Reaches the target in finite time.
       .floatField("duration", 0.25f, 0.f, 2.f, state::PrimaryInput)
-      // Smoothed value. min/max is the modulation-range contract (matches the
-      // input window); unipolar by default, same convention as data.lfo.
-      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
+      // Smoothed value. Range-preserving (just a lagged copy of input), so the
+      // output polarity INHERITS the input's: it mirrors whatever drives the
+      // input (so a signed source stays signed down a shaper chain). min/max is
+      // the modulation-range contract (matches the input window).
+      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "inherit")
       // A unary modulation shaper: 1 modulation value in -> 1 smoothed value out.
       .capability(state::Capability::ModulationShaper)
       .capability(state::Capability::ModulationShaperUnary)
