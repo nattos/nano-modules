@@ -340,13 +340,15 @@ struct Version {
 // capability signals (`category` "generator.*", the `is_identity` predicate,
 // and `registerFusion*`), which are left as-is.
 //
-// Two-tier vocabulary: a general UMBRELLA tag plus an arity/channel-SPECIFIC
-// tag. An effect declares BOTH (e.g. a single-output LFO is a ModulationSource
-// AND a ModulationSourceSingle), so the editor can query the umbrella ("is this
-// any kind of modulation source?") or specialise on arity. Channels themselves
-// are NOT re-listed here — they are the effect's scalar output fields that carry
-// a `magnitude` declaration.
+// Some capabilities are standalone (Generator); the modulation ones are
+// TWO-TIER: a general UMBRELLA tag plus an arity/channel-SPECIFIC tag. An
+// effect declares BOTH (e.g. a single-output LFO is a ModulationSource AND a
+// ModulationSourceSingle), so the editor can query the umbrella ("is this any
+// kind of modulation source?") or specialise on arity. Channels themselves are
+// NOT re-listed here — they are the effect's scalar output fields that carry a
+// `magnitude` declaration.
 enum class Capability {
+  Generator,               // produces image output without a primary texture input
   ModulationSource,        // produces modulation signal(s) on scalar outputs
   ModulationSourceSingle,  //   ...exactly one canonical channel (auto-wireable)
   ModulationSourceMulti,   //   ...several channels; the user picks one
@@ -356,6 +358,7 @@ enum class Capability {
 
 inline const char* capabilityName(Capability c) {
   switch (c) {
+    case Capability::Generator:              return "generator";
     case Capability::ModulationSource:       return "modulation_source";
     case Capability::ModulationSourceSingle: return "modulation_source_single";
     case Capability::ModulationSourceMulti:  return "modulation_source_multi";

@@ -71,6 +71,7 @@ void module_init() {
       .floatField("triangles", 0.1f, 0.f, 1.f, state::PrimaryInput)
       .floatField("speed", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::Generator)
   );
   state::log("SpinningTris: init");
 

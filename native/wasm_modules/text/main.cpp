@@ -75,6 +75,9 @@ void module_init() {
       .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)   // overlay text on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
+      // Generates its image; the tex_in overlay is optional (transparent when
+      // unconnected), so it's classed a generator like the codebase category.
+      .capability(state::Capability::Generator)
   );
 }
 

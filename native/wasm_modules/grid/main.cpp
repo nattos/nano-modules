@@ -82,6 +82,7 @@ void module_init() {
       .rgbaField("line", 1.0f, 1.0f, 1.0f, 1.0f, state::SecondaryInput)
       .rgbaField("bg",   0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::Generator)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

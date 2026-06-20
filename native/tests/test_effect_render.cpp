@@ -740,7 +740,15 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(has("modulation_source_single"));
   CHECK_FALSE(has("modulation_source_multi"));
 
-  // A plain image effect declares no capabilities (the array is absent).
+  // A generator declares the standalone `generator` capability (now explicit,
+  // no longer inferred from the "generator.*" category string alone).
+  const auto* solid = registry.find("generator.solid_color");
+  REQUIRE(solid != nullptr);
+  const auto& gcaps = solid->capabilities;
+  CHECK(std::find(gcaps.begin(), gcaps.end(), std::string("generator")) != gcaps.end());
+
+  // A plain image effect declares no capabilities (the array is absent) — and
+  // is NOT a generator.
   const auto* bc = registry.find("video.brightness_contrast");
   REQUIRE(bc != nullptr);
   CHECK(bc->capabilities.empty());

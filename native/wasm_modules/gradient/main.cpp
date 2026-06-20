@@ -77,6 +77,7 @@ void module_init() {
       .rgbField("color_a", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
       .rgbField("color_b", 0.0f, 0.0f, 0.0f, state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::Generator)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
