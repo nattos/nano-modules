@@ -391,10 +391,12 @@ export class TapsOverlay extends MobxLitElement {
     }
   }
 
-  /** Overlay-relative center of a field's tap-port hit-box (manager-backed Y). */
+  /** Overlay-relative center of a field's connection anchor: its tap-port
+   *  hit-box on an expanded card, or its splayed option pip when the card is
+   *  collapsed (cardAnchorEl resolves whichever exists). */
   private fieldCenter(key: string, overlayRect: DOMRect): { x: number; y: number } | null {
     if (!key) return null;
-    const hit = this.fieldHit(key);
+    const hit = this.cardAnchorEl(key);
     if (!hit) return null;
     const r = hit.getBoundingClientRect();
     return { x: r.left + r.width / 2 - overlayRect.left, y: r.top + r.height / 2 - overlayRect.top };

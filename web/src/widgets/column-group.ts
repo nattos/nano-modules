@@ -18,7 +18,7 @@ import { appState } from '../state/app-state';
 import { appController, DASHBOARD_MODULE_TYPE, DASHBOARD_KNOB_COUNT } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude } from '../sketch-types';
-import { sketchChain, chainEntryAt } from '../sketch-types';
+import { sketchChain, chainEntryAt, isEffectCollapsed } from '../sketch-types';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
@@ -873,6 +873,7 @@ export class ColumnGroup extends MobxLitElement {
     const isEditingType = this.editingTypeChainIdx === chainIdx;
     const effectPath = `effect/${this.sketchId}/${this.colIdx}/${chainIdx}`;
     const isSelected = appController.isSelected(effectPath);
+    const isCollapsed = isEffectCollapsed(appState.database.sketches[this.sketchId], entry.instance_key);
 
     // Per-effect device controls (reserved engine keys in instance state).
     const reservedState = appState.database.sketches[this.sketchId]
@@ -892,7 +893,8 @@ export class ColumnGroup extends MobxLitElement {
     };
 
     return html`
-      <div class="effect-card" ?selected=${isSelected}
+      <div class="effect-card" ?selected=${isSelected} ?collapsed=${isCollapsed}
+        data-chain-idx=${chainIdx}
         @click=${(e: Event) => {
           if ((e.target as HTMLElement).closest('smart-input, .tab-area')) return;
           // Swallow clicks anywhere on the card so the columns-view empty-space
@@ -909,7 +911,8 @@ export class ColumnGroup extends MobxLitElement {
             @pointerdown=${(e: PointerEvent) => {
               selectOnPointerDown(e);
               if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
-            }}>
+            }}
+            @dblclick=${(e: Event) => this.onHeaderDblClick(e, entry)}>
             <button
               title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
               style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
@@ -945,17 +948,31 @@ export class ColumnGroup extends MobxLitElement {
               @click=${(e: Event) => e.stopPropagation()}
             ></scalar-slider>
           </div>
-          <div class="effect-card-divider"></div>
-          <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"
-            style=${bypass ? 'opacity:0.4;pointer-events:none' : ''}>
-            ${this.renderFieldWidgets(chainIdx, entry)}
-          </div>
-          ${this.renderTraceCardRow(chainIdx, entry)}
-          ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
+          ${isCollapsed ? nothing : html`
+            <div class="effect-card-divider"></div>
+            <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"
+              style=${bypass ? 'opacity:0.4;pointer-events:none' : ''}>
+              ${this.renderFieldWidgets(chainIdx, entry)}
+            </div>
+            ${this.renderTraceCardRow(chainIdx, entry)}
+            ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
+          `}
         </div>
         ${this.renderDeviceTab('bottom', chainIdx + 1)}
       </div>
     `;
+  }
+
+  /**
+   * Double-click an effect card header to collapse / expand it — but NOT when
+   * the double-click lands on the editable type text (which opens the type
+   * editor) or on a header control (bypass toggle / opacity slider).
+   */
+  private onHeaderDblClick(e: Event, entry: ModuleEntry) {
+    const t = e.target as HTMLElement;
+    if (t.closest('.effect-card-name, smart-input, scalar-slider, button')) return;
+    e.stopPropagation();
+    appController.toggleEffectCollapsed(this.sketchId, entry.instance_key);
   }
 
   // ========================================================================
@@ -1214,7 +1231,8 @@ export class ColumnGroup extends MobxLitElement {
     // the already-selected field again picks it up for click-to-connect.
     if (appController.selectedFieldKey() === key) {
       const hit = this.renderRoot.querySelector(
-        `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
+        `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"],
+         .field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
       const r = hit?.getBoundingClientRect();
       tapsConnect.beginFromFieldClick(this.sketchId, key, {
         sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath,
@@ -1449,6 +1467,7 @@ export class ColumnGroup extends MobxLitElement {
     if (!gutterEl) return pips;
     const selKey = appController.selectedFieldKey();
     const wires = appState.database.sketches[this.sketchId]?.wires ?? [];
+    const sketch = appState.database.sketches[this.sketchId];
     for (let i = 0; i < column.chain.length; i++) {
       const entry = column.chain[i];
       if (entry.type !== 'module') continue;
@@ -1464,7 +1483,18 @@ export class ColumnGroup extends MobxLitElement {
         if (w.src.instanceKey === entry.instance_key) wiredFields.add(w.src.field);
         if (w.dest.instanceKey === entry.instance_key) wiredFields.add(w.dest.field);
       }
-      for (const fieldPath of new Set([...optionFields, ...wiredFields])) {
+      const fieldPaths = [...new Set([...optionFields, ...wiredFields])];
+
+      // Collapsed card: its field rows are gone, so the per-row pips can't
+      // anchor. Splay them to the right of the card instead — wires anchor to
+      // these (see taps-overlay cardAnchorEl) and, in wiring mode, connect here.
+      if (isEffectCollapsed(sketch, entry.instance_key)) {
+        pips.push(...this.renderCollapsedPips(
+          i, entry, fieldPaths, gutterEl, outputFieldNames, wiredFields, selKey));
+        continue;
+      }
+
+      for (const fieldPath of fieldPaths) {
         const fieldKey = `${this.sketchId}/${this.colIdx}/${i}/${fieldPath}`;
         const rect = this.layoutManager.getRelativeRect(fieldKey, gutterEl);
         if (!rect) continue;
@@ -1488,6 +1518,89 @@ export class ColumnGroup extends MobxLitElement {
       }
     }
     return pips;
+  }
+
+  /**
+   * Pips for a COLLAPSED card. Same green/blue/red dots as the field-row pips,
+   * but splayed to the right of the card body (the rows are hidden) so each
+   * connected/optioned field still has a visible, clickable anchor. They carry
+   * the full connect dataset + class `connectable` so that, in wiring mode,
+   * drag/drop-to-connect treats them as the field's endpoint, and committed
+   * wires anchor their arcs here (taps-overlay falls back to the option pip when
+   * a field has no live tap-port hit-box).
+   */
+  private renderCollapsedPips(
+    chainIdx: number,
+    entry: ModuleEntry,
+    fieldPaths: string[],
+    gutterEl: HTMLElement,
+    outputFieldNames: Set<string>,
+    wiredFields: Set<string>,
+    selKey: string | null,
+  ): TemplateResult[] {
+    const out: TemplateResult[] = [];
+    if (fieldPaths.length === 0) return out;
+    const cardEl = this.renderRoot.querySelector(
+      `.effect-card[data-chain-idx="${chainIdx}"]`) as HTMLElement | null;
+    if (!cardEl) return out;
+    const cardRect = cardEl.getBoundingClientRect();
+    const gutterRect = gutterEl.getBoundingClientRect();
+    const baseY = cardRect.top + cardRect.height / 2 - gutterRect.top;
+    const schema = appState.local.plugins.find(p => p.id === entry.module_type)?.schema ?? {};
+
+    fieldPaths.forEach((fieldPath, j) => {
+      const fieldKey = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
+      const isOutput = outputFieldNames.has(fieldPath);
+      const isWired = wiredFields.has(fieldPath);
+      const schemaDef = (schema as any)[fieldPath] ?? null;
+      this.registerFieldSelectable(fieldKey, chainIdx, entry, fieldPath, isOutput);
+      // Splay rightward off the card's vertical midline, one dot-width per pip.
+      const left = 2 + j * 16;
+      const title = isWired
+        ? 'Wired — click to view connections'
+        : 'Smoothing on — click to edit';
+      out.push(html`
+        <div class="field-option-pip connectable ${isWired ? 'wired' : ''} ${isWired && isOutput ? 'output' : ''}"
+          ?selected=${selKey === fieldKey}
+          data-field-key=${fieldKey}
+          data-sketch-id=${this.sketchId}
+          data-col-idx=${this.colIdx}
+          data-chain-idx=${chainIdx}
+          data-field-path=${fieldPath}
+          data-is-output=${isOutput ? 'true' : 'false'}
+          style="top:${baseY}px;left:${left}px"
+          title=${title}
+          @pointerdown=${(e: PointerEvent) =>
+            this.onCollapsedPipPointerDown(e, fieldKey, fieldPath, isOutput, schemaDef, chainIdx)}
+          @click=${(e: Event) =>
+            this.onCollapsedPipClick(e, fieldKey, fieldPath, isOutput, schemaDef, chainIdx)}></div>
+      `);
+    });
+    return out;
+  }
+
+  /** Collapsed-pip pointerdown: start a drag-to-connect, but only in wiring
+   *  mode (otherwise the pip is just a selection target). */
+  private onCollapsedPipPointerDown(
+    e: PointerEvent, key: string, fieldPath: string,
+    isOutput: boolean, schemaDef: any | null, chainIdx: number,
+  ) {
+    if (!appState.local.tappingMode) return;
+    this.onTapHitPointerDown(e, key, fieldPath, isOutput, schemaDef, chainIdx);
+  }
+
+  /** Collapsed-pip click: complete/pick-up a connection in wiring mode, else
+   *  just select the field (surfaces the floating field card). */
+  private onCollapsedPipClick(
+    e: Event, key: string, fieldPath: string,
+    isOutput: boolean, schemaDef: any | null, chainIdx: number,
+  ) {
+    e.stopPropagation();
+    if (appState.local.tappingMode) {
+      this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx);
+    } else {
+      appController.selectField(key);
+    }
   }
 
   // ========================================================================

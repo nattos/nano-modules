@@ -160,6 +160,33 @@ export function chainEntryAt(sketch: Sketch | undefined, chainIdx: number): Chai
   return sketch ? sketchChain(sketch)[chainIdx] : undefined;
 }
 
+// --- UI-only per-instance state ---
+
+/**
+ * Reserved key inside an instance's `state` for UI-only view state (card
+ * collapse, etc.). Deliberately namespaced and OFF-LIMITS to the engine /
+ * executor: it rides along in the serialized sketch, but nothing outside the UI
+ * should ever read or write it. If the engine ever touches `__ui_only__`, that's
+ * a bug — the distinct name makes such a leak obvious.
+ */
+export const UI_ONLY_KEY = '__ui_only__';
+
+export interface UiOnlyState {
+  /** Effect card collapsed in the IDE (fields + output traces hidden). */
+  collapsed?: boolean;
+}
+
+/** Read the UI-only subtree for an instance. Never throws; empty default. */
+export function uiOnlyState(sketch: Sketch | undefined, instanceKey: string): UiOnlyState {
+  const v = sketch?.instances?.[instanceKey]?.state?.[UI_ONLY_KEY];
+  return (v && typeof v === 'object') ? v as UiOnlyState : {};
+}
+
+/** Whether an effect card is collapsed (UI-only view state). */
+export function isEffectCollapsed(sketch: Sketch | undefined, instanceKey: string): boolean {
+  return uiOnlyState(sketch, instanceKey).collapsed === true;
+}
+
 // --- Wire modulation (mod / combine) ---
 
 /**

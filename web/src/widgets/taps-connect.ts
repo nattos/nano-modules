@@ -66,7 +66,9 @@ function hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
 function resolveTargetAt(x: number, y: number): Target | null {
   const el = deepElementFromPoint(x, y);
   if (!el) return null;
-  const hit = el.closest?.('.tap-overlay-hit') as HTMLElement | null;
+  // A field's tap-port hit-box (expanded card) OR a collapsed card's splayed
+  // option pip — both carry the same data-* connect dataset.
+  const hit = el.closest?.('.tap-overlay-hit, .field-option-pip.connectable') as HTMLElement | null;
   if (!hit) return null;
   const info = hitToInfo(hit);
   return info ? { key: hitKey(hit), info } : null;

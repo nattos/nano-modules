@@ -14,8 +14,8 @@ import { traceController } from './trace-controller';
 import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
-import type { Sketch, ChainEntry, Wire } from '../sketch-types';
-import { normalizeSketchChains, sketchChain, ensureChain } from '../sketch-types';
+import type { Sketch, ChainEntry, Wire, UiOnlyState } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY } from '../sketch-types';
 import {
   isDefaultProjectId,
   isUserProjectId,
@@ -358,6 +358,33 @@ export class AppController {
         }
       }
     });
+  }
+
+  /**
+   * Toggle an effect card's collapsed (UI-only) view state, stored in the
+   * instance's `__ui_only__` subtree (see UI_ONLY_KEY). Bypasses undo history —
+   * this is view state, not document content, so Cmd+Z shouldn't expand a card
+   * instead of reverting a real edit — but is persisted so it survives reloads.
+   * Creates a minimal instance entry if one doesn't exist yet (never clobbers
+   * existing param state).
+   */
+  toggleEffectCollapsed(sketchId: string, instanceKey: string) {
+    runInAction(() => {
+      const sk = appState.database.sketches[sketchId];
+      if (!sk) return;
+      sk.instances = sk.instances ?? {};
+      let inst = sk.instances[instanceKey];
+      if (!inst) {
+        const entry = sketchChain(sk).find(
+          e => e.type === 'module' && e.instance_key === instanceKey);
+        if (!entry || entry.type !== 'module') return;
+        inst = sk.instances[instanceKey] = { module_type: entry.module_type, state: {} };
+      }
+      const ui = (inst.state[UI_ONLY_KEY] ?? {}) as UiOnlyState;
+      ui.collapsed = !ui.collapsed;
+      inst.state[UI_ONLY_KEY] = ui;
+    });
+    this.requestProjectsSave();
   }
 
   setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue) {
