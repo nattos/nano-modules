@@ -39,6 +39,7 @@ import '../editors/brightness-contrast-inspector';
 import '../editors/shape-fold-inspector';
 import '../editors/phase-fold-inspector';
 import '../editors/spectral-lfo-inspector';
+import '../editors/envelope-inspector';
 
 const EXTRA_COLUMNS = 2;
 
