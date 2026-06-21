@@ -39,6 +39,10 @@ interface VideoPump {
   rafId: number;
   stopped: boolean;
   busy: boolean;
+  /** True for play-forward (<video>) sources: the element is its own clock,
+   *  so pause/step drive it directly (setPlaying / stepForward) rather than
+   *  the virtual playhead. False for random-access (DXV) sources. */
+  streaming: boolean;
 }
 
 type EngineSetInput = (sketchId: string, bitmap: ImageBitmap | null) => void;
@@ -194,9 +198,14 @@ export class SketchInputManager {
   }
 
   /** Mirror the engine's pause state: freeze the video preview on its current
-   *  frame (the playhead stops advancing and no new frames are pushed). */
+   *  frame (the playhead stops advancing and no new frames are pushed). For
+   *  play-forward sources the element is its own clock, so we must pause it
+   *  too — otherwise it drifts ahead while "paused" and jumps on resume. */
   setPaused(paused: boolean): void {
     this.paused = paused;
+    if (this.pump?.streaming) {
+      this.pump.service.setPlaying(this.pump.clip, !paused);
+    }
   }
 
   /** Advance the video preview by exactly one engine frame. Awaited by the
@@ -205,10 +214,20 @@ export class SketchInputManager {
   async stepFrame(): Promise<void> {
     const session = this.pump;
     if (!session || session.stopped || session.busy) return;
-    // One engine frame == 1/60 s, matching the executor's fixed step dt, so the
-    // video and sim stay in temporal lock-step regardless of the source fps.
-    this.videoClockMs += 1000 / 60;
     session.busy = true;
+    if (session.streaming) {
+      // Play-forward source: nudge the (paused) element forward one frame,
+      // then sample it. pumpFrame ignores frameIdx for streaming sources.
+      try {
+        await session.service.stepForward(session.clip);
+      } catch (err) {
+        console.debug('[sketch-input-manager] step failed', err);
+      }
+    } else {
+      // One engine frame == 1/60 s, matching the executor's fixed step dt, so
+      // the video and sim stay in temporal lock-step regardless of source fps.
+      this.videoClockMs += 1000 / 60;
+    }
     await this.pumpFrame(session);
   }
 
@@ -233,7 +252,10 @@ export class SketchInputManager {
 
     let clip: ClipHandle;
     try {
-      clip = await service.open(blob, sketchId);
+      // The IDE preview only ever plays the clip forward on a loop, so tell
+      // the service: it forces play-forward decoding for <video> sources
+      // (smooth) instead of the choppy per-frame seek path.
+      clip = await service.open(blob, sketchId, { sequential: true });
     } catch (err) {
       console.warn('[sketch-input-manager] could not open video', err);
       return;
@@ -258,8 +280,14 @@ export class SketchInputManager {
       sketchId, clip, playhead, service,
       width: info.width, height: info.height,
       rafId: 0, stopped: false, busy: false,
+      streaming: info.streaming,
     };
     this.pump = session;
+
+    // Play-forward sources run on the element's own clock; start it playing
+    // (or hold it if we loaded while the engine is paused). Random-access
+    // sources are driven entirely by the per-tick pull below.
+    if (session.streaming) service.setPlaying(clip, !this.paused);
 
     const tick = () => {
       if (session.stopped) return;

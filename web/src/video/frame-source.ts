@@ -33,6 +33,21 @@ export interface FrameSource {
    *  Resolves when the texture is ready to sample. */
   decode(idx: number, outTexHandle: number): Promise<void>;
 
+  /** Live (streaming) sources only: play or pause the underlying element.
+   *  Streaming sources are driven by the element's own clock (decode()
+   *  samples the current frame), so a consumer that wants to freeze the
+   *  preview on pause must stop the element here — otherwise it drifts
+   *  ahead while "paused" and jumps on resume. No-op / absent for
+   *  random-access sources (DXV), which are driven purely by decode(idx). */
+  setPlaying?(playing: boolean): void;
+
+  /** Live (streaming) sources only: advance the element by ~one frame
+   *  while paused (a short forward seek the decoder serves from its
+   *  current position), so a paused frame-step still moves the video in
+   *  lock-step with the engine. Absent for random-access sources, which
+   *  step by requesting the next frame index directly. */
+  stepForward?(): Promise<void>;
+
   /** Release codec-side resources. The host releases textures separately
    *  via the FrameCache. */
   dispose(): void;

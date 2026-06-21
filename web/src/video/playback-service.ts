@@ -55,6 +55,10 @@ export interface ProfileSnapshot {
   /** Native frame rate of the source — consumers should drive playback
    *  at this rate (see FrameSource.fps). */
   fps: number;
+  /** True when the source is play-forward-only (a <video> element sampled
+   *  live): the consumer drives play/pause via setPlaying/stepForward
+   *  rather than per-frame pulls. False for random-access codecs (DXV). */
+  streaming: boolean;
   /** Frame indices currently resident in cache (any set). For UI viz. */
   cachedFrameIndices: number[];
   /** Frame indices currently in the pinned set. */
@@ -134,10 +138,19 @@ export class VideoPlaybackService {
 
   /** Open a clip backed by `handle` (file picker / drop) or an in-memory
    *  blob/ArrayBuffer (tests). `salt` differentiates instances of the
-   *  same source — typically the graph-node ID. */
+   *  same source — typically the graph-node ID.
+   *
+   *  `opts.sequential` declares the consumer will only ever play the clip
+   *  forward (looping preview). For a <video>-backed source this forces
+   *  the play-forward path instead of probing for seekability: seeking a
+   *  long-GOP clip per frame decodes from the nearest keyframe each time
+   *  and gets choppier the further into the GOP you are, whereas native
+   *  play-forward decodes contiguously and stays smooth. No effect on
+   *  random-access codecs (DXV), which are already cheap to scrub. */
   async open(
     source: FileSystemFileHandle | File | Blob | ArrayBuffer,
     salt: string,
+    opts?: { sequential?: boolean },
   ): Promise<ClipHandle> {
     // Derive source identity + a BytesSource (for DXV) and a Blob (for
     // the browser-decoder fallback) from whatever the caller handed us.
@@ -176,8 +189,12 @@ export class VideoPlaybackService {
       frameSource = await DxvFrameSource.create(this.gpuHost, bytesSource, this.dxvWasmUrl);
     } catch (dxvErr) {
       try {
+        // Sequential intent forces play-forward; otherwise use the
+        // persisted seek-strategy verdict (or probe at open if neither).
         frameSource = await VideoElementFrameSource.create(
-          this.gpuHost, blob, { streaming: persistedSource?.videoStreaming });
+          this.gpuHost, blob, {
+            streaming: opts?.sequential ? true : persistedSource?.videoStreaming,
+          });
       } catch (videoErr) {
         throw new Error(
           `could not open clip — not DXV (${(dxvErr as Error).message}) `
@@ -318,6 +335,19 @@ export class VideoPlaybackService {
     return handle;
   }
 
+  /** Play/pause a streaming (play-forward) clip so a consumer can freeze
+   *  the preview on pause without the element drifting ahead. No-op for
+   *  random-access clips (they don't advance on their own). */
+  setPlaying(clip: ClipHandle, playing: boolean): void {
+    this.requireClip(clip).source.setPlaying?.(playing);
+  }
+
+  /** Advance a streaming clip by ~one frame while paused (for frame-step).
+   *  No-op for random-access clips, which step by pulling the next index. */
+  async stepForward(clip: ClipHandle): Promise<void> {
+    await this.requireClip(clip).source.stepForward?.();
+  }
+
   /** Snapshot the service's expectations — for UI surfaces. */
   hints(clip: ClipHandle): PlaybackHints {
     const state = this.requireClip(clip);
@@ -350,6 +380,7 @@ export class VideoPlaybackService {
       height: state.source.height,
       frameCount: state.source.frameCount,
       fps: state.source.fps,
+      streaming: state.source.streaming,
       cachedFrameIndices: state.cache.cachedFrameIndices(),
       pinnedFrameIndices: state.cache.pinnedFrameIndices(),
     };

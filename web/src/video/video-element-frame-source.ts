@@ -126,12 +126,11 @@ export class VideoElementFrameSource implements FrameSource {
 
   async decode(idx: number, outTexHandle: number): Promise<void> {
     if (this.streaming) {
-      // Live sampling — `idx` ignored. The element plays + loops itself;
+      // Live sampling — `idx` ignored. The element plays + loops itself
+      // (play/pause is driven explicitly via setPlaying, not here, so a
+      // paused frame-step doesn't accidentally resume continuous play);
       // we copy whatever frame is current (sparse-keyframe clips only
       // decode cleanly forward).
-      if (this.video.paused && !this.video.ended) {
-        try { await this.video.play(); } catch { /* autoplay blocked? */ }
-      }
       if (this.video.readyState < 2) await this.waitForFrame();
     } else {
       // Random access — seek to the requested frame. Lands mid-cell so
@@ -149,6 +148,35 @@ export class VideoElementFrameSource implements FrameSource {
       { texture: tex },
       { width: this.width, height: this.height, depthOrArrayLayers: 1 },
     );
+  }
+
+  /** Streaming sources: play/pause the element so the preview can freeze
+   *  on pause without the element drifting ahead. No-op when seekable
+   *  (those are driven frame-by-frame through decode()). */
+  setPlaying(playing: boolean): void {
+    if (!this.streaming) return;
+    if (playing) {
+      if (this.video.paused && !this.video.ended) {
+        void this.video.play().catch(() => { /* autoplay blocked? */ });
+      }
+    } else if (!this.video.paused) {
+      this.video.pause();
+    }
+  }
+
+  /** Streaming sources: nudge the element forward ~one frame while paused.
+   *  A small forward seek the decoder serves from its current position
+   *  (cheap, unlike a cold mid-GOP seek), keeping the element paused. */
+  async stepForward(): Promise<void> {
+    if (!this.streaming) return;
+    const t = Math.min(
+      Math.max(0, this.video.duration - 1e-3),
+      this.video.currentTime + 1 / this.fps,
+    );
+    await seekVideo(this.video, t, this.fps, SEEK_TIMEOUT_MS);
+    // Seeking a paused element leaves it paused; guard against any UA that
+    // resumes on currentTime assignment.
+    if (!this.video.paused) this.video.pause();
   }
 
   private waitForFrame(): Promise<void> {
