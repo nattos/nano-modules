@@ -31,7 +31,7 @@ NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
 NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
-// data.lfo and data.adsr ship in core — duplicated here for test access.
+// mod.source.lfo and mod.source.adsr ship in core — duplicated here for test access.
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
@@ -97,10 +97,10 @@ void nano_module_main() {
     // tests don't have to load `core` to exercise them.
     nano::registerEffect({
         2,
-        "video.brightness_contrast",
-        "Brightness/Contrast",
+        "color.tone.brightness_contrast",
+        "Brightness & Contrast",
         "Adjusts brightness and contrast of a texture input",
-        "video",
+        "color",
         "color,adjust,filter",
         NANO_INSTANCE_LIFECYCLE(brightness_contrast),
         &brightness_contrast::is_identity,
@@ -108,20 +108,20 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "generator.solid_color",
+        "source.solid_color",
         "Solid Color",
         "Fills the render target with a uniform RGB color",
-        "generator",
+        "source",
         "color,fill",
         NANO_INSTANCE_LIFECYCLE(solid_color),
     });
 
     nano::registerEffect({
         2,
-        "video.blend",
-        "Video Blend",
+        "composite.blend",
+        "Blend",
         "Blends two texture inputs with opacity control",
-        "video",
+        "composite",
         "blend,mix,composite,opacity",
         NANO_INSTANCE_LIFECYCLE(video_blend),
     });
@@ -131,7 +131,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.fuse_add",
-        "Fuse Add (test)",
+        "Fuse Add",
         "Adds an RGB offset and clamps. Test-only fusion mapper.",
         "debug",
         "test,fusion,mapper",
@@ -141,7 +141,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.fuse_mul",
-        "Fuse Mul (test)",
+        "Fuse Mul",
         "Multiplies RGB by a uniform scale and clamps. Test-only fusion mapper.",
         "debug",
         "test,fusion,mapper",
@@ -151,39 +151,39 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.fuse_solid",
-        "Fuse Solid (test)",
+        "Fuse Solid",
         "Writes a uniform color to every pixel. Test-only strict-output generator.",
         "debug",
         "test,fusion,strict-output,generator",
         NANO_INSTANCE_LIFECYCLE(fuse_solid),
     });
 
-    // data.lfo / data.adsr ship in core, duplicated for test access, same
+    // mod.source.lfo / mod.source.adsr ship in core, duplicated for test access, same
     // source as the shipping bundle.
     nano::registerEffect({
         2,
-        "data.lfo",
+        "mod.source.lfo",
         "LFO",
         "Low frequency oscillator outputting a sine wave",
-        "data",
+        "mod",
         "oscillator,modulation,automation",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
     });
 
     nano::registerEffect({
         2,
-        "data.adsr",
+        "mod.source.adsr",
         "ADSR",
         "ADSR envelope generator modulation source",
-        "data",
+        "mod",
         "envelope,adsr,modulation,automation,trigger,generator",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
     });
 
     nano::registerEffect({
         2,
-        "mod.remap",
-        "Modulation Remap",
+        "mod.shaper.remap",
+        "Remap",
         "Unary modulation shaper: range-remaps a modulation value (wire-identical remap)",
         "mod",
         "modulation,remap,shaper,curve,range,envelope",
@@ -192,8 +192,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.smooth",
-        "Modulation Smooth",
+        "mod.shaper.smooth",
+        "Smooth",
         "Unary modulation shaper: linear smoothing over a duration (wire-identical smoothing)",
         "mod",
         "modulation,smooth,slew,ramp,glide,shaper,filter",
@@ -202,8 +202,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.delay",
-        "Modulation Delay",
+        "mod.shaper.delay",
+        "Delay",
         "Unary modulation shaper: delays a modulation signal by a parameterized time (delay line)",
         "mod",
         "modulation,delay,line,echo,offset,lag,shaper",
@@ -212,8 +212,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.envelope",
-        "Modulation Envelope",
+        "mod.shaper.envelope",
+        "Envelope",
         "Unary modulation shaper: remaps a modulation value through a drawn envelope curve",
         "mod",
         "modulation,envelope,remap,curve,shaper,draw,easing",
@@ -232,30 +232,30 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "generator.spinningtris",
+        "debug.spinningtris",
         "Spinning Triangles",
         "Animated spinning triangles GPU demo",
-        "generator",
+        "debug",
         "demo,triangles,animation,generative",
         NANO_INSTANCE_LIFECYCLE(spinningtris),
     });
 
     nano::registerEffect({
         2,
-        "data.particles_emitter",
+        "debug.particles_emitter",
         "Particles Emitter",
         "Emits a stream of 2D particles into a GPU storage buffer",
-        "data",
+        "debug",
         "particles,gpu,emit,physics",
         NANO_INSTANCE_LIFECYCLE(particles_emitter),
     });
 
     nano::registerEffect({
         2,
-        "video.particles_renderer",
+        "debug.particles_renderer",
         "Particles Renderer",
         "Renders quads for each particle in an input GPU buffer",
-        "video",
+        "debug",
         "particles,gpu,quads,instanced",
         NANO_INSTANCE_LIFECYCLE(particles_renderer),
     });
@@ -265,7 +265,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.hdr_test",
-        "HDR Round-Trip",
+        "HDR Round Trip",
         "Verifies rgba16float storage textures via a 4x → 0.25x round trip",
         "debug",
         "test,hdr,float,texture-format",
@@ -285,7 +285,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.rw_storage_test",
-        "RW Storage Texture",
+        "RW Storage",
         "Verifies read_write access on r32float storage textures via in-place RMW",
         "debug",
         "test,rw,storage-texture,r32float",
@@ -295,7 +295,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.clear_copy_test",
-        "Texture Clear + Copy",
+        "Clear + Copy",
         "Verifies gpu::Device::clear and gpu::Device::copy via clear-then-copy round trip",
         "debug",
         "test,clear,copy,texture",
@@ -305,7 +305,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.mrt_test",
-        "Multi-Render-Target",
+        "Multi-Render Target",
         "Verifies multi-target render passes via fragment shader writing two color attachments",
         "debug",
         "test,mrt,render-target,fragment",
@@ -315,7 +315,7 @@ void nano_module_main() {
     nano::registerEffect({
         2,
         "debug.lut3d_test",
-        "3D LUT Identity",
+        "3D LUT",
         "Verifies 3D textures via an identity 16x16x16 color LUT",
         "debug",
         "test,3d,lut,texture-3d",
@@ -354,10 +354,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "video.motion_blur",
+        "motion.blur",
         "Motion Blur",
         "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
-        "video",
+        "motion",
         "blur,motion,velocity,render-outputs",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
     });

@@ -2,7 +2,7 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for video.shape_fold (nano bundle) — the evolving-shape
+ * E2E coverage for source.shape_fold (nano bundle) — the evolving-shape
  * generator. A baked atlas is resolved on the CPU to a few terms; the GPU
  * evaluates the SDF field and auto-levels it every frame (minmax → hist →
  * buildlut → present). This is the first real exercise of the WebGPU
@@ -30,7 +30,7 @@ function buildSketch(params: Record<string, unknown>): Sketch {
     chain: [
       {
         type: 'module',
-        module_type: 'video.shape_fold',
+        module_type: 'source.shape_fold',
         instance_key: 'sf@0',
         params,
       },
@@ -60,7 +60,7 @@ async function render(sketchId: string, params: Record<string, unknown>, dumpNam
 // A busy, high-contrast cell, frozen in time for determinism.
 const BUSY = { frequency: 0.7, simplicity: 0.35, time_speed: 0.0 };
 
-describe('video.shape_fold E2E', () => {
+describe('source.shape_fold E2E', () => {
   jest.setTimeout(60000);
 
   it('registers and renders a non-solid auto-leveled field', async () => {
@@ -69,7 +69,7 @@ describe('video.shape_fold E2E', () => {
     result.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
 
     // Registration: the effect is present with its broadcast outputs declared.
-    const sf = result.state.plugins.find((p: any) => p.id === 'video.shape_fold');
+    const sf = result.state.plugins.find((p: any) => p.id === 'source.shape_fold');
     expect(sf).toBeTruthy();
     expect(sf.io.find((io: any) => io.name === 'autopilot_x' && io.kind === 2)).toBeTruthy();
     expect(sf.io.find((io: any) => io.name === 'autopilot_y' && io.kind === 2)).toBeTruthy();

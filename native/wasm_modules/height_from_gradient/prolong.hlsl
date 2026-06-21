@@ -1,4 +1,4 @@
-// video.height_from_gradient — prolongation (coarse → fine initial guess).
+// filter.height_from_gradient — prolongation (coarse → fine initial guess).
 //
 // Bilinearly upsamples the solved coarse height onto the next finer level as
 // its initial guess, before that level's Jacobi sweeps refine it. This is the

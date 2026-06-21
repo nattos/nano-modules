@@ -1,6 +1,6 @@
 import { runEngineTest } from './engine-test-helpers';
 
-// Per-effect tests for `sequencer.nanolooper` against the shipping `nano`
+// Per-effect tests for `control.nanolooper` against the shipping `nano`
 // bundle. nanolooper has no texture I/O — its render output goes through
 // the canvas draw_list, not a GPU texture. UI-side behaviour
 // (keyboard triggers, state edits, audio callback) is covered by
@@ -15,19 +15,19 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
       width: 32, height: 32,
       modules: ['com.nano.nano'],
       commands: [
-        { type: 'instantiateEffect', effectId: 'sequencer.nanolooper' },
+        { type: 'instantiateEffect', effectId: 'control.nanolooper' },
       ],
       waitFrames: 5,
       dumpName: 'nanolooper_metadata',
     });
 
     expect(result.success).toBe(true);
-    const nl = result.state.plugins.find((p: any) => p.id === 'sequencer.nanolooper');
+    const nl = result.state.plugins.find((p: any) => p.id === 'control.nanolooper');
     expect(nl).toBeDefined();
     // Key carries an instance-counter suffix (@N); the bundle warmup registers
     // the schema-only instance and instantiateEffect makes the live one, so the
     // exact N isn't load-bearing — just assert the id@N shape.
-    expect(nl!.key).toMatch(/^sequencer\.nanolooper@\d+$/);
+    expect(nl!.key).toMatch(/^control\.nanolooper@\d+$/);
 
     // Spot-check a few schema fields — full coverage lives in wasm-host.test.ts.
     const paramNames = nl!.params.map((p: any) => p.name);
@@ -42,14 +42,14 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
       width: 32, height: 32,
       modules: ['com.nano.nano'],
       commands: [
-        { type: 'instantiateEffect', effectId: 'sequencer.nanolooper' },
+        { type: 'instantiateEffect', effectId: 'control.nanolooper' },
       ],
       waitFrames: 10,
       dumpName: 'nanolooper_initial',
     });
 
     expect(result.success).toBe(true);
-    const nl = result.state.plugins.find((p: any) => p.id === 'sequencer.nanolooper');
+    const nl = result.state.plugins.find((p: any) => p.id === 'control.nanolooper');
     const pluginState = result.state.pluginStates?.[nl!.key];
     expect(pluginState).toBeDefined();
     // Grid is the canonical "what's recorded" surface — should exist and
@@ -77,7 +77,7 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
             chain: [
               {
                 type: 'module',
-                module_type: 'sequencer.nanolooper',
+                module_type: 'control.nanolooper',
                 instance_key: 'nl@0',
                 // Start with record on so the trigger lands in the grid.
                 params: { record: 1.0 },
@@ -97,7 +97,7 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
 
     expect(result.success).toBe(true);
     const pluginState = result.state.pluginStates?.['nl@0']
-      ?? result.state.pluginStates?.['sequencer.nanolooper@0'];
+      ?? result.state.pluginStates?.['control.nanolooper@0'];
     expect(pluginState).toBeDefined();
     // Some step on channel 0 should have been recorded.
     expect(pluginState.grid[0].length).toBeGreaterThan(0);

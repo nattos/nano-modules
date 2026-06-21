@@ -1,4 +1,4 @@
-// video.exposure — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.tone.exposure — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

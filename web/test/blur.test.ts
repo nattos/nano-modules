@@ -1,6 +1,6 @@
 import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.blur` against `core`. The blur is a two-pass
+// Per-effect tests for `filter.blur.gaussian` against `core`. The blur is a two-pass
 // separable Gaussian with a CPU-driven kernel: tap LOCATIONS depend only
 // on `quality` (so smooth radius modulation doesn't shimmer), tap COUNT
 // and weights are recomputed from sigma per-frame.
@@ -18,7 +18,7 @@ describe('Blur Effect E2E', () => {
       dumpName: 'blur_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.blur');
+    expect(frame.metadata?.id).toBe('filter.blur.gaussian');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['quality', 'radius']);
   });

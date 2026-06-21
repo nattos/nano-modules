@@ -1,7 +1,7 @@
 /**
  * font-list.ts — pure parse/format for CSS-style font-family lists.
  *
- * The `font` param of gen.text is a CSS font-family value: an ordered,
+ * The `font` param of source.text.plain is a CSS font-family value: an ordered,
  * comma-separated list of family names (each optionally quoted) and/or generic
  * keywords (serif, sans-serif, …). The engine resolves the list in order,
  * falling through to the primary font for unmatched names.

@@ -40,7 +40,7 @@ async function main() {
   appController.loadModule('com.nano.nano');
   appController.loadModule('com.nano.lights');
   appController.loadModule('com.nano.text');
-  appController.loadModule('com.nano.richtext');   // gen.richtext (Blitz HTML/CSS)
+  appController.loadModule('com.nano.richtext');   // source.text.rich (Blitz HTML/CSS)
 }
 
 main();

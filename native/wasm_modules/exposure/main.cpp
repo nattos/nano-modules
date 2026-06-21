@@ -1,5 +1,5 @@
 /*
- * video.exposure — Multiplicative gain controlled by a normalized "stops"
+ * color.tone.exposure — Multiplicative gain controlled by a normalized "stops"
  * slider.
  *
  *   slider -1.0  →  -3 stops  (gain = 1/8)
@@ -11,7 +11,7 @@
  * straight in linear-ish RGB; if you need clean highlight roll-off,
  * pair this with `levels` or a tonemapping effect downstream.
  *
- * Warm/cool tinting lives in the dedicated `video.color_temperature`
+ * Warm/cool tinting lives in the dedicated `color.temperature`
  * effect — exposure is a clean stops-only gain.
  *
  * Class-like instance model: module_init() sets up the type-shared
@@ -52,7 +52,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.exposure", {1, 0, 0},
+  state::init("color.tone.exposure", {1, 0, 0},
     state::Schema()
       .floatField("amount",      0.0f, -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)

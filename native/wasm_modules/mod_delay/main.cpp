@@ -1,9 +1,9 @@
 /*
- * mod.delay — Modulation Delay shaper.
+ * mod.shaper.delay — Delay shaper.
  *
  * A unary modulation shaper: delays the `input` modulation signal by `delay`
  * seconds and republishes it on `output`. Pure data module — no GPU, no texture
- * I/O (same shape as data.lfo / mod.remap / mod.smooth), but STATEFUL: it keeps a
+ * I/O (same shape as mod.source.lfo / mod.shaper.remap / mod.shaper.smooth), but STATEFUL: it keeps a
  * time-stamped ring-buffer DELAY LINE (delay_line.h) across frames.
  *
  * Each tick it advances a time accumulator by `dt` (style guide §2.1 — accumulate,
@@ -36,7 +36,7 @@ struct State {
 };
 
 void module_init() {
-  state::init("mod.delay", {1, 0, 0},
+  state::init("mod.shaper.delay", {1, 0, 0},
     state::Schema()
       // The signal to delay (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect

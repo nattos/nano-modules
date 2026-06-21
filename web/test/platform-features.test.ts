@@ -156,7 +156,7 @@ describe('Platform features', () => {
           // Red bg that must be fully overwritten by the clear+copy.
           {
             type: 'module',
-            module_type: 'generator.solid_color',
+            module_type: 'source.solid_color',
             instance_key: 'bg@0',
             params: { color: [1.0, 0.0, 0.0] },
           },
@@ -253,7 +253,7 @@ describe('Platform features', () => {
   });
 
   describe('mip texture chain + LOD sampling', () => {
-    // video.fast_blur is the canonical exercise of the multi-mip
+    // filter.blur.fast is the canonical exercise of the multi-mip
     // platform path: it allocates a scratch with a mip chain,
     // bounces through 4 down + 4 up passes alternating reads of one
     // mip with writes to another. If the platform binds full-chain

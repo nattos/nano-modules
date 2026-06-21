@@ -1,5 +1,5 @@
 /*
- * video.crop — Rectangular crop with two parameterizations.
+ * warp.crop — Rectangular crop with two parameterizations.
  *
  * mode = Span (default):
  *   `center` (vec2, cover-square coords) + `width`/`height` (half-extents
@@ -86,7 +86,7 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.crop", {1, 0, 0},
+  state::init("warp.crop", {1, 0, 0},
     state::Schema()
       // Mode selector — drives which downstream fields are visible.
       .selectField("mode", ModeSpan, state::PrimaryInput, {

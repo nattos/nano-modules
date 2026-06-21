@@ -1,6 +1,6 @@
 import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.auto_level` against `core`.
+// Per-effect tests for `color.tone.auto_level` against `core`.
 // Param indices (declaration order): 0 = equalize, 1 = median_target, 2 = median_pull.
 
 const W = 64, H = 64;
@@ -42,7 +42,7 @@ describe('Auto Level Effect E2E', () => {
       dumpName: 'auto_level_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.auto_level');
+    expect(frame.metadata?.id).toBe('color.tone.auto_level');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['equalize', 'median_pull', 'median_target']);
   });

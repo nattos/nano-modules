@@ -2,7 +2,7 @@ import { runGpuTest, runGpuEffectTest, forEachBackend } from './gpu-test-helpers
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
-// Per-effect tests for `gen.soft_glow` against the `lights` bundle.
+// Per-effect tests for `source.light.soft_glow` against the `lights` bundle.
 //
 // Soft glow accumulates gaussian contributions from a pool of drifting
 // blobs and runs the accumulated intensity through a hue-shifting ramp.
@@ -28,7 +28,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
       dumpName: 'soft_glow_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.soft_glow');
+    expect(frame.metadata?.id).toBe('source.light.soft_glow');
   });
 
   it('intensity=0 passes input through unchanged', async () => {
@@ -145,13 +145,13 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.0, 0.0, 0.0] },
         },
         ...(withProducer ? [{
           type: 'module',
-          module_type: 'gen.soft_glow',
+          module_type: 'source.light.soft_glow',
           instance_key: 'glow@0',
           params: {
             blob_count: 4,
@@ -169,7 +169,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
         }] : []),
         {
           type: 'module',
-          module_type: 'video.motion_blur',
+          module_type: 'motion.blur',
           instance_key: 'blur@0',
           params: { strength: 32.0, samples: 16, quality: 1 },
         },
@@ -234,11 +234,11 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
       wires: [],
       chain: [
         {
-          type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+          type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
           params: { color: [0.0, 0.0, 0.0] },
         },
         {
-          type: 'module', module_type: 'gen.soft_glow', instance_key: 'glow@0',
+          type: 'module', module_type: 'source.light.soft_glow', instance_key: 'glow@0',
           params: {
             blob_count: 4, blob_size: 0.5, blob_size_jitter: 0.0,
             intensity: 1.5, drift_rate: 0.8,
@@ -250,7 +250,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
           },
         },
         {
-          type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
+          type: 'module', module_type: 'motion.blur', instance_key: 'blur@0',
           params: { strength: 32.0, samples: 16, quality: 1 },
         },
       ],

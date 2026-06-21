@@ -1,4 +1,4 @@
-// video.posterize — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.posterize — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

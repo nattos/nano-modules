@@ -103,7 +103,7 @@ public:
   // Dimensions of an existing texture handle. The host text compositor sizes
   // its dispatch off the *target* texture (mirroring the web path, which reads
   // GPUTexture.width/height) rather than the swapchain surface — generators
-  // like gen.text render into an executor-bound output texture, not a surface,
+  // like source.text.plain render into an executor-bound output texture, not a surface,
   // so surface dims would be 0. Default 0 (unknown handle / unsupported).
   virtual int32_t getTextureWidth(int32_t textureHandle)  { (void)textureHandle; return 0; }
   virtual int32_t getTextureHeight(int32_t textureHandle) { (void)textureHandle; return 0; }

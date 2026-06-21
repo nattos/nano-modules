@@ -24,9 +24,9 @@ describe('util.dashboard knob bank', () => {
       ac.mutate('s', d => {
         d.sketches['sk_dash'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'generator.solid_color', instance_key: 'sc@0',
+          chain: [{ type: 'module', module_type: 'source.solid_color', instance_key: 'sc@0',
                     params: { color: [0.1,0.1,0.1] } }],
-          instances: { 'sc@0': { module_type: 'generator.solid_color', state: { color:[0.1,0.1,0.1] } } },
+          instances: { 'sc@0': { module_type: 'source.solid_color', state: { color:[0.1,0.1,0.1] } } },
         };
       });
       ac.setActiveTab('edit');
@@ -124,16 +124,16 @@ describe('util.dashboard knob bank', () => {
         d.sketches['sk_m'] = {
           anchor: null,
           chain: [
-            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0' },
+            { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0' },
             { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0',
               params: {} },
-            { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0' },
+            { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0' },
           ],
           wires: [],
           instances: {
-            'lfo@0': { module_type: 'data.lfo', state: {} },
+            'lfo@0': { module_type: 'mod.source.lfo', state: {} },
             'dash@0': { module_type: 'util.dashboard', state: { knobs: [0,0,0,0,0,0,0,0] } },
-            'bc@0': { module_type: 'video.brightness_contrast', state: { brightness: 1, contrast: 0.25 } },
+            'bc@0': { module_type: 'color.tone.brightness_contrast', state: { brightness: 1, contrast: 0.25 } },
           },
         };
       });

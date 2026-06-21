@@ -1,6 +1,6 @@
 import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 
-// Per-effect tests for gen.tingle_top — sparkles bundled at the top of each
+// Per-effect tests for source.light.tingle_top — sparkles bundled at the top of each
 // bar while gated, draining downward on release. The GPU particle pool cycles
 // over time, so these use renderEachTick. With a black input the sparkles are
 // just bright pixels, so the gated-at-top vs released-fills-down envelope is
@@ -33,7 +33,7 @@ describe('Tingle Top Effect E2E', () => {
       inputColor: [0, 0, 0, 1], dumpName: 'tingle_top_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.tingle_top');
+    expect(frame.metadata?.id).toBe('source.light.tingle_top');
   });
 
   it('gated: sparkles stay bundled at the top band', async () => {

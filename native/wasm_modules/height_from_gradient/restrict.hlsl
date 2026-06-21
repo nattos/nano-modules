@@ -1,4 +1,4 @@
-// video.height_from_gradient — divergence pyramid restriction.
+// filter.height_from_gradient — divergence pyramid restriction.
 //
 // Coarsens the pre-scaled divergence one level: F_{k+1}[p] = SUM of the 2x2
 // children of F_k. The sum (not the average) is what bakes the squared-grid-

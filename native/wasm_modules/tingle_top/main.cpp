@@ -1,5 +1,5 @@
 /*
- * gen.tingle_top — sparkles bundled at the top of each bar while a note is
+ * source.light.tingle_top — sparkles bundled at the top of each bar while a note is
  * held, released downward as a "wave" when let go. POLYPHONIC: up to 4 voices.
  *
  * A note-on (gate rising / trigger pulse / auto) allocates a SUSTAINING voice
@@ -183,7 +183,7 @@ static void fire_note(State* s, bool held) {
 }
 
 void module_init() {
-  state::init("gen.tingle_top", {1, 0, 0},
+  state::init("source.light.tingle_top", {1, 0, 0},
     state::Schema()
       .boolField ("gate",                false,                state::PrimaryInput)
       .eventField("trigger",                                   state::PrimaryInput)

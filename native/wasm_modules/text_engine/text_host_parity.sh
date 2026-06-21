@@ -4,7 +4,7 @@
 # Unlike metal_parity.sh (which drives a standalone Metal harness), this compiles
 # the REAL FFGL code path — host_impls_text.cpp + effect_runtime + metal_backend
 # + the text engine + libtext_blitz.a — and drives text_layout/text_render
-# exactly as gen.text / gen.richtext do, asserting the GPU composite matches the
+# exactly as source.text.plain / source.text.rich do, asserting the GPU composite matches the
 # CPU golden (Engine::rasterize) for BOTH an attributed-string spec and a
 # mode:html (Blitz) spec.
 set -euo pipefail
@@ -71,7 +71,7 @@ clang++ -std=c++17 -O2 $OBJ "$LIB" $RUSTLIBS \
   -framework Metal -framework MetalPerformanceShaders -framework Foundation \
   -o /tmp/thp/text_host_metal
 
-echo "[4/4] running host-path parity (gen.text JSON + gen.richtext html)"
+echo "[4/4] running host-path parity (source.text.plain JSON + source.text.rich html)"
 export TE_FONT="$FONT" TE_FALLBACK="$FALLBACK"
 rc=0
 TE_PNG="$OUT/host_text.png"  /tmp/thp/text_host_metal text          | sed 's/^/  text: /' || rc=1

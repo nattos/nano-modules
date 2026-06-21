@@ -64,9 +64,9 @@ namespace {
 // the JS side can pass the same config to both backends.
 std::string resolveEffectId(const std::string& moduleName) {
   if (moduleName == "soft_glow.wasm" || moduleName == "soft_glow")
-    return "gen.soft_glow";
+    return "source.light.soft_glow";
   if (moduleName == "motion_blur.wasm" || moduleName == "motion_blur")
-    return "video.motion_blur";
+    return "motion.blur";
   return moduleName;
 }
 
@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
 
     effect_runtime::EffectRuntime rt(gpu.get());
     sketch_executor::ModuleRegistry registry(&rt);
-    // Text effects (gen.text / gen.richtext) reach the host TextEngine via the
+    // Text effects (source.text.plain / source.text.rich) reach the host TextEngine via the
     // text.* service; install the bundled fonts before any render so glyphs
     // resolve (null primary → system UI font + CJK fallbacks). Host-side, exactly
     // as the barrel does — the text.wasm bridge routes the effects' imports here.

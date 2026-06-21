@@ -1,4 +1,4 @@
-// gen.tingle_top — shared helpers + GPU-resident particle layout. Both
+// source.light.tingle_top — shared helpers + GPU-resident particle layout. Both
 // update.hlsl and render.hlsl include this so the pool struct stays in sync.
 
 #ifndef TINGLE_TOP_COMMON_HLSL

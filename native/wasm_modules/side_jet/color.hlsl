@@ -1,4 +1,4 @@
-// gen.side_jet — Stage 2: 2D plume synthesis (color).
+// source.light.side_jet — Stage 2: 2D plume synthesis (color).
 //
 // Stateless w.r.t. history → reacts in one frame. For each pixel we map x
 // to an axial station, read the 1D solver state (u, p, b, m, phi, lit), and

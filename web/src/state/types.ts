@@ -41,8 +41,8 @@ export interface IOInfo {
 // --- Available effects (from module registration) ---
 
 export interface AvailableEffect {
-  id: string;           // "video.brightness_contrast" (module-relative semantic ID)
-  name: string;         // "Brightness/Contrast"
+  id: string;           // "color.tone.brightness_contrast" (module-relative semantic ID)
+  name: string;         // "Brightness & Contrast"
   description: string;
   category: string;
   keywords: string[];

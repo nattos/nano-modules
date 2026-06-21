@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.invert.
+// Per-pixel kernel for color.invert.
 
 struct FuseUniforms {
   float invert_alpha;  // 0 = leave alpha, 1 = also invert

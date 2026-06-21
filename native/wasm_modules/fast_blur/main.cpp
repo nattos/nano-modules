@@ -1,5 +1,5 @@
 /*
- * video.fast_blur — Thin wrapper around `fx::FastBlur`.
+ * filter.blur.fast — Thin wrapper around `fx::FastBlur`.
  *
  * The actual blur machinery lives in `<effect_fast_blur.h>` so it can
  * be reused by future effects (bloom, glow, depth-of-field, energy
@@ -37,7 +37,7 @@ struct State {
 
 // Type-level setup: schema + backend check. Runs once per type.
 void module_init() {
-  state::init("video.fast_blur", {1, 0, 0},
+  state::init("filter.blur.fast", {1, 0, 0},
     state::Schema()
       .intField("iterations", 4, 1, fx::FastBlur::MAX_ITERATIONS, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)

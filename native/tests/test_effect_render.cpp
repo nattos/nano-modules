@@ -74,7 +74,7 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
 
   const WasmEffectDesc* w = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "video.brightness_contrast") { w = &e; break; }
+    if (e.id == "color.tone.brightness_contrast") { w = &e; break; }
   }
   REQUIRE(w != nullptr);
 
@@ -82,10 +82,10 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
   sketch_executor::ModuleRegistry registry(&rt);
   // Register ONLY this effect — registering the whole bundle would run every
   // effect's module_init, some of which use host imports not yet wired.
-  REQUIRE(registry.registerWasmEffect("video.brightness_contrast",
-                                      "Brightness/Contrast", &host, id, *w));
+  REQUIRE(registry.registerWasmEffect("color.tone.brightness_contrast",
+                                      "Brightness & Contrast", &host, id, *w));
 
-  EffectInstance* inst = rt.instanceFor("video.brightness_contrast", "k0");
+  EffectInstance* inst = rt.instanceFor("color.tone.brightness_contrast", "k0");
   REQUIRE(inst != nullptr);
 
   const uint32_t W = 16, H = 16;
@@ -126,13 +126,13 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
   host.shutdown();
 }
 
-// The slot-based GPU input ABI: video.blend reads its two inputs via
+// The slot-based GPU input ABI: composite.blend reads its two inputs via
 // gpu::Device::inputTexture(0/1) and writes via renderTarget() — NOT
 // textureForField. This locks the executor↔host plumbing that feeds those
 // (EffectInstance::setInputTextureSlots → WasmContext::input_texture_handles,
 // and GPUBackend::setSurface → getSurfaceTexture). Without it the effect bails
 // to black; texture wires into multi-input effects depend on it.
-TEST_CASE("WASM slot-based input ABI blends two textures (video.blend)", "[effect_render]") {
+TEST_CASE("WASM slot-based input ABI blends two textures (composite.blend)", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) {
     SKIP("No Metal device available");
@@ -151,15 +151,15 @@ TEST_CASE("WASM slot-based input ABI blends two textures (video.blend)", "[effec
 
   const WasmEffectDesc* w = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "video.blend") { w = &e; break; }
+    if (e.id == "composite.blend") { w = &e; break; }
   }
   REQUIRE(w != nullptr);
 
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(registry.registerWasmEffect("video.blend", "Blend", &host, id, *w));
+  REQUIRE(registry.registerWasmEffect("composite.blend", "Blend", &host, id, *w));
 
-  EffectInstance* inst = rt.instanceFor("video.blend", "k0");
+  EffectInstance* inst = rt.instanceFor("composite.blend", "k0");
   REQUIRE(inst != nullptr);
 
   const uint32_t W = 16, H = 16;
@@ -286,12 +286,12 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
   // fb.tex_out == acc's output. opacity 0.5 → frame-blend accumulator.
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "video.blend", "instance_key": "acc" },
-      { "module_type": "video.brightness_contrast", "instance_key": "fb" }
+      { "module_type": "composite.blend", "instance_key": "acc" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "fb" }
     ],
     "instances": {
-      "acc": { "module_type": "video.blend", "state": { "opacity": 0.5 } },
-      "fb":  { "module_type": "video.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } }
+      "acc": { "module_type": "composite.blend", "state": { "opacity": 0.5 } },
+      "fb":  { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } }
     },
     "wires": [
       { "id": "wfb", "src": { "instanceKey": "fb", "field": "tex_out" },
@@ -359,9 +359,9 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
 
   // Frame 0 (dirty): one brightness_contrast at +0.5 (> neutral 0) → lifts.
   auto bright = nlohmann::json::parse(R"JSON({
-    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "bc" } ],
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "bc" } ],
     "instances": {
-      "bc": { "module_type": "video.brightness_contrast",
+      "bc": { "module_type": "color.tone.brightness_contrast",
               "state": { "brightness": 0.5, "contrast": 0.0 } }
     }
   })JSON");
@@ -375,9 +375,9 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
   // (counter steady) even though the value-dirty flag is set, yet the new value
   // must still take effect (applyState runs on the dirty flag).
   auto dark = nlohmann::json::parse(R"JSON({
-    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "bc" } ],
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "bc" } ],
     "instances": {
-      "bc": { "module_type": "video.brightness_contrast",
+      "bc": { "module_type": "color.tone.brightness_contrast",
               "state": { "brightness": -0.5, "contrast": 0.0 } }
     }
   })JSON");
@@ -395,13 +395,13 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
   // signature changes (new chain entry), so the plan MUST rebuild.
   auto twoStage = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "video.brightness_contrast", "instance_key": "bc" },
-      { "module_type": "video.brightness_contrast", "instance_key": "bc2" }
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc2" }
     ],
     "instances": {
-      "bc":  { "module_type": "video.brightness_contrast",
+      "bc":  { "module_type": "color.tone.brightness_contrast",
                "state": { "brightness": -0.5, "contrast": 0.0 } },
-      "bc2": { "module_type": "video.brightness_contrast",
+      "bc2": { "module_type": "color.tone.brightness_contrast",
                "state": { "brightness": 0.5, "contrast": 0.0 } }
     }
   })JSON");
@@ -415,11 +415,11 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
 //      them (TS executor falls back to entry.params). Without it the solid_color
 //      sources render their DEFAULT grey and the blend is grey, not red/blue.
 //  (B) a texture wire whose DEST field is the schema's NAMED input slot
-//      (video.blend tex_a/tex_b) OR a NUMERIC positional index ('0'/'1') must
+//      (composite.blend tex_a/tex_b) OR a NUMERIC positional index ('0'/'1') must
 //      both reach inputTexture(0/1). The editor uses both spellings.
 // Sketch: red(solid)→blue(solid)→blend, all params on entry.params, opacity 0 →
 // output == tex_a (red). Run once with named dests, once with numeric.
-TEST_CASE("entry.params + named/numeric input wires drive video.blend",
+TEST_CASE("entry.params + named/numeric input wires drive composite.blend",
           "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) {
@@ -449,9 +449,9 @@ TEST_CASE("entry.params + named/numeric input wires drive video.blend",
   auto sketchFor = [](const char* destA, const char* destB) {
     return nlohmann::json::parse(std::string(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "red",  "params": { "color": [1.0, 0.0, 0.0] } },
-        { "module_type": "generator.solid_color", "instance_key": "blue", "params": { "color": [0.0, 0.0, 1.0] } },
-        { "module_type": "video.blend", "instance_key": "mix", "params": { "opacity": 0.0 } }
+        { "module_type": "source.solid_color", "instance_key": "red",  "params": { "color": [1.0, 0.0, 0.0] } },
+        { "module_type": "source.solid_color", "instance_key": "blue", "params": { "color": [0.0, 0.0, 1.0] } },
+        { "module_type": "composite.blend", "instance_key": "mix", "params": { "opacity": 0.0 } }
       ],
       "wires": [
         { "id": "wa", "src": { "instanceKey": "red",  "field": "tex_out" }, "dest": { "instanceKey": "mix", "field": ")JSON")
@@ -491,7 +491,7 @@ TEST_CASE("entry.params + named/numeric input wires drive video.blend",
 // Gap #3 regression (task #106): the entry.params fallback must merge PER FIELD,
 // not all-or-nothing. The web host mirrors a producer's live OUTPUT scalars into
 // instances[key].state, leaving it partially populated; an all-or-nothing skip
-// then drops the entry.params INPUT fields (e.g. data.lfo's rate), so the effect
+// then drops the entry.params INPUT fields (e.g. mod.source.lfo's rate), so the effect
 // runs at schema defaults. Here bc carries a partial instances.state
 // {brightness:0.0} (the "mirrored" field) AND entry.params {contrast:-1.0}. With
 // the per-field merge, contrast=-1.0 (0× scale) is applied → black; with the old
@@ -515,11 +515,11 @@ TEST_CASE("entry.params merges per-field over partial instance state",
 
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-      { "module_type": "video.brightness_contrast", "instance_key": "bc",
+      { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc",
         "params": { "brightness": 0.0, "contrast": -1.0 } }
     ],
-    "instances": { "bc": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.0 } } }
+    "instances": { "bc": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.0 } } }
   })JSON");
   int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
   backend->submit();
@@ -530,7 +530,7 @@ TEST_CASE("entry.params merges per-field over partial instance state",
 }
 
 // Gap #3 repro of the EXACT web engine-wires "forward scalar wire" sketch:
-// white -> data.lfo(rate 0) -> brightness_contrast, wire lfo.output -> brightness.
+// white -> mod.source.lfo(rate 0) -> brightness_contrast, wire lfo.output -> brightness.
 // lfo.output==0.5 (mirrored into instance state, as the web host does) folds into
 // brightness's signed [-1,1] -> 0 (neutral, magnitude auto/unsigned). With
 // contrast -0.5 (0.5x scale) on white -> output grey ~128.
@@ -556,11 +556,11 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
   // outputs there; the native float write-tap reads them from the JSON).
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-      { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-      { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
+      { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
     ],
-    "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+    "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
     "wires": [
       { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
     ]
@@ -576,7 +576,7 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
 // Modulation telemetry: the executor records, for every modulated scalar input,
 // the effective resolved value + the swing band the wire can drive it through
 // (lastModulationData(), the source of the editor's slider band). Same sketch
-// as the forward-wire repro: data.lfo(output 0.5) -> bc.brightness, magnitude
+// as the forward-wire repro: mod.source.lfo(output 0.5) -> bc.brightness, magnitude
 // auto/unsigned/replace into brightness's signed [-1,1]. The band must span the
 // dest's [-1,1] (sweeping lfo.output 0..1 → replaceVal -1..1) and the effective
 // value must be 0.0 (the live output mid-mapped). A `mod` remap on the wire must
@@ -601,11 +601,11 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   SECTION("plain wire — band spans the dest's declared [-1,1]") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
       ]
@@ -626,11 +626,11 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   SECTION("a remap on the wire narrows the band to the remap output range") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "mod": { "remap": { "inMin": 0.0, "inMax": 1.0, "outMin": 0.25, "outMax": 0.75 } } }
@@ -649,18 +649,18 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     CHECK(b["max"].get<double>()   == Catch::Approx(0.5).margin(0.01));
   }
 
-  // An ENVELOPE shaper on the wire reshapes the value the same way mod.envelope
+  // An ENVELOPE shaper on the wire reshapes the value the same way mod.shaper.envelope
   // would. Curve (0,0.2)->(1,0.6) maps lfo.output 0.5 → 0.4, narrowing the band
   // to the envelope's [0.2,0.6] output window (swept over the source's [0,1]) —
   // then folded into brightness's signed [-1,1] as [-0.6, 0.2] (2v-1).
   SECTION("an envelope on the wire reshapes the value + band") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "mod": { "envelope": [0.0, 0.2, 0.0, 1.0, 0.6, 0.0] } }
@@ -684,11 +684,11 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   SECTION("a delay on the wire lags the value across frames") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": 0.25 } }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.2 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.2 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "mod": { "delay": 1.0 } }
@@ -714,15 +714,15 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   // prescales the value to [-1,1] (0→-1, 1→1), so the band spans the FULL dest
   // range. Without the prescale (the old face-value behavior), an unsigned 0..1
   // value read as signed only reaches the upper half ([0.5,1.0]); the [0,1] band
-  // below proves the rescale is active. data.lfo.output declares "unsigned".
+  // below proves the rescale is active. mod.source.lfo.output declares "unsigned".
   SECTION("forced signed on an explicit-unsigned source rescales to bipolar") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "magnitude": "signed" }
@@ -749,11 +749,11 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   SECTION("scale on a forced-signed add wire holds the neutral, not -1") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": -0.5 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "magnitude": "signed", "combine": "add", "mod": { "scale": 0.5 } }
@@ -775,8 +775,8 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
   }
 }
 
-// A modulation shaper (mod.remap) placed DIRECTLY after a modulation generator
-// (data.lfo) auto-connects in the executor: the generator's magnitude'd OUTPUT
+// A modulation shaper (mod.shaper.remap) placed DIRECTLY after a modulation generator
+// (mod.source.lfo) auto-connects in the executor: the generator's magnitude'd OUTPUT
 // channel feeds the shaper's magnitude'd INPUT channel in ABSOLUTE magnitude,
 // without the user drawing a wire. Gated on the capability tags (modulation_source
 // / modulation_shaper). Observed via lastModulationData(): the auto-connect records
@@ -802,11 +802,11 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
   SECTION("adjacent generator -> shaper auto-connects (absolute) with NO wires") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "mod.shaper.remap", "instance_key": "rm", "params": {} }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } }
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } }
     })JSON");
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
     backend->submit();
@@ -827,11 +827,11 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
     // [0,1]. The narrowed band proves the explicit wire is the only connection.
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "mod.shaper.remap", "instance_key": "rm", "params": {} }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "rm", "field": "input" },
           "mod": { "remap": { "inMin": 0.0, "inMax": 1.0, "outMin": 0.25, "outMax": 0.75 } } }
@@ -853,12 +853,12 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
     // nearest predecessor is NOT a modulation source — no auto-connect.
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "video.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.0, "contrast": 0.0 } },
-        { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.0, "contrast": 0.0 } },
+        { "module_type": "mod.shaper.remap", "instance_key": "rm", "params": {} }
       ],
-      "instances": { "lfo": { "module_type": "data.lfo", "state": { "output": 0.5 } } }
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } }
     })JSON");
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
     backend->submit();
@@ -870,7 +870,7 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
 }
 
 // Shapers CHAIN: a shaper directly after ANOTHER shaper (not just a source)
-// auto-connects too, so data.lfo -> mod.smooth -> mod.remap wires up end to end
+// auto-connects too, so mod.source.lfo -> mod.shaper.smooth -> mod.shaper.remap wires up end to end
 // without the user drawing anything. Both intermediate inputs record a band
 // (observed via lastModulationData); the producer outputs are hand-mirrored into
 // instance state since the native test harness doesn't run the live mirror.
@@ -893,14 +893,14 @@ TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
 
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-      { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-      { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
-      { "module_type": "mod.remap", "instance_key": "rm", "params": {} }
+      { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+      { "module_type": "mod.shaper.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
+      { "module_type": "mod.shaper.remap", "instance_key": "rm", "params": {} }
     ],
     "instances": {
-      "lfo": { "module_type": "data.lfo",  "state": { "output": 0.5 } },
-      "sm":  { "module_type": "mod.smooth","state": { "output": 0.7 } }
+      "lfo": { "module_type": "mod.source.lfo",  "state": { "output": 0.5 } },
+      "sm":  { "module_type": "mod.shaper.smooth","state": { "output": 0.7 } }
     }
   })JSON");
   executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
@@ -918,14 +918,14 @@ TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
   CHECK(md["rm"]["input"]["value"].get<double>() == Catch::Approx(0.7).margin(0.01));
 }
 
-// A shaper output declared `magnitude:"inherit"` (mod.smooth/mod.delay are
+// A shaper output declared `magnitude:"inherit"` (mod.shaper.smooth/mod.shaper.delay are
 // range-preserving) mirrors the polarity of whatever drives its input. Probe via
 // the prescale: forcing `signed` on a wire from smooth.output, when smooth
 // inherited the lfo's EXPLICIT unsigned, rescales 0..1→−1..1 (full bipolar band);
 // without a source feeding smooth's input the polarity is unknown, so the same
-// forced-signed wire is taken at face value (only the upper half). data.lfo.output
+// forced-signed wire is taken at face value (only the upper half). mod.source.lfo.output
 // is "unsigned"; smooth/lfo outputs hand-mirrored into state. The sink is
-// video.posterize.amount (an UNSIGNED [0,1] field) — the distinction only shows
+// color.posterize.amount (an UNSIGNED [0,1] field) — the distinction only shows
 // on an unsigned dest, and brightness_contrast is now signed [-1,1].
 TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
@@ -947,14 +947,14 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
   SECTION("inherits the upstream source's unsigned (forced-signed rescales to full)") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "data.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
-        { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
-        { "module_type": "video.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+        { "module_type": "mod.shaper.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
+        { "module_type": "color.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
       ],
       "instances": {
-        "lfo": { "module_type": "data.lfo",  "state": { "output": 0.5 } },
-        "sm":  { "module_type": "mod.smooth","state": { "output": 0.5 } }
+        "lfo": { "module_type": "mod.source.lfo",  "state": { "output": 0.5 } },
+        "sm":  { "module_type": "mod.shaper.smooth","state": { "output": 0.5 } }
       },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "pz", "field": "amount" }, "magnitude": "signed" }
@@ -978,12 +978,12 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
     // unknown, so forcing signed does NOT rescale (only the upper half).
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
-        { "module_type": "mod.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
-        { "module_type": "video.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
+        { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+        { "module_type": "mod.shaper.smooth", "instance_key": "sm", "params": { "duration": 0.0 } },
+        { "module_type": "color.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
       ],
       "instances": {
-        "sm": { "module_type": "mod.smooth", "state": { "output": 0.5 } }
+        "sm": { "module_type": "mod.shaper.smooth", "state": { "output": 0.5 } }
       },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "pz", "field": "amount" }, "magnitude": "signed" }
@@ -1005,7 +1005,7 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
 
 // The engine-level `FieldOptions.smoothing` option linearly ramps a scalar
 // field's final value toward each new target over `duration` seconds (the same
-// param_smoothing math as mod.smooth). It's applied IN the executor (standalone
+// param_smoothing math as mod.shaper.smooth). It's applied IN the executor (standalone
 // path, after read taps), so it works on web AND native. Probe: gray input ->
 // brightness_contrast (brightness 0/contrast 0 = identity = gray); step
 // brightness 0 -> 1.0. With smoothing a single dt=0.25 / 1s-ramp frame lands
@@ -1033,7 +1033,7 @@ TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
   // executor's per-instance ramp state between the smoothed and instant runs.
   auto makeSketch = [](const char* key, bool smooth, double brightness) {
     nlohmann::json entry = {
-      {"module_type", "video.brightness_contrast"},
+      {"module_type", "color.tone.brightness_contrast"},
       {"instance_key", key},
     };
     if (smooth) {
@@ -1043,7 +1043,7 @@ TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
     }
     return nlohmann::json{
       {"chain", nlohmann::json::array({entry})},
-      {"instances", {{key, {{"module_type", "video.brightness_contrast"},
+      {"instances", {{key, {{"module_type", "color.tone.brightness_contrast"},
                             {"state", {{"brightness", brightness}, {"contrast", 0.0}}}}}}},
     };
   };
@@ -1093,9 +1093,9 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
   REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
 
-  // data.lfo (env_lfo lifecycle) → single-channel modulation source: declares
+  // mod.source.lfo (env_lfo lifecycle) → single-channel modulation source: declares
   // both the umbrella and the single-channel specialization, not the multi one.
-  const auto* lfo = registry.find("data.lfo");
+  const auto* lfo = registry.find("mod.source.lfo");
   REQUIRE(lfo != nullptr);
   const auto& caps = lfo->capabilities;
   auto has = [&](const char* s) {
@@ -1107,14 +1107,14 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
 
   // A generator declares the standalone `generator` capability (now explicit,
   // no longer inferred from the "generator.*" category string alone).
-  const auto* solid = registry.find("generator.solid_color");
+  const auto* solid = registry.find("source.solid_color");
   REQUIRE(solid != nullptr);
   const auto& gcaps = solid->capabilities;
   CHECK(std::find(gcaps.begin(), gcaps.end(), std::string("generator")) != gcaps.end());
 
-  // mod.remap (mod_remap lifecycle) → unary modulation shaper: declares the
+  // mod.shaper.remap (mod_remap lifecycle) → unary modulation shaper: declares the
   // umbrella shaper tag and the 1-in-1-out specialization, NOT the source tags.
-  const auto* remap = registry.find("mod.remap");
+  const auto* remap = registry.find("mod.shaper.remap");
   REQUIRE(remap != nullptr);
   const auto& rcaps = remap->capabilities;
   auto rhas = [&](const char* s) {
@@ -1124,8 +1124,8 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(rhas("modulation_shaper_unary"));
   CHECK_FALSE(rhas("modulation_source"));
 
-  // mod.smooth (mod_smooth lifecycle) → also a unary modulation shaper.
-  const auto* smooth = registry.find("mod.smooth");
+  // mod.shaper.smooth (mod_smooth lifecycle) → also a unary modulation shaper.
+  const auto* smooth = registry.find("mod.shaper.smooth");
   REQUIRE(smooth != nullptr);
   const auto& scaps = smooth->capabilities;
   auto shas = [&](const char* s) {
@@ -1134,15 +1134,15 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(shas("modulation_shaper"));
   CHECK(shas("modulation_shaper_unary"));
 
-  // mod.delay (mod_delay lifecycle) → also a unary modulation shaper.
-  const auto* delay = registry.find("mod.delay");
+  // mod.shaper.delay (mod_delay lifecycle) → also a unary modulation shaper.
+  const auto* delay = registry.find("mod.shaper.delay");
   REQUIRE(delay != nullptr);
   const auto& dcaps = delay->capabilities;
   CHECK(std::find(dcaps.begin(), dcaps.end(), std::string("modulation_shaper")) != dcaps.end());
   CHECK(std::find(dcaps.begin(), dcaps.end(), std::string("modulation_shaper_unary")) != dcaps.end());
 
-  // mod.envelope (mod_envelope lifecycle) → also a unary modulation shaper.
-  const auto* envp = registry.find("mod.envelope");
+  // mod.shaper.envelope (mod_envelope lifecycle) → also a unary modulation shaper.
+  const auto* envp = registry.find("mod.shaper.envelope");
   REQUIRE(envp != nullptr);
   const auto& ecaps = envp->capabilities;
   CHECK(std::find(ecaps.begin(), ecaps.end(), std::string("modulation_shaper")) != ecaps.end());
@@ -1150,7 +1150,7 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
 
   // A plain image effect declares no capabilities (the array is absent) — and
   // is NOT a generator.
-  const auto* bc = registry.find("video.brightness_contrast");
+  const auto* bc = registry.find("color.tone.brightness_contrast");
   REQUIRE(bc != nullptr);
   CHECK(bc->capabilities.empty());
 }
@@ -1163,8 +1163,8 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
 // publishes an EMPTY schema. testonly.wasm exercises this: debug.gpu_test (and
 // the MRT debug effects) call bindings-explicit render-PSO factories that the
 // bundles host must implement. With the full gpu PSO surface registered, every
-// effect after gpu_test — including the high-index data.particles_emitter /
-// video.particles_renderer — registers its schema intact.
+// effect after gpu_test — including the high-index debug.particles_emitter /
+// debug.particles_renderer — registers its schema intact.
 //
 // (The particles render path is now cross-platform: particles_renderer is
 // HLSL→SPV shaded, so it renders on the native Metal backend too — covered by
@@ -1180,7 +1180,7 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
   sketch_executor::ModuleRegistry registry(&rt);
   REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
 
-  // generator.spinningtris and the particles effects all register AFTER
+  // debug.spinningtris and the particles effects all register AFTER
   // debug.gpu_test; before the PSO-surface fix their schemas came back empty.
   auto requireSchema = [&](const char* mt) {
     const auto* m = registry.find(mt);
@@ -1189,13 +1189,13 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
     REQUIRE(m->schemaFields.is_object());
     CHECK(!m->schemaFields.empty());
   };
-  requireSchema("generator.spinningtris");
-  requireSchema("data.particles_emitter");
-  requireSchema("video.particles_renderer");
+  requireSchema("debug.spinningtris");
+  requireSchema("debug.particles_emitter");
+  requireSchema("debug.particles_renderer");
 
   // The emitter's particles_out struct must carry its GPU-buffer leaves — the
   // producer side of the struct buffer rail.
-  const auto& emitFields = registry.find("data.particles_emitter")->schemaFields;
+  const auto& emitFields = registry.find("debug.particles_emitter")->schemaFields;
   REQUIRE(emitFields.contains("particles_out"));
   const auto& outFields = emitFields["particles_out"].value("fields", nlohmann::json::object());
   REQUIRE(outFields.contains("positions"));
@@ -1205,8 +1205,8 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
 
 // Native pixel coverage for the GPU storage-buffer struct rail + the instanced
 // render-PSO factory (create_instanced_render_pso_layout) + buffer_for_field.
-// data.particles_emitter publishes positions/velocities into GPU storage
-// buffers exposed as a struct rail; video.particles_renderer (now HLSL→SPV,
+// debug.particles_emitter publishes positions/velocities into GPU storage
+// buffers exposed as a struct rail; debug.particles_renderer (now HLSL→SPV,
 // no longer web-only) instances one quad per particle, reading positions[iid]
 // from the bound buffer in its vertex shader and outputting the tint. We run
 // enough frames for the emitter's CPU physics to lift particles into the frame,
@@ -1236,11 +1236,11 @@ TEST_CASE("particles_emitter → particles_renderer draws tinted particles (buff
   // skipped and no implicit taps are generated.
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "type": "module", "module_type": "data.particles_emitter",  "instance_key": "emit" },
-      { "type": "module", "module_type": "video.particles_renderer", "instance_key": "render" }
+      { "type": "module", "module_type": "debug.particles_emitter",  "instance_key": "emit" },
+      { "type": "module", "module_type": "debug.particles_renderer", "instance_key": "render" }
     ],
     "instances": {
-      "render": { "module_type": "video.particles_renderer",
+      "render": { "module_type": "debug.particles_renderer",
                   "state": { "particle_size": 0.05, "tint": [1.0, 0.7, 0.2, 1.0] } }
     },
     "wires": []
@@ -1471,7 +1471,7 @@ TEST_CASE("a trapping module_init is detected and flagged, not silent",
 
   // A normal effect is NOT flagged and registered its schema. (Because trap_test
   // is last, nothing it could poison comes after it — the whole bundle is clean.)
-  const auto* normal = registry.find("video.motion_blur");
+  const auto* normal = registry.find("motion.blur");
   REQUIRE(normal != nullptr);
   CHECK_FALSE(normal->moduleInitTrapped);
   CHECK(!normal->schemaFields.empty());
@@ -1509,12 +1509,12 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
   // Two non-identity brightness_contrast stages → fuse into ONE kernel.
   auto twoFused = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "video.brightness_contrast", "instance_key": "a" },
-      { "module_type": "video.brightness_contrast", "instance_key": "b" }
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "a" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "b" }
     ],
     "instances": {
-      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.0 } },
-      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": -0.5, "contrast": 0.0 } }
+      "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.0 } },
+      "b": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": -0.5, "contrast": 0.0 } }
     }
   })JSON");
   int32_t s[7];
@@ -1532,8 +1532,8 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
 
   // Single non-identity stage → one standalone dispatch (no fusion of size 1).
   auto one = nlohmann::json::parse(R"JSON({
-    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "a" } ],
-    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.0 } } }
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "a" } ],
+    "instances": { "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.5, "contrast": 0.0 } } }
   })JSON");
   run(one, s);
   CHECK(s[0] == 1);  // effectsExecuted
@@ -1544,8 +1544,8 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
 
   // Single NEUTRAL brightness_contrast (0/0) → identity → skipped, no dispatch.
   auto ident = nlohmann::json::parse(R"JSON({
-    "chain": [ { "module_type": "video.brightness_contrast", "instance_key": "a" } ],
-    "instances": { "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } } }
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "a" } ],
+    "instances": { "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } } }
   })JSON");
   run(ident, s);
   CHECK(s[0] == 1);  // effectsExecuted (still processed)
@@ -1577,12 +1577,12 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
   // Two non-identity brightness stages → they fuse (no self-cancellation).
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "video.brightness_contrast", "instance_key": "a" },
-      { "module_type": "video.brightness_contrast", "instance_key": "b" }
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "a" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "b" }
     ],
     "instances": {
-      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.4, "contrast": 0.0 } },
-      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.4, "contrast": 0.0 } }
+      "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.4, "contrast": 0.0 } },
+      "b": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.4, "contrast": 0.0 } }
     }
   })JSON");
 
@@ -1617,12 +1617,12 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
   // second effect. Does the SECOND effect still render on the result? ----
   auto partialFirst = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "video.brightness_contrast", "instance_key": "a" },
-      { "module_type": "video.brightness_contrast", "instance_key": "b" }
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "a" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "b" }
     ],
     "instances": {
-      "a": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.0, "__opacity__": 0.5 } },
-      "b": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.0 } }
+      "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.0, "__opacity__": 0.5 } },
+      "b": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.8, "contrast": 0.0 } }
     }
   })JSON");
   {
@@ -1645,12 +1645,12 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
   // known color; brightness must then transform it. ----
   auto genFirst = nlohmann::json::parse(R"JSON({
     "chain": [
-      { "module_type": "generator.solid_color", "instance_key": "g" },
-      { "module_type": "video.brightness_contrast", "instance_key": "e" }
+      { "module_type": "source.solid_color", "instance_key": "g" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "e" }
     ],
     "instances": {
-      "g": { "module_type": "generator.solid_color", "state": { "color": [0.25, 0.25, 0.25] } },
-      "e": { "module_type": "video.brightness_contrast", "state": { "brightness": 0.6, "contrast": 0.0 } }
+      "g": { "module_type": "source.solid_color", "state": { "color": [0.25, 0.25, 0.25] } },
+      "e": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.6, "contrast": 0.0 } }
     }
   })JSON");
   {
@@ -1671,7 +1671,7 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
   }
 }
 
-// REPRO (#stuck): two generator.solid_color in series; the FIRST has partial
+// REPRO (#stuck): two source.solid_color in series; the FIRST has partial
 // effect opacity (__opacity__ = 0.9). Changing the SECOND's color must update
 // the output every frame — the user reports it freezes at the last frame.
 TEST_CASE("partial-opacity first stage does not freeze downstream output", "[effect_render][alpha]") {
@@ -1691,12 +1691,12 @@ TEST_CASE("partial-opacity first stage does not freeze downstream output", "[eff
     char buf[640];
     std::snprintf(buf, sizeof(buf), R"JSON({
       "chain": [
-        { "module_type": "generator.solid_color", "instance_key": "g1" },
-        { "module_type": "generator.solid_color", "instance_key": "g2" }
+        { "module_type": "source.solid_color", "instance_key": "g1" },
+        { "module_type": "source.solid_color", "instance_key": "g2" }
       ],
       "instances": {
-        "g1": { "module_type": "generator.solid_color", "state": { "color": [0.2, 0.2, 0.2], "__opacity__": %.3f } },
-        "g2": { "module_type": "generator.solid_color", "state": { "color": [0.0, 0.0, %.3f] } }
+        "g1": { "module_type": "source.solid_color", "state": { "color": [0.2, 0.2, 0.2], "__opacity__": %.3f } },
+        "g2": { "module_type": "source.solid_color", "state": { "color": [0.0, 0.0, %.3f] } }
       }
     })JSON", firstOpacity, secondBlue);
     auto sk = nlohmann::json::parse(buf);
@@ -1721,7 +1721,7 @@ TEST_CASE("partial-opacity first stage does not freeze downstream output", "[eff
 }
 
 #ifdef TEXT_WASM_PATH
-// Text-effect migration (step #4): gen.text loads from text.wasm — the same
+// Text-effect migration (step #4): source.text.plain loads from text.wasm — the same
 // bundle path as every other effect — instead of being statically linked. Its
 // text.* imports (layout/measure/render/atlas/glyphs/release) must resolve to
 // the native TextEngine through the "text" WAMR namespace registered by
@@ -1732,7 +1732,7 @@ TEST_CASE("partial-opacity first stage does not freeze downstream output", "[eff
 // Mirrors text_effect_smoke.mm's executor-overlay case but through the WASM
 // bundle: render "Hello" over a solid-red input via tex_in/tex_out, assert the
 // text texels brighten the output AND the red background shows through behind it.
-TEST_CASE("text.wasm renders gen.text via the native text bridge", "[effect_render]") {
+TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
 
@@ -1746,7 +1746,7 @@ TEST_CASE("text.wasm renders gen.text via the native text bridge", "[effect_rend
   sketch_executor::ModuleRegistry registry(&rt);
   REQUIRE(bundles.loadBundleFile(TEXT_WASM_PATH, registry, backend.get(), nullptr) >= 1);
 
-  EffectInstance* inst = rt.instanceFor("gen.text", "k0");
+  EffectInstance* inst = rt.instanceFor("source.text.plain", "k0");
   REQUIRE(inst != nullptr);
 
   const uint32_t W = 256, H = 128; const int RGBA8 = 1;
@@ -1778,7 +1778,7 @@ TEST_CASE("text.wasm renders gen.text via the native text bridge", "[effect_rend
   CHECK(redBg > W * H / 2);           // input background composited through
 
   // Second phase (#text-alpha), SAME backend + instance: disconnect tex_in.
-  // gen.text/richtext are generators, so with no input they must leave
+  // source.text.plain/richtext are generators, so with no input they must leave
   // TRANSPARENCY between glyphs rather than paint opaque black. Folded into this
   // test (not a separate TEST_CASE) on purpose: the text engine's GPU resources
   // are a process-global singleton bound to the FIRST backend, so a second

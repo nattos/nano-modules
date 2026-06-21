@@ -2,7 +2,7 @@
 // barrel-loads-WASM migration: a real effect bundle's nano_module_main() runs
 // under WAMR, its `module.register_effect` import lands, and the host captures
 // each nano::EffectDesc_v2 (strings + indirect-function-table indices) out of
-// the module's linear memory. testonly.wasm bundles data.lfo (env_lfo), a pure
+// the module's linear memory. testonly.wasm bundles mod.source.lfo (env_lfo), a pure
 // data effect with no GPU dependency — the smallest end-to-end exercise.
 
 #include <catch2/catch_test_macros.hpp>
@@ -37,7 +37,7 @@ static std::vector<uint8_t> load_file(const char* path) {
 #error "TESTONLY_WASM_PATH must be defined"
 #endif
 
-TEST_CASE("testonly.wasm registers data.lfo via nano_module_main", "[effect_abi]") {
+TEST_CASE("testonly.wasm registers mod.source.lfo via nano_module_main", "[effect_abi]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());
 
@@ -60,7 +60,7 @@ TEST_CASE("testonly.wasm registers data.lfo via nano_module_main", "[effect_abi]
 
   const WasmEffectDesc* lfo = nullptr;
   for (const auto& e : effects) {
-    if (e.id == "data.lfo") { lfo = &e; break; }
+    if (e.id == "mod.source.lfo") { lfo = &e; break; }
   }
   REQUIRE(lfo != nullptr);
 
@@ -79,7 +79,7 @@ TEST_CASE("testonly.wasm registers data.lfo via nano_module_main", "[effect_abi]
   host.shutdown();
 }
 
-TEST_CASE("data.lfo executes via call_indirect and writes output", "[effect_abi]") {
+TEST_CASE("mod.source.lfo executes via call_indirect and writes output", "[effect_abi]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());
 
@@ -103,7 +103,7 @@ TEST_CASE("data.lfo executes via call_indirect and writes output", "[effect_abi]
 
   const WasmEffectDesc* lfo = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "data.lfo") { lfo = &e; break; }
+    if (e.id == "mod.source.lfo") { lfo = &e; break; }
   }
   REQUIRE(lfo != nullptr);
 

@@ -1,5 +1,5 @@
 /*
- * video.motion_blur — Velocity-pyramid McGuire-style motion blur.
+ * motion.blur — Velocity-pyramid McGuire-style motion blur.
  *
  * Consumes the canonical `render_outputs` struct rail (see
  * state::Schema::renderOutputs); reads the optional `motion` texture
@@ -197,7 +197,7 @@ static void on_state_ready(void* self) {
 // Type-level setup: schema + shared shader modules, pyramid-reduce PSO,
 // and the linear sampler.
 void module_init() {
-  state::init("video.motion_blur", {1, 4, 0},
+  state::init("motion.blur", {1, 4, 0},
     state::Schema()
       .floatField("strength", 1.0f, 0.f, 4.f, state::PrimaryInput)
       .intField("samples",    12,   4,   32,  state::PrimaryInput)

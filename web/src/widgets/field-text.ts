@@ -14,7 +14,7 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
   @property() placeholder = '';
   @property() defaultValue = '';
   // Render a multi-line <textarea> instead of a one-line <input> (e.g. for the
-  // gen.richtext HTML field, where you want to paste/edit a whole document).
+  // source.text.rich HTML field, where you want to paste/edit a whole document).
   @property({ type: Boolean }) multiline = false;
   @property({ attribute: false }) binding: FieldBinding | null = null;
 

@@ -1,4 +1,4 @@
-// video.phase_fold — shared math for all passes.
+// source.phase_fold — shared math for all passes.
 //
 // A phase-portrait GENERATOR. The XY pad picks a cell in a GxG atlas of
 // emergent level-set limit-cycle FIELDS (x = eccentricity, y = lobedness). The

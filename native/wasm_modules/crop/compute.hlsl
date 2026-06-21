@@ -1,4 +1,4 @@
-// video.crop — Two-mode rectangular crop with optional soft feather.
+// warp.crop — Two-mode rectangular crop with optional soft feather.
 //
 // mode = 0 (Span):  rect centered at `center` (cover-square coords) with
 //                   half-extents (half_w, half_h) in cover-square units.

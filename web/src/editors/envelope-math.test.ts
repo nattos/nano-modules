@@ -70,7 +70,7 @@ describe('parseCurve / serializeCurve', () => {
     expect(parseCurve(serializeCurve(pts))).toEqual(pts);
   });
 
-  it('curveToArray emits the flat number array the wire mod.envelope stores', () => {
+  it('curveToArray emits the flat number array the wire mod.shaper.envelope stores', () => {
     const pts = parseCurve('[0,0,0,0.3,0.9,-0.4,1,0.2,0]');
     const arr = curveToArray(pts);
     // A real array (not a JSON string) — the wire stores it inline so the

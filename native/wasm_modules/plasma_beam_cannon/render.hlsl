@@ -1,4 +1,4 @@
-// gen.plasma_beam_cannon — render pass.
+// source.light.plasma_beam_cannon — render pass.
 //
 // Per pixel:
 //   1. If effect is idle → passthrough.

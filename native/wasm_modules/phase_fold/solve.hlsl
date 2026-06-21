@@ -1,4 +1,4 @@
-// video.phase_fold — limit-cycle solver (compute, STATEFUL, double-buffered).
+// source.phase_fold — limit-cycle solver (compute, STATEFUL, double-buffered).
 //
 // N persistent particles form a ring on the limit cycle. Each carries POSITION
 // (xy) and VELOCITY (zw); the update is a little force/momentum integrator so

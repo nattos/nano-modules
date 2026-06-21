@@ -1,5 +1,5 @@
 /*
- * video.hsl — Hue / Saturation / Lightness colour grading.
+ * color.hsl — Hue / Saturation / Lightness colour grading.
  *
  *   hue_shift  [-1, +1]  →  ±180° rotation around the colour wheel
  *   saturation [-1, +1]  →  -1 collapses to greyscale, +1 doubles saturation
@@ -49,7 +49,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.hsl", {1, 0, 0},
+  state::init("color.hsl", {1, 0, 0},
     state::Schema()
       .floatField("hue_shift",  0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("saturation", 0.0f, -1.f, 1.f, state::PrimaryInput)

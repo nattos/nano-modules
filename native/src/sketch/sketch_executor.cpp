@@ -174,7 +174,7 @@ tap_mod::Mod parseMod(const json& tap) {
   const json& mod = tap["mod"];
   m.scale = mod.value("scale", 1.0f);
   // Envelope: a flat number array [x0,y0,e0, x1,y1,e1, ...] (the same wire-format
-  // the mod.envelope effect uses; serialized by the envelope graph editor). Read
+  // the mod.shaper.envelope effect uses; serialized by the envelope graph editor). Read
   // it into the Mod's control points; applyTapMod evaluates it before the remap.
   if (mod.contains("envelope") && mod["envelope"].is_array()) {
     const json& e = mod["envelope"];
@@ -864,7 +864,7 @@ int32_t SketchExecutor::execute(
         // Per-FIELD fallback: fill in each entry.params field the canonical state
         // doesn't already have. Must NOT be all-or-nothing — the web host mirrors
         // producers' live OUTPUT scalars into instances[key].state, so a producer
-        // (e.g. data.lfo) has partial state {output: ...}; an all-or-nothing skip
+        // (e.g. mod.source.lfo) has partial state {output: ...}; an all-or-nothing skip
         // would then drop its INPUT params (rate/amplitude) and the effect would
         // run at schema defaults. (`*instancesPtr` stays == rawInstances for the
         // whole scan; we only swap to mergedInstances after.)
@@ -1207,7 +1207,7 @@ int32_t SketchExecutor::execute(
       // 0<o<1 → render into a scratch texture, then host-blend it with the
       //       column input: out = mix(colInput, fx, opacity).
       const float opacity = readOpacity(instances, instKey);
-      // A modulation source (no output texture, e.g. data.lfo) never renders an
+      // A modulation source (no output texture, e.g. mod.source.lfo) never renders an
       // image — it ticks to publish its scalar/struct outputs and passes the
       // texture chain through untouched. Same path as opacity 0 below. Without
       // this it would render an empty (black) frame over the chain. Mirrors
@@ -1225,7 +1225,7 @@ int32_t SketchExecutor::execute(
         applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
         markWriteTapOutputsConnected(inst.h, entry);
         inst.doTick(dt);
-        // A buffer-producing modulation source (e.g. data.particles_emitter) has
+        // A buffer-producing modulation source (e.g. debug.particles_emitter) has
         // no texture output, but its render() UPLOADS its GPU buffers — run it so
         // downstream readers see fresh data. It doesn't touch the chain texture,
         // so the passthrough below still forwards colInput untouched.
@@ -1259,7 +1259,7 @@ int32_t SketchExecutor::execute(
       markWriteTapOutputsConnected(inst.h, entry);
 
       // -- Positional input slots + per-stage render target (slot-based GPU
-      // ABI). Effects like video.blend read inputTexture(0/1) and
+      // ABI). Effects like composite.blend read inputTexture(0/1) and
       // renderTarget() rather than textureForField. Slot 0 is the linear chain
       // input; any wire-bound input field overrides its schema slot. Mirrors
       // the web executor's inputTextures construction. setSurface points

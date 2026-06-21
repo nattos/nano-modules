@@ -1,4 +1,4 @@
-// video.flow_swarm — shared helpers (hashes, color, mask shapes, particle
+// source.particles.flow_swarm — shared helpers (hashes, color, mask shapes, particle
 // layout, the VS→FS varyings). Both update.hlsl and the vs/fs raster pair
 // include this so the GPU-resident particle layout stays consistent.
 

@@ -1,4 +1,4 @@
-// gen.motion_blobs — motion-vector pass.
+// source.light.motion_blobs — motion-vector pass.
 //
 // Per pixel: gaussian-weighted sum of blob velocities * motion_strength.
 // local_mask = saturate(total_w); blend upstream motion toward local

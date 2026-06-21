@@ -1,5 +1,5 @@
 /*
- * Brightness/Contrast — fusion-aware GPU compute effect.
+ * Brightness & Contrast — fusion-aware GPU compute effect.
  * Per-pixel logic in pixel.hlsl. See EFFECTS_STYLE_GUIDE.md §0.1.
  *
  * Class-like instance model: module_init() sets up the type-shared
@@ -46,7 +46,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.brightness_contrast", {1, 0, 0},
+  state::init("color.tone.brightness_contrast", {1, 0, 0},
     state::Schema()
       .floatField("brightness", 0.f, -1.f, 1.f, state::PrimaryInput)
       .floatField("contrast", 0.f, -1.f, 1.f, state::PrimaryInput)

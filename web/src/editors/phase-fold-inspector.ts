@@ -1,5 +1,5 @@
 /**
- * Custom inspector for video.phase_fold — the limit-cycle phase-portrait
+ * Custom inspector for source.phase_fold — the limit-cycle phase-portrait
  * generator.
  *
  * Headline control is an XY pad over the baked atlas montage: drag to set
@@ -275,7 +275,7 @@ export class PhaseFoldInspector extends MobxLitElement {
   }
 }
 
-editorRegistry.register('video.phase_fold', {
+editorRegistry.register('source.phase_fold', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('phase-fold-inspector') as PhaseFoldInspector;

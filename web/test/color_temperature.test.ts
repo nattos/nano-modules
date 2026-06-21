@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.color_temperature` against `core`.
+// Per-effect tests for `color.temperature` against `core`.
 // temperature [-1, +1] shifts the per-channel gain on the orange/blue axis:
 //   +1 → R * 1.5, B * 0.5 (warm)
 //   -1 → R * 0.5, B * 1.5 (cool)
@@ -21,7 +21,7 @@ describe('Color Temperature Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.color_temperature');
+    expect(frame.metadata?.id).toBe('color.temperature');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['temperature']);
   });

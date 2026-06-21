@@ -1,7 +1,7 @@
 /*
- * mod.spectral — Spectral Curve modulation remapper.
+ * mod.shaper.spectral — Spectral Curve modulation remapper.
  *
- * A unary modulation shaper that is to data.spectral_lfo what mod.envelope is to
+ * A unary modulation shaper that is to mod.source.spectral_lfo what mod.shaper.envelope is to
  * a hand-drawn curve: it builds the SAME spectrally-morphed LFO curve from a
  * manifold position (morph_x, morph_y, metric, interpolation) — sharing the atlas
  * + morph code via spectral_curve.h — but instead of sweeping it over TIME with a
@@ -35,7 +35,7 @@ struct State {
 };
 
 void module_init() {
-  state::init("mod.spectral", {1, 0, 0},
+  state::init("mod.shaper.spectral", {1, 0, 0},
     state::Schema()
       // The signal to remap (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the shaper auto-connect locates it).
@@ -49,7 +49,7 @@ void module_init() {
       .boolField("interpolation", true, state::PrimaryInput)   // off = snap to one shape
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::SecondaryInput)  // scales around 0.5
       // Remapped value. Rectifies into [0,1] (the curve's y window), so unsigned —
-      // same convention as mod.remap / mod.envelope.
+      // same convention as mod.shaper.remap / mod.shaper.envelope.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
       // A unary modulation shaper: 1 modulation value in -> 1 remapped value out.
       .capability(state::Capability::ModulationShaper)

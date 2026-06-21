@@ -1,4 +1,4 @@
-// video.color_space — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.color_space — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

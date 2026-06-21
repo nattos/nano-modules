@@ -1,10 +1,10 @@
 /*
- * mod.remap — Modulation Remap shaper.
+ * mod.shaper.remap — Remap shaper.
  *
  * A unary modulation shaper: takes one scalar modulation value on `input`,
  * runs it through the EXACT same range-remapper the wire-options "remap" uses,
  * and republishes the shaped value on `output`. Pure data module — no GPU, no
- * texture I/O (same shape as data.lfo).
+ * texture I/O (same shape as mod.source.lfo).
  *
  * The remap math is `tap_mod::applyTapMod` (native/src/sketch/tap_mod.h), the
  * lock-step twin of web/src/tap-mod.ts. By reusing it verbatim, this effect's
@@ -75,7 +75,7 @@ static void recompute(State& s) {
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.remap", {1, 0, 0},
+  state::init("mod.shaper.remap", {1, 0, 0},
     state::Schema()
       // The signal to shape (wire target). Declared [0,1] so an unsigned source
       // passes straight through the default identity window; a signed source's
@@ -106,7 +106,7 @@ void module_init() {
       // Shaped value. min/max is the modulation-range contract (the UI band
       // samples this declared range, matching the default out window). Unipolar
       // by default; set out_min<0 for a bipolar reshape (the contract stays
-      // [0,1] — schema range is static, same convention as data.lfo).
+      // [0,1] — schema range is static, same convention as mod.source.lfo).
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
       // A unary modulation shaper: 1 modulation value in -> 1 shaped value out.
       .capability(state::Capability::ModulationShaper)

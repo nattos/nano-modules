@@ -1,6 +1,6 @@
-// gen.tingle_top — motion-vector pass: passthrough of upstream motion (v1).
+// source.light.tingle_top — motion-vector pass: passthrough of upstream motion (v1).
 // TODO: emit per-particle (velocity_x, velocity_y) where the canvas is
-// covered by a moving sparkle, so a downstream video.motion_blur streaks the
+// covered by a moving sparkle, so a downstream motion.blur streaks the
 // downward_sparkle preset into trails.
 
 Texture2D<float4>   upstreamTex : register(t0);

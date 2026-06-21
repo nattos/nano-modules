@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.levels — input/output remap with gamma midtone.
+// Per-pixel kernel for color.tone.levels — input/output remap with gamma midtone.
 
 struct FuseUniforms {
   float in_low;

@@ -1,5 +1,5 @@
 /*
- * video.sharpen — Laplacian sharpen.
+ * filter.sharpen — Laplacian sharpen.
  *
  *   out = in + amount * (5 * center - up - down - left - right)
  *
@@ -37,7 +37,7 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.sharpen", {1, 0, 0},
+  state::init("filter.sharpen", {1, 0, 0},
     state::Schema()
       .floatField("amount", 0.4f, 0.f, 1.f, state::PrimaryInput)
       .floatField("radius", 0.0f, 0.f, 1.f, state::PrimaryInput)

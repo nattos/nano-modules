@@ -1,5 +1,5 @@
 /*
- * generator.noise — Procedural noise generator.
+ * source.noise — Procedural noise generator.
  *
  * Standard params:
  *   algorithm   int        0 = white, 1 = value, 2 = simplex/perlin-style
@@ -91,7 +91,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("generator.noise", {1, 0, 0},
+  state::init("source.noise", {1, 0, 0},
     state::Schema()
       .selectField("algorithm", AlgoWhite, state::PrimaryInput, {
           {"White",  AlgoWhite},

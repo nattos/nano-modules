@@ -1,5 +1,5 @@
 /*
- * video.height_from_gradient — GPU gradient-domain height reconstruction.
+ * filter.height_from_gradient — GPU gradient-domain height reconstruction.
  *
  * Synthesizes a 2D gradient field from the input, takes its divergence, and
  * solves the Poisson equation laplacian(h) = div(g) for the least-squares
@@ -169,7 +169,7 @@ static gpu::ComputePSO s_pso_mm_reduce;
 static gpu::ComputePSO s_pso_present;
 
 void module_init() {
-  state::init("video.height_from_gradient", {1, 0, 0},
+  state::init("filter.height_from_gradient", {1, 0, 0},
     state::Schema()
       // --- Standard (live) ---
       // Gradient source. Radial — outward from `center`, magnitude = luma.

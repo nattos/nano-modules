@@ -1,6 +1,10 @@
-# Effect Taxonomy — proposed remap (prep stage, not yet applied)
+# Effect Taxonomy — APPLIED
 
 Scheme: `domain.[group.]name` · first component = category = colour key · bundle is separate metadata.
+
+This remap is live: all effect ids, display names, and categories below are the
+current registrations. The `← old id` column is kept as a historical record of
+the pre-rename ids.
 
 Total: 77 effects.
 

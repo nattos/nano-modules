@@ -1,8 +1,8 @@
-// gen.side_jet — Stage 2b: motion-vector emission.
+// source.light.side_jet — Stage 2b: motion-vector emission.
 //
 // The analytic flow field IS the motion field — far better than a single
 // "head velocity" because u(x) varies along the axis (fast at the nozzle,
-// decaying downstream), so downstream video.motion_blur streaks with the
+// decaying downstream), so downstream motion.blur streaks with the
 // correct gradient. Per pixel inside the plume we emit (u * motion_scale, 0)
 // weighted by the same radial envelope the colour pass uses, blended over
 // any upstream motion.

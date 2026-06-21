@@ -162,7 +162,7 @@ public:
 
   /**
    * Convenience overload that maps "playable" parameters to (sigma_px,
-   * spacing_px) the same way `video.blur` does — radius drives sigma to
+   * spacing_px) the same way `filter.blur.gaussian` does — radius drives sigma to
    * a 5%-of-min-dim ceiling, quality drives the tap stride.
    *
    *   radius  ∈ [0, 1] — blur strength.

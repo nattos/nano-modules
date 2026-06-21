@@ -265,9 +265,9 @@ class SketchExecutor {
       std::unordered_map<std::string, param_smoothing::SmoothState>> smoothState_;
 
   // Per-(instance,field) modulation DELAY lines (the wire's continuous-time
-  // `mod.delay`, seconds), persisted across frames. A wire shaper stage parallel
+  // `mod.shaper.delay`, seconds), persisted across frames. A wire shaper stage parallel
   // to smoothing: it time-shifts a modulated input's final (post-fold) value by
-  // `delay` seconds via delay_line.h (the same math as the mod.delay effect).
+  // `delay` seconds via delay_line.h (the same math as the mod.shaper.delay effect).
   // Transitive (doesn't change the value's range), so it runs after the pure
   // envelope/remap/scale fold and before smoothing. Advanced by modClock_.
   // NB: distinct from a tap's `delayed` flag, which is the 1-frame feedback delay

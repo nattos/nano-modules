@@ -10,7 +10,7 @@ describe('Grid Effect E2E', () => {
       dumpName: 'grid_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('generator.grid');
+    expect(frame.metadata?.id).toBe('source.grid');
   });
 
   it('default settings produce both line and background pixels', async () => {

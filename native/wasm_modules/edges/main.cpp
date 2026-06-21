@@ -1,5 +1,5 @@
 /*
- * video.edges — Sobel edge detection over the luminance of the input.
+ * filter.edges — Sobel edge detection over the luminance of the input.
  *
  * Standard params:
  *   threshold   [0, 1]  gradient magnitude below this is discarded.
@@ -47,7 +47,7 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.edges", {1, 0, 0},
+  state::init("filter.edges", {1, 0, 0},
     state::Schema()
       .floatField("threshold",  0.1f, 0.f, 1.f, state::PrimaryInput)
       .floatField("radius",     0.0f, 0.f, 1.f, state::PrimaryInput)

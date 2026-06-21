@@ -1,9 +1,9 @@
 /*
- * video.twitch_mask — roaming "twitch" vignette glitch.
+ * filter.glitch.twitch_mask — roaming "twitch" vignette glitch.
  *
  * Each frame, suppresses a random oval region of the input: a vignette anchored
  * at a per-frame random point, with a bipolar `shape` (+ blacks the rim, -
- * blacks the centre). Pulled out of video.local_delay's spatial mask; the per-
+ * blacks the centre). Pulled out of motion.local_delay's spatial mask; the per-
  * frame anchor/strength logic is shared via fx::TwitchMask (effect_twitch_mask.h)
  * and the GPU mask via shaders_common/nano_twitch.hlsl.
  *
@@ -52,7 +52,7 @@ static gpu::ComputePSO s_pso;
 static uint32_t s_seed_counter = 0x9E3779B9u;
 
 void module_init() {
-  state::init("video.twitch_mask", {1, 0, 0},
+  state::init("filter.glitch.twitch_mask", {1, 0, 0},
     state::Schema()
       // 0 = off; modulation depth into the mask. 0..0.5 ramps depth, 0.5..1
       // boosts the random per-frame intensity (cuts harder, more often).

@@ -1,5 +1,5 @@
 /*
- * gen.orthomod — Hadamard-driven, beat-synced bar pattern.
+ * source.light.orthomod — Hadamard-driven, beat-synced bar pattern.
  *
  * Two co-driven code systems sharing one global envelope:
  *
@@ -476,7 +476,7 @@ static float channel_value(int code_msb, int code_lsb, double mod_phase) {
 
 // Type-level setup: schema + the shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("gen.orthomod", {1, 0, 0},
+  state::init("source.light.orthomod", {1, 0, 0},
     state::Schema()
       // --- Standard ---
       // Manual trigger surface. gate = rising-edge re-fire; trigger = one

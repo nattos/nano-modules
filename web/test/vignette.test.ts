@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.vignette` against `core`. Tests use a 64x64
+// Per-effect tests for `filter.vignette` against `core`. Tests use a 64x64
 // input so the centre pixel is well inside the inner radius and the
 // corners are outside, which makes assertions straightforward.
 //
@@ -19,7 +19,7 @@ describe('Vignette Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.vignette');
+    expect(frame.metadata?.id).toBe('filter.vignette');
     const names = frame.params.map(p => p.name).sort();
     // `center` is a vec2 so it doesn't appear in the legacy scalar
     // params[] list — only scalars do.

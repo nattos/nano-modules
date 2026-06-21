@@ -1,4 +1,4 @@
-// video.shape_fold — auto-levels pass 1: field min/max over the SN×SN grid.
+// source.shape_fold — auto-levels pass 1: field min/max over the SN×SN grid.
 //
 // Atomic min/max of the field into a stats buffer. F ≥ 0 always, so the IEEE
 // bit pattern (asint) orders the same as the float — the testbed's trick.

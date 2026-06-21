@@ -208,7 +208,7 @@ export interface TapMod {
   /**
    * Optional drawn-curve shaper applied FIRST (before remap+scale), as a flat
    * number array `[x0,y0,e0, x1,y1,e1, ...]` of (x, y, ease) control points — the
-   * same wire-format the mod.envelope effect uses. Edited with the shared
+   * same wire-format the mod.shaper.envelope effect uses. Edited with the shared
    * envelope graph editor. Absent / empty → pass-through. Evaluated by the
    * executor via envelope.h (see native/src/sketch/tap_mod.h).
    */
@@ -217,7 +217,7 @@ export interface TapMod {
    * Optional temporal DELAY (seconds) applied to the final modulated value, AFTER
    * the pure envelope/remap/scale + magnitude fold and before smoothing. Transitive
    * (doesn't change the value's range). 0 / absent → pass-through. Stateful in the
-   * executor (a per-input delay line); shares the mod.delay effect's math.
+   * executor (a per-input delay line); shares the mod.shaper.delay effect's math.
    */
   delay?: number;
   remap?: {
@@ -253,7 +253,7 @@ export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
  *   declares the opposite (signed −1..1), the value is prescaled −1..1 → 0..1
  *   (−1→0, 1→1) so the negative half maps into range.
  * - `absolute`: source is already in the dest's scale (legacy behavior — uses
- *   the manual `mod.remap`).
+ *   the manual `mod.shaper.remap`).
  *
  * The signed/unsigned prescale (resolved + applied in the executor's wire
  * normalization, so it's web/native identical) only fires against an EXPLICIT

@@ -41,7 +41,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("generator.solid_color", {1, 0, 0},
+  state::init("source.solid_color", {1, 0, 0},
     state::Schema()
       .rgbField("color", 0.5f, 0.5f, 0.5f, state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

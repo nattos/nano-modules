@@ -70,7 +70,7 @@ static void respawn(State& s, int idx, double t) {
 
 // Type-level setup: publish the schema + backend check. Runs once per type.
 void module_init() {
-  state::init("data.particles_emitter", {1, 0, 0},
+  state::init("debug.particles_emitter", {1, 0, 0},
     state::Schema()
       .floatField("spawn_speed", 0.6f, 0.f, 2.f, state::PrimaryInput)
       .vec2Field("gravity", 0.0f, -0.4f, state::PrimaryInput, -1.f, 1.f)

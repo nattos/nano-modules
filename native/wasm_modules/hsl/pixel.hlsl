@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.hsl — hue rotate + saturation pull + bipolar lightness.
+// Per-pixel kernel for color.hsl — hue rotate + saturation pull + bipolar lightness.
 
 #include "nano_color.hlsl"
 

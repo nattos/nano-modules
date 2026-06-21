@@ -1,7 +1,7 @@
-// video.local_delay — motion pass.
+// motion.local_delay — motion pass.
 //
 // Publishes the motion field on render_outputs/motion so a downstream
-// video.motion_blur can smooth residual imperfections.
+// motion.blur can smooth residual imperfections.
 //
 // The written vector is the SMOOTHED FLOW (the real per-frame velocity in
 // uv/frame — exactly what motion_blur consumes), gated by the spatial mask

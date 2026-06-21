@@ -1,7 +1,7 @@
 // test_effect_driver.cpp — drives a WASM effect through the EffectInstance /
 // EffectRuntime path (the barrel's dispatch layer), proving the WASM-backed
 // EffectDesc driver wraps call_indirect correctly end-to-end: registerEffect →
-// doModuleInit, instanceFor → doCreate (create+init), doTick. Uses data.lfo
+// doModuleInit, instanceFor → doCreate (create+init), doTick. Uses mod.source.lfo
 // (env_lfo) — a pure data effect, no GPU.
 
 #include <catch2/catch_test_macros.hpp>
@@ -42,7 +42,7 @@ static std::vector<uint8_t> load_file(const char* path) {
 #error "TESTONLY_WASM_PATH must be defined"
 #endif
 
-TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_driver]") {
+TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect_driver]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());
 
@@ -66,7 +66,7 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
 
   const WasmEffectDesc* w = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "data.lfo") { w = &e; break; }
+    if (e.id == "mod.source.lfo") { w = &e; break; }
   }
   REQUIRE(w != nullptr);
 
@@ -89,7 +89,7 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
   desc.w_on_active = w->idx_on_active;
   REQUIRE(desc.isWasm());
 
-  EffectRuntime rt(nullptr);  // data.lfo is GPU-free
+  EffectRuntime rt(nullptr);  // mod.source.lfo is GPU-free
 
   // registerEffect → doModuleInit (WASM): registers the schema + plugin key.
   EffectInstance* proto = rt.registerEffect(desc);
@@ -97,14 +97,14 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
 
   // Schema forwarding: module_init's state.set_schema host call routed onto the
   // instance (via the EffectHostSink), so the executor/registry can read it.
-  CHECK(proto->metadataId() == "data.lfo");
+  CHECK(proto->metadataId() == "mod.source.lfo");
   CHECK(!proto->schemaJson().empty());
   const std::string key = host.plugin_key(id);
   INFO("plugin_key: " << key);
   REQUIRE(!key.empty());
 
   // instanceFor → doCreate (WASM create + init): allocates the State*.
-  EffectInstance* inst = rt.instanceFor("data.lfo", "k0");
+  EffectInstance* inst = rt.instanceFor("mod.source.lfo", "k0");
   REQUIRE(inst != nullptr);
   REQUIRE(inst->userState() != nullptr);
 
@@ -123,7 +123,7 @@ TEST_CASE("WASM effect driven through EffectInstance (data.lfo)", "[effect_drive
   host.shutdown();
 }
 
-TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effect_driver]") {
+TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "[effect_driver]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());
 
@@ -145,7 +145,7 @@ TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effec
   REQUIRE(host.call_function(id, "nano_module_main") == 0);
   const WasmEffectDesc* w = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "data.lfo") { w = &e; break; }
+    if (e.id == "mod.source.lfo") { w = &e; break; }
   }
   REQUIRE(w != nullptr);
 
@@ -164,7 +164,7 @@ TEST_CASE("WASM effect receives params via on_state_patched (data.lfo)", "[effec
   rt.registerEffect(desc);
   const std::string key = host.plugin_key(id);
   REQUIRE(!key.empty());
-  EffectInstance* inst = rt.instanceFor("data.lfo", "k0");
+  EffectInstance* inst = rt.instanceFor("mod.source.lfo", "k0");
   REQUIRE(inst != nullptr);
 
   // Defaults (amplitude 1.0): advance phase to 0.25 cycles → sin(pi/2)*1*0.5+0.5
@@ -203,7 +203,7 @@ TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_
   INFO("registered " << n << " effect(s)");
   CHECK(n >= 1);
 
-  const sketch_executor::RegisteredModule* reg = registry.find("data.lfo");
+  const sketch_executor::RegisteredModule* reg = registry.find("mod.source.lfo");
   REQUIRE(reg != nullptr);
   // schemaFields parsed from the forwarded schema JSON.
   CHECK(reg->schemaFields.contains("rate"));
@@ -216,10 +216,10 @@ TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_
   host.shutdown();
 }
 
-// Drive data.lfo through every waveform for one cycle and assert each has its
+// Drive mod.source.lfo through every waveform for one cycle and assert each has its
 // characteristic signature (style guide §2.1 shapes). All outputs must stay in
 // the declared [0,1] range; `shape` morphs the active waveform.
-TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]") {
+TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_driver]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());
 
@@ -238,7 +238,7 @@ TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]")
   REQUIRE(host.call_function(id, "nano_module_main") == 0);
   const WasmEffectDesc* w = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "data.lfo") { w = &e; break; }
+    if (e.id == "mod.source.lfo") { w = &e; break; }
   }
   REQUIRE(w != nullptr);
 
@@ -266,7 +266,7 @@ TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]")
   const double kRate = 0.1, kDt = 0.01;
   const int kN = 100;
   auto sweep = [&](const char* ikey, int waveform, float shape) {
-    EffectInstance* inst = rt.instanceFor("data.lfo", ikey);
+    EffectInstance* inst = rt.instanceFor("mod.source.lfo", ikey);
     REQUIRE(inst != nullptr);
     inst->setParamFloat("rate", static_cast<float>(kRate));
     inst->setParamFloat("waveform", static_cast<float>(waveform));
@@ -351,7 +351,7 @@ TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]")
   }
   // Invert: a saw at shape 0 has value == phase, so inverting yields 1 - phase.
   {
-    EffectInstance* inst = rt.instanceFor("data.lfo", "inv");
+    EffectInstance* inst = rt.instanceFor("mod.source.lfo", "inv");
     REQUIRE(inst != nullptr);
     inst->setParamFloat("rate", static_cast<float>(kRate));
     inst->setParamFloat("waveform", static_cast<float>(WfSaw));
@@ -367,10 +367,10 @@ TEST_CASE("data.lfo waveforms produce characteristic shapes", "[effect_driver]")
   host.shutdown();
 }
 
-// Drive data.adsr through its phase machine: a Decay-mode pluck, a held-gate
+// Drive mod.source.adsr through its phase machine: a Decay-mode pluck, a held-gate
 // ADSR that plateaus at the sustain level then releases, and the Reset-vs-Legato
 // retrigger distinction (Reset restarts the attack from 0; Legato does not).
-TEST_CASE("data.adsr envelope phases + retrigger", "[effect_driver]") {
+TEST_CASE("mod.source.adsr envelope phases + retrigger", "[effect_driver]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());
 
@@ -389,7 +389,7 @@ TEST_CASE("data.adsr envelope phases + retrigger", "[effect_driver]") {
   REQUIRE(host.call_function(id, "nano_module_main") == 0);
   const WasmEffectDesc* w = nullptr;
   for (const auto& e : host.registered_effects(id)) {
-    if (e.id == "data.adsr") { w = &e; break; }
+    if (e.id == "mod.source.adsr") { w = &e; break; }
   }
   REQUIRE(w != nullptr);
 
@@ -423,7 +423,7 @@ TEST_CASE("data.adsr envelope phases + retrigger", "[effect_driver]") {
 
   // A — Decay mode: an event trigger gives an instant attack then a fall to 0.
   {
-    EffectInstance* a = rt.instanceFor("data.adsr", "pluck");
+    EffectInstance* a = rt.instanceFor("mod.source.adsr", "pluck");
     REQUIRE(a != nullptr);
     a->setParamFloat("auto_rate", 0.0f);   // silence the Poisson auto-trigger
     a->setParamFloat("mode", static_cast<float>(ModeD));
@@ -437,7 +437,7 @@ TEST_CASE("data.adsr envelope phases + retrigger", "[effect_driver]") {
   // B — Held-gate ADSR: rises, plateaus at the sustain level while held, then
   // releases to 0 once the gate falls.
   {
-    EffectInstance* b = rt.instanceFor("data.adsr", "gate");
+    EffectInstance* b = rt.instanceFor("mod.source.adsr", "gate");
     REQUIRE(b != nullptr);
     b->setParamFloat("auto_rate", 0.0f);
     b->setParamFloat("mode", static_cast<float>(ModeADSR));
@@ -456,7 +456,7 @@ TEST_CASE("data.adsr envelope phases + retrigger", "[effect_driver]") {
   // C — Retrigger: Reset restarts the attack from 0 (output dips); Legato
   // re-gates without restarting (output keeps climbing).
   auto midAttackRetrigger = [&](const char* ikey, int retrig) {
-    EffectInstance* inst = rt.instanceFor("data.adsr", ikey);
+    EffectInstance* inst = rt.instanceFor("mod.source.adsr", ikey);
     inst->setParamFloat("auto_rate", 0.0f);
     inst->setParamFloat("mode", static_cast<float>(ModeAD));
     inst->setParamFloat("attack", 0.4f);   // long attack so we land mid-ramp

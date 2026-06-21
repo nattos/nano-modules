@@ -1,4 +1,4 @@
-// video.flash_particles — pre-fill compute pass.
+// source.particles.flash_particles — pre-fill compute pass.
 //
 // Seeds the framebuffer-sized target with the upstream content the
 // raster pass needs to blend on top of. Used twice with different

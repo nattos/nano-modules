@@ -1,4 +1,4 @@
-// video.edges — Sobel edge detection over input luminance.
+// filter.edges — Sobel edge detection over input luminance.
 
 #include "nano_color.hlsl"
 

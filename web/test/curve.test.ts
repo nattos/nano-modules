@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.curve` against `core`. The slider is signed
+// Per-effect tests for `color.tone.curve` against `core`. The slider is signed
 // [-1, +1] mapping to power exponents 8 → 1 → 1/8.
 //
 // Param indices (schema declaration order): 0 = rgb, 1 = alpha.
@@ -17,7 +17,7 @@ describe('Curve Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.curve');
+    expect(frame.metadata?.id).toBe('color.tone.curve');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['alpha', 'rgb']);
   });

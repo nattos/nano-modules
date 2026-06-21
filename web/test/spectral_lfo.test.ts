@@ -2,7 +2,7 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * data.spectral_lfo (nano bundle) E2E.
+ * mod.source.spectral_lfo (nano bundle) E2E.
  *
  * Schema introspection + functional checks via the proven passthrough-wire
  * pattern (see engine-wires "forward scalar wire from a passthrough modulation
@@ -18,11 +18,11 @@ function buildSketch(lfoParams: Record<string, unknown>, outField = 'output'): S
   return {
     anchor: null,
     chain: [
-      { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
-      { type: 'module', module_type: 'data.spectral_lfo', instance_key: 'lfo@0',
+      { type: 'module', module_type: 'mod.source.spectral_lfo', instance_key: 'lfo@0',
         params: lfoParams },
-      { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: -0.5 } },
     ],
     wires: [
@@ -32,13 +32,13 @@ function buildSketch(lfoParams: Record<string, unknown>, outField = 'output'): S
   } as Sketch;
 }
 
-describe('data.spectral_lfo', () => {
+describe('mod.source.spectral_lfo', () => {
   jest.setTimeout(30000);
 
   it('declares the schema: data_output + metric/interpolation/morph params', async () => {
     const result = await runEngineTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
+      modules: ['source.solid_color', 'color.tone.brightness_contrast', 'com.nano.nano'],
       commands: [{ type: 'createSketch', sketchId: 'sl_schema',
                    sketch: buildSketch({ rate: 0.0 }) }],
       waitFrames: 5,
@@ -46,7 +46,7 @@ describe('data.spectral_lfo', () => {
     });
     expect(result.success).toBe(true);
 
-    const lfo = result.state.plugins.find((p: any) => p.id === 'data.spectral_lfo');
+    const lfo = result.state.plugins.find((p: any) => p.id === 'mod.source.spectral_lfo');
     expect(lfo).toBeTruthy();
 
     // `output` is a data_output (io kind=2) AND a schema field.
@@ -74,7 +74,7 @@ describe('data.spectral_lfo', () => {
   it('oscillates over time when rate > 0 (phase accumulator advances)', async () => {
     const r = await runEngineMultiPhaseTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
+      modules: ['source.solid_color', 'color.tone.brightness_contrast', 'com.nano.nano'],
       dumpName: 'spectral_lfo_osc',
       phases: [
         {
@@ -108,7 +108,7 @@ describe('data.spectral_lfo', () => {
     // sample three phases and require the two sequences to differ somewhere).
     const r = await runEngineMultiPhaseTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
+      modules: ['source.solid_color', 'color.tone.brightness_contrast', 'com.nano.nano'],
       dumpName: 'spectral_lfo_morph',
       phases: [
         {
@@ -146,7 +146,7 @@ describe('data.spectral_lfo', () => {
     const params = { rate: 0.5, morph_x: 0.5, morph_y: 0.5 };
     const r = await runEngineMultiPhaseTest({
       width: W, height: H,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
+      modules: ['source.solid_color', 'color.tone.brightness_contrast', 'com.nano.nano'],
       dumpName: 'spectral_lfo_satellites',
       phases: [
         {

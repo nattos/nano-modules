@@ -10,7 +10,7 @@ describe('Noise Effect E2E', () => {
       dumpName: 'noise_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('generator.noise');
+    expect(frame.metadata?.id).toBe('source.noise');
   });
 
   it('white noise (algo=0) produces high-variance output', async () => {

@@ -6,7 +6,7 @@
 // active GPUBackend using the MSL port of the WGSL compositor.
 //
 // Parity: the engine + Blitz are byte-identical native↔wasm, and the MSL
-// compositor mirrors the WGSL/CPU math — so gen.text / gen.richtext render the
+// compositor mirrors the WGSL/CPU math — so source.text.plain / source.text.rich render the
 // same pixels here as in the browser (within hardware-sampler bilinear
 // precision; see native/wasm_modules/text_engine/metal_parity.sh).
 //
@@ -57,7 +57,7 @@ int installFallback(const uint8_t* bytes, int len, const char* lang, int lang_le
   // (FreeType openFace) rejects some faces the Blitz stack (parley) would
   // accept — e.g. a .ttc it won't open — returning -1. Mirroring such a face
   // into Blitz alone shifts every later Blitz faceId one ahead of the engine's,
-  // so pre-shaped runs (gen.richtext) reference a faceId the engine lacks and
+  // so pre-shaped runs (source.text.rich) reference a faceId the engine lacks and
   // every glyph is dropped (face-out-of-range). Only mirror when the engine
   // took it.
   if (fid >= 0) tb_add_font(g_blitz, nullptr, 0, 0, 0, bytes, len);
@@ -354,7 +354,7 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   int atlas = ensureAtlas(b, layout_id);
 
   // Canvas dims = the TARGET texture (mirrors the web path, which sizes off
-  // GPUTexture.width/height). gen.text/richtext are generators that render into
+  // GPUTexture.width/height). source.text.plain/richtext are generators that render into
   // an executor-bound output texture, not a swapchain surface — so the surface
   // dims are 0 here and can't be used. Fall back to the surface only for a
   // standalone/test path that explicitly called setSurface().
@@ -388,7 +388,7 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   g_gpu.uniBuf = ensureBuffer(b, g_gpu.uniBuf, uniCap, &u, sizeof(UBO));
 
   // Background sampled behind the text: a caller-supplied input texture to
-  // overlay text onto. When unconnected, gen.text/richtext are pure generators —
+  // overlay text onto. When unconnected, source.text.plain/richtext are pure generators —
   // they must leave TRANSPARENCY where there's no text, not paint opaque black.
   // bg MUST differ from the target (the bg pass samples it while rendering into
   // target).

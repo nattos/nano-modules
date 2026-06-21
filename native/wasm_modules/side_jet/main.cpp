@@ -1,5 +1,5 @@
 /*
- * gen.side_jet — JPL-style engine-test plume.
+ * source.light.side_jet — JPL-style engine-test plume.
  *
  * The engine under test is FIXED at the left edge. When it lights and
  * throttles up, a jet expands rightward; its entire structure is a live
@@ -281,7 +281,7 @@ static void spawn_sparks(State& s, int count) {
 }
 
 void module_init() {
-  state::init("gen.side_jet", {2, 0, 0},
+  state::init("source.light.side_jet", {2, 0, 0},
     state::Schema()
       // --- Drive (performable) ---
       .boolField ("ignition",          true,                     state::PrimaryInput)

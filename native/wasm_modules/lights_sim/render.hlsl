@@ -1,4 +1,4 @@
-// fx.lights_sim — sample 4 vertical LED bars from the input and render them.
+// filter.lights_sim — sample 4 vertical LED bars from the input and render them.
 //
 // Per pixel:
 //   * fade the input by input_opacity (the passthrough background).

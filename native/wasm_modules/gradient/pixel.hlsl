@@ -1,4 +1,4 @@
-// Per-pixel kernel for generator.gradient — linear ramp between two colours.
+// Per-pixel kernel for source.gradient — linear ramp between two colours.
 
 #include "nano_coords.hlsl"
 

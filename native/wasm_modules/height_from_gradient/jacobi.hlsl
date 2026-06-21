@@ -1,4 +1,4 @@
-// video.height_from_gradient — Jacobi relaxation sweep (one iteration).
+// filter.height_from_gradient — Jacobi relaxation sweep (one iteration).
 //
 // One Jacobi step of laplacian(h) = F at a single pyramid level:
 //   h' = (hL + hR + hD + hU - F) / 4

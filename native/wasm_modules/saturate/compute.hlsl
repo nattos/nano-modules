@@ -1,4 +1,4 @@
-// video.saturate — Per-channel tanh soft-clip with linear deadzone.
+// color.saturate — Per-channel tanh soft-clip with linear deadzone.
 //
 // The per-pixel transform lives in pixel.hlsl (so the runtime fuser
 // can splice it into a fused dispatch). This file is just the

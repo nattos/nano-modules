@@ -1,4 +1,4 @@
-// gen.bounce_resonator — color pass.
+// source.light.bounce_resonator — color pass.
 //
 // Each bar IS its whole 1/4-width column: fill the entire vertical strip
 // with the bar's colour. Brightness = its diffusion value; HUE = its

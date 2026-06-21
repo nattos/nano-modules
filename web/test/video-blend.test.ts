@@ -1,8 +1,8 @@
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
-// Per-effect tests for `video.blend` against the shipping `core` bundle.
-// video.blend takes two texture inputs (tex_a, tex_b) and outputs
+// Per-effect tests for `composite.blend` against the shipping `core` bundle.
+// composite.blend takes two texture inputs (tex_a, tex_b) and outputs
 // `tex_a * (1 - opacity) + tex_b * opacity`. The runner can't feed two
 // independent inputs through the chain ping-pong, so tests build a sketch with
 // two solid_color sources WIRED into the blend's tex_a / tex_b inputs (named
@@ -24,19 +24,19 @@ function buildBlendSketch(opts: {
     chain: [
       {
         type: 'module',
-        module_type: 'generator.solid_color',
+        module_type: 'source.solid_color',
         instance_key: a,
         params: { color: [opts.colorA.r, opts.colorA.g, opts.colorA.b] },
       },
       {
         type: 'module',
-        module_type: 'generator.solid_color',
+        module_type: 'source.solid_color',
         instance_key: b,
         params: { color: [opts.colorB.r, opts.colorB.g, opts.colorB.b] },
       },
       {
         type: 'module',
-        module_type: 'video.blend',
+        module_type: 'composite.blend',
         instance_key: blend,
         params: { opacity: opts.opacity },
       },
@@ -44,7 +44,7 @@ function buildBlendSketch(opts: {
   } as Sketch;
 }
 
-describe('Video Blend Effect E2E', () => {
+describe('Blend Effect E2E', () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -74,7 +74,7 @@ describe('Video Blend Effect E2E', () => {
     });
 
     expect(result.success).toBe(true);
-    const blend = result.state?.plugins?.find((p: any) => p.id === 'video.blend');
+    const blend = result.state?.plugins?.find((p: any) => p.id === 'composite.blend');
     expect(blend).toBeDefined();
     expect(blend!.params.find((p: any) => p.name === 'opacity')).toBeDefined();
   });

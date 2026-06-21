@@ -1,4 +1,4 @@
-// gen.soft_glow — motion-vector pass.
+// source.light.soft_glow — motion-vector pass.
 //
 // Per pixel, accumulate per-blob velocity contributions weighted by
 // the same gaussian footprint the color shader uses, optionally

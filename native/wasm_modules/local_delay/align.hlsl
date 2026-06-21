@@ -1,4 +1,4 @@
-// video.local_delay — align + temporal-smooth + weight pass.
+// motion.local_delay — align + temporal-smooth + weight pass.
 //
 // Three steps, producing the final per-pixel flow + blend weight the color
 // and motion passes consume:

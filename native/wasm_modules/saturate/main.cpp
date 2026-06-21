@@ -1,5 +1,5 @@
 /*
- * video.saturate — Per-channel tanh waveshaper that scales from
+ * color.saturate — Per-channel tanh waveshaper that scales from
  * black.
  *
  *   y = x * prescale                          (scales from 0; prescale=0 → pure black)
@@ -62,7 +62,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.saturate", {1, 0, 0},
+  state::init("color.saturate", {1, 0, 0},
     state::Schema()
       .floatField("prescale",        1.0f, 0.f, 4.f, state::PrimaryInput)
       .floatField("asymm",           0.0f, -1.f, 1.f, state::PrimaryInput)

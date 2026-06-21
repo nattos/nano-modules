@@ -1,4 +1,4 @@
-// video.height_from_gradient — min/max reduction seed.
+// filter.height_from_gradient — min/max reduction seed.
 //
 // The reconstructed height has an arbitrary scale (the Poisson solution is
 // defined up to a constant and its magnitude depends on the gradient field and

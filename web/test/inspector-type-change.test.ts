@@ -1,6 +1,6 @@
 /**
  * Regression: changing an effect's TYPE must swap its inspector live (no reload).
- * The "add effect" flow inserts a default video.brightness_contrast (which uses
+ * The "add effect" flow inserts a default color.tone.brightness_contrast (which uses
  * the GENERIC inspector — it has no custom widget) and the user then changes the
  * type; the inspector cache was keyed only on instanceKey, so a custom inspector
  * could persist across a type change. Drives the real effects IDE through
@@ -36,19 +36,19 @@ describe('effect type-change swaps the custom inspector (no reload)', () => {
 
     // "Add effect" inserts the default brightness_contrast — generic inspector,
     // no custom widget for either effect type yet.
-    await page.evaluate(`window.appController.addEffectToChain('proj_tc', 0, 0, 'video.brightness_contrast')`);
+    await page.evaluate(`window.appController.addEffectToChain('proj_tc', 0, 0, 'color.tone.brightness_contrast')`);
     await new Promise(r => setTimeout(r, 1200));
     expect(await hasTag('ENVELOPE-GRAPH')).toBe(false);
     expect(await hasTag('MOD-SPECTRAL-INSPECTOR')).toBe(false);
 
-    // Change the type to mod.envelope (same instanceKey) → its custom graph mounts.
-    await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.envelope')`);
+    // Change the type to mod.shaper.envelope (same instanceKey) → its custom graph mounts.
+    await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.shaper.envelope')`);
     await new Promise(r => setTimeout(r, 1500));
     expect(await hasTag('ENVELOPE-GRAPH')).toBe(true);
 
-    // Change again to mod.spectral — a custom→custom swap, the exact cache bug:
+    // Change again to mod.shaper.spectral — a custom→custom swap, the exact cache bug:
     // the envelope graph must go out and the spectral inspector come in.
-    await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.spectral')`);
+    await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.shaper.spectral')`);
     await new Promise(r => setTimeout(r, 1800));
     expect(await hasTag('MOD-SPECTRAL-INSPECTOR')).toBe(true);
     expect(await hasTag('ENVELOPE-GRAPH')).toBe(false);

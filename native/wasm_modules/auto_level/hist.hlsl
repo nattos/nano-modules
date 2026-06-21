@@ -1,4 +1,4 @@
-// video.auto_level — pass 2: luminance histogram over the SN×SN grid.
+// color.tone.auto_level — pass 2: luminance histogram over the SN×SN grid.
 //
 // Buckets input luminance into NB bins across [lo, hi] (from pass 1) via atomic
 // add. Runs after minmax in the same submit, so the lo/hi writes are visible.

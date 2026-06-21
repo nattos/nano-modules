@@ -1,5 +1,5 @@
 // test_delay_line.cpp — goldens for the time-stamped ring-buffer delay line
-// (delay_line.h) backing the mod.delay shaper. Pins the interpolation + clamp +
+// (delay_line.h) backing the mod.shaper.delay shaper. Pins the interpolation + clamp +
 // wraparound behavior. Uses a tiny capacity so buffer-full eviction is exercised.
 
 #include "sketch/delay_line.h"

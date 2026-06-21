@@ -6,7 +6,7 @@
  *
  * Add new inspectors HERE, not per entry point. The registrations used to be
  * listed separately in edit-tab.ts and ide-project-editor.ts, and the lists
- * drifted — which silently dropped mod.envelope from the IDE. A single barrel
+ * drifted — which silently dropped mod.shaper.envelope from the IDE. A single barrel
  * makes that impossible.
  */
 

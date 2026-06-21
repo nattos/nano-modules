@@ -40,36 +40,36 @@ import { TextEngine } from '/src/text-engine.ts';
 // bundle.
 const EFFECT_ID_BY_FILENAME = {
   'gpu_test.wasm': 'debug.gpu_test',
-  'spinningtris.wasm': 'generator.spinningtris',
-  'brightness_contrast.wasm': 'video.brightness_contrast',
-  'solid_color.wasm': 'generator.solid_color',
-  'video_blend.wasm': 'video.blend',
-  'env_lfo.wasm': 'data.lfo',
+  'spinningtris.wasm': 'debug.spinningtris',
+  'brightness_contrast.wasm': 'color.tone.brightness_contrast',
+  'solid_color.wasm': 'source.solid_color',
+  'video_blend.wasm': 'composite.blend',
+  'env_lfo.wasm': 'mod.source.lfo',
   // Wave-1 + Wave-2 core effects.
-  'bake_alpha.wasm': 'video.bake_alpha',
-  'curve.wasm': 'video.curve',
-  'exposure.wasm': 'video.exposure',
-  'color_temperature.wasm': 'video.color_temperature',
-  'invert.wasm': 'video.invert',
-  'posterize.wasm': 'video.posterize',
-  'levels.wasm': 'video.levels',
-  'hsl.wasm': 'video.hsl',
-  'color_space.wasm': 'video.color_space',
-  'hue_basis.wasm': 'video.hue_basis',
-  'saturate.wasm': 'video.saturate',
-  'vibrance.wasm': 'video.vibrance',
-  'vignette.wasm': 'video.vignette',
-  'blur.wasm': 'video.blur',
-  'fast_blur.wasm': 'video.fast_blur',
-  'sharpen.wasm': 'video.sharpen',
-  'edges.wasm': 'video.edges',
-  'crop.wasm': 'video.crop',
-  'transform.wasm': 'video.transform',
-  'gradient.wasm': 'generator.gradient',
-  'grid.wasm': 'generator.grid',
-  'noise.wasm': 'generator.noise',
-  'auto_level.wasm': 'video.auto_level',
-  'twitch_mask.wasm': 'video.twitch_mask',
+  'bake_alpha.wasm': 'composite.bake_alpha',
+  'curve.wasm': 'color.tone.curve',
+  'exposure.wasm': 'color.tone.exposure',
+  'color_temperature.wasm': 'color.temperature',
+  'invert.wasm': 'color.invert',
+  'posterize.wasm': 'color.posterize',
+  'levels.wasm': 'color.tone.levels',
+  'hsl.wasm': 'color.hsl',
+  'color_space.wasm': 'color.color_space',
+  'hue_basis.wasm': 'color.hue_basis',
+  'saturate.wasm': 'color.saturate',
+  'vibrance.wasm': 'color.vibrance',
+  'vignette.wasm': 'filter.vignette',
+  'blur.wasm': 'filter.blur.gaussian',
+  'fast_blur.wasm': 'filter.blur.fast',
+  'sharpen.wasm': 'filter.sharpen',
+  'edges.wasm': 'filter.edges',
+  'crop.wasm': 'warp.crop',
+  'transform.wasm': 'warp.transform',
+  'gradient.wasm': 'source.gradient',
+  'grid.wasm': 'source.grid',
+  'noise.wasm': 'source.noise',
+  'auto_level.wasm': 'color.tone.auto_level',
+  'twitch_mask.wasm': 'filter.glitch.twitch_mask',
   // Test-only fusion-aware mappers + generator (testonly bundle only).
   'fuse_add.wasm':   'debug.fuse_add',
   'fuse_mul.wasm':   'debug.fuse_mul',
@@ -82,18 +82,18 @@ const EFFECT_ID_BY_FILENAME = {
   'mrt_test.wasm': 'debug.mrt_test',
   'lut3d_test.wasm': 'debug.lut3d_test',
   // Lights bundle (com.nano.lights) — show effects.
-  'strobe_channel.wasm': 'gen.strobe_channel',
-  'soft_glow.wasm': 'gen.soft_glow',
-  'dispersion.wasm': 'fx.dispersion',
-  'plasma_beam_cannon.wasm': 'gen.plasma_beam_cannon',
-  'orthomod.wasm': 'gen.orthomod',
-  'bounce_resonator.wasm': 'gen.bounce_resonator',
-  'side_jet.wasm': 'gen.side_jet',
-  'motion_blobs.wasm': 'gen.motion_blobs',
-  'lights_sim.wasm': 'fx.lights_sim',
-  'block_dehance.wasm': 'fx.block_dehance',
-  'tingle_top.wasm': 'gen.tingle_top',
-  'chroma_wave.wasm': 'gen.chroma_wave',
+  'strobe_channel.wasm': 'source.light.strobe_channel',
+  'soft_glow.wasm': 'source.light.soft_glow',
+  'dispersion.wasm': 'warp.dispersion',
+  'plasma_beam_cannon.wasm': 'source.light.plasma_beam_cannon',
+  'orthomod.wasm': 'source.light.orthomod',
+  'bounce_resonator.wasm': 'source.light.bounce_resonator',
+  'side_jet.wasm': 'source.light.side_jet',
+  'motion_blobs.wasm': 'source.light.motion_blobs',
+  'lights_sim.wasm': 'filter.lights_sim',
+  'block_dehance.wasm': 'filter.glitch.block_dehance',
+  'tingle_top.wasm': 'source.light.tingle_top',
+  'chroma_wave.wasm': 'source.light.chroma_wave',
 };
 
 function resolveEffectId(moduleName) {
@@ -142,7 +142,7 @@ async function run() {
     const gpuHost = new GPUHost(device, format);
 
     // Initialize the shared text engine so effects using the text.* service
-    // (e.g. gen.text) can render. Idempotent; safe even if unused.
+    // (e.g. source.text.plain) can render. Idempotent; safe even if unused.
     try { await TextEngine.init(device, { fontUrl: '/fonts/default.ttf' }); }
     catch (e) { console.warn('[gpu-test-runner] text engine init failed:', e); }
 
@@ -316,7 +316,7 @@ async function run() {
       wasmHost.frameState.bpm = 120;
 
       // Multi-frame GPU effects (persistent compute state — e.g.
-      // gen.side_jet's 1D axial solver) accumulate their field across
+      // source.light.side_jet's 1D axial solver) accumulate their field across
       // rendered frames. The default path ticks N times then renders
       // once, which only advances such state a single frame. With
       // renderEachTick we interleave tick()+render() so the field

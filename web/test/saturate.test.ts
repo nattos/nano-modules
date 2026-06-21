@@ -1,6 +1,6 @@
 import { runGpuEffectTest, forEachFusionMode } from './gpu-test-helpers';
 
-// Per-effect tests for `video.saturate` against `core`. The effect is
+// Per-effect tests for `color.saturate` against `core`. The effect is
 // a per-channel waveshaper that scales from BLACK (not mid-grey):
 //   y = x * prescale                          (prescale=0 → output = 0)
 //   y <= dz       :  z = y                    (linear pass-through)
@@ -23,7 +23,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
       dumpName: 'saturate_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.saturate');
+    expect(frame.metadata?.id).toBe('color.saturate');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['asymm', 'linear_deadzone', 'prescale']);
   });

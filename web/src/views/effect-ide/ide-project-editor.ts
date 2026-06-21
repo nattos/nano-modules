@@ -35,7 +35,7 @@ import '../../widgets/taps-overlay';
 
 // Custom inspector registrations — a single barrel shared with edit-tab.ts so
 // the effect IDE and the sketch shell can never disagree on which custom editors
-// exist (the lists used to drift, silently dropping mod.envelope from the IDE).
+// exist (the lists used to drift, silently dropping mod.shaper.envelope from the IDE).
 import '../../editors/all-inspectors';
 
 @customElement('ide-project-editor')

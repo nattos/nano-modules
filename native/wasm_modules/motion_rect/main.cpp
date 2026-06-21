@@ -4,7 +4,7 @@
  * Overlays a moving colored rectangle on its input texture (color pass)
  * and writes per-pixel velocity vectors into an rgba16float side texture
  * (motion pass), publishing the side texture as `render_outputs/motion`
- * so downstream consumers (e.g. video.motion_blur) can pick it up via
+ * so downstream consumers (e.g. motion.blur) can pick it up via
  * the auto-binding struct rail mechanism.
  *
  * Pixels inside the rect carry velocity = (cx - cx_prev, cy - cy_prev)

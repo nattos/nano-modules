@@ -1,4 +1,4 @@
-// video.phase_fold — the atlas field + induced vector field.
+// source.phase_fold — the atlas field + induced vector field.
 //
 // Declares the GPU-uploaded atlas cell buffer (register t1) and evaluates the
 // blended scalar field H (backdrop) and the vector field v = level-set flow +

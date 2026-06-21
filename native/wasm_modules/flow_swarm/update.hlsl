@@ -1,4 +1,4 @@
-// video.flow_swarm — update pass. One thread per particle slot.
+// source.particles.flow_swarm — update pass. One thread per particle slot.
 //
 // Alive + in-bounds: sample the flow field at the particle's uv, derive the
 // "effective" flow (undertow may re-aim / re-scale it for some depths), then

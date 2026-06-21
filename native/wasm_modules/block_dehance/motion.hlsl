@@ -1,4 +1,4 @@
-// fx.block_dehance — motion-vector pass: pure passthrough of any upstream
+// filter.glitch.block_dehance — motion-vector pass: pure passthrough of any upstream
 // motion (block_dehance generates no motion of its own). Kept so the effect
 // is a transparent link in a render_outputs/motion chain.
 

@@ -1,4 +1,4 @@
-// Per-pixel kernel for generator.solid_color.
+// Per-pixel kernel for source.solid_color.
 // Strict-output: writes uniform RGB to every pixel; alpha = 1.
 
 struct FuseUniforms {

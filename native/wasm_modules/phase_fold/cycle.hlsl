@@ -1,4 +1,4 @@
-// video.phase_fold — limit-cycle build + break detection (compute).
+// source.phase_fold — limit-cycle build + break detection (compute).
 //
 // Reads the relaxed particle ring (from solve.hlsl) and emits one line segment
 // per consecutive pair — EXCEPT where the cycle is broken. A break is detected

@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for data.adsr (resolume shell, local mode).
+ * Custom-inspector E2E for mod.source.adsr (resolume shell, local mode).
  *
  * Verifies the registered inspector mounts: the <adsr-graph> envelope editor
  * (which must DRAW the ADSR shape) plus the mode tab-bar, the phase/slope
@@ -8,7 +8,7 @@
 const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 const WALK = `function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}`;
 
-describe('data.adsr custom inspector', () => {
+describe('mod.source.adsr custom inspector', () => {
   jest.setTimeout(60000);
 
   it('mounts the envelope graph + controls and draws the curve', async () => {
@@ -20,9 +20,9 @@ describe('data.adsr custom inspector', () => {
       ac.mutate('s', d => {
         d.sketches['sk_adsr'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'data.adsr', instance_key: 'adsr@0' }],
+          chain: [{ type: 'module', module_type: 'mod.source.adsr', instance_key: 'adsr@0' }],
           wires: [],
-          instances: { 'adsr@0': { module_type: 'data.adsr', state: { mode: 0, decay: 0.4 } } },
+          instances: { 'adsr@0': { module_type: 'mod.source.adsr', state: { mode: 0, decay: 0.4 } } },
         };
       });
       ac.setActiveTab('edit');

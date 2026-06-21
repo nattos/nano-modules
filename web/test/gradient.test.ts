@@ -10,7 +10,7 @@ describe('Gradient Effect E2E', () => {
       dumpName: 'gradient_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('generator.gradient');
+    expect(frame.metadata?.id).toBe('source.gradient');
   });
 
   it('default white→black goes from white on left to black on right', async () => {

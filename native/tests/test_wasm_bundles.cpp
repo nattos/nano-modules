@@ -75,7 +75,7 @@ TEST_CASE("WasmEffectBundles loads core.wasm and registers its effects", "[wasm_
   REQUIRE(registry.size() == static_cast<size_t>(n));
 
   const sketch_executor::RegisteredModule* bc =
-      registry.find("video.brightness_contrast");
+      registry.find("color.tone.brightness_contrast");
   REQUIRE(bc != nullptr);
   CHECK(bc->schemaFields.contains("brightness"));
   CHECK(bc->schemaFields.contains("tex_in"));

@@ -1,5 +1,5 @@
 /*
- * mod.envelope — Modulation Envelope shaper.
+ * mod.shaper.envelope — Envelope shaper.
  *
  * A unary modulation shaper: remaps the `input` modulation value through an
  * arbitrary user-drawn ENVELOPE curve and republishes it on `output`. Pure data
@@ -40,7 +40,7 @@ struct State {
 };
 
 void module_init() {
-  state::init("mod.envelope", {1, 0, 0},
+  state::init("mod.shaper.envelope", {1, 0, 0},
     state::Schema()
       // The signal to remap (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect
@@ -50,7 +50,7 @@ void module_init() {
       // by the custom envelope graph inspector (not a raw text box).
       .textField("curve", kDefaultCurve, state::SecondaryInput)
       // Remapped value. min/max is the modulation-range contract (the curve's y
-      // window); unipolar by default, same convention as data.lfo.
+      // window); unipolar by default, same convention as mod.source.lfo.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
       // A unary modulation shaper: 1 modulation value in -> 1 remapped value out.
       .capability(state::Capability::ModulationShaper)

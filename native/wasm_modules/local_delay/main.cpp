@@ -1,5 +1,5 @@
 /*
- * video.local_delay — stylized motion-driven local delay.
+ * motion.local_delay — stylized motion-driven local delay.
  *
  * Estimates dense optical flow between the current and previous frame with a
  * pyramidal Lucas-Kanade solver (windowed structure tensor, coarse-to-fine on
@@ -11,7 +11,7 @@
  * history) gives clean solid pixels: a trailing pixel's smoothed flow points
  * toward the object, so advecting forward lands on it — a solid motion echo.
  * The flow is also published on render_outputs/motion for a downstream
- * video.motion_blur.
+ * motion.blur.
  *
  * Pass pipeline (shared common.hlsl):
  *   luma     — input → HALF-res Rec.601 luma (the "downsample first" step).
@@ -168,7 +168,7 @@ static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
 
 void module_init() {
-  state::init("video.local_delay", {1, 0, 0},
+  state::init("motion.local_delay", {1, 0, 0},
     state::Schema()
       // --- Standard (live) ---
       // Advection step scale: how far each step walks along the flow (× the

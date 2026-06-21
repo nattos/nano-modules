@@ -1,4 +1,4 @@
-// Per-pixel kernel for generator.grid — tiled grid in cover-square coords
+// Per-pixel kernel for source.grid — tiled grid in cover-square coords
 // with anti-aliased lines. Strict-output: no input texture sampled.
 
 #include "nano_coords.hlsl"

@@ -1,6 +1,6 @@
 import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
 
-describe('Edge Detection Effect E2E', () => {
+describe('Edges Effect E2E', () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -11,7 +11,7 @@ describe('Edge Detection Effect E2E', () => {
       dumpName: 'edges_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.edges');
+    expect(frame.metadata?.id).toBe('filter.edges');
   });
 
   it('uniform input produces no edges (all background)', async () => {

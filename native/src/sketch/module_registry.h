@@ -33,7 +33,7 @@ struct WasmEffectDesc;
 namespace sketch_executor {
 
 /**
- * Maps editor module_type strings (eg "video.brightness_contrast") to
+ * Maps editor module_type strings (eg "color.tone.brightness_contrast") to
  * initialised `RegisteredModule` records. The same registry instance
  * is shared between the augmenter (for `schemas()`) and the executor
  * (for per-frame `find()`).
@@ -47,7 +47,7 @@ class ModuleRegistry {
 
   /**
    * Register an effect TYPE under its editor module_type (eg
-   * "video.brightness_contrast"). Runs the effect's `module_init()`
+   * "color.tone.brightness_contrast"). Runs the effect's `module_init()`
    * synchronously — when it publishes its schema and creates the shared
    * GPU resources (shader modules, PSOs). Per-instance state (uniform
    * buffers, params) is created lazily per chain entry via

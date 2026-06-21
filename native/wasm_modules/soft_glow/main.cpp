@@ -1,5 +1,5 @@
 /*
- * gen.soft_glow — Continuous warm-blob atmosphere bed (v1 scaffold).
+ * source.light.soft_glow — Continuous warm-blob atmosphere bed (v1 scaffold).
  *
  * A pool of soft Gaussian blobs drifting at constant velocity (toroidal
  * wrap). Per pixel sums blob contributions, looks up a hue-shifting
@@ -253,7 +253,7 @@ static void seed_all(State& st) {
 
 // Type-level setup: schema + the two shared compute PSOs.
 void module_init() {
-  state::init("gen.soft_glow", {1, 0, 0},
+  state::init("source.light.soft_glow", {1, 0, 0},
     state::Schema()
       .floatField("intensity",        1.0f, 0.0f, 2.0f, state::PrimaryInput)
       .floatField("intensity_mod",    0.0f, -1.0f, 1.0f, state::PrimaryInput)

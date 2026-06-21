@@ -1,4 +1,4 @@
-// gen.bounce_resonator — Stage 1: the diffusion sim (GPU-resident state).
+// source.light.bounce_resonator — Stage 1: the diffusion sim (GPU-resident state).
 //
 // Single-threaded (gid 0 only) — the native Metal backend hardcodes 8×8
 // threadgroups, which breaks single-workgroup parallel shaders, so the

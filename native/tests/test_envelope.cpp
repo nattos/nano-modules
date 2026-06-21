@@ -1,5 +1,5 @@
 // test_envelope.cpp — goldens for the envelope curve parse + evaluate
-// (envelope.h) backing the mod.envelope shaper. Pins interpolation, the
+// (envelope.h) backing the mod.shaper.envelope shaper. Pins interpolation, the
 // per-segment exponential easing, flat clamping, and the flat-array parser.
 
 #include "sketch/envelope.h"

@@ -2,7 +2,7 @@ import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
-// Per-effect tests for gen.chroma_wave — a charge-and-burst prismatic blob
+// Per-effect tests for source.light.chroma_wave — a charge-and-burst prismatic blob
 // that grows from the top-center while gated, then bursts outward on release.
 // The grade scrolls across the burst (renderEachTick advances grade_phase and
 // the phase machine), so envelope-dependent tests use renderEachTick. With a
@@ -90,7 +90,7 @@ describe('Chroma Wave Effect E2E', () => {
       inputColor: [0, 0, 0, 1], dumpName: 'chroma_wave_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.chroma_wave');
+    expect(frame.metadata?.id).toBe('source.light.chroma_wave');
   });
 
   it('schema JSON round-trips (not truncated past the buffer)', async () => {
@@ -307,16 +307,16 @@ describe('Chroma Wave Effect E2E', () => {
       anchor: null,
       wires: [],
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
         params: { color: [0.0, 0.0, 0.0] } },
-        ...(withProducer ? [{ type: 'module', module_type: 'gen.chroma_wave', instance_key: 'cw@0',
+        ...(withProducer ? [{ type: 'module', module_type: 'source.light.chroma_wave', instance_key: 'cw@0',
           params: {
             auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05, release_s: 0.5,
             release_expand: 4.0, base_radius: 0.15, intensity: 2.0,
             voice_pos_jitter: 0.3, voice_hue_jitter: 0.0, motion_scale: 1.0, seed: 3,
           },
         }] : []),
-        { type: 'module', module_type: 'video.motion_blur', instance_key: 'blur@0',
+        { type: 'module', module_type: 'motion.blur', instance_key: 'blur@0',
           params: { strength: 32.0, samples: 16, quality: 1 },
         },
       ],

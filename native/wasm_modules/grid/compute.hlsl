@@ -1,4 +1,4 @@
-// generator.grid — standalone compute wrapper for a strict-output generator.
+// source.grid — standalone compute wrapper for a strict-output generator.
 // Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"

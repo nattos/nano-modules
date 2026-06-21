@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.vignette.
+// Per-pixel kernel for filter.vignette.
 // Mapper signature has no vp_size, so prepare() writes it into u_fuse.
 
 #include "nano_coords.hlsl"

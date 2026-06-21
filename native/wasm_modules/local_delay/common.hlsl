@@ -1,4 +1,4 @@
-// video.local_delay — shared math for all passes.
+// motion.local_delay — shared math for all passes.
 //
 // One header so the passes agree byte-for-byte on the colinear vector
 // alignment, the stochastic + vignette mask, the power-squashed blend

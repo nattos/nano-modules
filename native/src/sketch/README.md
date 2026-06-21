@@ -59,7 +59,7 @@ The editor's sketch is a graph of modules connected by columns + rails
    — the FFGL barrel and the **web browser** (both via `executor.wasm`) —
    uses the same logic.
 2. **Module-instance lookup** — module_type strings from the sketch
-   (`"video.brightness_contrast"`) need to resolve to runtime
+   (`"color.tone.brightness_contrast"`) need to resolve to runtime
    instances of the corresponding effect.
 3. **Per-frame walk** — for each column × chain entry: zero stale
    per-field state, apply persisted state, wire primary `tex_in` /
@@ -214,7 +214,7 @@ int32_t SketchExecutor::execute(
        (the terse sketch format puts values there; matches the retired TS
        executor). Skipped entirely when `!sketchDirty`.
      - **Modulation-source passthrough**: a module whose schema declares no
-       output texture (`hasTextureOutput == false`, e.g. `data.lfo`) renders
+       output texture (`hasTextureOutput == false`, e.g. `mod.source.lfo`) renders
        NOTHING — it ticks to publish its scalar/struct outputs, then passes the
        image chain through untouched. (Rendering it would clobber the chain with
        an empty black frame.)

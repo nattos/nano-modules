@@ -13,8 +13,8 @@
 // The visible amount is `strength` alone (not scaled by |shape|).
 //
 // The CPU side picks the per-frame anchor + strength — see
-// include/effect_twitch_mask.h (fx::TwitchMask). Used by video.twitch_mask and
-// video.local_delay's spatial mask.
+// include/effect_twitch_mask.h (fx::TwitchMask). Used by filter.glitch.twitch_mask and
+// motion.local_delay's spatial mask.
 
 #ifndef NANO_TWITCH_HLSL
 #define NANO_TWITCH_HLSL

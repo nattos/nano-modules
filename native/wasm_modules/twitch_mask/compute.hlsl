@@ -1,4 +1,4 @@
-// video.twitch_mask — apply a roaming "twitch" vignette to the input.
+// filter.glitch.twitch_mask — apply a roaming "twitch" vignette to the input.
 //
 // The CPU (fx::TwitchMask) picks a per-frame random anchor + strength; this
 // pass multiplies the image by nano_twitch_mask() so a roaming oval region is

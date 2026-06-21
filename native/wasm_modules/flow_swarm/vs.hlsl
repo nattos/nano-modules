@@ -1,4 +1,4 @@
-// video.flow_swarm — instanced quad vertex shader.
+// source.particles.flow_swarm — instanced quad vertex shader.
 //
 // Six vertices per instance = one round particle quad. Reads the particle
 // pool at register(t0) by SV_InstanceID. Dead particles collapse to a

@@ -318,7 +318,7 @@ int gpu_create_compute_pso(int shader, const char* entry, int entry_len) {
 }
 
 int gpu_get_input_texture(int idx) {
-  // Positional multi-input API (video.blend's inputTexture(0/1)). The executor
+  // Positional multi-input API (composite.blend's inputTexture(0/1)). The executor
   // publishes the per-frame slots onto the active instance; effects that read
   // by field name (textureForField) are unaffected.
   auto* inst = active();

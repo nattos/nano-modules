@@ -99,10 +99,10 @@ __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     nano::registerEffect({
         2,
-        "video.brightness_contrast",
-        "Brightness/Contrast",
+        "color.tone.brightness_contrast",
+        "Brightness & Contrast",
         "Adjusts brightness and contrast of a texture input",
-        "video",
+        "color",
         "color,adjust,filter",
         NANO_INSTANCE_LIFECYCLE(brightness_contrast),
         &brightness_contrast::is_identity,
@@ -110,40 +110,40 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "generator.solid_color",
+        "source.solid_color",
         "Solid Color",
         "Fills the render target with a uniform RGB color",
-        "generator",
+        "source",
         "color,fill",
         NANO_INSTANCE_LIFECYCLE(solid_color),
     });
 
     nano::registerEffect({
         2,
-        "video.blend",
-        "Video Blend",
+        "composite.blend",
+        "Blend",
         "Blends two texture inputs with opacity control",
-        "video",
+        "composite",
         "blend,mix,composite,opacity",
         NANO_INSTANCE_LIFECYCLE(video_blend),
     });
 
     nano::registerEffect({
         2,
-        "utility.paramlinker",
+        "control.paramlinker",
         "Param Linker",
         "Links two Resolume parameters together via learn mechanism",
-        "utility",
+        "control",
         "resolume,parameter,link,automation",
         NANO_INSTANCE_LIFECYCLE(paramlinker),
     });
 
     nano::registerEffect({
         2,
-        "io.barrel_macros",
+        "control.barrel_macros",
         "Barrel Macros",
         "Exposes the NanoBarrel macro knobs as tappable float outputs",
-        "io",
+        "control",
         "macro,knob,barrel,control,rail",
         NANO_INSTANCE_LIFECYCLE(barrel_macros),
         &barrel_macros::is_identity,
@@ -151,30 +151,30 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "video.bake_alpha",
+        "composite.bake_alpha",
         "Bake Alpha",
         "Premultiplies RGB by alpha (mixable amount)",
-        "video",
+        "composite",
         "alpha,premultiply,composite",
         NANO_INSTANCE_LIFECYCLE(bake_alpha),
     });
 
     nano::registerEffect({
         2,
-        "video.curve",
+        "color.tone.curve",
         "Curve",
         "Power curve applied to RGB and alpha (-1 squashes down, +1 lifts up)",
-        "video",
+        "color",
         "curve,gamma,tonemap",
         NANO_INSTANCE_LIFECYCLE(curve),
     });
 
     nano::registerEffect({
         2,
-        "video.exposure",
+        "color.tone.exposure",
         "Exposure",
         "Multiplicative gain measured in stops",
-        "video",
+        "color",
         "exposure,gain,brightness,stops",
         NANO_INSTANCE_LIFECYCLE(exposure),
         &exposure::is_identity,
@@ -182,10 +182,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "video.color_temperature",
+        "color.temperature",
         "Color Temperature",
         "Warm/cool white-balance shift on the orange/blue axis",
-        "video",
+        "color",
         "temperature,warmth,white-balance,tint,color",
         NANO_INSTANCE_LIFECYCLE(color_temperature),
         &color_temperature::is_identity,
@@ -193,120 +193,120 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "video.invert",
+        "color.invert",
         "Invert",
         "Color inversion with optional alpha invert",
-        "video",
+        "color",
         "invert,negative,color",
         NANO_INSTANCE_LIFECYCLE(invert),
     });
 
     nano::registerEffect({
         2,
-        "video.posterize",
+        "color.posterize",
         "Posterize",
         "Quantizes RGB (and optionally alpha) to a small number of levels",
-        "video",
+        "color",
         "posterize,quantize,bitcrush",
         NANO_INSTANCE_LIFECYCLE(posterize),
     });
 
     nano::registerEffect({
         2,
-        "video.levels",
+        "color.tone.levels",
         "Levels",
         "Photoshop-style input/output remap with a gamma midtone control",
-        "video",
+        "color",
         "levels,gamma,contrast,remap",
         NANO_INSTANCE_LIFECYCLE(levels),
     });
 
     nano::registerEffect({
         2,
-        "video.hsl",
+        "color.hsl",
         "HSL",
         "Hue rotation, saturation pull, and bipolar lightness in HSL space",
-        "video",
+        "color",
         "hue,saturation,lightness,color",
         NANO_INSTANCE_LIFECYCLE(hsl),
     });
 
     nano::registerEffect({
         2,
-        "video.color_space",
+        "color.color_space",
         "Color Space",
         "Convert RGB between sRGB and Linear encodings",
-        "video",
+        "color",
         "color,space,srgb,linear,gamma,encoding",
         NANO_INSTANCE_LIFECYCLE(color_space),
     });
 
     nano::registerEffect({
         2,
-        "video.hue_basis",
+        "color.hue_basis",
         "Hue Basis",
         "Channel-mix into a basis defined by three hues; white-preserving forward, NaN-free reverse",
-        "video",
+        "color",
         "hue,basis,channel-mixer,color,matrix",
         NANO_INSTANCE_LIFECYCLE(hue_basis),
     });
 
     nano::registerEffect({
         2,
-        "video.saturate",
+        "color.saturate",
         "Saturate",
         "Per-channel tanh soft-clip with linear deadzone and asymmetric drive",
-        "video",
+        "color",
         "saturate,softclip,tanh,waveshaper,compressor,rolloff",
         NANO_INSTANCE_LIFECYCLE(saturate),
     });
 
     nano::registerEffect({
         2,
-        "video.vibrance",
+        "color.vibrance",
         "Vibrance",
         "Saturation boost biased toward already-unsaturated pixels",
-        "video",
+        "color",
         "vibrance,saturation,color",
         NANO_INSTANCE_LIFECYCLE(vibrance),
     });
 
     nano::registerEffect({
         2,
-        "video.vignette",
+        "filter.vignette",
         "Vignette",
         "Radial darken/lighten around a cover-square anchor with soft falloff",
-        "video",
+        "filter",
         "vignette,edge,fade,corner",
         NANO_INSTANCE_LIFECYCLE(vignette),
     });
 
     nano::registerEffect({
         2,
-        "video.blur",
+        "filter.blur.gaussian",
         "Blur",
         "Single-pass Gaussian blur with adjustable radius",
-        "video",
+        "filter",
         "blur,gaussian,defocus,soften",
         NANO_INSTANCE_LIFECYCLE(blur),
     });
 
     nano::registerEffect({
         2,
-        "video.fast_blur",
+        "filter.blur.fast",
         "Fast Blur",
         "Iterative dual-filter blur (CoD/SIGGRAPH 2014). Cheaper than Gaussian for large radii.",
-        "video",
+        "filter",
         "blur,bloom,dual-filter,downsample,upsample,fast",
         NANO_INSTANCE_LIFECYCLE(fast_blur),
     });
 
     nano::registerEffect({
         2,
-        "video.sharpen",
+        "filter.sharpen",
         "Sharpen",
         "Discrete Laplacian sharpen with adjustable radius",
-        "video",
+        "filter",
         "sharpen,detail,laplacian",
         NANO_INSTANCE_LIFECYCLE(sharpen),
         &sharpen::is_identity,
@@ -314,30 +314,30 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "video.edges",
-        "Edge Detection",
+        "filter.edges",
+        "Edges",
         "Sobel edges with adjustable threshold and overlay colours",
-        "video",
+        "filter",
         "edge,sobel,outline,detect",
         NANO_INSTANCE_LIFECYCLE(edges),
     });
 
     nano::registerEffect({
         2,
-        "video.crop",
+        "warp.crop",
         "Crop",
         "Soft-edged rectangular crop in cover-square coordinates",
-        "video",
+        "warp",
         "crop,mask,frame,window",
         NANO_INSTANCE_LIFECYCLE(crop),
     });
 
     nano::registerEffect({
         2,
-        "video.transform",
+        "warp.transform",
         "Transform",
         "2D affine resample (scale, rotate, translate around a pivot)",
-        "video",
+        "warp",
         "transform,scale,rotate,translate,affine",
         NANO_INSTANCE_LIFECYCLE(transform),
         &transform::is_identity,
@@ -345,50 +345,50 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "generator.gradient",
+        "source.gradient",
         "Gradient",
         "Two-colour linear gradient with adjustable angle, offset, and softness",
-        "generator",
+        "source",
         "gradient,ramp,linear",
         NANO_INSTANCE_LIFECYCLE(gradient),
     });
 
     nano::registerEffect({
         2,
-        "generator.grid",
+        "source.grid",
         "Grid",
         "Tiled grid pattern with adjustable cell size, line width, and softness",
-        "generator",
+        "source",
         "grid,pattern,tile,lines",
         NANO_INSTANCE_LIFECYCLE(grid),
     });
 
     nano::registerEffect({
         2,
-        "generator.noise",
+        "source.noise",
         "Noise",
         "Procedural noise: white, value, fbm, or animated static",
-        "generator",
+        "source",
         "noise,perlin,static,grain,procedural",
         NANO_INSTANCE_LIFECYCLE(noise),
     });
 
     nano::registerEffect({
         2,
-        "video.motion_blur",
+        "motion.blur",
         "Motion Blur",
         "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
-        "video",
+        "motion",
         "blur,motion,velocity,render-outputs",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
     });
 
     nano::registerEffect({
         2,
-        "video.auto_level",
+        "color.tone.auto_level",
         "Auto Level",
         "Histogram auto-leveler: equalize the luminance distribution and/or pull the median toward a target, chroma-preserving",
-        "video",
+        "color",
         "auto,level,histogram,equalize,contrast,exposure,median",
         NANO_INSTANCE_LIFECYCLE(auto_level),
         &auto_level::is_identity,
@@ -396,10 +396,10 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "video.twitch_mask",
+        "filter.glitch.twitch_mask",
         "Twitch Mask",
         "Roaming vignette glitch: suppresses a random oval region each frame (bipolar shape blacks the rim or the centre)",
-        "video",
+        "filter",
         "twitch,glitch,vignette,flicker,mask,random",
         NANO_INSTANCE_LIFECYCLE(twitch_mask),
         &twitch_mask::is_identity,
@@ -407,8 +407,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.remap",
-        "Modulation Remap",
+        "mod.shaper.remap",
+        "Remap",
         "Unary modulation shaper: range-remaps a modulation value with the same curves as the wire remap (in/out window, ease-in/out, foldback, scale)",
         "mod",
         "modulation,remap,shaper,curve,range,envelope",
@@ -417,8 +417,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.smooth",
-        "Modulation Smooth",
+        "mod.shaper.smooth",
+        "Smooth",
         "Unary modulation shaper: linearly smooths a modulation value over a duration (same linear ramp as the wire smoothing option)",
         "mod",
         "modulation,smooth,slew,ramp,glide,shaper,filter",
@@ -427,8 +427,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.delay",
-        "Modulation Delay",
+        "mod.shaper.delay",
+        "Delay",
         "Unary modulation shaper: delays a modulation signal by a parameterized time via a delay line",
         "mod",
         "modulation,delay,line,echo,offset,lag,shaper",
@@ -437,8 +437,8 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "mod.envelope",
-        "Modulation Envelope",
+        "mod.shaper.envelope",
+        "Envelope",
         "Unary modulation shaper: remaps a modulation value through an arbitrary drawn envelope curve (per-segment exponential easing)",
         "mod",
         "modulation,envelope,remap,curve,shaper,draw,easing",
@@ -447,20 +447,20 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "data.lfo",
+        "mod.source.lfo",
         "LFO",
         "Low frequency oscillator: a normalized [0,1] modulation source. Selectable waveform (sine/square/triangle/saw/random walk/random FM) with a shape morph, rate (0..10 Hz), amplitude, and invert.",
-        "data",
+        "mod",
         "oscillator,modulation,automation,lfo,wave",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
     });
 
     nano::registerEffect({
         2,
-        "data.adsr",
+        "mod.source.adsr",
         "ADSR",
-        "ADSR envelope generator (modulation source). A trigger / gate / Poisson auto-rate drives an attack-decay-sustain-release phase machine that publishes a scalar 'output' in [0,1]. The 'mode' selector enables phases (Decay = instant falling pluck by default, through full ADSR); attack/decay/release are phase TIMES and sustain a held LEVEL, each ramp shaped by a per-phase ease curve (shared with mod.envelope). Polyphonic: up to 'voices' overlapping envelopes (output = their max) with Reset / Legato / Poly retrigger styles. Pure data module (no GPU, no input).",
-        "data",
+        "ADSR envelope generator (modulation source). A trigger / gate / Poisson auto-rate drives an attack-decay-sustain-release phase machine that publishes a scalar 'output' in [0,1]. The 'mode' selector enables phases (Decay = instant falling pluck by default, through full ADSR); attack/decay/release are phase TIMES and sustain a held LEVEL, each ramp shaped by a per-phase ease curve (shared with mod.shaper.envelope). Polyphonic: up to 'voices' overlapping envelopes (output = their max) with Reset / Legato / Poly retrigger styles. Pure data module (no GPU, no input).",
+        "mod",
         "envelope,adsr,modulation,automation,trigger,gate,generator",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
     });

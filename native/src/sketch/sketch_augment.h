@@ -49,7 +49,7 @@ bool isRailCompatible(const nlohmann::json& writer,
  * added. Original sketch is not mutated.
  *
  * `pluginSchemas` maps the module_type string used in the sketch's
- * chain entries (eg "video.brightness_contrast") to the schema's
+ * chain entries (eg "color.tone.brightness_contrast") to the schema's
  * fields object — same shape the editor's `PluginInfo.schema` holds.
  *
  * Algorithm per column: for each module's structured input that has

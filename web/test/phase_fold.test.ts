@@ -2,7 +2,7 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for video.phase_fold (nano bundle) — the limit-cycle phase-
+ * E2E coverage for source.phase_fold (nano bundle) — the limit-cycle phase-
  * portrait generator. A baked atlas of level-set limit-cycle fields is uploaded
  * to the GPU; the backdrop (blended height field), the streamline tracer (with
  * animated arrows) and the limit-cycle integrator all run as GPU compute passes,
@@ -29,7 +29,7 @@ function buildSketch(params: Record<string, unknown>): Sketch {
     chain: [
       {
         type: 'module',
-        module_type: 'video.phase_fold',
+        module_type: 'source.phase_fold',
         instance_key: 'pf@0',
         params,
       },
@@ -59,14 +59,14 @@ async function render(sketchId: string, params: Record<string, unknown>, dumpNam
 // A valid cell with both stages on, flow clock frozen for determinism.
 const BASE = { eccentricity: 0.5, lobedness: 0.3, flow_speed: 0.0 };
 
-describe('video.phase_fold E2E', () => {
+describe('source.phase_fold E2E', () => {
   jest.setTimeout(60000);
 
   it('registers and renders a non-solid phase portrait', async () => {
     const result = await render('pf_smoke', BASE, 'pf_smoke');
     result.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
 
-    const pf = result.state.plugins.find((p: any) => p.id === 'video.phase_fold');
+    const pf = result.state.plugins.find((p: any) => p.id === 'source.phase_fold');
     expect(pf).toBeTruthy();
     expect(pf.io.find((io: any) => io.name === 'autopilot_x' && io.kind === 2)).toBeTruthy();
     expect(pf.io.find((io: any) => io.name === 'autopilot_y' && io.kind === 2)).toBeTruthy();

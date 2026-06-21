@@ -1,4 +1,4 @@
-// video.shape_fold — shared math for all passes.
+// source.shape_fold — shared math for all passes.
 //
 // An evolving-shape GENERATOR. A baked 3D atlas (frequency × simplicity ×
 // temporal-complexity) is interpolated on the CPU each frame down to a handful

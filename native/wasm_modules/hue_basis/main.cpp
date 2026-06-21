@@ -1,5 +1,5 @@
 /*
- * video.hue_basis — Channel-mix into a basis defined by three hues.
+ * color.hue_basis — Channel-mix into a basis defined by three hues.
  *
  * Each hue identifies a fully-saturated RGB basis vector (HSV at
  * S=V=1), normalized per-vector so its three components sum to 1.
@@ -67,7 +67,7 @@ void prepare(void* self, int vp_w, int vp_h);
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.hue_basis", {1, 0, 0},
+  state::init("color.hue_basis", {1, 0, 0},
     state::Schema()
       .selectField("direction", DirForward, state::PrimaryInput, {
           {"Forward", DirForward},

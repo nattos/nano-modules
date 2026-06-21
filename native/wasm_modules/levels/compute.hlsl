@@ -1,4 +1,4 @@
-// video.levels — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.tone.levels — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

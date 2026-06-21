@@ -1,4 +1,4 @@
-// gen.orthomod — render pass.
+// source.light.orthomod — render pass.
 //
 // Per pixel:
 //   1. Find (bar, segment) from uv + inset geometry.

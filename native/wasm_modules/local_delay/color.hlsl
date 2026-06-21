@@ -1,4 +1,4 @@
-// video.local_delay — color / forward-advection pass.
+// motion.local_delay — color / forward-advection pass.
 //
 // Instead of looking BACK into smeary history buffers (which lose all detail
 // exactly where motion peaks), we trace FORWARD along the (temporally-

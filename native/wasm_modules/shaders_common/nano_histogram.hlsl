@@ -1,6 +1,6 @@
 // nano_histogram.hlsl — shared histogram → CDF helpers for auto-leveling.
 //
-// The auto-level pattern (video.shape_fold, video.auto_level) buckets a scalar
+// The auto-level pattern (source.shape_fold, color.tone.auto_level) buckets a scalar
 // field/image into a fixed-size histogram via atomic scatter, then a single-
 // thread pass inverts that histogram into a remap curve. The CLAHE-clipped
 // cumulative distribution and the percentile lookup are identical across those

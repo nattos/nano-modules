@@ -1,5 +1,5 @@
 /*
- * video.motion_field — Image-driven motion vector generator.
+ * motion.field — Image-driven motion vector generator.
  *
  * Activation: per-pixel luma soft-thresholded against `threshold` ±
  * `softness`. Pixels below threshold emit zero motion; above, full
@@ -124,7 +124,7 @@ static gpu::ComputePSO s_pso_motion;
 
 // Type-level setup: schema + the two shared compute PSOs.
 void module_init() {
-  state::init("video.motion_field", {1, 0, 0},
+  state::init("motion.field", {1, 0, 0},
     state::Schema()
       // Activation
       .floatField("threshold",         0.5f,  0.0f,  1.0f,  state::PrimaryInput)

@@ -155,7 +155,7 @@ static void reload_assignment_from_state(State& s);
 
 // Type-level setup: schema registration. Runs once per type. No GPU work.
 void module_init() {
-  static const char id[] = "utility.paramlinker";
+  static const char id[] = "control.paramlinker";
   static const char schema[] =
     "{\"fields\":{"
     "\"learn\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":0},"

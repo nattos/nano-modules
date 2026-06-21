@@ -1,6 +1,6 @@
 import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 
-// Per-effect tests for fx.lights_sim — samples the input into 4 vertical LED
+// Per-effect tests for filter.lights_sim — samples the input into 4 vertical LED
 // bars (Resolume-style) and renders them inset into their quarters.
 //
 // The harness only supplies a SOLID input colour, so these can't verify the
@@ -23,7 +23,7 @@ describe('Lights Sim Effect E2E', () => {
       inputColor: [0, 0, 0, 1], dumpName: 'lights_sim_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('fx.lights_sim');
+    expect(frame.metadata?.id).toBe('filter.lights_sim');
   });
 
   it('renders inset bars showing the sampled input colour', async () => {

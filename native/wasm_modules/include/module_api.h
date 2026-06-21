@@ -39,7 +39,7 @@ struct EffectDesc_v2 {
 
     // Metadata
     const char* id;             // Module identifier, e.g. "com.nano.brightness_contrast"
-    const char* name;           // Display name, e.g. "Brightness/Contrast"
+    const char* name;           // Display name, e.g. "Brightness & Contrast"
     const char* description;    // Human-readable description
     const char* category;       // e.g. "Video", "Source", "Data"
     const char* keywords;       // Comma-separated, e.g. "color,adjust"

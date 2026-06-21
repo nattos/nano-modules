@@ -1,4 +1,4 @@
-// video.flow_swarm — pre-fill pass. Copies tex_in × input_alpha into tex_out
+// source.particles.flow_swarm — pre-fill pass. Copies tex_in × input_alpha into tex_out
 // (rgba8) so the instanced particle raster blends on top of the (optionally
 // dimmed) input. Same shape as flash_particles' prefill.
 

@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.bake_alpha` against the shipping `core`
+// Per-effect tests for `composite.bake_alpha` against the shipping `core`
 // bundle. The effect composites the input *over* a chosen background
 // colour: out.rgb = src.rgb * src.a + bg.rgb * (1 - src.a) and
 // out.a = src.a + bg.a * (1 - src.a). With opaque-black default the
@@ -20,7 +20,7 @@ describe('Bake Alpha Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.bake_alpha');
+    expect(frame.metadata?.id).toBe('composite.bake_alpha');
     // `color` is a vec4 (rgba) so it doesn't appear in the legacy
     // scalar params[] list.
     expect(frame.params.length).toBe(0);

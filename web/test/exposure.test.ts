@@ -1,8 +1,8 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.exposure` against `core`. amount [-1, +1]
+// Per-effect tests for `color.tone.exposure` against `core`. amount [-1, +1]
 // maps to ±3 stops (gain 1/8 .. 8). Warm/cool tinting moved to the
-// dedicated `video.color_temperature` effect.
+// dedicated `color.temperature` effect.
 //
 // Param indices (declaration order):
 //   0 = amount
@@ -19,7 +19,7 @@ describe('Exposure Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.exposure');
+    expect(frame.metadata?.id).toBe('color.tone.exposure');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['amount']);
   });

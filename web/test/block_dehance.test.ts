@@ -1,6 +1,6 @@
 import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 
-// Per-effect tests for fx.block_dehance — a GPU rect pool that "dehances"
+// Per-effect tests for filter.glitch.block_dehance — a GPU rect pool that "dehances"
 // the input (black / mosaic / noise) inside bright-seeking rectangles.
 //
 // The pool is GPU-resident and cycles over time, so these use
@@ -27,7 +27,7 @@ describe('Block Dehance Effect E2E', () => {
       inputColor: [0, 0, 0, 1], dumpName: 'block_dehance_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('fx.block_dehance');
+    expect(frame.metadata?.id).toBe('filter.glitch.block_dehance');
   });
 
   it('count 0 is a pure passthrough', async () => {

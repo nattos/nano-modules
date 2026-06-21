@@ -1,4 +1,4 @@
-// video.auto_level — pass 4: apply the remap curve to the image.
+// color.tone.auto_level — pass 4: apply the remap curve to the image.
 //
 // Per pixel: map luminance through the curve, then scale RGB by the luminance
 // ratio so chroma (hue/saturation) is preserved — only tonality changes. Near-

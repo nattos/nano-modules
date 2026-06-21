@@ -1,4 +1,4 @@
-// video.flow_swarm — fragment shader.
+// source.particles.flow_swarm — fragment shader.
 //
 // Color = captured-input ↔ solid blend (the default look), optionally tinted
 // toward a flow-direction/speed hue. Alpha = life fade × opacity × shape mask.

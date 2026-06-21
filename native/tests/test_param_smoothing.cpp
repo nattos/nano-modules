@@ -1,6 +1,6 @@
 // test_param_smoothing.cpp — native half of the LOCK-STEP param-smoothing
 // contract. These goldens MUST match web/src/param-smoothing.test.ts exactly:
-// the engine `FieldOptions.smoothing` option and the mod.smooth shaper effect
+// the engine `FieldOptions.smoothing` option and the mod.shaper.smooth shaper effect
 // shape the ramp with the same math on both hosts. If a formula changes, change
 // both files and keep these numbers in sync (same discipline as tap_mod).
 

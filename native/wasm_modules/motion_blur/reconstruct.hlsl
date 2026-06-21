@@ -1,4 +1,4 @@
-// video.motion_blur — Pass 3 of the McGuire reconstruction filter.
+// motion.blur — Pass 3 of the McGuire reconstruction filter.
 //
 // For each output pixel X, fetches the dominant nearby velocity V_max
 // from the NeighborMax texture and sums weighted contributions from N

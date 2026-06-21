@@ -1,6 +1,6 @@
 import { runEngineTest } from './engine-test-helpers';
 
-// Per-effect tests for `utility.paramlinker` against the shipping `core`
+// Per-effect tests for `control.paramlinker` against the shipping `core`
 // bundle. paramlinker has no texture I/O — it's a state-only utility that
 // observes Resolume parameter changes and links two of them. These tests
 // cover what's verifiable without a Resolume-param-injection mechanism:
@@ -15,19 +15,19 @@ describe('Param Linker Effect E2E', () => {
       width: 32, height: 32,
       modules: ['com.nano.core'],
       commands: [
-        { type: 'instantiateEffect', effectId: 'utility.paramlinker' },
+        { type: 'instantiateEffect', effectId: 'control.paramlinker' },
       ],
       waitFrames: 5,
       dumpName: 'pl_metadata',
     });
 
     expect(result.success).toBe(true);
-    const pl = result.state.plugins.find((p: any) => p.id === 'utility.paramlinker');
+    const pl = result.state.plugins.find((p: any) => p.id === 'control.paramlinker');
     expect(pl).toBeDefined();
     // Key carries an instance-counter suffix (@N); the bundle warmup registers
     // the schema-only instance and instantiateEffect makes the live one, so the
     // exact N isn't load-bearing — just assert the id@N shape.
-    expect(pl!.key).toMatch(/^utility\.paramlinker@\d+$/);
+    expect(pl!.key).toMatch(/^control\.paramlinker@\d+$/);
     const paramNames = pl!.params.map((p: any) => p.name).sort();
     expect(paramNames).toEqual(['active', 'learn']);
   });
@@ -37,14 +37,14 @@ describe('Param Linker Effect E2E', () => {
       width: 32, height: 32,
       modules: ['com.nano.core'],
       commands: [
-        { type: 'instantiateEffect', effectId: 'utility.paramlinker' },
+        { type: 'instantiateEffect', effectId: 'control.paramlinker' },
       ],
       waitFrames: 5,
       dumpName: 'pl_initial',
     });
 
     expect(result.success).toBe(true);
-    const pl = result.state.plugins.find((p: any) => p.id === 'utility.paramlinker');
+    const pl = result.state.plugins.find((p: any) => p.id === 'control.paramlinker');
     const pluginState = result.state.pluginStates?.[pl!.key];
     expect(pluginState).toBeDefined();
     expect(pluginState.learning).toBe(false);
@@ -63,7 +63,7 @@ describe('Param Linker Effect E2E', () => {
       width: 32, height: 32,
       modules: ['com.nano.core'],
       commands: [
-        { type: 'instantiateEffect', effectId: 'utility.paramlinker' },
+        { type: 'instantiateEffect', effectId: 'control.paramlinker' },
         // Once instantiated, set the learn param to 1.0 — paramlinker treats
         // a rising edge (>=0.5) as "toggle learning".
         // setParam targets a sketch chain entry; this effect is in the unassigned
@@ -78,7 +78,7 @@ describe('Param Linker Effect E2E', () => {
             chain: [
               {
                 type: 'module',
-                module_type: 'utility.paramlinker',
+                module_type: 'control.paramlinker',
                 instance_key: 'pl@0',
                 // No initial state override — defaults stand.
               },
@@ -98,7 +98,7 @@ describe('Param Linker Effect E2E', () => {
 
     expect(result.success).toBe(true);
     const pluginState = result.state.pluginStates?.['pl@0']
-      ?? result.state.pluginStates?.['utility.paramlinker@0'];
+      ?? result.state.pluginStates?.['control.paramlinker@0'];
     expect(pluginState).toBeDefined();
     // After toggling learn, the module should be observing.
     expect(pluginState.learning).toBe(true);

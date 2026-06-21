@@ -2,25 +2,25 @@ import { runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E for mod.spectral — the Spectral Curve shaper. It builds the SAME
- * spectrally-morphed LFO curve as data.spectral_lfo (shared spectral_curve.cpp)
+ * E2E for mod.shaper.spectral — the Spectral Curve shaper. It builds the SAME
+ * spectrally-morphed LFO curve as mod.source.spectral_lfo (shared spectral_curve.cpp)
  * but indexes it by the `input` modulation value instead of time, so the morphed
- * envelope becomes a remapping curve. Probe: white solid → mod.spectral → bc,
- * with mod.spectral.output wired into bc.brightness. Sweeping `input` across the
+ * envelope becomes a remapping curve. Probe: white solid → mod.shaper.spectral → bc,
+ * with mod.shaper.spectral.output wired into bc.brightness. Sweeping `input` across the
  * curve produces a varying remapped output (the curve is a non-trivial LFO
  * shape, not an identity passthrough).
  */
-describe('mod.spectral shaper node E2E', () => {
+describe('mod.shaper.spectral shaper node E2E', () => {
   jest.setTimeout(40000);
 
   const sketch: Sketch = {
     anchor: null,
     chain: [
-      { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
-      { type: 'module', module_type: 'mod.spectral', instance_key: 'sp@0',
+      { type: 'module', module_type: 'mod.shaper.spectral', instance_key: 'sp@0',
         params: { morph_x: 0.5, morph_y: 0.5, metric: 0, interpolation: 1, input: 0.0 } },
-      { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: 0.25 } },
     ],
     wires: [
@@ -33,7 +33,7 @@ describe('mod.spectral shaper node E2E', () => {
     const inputs = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
     const result = await runEngineMultiPhaseTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'video.brightness_contrast', 'com.nano.nano'],
+      modules: ['source.solid_color', 'color.tone.brightness_contrast', 'com.nano.nano'],
       phases: [
         { commands: [
             { type: 'createSketch', sketchId: 'sp', sketch },

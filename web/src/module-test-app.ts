@@ -281,14 +281,14 @@ async function main() {
   // The harness loads whichever bundle the effect lives in.
   interface ModuleEntry { effectId: string; bundle: 'core' | 'nano' | 'testonly' }
   const MODULE_NAME_TO_ENTRY: Record<string, ModuleEntry> = {
-    nanolooper:           { effectId: 'sequencer.nanolooper',     bundle: 'nano' },
-    brightness_contrast:  { effectId: 'video.brightness_contrast', bundle: 'core' },
-    paramlinker:          { effectId: 'utility.paramlinker',      bundle: 'core' },
-    solid_color:          { effectId: 'generator.solid_color',    bundle: 'core' },
-    video_blend:          { effectId: 'video.blend',              bundle: 'core' },
-    env_lfo:              { effectId: 'data.lfo',                 bundle: 'testonly' },
+    nanolooper:           { effectId: 'control.nanolooper',     bundle: 'nano' },
+    brightness_contrast:  { effectId: 'color.tone.brightness_contrast', bundle: 'core' },
+    paramlinker:          { effectId: 'control.paramlinker',      bundle: 'core' },
+    solid_color:          { effectId: 'source.solid_color',    bundle: 'core' },
+    video_blend:          { effectId: 'composite.blend',              bundle: 'core' },
+    env_lfo:              { effectId: 'mod.source.lfo',                 bundle: 'testonly' },
     gpu_test:             { effectId: 'debug.gpu_test',           bundle: 'testonly' },
-    spinningtris:         { effectId: 'generator.spinningtris',   bundle: 'testonly' },
+    spinningtris:         { effectId: 'debug.spinningtris',   bundle: 'testonly' },
   };
 
   async function loadModule(moduleName: string) {

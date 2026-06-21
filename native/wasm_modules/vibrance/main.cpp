@@ -1,5 +1,5 @@
 /*
- * video.vibrance — Saturation boost biased toward already-unsaturated pixels.
+ * color.vibrance — Saturation boost biased toward already-unsaturated pixels.
  *
  * Standard saturation pulls every pixel uniformly, which pushes already
  * saturated areas (skin tones, overdriven LEDs) into oversaturated mush.
@@ -46,7 +46,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.vibrance", {1, 0, 0},
+  state::init("color.vibrance", {1, 0, 0},
     state::Schema()
       .floatField("amount", 0.0f, -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)

@@ -34,7 +34,7 @@
 
 #include <host.h>
 #include <val.h>
-#include "sketch/envelope.h"   // envelope::applyEase — shared with mod.envelope
+#include "sketch/envelope.h"   // envelope::applyEase — shared with mod.shaper.envelope
 #include <cmath>
 #include <cstdint>
 
@@ -176,7 +176,7 @@ static int triggerVoice(State* s, bool momentary, const Shape& sh) {
 }
 
 void module_init() {
-  state::init("data.adsr", {1, 0, 0},
+  state::init("mod.source.adsr", {1, 0, 0},
     state::Schema()
       .selectField("mode", ModeD, state::PrimaryInput,
                    {{"Decay", ModeD},

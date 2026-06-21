@@ -1,4 +1,4 @@
-// video.transform — Affine resample with bilinear sampling.
+// warp.transform — Affine resample with bilinear sampling.
 //
 // Per output pixel:
 //   1. Convert dispatch coord → cover-square coord.

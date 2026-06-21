@@ -1,5 +1,5 @@
 /**
- * <field-font> — Font-family LIST editor for string `font` params (gen.text).
+ * <field-font> — Font-family LIST editor for string `font` params (source.text.plain).
  *
  * The `font` param is a CSS font-family value: an ordered, comma-separated list
  * of families (a fallback chain). This widget shows that list as inline removable

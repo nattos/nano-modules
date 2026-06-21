@@ -1,5 +1,5 @@
 /*
- * video.posterize — Quantize RGB to a small number of discrete levels.
+ * color.posterize — Quantize RGB to a small number of discrete levels.
  *
  * `amount` is a normalized intensity slider:
  *   0.0  → 256 levels  (passthrough)
@@ -62,7 +62,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.posterize", {1, 0, 0},
+  state::init("color.posterize", {1, 0, 0},
     state::Schema()
       .floatField("amount", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .boolField("quantize_alpha", false, state::SecondaryInput)

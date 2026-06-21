@@ -160,7 +160,7 @@ passthrough — see EFFECTS_STYLE_GUIDE.md.
 
 ### Text effects
 
-`gen.text` / `gen.richtext` load from `text.wasm` / `richtext.wasm` like any
+`source.text.plain` / `source.text.rich` load from `text.wasm` / `richtext.wasm` like any
 other effect — they are **not** special-cased or statically linked. Their
 `text.*` imports (layout/measure/render/atlas/glyphs/release) resolve to the
 native `TextEngine` (FreeType + msdfgen + Blitz) through the **"text" WAMR
@@ -178,13 +178,13 @@ render pipelines (`createInstancedRenderPSO` with alpha-over / additive blend),
 load-action passes (`beginRenderPassLoad`), stage-unified render buffer binding
 (`renderSetBuffer`), and multi-render-target pipelines + passes
 (`createInstancedRenderPSOMRT` / `beginRenderPassMRT`, up to 8 attachments).
-`video.flash_particles` (compute particle sim + instanced raster) renders. GPU
+`source.particles.flash_particles` (compute particle sim + instanced raster) renders. GPU
 fusion of adjacent compute stages works across the WASM ABI (effects register SPV
 fragments by name; the host runs SPV→MSL fused codegen).
 
 **Known gap** (effect registers + appears in the inspector, but won't render
 correctly natively — degrades gracefully to passthrough/black, no crashes):
-- Canvas-overlay effects (e.g. `sequencer.nanolooper`): the `canvas_*` host
+- Canvas-overlay effects (e.g. `control.nanolooper`): the `canvas_*` host
   imports are no-ops natively (a debug surface — intentionally deferred).
 
 ## Macros

@@ -234,7 +234,7 @@ export class AppController {
    * Initial instance state for a plugin, seeded from its typed schema
    * defaults. The legacy `params` list is numeric-only — it coerces string
    * defaults to 0 and drops vector (float2/3/4, color) fields entirely — so a
-   * gen.text node would come up with `text: 0` and no color. Reading the raw
+   * source.text.plain node would come up with `text: 0` and no color. Reading the raw
    * schema `default` preserves strings (`"Text"`), numbers (`64`), bools, and
    * vectors as arrays (`[1,1,1,1]`), matching what the inspector widgets and
    * the native patch readers (patchString / patchVec4) expect. Falls back to
@@ -901,7 +901,7 @@ export class AppController {
     // needs to wire up implicit struct-rail connections) arrive a frame
     // later via this `state` broadcast. Without a re-sync here, the
     // engine ends up holding an un-augmented sketch — every motion-vector
-    // consumer like video.motion_blur sits in pass-through fallback
+    // consumer like motion.blur sits in pass-through fallback
     // until something else triggers a sync (param release does, because
     // its postRecordHook calls syncSketchesToEngine). Symptom on a fresh
     // page reload: nothing renders until you release a slider.
@@ -1695,7 +1695,7 @@ export class AppController {
     if (!this.engine) return;
     // Don't push sketches until at least one effect bundle has registered.
     // Boot ordering: settings + projects load before `loadModule` even
-    // starts; pushing a sketch with `module_type: "generator.solid_color"`
+    // starts; pushing a sketch with `module_type: "source.solid_color"`
     // before the WASM module is loaded would cause the engine to error
     // every frame trying to render it. Once `setAvailableEffects` fires,
     // it calls back into here to flush any waiting sketches.

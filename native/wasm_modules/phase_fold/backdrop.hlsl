@@ -1,4 +1,4 @@
-// video.phase_fold — backdrop: the field rendered in the selected shading mode.
+// source.phase_fold — backdrop: the field rendered in the selected shading mode.
 //
 //   shading_mode 0 (Bands)    — height above the (blended) cycle level, banded
 //                               as a muted diverging colormap (the default).

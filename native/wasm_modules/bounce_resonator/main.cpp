@@ -1,5 +1,5 @@
 /*
- * gen.bounce_resonator — 4-bar scalar diffusion network (GPU-resident).
+ * source.light.bounce_resonator — 4-bar scalar diffusion network (GPU-resident).
  *
  * Each bar holds a value + hue. A cycling diffusion matrix (v ← M·v)
  * exchanges value (and carries hue) between bars on each hop; the matrix
@@ -182,7 +182,7 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("gen.bounce_resonator", {1, 0, 0},
+  state::init("source.light.bounce_resonator", {1, 0, 0},
     state::Schema()
       // --- Standard trigger surface ---
       .boolField ("gate",                false,                  state::PrimaryInput)

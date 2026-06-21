@@ -11,7 +11,7 @@ describe('Crop Effect E2E', () => {
       dumpName: 'crop_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.crop');
+    expect(frame.metadata?.id).toBe('warp.crop');
   });
 
   it('default 1x1 crop covers the whole frame (passthrough)', async () => {

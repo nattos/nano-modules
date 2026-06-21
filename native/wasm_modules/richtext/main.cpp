@@ -1,11 +1,11 @@
 /*
- * gen.richtext — HTML/CSS rich-text generator node (Blitz complex-layout mode).
+ * source.text.rich — HTML/CSS rich-text generator node (Blitz complex-layout mode).
  *
- * Like gen.text, but instead of a single attributed string it takes a full
+ * Like source.text.plain, but instead of a single attributed string it takes a full
  * HTML/CSS document and drives the host `text.*` service in its Blitz mode:
  * the host lays the document out with Stylo (CSS cascade) + Taffy (flex/grid) +
  * parley/harfrust (shaping), emits pre-shaped glyph runs, and rasterizes them
- * through the SAME MSDF atlas + compositor as gen.text. So flexbox, wrapping,
+ * through the SAME MSDF atlas + compositor as source.text.plain. So flexbox, wrapping,
  * colored spans, multiple sizes/weights, and complex scripts all "just work",
  * and the web simulator reproduces the native pixels (see blitz_parity.sh).
  *
@@ -25,7 +25,7 @@ namespace gen_richtext {
 // Default document. Defined as macros so the SAME text seeds BOTH the in-memory
 // State (the native runtime default) AND the param schema (textField's 2nd arg is
 // the default *value*) — the web reads that schema default via
-// defaultStateForPlugin, so a fresh gen.richtext starts identical in the browser
+// defaultStateForPlugin, so a fresh source.text.rich starts identical in the browser
 // and native. Structure (HTML) and styling (CSS) are separate fields so each gets
 // its own multi-line editor; render() combines them as <style>{css}</style>{html}.
 //
@@ -136,7 +136,7 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 }
 
 void module_init() {
-  state::init("gen.richtext", {1, 0, 0},
+  state::init("source.text.rich", {1, 0, 0},
     state::Schema()
       .textField   ("html",  GEN_RICHTEXT_DEFAULT_HTML, state::PrimaryInput)
       .textField   ("css",   GEN_RICHTEXT_DEFAULT_CSS,  state::PrimaryInput)
@@ -240,10 +240,10 @@ __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
   nano::registerEffect({
     2,
-    "gen.richtext",
+    "source.text.rich",
     "Rich Text",
     "HTML/CSS rich text laid out by Blitz (Stylo+Taffy+parley), via the host text engine",
-    "generator",
+    "source",
     "text,html,css,rich,layout,flexbox,type",
     NANO_INSTANCE_LIFECYCLE(gen_richtext),
   });

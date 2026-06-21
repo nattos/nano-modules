@@ -1,6 +1,6 @@
 import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `gen.strobe_channel` against the `lights` bundle.
+// Per-effect tests for `source.light.strobe_channel` against the `lights` bundle.
 //
 // The effect:
 //   - reads a triangle-wave ping-pong of (seed_low, seed_high) over time
@@ -24,7 +24,7 @@ describe('Strobe Channel Effect E2E', () => {
       dumpName: 'strobe_channel_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.strobe_channel');
+    expect(frame.metadata?.id).toBe('source.light.strobe_channel');
   });
 
   it('intensity=0 passes input through unchanged', async () => {

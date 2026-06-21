@@ -1,4 +1,4 @@
-// video.vignette — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// filter.vignette — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

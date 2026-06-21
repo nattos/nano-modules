@@ -653,7 +653,7 @@ static void state_set_gpu_buffer(wasm_exec_env_t env,
 //    render effect), and the native static path doesn't fire it on per-key
 //    render instances either (instanceFor copies the descriptor, not the
 //    prototype's on_state_ready_), so a no-op here MATCHES native — confirmed
-//    by pixel parity on the effects that use it (e.g. video.crop, AE=0).
+//    by pixel parity on the effects that use it (e.g. warp.crop, AE=0).
 static void state_set_field_hidden(wasm_exec_env_t, int32_t, int32_t, int32_t) {}
 static void state_mark_gpu_dirty(wasm_exec_env_t, int32_t, int32_t) {}
 static void state_set_on_state_ready(wasm_exec_env_t, int32_t) {}
@@ -1227,7 +1227,7 @@ static void gpu_render_set_buffer(wasm_exec_env_t env, int32_t pass, int32_t buf
 // shader reflection, so the binding layout args are ignored (as gpu_impls.cpp
 // does). These complete the effect gpu ABI in the bundles host — without them an
 // effect that calls one in module_init (e.g. debug.gpu_test,
-// video.particles_renderer) traps on an unlinked import, which leaks the wasm
+// debug.particles_renderer) traps on an unlinked import, which leaks the wasm
 // aux-stack pointer and breaks every effect registered after it in the bundle.
 static int32_t gpu_create_render_pso_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,

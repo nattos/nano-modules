@@ -2,18 +2,18 @@ import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E for the mod.envelope shaper NODE — a unary modulation shaper that remaps
+ * E2E for the mod.shaper.envelope shaper NODE — a unary modulation shaper that remaps
  * its `input` through a drawn envelope curve (a flat "[x0,y0,e0, ...]" string,
  * parsed + evaluated by native/src/sketch/envelope.h). The curve math/parser is
  * covered by the native goldens; here we prove the effect remaps end-to-end
  * through executor.wasm.
  *
- * Probe: white solid → mod.envelope → brightness_contrast, with mod.envelope.output
+ * Probe: white solid → mod.shaper.envelope → brightness_contrast, with mod.shaper.envelope.output
  * wired into bc.brightness (output 0 → black, 0.5 → gray, 1 → white). `input` and
  * `curve` are set as params (input not wired → preceding solid isn't a generator,
  * so no auto-connect).
  */
-describe('mod.envelope shaper node E2E', () => {
+describe('mod.shaper.envelope shaper node E2E', () => {
   jest.setTimeout(30000);
 
   // A peak curve: rises 0→1 over x∈[0,0.5], falls 1→0 over [0.5,1] (linear).
@@ -21,16 +21,16 @@ describe('mod.envelope shaper node E2E', () => {
 
   const build = (id: string, input: number, curve?: string): Sketch => {
     const env: any = {
-      type: 'module', module_type: 'mod.envelope', instance_key: 'env@0',
+      type: 'module', module_type: 'mod.shaper.envelope', instance_key: 'env@0',
       params: curve !== undefined ? { input, curve } : { input },
     };
     return {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
           params: { color: [1.0, 1.0, 1.0] } },
         env,
-        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
           params: { brightness: 1.0, contrast: -0.5 } },
       ],
       wires: [
@@ -42,7 +42,7 @@ describe('mod.envelope shaper node E2E', () => {
 
   const run = (id: string, input: number, curve?: string) => runEngineTest({
     width: 64, height: 64,
-    modules: ['generator.solid_color', 'mod.envelope', 'video.brightness_contrast'],
+    modules: ['source.solid_color', 'mod.shaper.envelope', 'color.tone.brightness_contrast'],
     commands: [{ type: 'createSketch', sketchId: id, sketch: build(id, input, curve) }],
     tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
     captureTraceIds: ['out'],

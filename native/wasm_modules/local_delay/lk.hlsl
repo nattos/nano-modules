@@ -1,4 +1,4 @@
-// video.local_delay — pyramidal Lucas-Kanade flow, one level.
+// motion.local_delay — pyramidal Lucas-Kanade flow, one level.
 //
 // Estimates dense optical flow between the current and previous luma at
 // one pyramid level, refining the (upsampled) flow from the coarser

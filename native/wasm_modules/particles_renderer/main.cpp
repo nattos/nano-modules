@@ -56,7 +56,7 @@ static gpu::RenderPSO s_render_pso;
 
 // Type-level setup: schema + shared render PSO. Runs once per type.
 void module_init() {
-  state::init("video.particles_renderer", {1, 0, 0},
+  state::init("debug.particles_renderer", {1, 0, 0},
     state::Schema()
       .floatField("particle_size", 0.02f, 0.001f, 0.2f, state::PrimaryInput)
       .rgbaField("tint", 1.0f, 0.7f, 0.2f, 1.0f, state::PrimaryInput)

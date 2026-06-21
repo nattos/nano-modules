@@ -1,4 +1,4 @@
-// video.flow_swarm — density splat vertex shader.
+// source.particles.flow_swarm — density splat vertex shader.
 //
 // Splats each live particle as a small quad into the (square, fixed-res)
 // density buffer so the next frame's update pass can read local crowding. The

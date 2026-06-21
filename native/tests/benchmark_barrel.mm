@@ -111,12 +111,12 @@ json buildSketch(const std::vector<std::pair<float, float>>& params) {
     std::string key = "bc" + std::to_string(i);
     chain.push_back({
       {"type", "module"},
-      {"module_type", "video.brightness_contrast"},
+      {"module_type", "color.tone.brightness_contrast"},
       {"instance_key", key},
       {"taps", json::array()},
     });
     instances[key] = {
-      {"module_type", "video.brightness_contrast"},
+      {"module_type", "color.tone.brightness_contrast"},
       {"state", {
         {"brightness", params[i].first},
         {"contrast",   params[i].second},

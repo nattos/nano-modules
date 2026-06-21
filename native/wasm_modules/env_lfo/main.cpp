@@ -116,7 +116,7 @@ static float deterministicWave(int wf, float shape, double p) {
 
 // Type-level setup: schema. Runs once per type.
 void module_init() {
-  state::init("data.lfo", {1, 0, 0},
+  state::init("mod.source.lfo", {1, 0, 0},
     state::Schema()
       .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)

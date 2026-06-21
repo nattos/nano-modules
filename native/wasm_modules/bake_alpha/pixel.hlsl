@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.bake_alpha — alpha-over a solid bg colour.
+// Per-pixel kernel for composite.bake_alpha — alpha-over a solid bg colour.
 
 struct FuseUniforms {
   float bg_r;

@@ -1,4 +1,4 @@
-// video.height_from_gradient — divergence pass (finest level).
+// filter.height_from_gradient — divergence pass (finest level).
 //
 // F_0 = div(g) = d(gx)/dx + d(gy)/dy by central differences in grid units
 // (dx = 1), Neumann (clamped) boundaries. This is the right-hand side of the

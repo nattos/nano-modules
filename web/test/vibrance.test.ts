@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.vibrance` against `core`.
+// Per-effect tests for `color.vibrance` against `core`.
 // amount [-1, +1] biased toward unsaturated pixels.
 
 describe('Vibrance Effect E2E', () => {
@@ -15,7 +15,7 @@ describe('Vibrance Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.vibrance');
+    expect(frame.metadata?.id).toBe('color.vibrance');
     expect(frame.params.length).toBe(1);
     expect(frame.params[0].name).toBe('amount');
   });

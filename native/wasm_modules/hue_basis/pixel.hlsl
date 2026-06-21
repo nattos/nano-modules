@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.hue_basis — channel-mix into a basis
+// Per-pixel kernel for color.hue_basis — channel-mix into a basis
 // defined by three hues. CPU pre-uploads M's columns (forward) or
 // M^-1's columns (reverse).
 

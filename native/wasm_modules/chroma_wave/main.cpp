@@ -1,5 +1,5 @@
 /*
- * gen.chroma_wave — charge-and-burst prismatic wave bloom (polyphonic).
+ * source.light.chroma_wave — charge-and-burst prismatic wave bloom (polyphonic).
  *
  * A voice is a soft super-gaussian blob that grows from a (jittered) position
  * while gated; as pressure builds the top flattens into a plateau, the blob
@@ -384,7 +384,7 @@ static void compute_voice_gpu(State* s, const Voice& v, VoiceGpu& o) {
 // --- ABI -----------------------------------------------------------------
 
 void module_init() {
-  state::init("gen.chroma_wave", {1, 0, 0},
+  state::init("source.light.chroma_wave", {1, 0, 0},
     state::Schema()
       // --- Standard trigger surface ---
       .boolField ("gate",               false,                  state::PrimaryInput)

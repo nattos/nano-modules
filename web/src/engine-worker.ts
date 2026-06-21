@@ -95,7 +95,7 @@ function makeBridgeVal(bc: BridgeCore, value: any): number | null {
 function resolveEffectId(id: string): string {
   // If it's already in the registry as-is, it's module-relative
   if (effectRegistry.has(id)) return id;
-  // Try stripping known module prefixes (e.g. "com.nano.core.video.blend" → "video.blend")
+  // Try stripping known module prefixes (e.g. "com.nano.core.composite.blend" → "composite.blend")
   for (const entry of moduleRegistry.values()) {
     const prefix = entry.moduleId + '.';
     if (id.startsWith(prefix)) {
@@ -407,7 +407,7 @@ async function init(width: number, height: number) {
   gpuContext.configure({ device: gpuDevice, format, alphaMode: 'opaque' });
 
   gpuHost = new GPUHost(gpuDevice, format);
-  // Initialize the shared text engine so text.* effects (gen.text) can render.
+  // Initialize the shared text engine so text.* effects (source.text.plain) can render.
   // Idempotent; failures are non-fatal (effects that don't use text are fine).
   TextEngine.init(gpuDevice, { fontUrl: '/fonts/default.ttf' })
     .then((te) => {
@@ -1003,8 +1003,8 @@ async function reloadWasmModule(wasmUrl: string) {
   let invalidatedCount = 0;
   // Sketch instances are keyed by entry.module_type, which the user
   // may have stored as either:
-  //   - the registry-relative effect id ("video.motion_blur"), or
-  //   - the fully-qualified bundle form ("com.nano.nano.video.motion_blur")
+  //   - the registry-relative effect id ("motion.blur"), or
+  //   - the fully-qualified bundle form ("com.nano.nano.motion.blur")
   // depending on how the sketch was built (legacy expandModulesList
   // produces relative; new auto-discovered effects in the IDE
   // tend to qualify). The `effectIds` set holds RELATIVE ids

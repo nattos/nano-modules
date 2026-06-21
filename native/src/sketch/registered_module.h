@@ -41,14 +41,14 @@ struct RegisteredModule {
    *  ABI (inputTexture(N)) reads. Distinct from inputTexturePaths. */
   std::vector<std::string> slotInputTextureFields;
   /** True when the schema declares at least one OUTPUT texture field (a `texture`
-   *  field with io & 2). False for a pure modulation source (e.g. data.lfo) that
+   *  field with io & 2). False for a pure modulation source (e.g. mod.source.lfo) that
    *  only emits scalars/structs — such a node is a texture PASSTHROUGH: it ticks
    *  to publish its outputs but never renders, leaving the image chain untouched.
    *  Mirrors sketch-executor.ts's isTexturePassthrough check. */
   bool hasTextureOutput = false;
 
   /** True when an OUTPUT field (io & 2) carries a GPU storage-buffer leaf
-   *  (`type:array`, `gpu:true`) — e.g. data.particles_emitter's
+   *  (`type:array`, `gpu:true`) — e.g. debug.particles_emitter's
    *  `particles_out/{positions,velocities}`. Such a node has no texture output
    *  (so it's a passthrough), but it must still render() so it can UPLOAD its
    *  buffers; the executor calls doRender for it in the passthrough branch. */

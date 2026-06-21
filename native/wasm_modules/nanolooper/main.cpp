@@ -378,7 +378,7 @@ static int field_to_pid(const char* path, int pathLen) {
 /* Type-level setup: schema registration. Runs once per type. No GPU work. */
 void module_init() {
   /* Register plugin with schema */
-  static const char id[] = "sequencer.nanolooper";
+  static const char id[] = "control.nanolooper";
   static const char schema[] =
     "{\"fields\":{"
     "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"

@@ -1,4 +1,4 @@
-// gen.bounce_resonator — motion-vector pass.
+// source.light.bounce_resonator — motion-vector pass.
 //
 // The diffusion network has no vertical motion (brightness sloshes, the
 // band doesn't travel), so for now this is a clean passthrough of any

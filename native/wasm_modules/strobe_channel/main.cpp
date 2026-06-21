@@ -1,5 +1,5 @@
 /*
- * gen.strobe_channel — Logistic-map-driven single-bar selector.
+ * source.light.strobe_channel — Logistic-map-driven single-bar selector.
  *
  * See SHOW_EFFECTS_PLAN.md for the design. This is the v1 scaffold:
  * - Triangle-wave ping-pong drives the seed x0.
@@ -65,7 +65,7 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("gen.strobe_channel", {1, 0, 0},
+  state::init("source.light.strobe_channel", {1, 0, 0},
     state::Schema()
       .floatField("r",                 3.95f, 0.0f, 4.0f,  state::PrimaryInput)
       .intField  ("iterations",        6,     1,    16,    state::PrimaryInput)

@@ -7,7 +7,7 @@
  * parametric t with a per-segment EXPONENTIAL ease (ease 0 = linear; ease > 0
  * bulges the rise up, ease < 0 bulges it down). Outside [x0, xn] it clamps flat.
  *
- * Backs the `mod.envelope` shaper effect — the user draws the curve in the
+ * Backs the `mod.shaper.envelope` shaper effect — the user draws the curve in the
  * inspector (web/src/editors/envelope-inspector.ts), which serializes it to a
  * flat JSON number array "[x0,y0,e0, x1,y1,e1, ...]" stored in a string field;
  * the effect parses that and evaluates it on the modulation input. The widget

@@ -1,4 +1,4 @@
-// gen.tingle_top — update pass. One thread per particle slot.
+// source.light.tingle_top — update pass. One thread per particle slot.
 //
 // Spawn position is sampled from a MIXTURE of up to 4 active "voices" (the
 // polyphony). Each voice is a y-distribution computed on the CPU and passed

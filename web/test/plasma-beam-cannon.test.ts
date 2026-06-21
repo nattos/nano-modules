@@ -1,6 +1,6 @@
 import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `gen.plasma_beam_cannon` against the `lights` bundle.
+// Per-effect tests for `source.light.plasma_beam_cannon` against the `lights` bundle.
 //
 // V1 scaffold: an ADSR phase machine drives the beam half-height. Idle
 // → Attack (held at seed_height) → Decay (ramps to full bar) → Sustain
@@ -19,7 +19,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
       dumpName: 'plasma_beam_cannon_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.plasma_beam_cannon');
+    expect(frame.metadata?.id).toBe('source.light.plasma_beam_cannon');
   });
 
   it('idle with auto_rate=0 passes input through unchanged', async () => {

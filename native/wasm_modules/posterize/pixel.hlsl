@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.posterize — snap RGB (and optionally alpha)
+// Per-pixel kernel for color.posterize — snap RGB (and optionally alpha)
 // to N evenly-spaced levels.
 
 struct FuseUniforms {

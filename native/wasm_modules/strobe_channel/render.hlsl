@@ -1,4 +1,4 @@
-// gen.strobe_channel — render pass.
+// source.light.strobe_channel — render pass.
 //
 // Lights up exactly one bar at full brightness; all others stay black.
 // The "which bar" decision is made CPU-side via the logistic map and

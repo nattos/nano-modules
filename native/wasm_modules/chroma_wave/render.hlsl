@@ -1,4 +1,4 @@
-// gen.chroma_wave — render pass (polyphonic).
+// source.light.chroma_wave — render pass (polyphonic).
 //
 // Loops over up to MAX_VOICES active blobs — each an independent CPU-managed
 // charge/burst prismatic wave. Instead of grading each voice to RGB and adding

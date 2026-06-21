@@ -1,5 +1,5 @@
 /*
- * gen.motion_blobs — pool of traveling soft blobs that emit motion
+ * source.light.motion_blobs — pool of traveling soft blobs that emit motion
  * vectors and/or color darkening configurably. Replaces the original
  * placeholders fx.directional_blur, fx.zoom_blur, fx.shadow_flyover —
  * same blob field drives both outputs independently via
@@ -349,7 +349,7 @@ static void spawn_one(State& st, CpuBlob& b, bool scattered) {
 
 // Type-level setup: schema + the two shared compute PSOs.
 void module_init() {
-  state::init("gen.motion_blobs", {1, 0, 0},
+  state::init("source.light.motion_blobs", {1, 0, 0},
     state::Schema()
       // --- Standard ---
       .floatField("density",               0.4f,  0.0f, 1.0f,    state::PrimaryInput)

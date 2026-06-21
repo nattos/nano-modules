@@ -1,4 +1,4 @@
-// video.flash_particles — update pass.
+// source.particles.flash_particles — update pass.
 //
 // One thread per particle slot. Three states:
 //

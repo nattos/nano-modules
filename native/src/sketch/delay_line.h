@@ -8,11 +8,11 @@
  * interpolate between the two bracketing samples, so the delayed output stays
  * smooth even as `delay` sweeps or `dt` jitters.
  *
- * Backs the `mod.delay` shaper effect. Header-only and dependency-light so it
+ * Backs the `mod.shaper.delay` shaper effect. Header-only and dependency-light so it
  * compiles in the native runtime and any wasm effect bundle. Behavior is pinned
  * by native/tests/test_delay_line.cpp. Lives in the shared executor source tree
  * (not the effect) so a future built-in delay field-option could reuse it, the
- * way param_smoothing.h backs both mod.smooth and FieldOptions.smoothing.
+ * way param_smoothing.h backs both mod.shaper.smooth and FieldOptions.smoothing.
  *
  * CAP bounds the history: it holds the most recent CAP samples, so the maximum
  * resolvable delay is CAP frames' worth of time. A delay older than the buffer

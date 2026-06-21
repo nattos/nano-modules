@@ -4,7 +4,7 @@
  * Loads the shared text_engine.wasm ONCE (the same FreeType+msdfgen engine that
  * compiles natively for FFGL), installs a default font, and owns the WebGPU MSDF
  * compositor. The `text.*` import group in wasm-host.ts delegates here; effects
- * (e.g. gen.text) call text::layout / text::render and the pixels land in their
+ * (e.g. source.text.plain) call text::layout / text::render and the pixels land in their
  * output texture.
  *
  * The compositor (WGSL below) is the instanced-quad MSDF pipeline, byte-for-byte
@@ -411,7 +411,7 @@ export class TextEngine {
     // available in Web Workers too; reflects the OS locale under Electron). A
     // run/spec `lang` overrides it per-text. Logged so the choice is inspectable.
     const loc = detectDefaultLang();
-    console.info('[text-engine] locale →', JSON.stringify(loc), '(set gen.text "lang" to override)');
+    console.info('[text-engine] locale →', JSON.stringify(loc), '(set source.text.plain "lang" to override)');
     this.setDefaultLang(loc.chosen);
 
     // Register the fallback chain (CJK etc.) in priority order, each tagged with
@@ -825,7 +825,7 @@ export class TextEngine {
     device.queue.writeBuffer(uniBuf, 0, uni);
 
     // Background behind the text: a caller-supplied input to overlay text onto.
-    // When unconnected, gen.text/richtext are pure generators and must leave
+    // When unconnected, source.text.plain/richtext are pure generators and must leave
     // TRANSPARENCY where there's no text (the bg pass is skipped below). The bg
     // is SAMPLED while we render into `target`, so it must be a different texture
     // (WebGPU forbids one texture as both); the 1×1 fallback keeps the bind group

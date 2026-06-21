@@ -91,7 +91,7 @@ export interface GpuEffectTestConfig {
   /**
    * Interleave tick()+render() per frame instead of ticking N times then
    * rendering once. Required for effects whose render() accumulates
-   * persistent GPU state across frames (e.g. gen.side_jet's 1D solver).
+   * persistent GPU state across frames (e.g. source.light.side_jet's 1D solver).
    */
   renderEachTick?: boolean;
 }

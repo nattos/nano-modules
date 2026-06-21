@@ -1,4 +1,4 @@
-// video.motion_blur — Velocity pyramid construction.
+// motion.blur — Velocity pyramid construction.
 //
 // Reduces a 2x2 region of the source motion texture to a single
 // pixel that holds the max-magnitude velocity. Dispatched once per

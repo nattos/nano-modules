@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.hue_basis` against `core`.
+// Per-effect tests for `color.hue_basis` against `core`.
 //
 // The basis is built from three hues (HSV at S=V=1), each normalized
 // so its three components sum to 1 (b'_i = b_i / dot(b_i, 1)). The
@@ -23,7 +23,7 @@ describe('Hue Basis Effect E2E', () => {
       dumpName: 'hue_basis_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.hue_basis');
+    expect(frame.metadata?.id).toBe('color.hue_basis');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['direction', 'hue_a', 'hue_b', 'hue_c']);
   });

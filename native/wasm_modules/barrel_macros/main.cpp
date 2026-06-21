@@ -1,5 +1,5 @@
 /*
- * io.barrel_macros — expose NanoBarrel's 16 macro knobs as tappable float rails.
+ * control.barrel_macros — expose NanoBarrel's 16 macro knobs as tappable float rails.
  *
  * An always-identity passthrough (tex_in → tex_out) that publishes 16 float
  * OUTPUT fields (macro_0 .. macro_15). Drop it into a sketch and write-tap any
@@ -41,7 +41,7 @@ void module_init() {
   }
   schema.textureField("tex_in",  state::PrimaryInput)
         .textureField("tex_out", state::PrimaryOutput);
-  state::init("io.barrel_macros", {1, 0, 0}, schema);
+  state::init("control.barrel_macros", {1, 0, 0}, schema);
 }
 
 void* create() { return new State(); }

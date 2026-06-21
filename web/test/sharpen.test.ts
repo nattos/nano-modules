@@ -1,6 +1,6 @@
 import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.sharpen` against `core`.
+// Per-effect tests for `filter.sharpen` against `core`.
 
 describe('Sharpen Effect E2E', () => {
   jest.setTimeout(30000);
@@ -13,7 +13,7 @@ describe('Sharpen Effect E2E', () => {
       dumpName: 'sharpen_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.sharpen');
+    expect(frame.metadata?.id).toBe('filter.sharpen');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['amount', 'radius']);
   });

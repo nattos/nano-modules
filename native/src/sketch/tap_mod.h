@@ -9,7 +9,7 @@
  * in sync. (There used to be a lock-step web/src/tap-mod.ts twin from when the web
  * had its own TS executor; that executor was replaced by executor.wasm and the
  * twin was removed.) Behavior is pinned by the Catch2 goldens in
- * native/tests/test_tap_mod.cpp; the `mod.remap` effect reuses this verbatim.
+ * native/tests/test_tap_mod.cpp; the `mod.shaper.remap` effect reuses this verbatim.
  *
  * Header-only and dependency-light (just <cmath>) so it compiles in both the native
  * runtime and any wasm build without dragging in GPU/STL-heavy headers.
@@ -30,7 +30,7 @@ enum class Combine { Replace, Mix, Add, Mul };
 
 /// Parsed remap spec. `hasRemap` distinguishes "scale only" from "scale + remap".
 /// The (optional) Envelope is a user-drawn remap curve applied FIRST, before the
-/// remap+scale, sharing the mod.envelope effect's math (envelope.h). `nEnv == 0`
+/// remap+scale, sharing the mod.shaper.envelope effect's math (envelope.h). `nEnv == 0`
 /// → no envelope (pass-through). This makes the WIRE config able to run the same
 /// shaper transforms (envelope/remap/scale) the standalone mod.* effects do.
 struct Mod {

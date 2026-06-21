@@ -1,4 +1,4 @@
-// gen.chroma_wave — motion-vector pass.
+// source.light.chroma_wave — motion-vector pass.
 //
 // The motion is the OPTICAL FLOW of the colour-band field
 //     t(uv, time) = g·F + grade_phase + band_tilt·qy

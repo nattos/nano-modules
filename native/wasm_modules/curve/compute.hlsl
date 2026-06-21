@@ -1,4 +1,4 @@
-// video.curve — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.tone.curve — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.color_space — RGB encoding conversion.
+// Per-pixel kernel for color.color_space — RGB encoding conversion.
 // in/out are independent: 0 = sRGB, 1 = Linear. Always routes
 // input → linear → output, so any combination (including identity)
 // works without special-casing.

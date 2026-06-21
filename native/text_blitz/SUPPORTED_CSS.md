@@ -1,6 +1,6 @@
 # Blitz complex-layout mode — supported HTML/CSS
 
-The `gen.richtext` effect lays out an HTML/CSS document with **Blitz** (`blitz-dom`
+The `source.text.rich` effect lays out an HTML/CSS document with **Blitz** (`blitz-dom`
 = Stylo cascade + Taffy flex/grid + parley/harfrust shaping) and renders it through
 the shared MSDF text engine. It's built for **expressive "headline / VJ" text** —
 big, styled, laid-out text and simple cards — **not** full web-page fidelity.
@@ -15,7 +15,7 @@ test suites (`blitz_parity.sh`, `parity_check.sh`).
 
 ## Using it
 
-`gen.richtext` has three inputs:
+`source.text.rich` has three inputs:
 
 - **`html`** — the document body (a full `<!DOCTYPE html>…` works, or just a fragment).
 - **`css`** — wrapped in `<style>` and prepended (so it's just author CSS).

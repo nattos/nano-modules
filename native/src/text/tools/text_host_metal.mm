@@ -7,13 +7,13 @@
  *   spec JSON ──text_layout──► engine/Blitz layout
  *             ──text_render(target, xform)──► [host GPU compositor] ──► RGBA
  *
- * Proves gen.text (attributed-string JSON) AND gen.richtext (mode:html → Blitz)
+ * Proves source.text.plain (attributed-string JSON) AND source.text.rich (mode:html → Blitz)
  * render identically to the reference through the host service + EffectRuntime +
  * GPUBackend, exactly as the plugin will call them.
  *
  *   text_host_metal <mode> [doc.html]
- *     mode = "text"  → a gen.text-style JSON spec (centered)
- *     mode = "html"  → a gen.richtext-style {mode:html} spec (origin 0,0)
+ *     mode = "text"  → a source.text.plain-style JSON spec (centered)
+ *     mode = "html"  → a source.text.rich-style {mode:html} spec (origin 0,0)
  *   env: TE_FONT, TE_FALLBACK, TE_W, TE_H, TE_PNG, TE_RAW
  */
 
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     // Fonts: the host service lazily bootstraps from TE_FONT/TE_FALLBACK on the
     // first text_layout (same as the tools) — no explicit install needed here.
 
-    // --- Build the spec the way gen.text / gen.richtext do ---
+    // --- Build the spec the way source.text.plain / source.text.rich do ---
     std::string spec, xform;
     if (mode == "html") {
       std::string html;
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
                ".card{background:#234;border-radius:14px;border:3px solid #6cf;padding:16px;overflow:hidden;}"
                "</style></head><body><div class=\"wrap\"><div class=\"card\">"
                "<h1>Blitz layout</h1>"
-               "<p>Native host path: gen.richtext through the Metal compositor.</p>"
+               "<p>Native host path: source.text.rich through the Metal compositor.</p>"
                "<span class=\"badge\">PARITY \xc2\xb7 MSDF \xc2\xb7 GPU</span>"
                "</div></div></body></html>";
       }
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
              ",\"height\":" + std::to_string(H) + ",\"scale\":1.0}";
       xform = "{\"x\":0,\"y\":0}";
     } else {
-      // gen.text-style attributed string.
+      // source.text.plain-style attributed string.
       spec = "{\"text\":\"Native text.* host\\nHello \xe4\xb8\x96\xe7\x95\x8c\","
              "\"runs\":[{\"size_px\":56.000,\"rgba\":[1,1,1,1]}],"
              "\"constraints\":{\"max_width_px\":0,\"line_spacing\":1.2}}";
@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
     int id = text_layout(spec.c_str(), (int)spec.size());
     if (id <= 0) { std::fprintf(stderr, "text_layout failed (fonts? TE_FONT)\n"); return 1; }
 
-    // gen.text centers using measure; gen.richtext draws at origin.
+    // source.text.plain centers using measure; source.text.rich draws at origin.
     float ox = 0, oy = 0;
     if (mode != "html") {
       AbiMetrics m{};

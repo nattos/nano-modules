@@ -1,4 +1,4 @@
-// video.flash_particles — shared helpers (hashes, color, mask shapes,
+// source.particles.flash_particles — shared helpers (hashes, color, mask shapes,
 // particle struct layout). Both update.hlsl and render.hlsl include
 // this so the GPU-resident particle layout stays consistent across
 // passes.

@@ -1,5 +1,5 @@
 /**
- * Custom inspector for data.spectral_lfo — the spectral-morph LFO generator.
+ * Custom inspector for mod.source.spectral_lfo — the spectral-morph LFO generator.
  *
  * Headline control is an XY pad over the t-SNE manifold: the shape atlas is
  * drawn as a faint scatter (per metric) with the Delaunay mesh overlaid and the
@@ -325,7 +325,7 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
 export class SpectralLfoPreview extends MobxLitElement {
   @property({ attribute: false }) binding: FieldBinding | null = null;
   // Playhead x ∈ [0,1]. When null the LFO's live `phase` output is used; a
-  // consumer (e.g. mod.spectral, which indexes the curve by its INPUT rather
+  // consumer (e.g. mod.shaper.spectral, which indexes the curve by its INPUT rather
   // than time) can set this imperatively to park the head at that value.
   cursor: number | null = null;
 
@@ -421,8 +421,8 @@ export class SpectralLfoPreview extends MobxLitElement {
       stroke(r.curve, '#cc66ff', 2 * dpr);
     }
 
-    // Playhead at the explicit cursor (mod.spectral's input index) or, when
-    // unset, the module's live broadcast phase (data.spectral_lfo).
+    // Playhead at the explicit cursor (mod.shaper.spectral's input index) or, when
+    // unset, the module's live broadcast phase (mod.source.spectral_lfo).
     const ph = this.cursor != null ? this.cursor : this.binding.getValue('phase');
     if (typeof ph === 'number') {
       const xph = clamp01(ph) * w;
@@ -486,7 +486,7 @@ export class SpectralLfoInspector extends MobxLitElement {
   }
 }
 
-editorRegistry.register('data.spectral_lfo', {
+editorRegistry.register('mod.source.spectral_lfo', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('spectral-lfo-inspector') as SpectralLfoInspector;

@@ -1,5 +1,5 @@
 /*
- * video.phase_fold — emergent limit-cycle phase-portrait generator.
+ * source.phase_fold — emergent limit-cycle phase-portrait generator.
  *
  * Productionized from the phase-fold research testbed. A baked GxG atlas of
  * emergent level-set limit-cycle FIELDS (axes eccentricity x × lobedness y) is
@@ -227,7 +227,7 @@ static gpu::RenderPSO  s_pso_lines;
 static gpu::RenderPSO  s_pso_contour;
 
 void module_init() {
-  state::init("video.phase_fold", {1, 0, 0},
+  state::init("source.phase_fold", {1, 0, 0},
     state::Schema()
       // --- Shape axes (the custom XY pad drives eccentricity + lobedness) ---
       .floatField("eccentricity", 0.2f, 0.0f, 1.0f, state::PrimaryInput)

@@ -1,4 +1,4 @@
-// video.color_temperature — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.temperature — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

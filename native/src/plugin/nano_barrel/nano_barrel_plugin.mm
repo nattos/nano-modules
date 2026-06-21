@@ -477,7 +477,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         sketch_snapshot_ = bridge_core_.state_document().get_at(
             "/plugins/" + barrel_plugin_key_ + "/state/sketch");
       }
-      // Route the live macro knobs into any io.barrel_macros instance's state.
+      // Route the live macro knobs into any control.barrel_macros instance's state.
       // The executor's write-tap capture reads scalar outputs from the sketch
       // instance state, so this is what makes the FFGL macros usable inside a
       // sketch (write-tap a macro_N output onto a rail). Done on a local copy of
@@ -488,7 +488,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           sketch_snapshot_["instances"].is_object()) {
         for (auto& [key, inst] : sketch_snapshot_["instances"].items()) {
           if (!inst.is_object()) continue;
-          if (inst.value("module_type", std::string()) != "io.barrel_macros") {
+          if (inst.value("module_type", std::string()) != "control.barrel_macros") {
             continue;
           }
           auto& st = inst["state"];
@@ -649,7 +649,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       bundles_.reset();
     }
 
-    // Text effects (gen.text / gen.richtext) load from text.wasm / richtext.wasm
+    // Text effects (source.text.plain / source.text.rich) load from text.wasm / richtext.wasm
     // in the bundle loop above — same as every other effect. They need NO
     // registerShaderMSL (the text.* host service owns its MSDF compositor PSO),
     // but the engine needs font BYTES: install the bundled default.ttf as the

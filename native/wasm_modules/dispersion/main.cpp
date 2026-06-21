@@ -1,5 +1,5 @@
 /*
- * fx.dispersion — Block-quantized UV-jitter sampler (v1 scaffold).
+ * warp.dispersion — Block-quantized UV-jitter sampler (v1 scaffold).
  *
  * Block sizes are internally quantized to a discrete ladder so a
  * sliding slider doesn't visibly sweep boundaries — when the slider
@@ -92,7 +92,7 @@ static int quantize_block(float norm, int levels, int max_block) {
 
 // Type-level setup: schema + the shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("fx.dispersion", {1, 0, 0},
+  state::init("warp.dispersion", {1, 0, 0},
     state::Schema()
       .floatField("vertical_block_norm",   0.1f,  0.0f, 1.0f, state::PrimaryInput)
       .floatField("horizontal_block_norm", 0.1f,  0.0f, 1.0f, state::PrimaryInput)

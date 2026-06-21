@@ -290,8 +290,8 @@ target_include_directories(test_envelope PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_envelope PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_envelope)
 
-# Shared spectral-morph curve generator (reused by data.spectral_lfo +
-# mod.spectral). Compiles standalone (no wasm host deps); pulls in the 1.2MB atlas.
+# Shared spectral-morph curve generator (reused by mod.source.spectral_lfo +
+# mod.shaper.spectral). Compiles standalone (no wasm host deps); pulls in the 1.2MB atlas.
 add_executable(test_spectral_curve tests/test_spectral_curve.cpp
                ${CMAKE_SOURCE_DIR}/wasm_modules/spectral_lfo/spectral_curve.cpp)
 target_include_directories(test_spectral_curve PRIVATE
@@ -313,7 +313,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/build/tmp/brightness_contrast_compute.spv")
 endif()
 
 # Effect v2 ABI load path (barrel-loads-WASM migration). Requires testonly.wasm
-# (bundles data.lfo) to be built into ../build/wasm.
+# (bundles mod.source.lfo) to be built into ../build/wasm.
 if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
   add_executable(test_effect_abi tests/test_effect_abi.cpp)
   target_link_libraries(test_effect_abi PRIVATE wasm_host Catch2::Catch2WithMain)
@@ -613,7 +613,7 @@ if(APPLE)
 
   # ==========================================================================
   # text_blitz — the Rust HTML/CSS layout lib (Stylo + Taffy + parley), built
-  # to a native staticlib by cargo and imported. Drives the gen.richtext mode.
+  # to a native staticlib by cargo and imported. Drives the source.text.rich mode.
   # ==========================================================================
   set(TEXT_BLITZ_DIR "${CMAKE_SOURCE_DIR}/text_blitz")
   set(TEXT_BLITZ_LIB "${TEXT_BLITZ_DIR}/target/release/libtext_blitz.a")
@@ -721,7 +721,7 @@ if(APPLE)
     NANO_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 
   # WASM effect driver (barrel-loads-WASM): drive a WASM-backed EffectDesc
-  # through the EffectInstance/EffectRuntime path. Uses data.lfo (no GPU).
+  # through the EffectInstance/EffectRuntime path. Uses mod.source.lfo (no GPU).
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     add_executable(test_effect_driver tests/test_effect_driver.cpp)
     target_link_libraries(test_effect_driver PRIVATE
@@ -754,7 +754,7 @@ if(APPLE)
     target_compile_definitions(test_effect_render PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
-    # text.wasm bridge (step #4): gen.text resolves text.* to the native
+    # text.wasm bridge (step #4): source.text.plain resolves text.* to the native
     # TextEngine. Only define the path when the bundle exists so the test's
     # text case compiles in conditionally.
     if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/text.wasm")

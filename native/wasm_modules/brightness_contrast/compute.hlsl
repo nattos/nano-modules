@@ -1,4 +1,4 @@
-// video.brightness_contrast — standalone compute wrapper. The
+// color.tone.brightness_contrast — standalone compute wrapper. The
 // per-pixel math lives in pixel.hlsl so the runtime fuser can
 // splice it in.
 

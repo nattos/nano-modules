@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.exposure. Per-channel multiplicative gain.
+// Per-pixel kernel for color.tone.exposure. Per-channel multiplicative gain.
 // The host folds amount + tint into per-channel gains; the shader is
 // just a multiply.
 

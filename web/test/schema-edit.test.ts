@@ -8,7 +8,7 @@
  * mode-selector field changes. The IDE never paints the intermediate
  * "all fields visible" state.
  *
- * `video.crop` is the canonical user of this pattern (Span vs Inset
+ * `warp.crop` is the canonical user of this pattern (Span vs Inset
  * mode), so we drive it directly through a WasmHost and inspect
  * `host.hiddenFields`.
  */
@@ -39,7 +39,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
       host.textureFields.set('tex_out', gpuHost.injectTexture(tex));
 
       await host.load('/wasm/core.wasm');
-      const mod = host.activateEffect('video.crop');
+      const mod = host.activateEffect('warp.crop');
       const beforeReady = Array.from(host.hiddenFields).sort();
 
       // Fire the on_state_ready signal — production path runs this in
@@ -134,7 +134,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
       host.textureFields.set('tex_in', gpuHost.injectTexture(tex));
       host.textureFields.set('tex_out', gpuHost.injectTexture(tex));
       await host.load('/wasm/core.wasm');
-      const mod = host.activateEffect('video.crop');
+      const mod = host.activateEffect('warp.crop');
       host.fireStateReady();
 
       const captured = [];
@@ -212,7 +212,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
       host.textureFields.set('tex_in', gpuHost.injectTexture(tex));
       host.textureFields.set('tex_out', gpuHost.injectTexture(tex));
       await host.load('/wasm/core.wasm');
-      const mod = host.activateEffect('video.crop');
+      const mod = host.activateEffect('warp.crop');
       host.fireStateReady();
 
       const captured = [];
@@ -280,7 +280,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
       host.textureFields.set('tex_out', gpuHost.injectTexture(tex));
 
       await host.load('/wasm/core.wasm');
-      const mod = host.activateEffect('video.crop');
+      const mod = host.activateEffect('warp.crop');
 
       // Replay a saved state with mode=Inset BEFORE firing on_state_ready.
       host.notifyStatePatched(mod, [{ op: 'replace', path: 'mode', value: 1 }]);

@@ -1,4 +1,4 @@
-// generator.solid_color — standalone compute wrapper for a strict-output generator.
+// source.solid_color — standalone compute wrapper for a strict-output generator.
 // Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"

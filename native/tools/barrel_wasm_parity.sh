@@ -29,8 +29,8 @@ if [ -z "$sketch" ]; then
   sketch="$tmp/sketch.json"
   cat > "$sketch" <<'JSON'
 { "columns": [ { "chain": [
-      { "module_type": "video.brightness_contrast", "instance_key": "k0" } ] } ],
-  "instances": { "k0": { "module_type": "video.brightness_contrast",
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "k0" } ] } ],
+  "instances": { "k0": { "module_type": "color.tone.brightness_contrast",
       "state": { "brightness": 0.75, "contrast": 0.5 } } } }
 JSON
 fi

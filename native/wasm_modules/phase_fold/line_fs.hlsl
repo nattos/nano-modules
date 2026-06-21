@@ -1,4 +1,4 @@
-// video.phase_fold — line raster fragment shader.
+// source.phase_fold — line raster fragment shader.
 //
 // Soft anti-aliased line with a CONTINUOUS flow animation (no quantized
 // arrowheads). Each segment carries its arc-length position along the line

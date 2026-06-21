@@ -1,5 +1,5 @@
 /*
- * video.color_space — Convert RGB between encoding spaces.
+ * color.color_space — Convert RGB between encoding spaces.
  *
  * Two select fields select the input and output encoding (sRGB or
  * Linear). The shader always routes input → linear (canonical) →
@@ -46,7 +46,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.color_space", {1, 0, 0},
+  state::init("color.color_space", {1, 0, 0},
     state::Schema()
       .selectField("in_space",  SpaceSRGB,   state::PrimaryInput, {
           {"sRGB",   SpaceSRGB},

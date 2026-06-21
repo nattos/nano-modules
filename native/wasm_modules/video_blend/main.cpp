@@ -1,5 +1,5 @@
 /*
- * video.blend — Blends two texture inputs.
+ * composite.blend — Blends two texture inputs.
  *
  * output = A * (1 - opacity) + B * opacity
  *
@@ -40,7 +40,7 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.blend", {1, 0, 0},
+  state::init("composite.blend", {1, 0, 0},
     state::Schema()
       .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .textureField("tex_a", state::PrimaryInput)

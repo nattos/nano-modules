@@ -1,7 +1,7 @@
 /**
- * Custom inspector for mod.spectral — the Spectral Curve modulation remapper.
+ * Custom inspector for mod.shaper.spectral — the Spectral Curve modulation remapper.
  *
- * It reuses data.spectral_lfo's morph controls: the <spectral-lfo-xy-pad> picks
+ * It reuses mod.source.spectral_lfo's morph controls: the <spectral-lfo-xy-pad> picks
  * the manifold position (morph_x/morph_y) and <spectral-lfo-preview> draws the
  * morphed curve. Unlike the LFO (which sweeps the curve over time), this shaper
  * INDEXES the curve by its `input` value — so we park the preview's playhead at
@@ -72,7 +72,7 @@ export class ModSpectralInspector extends MobxLitElement {
   }
 }
 
-editorRegistry.register('mod.spectral', {
+editorRegistry.register('mod.shaper.spectral', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('mod-spectral-inspector') as ModSpectralInspector;

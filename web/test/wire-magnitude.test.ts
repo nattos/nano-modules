@@ -5,13 +5,13 @@ import type { Sketch } from '../src/sketch-types';
  * E2E for wire "magnitude" modes — a scalar wire maps its source into the DEST
  * field's declared range per the combine mode, instead of feeding it raw.
  *
- * Probe: white solid → data.lfo (rate 0 → constant output 0.5) → brightness_contrast,
+ * Probe: white solid → mod.source.lfo (rate 0 → constant output 0.5) → brightness_contrast,
  * with lfo.output wired into bc.brightness (now a SIGNED range −1..1). With
  * contrast −0.5 (0.5× scale) on white, a neutral brightness (0) reads gray(128).
  *   - absolute replace: feeds the raw 0.5 → shift +0.5 → (1+0.5)*0.5 = 0.75 → ~191.
  *   - unsigned replace: folds 0.5 into [−1,1] → 0 (neutral) → gray(128). On a
  *     SIGNED field this no longer equals absolute (it does for a 0..1 field).
- *   - signed replace: data.lfo.output is declared *unsigned*, so forcing `signed`
+ *   - signed replace: mod.source.lfo.output is declared *unsigned*, so forcing `signed`
  *     RESCALES the source 0..1 → −1..1 (the polarity prescale); the midpoint 0.5
  *     maps to bipolar 0 (neutral) → gray(128), matching unsigned (NOT absolute).
  */
@@ -21,11 +21,11 @@ describe('Wire magnitude modes E2E', () => {
   const build = (magnitude: 'absolute' | 'signed' | 'unsigned', mod?: any): Sketch => ({
     anchor: null,
     chain: [
-      { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
-      { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+      { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
         params: { rate: 0.0, amplitude: 1.0 } },
-      { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: -0.5 } },
     ],
     wires: [
@@ -37,7 +37,7 @@ describe('Wire magnitude modes E2E', () => {
 
   const run = (id: string, magnitude: 'absolute' | 'signed' | 'unsigned', mod?: any) => runEngineTest({
     width: 64, height: 64,
-    modules: ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'],
+    modules: ['source.solid_color', 'mod.source.lfo', 'color.tone.brightness_contrast'],
     commands: [{ type: 'createSketch', sketchId: id, sketch: build(magnitude, mod) }],
     tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
     captureTraceIds: ['out'],

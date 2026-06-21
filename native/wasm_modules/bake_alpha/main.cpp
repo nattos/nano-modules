@@ -1,5 +1,5 @@
 /*
- * video.bake_alpha — Composite the input *over* a chosen background
+ * composite.bake_alpha — Composite the input *over* a chosen background
  * colour. Practical use case: "remove alpha" by baking a transparent
  * image onto a solid colour (default opaque black). With a
  * transparent background the input's own alpha is preserved.
@@ -41,7 +41,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.bake_alpha", {1, 0, 0},
+  state::init("composite.bake_alpha", {1, 0, 0},
     state::Schema()
       .rgbaField("color", 0.0f, 0.0f, 0.0f, 1.0f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)

@@ -2,7 +2,7 @@ import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for video.height_from_gradient (nano bundle) — GPU gradient-
+ * E2E coverage for filter.height_from_gradient (nano bundle) — GPU gradient-
  * domain height reconstruction (multigrid Poisson solve).
  *
  * The effect is DETERMINISTIC per frame (no cross-frame state, no RNG), so
@@ -31,13 +31,13 @@ function buildSketch(sketchId: string, params: Record<string, unknown>): Sketch 
     chain: [
       {
         type: 'module',
-        module_type: 'generator.solid_color',
+        module_type: 'source.solid_color',
         instance_key: 'bg@0',
         params: { color: [0.4, 0.55, 0.7] },
       },
       {
         type: 'module',
-        module_type: 'video.height_from_gradient',
+        module_type: 'filter.height_from_gradient',
         instance_key: 'hfg@0',
         params,
       },
@@ -63,7 +63,7 @@ async function render(sketchId: string, params: Record<string, unknown>, dumpNam
   return result.trace('out');
 }
 
-describe('video.height_from_gradient E2E', () => {
+describe('filter.height_from_gradient E2E', () => {
   jest.setTimeout(40000);
 
   it('registers and renders a non-black reconstruction', async () => {
@@ -133,7 +133,7 @@ function buildContourSketch(sketchId: string, params: Record<string, unknown>): 
     chain: [
       {
         type: 'module',
-        module_type: 'generator.solid_color',
+        module_type: 'source.solid_color',
         instance_key: 'bg@0',
         params: { color: [0.1, 0.1, 0.12] },
       },
@@ -146,7 +146,7 @@ function buildContourSketch(sketchId: string, params: Record<string, unknown>): 
       },
       {
         type: 'module',
-        module_type: 'video.height_from_gradient',
+        module_type: 'filter.height_from_gradient',
         instance_key: 'hfg@0',
         params,
       },
@@ -172,7 +172,7 @@ async function renderContour(sketchId: string, params: Record<string, unknown>, 
   return result.trace('out');
 }
 
-describe('video.height_from_gradient — Level Curves source', () => {
+describe('filter.height_from_gradient — Level Curves source', () => {
   jest.setTimeout(40000);
 
   it('reconstructs a stepped height from a contour (edges → relief)', async () => {
@@ -203,7 +203,7 @@ describe('video.height_from_gradient — Level Curves source', () => {
   });
 });
 
-describe('video.height_from_gradient — vector sources', () => {
+describe('filter.height_from_gradient — vector sources', () => {
   jest.setTimeout(40000);
 
   // Grayscale present normalizes the height, so any reconstructed structure is
@@ -243,13 +243,13 @@ describe('video.height_from_gradient — vector sources', () => {
       anchor: null,
       wires: [],
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0', params: { color: [0.05, 0.05, 0.1] } },
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0', params: { color: [0.05, 0.05, 0.1] } },
         ...(withProducer ? [{
           type: 'module', module_type: 'debug.motion_rect', instance_key: 'rect@0',
           params: { size: 0.3, speed: 2.0, color: [0.9, 0.4, 0.8] },
         }] : []),
         {
-          type: 'module', module_type: 'video.height_from_gradient', instance_key: 'hfg@0',
+          type: 'module', module_type: 'filter.height_from_gradient', instance_key: 'hfg@0',
           params: { source: 2, present_mode: 1, grad_gain: 1.0 },
         },
       ],

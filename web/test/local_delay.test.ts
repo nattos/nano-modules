@@ -2,7 +2,7 @@ import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for video.local_delay (nano bundle) — the stylized
+ * E2E coverage for motion.local_delay (nano bundle) — the stylized
  * motion-driven local delay.
  *
  * Three things under test:
@@ -15,11 +15,11 @@ import type { Sketch } from '../src/sketch-types';
  *     frames must differ.
  *  3. Motion producer: local_delay writes modulated vectors on
  *     render_outputs/motion. Wiring that rail into a downstream
- *     video.motion_blur changes the output vs. leaving it unwired —
+ *     motion.blur changes the output vs. leaving it unwired —
  *     confirming the motion texture is actually published + transported.
  */
 
-describe('video.local_delay E2E', () => {
+describe('motion.local_delay E2E', () => {
   jest.setTimeout(40000);
 
   it('passes a static input straight through (no motion → zero weight)', async () => {
@@ -28,13 +28,13 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.3, 0.5, 0.8] },
         },
         {
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           // Crank delay + gain: even so, a static input has zero flow,
           // so the weight is zero and the output equals the input.
@@ -74,7 +74,7 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.1, 0.1, 0.1] },
         },
@@ -91,7 +91,7 @@ describe('video.local_delay E2E', () => {
         },
         {
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           params: {
             delay_amount: delay,
@@ -146,12 +146,12 @@ describe('video.local_delay E2E', () => {
     const buildChain = (twitchAmount: number): Sketch => ({
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'bg@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
         params: { color: [0.1, 0.1, 0.1] } },
         { type: 'module', module_type: 'debug.motion_swarm', instance_key: 'swarm@0',
         params: { count: 24, size: 0.06, swirl: 1.5, radial: 0.0,
                   randomness: 0.4, speed: 1.0, opacity: 1.0, seed: 7 } },
-        { type: 'module', module_type: 'video.local_delay', instance_key: 'ld@0',
+        { type: 'module', module_type: 'motion.local_delay', instance_key: 'ld@0',
         params: {
           delay_amount: 0.0, weight_gain: 0.1, max_flow: 0.05,
           debug_show_motion: true,
@@ -190,7 +190,7 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.05, 0.05, 0.05] },
         },
@@ -202,13 +202,13 @@ describe('video.local_delay E2E', () => {
         },
         ...(withLocalDelay ? [{
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           params: { delay_amount: 0.5, weight_gain: 0.05, max_flow: 0.05 },
         }] : []),
         {
           type: 'module',
-          module_type: 'video.motion_blur',
+          module_type: 'motion.blur',
           instance_key: 'blur@0',
           params: { strength: 24.0, samples: 12, quality: 1 },
         },
@@ -262,7 +262,7 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.1, 0.1, 0.1] },
         },
@@ -277,7 +277,7 @@ describe('video.local_delay E2E', () => {
         },
         {
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           params: {
             delay_amount: 0.8, delay_steps: steps,
@@ -333,7 +333,7 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.1, 0.1, 0.1] },
         },
@@ -350,7 +350,7 @@ describe('video.local_delay E2E', () => {
         // chainIdx 1
         {
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           params: { delay_amount: 0.0, weight_gain: 0.05, max_flow: 0.05 },
         },
@@ -392,7 +392,7 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.1, 0.1, 0.1] },
         },
@@ -407,7 +407,7 @@ describe('video.local_delay E2E', () => {
         },
         {
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           params: {
             delay_amount: 0.8, delay_steps: 12.0,
@@ -474,7 +474,7 @@ describe('video.local_delay E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.05, 0.05, 0.1] },
         },
@@ -489,13 +489,13 @@ describe('video.local_delay E2E', () => {
         } : {
           // Same slot, no render_outputs producer → zero incoming flow.
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'filler@0',
           params: { color: [0.05, 0.05, 0.1] },
         },
         {
           type: 'module',
-          module_type: 'video.local_delay',
+          module_type: 'motion.local_delay',
           instance_key: 'ld@0',
           // Crank sensitivity/reach so the incoming-driven echo is well clear
           // of the passthrough baseline. smoothing=0 disables the temporal flow

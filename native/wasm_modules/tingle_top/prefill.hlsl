@@ -1,4 +1,4 @@
-// gen.tingle_top — prefill pass. Copies tex_in into tex_out so the instanced
+// source.light.tingle_top — prefill pass. Copies tex_in into tex_out so the instanced
 // sparkle quads (next pass) blend ADDITIVELY over the input. Also draws the
 // optional debug lines at each active voice's distribution peak.
 

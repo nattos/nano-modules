@@ -1,4 +1,4 @@
-// video.hue_basis — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.hue_basis — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

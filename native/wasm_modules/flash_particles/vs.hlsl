@@ -1,4 +1,4 @@
-// video.flash_particles — instanced quad vertex shader.
+// source.particles.flash_particles — instanced quad vertex shader.
 //
 // Six vertices per instance form one quad. Vertex/instance ids drive
 // corner selection + particle lookup; the storage buffer of particles

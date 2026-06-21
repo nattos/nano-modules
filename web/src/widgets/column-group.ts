@@ -73,11 +73,11 @@ function paramToFieldDef(p: ParamInfo): InspectorFieldDef {
     case 1: // event
       return { type: 'button', label: p.name, path: p.name, text: p.name };
     case 100: // text
-      // A `font` text param gets the searchable font-family picker (gen.text).
+      // A `font` text param gets the searchable font-family picker (source.text.plain).
       if (/^font$/i.test(p.name)) {
         return { type: 'font', label: p.name, path: p.name };
       }
-      // HTML/CSS fields (gen.richtext) get a multi-line editor so a whole
+      // HTML/CSS fields (source.text.rich) get a multi-line editor so a whole
       // document can be pasted/edited; other text fields stay single-line.
       return { type: 'string', label: p.name, path: p.name,
                multiline: /^(html|css)$/i.test(p.name) };
@@ -1647,7 +1647,7 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Insert a placeholder effect and immediately open smart-input to choose the type. */
   private addEffectAndBeginEdit(insertIdx: number) {
-    appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'video.brightness_contrast');
+    appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'color.tone.brightness_contrast');
     // The new entry is at insertIdx in the chain. Open the type editor for it.
     // Use requestUpdate + microtask to ensure the DOM has rendered the new card.
     this.requestUpdate();
@@ -2041,12 +2041,12 @@ export class ColumnGroup extends MobxLitElement {
       if (path === 'envelopeEnabled') {
         // Toggle on → seed the identity curve [0,0,0, 1,1,0] (passthrough);
         // off → drop the array. Matches remap's enable-seeds-default pattern.
-        return { mod: { ...mod, envelope: v ? (mod.envelope ?? [0, 0, 0, 1, 1, 0]) : undefined } };
+        return { mod: { ...mod, envelope: v ? (mod.shaper.envelope ?? [0, 0, 0, 1, 1, 0]) : undefined } };
       }
       if (path === 'remapEnabled') {
-        return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
+        return { mod: { ...mod, remap: v ? (mod.shaper.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
       }
-      const remap = mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
+      const remap = mod.shaper.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
       const key = path.slice(6);
       // field-toggle writes 0/1 for saturate; everything else is the typed value.
       const val = key === 'saturate' ? !!v : v;

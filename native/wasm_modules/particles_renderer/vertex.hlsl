@@ -1,4 +1,4 @@
-// video.particles_renderer — instanced quad vertex shader.
+// debug.particles_renderer — instanced quad vertex shader.
 //
 // Six vertices per instance form one screen-aligned quad centered on the
 // particle's clip-space position. Particle positions live in a GPU storage

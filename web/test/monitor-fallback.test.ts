@@ -26,15 +26,15 @@ describe('main sketch monitor fallback', () => {
         d.sketches['sk_mon'] = {
           anchor: null,
           chain: [
-            { type: 'module', module_type: 'generator.solid_color', instance_key: 'sc@0',
+            { type: 'module', module_type: 'source.solid_color', instance_key: 'sc@0',
               params: { color: [0.9, 0.2, 0.5] } },
-            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0' },
-            { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0' },
+            { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0' },
+            { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0' },
           ],
           instances: {
-            'sc@0': { module_type: 'generator.solid_color', state: { color: [0.9, 0.2, 0.5] } },
-            'lfo@0': { module_type: 'data.lfo', state: {} },
-            'bc@0': { module_type: 'video.brightness_contrast', state: { brightness: 1, contrast: 1 } },
+            'sc@0': { module_type: 'source.solid_color', state: { color: [0.9, 0.2, 0.5] } },
+            'lfo@0': { module_type: 'mod.source.lfo', state: {} },
+            'bc@0': { module_type: 'color.tone.brightness_contrast', state: { brightness: 1, contrast: 1 } },
           },
         };
       });

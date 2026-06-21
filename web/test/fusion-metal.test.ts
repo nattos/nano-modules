@@ -28,25 +28,25 @@ describe('Native Metal fusion', () => {
     {
       name: 'brightness_contrast → invert (self-contained mappers)',
       chain: [
-        { module: 'video.brightness_contrast', params: [['brightness', 0.6], ['contrast', 0.55]] },
-        { module: 'video.invert' },
+        { module: 'color.tone.brightness_contrast', params: [['brightness', 0.6], ['contrast', 0.55]] },
+        { module: 'color.invert' },
       ],
     },
     {
       name: 'brightness_contrast → saturate → invert (saturate calls a helper fn)',
       chain: [
-        { module: 'video.brightness_contrast', params: [['brightness', 0.55]] },
-        { module: 'video.saturate', params: [['asymm', 0.4], ['prescale', 1.2]] },
-        { module: 'video.invert' },
+        { module: 'color.tone.brightness_contrast', params: [['brightness', 0.55]] },
+        { module: 'color.saturate', params: [['asymm', 0.4], ['prescale', 1.2]] },
+        { module: 'color.invert' },
       ],
     },
     {
       name: 'brightness_contrast → exposure → hsl → curve (4-stage fuse)',
       chain: [
-        { module: 'video.brightness_contrast', params: [['brightness', 0.58]] },
-        { module: 'video.exposure', params: [['exposure', 0.2]] },
-        { module: 'video.hsl', params: [['saturation', 0.6]] },
-        { module: 'video.curve', params: [['gamma', 1.2]] },
+        { module: 'color.tone.brightness_contrast', params: [['brightness', 0.58]] },
+        { module: 'color.tone.exposure', params: [['exposure', 0.2]] },
+        { module: 'color.hsl', params: [['saturation', 0.6]] },
+        { module: 'color.tone.curve', params: [['gamma', 1.2]] },
       ],
     },
   ];

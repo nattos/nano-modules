@@ -1,4 +1,4 @@
-// video.motion_field — color pass.
+// motion.field — color pass.
 //
 // By default this is an identity copy (tex_in → tex_out). When
 // `vis_opacity > 0` we additionally blend an HSV-polar visualization

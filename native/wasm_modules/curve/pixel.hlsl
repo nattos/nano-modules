@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.curve.
+// Per-pixel kernel for color.tone.curve.
 // CPU folds the slider's signed range into pre-computed exponents.
 
 struct FuseUniforms {

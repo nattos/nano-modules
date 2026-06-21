@@ -1,4 +1,4 @@
-// video.height_from_gradient — shared math for all passes.
+// filter.height_from_gradient — shared math for all passes.
 //
 // Gradient-domain height reconstruction. We synthesize a 2D gradient field
 // from the input, take its divergence, and solve the Poisson equation

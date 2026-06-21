@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build richtext.wasm — the gen.richtext effect. Like text.wasm it ships NO
+# Build richtext.wasm — the source.text.rich effect. Like text.wasm it ships NO
 # shaders: it builds a {mode:"html"} spec and calls the host text.* service,
 # which lays the document out in its Blitz mode (text_blitz.wasm on web) and
 # rasterizes through the shared MSDF atlas + compositor.
@@ -20,7 +20,7 @@ WASM_COMMON_EXPORTS=(
   -Wl,--export=__indirect_function_table
 )
 
-echo "Building richtext.wasm (gen.richtext)"
+echo "Building richtext.wasm (source.text.rich)"
 wasm_build \
   -I"$TMP_DIR" \
   -I../include \

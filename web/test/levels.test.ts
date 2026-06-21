@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.levels` against `core`.
+// Per-effect tests for `color.tone.levels` against `core`.
 // Param indices: 0=in_low, 1=in_high, 2=gamma, 3=out_low, 4=out_high.
 
 describe('Levels Effect E2E', () => {
@@ -15,7 +15,7 @@ describe('Levels Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.levels');
+    expect(frame.metadata?.id).toBe('color.tone.levels');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['gamma', 'in_high', 'in_low', 'out_high', 'out_low']);
   });

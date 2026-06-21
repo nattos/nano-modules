@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for data.spectral_lfo (resolume shell, local mode).
+ * Custom-inspector E2E for mod.source.spectral_lfo (resolume shell, local mode).
  *
  * Verifies the registered inspector mounts on the effect card, the XY-pad
  * renders its t-SNE scatter canvas + handle, and dragging the pad writes
@@ -21,11 +21,11 @@ describe('spectral_lfo custom inspector', () => {
         d.sketches['sk_se'] = {
           anchor: null,
           chain: [
-            { type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' },
+            { type: 'module', module_type: 'mod.source.spectral_lfo', instance_key: 'slfo@0' },
           ],
           wires: [],
           instances: {
-            'slfo@0': { module_type: 'data.spectral_lfo', state: { morph_x: 0.5, morph_y: 0.5 } },
+            'slfo@0': { module_type: 'mod.source.spectral_lfo', state: { morph_x: 0.5, morph_y: 0.5 } },
           },
         };
       });
@@ -129,9 +129,9 @@ describe('spectral_lfo custom inspector', () => {
       ac.mutate('s', d => {
         d.sketches['sk_load'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' }],
+          chain: [{ type: 'module', module_type: 'mod.source.spectral_lfo', instance_key: 'slfo@0' }],
           wires: [],
-          instances: { 'slfo@0': { module_type: 'data.spectral_lfo',
+          instances: { 'slfo@0': { module_type: 'mod.source.spectral_lfo',
             state: { rate: 0.8, amplitude: 0.3, morph_x: 0.2, morph_y: 0.7, metric: 3 } } },
         };
       });
@@ -172,9 +172,9 @@ describe('spectral_lfo custom inspector', () => {
       ac.mutate('s', d => {
         d.sketches['sk_sat'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' }],
+          chain: [{ type: 'module', module_type: 'mod.source.spectral_lfo', instance_key: 'slfo@0' }],
           wires: [],
-          instances: { 'slfo@0': { module_type: 'data.spectral_lfo',
+          instances: { 'slfo@0': { module_type: 'mod.source.spectral_lfo',
             state: { morph_x: 0.5, morph_y: 0.5, satellites: true, sat_spread: 0.6, sat_rotation: 0.1 } } },
         };
       });
@@ -231,9 +231,9 @@ describe('spectral_lfo custom inspector', () => {
       ac.mutate('s', d => {
         d.sketches['sk_vis'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'data.spectral_lfo', instance_key: 'slfo@0' }],
+          chain: [{ type: 'module', module_type: 'mod.source.spectral_lfo', instance_key: 'slfo@0' }],
           wires: [],
-          instances: { 'slfo@0': { module_type: 'data.spectral_lfo', state: { satellites: false } } },
+          instances: { 'slfo@0': { module_type: 'mod.source.spectral_lfo', state: { satellites: false } } },
         };
       });
       ac.setActiveTab('edit');

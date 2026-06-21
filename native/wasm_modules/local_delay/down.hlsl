@@ -1,4 +1,4 @@
-// video.local_delay — luma pyramid downsample.
+// motion.local_delay — luma pyramid downsample.
 //
 // 2x2 box-average of an R32F luma level into the next-coarser level.
 // Used twice: half→quarter and quarter→eighth.

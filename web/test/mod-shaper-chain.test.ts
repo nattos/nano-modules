@@ -3,8 +3,8 @@ import type { Sketch } from '../src/sketch-types';
 
 /**
  * E2E for CHAINING shapers: a shaper directly after another shaper auto-connects
- * too (not only after a source). Probe: white solid → data.lfo (0.5) →
- * mod.smooth → mod.envelope → brightness_contrast, with ONLY envelope.output
+ * too (not only after a source). Probe: white solid → mod.source.lfo (0.5) →
+ * mod.shaper.smooth → mod.shaper.envelope → brightness_contrast, with ONLY envelope.output
  * wired into bc.brightness. The lfo→smooth and smooth→envelope hops auto-connect.
  *
  * With a PEAK envelope curve, input 0.5 maps to the peak (1.0), so the value
@@ -19,15 +19,15 @@ describe('modulation shaper chaining E2E', () => {
   const build = (id: string, curve: string): Sketch => ({
     anchor: null,
     chain: [
-      { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
-      { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+      { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
         params: { rate: 0.0, amplitude: 1.0 } },
-      { type: 'module', module_type: 'mod.smooth', instance_key: 'sm@0',
+      { type: 'module', module_type: 'mod.shaper.smooth', instance_key: 'sm@0',
         params: { duration: 0.0 } },
-      { type: 'module', module_type: 'mod.envelope', instance_key: 'env@0',
+      { type: 'module', module_type: 'mod.shaper.envelope', instance_key: 'env@0',
         params: { curve } },
-      { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: -0.5 } },
     ],
     // Only the final hop is drawn; lfo→smooth and smooth→envelope auto-connect.
@@ -39,7 +39,7 @@ describe('modulation shaper chaining E2E', () => {
 
   const run = (id: string, curve: string) => runEngineTest({
     width: 64, height: 64,
-    modules: ['generator.solid_color', 'data.lfo', 'mod.smooth', 'mod.envelope', 'video.brightness_contrast'],
+    modules: ['source.solid_color', 'mod.source.lfo', 'mod.shaper.smooth', 'mod.shaper.envelope', 'color.tone.brightness_contrast'],
     commands: [{ type: 'createSketch', sketchId: id, sketch: build(id, curve) }],
     tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
     captureTraceIds: ['out'],

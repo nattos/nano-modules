@@ -1,5 +1,5 @@
 /*
- * data.spectral_lfo — spectral-morph LFO generator.
+ * mod.source.spectral_lfo — spectral-morph LFO generator.
  *
  * Productionized from the nano-lfo Serum-shape explorer. A baked atlas of
  * ~2178 LFO shapes (Serum control points) is laid out per metric by a t-SNE
@@ -103,7 +103,7 @@ static void on_state_ready(void* self) {
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────
 void module_init() {
-  state::init("data.spectral_lfo", {1, 0, 0},
+  state::init("mod.source.spectral_lfo", {1, 0, 0},
     state::Schema()
       // Standard — the live performer reaches for these.
       .floatField("rate", 0.4f, 0.f, 1.f, state::PrimaryInput)        // exp → Hz; 0 = frozen

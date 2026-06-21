@@ -1,4 +1,4 @@
-// video.height_from_gradient — min/max reduction step.
+// filter.height_from_gradient — min/max reduction step.
 //
 // Folds the (min, max) range one level coarser: each coarse texel takes the
 // min of the mins and max of the maxes over its 2x2 children. Run to 1x1 to get

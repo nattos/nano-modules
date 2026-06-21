@@ -1,5 +1,5 @@
 /*
- * video.blur — Thin wrapper around `fx::GaussianBlur`.
+ * filter.blur.gaussian — Thin wrapper around `fx::GaussianBlur`.
  *
  * The actual blur machinery lives in `<effect_blur.h>` so it can be
  * reused by future effects (bloom, glow, depth-of-field, soft shadows,
@@ -32,7 +32,7 @@ struct State {
 
 // Type-level setup: publish the schema + backend check once per type.
 void module_init() {
-  state::init("video.blur", {1, 0, 0},
+  state::init("filter.blur.gaussian", {1, 0, 0},
     state::Schema()
       .floatField("radius",  0.25f, 0.f, 1.f, state::PrimaryInput)
       .floatField("quality", 1.0f,  0.f, 1.f, state::PrimaryInput)

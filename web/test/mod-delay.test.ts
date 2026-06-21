@@ -2,30 +2,30 @@ import { runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E for the mod.delay shaper NODE — a unary modulation shaper that delays its
+ * E2E for the mod.shaper.delay shaper NODE — a unary modulation shaper that delays its
  * `input` by `delay` seconds via a time-stamped ring-buffer delay line
  * (delay_line.h). The interpolation/clamp/wraparound math is covered by the
  * native goldens; here we prove the effect is wired right and actually HOLDS the
  * old value end-to-end.
  *
- * Probe: white solid → mod.delay → brightness_contrast, with mod.delay.output
+ * Probe: white solid → mod.shaper.delay → brightness_contrast, with mod.shaper.delay.output
  * wired into bc.brightness (brightness 0 → black, 1 → white). Step input 0 → 1.
  * With delay 0 the output jumps immediately (white); with a 5s delay the new
  * value is still "in the pipe" a few frames later (output 0 → black). Contrast
  * the two so it's robust to the harness's real-wall-clock dt.
  */
-describe('mod.delay shaper node E2E', () => {
+describe('mod.shaper.delay shaper node E2E', () => {
   jest.setTimeout(40000);
 
   const runStep = (id: string, delay: number) => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
           params: { color: [1.0, 1.0, 1.0] } },
-        { type: 'module', module_type: 'mod.delay', instance_key: 'dl@0',
+        { type: 'module', module_type: 'mod.shaper.delay', instance_key: 'dl@0',
           params: { input: 0.0, delay } },
-        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
           params: { brightness: 1.0, contrast: 0.25 } },
       ],
       wires: [
@@ -35,7 +35,7 @@ describe('mod.delay shaper node E2E', () => {
     } as Sketch;
     return runEngineMultiPhaseTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'mod.delay', 'video.brightness_contrast'],
+      modules: ['source.solid_color', 'mod.shaper.delay', 'color.tone.brightness_contrast'],
       phases: [
         // Settle at input 0 → output 0 → black.
         { commands: [

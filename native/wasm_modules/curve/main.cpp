@@ -1,5 +1,5 @@
 /*
- * video.curve — Power curve applied to RGB and alpha.
+ * color.tone.curve — Power curve applied to RGB and alpha.
  *
  * Per the style guide, exposed as a normalized signed slider. The
  * parameter feeds an exponential mapping so the perceived effect is
@@ -55,7 +55,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.curve", {1, 0, 0},
+  state::init("color.tone.curve", {1, 0, 0},
     state::Schema()
       .floatField("rgb",   0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("alpha", 0.0f, -1.f, 1.f, state::PrimaryInput)

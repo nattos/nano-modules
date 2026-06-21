@@ -1,4 +1,4 @@
-// video.phase_fold — longest-run select + cycle health + good-cycle morph.
+// source.phase_fold — longest-run select + cycle health + good-cycle morph.
 //
 // Single-thread pass (the heavy per-segment work already ran in parallel). It:
 //   1. Keeps only the LONGEST contiguous (circular) run of live segments and

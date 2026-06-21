@@ -1,4 +1,4 @@
-// gen.tingle_top — instanced sparkle vertex shader. 6 verts per particle form
+// source.light.tingle_top — instanced sparkle vertex shader. 6 verts per particle form
 // one quad; dead particles collapse to a degenerate triangle outside clip
 // space so the rasteriser skips them (no compaction pass). Size is in
 // isotropic uv (min(W,H) units) so a sparkle is round on any aspect.

@@ -47,9 +47,9 @@ Builds the native staticlib + wasm, runs a doc through both, and asserts:
 
 ## Consumer
 
-`native/wasm_modules/richtext` (`gen.richtext`): an `html` + `scale` node that
+`native/wasm_modules/richtext` (`source.text.rich`): an `html` + `scale` node that
 emits a `{mode:"html"}` spec. Use it when a node needs CSS layout, rich runs, or
-complex/vertical scripts; use `gen.text` for plain attributed strings.
+complex/vertical scripts; use `source.text.plain` for plain attributed strings.
 
 ## Scope / TODO
 

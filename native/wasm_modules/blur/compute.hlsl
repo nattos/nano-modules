@@ -1,4 +1,4 @@
-// video.blur — One axis of a separable Gaussian.
+// filter.blur.gaussian — One axis of a separable Gaussian.
 //
 // CPU-side computes the per-tap weights and the active half-count and
 // uploads them via a structured buffer; this shader just does the sum.

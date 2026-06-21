@@ -1,4 +1,4 @@
-// fx.block_dehance — shared helpers + the GPU-resident rect layout. Both
+// filter.glitch.block_dehance — shared helpers + the GPU-resident rect layout. Both
 // update.hlsl and render.hlsl include this so the rect-pool struct stays
 // consistent across passes.
 

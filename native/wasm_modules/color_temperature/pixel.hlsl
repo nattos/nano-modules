@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.color_temperature. Per-channel multiplicative
+// Per-pixel kernel for color.temperature. Per-channel multiplicative
 // shift on the orange/blue axis. The host folds temperature into per-channel
 // multipliers; the shader is just a multiply.
 

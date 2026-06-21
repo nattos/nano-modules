@@ -1,4 +1,4 @@
-// video.vibrance — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.vibrance — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

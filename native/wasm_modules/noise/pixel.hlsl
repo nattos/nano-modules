@@ -1,4 +1,4 @@
-// Per-pixel kernel for generator.noise — multiple algorithms.
+// Per-pixel kernel for source.noise — multiple algorithms.
 
 #include "nano_coords.hlsl"
 #include "nano_hash.hlsl"

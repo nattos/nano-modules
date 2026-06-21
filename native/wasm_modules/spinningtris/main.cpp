@@ -66,7 +66,7 @@ static float randf(State& s) {
 
 // Type-level setup: schema + shared compute/render PSOs. Runs once per type.
 void module_init() {
-  state::init("generator.spinningtris", {1, 0, 0},
+  state::init("debug.spinningtris", {1, 0, 0},
     state::Schema()
       .floatField("triangles", 0.1f, 0.f, 1.f, state::PrimaryInput)
       .floatField("speed", 0.5f, 0.f, 1.f, state::PrimaryInput)

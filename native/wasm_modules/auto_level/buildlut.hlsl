@@ -1,4 +1,4 @@
-// video.auto_level — pass 3: invert the histogram into the remap curve.
+// color.tone.auto_level — pass 3: invert the histogram into the remap curve.
 //
 // Single-invocation pass. Builds a 0..1 → 0..1 monotone curve as the
 // composition of two weighted options:

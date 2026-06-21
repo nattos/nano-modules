@@ -1,5 +1,5 @@
 /*
- * video.auto_level — histogram auto-leveler.
+ * color.tone.auto_level — histogram auto-leveler.
  *
  * Estimates the input's luminance histogram on the GPU each frame (minmax →
  * hist over a downsample grid), inverts it into a remap curve (buildlut), and
@@ -61,7 +61,7 @@ static gpu::ComputePSO s_pso_buildlut;
 static gpu::ComputePSO s_pso_apply;
 
 void module_init() {
-  state::init("video.auto_level", {1, 0, 0},
+  state::init("color.tone.auto_level", {1, 0, 0},
     state::Schema()
       // Flatten the whole curve toward an even (equalized) distribution.
       .floatField("equalize", 0.0f, 0.0f, 1.0f, state::PrimaryInput)

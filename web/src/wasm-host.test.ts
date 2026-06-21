@@ -36,7 +36,7 @@ async function loadHost(): Promise<{ host: WasmHost; module: import('./wasm-host
   const nanoMain = instance.exports.nano_module_main as (() => void) | undefined;
   if (nanoMain) {
     nanoMain();
-    const wasmModule = host.activateEffect('sequencer.nanolooper');
+    const wasmModule = host.activateEffect('control.nanolooper');
     return { host, module: wasmModule };
   }
 
@@ -161,7 +161,7 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       set_schema: (_idPtr: number, _idLen: number, _versionPacked: number,
                     _schemaPtr: number, _schemaLen: number) => {},
       get_key: (bufPtr: number, bufLen: number): number => {
-        const key = 'sequencer.nanolooper@0';
+        const key = 'control.nanolooper@0';
         const enc = new TextEncoder().encode(key);
         const len = Math.min(enc.length, bufLen);
         new Uint8Array(getMemory().buffer, bufPtr, len).set(enc.subarray(0, len));

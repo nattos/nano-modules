@@ -1,4 +1,4 @@
-// video.flash_particles — color fragment shader.
+// source.particles.flash_particles — color fragment shader.
 //
 // Outputs a per-fragment premultiplied color contribution. The render
 // pipeline's blend state takes it from there:

@@ -399,7 +399,7 @@ export class WasmSketchExecutor {
     //    state::set_val during last frame's tick) into the sketch state the
     //    executor reads. Float write-taps (captureWriteTaps) source a producer's
     //    scalar from instances[key].state[field], NOT the live runtime — so a
-    //    scalar wire (e.g. data.lfo.output → param) is invisible unless the
+    //    scalar wire (e.g. mod.source.lfo.output → param) is invisible unless the
     //    output is present here. 1-frame latency, matching the native barrel's
     //    sketch-state mirroring. Built on a shallow copy; the input sketch and
     //    the structural dirty check below are untouched.

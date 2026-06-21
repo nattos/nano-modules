@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.hsl` against `core`.
+// Per-effect tests for `color.hsl` against `core`.
 // Param indices: 0=hue_shift, 1=saturation, 2=lightness.
 
 describe('HSL Effect E2E', () => {
@@ -15,7 +15,7 @@ describe('HSL Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.hsl');
+    expect(frame.metadata?.id).toBe('color.hsl');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['hue_shift', 'lightness', 'saturation']);
   });

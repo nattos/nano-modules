@@ -1,7 +1,7 @@
 /**
- * Custom inspector for data.adsr — the ADSR envelope generator.
+ * Custom inspector for mod.source.adsr — the ADSR envelope generator.
  *
- * Reuses the mod.envelope curve machinery for VISUALIZATION + easier control: an
+ * Reuses the mod.shaper.envelope curve machinery for VISUALIZATION + easier control: an
  * <adsr-graph> draws the live A-D-S-R shape (shaped by the same envelope.h
  * `applyEase` the effect uses) and lets you drag the phase handles / bend the
  * per-phase slope, with a live level meter riding the right edge.
@@ -360,7 +360,7 @@ export class AdsrGraph extends MobxLitElement {
   }
 }
 
-// ----- The data.adsr inspector -----------------------------------------------
+// ----- The mod.source.adsr inspector -----------------------------------------------
 
 @customElement('adsr-inspector')
 export class AdsrInspector extends MobxLitElement implements FieldEditorElement {
@@ -434,7 +434,7 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
   }
 }
 
-editorRegistry.register('data.adsr', {
+editorRegistry.register('mod.source.adsr', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('adsr-inspector') as AdsrInspector;

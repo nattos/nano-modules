@@ -1,4 +1,4 @@
-// fx.dispersion — block-quantized UV-jitter sampler.
+// warp.dispersion — block-quantized UV-jitter sampler.
 //
 // Per pixel: figure out which block we're in (using the CPU-quantized
 // block_size and start_offset that don't sliding-sweep), hash a stable

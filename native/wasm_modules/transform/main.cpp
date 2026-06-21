@@ -1,5 +1,5 @@
 /*
- * video.transform — 2D affine resample of the input texture.
+ * warp.transform — 2D affine resample of the input texture.
  *
  * Standard params:
  *   scale       [-1, +1]  exponential map: -1 → 1/4, 0 → 1, +1 → 4.
@@ -63,7 +63,7 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.transform", {1, 0, 0},
+  state::init("warp.transform", {1, 0, 0},
     state::Schema()
       .floatField("scale",        0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("rotation",     0.0f, -1.f, 1.f, state::PrimaryInput)

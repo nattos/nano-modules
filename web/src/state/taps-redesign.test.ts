@@ -53,7 +53,7 @@ function seedWireSketch() {
       sk: {
         anchor: null,
         chain: [
-          { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+          { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo' },
           { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
         ],
       },
@@ -132,7 +132,7 @@ describe('dangling wire cleanup', () => {
     const sk = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+        { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo' },
         { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
       ],
       wires: [
@@ -155,7 +155,7 @@ describe('wire id collisions', () => {
         sk: {
           anchor: null,
           chain: [
-            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo' },
+            { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo' },
             { type: 'module', module_type: 'video.bc', instance_key: 'bc' },
           ],
           wires: [{ id: 'wire_0', src: { instanceKey: 'lfo', field: 'tex_out' }, dest: { instanceKey: 'bc', field: 'tex_b' } }],
@@ -274,7 +274,7 @@ describe('updateWire (scalar wire modulation)', () => {
     const id = connect();
     const updateSketch = vi.fn();
     appController.setEngine({ updateSketch } as any);
-    runInAction(() => { appState.local.availableEffects = [{ id: 'data.lfo' } as any]; });
+    runInAction(() => { appState.local.availableEffects = [{ id: 'mod.source.lfo' } as any]; });
 
     const patchFor = (v: number) => ({ mod: { ...(wires()[0].mod ?? {}), scale: v } });
     const edit = appController.beginUpdateWire('sk', id, patchFor(1.5));

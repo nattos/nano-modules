@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.brightness_contrast. See pixel.hlsl
+// Per-pixel kernel for color.tone.brightness_contrast. See pixel.hlsl
 // convention in EFFECTS_STYLE_GUIDE.md §0.1.
 
 struct FuseUniforms {

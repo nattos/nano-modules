@@ -16,7 +16,7 @@ Spec doc for the effects shipping for the first show. **Living document — fles
 
 ### Bundle + effect IDs
 
-All show effects ship under the **`com.nano.lights`** namespace. So the fully-qualified IDs are e.g. `com.nano.lights.gen.soft_glow`, `com.nano.lights.fx.block_dehance`. Throughout this doc the short form (`gen.soft_glow`, `fx.block_dehance`) is the **relative ID** that appears in C++ `state::init(...)`; the engine prefixes it with the bundle qualifier at registration time (same pattern as the existing `com.nano.nano` / `com.nano.core` bundles).
+All show effects ship under the **`com.nano.lights`** namespace. So the fully-qualified IDs are e.g. `com.nano.lights.gen.soft_glow`, `com.nano.lights.fx.block_dehance`. Throughout this doc the short form (`source.light.soft_glow`, `filter.glitch.block_dehance`) is the **relative ID** that appears in C++ `state::init(...)`; the engine prefixes it with the bundle qualifier at registration time (same pattern as the existing `com.nano.nano` / `com.nano.core` bundles).
 
 Practical naming rules:
 - Effects prefixed `gen.*` are generators (the "atmosphere" + "cut-in" layers).
@@ -36,7 +36,7 @@ Convention used by every effect that's bar-aware:
 
 Cut-in effects need a way to be "fired". Three flavors of input — effects pick the subset that fits.
 
-- **`gate` (bool, PrimaryInput)** — held-gate. Rising edge starts the envelope (attack → decay → sustain); the system *holds in sustain* as long as `gate` stays true. Falling edge starts release. Use for held-note style cues (MIDI note-on/note-off, performer holding a knob). Effects with an ADSR shape (e.g. `gen.plasma_beam_cannon`) should expose this.
+- **`gate` (bool, PrimaryInput)** — held-gate. Rising edge starts the envelope (attack → decay → sustain); the system *holds in sustain* as long as `gate` stays true. Falling edge starts release. Use for held-note style cues (MIDI note-on/note-off, performer holding a knob). Effects with an ADSR shape (e.g. `source.light.plasma_beam_cannon`) should expose this.
 - **`trigger` (event, PrimaryInput)** — one-shot. Rising edge fires the full envelope through to its natural end. For an ADSR effect: synthesizes an internal `(attack + decay + sustain_s)` gate pulse and then auto-falls into release, so an instantaneous cue (MIDI button tap, audio onset) still gets a sustain. For non-ADSR effects (bounce_resonator's impulse kick), this is the only trigger needed.
 - **`level` (float, 0..1, PrimaryInput)** — continuous "current intensity" input for effects whose visible amplitude tracks an envelope from upstream (audio envelope follower etc). When connected (non-zero), it overrides internal envelope state. Effects without an internal ADSR can use this as their primary drive.
 
@@ -98,7 +98,7 @@ The effect uses `clamp(intensity + intensity_mod, 0, intensity_max)`.
 
 ## Atmosphere layer
 
-### gen.soft_glow
+### source.light.soft_glow
 
 Continuous warm-blob bed. Slowly-drifting Gaussian blobs that the eye reads as "warm light dappling across the bars." Each pixel accumulates contributions from all blobs and looks up a hue-shifting color ramp ("Niagara blackbody" look — deep red edges, white-yellow cores). A divergence param emphasizes per-bar hue differences when it spikes.
 
@@ -157,7 +157,7 @@ I/O:
 
 ---
 
-### gen.orthomod
+### source.light.orthomod
 
 Beat-triggered, Hadamard-driven visual pattern generator. Direct descendant of the original Repatch `nicepattern.orthomod` node (`~/Code/nano-repatch/src/customnodes/nicepattern/orthomod.ts`), reframed for our 4-bar canvas and extended with a second matrix that drives the per-segment fill pattern.
 
@@ -269,7 +269,7 @@ I/O:
 
 ## Cut-in layer
 
-### gen.tingle_top
+### source.light.tingle_top
 
 Sparkles **bundled at the top of each bar while held**, **released downward on an envelope when ungated**. Individual sparkles don't move — they live and die in place. The visible "cascade" comes from the spawn region growing over time, so newly-born particles appear progressively lower in the bar while older top-region particles age out.
 
@@ -343,7 +343,7 @@ Same particle pool as `flash_particles` but with different spawn logic (uniform 
 
 **I/O**
 - `tex_in` PrimaryInput, `tex_out` PrimaryOutput (additive over input).
-- `render_outputs/motion` PrimaryOutput, `render_outputs_in` PrimaryInput — passthrough when `particle_velocity_*` is all zero (stationary particles). When velocity > 0 (downward_sparkle preset), each particle emits a motion vector matching its `(velocity_x, velocity_y)` so downstream `video.motion_blur` creates natural streaks/trails.
+- `render_outputs/motion` PrimaryOutput, `render_outputs_in` PrimaryInput — passthrough when `particle_velocity_*` is all zero (stationary particles). When velocity > 0 (downward_sparkle preset), each particle emits a motion vector matching its `(velocity_x, velocity_y)` so downstream `motion.blur` creates natural streaks/trails.
 
 #### Implementation sketch
 
@@ -375,7 +375,7 @@ particle_life_ms        = 1500      // long enough to traverse at slow rates
 respect_position_bounds = true      // kill cleanly when particle reaches the bottom
 ```
 
-For more "spray" / "comet" feel, increase `velocity_y_jitter` and chain `video.motion_blur` downstream — the per-particle motion vectors (now emitted automatically when velocity > 0) will streak each particle into a trail. Live performer can fade `density` up/down on a knob.
+For more "spray" / "comet" feel, increase `velocity_y_jitter` and chain `motion.blur` downstream — the per-particle motion vectors (now emitted automatically when velocity > 0) will streak each particle into a trail. Live performer can fade `density` up/down on a knob.
 
 If a user wants the cinematic "spawns at top, releases downward on gate-off" gesture INSTEAD, they leave `default_gate_state = false` and wire `gate` from MIDI; velocity stays 0. Same effect, different preset.
 
@@ -383,11 +383,11 @@ If a user wants the cinematic "spawns at top, releases downward on gate-off" ges
 
 - **Bar-independent envelopes**. Today, gate-on/gate-off applies uniformly across all targeted bars. A future variant could stagger the per-bar envelope phases so the release cascade rolls left-to-right across the 4 bars (chain-reaction feel). Defer; the linked model is the simpler default.
 - **Reset region on idle**. After release completes, the region stays at 1.0 indefinitely until next gate-on. Alternative: slowly contract back to `top_band_height` over an "auto-recharge" period so the effect "rearms" for the next trigger. The held-then-release pattern is the cleaner default; auto-recharge can come later if the show wants it.
-- **`flash_particles` mask-falloff option** (the previous open question). Lifted from the previous draft: instead of building `gen.tingle_top` separately, we could extend `flash_particles` with a `mask_falloff_shape` param that synthesizes a top-bias mask internally. Decision stays the same: build separately for the focused param surface; revisit when we feel duplication pain.
+- **`flash_particles` mask-falloff option** (the previous open question). Lifted from the previous draft: instead of building `source.light.tingle_top` separately, we could extend `flash_particles` with a `mask_falloff_shape` param that synthesizes a top-bias mask internally. Decision stays the same: build separately for the focused param surface; revisit when we feel duplication pain.
 
 ---
 
-### gen.bounce_resonator
+### source.light.bounce_resonator
 
 Per-bar vertical mass-on-spring **with cross-bar diffusion**. An impulse trigger kicks one bar's band; the energy then bleeds into other bars via a seeded coupling matrix and rings out across all four. Each cross-bar "send" passes through a non-linear filter that can be cranked to add harmonics or pick out specific frequencies. Performer can boost Q toward self-resonance for sustained shimmer.
 
@@ -466,7 +466,7 @@ Per pixel, per bar:
 
 Soft band edges are allowed here (unlike plasma's hard-step rule) — physical resonance reads better with the gradient.
 
-Motion vectors emitted per pixel: `(0, vy_i * motion_scale)`. Downstream `video.motion_blur` will streak the bands during fast bounces.
+Motion vectors emitted per pixel: `(0, vy_i * motion_scale)`. Downstream `motion.blur` will streak the bands during fast bounces.
 
 #### Params
 
@@ -524,9 +524,9 @@ Motion vectors emitted per pixel: `(0, vy_i * motion_scale)`. Downstream `video.
 
 ---
 
-### gen.strobe_channel
+### source.light.strobe_channel
 
-**Logistic-map-driven single-bar selector.** Exactly one bar lit at any time; which bar is determined by iterating the logistic map a few steps from a slowly-oscillating seed value. With `r` in the chaotic regime (~3.57..4.0), tiny changes in the seed produce wildly different final values — so a smooth ping-pong of the seed yields a chaotically-jumpy bar pattern that visually reads as strobing. Aesthetically adjacent to `gen.orthomod` (per-bar one-hot lighting) but driven by deterministic chaos instead of Hadamard codes.
+**Logistic-map-driven single-bar selector.** Exactly one bar lit at any time; which bar is determined by iterating the logistic map a few steps from a slowly-oscillating seed value. With `r` in the chaotic regime (~3.57..4.0), tiny changes in the seed produce wildly different final values — so a smooth ping-pong of the seed yields a chaotically-jumpy bar pattern that visually reads as strobing. Aesthetically adjacent to `source.light.orthomod` (per-bar one-hot lighting) but driven by deterministic chaos instead of Hadamard codes.
 
 #### The math
 
@@ -602,7 +602,7 @@ That's it. The whole effect is a few lines of CPU logic + a trivial shader.
 
 ---
 
-### gen.side_jet
+### source.light.side_jet
 
 Horizontal jet trail crossing the canvas left → right (or reversed). **JPL-style, not 90s game fire** — diverging cone with shock-diamond pulsation along the axis and fast-evolving turbulent edges. The lo-fi LED projection will only carry a hint of structure (4 bars × 13 segments crushes most detail), but designing for the full-canvas view auto-degrades to a satisfying sweep at LED resolution.
 
@@ -676,7 +676,7 @@ Multiple jets can be on screen at once (the trigger model decouples spawning fro
 
 **I/O**
 - `tex_in` PrimaryInput, `tex_out` PrimaryOutput (additive over input).
-- `render_outputs/motion` — for each pixel inside an active jet's cone, emit a motion vector `(jet_dx_per_sec, 0)` in canvas-uv-per-second. Downstream `video.motion_blur` will streak the head naturally without needing per-effect blur logic.
+- `render_outputs/motion` — for each pixel inside an active jet's cone, emit a motion vector `(jet_dx_per_sec, 0)` in canvas-uv-per-second. Downstream `motion.blur` will streak the head naturally without needing per-effect blur logic.
 - `render_outputs_in` PrimaryInput (chain upstream motion).
 
 #### Implementation sketch
@@ -694,7 +694,7 @@ Multiple jets can be on screen at once (the trigger model decouples spawning fro
 
 ---
 
-### gen.plasma_beam_cannon
+### source.light.plasma_beam_cannon
 
 90s anime power-up — per-bar vertical beam that snaps from a focused seed to a fully-lit bar, holds, then crumbles via simulated "breaks" eating the beam, with a flickering tail. **Strict rule: every visual transition is a hard on/off step. No alpha, no soft edges, no fades.**
 
@@ -862,13 +862,13 @@ I/O:
 
 ## Complicator FX (post-process)
 
-*"fx.wave_traveling_down" from the original list was a duplicate of motion-rain — already absorbed into `gen.motion_blobs` (with `spawn_edge=top, traverse_speed > 0`).*
+*"fx.wave_traveling_down" from the original list was a duplicate of motion-rain — already absorbed into `source.light.motion_blobs` (with `spawn_edge=top, traverse_speed > 0`).*
 
 ---
 
-### gen.motion_blobs *(absorbs the old fx.directional_blur, fx.zoom_blur, and fx.shadow_flyover placeholders)*
+### source.light.motion_blobs *(absorbs the old fx.directional_blur, fx.zoom_blur, and fx.shadow_flyover placeholders)*
 
-**A small pool of traveling soft blobs that can emit motion vectors AND/OR darken what's underneath.** With `motion_strength > 0, shadow_darkness = 0` it's pure "motion rain" — invisible blobs injecting velocity into `render_outputs/motion`, with the visible effect coming from a downstream `video.motion_blur`. With `motion_strength = 0, shadow_darkness > 0` it's "shadow flyover" — soft dark blobs sweeping across the canvas like passing objects. Both at once gives moving shadows that also blur what's around them.
+**A small pool of traveling soft blobs that can emit motion vectors AND/OR darken what's underneath.** With `motion_strength > 0, shadow_darkness = 0` it's pure "motion rain" — invisible blobs injecting velocity into `render_outputs/motion`, with the visible effect coming from a downstream `motion.blur`. With `motion_strength = 0, shadow_darkness > 0` it's "shadow flyover" — soft dark blobs sweeping across the canvas like passing objects. Both at once gives moving shadows that also blur what's around them.
 
 Renamed from `gen.motion_rain` once we realized shadow_flyover slots cleanly into the same blob-pool machinery — the two modes differ only in which output (motion field vs darkening) the blobs drive.
 
@@ -967,7 +967,7 @@ Both outputs use the same blob field — set whichever combo of `motion_strength
 
 ---
 
-### fx.dispersion
+### warp.dispersion
 
 **Not chromatic aberration** (the obvious interpretation that was here previously) — instead, a **block-quantized UV-jitter sampler**: tiles the canvas into blocks, picks a stable random offset per block, samples the input at `(block_center + offset)`, fills the block with that single color. With small blocks → crunchy grain / fast blur. With large blocks → mosaic downres. Random offsets can be large enough to cross bar boundaries (pulls in colors from neighboring bars — the cross-pollination is the point).
 
@@ -1056,7 +1056,7 @@ Implementation: an accumulator advances `tick_accum += dt * temporal_rate_hz`, i
 
 ### fx.chrome_wave
 
-> **SHIPPED (reimagined) as `gen.chroma_wave`.** The spec below (chromatic
+> **SHIPPED (reimagined) as `source.light.chroma_wave`.** The spec below (chromatic
 > aberration of the *input*) was superseded: the built effect GENERATES a
 > prismatic charge/burst "wave bloom" graded from its own density field and
 > composites it additively over the input — no input distortion. It is
@@ -1194,9 +1194,9 @@ Gives the "light leak" feel — a soft warm/colored bloom co-located with the ch
 
 ---
 
-### fx.block_dehance
+### filter.glitch.block_dehance
 
-**Cinema/game-glitch rectangles that "dehance" the input** in one of several modes — black-out (the original dropout), mosaic / downres, noise. Each rectangle's mode is sampled probabilistically at spawn, so a single instance can mix all three. Same lifecycle + bright-seeking spawn machinery as `flash_particles` / what `fx.dropout` was originally specced as. The original two-effect plan (`fx.dropout` + a separate full-canvas `fx.block_dehance`) collapses into this one effect: dropout is just `mode_black_weight = 1`, and the full-canvas macroblock look is already covered by `fx.dispersion`.
+**Cinema/game-glitch rectangles that "dehance" the input** in one of several modes — black-out (the original dropout), mosaic / downres, noise. Each rectangle's mode is sampled probabilistically at spawn, so a single instance can mix all three. Same lifecycle + bright-seeking spawn machinery as `flash_particles` / what `fx.dropout` was originally specced as. The original two-effect plan (`fx.dropout` + a separate full-canvas `filter.glitch.block_dehance`) collapses into this one effect: dropout is just `mode_black_weight = 1`, and the full-canvas macroblock look is already covered by `warp.dispersion`.
 
 #### Lifecycle (mirrors flash_particles)
 
@@ -1320,32 +1320,32 @@ Per-pixel iteration over ≤128 rectangles with a small per-mode branch is still
 - **Per-rect mosaic cell aspect.** Currently `mosaic_cell_size` is isotropic. Tall cells (cell_w ≪ cell_h) give scanline-pixelated feel; wide cells the opposite. Could expose `mosaic_cell_aspect` (-1..+1) for variety. Defer.
 - **Captured mode per rect vs per-tick re-roll.** Mode is sticky for a rect's lifetime — feels intentional and readable. If we want chaotic mode-flipping during a rect's life, that's an optional `mode_reroll_rate_hz` knob. Defer.
 - **Mode-specific lifetime tuning.** Noise mode at high `flicker_rate` is the most chaotic; black mode lives longer; mosaic somewhere between. Could expose `mode_*_life_mult` per mode if defaults don't read well on hardware. Defer.
-- **Additional dehance modes worth adding later**: chroma_strip (luminance-only / desaturate), invert, color_quantize (palette reduction), source_offset (sample from a jittered uv — essentially `fx.dispersion` constrained to the rect). All easy to slot in as new mode IDs + weights.
+- **Additional dehance modes worth adding later**: chroma_strip (luminance-only / desaturate), invert, color_quantize (palette reduction), source_offset (sample from a jittered uv — essentially `warp.dispersion` constrained to the rect). All easy to slot in as new mode IDs + weights.
 
 ---
 
 ## Build order
 
 Atmosphere first — establishes the bed everything else lives on:
-1. `gen.soft_glow` (single biggest visual win; informs the random-walk LFO helper)
-2. `gen.orthomod` (Hadamard-driven beat-synced visual; also exposes per-bar `ch1..ch4` rails downstream effects can consume)
+1. `source.light.soft_glow` (single biggest visual win; informs the random-walk LFO helper)
+2. `source.light.orthomod` (Hadamard-driven beat-synced visual; also exposes per-bar `ch1..ch4` rails downstream effects can consume)
 
 Then 2–3 cut-ins to validate the trigger model + per-bar conventions:
-3. `gen.plasma_beam_cannon` (most dramatic — proves the trigger / charge-release pattern)
-4. `gen.bounce_resonator` (proves the resonator core)
-5. `gen.side_jet` (proves the per-bar traversal + motion-vector emission)
+3. `source.light.plasma_beam_cannon` (most dramatic — proves the trigger / charge-release pattern)
+4. `source.light.bounce_resonator` (proves the resonator core)
+5. `source.light.side_jet` (proves the per-bar traversal + motion-vector emission)
 
 Then complicators we know we'll lean on:
-6. `gen.motion_blobs` (absorbs three old placeholders: `fx.directional_blur`, `fx.zoom_blur`, and `fx.shadow_flyover`. Same blob pool drives both motion vectors and color darkening — pick modes via `motion_strength` + `shadow_darkness`. Stack `video.motion_blur` downstream when in motion mode for the visible smear.)
-7. `fx.dispersion` (cheap, broadly useful)
-8. `fx.block_dehance` (absorbs the original `fx.dropout` — black is just one of the three dehance modes; weights control mode mix per spawn)
+6. `source.light.motion_blobs` (absorbs three old placeholders: `fx.directional_blur`, `fx.zoom_blur`, and `fx.shadow_flyover`. Same blob pool drives both motion vectors and color darkening — pick modes via `motion_strength` + `shadow_darkness`. Stack `motion.blur` downstream when in motion mode for the visible smear.)
+7. `warp.dispersion` (cheap, broadly useful)
+8. `filter.glitch.block_dehance` (absorbs the original `fx.dropout` — black is just one of the three dehance modes; weights control mode mix per spawn)
 
 Then the rest as time permits:
-9. `gen.tingle_top` (covers both the original tingle and the downward_sparkle preset via velocity params; bench against `flash_particles` to see if all three end up sharing enough machinery to extract a helper)
-10. `gen.strobe_channel`
-11. `fx.chrome_wave` → **shipped as `gen.chroma_wave`** (reimagined: a self-rendered, polyphonic prismatic "wave bloom" generator rather than an input chroma-distorter — see the spec note below). All 11 effects above are now built.
+9. `source.light.tingle_top` (covers both the original tingle and the downward_sparkle preset via velocity params; bench against `flash_particles` to see if all three end up sharing enough machinery to extract a helper)
+10. `source.light.strobe_channel`
+11. `fx.chrome_wave` → **shipped as `source.light.chroma_wave`** (reimagined: a self-rendered, polyphonic prismatic "wave bloom" generator rather than an input chroma-distorter — see the spec note below). All 11 effects above are now built.
 
-(`fx.bounce_resonator` was dropped: `gen.bounce_resonator` became a GPU diffusion network, so the shared spring-oscillator helper no longer exists, and its `impulse_mode = tex_in` already samples the input image per bar — covering the audio-energy-driven gesture this slot was for.)
+(`fx.bounce_resonator` was dropped: `source.light.bounce_resonator` became a GPU diffusion network, so the shared spring-oscillator helper no longer exists, and its `impulse_mode = tex_in` already samples the input image per bar — covering the audio-energy-driven gesture this slot was for.)
 
 ## Shared helpers we'll likely extract during this work
 
@@ -1360,5 +1360,5 @@ Then the rest as time permits:
 
 1. **Trigger event field type.** Style guide §0 mentions `eventField`. Need to confirm the existing one supports a clean "rising edge fired once" semantic plus a `level` continuous alternative on the same conceptual input. May need a small refactor.
 2. **Auto-trigger Poisson plumbing.** Each cut-in should be able to self-fire when no upstream trigger is wired. Worth standardizing the `auto_rate → Poisson → internal trigger` plumbing into a helper rather than reimplementing in every cut-in.
-3. **`gen.orthomod`'s float outputs.** Today, struct-rail outputs require the canonical schema. The 4 per-bar channel envelopes + 1 global env need either a custom struct schema or 5 separate float fields. Suggest 5 separate float fields (`ch1..ch4`, `env`) — simpler, no schema-shape proliferation. Mirrors the original Repatch node.
+3. **`source.light.orthomod`'s float outputs.** Today, struct-rail outputs require the canonical schema. The 4 per-bar channel envelopes + 1 global env need either a custom struct schema or 5 separate float fields. Suggest 5 separate float fields (`ch1..ch4`, `env`) — simpler, no schema-shape proliferation. Mirrors the original Repatch node.
 4. **Resolume cue routing.** How do MIDI triggers from Resolume reach the effect schema? Out of scope for this doc but worth a note: we'll need a sketch-input or rail mapping that translates Resolume MIDI → float rail values, which the effects' `trigger` event fields read.

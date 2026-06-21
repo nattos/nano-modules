@@ -1,4 +1,4 @@
-// video.bake_alpha — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// composite.bake_alpha — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

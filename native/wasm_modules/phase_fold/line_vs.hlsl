@@ -1,4 +1,4 @@
-// video.phase_fold — line raster vertex shader (instanced).
+// source.phase_fold — line raster vertex shader (instanced).
 //
 // One instance per traced Segment (from stream.hlsl / cycle.hlsl), six vertices
 // per instance forming a quad. The quad spans the segment p0→p1 with a half-

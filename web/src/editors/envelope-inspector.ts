@@ -1,5 +1,5 @@
 /**
- * Custom inspector for mod.envelope — the drawn-curve modulation remapper.
+ * Custom inspector for mod.shaper.envelope — the drawn-curve modulation remapper.
  *
  * The headline control is a generic ENVELOPE GRAPH editor (<envelope-graph>): a
  * curve over [0,1]×[0,1] defined by a sorted list of (x, y, ease) control points
@@ -284,7 +284,7 @@ export class EnvelopeGraph extends MobxLitElement {
   }
 }
 
-// ----- The mod.envelope inspector --------------------------------------------
+// ----- The mod.shaper.envelope inspector --------------------------------------------
 
 @customElement('envelope-inspector')
 export class EnvelopeInspector extends MobxLitElement implements FieldEditorElement {
@@ -378,7 +378,7 @@ export class EnvelopeInspector extends MobxLitElement implements FieldEditorElem
   }
 }
 
-editorRegistry.register('mod.envelope', {
+editorRegistry.register('mod.shaper.envelope', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('envelope-inspector') as EnvelopeInspector;

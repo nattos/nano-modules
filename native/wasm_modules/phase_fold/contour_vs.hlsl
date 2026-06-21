@@ -1,4 +1,4 @@
-// video.phase_fold — contour mode vertex shader (full-screen triangle).
+// source.phase_fold — contour mode vertex shader (full-screen triangle).
 //
 // The Contour limit-cycle mode draws the zero level-set of the blended height
 // field directly — no particles. This VS emits one oversized triangle covering

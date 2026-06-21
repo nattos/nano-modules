@@ -12,7 +12,7 @@ import type { Sketch } from '../src/sketch-types';
  *
  * Producer:  `debug.motion_rect` — overlays a moving colored rect and
  *            writes per-pixel velocity into `render_outputs/motion`.
- * Consumer:  `video.motion_blur` — reads `render_outputs/motion` and
+ * Consumer:  `motion.blur` — reads `render_outputs/motion` and
  *            samples `tex_in` along the velocity to produce a directional
  *            blur. Pass-through when no upstream produces motion.
  */
@@ -28,7 +28,7 @@ function buildChain(opts: {
   const chain: any[] = [
     {
       type: 'module',
-      module_type: 'generator.solid_color',
+      module_type: 'source.solid_color',
       instance_key: 'bg@0',
       params: { color: [0.2, 0.2, 0.2] },
     },
@@ -46,7 +46,7 @@ function buildChain(opts: {
   }
   chain.push({
     type: 'module',
-    module_type: 'video.motion_blur',
+    module_type: 'motion.blur',
     instance_key: 'blur@0',
     // Strength is a scale on per-frame uv velocity. Per-frame motion
     // here is ~1px at 60fps; we pump strength to 32 so V_max grows to
@@ -175,7 +175,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.05, 0.05, 0.1] },
         },
@@ -196,7 +196,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
         },
         {
           type: 'module',
-          module_type: 'video.motion_blur',
+          module_type: 'motion.blur',
           instance_key: 'blur@0',
           params: { strength: 16.0, samples: 12, quality: 1 },
         },
@@ -243,7 +243,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.0, 0.0, 0.0] },
         },
@@ -311,14 +311,14 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           // Bright enough to trip the default 0.5 threshold.
           params: { color: [0.9, 0.7, 0.4] },
         },
         {
           type: 'module',
-          module_type: 'video.motion_field',
+          module_type: 'motion.field',
           instance_key: 'mf@0',
           params: {
             threshold: 0.4,
@@ -346,7 +346,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
         },
         {
           type: 'module',
-          module_type: 'video.motion_blur',
+          module_type: 'motion.blur',
           instance_key: 'blur@0',
           params: { strength: 24.0, samples: 12, quality: 1 },
         },
@@ -391,7 +391,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
       chain: [
         {
           type: 'module',
-          module_type: 'generator.solid_color',
+          module_type: 'source.solid_color',
           instance_key: 'bg@0',
           params: { color: [0.05, 0.05, 0.05] },
         },
@@ -403,7 +403,7 @@ describe('RenderOutputs struct rail (motion blur showcase) E2E', () => {
         },
         {
           type: 'module',
-          module_type: 'video.motion_blur',
+          module_type: 'motion.blur',
           instance_key: 'blur@0',
           params: {
             strength: 32.0,

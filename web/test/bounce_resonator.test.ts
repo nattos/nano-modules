@@ -1,6 +1,6 @@
 import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 
-// Per-effect tests for gen.bounce_resonator — a 4-bar scalar diffusion
+// Per-effect tests for source.light.bounce_resonator — a 4-bar scalar diffusion
 // network with NO spatial structure. Each hop multiplies the 4-vector by a
 // seeded mixing matrix (v ← M·v), cycling through `pattern_count` matrices
 // at `cycle_rate` hops/sec:
@@ -57,7 +57,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
       inputColor: [0, 0, 0, 1], dumpName: 'bounce_resonator_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.bounce_resonator');
+    expect(frame.metadata?.id).toBe('source.light.bounce_resonator');
   });
 
   it('a kick lights the network', async () => {

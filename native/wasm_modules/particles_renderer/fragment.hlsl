@@ -1,4 +1,4 @@
-// video.particles_renderer — fragment shader.
+// debug.particles_renderer — fragment shader.
 //
 // Outputs the flat per-particle tint forwarded by the vertex shader.
 

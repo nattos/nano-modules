@@ -1,4 +1,4 @@
-// video.local_delay — upsample the half-res LK flow to full res.
+// motion.local_delay — upsample the half-res LK flow to full res.
 //
 // The flow is estimated on the downsampled pyramid (never at full res);
 // this bilinearly upsamples the finest (half-res) flow to the full output

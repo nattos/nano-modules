@@ -17,11 +17,11 @@ describe('Wire routing E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'red@0',
         params: { color: [1.0, 0.0, 0.0] } },
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'blue@0',
         params: { color: [0.0, 0.0, 1.0] } },
-        { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
+        { type: 'module', module_type: 'composite.blend', instance_key: 'blend@0',
         params: { opacity: 0.5 } },
       ],
       wires: [
@@ -32,7 +32,7 @@ describe('Wire routing E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'video.blend'],
+      modules: ['source.solid_color', 'composite.blend'],
       commands: [{ type: 'createSketch', sketchId: 'wire_blend', sketch }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_blend' } }],
       captureTraceIds: ['out'],
@@ -46,7 +46,7 @@ describe('Wire routing E2E', () => {
 
   it('texture wires by schema field name reach positional inputs (tex_a/tex_b)', async () => {
     // The IDE addresses a texture input by its schema NAME (tex_a/tex_b), but
-    // video.blend reads inputTexture(0)/(1) positionally. A named texture wire
+    // composite.blend reads inputTexture(0)/(1) positionally. A named texture wire
     // must therefore also feed the positional slot (index = order among input-
     // texture fields). Two solids above → blend; wired by name; opacity 0.5.
     // Without the name→index mapping the wires are ignored and the output is just
@@ -54,11 +54,11 @@ describe('Wire routing E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'red@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'red@0',
         params: { color: [1.0, 0.0, 0.0] } },
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'blue@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'blue@0',
         params: { color: [0.0, 0.0, 1.0] } },
-        { type: 'module', module_type: 'video.blend', instance_key: 'blend@0',
+        { type: 'module', module_type: 'composite.blend', instance_key: 'blend@0',
         params: { opacity: 0.5 } },
       ],
       wires: [
@@ -69,7 +69,7 @@ describe('Wire routing E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'video.blend'],
+      modules: ['source.solid_color', 'composite.blend'],
       commands: [{ type: 'createSketch', sketchId: 'wire_named', sketch }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_named' } }],
       captureTraceIds: ['out'],
@@ -82,7 +82,7 @@ describe('Wire routing E2E', () => {
   });
 
   it('forward scalar wire from a passthrough modulation source', async () => {
-    // data.lfo declares NO output texture → it is a texture-passthrough
+    // mod.source.lfo declares NO output texture → it is a texture-passthrough
     // modulation source: tick runs and publishes its scalar `output`, but it
     // consumes no slot and leaves the image chain untouched. With rate=0 its
     // phase stays 0 → output == 0.5 (constant, deterministic).
@@ -99,11 +99,11 @@ describe('Wire routing E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
-        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+        { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
         params: { rate: 0.0, amplitude: 1.0 } },
-        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: -0.5 } },
       ],
       wires: [
@@ -114,7 +114,7 @@ describe('Wire routing E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'],
+      modules: ['source.solid_color', 'mod.source.lfo', 'color.tone.brightness_contrast'],
       commands: [{ type: 'createSketch', sketchId: 'wire_lfo', sketch }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_lfo' } }],
       captureTraceIds: ['out'],
@@ -131,7 +131,7 @@ describe('Wire routing E2E', () => {
     // cleanest probe is a SELF-loop on the bottom (output) stage: acc@0.tex_out
     // → acc@0.'1' (src pos == dest pos → delayed). Chain top→bottom: src@0 (a dim
     // red, feeding acc's input A same-frame via the implicit texture flow), acc@0
-    // (video.blend, the output). With opacity 0.9:
+    // (composite.blend, the output). With opacity 0.9:
     //     out = 0.1*src + 0.9*(acc's PREVIOUS out)
     // so the red channel ramps UP frame-over-frame toward src (≈102), converging
     // only because each frame folds in the last frame's result. A monotonic rise
@@ -140,9 +140,9 @@ describe('Wire routing E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [0.4, 0.0, 0.0] } },
-        { type: 'module', module_type: 'video.blend', instance_key: 'acc@0',
+        { type: 'module', module_type: 'composite.blend', instance_key: 'acc@0',
         params: { opacity: 0.97 } },
       ],
       wires: [
@@ -153,7 +153,7 @@ describe('Wire routing E2E', () => {
 
     const r = await runEngineMultiPhaseTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'video.blend'],
+      modules: ['source.solid_color', 'composite.blend'],
       dumpName: 'wire_feedback',
       phases: [
         {
@@ -195,12 +195,12 @@ describe('Wire routing E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
-        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+        { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
         params: { rate: 0.0, amplitude: 1.0 } },
         { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
-        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: -0.5 } },
       ],
       instances: {
@@ -216,7 +216,7 @@ describe('Wire routing E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'data.lfo', 'video.brightness_contrast'],
+      modules: ['source.solid_color', 'mod.source.lfo', 'color.tone.brightness_contrast'],
       commands: [{ type: 'createSketch', sketchId: 'wire_dash', sketch }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_dash' } }],
       captureTraceIds: ['out'],

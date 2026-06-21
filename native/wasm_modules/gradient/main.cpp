@@ -1,5 +1,5 @@
 /*
- * generator.gradient — Two-color linear gradient.
+ * source.gradient — Two-color linear gradient.
  *
  * Standard params:
  *   angle      [-1, +1]  ±180°. 0 = left-to-right.
@@ -69,7 +69,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("generator.gradient", {1, 0, 0},
+  state::init("source.gradient", {1, 0, 0},
     state::Schema()
       .floatField("angle",    0.0f, -1.f, 1.f, state::PrimaryInput)
       .floatField("offset",   0.0f, -1.f, 1.f, state::PrimaryInput)

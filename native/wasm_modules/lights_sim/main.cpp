@@ -1,5 +1,5 @@
 /*
- * fx.lights_sim — 4 vertical LED bars sampled from the input (Resolume-style).
+ * filter.lights_sim — 4 vertical LED bars sampled from the input (Resolume-style).
  *
  * The input is split into 4 vertical quarters (one LED bar each). Each bar is
  * divided into `segments` LED segments stacked vertically. A segment's colour
@@ -48,7 +48,7 @@ static inline float clampf(float v, float lo, float hi) {
 }
 
 void module_init() {
-  state::init("fx.lights_sim", {1, 0, 0},
+  state::init("filter.lights_sim", {1, 0, 0},
     state::Schema()
       .intField  ("segments",      13, 1, 256,         state::PrimaryInput)
       .floatField("inset_h",       0.8f,  0.0f, 1.0f,  state::PrimaryInput)

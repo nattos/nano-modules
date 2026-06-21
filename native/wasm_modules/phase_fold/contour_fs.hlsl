@@ -1,4 +1,4 @@
-// video.phase_fold — contour mode fragment shader.
+// source.phase_fold — contour mode fragment shader.
 //
 // Draws the zero level-set of the blended height field as a gold line — the
 // "limit cycle" taken straight from the approximate height map, no particles or

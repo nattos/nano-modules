@@ -1,5 +1,5 @@
 /*
- * video.shape_fold — evolving-shape generator.
+ * source.shape_fold — evolving-shape generator.
  *
  * Productionized from the shape-fold research testbed. A baked 3D atlas of
  * resolved shape parameters — axes frequency (x) × simplicity (y) × temporal-
@@ -123,7 +123,7 @@ static gpu::ComputePSO s_pso_buildlut;
 static gpu::ComputePSO s_pso_present;
 
 void module_init() {
-  state::init("video.shape_fold", {1, 0, 0},
+  state::init("source.shape_fold", {1, 0, 0},
     state::Schema()
       // --- Shape axes (the custom XY pad drives frequency + simplicity) ---
       .floatField("frequency", 0.25f, 0.0f, 1.0f, state::PrimaryInput)

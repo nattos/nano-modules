@@ -1,4 +1,4 @@
-// video.invert — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
+// color.invert — standalone compute wrapper. Per-pixel logic in pixel.hlsl.
 
 #include "pixel.hlsl"
 

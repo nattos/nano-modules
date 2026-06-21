@@ -3,9 +3,9 @@
  * spectral_curve.h — Shared spectral-morph CURVE generation.
  *
  * Factors the atlas lookup + spectral morph (atlas triangle → FFT → barycentric
- * blend → IFFT → geometric straighten) out of data.spectral_lfo so it can be
- * reused. data.spectral_lfo samples the curve over TIME (a phase accumulator);
- * mod.spectral samples it at an INPUT value — the same morphed curve becomes a
+ * blend → IFFT → geometric straighten) out of mod.source.spectral_lfo so it can be
+ * reused. mod.source.spectral_lfo samples the curve over TIME (a phase accumulator);
+ * mod.shaper.spectral samples it at an INPUT value — the same morphed curve becomes a
  * remap envelope. The heavy ~1.2MB atlas lives in ONE translation unit
  * (spectral_curve.cpp), so the second consumer costs no extra data.
  *

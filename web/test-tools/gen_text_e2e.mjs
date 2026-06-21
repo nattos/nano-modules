@@ -1,5 +1,5 @@
 /*
- * gen_text_e2e.mjs — render the gen.text effect through the REAL app path
+ * gen_text_e2e.mjs — render the source.text.plain effect through the REAL app path
  * (gpu-test-runner.html → WasmHost + text.* import group → TextEngine → WebGPU)
  * and dump the PNG. Proves the effect node renders text in the actual runtime,
  * not just the standalone harness.
@@ -30,7 +30,7 @@ await page.goto(`http://localhost:${PORT}/gpu-test-runner.html`, { waitUntil: 'n
 
 await page.evaluate(() => {
   window.__gpuTestConfig = {
-    module: 'gen.text',
+    module: 'source.text.plain',
     bundle: 'text',
     width: 512,
     height: 256,
@@ -51,7 +51,7 @@ await browser.close();
 
 const raw = JSON.parse(text);
 if (!raw.success) { console.error('render failed:', JSON.stringify(raw, null, 2)); process.exit(1); }
-console.log(`gen.text rendered ${raw.width}x${raw.height}, metadata=${raw.metadata?.id}`);
+console.log(`source.text.plain rendered ${raw.width}x${raw.height}, metadata=${raw.metadata?.id}`);
 
 const pixels = new Uint8Array(Buffer.from(raw.pixelsBase64, 'base64'));
 writeFileSync(resolve(dumpDir, 'gen_text_e2e.png'), encodePNG(pixels, raw.width, raw.height));

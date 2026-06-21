@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.twitch_mask` against `core`. A roaming vignette
+// Per-effect tests for `filter.glitch.twitch_mask` against `core`. A roaming vignette
 // glitch: each frame picks a random anchor + strength and suppresses an oval.
 // Param indices (declaration order):
 //   0 = amount, 1 = shape, 2 = radius, 3 = softness, 4 = position
@@ -16,7 +16,7 @@ describe('Twitch Mask Effect E2E', () => {
       dumpName: 'twitch_mask_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.twitch_mask');
+    expect(frame.metadata?.id).toBe('filter.glitch.twitch_mask');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['amount', 'position', 'radius', 'shape', 'softness']);
   });

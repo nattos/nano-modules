@@ -1,5 +1,5 @@
 /**
- * Custom inspector for video.shape_fold — the evolving-shape generator.
+ * Custom inspector for source.shape_fold — the evolving-shape generator.
  *
  * The headline control is an XY pad: a square showing the baked atlas montage
  * (backdrop.png) where the user drags to set frequency (x) and simplicity (y).
@@ -221,7 +221,7 @@ export class ShapeFoldInspector extends MobxLitElement {
   }
 }
 
-editorRegistry.register('video.shape_fold', {
+editorRegistry.register('source.shape_fold', {
   inspector: {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('shape-fold-inspector') as ShapeFoldInspector;

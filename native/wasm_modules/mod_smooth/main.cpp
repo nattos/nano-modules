@@ -1,11 +1,11 @@
 /*
- * mod.smooth — Modulation Smooth shaper.
+ * mod.shaper.smooth — Smooth shaper.
  *
  * A unary modulation shaper: takes one scalar modulation value on `input` and
  * republishes a LINEARLY SMOOTHED version on `output`, using the EXACT same
  * linear-ramp math as the engine's built-in `FieldOptions.smoothing` option
  * (param_smoothing::advanceSmooth, the lock-step twin of web/src/param-smoothing.ts).
- * Pure data module — no GPU, no texture I/O (same shape as data.lfo / mod.remap),
+ * Pure data module — no GPU, no texture I/O (same shape as mod.source.lfo / mod.shaper.remap),
  * but STATEFUL: it carries the ramp (SmoothState) across frames.
  *
  * On a target change the timer resets, the current value becomes the ramp start,
@@ -36,7 +36,7 @@ struct State {
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.smooth", {1, 0, 0},
+  state::init("mod.shaper.smooth", {1, 0, 0},
     state::Schema()
       // The signal to smooth (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect

@@ -1,5 +1,5 @@
 /*
- * gen.text — text generator node.
+ * source.text.plain — text generator node.
  *
  * Renders multiline text into its output texture via the host `text.*` service
  * (FreeType + HarfBuzz + msdfgen live in the host, shared across effects). The
@@ -62,7 +62,7 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 }
 
 void module_init() {
-  state::init("gen.text", {1, 0, 0},
+  state::init("source.text.plain", {1, 0, 0},
     state::Schema()
       .textField  ("text",         "Text", state::PrimaryInput)
       .textField  ("font",         "",     state::PrimaryInput)
@@ -174,10 +174,10 @@ __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
   nano::registerEffect({
     2,
-    "gen.text",
+    "source.text.plain",
     "Text",
     "Renders multiline text via the host text engine (FreeType + msdfgen)",
-    "generator",
+    "source",
     "text,type,font,glyph,label,caption",
     NANO_INSTANCE_LIFECYCLE(gen_text),
   });

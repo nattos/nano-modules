@@ -2,7 +2,7 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for video.flow_swarm (nano bundle) + the `flow_field` struct
+ * E2E coverage for source.particles.flow_swarm (nano bundle) + the `flow_field` struct
  * handoff. flow_swarm consumes a velocity field (produced here by phase_fold)
  * and advects a GPU particle pool along it — connected via STRUCT AUTO-CONNECT
  * (flow_swarm's unwired flow_field_in binds the phase_fold producer above it),
@@ -46,14 +46,14 @@ function buildChain(withFlow: boolean, swarm: Record<string, unknown> = {},
   if (withFlow) {
     chain.push({
       type: 'module',
-      module_type: 'video.phase_fold',
+      module_type: 'source.phase_fold',
       instance_key: 'pf@0',
       params: { ...PF, ...pf },
     });
   }
   chain.push({
     type: 'module',
-    module_type: 'video.flow_swarm',
+    module_type: 'source.particles.flow_swarm',
     instance_key: 'sw@0',
     params: { ...SWARM, ...swarm },
   });
@@ -69,14 +69,14 @@ function buildGeneratorOnly(): Sketch {
   return {
     anchor: null,
     chain: [
-      { type: 'module', module_type: 'video.phase_fold', instance_key: 'pf@0', params: PF },
+      { type: 'module', module_type: 'source.phase_fold', instance_key: 'pf@0', params: PF },
     ],
   };
 }
 
 const isActive = (c: { r: number; g: number; b: number }) => c.r + c.g + c.b > 24;
 
-describe('video.flow_swarm + flow_field auto-connect E2E', () => {
+describe('source.particles.flow_swarm + flow_field auto-connect E2E', () => {
   jest.setTimeout(60000);
 
   it('renders a swarm over the flow_field (wired) distinct from the bare portrait', async () => {

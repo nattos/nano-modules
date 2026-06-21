@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for mod.envelope (resolume shell, local mode).
+ * Custom-inspector E2E for mod.shaper.envelope (resolume shell, local mode).
  *
  * Verifies the registered envelope inspector mounts on the effect card, the
  * graph draws the curve, and the headline interactions actually edit the `curve`
@@ -10,7 +10,7 @@ const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 
 const WALK = `function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}`;
 
-describe('mod.envelope custom inspector', () => {
+describe('mod.shaper.envelope custom inspector', () => {
   jest.setTimeout(60000);
 
   const openEnvelope = async (sketchId: string) => {
@@ -21,9 +21,9 @@ describe('mod.envelope custom inspector', () => {
       ac.mutate('s', d => {
         d.sketches['${sketchId}'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'mod.envelope', instance_key: 'env@0' }],
+          chain: [{ type: 'module', module_type: 'mod.shaper.envelope', instance_key: 'env@0' }],
           wires: [],
-          instances: { 'env@0': { module_type: 'mod.envelope', state: {} } },
+          instances: { 'env@0': { module_type: 'mod.shaper.envelope', state: {} } },
         };
       });
       ac.setActiveTab('edit');

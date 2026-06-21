@@ -1,5 +1,5 @@
 /*
- * video.invert — Color inversion.
+ * color.invert — Color inversion.
  *
  * Full RGB inversion. Partial-strength mixing is handled by the
  * system-level per-effect alpha, so there's no `amount` knob. Alpha
@@ -43,7 +43,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.invert", {1, 0, 0},
+  state::init("color.invert", {1, 0, 0},
     state::Schema()
       .boolField("invert_alpha", false, state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)

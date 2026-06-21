@@ -1,5 +1,5 @@
 /**
- * Regression: the mod.envelope custom inspector must mount in the EFFECTS IDE
+ * Regression: the mod.shaper.envelope custom inspector must mount in the EFFECTS IDE
  * (index.html → effect-ide-app), not only the resolume sketch shell. The IDE and
  * the shell registered custom editors via separate import lists, and the IDE's
  * list had drifted — so the envelope graph never appeared there. Both now share
@@ -9,10 +9,10 @@ const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 
 const WALK = `function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}`;
 
-describe('mod.envelope inspector in the effects IDE', () => {
+describe('mod.shaper.envelope inspector in the effects IDE', () => {
   jest.setTimeout(60000);
 
-  it('mounts the envelope graph for a mod.envelope effect', async () => {
+  it('mounts the envelope graph for a mod.shaper.envelope effect', async () => {
     await page.goto(`${BASE}/index.html`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3500));   // boot + bundle discovery
 
@@ -21,9 +21,9 @@ describe('mod.envelope inspector in the effects IDE', () => {
       ac.mutate('s', d => {
         d.sketches['proj_env'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'mod.envelope', instance_key: 'env@0' }],
+          chain: [{ type: 'module', module_type: 'mod.shaper.envelope', instance_key: 'env@0' }],
           wires: [],
-          instances: { 'env@0': { module_type: 'mod.envelope', state: {} } },
+          instances: { 'env@0': { module_type: 'mod.shaper.envelope', state: {} } },
         };
       });
       ac.selectProject('proj_env');

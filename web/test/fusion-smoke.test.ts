@@ -48,19 +48,19 @@ interface FusibleEffect {
 // Every effect that registers state::FusionKind::PerPixelMapper in the `core`
 // bundle (grep `FusionKind::PerPixelMapper` in native/wasm_modules/*/main.cpp).
 const EFFECTS: FusibleEffect[] = [
-  { id: 'video.bake_alpha' },
-  { id: 'video.brightness_contrast', params: [['brightness', 0.4]] },
-  { id: 'video.color_space' },
-  { id: 'video.curve',      params: [['gamma', 1.5]] },
-  { id: 'video.exposure',   params: [['exposure', 0.3]] },
-  { id: 'video.hsl',        params: [['saturation', 0.5]] },
-  { id: 'video.hue_basis' },
-  { id: 'video.invert' },
-  { id: 'video.levels' },
-  { id: 'video.posterize',  params: [['levels', 4]] },
-  { id: 'video.saturate',   params: [['asymm', 0.3]] },
-  { id: 'video.vibrance',   params: [['amount', 0.5]] },
-  { id: 'video.vignette' },
+  { id: 'composite.bake_alpha' },
+  { id: 'color.tone.brightness_contrast', params: [['brightness', 0.4]] },
+  { id: 'color.color_space' },
+  { id: 'color.tone.curve',      params: [['gamma', 1.5]] },
+  { id: 'color.tone.exposure',   params: [['exposure', 0.3]] },
+  { id: 'color.hsl',        params: [['saturation', 0.5]] },
+  { id: 'color.hue_basis' },
+  { id: 'color.invert' },
+  { id: 'color.tone.levels' },
+  { id: 'color.posterize',  params: [['levels', 4]] },
+  { id: 'color.saturate',   params: [['asymm', 0.3]] },
+  { id: 'color.vibrance',   params: [['amount', 0.5]] },
+  { id: 'filter.vignette' },
 ];
 
 const BACKENDS: Backend[] = ['puppeteer', 'metal'];
@@ -91,7 +91,7 @@ for (const backend of BACKENDS) {
 
         // (2)+(3) brightness_contrast → effect, standalone vs fused.
         const chain = [
-          { module: 'video.brightness_contrast', params: [['brightness', 0.55], ['contrast', 0.5]] as [string, number][] },
+          { module: 'color.tone.brightness_contrast', params: [['brightness', 0.55], ['contrast', 0.5]] as [string, number][] },
           { module: fx.id, params: fx.params },
         ];
         const opts = { chain, bundle: BUNDLE, width: W, height: H, inputColor: INPUT_COLOR };

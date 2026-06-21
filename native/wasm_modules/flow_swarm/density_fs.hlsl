@@ -1,4 +1,4 @@
-// video.flow_swarm — density splat fragment shader.
+// source.particles.flow_swarm — density splat fragment shader.
 //
 // Soft gaussian halo, peak 1.0 at the particle center. Drawn ADDITIVELY into
 // the density buffer. Channels:

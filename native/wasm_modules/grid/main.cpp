@@ -1,5 +1,5 @@
 /*
- * generator.grid — Procedural grid pattern.
+ * source.grid — Procedural grid pattern.
  *
  * Standard params:
  *   cell_size   [0, 1]   cell side length, in cover-square units (0.05..0.5).
@@ -73,7 +73,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("generator.grid", {1, 0, 0},
+  state::init("source.grid", {1, 0, 0},
     state::Schema()
       .floatField("cell_size",  0.1f,  0.f, 1.f, state::PrimaryInput)
       .floatField("line_width", 0.04f, 0.f, 1.f, state::PrimaryInput)

@@ -1,4 +1,4 @@
-// fx.block_dehance — render pass. Per pixel, find the (last) alive rect
+// filter.glitch.block_dehance — render pass. Per pixel, find the (last) alive rect
 // covering it and "dehance" the input there: black-fill, mosaic downres, or
 // noise — the mode captured per rect at spawn. An optional hard duty-cycle
 // flicker stutters each rect on/off out of phase.

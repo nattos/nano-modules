@@ -1,5 +1,5 @@
 /*
- * video.flash_particles — Mask-driven particle compositor.
+ * source.particles.flash_particles — Mask-driven particle compositor.
  *
  * Maintains a GPU-resident pool of up to MAX_PARTICLES particles. On
  * spawn, a compute shader random-samples the (optional) mask texture
@@ -263,7 +263,7 @@ static void apply_count_change(State& s) {
 
 // Type-level setup: schema + shared compute/render PSOs.
 void module_init() {
-  state::init("video.flash_particles", {1, 0, 0},
+  state::init("source.particles.flash_particles", {1, 0, 0},
     state::Schema()
       // ---- Pool ----
       .intField  ("count",            64,    1,    MAX_PARTICLES, state::PrimaryInput)

@@ -1,4 +1,4 @@
-// video.height_from_gradient — present / visualization pass.
+// filter.height_from_gradient — present / visualization pass.
 //
 // Turns the reconstructed full-res height into the output image. Four modes:
 //   Hillshade (default) — Lambertian-shade the surface normal (built from the

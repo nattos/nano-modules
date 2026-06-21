@@ -1,4 +1,4 @@
-// video.flash_particles — motion fragment shader.
+// source.particles.flash_particles — motion fragment shader.
 //
 // Outputs the per-particle motion vector along its rotation, with the
 // mask value as the alpha channel. The render pipeline runs in

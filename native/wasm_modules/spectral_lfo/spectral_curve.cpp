@@ -3,7 +3,7 @@
  *
  * The ONLY translation unit that includes spectral_lfo_atlas.h, so the ~1.2MB of
  * baked atlas data exists exactly once no matter how many effects consume the
- * curve (data.spectral_lfo, mod.spectral, ...). See spectral_curve.h.
+ * curve (mod.source.spectral_lfo, mod.shaper.spectral, ...). See spectral_curve.h.
  */
 
 #include "spectral_curve.h"

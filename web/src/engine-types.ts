@@ -7,7 +7,7 @@ import type { Sketch } from './sketch-types';
 // --- Effect info (from module registration) ---
 
 export interface EffectInfo {
-  id: string;           // "generator.spinningtris" (module-relative semantic ID)
+  id: string;           // "debug.spinningtris" (module-relative semantic ID)
   name: string;         // "Spinning Triangles"
   description: string;
   category: string;
@@ -93,7 +93,7 @@ export interface DebugStats {
 export interface DebugConsoleEntry {
   /** Source effect's instance key (so the UI can group/filter). */
   instanceKey: string;
-  /** Source effect's module ID (e.g. "video.saturate"). */
+  /** Source effect's module ID (e.g. "color.saturate"). */
   moduleId: string;
   /** Engine-relative timestamp (seconds). */
   timestamp: number;

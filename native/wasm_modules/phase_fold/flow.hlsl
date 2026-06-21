@@ -1,4 +1,4 @@
-// video.phase_fold — flow_field bake pass.
+// source.phase_fold — flow_field bake pass.
 //
 // Bakes the induced vector field v = level-set flow + wind (the same
 // pf_velocity the streamlines integrate) into a screen-resolution

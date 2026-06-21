@@ -1,15 +1,15 @@
 /**
  * <envelope-field> — a thin reusable binding of the generic <envelope-graph>
  * curve editor to a FieldBinding path whose value is a flat number ARRAY
- * `[x0,y0,e0, ...]` (the wire `mod.envelope` format), rather than the stringified
- * `curve` field the mod.envelope effect inspector uses.
+ * `[x0,y0,e0, ...]` (the wire `mod.shaper.envelope` format), rather than the stringified
+ * `curve` field the mod.shaper.envelope effect inspector uses.
  *
  * It's the same imperative-sync pattern as EnvelopeInspector (points pushed into
  * the graph via a rAF loop, guarded by `interacting` so a drag isn't clobbered;
  * continuous edits routed through begin/update/accept), just array-valued and
  * without the effect-specific input slider. Used by the wire-config "Envelope"
  * shaper stage (column-group.ts) so a wire can carry the same drawn curve a
- * standalone mod.envelope effect would.
+ * standalone mod.shaper.envelope effect would.
  */
 
 import { html, css } from 'lit';

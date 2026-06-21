@@ -1,4 +1,4 @@
-// video.shape_fold — auto-levels pass 3: invert the histogram into a remap LUT.
+// source.shape_fold — auto-levels pass 3: invert the histogram into a remap LUT.
 //
 // Single-invocation pass (port of buildLUT in app.js). Median → 0, contrast
 // leveled by blending a linear two-sided percentile stretch with the

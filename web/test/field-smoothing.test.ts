@@ -19,7 +19,7 @@ describe('engine FieldOptions.smoothing E2E', () => {
 
   const runStep = (id: string, smoothDuration: number | null) => {
     const bc: any = {
-      type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+      type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
       params: { brightness: 0.0, contrast: 0.0 },
     };
     if (smoothDuration !== null) {
@@ -28,14 +28,14 @@ describe('engine FieldOptions.smoothing E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
           params: { color: [0.5, 0.5, 0.5] } },
         bc,
       ],
     } as Sketch;
     return runEngineMultiPhaseTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'video.brightness_contrast'],
+      modules: ['source.solid_color', 'color.tone.brightness_contrast'],
       phases: [
         // Settle at brightness 0 (identity) → gray.
         { commands: [

@@ -5,7 +5,7 @@
  * Each frame, picks a random anchor + intensity from the performer params; the
  * GPU then applies nano_twitch_mask() (shaders_common/nano_twitch.hlsl) with the
  * resulting anchor/strength to suppress a roaming oval region. Extracted from
- * video.local_delay; also drives the standalone video.twitch_mask effect.
+ * motion.local_delay; also drives the standalone filter.glitch.twitch_mask effect.
  *
  * Param semantics:
  *   amount    0 = off; modulation depth into the mask. 0..0.5 ramps depth

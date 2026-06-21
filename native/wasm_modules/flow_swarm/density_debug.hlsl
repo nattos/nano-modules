@@ -1,4 +1,4 @@
-// video.flow_swarm — density buffer debug view.
+// source.particles.flow_swarm — density buffer debug view.
 //
 // Blits the interaction density buffer to tex_out as a heat map so the crowding
 // field (and the effect of interaction_radius) is directly visible. The buffer

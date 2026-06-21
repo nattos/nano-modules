@@ -1,4 +1,4 @@
-// gen.soft_glow — render pass (v1 scaffold).
+// source.light.soft_glow — render pass (v1 scaffold).
 //
 // Per pixel: sum gaussian contributions from N blobs, run the
 // accumulated intensity through a hue-shifting ramp (low → hue_low,

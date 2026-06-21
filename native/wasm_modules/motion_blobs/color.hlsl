@@ -1,4 +1,4 @@
-// gen.motion_blobs — color (darkening) pass.
+// source.light.motion_blobs — color (darkening) pass.
 //
 // Per pixel: sum gaussian coverage from all alive blobs (distance
 // computed in cover-square units so the footprint is aspect-correct).

@@ -1,5 +1,5 @@
 /*
- * gen.plasma_beam_cannon — 90s-anime power-up beam.
+ * source.light.plasma_beam_cannon — 90s-anime power-up beam.
  *
  * Per-bar vertical beam driven by a linked-across-bars ADSR clock:
  *   - Attack: small seed at `seed_y`, height = `seed_height`.
@@ -430,7 +430,7 @@ static void update_breaks(State& s, double dt) {
 // Type-level setup: schema + the shared color compute PSO. Runs once
 // per type.
 void module_init() {
-  state::init("gen.plasma_beam_cannon", {1, 0, 0},
+  state::init("source.light.plasma_beam_cannon", {1, 0, 0},
     state::Schema()
       // --- Standard ---
       .boolField ("gate",            false,                        state::PrimaryInput)

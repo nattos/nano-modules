@@ -11,7 +11,7 @@ describe('Transform Effect E2E', () => {
       dumpName: 'transform_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.transform');
+    expect(frame.metadata?.id).toBe('warp.transform');
   });
 
   it('default identity transform passes through unchanged', async () => {

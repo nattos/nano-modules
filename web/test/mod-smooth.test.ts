@@ -2,7 +2,7 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E for the mod.smooth shaper NODE — a unary modulation shaper that linearly
+ * E2E for the mod.shaper.smooth shaper NODE — a unary modulation shaper that linearly
  * ramps an incoming modulation value toward each new target over `duration`
  * seconds, using the SAME math as the engine's built-in `FieldOptions.smoothing`
  * (param_smoothing::advanceSmooth ↔ web/src/param-smoothing.ts). The exact ramp
@@ -10,28 +10,28 @@ import type { Sketch } from '../src/sketch-types';
  * end-to-end (steady-state passthrough + auto-connect) and that a stepped target
  * actually lags (temporal ramp).
  *
- * Probe: white solid → mod.smooth → brightness_contrast, with mod.smooth.output
+ * Probe: white solid → mod.shaper.smooth → brightness_contrast, with mod.shaper.smooth.output
  * wired into bc.brightness (auto/unsigned replace folds the source [0,1] into
  * brightness's signed [-1,1]). With contrast -0.5 (0.5× scale) on white input,
  * bc paints gray(128) at brightness 0 (source 0.5), black at -1 (source 0),
  * white at +1 (source 1).
  */
-describe('mod.smooth shaper node E2E', () => {
+describe('mod.shaper.smooth shaper node E2E', () => {
   jest.setTimeout(40000);
 
   it('auto-connects after a generator and passes the settled value through (duration 0)', async () => {
-    // lfo(0.5) sits directly above mod.smooth → auto-connected into its input.
+    // lfo(0.5) sits directly above mod.shaper.smooth → auto-connected into its input.
     // duration 0 ⇒ instant, so the output is the lfo value with no ramp: gray.
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
           params: { color: [1.0, 1.0, 1.0] } },
-        { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0',
+        { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
           params: { rate: 0.0, amplitude: 1.0 } },
-        { type: 'module', module_type: 'mod.smooth', instance_key: 'sm@0',
+        { type: 'module', module_type: 'mod.shaper.smooth', instance_key: 'sm@0',
           params: { duration: 0.0 } },
-        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
           params: { brightness: 1.0, contrast: -0.5 } },
       ],
       // No wire into sm@0.input — the executor auto-connects lfo@0 -> sm@0.
@@ -43,7 +43,7 @@ describe('mod.smooth shaper node E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'data.lfo', 'mod.smooth', 'video.brightness_contrast'],
+      modules: ['source.solid_color', 'mod.source.lfo', 'mod.shaper.smooth', 'color.tone.brightness_contrast'],
       commands: [{ type: 'createSketch', sketchId: 'sm_pass', sketch }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'sm_pass' } }],
       captureTraceIds: ['out'],
@@ -62,11 +62,11 @@ describe('mod.smooth shaper node E2E', () => {
     const sketch: Sketch = {
       anchor: null,
       chain: [
-        { type: 'module', module_type: 'generator.solid_color', instance_key: 'src@0',
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
           params: { color: [1.0, 1.0, 1.0] } },
-        { type: 'module', module_type: 'mod.smooth', instance_key: 'sm@0',
+        { type: 'module', module_type: 'mod.shaper.smooth', instance_key: 'sm@0',
           params: { input: 0.0, duration } },
-        { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0',
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
           params: { brightness: 1.0, contrast: -0.5 } },
       ],
       wires: [
@@ -76,7 +76,7 @@ describe('mod.smooth shaper node E2E', () => {
     } as Sketch;
     return runEngineMultiPhaseTest({
       width: 64, height: 64,
-      modules: ['generator.solid_color', 'mod.smooth', 'video.brightness_contrast'],
+      modules: ['source.solid_color', 'mod.shaper.smooth', 'color.tone.brightness_contrast'],
       phases: [
         // Settle at input 0 → output 0 → black. (Multi-phase ignores top-level
         // tracePoints — set them via a command in the first phase.)

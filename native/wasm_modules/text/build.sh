@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build text.wasm — the bundle containing the gen.text effect. Unlike most
-# effects, gen.text ships NO shaders: it drives the host `text.*` service
+# Build text.wasm — the bundle containing the source.text.plain effect. Unlike most
+# effects, source.text.plain ships NO shaders: it drives the host `text.*` service
 # (the shared FreeType+msdfgen engine + GPU compositor live in the host), so
 # this is just the tiny effect that builds a JSON spec and calls text.layout /
 # text.render.
@@ -24,7 +24,7 @@ WASM_COMMON_EXPORTS=(
   -Wl,--export=__indirect_function_table
 )
 
-echo "Building text.wasm (gen.text)"
+echo "Building text.wasm (source.text.plain)"
 wasm_build \
   -I"$TMP_DIR" \
   -I../include \

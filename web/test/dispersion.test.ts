@@ -1,6 +1,6 @@
 import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `fx.dispersion` against the `lights` bundle.
+// Per-effect tests for `warp.dispersion` against the `lights` bundle.
 //
 // Dispersion samples the input at (block_center + random_offset). With
 // a uniform input texture, every sample returns the same color → output
@@ -19,7 +19,7 @@ describe('Dispersion Effect E2E', () => {
       dumpName: 'dispersion_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('fx.dispersion');
+    expect(frame.metadata?.id).toBe('warp.dispersion');
   });
 
   it('intensity=0 passes input through unchanged', async () => {

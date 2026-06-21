@@ -1,4 +1,4 @@
-// video.motion_field — motion pass.
+// motion.field — motion pass.
 //
 // Computes the per-pixel velocity via the shared `mf_velocity_at`
 // and writes it into the rgba16float motion texture. Pixels with zero

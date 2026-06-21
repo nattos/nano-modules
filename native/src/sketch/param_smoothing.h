@@ -5,7 +5,7 @@
  * This is the SOLE implementation of the smoothing math: the shared executor
  * (sketch_executor.cpp) compiles to BOTH the native barrel AND executor.wasm, so
  * the web runtime runs exactly this code. It backs both the engine-level
- * `FieldOptions.smoothing` option (applied in the executor) and the `mod.smooth`
+ * `FieldOptions.smoothing` option (applied in the executor) and the `mod.shaper.smooth`
  * shaper effect. Behavior is pinned by the Catch2 goldens in
  * native/tests/test_param_smoothing.cpp. (A web/src/param-smoothing.ts twin
  * existed from the old TS-executor era; it was removed once smoothing was wired

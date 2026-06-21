@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.vibrance.
+// Per-pixel kernel for color.vibrance.
 // Saturation boost biased toward already-unsaturated pixels.
 
 #include "nano_color.hlsl"

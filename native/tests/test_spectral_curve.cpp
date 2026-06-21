@@ -1,6 +1,6 @@
 // test_spectral_curve.cpp — the shared spectral-morph curve generator
 // (wasm_modules/spectral_lfo/spectral_curve.{h,cpp}), factored out of
-// data.spectral_lfo so mod.spectral can reuse it. Verifies the curve build is
+// mod.source.spectral_lfo so mod.shaper.spectral can reuse it. Verifies the curve build is
 // in-range, deterministic, position-sensitive, and properly cached.
 
 #include "spectral_curve.h"

@@ -19,7 +19,7 @@ namespace fx {
  *   slider +1  →  exp 1 / 2^range      (heavy lift)
  *
  * `range = 3.0` (default) gives the standard 8↔1↔1/8 mapping used by
- * `video.curve`, `video.levels` (gamma), and the noise contrast control.
+ * `color.tone.curve`, `color.tone.levels` (gamma), and the noise contrast control.
  */
 inline float signedSliderToExp(float slider, float range = 3.0f) {
   return std::pow(2.0f, -slider * range);

@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for gen.side_jet — the fixed-engine JPL test plume.
+// Per-effect tests for source.light.side_jet — the fixed-engine JPL test plume.
 //
 // side_jet's 1D axial solver carries persistent GPU state that develops
 // across rendered frames, so these tests set `renderEachTick: true` (the
@@ -19,7 +19,7 @@ describe('Side Jet Effect E2E', () => {
       inputColor: [0, 0, 0, 1], dumpName: 'side_jet_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('gen.side_jet');
+    expect(frame.metadata?.id).toBe('source.light.side_jet');
   });
 
   it('ignited engine renders a visible plume', async () => {

@@ -1,5 +1,5 @@
 /*
- * video.levels — Photoshop-style input/output remapping with gamma.
+ * color.tone.levels — Photoshop-style input/output remapping with gamma.
  *
  *   x = saturate((in - in_low) / (in_high - in_low))
  *   x = pow(x, gamma_exp)
@@ -62,7 +62,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.levels", {1, 0, 0},
+  state::init("color.tone.levels", {1, 0, 0},
     state::Schema()
       .floatField("in_low",   0.0f, 0.f, 1.f, state::PrimaryInput)
       .floatField("in_high",  1.0f, 0.f, 1.f, state::PrimaryInput)

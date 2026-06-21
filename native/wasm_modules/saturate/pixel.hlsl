@@ -1,4 +1,4 @@
-// Per-pixel kernel for video.saturate. Authored once; the build emits
+// Per-pixel kernel for color.saturate. Authored once; the build emits
 // both the standalone compute shader (via compute.hlsl wrapping this
 // file) and the fusion fragment (via DXC + naga, see
 // compile_shaders_compute_fused in wasm_build_env.sh). The runtime

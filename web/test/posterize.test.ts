@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.posterize` against `core`.
+// Per-effect tests for `color.posterize` against `core`.
 // amount [0, 1] maps exponentially to a number of levels: 0→256, 1→2.
 // Param indices: 0 = amount, 1 = quantize_alpha.
 
@@ -16,7 +16,7 @@ describe('Posterize Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.posterize');
+    expect(frame.metadata?.id).toBe('color.posterize');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['amount', 'quantize_alpha']);
   });

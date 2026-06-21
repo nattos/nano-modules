@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.color_space` against `core`. The effect
+// Per-effect tests for `color.color_space` against `core`. The effect
 // always routes input → linear (canonical) → output, so all four
 // combinations of (in_space × out_space) are covered by a single
 // shader path; the tests pin a few representative round-trips.
@@ -22,7 +22,7 @@ describe('Color Space Effect E2E', () => {
       dumpName: 'color_space_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.color_space');
+    expect(frame.metadata?.id).toBe('color.color_space');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['in_space', 'out_space']);
   });

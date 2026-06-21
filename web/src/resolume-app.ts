@@ -54,8 +54,8 @@ async function main() {
   engine.onEffectsDiscovered = (effects) => {
     baseHandler?.(effects);
     if (barrelMode) return;
-    appController.instantiateEffect('generator.spinningtris');
-    appController.instantiateEffect('generator.solid_color');
+    appController.instantiateEffect('debug.spinningtris');
+    appController.instantiateEffect('source.solid_color');
     appController.instantiateEffect('debug.gpu_test');
 
     if (!debugSketchCreated) {
@@ -71,8 +71,8 @@ async function main() {
     appController.loadModule('com.nano.core');
     appController.loadModule('com.nano.nano');
     appController.loadModule('com.nano.lights');
-    appController.loadModule('com.nano.text');      // gen.text
-    appController.loadModule('com.nano.richtext');  // gen.richtext (Blitz HTML/CSS)
+    appController.loadModule('com.nano.text');      // source.text.plain
+    appController.loadModule('com.nano.richtext');  // source.text.rich (Blitz HTML/CSS)
   }
 
   if (barrelMode) connectBarrel(barrelUrl!);
@@ -133,7 +133,7 @@ function connectBarrel(url: string) {
     });
   };
 
-  // Per-instance output values the barrel publishes for io.barrel_macros (the
+  // Per-instance output values the barrel publishes for control.barrel_macros (the
   // live macro knobs). Injected into a local sketch copy natively, so otherwise
   // invisible to the web. Feeds engine.pluginStates so the effect's output trace
   // cards (which read pluginStates[instanceKey][field]) show live values.
@@ -330,12 +330,12 @@ function createDebugParticleSketch() {
     chain: [
       {
         type: 'module',
-        module_type: 'data.particles_emitter',
+        module_type: 'debug.particles_emitter',
         instance_key: emitterKey,
       },
       {
         type: 'module',
-        module_type: 'video.particles_renderer',
+        module_type: 'debug.particles_renderer',
         instance_key: rendererKey,
       },
     ],
@@ -348,11 +348,11 @@ function createDebugParticleSketch() {
     ],
     instances: {
       [emitterKey]: {
-        module_type: 'data.particles_emitter',
+        module_type: 'debug.particles_emitter',
         state: { spawn_speed: 0.6, gravity: [0.0, -0.4] },
       },
       [rendererKey]: {
-        module_type: 'video.particles_renderer',
+        module_type: 'debug.particles_renderer',
         state: { particle_size: 0.03, tint: [1.0, 0.7, 0.2, 1.0] },
       },
     },

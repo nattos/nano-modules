@@ -1,4 +1,4 @@
-// video.motion_field — shared math for color + motion passes.
+// motion.field — shared math for color + motion passes.
 //
 // Both passes need to compute the per-pixel velocity. Defining it
 // once here keeps the two shaders byte-for-byte consistent — any

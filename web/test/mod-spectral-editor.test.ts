@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for mod.spectral (resolume shell, local mode).
+ * Custom-inspector E2E for mod.shaper.spectral (resolume shell, local mode).
  *
  * Verifies the registered inspector mounts: the reused spectral morph XY pad +
  * curve preview, plus the `input` slider. The preview parks its playhead at the
@@ -8,7 +8,7 @@
 const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 const WALK = `function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}`;
 
-describe('mod.spectral custom inspector', () => {
+describe('mod.shaper.spectral custom inspector', () => {
   jest.setTimeout(60000);
 
   it('mounts the morph pad + curve preview + input slider', async () => {
@@ -20,9 +20,9 @@ describe('mod.spectral custom inspector', () => {
       ac.mutate('s', d => {
         d.sketches['sk_sp'] = {
           anchor: null,
-          chain: [{ type: 'module', module_type: 'mod.spectral', instance_key: 'sp@0' }],
+          chain: [{ type: 'module', module_type: 'mod.shaper.spectral', instance_key: 'sp@0' }],
           wires: [],
-          instances: { 'sp@0': { module_type: 'mod.spectral', state: { morph_x: 0.5, morph_y: 0.5, input: 0.3 } } },
+          instances: { 'sp@0': { module_type: 'mod.shaper.spectral', state: { morph_x: 0.5, morph_y: 0.5, input: 0.3 } } },
         };
       });
       ac.setActiveTab('edit');

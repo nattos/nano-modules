@@ -1,4 +1,4 @@
-// video.auto_level — shared block for the auto-leveler passes.
+// color.tone.auto_level — shared block for the auto-leveler passes.
 //
 // Estimates the input's luminance histogram (minmax → hist over a downsample
 // grid), inverts it into a remap curve (buildlut) with two composable options,

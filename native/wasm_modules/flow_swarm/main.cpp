@@ -1,5 +1,5 @@
 /*
- * video.flow_swarm — flow-field-driven GPU particle swarm.
+ * source.particles.flow_swarm — flow-field-driven GPU particle swarm.
  *
  * Consumes a `flow_field` rail (the canonical velocity texture produced by
  * phase_fold or any flow generator/modifier) and advects a GPU-resident pool
@@ -281,7 +281,7 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("video.flow_swarm", {1, 0, 0},
+  state::init("source.particles.flow_swarm", {1, 0, 0},
     state::Schema()
       // ---- Pool / advection (the live controls) ----
       .intField  ("count",        150000, 1, MAX_PARTICLES, state::PrimaryInput)

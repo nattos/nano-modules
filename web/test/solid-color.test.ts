@@ -1,6 +1,6 @@
 import { runGpuTest } from './gpu-test-helpers';
 
-// Per-effect tests for `generator.solid_color` against the shipping `core`
+// Per-effect tests for `source.solid_color` against the shipping `core`
 // bundle. solid_color is a generator (no texture input). It exposes one
 // vec3 color field (`color`, hint=color) which the IDE shows as an RGB
 // picker. Tests pass it as a name+array tuple via the test runner's
@@ -17,7 +17,7 @@ describe('Solid Color Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('generator.solid_color');
+    expect(frame.metadata?.id).toBe('source.solid_color');
     // float3 fields don't appear in the legacy params[] list (only
     // scalars do). solid_color has no scalar params after the migration.
     expect(frame.params.length).toBe(0);

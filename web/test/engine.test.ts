@@ -6,9 +6,9 @@ describe('Engine Worker E2E', () => {
   describe('single real plugin', () => {
     it('ticks and traces output from spinningtris', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris'],
+        modules: ['debug.spinningtris'],
         tracePoints: [
-          { id: 'main', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
+          { id: 'main', target: { type: 'plugin_output', pluginKey: 'debug.spinningtris@0' } },
         ],
         captureTraceIds: ['main'],
         dumpName: 'engine_spinningtris',
@@ -45,7 +45,7 @@ describe('Engine Worker E2E', () => {
 
     it('reports correct plugin metadata in state', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris'],
+        modules: ['debug.spinningtris'],
         tracePoints: [],
         waitFrames: 5,
         dumpName: 'engine_metadata',
@@ -55,9 +55,9 @@ describe('Engine Worker E2E', () => {
       expect(result.state).toBeTruthy();
       expect(result.state.plugins.length).toBeGreaterThanOrEqual(1);
 
-      const st = result.state.plugins.find((p: any) => p.id === 'generator.spinningtris');
+      const st = result.state.plugins.find((p: any) => p.id === 'debug.spinningtris');
       expect(st).toBeTruthy();
-      expect(st.key).toBe('generator.spinningtris@0');
+      expect(st.key).toBe('debug.spinningtris@0');
       expect(st.params.length).toBe(2);
       const paramNames = st.params.map((p: any) => p.name).sort();
       expect(paramNames).toEqual(['speed', 'triangles']);
@@ -67,9 +67,9 @@ describe('Engine Worker E2E', () => {
   describe('multiple real plugins', () => {
     it('traces different outputs from different plugins', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris', 'debug.gpu_test'],
+        modules: ['debug.spinningtris', 'debug.gpu_test'],
         tracePoints: [
-          { id: 'tris', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
+          { id: 'tris', target: { type: 'plugin_output', pluginKey: 'debug.spinningtris@0' } },
           { id: 'blue', target: { type: 'plugin_output', pluginKey: 'debug.gpu_test@0' } },
         ],
         captureTraceIds: ['tris', 'blue'],
@@ -97,9 +97,9 @@ describe('Engine Worker E2E', () => {
   describe('sketch with brightness_contrast', () => {
     it('applies contrast reduction to spinningtris', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         tracePoints: [
-          { id: 'raw', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
+          { id: 'raw', target: { type: 'plugin_output', pluginKey: 'debug.spinningtris@0' } },
           { id: 'processed', target: { type: 'sketch_output', sketchId: 'test_sketch' } },
         ],
         commands: [
@@ -107,11 +107,11 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'test_sketch',
             sketch: {
-              anchor: 'generator.spinningtris@0',
+              anchor: 'debug.spinningtris@0',
               chain: [
                 {
                   type: 'module',
-                  module_type: 'video.brightness_contrast',
+                  module_type: 'color.tone.brightness_contrast',
                   instance_key: 'virtual_bc@0',
                   params: { brightness: 0.0, contrast: -0.5 },  // neutral brightness, half contrast
                 },
@@ -142,7 +142,7 @@ describe('Engine Worker E2E', () => {
 
     it('contrast=-1 produces black', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'black_sketch' } },
         ],
@@ -151,11 +151,11 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'black_sketch',
             sketch: {
-              anchor: 'generator.spinningtris@0',
+              anchor: 'debug.spinningtris@0',
               chain: [
                 {
                   type: 'module',
-                  module_type: 'video.brightness_contrast',
+                  module_type: 'color.tone.brightness_contrast',
                   instance_key: 'virtual_bc_black@0',
                   params: { brightness: 0.0, contrast: -1.0 },  // contrast=-1 → black
                 },
@@ -179,13 +179,13 @@ describe('Engine Worker E2E', () => {
       // Simpler version: just trace plugin outputs directly (no sketches)
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['generator.spinningtris', 'debug.gpu_test'],
+        modules: ['debug.spinningtris', 'debug.gpu_test'],
         dumpName: 'engine_plugin_switch',
         phases: [
           {
             commands: [
               { type: 'setTracePoints', tracePoints: [
-                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'debug.spinningtris@0' } },
               ]},
             ],
             waitFrames: 10,
@@ -203,7 +203,7 @@ describe('Engine Worker E2E', () => {
           {
             commands: [
               { type: 'setTracePoints', tracePoints: [
-                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'generator.spinningtris@0' } },
+                { id: 'preview', target: { type: 'plugin_output', pluginKey: 'debug.spinningtris@0' } },
               ]},
             ],
             waitFrames: 10,
@@ -232,7 +232,7 @@ describe('Engine Worker E2E', () => {
       // Bug: switching back shows the gpu_test output instead of spinningtris.
 
       const trisSketch = {
-        anchor: 'generator.spinningtris@0',
+        anchor: 'debug.spinningtris@0',
         chain: [
         ],
       };
@@ -245,7 +245,7 @@ describe('Engine Worker E2E', () => {
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['generator.spinningtris', 'debug.gpu_test'],
+        modules: ['debug.spinningtris', 'debug.gpu_test'],
         dumpName: 'engine_trace_switch',
         phases: [
           // Phase 0: Create both sketches, trace the spinningtris sketch
@@ -306,14 +306,14 @@ describe('Engine Worker E2E', () => {
   describe('env_lfo output', () => {
     it('env_lfo reports output as data_output in plugin io', async () => {
       const result = await runEngineTest({
-        modules: ['data.lfo'],
+        modules: ['mod.source.lfo'],
         tracePoints: [],
         waitFrames: 5,
         dumpName: 'engine_lfo_io',
       });
 
       expect(result.success).toBe(true);
-      const lfo = result.state.plugins.find((p: any) => p.id === 'data.lfo');
+      const lfo = result.state.plugins.find((p: any) => p.id === 'mod.source.lfo');
       expect(lfo).toBeTruthy();
 
       // "output" should appear in io with kind=2 (data_output)
@@ -333,7 +333,7 @@ describe('Engine Worker E2E', () => {
   describe('chain_entry trace points', () => {
     it('resolves chain_entry trace to module output texture', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         tracePoints: [
           // Trace the BC module's output. Texture I/O are implicit (stripped on
           // ingest), so the single module sits at chainIdx 0 in the flattened chain.
@@ -345,11 +345,11 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'sk_ce',
             sketch: {
-              anchor: 'generator.spinningtris@0',
+              anchor: 'debug.spinningtris@0',
               chain: [
                 {
                   type: 'module',
-                  module_type: 'video.brightness_contrast',
+                  module_type: 'color.tone.brightness_contrast',
                   instance_key: 'bc_ce@0',
                   params: { brightness: 0.0, contrast: -1.0 },
                 },
@@ -377,7 +377,7 @@ describe('Engine Worker E2E', () => {
 
     it('chain_entry input differs from output when module applies effect', async () => {
       const result = await runEngineTest({
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         tracePoints: [
           { id: 'bc_in', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 0, side: 'input' } },
           { id: 'bc_out', target: { type: 'chain_entry', sketchId: 'sk_io', colIdx: 0, chainIdx: 0, side: 'output' } },
@@ -387,11 +387,11 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'sk_io',
             sketch: {
-              anchor: 'generator.spinningtris@0',
+              anchor: 'debug.spinningtris@0',
               chain: [
                 {
                   type: 'module',
-                  module_type: 'video.brightness_contrast',
+                  module_type: 'color.tone.brightness_contrast',
                   instance_key: 'bc_io@0',
                   params: { brightness: 0.0, contrast: -1.0 },
                 },
@@ -426,11 +426,11 @@ describe('Engine Worker E2E', () => {
       // render with default params instead of the ones in the sketch.
 
       const makeSketch = () => ({
-        anchor: 'generator.spinningtris@0',
+        anchor: 'debug.spinningtris@0',
         chain: [
           {
             type: 'module',
-            module_type: 'video.brightness_contrast',
+            module_type: 'color.tone.brightness_contrast',
             instance_key: 'bc_move@0',
             params: { brightness: 0.0, contrast: -1.0 },
           },
@@ -439,7 +439,7 @@ describe('Engine Worker E2E', () => {
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         dumpName: 'engine_sketch_resend',
         phases: [
           // Phase 0: contrast=-1 → should be black
@@ -489,7 +489,7 @@ describe('Engine Worker E2E', () => {
       // The sketch output should be the module's processed result, not the raw
       // anchor passthrough.
       const result = await runEngineTest({
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'sk_trailing' } },
         ],
@@ -498,11 +498,11 @@ describe('Engine Worker E2E', () => {
             type: 'createSketch',
             sketchId: 'sk_trailing',
             sketch: {
-              anchor: 'generator.spinningtris@0',
+              anchor: 'debug.spinningtris@0',
               chain: [
                 {
                   type: 'module',
-                  module_type: 'video.brightness_contrast',
+                  module_type: 'color.tone.brightness_contrast',
                   instance_key: 'bc_trail@0',
                   params: { brightness: 0.0, contrast: -1.0 },
                 },
@@ -529,11 +529,11 @@ describe('Engine Worker E2E', () => {
       // Verify output reflects the param change throughout.
 
       const sketchEmpty = {
-        anchor: 'generator.spinningtris@0',
+        anchor: 'debug.spinningtris@0',
         chain: [
           {
             type: 'module',
-            module_type: 'video.brightness_contrast',
+            module_type: 'color.tone.brightness_contrast',
             instance_key: 'bc_setparam@0',
             params: {},  // Empty, like createSketch
           },
@@ -541,11 +541,11 @@ describe('Engine Worker E2E', () => {
       };
 
       const sketchWithParams = {
-        anchor: 'generator.spinningtris@0',
+        anchor: 'debug.spinningtris@0',
         chain: [
           {
             type: 'module',
-            module_type: 'video.brightness_contrast',
+            module_type: 'color.tone.brightness_contrast',
             instance_key: 'bc_setparam@0',
             params: { brightness: 0.0, contrast: -1.0 },
           },
@@ -554,7 +554,7 @@ describe('Engine Worker E2E', () => {
 
       const result = await runEngineMultiPhaseTest({
         width: 64, height: 64,
-        modules: ['generator.spinningtris', 'video.brightness_contrast'],
+        modules: ['debug.spinningtris', 'color.tone.brightness_contrast'],
         dumpName: 'engine_setparam_resend',
         phases: [
           // Phase 0: Create sketch with empty params, then set contrast=-1

@@ -1,5 +1,5 @@
 /*
- * fx.block_dehance — glitch rectangles that "dehance" the input.
+ * filter.glitch.block_dehance — glitch rectangles that "dehance" the input.
  *
  * A GPU-resident pool of rectangles cycles continuously (no trigger). Each
  * rect, on respawn, bright-seeks the mask (K samples, softmax by temperature)
@@ -104,7 +104,7 @@ static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (
 static inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (v > hi ? hi : v); }
 
 void module_init() {
-  state::init("fx.block_dehance", {1, 0, 0},
+  state::init("filter.glitch.block_dehance", {1, 0, 0},
     state::Schema()
       .intField  ("count",                 6, 0, 64,            state::PrimaryInput)
       .floatField("life_s",                1.5f, 0.05f, 10.0f,  state::PrimaryInput)

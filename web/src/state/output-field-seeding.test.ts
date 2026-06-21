@@ -16,8 +16,8 @@ import type { PluginInfo } from './types';
 // (`output`, io = Output|Primary = 6). The legacy `params` list carries BOTH
 // (it has no io), so the seeder must filter the output in both passes.
 const LFO_PLUGIN: PluginInfo = {
-  id: 'data.lfo',
-  key: 'data.lfo',
+  id: 'mod.source.lfo',
+  key: 'mod.source.lfo',
   version: '1',
   params: [
     { index: 0, name: 'amplitude', type: 10, defaultValue: 1, min: 0, max: 1 },
@@ -46,7 +46,7 @@ describe('fresh instance output-field seeding', () => {
       } as any;
     });
 
-    appController.addEffectToChain('sk', 0, 0, 'data.lfo');
+    appController.addEffectToChain('sk', 0, 0, 'mod.source.lfo');
 
     const entry = sketchChain(appState.database.sketches.sk)[0] as any;
     const state = appState.database.sketches.sk.instances![entry.instance_key].state;

@@ -22,14 +22,14 @@ describe('wire magnitude UI', () => {
         d.sketches['sk_wm'] = {
           anchor: null,
           chain: [
-            { type: 'module', module_type: 'data.lfo', instance_key: 'lfo@0' },
-            { type: 'module', module_type: 'video.brightness_contrast', instance_key: 'bc@0' },
+            { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0' },
+            { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0' },
           ],
           wires: [{ id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
                     dest: { instanceKey: 'bc@0', field: 'brightness' } }],
           instances: {
-            'lfo@0': { module_type: 'data.lfo', state: {} },
-            'bc@0': { module_type: 'video.brightness_contrast', state: { brightness: 1, contrast: 0.25 } },
+            'lfo@0': { module_type: 'mod.source.lfo', state: {} },
+            'bc@0': { module_type: 'color.tone.brightness_contrast', state: { brightness: 1, contrast: 0.25 } },
           },
         };
       });

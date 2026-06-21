@@ -1,4 +1,4 @@
-// video.auto_level — pass 1: luminance min/max over the SN×SN grid.
+// color.tone.auto_level — pass 1: luminance min/max over the SN×SN grid.
 //
 // Atomic min/max of input luminance into a stats buffer. Luminance ≥ 0, so the
 // IEEE bit pattern (asint) orders the same as the float. Reset on the CPU each

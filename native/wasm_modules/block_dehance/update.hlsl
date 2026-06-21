@@ -1,4 +1,4 @@
-// fx.block_dehance — update pass. One thread per rect slot.
+// filter.glitch.block_dehance — update pass. One thread per rect slot.
 //
 // Lifecycle (mirrors flash_particles):
 //   life_remain > 0                        — visible; tick life down.

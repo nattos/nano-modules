@@ -1,4 +1,4 @@
-// video.height_from_gradient — gradient generation pass.
+// filter.height_from_gradient — gradient generation pass.
 //
 // Synthesizes the source gradient field g(p) from the input. The `source`
 // switch is the seam where gradient generators plug in; the solver and

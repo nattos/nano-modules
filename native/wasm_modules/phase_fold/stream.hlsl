@@ -1,4 +1,4 @@
-// video.phase_fold — streamline tracer (compute).
+// source.phase_fold — streamline tracer (compute).
 //
 // One thread per streamline seed (an NS×NS grid over the phase window). Each
 // thread integrates the blended vector field for SL_STEPS RK2 steps and writes

@@ -1,4 +1,4 @@
-// video.shape_fold — present: the auto-leveled field as grayscale or a grade.
+// source.shape_fold — present: the auto-leveled field as grayscale or a grade.
 //
 // The square [-1,1]² field COVERS the (possibly non-square) viewport uniformly
 // — the long axis spans ±1, the short axis is cropped, no bars — then zoomed by

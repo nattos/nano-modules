@@ -1,4 +1,4 @@
-// gen.tingle_top — sparkle fragment shader. Mask (solid/circle/gaussian) ×
+// source.light.tingle_top — sparkle fragment shader. Mask (solid/circle/gaussian) ×
 // life-fade × per-frame shimmer → alpha; single hue + per-particle jitter →
 // colour × intensity. Output is straight colour + alpha; the additive PSO
 // composites it as colour*alpha over the pre-filled input.

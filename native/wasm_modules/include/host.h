@@ -722,7 +722,7 @@ private:
 
   // Append `s` into the schema JSON as the body of a string literal, escaping
   // any character that JSON forbids raw. A textField default can be a whole
-  // multi-line stylesheet (gen.richtext) with embedded quotes and newlines; a
+  // multi-line stylesheet (source.text.rich) with embedded quotes and newlines; a
   // raw control byte / unescaped quote corrupts the schema JSON and the web's
   // strict JSON.parse rejects it. (Native nlohmann is lenient and would hide it.)
   void appendJsonString(const char* s) {

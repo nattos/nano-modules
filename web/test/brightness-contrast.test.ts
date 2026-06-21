@@ -5,7 +5,7 @@ import { runGpuEffectTest, runGpuChainTest, runGpuTest } from './gpu-test-helper
 // spinningtris use `testonly` (where spinningtris lives) since chain tests
 // can mix bundles only by step.
 
-describe('Brightness/Contrast Effect E2E', () => {
+describe('Brightness & Contrast Effect E2E', () => {
   jest.setTimeout(30000);
 
   describe('standalone (solid color input)', () => {
@@ -18,7 +18,7 @@ describe('Brightness/Contrast Effect E2E', () => {
       });
 
       expect(frame.success).toBe(true);
-      expect(frame.metadata?.id).toBe('video.brightness_contrast');
+      expect(frame.metadata?.id).toBe('color.tone.brightness_contrast');
       expect(frame.params.length).toBe(2);
       expect(frame.params[0].name).toBe('brightness');
       expect(frame.params[1].name).toBe('contrast');

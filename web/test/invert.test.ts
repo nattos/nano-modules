@@ -1,6 +1,6 @@
 import { runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.invert` against `core`. Inversion is now
+// Per-effect tests for `color.invert` against `core`. Inversion is now
 // unconditional (partial-strength mixing is handled by the system-level
 // per-effect alpha). Param indices: 0 = invert_alpha (bool as 0/1).
 
@@ -16,7 +16,7 @@ describe('Invert Effect E2E', () => {
     });
 
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.invert');
+    expect(frame.metadata?.id).toBe('color.invert');
     const names = frame.params.map(p => p.name).sort();
     expect(names).toEqual(['invert_alpha']);
   });

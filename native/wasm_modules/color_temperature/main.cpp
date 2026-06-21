@@ -1,12 +1,12 @@
 /*
- * video.color_temperature — Warm/cool white-balance shift.
+ * color.temperature — Warm/cool white-balance shift.
  *
  *   temperature -1.0  →  cool  (boost B, cut R)
  *   temperature  0.0  →  neutral (pass-through)
  *   temperature +1.0  →  warm  (boost R, cut B)
  *
  * A simple per-channel multiply on the orange/blue axis. Split out of
- * `video.exposure` so exposure stays a clean stops-only gain. Pair with
+ * `color.tone.exposure` so exposure stays a clean stops-only gain. Pair with
  * `exposure` upstream/downstream if you want both.
  *
  * Class-like instance model: module_init() sets up the type-shared
@@ -49,7 +49,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.color_temperature", {1, 0, 0},
+  state::init("color.temperature", {1, 0, 0},
     state::Schema()
       .floatField("temperature", 0.0f, -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)

@@ -1,4 +1,4 @@
-// video.shape_fold — auto-levels pass 2: histogram over the SN×SN grid.
+// source.shape_fold — auto-levels pass 2: histogram over the SN×SN grid.
 //
 // Buckets the field into NB bins across [lo, hi] (from pass 1) via atomic add.
 // Runs after minmax in the same submit, so the lo/hi writes are visible.

@@ -1,4 +1,4 @@
-// video.local_delay — luma + initial downsample pass.
+// motion.local_delay — luma + initial downsample pass.
 //
 // Reads the full-res input and writes HALF-res Rec.601 luma (a 2x2 box
 // average). This is the "downsample first" step: the flow estimator never

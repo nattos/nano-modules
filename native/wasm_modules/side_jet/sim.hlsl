@@ -1,4 +1,4 @@
-// gen.side_jet — Stage 1: 1D axial plume solver.
+// source.light.side_jet — Stage 1: 1D axial plume solver.
 //
 // The engine under test is FIXED at the left edge (cell 0 = nozzle). The
 // plume is quasi-1D along the axis; this pass evolves a small row of cells

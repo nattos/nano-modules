@@ -272,7 +272,7 @@ export class ParamLinkerEditor extends MobxLitElement {
 }
 
 // Register the editor factory
-editorRegistry.register('utility.paramlinker', {
+editorRegistry.register('control.paramlinker', {
   editor: {
     create(pluginKey: string, client: ModuleClient): HTMLElement {
       const editor = document.createElement('paramlinker-editor') as ParamLinkerEditor;

@@ -1,4 +1,4 @@
-// video.sharpen — Discrete Laplacian sharpen with adjustable radius.
+// filter.sharpen — Discrete Laplacian sharpen with adjustable radius.
 // Edge taps clamp to the image edge.
 
 Texture2D<float4> inputTex : register(t0);

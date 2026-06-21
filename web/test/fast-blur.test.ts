@@ -1,7 +1,7 @@
 import { runGpuChainTest, runGpuEffectTest } from './gpu-test-helpers';
 
-// Per-effect tests for `video.fast_blur` (the dual-filter / 13-tap +
-// 9-tap blur). Compared to the precise Gaussian in `video.blur`, this
+// Per-effect tests for `filter.blur.fast` (the dual-filter / 13-tap +
+// 9-tap blur). Compared to the precise Gaussian in `filter.blur.gaussian`, this
 // trades exactness for speed — the assertions verify the blur
 // behaviour rather than pixel-stable shape.
 
@@ -16,7 +16,7 @@ describe('Fast Blur Effect E2E', () => {
       dumpName: 'fast_blur_metadata',
     });
     expect(frame.success).toBe(true);
-    expect(frame.metadata?.id).toBe('video.fast_blur');
+    expect(frame.metadata?.id).toBe('filter.blur.fast');
     const names = frame.params.map(p => p.name);
     expect(names).toContain('iterations');
   });

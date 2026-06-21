@@ -1,5 +1,5 @@
 /*
- * video.vignette — Darken (or brighten) the edges of the frame around an
+ * filter.vignette — Darken (or brighten) the edges of the frame around an
  * anchor point.
  *
  * Standard params:
@@ -77,7 +77,7 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("video.vignette", {1, 0, 0},
+  state::init("filter.vignette", {1, 0, 0},
     state::Schema()
       .floatField("amount",   -0.5f, -1.f, 1.f, state::PrimaryInput)
       .floatField("radius",    0.6f,  0.f, 1.f, state::PrimaryInput)
