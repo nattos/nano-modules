@@ -40,6 +40,7 @@ void module_init() {
   state::init("filter.blur.fast", {1, 0, 0},
     state::Schema()
       .intField("iterations", 4, 1, fx::FastBlur::MAX_ITERATIONS, state::PrimaryInput)
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

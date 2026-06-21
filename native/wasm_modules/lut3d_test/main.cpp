@@ -52,6 +52,7 @@ void module_init() {
     state::Schema()
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

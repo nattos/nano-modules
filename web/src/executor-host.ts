@@ -544,6 +544,11 @@ export class WasmSketchExecutor {
       set_active: (h: number, active: number) => {
         const i = this.resolve(h); if (i) i.module.onActive?.(active !== 0);
       },
+      // Seek/prefill a stateful effect to a target time (mirrors effrt_seek /
+      // EffectInstance::doSeek). Declared ABI — no executor caller yet.
+      seek: (h: number, from: number, to: number) => {
+        const i = this.resolve(h); if (i) i.module.seek?.(from, to);
+      },
       is_identity: (h: number): number => {
         const i = this.resolve(h); return (i && i.module.isIdentity()) ? 1 : 0;
       },

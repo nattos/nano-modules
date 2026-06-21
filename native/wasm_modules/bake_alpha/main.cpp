@@ -44,6 +44,7 @@ void module_init() {
   state::init("composite.bake_alpha", {1, 0, 0},
     state::Schema()
       .rgbaField("color", 0.0f, 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

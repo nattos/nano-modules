@@ -133,6 +133,7 @@ void module_init() {
       .floatField("flicker_duty",          0.5f, 0.0f, 1.0f,    state::PrimaryInput)
       .intField  ("seed",                  12345, 0, 0x7FFFFFFF, state::PrimaryInput)
       .boolField ("debug_show_rects",      false,               state::PrimaryInput)
+      .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("mask_in", state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)

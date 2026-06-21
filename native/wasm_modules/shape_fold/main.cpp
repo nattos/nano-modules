@@ -175,6 +175,7 @@ void module_init() {
       // --- I/O: pure generator (no input) ---
       .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::Generator)
+        .capability(state::Capability::SeekableApproximate)
     );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

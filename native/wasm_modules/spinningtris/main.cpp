@@ -72,6 +72,7 @@ void module_init() {
       .floatField("speed", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
+      .capability(state::Capability::SeekableApproximate)
   );
   state::log("SpinningTris: init");
 

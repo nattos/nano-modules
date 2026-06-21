@@ -146,6 +146,7 @@ void module_init() {
       // Generates its image; the tex_in overlay is optional (transparent when
       // unconnected), so it's classed a generator like the codebase category.
       .capability(state::Capability::Generator)
+      .capability(state::Capability::TimeIndependent)
   );
 }
 

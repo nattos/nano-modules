@@ -40,6 +40,12 @@ export interface WasmModule {
    * when the effect didn't register an on_active callback.
    */
   onActive?(active: boolean): void;
+  /**
+   * Seek/prefill a stateful effect to a target time without ticking every
+   * intervening frame (see EffectDesc_v2::seek). Absent when the effect didn't
+   * export seek. Declared ABI — no executor caller yet, no effect implements it.
+   */
+  seek?(fromSeconds: number, toSeconds: number): void;
 }
 
 /** Metadata for an effect discovered via nano_module_main registration. */
@@ -59,6 +65,7 @@ export interface EffectInfo {
   _onStatePatchedIdx: number;
   _isIdentityIdx: number; // 0 = not supported (never skippable)
   _onActiveIdx: number; // 0 = not supported (no device on/off callback)
+  _seekIdx: number; // 0 = not supported (not seekable via prefill)
 }
 
 export interface ConsoleEntry {
@@ -1180,7 +1187,8 @@ export class WasmHost {
           //  +24 module_init, +28 create, +32 destroy, +36 init,
           //  +40 tick, +44 render, +48 on_state_patched,
           //  +52 is_identity (optional; 0/absent => never skippable),
-          //  +56 on_active (optional device on/off transition callback).
+          //  +56 on_active (optional device on/off transition callback),
+          //  +60 seek (optional seek/prefill; 0/absent => not seekable).
           const idPtr = mem.getUint32(descPtr + 4, true);
           const namePtr = mem.getUint32(descPtr + 8, true);
           const descriptionPtr = mem.getUint32(descPtr + 12, true);
@@ -1196,6 +1204,7 @@ export class WasmHost {
           const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
           const isIdentityIdx = mem.getUint32(descPtr + 52, true);
           const onActiveIdx = mem.getUint32(descPtr + 56, true);
+          const seekIdx = mem.getUint32(descPtr + 60, true);
 
           this.registeredEffects.push({
             id: this.readCString(idPtr),
@@ -1212,6 +1221,7 @@ export class WasmHost {
             _onStatePatchedIdx: onStatePatchedIdx,
             _isIdentityIdx: isIdentityIdx,
             _onActiveIdx: onActiveIdx,
+            _seekIdx: seekIdx,
           });
         },
       },
@@ -1286,6 +1296,15 @@ export class WasmHost {
         onActiveFn = undefined;
       }
     }
+    // seek is the next trailing/optional field (offset +60); same guard.
+    let seekFn: ((self: number, from: number, to: number) => void) | undefined;
+    if (effect._seekIdx !== 0) {
+      try {
+        seekFn = table.get(effect._seekIdx) as (self: number, from: number, to: number) => void;
+      } catch {
+        seekFn = undefined;
+      }
+    }
 
     // Call init immediately, threading the instance's self pointer.
     initFn(self);
@@ -1298,6 +1317,7 @@ export class WasmHost {
         onStatePatchedFn(self, n, pb, off, len, ops),
       isIdentity: () => isIdentityFn ? (isIdentityFn(self) | 0) !== 0 : false,
       onActive: onActiveFn ? (active: boolean) => onActiveFn!(self, active ? 1 : 0) : undefined,
+      seek: seekFn ? (from: number, to: number) => seekFn!(self, from, to) : undefined,
     };
   }
 

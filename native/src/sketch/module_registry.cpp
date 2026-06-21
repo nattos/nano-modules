@@ -85,6 +85,7 @@ bool ModuleRegistry::registerWasmEffect(
   d.w_on_state_patched  = wd.idx_on_state_patched;
   d.w_is_identity       = wd.idx_is_identity;
   d.w_on_active         = wd.idx_on_active;
+  d.w_seek              = wd.idx_seek;
 
   // Runs module_init() — schema is published onto the prototype via the WASM
   // host-import forwarding (EffectHostSink), then parsed below as for native.

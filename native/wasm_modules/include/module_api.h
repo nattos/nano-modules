@@ -80,6 +80,18 @@ struct EffectDesc_v2 {
     // (no tick/render/state) and the host aliases its input→output.
     // Trailing + optional: nullptr means "don't care".
     void (*on_active)(void* self, int32_t active);
+
+    // Optional: drive a STATEFUL effect to an arbitrary point in time without
+    // ticking every intervening frame. The effect should prefill its internal
+    // state (accumulators, feedback buffers, particle pools, …) as if it had
+    // been running from `from_seconds` to `to_seconds`, so the next render()
+    // produces the frame at `to_seconds`. May be SLOW (a long prefill). The
+    // host only calls this for effects that declare the `seekable_prefill`
+    // capability (see Capability in host.h). Trailing + optional: nullptr means
+    // "not seekable via prefill" (the conservative default — the host must
+    // replay frame-by-frame, or skip seeking, per the effect's other temporal
+    // capabilities). NOTE: declared as ABI; no effect implements it yet.
+    void (*seek)(void* self, double from_seconds, double to_seconds);
 };
 
 /// Register an effect with the host.

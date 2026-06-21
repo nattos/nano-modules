@@ -113,6 +113,9 @@ void effrt_prepare(int32_t inst, int32_t w, int32_t h) {
 void effrt_set_active(int32_t inst, int32_t active) {
   if (auto* i = resolve(inst)) i->doSetActive(active != 0);
 }
+void effrt_seek(int32_t inst, double from, double to) {
+  if (auto* i = resolve(inst)) i->doSeek(from, to);
+}
 int32_t effrt_is_identity(int32_t inst) {
   auto* i = resolve(inst);
   return (i && i->isIdentity()) ? 1 : 0;

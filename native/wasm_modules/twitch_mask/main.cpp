@@ -64,6 +64,7 @@ void module_init() {
       .floatField("softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput)
       // Spawn bias: -1 → outer ring, +1 → centre (scaled out by radius).
       .floatField("position", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

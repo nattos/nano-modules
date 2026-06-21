@@ -168,6 +168,10 @@ void module_init() {
       // inherit upstream, active pixels override with this stage's
       // local velocity.
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
+      // Only cross-frame state is the free-running `noise_time` phase
+      // accumulator (dt*evolution_rate) — a jump re-converges to a
+      // noise-level-equivalent field.
+      .capability(state::Capability::SeekableApproximate)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

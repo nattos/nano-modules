@@ -46,6 +46,7 @@ void module_init() {
     state::Schema()
       .rgbaField("color", 0.f, 0.f, 0.f, 1.f, state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

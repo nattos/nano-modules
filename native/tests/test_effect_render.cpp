@@ -1229,11 +1229,19 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
   CHECK(std::find(ecaps.begin(), ecaps.end(), std::string("modulation_shaper")) != ecaps.end());
   CHECK(std::find(ecaps.begin(), ecaps.end(), std::string("modulation_shaper_unary")) != ecaps.end());
 
-  // A plain image effect declares no capabilities (the array is absent) — and
-  // is NOT a generator.
+  // A plain stateless image effect declares its temporal contract
+  // (time_independent) but NO generator/modulation capabilities.
   const auto* bc = registry.find("color.tone.brightness_contrast");
   REQUIRE(bc != nullptr);
-  CHECK(bc->capabilities.empty());
+  const auto& bcaps = bc->capabilities;
+  auto bhas = [&](const char* s) {
+    return std::find(bcaps.begin(), bcaps.end(), std::string(s)) != bcaps.end();
+  };
+  CHECK(bhas("time_independent"));
+  CHECK_FALSE(bhas("generator"));
+  CHECK_FALSE(bhas("modulation_source"));
+  CHECK_FALSE(bhas("seekable_approximate"));
+  CHECK_FALSE(bhas("seekable_prefill"));
 }
 
 // A trapping module_init must not poison the rest of the bundle. The native

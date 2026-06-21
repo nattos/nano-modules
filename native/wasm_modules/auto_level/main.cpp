@@ -70,6 +70,7 @@ void module_init() {
       .floatField("median_pull",   0.0f, 0.0f, 1.0f, state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

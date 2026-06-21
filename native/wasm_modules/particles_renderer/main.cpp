@@ -66,6 +66,7 @@ void module_init() {
         .gpuArrayField("velocities", "float", state::None)
       .endObject()
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

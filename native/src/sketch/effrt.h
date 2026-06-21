@@ -70,6 +70,10 @@ EFFRT_IMPORT("render")     void effrt_render(int32_t inst, int32_t w, int32_t h)
 EFFRT_IMPORT("prepare")    void effrt_prepare(int32_t inst, int32_t w, int32_t h);
 EFFRT_IMPORT("set_active") void effrt_set_active(int32_t inst, int32_t active);
 EFFRT_IMPORT("is_identity") int32_t effrt_is_identity(int32_t inst);
+// Seek/prefill a stateful effect to a target time (see EffectInstance::doSeek /
+// EffectDesc_v2::seek). Declared ABI — no executor caller yet, and no effect
+// implements the underlying export.
+EFFRT_IMPORT("seek") void effrt_seek(int32_t inst, double from, double to);
 
 // --- Fusion introspection (reads EffectInstance::fusionInfo()) ---
 EFFRT_IMPORT("fusion_kind")           int32_t effrt_fusion_kind(int32_t inst);

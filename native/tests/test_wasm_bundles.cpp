@@ -5,8 +5,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "bridge/param_cache.h"
@@ -82,4 +84,41 @@ TEST_CASE("WasmEffectBundles loads core.wasm and registers its effects", "[wasm_
 
   // A missing / non-bundle path returns 0 without crashing.
   CHECK(bundles.loadBundleFile("/no/such/bundle.wasm", registry, nullptr, nullptr) == 0);
+}
+
+TEST_CASE("temporal capabilities round-trip from schema to the registry", "[wasm_bundles]") {
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(nullptr);  // no GPU — schema still publishes
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, nullptr, nullptr) > 1);
+
+  auto has = [&](const char* id, const char* cap) -> bool {
+    const auto* m = registry.find(id);
+    REQUIRE(m != nullptr);
+    return std::find(m->capabilities.begin(), m->capabilities.end(),
+                     std::string(cap)) != m->capabilities.end();
+  };
+
+  // Stateless tone op → declares time_independent, and none of the seek tags.
+  CHECK(has("color.tone.brightness_contrast", "time_independent"));
+  CHECK_FALSE(has("color.tone.brightness_contrast", "seekable_approximate"));
+  CHECK_FALSE(has("color.tone.brightness_contrast", "seekable_prefill"));
+
+  // Free-running LFO (phase + random-walk) → seekable_approximate, NOT
+  // time_independent, and (since no effect implements it) not seekable_prefill.
+  CHECK(has("mod.source.lfo", "seekable_approximate"));
+  CHECK_FALSE(has("mod.source.lfo", "time_independent"));
+  CHECK_FALSE(has("mod.source.lfo", "seekable_prefill"));
+
+  // ADSR is a trigger/voice state machine → no temporal tag at all (the
+  // conservative "fully stateful, not safely seekable" default).
+  CHECK_FALSE(has("mod.source.adsr", "time_independent"));
+  CHECK_FALSE(has("mod.source.adsr", "seekable_approximate"));
+  CHECK_FALSE(has("mod.source.adsr", "seekable_prefill"));
+
+  // seekable_prefill is declared in the ABI but added to NO effect yet.
+  for (const char* id : {"color.tone.brightness_contrast", "mod.source.lfo",
+                         "mod.source.adsr", "motion.blur"})
+    CHECK_FALSE(has(id, "seekable_prefill"));
 }

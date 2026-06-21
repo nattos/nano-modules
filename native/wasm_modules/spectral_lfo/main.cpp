@@ -137,6 +137,7 @@ void module_init() {
       // satellite scalar outputs are all selectable channels.
       .capability(state::Capability::ModulationSource)
       .capability(state::Capability::ModulationSourceMulti)
+      .capability(state::Capability::SeekableApproximate)
   );
   state::log("spectral_lfo: init");
 }

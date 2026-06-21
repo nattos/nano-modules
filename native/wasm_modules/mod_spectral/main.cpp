@@ -54,6 +54,7 @@ void module_init() {
       // A unary modulation shaper: 1 modulation value in -> 1 remapped value out.
       .capability(state::Capability::ModulationShaper)
       .capability(state::Capability::ModulationShaperUnary)
+      .capability(state::Capability::TimeIndependent)
   );
 }
 

@@ -336,6 +336,7 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
           _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
           _isIdentityIdx: mem.getUint32(descPtr + 52, true),
           _onActiveIdx: mem.getUint32(descPtr + 56, true),
+          _seekIdx: mem.getUint32(descPtr + 60, true),
         });
       },
     },

@@ -218,6 +218,9 @@ void module_init() {
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput)
+      // Instantaneous blur: the per-frame pyramid is rebuilt from the
+      // current input + current motion; no cross-frame history retained.
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

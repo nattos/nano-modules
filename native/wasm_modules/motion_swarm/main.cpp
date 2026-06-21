@@ -168,6 +168,7 @@ void module_init() {
       // the incoming field — pixels outside any rect inherit upstream,
       // pixels inside override with this swarm's own motion.
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
+      .capability(state::Capability::SeekableApproximate)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

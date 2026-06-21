@@ -36,6 +36,7 @@ void module_init() {
     state::Schema()
       .floatField("radius",  0.25f, 0.f, 1.f, state::PrimaryInput)
       .floatField("quality", 1.0f,  0.f, 1.f, state::PrimaryInput)
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

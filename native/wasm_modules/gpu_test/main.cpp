@@ -35,6 +35,7 @@ void module_init() {
   state::init("debug.gpu_test", {1, 0, 0},
     state::Schema()
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

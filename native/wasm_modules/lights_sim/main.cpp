@@ -54,6 +54,7 @@ void module_init() {
       .floatField("inset_h",       0.8f,  0.0f, 1.0f,  state::PrimaryInput)
       .floatField("inset_v",       0.05f, 0.0f, 1.0f,  state::PrimaryInput)
       .floatField("input_opacity", 0.25f, 0.0f, 1.0f,  state::PrimaryInput)
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

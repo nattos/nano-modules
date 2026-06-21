@@ -56,6 +56,10 @@ struct EffectDesc {
   // Optional device on/off transition callback (see nano::EffectDesc_v2::on_active).
   // active=1 turned ON, 0 turned OFF. Fired only on a change.
   void (*on_active)(void* self, int32_t active) = nullptr;
+  // Optional seek/prefill (see nano::EffectDesc_v2::seek). Drives a stateful
+  // effect to `to` time as if it had run from `from`. Only valid for effects
+  // declaring the `seekable_prefill` capability. nullptr = not seekable.
+  void (*seek)(void* self, double from_seconds, double to_seconds) = nullptr;
 
   // --- WASM-backed dispatch (barrel-loads-WASM migration) ---
   // When `wasm_host` is non-null this descriptor is WASM-backed: the
@@ -77,6 +81,7 @@ struct EffectDesc {
   uint32_t w_on_state_patched = 0;
   uint32_t w_is_identity = 0;
   uint32_t w_on_active = 0;
+  uint32_t w_seek = 0;
   bool isWasm() const { return wasm_host != nullptr; }
 };
 
@@ -128,6 +133,10 @@ class EffectInstance : public wasm::EffectHostSink {
   // on_active callback only on a transition. New instances start active, so
   // the first doSetActive(false) fires an OFF; re-enabling fires an ON.
   void doSetActive(bool active);
+  // Drive the optional seek/prefill (desc.seek / w_seek). No-op when the
+  // effect doesn't export seek. Only valid for `seekable_prefill` effects.
+  // See nano::EffectDesc_v2::seek. No executor caller yet (declared ABI).
+  void doSeek(double from_seconds, double to_seconds);
   bool active() const { return active_; }
   // Per-frame "will this effect's output be drawn" flag, set by the executor
   // before doTick(). False when opacity is 0 (render is skipped). Read by the

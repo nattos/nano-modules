@@ -85,6 +85,7 @@ void module_init() {
       .vec2Field("center", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
       .floatField("shape",     0.0f,  0.f, 1.f, state::SecondaryInput)
       .floatField("squash",    0.0f, -1.f, 1.f, state::SecondaryInput)
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

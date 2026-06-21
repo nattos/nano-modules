@@ -48,6 +48,7 @@ void module_init() {
       .boolField("invert_alpha", false, state::SecondaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

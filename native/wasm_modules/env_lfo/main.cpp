@@ -138,6 +138,7 @@ void module_init() {
       // A single-channel modulation source: one canonical scalar output.
       .capability(state::Capability::ModulationSource)
       .capability(state::Capability::ModulationSourceSingle)
+      .capability(state::Capability::SeekableApproximate)
   );
   state::log("LFO: init");
 }

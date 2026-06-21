@@ -40,7 +40,8 @@ void module_init() {
     schema.floatField(name, 0.0f, 0.0f, 1.0f, state::SecondaryOutput);
   }
   schema.textureField("tex_in",  state::PrimaryInput)
-        .textureField("tex_out", state::PrimaryOutput);
+        .textureField("tex_out", state::PrimaryOutput)
+        .capability(state::Capability::TimeIndependent);
   state::init("control.barrel_macros", {1, 0, 0}, schema);
 }
 

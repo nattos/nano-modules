@@ -122,6 +122,7 @@ void module_init() {
       // incoming one — pixels below threshold inherit upstream, active
       // pixels override with this stage's local velocity.
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
+      .capability(state::Capability::SeekableApproximate)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

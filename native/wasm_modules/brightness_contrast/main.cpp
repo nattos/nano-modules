@@ -52,6 +52,7 @@ void module_init() {
       .floatField("contrast", 0.f, -1.f, 1.f, state::PrimaryInput)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) {

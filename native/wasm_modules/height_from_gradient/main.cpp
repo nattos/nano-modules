@@ -245,6 +245,7 @@ void module_init() {
       .floatField("line_width", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Debug (last) ---
       .boolField("debug_show_gradient", false, state::PrimaryInput)
+      .capability(state::Capability::TimeIndependent)
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

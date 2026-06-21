@@ -68,6 +68,7 @@ void module_init() {
       .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput,
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   /*description=*/"Crossfade: A (0) → fully blended result (1)")
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_a", state::PrimaryInput)
       .textureField("tex_b", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

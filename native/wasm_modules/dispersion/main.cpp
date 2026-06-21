@@ -104,6 +104,7 @@ void module_init() {
       .intField  ("block_max_pixels_vertical",      64, 1, 512, state::PrimaryInput)
       .intField  ("block_max_pixels_horizontal",    64, 1, 512, state::PrimaryInput)
       .intField  ("seed",                  12345, 0,    65535, state::PrimaryInput)
+      .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

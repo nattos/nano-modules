@@ -76,6 +76,7 @@ void module_init() {
           {"Repeat",      WrapRepeat},
           {"Mirror",      WrapMirror},
       })
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

@@ -168,6 +168,24 @@ void EffectInstance::doSetActive(bool active) {
   }
 }
 
+void EffectInstance::doSeek(double from, double to) {
+  if (desc_.isWasm()) {
+    if (!desc_.w_seek) return;
+    // seek(self, from, to): self i32 @argv[0], from f64 @argv[1..2],
+    // to f64 @argv[3..4] (both doubles packed little-endian).
+    uint32_t argv[5] = {wasmSelf()};
+    std::memcpy(&argv[1], &from, sizeof(double));
+    std::memcpy(&argv[3], &to, sizeof(double));
+    driveWasm(desc_.w_seek, 5, argv);
+    return;
+  }
+  if (desc_.seek) {
+    runtime_->setActive(this);
+    desc_.seek(user_state_, from, to);
+    runtime_->setActive(nullptr);
+  }
+}
+
 void EffectInstance::doPrepare(int vp_w, int vp_h) {
   if (desc_.isWasm()) {
     if (!fusion_info_.wasmPrepareIdx) return;
@@ -511,6 +529,7 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
     void  (*on_state_patched)(void*, int, const char*, const int*, const int*, const int*);
     int32_t (*is_identity)(void*);
     void  (*on_active)(void*, int32_t);
+    void  (*seek)(void*, double, double);
   };
   const auto* d = static_cast<const DescV2*>(desc_v2_ptr);
   if (!d || d->struct_version != 2) return;
@@ -529,6 +548,7 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
   desc.on_state_patched = d->on_state_patched;
   desc.is_identity = d->is_identity;
   desc.on_active = d->on_active;
+  desc.seek = d->seek;
   registerEffect(desc);
 }
 

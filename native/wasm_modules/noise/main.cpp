@@ -107,6 +107,7 @@ void module_init() {
       .floatField("speed",   0.5f, 0.f, 1.f, state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
+      .capability(state::Capability::SeekableApproximate)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

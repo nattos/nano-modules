@@ -54,6 +54,7 @@ void module_init() {
       .floatField("keep_input", 0.0f, 0.f, 1.f, state::SecondaryInput)
       .rgbField("line", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
       .rgbField("bg",   0.0f, 0.0f, 0.0f, state::SecondaryInput)
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
   );

@@ -356,6 +356,23 @@ inline void setModuleVersion(Version v) { moduleVersionRef() = v; }
 // kind of modulation source?") or specialise on arity. Channels themselves are
 // NOT re-listed here — they are the effect's scalar output fields that carry a
 // `magnitude` declaration.
+//
+// TEMPORAL capabilities classify how an effect behaves when TIME JUMPS (a
+// scrub, a loop wrap, a render-export seek) rather than advancing one frame at
+// a time. They are independent flags; an effect declares whichever fit. The
+// ABSENCE of any temporal tag is the conservative default: "fully stateful, not
+// safely seekable" — the host must replay frame-by-frame to reach a target time.
+//   - TimeIndependent:    the effect is a pure function of its current inputs;
+//                         a jump just yields the correct frame (no warm-up).
+//   - SeekablePrefill:    stateful, but can be driven to an arbitrary time via
+//                         the optional seek() export (a potentially slow
+//                         prefill). See EffectDesc_v2::seek in module_api.h.
+//   - SeekableApproximate: stateful; a jump yields a non-deterministic result
+//                         that differs only at noise level. Safe to seek UNLESS
+//                         the pipeline requires bit-reproducible output.
+// (TimeIndependent and SeekableApproximate are mutually exclusive in practice,
+//  but nothing enforces it; SeekablePrefill can pair with either to advertise
+//  that an exact prefill is also available.)
 enum class Capability {
   Generator,               // synthesizes image output; can start a chain (may also composite over an optional input)
   ModulationSource,        // produces modulation signal(s) on scalar outputs
@@ -363,6 +380,10 @@ enum class Capability {
   ModulationSourceMulti,   //   ...several channels; the user picks one
   ModulationShaper,        // transforms modulation value(s): N in -> M out
   ModulationShaperUnary,   //   ...1 in -> 1 out (e.g. the envelope remapper)
+  TimeIndependent,         // stateless w.r.t. time; a time jump yields the correct frame
+  SeekablePrefill,         // stateful, but seekable to any time via seek() (may be slow)
+  SeekableApproximate,     // stateful; seeking differs only at noise level (non-deterministic)
+  SketchInputSource,       // exports sketch-level input parameters (for the dashboard)
 };
 
 inline const char* capabilityName(Capability c) {
@@ -373,6 +394,10 @@ inline const char* capabilityName(Capability c) {
     case Capability::ModulationSourceMulti:  return "modulation_source_multi";
     case Capability::ModulationShaper:       return "modulation_shaper";
     case Capability::ModulationShaperUnary:  return "modulation_shaper_unary";
+    case Capability::TimeIndependent:        return "time_independent";
+    case Capability::SeekablePrefill:        return "seekable_prefill";
+    case Capability::SeekableApproximate:    return "seekable_approximate";
+    case Capability::SketchInputSource:      return "sketch_input_source";
   }
   return "";
 }
@@ -1048,6 +1073,19 @@ inline void setFieldHidden(const char* path, bool hidden) {
 ///     state::setFieldHidden("inset_left",  s->mode != Inset);
 ///     ...
 ///   }
+///
+/// CANONICAL PATTERN — react to DESERIALIZATION via `on_state_patched`, NOT
+/// `tick`. Any schema-affecting recompute that depends on serialized values
+/// (field visibility, and — for a `sketch_input_source` effect — which
+/// parameters are exposed/active) must run in `on_state_patched`, which fires
+/// for every patch INCLUDING the initial state replay on load. On web that
+/// recompute (via setFieldHidden) propagates to the inspector IMMEDIATELY (it
+/// dirties the engine state → broadcast), so the schema is correct on load
+/// without waiting for a step. `setOnStateReady` is a convenience for the
+/// no-saved-state case and to reaffirm after replay; effects that recompute in
+/// `on_state_patched` already track restored state without it. (Note: on the
+/// native barrel render path this hook is a visibility-only no-op — see
+/// host_functions.cpp — so never put render-affecting logic here.)
 inline void setOnStateReady(void (*fn)(void* self)) {
   state_set_on_state_ready(fn);
 }

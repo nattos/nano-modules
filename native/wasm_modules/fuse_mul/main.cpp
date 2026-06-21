@@ -45,6 +45,7 @@ void module_init() {
       .vec4Field("scale", 1.f, 1.f, 1.f, 1.f, state::PrimaryInput, 0.f, 4.f)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::TimeIndependent)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

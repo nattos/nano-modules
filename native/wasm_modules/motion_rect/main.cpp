@@ -122,6 +122,7 @@ void module_init() {
       // with any other render_outputs producer (auto-bind matches by
       // shape, not field name).
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
+      .capability(state::Capability::SeekableApproximate)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

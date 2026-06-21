@@ -92,6 +92,7 @@ void    w_tick(wasm_exec_env_t, int32_t h, double dt)            { effrt_tick(h,
 void    w_render(wasm_exec_env_t, int32_t h, int32_t w, int32_t hh)  { effrt_render(h, w, hh); }
 void    w_prepare(wasm_exec_env_t, int32_t h, int32_t w, int32_t hh) { effrt_prepare(h, w, hh); }
 void    w_set_active(wasm_exec_env_t, int32_t h, int32_t a)     { effrt_set_active(h, a); }
+void    w_seek(wasm_exec_env_t, int32_t h, double from, double to) { effrt_seek(h, from, to); }
 int32_t w_is_identity(wasm_exec_env_t, int32_t h)              { return effrt_is_identity(h); }
 int32_t w_fusion_kind(wasm_exec_env_t, int32_t h)             { return effrt_fusion_kind(h); }
 int32_t w_fusion_has_prepare(wasm_exec_env_t, int32_t h)      { return effrt_fusion_has_prepare(h); }
@@ -128,6 +129,7 @@ NativeSymbol g_effrt_symbols[] = {
     {"render", reinterpret_cast<void*>(w_render), "(iii)", nullptr},
     {"prepare", reinterpret_cast<void*>(w_prepare), "(iii)", nullptr},
     {"set_active", reinterpret_cast<void*>(w_set_active), "(ii)", nullptr},
+    {"seek", reinterpret_cast<void*>(w_seek), "(iFF)", nullptr},
     {"is_identity", reinterpret_cast<void*>(w_is_identity), "(i)i", nullptr},
     {"fusion_kind", reinterpret_cast<void*>(w_fusion_kind), "(i)i", nullptr},
     {"fusion_has_prepare", reinterpret_cast<void*>(w_fusion_has_prepare), "(i)i", nullptr},

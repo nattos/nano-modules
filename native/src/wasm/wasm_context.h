@@ -61,6 +61,7 @@ struct WasmEffectDesc {
   uint32_t idx_on_state_patched = 0;
   uint32_t idx_is_identity = 0;
   uint32_t idx_on_active = 0;
+  uint32_t idx_seek = 0;   // optional seek(self, from, to); 0 = not provided
 };
 
 struct WasmContext {
