@@ -19,6 +19,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
+import { dragHasFiles } from '../../utils/drag-drop';
 
 import './ide-icon-bar';
 import './ide-explorer';
@@ -73,6 +74,41 @@ export class EffectIdeApp extends MobxLitElement {
       background: var(--app-bg-color2);
     }
   `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    // Page-level file-drop fallback. Listening on the host catches drops from
+    // anywhere in the IDE (drag events are composed and bubble out of the inner
+    // shadow trees), so a video dropped anywhere loads into the selected
+    // sketch's input by default. Specific zones override by claiming the drop
+    // (stopPropagation) before it reaches here — see utils/drag-drop.
+    this.addEventListener('dragover', this.onPageDragOver);
+    this.addEventListener('drop', this.onPageDrop);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.removeEventListener('dragover', this.onPageDragOver);
+    this.removeEventListener('drop', this.onPageDrop);
+  }
+
+  /** Allow file drops (and suppress the browser's open/navigate default). */
+  private onPageDragOver = (e: DragEvent) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  };
+
+  /** Default: load the dropped file into the selected sketch's texture input. */
+  private onPageDrop = (e: DragEvent) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    const sketchId = appState.local.userSettings.selectedProjectId;
+    if (!sketchId) return;
+    void appController.handleSketchInputDrop(sketchId, file);
+  };
 
   render() {
     const settings = appState.local.userSettings;

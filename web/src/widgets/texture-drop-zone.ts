@@ -13,6 +13,7 @@
 import { html, css, LitElement } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { appController } from '../state/controller';
+import { dragHasFiles, claimDrop } from '../utils/drag-drop';
 
 @customElement('texture-drop-zone')
 export class TextureDropZone extends LitElement {
@@ -67,15 +68,19 @@ export class TextureDropZone extends LitElement {
     `;
   }
 
+  // This zone is a specific override of the page-level drop fallback: it claims
+  // file drags (preventDefault + stopPropagation) so the event never reaches
+  // the IDE host listener — and shows its own hover affordance meanwhile.
+
   private onDragEnter = (e: DragEvent) => {
-    if (!this.hasFile(e)) return;
-    e.preventDefault();
+    if (!dragHasFiles(e)) return;
+    claimDrop(e);
     this.hovering = true;
   };
 
   private onDragOver = (e: DragEvent) => {
-    if (!this.hasFile(e)) return;
-    e.preventDefault();
+    if (!dragHasFiles(e)) return;
+    claimDrop(e);
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     this.hovering = true;
   };
@@ -85,20 +90,11 @@ export class TextureDropZone extends LitElement {
   };
 
   private onDrop = (e: DragEvent) => {
-    e.preventDefault();
+    claimDrop(e);
     this.hovering = false;
     if (!this.sketchId) return;
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
     void appController.handleSketchInputDrop(this.sketchId, file);
   };
-
-  private hasFile(e: DragEvent): boolean {
-    const types = e.dataTransfer?.types;
-    if (!types) return false;
-    for (let i = 0; i < types.length; i++) {
-      if (types[i] === 'Files') return true;
-    }
-    return false;
-  }
 }
