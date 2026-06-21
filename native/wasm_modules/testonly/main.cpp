@@ -8,8 +8,8 @@
  * It can freely duplicate effects that also appear in the `core` or `nano`
  * bundles. In the future, when test assertions need pixel-stable
  * implementations that may diverge from the shipping ones, this is the
- * place to fork (e.g. an `env_lfo` whose math is locked to the values our
- * golden masters were computed against).
+ * place to fork (a copy whose math is locked to the values our golden
+ * masters were computed against).
  *
  * Per-effect e2e tests should load whichever bundle their effect actually
  * lives in, not this one — those tests are part of the effect's
@@ -31,6 +31,10 @@ NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
 NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
+// data.lfo ships in core, data.adsr in nano — duplicated here for test access.
+NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
+NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
+
 // ---- Test-only effects (never shipped) ----
 
 // Fusion-aware mappers used to verify multi-stage fusion. Predictable
@@ -41,9 +45,6 @@ NANO_DECLARE_INSTANCE_EFFECT(fuse_add)
 NANO_DECLARE_INSTANCE_EFFECT(fuse_mul)
 
 NANO_DECLARE_INSTANCE_EFFECT(fuse_solid)
-
-NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
-NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 
@@ -157,9 +158,8 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(fuse_solid),
     });
 
-    // Test-only effects — these never appear in core/nano. The LFO in
-    // particular will likely diverge from the shipping implementation,
-    // which is why it lives here.
+    // data.lfo (core) / data.adsr (nano) duplicated for test access, same
+    // source as the shipping bundles.
     nano::registerEffect({
         2,
         "data.lfo",

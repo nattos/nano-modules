@@ -106,6 +106,7 @@ wasm_build \
   ../mod_remap/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_delay/main.cpp \
-  ../mod_envelope/main.cpp
+  ../mod_envelope/main.cpp \
+  ../env_lfo/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

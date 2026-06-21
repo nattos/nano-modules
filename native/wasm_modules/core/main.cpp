@@ -89,6 +89,8 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_envelope)
 
+NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -439,6 +441,16 @@ void nano_module_main() {
         "mod",
         "modulation,envelope,remap,curve,shaper,draw,easing",
         NANO_INSTANCE_LIFECYCLE(mod_envelope),
+    });
+
+    nano::registerEffect({
+        2,
+        "data.lfo",
+        "LFO",
+        "Low frequency oscillator: a normalized [0,1] modulation source. Selectable waveform (sine/square/triangle/saw/random walk/random FM) with a shape morph, rate (0..10 Hz), amplitude, and invert.",
+        "data",
+        "oscillator,modulation,automation,lfo,wave",
+        NANO_INSTANCE_LIFECYCLE(env_lfo),
     });
 }
 
