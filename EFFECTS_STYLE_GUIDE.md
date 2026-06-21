@@ -228,7 +228,7 @@ on the instance ABI — there is no legacy trampoline:
 NANO_DECLARE_INSTANCE_EFFECT(example)   // forward-declares the 8 entry points
 
 void nano_module_main() {
-  nano::registerEffect({ 2, "video.example", "Example", "…", "video", "kw",
+  nano::registerEffect({ 2, "filter.glitch.twitch_mask", "Twitch Mask", "…", "filter", "kw",
                          NANO_INSTANCE_LIFECYCLE(example) });
   // Effects with a genuine identity state pass &example::is_identity as the
   // trailing field (see §"is_identity").
@@ -236,6 +236,30 @@ void nano_module_main() {
 ```
 
 (`struct_version` is `2`. The macros live in `wasm_modules/include/module_api.h`.)
+The id string passed here **must** match the id the effect declares in its own
+`state::init("<id>", …)` — both are renamed in lockstep.
+
+### Naming: id, display name, category
+
+Effect ids are **hierarchical dotted paths**: `domain.[group.[…]].name`. The first
+segment is the **domain** and doubles as the `category` field (the 5th
+`registerEffect` arg, used for colour-coding) — keep the two in sync. The full
+roster and the rules live in `EFFECT_TAXONOMY.md`; the domains are `source,
+color, filter, warp, composite, motion, mod, control, debug`.
+
+- **Use the full path to group, not just two levels.** The effect chooser
+  (`web/src/widgets/smart-input.ts`) drills down *one path segment at a time* —
+  `source/` → `light/` → *Chroma Wave* — and lists sub-folders alongside the
+  effects at each level. A deeper, well-chosen path (`source.light.chroma_wave`,
+  `filter.blur.gaussian`, `mod.shaper.remap`) makes the effect easier to find;
+  flat names bury it in one long list. Group siblings that share a family under a
+  common middle segment (`filter.blur.*`, `color.tone.*`, `mod.source.*`).
+- **Display name** is human-facing Title Case (`"Chroma Wave"`, `"Brightness &
+  Contrast"`) — it's *not* derived from the id, so name it for clarity, not to
+  echo the path. Don't repeat the bundle/domain in it ("Video Blend" → "Blend").
+- **Bundle ≠ domain.** Which `.wasm` an effect ships in is independent of its id;
+  the same domain can span bundles (`source.light.*` lives in `lights`,
+  `source.gradient` in `core`).
 
 ### Skip whole stages on the host — don't early-out in the shader
 

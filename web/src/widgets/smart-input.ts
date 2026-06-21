@@ -308,82 +308,90 @@ export class SmartInput extends LitElement {
   private completionSource(context: CompletionContext): CompletionResult | null {
     const query = context.state.doc.toString().trim();
 
-    // Collect unique namespace prefixes from effect IDs
-    const allNamespaces = new Set<string>();
-    for (const e of this.effects) {
-      const dotIdx = e.id.indexOf('.');
-      if (dotIdx > 0) allNamespaces.add(e.id.slice(0, dotIdx));
+    // Effect ids are dotted paths of arbitrary depth (e.g.
+    // "source.light.chroma_wave"). The drill-down context is everything up to
+    // and including the last dot — that's the path we've descended into — and
+    // the text after the last dot is the local search within that path.
+    //   ""                     -> prefix "",              sub ""        (root)
+    //   "source"               -> prefix "",              sub "source"  (root, filtering)
+    //   "source."              -> prefix "source.",       sub ""
+    //   "source.li"            -> prefix "source.",       sub "li"
+    //   "source.light."        -> prefix "source.light.", sub ""
+    //   "source.light.chr"     -> prefix "source.light.", sub "chr"
+    const lastDot = query.lastIndexOf('.');
+    let prefix = lastDot >= 0 ? query.slice(0, lastDot + 1) : '';
+    let subQuery = lastDot >= 0 ? query.slice(lastDot + 1) : query;
+
+    // If the typed prefix isn't a real path (no effect lives under it), fall
+    // back to a flat fuzzy search over the whole query.
+    if (prefix && !this.effects.some(e => e.id.startsWith(prefix))) {
+      prefix = '';
+      subQuery = query;
     }
 
-    // Check if the query is a namespace prefix (e.g., "video." or "video")
-    const dotIdx = query.indexOf('.');
-    const queryNamespace = dotIdx > 0 ? query.slice(0, dotIdx) : null;
-    const queryAfterDot = dotIdx > 0 ? query.slice(dotIdx + 1) : null;
+    const sub = subQuery.toLowerCase();
+    const under = this.effects.filter(e => e.id.length > prefix.length && e.id.startsWith(prefix));
 
-    // If query matches a namespace prefix exactly (e.g., "video." or "video.b"),
-    // show only effects within that namespace
-    if (queryNamespace && allNamespaces.has(queryNamespace)) {
-      const nsEffects = this.effects.filter(e => e.id.startsWith(queryNamespace + '.'));
-      const subQuery = queryAfterDot ?? '';
-      const filtered = subQuery.length > 0
-        ? nsEffects.filter(e => {
-            const local = e.id.slice(queryNamespace.length + 1);
-            return fuzzyMatch(subQuery.toLowerCase(), local.toLowerCase())
-              || fuzzyMatch(subQuery.toLowerCase(), e.name.toLowerCase());
-          })
-        : nsEffects;
-
-      if (filtered.length === 0) {
-        return { from: 0, options: [{ label: 'No matching effects', type: 'text', apply: '' }], filter: false };
-      }
-
-      return {
-        from: 0,
-        options: filtered.map((effect, i) => ({
-          label: effect.name,
-          detail: effect.id,
-          apply: () => { this.dispatchCommit(effect.id, true); },
-          boost: filtered.length - i,
-        })),
-        filter: false,
-      };
-    }
-
-    // Root level: show namespace categories first, then all matching effects
     const options: any[] = [];
 
-    // Add namespace drill-down options
-    const matchingNamespaces = query.length > 0
-      ? [...allNamespaces].filter(ns => ns.startsWith(query.toLowerCase()) || fuzzyMatch(query.toLowerCase(), ns))
-      : [...allNamespaces];
+    // --- Sub-folders: the next path segment of any deeper effect under the
+    // current prefix. A segment is a folder when at least one effect has a
+    // further dot beyond it (i.e. there's something to descend into).
+    const folderCounts = new Map<string, number>();
+    for (const e of under) {
+      const remainder = e.id.slice(prefix.length);
+      const dot = remainder.indexOf('.');
+      if (dot <= 0) continue; // leaf at this level, not a folder
+      const seg = remainder.slice(0, dot);
+      folderCounts.set(seg, (folderCounts.get(seg) ?? 0) + 1);
+    }
 
-    for (const ns of matchingNamespaces.sort()) {
-      const count = this.effects.filter(e => e.id.startsWith(ns + '.')).length;
+    const folders = [...folderCounts.keys()]
+      .filter(seg => sub.length === 0 || seg.toLowerCase().startsWith(sub) || fuzzyMatch(sub, seg.toLowerCase()))
+      .sort();
+
+    for (const seg of folders) {
+      const fullPath = prefix + seg;
+      const count = folderCounts.get(seg)!;
       options.push({
-        label: `${ns}/`,
+        label: `${seg}/`,
         detail: `${count} effect${count !== 1 ? 's' : ''}`,
         type: 'namespace',
         apply: (view: EditorView, _completion: any, from: number, to: number) => {
-          // Drill down: replace text with "namespace." and re-trigger completion
+          // Drill down: replace text with "<path>." and re-trigger completion
           view.dispatch({
-            changes: { from, to, insert: ns + '.' },
-            selection: { anchor: ns.length + 1 },
+            changes: { from, to, insert: fullPath + '.' },
+            selection: { anchor: fullPath.length + 1 },
           });
           setTimeout(() => startCompletion(view), 0);
         },
-        boost: 1000 + (ns.startsWith(query.toLowerCase()) ? 100 : 0),
+        boost: 1000 + (seg.toLowerCase().startsWith(sub) ? 100 : 0),
       });
     }
 
-    // Add matching effects
-    const results = searchEffects(this.effects, query);
-    for (let i = 0; i < results.length; i++) {
-      const effect = results[i];
+    // --- Effects. With no sub-query, list only the immediate leaves under the
+    // prefix (clean drill-down). While searching, reach into deeper folders too
+    // so a fuzzy match can jump straight to a nested effect.
+    let effects: AvailableEffect[];
+    if (sub.length === 0) {
+      effects = under.filter(e => !e.id.slice(prefix.length).includes('.'));
+    } else if (prefix.length === 0) {
+      effects = searchEffects(this.effects, subQuery);
+    } else {
+      effects = under
+        .map(e => ({ e, s: matchScore(subQuery, e) }))
+        .filter(x => x.s >= 0)
+        .sort((a, b) => a.s - b.s)
+        .map(x => x.e);
+    }
+
+    for (let i = 0; i < effects.length; i++) {
+      const effect = effects[i];
       options.push({
         label: effect.name,
         detail: effect.id,
         apply: () => { this.dispatchCommit(effect.id, true); },
-        boost: results.length - i,
+        boost: effects.length - i,
       });
     }
 
