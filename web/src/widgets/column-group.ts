@@ -45,6 +45,7 @@ import '../editors/envelope-field';   // <envelope-field> for the wire Envelope 
 
 import type { LongEdit } from '../state/history';
 import type { Selectable } from '../state/types';
+import { categoryColor, effectDomain } from './category-color';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -321,6 +322,16 @@ export class ColumnGroup extends MobxLitElement {
       font-size: 11px;
       color: var(--app-text-color1);
       cursor: default;
+    }
+    /* A small per-category accent dot — a quiet hint at the effect's domain,
+     * sitting between the bypass toggle and the name. Tracks the type live while
+     * the smart-input is open (so it shifts hue as a new type is previewed). */
+    .effect-cat-dot {
+      flex: 0 0 auto;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      margin-right: 6px;
+      opacity: 0.8;
     }
     .effect-card-name-wrapper {
       flex: 1;
@@ -928,6 +939,8 @@ export class ColumnGroup extends MobxLitElement {
                 e.stopPropagation();
                 appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
               }}>⏻</button>
+            <span class="effect-cat-dot" title=${effectDomain(entry.module_type)}
+              style="background:${categoryColor(effectDomain(entry.module_type))}"></span>
             <div class="effect-card-name-wrapper" style=${isEditingType ? 'flex:1' : 'flex:0 1 auto'}>
               ${isEditingType ? html`
                 <smart-input

@@ -10,6 +10,20 @@
   --app-text-color2: #B0B0B0;
   --app-bg-color1: #121418;
   --app-bg-color2: #1a1d24;
+
+  /* Per-category (taxonomy domain) accents. Effect ids are dotted paths whose
+   * first segment is the domain; each gets one muted hue. Applied only as small
+   * dots / thin bars — kept low-key so a dense chain doesn't turn to confetti.
+   * Single source of truth: web/src/widgets/category-color.ts references these. */
+  --app-cat-source: #5BC8A0;     /* mint — generators */
+  --app-cat-color: #E3B341;      /* gold — colour/tone */
+  --app-cat-filter: #5B9BE3;     /* blue — filtering */
+  --app-cat-warp: #A07CE0;       /* violet — distortion */
+  --app-cat-composite: #E06B9A;  /* pink — blending */
+  --app-cat-motion: #E8884A;     /* orange — movement */
+  --app-cat-mod: #46C2C2;        /* cyan — modulation */
+  --app-cat-control: #94A0B4;    /* slate — control/utility */
+  --app-cat-debug: #C56B6B;      /* muted red — debug/test */
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }

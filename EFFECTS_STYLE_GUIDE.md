@@ -245,7 +245,10 @@ Effect ids are **hierarchical dotted paths**: `domain.[group.[…]].name`. The f
 segment is the **domain** and doubles as the `category` field (the 5th
 `registerEffect` arg, used for colour-coding) — keep the two in sync. The full
 roster and the rules live in `EFFECT_TAXONOMY.md`; the domains are `source,
-color, filter, warp, composite, motion, mod, control, debug`.
+color, filter, warp, composite, motion, mod, control, debug`. Each domain has a
+muted accent colour (header dot + chooser dot); the palette is the closed set of
+`--app-cat-*` vars in `web/src/style.css`, mapped via
+`web/src/widgets/category-color.ts` — adding a domain means touching both.
 
 - **Use the full path to group, not just two levels.** The effect chooser
   (`web/src/widgets/smart-input.ts`) drills down *one path segment at a time* —

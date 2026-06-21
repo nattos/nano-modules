@@ -111,4 +111,19 @@ describe('smart-input drill-down completion', () => {
     expect(raw.length).toBe(1);
     expect(raw[0].label).toBe('No matching effects');
   });
+
+  it('tags each option with its taxonomy domain for category colouring', () => {
+    const { raw } = complete('source.');
+    // Sub-folder rows carry the parent domain...
+    const light = raw.find(o => o.label === 'light/');
+    expect(light.category).toBe('source');
+    // ...and leaf-effect rows carry their own domain.
+    const gradient = raw.find(o => o.detail === 'source.gradient');
+    expect(gradient.category).toBe('source');
+
+    // A flat search across domains tags each row independently.
+    const flat = complete('blur');
+    const gaussian = flat.raw.find(o => o.detail === 'filter.blur.gaussian');
+    expect(gaussian.category).toBe('filter');
+  });
 });

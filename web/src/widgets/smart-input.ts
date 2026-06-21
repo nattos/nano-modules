@@ -31,6 +31,7 @@ import {
 } from '@codemirror/autocomplete';
 import { standardKeymap } from '@codemirror/commands';
 import type { AvailableEffect } from '../state/types';
+import { effectDomain } from './category-color';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -155,6 +156,27 @@ export class SmartInput extends LitElement {
     .cm-tooltip-autocomplete > ul > li .cm-completionLabel {
       font-weight: 400;
     }
+    /* Per-category accent dot, mirroring the effect-card header dot. Only
+       categorized rows (cat-*) get one, so the placeholder row stays flush. */
+    .cm-tooltip-autocomplete > ul > li[class*="cat-"]::before {
+      content: '';
+      display: inline-block;
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      margin-right: 7px;
+      vertical-align: middle;
+      background: var(--app-text-color2);
+      opacity: 0.8;
+    }
+    .cm-tooltip-autocomplete > ul > li.cat-source::before { background: var(--app-cat-source); }
+    .cm-tooltip-autocomplete > ul > li.cat-color::before { background: var(--app-cat-color); }
+    .cm-tooltip-autocomplete > ul > li.cat-filter::before { background: var(--app-cat-filter); }
+    .cm-tooltip-autocomplete > ul > li.cat-warp::before { background: var(--app-cat-warp); }
+    .cm-tooltip-autocomplete > ul > li.cat-composite::before { background: var(--app-cat-composite); }
+    .cm-tooltip-autocomplete > ul > li.cat-motion::before { background: var(--app-cat-motion); }
+    .cm-tooltip-autocomplete > ul > li.cat-mod::before { background: var(--app-cat-mod); }
+    .cm-tooltip-autocomplete > ul > li.cat-control::before { background: var(--app-cat-control); }
+    .cm-tooltip-autocomplete > ul > li.cat-debug::before { background: var(--app-cat-debug); }
   `;
 
   protected firstUpdated() {
@@ -268,7 +290,12 @@ export class SmartInput extends LitElement {
         override: [this.completionSource.bind(this)],
         icons: false,
         defaultKeymap: false,
-        optionClass: (opt) => opt.type === 'namespace' ? 'namespace-option' : '',
+        optionClass: (opt) => {
+          // `category` is stashed on the completion in completionSource so each
+          // row can carry a subtle per-domain accent dot (see the cat-* CSS).
+          const cat = (opt as any).category ? `cat-${(opt as any).category}` : '';
+          return opt.type === 'namespace' ? `namespace-option ${cat}`.trim() : cat;
+        },
       }),
     ];
 
@@ -364,6 +391,7 @@ export class SmartInput extends LitElement {
         label: `${seg}/`,
         detail: `${count} effect${count !== 1 ? 's' : ''}`,
         type: 'namespace',
+        category: effectDomain(fullPath),
         apply: (view: EditorView, _completion: any, from: number, to: number) => {
           // Drill down: replace text with "<path>." and re-trigger completion
           view.dispatch({
@@ -397,6 +425,7 @@ export class SmartInput extends LitElement {
       options.push({
         label: effect.name,
         detail: effect.id,
+        category: effectDomain(effect.id),
         apply: () => { this.emitCommit(effect.id, true); },
         boost: effects.length - i,
       });
