@@ -48,7 +48,6 @@ struct EffectDesc {
   void  (*render)(void* self, int vp_w, int vp_h) = nullptr;
   void  (*on_state_patched)(void* self, int n, const char* pb, const int* off,
                             const int* len, const int* ops) = nullptr;
-  void  (*on_resolume_param)(void* self, long long param_id, double value) = nullptr;
   // Optional pure passthrough predicate (see nano::EffectDesc_v2::is_identity).
   // Returns nonzero when the current state makes the effect an identity;
   // the executor then skips its dispatch and aliases input→output. Only
@@ -76,7 +75,6 @@ struct EffectDesc {
   uint32_t w_tick = 0;
   uint32_t w_render = 0;
   uint32_t w_on_state_patched = 0;
-  uint32_t w_on_resolume_param = 0;
   uint32_t w_is_identity = 0;
   uint32_t w_on_active = 0;
   bool isWasm() const { return wasm_host != nullptr; }

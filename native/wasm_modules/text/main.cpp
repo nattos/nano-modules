@@ -85,7 +85,6 @@ void* create() { return new State(); }
 void  destroy(void* self) { delete static_cast<State*>(self); }
 void  init(void* self) { auto* s = static_cast<State*>(self); if (s) s->initialized = true; }
 void  tick(void*, double) {}
-void  on_resolume_param(void*, long long, double) {}
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {

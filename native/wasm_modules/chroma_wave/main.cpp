@@ -564,7 +564,6 @@ void tick(void* self, double dt) {
     if (s->voices[i].active) advance_voice(s, s->voices[i], dt);
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {

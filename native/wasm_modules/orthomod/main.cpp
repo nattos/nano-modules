@@ -626,7 +626,6 @@ static void enter_release(State& s) {
   s.gate_open = false;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {

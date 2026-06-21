@@ -165,7 +165,6 @@ void tick(void* self, double dt) {
   if (s->static_phase > 1.0e6f) s->static_phase -= 1.0e6f;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {

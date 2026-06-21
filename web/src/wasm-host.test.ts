@@ -334,8 +334,8 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
           _tickIdx: mem.getUint32(descPtr + 40, true),
           _renderIdx: mem.getUint32(descPtr + 44, true),
           _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
-          _onResolumeParamIdx: mem.getUint32(descPtr + 52, true),
-          _isIdentityIdx: mem.getUint32(descPtr + 56, true),
+          _isIdentityIdx: mem.getUint32(descPtr + 52, true),
+          _onActiveIdx: mem.getUint32(descPtr + 56, true),
         });
       },
     },
@@ -590,8 +590,7 @@ describe('EffectDesc_v2 is_identity decode', () => {
     mem.setUint32(descPtr + 40, IDX_TICK, true);   // tick
     mem.setUint32(descPtr + 44, IDX_RENDER, true); // render
     mem.setUint32(descPtr + 48, IDX_ONPATCH, true);// on_state_patched
-    mem.setUint32(descPtr + 52, 0, true);          // on_resolume_param
-    mem.setUint32(descPtr + 56,                    // is_identity (NEW)
+    mem.setUint32(descPtr + 52,                    // is_identity
       identityResult === null ? 0 : IDX_IS_IDENTITY, true);
 
     // Drive the host's real decode (mirrors register_effect in load()).
@@ -608,8 +607,8 @@ describe('EffectDesc_v2 is_identity decode', () => {
       _tickIdx: mem.getUint32(descPtr + 40, true),
       _renderIdx: mem.getUint32(descPtr + 44, true),
       _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
-      _onResolumeParamIdx: mem.getUint32(descPtr + 52, true),
-      _isIdentityIdx: mem.getUint32(descPtr + 56, true),
+      _isIdentityIdx: mem.getUint32(descPtr + 52, true),
+      _onActiveIdx: 0,
     });
 
     return { host, capturedSelf };

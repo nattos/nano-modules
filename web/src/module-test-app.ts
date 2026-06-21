@@ -202,7 +202,6 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
         fp.value = val;
         if (bc) bc.setParam(fp.id, val);
         valueEl.textContent = val.toFixed(2);
-        fireResolumeParam(host, wasmModule, fp.id, val);
       });
       row.appendChild(slider);
       paramElements.set(fp.id, { slider, valueEl });
@@ -215,7 +214,6 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
         fp.value = val;
         if (bc) bc.setParam(fp.id, val);
         valueEl.textContent = val.toFixed(0);
-        fireResolumeParam(host, wasmModule, fp.id, val);
       });
       valueEl.textContent = fp.value.toFixed(0);
       row.appendChild(cb);
@@ -241,14 +239,6 @@ function buildResolumePanel(host: WasmHost, wasmModule: WasmModule) {
     const fp = FAKE_PARAMS.find(p => p.id === id);
     if (fp) fp.value = value;
   };
-}
-
-function fireResolumeParam(host: WasmHost, wasmModule: WasmModule, paramId: bigint, value: number) {
-  // Check if any subscription query matches (simple: "/*" or "*" matches everything)
-  const matches = host.subscribeQueries.some(q => q === '/*' || q === '*');
-  if (matches && wasmModule.onResolumeParam) {
-    wasmModule.onResolumeParam(paramId, value);
-  }
 }
 
 // --- Main ---

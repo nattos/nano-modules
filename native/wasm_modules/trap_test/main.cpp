@@ -45,6 +45,5 @@ void  init(void*) {}
 void  tick(void*, double) {}
 void  render(void*, int, int) {}
 void  on_state_patched(void*, int, const char*, const int*, const int*, const int*) {}
-void  on_resolume_param(void*, long long, double) {}
 
 }  // namespace trap_test

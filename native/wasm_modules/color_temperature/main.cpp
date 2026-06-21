@@ -99,7 +99,6 @@ void tick(void* self, double dt) {
   (void)dt;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 // Passthrough at neutral: temperature == 0 ⇒ all multipliers 1× ⇒ out == in.
 // Stateless — skippable, and the fused group collapses if every stage is identity.

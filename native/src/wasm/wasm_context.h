@@ -59,7 +59,6 @@ struct WasmEffectDesc {
   uint32_t idx_tick = 0;
   uint32_t idx_render = 0;
   uint32_t idx_on_state_patched = 0;
-  uint32_t idx_on_resolume_param = 0;
   uint32_t idx_is_identity = 0;
   uint32_t idx_on_active = 0;
 };

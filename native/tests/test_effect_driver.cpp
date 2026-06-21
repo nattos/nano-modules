@@ -84,7 +84,6 @@ TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect
   desc.w_tick = w->idx_tick;
   desc.w_render = w->idx_render;
   desc.w_on_state_patched = w->idx_on_state_patched;
-  desc.w_on_resolume_param = w->idx_on_resolume_param;
   desc.w_is_identity = w->idx_is_identity;
   desc.w_on_active = w->idx_on_active;
   REQUIRE(desc.isWasm());

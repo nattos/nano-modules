@@ -117,7 +117,6 @@ void tick(void* self, double dt) {
   s->strength = f.strength;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 // Pass-through when amount == 0: no draw, strength stays 0 → mask multiplier 1.
 // No state advances at amount == 0, so skipping is safe.

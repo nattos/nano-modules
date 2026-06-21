@@ -296,31 +296,6 @@ static void on_param_change(State& s, int index, double value) {
   }
 }
 
-void on_resolume_param(void* self, long long param_id, double value) {
-  auto* s = static_cast<State*>(self);
-  if (!s) return;
-
-  if (!s->learning) return;
-
-  int idx = find_seen(*s, param_id);
-  if (idx >= 0) {
-    /* Already seen — update value */
-    s->seen[idx].last_value = value;
-    return;
-  }
-
-  /* New parameter */
-  if (s->seen_count >= MAX_SEEN) return;
-
-  SeenParam* sp = &s->seen[s->seen_count++];
-  sp->param_id = param_id;
-  sp->last_value = value;
-  sp->ignored = s->settled ? 0 : 1; /* if not yet settled, mark as ignored immediately */
-  sp->order = s->next_order++;
-  sp->path_len = resolume_get_param_path(param_id, sp->path, sizeof(sp->path) - 1);
-  sp->path[sp->path_len] = 0;
-}
-
 static void reload_assignment_from_state(State& s) {
   /* Read input_id and output_id from canonical state (may be set by editor) */
   static const char assign_paths[] =

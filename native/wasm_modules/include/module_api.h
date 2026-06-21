@@ -15,7 +15,7 @@
  *                        opaque pointer (the effect's `State*`). The host
  *                        threads this back as `self` on every instance call.
  *   - `destroy(self)`  — release the per-instance state.
- *   - `init/tick/render/on_state_patched/on_resolume_param(self, ...)` —
+ *   - `init/tick/render/on_state_patched(self, ...)` —
  *                        per-instance lifecycle; all take `self` first.
  *
  * There is no backward-compat v1 path — the old free-function ABI is gone.
@@ -55,9 +55,6 @@ struct EffectDesc_v2 {
     void  (*render)(void* self, int vp_w, int vp_h);
     void  (*on_state_patched)(void* self, int n, const char* pb,
                               const int* off, const int* len, const int* ops);
-
-    // Optional callbacks (nullptr if not supported)
-    void  (*on_resolume_param)(void* self, long long param_id, double value);
 
     // Optional: pure passthrough predicate. Returns nonzero when the
     // effect, with its CURRENT applied state, is an identity (output ==
@@ -100,7 +97,7 @@ inline void registerEffect(const EffectDesc_v2& desc) {
 //                          NANO_INSTANCE_LIFECYCLE(my_effect) });
 #define NANO_INSTANCE_LIFECYCLE(ns)                                           \
     ns::module_init, ns::create, ns::destroy, ns::init,                       \
-    ns::tick, ns::render, ns::on_state_patched, ns::on_resolume_param
+    ns::tick, ns::render, ns::on_state_patched
 
 // Forward-declare an effect namespace's entry points for the class-like
 // instance ABI (paired with NANO_INSTANCE_LIFECYCLE).
@@ -114,5 +111,4 @@ inline void registerEffect(const EffectDesc_v2& desc) {
     void  render(void* self, int vp_w, int vp_h);                             \
     void  on_state_patched(void* self, int n, const char* pb, const int* off,\
                            const int* len, const int* ops);                   \
-    void  on_resolume_param(void* self, long long param_id, double value);    \
   }

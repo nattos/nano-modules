@@ -85,7 +85,6 @@ void tick(void* self, double dt) {
   (void)dt;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 // Pure passthrough when amount == 0 (unsharp add contributes nothing).
 int32_t is_identity(void* self) {

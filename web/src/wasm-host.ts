@@ -27,7 +27,6 @@ export interface WasmModule {
   render(vpW: number, vpH: number): void;
   /** State change notification with patch details. All modules implement this. */
   onStatePatched(patchCount: number, pathsBuf: number, offsets: number, lengths: number, ops: number): void;
-  onResolumeParam?(paramId: bigint, value: number): void;
   /**
    * Pure passthrough predicate. Returns true when the effect, with its
    * current applied state, is an identity (output == primary input) — lets
@@ -58,7 +57,6 @@ export interface EffectInfo {
   _tickIdx: number;
   _renderIdx: number;
   _onStatePatchedIdx: number;
-  _onResolumeParamIdx: number; // 0 = not supported
   _isIdentityIdx: number; // 0 = not supported (never skippable)
   _onActiveIdx: number; // 0 = not supported (no device on/off callback)
 }
@@ -1180,9 +1178,9 @@ export class WasmHost {
           // EffectDesc_v2 layout (wasm32, 4-byte ptrs/fn-indices):
           //  +0 version, +4..+20 id/name/desc/category/keywords,
           //  +24 module_init, +28 create, +32 destroy, +36 init,
-          //  +40 tick, +44 render, +48 on_state_patched, +52 on_resolume_param,
-          //  +56 is_identity (optional; 0/absent => never skippable),
-          //  +60 on_active (optional device on/off transition callback).
+          //  +40 tick, +44 render, +48 on_state_patched,
+          //  +52 is_identity (optional; 0/absent => never skippable),
+          //  +56 on_active (optional device on/off transition callback).
           const idPtr = mem.getUint32(descPtr + 4, true);
           const namePtr = mem.getUint32(descPtr + 8, true);
           const descriptionPtr = mem.getUint32(descPtr + 12, true);
@@ -1196,9 +1194,8 @@ export class WasmHost {
           const tickIdx = mem.getUint32(descPtr + 40, true);
           const renderIdx = mem.getUint32(descPtr + 44, true);
           const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
-          const onResolumeParamIdx = mem.getUint32(descPtr + 52, true);
-          const isIdentityIdx = mem.getUint32(descPtr + 56, true);
-          const onActiveIdx = mem.getUint32(descPtr + 60, true);
+          const isIdentityIdx = mem.getUint32(descPtr + 52, true);
+          const onActiveIdx = mem.getUint32(descPtr + 56, true);
 
           this.registeredEffects.push({
             id: this.readCString(idPtr),
@@ -1213,7 +1210,6 @@ export class WasmHost {
             _tickIdx: tickIdx,
             _renderIdx: renderIdx,
             _onStatePatchedIdx: onStatePatchedIdx,
-            _onResolumeParamIdx: onResolumeParamIdx,
             _isIdentityIdx: isIdentityIdx,
             _onActiveIdx: onActiveIdx,
           });
@@ -1268,10 +1264,7 @@ export class WasmHost {
     const renderFn = table.get(effect._renderIdx) as (self: number, vpW: number, vpH: number) => void;
     const onStatePatchedFn = table.get(effect._onStatePatchedIdx) as
       (self: number, n: number, pb: number, off: number, len: number, ops: number) => void;
-    const onResolumeParamFn = effect._onResolumeParamIdx !== 0
-      ? table.get(effect._onResolumeParamIdx) as (self: number, paramId: bigint, value: number) => void
-      : undefined;
-    // is_identity is a trailing/optional descriptor field (offset +56).
+    // is_identity is a trailing/optional descriptor field (offset +52).
     // A bundle built before the field existed has no value there, so the
     // decoded index may be garbage; guard the table lookup and treat any
     // out-of-range index as "no predicate" (never skippable). Properly
@@ -1284,7 +1277,7 @@ export class WasmHost {
         isIdentityFn = undefined;
       }
     }
-    // on_active is the next trailing/optional field (offset +60); same guard.
+    // on_active is the next trailing/optional field (offset +56); same guard.
     let onActiveFn: ((self: number, active: number) => void) | undefined;
     if (effect._onActiveIdx !== 0) {
       try {
@@ -1303,9 +1296,6 @@ export class WasmHost {
       render: (vpW: number, vpH: number) => renderFn(self, vpW, vpH),
       onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) =>
         onStatePatchedFn(self, n, pb, off, len, ops),
-      onResolumeParam: onResolumeParamFn
-        ? (paramId: bigint, value: number) => onResolumeParamFn(self, paramId, value)
-        : undefined,
       isIdentity: () => isIdentityFn ? (isIdentityFn(self) | 0) !== 0 : false,
       onActive: onActiveFn ? (active: boolean) => onActiveFn!(self, active ? 1 : 0) : undefined,
     };

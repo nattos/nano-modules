@@ -686,6 +686,5 @@ void render(void* self, int vp_w, int vp_h) {
   gpu::Device::submit();
 }
 
-void on_resolume_param(void* self, long long param_id, double value) {}
 
 } // namespace side_jet

@@ -139,7 +139,6 @@ void init(void* self) {
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
 
-void on_resolume_param(void*, long long, double) {}
 
 // Neutral pass-through: no equalization and no median pull → curve reproduces
 // the input. Stateless → skippable.

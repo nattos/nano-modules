@@ -106,7 +106,6 @@ void tick(void* self, double dt) {
   (void)dt;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 // Passthrough at neutral: pixel.hlsl shifts by brightness and scales by
 // (contrast+1), so brightness == 0 (no shift) AND contrast == 0 (1× scale)

@@ -83,7 +83,6 @@ bool ModuleRegistry::registerWasmEffect(
   d.w_tick              = wd.idx_tick;
   d.w_render            = wd.idx_render;
   d.w_on_state_patched  = wd.idx_on_state_patched;
-  d.w_on_resolume_param = wd.idx_on_resolume_param;
   d.w_is_identity       = wd.idx_is_identity;
   d.w_on_active         = wd.idx_on_active;
 

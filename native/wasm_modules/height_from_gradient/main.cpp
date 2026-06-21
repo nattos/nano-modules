@@ -364,7 +364,6 @@ static void on_state_ready(void* self) {
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
 
-void on_resolume_param(void*, long long, double) {}
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {

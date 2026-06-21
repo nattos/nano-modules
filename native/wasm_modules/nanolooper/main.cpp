@@ -512,7 +512,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   if (grid_changed) load_grid_from_state(*s);
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);

@@ -509,7 +509,6 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
     void  (*tick)(void*, double);
     void  (*render)(void*, int, int);
     void  (*on_state_patched)(void*, int, const char*, const int*, const int*, const int*);
-    void  (*on_resolume_param)(void*, long long, double);
     int32_t (*is_identity)(void*);
     void  (*on_active)(void*, int32_t);
   };
@@ -528,7 +527,6 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
   desc.tick = d->tick;
   desc.render = d->render;
   desc.on_state_patched = d->on_state_patched;
-  desc.on_resolume_param = d->on_resolume_param;
   desc.is_identity = d->is_identity;
   desc.on_active = d->on_active;
   registerEffect(desc);

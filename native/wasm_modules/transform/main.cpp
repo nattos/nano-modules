@@ -130,7 +130,6 @@ void tick(void* self, double dt) {
   (void)dt;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 // Pure passthrough at neutral transform (no scale/rotate/translate).
 int32_t is_identity(void* self) {

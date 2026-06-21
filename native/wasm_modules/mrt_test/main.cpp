@@ -97,7 +97,6 @@ void tick(void* self, double) {
   if (!s) return;
 }
 
-void on_resolume_param(void*, long long, double) {}
 
 void on_state_patched(void* self, int, const char*, const int*, const int*,
                       const int*) {
