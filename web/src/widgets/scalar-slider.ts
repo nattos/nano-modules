@@ -93,10 +93,10 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     :host {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       user-select: none;
       font-family: inherit;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color1, #eaeaea);
       box-sizing: border-box;
       touch-action: none;
@@ -120,7 +120,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       position: relative;
       cursor: ew-resize;
       background: rgba(0, 0, 0, 0.2);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid var(--app-tint-4);
       border-radius: 1px;
       overflow: hidden;
     }

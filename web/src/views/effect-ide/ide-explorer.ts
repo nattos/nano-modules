@@ -39,7 +39,7 @@ export class IdeExplorer extends MobxLitElement {
       padding: 8px 0 16px;
     }
     .section-header {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--app-text-color2);
@@ -49,20 +49,20 @@ export class IdeExplorer extends MobxLitElement {
       position: relative;
       display: flex;
       flex-direction: column;
-      gap: 1px;
+      gap: var(--app-sp-1);
       padding: 6px 12px;
       cursor: pointer;
       border-left: 2px solid transparent;
     }
     .row:hover {
-      background: rgba(255,255,255,0.04);
+      background: var(--app-tint-2);
     }
     .row[selected] {
       background: rgba(65,105,225,0.12);
       border-left-color: var(--app-hi-color2);
     }
     .row-name {
-      font-size: 12px;
+      font-size: var(--app-fs-lg);
       color: var(--app-text-color1);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -70,7 +70,7 @@ export class IdeExplorer extends MobxLitElement {
       padding-right: 24px;
     }
     .row-id {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -103,7 +103,7 @@ export class IdeExplorer extends MobxLitElement {
     }
     .empty {
       padding: 8px 12px;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       color: var(--app-text-color2);
       font-style: italic;
     }

@@ -25,9 +25,9 @@ export class UiButton extends LitElement {
   static readonly styles = [unsafeCSS(lineawesomecss), css`
     :host { display: inline-block; }
     button {
-      background-color: var(--button-bg, rgba(255,255,255,0.08));
+      background-color: var(--button-bg, var(--app-tint-3));
       color: var(--text-color, var(--app-text-color1, #eaeaea));
-      border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+      border: 1px solid var(--border-color, var(--app-tint-4));
       border-radius: 1px;
       padding: 6px 10px;
       cursor: pointer;
@@ -35,11 +35,11 @@ export class UiButton extends LitElement {
       align-items: center;
       justify-content: center;
       font-family: inherit;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       letter-spacing: 0.04em;
     }
     button:hover:not(:disabled) {
-      background-color: var(--button-hover, rgba(255,255,255,0.15));
+      background-color: var(--button-hover, var(--app-tint-5));
     }
     button:active:not(:disabled) {
       background-color: var(--button-active, rgba(255,255,255,0.22));
@@ -50,7 +50,7 @@ export class UiButton extends LitElement {
       color: #fff;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    i { font-size: 14px; }
+    i { font-size: var(--app-fs-xl); }
     span { margin-left: 6px; }
     span.hidden { display: none; }
   `];

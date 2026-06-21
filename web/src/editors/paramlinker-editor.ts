@@ -19,17 +19,17 @@ export class ParamLinkerEditor extends MobxLitElement {
     :host {
       display: block;
       font-family: 'JetBrains Mono', 'SF Mono', monospace;
-      font-size: 12px;
+      font-size: var(--app-fs-lg);
       color: #eaeaea;
     }
 
     .section {
       padding: 8px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      border-bottom: 1px solid var(--app-tint-2);
     }
 
     .section-title {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: #b0b0b0;
@@ -38,25 +38,25 @@ export class ParamLinkerEditor extends MobxLitElement {
 
     .controls {
       display: flex;
-      gap: 8px;
+      gap: var(--app-sp-4);
       margin-bottom: 8px;
     }
 
     .toggle-btn {
       flex: 1;
       padding: 6px 12px;
-      border: 1px solid rgba(255,255,255,0.15);
+      border: 1px solid var(--app-tint-5);
       border-radius: 1px;
-      background: rgba(255,255,255,0.05);
+      background: var(--app-tint-2);
       color: #eaeaea;
       font-family: inherit;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       cursor: pointer;
       text-align: center;
       user-select: none;
       transition: background 0.1s;
     }
-    .toggle-btn:hover { background: rgba(255,255,255,0.1); }
+    .toggle-btn:hover { background: var(--app-tint-4); }
     .toggle-btn.active {
       background: #4169E1;
       border-color: #4169E1;
@@ -69,7 +69,7 @@ export class ParamLinkerEditor extends MobxLitElement {
     .assignment {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: var(--app-sp-2);
       padding: 6px 8px;
       background: rgba(0,0,0,0.2);
       border-radius: 1px;
@@ -78,17 +78,17 @@ export class ParamLinkerEditor extends MobxLitElement {
     .assignment-row {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
     }
     .assignment-label {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       font-weight: bold;
       min-width: 30px;
     }
     .assignment-label.input { color: var(--app-io-input); }
     .assignment-label.output { color: var(--app-io-output); }
     .assignment-path {
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       color: #b0b0b0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -104,12 +104,12 @@ export class ParamLinkerEditor extends MobxLitElement {
     .param-item {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       padding: 4px 6px;
       border-radius: 1px;
       cursor: default;
     }
-    .param-item:hover { background: rgba(255,255,255,0.04); }
+    .param-item:hover { background: var(--app-tint-2); }
 
     .param-bar {
       width: 3px;
@@ -120,7 +120,7 @@ export class ParamLinkerEditor extends MobxLitElement {
 
     .param-path {
       flex: 1;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -128,33 +128,33 @@ export class ParamLinkerEditor extends MobxLitElement {
 
     .param-actions {
       display: flex;
-      gap: 3px;
+      gap: var(--app-sp-2);
       flex-shrink: 0;
     }
 
     .assign-btn {
       padding: 2px 6px;
-      border: 1px solid rgba(255,255,255,0.12);
+      border: 1px solid var(--app-tint-4);
       border-radius: 1px;
-      background: rgba(255,255,255,0.04);
+      background: var(--app-tint-2);
       color: #b0b0b0;
       font-family: inherit;
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       cursor: pointer;
     }
-    .assign-btn:hover { background: rgba(255,255,255,0.1); color: #eaeaea; }
+    .assign-btn:hover { background: var(--app-tint-4); color: #eaeaea; }
     .assign-btn.in-btn:hover { color: var(--app-io-input); border-color: var(--app-io-input); }
     .assign-btn.out-btn:hover { color: var(--app-io-output); border-color: var(--app-io-output); }
 
     .badge {
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       padding: 1px 4px;
       border-radius: 1px;
       flex-shrink: 0;
     }
     .badge-input { background: rgba(77,201,246,0.2); color: var(--app-io-input); }
     .badge-output { background: rgba(255,140,0,0.2); color: var(--app-io-output); }
-    .badge-ignored { background: rgba(255,255,255,0.05); color: #555; }
+    .badge-ignored { background: var(--app-tint-2); color: #555; }
   `;
 
   private assignAsInput(paramId: number) {

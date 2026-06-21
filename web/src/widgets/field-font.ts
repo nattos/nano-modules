@@ -262,11 +262,11 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     :host {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: var(--app-sp-2);
       padding: 2px 0;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
     }
-    .row { display: flex; align-items: flex-start; gap: 6px; }
+    .row { display: flex; align-items: flex-start; gap: var(--app-sp-3); }
     .label {
       min-width: 60px;
       padding-top: 3px;
@@ -282,7 +282,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 4px;
+      gap: var(--app-sp-2);
       min-height: 20px;
     }
     .hint { color: var(--app-text-color2, #8a8a8a); font-style: italic; padding: 0 2px; }
@@ -290,10 +290,10 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     .chip {
       display: inline-flex;
       align-items: center;
-      gap: 3px;
+      gap: var(--app-sp-2);
       max-width: 100%;
       background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(255, 255, 255, 0.14);
+      border: 1px solid var(--app-tint-5);
       border-radius: 1px;
       padding: 1px 2px 1px 6px;
       cursor: pointer;
@@ -306,22 +306,22 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
     }
     .chip-x {
       border: none; background: transparent; cursor: pointer;
       color: var(--app-text-color2, #b0b0b0);
-      font-size: 12px; line-height: 1; padding: 0 3px; border-radius: 1px;
+      font-size: var(--app-fs-lg); line-height: 1; padding: 0 3px; border-radius: 1px;
     }
-    .chip-x:hover { color: #fff; background: rgba(255, 255, 255, 0.15); }
+    .chip-x:hover { color: #fff; background: var(--app-tint-5); }
 
     .add, .pencil {
-      border: 1px solid rgba(255, 255, 255, 0.14);
+      border: 1px solid var(--app-tint-5);
       background: rgba(0, 0, 0, 0.3);
       color: var(--app-text-color1, #eaeaea);
       border-radius: 1px;
       cursor: pointer;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       line-height: 1;
       flex-shrink: 0;
     }
@@ -342,11 +342,11 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     }
     .search {
       border: none;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      border-bottom: 1px solid var(--app-tint-4);
       background: rgba(0, 0, 0, 0.35);
       color: var(--app-text-color1, #eaeaea);
       padding: 5px 7px;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       font-family: inherit;
       outline: none;
     }
@@ -354,7 +354,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     .item {
       display: flex;
       align-items: baseline;
-      gap: 8px;
+      gap: var(--app-sp-4);
       padding: 4px 8px;
       cursor: pointer;
       white-space: nowrap;
@@ -368,18 +368,18 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     }
     .item .name {
       flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-      font-size: 13px; color: var(--app-text-color1, #eaeaea);
+      font-size: var(--app-fs-lg); color: var(--app-text-color1, #eaeaea);
     }
-    .item.custom .name { font-size: 11px; color: var(--app-text-color2, #b0b0b0); font-style: italic; }
-    .item .tag { flex-shrink: 0; font-size: 9px; color: var(--app-hi-color2, #6f8fff); }
+    .item.custom .name { font-size: var(--app-fs-md); color: var(--app-text-color2, #b0b0b0); font-style: italic; }
+    .item .tag { flex-shrink: 0; font-size: var(--app-fs-xs); color: var(--app-hi-color2, #6f8fff); }
     .status {
       padding: 4px 8px;
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      border-top: 1px solid var(--app-tint-4);
       color: var(--app-text-color2, #9a9a9a);
-      font-size: 10px;
-      display: flex; justify-content: space-between; gap: 8px;
+      font-size: var(--app-fs-sm);
+      display: flex; justify-content: space-between; gap: var(--app-sp-4);
     }
-    .empty { padding: 8px; color: var(--app-text-color2, #8a8a8a); font-size: 10px; }
+    .empty { padding: var(--app-sp-4); color: var(--app-text-color2, #8a8a8a); font-size: var(--app-fs-sm); }
   `;
 
   render() {

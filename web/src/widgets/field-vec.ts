@@ -37,10 +37,10 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
     :host {
       display: flex;
       flex-direction: column;
-      gap: 1px;
-      font-size: 10px;
+      gap: var(--app-sp-1);
+      font-size: var(--app-fs-sm);
     }
-    .row { display: inline-flex; align-items: center; gap: 6px; }
+    .row { display: inline-flex; align-items: center; gap: var(--app-sp-3); }
     .label {
       min-width: 70px;
       flex-shrink: 0;
@@ -49,7 +49,7 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .group-label { font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding-bottom: 1px; }
+    .group-label { font-size: var(--app-fs-sm); color: var(--app-text-color2, #b0b0b0); padding-bottom: 1px; }
     scalar-slider { flex: 1; min-width: 0; }
   `;
 

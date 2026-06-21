@@ -36,7 +36,7 @@ export class IdeIconBar extends MobxLitElement {
       width: 48px;
       flex-shrink: 0;
       background: var(--app-bg-color2);
-      border-right: 1px solid rgba(255,255,255,0.08);
+      border-right: 1px solid var(--app-tint-3);
     }
     .icon-btn {
       width: 48px;

@@ -100,7 +100,7 @@ export class SmartInput extends LitElement {
     }
     /* CodeMirror dark theme overrides */
     .cm-editor {
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       background: transparent;
     }
     .cm-editor.cm-focused { outline: none; }
@@ -118,7 +118,7 @@ export class SmartInput extends LitElement {
     .cm-tooltip {
       background: var(--app-bg-color2) !important;
       color: var(--app-text-color1, #e0e0e0) !important;
-      border: 1px solid rgba(255,255,255,0.15) !important;
+      border: 1px solid var(--app-tint-5) !important;
       border-radius: 1px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     }
@@ -127,7 +127,7 @@ export class SmartInput extends LitElement {
     }
     .cm-tooltip-autocomplete > ul {
       font-family: inherit;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
     }
     .cm-tooltip-autocomplete > ul > li {
       padding: 3px 8px !important;
@@ -144,7 +144,7 @@ export class SmartInput extends LitElement {
       font-style: normal !important;
       color: var(--app-text-color2, #888) !important;
       margin-left: 8px !important;
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }

@@ -74,9 +74,9 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
     :host {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       padding: 2px 0;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
     }
     .label {
       min-width: 60px;
@@ -90,11 +90,11 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
       flex: 1;
       min-width: 0;
       background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color1, #eaeaea);
       border-radius: 1px;
       padding: 2px 4px;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       font-family: inherit;
     }
     input:focus { outline: none; border-color: var(--app-hi-color2, #4169E1); }
@@ -105,11 +105,11 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
       min-height: 96px;
       resize: vertical;
       background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color1, #eaeaea);
       border-radius: 1px;
       padding: 3px 4px;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       font-family: ui-monospace, Menlo, Consolas, monospace;
       line-height: 1.4;
       white-space: pre;

@@ -314,10 +314,10 @@ export class EnvelopeInspector extends MobxLitElement implements FieldEditorElem
   static styles = css`
     :host { display: block; }
     .label {
-      font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding: 2px 0;
+      font-size: var(--app-fs-sm); color: var(--app-text-color2, #b0b0b0); padding: 2px 0;
     }
     .hint {
-      font-size: 9px; color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
+      font-size: var(--app-fs-xs); color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
       padding: 4px 0 2px; line-height: 1.4;
     }
   `;

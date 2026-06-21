@@ -41,8 +41,8 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
     :host {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 10px;
+      gap: var(--app-sp-3);
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color1, #eaeaea);
     }
     .label {
@@ -65,7 +65,7 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
     }
     input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
     input[type=color]::-webkit-color-swatch { border: none; border-radius: 1px; }
-    .alpha-row { display: inline-flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+    .alpha-row { display: inline-flex; align-items: center; gap: var(--app-sp-2); flex: 1; min-width: 0; }
     .alpha-label { color: var(--app-text-color2, #b0b0b0); flex-shrink: 0; }
     scalar-slider { flex: 1; min-width: 0; }
   `;

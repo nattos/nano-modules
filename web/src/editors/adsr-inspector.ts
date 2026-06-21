@@ -380,16 +380,16 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
 
   static styles = css`
     :host { display: block; }
-    .label { font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding: 2px 0; }
+    .label { font-size: var(--app-fs-sm); color: var(--app-text-color2, #b0b0b0); padding: 2px 0; }
     .hint {
-      font-size: 9px; color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
+      font-size: var(--app-fs-xs); color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
       padding: 4px 0 6px; line-height: 1.4;
     }
     .section {
-      font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+      font-size: var(--app-fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
       color: var(--app-text-color2, #b0b0b0); padding: 8px 0 2px; opacity: 0.7;
     }
-    .row { display: flex; gap: 8px; }
+    .row { display: flex; gap: var(--app-sp-4); }
     .row > * { flex: 1; min-width: 0; }
   `;
 

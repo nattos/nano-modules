@@ -40,7 +40,7 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
       display: inline-flex;
       flex-direction: column;
       align-items: stretch;
-      gap: 2px;
+      gap: var(--app-sp-1);
       min-width: 64px;
     }
     .content {
@@ -51,20 +51,20 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
     .placeholder {
       width: 64px;
       height: 36px;
-      background: rgba(255,255,255,0.04);
+      background: var(--app-tint-2);
       border: 1px dashed rgba(255,255,255,0.18);
       border-radius: 1px;
       display: flex;
       align-items: center;
       justify-content: center;
       color: var(--app-text-color2, #b0b0b0);
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       text-transform: uppercase;
       letter-spacing: 0.04em;
       box-sizing: border-box;
     }
     .caption {
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       color: var(--app-text-color2, #b0b0b0);
       text-align: center;
       overflow: hidden;

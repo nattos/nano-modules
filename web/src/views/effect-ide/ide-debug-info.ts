@@ -40,7 +40,7 @@ export class IdeDebugInfo extends MobxLitElement {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--app-text-color2);
@@ -51,8 +51,8 @@ export class IdeDebugInfo extends MobxLitElement {
       padding: 0 12px 8px;
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 4px 12px;
-      font-size: 11px;
+      gap: var(--app-sp-2) 12px;
+      font-size: var(--app-fs-md);
       color: var(--app-text-color1);
       flex-shrink: 0;
     }
@@ -71,22 +71,22 @@ export class IdeDebugInfo extends MobxLitElement {
       min-height: 0;
       overflow-y: auto;
       padding: 4px 0 16px;
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid var(--app-tint-3);
       font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       line-height: 1.4;
     }
     .empty {
       padding: 16px 12px;
       color: var(--app-text-color2);
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       font-style: italic;
     }
     .log-row {
       padding: 2px 12px;
       display: flex;
-      gap: 8px;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
+      gap: var(--app-sp-4);
+      border-bottom: 1px solid var(--app-tint-1);
     }
     .log-row[level="warn"] { color: var(--app-warn); }
     .log-row[level="error"] { color: var(--app-error); }
@@ -109,9 +109,9 @@ export class IdeDebugInfo extends MobxLitElement {
     }
     .clear-btn {
       background: transparent;
-      border: 1px solid rgba(255,255,255,0.16);
+      border: 1px solid var(--app-tint-5);
       color: var(--app-text-color2);
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       padding: 2px 6px;
       border-radius: 1px;
       cursor: pointer;

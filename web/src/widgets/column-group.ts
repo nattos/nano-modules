@@ -199,10 +199,10 @@ export class ColumnGroup extends MobxLitElement {
       width: var(--gutter-width);
       flex-shrink: 0;
       position: relative;
-      border-left: 1px solid rgba(255,255,255,0.04);
+      border-left: 1px solid var(--app-tint-2);
     }
     .column-header {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--app-text-color2);
@@ -219,13 +219,13 @@ export class ColumnGroup extends MobxLitElement {
       gap: 0;
       padding: 4px 0;
       background: rgba(0,0,0,0.35);
-      border: 1px solid rgba(255,255,255,0.06);
+      border: 1px solid var(--app-tint-2);
       border-radius: 1px;
       box-shadow: inset 0 1px 0 rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.25);
       box-sizing: border-box;
     }
     .column-placeholder {
-      border: 1px dashed rgba(255,255,255,0.08);
+      border: 1px dashed var(--app-tint-3);
       border-radius: 1px;
       min-height: 100px;
       width: 100%;
@@ -233,7 +233,7 @@ export class ColumnGroup extends MobxLitElement {
       align-items: center;
       justify-content: center;
       color: var(--app-text-color2);
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       opacity: 0.5;
     }
 
@@ -247,7 +247,7 @@ export class ColumnGroup extends MobxLitElement {
 
     /* Colors used consistently across cards and markers. */
     :host {
-      --device-bg: rgba(255,255,255,0.07);
+      --device-bg: var(--app-tint-3);
       --device-border: rgba(255,255,255,0.22);
       --device-sel-bg: rgba(65, 105, 225, 0.22);
       --device-sel-border: var(--app-hi-color2, #4169E1);
@@ -291,7 +291,7 @@ export class ColumnGroup extends MobxLitElement {
       cursor: default;
     }
     .chain-marker-label {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--app-text-color2);
@@ -319,7 +319,7 @@ export class ColumnGroup extends MobxLitElement {
     }
     .effect-card-header:active { cursor: grabbing; }
     .effect-card-name {
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       color: var(--app-text-color1);
       cursor: default;
     }
@@ -357,7 +357,7 @@ export class ColumnGroup extends MobxLitElement {
     .trace-card-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px;
+      gap: var(--app-sp-2);
       width: 100%;
       padding: 6px 10px 8px;
       box-sizing: border-box;
@@ -585,21 +585,21 @@ export class ColumnGroup extends MobxLitElement {
 
     /* --- Inspector content (rendered into the right panel via Selectable) --- */
     .section-header {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2); margin-bottom: 8px;
     }
     .inspector-field {
-      display: flex; align-items: center; gap: 6px; padding: 4px 0;
+      display: flex; align-items: center; gap: var(--app-sp-3); padding: 4px 0;
     }
     .inspector-field-label {
-      min-width: 70px; color: var(--app-text-color2); font-size: 10px; flex-shrink: 0;
+      min-width: 70px; color: var(--app-text-color2); font-size: var(--app-fs-sm); flex-shrink: 0;
     }
     .inspector-field-value {
-      flex: 1; min-width: 0; color: var(--app-text-color1); font-size: 10px;
+      flex: 1; min-width: 0; color: var(--app-text-color1); font-size: var(--app-fs-sm);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .inspector-separator {
-      height: 1px; background: rgba(255,255,255,0.06); margin: 8px 0;
+      height: 1px; background: var(--app-tint-2); margin: 8px 0;
     }
   `;
 

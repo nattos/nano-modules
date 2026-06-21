@@ -55,8 +55,8 @@ export class EffectIdeApp extends MobxLitElement {
       overflow: hidden;
     }
     .placeholder {
-      padding: 16px;
-      font-size: 11px;
+      padding: var(--app-sp-6);
+      font-size: var(--app-fs-md);
       color: var(--app-text-color2);
       line-height: 1.6;
     }
@@ -67,9 +67,9 @@ export class EffectIdeApp extends MobxLitElement {
     }
     .status-strip {
       padding: 6px 16px;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid var(--app-tint-3);
       background: var(--app-bg-color2);
     }
   `;

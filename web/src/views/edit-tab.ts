@@ -195,33 +195,33 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       width: 340px;
       min-width: 260px;
       background: var(--app-bg-color2);
-      border-left: 1px solid rgba(255,255,255,0.08);
+      border-left: 1px solid var(--app-tint-3);
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
-    .right-content { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; font-size: 11px; }
+    .right-content { flex: 1; overflow-y: auto; min-height: 0; padding: var(--app-sp-5); font-size: var(--app-fs-md); }
     .inspector-field {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: var(--app-sp-3);
       padding: 4px 0;
     }
     .inspector-field-label {
       min-width: 70px; color: var(--app-text-color2);
-      font-size: 10px; flex-shrink: 0;
+      font-size: var(--app-fs-sm); flex-shrink: 0;
     }
     .inspector-field-value {
       flex: 1; min-width: 0;
       color: var(--app-text-color1);
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .inspector-separator {
-      height: 1px; background: rgba(255,255,255,0.06);
+      height: 1px; background: var(--app-tint-2);
       margin: 8px 0;
     }
     .preview-area {
-      border-top: 1px solid rgba(255,255,255,0.08);
-      padding: 8px;
+      border-top: 1px solid var(--app-tint-3);
+      padding: var(--app-sp-4);
       flex-shrink: 0;
     }
     .preview-area canvas {
@@ -244,58 +244,58 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     /* --- Buttons --- */
     .btn {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--app-tint-3);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color1);
-      font-size: 10px; padding: 2px 8px;
+      font-size: var(--app-fs-sm); padding: 2px 8px;
       border-radius: 1px; cursor: pointer;
       font-family: inherit;
     }
-    .btn:hover { background: rgba(255,255,255,0.15); }
+    .btn:hover { background: var(--app-tint-5); }
     .btn:disabled { opacity: 0.4; cursor: default; }
-    .btn-row { display: flex; gap: 6px; padding: 0 0 8px; }
-    .btn-row .btn { flex: 1; text-align: center; padding: 6px; }
+    .btn-row { display: flex; gap: var(--app-sp-3); padding: 0 0 8px; }
+    .btn-row .btn { flex: 1; text-align: center; padding: var(--app-sp-3); }
     .btn[active] {
       background: var(--app-hi-color2);
       border-color: var(--app-hi-color2);
       color: #fff;
     }
     .section-header {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2); margin-bottom: 8px;
     }
     .empty-state {
-      color: var(--app-text-color2); font-size: 12px;
+      color: var(--app-text-color2); font-size: var(--app-fs-lg);
       text-align: center; padding: 32px 16px;
     }
 
     /* --- Right panel tap config --- */
-    .rail-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .rail-list { display: flex; flex-direction: column; gap: var(--app-sp-2); margin-bottom: 12px; }
     .rail-item {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: var(--app-sp-3);
       padding: 6px 8px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--app-tint-1);
+      border: 1px solid var(--app-tint-2);
       border-radius: 1px;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       cursor: pointer;
     }
-    .rail-item:hover { background: rgba(255,255,255,0.08); }
+    .rail-item:hover { background: var(--app-tint-3); }
     .tap-row {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: var(--app-sp-3);
       padding: 6px 8px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--app-tint-2);
+      border: 1px solid var(--app-tint-3);
       border-radius: 1px;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       margin-bottom: 4px;
     }
     .tap-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .dir-btn {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--app-tint-2);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color2);
-      font-size: 9px; padding: 2px 6px;
+      font-size: var(--app-fs-xs); padding: 2px 6px;
       border-radius: 1px; cursor: pointer;
       font-family: inherit; text-transform: uppercase;
     }

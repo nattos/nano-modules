@@ -66,7 +66,7 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
       justify-content: center;
       padding: 32px 16px;
       color: var(--app-text-color2);
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       text-align: center;
       line-height: 1.6;
     }

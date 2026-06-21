@@ -31,18 +31,18 @@ export class SketchApp extends MobxLitElement {
       display: flex;
       align-items: center;
       background: var(--app-bg-color2);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
+      border-bottom: 1px solid var(--app-tint-3);
       padding: 0 12px;
       height: 36px;
       flex-shrink: 0;
-      gap: 2px;
+      gap: var(--app-sp-1);
     }
     .tab-btn {
       background: transparent;
       border: none;
       color: var(--app-text-color2);
       font-family: inherit;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       text-transform: uppercase;
       letter-spacing: 0.06em;
       padding: 8px 16px;
@@ -59,8 +59,8 @@ export class SketchApp extends MobxLitElement {
       margin-left: auto;
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-size: 10px;
+      gap: var(--app-sp-4);
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
     }
     .tab-status .metric {
@@ -75,10 +75,10 @@ export class SketchApp extends MobxLitElement {
     .tab-status .headroom.tight { color: var(--app-warn); }
     .tab-status .headroom.over { color: var(--app-error); }
     .tab-status .target {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
       background: var(--app-bg-color1);
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      border: 1px solid var(--app-tint-5);
       border-radius: 1px;
       padding: 1px 2px;
       cursor: pointer;

@@ -56,7 +56,7 @@ export class IdeMonitor extends MobxLitElement {
          top/left overflow is clipped and unreachable by the scrollbars. */
       align-items: safe center;
       justify-content: safe center;
-      padding: 16px;
+      padding: var(--app-sp-6);
       background: #000;
       overflow: hidden;
       min-height: 0;
@@ -78,25 +78,25 @@ export class IdeMonitor extends MobxLitElement {
       align-items: center;
       justify-content: center;
       color: var(--app-text-color2);
-      font-size: 11px;
+      font-size: var(--app-fs-md);
       text-align: center;
       padding: 32px;
     }
     .transport {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       padding: 8px 12px;
       background: var(--app-bg-color2);
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid var(--app-tint-3);
       flex-shrink: 0;
     }
     .stat {
       margin-left: auto;
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-size: 10px;
+      gap: var(--app-sp-4);
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
     }
     .stat .metric {
@@ -117,10 +117,10 @@ export class IdeMonitor extends MobxLitElement {
       color: var(--app-error);
     }
     .stat .target {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
       background: var(--app-bg-color);
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      border: 1px solid var(--app-tint-5);
       border-radius: 1px;
       padding: 1px 2px;
       cursor: pointer;

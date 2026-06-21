@@ -53,10 +53,10 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
       display: inline-flex;
       flex-direction: column;
       align-items: center;
-      gap: 3px;
+      gap: var(--app-sp-2);
       user-select: none;
       font-family: inherit;
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       color: var(--app-text-color1, #eaeaea);
       touch-action: none;
       width: 44px;
@@ -68,7 +68,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
       cursor: ns-resize;
     }
     svg { display: block; width: 34px; height: 34px; overflow: visible; }
-    .track { stroke: rgba(255,255,255,0.12); }
+    .track { stroke: var(--app-tint-4); }
     .fill { stroke: var(--app-hi-color2, #4169E1); }
     .pointer { stroke: var(--app-text-color1, #eaeaea); }
     :host([dragging]) .fill { stroke: var(--app-hi-color2, #4169E1); filter: drop-shadow(0 0 2px var(--app-hi-color2, #4169E1)); }
@@ -79,7 +79,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
     :host([muted]) { opacity: 0.4; }
     :host([muted]) .fill { stroke: var(--app-text-color2, #888); filter: none; }
     :host([muted]) .pointer { stroke: var(--app-text-color2, #888); }
-    .knob-hub { fill: rgba(0,0,0,0.35); stroke: rgba(255,255,255,0.14); }
+    .knob-hub { fill: rgba(0,0,0,0.35); stroke: var(--app-tint-5); }
     .dial:hover .knob-hub { stroke: var(--app-hi-color2, #4169E1); }
     .label { color: var(--app-text-color2, #b0b0b0); overflow: hidden; text-overflow: ellipsis;
              white-space: nowrap; max-width: 44px; text-align: center; }
@@ -87,7 +87,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
     input {
       width: 40px; height: 14px; border: none; border-radius: 1px;
       background: rgba(0,0,0,0.7); color: var(--app-text-color1, #eaeaea);
-      font-family: inherit; font-size: 9px; padding: 0 2px; margin: 0;
+      font-family: inherit; font-size: var(--app-fs-xs); padding: 0 2px; margin: 0;
       outline: none; text-align: center;
     }
   `;

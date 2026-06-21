@@ -64,7 +64,7 @@ export class ColumnsView extends LitElement {
       min-width: 0;
       width: 0;
       overflow: auto;
-      padding: 16px;
+      padding: var(--app-sp-6);
       box-sizing: border-box;
     }
     .content {
@@ -91,7 +91,7 @@ export class ColumnsView extends LitElement {
       transition: background 0.15s;
     }
     .resize-handle:hover::after {
-      background: rgba(255,255,255,0.15);
+      background: var(--app-tint-5);
     }
   `;
 

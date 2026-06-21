@@ -20,7 +20,7 @@ export class OrganizeTab extends MobxLitElement {
     .main-area {
       flex: 1;
       overflow-y: auto;
-      padding: 16px;
+      padding: var(--app-sp-6);
       min-width: 0;
       width: 0;
     }
@@ -28,40 +28,40 @@ export class OrganizeTab extends MobxLitElement {
       width: 340px;
       min-width: 260px;
       background: var(--app-bg-color2);
-      border-left: 1px solid rgba(255,255,255,0.08);
-      padding: 12px;
+      border-left: 1px solid var(--app-tint-3);
+      padding: var(--app-sp-5);
     }
-    .sketch-list { display: flex; flex-direction: column; gap: 4px; }
+    .sketch-list { display: flex; flex-direction: column; gap: var(--app-sp-2); }
     .sketch-card {
       padding: 10px 12px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--app-tint-1);
+      border: 1px solid var(--app-tint-2);
       border-radius: 1px;
       cursor: pointer;
     }
-    .sketch-card:hover { border-color: rgba(255,255,255,0.15); }
+    .sketch-card:hover { border-color: var(--app-tint-5); }
     .sketch-card[selected] {
       border-color: var(--app-hi-color2);
       background: rgba(65,105,225,0.08);
     }
-    .sketch-card-name { font-size: 12px; color: var(--app-text-color1); }
-    .sketch-card-info { font-size: 10px; color: var(--app-text-color2); margin-top: 2px; }
+    .sketch-card-name { font-size: var(--app-fs-lg); color: var(--app-text-color1); }
+    .sketch-card-info { font-size: var(--app-fs-sm); color: var(--app-text-color2); margin-top: 2px; }
     .section-header {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2); margin-bottom: 8px;
     }
-    .summary { font-size: 11px; color: var(--app-text-color2); margin-bottom: 12px; }
+    .summary { font-size: var(--app-fs-md); color: var(--app-text-color2); margin-bottom: 12px; }
     .summary div { margin-bottom: 2px; }
     .btn {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--app-tint-3);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color1);
-      font-size: 10px; padding: 6px;
+      font-size: var(--app-fs-sm); padding: var(--app-sp-3);
       border-radius: 1px; cursor: pointer;
       font-family: inherit; width: 100%; text-align: center;
     }
-    .btn:hover { background: rgba(255,255,255,0.15); }
-    .empty-state { color: var(--app-text-color2); font-size: 12px; text-align: center; padding: 32px 16px; }
+    .btn:hover { background: var(--app-tint-5); }
+    .empty-state { color: var(--app-text-color2); font-size: var(--app-fs-lg); text-align: center; padding: 32px 16px; }
   `;
 
   render() {

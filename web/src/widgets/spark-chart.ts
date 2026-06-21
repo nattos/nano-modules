@@ -45,7 +45,7 @@ export class SparkChart extends MobxLitElement {
       display: block;
       background: rgba(0, 0, 0, 0.3);
       border-radius: 1px;
-      border: 1px solid rgba(255,255,255,0.06);
+      border: 1px solid var(--app-tint-2);
     }
   `;
 

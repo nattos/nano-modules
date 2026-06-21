@@ -31,7 +31,7 @@ export class CreateTab extends MobxLitElement {
     .main-area {
       flex: 1;
       overflow-y: auto;
-      padding: 16px;
+      padding: var(--app-sp-6);
       min-width: 0;
       width: 0;
     }
@@ -39,53 +39,53 @@ export class CreateTab extends MobxLitElement {
       width: 340px;
       min-width: 260px;
       background: var(--app-bg-color2);
-      border-left: 1px solid rgba(255,255,255,0.08);
+      border-left: 1px solid var(--app-tint-3);
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      padding: 12px;
+      padding: var(--app-sp-5);
     }
-    .plugin-list { display: flex; flex-direction: column; gap: 4px; }
+    .plugin-list { display: flex; flex-direction: column; gap: var(--app-sp-2); }
     .plugin-card {
-      display: flex; align-items: center; gap: 8px;
+      display: flex; align-items: center; gap: var(--app-sp-4);
       padding: 8px 12px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--app-tint-1);
+      border: 1px solid var(--app-tint-2);
       border-radius: 1px;
     }
     .plugin-card-info { flex: 1; min-width: 0; }
-    .plugin-card-name { font-size: 12px; color: var(--app-text-color1); }
-    .plugin-card-key { font-size: 10px; color: var(--app-text-color2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .plugin-card-name { font-size: var(--app-fs-lg); color: var(--app-text-color1); }
+    .plugin-card-key { font-size: var(--app-fs-sm); color: var(--app-text-color2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .section-header {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2); margin-bottom: 8px;
     }
-    .staging-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .staging-list { display: flex; flex-direction: column; gap: var(--app-sp-2); margin-bottom: 12px; }
     .instance-row {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: var(--app-sp-3);
       padding: 6px 8px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--app-tint-1);
+      border: 1px solid var(--app-tint-2);
       border-radius: 1px;
-      font-size: 11px;
+      font-size: var(--app-fs-md);
     }
     .instance-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .empty-state { color: var(--app-text-color2); font-size: 12px; text-align: center; padding: 32px 16px; }
+    .empty-state { color: var(--app-text-color2); font-size: var(--app-fs-lg); text-align: center; padding: 32px 16px; }
     .btn {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--app-tint-3);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color1);
-      font-size: 10px; padding: 2px 8px;
+      font-size: var(--app-fs-sm); padding: 2px 8px;
       border-radius: 1px; cursor: pointer;
       font-family: inherit; flex-shrink: 0;
     }
-    .btn:hover { background: rgba(255,255,255,0.15); }
-    .btn-full { width: 100%; padding: 6px; text-align: center; }
+    .btn:hover { background: var(--app-tint-5); }
+    .btn-full { width: 100%; padding: var(--app-sp-3); text-align: center; }
     .toggle-btn {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--app-tint-2);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color2);
-      font-size: 9px; padding: 2px 6px;
+      font-size: var(--app-fs-xs); padding: 2px 6px;
       border-radius: 1px; cursor: pointer;
       font-family: inherit; text-transform: uppercase;
     }
@@ -97,7 +97,7 @@ export class CreateTab extends MobxLitElement {
     .remove-btn {
       background: none; border: none;
       color: var(--app-text-color2); cursor: pointer;
-      font-size: 14px; padding: 0 4px; line-height: 1;
+      font-size: var(--app-fs-xl); padding: 0 4px; line-height: 1;
     }
     .remove-btn:hover { color: var(--app-hi-color1); }
   `;

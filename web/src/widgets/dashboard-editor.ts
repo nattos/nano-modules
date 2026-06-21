@@ -38,7 +38,7 @@ export class DashboardEditor extends MobxLitElement {
     .knob-row {
       display: grid;
       grid-template-columns: repeat(4, max-content);
-      gap: 6px 8px;
+      gap: var(--app-sp-3) 8px;
       justify-content: center;
       justify-items: center;
       padding: 4px 2px;

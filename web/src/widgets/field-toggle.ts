@@ -41,9 +41,9 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
     :host {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       padding: 2px 0;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
     }
     .label {
       min-width: 70px;
@@ -52,17 +52,17 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
     }
     button {
       flex: 1;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--app-tint-2);
+      border: 1px solid var(--app-tint-4);
       color: var(--app-text-color2, #b0b0b0);
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
       padding: 3px 6px;
       border-radius: 1px;
       cursor: pointer;
       font-family: inherit;
       text-align: center;
     }
-    button:hover { background: rgba(255,255,255,0.1); }
+    button:hover { background: var(--app-tint-4); }
     button[active] {
       background: var(--app-hi-color2, #4169E1);
       border-color: var(--app-hi-color2, #4169E1);

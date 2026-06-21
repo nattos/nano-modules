@@ -46,7 +46,7 @@ export class TextureDropZone extends LitElement {
       justify-content: center;
     }
     .hint {
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       color: var(--app-hi-color2);
       letter-spacing: 0.06em;
       text-transform: uppercase;

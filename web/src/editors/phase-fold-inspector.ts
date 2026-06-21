@@ -55,7 +55,7 @@ export class PhaseFoldXyPad extends MobxLitElement implements FieldEditorElement
   static styles = css`
     :host { display: block; }
     .group-label {
-      font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding-bottom: 2px;
+      font-size: var(--app-fs-sm); color: var(--app-text-color2, #b0b0b0); padding-bottom: 2px;
     }
     .pad {
       position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 2px 0 6px;
@@ -71,7 +71,7 @@ export class PhaseFoldXyPad extends MobxLitElement implements FieldEditorElement
       transform: translate(-50%, -50%); pointer-events: none; left: 50%; top: 50%;
     }
     .pad-labels {
-      display: flex; justify-content: space-between; font-size: 9px;
+      display: flex; justify-content: space-between; font-size: var(--app-fs-xs);
       color: var(--app-text-color2, #b0b0b0); margin: -4px 0 2px;
     }
   `;
@@ -163,7 +163,7 @@ export class PhaseFoldInspector extends MobxLitElement {
   static styles = css`
     :host { display: block; }
     .section {
-      font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+      font-size: var(--app-fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
       color: var(--app-text-color2, #b0b0b0); padding: 6px 0 2px; opacity: 0.7;
     }
   `;

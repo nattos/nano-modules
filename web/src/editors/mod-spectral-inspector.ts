@@ -27,7 +27,7 @@ export class ModSpectralInspector extends MobxLitElement {
   static styles = css`
     :host { display: block; }
     .section {
-      font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+      font-size: var(--app-fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
       color: var(--app-text-color2, #b0b0b0); padding: 6px 0 2px; opacity: 0.7;
     }
   `;

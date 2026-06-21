@@ -50,9 +50,9 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
     :host {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       padding: 2px 0;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
     }
     .label {
       min-width: 70px;
@@ -66,7 +66,7 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       display: inline-flex;
       flex: 1;
       min-width: 0;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid var(--app-tint-4);
       border-radius: 1px;
       overflow: hidden;
     }
@@ -75,9 +75,9 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       min-width: 0;
       background: rgba(0, 0, 0, 0.2);
       border: none;
-      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      border-right: 1px solid var(--app-tint-3);
       color: var(--app-text-color2, #b0b0b0);
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
       font-family: inherit;
       padding: 3px 6px;
       cursor: pointer;
@@ -89,7 +89,7 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
     }
     button:last-child { border-right: none; }
     button:hover {
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--app-tint-2);
       color: var(--app-text-color1, #eaeaea);
     }
     button[active] {

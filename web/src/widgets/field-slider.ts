@@ -66,9 +66,9 @@ export class FieldSlider extends MobxLitElement implements FieldEditorElement {
     :host {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--app-sp-3);
       padding: 2px 0;
-      font-size: 10px;
+      font-size: var(--app-fs-sm);
     }
     .label {
       min-width: 70px;
@@ -88,7 +88,7 @@ export class FieldSlider extends MobxLitElement implements FieldEditorElement {
       min-width: 28px;
       text-align: right;
       color: var(--app-text-color2, #b0b0b0);
-      font-size: 9px;
+      font-size: var(--app-fs-xs);
     }
   `;
 
