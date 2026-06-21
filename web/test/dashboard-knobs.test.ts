@@ -185,4 +185,50 @@ describe('util.dashboard knob bank', () => {
     await new Promise(r => setTimeout(r, 400));
     expect(await mutedOf(2)).toBe(false);
   });
+
+  it('wires through the knobs, not an output-trace card', async () => {
+    // The dashboard renders NO output-trace cards — each knob_i is wired
+    // directly via its <scalar-knob> (the sole field endpoint for both the
+    // input and output wire), like the old virtual dashboard.
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_w'] = {
+          anchor: null,
+          chain: [
+            { type: 'module', module_type: 'source.solid_color', instance_key: 'sc@0',
+              params: { color: [0.1,0.1,0.1] } },
+            { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
+          ],
+          instances: { 'sc@0': { module_type: 'source.solid_color', state: { color:[0.1,0.1,0.1] } } },
+        };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_w');
+      ac.addEffectToChain('sk_w', 0, 1, 'util.dashboard');
+      ac.setTappingMode(true);
+    })()`);
+    await new Promise(r => setTimeout(r, 1500));
+
+    const dom = await page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      let knobOutputTraceCards = 0, knob2 = false, knob2TapHit = false;
+      for (const el of walk(document)) {
+        if (el.tagName === 'OUTPUT-TRACE-CARD' && String(el.fieldPath || '').indexOf('knob_') === 0) knobOutputTraceCards++;
+        if (el.tagName === 'SCALAR-KNOB' && el.fieldPath === 'knob_2') knob2 = true;
+        if (el.classList && el.classList.contains('tap-overlay-hit') && el.dataset.fieldPath === 'knob_2') knob2TapHit = true;
+      }
+      return { knobOutputTraceCards, knob2, knob2TapHit };
+    })()`) as { knobOutputTraceCards: number; knob2: boolean; knob2TapHit: boolean };
+
+    // No output-trace cards for the knobs (output traces hidden for dashboards).
+    expect(dom.knobOutputTraceCards).toBe(0);
+    // The knob widget exists and is itself the wire endpoint (tap-overlay hit).
+    expect(dom.knob2).toBe(true);
+    expect(dom.knob2TapHit).toBe(true);
+  });
 });

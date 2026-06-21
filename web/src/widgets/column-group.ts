@@ -819,6 +819,12 @@ export class ColumnGroup extends MobxLitElement {
    * with the output rather than a hidden slider inside the body.
    */
   private renderModuleOutputRow(chainIdx: number, entry: ModuleEntry) {
+    // util.dashboard wires through its knob widgets (the <dashboard-editor>
+    // body), not a separate output-trace row. Hiding the row (a) keeps each
+    // <scalar-knob> the SOLE field-layout endpoint for its knob_i — so both the
+    // input and output wires attach to the knob, like the old virtual dashboard
+    // — and (b) hides the dashboard's output traces.
+    if (entry.module_type === DASHBOARD_MODULE_TYPE) return nothing;
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
     const outputs = this.collectModuleOutputs(entry);
     const tappingMode = appState.local.tappingMode;
