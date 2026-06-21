@@ -59,6 +59,13 @@ struct RegisteredModule {
    *  bundle). Surfaced from EffectInstance::moduleInitTrapped() for diagnostics
    *  and tests. */
   bool moduleInitTrapped = false;
+
+  /** Host<->effect ABI version of the bundle this effect came from (its
+   *  nano_abi_version() export; 0 for a legacy bundle without the export). Lets
+   *  the executor branch on contract version for compatibility shims. Native
+   *  built-in (non-wasm) effects link against the current headers, so they
+   *  report NANO_ABI_VERSION. See module_api.h. */
+  int abiVersion = 0;
 };
 
 }  // namespace sketch_executor

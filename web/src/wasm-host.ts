@@ -225,6 +225,13 @@ export class WasmHost {
   // what the effect is FOR; see host.h Capability. Empty when none declared.
   capabilities: string[] = [];
 
+  // Host<->effect ABI version this bundle was built against (its
+  // `nano_abi_version()` export; see NANO_ABI_VERSION in module_api.h). 0 when
+  // the export is absent (a legacy bundle). Read in load() before
+  // nano_module_main, so register_effect can gate trailing descriptor fields
+  // (e.g. seek at +60) on it. The web twin of RegisteredModule::abiVersion.
+  abiVersion = 0;
+
   // Bundle (module) version "major.minor.patch" from the schema's top-level
   // `moduleVersion`, distinct from the per-effect `metadata.version`. Both are
   // recorded onto serialized instances. Defaults to 0.0.0 until a schema is seen.
@@ -1204,7 +1211,10 @@ export class WasmHost {
           const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
           const isIdentityIdx = mem.getUint32(descPtr + 52, true);
           const onActiveIdx = mem.getUint32(descPtr + 56, true);
-          const seekIdx = mem.getUint32(descPtr + 60, true);
+          // seek (+60) exists only in ABI v1+ descriptors; a legacy bundle's
+          // descriptor stops at +56, so don't read past it (canonical shim:
+          // gate a trailing descriptor field on the bundle's ABI version).
+          const seekIdx = this.abiVersion >= 1 ? mem.getUint32(descPtr + 60, true) : 0;
 
           this.registeredEffects.push({
             id: this.readCString(idPtr),
@@ -1233,6 +1243,12 @@ export class WasmHost {
     // Initialize WASI runtime (C++ static constructors, etc.)
     const _initialize = this.instance.exports._initialize as (() => void) | undefined;
     if (_initialize) _initialize();
+
+    // Read the host<->effect ABI version BEFORE nano_module_main so
+    // register_effect can gate trailing descriptor fields on it. Absent export
+    // (legacy bundle) → 0.
+    const abiVersionFn = this.instance.exports.nano_abi_version as (() => number) | undefined;
+    this.abiVersion = abiVersionFn ? (abiVersionFn() | 0) : 0;
 
     // Call nano_module_main to discover registered effects
     const nanoMain = this.instance.exports.nano_module_main as (() => void) | undefined;

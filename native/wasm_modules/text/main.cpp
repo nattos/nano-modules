@@ -170,6 +170,8 @@ NANO_DECLARE_INSTANCE_EFFECT(gen_text)
 // gen_text:: namespace function pointers instead, and several effects share one
 // binary — so this global export is WASM-only to avoid duplicate symbols.
 #ifdef __wasm__
+NANO_EXPORT_ABI_VERSION()
+
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
   nano::registerEffect({

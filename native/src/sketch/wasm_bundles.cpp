@@ -69,6 +69,10 @@ int WasmEffectBundles::loadBundle(const uint8_t* bytecode, uint32_t len,
   if (gpu) host_.set_gpu_backend(id, gpu);
   if (stateDoc) host_.set_state_doc(id, stateDoc);
 
+  // Read the bundle's host<->effect ABI version BEFORE nano_module_main so
+  // register_effect can gate trailing descriptor fields on it (0 = legacy).
+  host_.query_abi_version(id);
+
   // Bundles register their effects from nano_module_main. A non-effect module
   // (no such export) fails here and contributes nothing.
   if (host_.call_function(id, "nano_module_main") != 0) return 0;

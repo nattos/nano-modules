@@ -27,6 +27,8 @@ NANO_DECLARE_INSTANCE_EFFECT(chroma_wave)
 
 extern "C" {
 
+NANO_EXPORT_ABI_VERSION()
+
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     nano::registerEffect({

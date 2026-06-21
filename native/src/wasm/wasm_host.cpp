@@ -181,6 +181,27 @@ int32_t WasmHost::call_function(int32_t module_id, const char* func_name) {
   return 0;
 }
 
+int32_t WasmHost::query_abi_version(int32_t module_id) {
+  auto* m = find_module(module_id);
+  if (!m) { last_error_ = "Module not found"; return 0; }
+
+  int32_t v = 0;
+  wasm_function_inst_t func =
+      wasm_runtime_lookup_function(m->instance, "nano_abi_version");
+  if (func) {
+    wasm_val_t results[1] = {};
+    NestedCallScope scope(m->exec_env);
+    if (wasm_runtime_call_wasm_a(m->exec_env, func, 1, results, 0, nullptr)) {
+      v = results[0].of.i32;
+    } else {
+      // A trap here shouldn't poison the bundle load — just fall back to 0.
+      wasm_runtime_clear_exception(m->instance);
+    }
+  }
+  m->context.abi_version = v;  // legacy bundle (no export) stays 0
+  return v;
+}
+
 int32_t WasmHost::call_function_f64(int32_t module_id, const char* func_name, double arg) {
   auto* m = find_module(module_id);
   if (!m) { last_error_ = "Module not found"; return -1; }

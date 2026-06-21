@@ -16,6 +16,7 @@
 #include "sketch/module_registry.h"
 #include "sketch/wasm_bundles.h"
 #include "wasm/wasm_host.h"
+#include "../wasm_modules/include/module_api.h"  // NANO_ABI_VERSION
 
 using sketch_executor::WasmEffectBundles;
 using sketch_executor::ModuleRegistry;
@@ -121,4 +122,26 @@ TEST_CASE("temporal capabilities round-trip from schema to the registry", "[wasm
   for (const char* id : {"color.tone.brightness_contrast", "mod.source.lfo",
                          "mod.source.adsr", "motion.blur"})
     CHECK_FALSE(has(id, "seekable_prefill"));
+}
+
+TEST_CASE("bundle reports its host<->effect ABI version", "[wasm_bundles]") {
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(nullptr);
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, nullptr, nullptr) > 1);
+
+  // core.wasm is built against the current headers, so every effect it
+  // registers carries the current NANO_ABI_VERSION (read from the bundle's
+  // nano_abi_version() export before nano_module_main). A value of 0 would mean
+  // the export wasn't found / wired.
+  const auto* bc = registry.find("color.tone.brightness_contrast");
+  REQUIRE(bc != nullptr);
+  CHECK(bc->abiVersion == NANO_ABI_VERSION);
+  CHECK(bc->abiVersion >= 1);
+
+  // Every effect in one bundle shares the bundle's ABI version.
+  const auto* lfo = registry.find("mod.source.lfo");
+  REQUIRE(lfo != nullptr);
+  CHECK(lfo->abiVersion == bc->abiVersion);
 }

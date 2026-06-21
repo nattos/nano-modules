@@ -23,6 +23,32 @@
 
 #include <cstdint>
 
+// ── Host↔effect ABI version ────────────────────────────────────────────────
+// Version of the host<->effect CONTRACT: which host imports exist (and their
+// signatures), which effect exports the host drives, and the EffectDesc_v2
+// trailing-field set. This is DISTINCT from:
+//   - EffectDesc_v2::struct_version — the descriptor STRUCT identity (still 2);
+//   - a Schema's effectVersion / moduleVersion — per-effect/module SEMANTICS.
+// Bump it on ANY change to the contract (a new/renamed host import, a new
+// effect export, an added descriptor field) so the executor can detect an
+// older-ABI bundle and shim it (synthesize a missing export's default, skip a
+// descriptor field that didn't exist, adapt a changed import). A bundle built
+// before this existed exports no `nano_abi_version()`; the host reads that
+// absence as version 0 (legacy / pre-versioning).
+//
+//   1 — first versioned contract: EffectDesc_v2 carries the trailing `seek`
+//       field; effrt + state/gpu/host/canvas/resolume/text/module/io/val import
+//       surface as of 2026-06.
+#define NANO_ABI_VERSION 1
+
+// Emit the exported `nano_abi_version()` accessor. Each bundle's aggregator
+// TU (the one that defines nano_module_main) invokes this ONCE at file scope.
+// `used` + `export_name` keep it from being dead-stripped and fix the export
+// name regardless of C++ mangling — no per-bundle linker flag needed.
+#define NANO_EXPORT_ABI_VERSION()                                              \
+  extern "C" __attribute__((used, export_name("nano_abi_version")))           \
+  int32_t nano_abi_version(void) { return NANO_ABI_VERSION; }
+
 // The host provides this callback as an import.
 extern "C" {
 __attribute__((import_module("module"), import_name("register_effect")))

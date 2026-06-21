@@ -62,10 +62,19 @@ struct WasmEffectDesc {
   uint32_t idx_is_identity = 0;
   uint32_t idx_on_active = 0;
   uint32_t idx_seek = 0;   // optional seek(self, from, to); 0 = not provided
+  // Host<->effect ABI version of the bundle this effect came from (copied from
+  // WasmContext::abi_version at register time). 0 = legacy bundle that exports
+  // no nano_abi_version(). See NANO_ABI_VERSION in module_api.h.
+  int32_t abi_version = 0;
 };
 
 struct WasmContext {
   WasmHost* host = nullptr;
+  // Host<->effect ABI version this bundle was built against (read from the
+  // bundle's nano_abi_version() export before nano_module_main runs). 0 when
+  // the export is absent (legacy bundle). register_effect copies it onto each
+  // WasmEffectDesc and gates trailing descriptor fields (e.g. seek) on it.
+  int32_t abi_version = 0;
   canvas::DrawList* draw_list = nullptr;
   FrameState* frame_state = nullptr;
   AudioTriggerCallback audio_callback = nullptr;

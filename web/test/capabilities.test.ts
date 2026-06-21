@@ -41,7 +41,11 @@ describe('Effect capabilities (schema → WasmHost)', () => {
         host.textureFields.set('tex_out', gpuHost.injectTexture(tex));
         await host.load('/wasm/core.wasm');
         const mod = host.activateEffect(effectId);
-        return { caps: Array.from(host.capabilities).sort(), hasSeek: typeof mod.seek === 'function' };
+        return {
+          caps: Array.from(host.capabilities).sort(),
+          hasSeek: typeof mod.seek === 'function',
+          abiVersion: host.abiVersion,
+        };
       }
 
       return {
@@ -72,5 +76,10 @@ describe('Effect capabilities (schema → WasmHost)', () => {
     expect(r.brightness.hasSeek).toBe(false);
     expect(r.lfo.hasSeek).toBe(false);
     expect(r.adsr.hasSeek).toBe(false);
+
+    // The bundle reports its host<->effect ABI version (from nano_abi_version()).
+    // 0 would mean the export wasn't found / wired.
+    expect(r.brightness.abiVersion).toBeGreaterThanOrEqual(1);
+    expect(r.lfo.abiVersion).toBe(r.brightness.abiVersion);
   });
 });

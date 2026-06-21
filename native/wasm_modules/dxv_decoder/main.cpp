@@ -20,6 +20,7 @@
 
 #include "dxv_demux.h"
 #include "dxv_lz.h"
+#include "../include/module_api.h"  // NANO_EXPORT_ABI_VERSION (no effects registered)
 
 // State for the LZ scratch buffer (decompressed BC1 bytes). Sized to fit
 // the largest BC1 frame we'll see; grown on demand.
@@ -44,6 +45,8 @@ extern "C" {
 
 // Service modules don't register effects; the entry point exists so the
 // host's WasmHost.load() has something to call.
+NANO_EXPORT_ABI_VERSION()
+
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {}
 

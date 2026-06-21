@@ -6,6 +6,7 @@
 #include "sketch/schema_util.h"
 #include "runtime/effect_runtime.h"
 #include "wasm/wasm_host.h"
+#include "../wasm_modules/include/module_api.h"  // NANO_ABI_VERSION
 
 namespace sketch_executor {
 
@@ -47,6 +48,9 @@ bool ModuleRegistry::registerEffect(
   if (!proto) return false;
 
   RegisteredModule reg;
+  // Native built-in (non-wasm) effects are linked against the current headers,
+  // so they implicitly speak the current ABI.
+  reg.abiVersion = NANO_ABI_VERSION;
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());
@@ -94,6 +98,7 @@ bool ModuleRegistry::registerWasmEffect(
 
   RegisteredModule reg;
   reg.moduleInitTrapped = proto->moduleInitTrapped();
+  reg.abiVersion = wd.abi_version;  // 0 for a legacy bundle (no export)
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());

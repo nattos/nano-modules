@@ -1377,12 +1377,16 @@ static void module_register_effect(wasm_exec_env_t env, int32_t desc_ptr) {
   if (!ctx) return;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
 
-  // EffectDesc_v2 is 16 contiguous i32 fields on wasm32: struct_version, 5
-  // char* (id/name/description/category/keywords), then 10 function-table
-  // indices (module_init, create, destroy, init, tick, render,
-  // on_state_patched, is_identity, on_active, seek).
-  constexpr uint32_t kFieldCount = 16;
-  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, kFieldCount * 4)) return;
+  // EffectDesc_v2 base layout (wasm32): struct_version, 5 char*
+  // (id/name/description/category/keywords), then 9 function-table indices
+  // (module_init, create, destroy, init, tick, render, on_state_patched,
+  // is_identity, on_active) = 15 i32 fields. The trailing `seek` (d[15]) was
+  // added in ABI v1; a legacy (v0) bundle's descriptor stops at 15, so validate
+  // the base set first and read seek only when the bundle's ABI version says
+  // it's present. This is the canonical compat-shim shape — gate a trailing
+  // descriptor field on ctx->abi_version. (See NANO_ABI_VERSION / module_api.h.)
+  constexpr uint32_t kBaseFieldCount = 15;
+  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, kBaseFieldCount * 4)) return;
   const uint32_t* d = static_cast<const uint32_t*>(
       wasm_runtime_addr_app_to_native(inst, desc_ptr));
   if (!d) return;
@@ -1410,7 +1414,14 @@ static void module_register_effect(wasm_exec_env_t env, int32_t desc_ptr) {
   desc.idx_on_state_patched  = d[12];
   desc.idx_is_identity       = d[13];
   desc.idx_on_active         = d[14];
-  desc.idx_seek              = d[15];
+  desc.abi_version           = ctx->abi_version;
+  // seek (d[15]) exists only in ABI v1+ descriptors. For a legacy (v0) bundle
+  // leave it 0 — and don't read past the validated base, which may be the end
+  // of the descriptor's storage.
+  if (ctx->abi_version >= 1 &&
+      wasm_runtime_validate_app_addr(inst, desc_ptr, 16 * 4)) {
+    desc.idx_seek            = d[15];
+  }
 
   if (auto* host = get_host(env)) {
     host->log("module.register_effect: " + desc.id +

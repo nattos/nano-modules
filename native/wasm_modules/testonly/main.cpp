@@ -91,6 +91,8 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
 extern "C" {
 
+NANO_EXPORT_ABI_VERSION()
+
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     // Duplicates of core effects — same source, registered separately so

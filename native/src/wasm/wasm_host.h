@@ -52,6 +52,13 @@ public:
   /// Call an exported function with two i32 arguments.
   int32_t call_function_i32_i32(int32_t module_id, const char* func_name, int32_t a, int32_t b);
 
+  /// Read the bundle's `nano_abi_version()` export (the host<->effect ABI
+  /// version it was built against; see NANO_ABI_VERSION in module_api.h), store
+  /// it on the module context, and return it. 0 when the export is absent (a
+  /// legacy bundle). Call once after load_module, BEFORE nano_module_main —
+  /// register_effect reads the context value to gate trailing descriptor fields.
+  int32_t query_abi_version(int32_t module_id);
+
   // --- Generic dispatch primitives (for effect lifecycle, EffectDesc_v2). ---
   // The fixed-signature call_function_* helpers above cover bridge_server's
   // needs; effect modules need arbitrary-arity calls (on_state_patched has 6
