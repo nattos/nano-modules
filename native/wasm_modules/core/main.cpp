@@ -25,6 +25,9 @@ NANO_DECLARE_INSTANCE_EFFECT(paramlinker)
 NANO_DECLARE_INSTANCE_EFFECT(barrel_macros)
 namespace barrel_macros { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(dashboard)
+namespace dashboard { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
 NANO_DECLARE_INSTANCE_EFFECT(curve)
@@ -149,6 +152,17 @@ void nano_module_main() {
         "macro,knob,barrel,control,rail",
         NANO_INSTANCE_LIFECYCLE(barrel_macros),
         &barrel_macros::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "util.dashboard",
+        "Dashboard",
+        "A bank of 8 knobs — each a wire source and sink for macro control",
+        "control",
+        "knob,macro,control,dashboard,util",
+        NANO_INSTANCE_LIFECYCLE(dashboard),
+        &dashboard::is_identity,
     });
 
     nano::registerEffect({

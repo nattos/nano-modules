@@ -51,16 +51,16 @@ export class DashboardEditor extends MobxLitElement {
     }
   `;
 
-  /** One binding for all knobs; field path `knob_i` selects the array slot. */
+  /** One binding for all knobs; field path `knob_i` reads/writes state.knob_i. */
   private binding(): FieldBinding {
     const sId = this.sketchId, key = this.instanceKey;
-    const knobsOf = (): number[] => {
-      const st = appState.database.sketches[sId]?.instances?.[key]?.state as Record<string, any> | undefined;
-      return Array.isArray(st?.knobs) ? st!.knobs : [];
-    };
     return {
       instanceKey: key,
-      getValue: (fp: string) => knobsOf()[knobIndex(fp)] ?? 0,
+      getValue: (fp: string) => {
+        const st = appState.database.sketches[sId]?.instances?.[key]?.state as Record<string, any> | undefined;
+        const v = st?.[fp];
+        return typeof v === 'number' ? v : 0;
+      },
       setValue: (fp: string, v: any) =>
         appController.setDashboardKnob(sId, key, knobIndex(fp), v as number),
       beginContinuousEdit: (fp: string, v: any): ContinuousEditHandle => {

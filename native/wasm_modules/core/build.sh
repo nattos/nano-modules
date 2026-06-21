@@ -78,6 +78,7 @@ wasm_build \
   ../video_blend/main.cpp \
   ../paramlinker/main.cpp \
   ../barrel_macros/main.cpp \
+  ../dashboard/main.cpp \
   ../bake_alpha/main.cpp \
   ../curve/main.cpp \
   ../exposure/main.cpp \

@@ -15,7 +15,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
-import { appController, DASHBOARD_MODULE_TYPE, DASHBOARD_KNOB_COUNT } from '../state/controller';
+import { appController, DASHBOARD_MODULE_TYPE } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude } from '../sketch-types';
 import { sketchChain, chainEntryAt, isEffectCollapsed } from '../sketch-types';
@@ -1094,12 +1094,8 @@ export class ColumnGroup extends MobxLitElement {
    */
   private getOutputFieldNames(entry: ModuleEntry): Set<string> {
     const names = new Set<string>();
-    // Dashboard knobs are wire sources (and sinks); surface them as outputs so
-    // the gutter renders them on the producing side.
-    if (entry.module_type === DASHBOARD_MODULE_TYPE) {
-      for (let i = 0; i < DASHBOARD_KNOB_COUNT; i++) names.add(`knob_${i}`);
-      return names;
-    }
+    // util.dashboard's knob_i fields are io = in|out, so the generic io&2 scan
+    // below surfaces them as outputs (wire sources) like any other effect.
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
     // Schema io-declared outputs (io bit 2).
     const schema = plugin?.schema ?? {};

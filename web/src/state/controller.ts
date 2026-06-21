@@ -245,14 +245,16 @@ export class AppController {
   private defaultStateForPlugin(plugin: PluginInfo): Record<string, any> {
     const state: Record<string, any> = {};
     const schema = (plugin.schema ?? {}) as Record<string, any>;
-    // OUTPUT fields (io & Output) are live-published by the running effect, not
-    // authored. Seeding them into instance state at the schema default (0) bakes
-    // a stale 0 that shadows the engine's published value in the field binding —
-    // the output trace would read 0.0 forever. Skip them in BOTH loops (scalar
-    // outputs also appear in the legacy `params` list, which carries no io).
+    // PURE OUTPUT fields (io & Output, NOT also an input) are live-published by
+    // the running effect, not authored. Seeding them into instance state at the
+    // schema default (0) bakes a stale 0 that shadows the engine's published
+    // value in the field binding — the output trace would read 0.0 forever. Skip
+    // them in BOTH loops. A field that is BOTH input and output (a relay, e.g. a
+    // util.dashboard knob_i, io = in|out) IS authored — seed it like any input.
     const outputs = new Set<string>();
     for (const [name, field] of Object.entries(schema)) {
-      if (((field?.io ?? 0) & 2) !== 0) outputs.add(name);
+      const io = field?.io ?? 0;
+      if ((io & 2) !== 0 && (io & 1) === 0) outputs.add(name);
     }
     for (const [name, field] of Object.entries(schema)) {
       if (field?.type === 'texture') continue;            // wiring, not state
@@ -267,14 +269,11 @@ export class AppController {
   }
 
   /**
-   * Initial instance state for a module by type — the seam where the
-   * executor-handled `util.dashboard` (a non-WASM knob bank) gets its
-   * `knobs` array seeded. Everything else defers to the plugin schema.
+   * Initial instance state for a module by type — seeded from the plugin
+   * schema's field defaults. (util.dashboard is now a real schema-backed
+   * effect, so its knob_0..knob_N fields seed from the schema like any other.)
    */
   private initialStateForModule(moduleType: string): Record<string, any> {
-    if (moduleType === DASHBOARD_MODULE_TYPE) {
-      return { knobs: Array.from({ length: DASHBOARD_KNOB_COUNT }, () => 0) };
-    }
     const plugin = appState.local.plugins.find(p => p.id === moduleType);
     return plugin ? this.defaultStateForPlugin(plugin) : {};
   }
@@ -638,17 +637,14 @@ export class AppController {
     for (const k in values) this.engine?.setParam(sketchId, colIdx, chainIdx, k, values[k]);
   }
 
-  // --- util.dashboard knobs (state.knobs[i], executor-handled) ---
+  // --- util.dashboard knobs (state.knob_i — real schema-backed effect) ---
 
-  /** Recipe that writes one knob value into a dashboard instance's `knobs` array. */
+  /** Recipe that writes one knob value into a dashboard instance's `knob_i` field. */
   private dashboardKnobRecipe(sketchId: string, instanceKey: string, idx: number, value: number) {
     return (draft: DatabaseState) => {
       const inst = draft.sketches[sketchId]?.instances?.[instanceKey];
       if (!inst) return;
-      const knobs = Array.isArray(inst.state.knobs) ? inst.state.knobs : [];
-      while (knobs.length <= idx) knobs.push(0);
-      knobs[idx] = value;
-      inst.state.knobs = knobs;
+      inst.state[`knob_${idx}`] = value;
     };
   }
 
@@ -873,19 +869,12 @@ export class AppController {
           existing.push({ id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords });
         }
       }
-      // Built-in, non-WASM effects. Injected alongside the first WASM batch so
-      // the "no effects until a module loads" invariant (syncSketchesToEngine)
-      // holds, but the picker still offers them.
-      if (!existing.some(x => x.id === DASHBOARD_MODULE_TYPE)) {
-        existing.push({
-          id: DASHBOARD_MODULE_TYPE,
-          name: 'Dashboard',
-          description: `A bank of ${DASHBOARD_KNOB_COUNT} knobs — each a wire source and sink for macro control.`,
-          category: 'Utility',
-          keywords: ['knob', 'macro', 'control', 'dashboard', 'util'],
-          kind: 'dashboard',
-        });
-      }
+      // util.dashboard is a real, schema-backed core-bundle effect, but the UI
+      // gives it a bespoke knob-row card instead of the generic inspector — tag
+      // its registry entry with kind:'dashboard' so column-group renders the
+      // custom body. (No-op until core.wasm has loaded and registered it.)
+      const dash = existing.find(x => x.id === DASHBOARD_MODULE_TYPE);
+      if (dash) dash.kind = 'dashboard';
     });
     // If a default project was selected before its effect was discovered
     // (typical at boot — settings load completes before WASM does), retry

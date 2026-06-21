@@ -185,9 +185,10 @@ describe('Wire routing E2E', () => {
   });
 
   it('util.dashboard knob is both a wire sink and source', async () => {
-    // The dashboard is an executor-handled virtual knob bank (no WASM). knob_0
-    // is wired BOTH ways: lfo.output (0.5) drives INTO it (overriding the stored
-    // 1.0), and it drives OUT to brightness_contrast.brightness.
+    // The dashboard is a real schema-backed effect whose knob_i fields are both
+    // inputs and outputs (the relay case). knob_0 is wired BOTH ways: lfo.output
+    // (0.5) drives INTO it (overriding the stored 1.0), and it drives OUT to
+    // brightness_contrast.brightness.
     //   white input, src 0.5 folds to brightness 0 (neutral); contrast -0.5 → scale 0.5 → gray.
     // gray(128) proves both directions: if the input wire failed the knob stays
     // 1.0 → white; if the output wire failed brightness stays its stored 1.0 →
@@ -204,7 +205,7 @@ describe('Wire routing E2E', () => {
         params: { brightness: 1.0, contrast: -0.5 } },
       ],
       instances: {
-        'dash@0': { module_type: 'util.dashboard', state: { knobCount: 1, knobs: [1.0] } },
+        'dash@0': { module_type: 'util.dashboard', state: { knob_0: 1.0 } },
       },
       wires: [
         { id: 'win',  src: { instanceKey: 'lfo@0',  field: 'output' },
@@ -216,7 +217,9 @@ describe('Wire routing E2E', () => {
 
     const result = await runEngineTest({
       width: 64, height: 64,
-      modules: ['source.solid_color', 'mod.source.lfo', 'color.tone.brightness_contrast'],
+      // Load the whole core bundle: util.dashboard (a real core effect) lives
+      // there alongside solid_color / lfo / brightness_contrast.
+      modules: ['com.nano.core'],
       commands: [{ type: 'createSketch', sketchId: 'wire_dash', sketch }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_dash' } }],
       captureTraceIds: ['out'],

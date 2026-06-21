@@ -321,9 +321,8 @@ class SketchExecutor {
     size_t chainIdx;             // index into the column's "chain" array
     std::string moduleType;
     std::string instanceKey;
-    const RegisteredModule* reg; // non-null EXCEPT for dashboard entries
+    const RegisteredModule* reg; // schema/metadata for this chain entry
     bool eligible;               // fusion-eligible at plan-build time
-    bool dashboard = false;      // util.dashboard virtual knob bank (no effect/reg)
   };
   struct PlanColumn {
     std::vector<PlanEntry> resolvable;
@@ -455,7 +454,12 @@ class SketchExecutor {
         std::unordered_map<std::string, int32_t>>& railTextures,
       std::unordered_map<std::string, float>& railFloats,
       std::unordered_map<std::string,
-        std::unordered_map<std::string, int32_t>>& railBuffers);
+        std::unordered_map<std::string, int32_t>>& railBuffers,
+      // Read-tap-modulated scalars from applyReadTaps this frame. A field that
+      // is BOTH read-tapped and write-tapped (a "relay" field, e.g. a dashboard
+      // knob driven by an LFO) publishes this modulated value instead of its
+      // canonical serialized state. nullptr → no relay (publish state as usual).
+      const std::unordered_map<std::string, float>* modulatedScalars = nullptr);
 
   void markWriteTapOutputsConnected(
       int32_t inst,

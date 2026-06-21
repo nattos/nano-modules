@@ -458,16 +458,6 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
     for (size_t i = 0; i < chain.size(); ++i) {
       const auto& entry = chain[i];
       std::string mt = entry.value("module_type", std::string());
-      // util.dashboard is a virtual knob bank — no effect, no schema. It's a
-      // texture passthrough that resolves its knobs (stored + input-wire
-      // overrides) and republishes them to its output wires. Keep it in the plan
-      // (a non-fusable dashboard entry) so runDashboard can process its taps.
-      if (mt == "util.dashboard") {
-        std::string instKey = entry.value("instance_key", std::string());
-        pc.resolvable.push_back({i, std::move(mt), std::move(instKey),
-                                 nullptr, false, true});
-        continue;
-      }
       const RegisteredModule* reg = findSchema(mt);
       if (!reg) continue;  // unknown module_type → silent passthrough
       std::string instKey = entry.value("instance_key", std::string());
@@ -743,11 +733,6 @@ int32_t SketchExecutor::execute(
             srcDef = *fit;
             ftype = fit->value("type", std::string());
           }
-        }
-        // util.dashboard has no schema — its knob_i fields are 0..1 float
-        // sources (the runDashboard handler publishes them to the write-tap).
-        if (srcMt == "util.dashboard" && srcField.rfind("knob_", 0) == 0) {
-          ftype = "float";
         }
         json railDataType;
         if (ftype == "float" || ftype == "texture") {
@@ -1034,99 +1019,6 @@ int32_t SketchExecutor::execute(
       cachedState = state;
     };
 
-    // util.dashboard — virtual knob bank (no effect). A texture passthrough that
-    // resolves each knob (stored knobs[i], modulated by any INPUT wire on knob_i)
-    // and republishes it to its OUTPUT wires. Mirrors sketch-executor.ts's
-    // dashboard block (the float read-tap + write-tap math lifted from
-    // applyReadTaps / captureWriteTaps).
-    auto runDashboard = [&](size_t k) {
-      const PlanEntry& pe = R[k];
-      size_t i = pe.chainIdx;
-      const auto& entry = chain[i];
-
-      std::vector<float> knobs;
-      if (const json* st = findState(instances, pe.instanceKey)) {
-        auto kit = st->find("knobs");
-        if (kit != st->end() && kit->is_array())
-          for (const auto& v : *kit)
-            knobs.push_back(v.is_number() ? (float)v.get<double>() : 0.0f);
-      }
-      auto baseFor = [&](const std::string& field) -> float {
-        if (field.rfind("knob_", 0) != 0) return 0.0f;
-        int idx = std::atoi(field.c_str() + 5);
-        return (idx >= 0 && idx < (int)knobs.size()) ? knobs[idx] : 0.0f;
-      };
-
-      // INPUT wires (read taps) override the stored knob, modulating from it.
-      std::unordered_map<std::string, float> knobVal;
-      if (entry.contains("taps") && entry["taps"].is_array()) {
-        for (const auto& tap : entry["taps"]) {
-          if (tap.value("direction", std::string()) != "read") continue;
-          const std::string railId = tap.value("railId", std::string());
-          const std::string field  = tap.value("fieldPath", std::string());
-          const bool delayed = tap.value("delayed", false);
-          const auto& src = delayed ? delayedRailFloats_ : railFloats;
-          auto fit = src.find(railId);
-          if (fit == src.end()) continue;
-          float canon = knobVal.count(field) ? knobVal[field] : baseFor(field);
-          // Shared fold (live value + band sweep) — see applyReadTaps.
-          const tap_mod::Mod mod = parseMod(tap);
-          const tap_mod::Combine combine = parseCombine(tap);
-          const float mixFactor = tap.value("mixFactor", 1.0f);
-          const bool hasMag = tap.contains("magnitude");
-          const bool isSigned = tap.value("magnitude", std::string()) == "signed";
-          const float dmin = (float)tap.value("destMin", 0.0);
-          const float dmax = (float)tap.value("destMax", 1.0);
-          // Polarity prescale (identity unless the wire forces signed/unsigned
-          // against an opposite EXPLICIT source decl — see normalization).
-          // Applied to the raw value BEFORE applyTapMod, so the conversion's
-          // affine bias is inside what `scale` multiplies — i.e. `scale` scales
-          // the converted swing around its neutral (0 for signed), not after it.
-          const float preScale = (float)tap.value("preScale", 1.0);
-          const float preBias  = (float)tap.value("preBias", 0.0);
-          auto fold = [&](float railVal) -> float {
-            const float shaped = tap_mod::applyTapMod(railVal * preScale + preBias, mod);
-            return hasMag
-                ? tap_mod::applyMagnitude(canon, shaped, isSigned, combine, mixFactor, dmin, dmax)
-                : tap_mod::combineTap(true, canon, shaped, combine, mixFactor);
-          };
-          float combined = fold(fit->second);
-          // Wire DELAY stage (see applyReadTaps) — temporal, transitive.
-          const float delaySec = tap.contains("mod") && tap["mod"].is_object()
-              ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
-          combined = applyModDelay(pe.instanceKey, field, combined, delaySec);
-          knobVal[field] = combined;
-          recordModBand(modulationData_, pe.instanceKey, field, combined,
-                        modNeutral(combine, isSigned, canon, dmin, dmax),
-                        (float)tap.value("srcMin", 0.0),
-                        (float)tap.value("srcMax", 1.0), fold);
-        }
-      }
-
-      // OUTPUT wires (write taps) publish the resolved (or stored) knob value.
-      if (entry.contains("taps") && entry["taps"].is_array()) {
-        for (const auto& tap : entry["taps"]) {
-          if (tap.value("direction", std::string()) != "write") continue;
-          const std::string railId = tap.value("railId", std::string());
-          const std::string field  = tap.value("fieldPath", std::string());
-          const bool delayed = tap.value("delayed", false);
-          float v = knobVal.count(field) ? knobVal[field] : baseFor(field);
-          float shaped = tap_mod::applyTapMod(v, parseMod(tap));
-          auto& rf = delayed ? delayedRailFloats_ : railFloats;
-          auto existing = rf.find(railId);
-          rf[railId] = tap_mod::combineTap(existing != rf.end(),
-              existing != rf.end() ? existing->second : 0.0f,
-              shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
-        }
-      }
-
-      // Texture passthrough: the image chain flows past untouched, no slot.
-      if (chainEntryHook_) {
-        chainEntryHook_((int)colIdx, (int)i, colInput, colInput, W, H);
-      }
-      finalHandle = colInput;
-    };
-
     auto runStandalone = [&](size_t k, bool isLastGroupInCol) {
       const PlanEntry& pe = R[k];
       size_t i = pe.chainIdx;
@@ -1243,7 +1135,8 @@ int32_t SketchExecutor::execute(
         // so the passthrough below still forwards colInput untouched.
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
         captureWriteTaps(inst.h, entry, instKey, instances,
-                         railsById, railTextures, railFloats, railBuffers);
+                         railsById, railTextures, railFloats, railBuffers,
+                         &modScalars);
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
@@ -1307,7 +1200,8 @@ int32_t SketchExecutor::execute(
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
       captureWriteTaps(inst.h, entry, instKey, instances,
-                       railsById, railTextures, railFloats, railBuffers);
+                       railsById, railTextures, railFloats, railBuffers,
+                       &modScalars);
 
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
@@ -1492,8 +1386,6 @@ int32_t SketchExecutor::execute(
       stats_.effectsExecuted += (int)(g.lastK - g.firstK + 1);
       if (g.fused) {
         runFusedGroup(g, isLastGroupInCol);
-      } else if (R[g.firstK].dashboard) {
-        runDashboard(g.firstK);   // virtual knob bank (always its own group)
       } else {
         // size 1 — non-eligible or single-eligible (no fusion savings)
         runStandalone(g.firstK, isLastGroupInCol);
@@ -1845,7 +1737,8 @@ void SketchExecutor::captureWriteTaps(
       std::unordered_map<std::string, int32_t>>& railTextures,
     std::unordered_map<std::string, float>& railFloats,
     std::unordered_map<std::string,
-      std::unordered_map<std::string, int32_t>>& railBuffers) {
+      std::unordered_map<std::string, int32_t>>& railBuffers,
+    const std::unordered_map<std::string, float>* modulatedScalars) {
   const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   for (const auto& tap : entry["taps"]) {
@@ -1861,34 +1754,43 @@ void SketchExecutor::captureWriteTaps(
     const bool delayed = tap.value("delayed", false);
 
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
-      // Producer's current scalar lives in the sketch's instance
-      // state — the editor mirrors it there each frame. The runtime
-      // doesn't expose a getParamFloat, so we read the canonical
-      // source rather than the in-runtime mirror.
-      if (sketchInstances.is_object() &&
+      bool hasScalar = false;
+      float raw = 0.0f;
+      // Relay field: if this same field was read-tapped (modulated) this frame,
+      // publish the MODULATED value, not the canonical state — so e.g. a
+      // dashboard knob driven by an LFO forwards the LFO-modulated result to its
+      // output wire. This is exactly what the old runDashboard resolved in one
+      // place; a normal effect never read-taps an output field, so it's
+      // unaffected.
+      if (modulatedScalars) {
+        auto mit = modulatedScalars->find(fieldPath);
+        if (mit != modulatedScalars->end()) { raw = mit->second; hasScalar = true; }
+      }
+      // Otherwise the producer's current scalar lives in the sketch's instance
+      // state — the editor mirrors it there each frame. The runtime doesn't
+      // expose a getParamFloat, so we read the canonical source.
+      if (!hasScalar && sketchInstances.is_object() &&
           sketchInstances.contains(producerInstanceKey)) {
         const auto& st = sketchInstances[producerInstanceKey]
                             .value("state", json::object());
         if (st.is_object() && st.contains(fieldPath)) {
           const auto& v = st[fieldPath];
-          bool hasScalar = false;
-          float raw = 0.0f;
           if (v.is_number())       { raw = (float)v.get<double>(); hasScalar = true; }
           else if (v.is_boolean()) { raw = v.get<bool>() ? 1.0f : 0.0f; hasScalar = true; }
-          if (hasScalar) {
-            // Apply the range remapper (before write), then fold into the rail's
-            // current frame value per the combine mode. The first writer this
-            // frame (railFloats has no entry yet) just seeds.
-            auto& rf = delayed ? delayedRailFloats_ : railFloats;
-            float shaped = tap_mod::applyTapMod(raw, parseMod(tap));
-            auto existing = rf.find(railId);
-            rf[railId] = tap_mod::combineTap(
-                existing != rf.end(),
-                existing != rf.end() ? existing->second : 0.0f,
-                shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
-            inst.setFieldConnected(fieldPath, false, true);
-          }
         }
+      }
+      if (hasScalar) {
+        // Apply the range remapper (before write), then fold into the rail's
+        // current frame value per the combine mode. The first writer this
+        // frame (railFloats has no entry yet) just seeds.
+        auto& rf = delayed ? delayedRailFloats_ : railFloats;
+        float shaped = tap_mod::applyTapMod(raw, parseMod(tap));
+        auto existing = rf.find(railId);
+        rf[railId] = tap_mod::combineTap(
+            existing != rf.end(),
+            existing != rf.end() ? existing->second : 0.0f,
+            shaped, parseCombine(tap), tap.value("mixFactor", 1.0f));
+        inst.setFieldConnected(fieldPath, false, true);
       }
       continue;
     }
