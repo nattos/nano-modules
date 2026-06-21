@@ -264,6 +264,44 @@ muted accent colour (header dot + chooser dot); the palette is the closed set of
   the same domain can span bundles (`source.light.*` lives in `lights`,
   `source.gradient` in `core`).
 
+### Versioning — bump it when serialized state changes
+
+Every effect declares a three-part version in `state::init("<id>", {major,
+minor, patch}, …)`, and every bundle declares a module version once in its
+`nano_module_main` via `state::setModuleVersion({major, minor, patch})`
+(defaults to `1.0.0`). Both ride the schema and get **recorded onto each
+serialized instance** (`instance.version.{effect, module}`), alongside a
+top-level engine version on the sketch. There are no migrations yet — these are
+recorded so a future load can *detect* an incompatibility.
+
+The one rule that matters: **MINOR = serialization break.** The middle number is
+the contract for "can an older sketch's stored `state` still be read?"
+
+- **PATCH** (`x.y.Z`) — behaviour/quality/perf changes that don't touch the
+  serialized shape. New default value, retuned curve, faster shader, bug fix.
+  Old sketches load and behave (close enough) the same. Bump freely.
+- **MINOR** (`x.Y.0`) — the stored `state` is no longer compatible: a field
+  renamed or removed, its type/units/range redefined, a select's enum values
+  renumbered, or a default change you *don't* want applied to existing sketches.
+  An old sketch's `state` may now mis-map — this is the signal a migration will
+  eventually key on. Reset PATCH to 0.
+- **MAJOR** (`X.0.0`) — reserved for a wholesale rewrite (the effect is
+  effectively a different module). Rare; reset minor/patch to 0.
+
+Rules of thumb:
+- **Adding a brand-new field with a sensible default is PATCH, not minor** — old
+  sketches simply lack it and fall back to the default; nothing mis-maps.
+- **Renaming/removing/retyping a field, or renumbering a `selectField`, is
+  MINOR** — old serialized values would land on the wrong field or value.
+- **Prefer not renumbering enums.** Append new `selectField` options at the end
+  (next integer) instead of reordering — keeps it a PATCH.
+- **Bump the EFFECT version for a single effect; bump the MODULE version when a
+  shared change across the bundle (a common helper, schema convention) breaks
+  serialization for several of its effects at once.** They're independent knobs.
+- Keep the `state::init` id and version next to each other and review them on
+  every schema edit — the version is part of the schema's contract, not an
+  afterthought.
+
 ### Skip whole stages on the host — don't early-out in the shader
 
 We are **not in ShaderToy land**. An effect isn't one fragment program that has to do everything every pixel — it's a host-driven graph of compute dispatches, and `render(self, w, h)` is plain C++ that decides, per frame, *which* dispatches to issue. A pipeline can have as many stages as it wants, and that count can be **dynamic** — gated on parameters, connectivity, or mode. Lean into that.
