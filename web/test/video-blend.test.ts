@@ -80,6 +80,11 @@ describe('Blend Effect E2E', () => {
     const blend = result.state?.plugins?.find((p: any) => p.id === 'composite.blend');
     expect(blend).toBeDefined();
     expect(blend!.params.find((p: any) => p.name === 'opacity')).toBeDefined();
+    // Schema-level UI options (state::Schema step/description) reach the web schema.
+    const opacity = (blend as any).schema?.opacity;
+    expect(opacity?.step).toBeCloseTo(0.01, 5);
+    expect(typeof opacity?.description).toBe('string');
+    expect((blend as any).schema?.mode?.description).toContain('Photoshop');
   });
 
   it('opacity=0 passes texture A through unchanged', async () => {

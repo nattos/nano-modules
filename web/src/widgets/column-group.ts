@@ -1453,6 +1453,7 @@ export class ColumnGroup extends MobxLitElement {
             })),
             default: typeof d.default === 'number' ? d.default : (d.options[0]?.value ?? 0),
             wrap: d.wrap === true,
+            description: typeof d.description === 'string' ? d.description : undefined,
           });
           continue;
         }
@@ -1460,10 +1461,26 @@ export class ColumnGroup extends MobxLitElement {
         if (param) {
           const fieldDef = paramToFieldDef(param);
           fieldDef.label = label;
+          // Overlay schema-only UI options the legacy ParamInfo doesn't carry
+          // (step/units/description from state::Schema's floatField/intField).
+          if (fieldDef.type === 'slider' || fieldDef.type === 'number') {
+            if (typeof d.step === 'number' && d.step > 0) fieldDef.step = d.step;
+            if (typeof d.units === 'string') fieldDef.units = d.units;
+          }
+          if (typeof d.description === 'string') (fieldDef as any).description = d.description;
           fields.push(fieldDef);
           continue;
         }
         // No legacy param row (shouldn't happen for scalars) — fall through.
+      }
+      // Font-family picker (state::Schema::fontField) — searchable list editor.
+      if (d.type === 'font') {
+        fields.push({
+          type: 'font', label, path: name,
+          default: typeof d.default === 'string' ? d.default : '',
+          description: typeof d.description === 'string' ? d.description : undefined,
+        });
+        continue;
       }
       // Vector fields: float2 / float3 / float4 → labeled component
       // sliders, or RGB(A) color picker when the schema carries

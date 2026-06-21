@@ -64,8 +64,10 @@ void module_init() {
         {"Hard Light", HardLight}, {"Soft Light", SoftLight},
         {"Difference", Difference}, {"Exclusion", Exclusion},
         {"Subtract", Subtract}, {"Divide", Divide}, {"Linear Burn", LinearBurn},
-      }, /*wrap=*/true)
-      .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      }, /*wrap=*/true, /*description=*/"Photoshop-style blend math applied before opacity")
+      .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput,
+                  /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  /*description=*/"Crossfade: A (0) → fully blended result (1)")
       .textureField("tex_a", state::PrimaryInput)
       .textureField("tex_b", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -122,7 +124,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (state::pathIs(pb + off[i], len[i], "opacity"))
       s->opacity = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "mode"))
-      s->mode = (int)state::patchFloat(i);  // select ints ride the float patch path
+      s->mode = state::patchInt(i);  // typed select/int reader
   }
 }
 

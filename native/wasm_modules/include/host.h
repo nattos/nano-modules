@@ -386,8 +386,12 @@ public:
   // `magnitude` (optional) declares how an OUTPUT field's value should be
   // interpreted by a wire's "Auto" magnitude mode: "signed" (bipolar -1..1) or
   // "unsigned" (unipolar 0..1). Absent → the web defaults Auto to unsigned.
+  // Trailing optionals: `step` (slider granularity; 0 = UI default), `units`
+  // (display suffix), `description` (tooltip). `magnitude` keeps its place for
+  // back-compat with existing call sites.
   Schema& floatField(const char* name, float def, float min, float max, int io = None,
-                     const char* magnitude = nullptr) {
+                     const char* magnitude = nullptr, float step = 0.f,
+                     const char* units = nullptr, const char* description = nullptr) {
     beginField(name);
     appendRaw("\"type\":\"float\",\"default\":");
     appendFloat(def);
@@ -402,12 +406,15 @@ public:
       appendRaw(magnitude);
       appendRaw("\"");
     }
+    if (step > 0.f) { appendRaw(",\"step\":"); appendFloat(step); }
+    appendFieldMeta(units, description);
     appendOrder();
     appendRaw("}");
     return *this;
   }
 
-  Schema& intField(const char* name, int def, int min, int max, int io = None) {
+  Schema& intField(const char* name, int def, int min, int max, int io = None,
+                   int step = 0, const char* units = nullptr, const char* description = nullptr) {
     beginField(name);
     appendRaw("\"type\":\"int\",\"default\":");
     appendInt(def);
@@ -417,6 +424,8 @@ public:
     appendInt(max);
     appendRaw(",\"io\":");
     appendInt(io);
+    if (step > 0) { appendRaw(",\"step\":"); appendInt(step); }
+    appendFieldMeta(units, description);
     appendOrder();
     appendRaw("}");
     return *this;
@@ -433,7 +442,7 @@ public:
   /// (blend modes, etc.) so each choice stays a comfortable hit target.
   Schema& selectField(const char* name, int def, int io,
                       std::initializer_list<SelectOption> options,
-                      bool wrap = false) {
+                      bool wrap = false, const char* description = nullptr) {
     int lo = def, hi = def;
     for (const auto& o : options) {
       if (o.value < lo) lo = o.value;
@@ -461,17 +470,20 @@ public:
       appendRaw("}");
     }
     appendRaw("]");
+    appendFieldMeta(nullptr, description);
     appendOrder();
     appendRaw("}");
     return *this;
   }
 
-  Schema& boolField(const char* name, bool def = false, int io = None) {
+  Schema& boolField(const char* name, bool def = false, int io = None,
+                    const char* description = nullptr) {
     beginField(name);
     appendRaw("\"type\":\"bool\",\"default\":");
     appendRaw(def ? "true" : "false");
     appendRaw(",\"io\":");
     appendInt(io);
+    appendFieldMeta(nullptr, description);
     appendOrder();
     appendRaw("}");
     return *this;
@@ -618,12 +630,30 @@ public:
     return *this;
   }
 
-  Schema& textField(const char* name, const char* def = "", int io = None) {
+  Schema& textField(const char* name, const char* def = "", int io = None,
+                    const char* description = nullptr) {
     beginField(name);
     appendRaw("\"type\":\"string\",\"default\":\"");
     appendJsonString(def);   // escape — defaults may be multi-line CSS/HTML
     appendRaw("\",\"io\":");
     appendInt(io);
+    appendFieldMeta(nullptr, description);
+    appendOrder();
+    appendRaw("}");
+    return *this;
+  }
+
+  /// Font-family picker: a string field the IDE renders as a searchable font
+  /// list with previews (vs. a plain text box). The stored value is the font
+  /// family name; the effect reads it via `patchString` like any string field.
+  Schema& fontField(const char* name, const char* def = "", int io = None,
+                    const char* description = nullptr) {
+    beginField(name);
+    appendRaw("\"type\":\"font\",\"default\":\"");
+    appendJsonString(def);
+    appendRaw("\",\"io\":");
+    appendInt(io);
+    appendFieldMeta(nullptr, description);
     appendOrder();
     appendRaw("}");
     return *this;
@@ -784,6 +814,16 @@ private:
     }
   }
 
+  // Optional, shared UI metadata: a `units` suffix ("ms", "Hz", "%") and a
+  // human `description`/tooltip. Emitted only when supplied; both go through
+  // appendJsonString so free text can't corrupt the schema JSON.
+  void appendFieldMeta(const char* units, const char* description) {
+    if (units && *units) { appendRaw(",\"units\":\""); appendJsonString(units); appendRaw("\""); }
+    if (description && *description) {
+      appendRaw(",\"description\":\""); appendJsonString(description); appendRaw("\"");
+    }
+  }
+
   void appendInt(int v) {
     char tmp[16];
     int neg = v < 0;
@@ -837,6 +877,10 @@ enum PatchOp : int {
   PatchReplace = 2,
   PatchMove    = 3,
   PatchCopy    = 4,
+  // Host-emitted "this GPU/struct field was marked dirty" notice (no value
+  // change). Effects that only react to value edits keep doing
+  // `if (ops[i] != PatchReplace) continue;` and naturally skip it.
+  PatchDirty   = 5,
 };
 
 /// Check if a patch path matches a field name.
@@ -851,6 +895,26 @@ inline float patchFloat(int index) {
   auto patch = val::Value(state::getPatch(index));
   auto v = val::Value(val::get(patch.h, "value"));
   return static_cast<float>(val::asNumber(v.h));
+}
+
+/// Read an int value from the Nth patch — for `intField` / `selectField`.
+/// (Select/int values ride the same numeric patch channel; this rounds rather
+/// than truncates so a 2.9999 round-trip lands on 3.)
+inline int patchInt(int index) {
+  float f = patchFloat(index);
+  return static_cast<int>(f < 0.0f ? f - 0.5f : f + 0.5f);
+}
+
+/// Read a bool value from the Nth patch — for `boolField`. True when the
+/// numeric value is at/above 0.5 (handles both 0/1 ints and 0.0/1.0 floats).
+inline bool patchBool(int index) {
+  return patchFloat(index) >= 0.5f;
+}
+
+/// Read an `eventField` trigger from the Nth patch: nonzero ⇒ fired this
+/// transaction. (Events ride the numeric channel like a momentary bool.)
+inline bool patchEvent(int index) {
+  return patchFloat(index) != 0.0f;
 }
 
 /// Read a string value from the Nth patch into `buf` (NUL-terminated, capped

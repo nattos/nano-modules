@@ -171,6 +171,11 @@ enum class FilterMode : int { Nearest = 0, Linear = 1 };
 
 enum class AddressMode : int { ClampToEdge = 0, Repeat = 1, Mirror = 2 };
 
+// How a compute pass binds a (storage) texture slot. Names the bare 0/1/2
+// `access` ints at setTexture/setTextureMip; the int overloads stay for
+// back-compat with existing call sites.
+enum class TextureAccess : int { Read = 0, Write = 1, ReadWrite = 2 };
+
 // --- Explicit bind group layouts ---
 //
 // By default the host derives bind group layouts from the shader via
@@ -430,9 +435,12 @@ struct ComputePass {
     gpu_compute_set_buffer(id, buf.id, offset, slot);
   }
 
-  // access: 0=read, 1=write, 2=read_write
+  // access: 0=read, 1=write, 2=read_write (prefer the TextureAccess overload).
   void setTexture(Texture tex, int slot, int access = 0) {
     gpu_compute_set_texture(id, tex.id, slot, access);
+  }
+  void setTexture(Texture tex, int slot, TextureAccess access) {
+    gpu_compute_set_texture(id, tex.id, slot, (int)access);
   }
 
   /// Bind a specific mip level of a texture as the storage target at
@@ -442,6 +450,9 @@ struct ComputePass {
   /// binding sees a `texture_storage_2d` view of just that mip.
   void setTextureMip(Texture tex, int slot, int access, int mip_level) {
     gpu_compute_set_texture_mip(id, tex.id, slot, access, mip_level);
+  }
+  void setTextureMip(Texture tex, int slot, TextureAccess access, int mip_level) {
+    gpu_compute_set_texture_mip(id, tex.id, slot, (int)access, mip_level);
   }
 
   void setSampler(Sampler s, int slot) {

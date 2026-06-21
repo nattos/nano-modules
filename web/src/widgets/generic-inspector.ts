@@ -32,13 +32,13 @@ import './field-font';
 // --- Field definitions ---
 
 export type InspectorFieldDef =
-  | { type: 'string'; label: string; path: string; placeholder?: string; default?: string; multiline?: boolean }
+  | { type: 'string'; label: string; path: string; placeholder?: string; default?: string; multiline?: boolean; description?: string }
   /// Font-family picker (searchable list with previews) for string `font` params.
-  | { type: 'font'; label: string; path: string; default?: string }
-  | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number }
-  | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number }
-  | { type: 'boolean'; label: string; path: string; default?: boolean }
-  | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any; wrap?: boolean }
+  | { type: 'font'; label: string; path: string; default?: string; description?: string }
+  | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number; units?: string; description?: string }
+  | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number; units?: string; description?: string }
+  | { type: 'boolean'; label: string; path: string; default?: boolean; description?: string }
+  | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any; wrap?: boolean; description?: string }
   | { type: 'button'; label: string; path: string; text?: string }
   /// 2/3/4-component vector — N labeled component sliders.
   | { type: 'vec'; label: string; path: string; components: 2 | 3 | 4;
@@ -56,7 +56,7 @@ export type InspectorFieldDef =
 // --- Field renderers ---
 
 const renderString = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'string' }>) => html`
-  <field-text
+  <field-text title=${f.description ?? ''}
     .fieldPath=${f.path}
     .label=${f.label}
     .placeholder=${f.placeholder ?? ''}
@@ -67,7 +67,7 @@ const renderString = (binding: FieldBinding, f: Extract<InspectorFieldDef, { typ
 `;
 
 const renderFont = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'font' }>) => html`
-  <field-font
+  <field-font title=${f.description ?? ''}
     .fieldPath=${f.path}
     .label=${f.label}
     .defaultValue=${f.default ?? ''}
@@ -76,31 +76,33 @@ const renderFont = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type:
 `;
 
 const renderNumber = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'number' }>) => html`
-  <scalar-slider style="width: 100%;"
+  <scalar-slider style="width: 100%;" title=${f.description ?? ''}
     .fieldPath=${f.path}
     .label=${f.label}
     .min=${f.min ?? 0}
     .max=${f.max ?? 1}
     .step=${f.step ?? 0.01}
+    .units=${f.units ?? ''}
     .defaultValue=${f.default ?? 0}
     .binding=${binding}
   ></scalar-slider>
 `;
 
 const renderSlider = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'slider' }>) => html`
-  <scalar-slider style="width: 100%;"
+  <scalar-slider style="width: 100%;" title=${f.description ?? ''}
     .fieldPath=${f.path}
     .label=${f.label}
     .min=${f.min}
     .max=${f.max}
     .step=${f.step ?? 0.01}
+    .units=${f.units ?? ''}
     .defaultValue=${f.default ?? f.min}
     .binding=${binding}
   ></scalar-slider>
 `;
 
 const renderBoolean = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'boolean' }>) => html`
-  <field-toggle
+  <field-toggle title=${f.description ?? ''}
     .fieldPath=${f.path}
     .label=${f.label}
     .defaultValue=${(f.default ?? false) ? 1 : 0}
@@ -109,7 +111,7 @@ const renderBoolean = (binding: FieldBinding, f: Extract<InspectorFieldDef, { ty
 `;
 
 const renderSelect = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'select' }>) => html`
-  <field-tab-bar
+  <field-tab-bar title=${f.description ?? ''}
     .fieldPath=${f.path}
     .label=${f.label}
     .options=${f.options}

@@ -66,6 +66,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
   @property({ type: Number }) min = 0;
   @property({ type: Number }) max = 1;
   @property({ type: Number }) step = 0.01;
+  @property() units = '';
   @property({ type: Number }) defaultValue = 0;
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
@@ -336,9 +337,10 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
 
   private formatValue(val: number): string {
     if (typeof val !== 'number' || isNaN(val)) return '0';
-    if (Number.isInteger(this.step)) return val.toString();
+    const suffix = this.units ? ` ${this.units}` : '';
+    if (Number.isInteger(this.step)) return val.toString() + suffix;
     const decimals = this.step.toString().split('.')[1]?.length || 0;
-    return val.toFixed(decimals);
+    return val.toFixed(decimals) + suffix;
   }
 
   private handlePointerDown(e: PointerEvent) {
