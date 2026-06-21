@@ -162,6 +162,7 @@ void  on_state_patched(void* self, int n, const char* pb,
                        const int* off, const int* len, const int* ops);
 void  on_resolume_param(void* self, long long param_id, double value);  // ok as no-op
 int32_t is_identity(void* self);     // OPTIONAL: nonzero ⇒ pure passthrough now
+void  seek(void* self, double from_s, double to_s); // OPTIONAL: prefill to a time (§2.3)
 ```
 
 ### `is_identity` — let the executor skip your no-op
@@ -255,7 +256,43 @@ void nano_module_main() {
 
 (`struct_version` is `2`. The macros live in `wasm_modules/include/module_api.h`.)
 The id string passed here **must** match the id the effect declares in its own
-`state::init("<id>", …)` — both are renamed in lockstep.
+`state::init("<id>", …)` — both are renamed in lockstep. Each bundle aggregator
+also calls `NANO_EXPORT_ABI_VERSION()` once next to `nano_module_main` — that
+emits the host↔effect *ABI* version (`NANO_ABI_VERSION`), the contract version
+the executor reads to shim older bundles. It's distinct from the per-effect /
+per-module *semantic* versions in §Versioning, and it's bundle boilerplate —
+new effects don't touch it.
+
+### Capabilities — classify what the effect is for
+
+Beyond its fields, an effect declares **capability tags**: queryable hints the
+executor and editor read to classify what the effect *is*. Chain `.capability(...)`
+onto the schema in `module_init`; they ride the schema JSON and surface on both
+web and native with no extra wiring. Declare every tag that applies.
+
+```cpp
+state::init("source.gradient", {1, 0, 0},
+  state::Schema()
+    /* … fields … */
+    .capability(state::Capability::Generator)
+    .capability(state::Capability::TimeIndependent));
+```
+
+The full set (`state::Capability`, in `wasm_modules/include/host.h`):
+
+- **`Generator`** — synthesizes image output; can start a chain (may also
+  composite over an optional input).
+- **`ModulationSource`** + an arity tag (**`ModulationSourceSingle`** /
+  **`ModulationSourceMulti`**) — produces modulation signal(s) on scalar outputs.
+  Declare the umbrella tag AND the arity (an LFO is `ModulationSource` +
+  `ModulationSourceSingle`).
+- **`ModulationShaper`** + **`ModulationShaperUnary`** — transforms modulation
+  values (N→M; the unary tag is the 1→1 case, e.g. the envelope remapper).
+- **Temporal contract** — `TimeIndependent` / `SeekablePrefill` /
+  `SeekableApproximate`: how the effect behaves under a time *jump*. See §2.3.
+- **`SketchInputSource`** — the effect's params ARE the sketch's exposed input
+  parameters (the dashboard). Per-knob labels + active state are UI-owned at the
+  sketch level; the effect just declares the capability and the fields.
 
 ### Naming: id, display name, category
 
@@ -661,6 +698,36 @@ last_bar_phase = barPhase;
 my_phase += dphase * my_rate_in_bars;
 ```
 
+### 2.3 Declare your temporal contract
+
+Tell the executor how your effect behaves when time *jumps* (a scrub, a loop
+wrap, a render-export seek) rather than advancing one frame at a time. Declare
+one temporal capability in `module_init` (see §0 "Capabilities"). The **absence**
+of any tag is the conservative default — *fully stateful, not safely seekable* —
+so the host must replay frame-by-frame to reach a target time.
+
+- **`TimeIndependent`** — the frame is a pure function of the current inputs (or
+  computed directly from absolute `host::time()`): a jump just yields the right
+  frame, no warm-up. Most filters / color ops (`brightness_contrast`, `blur`,
+  `motion_blur`) and time-from-absolute generators.
+- **`SeekableApproximate`** — stateful, but the only state is a phase/RNG
+  accumulator that re-converges, so a jump differs only at noise level. Safe to
+  seek UNLESS the pipeline needs bit-reproducible output. Most accumulator-based
+  oscillators (the LFO) land here.
+- **`SeekablePrefill`** — stateful, and seekable to any time via the optional
+  `seek(self, from_s, to_s)` export — a (potentially slow) prefill that advances
+  internal state as if it had run `from → to`, so the next `render` shows the
+  frame at `to`. Declared in the ABI; no effect implements it yet.
+- **No tag** — feedback buffers, particle pools, physical sims, ADSR/trigger
+  state machines, delay lines, loopers. A jump would visibly corrupt these.
+
+Tie-in with §2.1: an effect that *integrates* an accumulator (`phase += dt*rate`)
+is **not** `TimeIndependent` — its state depends on the path taken, so it's
+`SeekableApproximate` at best; one that computes from absolute host time each
+frame *is* `TimeIndependent`. Pick the tag by reading your own `State`: no
+cross-frame state → `TimeIndependent`; only a re-converging phase/RNG →
+`SeekableApproximate`; real history → no tag (when unsure, no tag).
+
 ---
 
 ## 3. Visual character
@@ -826,6 +893,7 @@ For `bool`-typed debug toggles, the `mute`-style schema entry works well:
 
 - [ ] Uses the per-instance ABI (§0): mutable state in `struct State` threaded via `self`; only immutable type-shared resources (PSOs, shader modules, samplers) are file-static. No file-static mutable state.
 - [ ] All parameters declared in `state::Schema` with `order:` and a sensible `io:` flag.
+- [ ] Declares its capability tags (§0 "Capabilities") — including a **temporal contract** (§2.3): `TimeIndependent` / `SeekableApproximate` / none. Generators and modulation sources/shapers declare their role tags too.
 - [ ] Standard params come first; tuning / debug params after.
 - [ ] Every parameter is on a normalized range OR has a documented perceptual mapping in its description.
 - [ ] No `time * rate` patterns — accumulators only.
