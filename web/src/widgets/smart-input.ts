@@ -47,10 +47,15 @@ function fuzzyMatch(q: string, t: string): boolean {
 /** Score a match — lower is better. Returns -1 for no match. */
 function matchScore(query: string, effect: AvailableEffect): number {
   const q = query.toLowerCase();
+  const id = effect.id.toLowerCase();
   const name = effect.name.toLowerCase();
   const short = shortName(effect.id).toLowerCase();
 
-  if (short === q) return 0;
+  // Full dotted-id matches first, so a path-style query ("color.tone.bright")
+  // resolves straight to its effect (drives live preview + express commit when
+  // the field is seeded with a full identifier).
+  if (id === q || short === q) return 0;
+  if (id.startsWith(q)) return 1;
   if (short.startsWith(q)) return 1;
   if (name === q) return 2;
   if (name.startsWith(q)) return 3;
@@ -404,12 +409,24 @@ export class SmartInput extends LitElement {
       });
     }
 
-    // --- Effects. With no sub-query, list only the immediate leaves under the
-    // prefix (clean drill-down). While searching, reach into deeper folders too
-    // so a fuzzy match can jump straight to a nested effect.
+    // --- Effects. While searching, reach into deeper folders too so a fuzzy
+    // match can jump straight to a nested effect.
     let effects: AvailableEffect[];
-    if (sub.length === 0) {
+    if (sub.length === 0 && prefix.length === 0) {
+      // Root with no query: just the (dotless) leaf effects — the top-level
+      // folders are listed separately above. Don't dump every effect flat.
       effects = under.filter(e => !e.id.slice(prefix.length).includes('.'));
+    } else if (sub.length === 0) {
+      // Relaxed drill-down: once inside a path, list EVERY effect under it at
+      // any depth — not just the immediate leaves — so drilling into "color/"
+      // also surfaces "color.tone.brightness_contrast" directly (alongside the
+      // "tone/" folder). Shallower effects sort first.
+      effects = [...under].sort((a, b) => {
+        const da = a.id.slice(prefix.length).split('.').length;
+        const db = b.id.slice(prefix.length).split('.').length;
+        if (da !== db) return da - db;
+        return a.id.localeCompare(b.id);
+      });
     } else if (prefix.length === 0) {
       effects = searchEffects(this.effects, subQuery);
     } else {

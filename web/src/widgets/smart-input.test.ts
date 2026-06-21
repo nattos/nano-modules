@@ -48,13 +48,21 @@ describe('smart-input drill-down completion', () => {
     expect(effects).toEqual([]);
   });
 
-  it('drills one level: source. shows sub-folders AND direct leaves', () => {
+  it('drills one level: source. shows sub-folders AND every nested effect', () => {
     const { folders, effects } = complete('source.');
     expect(folders.sort()).toEqual(['light/', 'particles/']);
-    // Immediate leaves only — not the nested light.* / particles.* effects.
-    expect(effects.sort()).toEqual([
+    // Shallower effects sort ahead of deeper ones (immediate leaves first) —
+    // check the emitted order before sorting for the membership comparison.
+    expect(effects.indexOf('source.gradient'))
+      .toBeLessThan(effects.indexOf('source.light.chroma_wave'));
+    // Relaxed drill-down: ALL effects under source.* at any depth, not just the
+    // immediate leaves — the nested light.* / particles.* effects show too.
+    expect([...effects].sort()).toEqual([
       'source.gradient',
+      'source.light.chroma_wave',
+      'source.light.soft_glow',
       'source.noise',
+      'source.particles.flow_swarm',
       'source.phase_fold',
       'source.solid_color',
     ]);
@@ -93,6 +101,14 @@ describe('smart-input drill-down completion', () => {
   it('search within a prefix reaches into deeper folders', () => {
     const { effects } = complete('source.chr');
     expect(effects).toContain('source.light.chroma_wave');
+  });
+
+  it('a full dotted id resolves to its effect (seeds preview / express commit)', () => {
+    // The type editor is seeded with the full module id (e.g. when retyping an
+    // existing effect); typing it back must resolve to exactly that effect so
+    // an express commit bakes in a real id.
+    const { effects } = complete('color.tone.curve');
+    expect(effects[0]).toBe('color.tone.curve');
   });
 
   it('root fuzzy search stays flat across all effects', () => {

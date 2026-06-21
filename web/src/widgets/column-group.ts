@@ -945,7 +945,7 @@ export class ColumnGroup extends MobxLitElement {
               ${isEditingType ? html`
                 <smart-input
                   .effects=${appState.local.availableEffects}
-                  .initialValue=${this.insertCtx ? '' : shortName(entry.module_type)}
+                  .initialValue=${this.insertCtx ? '' : entry.module_type}
                   .autoSelect=${true}
                   @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
                   @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
@@ -955,7 +955,8 @@ export class ColumnGroup extends MobxLitElement {
               ` : html`
                 <span class="effect-card-name"
                   @dblclick=${(e: Event) => { e.stopPropagation(); this.beginEditType(chainIdx); }}
-                >${shortName(entry.module_type)}</span>
+                  title=${entry.module_type}
+                >${this.effectDisplayName(entry.module_type)}</span>
               `}
             </div>
             <scalar-slider
@@ -998,6 +999,13 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
   // Smart type editing
   // ========================================================================
+
+  /** Human-readable display name for a module type ("Brightness & Contrast"),
+   *  falling back to the short id segment when no effect metadata is found. */
+  private effectDisplayName(moduleType: string): string {
+    const eff = appState.local.availableEffects?.find(e => e.id === moduleType);
+    return eff?.name || shortName(moduleType);
+  }
 
   /** Open the smart-input for a chain entry. */
   beginEditType(chainIdx: number) {
