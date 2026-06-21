@@ -348,7 +348,7 @@ struct Version {
 // NOT re-listed here — they are the effect's scalar output fields that carry a
 // `magnitude` declaration.
 enum class Capability {
-  Generator,               // produces image output without a primary texture input
+  Generator,               // synthesizes image output; can start a chain (may also composite over an optional input)
   ModulationSource,        // produces modulation signal(s) on scalar outputs
   ModulationSourceSingle,  //   ...exactly one canonical channel (auto-wireable)
   ModulationSourceMulti,   //   ...several channels; the user picks one

@@ -330,7 +330,8 @@ void module_init() {
       // contract as the other motion writers — pixels not covered by
       // any particle inherit upstream motion.
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
-  );
+        .capability(state::Capability::Generator)
+    );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 

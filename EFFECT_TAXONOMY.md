@@ -11,24 +11,27 @@ Total: 77 effects.
 
 ## source  (19)
 
+All source effects now declare the `Generator` capability (separate from the
+`source` taxonomy domain). Some also sample an optional input to composite over.
+
 | new id | display | ← old id | bundle | gen.cap | note |
 |---|---|---|---|---|---|
 | `source.gradient` | Gradient | `generator.gradient` | core | Y |  |
 | `source.grid` | Grid | `generator.grid` | core | Y |  |
-| `source.light.bounce_resonator` | Bounce Resonator | `gen.bounce_resonator` | lights |  | no Generator cap |
-| `source.light.chroma_wave` | Chroma Wave | `gen.chroma_wave` | lights |  | no Generator cap |
-| `source.light.motion_blobs` | Motion Blobs | `gen.motion_blobs` | lights |  | no Generator cap; also emits motion |
-| `source.light.orthomod` | Orthomod | `gen.orthomod` | lights |  | no Generator cap |
-| `source.light.plasma_beam_cannon` | Plasma Beam Cannon | `gen.plasma_beam_cannon` | lights |  | no Generator cap |
-| `source.light.side_jet` | Side Jet | `gen.side_jet` | lights |  | no Generator cap |
-| `source.light.soft_glow` | Soft Glow | `gen.soft_glow` | lights |  | no Generator cap |
-| `source.light.strobe_channel` | Strobe Channel | `gen.strobe_channel` | lights |  | no Generator cap |
-| `source.light.tingle_top` | Tingle Top | `gen.tingle_top` | lights |  | no Generator cap |
+| `source.light.bounce_resonator` | Bounce Resonator | `gen.bounce_resonator` | lights | Y |  |
+| `source.light.chroma_wave` | Chroma Wave | `gen.chroma_wave` | lights | Y |  |
+| `source.light.motion_blobs` | Motion Blobs | `gen.motion_blobs` | lights | Y | also emits motion |
+| `source.light.orthomod` | Orthomod | `gen.orthomod` | lights | Y |  |
+| `source.light.plasma_beam_cannon` | Plasma Beam Cannon | `gen.plasma_beam_cannon` | lights | Y |  |
+| `source.light.side_jet` | Side Jet | `gen.side_jet` | lights | Y |  |
+| `source.light.soft_glow` | Soft Glow | `gen.soft_glow` | lights | Y |  |
+| `source.light.strobe_channel` | Strobe Channel | `gen.strobe_channel` | lights | Y |  |
+| `source.light.tingle_top` | Tingle Top | `gen.tingle_top` | lights | Y |  |
 | `source.noise` | Noise | `generator.noise` | core | Y |  |
-| `source.particles.flash_particles` | Flash Particles | `video.flash_particles` | nano |  | JUDGMENT: mask-driven compositor |
-| `source.particles.flow_swarm` | Flow Swarm | `video.flow_swarm` | nano |  | JUDGMENT: consumes flow_field rail |
-| `source.phase_fold` | Phase Fold | `video.phase_fold` | nano |  | was video.*; no Generator cap |
-| `source.shape_fold` | Shape Fold | `video.shape_fold` | nano |  | was video.*; no Generator cap |
+| `source.particles.flash_particles` | Flash Particles | `video.flash_particles` | nano | Y | JUDGMENT: mask-driven compositor |
+| `source.particles.flow_swarm` | Flow Swarm | `video.flow_swarm` | nano | Y | JUDGMENT: consumes flow_field rail |
+| `source.phase_fold` | Phase Fold | `video.phase_fold` | nano | Y | was video.* |
+| `source.shape_fold` | Shape Fold | `video.shape_fold` | nano | Y | was video.* |
 | `source.solid_color` | Solid Color | `generator.solid_color` | core,testonly | Y |  |
 | `source.text.plain` | Text | `gen.text` | text | Y |  |
 | `source.text.rich` | Rich Text | `gen.richtext` | richtext | Y |  |

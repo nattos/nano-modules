@@ -78,7 +78,8 @@ void module_init() {
       .intField  ("bar_count",         4,     2,    16,    state::PrimaryInput)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
-  );
+        .capability(state::Capability::Generator)
+    );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 

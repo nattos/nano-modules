@@ -323,7 +323,8 @@ void module_init() {
       // downstream swarm / flow modifier can consume it (separates the field
       // from its rendering). Baked only when wired.
       .flowField(state::PrimaryOutput)
-  );
+        .capability(state::Capability::Generator)
+    );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 

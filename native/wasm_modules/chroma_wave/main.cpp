@@ -464,7 +464,8 @@ void module_init() {
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput,  "render_outputs_in")
-  );
+        .capability(state::Capability::Generator)
+    );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 

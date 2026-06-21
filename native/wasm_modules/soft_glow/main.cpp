@@ -288,7 +288,8 @@ void module_init() {
       // Upstream auxiliary inputs (e.g. motion) — when wired the motion
       // pass lerps our local contribution on top of the upstream field.
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
-  );
+        .capability(state::Capability::Generator)
+    );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
