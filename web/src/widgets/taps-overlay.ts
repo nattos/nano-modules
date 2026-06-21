@@ -140,8 +140,8 @@ export class TapsOverlay extends MobxLitElement {
       will-change: transform;
     }
     /* Inspector field rows reused inside the card (mirrors edit-tab styles). */
-    .section-header { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
-      color: var(--app-text-color2, #999); margin: 4px 0; }
+    .section-header { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--app-text-color2, #b0b0b0); margin: 4px 0; }
     .tap-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
     .tap-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
       white-space: nowrap; color: var(--app-text-color1, #ddd); }
