@@ -24,6 +24,9 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
   @property({ attribute: false }) options: FieldTabBarOption[] = [];
   @property({ attribute: false }) defaultValue: any = undefined;
   @property({ attribute: false }) binding: FieldBinding | null = null;
+  /** Let the options flow onto multiple rows instead of one squeezed strip.
+   *  Reflected so the `:host([wrap])` rules below can restyle the layout. */
+  @property({ type: Boolean, reflect: true }) wrap = false;
 
   get controlledFields() { return [this.fieldPath]; }
   getControlElements(): HTMLElement[] {
@@ -98,6 +101,23 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
     }
     button[active]:hover {
       background: var(--app-hi-color2, #4169E1);
+    }
+
+    /* Wrap mode: options flow onto multiple rows as discrete chips (each
+     * keeps its own border + corner) rather than one seamless segmented
+     * strip. Used for large enums like blend modes. */
+    :host([wrap]) { align-items: flex-start; }
+    :host([wrap]) .label { padding-top: 4px; }
+    :host([wrap]) .tabs {
+      flex-wrap: wrap;
+      gap: 2px;
+      border: none;
+      overflow: visible;
+    }
+    :host([wrap]) button {
+      flex: 0 1 auto;
+      border: 1px solid var(--app-tint-4);
+      border-radius: 1px;
     }
   `;
 

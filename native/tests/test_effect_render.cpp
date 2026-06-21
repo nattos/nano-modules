@@ -200,6 +200,23 @@ TEST_CASE("WASM slot-based input ABI blends two textures (composite.blend)", "[e
   INFO("opacity=0.5 mean " << mean_rgb(mid) << " (expect ~120)");
   CHECK(std::abs(mean_rgb(mid) - 120.0) < 25.0);
 
+  // --- Blend modes (mode select drives the shader switch). A=40, B=200 ---
+  inst->setParamFloat("opacity", 1.0f);
+
+  // Multiply (mode 2): (40/255)*(200/255)*255 ≈ 31 — darker than EITHER input.
+  inst->setParamFloat("mode", 2.0f);
+  inst->doRender(W, H);
+  auto mul = backend->readbackTexture(outTex, W, H);
+  INFO("Multiply mean " << mean_rgb(mul) << " (expect ~31)");
+  CHECK(std::abs(mean_rgb(mul) - 31.0) < 15.0);
+
+  // Add (mode 1): min(1, 40/255 + 200/255)*255 ≈ 240 — brighter than EITHER.
+  inst->setParamFloat("mode", 1.0f);
+  inst->doRender(W, H);
+  auto add = backend->readbackTexture(outTex, W, H);
+  INFO("Add mean " << mean_rgb(add) << " (expect ~240)");
+  CHECK(mean_rgb(add) > 220.0);
+
   host.shutdown();
 }
 

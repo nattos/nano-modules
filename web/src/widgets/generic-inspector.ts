@@ -38,7 +38,7 @@ export type InspectorFieldDef =
   | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number }
   | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number }
   | { type: 'boolean'; label: string; path: string; default?: boolean }
-  | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any }
+  | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any; wrap?: boolean }
   | { type: 'button'; label: string; path: string; text?: string }
   /// 2/3/4-component vector — N labeled component sliders.
   | { type: 'vec'; label: string; path: string; components: 2 | 3 | 4;
@@ -114,6 +114,7 @@ const renderSelect = (binding: FieldBinding, f: Extract<InspectorFieldDef, { typ
     .label=${f.label}
     .options=${f.options}
     .defaultValue=${f.default ?? f.options[0]?.value}
+    ?wrap=${f.wrap ?? false}
     .binding=${binding}
   ></field-tab-bar>
 `;

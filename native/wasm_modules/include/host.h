@@ -419,8 +419,12 @@ public:
   /// selectors, algorithm pickers, and anything else with a small
   /// fixed set of named values.
   struct SelectOption { const char* label; int value; };
+  /// `wrap` lets the IDE's row-of-buttons editor flow onto multiple rows
+  /// instead of one squeezed strip — use it when the option count is large
+  /// (blend modes, etc.) so each choice stays a comfortable hit target.
   Schema& selectField(const char* name, int def, int io,
-                      std::initializer_list<SelectOption> options) {
+                      std::initializer_list<SelectOption> options,
+                      bool wrap = false) {
     int lo = def, hi = def;
     for (const auto& o : options) {
       if (o.value < lo) lo = o.value;
@@ -435,6 +439,7 @@ public:
     appendInt(hi);
     appendRaw(",\"io\":");
     appendInt(io);
+    if (wrap) appendRaw(",\"wrap\":true");
     appendRaw(",\"options\":[");
     bool first = true;
     for (const auto& o : options) {

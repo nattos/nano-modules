@@ -1452,6 +1452,7 @@ export class ColumnGroup extends MobxLitElement {
               value: typeof o?.value === 'number' ? o.value : 0,
             })),
             default: typeof d.default === 'number' ? d.default : (d.options[0]?.value ?? 0),
+            wrap: d.wrap === true,
           });
           continue;
         }

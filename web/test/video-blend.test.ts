@@ -13,6 +13,7 @@ function buildBlendSketch(opts: {
   colorA: { r: number; g: number; b: number };
   colorB: { r: number; g: number; b: number };
   opacity: number;
+  mode?: number;
 }): Sketch {
   const a = `${opts.sketchId}_a`, b = `${opts.sketchId}_b`, blend = `${opts.sketchId}_blend`;
   return {
@@ -38,7 +39,9 @@ function buildBlendSketch(opts: {
         type: 'module',
         module_type: 'composite.blend',
         instance_key: blend,
-        params: { opacity: opts.opacity },
+        params: opts.mode !== undefined
+          ? { opacity: opts.opacity, mode: opts.mode }
+          : { opacity: opts.opacity },
       },
     ],
   } as Sketch;
@@ -193,5 +196,36 @@ describe('Blend Effect E2E', () => {
 
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(16, 16, { r: 191, g: 76, b: 51 }, 6);
+  });
+
+  it('Add mode (mode=1) sums the channels: red + blue = magenta', async () => {
+    // Locks the shader-switch path through naga/WGSL on the web backend.
+    // A = red (1,0,0), B = blue (0,0,1), opacity = 1, Add → (1,0,1) = magenta.
+    const result = await runEngineTest({
+      width: 32, height: 32,
+      modules: ['com.nano.core'],
+      commands: [
+        {
+          type: 'createSketch',
+          sketchId: 'blend_add',
+          sketch: buildBlendSketch({
+            sketchId: 'blend_add',
+            colorA: { r: 1.0, g: 0.0, b: 0.0 },
+            colorB: { r: 0.0, g: 0.0, b: 1.0 },
+            opacity: 1.0,
+            mode: 1, // Add
+          }),
+        },
+      ],
+      tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId: 'blend_add' } },
+      ],
+      captureTraceIds: ['out'],
+      waitFrames: 5,
+      dumpName: 'blend_add',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectUniformColor({ r: 255, g: 0, b: 255, a: 255 }, 4);
   });
 });

@@ -1,14 +1,20 @@
 /*
- * composite.blend — Blends two texture inputs.
+ * composite.blend — Blends two texture inputs with a selectable blend mode.
  *
- * output = A * (1 - opacity) + B * opacity
+ *   blended = mode(A, B)            (per the chosen Photoshop-style mode)
+ *   output  = lerp(A, blended, opacity)
+ *
+ * So opacity stays meaningful for every mode: it crossfades between the base
+ * (A) and the fully-blended result. Mode 0 (Normal) reduces to the old
+ * A*(1-opacity) + B*opacity behaviour.
  *
  * Parameters:
- *   0: Opacity (Standard, default 0.5)
+ *   mode    (select, default Normal) — see the BlendMode enum / shader switch
+ *   opacity (Standard, default 0.5)
  *
  * Texture I/O:
- *   Input 0: Texture A
- *   Input 1: Texture B
+ *   Input 0: Texture A (base)
+ *   Input 1: Texture B (blend)
  *   Output 0: Blended result
  *
  * Class-like instance model: module_init() sets up the type-shared
@@ -23,14 +29,23 @@
 
 namespace video_blend {
 
+// Keep in lock-step with the switch in compute.hlsl and the selectField list.
+enum BlendMode {
+  Normal = 0, Add, Multiply, Screen, Overlay, Darken, Lighten,
+  ColorDodge, ColorBurn, HardLight, SoftLight, Difference, Exclusion,
+  Subtract, Divide, LinearBurn,
+};
+
 struct Uniforms {
   float opacity;
-  float _pad0, _pad1, _pad2;
+  int mode;
+  float _pad1, _pad2;
 };
 
 // Per-instance state. One per chain entry.
 struct State {
   float opacity = 0.5f;
+  int mode = Normal;
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
@@ -42,6 +57,14 @@ static gpu::ComputePSO s_pso;
 void module_init() {
   state::init("composite.blend", {1, 0, 0},
     state::Schema()
+      .selectField("mode", Normal, state::PrimaryInput, {
+        {"Normal", Normal}, {"Add", Add}, {"Multiply", Multiply},
+        {"Screen", Screen}, {"Overlay", Overlay}, {"Darken", Darken},
+        {"Lighten", Lighten}, {"Dodge", ColorDodge}, {"Burn", ColorBurn},
+        {"Hard Light", HardLight}, {"Soft Light", SoftLight},
+        {"Difference", Difference}, {"Exclusion", Exclusion},
+        {"Subtract", Subtract}, {"Divide", Divide}, {"Linear Burn", LinearBurn},
+      }, /*wrap=*/true)
       .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .textureField("tex_a", state::PrimaryInput)
       .textureField("tex_b", state::PrimaryInput)
@@ -78,6 +101,7 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->opacity = 0.5f;
+  s->mode = Normal;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
   state::log("blend: init");
@@ -98,6 +122,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     if (state::pathIs(pb + off[i], len[i], "opacity"))
       s->opacity = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "mode"))
+      s->mode = (int)state::patchFloat(i);  // select ints ride the float patch path
   }
 }
 
@@ -111,7 +137,7 @@ void render(void* self, int vp_w, int vp_h) {
 
   if (!inputA.valid() || !inputB.valid()) return;
 
-  Uniforms u = { s->opacity, 0, 0, 0 };
+  Uniforms u = { s->opacity, s->mode, 0, 0 };
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
