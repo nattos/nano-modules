@@ -91,6 +91,8 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_envelope)
 
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 
+NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
+
 extern "C" {
 
 __attribute__((export_name("nano_module_main")))
@@ -451,6 +453,16 @@ void nano_module_main() {
         "data",
         "oscillator,modulation,automation,lfo,wave",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
+    });
+
+    nano::registerEffect({
+        2,
+        "data.adsr",
+        "ADSR",
+        "ADSR envelope generator (modulation source). A trigger / gate / Poisson auto-rate drives an attack-decay-sustain-release phase machine that publishes a scalar 'output' in [0,1]. The 'mode' selector enables phases (Decay = instant falling pluck by default, through full ADSR); attack/decay/release are phase TIMES and sustain a held LEVEL, each ramp shaped by a per-phase ease curve (shared with mod.envelope). Polyphonic: up to 'voices' overlapping envelopes (output = their max) with Reset / Legato / Poly retrigger styles. Pure data module (no GPU, no input).",
+        "data",
+        "envelope,adsr,modulation,automation,trigger,gate,generator",
+        NANO_INSTANCE_LIFECYCLE(env_adsr),
     });
 }
 

@@ -31,7 +31,7 @@ NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
 NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
-// data.lfo ships in core, data.adsr in nano — duplicated here for test access.
+// data.lfo and data.adsr ship in core — duplicated here for test access.
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
@@ -158,8 +158,8 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(fuse_solid),
     });
 
-    // data.lfo (core) / data.adsr (nano) duplicated for test access, same
-    // source as the shipping bundles.
+    // data.lfo / data.adsr ship in core, duplicated for test access, same
+    // source as the shipping bundle.
     nano::registerEffect({
         2,
         "data.lfo",
