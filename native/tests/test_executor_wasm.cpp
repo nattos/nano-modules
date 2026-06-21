@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -98,4 +99,52 @@ TEST_CASE("executor.wasm renders pixel-identical to the native executor", "[exec
   size_t diffs = 0;
   for (size_t i = 0; i < wasmOut.size(); ++i) if (wasmOut[i] != nativeOut[i]) ++diffs;
   CHECK(diffs == 0);
+}
+
+TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[executor_wasm]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  // White input → dashboard (knob_0 = 0.5, no input wire) → brightness_contrast.
+  // The knob's AUTHORED value drives brightness via the output wire: 0.5 folds to
+  // neutral, contrast -0.5 → gray. If the authored knob value doesn't reach the
+  // wire, brightness stays its stored 1.0 → white.
+  const std::string sketch = R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "util.dashboard", "instance_key": "dash@0" },
+      { "type": "module", "module_type": "color.tone.brightness_contrast", "instance_key": "bc@0" }
+    ],
+    "instances": {
+      "dash@0": { "module_type": "util.dashboard", "state": { "knob_0": 0.5 } },
+      "bc@0": { "module_type": "color.tone.brightness_contrast",
+                "state": { "brightness": 1.0, "contrast": -0.5 } }
+    },
+    "wires": [
+      { "id": "wout", "src": { "instanceKey": "dash@0", "field": "knob_0" },
+        "dest": { "instanceKey": "bc@0", "field": "brightness" } }
+    ]
+  })JSON";
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> inPix(W * H * 4, 255);  // white
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  SketchExecutor ex(&rt, &registry, backend.get());
+  auto j = nlohmann::json::parse(sketch);
+  int32_t h = ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto out = backend->readbackTexture(h, W, H);
+  REQUIRE(out.size() == W * H * 4);
+
+  const double m = mean_rgb(out);
+  INFO("output mean " << m << " (gray~128 = knob drove brightness; white~255 = wire dropped)");
+  CHECK(m < 200.0);            // not white — the knob value reached brightness
+  CHECK(std::abs(m - 128.0) < 24.0);  // gray
 }

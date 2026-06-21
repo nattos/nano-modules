@@ -13,13 +13,13 @@ const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 describe('util.dashboard knob bank', () => {
   jest.setTimeout(50000);
 
-  // TODO(dashboard-real-effect): re-enable once the resolume-shell authored-state
-  // persistence for sketch_input_source effects is fixed. The drag WRITES the
-  // correct knob value (verified) and the relay works (engine-wires e2e), but in
-  // the full resolume app an idle-frame writeback recurringly resets the real
-  // dashboard's authored io=in|out knob state — the old plugin-less virtual
-  // dashboard escaped this. Tracked as a follow-up to gate that reset on the
-  // sketch_input_source capability.
+  // TODO(task #21): re-enable once the resolume-shell DATABASE reset is fixed.
+  // The engine-side wire propagation is now correct (executor-host no longer
+  // mirrors relay in+out fields over their authored value — see
+  // engine-wires "pure-output knob"), but in the full resolume app an idle-frame
+  // process still replaces the dashboard instance's authored state with {} (a
+  // DIFFERENT bug from the engine mirror — that produced {knob_i:0}, this gives
+  // {}). The drag-write itself is correct (traced).
   it.skip('registers as a dashboard kind, seeds 8 knobs, and edits them', async () => {
     page.removeAllListeners('console');
 

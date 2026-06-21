@@ -230,4 +230,41 @@ describe('Wire routing E2E', () => {
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
   });
+
+  it('util.dashboard pure-output knob drives a param from its authored value', async () => {
+    // No input wire on the knob — its AUTHORED value (state.knob_0 = 0.5) must
+    // reach captureWriteTaps and publish to brightness. white in, brightness 0.5
+    // folds to neutral, contrast -0.5 → gray. If the authored knob value doesn't
+    // reach the output wire, brightness stays its stored 1.0 → white.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
+        params: { color: [1.0, 1.0, 1.0] } },
+        { type: 'module', module_type: 'util.dashboard', instance_key: 'dash@0' },
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
+        params: { brightness: 1.0, contrast: -0.5 } },
+      ],
+      instances: {
+        'dash@0': { module_type: 'util.dashboard', state: { knob_0: 0.5 } },
+      },
+      wires: [
+        { id: 'wout', src: { instanceKey: 'dash@0', field: 'knob_0' },
+          dest: { instanceKey: 'bc@0', field: 'brightness' } },
+      ],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['com.nano.core'],
+      commands: [{ type: 'createSketch', sketchId: 'wire_dash_out', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_dash_out' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'wire_dash_out',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+  });
 });

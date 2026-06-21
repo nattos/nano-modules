@@ -413,7 +413,12 @@ export class WasmSketchExecutor {
       const outs: Record<string, number> = {};
       for (const fname in schema) {
         const def: any = schema[fname];
-        if (!(((def?.io ?? 0) & 2))) continue;            // output fields only
+        const io = def?.io ?? 0;
+        // PURE output fields only. A field that is ALSO an input (a "relay" —
+        // both io bits, e.g. a util.dashboard knob) is AUTHORED, not engine-
+        // published; mirroring the effect's (uncomputed) output over it would
+        // clobber the user's value and break its output wire.
+        if (!((io & 2) && !(io & 1))) continue;
         if (def?.type === 'object' || def?.type === 'array' || def?.type === 'texture') continue;
         const v = ps[fname];
         if (typeof v === 'number') outs[fname] = v;
