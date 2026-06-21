@@ -14,8 +14,9 @@ import { traceController } from './trace-controller';
 import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
-import type { Sketch, ChainEntry, Wire, UiOnlyState } from '../sketch-types';
+import type { Sketch, ChainEntry, Wire, UiOnlyState, InstanceState } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY } from '../sketch-types';
+import { ENGINE_VERSION, parseVersion } from '../version';
 import {
   isDefaultProjectId,
   isUserProjectId,
@@ -209,7 +210,7 @@ export class AppController {
         module_type: inInstances[0].moduleType,
         instance_key: inKey,
       });
-      instances[inKey] = { module_type: inInstances[0].moduleType, state: {} };
+      instances[inKey] = { module_type: inInstances[0].moduleType, state: {}, version: this.versionForModule(inInstances[0].moduleType) };
     }
     for (const out of outInstances) {
       chain.push({
@@ -217,11 +218,11 @@ export class AppController {
         module_type: out.moduleType,
         instance_key: out.pluginKey,
       });
-      instances[out.pluginKey] = { module_type: out.moduleType, state: {} };
+      instances[out.pluginKey] = { module_type: out.moduleType, state: {}, version: this.versionForModule(out.moduleType) };
     }
 
     const anchor = outInstances[0]?.pluginKey ?? inInstances[0]?.pluginKey ?? null;
-    const sketch: Sketch = { anchor, chain, instances };
+    const sketch: Sketch = { anchor, chain, instances, engineVersion: ENGINE_VERSION };
 
     this.mutate(`Create sketch ${sketchId}`, draft => {
       draft.sketches[sketchId] = sketch;
@@ -278,10 +279,25 @@ export class AppController {
     return plugin ? this.defaultStateForPlugin(plugin) : {};
   }
 
+  /**
+   * The {module, effect} version pair to stamp on a freshly-created instance,
+   * read from the live plugin metadata (the effect's state::init version and its
+   * bundle's module version). Unknown plugins record 0.0.0 so the slot is always
+   * present. Recorded for later compat checks; no migration logic yet.
+   */
+  private versionForModule(moduleType: string): InstanceState['version'] {
+    const plugin = appState.local.plugins.find(p => p.id === moduleType);
+    return {
+      module: parseVersion(plugin?.moduleVersion),
+      effect: parseVersion(plugin?.version),
+    };
+  }
+
   addEffectToChain(sketchId: string, colIdx: number, insertIdx: number, moduleType: string) {
     const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
 
     const defaultState = this.initialStateForModule(moduleType);
+    const version = this.versionForModule(moduleType);
 
     this.mutate(`Add ${shortName(moduleType)}`, draft => {
       const sketch = draft.sketches[sketchId];
@@ -293,7 +309,7 @@ export class AppController {
       });
       // Create instance state in the sketch
       sketch.instances = sketch.instances ?? {};
-      sketch.instances[instanceKey] = { module_type: moduleType, state: defaultState };
+      sketch.instances[instanceKey] = { module_type: moduleType, state: defaultState, version };
     });
   }
 
@@ -368,7 +384,7 @@ export class AppController {
         instance_key: instanceKey,
       });
       sk.instances = sk.instances ?? {};
-      sk.instances[instanceKey] = { module_type: moduleType, state: this.initialStateForModule(moduleType) };
+      sk.instances[instanceKey] = { module_type: moduleType, state: this.initialStateForModule(moduleType), version: this.versionForModule(moduleType) };
     };
   }
 
@@ -473,7 +489,7 @@ export class AppController {
         ...(fieldOptions ? { fieldOptions } : {}),
       });
       sk.instances = sk.instances ?? {};
-      sk.instances[instanceKey] = { module_type: payload.moduleType, state };
+      sk.instances[instanceKey] = { module_type: payload.moduleType, state, version: this.versionForModule(payload.moduleType) };
     });
     // Select the freshly pasted card (queues if it hasn't rendered yet).
     this.select(`effect/${sketchId}/${colIdx}/${insertIdx}`);
@@ -1398,6 +1414,7 @@ export class AppController {
         key: rp.key ?? rp.id,
         id: rp.id,
         version: rp.version ?? '0.0.0',
+        moduleVersion: (rp as any).moduleVersion ?? '0.0.0',
         params, io, schema,
         // Forwarded by the barrel host when present; harmless [] otherwise.
         capabilities: Array.isArray((rp as any).capabilities) ? (rp as any).capabilities : [],

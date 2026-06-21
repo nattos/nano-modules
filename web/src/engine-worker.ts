@@ -1360,6 +1360,8 @@ function broadcastState() {
         version: entry.metadata?.version
           ? `${entry.metadata.version.major}.${entry.metadata.version.minor}.${entry.metadata.version.patch}`
           : '0.0.0',
+        moduleVersion: WasmHost.moduleVersionsById.get(entry.metadata?.id ?? '')
+          ?? matchedHost?.moduleVersion ?? '0.0.0',
         params: (entry.params ?? []).map((p: any) => ({
           index: p.index,
           name: p.name,

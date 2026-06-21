@@ -9,7 +9,8 @@ import type { Sketch, FieldOptions } from '../sketch-types';
 export interface PluginInfo {
   key: string;
   id: string;
-  version: string;
+  version: string;        // per-effect version (state::init), "major.minor.patch"
+  moduleVersion?: string; // bundle/module version, "major.minor.patch"
   params: ParamInfo[];
   io: IOInfo[];
   schema?: Record<string, any>;

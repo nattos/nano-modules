@@ -31,6 +31,13 @@ export interface Sketch {
   /** Per-instance state, keyed by instance_key. Canonical source of truth for all field values. */
   instances?: Record<string, InstanceState>;
   /**
+   * Engine (runtime) version that serialized this sketch, as [major, minor,
+   * patch]. A MINOR bump signals a serialization-incompatible engine change.
+   * Stamped at save time; migrations/fallbacks are a later concern — for now we
+   * just record it. See ENGINE_VERSION in version.ts.
+   */
+  engineVersion?: [number, number, number];
+  /**
    * Effect-IDE-only marker: this `user:` sketch was just materialized from a
    * default template and has not been edited yet. Hidden from explorer lists
    * and skipped by the project-store autosave. Cleared inside `mutate()` on
@@ -44,6 +51,14 @@ export interface InstanceState {
   module_type: string;
   /** The plugin's full state (inputs, outputs, internal). */
   state: Record<string, any>;
+  /**
+   * Versions captured when this instance was created, each [major, minor,
+   * patch]: `effect` is the effect's own state::init version, `module` is its
+   * bundle version. A MINOR bump of either signals the stored `state` may be
+   * serialization-incompatible with the current build. Recorded only; we worry
+   * about migrations later.
+   */
+  version?: { module: [number, number, number]; effect: [number, number, number] };
 }
 
 /**

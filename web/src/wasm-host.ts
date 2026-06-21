@@ -220,6 +220,17 @@ export class WasmHost {
   // what the effect is FOR; see host.h Capability. Empty when none declared.
   capabilities: string[] = [];
 
+  // Bundle (module) version "major.minor.patch" from the schema's top-level
+  // `moduleVersion`, distinct from the per-effect `metadata.version`. Both are
+  // recorded onto serialized instances. Defaults to 0.0.0 until a schema is seen.
+  moduleVersion = '0.0.0';
+
+  // Per-effect-id module version, captured on EVERY set_schema and kept here so
+  // broadcastState can read it by id even after the transient init-time host is
+  // gone (the per-instance `moduleVersion` field above only exists while a host
+  // is live; effect version rides bridgeCore, module version rides this map).
+  static moduleVersionsById = new Map<string, string>();
+
   // Pending patches for the current on_state_patched call
   pendingPatches: PatchOp[] = [];
 
@@ -540,6 +551,10 @@ export class WasmHost {
             this.capabilities = Array.isArray(schemaJson.capabilities)
               ? schemaJson.capabilities.filter((c: any) => typeof c === 'string')
               : [];
+            if (Array.isArray(schemaJson.moduleVersion) && schemaJson.moduleVersion.length === 3) {
+              this.moduleVersion = schemaJson.moduleVersion.map((n: any) => n | 0).join('.');
+            }
+            WasmHost.moduleVersionsById.set(id, this.moduleVersion);
 
             // Derive params and ioDecls from schema for backward compat
             this.params = [];

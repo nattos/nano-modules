@@ -19,7 +19,8 @@ export interface EffectInfo {
 export interface PluginInfo {
   key: string;          // "com.nano.spinningtris@0"
   id: string;           // "com.nano.spinningtris"
-  version: string;
+  version: string;      // per-effect version (state::init), "major.minor.patch"
+  moduleVersion?: string; // bundle/module version, "major.minor.patch"
   params: ParamInfo[];
   io: IOInfo[];
   /**

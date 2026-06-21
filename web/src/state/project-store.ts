@@ -13,6 +13,7 @@
 
 import { toJS } from 'mobx';
 import type { Sketch } from '../sketch-types';
+import { ENGINE_VERSION } from '../version';
 import { idbGetAll, idbPut, idbDelete, STORE_PROJECTS } from './idb-store';
 
 interface ProjectRecord {
@@ -35,6 +36,9 @@ export async function loadAllProjects(): Promise<Record<string, Sketch>> {
 export async function saveProject(id: string, sketch: Sketch): Promise<void> {
   // toJS + JSON round-trip to avoid sending MobX proxies into IDB.
   const safe = JSON.parse(JSON.stringify(toJS(sketch)));
+  // Stamp the engine version that produced this serialization (the save is the
+  // serialization boundary, so this records "engine that last wrote this").
+  safe.engineVersion = ENGINE_VERSION;
   await idbPut(STORE_PROJECTS, { id, sketch: safe, updatedAt: Date.now() });
 }
 

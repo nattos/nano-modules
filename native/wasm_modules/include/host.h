@@ -329,6 +329,15 @@ struct Version {
   int packed() const { return (major << 16) | (minor << 8) | patch; }
 };
 
+// Module-level (bundle) version, distinct from each effect's own state::init
+// version. One per WASM module; defaults to 1.0.0. A bundle bumps it once in
+// nano_module_main (before its effects register) when the whole module's
+// serialization changes; individual effects bump their own state::init version.
+// Both ride every effect's schema JSON so serialized instances can record the
+// pair (see Schema::apply). Function-local static → one instance per module.
+inline Version& moduleVersionRef() { static Version v{1, 0, 0}; return v; }
+inline void setModuleVersion(Version v) { moduleVersionRef() = v; }
+
 // ========================================================================
 // Schema builder — unified module declaration
 // ========================================================================
@@ -648,6 +657,28 @@ public:
       for (const char* p = pfx; *p && flen < (int)sizeof(finalized) - 4; ++p) finalized[flen++] = *p;
       for (int i = 0; i < capLen_ && flen < (int)sizeof(finalized) - 4; i++) finalized[flen++] = capBuf_[i];
       if (flen < (int)sizeof(finalized) - 2) finalized[flen++] = ']';
+    }
+    // Version contract: this effect's own version + its bundle's module version,
+    // both as [major,minor,patch]. Recorded onto serialized instances so a load
+    // can detect a serialization-incompatible bump (minor) per effect or per
+    // module. Siblings of "fields"/"capabilities" at the schema root.
+    {
+      auto appendStr = [&](const char* s) {
+        for (const char* p = s; *p && flen < (int)sizeof(finalized) - 8; ++p) finalized[flen++] = *p;
+      };
+      auto appendInt = [&](int v) {
+        char tmp[16]; int n = 0; int x = v < 0 ? 0 : v;
+        do { tmp[n++] = (char)('0' + x % 10); x /= 10; } while (x && n < 15);
+        while (n && flen < (int)sizeof(finalized) - 8) finalized[flen++] = tmp[--n];
+      };
+      auto appendVer = [&](const char* key, Version vv) {
+        appendStr(",\""); appendStr(key); appendStr("\":[");
+        appendInt(vv.major); if (flen < (int)sizeof(finalized) - 8) finalized[flen++] = ',';
+        appendInt(vv.minor); if (flen < (int)sizeof(finalized) - 8) finalized[flen++] = ',';
+        appendInt(vv.patch); if (flen < (int)sizeof(finalized) - 8) finalized[flen++] = ']';
+      };
+      appendVer("effectVersion", version);
+      appendVer("moduleVersion", moduleVersionRef());
     }
     finalized[flen++] = '}';   // close root
 
