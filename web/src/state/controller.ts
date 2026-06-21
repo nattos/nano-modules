@@ -346,6 +346,63 @@ export class AppController {
     this.engine?.changeInstanceType(sketchId, colIdx, chainIdx, newModuleType);
   }
 
+  /**
+   * Cancel a continuous effect type change — reverts the preview to the
+   * effect's original type and re-pushes that to the engine. (The preview
+   * drove the engine live via `changeInstanceType`; reverting the observable
+   * isn't enough, the engine has to be told to swap back.)
+   */
+  cancelChangeEffectType(edit: LongEdit) {
+    edit.cancel();
+    this.syncSketchesToEngine();
+  }
+
+  /** Recipe for inserting a new effect (shared by the insert long edit). */
+  private insertEffectRecipe(sketchId: string, insertIdx: number, moduleType: string, instanceKey: string) {
+    return (draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      ensureChain(sk).splice(insertIdx, 0, {
+        type: 'module',
+        module_type: moduleType,
+        instance_key: instanceKey,
+      });
+      sk.instances = sk.instances ?? {};
+      sk.instances[instanceKey] = { module_type: moduleType, state: this.initialStateForModule(moduleType) };
+    };
+  }
+
+  /**
+   * Begin inserting a new effect as a *continuous* edit. The placeholder is
+   * previewed live (engine renders it), but only becomes a real undo point on
+   * `accept()`; `cancelInsertEffect()` removes it entirely and leaves no
+   * history. This makes the whole "insert, then pick a type" flow a single
+   * undoable action that vanishes cleanly if the user backs out.
+   * `colIdx` is accepted for call-site symmetry; the chain is per-sketch.
+   */
+  beginInsertEffect(sketchId: string, _colIdx: number, insertIdx: number, moduleType: string): { edit: LongEdit; instanceKey: string } {
+    const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
+    const edit = this.history.beginLongEdit(
+      `Add ${shortName(moduleType)}`,
+      this.insertEffectRecipe(sketchId, insertIdx, moduleType, instanceKey),
+    );
+    this.syncSketchesToEngine();
+    return { edit, instanceKey };
+  }
+
+  /** Update the previewed type of an in-progress effect insertion (no undo point). */
+  updateInsertEffect(edit: LongEdit, sketchId: string, _colIdx: number, insertIdx: number, instanceKey: string, newModuleType: string) {
+    edit._setDescription(`Add ${shortName(newModuleType)}`);
+    edit.update(this.insertEffectRecipe(sketchId, insertIdx, newModuleType, instanceKey));
+    this.syncSketchesToEngine();
+  }
+
+  /** Cancel an in-progress insertion — removes the placeholder, no undo point. */
+  cancelInsertEffect(edit: LongEdit) {
+    edit.cancel();
+    this.syncSketchesToEngine();
+  }
+
   removeEffectFromChain(sketchId: string, colIdx: number, chainIdx: number) {
     this.mutate('Remove effect', draft => {
       const sk = draft.sketches[sketchId];

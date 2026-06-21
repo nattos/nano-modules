@@ -58,6 +58,8 @@ export class LongEdit {
   _getRecipe() { return this.recipe; }
   /** @internal */
   _getDescription() { return this.description; }
+  /** @internal Update the undo-history label (e.g. as the previewed type changes). */
+  _setDescription(description: string) { this.description = description; }
 }
 
 /**

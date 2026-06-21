@@ -173,6 +173,12 @@ export class ColumnGroup extends MobxLitElement {
   private editingTypeChainIdx = -1;
   /** The active LongEdit for type preview (null when not previewing). */
   private typeLongEdit: LongEdit | null = null;
+  /**
+   * Set while the open type editor is choosing the type for a *freshly inserted*
+   * placeholder effect (vs. retyping an existing one). The whole insertion rides
+   * `typeLongEdit` so it commits as one undo point and disappears on cancel.
+   */
+  private insertCtx: { instanceKey: string; insertIdx: number } | null = null;
 
   static styles = css`
     :host {
@@ -926,7 +932,7 @@ export class ColumnGroup extends MobxLitElement {
               ${isEditingType ? html`
                 <smart-input
                   .effects=${appState.local.availableEffects}
-                  .initialValue=${shortName(entry.module_type)}
+                  .initialValue=${this.insertCtx ? '' : shortName(entry.module_type)}
                   .autoSelect=${true}
                   @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
                   @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
@@ -987,7 +993,13 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   private handleTypePreview(chainIdx: number, effectId: string) {
-    if (!this.typeLongEdit) {
+    if (this.insertCtx) {
+      // Insertion: the long edit already exists (it added the placeholder) —
+      // just re-point it at the previewed type.
+      appController.updateInsertEffect(
+        this.typeLongEdit!, this.sketchId, this.colIdx, this.insertCtx.insertIdx,
+        this.insertCtx.instanceKey, effectId);
+    } else if (!this.typeLongEdit) {
       this.typeLongEdit = appController.beginChangeEffectType(
         this.sketchId, this.colIdx, chainIdx, effectId);
     } else {
@@ -997,42 +1009,60 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   private handleTypeCommit(chainIdx: number, effectId: string) {
-    if (this.typeLongEdit) {
+    if (this.insertCtx) {
+      // Commit the insertion at the chosen type → one "Add <type>" undo point.
+      appController.updateInsertEffect(
+        this.typeLongEdit!, this.sketchId, this.colIdx, this.insertCtx.insertIdx,
+        this.insertCtx.instanceKey, effectId);
+      this.typeLongEdit!.accept();
+    } else if (this.typeLongEdit) {
       // Update to final value, then accept (creates single undo point)
       appController.updateChangeEffectType(
         this.typeLongEdit, this.sketchId, this.colIdx, chainIdx, effectId);
       this.typeLongEdit.accept();
-      this.typeLongEdit = null;
     } else {
       // No preview happened — direct change
       appController.changeEffectType(this.sketchId, this.colIdx, chainIdx, effectId);
     }
-    this.editingTypeChainIdx = -1;
-    this.requestUpdate();
-  }
-
-  private handleTypeCancel() {
-    if (this.typeLongEdit) {
-      this.typeLongEdit.cancel();
-      this.typeLongEdit = null;
-    }
-    this.editingTypeChainIdx = -1;
-    this.requestUpdate();
+    this.endTypeEdit();
   }
 
   /**
-   * User cleared the type text field and accepted — interpret as "delete this effect".
-   * Any in-progress type preview is cancelled first so we don't leave a preview in the
-   * undo stack.
+   * Escape or click-away. For a fresh insertion this backs out entirely
+   * (the placeholder is removed, no undo point); for an existing effect it
+   * reverts to the original type.
+   */
+  private handleTypeCancel() {
+    if (this.insertCtx && this.typeLongEdit) {
+      appController.cancelInsertEffect(this.typeLongEdit);
+    } else if (this.typeLongEdit) {
+      appController.cancelChangeEffectType(this.typeLongEdit);
+    }
+    this.endTypeEdit();
+  }
+
+  /**
+   * User expressly committed empty text (Enter/Tab on a blank field).
+   * For a fresh insertion this is the same as cancelling — back out, no undo
+   * point. For an existing effect it means "delete this effect" (its own undo
+   * point); any in-progress type preview is reverted first.
    */
   private handleTypeDeleteRequest(chainIdx: number) {
-    if (this.typeLongEdit) {
-      this.typeLongEdit.cancel();
-      this.typeLongEdit = null;
+    if (this.insertCtx && this.typeLongEdit) {
+      appController.cancelInsertEffect(this.typeLongEdit);
+    } else {
+      if (this.typeLongEdit) this.typeLongEdit.cancel();
+      appController.select(null);
+      appController.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx);
     }
+    this.endTypeEdit();
+  }
+
+  /** Tear down the type-editing session state and re-render. */
+  private endTypeEdit() {
+    this.typeLongEdit = null;
+    this.insertCtx = null;
     this.editingTypeChainIdx = -1;
-    appController.select(null);
-    appController.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx);
     this.requestUpdate();
   }
 
@@ -1645,15 +1675,21 @@ export class ColumnGroup extends MobxLitElement {
     `;
   }
 
-  /** Insert a placeholder effect and immediately open smart-input to choose the type. */
+  /**
+   * Insert a placeholder effect and immediately open smart-input to choose its
+   * type. The insertion is a single continuous edit (see `beginInsertEffect`):
+   * it commits as one "Add <type>" undo point only if the user picks a type,
+   * and is removed with no history if they cancel / click away / leave it blank.
+   * The smart-input opens *empty* (not pre-filled), but the placeholder
+   * brightness_contrast keeps the card populated while they choose.
+   */
   private addEffectAndBeginEdit(insertIdx: number) {
-    appController.addEffectToChain(this.sketchId, this.colIdx, insertIdx, 'color.tone.brightness_contrast');
-    // The new entry is at insertIdx in the chain. Open the type editor for it.
-    // Use requestUpdate + microtask to ensure the DOM has rendered the new card.
+    const { edit, instanceKey } = appController.beginInsertEffect(
+      this.sketchId, this.colIdx, insertIdx, 'color.tone.brightness_contrast');
+    this.typeLongEdit = edit;
+    this.insertCtx = { instanceKey, insertIdx };
+    this.editingTypeChainIdx = insertIdx;
     this.requestUpdate();
-    requestAnimationFrame(() => {
-      this.beginEditType(insertIdx);
-    });
   }
 
   /** Register a tab (insert hotspot) as a selectable. */
@@ -2041,12 +2077,12 @@ export class ColumnGroup extends MobxLitElement {
       if (path === 'envelopeEnabled') {
         // Toggle on → seed the identity curve [0,0,0, 1,1,0] (passthrough);
         // off → drop the array. Matches remap's enable-seeds-default pattern.
-        return { mod: { ...mod, envelope: v ? (mod.shaper.envelope ?? [0, 0, 0, 1, 1, 0]) : undefined } };
+        return { mod: { ...mod, envelope: v ? (mod.envelope ?? [0, 0, 0, 1, 1, 0]) : undefined } };
       }
       if (path === 'remapEnabled') {
-        return { mod: { ...mod, remap: v ? (mod.shaper.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
+        return { mod: { ...mod, remap: v ? (mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 }) : undefined } };
       }
-      const remap = mod.shaper.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
+      const remap = mod.remap ?? { inMin: 0, inMax: 1, outMin: 0, outMax: 1 };
       const key = path.slice(6);
       // field-toggle writes 0/1 for saturate; everything else is the typed value.
       const val = key === 'saturate' ? !!v : v;

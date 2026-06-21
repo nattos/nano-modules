@@ -5,10 +5,15 @@
  * as the user types, shows a dropdown via CodeMirror autocompletion, and
  * dispatches preview/commit/cancel events.
  *
- * Events:
- *   preview  — detail: effectId (string) — fired on each keystroke with the top match
- *   commit   — detail: effectId (string) — fired on Enter/Tab/blur with the final selection
- *   cancel   — fired on Escape
+ * Events (exactly one terminal event — commit / delete-request / cancel — fires
+ * per session):
+ *   preview        — detail: effectId (string) — each keystroke, with the top match
+ *   commit         — detail: effectId (string) — Enter/Tab (or clicking an option)
+ *                    with a non-empty selection
+ *   delete-request — Enter/Tab on an empty / whitespace-only field (express
+ *                    commit of "nothing")
+ *   cancel         — Escape, OR blur / clicking away (click-away is a cancel,
+ *                    never a commit)
  */
 
 import { LitElement, html, css } from 'lit';
@@ -79,6 +84,9 @@ export class SmartInput extends LitElement {
 
   private editorView?: EditorView;
   private lastPreviewedId: string | null = null;
+  /** Set once a terminal event (commit/delete/cancel) has fired — guards against
+   *  a second one racing in (e.g. the delayed blur handler after an option click). */
+  private finished = false;
 
   static styles = css`
     :host {
@@ -187,18 +195,17 @@ export class SmartInput extends LitElement {
         {
           key: 'Tab',
           run: (view) => {
-            // Empty text + accept means "delete this effect" — check this
-            // BEFORE acceptCompletion, otherwise the open autocomplete dropdown
-            // (showing all effects when query is empty) would swallow Tab and
-            // pick a namespace/effect instead of routing to delete-request.
+            // Empty/whitespace text + accept means "express commit of nothing" —
+            // check this BEFORE acceptCompletion, otherwise the open autocomplete
+            // dropdown (showing all effects when the query is empty) would swallow
+            // Tab and pick a namespace/effect instead of routing to delete-request.
             const val = view.state.doc.toString();
-            if (val.length === 0) {
-              closeCompletion(view);
-              self.dispatchEvent(new CustomEvent('delete-request'));
+            if (val.trim().length === 0) {
+              self.emitDelete();
               return true;
             }
             if (acceptCompletion(view)) return true;
-            self.dispatchCommit(val);
+            self.emitCommit(val);
             return true;
           },
         },
@@ -206,20 +213,19 @@ export class SmartInput extends LitElement {
           key: 'Enter',
           run: (view) => {
             const val = view.state.doc.toString();
-            if (val.length === 0) {
-              closeCompletion(view);
-              self.dispatchEvent(new CustomEvent('delete-request'));
+            if (val.trim().length === 0) {
+              self.emitDelete();
               return true;
             }
             if (acceptCompletion(view)) return true;
-            self.dispatchCommit(val);
+            self.emitCommit(val);
             return true;
           },
         },
         {
           key: 'Escape',
           run: () => {
-            self.dispatchEvent(new CustomEvent('cancel'));
+            self.emitCancel();
             return true;
           },
         },
@@ -237,10 +243,10 @@ export class SmartInput extends LitElement {
 
         const value = update.state.doc.toString();
 
-        // An explicitly emptied input means the user is asking to delete the
-        // effect on commit — clear the pending preview so dispatchCommit can
-        // route into the delete path rather than falling back to a guess.
-        if (value.length === 0) {
+        // An emptied (or whitespace-only) input means the user is asking to
+        // commit "nothing" — clear the pending preview so the express-commit
+        // path routes into delete rather than falling back to a stale guess.
+        if (value.trim().length === 0) {
           self.lastPreviewedId = null;
           startCompletion(self.editorView!);
           return;
@@ -295,12 +301,13 @@ export class SmartInput extends LitElement {
       }
     }
 
-    // Commit on blur
+    // Click-away is a cancel (never a commit). Delay so that clicking an
+    // autocomplete option resolves first — that fires commit and sets
+    // `finished`, which makes this a no-op.
     this.editorView.contentDOM.addEventListener('blur', () => {
-      // Delay so autocomplete clicks resolve first
       setTimeout(() => {
-        if (!this.isConnected) return;
-        this.dispatchCommit(this.editorView!.state.doc.toString());
+        if (!this.isConnected || this.finished) return;
+        this.emitCancel();
       }, 150);
     });
   }
@@ -390,7 +397,7 @@ export class SmartInput extends LitElement {
       options.push({
         label: effect.name,
         detail: effect.id,
-        apply: () => { this.dispatchCommit(effect.id, true); },
+        apply: () => { this.emitCommit(effect.id, true); },
         boost: effects.length - i,
       });
     }
@@ -402,28 +409,42 @@ export class SmartInput extends LitElement {
     return { from: 0, options, filter: false };
   }
 
-  private dispatchCommit(value: string, explicit = false) {
-    if (this.editorView) {
-      closeCompletion(this.editorView);
-    }
+  /** Express commit (Enter/Tab without an accepted option, or an option click). */
+  private emitCommit(value: string, explicit = false) {
+    if (this.finished) return;
 
     if (!explicit) {
-      // Implicit commit (Enter without accepting, blur). Use last valid
-      // preview if we have one. Falling back to initialValue is unsafe —
-      // it's the human-readable short name, but the consumer
-      // (changeEffectType) needs a full effect id; an unresolved short name
-      // ends up baked into the chain entry as an invalid module_type.
-      // If we have nothing valid, treat it as a cancel so the chain is left
-      // unchanged.
+      // Keyboard commit without accepting a dropdown row. Resolve to the last
+      // valid preview — the typed text is a human-readable short name, but the
+      // consumer needs a full effect id, so an unresolved name must NOT be
+      // baked in. With nothing valid, fall back to a cancel.
       if (this.lastPreviewedId) {
         value = this.lastPreviewedId;
       } else {
-        this.dispatchEvent(new CustomEvent('cancel'));
+        this.emitCancel();
         return;
       }
     }
 
+    this.finished = true;
+    if (this.editorView) closeCompletion(this.editorView);
     this.dispatchEvent(new CustomEvent('commit', { detail: value }));
+  }
+
+  /** Express commit of an empty field — the consumer decides delete vs. back-out. */
+  private emitDelete() {
+    if (this.finished) return;
+    this.finished = true;
+    if (this.editorView) closeCompletion(this.editorView);
+    this.dispatchEvent(new CustomEvent('delete-request'));
+  }
+
+  /** Escape or click-away — abandon the edit. */
+  private emitCancel() {
+    if (this.finished) return;
+    this.finished = true;
+    if (this.editorView) closeCompletion(this.editorView);
+    this.dispatchEvent(new CustomEvent('cancel'));
   }
 
   render() {
