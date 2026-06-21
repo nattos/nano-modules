@@ -63,7 +63,16 @@ export class TextureMonitor extends MobxLitElement {
     :host([fit]) canvas {
       width: 100%;
       height: 100%;
-      object-fit: contain;
+      /* "fill", not "contain": the parent already sizes the host to the exact
+         contain-fit box of the (fixed-aspect) capture, so the canvas and its
+         bitmap share an aspect ratio. The only deviation is the parent's
+         independent integer-flooring of width vs height — with "contain" that
+         sub-pixel gap letterboxes the bitmap and exposes the canvas's own
+         checkerboard background as a 1px sliver at certain widths. "fill"
+         absorbs that sub-pixel difference (invisible) and removes the sliver;
+         genuinely transparent pixels still reveal the checkerboard within the
+         image, since the drawing buffer keeps its alpha either way. */
+      object-fit: fill;
     }
     /* Photoshop-style transparency checkerboard. The canvas is drawn
        with alpha (default 2d context), so transparent pixels in the
