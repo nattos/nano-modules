@@ -333,6 +333,70 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
   CHECK(earlyMean < lateMean - 10.0);
 }
 
+// Disabling an effect makes it INVISIBLE to modulation auto-connect: a
+// downstream shaper skips a bypassed shaper and re-routes to the nearest
+// ENABLED producer above it. chain: lfo(out 0.5) -> mid(smooth, out 0.9) ->
+// tail(remap). The tail's input auto-connects to its nearest enabled producer;
+// probe it via lastModulationData (same mechanism as the chaining test above).
+//   - mid enabled : tail.input = mid.output (0.9).
+//   - mid disabled: tail skips mid, connects to lfo → tail.input = lfo.output (0.5).
+// Only __bypass__ on mid differs, so the 0.9 -> 0.5 flip isolates the re-route.
+TEST_CASE("disabled shaper is skipped by modulation auto-connect", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  auto buildSketch = [](bool midBypassed) {
+    nlohmann::json midState = {{"output", 0.9}};
+    if (midBypassed) midState["__bypass__"] = true;
+    return nlohmann::json{
+      {"chain", nlohmann::json::array({
+        {{"module_type", "source.solid_color"}, {"instance_key", "src"}, {"params", {{"color", {1.0, 1.0, 1.0}}}}},
+        {{"module_type", "mod.source.lfo"},     {"instance_key", "lfo"}, {"params", {{"rate", 0.0}, {"amplitude", 1.0}}}},
+        {{"module_type", "mod.shaper.smooth"},  {"instance_key", "mid"}, {"params", nlohmann::json::object()}},
+        {{"module_type", "mod.shaper.remap"},   {"instance_key", "tail"},{"params", nlohmann::json::object()}},
+      })},
+      {"instances", {
+        {"lfo", {{"module_type", "mod.source.lfo"},    {"state", {{"output", 0.5}}}}},
+        {"mid", {{"module_type", "mod.shaper.smooth"}, {"state", midState}}},
+      }},
+    };
+  };
+
+  auto tailInput = [&](bool midBypassed) {
+    auto sketch = buildSketch(midBypassed);
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, /*sketchDirty=*/true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("tail"));
+    REQUIRE(md["tail"].contains("input"));
+    return md["tail"]["input"]["value"].get<double>();
+  };
+
+  // mid enabled: tail auto-connects to mid (its output, 0.9).
+  CHECK(tailInput(false) == Catch::Approx(0.9).margin(0.02));
+  // mid disabled: tail skips it and re-routes to lfo (its output, 0.5).
+  CHECK(tailInput(true) == Catch::Approx(0.5).margin(0.02));
+}
+
 // Plan-rebuild gating (#105): on a dirty frame the executor rebuilds its
 // structural plan ONLY when the chain topology actually changed, not on every
 // param edit. A continuous slider/knob drag sets the coarse value-dirty flag

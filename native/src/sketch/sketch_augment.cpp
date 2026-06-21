@@ -162,6 +162,25 @@ void augmentColumn(json& sketch, int colIdx,
   if (!column.contains("chain") || !column["chain"].is_array()) return;
   auto& chain = column["chain"];
 
+  // A disabled (bypassed) instance is invisible to implicit struct rails: it
+  // neither consumes a rail nor acts as a producer, so the rail re-routes to
+  // the nearest ENABLED compatible producer (matching the runtime, where a
+  // bypassed module passes its input straight through).
+  auto isBypassed = [&sketch](const json& entry) -> bool {
+    if (!sketch.contains("instances") || !sketch["instances"].is_object()) return false;
+    const std::string key = entry.value("instance_key", std::string());
+    if (key.empty()) return false;
+    auto iit = sketch["instances"].find(key);
+    if (iit == sketch["instances"].end()) return false;
+    auto sit = iit->find("state");
+    if (sit == iit->end() || !sit->is_object()) return false;
+    auto bit = sit->find("__bypass__");
+    if (bit == sit->end()) return false;
+    if (bit->is_boolean()) return bit->get<bool>();
+    if (bit->is_number())  return bit->get<double>() != 0.0;
+    return false;
+  };
+
   // Deterministic implicit-rail IDs — repeated augmentations of the
   // same input produce identical output.
   auto implicitRailId = [colIdx](int producerChainIdx,
@@ -203,6 +222,7 @@ void augmentColumn(json& sketch, int colIdx,
   for (size_t i = 0; i < chain.size(); ++i) {
     auto& entry = chain[i];
     if (!entry.is_object() || entry.value("type", std::string()) != "module") continue;
+    if (isBypassed(entry)) continue;   // disabled consumer takes no implicit rail
     const std::string moduleType = entry.value("module_type", std::string());
     auto schemaIt = schemas.find(moduleType);
     if (schemaIt == schemas.end()) continue;
@@ -236,6 +256,7 @@ void augmentColumn(json& sketch, int colIdx,
       for (int j = static_cast<int>(i) - 1; j >= 0 && producerChainIdx < 0; --j) {
         const auto& pe = chain[j];
         if (!pe.is_object() || pe.value("type", std::string()) != "module") continue;
+        if (isBypassed(pe)) continue;   // see through disabled producers
         const std::string pmt = pe.value("module_type", std::string());
         auto pschemaIt = schemas.find(pmt);
         if (pschemaIt == schemas.end()) continue;

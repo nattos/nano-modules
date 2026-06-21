@@ -621,18 +621,30 @@ int32_t SketchExecutor::execute(
       return primary.empty() ? any : primary;
     };
     {
+      // Disabled (bypassed) instances are invisible to modulation auto-connect:
+      // they get no wire of their own, and neighbours connect THROUGH them (the
+      // predecessor scan skips them), so toggling an effect off re-routes the
+      // mod chain around it.
+      const json& modInstances = refOr(rawSketch, "instances", kEmptyObj, false);
       for (size_t i = 0; i < chain.size(); ++i) {
         if (!chain[i].is_object() || !chain[i].contains("instance_key")) continue;
+        if (readBypass(modInstances, chain[i].value("instance_key", std::string())))
+          continue;  // a disabled shaper takes no auto-connect
         const RegisteredModule* sreg =
             findSchema(chain[i].value("module_type", std::string()));
         if (!hasCap(sreg, "modulation_shaper")) continue;
         const std::string inField = modChannel(sreg, 1);   // Input bit
         if (inField.empty()) continue;
-        // Nearest module entry above (the "directly after" relation).
+        // Nearest ENABLED module entry above (the "directly after" relation,
+        // seeing through disabled instances).
         int p = -1;
         for (int j = static_cast<int>(i) - 1; j >= 0; --j) {
           if (chain[j].is_object() && chain[j].contains("module_type") &&
-              chain[j].contains("instance_key")) { p = j; break; }
+              chain[j].contains("instance_key")) {
+            if (readBypass(modInstances, chain[j].value("instance_key", std::string())))
+              continue;  // skip disabled producers
+            p = j; break;
+          }
         }
         if (p < 0) continue;
         const RegisteredModule* greg =
