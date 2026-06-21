@@ -115,8 +115,8 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
     .group-label { font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding-bottom: 2px; }
     .pad {
       position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 2px 0 6px;
-      border: 1px solid var(--app-border-color, #3a3346); border-radius: 4px;
-      background-color: #0b0b12; overflow: hidden;
+      border: 1px solid var(--app-border-color, #3a3346); border-radius: 1px;
+      background-color: var(--app-bg-color1); overflow: hidden;
       cursor: crosshair; touch-action: none; user-select: none;
     }
     canvas.layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: block; }
@@ -125,7 +125,7 @@ export class SpectralLfoXyPad extends MobxLitElement implements FieldEditorEleme
       border: 2px solid #fff; box-shadow: 0 0 0 1px #000, 0 0 6px #000;
       transform: translate(-50%, -50%); pointer-events: none; left: 50%; top: 50%;
     }
-    .pad-caption { text-align: center; font-size: 9px; color: var(--app-text-color2, #8a8296); margin: -4px 0 2px; }
+    .pad-caption { text-align: center; font-size: 9px; color: var(--app-text-color2, #b0b0b0); margin: -4px 0 2px; }
   `;
 
   connectedCallback() {
@@ -337,7 +337,7 @@ export class SpectralLfoPreview extends MobxLitElement {
   static styles = css`
     :host { display: block; }
     .group-label { font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding: 2px 0; }
-    canvas { width: 100%; aspect-ratio: 3 / 1; display: block; border-radius: 4px;
+    canvas { width: 100%; aspect-ratio: 3 / 1; display: block; border-radius: 1px;
              border: 1px solid var(--app-border-color, #3a3346); }
   `;
 
@@ -384,7 +384,7 @@ export class SpectralLfoPreview extends MobxLitElement {
     const px = (i: number, n: number) => (i / (n - 1)) * w;
     const py = (v: number) => pad + (1 - clamp01(v)) * (h - 2 * pad);
 
-    ctx.fillStyle = '#111122'; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#121418'; ctx.fillRect(0, 0, w, h);
     ctx.strokeStyle = 'rgba(110,110,170,0.18)'; ctx.lineWidth = Math.max(0.5, dpr * 0.5);
     for (let i = 0; i <= 4; i++) {
       const gy = (i / 4) * h, gx = (i / 4) * w;

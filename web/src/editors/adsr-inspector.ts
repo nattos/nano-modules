@@ -167,7 +167,7 @@ export class AdsrGraph extends MobxLitElement {
     canvas {
       width: 100%; height: 140px; display: block;
       background: rgba(0,0,0,0.25);
-      border: 1px solid var(--app-border-color, #3a3346); border-radius: 4px;
+      border: 1px solid var(--app-border-color, #3a3346); border-radius: 1px;
       touch-action: none; user-select: none; cursor: crosshair;
     }
   `;
@@ -303,7 +303,7 @@ export class AdsrGraph extends MobxLitElement {
     ctx.scale(dpr, dpr);
     const { w: cw, h: ch } = this.dims();
     ctx.clearRect(0, 0, cw, ch);
-    const accent = getComputedStyle(this).getPropertyValue('--app-accent-color').trim() || '#ff7847';
+    const accent = getComputedStyle(this).getPropertyValue('--app-hi-color1').trim() || '#ff4500';
 
     // Grid.
     ctx.strokeStyle = 'rgba(255,255,255,0.07)';
@@ -382,7 +382,7 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
     :host { display: block; }
     .label { font-size: 10px; color: var(--app-text-color2, #b0b0b0); padding: 2px 0; }
     .hint {
-      font-size: 9px; color: var(--app-text-color2, #8a8296); opacity: 0.7;
+      font-size: 9px; color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
       padding: 4px 0 6px; line-height: 1.4;
     }
     .section {

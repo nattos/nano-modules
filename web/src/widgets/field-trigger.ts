@@ -48,7 +48,7 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
       color: var(--app-text-color1, #eaeaea);
       font-size: 9px;
       padding: 3px 6px;
-      border-radius: 3px;
+      border-radius: 1px;
       cursor: pointer;
       font-family: inherit;
       text-align: center;

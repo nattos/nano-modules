@@ -36,7 +36,7 @@ export class OrganizeTab extends MobxLitElement {
       padding: 10px 12px;
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 4px;
+      border-radius: 1px;
       cursor: pointer;
     }
     .sketch-card:hover { border-color: rgba(255,255,255,0.15); }
@@ -57,7 +57,7 @@ export class OrganizeTab extends MobxLitElement {
       border: 1px solid rgba(255,255,255,0.12);
       color: var(--app-text-color1);
       font-size: 10px; padding: 6px;
-      border-radius: 3px; cursor: pointer;
+      border-radius: 1px; cursor: pointer;
       font-family: inherit; width: 100%; text-align: center;
     }
     .btn:hover { background: rgba(255,255,255,0.15); }

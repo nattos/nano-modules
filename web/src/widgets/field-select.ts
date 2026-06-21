@@ -66,7 +66,7 @@ export class FieldSelect extends MobxLitElement implements FieldEditorElement {
       background: rgba(0, 0, 0, 0.3);
       border: 1px solid rgba(255, 255, 255, 0.12);
       color: var(--app-text-color1, #eaeaea);
-      border-radius: 2px;
+      border-radius: 1px;
       padding: 2px 4px;
       font-size: 10px;
       font-family: inherit;

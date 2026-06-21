@@ -56,7 +56,7 @@ export class FieldPlaceholder extends MobxLitElement implements FieldEditorEleme
       gap: 4px;
       padding: 2px 6px;
       border: 1px dashed rgba(255, 255, 255, 0.18);
-      border-radius: 3px;
+      border-radius: 1px;
       background: rgba(180, 180, 180, 0.14);
       color: var(--app-text-color2, #b0b0b0);
       font-size: 9px;

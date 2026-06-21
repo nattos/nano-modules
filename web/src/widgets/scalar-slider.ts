@@ -121,7 +121,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       cursor: ew-resize;
       background: rgba(0, 0, 0, 0.2);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 2px;
+      border-radius: 1px;
       overflow: hidden;
     }
     .control:hover {

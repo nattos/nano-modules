@@ -67,7 +67,7 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       flex: 1;
       min-width: 0;
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 2px;
+      border-radius: 1px;
       overflow: hidden;
     }
     button {

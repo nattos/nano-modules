@@ -63,7 +63,7 @@ export class EffectIdeApp extends MobxLitElement {
     .placeholder code {
       background: var(--app-bg-color1);
       padding: 1px 6px;
-      border-radius: 3px;
+      border-radius: 1px;
     }
     .status-strip {
       padding: 6px 16px;

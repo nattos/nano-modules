@@ -46,7 +46,7 @@ export class ParamLinkerEditor extends MobxLitElement {
       flex: 1;
       padding: 6px 12px;
       border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 4px;
+      border-radius: 1px;
       background: rgba(255,255,255,0.05);
       color: #eaeaea;
       font-family: inherit;
@@ -72,7 +72,7 @@ export class ParamLinkerEditor extends MobxLitElement {
       gap: 4px;
       padding: 6px 8px;
       background: rgba(0,0,0,0.2);
-      border-radius: 4px;
+      border-radius: 1px;
       margin-bottom: 8px;
     }
     .assignment-row {
@@ -85,8 +85,8 @@ export class ParamLinkerEditor extends MobxLitElement {
       font-weight: bold;
       min-width: 30px;
     }
-    .assignment-label.input { color: #4dc9f6; }
-    .assignment-label.output { color: #ff8c00; }
+    .assignment-label.input { color: var(--app-io-input); }
+    .assignment-label.output { color: var(--app-io-output); }
     .assignment-path {
       font-size: 11px;
       color: #b0b0b0;
@@ -106,7 +106,7 @@ export class ParamLinkerEditor extends MobxLitElement {
       align-items: center;
       gap: 6px;
       padding: 4px 6px;
-      border-radius: 3px;
+      border-radius: 1px;
       cursor: default;
     }
     .param-item:hover { background: rgba(255,255,255,0.04); }
@@ -135,7 +135,7 @@ export class ParamLinkerEditor extends MobxLitElement {
     .assign-btn {
       padding: 2px 6px;
       border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 2px;
+      border-radius: 1px;
       background: rgba(255,255,255,0.04);
       color: #b0b0b0;
       font-family: inherit;
@@ -143,17 +143,17 @@ export class ParamLinkerEditor extends MobxLitElement {
       cursor: pointer;
     }
     .assign-btn:hover { background: rgba(255,255,255,0.1); color: #eaeaea; }
-    .assign-btn.in-btn:hover { color: #4dc9f6; border-color: #4dc9f6; }
-    .assign-btn.out-btn:hover { color: #ff8c00; border-color: #ff8c00; }
+    .assign-btn.in-btn:hover { color: var(--app-io-input); border-color: var(--app-io-input); }
+    .assign-btn.out-btn:hover { color: var(--app-io-output); border-color: var(--app-io-output); }
 
     .badge {
       font-size: 9px;
       padding: 1px 4px;
-      border-radius: 2px;
+      border-radius: 1px;
       flex-shrink: 0;
     }
-    .badge-input { background: rgba(77,201,246,0.2); color: #4dc9f6; }
-    .badge-output { background: rgba(255,140,0,0.2); color: #ff8c00; }
+    .badge-input { background: rgba(77,201,246,0.2); color: var(--app-io-input); }
+    .badge-output { background: rgba(255,140,0,0.2); color: var(--app-io-output); }
     .badge-ignored { background: rgba(255,255,255,0.05); color: #555; }
   `;
 
@@ -242,8 +242,8 @@ export class ParamLinkerEditor extends MobxLitElement {
             const isOutput = p.id === outputId;
             let barColor = 'rgba(255,255,255,0.15)';
             let textColor = '#b0b0b0';
-            if (isInput) { barColor = '#4dc9f6'; textColor = '#4dc9f6'; }
-            else if (isOutput) { barColor = '#ff8c00'; textColor = '#ff8c00'; }
+            if (isInput) { barColor = 'var(--app-io-input)'; textColor = 'var(--app-io-input)'; }
+            else if (isOutput) { barColor = 'var(--app-io-output)'; textColor = 'var(--app-io-output)'; }
             else if (p.ignored) { barColor = 'rgba(255,255,255,0.06)'; textColor = '#444'; }
 
             return html`

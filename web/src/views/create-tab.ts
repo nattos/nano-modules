@@ -51,7 +51,7 @@ export class CreateTab extends MobxLitElement {
       padding: 8px 12px;
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 4px;
+      border-radius: 1px;
     }
     .plugin-card-info { flex: 1; min-width: 0; }
     .plugin-card-name { font-size: 12px; color: var(--app-text-color1); }
@@ -66,7 +66,7 @@ export class CreateTab extends MobxLitElement {
       padding: 6px 8px;
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 4px;
+      border-radius: 1px;
       font-size: 11px;
     }
     .instance-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -76,7 +76,7 @@ export class CreateTab extends MobxLitElement {
       border: 1px solid rgba(255,255,255,0.12);
       color: var(--app-text-color1);
       font-size: 10px; padding: 2px 8px;
-      border-radius: 3px; cursor: pointer;
+      border-radius: 1px; cursor: pointer;
       font-family: inherit; flex-shrink: 0;
     }
     .btn:hover { background: rgba(255,255,255,0.15); }
@@ -86,7 +86,7 @@ export class CreateTab extends MobxLitElement {
       border: 1px solid rgba(255,255,255,0.12);
       color: var(--app-text-color2);
       font-size: 9px; padding: 2px 6px;
-      border-radius: 3px; cursor: pointer;
+      border-radius: 1px; cursor: pointer;
       font-family: inherit; text-transform: uppercase;
     }
     .toggle-btn[active] {

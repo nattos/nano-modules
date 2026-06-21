@@ -1,15 +1,26 @@
 :root {
-  --app-color1: #FFFACD;
-  --app-color2: #D87093;
-  --app-color3: #444444;
-  --app-hi-color1: #ff4500;
-  --app-hi-color2: #4169E1;
-  --app-hi-color3: #FF8C00;
-  --app-hi-color4: #FFDA63;
-  --app-text-color1: #EAEAEA;
-  --app-text-color2: #B0B0B0;
-  --app-bg-color1: #121418;
-  --app-bg-color2: #1a1d24;
+  /* Surfaces */
+  --app-bg-color1: #121418;      /* app background */
+  --app-bg-color2: #1a1d24;      /* panels, cards, dropdowns, canvases */
+
+  /* Text */
+  --app-text-color1: #EAEAEA;    /* primary */
+  --app-text-color2: #B0B0B0;    /* secondary / labels */
+
+  /* Accents (semantic, not decorative) */
+  --app-hi-color1: #ff4500;      /* primary accent: output taps, alerts, learn/active */
+  --app-hi-color2: #4169E1;      /* secondary accent: selection, focus, input taps */
+  --app-hi-color3: #FF8C00;      /* tertiary: output indicators */
+  --app-hi-color4: #FFDA63;      /* data / JSON / code */
+
+  /* Status */
+  --app-ok: #6cc070;             /* success, device-on */
+  --app-warn: #d6a13c;           /* warning, tight headroom */
+  --app-error: #e06c6c;          /* error, over-budget */
+
+  /* Data-flow roles (parameter linker, IO badges) */
+  --app-io-input: #4dc9f6;       /* input / source */
+  --app-io-output: #ff8c00;      /* output / sink */
 
   /* Per-category (taxonomy domain) accents. Effect ids are dotted paths whose
    * first segment is the domain; each gets one muted hue. Applied only as small
@@ -63,7 +74,7 @@ body {
   color: var(--app-text-color2);
   background: rgba(0,0,0,0.5);
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: 1px;
   pointer-events: none;
 }
 
@@ -76,7 +87,7 @@ body {
   color: var(--app-text-color2);
   background: rgba(0,0,0,0.5);
   padding: 4px 12px;
-  border-radius: 4px;
+  border-radius: 1px;
   display: flex;
   gap: 12px;
   pointer-events: none;
@@ -144,7 +155,7 @@ body {
   color: var(--app-text-color1);
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: 3px;
+  border-radius: 1px;
   cursor: pointer;
   font-family: inherit;
 }
@@ -180,7 +191,7 @@ body {
   background: rgba(0,0,0,0.3);
   color: var(--app-hi-color4);
   border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 3px;
+  border-radius: 1px;
   font-family: inherit;
   font-size: 11px;
   padding: 6px;
@@ -213,7 +224,7 @@ body {
   color: var(--app-text-color1);
   font-size: 10px;
   padding: 3px 10px;
-  border-radius: 3px;
+  border-radius: 1px;
   cursor: pointer;
   font-family: inherit;
   width: 100%;
@@ -235,7 +246,7 @@ body {
   background: rgba(0,0,0,0.3);
   color: var(--app-text-color1);
   border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 3px;
+  border-radius: 1px;
   padding: 4px 6px;
   font-family: inherit;
   font-size: 11px;
@@ -358,7 +369,7 @@ body {
   width: 100%;
   aspect-ratio: 16/9;
   background: #000;
-  border-radius: 4px;
+  border-radius: 1px;
   display: block;
 }
 
@@ -377,7 +388,7 @@ body {
   padding: 8px 12px;
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 4px;
+  border-radius: 1px;
 }
 
 .plugin-card-info {
@@ -424,7 +435,7 @@ body {
   padding: 6px 8px;
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 4px;
+  border-radius: 1px;
   font-size: 11px;
 }
 
@@ -442,7 +453,7 @@ body {
   color: var(--app-text-color2);
   font-size: 9px;
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: 1px;
   cursor: pointer;
   font-family: inherit;
   text-transform: uppercase;
@@ -476,7 +487,7 @@ body {
   padding: 10px 12px;
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 4px;
+  border-radius: 1px;
   cursor: pointer;
 }
 .sketch-card:hover { border-color: rgba(255,255,255,0.15); }
@@ -514,7 +525,7 @@ body {
   padding: 6px 16px;
   background: rgba(255,255,255,0.03);
   border: 1px dashed rgba(255,255,255,0.12);
-  border-radius: 4px;
+  border-radius: 1px;
   text-align: center;
   width: 100%;
 }
@@ -532,7 +543,7 @@ body {
   font-size: 16px;
   width: 100%;
   padding: 4px;
-  border-radius: 4px;
+  border-radius: 1px;
   cursor: pointer;
   font-family: inherit;
   text-align: center;
@@ -549,7 +560,7 @@ body {
   padding: 10px 12px;
   background: rgba(255,255,255,0.05);
   border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 4px;
+  border-radius: 1px;
 }
 
 .effect-card-header {

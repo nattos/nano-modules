@@ -58,7 +58,7 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
       height: 18px;
       padding: 0;
       border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 2px;
+      border-radius: 1px;
       background: transparent;
       cursor: pointer;
       flex-shrink: 0;

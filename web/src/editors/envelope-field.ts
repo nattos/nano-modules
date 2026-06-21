@@ -43,7 +43,7 @@ export class EnvelopeFieldEditor extends MobxLitElement {
   static styles = css`
     :host { display: block; }
     .hint {
-      font-size: 9px; color: var(--app-text-color2, #8a8296); opacity: 0.7;
+      font-size: 9px; color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
       padding: 4px 0 2px; line-height: 1.4;
     }
   `;

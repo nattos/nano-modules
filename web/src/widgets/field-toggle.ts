@@ -57,7 +57,7 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
       color: var(--app-text-color2, #b0b0b0);
       font-size: 9px;
       padding: 3px 6px;
-      border-radius: 3px;
+      border-radius: 1px;
       cursor: pointer;
       font-family: inherit;
       text-align: center;

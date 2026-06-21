@@ -116,10 +116,10 @@ export class SmartInput extends LitElement {
 
     /* Autocomplete popup */
     .cm-tooltip {
-      background: var(--app-bg-color2, #1a1a2e) !important;
+      background: var(--app-bg-color2) !important;
       color: var(--app-text-color1, #e0e0e0) !important;
       border: 1px solid rgba(255,255,255,0.15) !important;
-      border-radius: 4px;
+      border-radius: 1px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     }
     .cm-tooltip-autocomplete {
@@ -198,7 +198,7 @@ export class SmartInput extends LitElement {
       '&.cm-focused .cm-cursor': { borderLeftColor: '#fff' },
       '&.cm-focused .cm-selectionBackground, ::selection': { backgroundColor: '#444' },
       '.cm-tooltip': {
-        backgroundColor: '#1a1a2e',
+        backgroundColor: '#1a1d24',
         color: '#eee',
         border: '1px solid rgba(255,255,255,0.15)',
         position: 'fixed',

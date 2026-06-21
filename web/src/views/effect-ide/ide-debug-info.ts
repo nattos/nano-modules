@@ -88,8 +88,8 @@ export class IdeDebugInfo extends MobxLitElement {
       gap: 8px;
       border-bottom: 1px solid rgba(255,255,255,0.03);
     }
-    .log-row[level="warn"] { color: #e0c060; }
-    .log-row[level="error"] { color: #e07060; }
+    .log-row[level="warn"] { color: var(--app-warn); }
+    .log-row[level="error"] { color: var(--app-error); }
     .log-time {
       color: var(--app-text-color2);
       font-variant-numeric: tabular-nums;
@@ -113,7 +113,7 @@ export class IdeDebugInfo extends MobxLitElement {
       color: var(--app-text-color2);
       font-size: 9px;
       padding: 2px 6px;
-      border-radius: 2px;
+      border-radius: 1px;
       cursor: pointer;
       text-transform: uppercase;
       letter-spacing: 0.05em;

@@ -226,7 +226,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     }
     .preview-area canvas {
       width: 100%; aspect-ratio: 16/9;
-      border-radius: 4px; display: block;
+      border-radius: 1px; display: block;
       /* Same Photoshop-style transparency checkerboard as
          <texture-monitor>. The preview texture often carries an alpha
          channel (eg generators like soft_glow output a glow over
@@ -248,7 +248,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       border: 1px solid rgba(255,255,255,0.12);
       color: var(--app-text-color1);
       font-size: 10px; padding: 2px 8px;
-      border-radius: 3px; cursor: pointer;
+      border-radius: 1px; cursor: pointer;
       font-family: inherit;
     }
     .btn:hover { background: rgba(255,255,255,0.15); }
@@ -276,7 +276,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       padding: 6px 8px;
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 4px;
+      border-radius: 1px;
       font-size: 11px;
       cursor: pointer;
     }
@@ -286,7 +286,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       padding: 6px 8px;
       background: rgba(255,255,255,0.05);
       border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 4px;
+      border-radius: 1px;
       font-size: 11px;
       margin-bottom: 4px;
     }
@@ -296,7 +296,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       border: 1px solid rgba(255,255,255,0.12);
       color: var(--app-text-color2);
       font-size: 9px; padding: 2px 6px;
-      border-radius: 3px; cursor: pointer;
+      border-radius: 1px; cursor: pointer;
       font-family: inherit; text-transform: uppercase;
     }
     .dir-btn[active] {

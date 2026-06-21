@@ -68,18 +68,18 @@ export class SketchApp extends MobxLitElement {
       font-variant-numeric: tabular-nums;
     }
     .tab-status .err {
-      color: #e06c6c;
+      color: var(--app-error);
     }
     /* GPU headroom colour ramp: comfortable / tight / over budget. */
-    .tab-status .headroom.ok { color: #6cc070; }
-    .tab-status .headroom.tight { color: #d6a13c; }
-    .tab-status .headroom.over { color: #e06c6c; }
+    .tab-status .headroom.ok { color: var(--app-ok); }
+    .tab-status .headroom.tight { color: var(--app-warn); }
+    .tab-status .headroom.over { color: var(--app-error); }
     .tab-status .target {
       font-size: 10px;
       color: var(--app-text-color2);
       background: var(--app-bg-color1);
       border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 3px;
+      border-radius: 1px;
       padding: 1px 2px;
       cursor: pointer;
     }

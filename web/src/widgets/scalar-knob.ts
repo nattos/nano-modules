@@ -85,7 +85,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
              white-space: nowrap; max-width: 44px; text-align: center; }
     .val { font-variant-numeric: tabular-nums; }
     input {
-      width: 40px; height: 14px; border: none; border-radius: 2px;
+      width: 40px; height: 14px; border: none; border-radius: 1px;
       background: rgba(0,0,0,0.7); color: var(--app-text-color1, #eaeaea);
       font-family: inherit; font-size: 9px; padding: 0 2px; margin: 0;
       outline: none; text-align: center;

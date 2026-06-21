@@ -63,7 +63,7 @@ export class ShapeFoldXyPad extends MobxLitElement implements FieldEditorElement
     }
     .pad {
       position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 2px 0 6px;
-      border: 1px solid var(--app-border-color, #3a3346); border-radius: 4px;
+      border: 1px solid var(--app-border-color, #3a3346); border-radius: 1px;
       background-image: var(--sf-backdrop, url(/images/shape-fold-backdrop.png));
       background-size: 100% 100%; background-position: center;
       cursor: crosshair; touch-action: none; user-select: none;
@@ -75,7 +75,7 @@ export class ShapeFoldXyPad extends MobxLitElement implements FieldEditorElement
     }
     .pad-labels {
       display: flex; justify-content: space-between; font-size: 9px;
-      color: var(--app-text-color2, #8a8296); margin: -4px 0 2px;
+      color: var(--app-text-color2, #b0b0b0); margin: -4px 0 2px;
     }
   `;
 

@@ -90,7 +90,7 @@ export class IdeExplorer extends MobxLitElement {
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      border-radius: 3px;
+      border-radius: 1px;
       opacity: 0;
       transition: opacity 0.15s, color 0.15s, background 0.15s;
       padding: 0;

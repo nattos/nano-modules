@@ -28,7 +28,7 @@ export class UiButton extends LitElement {
       background-color: var(--button-bg, rgba(255,255,255,0.08));
       color: var(--text-color, var(--app-text-color1, #eaeaea));
       border: 1px solid var(--border-color, rgba(255,255,255,0.12));
-      border-radius: 3px;
+      border-radius: 1px;
       padding: 6px 10px;
       cursor: pointer;
       display: flex;

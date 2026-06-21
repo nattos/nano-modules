@@ -132,8 +132,8 @@ export class TapsOverlay extends MobxLitElement {
       pointer-events: auto;
       width: 220px;
       max-height: 70vh; overflow-y: auto;
-      padding: 8px 10px; border-radius: 6px;
-      background: var(--app-bg-color2, #1e1e1e);
+      padding: 8px 10px; border-radius: 1px;
+      background: var(--app-bg-color2);
       border: 1px solid var(--app-hi-color2, #4169E1);
       box-shadow: 0 3px 12px rgba(0,0,0,0.5);
       font-size: 11px;

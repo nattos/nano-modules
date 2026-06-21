@@ -53,7 +53,7 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
       height: 36px;
       background: rgba(255,255,255,0.04);
       border: 1px dashed rgba(255,255,255,0.18);
-      border-radius: 2px;
+      border-radius: 1px;
       display: flex;
       align-items: center;
       justify-content: center;

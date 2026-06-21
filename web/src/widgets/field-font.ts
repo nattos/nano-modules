@@ -294,7 +294,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       max-width: 100%;
       background: rgba(0, 0, 0, 0.3);
       border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 3px;
+      border-radius: 1px;
       padding: 1px 2px 1px 6px;
       cursor: pointer;
       color: var(--app-text-color1, #eaeaea);
@@ -311,7 +311,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     .chip-x {
       border: none; background: transparent; cursor: pointer;
       color: var(--app-text-color2, #b0b0b0);
-      font-size: 12px; line-height: 1; padding: 0 3px; border-radius: 2px;
+      font-size: 12px; line-height: 1; padding: 0 3px; border-radius: 1px;
     }
     .chip-x:hover { color: #fff; background: rgba(255, 255, 255, 0.15); }
 
@@ -319,7 +319,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       border: 1px solid rgba(255, 255, 255, 0.14);
       background: rgba(0, 0, 0, 0.3);
       color: var(--app-text-color1, #eaeaea);
-      border-radius: 3px;
+      border-radius: 1px;
       cursor: pointer;
       font-size: 11px;
       line-height: 1;
@@ -337,7 +337,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       flex-direction: column;
       background: rgba(0, 0, 0, 0.25);
       border: 1px solid var(--app-hi-color2, #4169E1);
-      border-radius: 3px;
+      border-radius: 1px;
       overflow: hidden;
     }
     .search {

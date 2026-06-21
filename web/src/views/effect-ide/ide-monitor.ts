@@ -104,24 +104,24 @@ export class IdeMonitor extends MobxLitElement {
       font-variant-numeric: tabular-nums;
     }
     .stat .err {
-      color: #e06c6c;
+      color: var(--app-error);
     }
     /* GPU headroom colour ramp: comfortable / tight / over budget. */
     .stat .headroom.ok {
-      color: #6cc070;
+      color: var(--app-ok);
     }
     .stat .headroom.tight {
-      color: #d6a13c;
+      color: var(--app-warn);
     }
     .stat .headroom.over {
-      color: #e06c6c;
+      color: var(--app-error);
     }
     .stat .target {
       font-size: 10px;
       color: var(--app-text-color2);
       background: var(--app-bg-color);
       border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 3px;
+      border-radius: 1px;
       padding: 1px 2px;
       cursor: pointer;
     }

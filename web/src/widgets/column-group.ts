@@ -220,13 +220,13 @@ export class ColumnGroup extends MobxLitElement {
       padding: 4px 0;
       background: rgba(0,0,0,0.35);
       border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 4px;
+      border-radius: 1px;
       box-shadow: inset 0 1px 0 rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.25);
       box-sizing: border-box;
     }
     .column-placeholder {
       border: 1px dashed rgba(255,255,255,0.08);
-      border-radius: 4px;
+      border-radius: 1px;
       min-height: 100px;
       width: 100%;
       display: flex;
@@ -478,7 +478,7 @@ export class ColumnGroup extends MobxLitElement {
       right: var(--gutter-width, 8px); /* leave room for gutter */
       height: 3px;
       background: var(--app-hi-color2, #4169E1);
-      border-radius: 2px;
+      border-radius: 1px;
       pointer-events: none;
       z-index: 20;
       display: none;
@@ -501,7 +501,7 @@ export class ColumnGroup extends MobxLitElement {
       position: absolute;
       background: rgba(65, 105, 225, 0.12);
       border: 1px solid rgba(65, 105, 225, 0.3);
-      border-radius: 2px;
+      border-radius: 1px;
       cursor: pointer;
       pointer-events: all;
     }
@@ -558,12 +558,12 @@ export class ColumnGroup extends MobxLitElement {
       left: 6px; top: 50%; margin-top: -3px;
       width: 6px; height: 6px;
       border-radius: 50%;
-      background: var(--app-accent-color, #4caf50);
-      box-shadow: 0 0 4px var(--app-accent-color, #4caf50);
+      background: var(--app-ok);
+      box-shadow: 0 0 4px var(--app-ok);
       pointer-events: none;
     }
     .field-option-pip:hover::after {
-      box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-accent-color, #4caf50);
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-ok);
     }
     .field-option-pip[selected]::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.85); }
     /* A wired field's pip follows the rail convention: blue for inputs, red for
@@ -933,7 +933,7 @@ export class ColumnGroup extends MobxLitElement {
             @dblclick=${(e: Event) => this.onHeaderDblClick(e, entry)}>
             <button
               title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
-              style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-accent-color, #4caf50)'}"
+              style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-ok)'}"
               @pointerdown=${(e: Event) => e.stopPropagation()}
               @click=${(e: Event) => {
                 e.stopPropagation();
