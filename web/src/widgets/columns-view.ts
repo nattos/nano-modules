@@ -36,6 +36,13 @@ export class ColumnsView extends LitElement {
   @property({ type: Number }) columnMaxWidth = 344;
   @property({ type: Number }) gap = 16;
   @property({ type: Number }) defaultGutterWidth = 8;
+  /**
+   * Single-column "fit" mode: the lone column stretches to fill the available
+   * panel width (minus its gutter, where the pips live) instead of holding a
+   * fixed width, and horizontal scrolling is suppressed. Used by the effects
+   * IDE, whose left panel is user-resizable.
+   */
+  @property({ type: Boolean, reflect: true }) fitWidth = false;
 
   /** Per-column widths. Lazily initialized to default width. */
   private columnWidths: number[] = [];
@@ -67,6 +74,11 @@ export class ColumnsView extends LitElement {
       padding: var(--app-sp-6);
       box-sizing: border-box;
     }
+    /* Fit mode: the column already tracks the panel width, so there's nothing
+       to scroll sideways — suppress the horizontal scrollbar (keep vertical). */
+    :host([fitwidth]) .scroll-container {
+      overflow-x: hidden;
+    }
     .content {
       position: relative;
       min-height: 100px;
@@ -97,7 +109,12 @@ export class ColumnsView extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.resizeObs = new ResizeObserver(() => this.updateVisibleRange());
+    // A container resize changes the fitted column width (and the scroll-past
+    // tail height), so recompute layout — not just the visible range.
+    this.resizeObs = new ResizeObserver(() => {
+      if (this.fitWidth) this.recalcLayout();
+      this.updateVisibleRange();
+    });
     this.columnResizeObs = new ResizeObserver(() => this.updateContentHeight());
   }
 
@@ -127,7 +144,8 @@ export class ColumnsView extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('host') || changed.has('columnMinWidth') || changed.has('columnMaxWidth') || changed.has('gap')) {
+    if (changed.has('host') || changed.has('columnMinWidth') || changed.has('columnMaxWidth')
+        || changed.has('gap') || changed.has('fitWidth')) {
       this.recalcLayout();
       this.updateVisibleRange();
     }
@@ -189,12 +207,32 @@ export class ColumnsView extends LitElement {
     return (this.columnWidths[idx] ?? this.getDefaultWidth()) + this.getGutterWidth(idx);
   }
 
+  /** Usable inner width of the scroll area (clientWidth minus its padding). */
+  private availableContentWidth(): number {
+    if (!this.scrollEl) return 0;
+    const cs = getComputedStyle(this.scrollEl);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    return Math.max(0, this.scrollEl.clientWidth - padL - padR);
+  }
+
   private recalcLayout() {
     const count = this.host?.columnCount ?? 0;
 
     // Grow columnWidths array if needed
     while (this.columnWidths.length < count) {
       this.columnWidths.push(this.getDefaultWidth());
+    }
+
+    // Fit mode: the single column fills the panel minus its gutter (the pip
+    // strip), so it tracks the resizable panel exactly with no horizontal
+    // scroll. Recomputed here so every layout pass (resize, attach, count
+    // change) keeps the width current.
+    if (this.fitWidth && count === 1) {
+      const avail = this.availableContentWidth();
+      if (avail > 0) {
+        this.columnWidths[0] = Math.max(80, avail - this.getGutterWidth(0));
+      }
     }
 
     // Recompute left edges
@@ -219,7 +257,13 @@ export class ColumnsView extends LitElement {
     for (const [, el] of this.attachedColumns) {
       maxH = Math.max(maxH, el.scrollHeight);
     }
-    this.contentEl.style.height = `${maxH}px`;
+    // Add a tail of empty space so the last card can be scrolled up off the
+    // bottom edge ("scroll past the end") rather than being pinned there. Only
+    // when the content already overflows — short content stays fixed so it
+    // doesn't gain a phantom scrollbar over empty space.
+    const vh = this.scrollEl?.clientHeight ?? 0;
+    const tail = (vh > 0 && maxH > vh) ? Math.max(120, Math.round(vh * 0.5)) : 0;
+    this.contentEl.style.height = `${maxH + tail}px`;
   }
 
   private updateVisibleRange() {

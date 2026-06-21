@@ -22,7 +22,7 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 import type { ColumnHost } from '../../widgets/columns-view';
-import type { ColumnGroupCallbacks, ColumnGroup } from '../../widgets/column-group';
+import { type ColumnGroupCallbacks, ColumnGroup } from '../../widgets/column-group';
 import type { FieldBinding } from '../../widgets/field-editor';
 import { editorRegistry } from '../../editor-registry';
 import { ensureChain, chainEntryAt } from '../../sketch-types';
@@ -332,6 +332,8 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     return html`${keyed(id, html`
       <div class="columns-wrap">
         <columns-view .host=${this as ColumnHost}
+          fitWidth
+          .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}
           @click=${(e: Event) => {
             // Deselect when clicking empty space (not handled by a child).
             if (e.target === e.currentTarget) appController.select(null);
