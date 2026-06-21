@@ -8,7 +8,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import { computeHeadroom, TARGET_FPS_OPTIONS } from './gpu-headroom';
+import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from './gpu-headroom';
 
 import './create-tab';
 import './organize-tab';
@@ -129,17 +129,17 @@ export class SketchApp extends MobxLitElement {
     }
     const fps = engine.fps;
     if (barrelMode) {
-      return fps > 0 ? html`<span class="metric">${fps} FPS</span>` : '';
+      return fps > 0 ? html`<span class="metric">${fixedNum(fps, 3)} FPS</span>` : '';
     }
     const targetFps = appState.local.userSettings.targetFps;
     const h = computeHeadroom(engine.gpuTimeMs, targetFps);
     return html`
-      ${fps > 0 ? html`<span class="metric">${fps} FPS</span>` : ''}
+      ${fps > 0 ? html`<span class="metric">${fixedNum(fps, 3)} FPS</span>` : ''}
       ${h.measured
         ? html`<span
             class="metric headroom ${h.level}"
             title="Est. GPU ${h.gpuMs.toFixed(1)} ms of ${h.budgetMs.toFixed(1)} ms budget (${targetFps} FPS) — ${h.headroomPct}% headroom"
-            >GPU ${h.gpuMs.toFixed(1)}ms · ${h.headroomPct}% free</span
+            >GPU ${fixedNum(h.gpuMs.toFixed(1), 4)}ms · ${fixedNum(h.headroomPct, 3)}% free</span
           >`
         : html`<span class="metric" title="No GPU timing yet">GPU —</span>`}
       <select

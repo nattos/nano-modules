@@ -8,8 +8,28 @@
  * lives in each component, only the computation is shared.
  */
 
+import { html, TemplateResult } from 'lit';
+
 /** Target framerates offered by the headroom selector. */
 export const TARGET_FPS_OPTIONS = [30, 60, 120];
+
+/**
+ * A fixed-width, right-aligned numeric cell. The status readouts use tabular
+ * figures so each digit is the same width, but the *digit count* still changes
+ * ("9.5"→"10.5" ms, "100%"→"5%" free), which would otherwise reflow every
+ * sibling metric in the flex row. Reserving a min-width sized for the widest
+ * expected value keeps the whole readout stationary within its normal range
+ * (it only grows past `ch` for out-of-range alarm values, where a shift is ok).
+ *
+ * Self-contained inline styling so both shadow-DOM hosts can share it without
+ * each needing a matching CSS rule.
+ */
+export function fixedNum(value: string | number, ch: number): TemplateResult {
+  return html`<span
+    style="display:inline-block;text-align:right;min-width:${ch}ch;font-variant-numeric:tabular-nums"
+    >${value}</span
+  >`;
+}
 
 export interface HeadroomInfo {
   /** False until the first live GPU sample (or while paused / barrel mode) —

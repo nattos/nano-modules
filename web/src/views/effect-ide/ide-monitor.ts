@@ -16,7 +16,7 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 
-import { computeHeadroom, TARGET_FPS_OPTIONS } from '../gpu-headroom';
+import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../gpu-headroom';
 
 import '../../widgets/texture-monitor';
 import '../../widgets/ui-button';
@@ -227,7 +227,7 @@ export class IdeMonitor extends MobxLitElement {
           ${error
             ? html`<span class="err">Error: ${error}</span>`
             : html`
-                <span class="metric">${fps} FPS</span>
+                <span class="metric">${fixedNum(fps, 3)} FPS</span>
                 ${this.renderHeadroom(gpuMs, targetFps)}
                 <select
                   class="target"
@@ -255,7 +255,7 @@ export class IdeMonitor extends MobxLitElement {
     return html`<span
       class="metric headroom ${h.level}"
       title="Est. GPU ${h.gpuMs.toFixed(1)} ms of ${h.budgetMs.toFixed(1)} ms budget (${targetFps} FPS) — ${h.headroomPct}% headroom"
-      >GPU ${h.gpuMs.toFixed(1)}ms · ${h.headroomPct}% free</span
+      >GPU ${fixedNum(h.gpuMs.toFixed(1), 4)}ms · ${fixedNum(h.headroomPct, 3)}% free</span
     >`;
   }
 
