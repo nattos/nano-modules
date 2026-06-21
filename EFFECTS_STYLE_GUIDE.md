@@ -61,12 +61,22 @@ state::Schema()
   .rgbaField("bg",      0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput) // color + alpha
 ```
 
-In `on_state_patched` use `state::patchVec2(i)` / `patchVec3(i)` / `patchVec4(i)` to read the array value:
+In `on_state_patched` read the patch value with the typed reader that matches
+the field: `patchFloat(i)` (float), `patchInt(i)` (int / `selectField` — rounds),
+`patchBool(i)` (bool), `patchEvent(i)` (event trigger), `patchString(i, buf, n)`
+(string / font), and `patchVec2/3/4(i)` for vectors. Reach for the typed one —
+don't hand-cast `(int)patchFloat` / `patchFloat != 0`.
 
 ```cpp
+if (state::pathIs(p, l, "mode"))   s->mode = state::patchInt(i);
+if (state::pathIs(p, l, "enabled")) s->on  = state::patchBool(i);
 if (state::pathIs(p, l, "center")) { auto v = state::patchVec2(i); cx = v.x; cy = v.y; }
 if (state::pathIs(p, l, "line"))   { auto v = state::patchVec3(i); /* … */ }
 ```
+
+`ops[i]` is one of `state::PatchReplace` (a value edit — the usual case) etc.;
+guard with `if (ops[i] != state::PatchReplace) continue;` to skip the host's
+`PatchDirty` GPU-dirty notices and array add/remove ops.
 
 `rgbField` / `rgbaField` are aliases for `vec3Field` / `vec4Field` with `hint="color"`. The hint also works on a raw `vec3Field`/`vec4Field` if you want the color picker without the alias.
 
@@ -100,7 +110,15 @@ Why this shape:
 - `on_state_ready` fires after the executor replays serialized state, so the IDE only ever paints the post-restoration schema. The user never sees a transient "all fields visible" frame.
 - Setting hidden is a pure UI overlay — `notifyStatePatched`, rail routing, and bridge-core state continue to work for hidden fields exactly as if they were visible.
 
-**`selectField`** — single-choice integer with named options. Renders as a dropdown in the inspector. Use this for mode selectors, algorithm pickers, and anything else with a small fixed set of named values. Schema-wise it's `type:int` plus an `options:[{label,value},…]` array.
+**`selectField`** — single-choice integer with named options. Renders as a row of buttons in the inspector (pass `wrap=true` for large sets like blend modes so they flow onto multiple rows — see `composite.blend`). Use it for mode selectors, algorithm pickers, and anything else with a small fixed set of named values. Schema-wise it's `type:int` plus an `options:[{label,value},…]` array.
+
+**`fontField`** — a string field the IDE renders as a searchable font-family picker (vs a plain `textField`). Read it like any string via `patchString`.
+
+**Optional field metadata.** Several builders take trailing optionals — use them to make a control legible:
+- `floatField` / `intField`: `step` (slider granularity; e.g. `…, PrimaryInput, nullptr, /*step=*/0.05f`), `units` (a display suffix shown after the value — `"ms"`, `"Hz"`, `"px"`), and `description`.
+- `selectField` / `boolField` / `textField` / `fontField`: a trailing `description`.
+
+`description` surfaces as the control's tooltip. Keep it short; it's free text (escaped into the schema for you). These are pure UI metadata — adding them is a PATCH-level change (no serialized-state impact; see §Versioning).
 
 **GPU platform features** — what the host actually supports. Reach for the right tool instead of working around what you assume isn't there.
 
