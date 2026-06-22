@@ -19,7 +19,7 @@ import {
   ROW_HEIGHT,
   AUTO_LANE_HEIGHT,
 } from './grid-shared';
-import { Track, AutomationLane, derivedWarpSegments } from '../model/composition';
+import { Track, Clip, AutomationLane, derivedWarpSegments } from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
 import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, AnchorKeys } from './anchor-registry';
@@ -35,6 +35,7 @@ export class ArrGrid extends MobxLitElement {
     :host {
       display: block;
       overflow: hidden;
+      position: relative;
     }
     .scroll {
       position: relative;
@@ -270,7 +271,8 @@ export class ArrGrid extends MobxLitElement {
     }
     .timebar {
       position: absolute;
-      top: 6px;
+      bottom: 8px;
+      top: auto;
       left: ${HEADER_WIDTH + 8}px;
       z-index: 40;
       display: flex;
@@ -424,7 +426,7 @@ export class ArrGrid extends MobxLitElement {
     const totalH = this.contentHeight(tracks);
 
     return html`
-      <div class="scroll">
+      <div class="scroll" @pointerdown=${this.onScrollDown}>
         <canvas class="grid-canvas" style="height:${totalH}px"></canvas>
         <div class="rows">
           ${tracks.map((t) => this.renderTrack(t))}
@@ -438,7 +440,15 @@ export class ArrGrid extends MobxLitElement {
   }
 
   private renderTimeToolbar() {
-    if (!store.hasTimeSelection) return '';
+    // Always visible, pinned to the bottom of the timeline (above the clip
+    // panel when open). With no time selection it shows the play-from cursor.
+    if (!store.hasTimeSelection) {
+      return html`
+        <div class="timebar">
+          <span class="trange">▸ play from ${store.playFromBeat.toFixed(2)}b</span>
+        </div>
+      `;
+    }
     const a = store.timeSelStart!;
     const b = store.timeSelEnd;
     const nScope = store.timeSelTrackIds.length;
@@ -542,16 +552,12 @@ export class ArrGrid extends MobxLitElement {
           </div>
         </div>
         ${isRail
-          ? html`<div
-              class="lane rail"
-              @pointerdown=${(e: PointerEvent) => this.onLaneDown(e)}
-            >
+          ? html`<div class="lane rail">
               <arr-rail-lane .trackId=${track.id}></arr-rail-lane>
             </div>`
           : html`<div
               class="lane ${isGroup ? 'group' : ''} ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''} ${this.clipDropTrackId === track.id ? 'dropok' : ''}"
               @dblclick=${(e: MouseEvent) => this.onLaneDblClick(e, track)}
-              @pointerdown=${(e: PointerEvent) => this.onLaneDown(e)}
             >
               ${isGroup
                 ? html`<span class="empty-hint">main bus — all tracks sum here</span>`
@@ -874,11 +880,81 @@ export class ArrGrid extends MobxLitElement {
     return Math.max(0, layout.length - 1);
   }
 
-  /** Lane background pointerdown → start a region drag (unless on a clip). */
-  private onLaneDown(e: PointerEvent) {
-    if (e.target instanceof Element && e.target.closest('arr-clip')) return;
+  /**
+   * Pointerdown anywhere in the scroll area → start a time×track region drag.
+   * Skips headers (select/reorder), clips (own handlers), and overlays. Clicking
+   * empty space BELOW the main bus lands here too, so it gets the same global
+   * time-slice selection as the main-bus lane.
+   */
+  private onScrollDown = (e: PointerEvent) => {
+    const t = e.target;
+    if (t instanceof Element && t.closest('.header, .auto-header, arr-clip, .timebar, .reorder-line')) {
+      return;
+    }
     this.beginRegionFromClient(e);
+  };
+
+  // ── Clip move drag (driven by the grid so it survives the clip element being
+  //    reparented to another track mid-drag). Cross-track + time-box split-move.
+  private clipMove: {
+    trackId: string;
+    clipId: string;
+    grabBeatOffset: number;
+    grabBeat: number;
+    x0: number;
+    active: boolean;
+    timebox: boolean;
+  } | null = null;
+
+  /** Begin moving `clip` (from arr-clip). `fromHeader` enables time-box split-move. */
+  beginClipMove(e: PointerEvent, trackId: string, clip: Clip, fromHeader: boolean) {
+    const grid = buildBeatGrid();
+    const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
+    const grabBeat = grid.xToBeat(e.clientX - laneLeft);
+    this.clipMove = {
+      trackId,
+      clipId: clip.id,
+      grabBeatOffset: grabBeat - clip.startBeat,
+      grabBeat,
+      x0: e.clientX,
+      active: false,
+      timebox: fromHeader && store.timeBoxCoversClip(trackId, clip.id),
+    };
+    window.addEventListener('pointermove', this.onClipMove);
+    window.addEventListener('pointerup', this.onClipUp);
   }
+
+  private onClipMove = (e: PointerEvent) => {
+    const d = this.clipMove;
+    if (!d) return;
+    if (!d.active) {
+      if (Math.abs(e.clientX - d.x0) < 4) return;
+      d.active = true;
+    }
+    const grid = buildBeatGrid();
+    const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
+    const free = e.altKey;
+    const cursorBeat = grid.xToBeat(e.clientX - laneLeft);
+    if (d.timebox) {
+      // Split the scope clips at the box edges and move the in-box content.
+      const delta = store.quantize(cursorBeat, free) - store.quantize(d.grabBeat, free);
+      store.moveTimeBoxContent(delta);
+      return;
+    }
+    const beat = store.quantize(cursorBeat - d.grabBeatOffset, free);
+    const dest = this.eligibleTrackAtClientY(e.clientY) ?? d.trackId;
+    this.clipDropTrackId = dest !== d.trackId ? dest : null;
+    // Always pass the ORIGINAL source track: coalescing reverts to the gesture's
+    // base each frame (clip back on its source), then re-applies the move.
+    store.moveClipToTrack(d.trackId, d.clipId, dest, beat);
+  };
+
+  private onClipUp = () => {
+    window.removeEventListener('pointermove', this.onClipMove);
+    window.removeEventListener('pointerup', this.onClipUp);
+    this.clipMove = null;
+    this.clipDropTrackId = null;
+  };
 
   /**
    * Begin a time × track region drag from raw client coordinates. Public so a
@@ -886,13 +962,17 @@ export class ArrGrid extends MobxLitElement {
    * like clicking the grid). The start track is derived from clientY.
    */
   beginRegionFromClient(e: PointerEvent) {
+    if (this.drag) return;
     store.closeTapPopup();
     const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
     const grid = buildBeatGrid();
+    const startBeat = grid.xToBeat(e.clientX - laneLeft);
     const startTrack = store.displayTracks[this.trackIndexAtClientY(e.clientY)];
+    // Move the cursor immediately on pointerdown (no need to wait for drag/up).
+    store.setPlayFrom(store.quantize(startBeat, e.altKey));
     this.drag = {
       x0: e.clientX,
-      startBeat: grid.xToBeat(e.clientX - laneLeft),
+      startBeat,
       laneLeft,
       startTrackId: startTrack?.id ?? '',
       active: false,
@@ -925,6 +1005,8 @@ export class ArrGrid extends MobxLitElement {
       trackIds = tracks.slice(lo, hi + 1).map((t) => t.id);
     }
     store.setTimeSelection(a, b, trackIds);
+    // The cursor follows the latest drag position (paused → playhead follows too).
+    store.setPlayFrom(cur < 0 ? 0 : store.quantize(cur, free));
     // The region also selects the clips it covers (no multi-edit yet).
     store.selectClipsInRegion();
   };

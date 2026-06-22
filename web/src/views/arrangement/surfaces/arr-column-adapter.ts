@@ -166,6 +166,27 @@ export class ArrColumnAdapter implements ColumnAdapter {
       };
     },
     getPlugin: (moduleType: string): PluginInfo | undefined => {
+      // Prefer the engine's REAL schema (complete editors: color/bool/enum/vec,
+      // exact ranges). Reading store.enginePlugins here ties column-group's render
+      // to it, so editors upgrade automatically once the bundle warms up. The
+      // real schema carries no display names, so overlay the catalog's curated
+      // labels where present. Falls back to the float-only synthesis until the
+      // schema lands.
+      const real = store.enginePlugin(moduleType);
+      if (real) {
+        const mergedKey = `real:${moduleType}`;
+        const cachedReal = this.pluginCache.get(mergedKey);
+        if (cachedReal) return cachedReal;
+        const cat = catalogEffect(moduleType);
+        const schema: Record<string, any> = {};
+        for (const [k, def] of Object.entries((real.schema ?? {}) as Record<string, any>)) {
+          const label = cat?.fields.find((f) => f.key === k)?.label;
+          schema[k] = label && def && def.name == null ? { ...def, name: label } : def;
+        }
+        const merged: PluginInfo = { ...(real as unknown as PluginInfo), schema };
+        this.pluginCache.set(mergedKey, merged);
+        return merged;
+      }
       const cached = this.pluginCache.get(moduleType);
       if (cached) return cached;
       const cat = catalogEffect(moduleType);

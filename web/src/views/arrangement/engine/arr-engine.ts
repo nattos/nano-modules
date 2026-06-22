@@ -15,7 +15,7 @@
 
 import { EngineProxy } from '../../../engine-proxy';
 import type { Sketch } from '../../../sketch-types';
-import type { TracePoint, StateDiff } from '../../../engine-types';
+import type { TracePoint, StateDiff, PluginInfo } from '../../../engine-types';
 
 export interface ShowSketchOpts {
   /** Effect bundle to load first (e.g. 'com.nano.testonly', 'com.nano.core'). */
@@ -47,6 +47,8 @@ export class ArrEngine {
   onError: ((message: string) => void) | null = null;
   /** Per-frame wire-modulation telemetry (keyed by engine instance key). */
   onModulationDataDiff: ((diff: StateDiff) => void) | null = null;
+  /** Full plugin schemas as the worker discovers/warms them (for real editors). */
+  onPlugins: ((plugins: PluginInfo[]) => void) | null = null;
   /** Union of effect ids discovered across loaded bundles (diagnostic). */
   readonly discovered = new Set<string>();
   /** Count of create/update sketch calls (diagnostic). */
@@ -65,6 +67,7 @@ export class ArrEngine {
     this.proxy.onFps = (fps) => this.onFps?.(fps);
     this.proxy.onError = (m) => this.onError?.(m);
     this.proxy.onModulationDataDiff = (diff) => this.onModulationDataDiff?.(diff);
+    this.proxy.onStateUpdate = (state) => { if (state.plugins?.length) this.onPlugins?.(state.plugins); };
     this.proxy.onEffectsDiscovered = (effects) => {
       for (const e of effects) this.discovered.add(e.id);
     };

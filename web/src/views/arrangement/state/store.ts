@@ -8,7 +8,7 @@
  */
 
 import { makeAutoObservable, runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
-import type { StateDiff } from '../../../engine-types';
+import type { StateDiff, PluginInfo } from '../../../engine-types';
 import {
   Composition,
   Clip,
@@ -83,6 +83,38 @@ function splitClipsAt(track: Track, beat: number) {
     } else {
       next.push(clip);
     }
+  }
+  track.clips = next;
+}
+
+/**
+ * Carve the span `[start,end)` out of every clip on `track` EXCEPT `exceptId`:
+ * clips fully inside are removed, overlapping clips are trimmed (and split into
+ * left+right pieces when the span lands in their middle). Used so a moved/resized
+ * clip is mutually exclusive with the rest of its lane (the overlapped section is
+ * deleted). Operates on a draft `Track` inside a history recipe.
+ */
+function carveTrackSpan(track: Track, exceptId: string, start: number, end: number) {
+  if (end <= start + 1e-6) return;
+  const next: Clip[] = [];
+  for (const c of track.clips) {
+    if (c.id === exceptId) { next.push(c); continue; }
+    const cs = c.startBeat;
+    const ce = c.startBeat + c.lengthBeat;
+    if (ce <= start + 1e-6 || cs >= end - 1e-6) { next.push(c); continue; } // disjoint
+    if (cs < start - 1e-6) {
+      // keep the left piece (reuse the original clip id)
+      c.lengthBeat = start - cs;
+      next.push(c);
+    }
+    if (ce > end + 1e-6) {
+      const right: Clip = JSON.parse(JSON.stringify(c));
+      right.id = uid('clip');
+      right.startBeat = end;
+      right.lengthBeat = ce - end;
+      next.push(right);
+    }
+    // a clip wholly inside [start,end) contributes neither piece → removed
   }
   track.clips = next;
 }
@@ -163,6 +195,15 @@ export class ArrangementStore {
    * live modulation bands. Not persisted, not undoable.
    */
   modulationData: Record<string, Record<string, { value: number; min: number; max: number; neutral: number }>> = {};
+
+  /**
+   * Real plugin schemas discovered by the engine (keyed by effect id, e.g.
+   * `color.hsl`). The inspector prefers these over the catalog's float-only
+   * synthesis so editors are complete (color / bool / enum / vec, exact ranges).
+   * Populated async as bundles warm up; reading it in render re-renders editors
+   * when a schema lands. Not persisted, not undoable.
+   */
+  enginePlugins: Record<string, PluginInfo> = {};
 
   constructor() {
     makeAutoObservable<
@@ -268,6 +309,19 @@ export class ArrangementStore {
     });
   }
 
+  /** Mirror the engine's discovered plugin schemas (keyed by effect id). */
+  setEnginePlugins(plugins: PluginInfo[]) {
+    if (!plugins.length) return;
+    runInAction(() => {
+      for (const p of plugins) mobxSet(this.enginePlugins as object, p.id, p);
+    });
+  }
+
+  /** Real engine schema for an effect id, if it's been discovered yet. */
+  enginePlugin(effectId: string): PluginInfo | undefined {
+    return this.enginePlugins[effectId];
+  }
+
   // ── Lookups ─────────────────────────────────────────────────────────
   trackById(id: string): Track | undefined {
     return this.composition.tracks.find((t) => t.id === id);
@@ -339,6 +393,19 @@ export class ArrangementStore {
     return [...this.selection]
       .filter((p) => p.startsWith('track/'))
       .map((p) => p.split('/')[1]);
+  }
+
+  /**
+   * Select a clip WITHOUT touching the time region — clicking a clip body picks
+   * the clip but doesn't grab a time box (only the clip header does that).
+   */
+  selectClipOnly(path: string) {
+    runInAction(() => {
+      this.selection = new Set([path]);
+      this.primaryPath = path;
+      this.selectedWireId = null;
+      this.activeRightTab = 'inspector';
+    });
   }
 
   toggleSelect(path: string) {
@@ -433,11 +500,13 @@ export class ArrangementStore {
   }
 
   /**
-   * All renderable clips active at `beat`, in composite DRAW order — bottom
-   * track first → top last. One clip per track (on overlap the latest-started
-   * wins). Each layer is `engine` (rendered chain) or `media` (decoded frames),
-   * carries its effective `opacity`, and respects bypass + solo propagated
-   * through the group hierarchy (an ancestor group's bypass/solo/level applies).
+   * All renderable clips active at `beat`, in composite DRAW order. The mix sums
+   * DOWNWARD (Ableton-style: the main bus pins to the bottom) — the TOP track is
+   * the background and each lower track draws over it, so the BOTTOM-most track
+   * wins. Returned in paint order (top track first → bottom track last). One clip
+   * per track (on overlap the latest-started wins). Each layer is `engine`
+   * (rendered chain) or `media` (decoded frames), carries its effective
+   * `opacity`, and respects bypass + solo propagated through the group hierarchy.
    * Empty engine clips (no devices) are skipped. Rail/group tracks hold no clips.
    */
   compositeLayersAtBeat(beat: number): CompositeLayer[] {
@@ -463,7 +532,9 @@ export class ArrangementStore {
         opacity: this.effectiveOpacity(t, anc),
       });
     }
-    return layers.reverse(); // tracks are top→bottom; draw bottom→top
+    // `tracks` is already top→bottom; paint in that order so each lower track
+    // draws over the one above it (downward sum — bottom-most track on top).
+    return layers;
   }
 
   /** Engine-renderable layers only (the bridge renders/traces these). */
@@ -572,6 +643,57 @@ export class ArrangementStore {
     this.setSelection(found);
   }
 
+  /** True if the time box exists, covers this clip's track, and overlaps it. */
+  timeBoxCoversClip(trackId: string, clipId: string): boolean {
+    if (!this.hasTimeSelection) return false;
+    const found = this.clipByPath(paths.clip(trackId, clipId));
+    if (!found) return false;
+    const scope = this.timeSelTrackIds;
+    const inScope = scope.length === 0 ? found.track.kind === 'track' : scope.includes(trackId);
+    if (!inScope) return false;
+    const c = found.clip;
+    return (
+      c.startBeat < this.timeSelEnd - 1e-6 &&
+      c.startBeat + c.lengthBeat > this.timeSelStart! + 1e-6
+    );
+  }
+
+  /**
+   * Shift the CONTENT inside the time box by `deltaBeat` across the region's
+   * scope: split every scope clip at both box edges, then move the in-box pieces
+   * (carving their destinations so they stay mutually exclusive). The box itself
+   * stays put. `deltaBeat` is absolute from the gesture start; pass a stable
+   * coalesce so a whole drag is one undo. Mirrors Ableton's time-selection move.
+   */
+  moveTimeBoxContent(deltaBeat: number) {
+    if (!this.hasTimeSelection || deltaBeat === 0) return;
+    const a = this.timeSelStart!;
+    const b = this.timeSelEnd;
+    const scope = this.regionTracks().map((t) => t.id);
+    this.mutate(
+      'move time selection',
+      (d) => {
+        for (const track of d.tracks) {
+          if (!scope.includes(track.id)) continue;
+          splitClipsAt(track, a);
+          splitClipsAt(track, b);
+          const inBox = (c: Clip) => c.startBeat >= a - 1e-6 && c.startBeat < b - 1e-6;
+          const moving = track.clips.filter(inBox).map((c) => {
+            const m: Clip = JSON.parse(JSON.stringify(c));
+            m.startBeat = Math.max(0, c.startBeat + deltaBeat);
+            return m;
+          });
+          track.clips = track.clips.filter((c) => !inBox(c));
+          for (const m of moving) {
+            carveTrackSpan(track, '__none__', m.startBeat, m.startBeat + m.lengthBeat);
+            track.clips.push(m);
+          }
+        }
+      },
+      'move-time-box',
+    );
+  }
+
   /** Split every clip in scope at both region edges (Ableton split). */
   splitAtRegion() {
     if (!this.hasTimeSelection) return;
@@ -667,11 +789,17 @@ export class ArrangementStore {
   setPosition(beat: number) {
     this.positionBeat = Math.max(0, beat);
   }
-  /** Set the insert / "play from" marker (and move the playhead there). */
+  /**
+   * Set the insert / "play from" marker. The marker always follows the cursor
+   * (click/drag, any transport state). When PAUSED the playhead follows it too
+   * (scrubbing); while PLAYING the playhead keeps running and only the marker
+   * moves — so clicking the timeline mid-playback re-arms where the next play
+   * starts without interrupting playback.
+   */
   setPlayFrom(beat: number) {
     runInAction(() => {
       this.playFromBeat = Math.max(0, beat);
-      this.positionBeat = this.playFromBeat;
+      if (!this.playing) this.positionBeat = this.playFromBeat;
     });
   }
   toggleLoop() {
@@ -1073,8 +1201,12 @@ export class ArrangementStore {
     this.mutate(
       'move clip',
       (d) => {
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
-        if (c) c.startBeat = v;
+        const t = d.tracks.find((t) => t.id === trackId);
+        const c = t?.clips.find((x) => x.id === clipId);
+        if (t && c) {
+          c.startBeat = v;
+          carveTrackSpan(t, clipId, v, v + c.lengthBeat);
+        }
       },
       `move:${trackId}:${clipId}`,
     );
@@ -1091,8 +1223,13 @@ export class ArrangementStore {
     this.mutate(
       'resize clip',
       (d) => {
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
-        if (c) { c.startBeat = start; c.lengthBeat = len; }
+        const t = d.tracks.find((t) => t.id === trackId);
+        const c = t?.clips.find((x) => x.id === clipId);
+        if (t && c) {
+          c.startBeat = start;
+          c.lengthBeat = len;
+          carveTrackSpan(t, clipId, start, start + len);
+        }
       },
       `resize:${trackId}:${clipId}`,
     );
@@ -1227,7 +1364,10 @@ export class ArrangementStore {
         if (!from || !to) return;
         if (from === to) {
           const c = from.clips.find((x) => x.id === clipId);
-          if (c) c.startBeat = v;
+          if (c) {
+            c.startBeat = v;
+            carveTrackSpan(to, clipId, v, v + c.lengthBeat);
+          }
           return;
         }
         const i = from.clips.findIndex((c) => c.id === clipId);
@@ -1235,6 +1375,7 @@ export class ArrangementStore {
         const [clip] = from.clips.splice(i, 1);
         clip.startBeat = v;
         to.clips.push(clip);
+        carveTrackSpan(to, clipId, v, v + clip.lengthBeat);
       },
       `move:${clipId}`,
     );

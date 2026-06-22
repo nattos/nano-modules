@@ -65,6 +65,9 @@ export class EngineBridge {
     // Wire-modulation telemetry → store, mirroring the IDE's
     // appState.local.engine.modulationData (sliders draw live mod bands from it).
     e.onModulationDataDiff = (diff) => store.applyModulationDataDiff(diff);
+    // Real plugin schemas → store, so the inspector renders complete editors
+    // (color/bool/enum/vec) instead of the catalog's float-only synthesis.
+    e.onPlugins = (plugins) => store.setEnginePlugins(plugins);
     this.engine = e;
     return e;
   }

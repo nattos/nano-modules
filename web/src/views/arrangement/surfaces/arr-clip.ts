@@ -19,7 +19,7 @@ import {
 } from '../model/composition';
 import '../../../widgets/ui-icon';
 
-type DragMode = 'move' | 'resize-l' | 'resize-r' | null;
+type DragMode = 'resize-l' | 'resize-r' | null;
 
 @customElement('arr-clip')
 export class ArrClip extends MobxLitElement {
@@ -189,13 +189,8 @@ export class ArrClip extends MobxLitElement {
   `;
 
   private mode: DragMode = null;
-  private grabBeatOffset = 0;
   private origStart = 0;
   private origLen = 0;
-  private moved = 0;
-  private startClientX = 0;
-  /** Eligible destination track during a cross-track move drag, or null. */
-  private dropTrackId: string | null = null;
 
   /** The host <arr-grid> (this clip lives in its shadow root). */
   private gridHost(): any {
@@ -374,7 +369,12 @@ export class ArrClip extends MobxLitElement {
 
     return html`
       <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''}">
-        <div class="bar" style="background:${barBg}" @pointerdown=${this.onHeaderDown}>
+        <div
+          class="bar"
+          style="background:${barBg}"
+          @pointerdown=${this.onHeaderDown}
+          @dblclick=${this.onHeaderDblClick}
+        >
           <ui-icon
             class="ico"
             icon=${isVideo ? 'la-film' : modOnly ? 'la-wave-square' : 'la-layer-group'}
@@ -414,25 +414,33 @@ export class ArrClip extends MobxLitElement {
     `;
   }
 
-  /** Clicking the clip HEADER selects it and starts a move-drag. */
+  /**
+   * Clicking the HEADER selects the clip (grabbing its time box, unless a time
+   * box already covers it — then keep that box so the drag splits/moves its
+   * content) and starts a move drag. The move is driven by the GRID (it survives
+   * the element being reparented to another track mid-drag).
+   */
   private onHeaderDown = (e: PointerEvent) => {
     e.stopPropagation();
     const path = paths.clip(this.trackId, this.clip.id);
+    const inBox = store.timeBoxCoversClip(this.trackId, this.clip.id);
     if (e.shiftKey) store.toggleSelect(path);
-    else if (!store.isSelected(path)) store.select(path);
-    this.beginDrag(e, 'move');
+    else if (inBox) store.selectClipOnly(path);
+    else store.select(path);
+    this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };
 
-  /**
-   * Clicking the clip BODY (film strip) behaves like clicking the grid: set the
-   * play-from marker and start a time-region drag. Delegates to the host grid.
-   */
+  /** Double-clicking the header opens the bottom clip panel (if not already open). */
+  private onHeaderDblClick = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!store.clipViewOpen) store.toggleClipView();
+  };
+
+  /** Clicking the BODY selects the clip immediately (no time box) and moves it. */
   private onBodyDown = (e: PointerEvent) => {
     e.stopPropagation();
-    const host = this.getRootNode() instanceof ShadowRoot
-      ? ((this.getRootNode() as ShadowRoot).host as any)
-      : null;
-    host?.beginRegionFromClient?.(e);
+    store.selectClipOnly(paths.clip(this.trackId, this.clip.id));
+    this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, false);
   };
 
   private onHandleDown(e: PointerEvent, mode: DragMode) {
@@ -441,36 +449,22 @@ export class ArrClip extends MobxLitElement {
     this.beginDrag(e, mode);
   }
 
+  /** Edge-resize drag (move drags live in the grid; resizing never reparents). */
   private beginDrag(e: PointerEvent, mode: DragMode) {
     this.mode = mode;
-    this.moved = 0;
-    this.startClientX = e.clientX;
     this.origStart = this.clip.startBeat;
     this.origLen = this.clip.lengthBeat;
-    const grid = buildBeatGrid();
-    const localX = e.clientX - this.laneRect().left;
-    this.grabBeatOffset = grid.xToBeat(localX) - this.clip.startBeat;
     window.addEventListener('pointermove', this.onWinMove);
     window.addEventListener('pointerup', this.onWinUp);
   }
 
   private onWinMove = (e: PointerEvent) => {
     if (!this.mode) return;
-    this.moved += Math.abs(e.clientX - this.startClientX);
-    // Hold Alt to break out of the grid (free positioning).
     const free = e.altKey;
     const q = (b: number) => store.quantize(b, free);
     const grid = buildBeatGrid();
-    const localX = e.clientX - this.laneRect().left;
-    const beatAtCursor = grid.xToBeat(localX);
-    if (this.mode === 'move') {
-      store.moveClip(this.trackId, this.clip.id, q(beatAtCursor - this.grabBeatOffset));
-      // Cross-track: highlight the eligible destination lane under the cursor.
-      const grid = this.gridHost();
-      const dest = grid?.eligibleTrackAtClientY?.(e.clientY) ?? null;
-      this.dropTrackId = dest && dest !== this.trackId ? dest : null;
-      grid?.setClipDropTarget?.(this.dropTrackId);
-    } else if (this.mode === 'resize-r') {
+    const beatAtCursor = grid.xToBeat(e.clientX - this.laneRect().left);
+    if (this.mode === 'resize-r') {
       const len = q(beatAtCursor) - this.clip.startBeat;
       store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, Math.max(0.5, len));
     } else if (this.mode === 'resize-l') {
@@ -482,21 +476,10 @@ export class ArrClip extends MobxLitElement {
     }
   };
 
-  private onWinUp = (e: PointerEvent) => {
-    const wasMove = this.mode === 'move';
+  private onWinUp = () => {
     this.mode = null;
     window.removeEventListener('pointermove', this.onWinMove);
     window.removeEventListener('pointerup', this.onWinUp);
-    const grid = this.gridHost();
-    grid?.setClipDropTarget?.(null);
-    // Commit a cross-track move on release (reparenting mid-drag would break
-    // the active pointer gesture, so it lands here instead).
-    if (wasMove && this.dropTrackId && this.dropTrackId !== this.trackId) {
-      const localX = e.clientX - this.laneRect().left;
-      const beat = store.quantize(buildBeatGrid().xToBeat(localX) - this.grabBeatOffset, e.altKey);
-      store.moveClipToTrack(this.trackId, this.clip.id, this.dropTrackId, beat);
-    }
-    this.dropTrackId = null;
     this.requestUpdate();
   };
 }

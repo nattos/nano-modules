@@ -28,6 +28,20 @@ import './surfaces/arr-monitor';
 import './surfaces/arr-overlay';
 import './surfaces/arr-clip-view';
 
+/** The focused element, resolved through nested shadow roots. */
+function deepActiveElement(): Element | null {
+  let a: Element | null = document.activeElement;
+  while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+  return a;
+}
+
+/** True if the element is a text editor (so global key shortcuts should defer). */
+function isEditable(el: Element | null): boolean {
+  if (!el) return false;
+  const t = el.tagName;
+  return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || (el as HTMLElement).isContentEditable;
+}
+
 @customElement('arrangement-app')
 export class ArrangementApp extends MobxLitElement {
   static styles = css`
@@ -78,7 +92,7 @@ export class ArrangementApp extends MobxLitElement {
     arr-inspector {
       flex: 1;
       min-height: 0;
-      overflow: hidden;
+      overflow-y: auto;
     }
     arr-monitor {
       flex-shrink: 0;
@@ -115,10 +129,13 @@ export class ArrangementApp extends MobxLitElement {
   private raf = 0;
   private lastT = 0;
   private transport = new TransportController();
+  /** Which surface the user last interacted with (gates timeline deletions). */
+  private lastSurface: 'timeline' | 'inspector' | 'other' = 'other';
 
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onKey);
+    window.addEventListener('pointerdown', this.onPointerDownCapture, true);
     this.addEventListener('dragover', this.onDragOver);
     this.addEventListener('drop', this.onDrop);
     this.lastT = performance.now();
@@ -128,10 +145,20 @@ export class ArrangementApp extends MobxLitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('pointerdown', this.onPointerDownCapture, true);
     this.removeEventListener('dragover', this.onDragOver);
     this.removeEventListener('drop', this.onDrop);
     cancelAnimationFrame(this.raf);
   }
+
+  /** Track the interacted surface via the composed path (crosses shadow roots). */
+  private onPointerDownCapture = (e: PointerEvent) => {
+    const path = e.composedPath();
+    const has = (tag: string) => path.some((n) => (n as Element)?.tagName === tag);
+    if (has('ARR-GRID') || has('ARR-RULER')) this.lastSurface = 'timeline';
+    else if (has('ARR-INSPECTOR') || has('ARR-TABBAR')) this.lastSurface = 'inspector';
+    else this.lastSurface = 'other';
+  };
 
   /** Allow file drops anywhere on the page. */
   private onDragOver = (e: DragEvent) => {
@@ -193,9 +220,12 @@ export class ArrangementApp extends MobxLitElement {
   };
 
   private onKey = (e: KeyboardEvent) => {
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // Resolve focus through shadow roots — typing in any editor consumes the key.
+    if (isEditable(deepActiveElement())) return;
     if (e.key === 'Backspace' || e.key === 'Delete') {
+      // Backspace/Delete is timeline-only: deleting an effect in a sketch card or
+      // anywhere else must NOT delete clips/tracks (the bug this guards against).
+      if (this.lastSurface !== 'timeline') return;
       if (store.primaryPath?.startsWith('track/')) {
         e.preventDefault();
         store.deleteSelectedTracks(); // a focused track → delete it (never the bus)

@@ -29,6 +29,7 @@ export class ArrRuler extends MobxLitElement {
     }
     .corner {
       width: ${HEADER_WIDTH}px;
+      box-sizing: border-box;
       flex-shrink: 0;
       border-right: 1px solid var(--app-tint-3);
       display: flex;
@@ -233,6 +234,9 @@ export class ArrRuler extends MobxLitElement {
     this.dragging = true;
     this.moved = 0;
     this.lastY = e.clientY;
+    // Scrub: move the cursor immediately on pointerdown (not just on click-up).
+    const grid = buildBeatGrid();
+    store.setPlayFrom(store.quantize(grid.xToBeat(this.localX(e))));
     // Capture the content position under the cursor — it stays anchored there
     // for the whole gesture, so hitting the scroll endpoint never makes the
     // anchor drift (it just stops following until you drag back).

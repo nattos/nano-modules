@@ -3,8 +3,9 @@ import { store } from './store';
 
 /**
  * compositeClipsAtBeat — the timeline → composite-layer resolution that drives
- * the multi-track monitor. Covers active-at-beat selection, draw order
- * (bottom→top), bypass/solo, media exclusion, empties, and overlap tie-break.
+ * the multi-track monitor. Covers active-at-beat selection, draw order (downward
+ * sum: top track first → bottom track on top), bypass/solo, media exclusion,
+ * empties, and overlap tie-break.
  */
 describe('compositeClipsAtBeat', () => {
   let topId: string; // first 'track' kind = topmost
@@ -25,13 +26,13 @@ describe('compositeClipsAtBeat', () => {
     for (const t of store.composition.tracks) { t.soloed = false; t.bypassed = false; }
   });
 
-  it('returns active clips in draw order (bottom track first → top last)', () => {
+  it('returns active clips in draw order (downward sum: top first → bottom on top)', () => {
     withDevice(topId, 40);
     withDevice(botId, 40);
     const layers = store.compositeClipsAtBeat(42);
     expect(layers.length).toBe(2);
-    expect(layers[layers.length - 1].track.id).toBe(topId); // top track drawn last
-    expect(layers[0].track.id).toBe(botId);
+    expect(layers[0].track.id).toBe(topId); // top track painted first (background)
+    expect(layers[layers.length - 1].track.id).toBe(botId); // bottom track drawn last (on top)
   });
 
   it('excludes clips outside the beat', () => {
