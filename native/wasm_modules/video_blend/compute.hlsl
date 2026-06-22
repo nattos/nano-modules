@@ -1,5 +1,9 @@
 // Video Blend — composites two input textures with a selectable blend mode.
-//   blended = mode(A, B);  output = lerp(A, blended, opacity)
+//   blended = mode(A.rgb, B.rgb)
+//   output  = (blended) OVER A, using B's alpha × opacity  (Porter-Duff source-over)
+// Alpha is PRESERVED (not forced to 1), so a transparent B reveals A and the
+// composite carries real transparency downstream. For opaque inputs this reduces
+// to the old lerp(A, blended, opacity) with alpha 1 (backward compatible).
 // Modes mirror the BlendMode enum in main.cpp (keep in lock-step).
 
 Texture2D<float4> inputA : register(t0);   // base
@@ -47,9 +51,16 @@ float3 blendMode(int m, float3 a, float3 b) {
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
-  float4 a = inputA[gid.xy];
-  float4 b = inputB[gid.xy];
+  float4 a = inputA[gid.xy];   // base (the layers below / accumulator)
+  float4 b = inputB[gid.xy];   // top layer
   float3 blended = saturate(blendMode(mode, a.rgb, b.rgb));
-  float3 outc = lerp(a.rgb, blended, opacity);
-  outputTex[gid.xy] = float4(outc, 1.0);
+  // Source-over: composite the blended top over the base by the top's coverage
+  // (its alpha × opacity). Straight-alpha in/out. Opaque inputs → lerp(a, blended,
+  // opacity) with alpha 1 (unchanged); a transparent top reveals the base.
+  float topA = saturate(b.a * opacity);
+  float outA = topA + a.a * (1.0 - topA);
+  float3 outc = (outA > 1e-5)
+      ? (blended * topA + a.rgb * a.a * (1.0 - topA)) / outA
+      : float3(0.0, 0.0, 0.0);
+  outputTex[gid.xy] = float4(outc, outA);
 }

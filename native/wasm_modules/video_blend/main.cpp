@@ -1,12 +1,13 @@
 /*
  * composite.blend — Blends two texture inputs with a selectable blend mode.
  *
- *   blended = mode(A, B)            (per the chosen Photoshop-style mode)
- *   output  = lerp(A, blended, opacity)
+ *   blended = mode(A.rgb, B.rgb)    (per the chosen Photoshop-style mode)
+ *   output  = (blended) OVER A, by B.alpha * opacity   (Porter-Duff source-over)
  *
- * So opacity stays meaningful for every mode: it crossfades between the base
- * (A) and the fully-blended result. Mode 0 (Normal) reduces to the old
- * A*(1-opacity) + B*opacity behaviour.
+ * Opacity stays meaningful for every mode (it scales the top's coverage), and
+ * ALPHA IS PRESERVED — a transparent B reveals A and the composite carries real
+ * transparency downstream. For opaque inputs this reduces to the old
+ * lerp(A, blended, opacity) with alpha 1 (backward compatible).
  *
  * Parameters:
  *   mode    (select, default Normal) — see the BlendMode enum / shader switch
