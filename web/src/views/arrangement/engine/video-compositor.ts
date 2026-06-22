@@ -1,0 +1,210 @@
+/**
+ * VideoCompositor — main-thread video decode pump for the arrangement.
+ *
+ * Each active video clip (a clip backed by on-disk / object-URL media) decodes
+ * on the MAIN thread via `VideoPlaybackService` (its own WebGPU device), and each
+ * frame's GPU texture is blitted to an ImageBitmap and pushed to the executor
+ * worker, bound to that clip's `source.video.file` chain entry
+ * (`setInstanceTexture`). So the video becomes a normal SOURCE inside the GPU
+ * composite — its effects process it and it composites via composite.blend —
+ * mirroring the IDE's video preview path, but for many clips at once and driven
+ * by the arrangement TRANSPORT clock instead of a free-running loop.
+ *
+ * Reuses the proven decode stack (VideoPlaybackService / FrameBlitter); only the
+ * multi-clip lifecycle + transport→frame mapping are arrangement-specific.
+ */
+
+import { GPUHost } from '../../../gpu-host';
+import { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
+import { FrameBlitter } from '../../../video/frame-blitter';
+import { thumbnailController } from '../media/thumbnail-controller';
+
+/** One active video clip the pump should feed. */
+export interface VideoClipDesc {
+  clipId: string;
+  /** Engine instance key of the clip's `source.video.file` entry. */
+  instanceKey: string;
+  /** Fetchable media URL (object URL or served asset). */
+  url: string;
+  /** Stable cache identity. */
+  sourceKey: string;
+  startBeat: number;
+  lengthBeat: number;
+  durationFrames: number;
+  fps?: number;
+  speed?: number;
+}
+
+/** Current transport position the frame mapping reads. */
+export type TransportClock = () => { beat: number; bpm: number };
+
+interface Pump {
+  desc: VideoClipDesc;
+  clip: ClipHandle;
+  width: number;
+  height: number;
+  frameCount: number;
+  fps: number;
+  busy: boolean;
+}
+
+export class VideoCompositor {
+  private device: GPUDevice | null = null;
+  private gpuHost: GPUHost | null = null;
+  private blitter: FrameBlitter | null = null;
+  private service: VideoPlaybackService | null = null;
+  private servicePromise: Promise<VideoPlaybackService> | null = null;
+
+  /** Open pumps, keyed by clipId. */
+  private pumps = new Map<string, Pump>();
+  /** Clips currently being opened (async), to avoid double-open. */
+  private opening = new Set<string>();
+  private raf = 0;
+
+  constructor(
+    /** Push a decoded frame to the executor for `instanceKey`. */
+    private readonly setInstanceTexture: (instanceKey: string, bitmap: ImageBitmap | null) => void,
+    /** Render size the frames are blitted to (matches the composite sketch). */
+    private readonly renderW: number,
+    private readonly renderH: number,
+    private readonly clock: TransportClock,
+  ) {}
+
+  private ensureService(): Promise<VideoPlaybackService> {
+    if (this.service) return Promise.resolve(this.service);
+    if (!this.servicePromise) {
+      this.servicePromise = (async () => {
+        // Reuse the thumbnailController's main-thread GPU device + decode service
+        // (one device per page — a second requestDevice fails under headless
+        // WebGPU). We only add our own FrameBlitter on the shared device.
+        const { device, gpuHost, service } = await thumbnailController.sharedGpu();
+        this.device = device;
+        this.gpuHost = gpuHost;
+        this.blitter = new FrameBlitter(device);
+        this.service = service;
+        return service;
+      })();
+    }
+    return this.servicePromise;
+  }
+
+  /**
+   * Reconcile the active video clips: open new ones, close departed ones, and
+   * keep timing in sync. Cheap to call every frame (diffed by clipId).
+   */
+  setActiveClips(descs: VideoClipDesc[]) {
+    const wanted = new Map(descs.map((d) => [d.clipId, d]));
+    // Close departed.
+    for (const [clipId, pump] of [...this.pumps]) {
+      if (!wanted.has(clipId)) {
+        this.pumps.delete(clipId);
+        pump.desc && this.setInstanceTexture(pump.desc.instanceKey, null);
+        this.service?.close(pump.clip).catch(() => {});
+      }
+    }
+    // Open new / update existing timing.
+    for (const d of descs) {
+      const existing = this.pumps.get(d.clipId);
+      if (existing) {
+        existing.desc = d; // startBeat/length/instanceKey may have changed
+      } else if (!this.opening.has(d.clipId)) {
+        void this.openClip(d);
+      }
+    }
+    if (this.pumps.size > 0 || this.opening.size > 0) this.start();
+    else this.stop();
+  }
+
+  private async openClip(d: VideoClipDesc) {
+    this.opening.add(d.clipId);
+    try {
+      const service = await this.ensureService();
+      const resp = await fetch(d.url);
+      const blob = await resp.blob();
+      // Random-access (not sequential): the timeline scrubs anywhere.
+      const clip = await service.open(blob, d.sourceKey, { sequential: false });
+      if (!this.opening.has(d.clipId)) { service.close(clip).catch(() => {}); return; } // canceled
+      const info = service.inspect(clip);
+      this.pumps.set(d.clipId, {
+        desc: d,
+        clip,
+        width: info.width,
+        height: info.height,
+        frameCount: info.frameCount > 0 ? info.frameCount : Math.max(1, d.durationFrames),
+        fps: info.fps > 0 ? info.fps : d.fps ?? 30,
+        busy: false,
+      });
+    } catch (err) {
+      console.warn('[video-compositor] open failed:', d.url, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+    } finally {
+      this.opening.delete(d.clipId);
+      if (this.pumps.size > 0) this.start();
+    }
+  }
+
+  private start() {
+    if (this.raf) return;
+    const tick = () => {
+      this.raf = requestAnimationFrame(tick);
+      this.pumpAll();
+    };
+    this.raf = requestAnimationFrame(tick);
+  }
+
+  private stop() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private pumpAll() {
+    if (this.pumps.size === 0) return;
+    const { beat, bpm } = this.clock();
+    for (const pump of this.pumps.values()) {
+      if (pump.busy) continue;
+      pump.busy = true;
+      void this.pumpClip(pump, beat, bpm);
+    }
+  }
+
+  /** Map the transport position to a clip-local source frame (loops). */
+  private frameFor(p: Pump, beat: number, bpm: number): number {
+    const d = p.desc;
+    const secPerBeat = 60 / Math.max(1, bpm);
+    const localSec = (beat - d.startBeat) * secPerBeat;
+    if (localSec <= 0) return 0;
+    const raw = Math.floor(localSec * p.fps * (d.speed ?? 1));
+    const fc = p.frameCount;
+    return ((raw % fc) + fc) % fc; // loop within the source
+  }
+
+  private async pumpClip(p: Pump, beat: number, bpm: number) {
+    try {
+      if (!this.gpuHost || !this.blitter || !this.service) return;
+      const frame = this.frameFor(p, beat, bpm);
+      const handle = await this.service.pull(p.clip, frame);
+      if (handle <= 0 || !this.pumps.has(p.desc.clipId)) return;
+      const tex = this.gpuHost.getTextureByHandle(handle);
+      if (!tex) return;
+      // Blit (and scale) to the composite render size so the source.video.file
+      // copy is a straight 1:1 write.
+      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH);
+      this.setInstanceTexture(p.desc.instanceKey, bitmap);
+    } catch (err) {
+      console.debug('[video-compositor] pump failed', err);
+    } finally {
+      p.busy = false;
+    }
+  }
+
+  destroy() {
+    this.stop();
+    for (const pump of this.pumps.values()) this.service?.close(pump.clip).catch(() => {});
+    this.pumps.clear();
+    this.opening.clear();
+  }
+
+  /** Active pump count (diagnostic / tests). */
+  get pumpCount(): number {
+    return this.pumps.size;
+  }
+}

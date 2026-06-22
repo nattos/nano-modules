@@ -309,6 +309,9 @@ async function handleCommand(cmd: WorkerCommand) {
       // it's available when that phase lands.
       handleSetSketchInput(cmd.sketchId, cmd.bitmap);
       break;
+    case 'setInstanceTexture':
+      handleSetInstanceTexture(cmd.instanceKey, cmd.bitmap);
+      break;
     case 'reloadWasm':
       await reloadWasmModule(cmd.wasmUrl);
       break;
@@ -513,13 +516,15 @@ async function frame() {
     const submitTime = performance.now();
     const fence = gpuDevice.queue.onSubmittedWorkDone();
     // GPU-busy proxy: smooth the queue-completion lag (see gpuTimeEma decl).
+    // Tolerate fence rejection (e.g. a transient device/instance drop) so it
+    // never escapes as an unhandled rejection and the loop keeps running.
     void fence.then(() => {
       const sample = performance.now() - submitTime;
       gpuTimeEma = gpuTimeEma === 0 ? sample : gpuTimeEma * 0.85 + sample * 0.15;
-    });
+    }).catch(() => {});
     inFlightFences.push(fence);
     if (inFlightFences.length > MAX_FRAMES_IN_FLIGHT) {
-      await inFlightFences.shift();
+      try { await inFlightFences.shift(); } catch { /* dropped fence — keep looping */ }
     }
   }
   // Refresh the UI-facing GPU-time at ~10 Hz so the readout is stable.
@@ -607,6 +612,54 @@ function handleSetSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
   // A video/live source feeds this ~30-60×/s; calling markDirty() here used
   // to trigger a full /global JSON dump + plugins re-wrap + 'state' post
   // every input frame — the dominant CPU churn even when output was stopped.
+}
+
+/**
+ * Per-instance host-injected frame textures (the arrangement video pump →
+ * `source.video.file` chain entries). Keyed by the global instance key; the
+ * decoded frame is bound to that instance's `frame` field each tick.
+ */
+const instanceTextures = new Map<string, { handle: number; width: number; height: number }>();
+
+function handleSetInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
+  if (!bitmap) {
+    instanceTextures.delete(instanceKey);
+    activeExecutor()?.getInstance(instanceKey)?.host.textureFields.delete('frame');
+    return;
+  }
+  if (!gpuHost || !gpuDevice) {
+    bitmap.close();
+    return;
+  }
+  const w = bitmap.width;
+  const h = bitmap.height;
+  let entry = instanceTextures.get(instanceKey);
+  if (!entry || entry.width !== w || entry.height !== h) {
+    const handle = gpuHost.createTexture(w, h, 1); // rgba8unorm
+    entry = { handle, width: w, height: h };
+    instanceTextures.set(instanceKey, entry);
+  }
+  const tex = gpuHost.getTextureByHandle(entry.handle);
+  if (tex) {
+    gpuDevice.queue.copyExternalImageToTexture(
+      { source: bitmap, flipY: false },
+      { texture: tex },
+      { width: w, height: h },
+    );
+  }
+  bitmap.close();
+  // Bind now (and re-bound each tick in applyInstanceTextures, since the instance
+  // may not exist yet when the first frame arrives). No markDirty — same reasoning
+  // as handleSetSketchInput (this is a per-frame video feed, not inspector state).
+}
+
+/** Re-bind injected frame textures onto their live instances (called per tick). */
+function applyInstanceTextures() {
+  const ex = activeExecutor();
+  if (!ex || instanceTextures.size === 0) return;
+  for (const [instanceKey, entry] of instanceTextures) {
+    ex.getInstance(instanceKey)?.host.textureFields.set('frame', entry.handle);
+  }
 }
 
 /**
@@ -699,6 +752,7 @@ async function simulateTick(dt: number) {
   }
 
   // 4. Execute sketch chains (modules in chains are ticked + rendered by the executor)
+  applyInstanceTextures(); // bind injected video frames to their instances first
   sketchOutputs.clear();
   for (const [sketchId, sketch] of sketches) {
     let inputHandle = -1;

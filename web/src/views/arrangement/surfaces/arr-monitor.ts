@@ -18,8 +18,6 @@ import { customElement, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { engineBridge } from '../engine/engine-bridge';
-import { thumbnailController } from '../media/thumbnail-controller';
-import type { Clip } from '../model/composition';
 
 @customElement('arr-monitor')
 export class ArrMonitor extends MobxLitElement {
@@ -71,29 +69,18 @@ export class ArrMonitor extends MobxLitElement {
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
   private compositeOff?: () => void;
-  private thumbOff?: () => void;
-  /** Active media-layer view ids (`monitor:<clipId>`) for cleanup. */
-  private mediaViews = new Set<string>();
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => this.redraw());
     this.ro.observe(this);
-    // Recomposite whenever the engine produces a new frame for any layer.
+    // Recomposite whenever the engine produces a new composite frame.
     this.compositeOff = engineBridge.setOnComposite(() => this.redraw());
-    // Recomposite as decoded media tiles land for any active media layer.
-    this.thumbOff = thumbnailController.subscribe((sk) => {
-      const active = store.compositeLayersAtBeat(store.positionBeat);
-      if (active.some((l) => l.kind === 'media' && l.clip.source?.sourceKey === sk)) this.redraw();
-    });
     this.redraw();
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
     this.compositeOff?.();
-    this.thumbOff?.();
-    for (const v of this.mediaViews) thumbnailController.dropView(v);
-    this.mediaViews.clear();
   }
   updated() {
     // Reflect the TIMELINE at the playhead into the engine (deduped inside the
@@ -113,16 +100,15 @@ export class ArrMonitor extends MobxLitElement {
     // real edit (param, device, or track level) re-renders → showComposite
     // rebuilds the combined sketch → engine update.
     for (const layer of store.compositeLayersAtBeat(store.positionBeat)) {
-      void layer.kind;
       void layer.opacity;
+      void layer.blendMode;
+      void layer.clip.source?.url;
       for (const d of layer.clip.sketch.devices) {
         void d.moduleType;
         const st = d.state;
         if (st) for (const k in st) void (st as Record<string, unknown>)[k];
       }
     }
-    // The active media clip drives the decoded-frame path.
-    void store.topMediaClipAtBeat(store.positionBeat)?.source?.url;
     return html`
       <div class="head">
         <span>OUTPUT</span>
@@ -164,50 +150,19 @@ export class ArrMonitor extends MobxLitElement {
   }
 
   /**
-   * Composite every active layer (bottom → top) at the playhead: engine layers
-   * from the bridge's retained frames, media layers from decoded tiles, each at
-   * its effective opacity. Unifies what used to be two exclusive paths so a
-   * media clip can sit BETWEEN effect layers and per-track opacity is honoured.
+   * Draw the single combined composite (all active layers — effect chains AND
+   * video clips — are folded into ONE GPU sketch by the bridge, with cross-track
+   * effect input, per-track opacity, and blend modes already applied).
    */
   private redraw() {
-    const layers = store.compositeLayersAtBeat(store.positionBeat);
-    this.syncMediaViews(layers);
     const s = this.sizedCtx();
     if (!s) return;
     const { ctx, w, h } = s;
-    if (layers.length === 0) { this.drawPlaceholder(); return; }
-
+    if (!engineBridge.hasContent) { this.drawPlaceholder(); return; }
+    const bmp = engineBridge.engineComposite();
+    if (!bmp) { this.drawPlaceholder('booting…'); return; }
     ctx.clearRect(0, 0, w, h);
-    let drew = false;
-    let pending = false;
-    let drewEngine = false;
-    for (const layer of layers) {
-      if (layer.kind === 'engine') {
-        // ALL engine layers are folded into ONE combined composite (the chain
-        // handles cross-track effect input + per-track opacity), so draw it once
-        // at the z of the first engine layer.
-        if (drewEngine) continue;
-        drewEngine = true;
-        const bmp = engineBridge.engineComposite();
-        if (!bmp) { pending = true; continue; }
-        ctx.save();
-        ctx.globalAlpha = 1; // per-track opacity is already baked into the composite
-        this.drawCover(ctx, bmp, w, h);
-        ctx.restore();
-        drew = true;
-      } else {
-        const bmp = this.mediaTile(layer.clip);
-        if (!bmp) { pending = true; continue; }
-        ctx.save();
-        ctx.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
-        this.drawCover(ctx, bmp, w, h);
-        ctx.restore();
-        drew = true;
-      }
-    }
-    // Nothing ready yet (engine booting / tiles decoding) → booting placeholder.
-    if (!drew && pending) this.drawPlaceholder('booting…');
-    else if (!drew) this.drawPlaceholder();
+    this.drawCover(ctx, bmp, w, h); // opacity/blend already baked into the composite
   }
 
   /** Cover-fit a bitmap into w×h centred. */
@@ -216,39 +171,6 @@ export class ArrMonitor extends MobxLitElement {
     const dw = bmp.width * scale;
     const dh = bmp.height * scale;
     ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  }
-
-  /** Decoded frame for a media clip at the playhead (best-available; nullable). */
-  private mediaTile(clip: Clip): ImageBitmap | null {
-    const media = clip.source;
-    if (!media?.url || !media.sourceKey) return null;
-    const fc = Math.max(1, media.durationFrames);
-    const u = clip.lengthBeat > 0 ? (store.positionBeat - clip.startBeat) / clip.lengthBeat : 0;
-    const frame = Math.max(0, Math.min(fc - 1, Math.round(Math.max(0, Math.min(1, u)) * (fc - 1))));
-    return thumbnailController.peek(media.sourceKey, frame, 0)?.value ?? null;
-  }
-
-  /** Register decode views for the active media layers; drop departed ones. */
-  private syncMediaViews(layers: { kind: string; clip: Clip }[]) {
-    const want = new Set<string>();
-    for (const l of layers) {
-      const media = l.clip.source;
-      if (l.kind !== 'media' || !media?.url || !media.sourceKey) continue;
-      const viewId = `monitor:${l.clip.id}`;
-      want.add(viewId);
-      const fc = Math.max(1, media.durationFrames);
-      const u = l.clip.lengthBeat > 0 ? (store.positionBeat - l.clip.startBeat) / l.clip.lengthBeat : 0;
-      const frame = Math.max(0, Math.min(fc - 1, Math.round(Math.max(0, Math.min(1, u)) * (fc - 1))));
-      thumbnailController.registerMedia({ sourceKey: media.sourceKey, url: media.url, frameCount: fc, fps: media.fps });
-      thumbnailController.setView(viewId, {
-        sourceKey: media.sourceKey, level: 0, startFrame: frame, endFrame: frame,
-        pattern: 'window', readaheadFrames: 1,
-      });
-    }
-    for (const v of [...this.mediaViews]) {
-      if (!want.has(v)) { thumbnailController.dropView(v); this.mediaViews.delete(v); }
-    }
-    for (const v of want) this.mediaViews.add(v);
   }
 
   private drawPlaceholder(_note?: string) {

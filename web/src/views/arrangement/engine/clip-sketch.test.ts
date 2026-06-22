@@ -62,4 +62,19 @@ describe('buildCompositeSketch', () => {
   it('returns null for an empty stack', () => {
     expect(buildCompositeSketch([])).toBeNull();
   });
+
+  it('a video clip uses source.video.file as its source and composites over', () => {
+    const r = buildCompositeSketch([
+      { clip: clip('A', 'source.noise'), opacity: 1 }, // top background
+      { clip: clip('V', 'source.video.file'), opacity: 1 }, // video below → blend over
+    ])!;
+    const types = r.sketch.chain!.map((e) => e.module_type);
+    expect(types).toContain('source.video.file');
+    expect(types.filter((t) => t === 'composite.blend').length).toBe(1);
+    // The video entry's instance key is exactly what the decode pump feeds.
+    const vKey = clipInstanceKey('V', 'Vd0');
+    expect(
+      r.sketch.chain!.some((e) => e.instance_key === vKey && e.module_type === 'source.video.file'),
+    ).toBe(true);
+  });
 });

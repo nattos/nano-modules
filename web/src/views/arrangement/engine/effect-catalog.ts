@@ -62,6 +62,16 @@ export const EFFECT_CATALOG: CatalogEffect[] = [
     fields: [], // RGB color input only — no float sliders
   },
   {
+    // Host-fed video frame source: the arrangement's main-thread decode pump
+    // injects the decoded clip frame each tick. Not in the add-effect palette
+    // (it's added automatically when a clip is backed by media).
+    type: 'source.video.file',
+    name: 'Video File',
+    bundle: CORE,
+    role: 'generator',
+    fields: [],
+  },
+  {
     type: 'source.gradient',
     name: 'Gradient',
     bundle: CORE,
@@ -837,6 +847,9 @@ export const EFFECT_CATALOG: CatalogEffect[] = [
     ],
   },
 ];
+
+/** The host-fed video source module type (added automatically for media clips). */
+export const VIDEO_SOURCE_TYPE = 'source.video.file';
 
 const BY_TYPE = new Map(EFFECT_CATALOG.map((e) => [e.type, e]));
 

@@ -30,18 +30,18 @@ describe('compositeLayersAtBeat depth', () => {
     tB = tracks[1];
   });
 
-  it('classifies media clips as kind=media (and engine-only view drops them)', () => {
+  it('a video clip is a composite (engine) layer + appears in the active-video set', () => {
     const path = store.createEmptyClip(tA.id, 50, 8)!;
     const clipId = path.split('/')[2];
     const clip = store.clipByPath(path)!.clip;
     clip.source = { label: 'v', durationFrames: 100, sourceKey: 'k', url: 'blob:x' };
 
     const layers = store.compositeLayersAtBeat(52);
-    const media = layers.find((l) => l.clip.id === clipId);
-    expect(media?.kind).toBe('media');
-    // Engine-only view (the bridge's) excludes media layers.
-    expect(store.compositeClipsAtBeat(52).some((l) => l.clip.id === clipId)).toBe(false);
-    expect(store.topMediaClipAtBeat(52)?.id).toBe(clipId);
+    const layer = layers.find((l) => l.clip.id === clipId);
+    expect(layer?.kind).toBe('engine'); // video clips render through the GPU composite now
+    // It composites (not dropped) and is flagged for the video decode pump.
+    expect(store.compositeClipsAtBeat(52).some((l) => l.clip.id === clipId)).toBe(true);
+    expect(store.activeVideoClipsAtBeat(52).some((l) => l.clip.id === clipId)).toBe(true);
   });
 
   it('carries per-track opacity from level', () => {

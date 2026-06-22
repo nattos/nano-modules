@@ -69,6 +69,12 @@ export class ThumbnailController {
   private manager: ThumbnailManager<ImageBitmap> | null = null;
   private initPromise: Promise<ThumbnailManager<ImageBitmap>> | null = null;
   private media = new Map<string, ClipMedia>();
+  // The booted main-thread GPU stack — SHARED so other arrangement consumers
+  // (the video compositor pump) don't create a second device (which conflicts
+  // with this one under headless WebGPU). Assigned in `ensure()`.
+  private device: GPUDevice | null = null;
+  private gpuHostShared: GPUHost | null = null;
+  private serviceShared: VideoPlaybackService | null = null;
   private listeners = new Set<Listener>();
   /** Count of tiles that have landed in memory (test/diagnostic hook). */
   tilesFilled = 0;
@@ -95,14 +101,29 @@ export class ThumbnailController {
   private ensure(): Promise<ThumbnailManager<ImageBitmap>> {
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
-      const adapter = await navigator.gpu?.requestAdapter();
-      if (!adapter) throw new Error('no WebGPU adapter for thumbnails');
-      const required: GPUFeatureName[] = [];
-      // DXV's BC1 fast path; harmless when absent.
-      if (adapter.features.has('texture-compression-bc')) required.push('texture-compression-bc');
-      const device = await adapter.requestDevice({ requiredFeatures: required });
-      const gpuHost = new GPUHost(device, 'rgba8unorm');
+      // Retry adapter+device creation: when the engine worker and this main-thread
+      // device initialize together, Dawn can transiently drop the GPU instance
+      // ("a valid external Instance reference no longer exists") — a fresh request
+      // a tick later succeeds.
+      let device: GPUDevice | null = null;
+      for (let attempt = 0; attempt < 4 && !device; attempt++) {
+        try {
+          const adapter = await navigator.gpu?.requestAdapter();
+          if (!adapter) throw new Error('no WebGPU adapter for thumbnails');
+          const required: GPUFeatureName[] = [];
+          // DXV's BC1 fast path; harmless when absent.
+          if (adapter.features.has('texture-compression-bc')) required.push('texture-compression-bc');
+          device = await adapter.requestDevice({ requiredFeatures: required });
+        } catch (err) {
+          if (attempt === 3) throw err;
+          await new Promise((r) => setTimeout(r, 60 * (attempt + 1)));
+        }
+      }
+      const gpuHost = new GPUHost(device!, 'rgba8unorm');
       const service = new VideoPlaybackService(gpuHost, { dxvWasmUrl: '/wasm/dxv_decoder.wasm' });
+      this.device = device;
+      this.gpuHostShared = gpuHost;
+      this.serviceShared = service;
 
       const openClip = async (sourceKey: string): Promise<ClipHandle> => {
         const m = this.media.get(sourceKey);
@@ -132,6 +153,17 @@ export class ThumbnailController {
       return mgr;
     })();
     return this.initPromise;
+  }
+
+  /**
+   * Boot (if needed) and return the SHARED main-thread GPU stack so the video
+   * compositor decode pump can reuse this device instead of creating a second
+   * one (which fails under headless WebGPU: "external Instance reference no
+   * longer exists"). Same device → same handle space.
+   */
+  async sharedGpu(): Promise<{ device: GPUDevice; gpuHost: GPUHost; service: VideoPlaybackService }> {
+    await this.ensure();
+    return { device: this.device!, gpuHost: this.gpuHostShared!, service: this.serviceShared! };
   }
 
   /** Declare interest in a source's full frame range at `level` (prefetch). */

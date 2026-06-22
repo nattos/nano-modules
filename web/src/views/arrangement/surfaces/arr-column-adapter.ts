@@ -24,7 +24,7 @@ import type { Selectable, EffectClipboard, AvailableEffect } from '../../../stat
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Device } from '../model/composition';
 import { store } from '../state/store';
-import { EFFECT_CATALOG, catalogEffect } from '../engine/effect-catalog';
+import { EFFECT_CATALOG, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
 import { clipInstanceKey } from '../engine/clip-sketch';
 
 const CAPS: ColumnCapabilities = {
@@ -35,7 +35,7 @@ const CAPS: ColumnCapabilities = {
   clipboard: false,
 };
 
-const AVAILABLE: AvailableEffect[] = EFFECT_CATALOG.map((c) => ({
+const AVAILABLE: AvailableEffect[] = EFFECT_CATALOG.filter((c) => c.type !== VIDEO_SOURCE_TYPE).map((c) => ({
   id: c.type,
   name: c.name,
   description: '',

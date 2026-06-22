@@ -203,6 +203,11 @@ export class ArrEngine {
     this.proxy.updateSketch(sketchId, plainSketch(sketch));
   }
 
+  /** Bind a decoded video frame to a `source.video.file` instance (null clears). */
+  setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
+    this.proxy.setInstanceTexture(instanceKey, bitmap);
+  }
+
   setPaused(paused: boolean) {
     this.proxy.setPaused(paused);
   }

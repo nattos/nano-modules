@@ -16,7 +16,9 @@
  */
 
 import { ArrEngine } from './arr-engine';
-import { buildCompositeSketch } from './clip-sketch';
+import { buildCompositeSketch, clipInstanceKey } from './clip-sketch';
+import { VideoCompositor, type VideoClipDesc } from './video-compositor';
+import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
 import type { Clip } from '../model/composition';
 
@@ -54,6 +56,23 @@ export class EngineBridge {
   /** Number of active engine layers in the composite (diagnostic). */
   layerCount(): number { return this.engineLayerN; }
 
+  /** Main-thread video decode pump (lazily created on first video clip). */
+  private video: VideoCompositor | null = null;
+  private videoCompositor(): VideoCompositor {
+    if (!this.video) {
+      this.video = new VideoCompositor(
+        (key, bmp) => this.setInstanceTexture(key, bmp),
+        RENDER_W,
+        RENDER_H,
+        () => ({ beat: store.positionBeat, bpm: store.composition.meta.baseBPM }),
+      );
+    }
+    return this.video;
+  }
+
+  /** Count of active video decode pumps (diagnostic / tests). */
+  videoPumpCount(): number { return this.video?.pumpCount ?? 0; }
+
   /** Boot the engine on first real use; idempotent. */
   private ensureEngine(): ArrEngine {
     if (this.engine) return this.engine;
@@ -88,6 +107,13 @@ export class EngineBridge {
   /** The latest combined composite frame (all engine layers), or undefined. */
   engineComposite(): ImageBitmap | undefined {
     return this.compositeFrame ?? undefined;
+  }
+
+  /** Bind a decoded video frame to a `source.video.file` instance (the video
+   *  pump → the composite chain). No-op until the engine has booted. */
+  setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
+    if (this.engine) this.engine.setInstanceTexture(instanceKey, bitmap);
+    else bitmap?.close();
   }
 
   /** Listen for new engine frames (the monitor recomposites). Returns unsub. */
@@ -133,9 +159,34 @@ export class EngineBridge {
    * composite actually changes, and clears the trace when nothing renders.
    */
   showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number }>) {
-    const engineLayers = layers.filter((l) => !l.clip.source?.url);
+    // Every layer renders through the GPU composite now — video clips included
+    // (their source.video.file entry outputs the host-injected decoded frame).
+    const engineLayers = layers;
     this.engineLayerN = engineLayers.length;
     this.hasContent = engineLayers.length > 0;
+
+    // Reconcile the main-thread video decode pumps with the active video clips
+    // (each feeds its `source.video.file` entry). Cheap + diffed; the pump's own
+    // rAF maps the live transport clock → frame, so this only handles the set.
+    const videoDescs: VideoClipDesc[] = [];
+    for (const l of engineLayers) {
+      const src = l.clip.source;
+      if (!src?.url) continue;
+      const dev = l.clip.sketch.devices.find((d) => d.moduleType === VIDEO_SOURCE_TYPE);
+      if (!dev) continue;
+      videoDescs.push({
+        clipId: l.clip.id,
+        instanceKey: clipInstanceKey(l.clip.id, dev.id),
+        url: src.url,
+        sourceKey: src.sourceKey ?? l.clip.id,
+        startBeat: l.clip.startBeat,
+        lengthBeat: l.clip.lengthBeat,
+        durationFrames: src.durationFrames,
+        fps: src.fps,
+        speed: l.clip.loop?.speed,
+      });
+    }
+    if (videoDescs.length > 0 || this.video) this.videoCompositor().setActiveClips(videoDescs);
 
     const render = engineLayers.length
       ? buildCompositeSketch(
@@ -162,6 +213,8 @@ export class EngineBridge {
   }
 
   destroy() {
+    this.video?.destroy();
+    this.video = null;
     this.engine?.destroy();
     this.engine = null;
     this.onCompositeCb = null;

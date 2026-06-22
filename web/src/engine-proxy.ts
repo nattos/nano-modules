@@ -150,6 +150,15 @@ export class EngineProxy {
     }
   }
 
+  /** Bind a decoded frame to an instance's host `frame` field (null to clear). */
+  setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
+    if (bitmap) {
+      this.send({ type: 'setInstanceTexture', instanceKey, bitmap }, [bitmap]);
+    } else {
+      this.send({ type: 'setInstanceTexture', instanceKey, bitmap: null });
+    }
+  }
+
   reloadWasm(wasmUrl: string) {
     this.send({ type: 'reloadWasm', wasmUrl });
   }

@@ -18,6 +18,8 @@ namespace brightness_contrast { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 
+NANO_DECLARE_INSTANCE_EFFECT(video_file)
+
 NANO_DECLARE_INSTANCE_EFFECT(video_blend)
 
 NANO_DECLARE_INSTANCE_EFFECT(paramlinker)
@@ -124,6 +126,16 @@ void nano_module_main() {
         "source",
         "color,fill",
         NANO_INSTANCE_LIFECYCLE(solid_color),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.video.file",
+        "Video File",
+        "Outputs a decoded video frame injected by the host",
+        "source",
+        "video,source,clip,file",
+        NANO_INSTANCE_LIFECYCLE(video_file),
     });
 
     nano::registerEffect({

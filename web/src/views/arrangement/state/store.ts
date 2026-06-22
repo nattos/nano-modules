@@ -506,10 +506,11 @@ export class ArrangementStore {
    * DOWNWARD (Ableton-style: the main bus pins to the bottom) — the TOP track is
    * the background and each lower track draws over it, so the BOTTOM-most track
    * wins. Returned in paint order (top track first → bottom track last). One clip
-   * per track (on overlap the latest-started wins). Each layer is `engine`
-   * (rendered chain) or `media` (decoded frames), carries its effective
-   * `opacity`, and respects bypass + solo propagated through the group hierarchy.
-   * Empty engine clips (no devices) are skipped. Rail/group tracks hold no clips.
+   * per track (on overlap the latest-started wins). Every layer is `engine`:
+   * effect chains AND video clips render through the GPU composite (a video clip's
+   * `source.video.file` entry outputs the host-injected decoded frame). Carries
+   * effective `opacity` + blend mode, and respects bypass + solo propagated
+   * through the group hierarchy. Empty clips (no devices, no media) are skipped.
    */
   compositeLayersAtBeat(beat: number): CompositeLayer[] {
     const tracks = this.composition.tracks.filter((t) => t.kind === 'track');
@@ -523,14 +524,14 @@ export class ArrangementStore {
       let pick: Clip | undefined;
       for (const c of t.clips) {
         if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
-        if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty engine clip
+        if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty clip
         if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
       }
       if (!pick) continue;
       layers.push({
         track: t,
         clip: pick,
-        kind: pick.source?.url ? 'media' : 'engine',
+        kind: 'engine',
         opacity: this.effectiveOpacity(t, anc),
         blendMode: pick.blendMode ?? 0,
       });
@@ -540,17 +541,16 @@ export class ArrangementStore {
     return layers;
   }
 
-  /** Engine-renderable layers only (the bridge renders/traces these). */
+  /** The active composite layers (the bridge folds these into one chain). */
   compositeClipsAtBeat(beat: number): Array<{ track: Track; clip: Clip }> {
-    return this.compositeLayersAtBeat(beat)
-      .filter((l) => l.kind === 'engine')
-      .map(({ track, clip }) => ({ track, clip }));
+    return this.compositeLayersAtBeat(beat).map(({ track, clip }) => ({ track, clip }));
   }
 
-  /** The topmost media clip active at `beat` (legacy single-media accessor). */
-  topMediaClipAtBeat(beat: number): Clip | undefined {
-    const media = this.compositeLayersAtBeat(beat).filter((l) => l.kind === 'media');
-    return media.length ? media[media.length - 1].clip : undefined;
+  /** Active video clips at `beat` (with the device the decode pump feeds). */
+  activeVideoClipsAtBeat(beat: number): Array<{ track: Track; clip: Clip }> {
+    return this.compositeLayersAtBeat(beat)
+      .filter((l) => !!l.clip.source?.url)
+      .map(({ track, clip }) => ({ track, clip }));
   }
 
   // ── Viewport ──────────────────────────────────────────────────────────

@@ -148,6 +148,10 @@ export type WorkerCommand =
   // while paused; the worker simulates one tick with a fixed nominal dt.
   | { type: 'stepFrame' }
   | { type: 'setSketchInput'; sketchId: string; bitmap: ImageBitmap | null }
+  // Bind a decoded frame to a specific instance's host-injected `frame` texture
+  // field (the arrangement video pump → a `source.video.file` chain entry).
+  // Keyed by the global instance key; pass null to clear.
+  | { type: 'setInstanceTexture'; instanceKey: string; bitmap: ImageBitmap | null }
   | { type: 'reloadWasm'; wasmUrl: string }
   // Test-only: route fusion-eligible stages through the dispatcher
   // ('force-on'), back to the standalone path ('force-off'), or use
