@@ -32,6 +32,7 @@ export default defineConfig({
         arrStateTestbed: resolve(__dirname, 'arr-state-testbed.html'),
         arrEngineTestbed: resolve(__dirname, 'arr-engine-testbed.html'),
         thumbnailTestbed: resolve(__dirname, 'thumbnail-testbed.html'),
+        warpTestbed: resolve(__dirname, 'warp-testbed.html'),
       },
     },
   },
