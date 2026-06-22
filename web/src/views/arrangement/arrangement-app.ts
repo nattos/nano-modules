@@ -161,6 +161,10 @@ export class ArrangementApp extends MobxLitElement {
     } else if (e.key === ' ') {
       e.preventDefault();
       store.togglePlay();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) store.redo();
+      else store.undo();
     }
   };
 

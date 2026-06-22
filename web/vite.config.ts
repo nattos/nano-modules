@@ -29,6 +29,7 @@ export default defineConfig({
         moduleTest: resolve(__dirname, 'module-test-app.html'),
         arrangement: resolve(__dirname, 'arrangement.html'),
         workspaceTestbed: resolve(__dirname, 'workspace-testbed.html'),
+        arrStateTestbed: resolve(__dirname, 'arr-state-testbed.html'),
       },
     },
   },

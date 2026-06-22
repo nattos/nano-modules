@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arrangement State Testbed</title>
+  <link rel="stylesheet" href="src/style.css" />
+  <style>
+    body { margin: 0; font-family: 'JetBrains Mono', monospace; background: #121418; color: #e6e6e6; padding: 16px; }
+    pre { background: #0e1014; border: 1px solid #2a2e38; padding: 10px; font-size: 12px; max-height: 70vh; overflow: auto; }
+    .muted { color: #888; }
+  </style>
+</head>
+<body>
+  <h2>Arrangement State Testbed <span class="muted">— DocHistory undo/redo + disk persistence (drive via window.__arrState)</span></h2>
+  <pre id="out">Open the console and use window.__arrState. The smoke test drives it headlessly via OPFS.</pre>
+  <script type="module" src="src/arr-state-testbed.ts"></script>
+</body>
+</html>

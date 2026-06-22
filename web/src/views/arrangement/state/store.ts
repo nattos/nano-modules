@@ -7,7 +7,7 @@
  * mutations are explicit action methods (no reactions for business logic).
  */
 
-import { makeAutoObservable, runInAction } from 'mobx';
+import { makeAutoObservable, runInAction, toJS } from 'mobx';
 import {
   Composition,
   Clip,
@@ -19,6 +19,8 @@ import {
   deviceIsSource,
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
+import { DocHistory } from './history';
+import type { WorkspaceBackend } from '../workspace/backend';
 
 export type SelectableKind =
   | 'track'
@@ -47,9 +49,43 @@ export const paths = {
 let _uid = 1000;
 const uid = (p: string) => `${p}_${(_uid++).toString(36)}`;
 
+/**
+ * Split every clip in a track that straddles `beat` into two. Operates on a
+ * draft `Track` inside a history recipe (clips are drafts; the JSON clone
+ * yields a plain right-hand clip). Shared by all the time-region ops.
+ */
+function splitClipsAt(track: Track, beat: number) {
+  const next: Clip[] = [];
+  for (const clip of track.clips) {
+    const end = clip.startBeat + clip.lengthBeat;
+    if (beat > clip.startBeat + 1e-6 && beat < end - 1e-6) {
+      const right: Clip = JSON.parse(JSON.stringify(clip));
+      right.id = uid('clip');
+      right.startBeat = beat;
+      right.lengthBeat = end - beat;
+      clip.lengthBeat = beat - clip.startBeat;
+      next.push(clip, right);
+    } else {
+      next.push(clip);
+    }
+  }
+  track.clips = next;
+}
+
 export class ArrangementStore {
   // ── Persisted document ────────────────────────────────────────────────
   composition: Composition = makeFakeComposition();
+
+  // ── Persistence + undo (non-observable infra) ─────────────────────────
+  /** Undo/redo over `composition`; all document writes go through `mutate`. */
+  private history!: DocHistory<Composition>;
+  /** The mounted workspace this arrangement saves to, if any. */
+  private backend: WorkspaceBackend | null = null;
+  /** Active arrangement file name within the workspace. */
+  currentName: string | null = null;
+  private persistenceEnabled = false;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSavedJson = '';
 
   // ── Ephemeral UI state ────────────────────────────────────────────────
   /** Multi-select: set of selectable paths. */
@@ -105,7 +141,90 @@ export class ArrangementStore {
   timeSelTrackIds: string[] = [];
 
   constructor() {
-    makeAutoObservable(this, {}, { autoBind: true });
+    makeAutoObservable<
+      ArrangementStore,
+      'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson'
+    >(
+      this,
+      {
+        backend: false,
+        saveTimer: false,
+        persistenceEnabled: false,
+        lastSavedJson: false,
+      },
+      { autoBind: true },
+    );
+    // `history` is assigned after makeAutoObservable so it stays a plain
+    // (non-observable) ref; its own internal stacks are observable.
+    this.history = new DocHistory<Composition>(() => this.composition);
+    this.history.postRecordHook = () => this.requestSave();
+  }
+
+  // ── Document mutation + undo ──────────────────────────────────────────
+  /** The single funnel for every write to `composition` (recorded + saved). */
+  private mutate(
+    description: string,
+    recipe: (d: Composition) => void,
+    coalesceKey?: string,
+  ) {
+    this.history.record(description, recipe, coalesceKey);
+  }
+
+  undo() {
+    this.history.undo();
+  }
+  redo() {
+    this.history.redo();
+  }
+  get canUndo(): boolean {
+    return this.history.canUndo;
+  }
+  get canRedo(): boolean {
+    return this.history.canRedo;
+  }
+
+  // ── Workspace persistence ─────────────────────────────────────────────
+  /** Load an existing arrangement file from a mounted workspace. */
+  async openArrangement(backend: WorkspaceBackend, name: string) {
+    const comp = await backend.read(name);
+    runInAction(() => {
+      this.backend = backend;
+      this.currentName = name;
+      this.composition = comp;
+      this.persistenceEnabled = true;
+      this.lastSavedJson = JSON.stringify(toJS(comp));
+      this.clearSelection();
+    });
+    this.history.reset();
+  }
+
+  /** Create a new arrangement file (seeded with `comp` or the current doc). */
+  async createArrangement(backend: WorkspaceBackend, name: string, comp?: Composition) {
+    await backend.create(name, comp ?? toJS(this.composition));
+    await this.openArrangement(backend, name);
+  }
+
+  /** Debounced autosave; a no-op until a workspace is bound. */
+  private requestSave(debounceMs = 400) {
+    if (!this.persistenceEnabled || !this.backend || !this.currentName) return;
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.saveNow();
+    }, debounceMs);
+  }
+
+  /** Flush the current document to disk now (dedup'd against last save). */
+  async saveNow() {
+    if (!this.backend || !this.currentName) return;
+    const json = JSON.stringify(toJS(this.composition));
+    if (json === this.lastSavedJson) return;
+    await this.backend.write(this.currentName, this.composition);
+    this.lastSavedJson = json;
+  }
+
+  get hasWorkspace(): boolean {
+    return this.backend !== null;
   }
 
   // ── Lookups ─────────────────────────────────────────────────────────
@@ -309,29 +428,13 @@ export class ArrangementStore {
   splitAtRegion() {
     if (!this.hasTimeSelection) return;
     const edges = [this.timeSelStart!, this.timeSelEnd];
-    runInAction(() => {
-      for (const track of this.regionTracks()) {
-        for (const edge of edges) this.splitTrackClipsAt(track, edge);
+    const scope = this.regionTracks().map((t) => t.id);
+    this.mutate('split', (d) => {
+      for (const track of d.tracks) {
+        if (!scope.includes(track.id)) continue;
+        for (const edge of edges) splitClipsAt(track, edge);
       }
     });
-  }
-
-  private splitTrackClipsAt(track: Track, beat: number) {
-    const next: Clip[] = [];
-    for (const clip of track.clips) {
-      const end = clip.startBeat + clip.lengthBeat;
-      if (beat > clip.startBeat + 1e-6 && beat < end - 1e-6) {
-        const right: Clip = JSON.parse(JSON.stringify(clip));
-        right.id = uid('clip');
-        right.startBeat = beat;
-        right.lengthBeat = end - beat;
-        clip.lengthBeat = beat - clip.startBeat;
-        next.push(clip, right);
-      } else {
-        next.push(clip);
-      }
-    }
-    track.clips = next;
   }
 
   /** Remove the region's span; later clips shift left, spanning clips trim. */
@@ -340,11 +443,13 @@ export class ArrangementStore {
     const start = this.timeSelStart!;
     const end = this.timeSelEnd;
     const span = end - start;
-    runInAction(() => {
-      for (const track of this.regionTracks()) {
+    const scope = this.regionTracks().map((t) => t.id);
+    this.mutate('delete time', (d) => {
+      for (const track of d.tracks) {
+        if (!scope.includes(track.id)) continue;
         // First split at both edges so trims are clean.
-        this.splitTrackClipsAt(track, start);
-        this.splitTrackClipsAt(track, end);
+        splitClipsAt(track, start);
+        splitClipsAt(track, end);
         track.clips = track.clips.filter(
           (c) => !(c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6),
         );
@@ -352,6 +457,8 @@ export class ArrangementStore {
           if (c.startBeat >= end - 1e-6) c.startBeat -= span;
         }
       }
+    });
+    runInAction(() => {
       this.timeSelEnd = start;
       this.timeSelStart = start;
     });
@@ -365,10 +472,12 @@ export class ArrangementStore {
     if (!this.hasTimeSelection) return;
     const start = this.timeSelStart!;
     const end = this.timeSelEnd;
-    runInAction(() => {
-      for (const track of this.regionTracks()) {
-        this.splitTrackClipsAt(track, start);
-        this.splitTrackClipsAt(track, end);
+    const scope = this.regionTracks().map((t) => t.id);
+    this.mutate('clear time', (d) => {
+      for (const track of d.tracks) {
+        if (!scope.includes(track.id)) continue;
+        splitClipsAt(track, start);
+        splitClipsAt(track, end);
         track.clips = track.clips.filter(
           (c) => !(c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6),
         );
@@ -381,9 +490,11 @@ export class ArrangementStore {
     if (!this.hasTimeSelection) return;
     const start = this.timeSelStart!;
     const span = this.timeSelEnd - start;
-    runInAction(() => {
-      for (const track of this.regionTracks()) {
-        this.splitTrackClipsAt(track, start);
+    const scope = this.regionTracks().map((t) => t.id);
+    this.mutate('insert time', (d) => {
+      for (const track of d.tracks) {
+        if (!scope.includes(track.id)) continue;
+        splitClipsAt(track, start);
         for (const c of track.clips) {
           if (c.startBeat >= start - 1e-6) c.startBeat += span;
         }
@@ -422,10 +533,11 @@ export class ArrangementStore {
     this.transportMode = mode;
   }
   setBpm(bpm: number) {
-    this.composition.meta.baseBPM = Math.max(20, Math.min(300, bpm));
+    const v = Math.max(20, Math.min(300, bpm));
+    this.mutate('set BPM', (d) => { d.meta.baseBPM = v; }, 'meta:bpm');
   }
   setResolution(width: number, height: number) {
-    this.composition.meta.resolution = { width, height };
+    this.mutate('set resolution', (d) => { d.meta.resolution = { width, height }; }, 'meta:res');
   }
 
   // ── Clip mutations ────────────────────────────────────────────────────
@@ -534,8 +646,8 @@ export class ArrangementStore {
       exports: [],
       warps: [],
     };
-    runInAction(() => {
-      track.clips.push(clip);
+    this.mutate('create clip', (d) => {
+      d.tracks.find((t) => t.id === trackId)?.clips.push(clip);
     });
     const path = paths.clip(trackId, clip.id);
     this.select(path);
@@ -550,7 +662,10 @@ export class ArrangementStore {
   addTrackDevice(trackId: string, _kind: 'source' | 'effect') {
     const t = this.trackById(trackId);
     if (!t) return;
-    t.sketch.devices.push(this.makeDevice('effect'));
+    const dev = this.makeDevice('effect');
+    this.mutate('add device', (d) => {
+      d.tracks.find((x) => x.id === trackId)?.sketch.devices.push(dev);
+    });
   }
 
   private makeDevice(kind: 'source' | 'effect'): Device {
@@ -582,20 +697,27 @@ export class ArrangementStore {
     const track = this.trackById(trackId);
     const clip = track?.clips.find((c) => c.id === clipId);
     if (!clip) return;
-    runInAction(() => {
-      clip.sketch.devices.push(device);
-      if (deviceIsSource(device) && clip.kind === 'effect') {
-        clip.kind = 'video';
-        clip.source = clip.source ?? { label: device.name, durationFrames: 300 };
+    this.mutate('add device', (d) => {
+      const c = d.tracks.find((x) => x.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c) return;
+      c.sketch.devices.push(device);
+      if (deviceIsSource(device) && c.kind === 'effect') {
+        c.kind = 'video';
+        c.source = c.source ?? { label: device.name, durationFrames: 300 };
       }
     });
   }
 
   moveClip(trackId: string, clipId: string, newStartBeat: number) {
-    const track = this.trackById(trackId);
-    const clip = track?.clips.find((c) => c.id === clipId);
-    if (!clip) return;
-    clip.startBeat = Math.max(0, newStartBeat);
+    const v = Math.max(0, newStartBeat);
+    this.mutate(
+      'move clip',
+      (d) => {
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (c) c.startBeat = v;
+      },
+      `move:${trackId}:${clipId}`,
+    );
   }
 
   resizeClip(
@@ -604,48 +726,63 @@ export class ArrangementStore {
     newStartBeat: number,
     newLengthBeat: number,
   ) {
-    const track = this.trackById(trackId);
-    const clip = track?.clips.find((c) => c.id === clipId);
-    if (!clip) return;
-    runInAction(() => {
-      clip.startBeat = Math.max(0, newStartBeat);
-      clip.lengthBeat = Math.max(0.5, newLengthBeat);
-    });
+    const start = Math.max(0, newStartBeat);
+    const len = Math.max(0.5, newLengthBeat);
+    this.mutate(
+      'resize clip',
+      (d) => {
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (c) { c.startBeat = start; c.lengthBeat = len; }
+      },
+      `resize:${trackId}:${clipId}`,
+    );
   }
 
   deleteSelectedClips() {
-    runInAction(() => {
-      for (const path of this.selection) {
-        const found = this.clipByPath(path);
-        if (found) {
-          found.track.clips = found.track.clips.filter(
-            (c) => c.id !== found.clip.id,
-          );
-        }
+    const sel = [...this.selection];
+    this.mutate('delete clips', (d) => {
+      for (const path of sel) {
+        const [kind, trackId, clipId] = path.split('/');
+        if (kind !== 'clip') continue;
+        const t = d.tracks.find((x) => x.id === trackId);
+        if (t) t.clips = t.clips.filter((c) => c.id !== clipId);
       }
-      this.clearSelection();
     });
+    this.clearSelection();
   }
 
   // ── Track / group / automation toggles ────────────────────────────────
   toggleGroupCollapse(trackId: string) {
-    const t = this.trackById(trackId);
-    if (t) t.collapsed = !t.collapsed;
+    this.mutate('toggle collapse', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (t) t.collapsed = !t.collapsed;
+    });
   }
 
   toggleSolo(trackId: string) {
-    const t = this.trackById(trackId);
-    if (t) t.soloed = !t.soloed;
+    this.mutate('toggle solo', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (t) t.soloed = !t.soloed;
+    });
   }
 
   toggleBypass(trackId: string) {
-    const t = this.trackById(trackId);
-    if (t) t.bypassed = !t.bypassed;
+    this.mutate('toggle bypass', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (t) t.bypassed = !t.bypassed;
+    });
   }
 
   setTrackLevel(trackId: string, level: number) {
-    const t = this.trackById(trackId);
-    if (t) t.level = Math.max(0, Math.min(1, level));
+    const v = Math.max(0, Math.min(1, level));
+    this.mutate(
+      'set level',
+      (d) => {
+        const t = d.tracks.find((x) => x.id === trackId);
+        if (t) t.level = v;
+      },
+      `level:${trackId}`,
+    );
   }
 
   /** Select every clip whose path is in `clipPaths` (marquee result). */
@@ -661,11 +798,13 @@ export class ArrangementStore {
   }
 
   toggleAutomationExpand(trackId: string, laneId: string) {
-    const t = this.trackById(trackId);
-    const lane =
-      t?.automation.find((l) => l.id === laneId) ??
-      t?.clips.flatMap((c) => c.automation).find((l) => l.id === laneId);
-    if (lane) lane.expanded = !lane.expanded;
+    this.mutate('toggle lane', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      const lane =
+        t?.automation.find((l) => l.id === laneId) ??
+        t?.clips.flatMap((c) => c.automation).find((l) => l.id === laneId);
+      if (lane) lane.expanded = !lane.expanded;
+    });
   }
 
   /** Flip all of a track's automation lanes open/closed together. */
@@ -673,8 +812,9 @@ export class ArrangementStore {
     const t = this.trackById(trackId);
     if (!t || t.automation.length === 0) return;
     const anyClosed = t.automation.some((l) => !l.expanded);
-    runInAction(() => {
-      for (const l of t.automation) l.expanded = anyClosed;
+    this.mutate('toggle automation', (d) => {
+      const dt = d.tracks.find((x) => x.id === trackId);
+      if (dt) for (const l of dt.automation) l.expanded = anyClosed;
     });
   }
 
