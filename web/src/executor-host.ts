@@ -198,6 +198,19 @@ export class WasmSketchExecutor {
     this.instances.delete(instanceKey);
   }
 
+  /**
+   * Drop chain-entry instances no longer referenced by ANY live sketch, freeing
+   * their WASM instance for GC. Bounds memory when a sketch's chain churns — e.g.
+   * the arrangement's single combined composite as clips become active/inactive
+   * (and split mints new clip ids); without this the executor accumulates an
+   * instance per clip/device ever composited → WASM out-of-memory.
+   */
+  pruneInstancesExcept(liveKeys: Set<string>): void {
+    for (const key of [...this.instances.keys()]) {
+      if (!liveKeys.has(key)) this.instances.delete(key);
+    }
+  }
+
   /** Live module for a chain-entry key (matches SketchExecutor.getInstance) —
    *  lets the worker's setParam direct-poke fast path + debugDump reach the
    *  effect instances when executor.wasm is the active executor. */

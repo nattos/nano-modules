@@ -771,6 +771,10 @@ async function simulateTick(dt: number) {
       console.error(`[sketch ${sketchId}]`, err);
     }
   }
+  // Free chain instances for entries that left every sketch this frame (bounds
+  // WASM memory: the arrangement's combined composite chain churns as clips come
+  // and go / are split — otherwise instances accumulate until OOM).
+  exec.pruneInstancesExcept(sketchInstanceKeys);
 
   // 5. Tick and render remaining real modules not used by any sketch or anchor
   for (const [key, { host, module: mod }] of realModules) {
