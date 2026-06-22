@@ -319,20 +319,20 @@ export class ColumnGroup extends MobxLitElement {
     }
     .effect-card-header:active { cursor: grabbing; }
     .effect-card-name {
-      display: inline-block;
+      /* Fill the wrapper's locked height and center the text, so the whole row
+       * height is a double-click target (covering above/below the glyphs) and
+       * the text stays vertically aligned with the header's other controls. */
+      flex: 1;
+      min-width: 0;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
       font-size: var(--app-fs-md);
-      /* Match the smart-input's CodeMirror line-height + padding exactly so
-       * swapping the label for the editor (on double-click) doesn't shift the
-       * header vertically. The vertical padding also gives the type text a
-       * taller double-click target that covers above and below the glyphs. */
-      line-height: 1.4;
-      padding: 3px 0;
       color: var(--app-text-color1);
       cursor: default;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 100%;
     }
     /* A small per-category accent dot — a quiet hint at the effect's domain,
      * sitting between the bypass toggle and the name. Tracks the type live while
@@ -348,6 +348,16 @@ export class ColumnGroup extends MobxLitElement {
       flex: 1;
       min-width: 0;
       position: relative;
+      /* Center both the static label and the smart-input editor, and lock a
+       * single height for both so double-clicking to edit never nudges the
+       * header up/down (the label and CodeMirror differ by ~1px otherwise). */
+      display: flex;
+      align-items: center;
+      min-height: 22px;
+    }
+    .effect-card-name-wrapper > smart-input {
+      flex: 1;
+      min-width: 0;
     }
     /* Horizontal divider under the card header. */
     .effect-card-divider {
