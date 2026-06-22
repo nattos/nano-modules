@@ -12,6 +12,15 @@ A real module instance (`realModules`) that appears in more than one sketch chai
 ### Empty columns left behind after drag-drop
 When a module is dragged out of a column, the empty column (just `texture_input` → `texture_output`) is not automatically removed. This is cosmetic — the executor correctly skips empty columns for output — but it clutters the UI.
 
+### `util.dashboard` authored knob state reset to `{}` in the resolume shell
+In the **full resolume-shell app** (not the IDE), an idle/frame-driven process recurringly replaces a `util.dashboard` instance's authored `state` (the `knob_i` values) with `{}`. The drag-write itself is correct and the engine-side wire propagation works, so this is specific to the resolume shell's per-frame sketch sync.
+
+**Impact**: In the resolume shell, dashboard knob values may appear to reset / not persist. The IDE is unaffected (engine wire propagation verified by `engine-wires` e2e).
+
+**Symptom / test**: `web/test/dashboard-knobs.test.ts` test 1 ("registers as a dashboard kind, seeds 8 knobs, and edits them") is `it.skip` pending this fix. Heisenbug — *any* recurring main-thread activity (probes, `setInterval`) suppresses it, so it's an idle-frame artifact. This is DISTINCT from the engine output-mirror bug (now fixed), which produced `{knob_i: 0}`, not `{}`.
+
+**Not yet pinpointed**: not `mutate`; not `applySketchStateDiff`/`applyPluginStatesDiff` (they write `local.engine`, not the database); not `setBarrelSketch` (targets `'barrel'`); no reaction touches instances. **Next**: trap via a global `runInAction` wrapper, or bisect the resolume-app frame/snapshot handlers + the RuntimeManager frame callback; consider gating the offending reset on the `sketch_input_source` capability; then re-enable the test.
+
 ## Future Work
 
 - **Instance cloning for multi-sketch** (see above)
@@ -23,6 +32,8 @@ When a module is dragged out of a column, the empty column (just `texture_input`
 
 ## Recently Completed
 
+- **`util.dashboard` is a real wasm effect**: replaced the virtual knob bank + the executor's `runDashboard` handler with a real core-bundle effect — `knob_0..7` as relay fields (`io = in|out`), `is_identity` passthrough, `sketch_input_source` capability. Added relay-field write capture to the shared tap path (a field that's both read- and write-tapped publishes its modulated value). Knobs wire directly (input + output) through their `<scalar-knob>`; the dashboard's output-trace row is hidden.
+- **Relay-field output-mirror fix**: `executor-host` no longer mirrors a relay field's (io in+out) published output over its authored value — that clobbered dashboard knobs and broke knob→param wires. Mirror is now restricted to PURE outputs (`(io&2) && !(io&1)`).
 - **Val store moved to bridge core**: Val handles now live in bridge core's WASM memory (`nlohmann::json`), eliminating JS↔WASM boundary crossings for val operations and the JSON serialization round-trip in `state_set_val`.
 - **`on_param_change` → `on_state_patched` migration**: All 8 modules now use `on_state_patched` with field name matching via `state::pathIs()` and `state::patchFloat()` helpers. `onParamChange` removed from JS `WasmModule` interface and all callers.
 - **Legacy host function cleanup**: `state.set` (JSON), `state.declare_param`, `io.declare_*` stubbed to no-ops in JS. Legacy C++ wrappers (`state::set`, `state::declareParam`, `state::setMetadata`) removed from `host.h`.

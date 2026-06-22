@@ -294,6 +294,35 @@ The full set (`state::Capability`, in `wasm_modules/include/host.h`):
   parameters (the dashboard). Per-knob labels + active state are UI-owned at the
   sketch level; the effect just declares the capability and the fields.
 
+### Relay fields — an authored param that's ALSO an output
+
+Most fields are either an input (an authored param) or an output (the effect
+publishes it each frame). A **relay field** is both — declared
+`io = SecondaryInput | SecondaryOutput` (or the Primary variants). Its value is
+*authored* (by the user, or driven by an incoming wire) and *published* to
+outgoing wires; the effect itself computes nothing for it. `util.dashboard`'s
+`knob_i` are the canonical case: a knob is a wire SINK (an input wire modulates
+it) and a wire SOURCE (drives a downstream param) at once.
+
+It's a **pure relay** — the executor's standard tap path does all the work:
+
+- The authored value lives in instance state; `applyState` sets it like any input.
+- An incoming wire (read tap) modulates it; an outgoing wire (write tap)
+  publishes it. When BOTH are wired, the write tap publishes the *modulated*
+  value (relay-field write capture in the executor's `captureWriteTaps`).
+- The host does **NOT** mirror a relay field's "published output" back over its
+  authored value (that per-frame output mirror is restricted to PURE outputs —
+  `(io&2) && !(io&1)`). So never have the effect `state::setValPath` a relay
+  field every frame — leave it; the executor relays the authored value. (Seeding
+  / inspector defaults treat relay fields as authored, not engine-owned, for the
+  same reason.)
+
+So a relay-field effect needs only the schema (the io=in|out fields) plus an
+identity passthrough. `wasm_modules/dashboard/main.cpp` is the template — 8 knob
+fields + `is_identity` + `sketch_input_source`, no per-frame logic. In the IDE
+both wire directions attach to the field's own editor widget (the knob), not a
+separate output-trace card.
+
 ### Naming: id, display name, category
 
 Effect ids are **hierarchical dotted paths**: `domain.[group.[…]].name`. The first
