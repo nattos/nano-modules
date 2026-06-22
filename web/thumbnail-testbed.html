@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thumbnail Cache Testbed</title>
+  <link rel="stylesheet" href="src/style.css" />
+  <style>
+    body { margin: 0; font-family: 'JetBrains Mono', monospace; background: #121418; color: #e6e6e6; padding: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    button { background: #1a1d24; color: #e6e6e6; border: 1px solid #2a2e38; padding: 6px 12px; font-family: inherit; cursor: pointer; }
+    button:hover { background: #222630; }
+    canvas { border: 1px solid #2a2e38; display: block; background: #0e1014; }
+    .muted { color: #888; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Thumbnail Cache Testbed <span class="muted">— LRU + async-fill cache w/ procedural producer (window.__thumbs)</span></h2>
+  <div class="row">
+    <button id="request">Request strip</button>
+    <button id="scrub">Scrub +1</button>
+    <button id="clear">Clear cache</button>
+    <span id="status" class="muted"></span>
+  </div>
+  <canvas id="strip" width="1604" height="62"></canvas>
+  <p class="muted">Procedural thumbnails stand in for decoded frames (simulated decode latency). The
+    real path (<code>VideoThumbnailProducer</code>) reuses the video playback service for clips with media.</p>
+  <script type="module" src="src/thumbnail-testbed.ts"></script>
+</body>
+</html>

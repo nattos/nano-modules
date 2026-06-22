@@ -31,6 +31,7 @@ export default defineConfig({
         workspaceTestbed: resolve(__dirname, 'workspace-testbed.html'),
         arrStateTestbed: resolve(__dirname, 'arr-state-testbed.html'),
         arrEngineTestbed: resolve(__dirname, 'arr-engine-testbed.html'),
+        thumbnailTestbed: resolve(__dirname, 'thumbnail-testbed.html'),
       },
     },
   },
