@@ -17,6 +17,7 @@ import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
 import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
+import './arr-automation-editor';
 
 /** Minimal callbacks: the arrangement has no custom inspectors or card-reorder. */
 const ARR_COLUMN_CALLBACKS: ColumnGroupCallbacks = {
@@ -89,6 +90,14 @@ export class ArrInspector extends MobxLitElement {
       margin-top: var(--app-sp-3);
       border-top: 1px solid var(--app-tint-2);
       padding-top: var(--app-sp-3);
+    }
+    .auto-block {
+      padding: 4px 0 8px;
+    }
+    .auto-name {
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color1);
+      padding: 2px 0 4px;
     }
     .chips {
       display: flex;
@@ -370,7 +379,10 @@ export class ArrInspector extends MobxLitElement {
         ${clip.automation.length
           ? html`<div class="group-title">Clip automation</div>
               ${clip.automation.map(
-                (l) => html`<div class="row"><label>${l.label}</label><span class="val">${l.points.length} pts</span></div>`,
+                (l) => html`<div class="auto-block">
+                  <div class="auto-name">${l.label}</div>
+                  <arr-automation-editor .lane=${l} .ensureLaneId=${() => l.id}></arr-automation-editor>
+                </div>`,
               )}`
           : ''}
       </div>
@@ -392,12 +404,20 @@ export class ArrInspector extends MobxLitElement {
           .adapter=${this.adapterFor(trackTarget(track.id))}
           .callbacks=${ARR_COLUMN_CALLBACKS}
         ></column-group>
+        <div class="group-title">Track automation</div>
         ${track.automation.length
-          ? html`<div class="group-title">Track automation</div>
-              ${track.automation.map(
-                (l) => html`<div class="row"><label>${l.label}</label><span class="val">${l.points.length} pts</span></div>`,
-              )}`
-          : ''}
+          ? track.automation.map(
+              (l) => html`<div class="auto-block">
+                <div class="auto-name">${l.label}</div>
+                <arr-automation-editor .lane=${l} .ensureLaneId=${() => l.id}></arr-automation-editor>
+              </div>`,
+            )
+          : html`<div class="auto-block">
+              <arr-automation-editor
+                .lane=${undefined}
+                .ensureLaneId=${() => store.ensureTrackAutomationLane(track.id)}
+              ></arr-automation-editor>
+            </div>`}
       </div>
     `;
   }

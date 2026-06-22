@@ -15,6 +15,7 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { drawFrameCell, reelSeedFor } from './film-reel';
 import './time-strip';
+import './arr-automation-editor';
 import '../../../widgets/ui-icon';
 
 @customElement('arr-clip-view')
@@ -111,6 +112,11 @@ export class ArrClipView extends MobxLitElement {
       width: 100%;
       height: 100%;
     }
+    .top .autoedit {
+      display: block;
+      padding: 8px 10px 2px;
+      box-sizing: border-box;
+    }
     .plabel {
       position: absolute;
       left: 6px;
@@ -192,7 +198,14 @@ export class ArrClipView extends MobxLitElement {
           ${short
             ? ''
             : html`<div class="top">
-                <canvas></canvas>
+                ${mode === 'automation'
+                  ? html`<arr-automation-editor
+                      class="autoedit"
+                      .lane=${clip.automation?.[0]}
+                      .ensureLaneId=${() => store.ensureClipAutomationLane(sel.track.id, clip.id)}
+                      .cursor=${this.autoCursor(clip)}
+                    ></arr-automation-editor>`
+                  : html`<canvas></canvas>`}
                 <span class="plabel">${this.topLabel(clip, mode)}</span>
               </div>`}
           ${isVideo || mode === 'automation'
@@ -294,50 +307,16 @@ export class ArrClipView extends MobxLitElement {
     if (!sel) return;
     const clip = sel.clip;
     const seed = reelSeedFor(clip.id);
-
-    if (store.clipViewMode === 'automation') {
-      this.drawCurve(ctx, w, h, clip);
-    } else {
-      // Big preview frame at the scrub position.
-      drawFrameCell(ctx, 0, 0, w, h, seed, Math.min(1, this.scrubFrame / this.duration()));
-    }
+    // Automation mode renders the editable <arr-automation-editor> (no canvas);
+    // this canvas only exists in source mode → big preview at the scrub frame.
+    drawFrameCell(ctx, 0, 0, w, h, seed, Math.min(1, this.scrubFrame / this.duration()));
   }
 
-  private drawCurve(ctx: CanvasRenderingContext2D, w: number, h: number, clip: any) {
-    const pts: Array<{ x: number; y: number }> = clip.automation?.[0]?.points ?? [
-      { x: 0, y: 0.3 }, { x: 0.5, y: 0.8 }, { x: 1, y: 0.4 },
-    ];
-    // x-domain in frames: loop range (loop timing) or full duration (clip timing).
-    const lo = store.clipAutoTiming === 'loop' ? clip.loop.inFrame ?? 0 : 0;
-    const hi = store.clipAutoTiming === 'loop' ? clip.loop.outFrame ?? this.duration() : this.duration();
-    const toX = (nx: number) => this.frameToX(lo + nx * (hi - lo));
-    void w;
-    const toY = (ny: number) => 6 + (1 - ny) * (h - 12);
-    // grid baseline
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    for (const gy of [0.25, 0.5, 0.75]) {
-      ctx.beginPath();
-      ctx.moveTo(0, toY(gy));
-      ctx.lineTo(w, toY(gy));
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    pts.forEach((p, i) => {
-      const x = toX(p.x);
-      const y = toY(p.y);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = 'var(--app-cat-mod)';
-    ctx.strokeStyle = '#46C2C2';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    for (const p of pts) {
-      ctx.beginPath();
-      ctx.arc(toX(p.x), toY(p.y), 3, 0, Math.PI * 2);
-      ctx.fillStyle = '#46C2C2';
-      ctx.fill();
-    }
+  /** Playhead position as normalized x∈[0,1] across the clip, or null if outside. */
+  private autoCursor(clip: any): number | null {
+    const len = clip.lengthBeat || 1;
+    const x = (store.positionBeat - clip.startBeat) / len;
+    return x >= 0 && x <= 1 ? x : null;
   }
 
   private drawMini() {

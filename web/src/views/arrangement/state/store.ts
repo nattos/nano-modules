@@ -17,6 +17,8 @@ import {
   ClipLoopConfig,
   RailExport,
   RailRead,
+  AutomationLane,
+  EnvelopePoint,
   deviceIsSource,
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
@@ -1045,6 +1047,93 @@ export class ArrangementStore {
         t?.clips.flatMap((c) => c.automation).find((l) => l.id === laneId);
       if (lane) lane.expanded = !lane.expanded;
     });
+  }
+
+  // ── Automation point editing ──────────────────────────────────────────
+  /** Locate a lane by id across track-level AND clip-level automation. */
+  private static laneIn(d: Composition, laneId: string): AutomationLane | undefined {
+    for (const t of d.tracks) {
+      const tl = t.automation.find((l) => l.id === laneId);
+      if (tl) return tl;
+      for (const c of t.clips) {
+        const cl = c.automation.find((l) => l.id === laneId);
+        if (cl) return cl;
+      }
+    }
+    return undefined;
+  }
+
+  /** Read a lane by id (live composition), or undefined. */
+  automationLane(laneId: string): AutomationLane | undefined {
+    return ArrangementStore.laneIn(this.composition, laneId);
+  }
+
+  /**
+   * Replace a lane's points (normalizing to `{x,y,bend}`). Pass a stable
+   * `coalesceKey` for the duration of a drag so the whole gesture is ONE undo.
+   */
+  setAutomationPoints(laneId: string, points: EnvelopePoint[], coalesceKey?: string) {
+    this.mutate(
+      'edit automation',
+      (d) => {
+        const lane = ArrangementStore.laneIn(d, laneId);
+        if (lane) lane.points = points.map((p) => ({ x: p.x, y: p.y, bend: p.bend ?? 0 }));
+      },
+      coalesceKey,
+    );
+  }
+
+  /** A flat mid-level curve — the seed for a freshly created lane. */
+  private static defaultCurve(): EnvelopePoint[] {
+    return [{ x: 0, y: 0.5, bend: 0 }, { x: 1, y: 0.5, bend: 0 }];
+  }
+
+  /** Label/target for a new lane from a sketch's first catalog device field. */
+  private autoTargetFor(devices: Device[] | undefined): { deviceId: string; field: string; label: string } {
+    const dev = devices?.[0];
+    const cat = dev ? catalogEffect(dev.moduleType) : undefined;
+    const field = cat?.fields[0];
+    return {
+      deviceId: dev?.id ?? '',
+      field: field?.key ?? 'value',
+      label: field ? `${cat!.name} · ${field.label}` : 'Automation',
+    };
+  }
+
+  /** Ensure the clip has an automation lane; returns its id (existing or new). */
+  ensureClipAutomationLane(trackId: string, clipId: string): string {
+    const clip = this.clipByPath(paths.clip(trackId, clipId))?.clip;
+    const existing = clip?.automation[0];
+    if (existing) return existing.id;
+    const laneId = uid('auto');
+    const t = this.autoTargetFor(clip?.sketch.devices);
+    this.mutate('add automation', (d) => {
+      const c = d.tracks.find((x) => x.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c || c.automation.length) return;
+      c.automation.push({
+        id: laneId, targetDeviceId: t.deviceId, targetField: t.field,
+        label: t.label, points: ArrangementStore.defaultCurve(), expanded: true,
+      });
+    });
+    return laneId;
+  }
+
+  /** Ensure the track has an automation lane; returns its id (existing or new). */
+  ensureTrackAutomationLane(trackId: string): string {
+    const track = this.trackById(trackId);
+    const existing = track?.automation[0];
+    if (existing) return existing.id;
+    const laneId = uid('auto');
+    const t = this.autoTargetFor(track?.sketch.devices);
+    this.mutate('add automation', (d) => {
+      const dt = d.tracks.find((x) => x.id === trackId);
+      if (!dt || dt.automation.length) return;
+      dt.automation.push({
+        id: laneId, targetDeviceId: t.deviceId, targetField: t.field,
+        label: t.label, points: ArrangementStore.defaultCurve(), expanded: true,
+      });
+    });
+    return laneId;
   }
 
   /** Flip all of a track's automation lanes open/closed together. */
