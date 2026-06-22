@@ -729,6 +729,32 @@ export class ArrangementStore {
     );
   }
 
+  /** Rename a clip (inline edit). No-op if unchanged. */
+  renameClip(trackId: string, clipId: string, name: string) {
+    const next = name.trim();
+    this.mutate(
+      'rename clip',
+      (d) => {
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (c && next.length > 0) c.name = next;
+      },
+      `rename:clip:${clipId}`,
+    );
+  }
+
+  /** Rename a track (inline edit). No-op if unchanged. */
+  renameTrack(trackId: string, name: string) {
+    const next = name.trim();
+    this.mutate(
+      'rename track',
+      (d) => {
+        const t = d.tracks.find((x) => x.id === trackId);
+        if (t && next.length > 0) t.name = next;
+      },
+      `rename:track:${trackId}`,
+    );
+  }
+
   addTrackDevice(trackId: string, _kind: 'source' | 'effect') {
     const t = this.trackById(trackId);
     if (!t) return;

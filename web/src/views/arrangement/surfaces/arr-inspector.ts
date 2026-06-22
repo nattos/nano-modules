@@ -14,6 +14,7 @@ import { store } from '../state/store';
 import { clipProcessesTexture } from '../model/composition';
 import './arr-chain';
 import '../../../widgets/ui-icon';
+import '../../../widgets/editable-label';
 
 @customElement('arr-inspector')
 export class ArrInspector extends MobxLitElement {
@@ -302,7 +303,14 @@ export class ArrInspector extends MobxLitElement {
     const { clip } = found;
     const processes = clipProcessesTexture(clip);
     return html`
-      <div class="section-header">Clip · ${clip.name}</div>
+      <div class="section-header">
+        Clip ·
+        <editable-label
+          .value=${clip.name}
+          placeholder="Untitled clip"
+          @commit=${(e: CustomEvent) => store.renameClip(found.track.id, clip.id, e.detail)}
+        ></editable-label>
+      </div>
       <div class="body">
         <div class="row">
           <label>Kind</label>

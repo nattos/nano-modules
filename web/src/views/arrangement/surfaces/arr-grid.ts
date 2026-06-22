@@ -23,6 +23,7 @@ import { Track, AutomationLane, derivedWarpSegments } from '../model/composition
 import { warpDeviationAt } from '../model/beat-grid';
 import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, AnchorKeys } from './anchor-registry';
+import '../../../widgets/editable-label';
 import './arr-clip';
 import './arr-mixer-strip';
 import './arr-rail-lane';
@@ -475,7 +476,14 @@ export class ArrGrid extends MobxLitElement {
               ? html`<ui-icon class="railico" icon="la-exchange-alt"></ui-icon>`
               : ''}
             <span class="dot" style="background:${accent}"></span>
-            <span class="tname">${isBus ? '▸ ' + track.name : track.name}</span>
+            ${isBus || isRail
+              ? html`<span class="tname">${isBus ? '▸ ' + track.name : track.name}</span>`
+              : html`<editable-label
+                  class="tname"
+                  .value=${track.name}
+                  placeholder="Untitled track"
+                  @commit=${(e: CustomEvent) => store.renameTrack(track.id, e.detail)}
+                ></editable-label>`}
             ${isRail
               ? html`<span class="rtag">return</span>`
               : html`
