@@ -27,6 +27,7 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         resolume: resolve(__dirname, 'resolume/index.html'),
         moduleTest: resolve(__dirname, 'module-test-app.html'),
+        arrangement: resolve(__dirname, 'arrangement.html'),
       },
     },
   },
