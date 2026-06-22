@@ -183,6 +183,69 @@ TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "
   host.shutdown();
 }
 
+TEST_CASE("mod.source.lfo Period mode remaps the speed knob (env_lfo)", "[effect_driver]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  FrameState fs;
+  fs.elapsed_time = 0.0;
+  host.set_frame_state(id, &fs);
+
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "mod.source.lfo") { w = &e; break; }
+  }
+  REQUIRE(w != nullptr);
+
+  EffectDesc desc;
+  desc.id = w->id;
+  desc.wasm_host = &host;
+  desc.wasm_module_id = id;
+  desc.w_module_init = w->idx_module_init;
+  desc.w_create = w->idx_create;
+  desc.w_destroy = w->idx_destroy;
+  desc.w_init = w->idx_init;
+  desc.w_tick = w->idx_tick;
+  desc.w_on_state_patched = w->idx_on_state_patched;
+
+  EffectRuntime rt(nullptr);
+  rt.registerEffect(desc);
+  const std::string key = host.plugin_key(id);
+  REQUIRE(!key.empty());
+
+  // Period mode, period=0 → exponential map bottoms out at 0.5s → 2 Hz. A
+  // dt=0.125 tick advances phase 0.125*2 = 0.25 cycles → sin(pi/2)=1 → output 1.
+  EffectInstance* fast = rt.instanceFor("mod.source.lfo", "fast");
+  REQUIRE(fast != nullptr);
+  fast->setParamFloat("mode", 1.0f);    // ModePeriod
+  fast->setParamFloat("period", 0.0f);
+  fast->doTick(0.125);
+  CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
+        Catch::Approx(1.0).margin(1e-4));
+
+  // period=1 → 300s (5 min). The same dt barely moves phase (0.125/300 cycles),
+  // so the output sits essentially at the 0.5 midpoint — far slower than Freq
+  // mode's 0.1 Hz floor could reach.
+  EffectInstance* slow = rt.instanceFor("mod.source.lfo", "slow");
+  REQUIRE(slow != nullptr);
+  slow->setParamFloat("mode", 1.0f);    // ModePeriod
+  slow->setParamFloat("period", 1.0f);
+  slow->doTick(0.125);
+  CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
+        Catch::Approx(0.5).margin(5e-3));
+
+  host.shutdown();
+}
+
 TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_driver]") {
   auto bytecode = load_file(TESTONLY_WASM_PATH);
   REQUIRE(!bytecode.empty());

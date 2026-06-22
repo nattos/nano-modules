@@ -319,9 +319,20 @@ export class ColumnGroup extends MobxLitElement {
     }
     .effect-card-header:active { cursor: grabbing; }
     .effect-card-name {
+      display: inline-block;
       font-size: var(--app-fs-md);
+      /* Match the smart-input's CodeMirror line-height + padding exactly so
+       * swapping the label for the editor (on double-click) doesn't shift the
+       * header vertically. The vertical padding also gives the type text a
+       * taller double-click target that covers above and below the glyphs. */
+      line-height: 1.4;
+      padding: 3px 0;
       color: var(--app-text-color1);
       cursor: default;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
     }
     /* A small per-category accent dot — a quiet hint at the effect's domain,
      * sitting between the bypass toggle and the name. Tracks the type live while

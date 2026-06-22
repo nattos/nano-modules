@@ -107,15 +107,20 @@ export class SmartInput extends LitElement {
     .cm-editor {
       font-size: var(--app-fs-md);
       background: transparent;
+      /* Keep the editor's total height identical to the static
+       * .effect-card-name label it replaces (same line-height + vertical
+       * padding) so opening the type editor doesn't nudge the header. */
+      line-height: 1.4;
     }
     .cm-editor.cm-focused { outline: none; }
-    .cm-scroller { overflow: visible; }
+    .cm-scroller { overflow: visible; line-height: 1.4; }
     .cm-content {
-      padding: 0;
+      padding: 3px 0;
       font-family: inherit;
+      line-height: 1.4;
       caret-color: var(--app-text-color1, #e0e0e0);
     }
-    .cm-line { padding: 0; }
+    .cm-line { padding: 0; line-height: 1.4; }
     .cm-selectionBackground { background: rgba(65, 105, 225, 0.35) !important; }
     .cm-cursor { border-left-color: var(--app-text-color1, #e0e0e0) !important; }
 

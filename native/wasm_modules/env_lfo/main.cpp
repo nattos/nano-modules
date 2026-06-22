@@ -9,7 +9,13 @@
  * instance callbacks take `self`.
  *
  * Parameters:
- *   rate      (0..1, default 0.5) — oscillation speed (maps to 0..10 Hz)
+ *   mode      (enum)             — Freq / Period. Selects how the speed knob is
+ *                                  interpreted; a tab-bar selector. Freq exposes
+ *                                  `rate`; Period exposes `period` (see below).
+ *   rate      (0..1, default 0.5) — Freq mode: oscillation speed (maps to 0..10 Hz)
+ *   period    (0..1, default 0.5) — Period mode: cycle length, exponentially
+ *                                  mapped to 0.5s..300s (5 min) so the LFO can run
+ *                                  far slower than Freq mode's 0.1 Hz floor allows.
  *   amplitude (0..1, default 1.0) — output swing around 0.5
  *   waveform  (enum)             — Sine / Square / Triangle / Saw / Random Walk
  *                                  / Random FM
@@ -39,6 +45,12 @@
 
 namespace env_lfo {
 
+// Speed-knob interpretation (schema `mode` select field + State::mode).
+enum Mode {
+  ModeFreq = 0,    // `rate` knob → 0..10 Hz
+  ModePeriod = 1,  // `period` knob → 0.5s..300s cycle length
+};
+
 // Waveform selector values (schema `waveform` select field + State::waveform).
 enum Shape {
   ShapeSine = 0,
@@ -51,7 +63,9 @@ enum Shape {
 
 // Per-instance state. One per chain entry.
 struct State {
+  int mode = ModeFreq;
   float rate = 0.5f;
+  float period = 0.5f;
   float amplitude = 1.0f;
   int waveform = ShapeSine;
   float shape = 0.0f;
@@ -114,11 +128,28 @@ static float deterministicWave(int wf, float shape, double p) {
   }
 }
 
+// Show only the speed knob that belongs to the active mode. Called from
+// on_state_ready (once after init + state replay) and from on_state_patched
+// whenever `mode` changes — same code path either way. Touches the type-shared
+// schema, so it takes the active mode value as an argument.
+static void apply_mode_visibility(int mode) {
+  bool period = (mode == ModePeriod);
+  state::setFieldHidden("rate", period);
+  state::setFieldHidden("period", !period);
+}
+
+static void on_state_ready(void* self);
+
 // Type-level setup: schema. Runs once per type.
 void module_init() {
   state::init("mod.source.lfo", {1, 0, 0},
     state::Schema()
+      // Tab-bar selector: how the speed knob below is interpreted.
+      .selectField("mode", ModeFreq, state::PrimaryInput,
+                   {{"Freq", ModeFreq}, {"Period", ModePeriod}})
       .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      // Period mode: exponential 0.5s..300s (mapped in tick). Hidden in Freq mode.
+      .floatField("period", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)
       .selectField("waveform", ShapeSine, state::PrimaryInput,
                    {{"Sine", ShapeSine},
@@ -140,7 +171,16 @@ void module_init() {
       .capability(state::Capability::ModulationSourceSingle)
       .capability(state::Capability::SeekableApproximate)
   );
+  state::setOnStateReady(&on_state_ready);
   state::log("LFO: init");
+}
+
+// Fired after init + initial state replay. Hide the inactive mode's speed knob
+// so the IDE never paints both at once.
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  apply_mode_visibility(s->mode);
 }
 
 // Per-instance construction.
@@ -158,7 +198,9 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  s->mode = ModeFreq;
   s->rate = 0.5f;
+  s->period = 0.5f;
   s->amplitude = 1.0f;
   s->waveform = ShapeSine;
   s->shape = 0.0f;
@@ -177,7 +219,18 @@ void init(void* self) {
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  double rate = s->rate * 10.0;  // map 0-1 param to 0-10 Hz
+  // Cycles per second. Freq mode: 0..10 Hz. Period mode: exponential cycle
+  // length 0.5s..300s (5 min), so the slow end runs far below Freq's 0.1 Hz floor.
+  double rate;
+  if (s->mode == ModePeriod) {
+    double p = s->period;
+    if (p < 0.f) p = 0.f;
+    if (p > 1.f) p = 1.f;
+    double seconds = 0.5 * std::pow(600.0, p);  // 0.5s .. 300s
+    rate = 1.0 / seconds;
+  } else {
+    rate = s->rate * 10.0;  // map 0-1 param to 0-10 Hz
+  }
   float shape = s->shape;
   if (shape < 0.f) shape = 0.f;
   if (shape > 1.f) shape = 1.f;
@@ -253,10 +306,17 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool mode_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
-    if (state::pathIs(pb + off[i], len[i], "rate"))
+    if (state::pathIs(pb + off[i], len[i], "mode")) {
+      int m = static_cast<int>(state::patchFloat(i));
+      if (m != s->mode) { s->mode = m; mode_changed = true; }
+    }
+    else if (state::pathIs(pb + off[i], len[i], "rate"))
       s->rate = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "period"))
+      s->period = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "amplitude"))
       s->amplitude = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "waveform"))
@@ -266,6 +326,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(pb + off[i], len[i], "invert"))
       s->invert = state::patchFloat(i) != 0.0f;
   }
+  if (mode_changed) apply_mode_visibility(s->mode);
 }
 
 void render(void* self, int vp_w, int vp_h) {
