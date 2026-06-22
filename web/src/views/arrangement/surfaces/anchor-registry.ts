@@ -1,32 +1,32 @@
 /**
- * Cross-shadow anchor registry. Components register DOM elements under stable
- * keys; the global wire overlay (arr-overlay) looks them up by key and reads
- * their viewport rects to route wires — without fragile deep shadow queries.
+ * Arrangement cross-shadow anchor registry — the KEYING layer over the shared
+ * rect tracker. Components register DOM elements under stable keys; the global
+ * wire overlay (arr-overlay) looks them up by key and reads their viewport rects
+ * to route wires — without fragile deep shadow queries.
  *
- * Anchors that come and go (trace cards, field editors) are re-registered on
- * each render; lookups self-prune disconnected / zero-size elements.
+ * The tracking implementation is the SAME `FieldLayoutManager` the effect IDE
+ * uses for field editors — there is one rect-tracking system, not two. This
+ * module only owns the arrangement's key vocabulary (`AnchorKeys`) and a
+ * surface-scoped manager instance. Anchors that come and go (trace cards, field
+ * editors) are re-registered on each render; lookups self-prune disconnected /
+ * zero-size elements (`liveRect`).
  */
 
-const anchors = new Map<string, Element>();
+import { FieldLayoutManager } from '../../../widgets/field-layout-manager';
+
+/** One shared rect tracker for the whole arrangement surface. */
+const layout = new FieldLayoutManager();
 
 export function setAnchor(key: string, el: Element | null | undefined): void {
-  if (el) anchors.set(key, el);
-  else anchors.delete(key);
+  layout.setAnchor(key, (el as HTMLElement | null | undefined) ?? null);
 }
 
 export function clearAnchor(key: string): void {
-  anchors.delete(key);
+  layout.unregister(key);
 }
 
 export function anchorRect(key: string): DOMRect | null {
-  const el = anchors.get(key);
-  if (!el || !el.isConnected) {
-    if (el) anchors.delete(key);
-    return null;
-  }
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 && r.height === 0) return null;
-  return r;
+  return layout.liveRect(key);
 }
 
 export const AnchorKeys = {

@@ -1,18 +1,20 @@
 /**
- * FieldLayoutManager — centralized bounding box tracking for field editors.
+ * FieldLayoutManager — centralized bounding-box tracking for keyed elements.
  *
- * All consumers of field element positions (the wire overlay, the field-option
- * pip, the field card) go through this single source. Field editors themselves
- * have NO knowledge of this manager — the edit-tab discovers and registers them
- * by scanning the DOM.
+ * This is the ONE rect/anchor registry used across surfaces: the effect IDE
+ * tracks field editors here (the wire overlay, field-option pips, field cards
+ * read positions from it), and the arrangement tracks its wire/tap anchors
+ * (clips, rails, traces, fields — see `arrangement/surfaces/anchor-registry.ts`,
+ * a thin keying layer over an instance of this class). Elements have NO
+ * knowledge of the manager — consumers register them by key.
  *
  * The manager tracks viewport-relative bounding boxes, batching recalculation
- * via requestAnimationFrame. A ResizeObserver on the columns container detects
- * layout shifts.
+ * via requestAnimationFrame. A ResizeObserver on a container detects layout
+ * shifts. `getViewportRect` returns the cached (rAF) rect; `liveRect` reads a
+ * fresh rect on demand (for consumers that recompute every frame).
  */
 
 import { observable, runInAction, makeObservable, untracked } from 'mobx';
-import type { FieldEditorElement } from './field-editor';
 
 export interface FieldRect {
   top: number;
@@ -23,7 +25,7 @@ export interface FieldRect {
 
 export interface FieldLayoutEntry {
   key: string;
-  element: FieldEditorElement;
+  element: HTMLElement;
   /** Viewport-relative rect of the host element. Updated on recalculate. */
   viewportRect: DOMRect | null;
 }
@@ -41,7 +43,7 @@ export class FieldLayoutManager {
     makeObservable(this);
   }
 
-  register(key: string, element: FieldEditorElement) {
+  register(key: string, element: HTMLElement) {
     const existing = this.entries.get(key);
     if (existing && existing.element === element) return;
     runInAction(() => {
@@ -111,6 +113,30 @@ export class FieldLayoutManager {
   /** Get viewport-relative rect (uses cached value from last recalculate). */
   getViewportRect(key: string): DOMRect | null {
     return this.entries.get(key)?.viewportRect ?? null;
+  }
+
+  /** Register (or, with `null`, unregister) an element under a key. Convenience
+   *  for anchor-style consumers that re-assert their element on every render. */
+  setAnchor(key: string, element: HTMLElement | null | undefined) {
+    if (element) this.register(key, element);
+    else this.unregister(key);
+  }
+
+  /** Live (uncached) viewport rect for `key`, self-pruning disconnected or
+   *  zero-size elements. For consumers that read positions every frame (e.g. the
+   *  arrangement wire overlay's rAF loop) and want the freshest geometry without
+   *  waiting for the next recalculate. Reads `entries` untracked — see
+   *  keysUntracked() for why. */
+  liveRect(key: string): DOMRect | null {
+    const entry = untracked(() => this.entries.get(key));
+    if (!entry) return null;
+    if (!entry.element.isConnected) {
+      this.unregister(key);
+      return null;
+    }
+    const r = entry.element.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return null;
+    return r;
   }
 
   /** Attach a ResizeObserver to auto-recalculate on layout shifts. */
