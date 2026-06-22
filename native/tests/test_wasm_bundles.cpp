@@ -122,6 +122,13 @@ TEST_CASE("temporal capabilities round-trip from schema to the registry", "[wasm
   for (const char* id : {"color.tone.brightness_contrast", "mod.source.lfo",
                          "mod.source.adsr", "motion.blur"})
     CHECK_FALSE(has(id, "seekable_prefill"));
+
+  // The dashboard exposes sketch INPUTS; util.sketch_output the symmetric
+  // OUTPUTS. Both are identity passthroughs → also time_independent.
+  CHECK(has("util.dashboard", "sketch_input_source"));
+  CHECK(has("util.sketch_output", "sketch_output_source"));
+  CHECK(has("util.sketch_output", "time_independent"));
+  CHECK_FALSE(has("util.sketch_output", "sketch_input_source"));
 }
 
 TEST_CASE("bundle reports its host<->effect ABI version", "[wasm_bundles]") {

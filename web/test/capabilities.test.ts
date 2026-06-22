@@ -52,6 +52,8 @@ describe('Effect capabilities (schema → WasmHost)', () => {
         brightness: await capsOf('color.tone.brightness_contrast'),
         lfo: await capsOf('mod.source.lfo'),
         adsr: await capsOf('mod.source.adsr'),
+        sketchOutput: await capsOf('util.sketch_output'),
+        dashboard: await capsOf('util.dashboard'),
       };
     })()`);
 
@@ -76,6 +78,13 @@ describe('Effect capabilities (schema → WasmHost)', () => {
     expect(r.brightness.hasSeek).toBe(false);
     expect(r.lfo.hasSeek).toBe(false);
     expect(r.adsr.hasSeek).toBe(false);
+
+    // util.sketch_output exposes sketch OUTPUTS; util.dashboard the symmetric
+    // INPUTS. Both are identity passthroughs → also time_independent.
+    expect(r.sketchOutput.caps).toContain('sketch_output_source');
+    expect(r.sketchOutput.caps).toContain('time_independent');
+    expect(r.sketchOutput.caps).not.toContain('sketch_input_source');
+    expect(r.dashboard.caps).toContain('sketch_input_source');
 
     // The bundle reports its host<->effect ABI version (from nano_abi_version()).
     // 0 would mean the export wasn't found / wired.

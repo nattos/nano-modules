@@ -267,4 +267,46 @@ describe('Wire routing E2E', () => {
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
   });
+
+  it('util.sketch_output trace receives a wire write and republishes it (relay)', async () => {
+    // The inverse of the dashboard: a producer writes INTO a sketch-output trace
+    // (out_0), which — being a relay field (io = in|out) like a dashboard knob —
+    // republishes the written value downstream. lfo.output (0.5) → so@0.out_0 →
+    // brightness. gray(128) proves the value flowed THROUGH the output trace: if
+    // the write into out_0 failed, brightness stays its stored 1.0 → white.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
+        params: { color: [1.0, 1.0, 1.0] } },
+        { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
+        params: { rate: 0.0, amplitude: 1.0 } },
+        { type: 'module', module_type: 'util.sketch_output', instance_key: 'so@0' },
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
+        params: { brightness: 1.0, contrast: -0.5 } },
+      ],
+      instances: {
+        'so@0': { module_type: 'util.sketch_output', state: {} },
+      },
+      wires: [
+        { id: 'win',  src: { instanceKey: 'lfo@0', field: 'output' },
+          dest: { instanceKey: 'so@0', field: 'out_0' } },
+        { id: 'wout', src: { instanceKey: 'so@0', field: 'out_0' },
+          dest: { instanceKey: 'bc@0', field: 'brightness' } },
+      ],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['com.nano.core'],
+      commands: [{ type: 'createSketch', sketchId: 'wire_sketch_out', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_sketch_out' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'wire_sketch_out',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+  });
 });

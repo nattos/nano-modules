@@ -384,6 +384,7 @@ enum class Capability {
   SeekablePrefill,         // stateful, but seekable to any time via seek() (may be slow)
   SeekableApproximate,     // stateful; seeking differs only at noise level (non-deterministic)
   SketchInputSource,       // exports sketch-level input parameters (for the dashboard)
+  SketchOutputSource,      // exports sketch-level OUTPUT channels — wires write into them (for a future video-editor)
 };
 
 inline const char* capabilityName(Capability c) {
@@ -398,6 +399,7 @@ inline const char* capabilityName(Capability c) {
     case Capability::SeekablePrefill:        return "seekable_prefill";
     case Capability::SeekableApproximate:    return "seekable_approximate";
     case Capability::SketchInputSource:      return "sketch_input_source";
+    case Capability::SketchOutputSource:     return "sketch_output_source";
   }
   return "";
 }

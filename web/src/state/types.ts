@@ -52,7 +52,7 @@ export interface AvailableEffect {
    * kinds (e.g. `'dashboard'`) are handled specially by the UI — different card
    * rendering, no generic inspector. See column-group's util.dashboard case.
    */
-  kind?: 'effect' | 'dashboard';
+  kind?: 'effect' | 'dashboard' | 'sketch_output';
 }
 
 // --- Selectable system ---

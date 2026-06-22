@@ -89,6 +89,24 @@ describe('connectWire', () => {
     });
   });
 
+  it('directs a producer INTO a sketch-output trace regardless of stack position', () => {
+    // util.sketch_output endpoints report isOutput=false (column-group's
+    // getOutputFieldNames returns empty for the type), so a producer-output →
+    // sketch-output connection is unambiguously directed writer=producer even
+    // when the sketch-output card sits HIGHER on screen (smaller viewportY) than
+    // the producer — proving the isOutput flag, not the positional tiebreak,
+    // decides direction.
+    seedWireSketch();
+    appController.connectWire(
+      field({ chainIdx: 1, fieldPath: 'out_0', isOutput: false, viewportY: 100 }), // sketch-output, higher
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true,  viewportY: 200 }), // producer, lower
+    );
+    expect(wires()[0]).toMatchObject({
+      src:  { instanceKey: 'lfo', field: 'output' },
+      dest: { instanceKey: 'bc',  field: 'out_0' },
+    });
+  });
+
   it('replaces an existing wire into the same dest field (last wins)', () => {
     seedWireSketch();
     appController.connectWire(

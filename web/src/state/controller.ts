@@ -42,6 +42,12 @@ export const DASHBOARD_MODULE_TYPE = 'util.dashboard';
 /** Fixed knob count — create more dashboards if you need more knobs. */
 export const DASHBOARD_KNOB_COUNT = 8;
 
+/** The inverse of the dashboard: 8 OUTPUT traces that internal wires write INTO
+ *  (the sketch's exposed scalar outputs). Mirrors util.dashboard's relay fields. */
+export const SKETCH_OUTPUT_MODULE_TYPE = 'util.sketch_output';
+/** Fixed output-trace count (mirrors N_OUT in native/wasm_modules/sketch_output). */
+export const SKETCH_OUTPUT_TRACE_COUNT = 8;
+
 /** Identifies one end of a drag-to-connect operation. */
 export interface FieldConnectInfo {
   sketchId: string;
@@ -875,6 +881,11 @@ export class AppController {
       // custom body. (No-op until core.wasm has loaded and registered it.)
       const dash = existing.find(x => x.id === DASHBOARD_MODULE_TYPE);
       if (dash) dash.kind = 'dashboard';
+      // util.sketch_output is the inverse: the UI renders its 8 fields as output
+      // traces that wires write INTO (no authored knobs). column-group
+      // special-cases it by module_type; the kind tag is informational.
+      const so = existing.find(x => x.id === SKETCH_OUTPUT_MODULE_TYPE);
+      if (so) so.kind = 'sketch_output';
     });
     // If a default project was selected before its effect was discovered
     // (typical at boot — settings load completes before WASM does), retry

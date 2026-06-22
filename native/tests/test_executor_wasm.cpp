@@ -148,3 +148,59 @@ TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[exec
   CHECK(m < 200.0);            // not white — the knob value reached brightness
   CHECK(std::abs(m - 128.0) < 24.0);  // gray
 }
+
+TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", "[executor_wasm]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  // White input → dashboard (knob_0 = 0.5, the PRODUCER) → util.sketch_output.
+  // The wire writes the knob value INTO the sketch-output trace out_0. The image
+  // is untouched (both effects are identity), and the written value surfaces as
+  // modulation telemetry on so@0/out_0 (it never reaches pluginState — see the
+  // web getValue→modulationData branch).
+  const std::string sketch = R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "util.dashboard", "instance_key": "dash@0" },
+      { "type": "module", "module_type": "util.sketch_output", "instance_key": "so@0" }
+    ],
+    "instances": {
+      "dash@0": { "module_type": "util.dashboard", "state": { "knob_0": 0.5 } },
+      "so@0": { "module_type": "util.sketch_output", "state": {} }
+    },
+    "wires": [
+      { "id": "win", "src": { "instanceKey": "dash@0", "field": "knob_0" },
+        "dest": { "instanceKey": "so@0", "field": "out_0" } }
+    ]
+  })JSON";
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> inPix(W * H * 4, 255);  // white
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  SketchExecutor ex(&rt, &registry, backend.get());
+  auto j = nlohmann::json::parse(sketch);
+  int32_t h = ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto out = backend->readbackTexture(h, W, H);
+  REQUIRE(out.size() == W * H * 4);
+
+  // Image passes through untouched — sketch_output is identity.
+  const double m = mean_rgb(out);
+  INFO("output mean " << m << " (should be ~255 white — identity passthrough)");
+  CHECK(m > 240.0);
+
+  // The wire-written value reached out_0 and was recorded as modulation telemetry.
+  const auto& md = ex.lastModulationData();
+  REQUIRE(md.contains("so@0"));
+  REQUIRE(md["so@0"].contains("out_0"));
+  const double v = md["so@0"]["out_0"].value("value", -1.0);
+  INFO("out_0 modulation value " << v << " (knob_0 = 0.5 folded into [0,1])");
+  CHECK(std::abs(v - 0.5) < 0.1);
+}

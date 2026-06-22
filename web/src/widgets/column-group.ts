@@ -15,7 +15,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { tapsConnect } from './taps-connect';
 import { appState } from '../state/app-state';
-import { appController, DASHBOARD_MODULE_TYPE } from '../state/controller';
+import { appController, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../state/controller';
 import type { FieldConnectInfo } from '../state/controller';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude } from '../sketch-types';
 import { sketchChain, chainEntryAt, isEffectCollapsed } from '../sketch-types';
@@ -1121,6 +1121,13 @@ export class ColumnGroup extends MobxLitElement {
    */
   private getOutputFieldNames(entry: ModuleEntry): Set<string> {
     const names = new Set<string>();
+    // util.sketch_output: its out_i fields are io = in|out, but they are wire
+    // DESTS (a producer writes INTO them), not sources. Return an empty set so
+    // every endpoint renders with data-isOutput=false — a producer-output→
+    // sketch-output connection is then unambiguously directed (writer=producer),
+    // independent of chain order. The trace cards still render: collectModuleOutputs
+    // scans io&2 itself. The schema still declares io&2 for future output exposure.
+    if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) return names;
     // util.dashboard's knob_i fields are io = in|out, so the generic io&2 scan
     // below surfaces them as outputs (wire sources) like any other effect.
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
@@ -1324,6 +1331,10 @@ export class ColumnGroup extends MobxLitElement {
       return html`<dashboard-editor
         .sketchId=${this.sketchId} .instanceKey=${entry.instance_key}></dashboard-editor>`;
     }
+    // util.sketch_output: its out_i fields are io = in|out, so they'd otherwise
+    // render 8 input sliders here. Suppress the body entirely — the 8 fields are
+    // exposed only as the output-trace row below (wire DEST endpoints).
+    if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) return nothing;
 
     const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
 
@@ -1384,6 +1395,14 @@ export class ColumnGroup extends MobxLitElement {
     return {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
+        // util.sketch_output: a wire writes INTO out_i via its read-tap, but an
+        // identity passthrough never republishes to pluginStates — the written
+        // value only surfaces as modulation telemetry. Read it from there so the
+        // output-trace spark-chart shows the wire value (else it pins at 0).
+        if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) {
+          const md = appState.local.engine.modulationData[entry.instance_key]?.[fieldPath];
+          return md && typeof md.value === 'number' ? md.value : 0;
+        }
         const ps = appState.local.engine.pluginStates[entry.instance_key];
         // OUTPUT fields are LIVE-published by the running effect — pluginStates
         // is authoritative. Prefer it, and crucially do NOT fall through to the

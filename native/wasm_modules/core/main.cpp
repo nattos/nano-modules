@@ -28,6 +28,9 @@ namespace barrel_macros { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(dashboard)
 namespace dashboard { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(sketch_output)
+namespace sketch_output { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
 NANO_DECLARE_INSTANCE_EFFECT(curve)
@@ -163,6 +166,17 @@ void nano_module_main() {
         "knob,macro,control,dashboard,util",
         NANO_INSTANCE_LIFECYCLE(dashboard),
         &dashboard::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "util.sketch_output",
+        "Sketch Output",
+        "8 output traces — wire a producer's scalar into each to expose it as a sketch output",
+        "control",
+        "output,trace,sketch,macro,control,util",
+        NANO_INSTANCE_LIFECYCLE(sketch_output),
+        &sketch_output::is_identity,
     });
 
     nano::registerEffect({
