@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OPFS Thumbnail Store Testbed</title>
+  <link rel="stylesheet" href="src/style.css" />
+  <style>
+    body { margin: 0; font-family: 'JetBrains Mono', monospace; background: #121418; color: #e6e6e6; padding: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    button { background: #1a1d24; color: #e6e6e6; border: 1px solid #2a2e38; padding: 6px 12px; font-family: inherit; cursor: pointer; }
+    button:hover { background: #222630; }
+    canvas { border: 1px solid #2a2e38; display: block; background: #0e1014; }
+    .muted { color: #888; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>OPFS Thumbnail Store Testbed
+    <span class="muted">— worker + OPFS packs + WebP, real persistence (window.__opfsThumb)</span></h2>
+  <div class="row">
+    <button id="write">Write strip → OPFS</button>
+    <button id="reopen">Reopen (restart)</button>
+    <button id="read">Read strip back</button>
+    <button id="clear">Clear OPFS</button>
+    <span id="status" class="muted">ready</span>
+  </div>
+  <canvas id="strip" width="800" height="62"></canvas>
+  <p class="muted">Writes encode to WebP in the worker and land in OPFS pack files. Reopen drops the
+    worker's in-memory indexes and re-reads them from disk — tiles return with no re-decode of source.</p>
+  <script type="module" src="src/opfs-thumb-testbed.ts"></script>
+</body>
+</html>

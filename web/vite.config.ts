@@ -33,6 +33,7 @@ export default defineConfig({
         arrEngineTestbed: resolve(__dirname, 'arr-engine-testbed.html'),
         thumbnailTestbed: resolve(__dirname, 'thumbnail-testbed.html'),
         thumbnailMipTestbed: resolve(__dirname, 'thumbnail-mip-testbed.html'),
+        opfsThumbTestbed: resolve(__dirname, 'opfs-thumb-testbed.html'),
         warpTestbed: resolve(__dirname, 'warp-testbed.html'),
       },
     },
