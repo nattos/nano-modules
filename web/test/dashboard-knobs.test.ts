@@ -13,14 +13,12 @@ const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 describe('util.dashboard knob bank', () => {
   jest.setTimeout(50000);
 
-  // TODO(task #21): re-enable once the resolume-shell DATABASE reset is fixed.
-  // The engine-side wire propagation is now correct (executor-host no longer
-  // mirrors relay in+out fields over their authored value — see
-  // engine-wires "pure-output knob"), but in the full resolume app an idle-frame
-  // process still replaces the dashboard instance's authored state with {} (a
-  // DIFFERENT bug from the engine mirror — that produced {knob_i:0}, this gives
-  // {}). The drag-write itself is correct (traced).
-  it.skip('registers as a dashboard kind, seeds 8 knobs, and edits them', async () => {
+  // Re-enabled (task #21): the "authored knob state resets to {}" was NOT a real
+  // engine stomp — it was a TEST artifact. The old assertion returned the raw
+  // MobX observable `inst.state` to Puppeteer, whose structured clone walks the
+  // Proxy and yields `{}` (a false "wiped"). Stringify in-page (where MobX
+  // serializes correctly) and the authored knobs are intact through the drag.
+  it('registers as a dashboard kind, seeds 8 knobs, and edits them', async () => {
     page.removeAllListeners('console');
 
     await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
@@ -86,7 +84,10 @@ describe('util.dashboard knob bank', () => {
     const after = await page.evaluate(`(() => {
       const inst = Object.values(window.appState.database.sketches['sk_dash'].instances)
         .find(v => v.module_type === 'util.dashboard');
-      return inst.state;
+      // toJS / re-serialize IN-PAGE: returning the raw MobX observable lets
+      // Puppeteer's structured clone walk the Proxy and yield {} (a false
+      // "state was wiped"). Stringify here where MobX serializes correctly.
+      return JSON.parse(JSON.stringify(inst.state));
     })()`) as Record<string, number>;
     expect(after.knob_2).toBeGreaterThan(0.2);   // dragged up ~64px / 160px range
     expect(after.knob_0).toBe(0);                // others untouched
