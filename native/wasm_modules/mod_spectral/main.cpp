@@ -45,7 +45,7 @@ void module_init() {
       .floatField("morph_y", 0.5f, 0.f, 1.f, state::PrimaryInput)
       .selectField("metric", 0, state::PrimaryInput,
                    {{"FFT Magnitude", 0}, {"Phase Coherence", 1}, {"Roughness", 2},
-                    {"Spectral vs TD", 3}, {"Combined", 4}})
+                    {"Spectral vs TD", 3}, {"Combined", 4}}, /*wrap=*/true)
       .boolField("interpolation", true, state::PrimaryInput)   // off = snap to one shape
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::SecondaryInput)  // scales around 0.5
       // Remapped value. Rectifies into [0,1] (the curve's y window), so unsigned —

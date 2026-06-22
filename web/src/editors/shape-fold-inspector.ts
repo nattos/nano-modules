@@ -23,7 +23,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from '../widgets/field-editor';
 import '../widgets/scalar-slider';
-import '../widgets/field-select';
+import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
 
@@ -212,11 +212,11 @@ export class ShapeFoldInspector extends MobxLitElement {
       <div class="section">Output</div>
       <scalar-slider style="width: 100%;" .fieldPath=${'exposure'} .label=${'Exposure'}
         .min=${0} .max=${4} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
-      <field-select .fieldPath=${'output_mode'} .label=${'Mode'}
+      <field-tab-bar .fieldPath=${'output_mode'} .label=${'Mode'} ?wrap=${true}
         .options=${[{ label: 'Grayscale', value: 0 }, { label: 'Magma', value: 1 },
                     { label: 'Inferno', value: 2 }, { label: 'Viridis', value: 3 },
                     { label: 'Plasma', value: 4 }, { label: 'Turbo', value: 5 }]}
-        .defaultValue=${1} .binding=${b}></field-select>
+        .defaultValue=${1} .binding=${b}></field-tab-bar>
     `;
   }
 }

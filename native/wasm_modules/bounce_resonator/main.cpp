@@ -190,7 +190,7 @@ void module_init() {
       .floatField("auto_rate",           0.3f,  0.0f, 1.0f,      state::PrimaryInput)
       .selectField("impulse_mode",       MODE_ONE_BAR,           state::PrimaryInput,
                    {{"tex_in", MODE_TEX_IN}, {"one_bar", MODE_ONE_BAR},
-                    {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}})
+                    {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}}, /*wrap=*/true)
       .intField  ("one_bar_target",      0, 0, 3,                state::PrimaryInput)
       .floatField("tex_in_boost",        1.0f, 0.0f, 10.0f,      state::PrimaryInput)
       // --- Diffusion network ---

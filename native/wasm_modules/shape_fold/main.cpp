@@ -167,7 +167,7 @@ void module_init() {
       .floatField("exposure", 1.0f, 0.0f, 4.0f, state::PrimaryInput)
       .selectField("output_mode", 1, state::PrimaryInput,
                    {{"Grayscale", 0}, {"Magma", 1}, {"Inferno", 2},
-                    {"Viridis", 3}, {"Plasma", 4}, {"Turbo", 5}})
+                    {"Viridis", 3}, {"Plasma", 4}, {"Turbo", 5}}, /*wrap=*/true)
       // Broadcast: the effective XY (epicycle when autopilot is on, else the
       // input XY) so the custom editor can show the live position.
       .floatField("autopilot_x", 0.25f, 0.0f, 1.0f, state::SecondaryOutput)

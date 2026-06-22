@@ -179,7 +179,7 @@ void module_init() {
       // the gradient directly.
       .selectField("source", 0, state::PrimaryInput,
                    {{"Radial", 0}, {"Level Curves", 1}, {"Motion Vectors", 2},
-                    {"Normal Map", 3}, {"Gradient Field", 4}})
+                    {"Normal Map", 3}, {"Gradient Field", 4}}, /*wrap=*/true)
       // Anchor (cover-square, aspect-correct; (0,0)=viewport center, §1.5).
       // Radial source: the field center. Level Curves + Radial bias: the
       // up/downhill reference point.
@@ -222,7 +222,7 @@ void module_init() {
       // How to visualize the reconstructed height. Contours draws iso-lines of
       // OUR reconstructed height — a contour map of the result.
       .selectField("present_mode", 0, state::PrimaryInput,
-                   {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}, {"Contours", 3}})
+                   {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}, {"Contours", 3}}, /*wrap=*/true)
       // Cross-fade the visualization back toward the input image (all modes).
       .floatField("mix", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
       // Hillshade light azimuth (0..1 → full circle) and elevation

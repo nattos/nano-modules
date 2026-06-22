@@ -182,7 +182,7 @@ void module_init() {
                    {{"Decay", ModeD},
                     {"Attack-Decay", ModeAD},
                     {"Attack-Decay-Sustain", ModeADS},
-                    {"ADSR", ModeADSR}})
+                    {"ADSR", ModeADSR}}, /*wrap=*/true)
       .floatField("attack", 0.05f, 0.f, 1.f, state::PrimaryInput)
       .floatField("decay", 0.30f, 0.f, 1.f, state::PrimaryInput)
       .floatField("sustain", 0.50f, 0.f, 1.f, state::PrimaryInput)

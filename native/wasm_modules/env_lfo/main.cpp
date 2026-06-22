@@ -158,7 +158,7 @@ void module_init() {
                     {"Triangle", ShapeTriangle},
                     {"Saw", ShapeSaw},
                     {"Random Walk", ShapeRandomWalk},
-                    {"Random FM", ShapeRandomFM}})
+                    {"Random FM", ShapeRandomFM}}, /*wrap=*/true)
       // Morphs the active waveform (see file header for the per-shape meaning).
       .floatField("shape", 0.0f, 0.f, 1.f, state::PrimaryInput)
       // Flip the output: 1 - value (stays in [0,1]).

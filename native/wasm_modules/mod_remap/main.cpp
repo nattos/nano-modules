@@ -95,10 +95,10 @@ void module_init() {
       // Ease-in / ease-out shaping curves (same set as the wire remap).
       .selectField("curve_in", 0, state::PrimaryInput,
                    {{"Linear", 0}, {"Quad", 1}, {"Circular", 2},
-                    {"Power", 3}, {"Foldback", 4}})
+                    {"Power", 3}, {"Foldback", 4}}, /*wrap=*/true)
       .selectField("curve_out", 0, state::PrimaryInput,
                    {{"Linear", 0}, {"Quad", 1}, {"Circular", 2},
-                    {"Power", 3}, {"Foldback", 4}})
+                    {"Power", 3}, {"Foldback", 4}}, /*wrap=*/true)
       // Tuning: exponent for the Power curve, hard clip, post-scale.
       .floatField("exponent", 2.0f, 0.25f, 8.f, state::SecondaryInput)
       .boolField("saturate", false, state::SecondaryInput)

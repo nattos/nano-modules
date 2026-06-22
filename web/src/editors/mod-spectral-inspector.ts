@@ -16,7 +16,7 @@ import { editorRegistry } from '../editor-registry';
 import type { FieldBinding } from '../widgets/field-editor';
 import { METRIC_OPTIONS, type SpectralLfoPreview } from './spectral-lfo-inspector';  // defines the pad + preview tags
 import '../widgets/scalar-slider';
-import '../widgets/field-select';
+import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
 
 @customElement('mod-spectral-inspector')
@@ -58,8 +58,8 @@ export class ModSpectralInspector extends MobxLitElement {
       <div class="section">Manifold</div>
       <spectral-lfo-xy-pad .label=${''} .binding=${b}></spectral-lfo-xy-pad>
       <spectral-lfo-preview .binding=${b}></spectral-lfo-preview>
-      <field-select .fieldPath=${'metric'} .label=${'Metric'}
-        .options=${METRIC_OPTIONS} .defaultValue=${0} .binding=${b}></field-select>
+      <field-tab-bar .fieldPath=${'metric'} .label=${'Metric'} ?wrap=${true}
+        .options=${METRIC_OPTIONS} .defaultValue=${0} .binding=${b}></field-tab-bar>
       <field-toggle .fieldPath=${'interpolation'} .label=${'Interpolation'}
         .defaultValue=${1} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'amplitude'} .label=${'Amplitude'}

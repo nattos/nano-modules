@@ -500,7 +500,7 @@ void module_init() {
       // --- Tuning ---
       .selectField("codebook", CB_WALSH, state::PrimaryInput,
                    {{"Walsh", CB_WALSH}, {"Random", CB_RANDOM}, {"LFSR", CB_LFSR},
-                    {"Gray", CB_GRAY}, {"Binary", CB_BINARY}, {"Thue-Morse", CB_THUE_MORSE}})
+                    {"Gray", CB_GRAY}, {"Binary", CB_BINARY}, {"Thue-Morse", CB_THUE_MORSE}}, /*wrap=*/true)
       .floatField("start",         0.0f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("end",           1.0f, 0.0f, 1.0f, state::PrimaryInput)
       .boolField ("keep_flash",    true,             state::PrimaryInput)

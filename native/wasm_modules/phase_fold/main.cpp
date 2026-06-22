@@ -249,7 +249,7 @@ void module_init() {
       // matplotlib colormap of the height field.
       .selectField("shading_mode", 0, state::PrimaryInput,
                    {{"Bands", 0}, {"Gradient", 1}, {"Magma", 2}, {"Inferno", 3},
-                    {"Viridis", 4}, {"Plasma", 5}, {"Turbo", 6}})
+                    {"Viridis", 4}, {"Plasma", 5}, {"Turbo", 6}}, /*wrap=*/true)
       .floatField("bands", 13.0f, 2.0f, 24.0f, state::PrimaryInput)
       .floatField("contrast", 1.6f, 0.4f, 4.0f, state::PrimaryInput)
       .floatField("backdrop_dim", 0.42f, 0.0f, 1.0f, state::PrimaryInput)

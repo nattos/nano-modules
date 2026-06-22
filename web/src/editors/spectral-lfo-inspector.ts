@@ -27,7 +27,7 @@ import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from
 import { decodeScatter, SCATTER_NUM_METRICS, SCATTER_NUM_POINTS } from './spectral-lfo-scatter-data';
 import { loadSpectralLfoData, SpectralLfoData, type MorphResult } from './spectral-lfo-data';
 import '../widgets/scalar-slider';
-import '../widgets/field-select';
+import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -456,8 +456,8 @@ export class SpectralLfoInspector extends MobxLitElement {
       <div class="section">Shape</div>
       <spectral-lfo-xy-pad .label=${''} .binding=${b}></spectral-lfo-xy-pad>
       <spectral-lfo-preview .binding=${b}></spectral-lfo-preview>
-      <field-select .fieldPath=${'metric'} .label=${'Metric'}
-        .options=${METRIC_OPTIONS} .defaultValue=${0} .binding=${b}></field-select>
+      <field-tab-bar .fieldPath=${'metric'} .label=${'Metric'} ?wrap=${true}
+        .options=${METRIC_OPTIONS} .defaultValue=${0} .binding=${b}></field-tab-bar>
       <field-toggle .fieldPath=${'interpolation'} .label=${'Interpolation'}
         .defaultValue=${1} .binding=${b}></field-toggle>
 

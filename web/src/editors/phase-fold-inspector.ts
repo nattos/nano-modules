@@ -23,7 +23,7 @@ import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from '../widgets/field-editor';
 import '../widgets/scalar-slider';
 import '../widgets/field-toggle';
-import '../widgets/field-select';
+import '../widgets/field-tab-bar';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -198,12 +198,12 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${-0.6} .max=${0.6} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>
 
       <div class="section">Backdrop</div>
-      <field-select .fieldPath=${'shading_mode'} .label=${'Shading'}
+      <field-tab-bar .fieldPath=${'shading_mode'} .label=${'Shading'} ?wrap=${true}
         .options=${[{ label: 'Bands', value: 0 }, { label: 'Gradient', value: 1 },
                     { label: 'Magma', value: 2 }, { label: 'Inferno', value: 3 },
                     { label: 'Viridis', value: 4 }, { label: 'Plasma', value: 5 },
                     { label: 'Turbo', value: 6 }]}
-        .defaultValue=${0} .binding=${b}></field-select>
+        .defaultValue=${0} .binding=${b}></field-tab-bar>
       <scalar-slider style="width: 100%;" .fieldPath=${'bands'} .label=${'Bands'}
         .min=${2} .max=${24} .step=${1} .defaultValue=${13} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'contrast'} .label=${'Contrast'}
@@ -226,9 +226,9 @@ export class PhaseFoldInspector extends MobxLitElement {
       <div class="section">Limit Cycle</div>
       <field-toggle .fieldPath=${'show_limit_cycle'} .label=${'Show Limit Cycle'}
         .defaultValue=${1} .binding=${b}></field-toggle>
-      <field-select .fieldPath=${'cycle_mode'} .label=${'Algorithm'}
+      <field-tab-bar .fieldPath=${'cycle_mode'} .label=${'Algorithm'}
         .options=${[{ label: 'Relax', value: 0 }, { label: 'Tracer', value: 1 }, { label: 'Trace', value: 2 }, { label: 'Contour', value: 3 }]}
-        .defaultValue=${0} .binding=${b}></field-select>
+        .defaultValue=${0} .binding=${b}></field-tab-bar>
       <scalar-slider style="width: 100%;" .fieldPath=${'cycle_width'} .label=${'Width'}
         .min=${0.004} .max=${0.06} .step=${0.001} .defaultValue=${0.02} .binding=${b}></scalar-slider>
       ${(isRelax || isTracer) ? html`

@@ -75,7 +75,7 @@ void module_init() {
           {"Transparent", WrapTransparent},
           {"Repeat",      WrapRepeat},
           {"Mirror",      WrapMirror},
-      })
+      }, /*wrap=*/true)
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
