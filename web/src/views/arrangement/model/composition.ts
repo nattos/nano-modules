@@ -235,6 +235,20 @@ export interface Composition {
   playMode: PlayModeConfig;
 }
 
+/** A blank composition — the seed for a freshly created arrangement file. */
+export function emptyComposition(): Composition {
+  return {
+    meta: {
+      resolution: { width: 1920, height: 1080 },
+      baseBPM: 120,
+      timeSignature: [4, 4],
+    },
+    tracks: [],
+    rails: [],
+    playMode: { defaultMode: 'loop' },
+  };
+}
+
 /**
  * Effective warp segments derived from every clip's warp bindings. Each binding
  * contributes a sinusoidal tempo deviation over its clip's [start, end] range.

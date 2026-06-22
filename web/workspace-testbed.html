@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workspace Testbed — Nano Arrangement</title>
+  <link rel="stylesheet" href="src/style.css" />
+  <style>
+    body { margin: 0; font-family: 'JetBrains Mono', monospace; background: #121418; color: #e6e6e6; }
+    #app { padding: 16px; display: grid; gap: 12px; max-width: 880px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button { background: #1a1d24; color: #e6e6e6; border: 1px solid #2a2e38; padding: 6px 12px;
+      font-family: inherit; cursor: pointer; }
+    button:hover { background: #222630; }
+    input { background: #0e1014; color: #e6e6e6; border: 1px solid #2a2e38; padding: 6px 8px; font-family: inherit; }
+    textarea { width: 100%; height: 280px; background: #0e1014; color: #9ad; border: 1px solid #2a2e38;
+      font-family: inherit; font-size: 12px; }
+    .files button { display: block; width: 100%; text-align: left; margin: 2px 0; }
+    .files button.active { border-color: #4169E1; color: #fff; }
+    #label { color: #4dc9f6; }
+    .muted { color: #888; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h2>Workspace Testbed <span id="label" class="muted">(not mounted)</span></h2>
+    <div class="row">
+      <button id="pick">Mount folder (picker)</button>
+      <button id="opfs">Use OPFS (test)</button>
+      <button id="restore">Restore last</button>
+    </div>
+    <div class="row">
+      <input id="name" placeholder="arrangement name" value="untitled" />
+      <button id="create">Create</button>
+      <button id="save">Save current</button>
+      <button id="delete">Delete</button>
+      <button id="reload">Refresh list</button>
+    </div>
+    <div class="row" style="align-items: flex-start;">
+      <div class="files" id="files" style="min-width: 200px;"></div>
+      <textarea id="json" spellcheck="false"></textarea>
+    </div>
+    <div class="muted" id="status">Pick a folder or use OPFS to begin.</div>
+  </div>
+  <script type="module" src="src/workspace-testbed.ts"></script>
+</body>
+</html>

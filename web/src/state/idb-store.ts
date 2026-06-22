@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = 'nano-modules';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export const STORE_PROJECTS = 'projects';
 export const STORE_SETTINGS = 'settings';
@@ -30,6 +30,20 @@ export const STORE_VIDEO_SOURCE_PROFILES = 'videoSourceProfiles';
  * mode plus mode-specific cache hints (loop range, hot frames, stride).
  */
 export const STORE_VIDEO_CLIP_PROFILES = 'videoClipProfiles';
+/**
+ * Arrangement workspace directory handles (File System Access API). Keyed by
+ * 'current' for the active workspace, plus per-path recents. Stores the raw
+ * `FileSystemDirectoryHandle` (structured-cloneable) so we can re-mount the
+ * same on-disk folder across reloads after a permission re-grant.
+ */
+export const STORE_WORKSPACE = 'workspace';
+/**
+ * Per-source media file handles for arrangement clips. Keyed by a stable
+ * sourceKey ('name|size|lastModified'). Stores the `FileSystemFileHandle` so
+ * media that lives anywhere on disk (outside the workspace) can be relinked
+ * after reload — mirrors the video profile-store handle pattern.
+ */
+export const STORE_MEDIA = 'mediaHandles';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -53,6 +67,12 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_VIDEO_CLIP_PROFILES)) {
         db.createObjectStore(STORE_VIDEO_CLIP_PROFILES, { keyPath: 'clipKey' });
+      }
+      if (!db.objectStoreNames.contains(STORE_WORKSPACE)) {
+        db.createObjectStore(STORE_WORKSPACE, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_MEDIA)) {
+        db.createObjectStore(STORE_MEDIA, { keyPath: 'sourceKey' });
       }
     };
     req.onsuccess = () => resolve(req.result);

@@ -28,6 +28,7 @@ export default defineConfig({
         resolume: resolve(__dirname, 'resolume/index.html'),
         moduleTest: resolve(__dirname, 'module-test-app.html'),
         arrangement: resolve(__dirname, 'arrangement.html'),
+        workspaceTestbed: resolve(__dirname, 'workspace-testbed.html'),
       },
     },
   },
