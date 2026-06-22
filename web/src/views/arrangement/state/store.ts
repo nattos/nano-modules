@@ -361,6 +361,44 @@ export class ArrangementStore {
     return this.clipByPath(this.primaryPath) ?? null;
   }
 
+  // ── Timeline compositing ──────────────────────────────────────────────
+  /**
+   * Engine-renderable clips active at `beat`, in composite DRAW order — bottom
+   * track first → top track last, so the topmost track lands on top. One clip
+   * per track (on overlap the latest-started wins). Respects bypass + solo;
+   * excludes media clips (the decoded-frame path) and empty clips. Group/rail
+   * tracks are skipped for now.
+   */
+  compositeClipsAtBeat(beat: number): Array<{ track: Track; clip: Clip }> {
+    const tracks = this.composition.tracks.filter((t) => t.kind === 'track');
+    const anySolo = tracks.some((t) => t.soloed);
+    const layers: Array<{ track: Track; clip: Clip }> = [];
+    for (const t of tracks) {
+      if (t.bypassed) continue;
+      if (anySolo && !t.soloed) continue;
+      let pick: Clip | undefined;
+      for (const c of t.clips) {
+        if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
+        if (c.source?.url) continue; // media clip → decoded-frame path
+        if (c.sketch.devices.length === 0) continue; // nothing to render
+        if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
+      }
+      if (pick) layers.push({ track: t, clip: pick });
+    }
+    return layers.reverse(); // tracks are top→bottom; draw bottom→top
+  }
+
+  /** The topmost media clip active at `beat` (for the monitor's decoded preview). */
+  topMediaClipAtBeat(beat: number): Clip | undefined {
+    for (const t of this.composition.tracks) {
+      if (t.kind !== 'track' || t.bypassed) continue;
+      for (const c of t.clips) {
+        if (beat >= c.startBeat && beat < c.startBeat + c.lengthBeat && c.source?.url) return c;
+      }
+    }
+    return undefined;
+  }
+
   // ── Viewport ──────────────────────────────────────────────────────────
   setZoom(pxPerBeat: number) {
     this.pxPerBeat = Math.max(4, Math.min(200, pxPerBeat));

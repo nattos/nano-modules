@@ -79,9 +79,9 @@ export class ArrMonitor extends MobxLitElement {
     this.ro = new ResizeObserver(() => this.redraw());
     this.ro.observe(this);
     this.frameSinkOff = engineBridge.setFrameSink((bmp) => this.onFrame(bmp));
-    // Repaint the video preview as decoded frames land for the selected clip.
+    // Repaint the video preview as decoded frames land for the active media clip.
     this.thumbOff = thumbnailController.subscribe((sk) => {
-      if (store.selectedClip?.clip?.source?.sourceKey === sk) this.redraw();
+      if (store.topMediaClipAtBeat(store.positionBeat)?.source?.sourceKey === sk) this.redraw();
     });
     this.redraw();
   }
@@ -93,10 +93,10 @@ export class ArrMonitor extends MobxLitElement {
     thumbnailController.dropView('monitor');
   }
   updated() {
-    // Reflect the current selection into the engine (deduped inside the bridge),
-    // then repaint. Reading the observables in render() establishes tracking so
-    // selection/transport changes drive these updates.
-    engineBridge.showClip(store.selectedClip?.clip ?? null);
+    // Reflect the TIMELINE at the playhead into the engine (deduped inside the
+    // bridge), then repaint. Reading the observables in render() establishes
+    // tracking so transport/edit changes drive these updates.
+    engineBridge.showComposite(store.compositeClipsAtBeat(store.positionBeat));
     this.redraw();
   }
 
@@ -106,18 +106,18 @@ export class ArrMonitor extends MobxLitElement {
     void store.positionBeat;
     void store.primaryPath;
     void store.playing;
-    // Track the selected clip's chain + param state so a real param edit
-    // re-renders → showClip rebuilds the sketch → engine updateSketch.
-    const sel = store.selectedClip?.clip;
-    if (sel) {
-      void sel.kind;
-      void sel.source?.url;
-      for (const d of sel.sketch.devices) {
+    // Track every ACTIVE composite clip's chain + param state so a real param
+    // edit (on any layer) re-renders → showComposite rebuilds → engine update.
+    for (const { clip } of store.compositeClipsAtBeat(store.positionBeat)) {
+      void clip.kind;
+      for (const d of clip.sketch.devices) {
         void d.moduleType;
         const st = d.state;
         if (st) for (const k in st) void (st as Record<string, unknown>)[k];
       }
     }
+    // The active media clip drives the decoded-frame path.
+    void store.topMediaClipAtBeat(store.positionBeat)?.source?.url;
     return html`
       <div class="head">
         <span>OUTPUT</span>
@@ -168,21 +168,20 @@ export class ArrMonitor extends MobxLitElement {
     this.haveFrame = true;
   }
 
-  /** Paint the monitor: decoded video frame → live engine frame → placeholder. */
+  /** Paint the monitor: live composite → decoded video frame → placeholder. */
   private redraw() {
-    const clip = store.selectedClip?.clip ?? null;
-    // Media-backed clip: preview its decoded frame at the playhead (reuses D).
-    if (clip?.source?.url) {
-      this.haveFrame = false;
-      this.drawVideoFrame(clip);
-      return;
-    }
-    // Live engine frames own the canvas once content is up.
+    // Live engine frames (the composite) own the canvas once content is up.
     if (engineBridge.hasContent) {
       if (!this.haveFrame) this.drawPlaceholder('booting…');
       return;
     }
     this.haveFrame = false;
+    // Else a media clip active at the playhead previews its decoded frame (D).
+    const media = store.topMediaClipAtBeat(store.positionBeat);
+    if (media?.source?.url) {
+      this.drawVideoFrame(media);
+      return;
+    }
     this.drawPlaceholder();
   }
 
