@@ -20,6 +20,7 @@ import {
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
+import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import type { WorkspaceBackend } from '../workspace/backend';
 
 export type SelectableKind =
@@ -695,9 +696,37 @@ export class ArrangementStore {
     return path;
   }
 
-  /** Build + add a fake device of a kind (used by the inspector chain). */
+  /** Build + add a real device of a kind (used by the inspector chain). */
   addClipDevice(trackId: string, clipId: string, kind: 'source' | 'effect') {
     this.addDeviceToClip(trackId, clipId, this.makeDevice(kind));
+  }
+
+  /** Add a SPECIFIC real catalog effect to a clip (precise palette / tests). */
+  addClipDeviceType(trackId: string, clipId: string, moduleType: string) {
+    const cat = catalogEffect(moduleType);
+    if (!cat) return;
+    this.addDeviceToClip(trackId, clipId, {
+      id: uid('dev'),
+      moduleType: cat.type,
+      name: cat.name,
+      capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+      state: defaultStateFor(cat.type),
+    });
+  }
+
+  /** Set one field on a clip device's param state (a real param edit). */
+  setClipDeviceField(trackId: string, clipId: string, deviceId: string, key: string, value: number) {
+    this.mutate(
+      'set param',
+      (d) => {
+        const dev = d.tracks
+          .find((t) => t.id === trackId)
+          ?.clips.find((x) => x.id === clipId)
+          ?.sketch.devices.find((x) => x.id === deviceId);
+        if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
+      },
+      `param:${deviceId}:${key}`,
+    );
   }
 
   addTrackDevice(trackId: string, _kind: 'source' | 'effect') {
@@ -711,25 +740,23 @@ export class ArrangementStore {
 
   private makeDevice(kind: 'source' | 'effect'): Device {
     if (kind === 'source') {
+      // A real generator (renders on its own as the chain's first entry).
       return {
         id: uid('dev'),
-        moduleType: 'source.video.file',
-        name: 'New Source',
-        capabilities: ['source'],
+        moduleType: 'source.solid_color',
+        name: 'Solid Color',
+        capabilities: ['generator'],
+        state: {},
       };
     }
-    const pool = [
-      ['color.saturate', 'Saturate'],
-      ['filter.blur.gaussian', 'Gaussian Blur'],
-      ['warp.displace', 'Displace'],
-      ['composite.bloom', 'Bloom'],
-    ];
-    const pick = pool[(_uid + pool.length) % pool.length];
+    // Rotate through the real effect catalog.
+    const pick = EFFECTS[(_uid >>> 0) % EFFECTS.length];
     return {
       id: uid('dev'),
-      moduleType: pick[0],
-      name: pick[1],
+      moduleType: pick.type,
+      name: pick.name,
       capabilities: ['time_independent'],
+      state: defaultStateFor(pick.type),
     };
   }
 

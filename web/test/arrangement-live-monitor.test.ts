@@ -48,13 +48,14 @@ describe('Arrangement live monitor + transport (GPU)', () => {
       errors.push(`[console] ${t}`);
     });
 
-    // Create a deterministic effect clip (→ solid blue) and select it.
+    // Create a real effect clip: implicit gpu_test anchor (solid blue) → identity
+    // HSL chain → still blue. Exercises the real clip chain deterministically.
     await page.evaluate(() => {
       const store = (window as any).arrangementStore;
       const track = store.composition.tracks.find((t: any) => t.kind === 'track');
       const path = store.createEmptyClip(track.id, 0, 8);
       const [, trackId, clipId] = path.split('/');
-      store.addClipDevice(trackId, clipId, 'effect'); // time_independent → processes texture
+      store.addClipDeviceType(trackId, clipId, 'color.hsl'); // identity defaults
       store.select(path);
     });
 

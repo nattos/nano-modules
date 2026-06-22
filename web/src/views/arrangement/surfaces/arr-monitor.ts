@@ -106,6 +106,18 @@ export class ArrMonitor extends MobxLitElement {
     void store.positionBeat;
     void store.primaryPath;
     void store.playing;
+    // Track the selected clip's chain + param state so a real param edit
+    // re-renders → showClip rebuilds the sketch → engine updateSketch.
+    const sel = store.selectedClip?.clip;
+    if (sel) {
+      void sel.kind;
+      void sel.source?.url;
+      for (const d of sel.sketch.devices) {
+        void d.moduleType;
+        const st = d.state;
+        if (st) for (const k in st) void (st as Record<string, unknown>)[k];
+      }
+    }
     return html`
       <div class="head">
         <span>OUTPUT</span>

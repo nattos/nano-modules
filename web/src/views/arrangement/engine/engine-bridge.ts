@@ -28,14 +28,16 @@ export type FrameTap = (clipId: string, bitmap: ImageBitmap) => void;
 
 const RENDER_W = 640;
 const RENDER_H = 360;
+/** One stable engine sketch the active clip is swapped through (updateSketch). */
+const ARR_SKETCH_ID = 'arr-active';
 
 export class EngineBridge {
   private engine: ArrEngine | null = null;
   private sink: FrameSink | null = null;
   private tap: FrameTap | null = null;
 
-  /** Content key currently shown by the engine (`ClipRender.id`), or null. */
-  private shownKey: string | null = null;
+  /** Signature of the content currently shown by the engine, or null. */
+  private shownSig: string | null = null;
   /** Clip whose frames the capture tap should be attributed to. */
   private activeClipId: string | null = null;
 
@@ -86,6 +88,19 @@ export class EngineBridge {
     return this.engine !== null;
   }
 
+  /** Effect ids discovered across loaded bundles (diagnostic). */
+  discoveredEffects(): string[] {
+    return this.engine ? [...this.engine.discovered] : [];
+  }
+
+  /** create/update sketch call count (diagnostic). */
+  showCount(): number {
+    return this.engine?.showCount ?? 0;
+  }
+
+  setDebugMode(on: boolean) { this.engine?.setDebugMode(on); }
+  debugStats(): unknown { return this.engine?.lastDebugStats ?? null; }
+
   get ready(): Promise<void> | null {
     return this.engine?.ready ?? null;
   }
@@ -99,13 +114,15 @@ export class EngineBridge {
     this.hasContent = !!render;
     this.activeClipId = render ? clip!.id : null;
     if (!render) {
-      this.shownKey = null;
+      this.shownSig = null;
       return;
     }
     const engine = this.ensureEngine();
-    if (this.shownKey !== render.id) {
-      this.shownKey = render.id;
-      void engine.showSketch(render.id, render.slice.sketch, render.slice.opts);
+    // Re-issue only when the built sketch changes (clip switch OR param edit) —
+    // one stable engine sketch, swapped via create-or-update.
+    if (this.shownSig !== render.sig) {
+      this.shownSig = render.sig;
+      void engine.showSketch(ARR_SKETCH_ID, render.sketch, render.opts);
     }
   }
 
@@ -114,7 +131,7 @@ export class EngineBridge {
     this.engine = null;
     this.sink = null;
     this.tap = null;
-    this.shownKey = null;
+    this.shownSig = null;
   }
 }
 

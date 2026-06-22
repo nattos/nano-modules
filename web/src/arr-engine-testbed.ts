@@ -7,7 +7,7 @@
  */
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
-import { gpuTestSketch, spinningTrisSketch } from './views/arrangement/engine/slice-sketches';
+import { gpuTestSketch, invertSketch } from './views/arrangement/engine/slice-sketches';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -34,7 +34,8 @@ document.getElementById('tris')!.addEventListener('click', () => void show('tris
 
 async function show(which: 'blue' | 'tris') {
   frames = 0;
-  const s = which === 'blue' ? gpuTestSketch('arr-monitor') : spinningTrisSketch('arr-monitor');
+  // 'tris' historically meant "the other scene"; now a real invert chain.
+  const s = which === 'blue' ? gpuTestSketch('arr-monitor') : invertSketch('arr-monitor');
   // Distinct sketch id per content; switching is a trace re-target.
   const id = which === 'blue' ? 'sk-blue' : 'sk-tris';
   await engine.showSketch(id, s.sketch, s.opts);

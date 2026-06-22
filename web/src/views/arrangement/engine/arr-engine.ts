@@ -20,6 +20,8 @@ import type { TracePoint } from '../../../engine-types';
 export interface ShowSketchOpts {
   /** Effect bundle to load first (e.g. 'com.nano.testonly', 'com.nano.core'). */
   bundle?: string;
+  /** Additional bundles to load (a real chain spans multiple bundles). */
+  bundles?: string[];
   /** Effect ids to instantiate before creating the sketch (the sketch's anchor
    *  + chain reference these as `<effectId>@<n>`). */
   effects?: string[];
@@ -37,6 +39,14 @@ export class ArrEngine {
   onFrame: ((traceId: string, bitmap: ImageBitmap) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
   onError: ((message: string) => void) | null = null;
+  /** Union of effect ids discovered across loaded bundles (diagnostic). */
+  readonly discovered = new Set<string>();
+  /** Count of create/update sketch calls (diagnostic). */
+  showCount = 0;
+  /** Last debug stats (when debug mode on; diagnostic). */
+  lastDebugStats: unknown = null;
+
+  setDebugMode(on: boolean) { this.proxy.setDebugMode(on); }
 
   constructor(width = 640, height = 360) {
     this.proxy = new EngineProxy(width, height);
@@ -45,6 +55,10 @@ export class ArrEngine {
     };
     this.proxy.onFps = (fps) => this.onFps?.(fps);
     this.proxy.onError = (m) => this.onError?.(m);
+    this.proxy.onEffectsDiscovered = (effects) => {
+      for (const e of effects) this.discovered.add(e.id);
+    };
+    this.proxy.onDebugStats = (s) => { this.lastDebugStats = s; };
     this.readyPromise = this.waitReady();
   }
 
@@ -87,9 +101,11 @@ export class ArrEngine {
    */
   async showSketch(sketchId: string, sketch: Sketch, opts: ShowSketchOpts = {}) {
     await this.readyPromise;
-    if (opts.bundle && !this.loadedBundles.has(opts.bundle)) {
-      this.proxy.loadModule(opts.bundle);
-      this.loadedBundles.add(opts.bundle);
+    const bundles = [opts.bundle, ...(opts.bundles ?? [])].filter((b): b is string => !!b);
+    for (const bundle of bundles) {
+      if (this.loadedBundles.has(bundle)) continue;
+      this.proxy.loadModule(bundle);
+      this.loadedBundles.add(bundle);
       await delay(60);
     }
     for (const effectId of opts.effects ?? []) {
@@ -98,6 +114,7 @@ export class ArrEngine {
       this.instantiated.add(effectId);
       await delay(60);
     }
+    this.showCount++;
     if (this.shownSketches.has(sketchId)) {
       this.proxy.updateSketch(sketchId, sketch);
     } else {
