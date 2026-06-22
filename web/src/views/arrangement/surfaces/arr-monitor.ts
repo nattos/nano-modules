@@ -1,14 +1,23 @@
 /**
  * <arr-monitor> — output monitor pinned to the bottom of the inspector column
- * (same idea as the sketch IDE). Mockup: a placeholder render with a Photoshop
- * checkerboard alpha backing and the composition resolution label. Real trace
- * frames arrive in Milestone 2.
+ * (same idea as the sketch IDE).
+ *
+ * Live (Component C): the selected clip is mapped to a real sketch and rendered
+ * through executor.wasm by the shared `engineBridge`; traced frames paint here.
+ * When the selection has no renderable content (empty / modulation-only clip, or
+ * nothing selected) the monitor falls back to the placeholder render that drifts
+ * with the transport playhead.
+ *
+ * The engine free-runs a live preview; the warped transport clock drives the
+ * playhead/grid. Precise pause-and-seek-to-beat (freezing the exact frame at the
+ * playhead) needs a worker seek command and is a later step.
  */
 
 import { html, css } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { engineBridge } from '../engine/engine-bridge';
 
 @customElement('arr-monitor')
 export class ArrMonitor extends MobxLitElement {
@@ -59,24 +68,35 @@ export class ArrMonitor extends MobxLitElement {
 
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
+  private frameSinkOff?: () => void;
+  /** A real engine frame has painted the canvas (so don't stomp it). */
+  private haveFrame = false;
 
   firstUpdated() {
-    this.ro = new ResizeObserver(() => this.draw());
+    this.ro = new ResizeObserver(() => this.redraw());
     this.ro.observe(this);
-    this.draw();
+    this.frameSinkOff = engineBridge.setFrameSink((bmp) => this.onFrame(bmp));
+    this.redraw();
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
+    this.frameSinkOff?.();
   }
   updated() {
-    this.draw();
+    // Reflect the current selection into the engine (deduped inside the bridge),
+    // then repaint. Reading the observables in render() establishes tracking so
+    // selection/transport changes drive these updates.
+    engineBridge.showClip(store.selectedClip?.clip ?? null);
+    this.redraw();
   }
 
   render() {
     const res = store.composition.meta.resolution;
+    // Tracked reads — drive reactive updates of the live engine + placeholder.
     void store.positionBeat;
     void store.primaryPath;
+    void store.playing;
     return html`
       <div class="head">
         <span>OUTPUT</span>
@@ -98,21 +118,53 @@ export class ArrMonitor extends MobxLitElement {
     return '▸ Composition';
   }
 
-  private draw() {
+  /** Canvas 2D context sized to the element (DPR-aware). null if unsized. */
+  private sizedCtx(): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
     const canvas = this.canvas;
-    if (!canvas) return;
+    if (!canvas) return null;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) return null;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
+    const bw = Math.floor(w * dpr);
+    const bh = Math.floor(h * dpr);
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;
+      canvas.height = bh;
+    }
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    return { ctx, w, h };
+  }
 
-    // Placeholder "render": a slow gradient that drifts with the playhead so
-    // the monitor visibly reflects transport — stands in for a real frame.
+  /** Paint a traced engine frame (scaled to fit), then drop the bitmap. */
+  private onFrame(bmp: ImageBitmap) {
+    if (!engineBridge.hasContent) return; // selection changed mid-flight
+    const s = this.sizedCtx();
+    if (!s) return;
+    s.ctx.clearRect(0, 0, s.w, s.h);
+    s.ctx.drawImage(bmp, 0, 0, s.w, s.h);
+    this.haveFrame = true;
+  }
+
+  /** Placeholder paint — only while there's no live engine frame to show. */
+  private redraw() {
+    // Live frames own the canvas once content is up.
+    if (engineBridge.hasContent) {
+      if (!this.haveFrame) this.drawPlaceholder('booting…');
+      return;
+    }
+    this.haveFrame = false;
+    this.drawPlaceholder();
+  }
+
+  private drawPlaceholder(_note?: string) {
+    const s = this.sizedCtx();
+    if (!s) return;
+    const { ctx, w, h } = s;
+    ctx.clearRect(0, 0, w, h);
+    // A slow gradient that drifts with the playhead so the monitor visibly
+    // reflects transport even with no clip selected.
     const t = store.positionBeat * 0.1;
     const g = ctx.createLinearGradient(0, 0, w, h);
     const hue = (t * 40) % 360;
@@ -120,7 +172,6 @@ export class ArrMonitor extends MobxLitElement {
     g.addColorStop(1, `hsl(${(hue + 60) % 360}, 45%, 12%)`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
-
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
   }

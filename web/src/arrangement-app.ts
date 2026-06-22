@@ -10,6 +10,8 @@ import './views/arrangement/arrangement-app';
 import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 
 import { store } from './views/arrangement/state/store';
+import { engineBridge } from './views/arrangement/engine/engine-bridge';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
+(window as any).__engineBridge = engineBridge;

@@ -16,6 +16,7 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
+import { TransportController } from './engine/transport-clock';
 
 import './surfaces/transport-bar';
 import './surfaces/arr-ruler';
@@ -112,6 +113,7 @@ export class ArrangementApp extends MobxLitElement {
 
   private raf = 0;
   private lastT = 0;
+  private transport = new TransportController();
 
   connectedCallback() {
     super.connectedCallback();
@@ -127,21 +129,14 @@ export class ArrangementApp extends MobxLitElement {
   }
 
   /**
-   * Transport ticker. Explicit rAF loop (no MobX reaction) advances the
-   * playhead and loops at the brace. Mockup only — the real clock is the
-   * worker's warped beat clock in M2+.
+   * Transport ticker. Explicit rAF loop (no MobX reaction) advances the playhead
+   * through the WARPED beat clock (Component E) and loops at the brace — the
+   * playhead moves faster where the grid clumps, slower where it spreads.
    */
   private tick = (now: number) => {
     const dt = (now - this.lastT) / 1000;
     this.lastT = now;
-    if (store.playing) {
-      const bps = store.composition.meta.baseBPM / 60;
-      let p = store.positionBeat + dt * bps;
-      if (store.loopEnabled && p >= store.loopEndBeat) {
-        p = store.loopStartBeat + (p - store.loopEndBeat);
-      }
-      store.setPosition(p);
-    }
+    this.transport.advance(store, dt);
     this.raf = requestAnimationFrame(this.tick);
   };
 
