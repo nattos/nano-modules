@@ -5,9 +5,14 @@ Companion to `PRD.md`. Captures what we learned building the **Milestone 1 mocku
 thing, and where to reuse code — especially **whole components from the Effect IDE / Sketch IDE**,
 since making the two surfaces look and feel the same is a deliberate goal.
 
-> Mockup-only modules (replace/rework for the engine build): `surfaces/fake-binding.ts`,
-> `surfaces/film-reel.ts`, `model/fake-data.ts`, the placeholder draws in `arr-monitor.ts`, and
-> the synthesized dashboard in `arr-inspector.ts`.
+> **STATUS 2026-06-22:** M1 was a fake-data mockup; most of it is now real (engine, undo +
+> disk persistence, real clip chains, editable automation, real dashboard, real thumbnails,
+> multi-track compositing). `surfaces/fake-binding.ts` + `surfaces/arr-chain.ts` are RETIRED
+> (the inspector mounts the real shared `<column-group>`). Mockup-only leftovers still standing:
+> `model/fake-data.ts` (still the boot default — no real empty-state/file-open flow yet) and
+> `surfaces/film-reel.ts` (procedural fallback when no decoded thumbnail is available).
+> See the per-item status below; the canonical running history lives in the memory note
+> `nano-arrangement-project` and the plan file.
 
 ---
 
@@ -35,50 +40,56 @@ since making the two surfaces look and feel the same is a deliberate goal.
 
 ---
 
-## Known shortcomings (mockup shortcuts to replace)
+## Shortcomings — status (M1 shortcuts, what's real now)
 
-- **No engine.** Everything is fake data + procedural visuals. No worker, no real rendering,
-  no real warp precompute, no real rail values. M2 onward per the PRD.
-- **No undo/persistence.** The store is `makeAutoObservable` with plain actions; it does **not**
-  use the immer/patch history or IndexedDB yet (see Reuse below).
-- **Continuous rAF overlay.** `arr-overlay` reconciles wires every frame even when idle — fine
-  for a mock, wasteful for real; gate it on "something moved / wires exist".
-- **Overlay z-order.** The viewport overlay (z 60) draws wires *over* the bottom clip view; a
-  reader wire to an inspector field visually crosses the panel. Clip the overlay region or lower
-  its z below the clip view.
-- **Dashboard is synthesized.** Inputs are faux SVG knobs (not real `scalar-knob` + binding),
-  and a rail read is shown twice (chain field pip *and* dashboard input). Real dashboards should
-  expose a curated set distinct from raw device params, with real bindings.
-- **Display-only editing.** Automation curves render with nodes but aren't draggable; clip-view
-  loop/in-out markers aren't editable; track reordering / group DnD not implemented.
-- **Warp is single-source + faked.** One global derived warp from clip bindings; the beat-warp
-  lane curve is a direct sine sum, not the integrated tempo the grid actually uses. Reconcile to
-  one source of truth (`beat-grid.ts`) when real.
-- **Region/clip-view share little with the arrangement transform.** `time-strip` is a *separate*
-  linear time view; the arrangement uses `BeatGrid` (warped). Unifying them behind one
-  "zoomable gridded time view" abstraction is the stated goal but not yet done.
-- **Film thumbnails are procedural** (`film-reel.ts`). Real system needs a decode + thumbnail
-  cache keyed by source+frame.
+**✅ Resolved:**
+- ~~No engine~~ — real render via `executor.wasm` (`engine/`: ArrEngine/EngineProxy, engine-bridge,
+  clip-sketch). Warped transport clock real (`warp-clock.ts`).
+- ~~No undo/persistence~~ — `state/history.ts` immer+patch `DocHistory` + `.nano-arr` files on a
+  mounted workspace (`workspace/`). All writes funnel through `store.mutate(desc,recipe[,ck])`.
+- ~~Dashboard synthesized~~ — real `<scalar-knob>` (rail-read inputs) + `<spark-chart>` (export
+  outputs) via `buildClipFieldBinding` (`arr-column-adapter.ts`).
+- ~~Display-only AUTOMATION~~ — editable via `<arr-automation-editor>` wrapping the shared
+  `<envelope-graph>` (clip-view + clip/track inspector). Curves eval lock-step (`automation-eval.ts`).
+- ~~Film thumbnails procedural~~ — real decode + cache (`media/`, Component D); procedural reel is
+  now only the not-yet-decoded fallback.
+- **(new) Multi-track compositing** — the monitor plays the timeline: `store.compositeLayersAtBeat`
+  (groups/bypass/solo/opacity) → bridge renders engine layers → monitor composites engine + media
+  bottom→top at per-track opacity.
+
+**⏳ Still open (real TODOs):**
+- **Real rail VALUES.** Rails don't yet modulate: the rail lane sums a MOCK oscillation
+  (`arr-rail-lane.contribAt`). NOTE the lock-step `web/src/tap-mod.ts` twin was **DELETED** (zombie;
+  modulation telemetry now comes from the native executor via the modulationData channel) — so this
+  is a fork: reintroduce a TS evaluator (+goldens) vs. native cross-clip integration. UNDECIDED.
+- **Real empty-state / file-open flow.** App still boots `makeFakeComposition()`; Component A
+  (workspace mount) is built but not wired into boot.
+- **Continuous rAF overlay.** `arr-overlay` reconciles wires every frame even when idle — gate it.
+- **Overlay z-order.** Viewport overlay (z 60) draws wires *over* the bottom clip view.
+- **Warp single-source + faked.** Beat-warp lane is a direct sine sum, not the integrated tempo the
+  grid uses; reconcile to one source of truth in `beat-grid.ts`.
+- **Time-view unification.** `time-strip` (linear) vs `BeatGrid` (warped) are separate; unify behind
+  one zoomable gridded time view.
+- **Other display-only edits.** Clip-view loop/in-out markers; track reorder / group DnD.
+- **Compositor features (not holes).** Blend modes (needs a model field) + group-bus effect chains
+  (a group's sketch processing its summed children).
 
 ---
 
-## Opportunities for reuse (internal — wire these up for M2)
+## Opportunities for reuse (internal)
 
-- **Undo/redo + persistence.** Swap the ad-hoc store mutations for the IDE's immer + forward/
-  inverse-patch engine (`state/history.ts` `record()` / `LongEdit`, `applyPatchesToObservable`)
-  and IndexedDB (`state/project-store.ts`, `state/idb-store.ts`). The `Composition` doc slots in
-  as the undo-able `database` tree.
-- **One time-view abstraction.** Generalize `BeatGrid` (warped) and `time-strip`'s linear view
-  into a shared transform + a shared gridded-canvas component used by the ruler, arrangement
-  grid, clip view, and automation lanes (the PRD's "shared component" goal).
-- **Selectable registry.** Adopt the path-keyed `Selectable` interface (`state/types.ts`) +
-  `defineSelectable`/`select` with queued promotion (`state/controller.ts`) instead of the
-  bespoke `Set<path>` selection, so inspector content routing matches the IDE.
-- **Worker diff mirror.** When the engine lands, copy `engine-worker.ts`'s `diffMap` → frame
-  channels and `applyPluginStatesDiff` application verbatim for transport/rail/mod telemetry.
-- **Lock-step math.** Rail read/write and automation must evaluate through the real
-  `web/src/tap-mod.ts` ↔ `native/src/sketch/tap_mod.h` and `envelope.h` pipelines (goldens
-  exist) rather than the mock's approximations.
+- ✅ **Undo/redo + persistence.** DONE — `state/history.ts` `DocHistory` (immer+patch, adapted from
+  the IDE) + `.nano-arr` files on a mounted workspace (`workspace/`).
+- ⏳ **One time-view abstraction.** Still TODO: generalize `BeatGrid` (warped) and `time-strip`'s
+  linear view into one shared transform + gridded-canvas (ruler / grid / clip view / automation).
+- ◐ **Selectable registry.** Partial — selection is still the bespoke `Set<path>` + `primaryPath`;
+  the IDE's path-keyed `Selectable`/`defineSelectable` isn't adopted (the shared `<column-group>`
+  routes its own selection through the adapter).
+- ✅ **Worker diff mirror.** DONE for modulation telemetry — `onModulationDataDiff` →
+  `store.applyModulationDataDiff` mirrors `appState.local.engine.modulationData`.
+- ⚠️ **Lock-step math.** automation/rail curves eval through `automation-eval.ts` → `envelope-math.ts`
+  (the real `envelope.h` twin). BUT the rail `tap_mod` twin `web/src/tap-mod.ts` was **DELETED** as a
+  zombie — there is no TS tap_mod anymore; real rail values are an open architecture fork (see above).
 
 ---
 
@@ -87,21 +98,21 @@ since making the two surfaces look and feel the same is a deliberate goal.
 Look-and-feel parity with the IDEs is a goal. These already-built components should be lifted in
 (some are already imported; most are not yet):
 
-| Need in arrangement | Reuse from IDE / sketch | Notes |
+| Need in arrangement | Reuse from IDE / sketch | Status |
 | --- | --- | --- |
-| Effect chain in inspector | **`widgets/column-group.ts`** + **`widgets/columns-view.ts`** | The real effect-card column (category dots, bypass, collapse, param rows, gutter pips). Our `arr-chain` is a thin re-implementation — replace it with `column-group` for true parity. |
-| Field editors | **`widgets/scalar-slider`** (already used), **`scalar-knob`**, `field-toggle/-select/-vec/-color/-text`, **`generic-inspector.ts`** | Dashboard knobs should be real `scalar-knob` + a `FieldBinding`. `generic-inspector` builds a whole field set from a schema. |
-| Wire / tap drawing + tap card | **`widgets/taps-overlay.ts`** (+ `taps-connect.ts`) | The canonical arcing-wire + marching-ants + fat-hit-path + tap-config card. Our `arr-overlay` mirrors its aesthetic; reconcile to share the actual component/idiom (and `field-layout-manager.ts` for port/pip hit maps). |
-| Automation / envelope editing | **`editors/envelope-inspector.ts`** | Real double-click add/remove, drag-to-bend-easing, live input cursor — drop into the clip-view automation mode and track automation lanes instead of the display-only curve. |
-| Output monitor / preview | **`views/effect-ide/ide-monitor.ts`**, **`widgets/texture-monitor.ts`** | Replace `arr-monitor`'s placeholder; reuse checkerboard alpha, fit/zoom, transport stats. Also the trace plumbing (`state/trace-controller.ts`). |
-| Effect picker (add device) | **`widgets/smart-input.ts`** | Hierarchical dotted-path effect chooser — use for "add source / add effect" in the chain instead of the stub buttons. |
-| App shell / panels / splitter | **`views/effect-ide/effect-ide-app.ts`**, **`widgets/splitter.ts`**, **`views/effect-ide/ide-icon-bar.ts`** | Same panel chrome, resizable splitters, icon bar idiom (our resize handle is bespoke). |
-| Category color + icons | **`widgets/category-color.ts`** (used), **`widgets/ui-icon.ts`** (used) | Keep. |
-| Base reactivity | **`mobx-lit-element.ts`** (used) | Keep. |
-| Design tokens / style | **`style.css`**, **`EFFECTS_STYLE_GUIDE.md`** (used) | Keep. |
+| Effect chain in inspector | **`widgets/column-group.ts`** | ✅ DONE — `arr-chain` retired; inspector mounts the real `<column-group>` behind a `ColumnAdapter` (`arr-column-adapter.ts`; caps gate tracing/wiring/smoothing off). |
+| Field editors | **`scalar-slider`/`scalar-knob`**, `generic-inspector` | ✅ DONE — column-group's `generic-inspector` param rows + real `<scalar-knob>`/`<spark-chart>` dashboard via `buildClipFieldBinding`. |
+| Text rename + autocomplete | **`widgets/editable-label.ts`** (extracted this arc) | ✅ DONE — clip/track names (dblclick-to-edit); shared with the IDE. |
+| Rect tracking | **`widgets/field-layout-manager.ts`** | ✅ DONE — anchor-registry delegates to one `FieldLayoutManager` (no second registry). |
+| Automation / envelope editing | **`editors/envelope-inspector.ts`** (`<envelope-graph>`) | ✅ DONE — `<arr-automation-editor>` wraps the generic `<envelope-graph>` (clip-view + inspector). |
+| Output monitor / preview | **`widgets/texture-monitor.ts`** idioms | ◐ PARTIAL — `arr-monitor` is the real unified compositor (checkerboard + cover-fit) but bespoke (not `texture-monitor`/`ide-monitor`). |
+| Wire / tap drawing + tap card | **`widgets/taps-overlay.ts`** (+ `taps-connect.ts`) | ⏳ TODO — `arr-overlay` still re-skins it; caps keep wiring off in the arrangement column. |
+| Effect picker (add device) | **`widgets/smart-input.ts`** | ✅ DONE — column-group's header retype/insert uses smart-input (via the adapter's `availableEffects`). |
+| App shell / panels / splitter | **`splitter.ts`**, IDE shell | ⏳ TODO — resize handle still bespoke. |
+| Category color + icons / reactivity / style | `category-color`, `ui-icon`, `mobx-lit-element`, `style.css` | ✅ used. |
 
-**Bottom line:** the arrangement currently *re-skins* several IDE concepts (chain cards, wires,
-tap popup, monitor, knobs). For the production build, prefer lifting the **actual** IDE
-components (`column-group`, `taps-overlay`, `envelope-inspector`, `ide-monitor`, `smart-input`,
-`scalar-knob`, `splitter`) so the two surfaces stay byte-for-byte consistent and we don't
-maintain two divergent versions of the same widget.
+**Bottom line (updated):** the big reuse refactor LANDED — the arrangement now mounts the *actual*
+IDE widgets (`column-group`, `scalar-knob`/`spark-chart`, `envelope-graph`, `editable-label`,
+`field-layout-manager`, `smart-input`) instead of re-skins. Remaining re-skins: the wire/tap overlay
+(`arr-overlay` vs `taps-overlay`), the monitor (bespoke vs `texture-monitor`), and the app
+shell/splitter.

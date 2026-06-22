@@ -379,19 +379,31 @@ All surfaces run against fake state (`model/fake-data.ts`); no engine/worker. St
 - **Verified**: typechecks clean; `test/arrangement-smoke.test.ts` (Puppeteer) passes;
   screenshots reviewed. Run at `http://localhost:5174/arrangement.html`.
 
-### Milestone 2 — Engine vertical slice
-Timeline-native worker; one track/one clip rendering for real through the sketch executor;
-diff-mirrored transport + monitor; Precise mode. Validates the global-GPU-sync approach.
+### Milestone 2 — Engine vertical slice — ✅ BUILT
+Real render through `executor.wasm` (NOT a bespoke timeline-native worker — reuses `EngineProxy`/
+`engine-worker.ts`): `engine/` ArrEngine + engine-bridge + clip-sketch; real clip effect chains
+(`effect-catalog.ts`); modulation telemetry diff-mirrored to the store. **Now MULTI-TRACK**: the
+monitor composites the active clip per track at the playhead (groups/bypass/solo/opacity; engine +
+media layers) — `store.compositeLayersAtBeat` → bridge renders engine layers → monitor composites.
+(Global-GPU-sync question moot for now: layers render as independent traced sketches.)
 
-### Milestone 3 — Beat warp (LFO-special-cased) end to end
-Warp binding → offline precomputed curve → warped grid render + warped seeking.
+### Milestone 3 — Beat warp (LFO-special-cased) — ✅ BUILT (offline clock)
+`engine/warp-clock.ts` = beat↔seconds seek map on the SAME `WarpCurve` as the grid (one source of
+truth); transport advances in real warped seconds. Remaining: the beat-warp LANE preview is still a
+faked sine sum (reconcile to the integrated tempo); binding a real LFO instance is a follow-up.
 
-### Milestone 4 — Rails/returns + automation
-Wire-system-based rail read/write; track + clip automation; sketch-output "dashboard".
+### Milestone 4 — Rails/returns + automation — ◐ PARTIAL
+✅ **Automation**: editable curves (`<arr-automation-editor>` over the shared `<envelope-graph>`),
+lock-step eval (`automation-eval.ts` → `envelope.h` twin). ✅ **Dashboard**: real `<scalar-knob>` +
+`<spark-chart>` bindings. ⏳ **Rails (values)**: rail read/write still mocked — blocked on an
+architecture fork (the TS `tap-mod.ts` twin was deleted; reintroduce it +goldens vs. native
+cross-clip integration). ⏳ **Sketch-output "dashboard for outputs"** (promote fields → named outputs).
 
 ### Later
-`offline_renderable` capability (generalize warps), Live mode, instancing, clip library/packages,
-session view, media manager.
+Real empty-state/file-open boot (Component A is built but unused at boot); compositor blend modes +
+group-bus chains; overlay rAF-gating + z-order; time-view unification; clip loop/in-out editing +
+track reorder/group DnD; `offline_renderable` (generalize warps); Live mode; instancing; clip
+library/packages; session view; media manager.
 
 ---
 
@@ -406,7 +418,7 @@ session view, media manager.
 | Field widgets / inspector | `widgets/*` (`scalar-slider` mod bands, `generic-inspector`, `field-layout-manager`, `texture-monitor`, `smart-input`) |
 | Automation editor | `editors/envelope-inspector.ts` + `native/src/sketch/envelope.h` |
 | Clip = sketch host | `sketch-types.ts` (`Sketch`/`ChainEntry`/`Wire`/`InstanceState`/`TapMod`) |
-| Rail read/write (mix/magnitude/curves) | `native/src/sketch/tap_mod.h` ↔ `web/src/tap-mod.ts` |
+| Rail read/write (mix/magnitude/curves) | `native/src/sketch/tap_mod.h` (⚠️ the TS twin `web/src/tap-mod.ts` was DELETED — no JS tap_mod; real rail values are an open fork) |
 | Warp source (v1) | `native/wasm_modules/env_lfo/main.cpp` (deterministic modes) |
 | Play modes / seeking | `video/playhead-controllers.ts`, `video/access-classifier.ts`, `video/playback-service.ts` |
 | Compositing | `native/wasm_modules/video_blend/main.cpp`, `native/src/sketch/host_blend.h` |
