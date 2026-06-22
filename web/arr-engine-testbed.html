@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arrangement Engine Testbed</title>
+  <link rel="stylesheet" href="src/style.css" />
+  <style>
+    body { margin: 0; font-family: 'JetBrains Mono', monospace; background: #121418; color: #e6e6e6; padding: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    button { background: #1a1d24; color: #e6e6e6; border: 1px solid #2a2e38; padding: 6px 12px; font-family: inherit; cursor: pointer; }
+    button:hover { background: #222630; }
+    canvas { border: 1px solid #2a2e38; image-rendering: pixelated; background:
+      repeating-conic-gradient(#1a1d24 0% 25%, #15171d 0% 50%) 50% / 16px 16px; }
+    .muted { color: #888; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Arrangement Engine Testbed <span class="muted">— real clip sketch via EngineProxy (drive via window.__arrEngine)</span></h2>
+  <div class="row">
+    <button id="blue">Show gpu_test (blue)</button>
+    <button id="tris">Show spinningtris</button>
+    <span id="status" class="muted">booting…</span>
+  </div>
+  <canvas id="mon" width="256" height="256"></canvas>
+  <script type="module" src="src/arr-engine-testbed.ts"></script>
+</body>
+</html>
