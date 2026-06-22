@@ -8,13 +8,12 @@
  *  - Translate "the selection changed" into engine calls: map the active clip to
  *    a real sketch (`clipToRender`), show it, and re-target the monitor trace —
  *    deduped so steady-state transport ticks don't re-issue commands.
- *  - Fan the engine's traced frames to a single frame sink (the monitor) plus an
- *    optional capture tap (Component D live thumbnails). The sink/tap own drawing
- *    from the bitmap; the bridge closes it once after delivery.
- *
- * Single consumer by design: `setFrameSink` replaces (not appends). Rendering the
- * same engine frame into multiple live surfaces (e.g. the bottom clip view) is a
- * later concern that needs per-consumer bitmap clones.
+ *  - RETAIN the latest traced frame per active clip (`engineFrame(clipId)`) and
+ *    notify a listener (`setOnComposite`) each frame. The monitor is the unified
+ *    compositor: it interleaves these engine frames with decoded media frames in
+ *    z-order (so a media clip can sit between two effect layers) and applies
+ *    per-track opacity — things a single in-bridge composite couldn't express.
+ *  - An optional capture tap (Component D live thumbnails) still sees each layer.
  */
 
 import { ArrEngine } from './arr-engine';
@@ -22,8 +21,8 @@ import { clipToRender, type ClipRender } from './clip-sketch';
 import { store } from '../state/store';
 import type { Clip } from '../model/composition';
 
-/** Receives each traced frame. The bridge closes the bitmap after this returns. */
-export type FrameSink = (bitmap: ImageBitmap) => void;
+/** Fired once per rendered frame after the latest engine frames are retained. */
+export type CompositeListener = () => void;
 /** Best-effort capture of the active clip's frames (Component D). */
 export type FrameTap = (clipId: string, bitmap: ImageBitmap) => void;
 
@@ -32,7 +31,7 @@ const RENDER_H = 360;
 
 export class EngineBridge {
   private engine: ArrEngine | null = null;
-  private sink: FrameSink | null = null;
+  private onCompositeCb: CompositeListener | null = null;
   private tap: FrameTap | null = null;
 
   /** Per composite-layer content signature (sketchId → sig) for dedupe. */
@@ -41,8 +40,8 @@ export class EngineBridge {
   private layerOrder: string[] = [];
   /** Layer sketchId → clip id, so the capture tap attributes frames. */
   private layerClip = new Map<string, string>();
-  /** Offscreen surface the per-frame layers composite into (one output bitmap). */
-  private comp: OffscreenCanvas | null = null;
+  /** Latest retained engine frame per clip id (the monitor reads these). */
+  private latest = new Map<string, ImageBitmap>();
 
   /** Whether the playhead maps to any renderable composite layer. */
   hasContent = false;
@@ -70,39 +69,34 @@ export class EngineBridge {
     return e;
   }
 
-  /** Composite a frame's layers (in draw order) into one bitmap, deliver, free. */
+  /** Retain this frame's layer bitmaps per clip, tap them, then notify. */
   private onFrameSet(frames: Record<string, ImageBitmap>) {
     this.framesSeen++;
-    // Capture tap per layer first (Component D thumbnails attribute to the clip).
-    if (this.tap) {
-      for (const id of this.layerOrder) {
-        const cid = this.layerClip.get(id);
-        if (cid && frames[id]) this.tap(cid, frames[id]);
-      }
+    const retained = new Set<string>();
+    for (const id of this.layerOrder) {
+      const bmp = frames[id];
+      if (!bmp) continue;
+      const cid = this.layerClip.get(id);
+      if (!cid) continue;
+      if (this.tap) this.tap(cid, bmp); // Component D thumbnails, before retain
+      this.latest.get(cid)?.close();    // drop the previous frame for this clip
+      this.latest.set(cid, bmp);        // retain (closed on replace / departure)
+      retained.add(id);
     }
-    if (this.sink) {
-      const out = this.composite(frames);
-      if (out) { this.sink(out); out.close(); }
-    }
-    for (const id in frames) frames[id].close();
+    // Any traced bitmap we didn't retain (no clip mapping) must be freed.
+    for (const id in frames) if (!retained.has(id)) frames[id].close();
+    this.onCompositeCb?.();
   }
 
-  /** Draw the active layers source-over (bottom → top) → one output bitmap. */
-  private composite(frames: Record<string, ImageBitmap>): ImageBitmap | null {
-    const ids = this.layerOrder.filter((id) => frames[id]);
-    if (ids.length === 0) return null;
-    if (!this.comp) this.comp = new OffscreenCanvas(RENDER_W, RENDER_H);
-    const ctx = this.comp.getContext('2d');
-    if (!ctx) return null;
-    ctx.clearRect(0, 0, RENDER_W, RENDER_H);
-    for (const id of ids) ctx.drawImage(frames[id], 0, 0, RENDER_W, RENDER_H);
-    return this.comp.transferToImageBitmap();
+  /** The latest retained engine frame for a clip, or undefined. */
+  engineFrame(clipId: string): ImageBitmap | undefined {
+    return this.latest.get(clipId);
   }
 
-  /** Register the live frame sink (the monitor). Returns an unsubscribe fn. */
-  setFrameSink(sink: FrameSink | null): () => void {
-    this.sink = sink;
-    return () => { if (this.sink === sink) this.sink = null; };
+  /** Listen for new engine frames (the monitor recomposites). Returns unsub. */
+  setOnComposite(cb: CompositeListener | null): () => void {
+    this.onCompositeCb = cb;
+    return () => { if (this.onCompositeCb === cb) this.onCompositeCb = null; };
   }
 
   /** Register the capture tap (live thumbnails). Returns an unsubscribe fn. */
@@ -163,10 +157,12 @@ export class EngineBridge {
     }
     if (order.join('|') !== this.layerOrder.join('|')) changed = true;
 
-    // Drop sketches for clips no longer active.
+    // Drop sketches for clips no longer active (+ free their retained frame).
     for (const id of [...this.shownSigs.keys()]) {
       if (!active.has(id)) {
         this.engine?.deleteSketch(id);
+        const cid = this.layerClip.get(id);
+        if (cid) { this.latest.get(cid)?.close(); this.latest.delete(cid); }
         this.shownSigs.delete(id);
         this.layerClip.delete(id);
         changed = true;
@@ -187,12 +183,13 @@ export class EngineBridge {
   destroy() {
     this.engine?.destroy();
     this.engine = null;
-    this.sink = null;
+    this.onCompositeCb = null;
     this.tap = null;
     this.shownSigs.clear();
     this.layerOrder = [];
     this.layerClip.clear();
-    this.comp = null;
+    for (const bmp of this.latest.values()) bmp.close();
+    this.latest.clear();
   }
 }
 

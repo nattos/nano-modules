@@ -41,6 +41,16 @@ export interface Selection {
 
 export type RightTab = 'inspector' | 'settings' | 'export';
 
+/** A resolved composite layer (the monitor draws these bottom→top). */
+export interface CompositeLayer {
+  track: Track;
+  clip: Clip;
+  /** `engine` = rendered effect chain; `media` = decoded video frames. */
+  kind: 'engine' | 'media';
+  /** Effective opacity (own × ancestor-group `level`s), 0..1. */
+  opacity: number;
+}
+
 /** Path builders — stable keys used for selection + DOM data attributes. */
 export const paths = {
   track: (trackId: string) => `track/${trackId}`,
@@ -362,41 +372,74 @@ export class ArrangementStore {
   }
 
   // ── Timeline compositing ──────────────────────────────────────────────
+  /** Ancestor groups of a track, nearest-first (via parentId). */
+  private ancestorsOf(track: Track): Track[] {
+    const out: Track[] = [];
+    let pid = track.parentId;
+    while (pid) {
+      const p = this.trackById(pid);
+      if (!p) break;
+      out.push(p);
+      pid = p.parentId;
+    }
+    return out;
+  }
+  /** Bypassed if the track OR any ancestor group is bypassed. */
+  private effectiveBypassed(track: Track, anc: Track[]): boolean {
+    return !!track.bypassed || anc.some((a) => a.bypassed);
+  }
+  /** Composite opacity = product of own + ancestor `level`s (default 1). */
+  private effectiveOpacity(track: Track, anc: Track[]): number {
+    let o = track.level ?? 1;
+    for (const a of anc) o *= a.level ?? 1;
+    return Math.max(0, Math.min(1, o));
+  }
+
   /**
-   * Engine-renderable clips active at `beat`, in composite DRAW order — bottom
-   * track first → top track last, so the topmost track lands on top. One clip
-   * per track (on overlap the latest-started wins). Respects bypass + solo;
-   * excludes media clips (the decoded-frame path) and empty clips. Group/rail
-   * tracks are skipped for now.
+   * All renderable clips active at `beat`, in composite DRAW order — bottom
+   * track first → top last. One clip per track (on overlap the latest-started
+   * wins). Each layer is `engine` (rendered chain) or `media` (decoded frames),
+   * carries its effective `opacity`, and respects bypass + solo propagated
+   * through the group hierarchy (an ancestor group's bypass/solo/level applies).
+   * Empty engine clips (no devices) are skipped. Rail/group tracks hold no clips.
    */
-  compositeClipsAtBeat(beat: number): Array<{ track: Track; clip: Clip }> {
+  compositeLayersAtBeat(beat: number): CompositeLayer[] {
     const tracks = this.composition.tracks.filter((t) => t.kind === 'track');
-    const anySolo = tracks.some((t) => t.soloed);
-    const layers: Array<{ track: Track; clip: Clip }> = [];
+    // Solo on ANY track or group restricts the mix to soloed lineages.
+    const anySolo = this.composition.tracks.some((t) => t.soloed);
+    const layers: CompositeLayer[] = [];
     for (const t of tracks) {
-      if (t.bypassed) continue;
-      if (anySolo && !t.soloed) continue;
+      const anc = this.ancestorsOf(t);
+      if (this.effectiveBypassed(t, anc)) continue;
+      if (anySolo && !(t.soloed || anc.some((a) => a.soloed))) continue;
       let pick: Clip | undefined;
       for (const c of t.clips) {
         if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
-        if (c.source?.url) continue; // media clip → decoded-frame path
-        if (c.sketch.devices.length === 0) continue; // nothing to render
+        if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty engine clip
         if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
       }
-      if (pick) layers.push({ track: t, clip: pick });
+      if (!pick) continue;
+      layers.push({
+        track: t,
+        clip: pick,
+        kind: pick.source?.url ? 'media' : 'engine',
+        opacity: this.effectiveOpacity(t, anc),
+      });
     }
     return layers.reverse(); // tracks are top→bottom; draw bottom→top
   }
 
-  /** The topmost media clip active at `beat` (for the monitor's decoded preview). */
+  /** Engine-renderable layers only (the bridge renders/traces these). */
+  compositeClipsAtBeat(beat: number): Array<{ track: Track; clip: Clip }> {
+    return this.compositeLayersAtBeat(beat)
+      .filter((l) => l.kind === 'engine')
+      .map(({ track, clip }) => ({ track, clip }));
+  }
+
+  /** The topmost media clip active at `beat` (legacy single-media accessor). */
   topMediaClipAtBeat(beat: number): Clip | undefined {
-    for (const t of this.composition.tracks) {
-      if (t.kind !== 'track' || t.bypassed) continue;
-      for (const c of t.clips) {
-        if (beat >= c.startBeat && beat < c.startBeat + c.lengthBeat && c.source?.url) return c;
-      }
-    }
-    return undefined;
+    const media = this.compositeLayersAtBeat(beat).filter((l) => l.kind === 'media');
+    return media.length ? media[media.length - 1].clip : undefined;
   }
 
   // ── Viewport ──────────────────────────────────────────────────────────

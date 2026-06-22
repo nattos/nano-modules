@@ -111,6 +111,37 @@ describe('Arrangement multi-track compositing (GPU)', () => {
     const bottomOnly = await center();
     expect(isBlue(bottomOnly)).toBe(false);
 
+    // OPACITY: un-bypass the top, then drive its level to 0 → it's drawn fully
+    // transparent so the bottom shows through; level 1 brings the blue back.
+    await page.evaluate((d) => {
+      const s = (window as any).arrangementStore;
+      s.toggleBypass(d.top); // restore (2 layers again)
+      s.setTrackLevel(d.top, 0);
+    }, ids);
+    await page.waitForFunction(() => (window as any).__engineBridge.layerCount() === 2, { timeout: 10_000 });
+    await page.waitForFunction(
+      () => {
+        const app = document.querySelector('arrangement-app') as any;
+        const c = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
+        const d = c.getContext('2d')!.getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data;
+        return !(Math.abs(d[0]) < 24 && Math.abs(d[1] - 128) < 28 && Math.abs(d[2] - 255) < 24); // not blue
+      },
+      { timeout: 30_000 },
+    );
+    expect(isBlue(await center())).toBe(false); // transparent top → bottom shows
+
+    await page.evaluate((d) => (window as any).arrangementStore.setTrackLevel(d.top, 1), ids);
+    await page.waitForFunction(
+      () => {
+        const app = document.querySelector('arrangement-app') as any;
+        const c = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
+        const d = c.getContext('2d')!.getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data;
+        return Math.abs(d[0]) < 24 && Math.abs(d[1] - 128) < 28 && Math.abs(d[2] - 255) < 24; // blue again
+      },
+      { timeout: 30_000 },
+    );
+    expect(isBlue(await center())).toBe(true); // opaque top → blue
+
     expect(errors).toEqual([]);
   });
 });

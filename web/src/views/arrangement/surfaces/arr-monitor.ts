@@ -70,27 +70,30 @@ export class ArrMonitor extends MobxLitElement {
 
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
-  private frameSinkOff?: () => void;
+  private compositeOff?: () => void;
   private thumbOff?: () => void;
-  /** A real engine frame has painted the canvas (so don't stomp it). */
-  private haveFrame = false;
+  /** Active media-layer view ids (`monitor:<clipId>`) for cleanup. */
+  private mediaViews = new Set<string>();
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => this.redraw());
     this.ro.observe(this);
-    this.frameSinkOff = engineBridge.setFrameSink((bmp) => this.onFrame(bmp));
-    // Repaint the video preview as decoded frames land for the active media clip.
+    // Recomposite whenever the engine produces a new frame for any layer.
+    this.compositeOff = engineBridge.setOnComposite(() => this.redraw());
+    // Recomposite as decoded media tiles land for any active media layer.
     this.thumbOff = thumbnailController.subscribe((sk) => {
-      if (store.topMediaClipAtBeat(store.positionBeat)?.source?.sourceKey === sk) this.redraw();
+      const active = store.compositeLayersAtBeat(store.positionBeat);
+      if (active.some((l) => l.kind === 'media' && l.clip.source?.sourceKey === sk)) this.redraw();
     });
     this.redraw();
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
-    this.frameSinkOff?.();
+    this.compositeOff?.();
     this.thumbOff?.();
-    thumbnailController.dropView('monitor');
+    for (const v of this.mediaViews) thumbnailController.dropView(v);
+    this.mediaViews.clear();
   }
   updated() {
     // Reflect the TIMELINE at the playhead into the engine (deduped inside the
@@ -158,66 +161,78 @@ export class ArrMonitor extends MobxLitElement {
     return { ctx, w, h };
   }
 
-  /** Paint a traced engine frame (scaled to fit), then drop the bitmap. */
-  private onFrame(bmp: ImageBitmap) {
-    if (!engineBridge.hasContent) return; // selection changed mid-flight
+  /**
+   * Composite every active layer (bottom → top) at the playhead: engine layers
+   * from the bridge's retained frames, media layers from decoded tiles, each at
+   * its effective opacity. Unifies what used to be two exclusive paths so a
+   * media clip can sit BETWEEN effect layers and per-track opacity is honoured.
+   */
+  private redraw() {
+    const layers = store.compositeLayersAtBeat(store.positionBeat);
+    this.syncMediaViews(layers);
     const s = this.sizedCtx();
     if (!s) return;
-    s.ctx.clearRect(0, 0, s.w, s.h);
-    s.ctx.drawImage(bmp, 0, 0, s.w, s.h);
-    this.haveFrame = true;
+    const { ctx, w, h } = s;
+    if (layers.length === 0) { this.drawPlaceholder(); return; }
+
+    ctx.clearRect(0, 0, w, h);
+    let drew = false;
+    let pending = false;
+    for (const layer of layers) {
+      const bmp = layer.kind === 'engine'
+        ? engineBridge.engineFrame(layer.clip.id)
+        : this.mediaTile(layer.clip);
+      if (!bmp) { pending = true; continue; }
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
+      this.drawCover(ctx, bmp, w, h);
+      ctx.restore();
+      drew = true;
+    }
+    // Nothing ready yet (engine booting / tiles decoding) → booting placeholder.
+    if (!drew && pending) this.drawPlaceholder('booting…');
+    else if (!drew) this.drawPlaceholder();
   }
 
-  /** Paint the monitor: live composite → decoded video frame → placeholder. */
-  private redraw() {
-    // Live engine frames (the composite) own the canvas once content is up.
-    if (engineBridge.hasContent) {
-      if (!this.haveFrame) this.drawPlaceholder('booting…');
-      return;
-    }
-    this.haveFrame = false;
-    // Else a media clip active at the playhead previews its decoded frame (D).
-    const media = store.topMediaClipAtBeat(store.positionBeat);
-    if (media?.source?.url) {
-      this.drawVideoFrame(media);
-      return;
-    }
-    this.drawPlaceholder();
+  /** Cover-fit a bitmap into w×h centred. */
+  private drawCover(ctx: CanvasRenderingContext2D, bmp: ImageBitmap, w: number, h: number) {
+    const scale = Math.max(w / bmp.width, h / bmp.height);
+    const dw = bmp.width * scale;
+    const dh = bmp.height * scale;
+    ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
   }
 
-  /**
-   * Preview a media clip by decoding the frame under the playhead through the
-   * thumbnail cache (Component D) and cover-fitting it. A fine single-frame view
-   * pulls the exact playhead frame; `peek` substitutes the nearest cached tile
-   * (from the film strip) until it lands, so it's never blank while scrubbing.
-   */
-  private drawVideoFrame(clip: Clip) {
-    const media = clip.source!;
-    if (!media.url || !media.sourceKey) return;
+  /** Decoded frame for a media clip at the playhead (best-available; nullable). */
+  private mediaTile(clip: Clip): ImageBitmap | null {
+    const media = clip.source;
+    if (!media?.url || !media.sourceKey) return null;
     const fc = Math.max(1, media.durationFrames);
     const u = clip.lengthBeat > 0 ? (store.positionBeat - clip.startBeat) / clip.lengthBeat : 0;
     const frame = Math.max(0, Math.min(fc - 1, Math.round(Math.max(0, Math.min(1, u)) * (fc - 1))));
+    return thumbnailController.peek(media.sourceKey, frame, 0)?.value ?? null;
+  }
 
-    thumbnailController.registerMedia({ sourceKey: media.sourceKey, url: media.url, frameCount: fc, fps: media.fps });
-    thumbnailController.setView('monitor', {
-      sourceKey: media.sourceKey, level: 0, startFrame: frame, endFrame: frame,
-      pattern: 'window', readaheadFrames: 1,
-    });
-    const hit = thumbnailController.peek(media.sourceKey, frame, 0);
-
-    const s = this.sizedCtx();
-    if (!s) return;
-    s.ctx.clearRect(0, 0, s.w, s.h);
-    if (!hit) {
-      this.drawPlaceholder();
-      return;
+  /** Register decode views for the active media layers; drop departed ones. */
+  private syncMediaViews(layers: { kind: string; clip: Clip }[]) {
+    const want = new Set<string>();
+    for (const l of layers) {
+      const media = l.clip.source;
+      if (l.kind !== 'media' || !media?.url || !media.sourceKey) continue;
+      const viewId = `monitor:${l.clip.id}`;
+      want.add(viewId);
+      const fc = Math.max(1, media.durationFrames);
+      const u = l.clip.lengthBeat > 0 ? (store.positionBeat - l.clip.startBeat) / l.clip.lengthBeat : 0;
+      const frame = Math.max(0, Math.min(fc - 1, Math.round(Math.max(0, Math.min(1, u)) * (fc - 1))));
+      thumbnailController.registerMedia({ sourceKey: media.sourceKey, url: media.url, frameCount: fc, fps: media.fps });
+      thumbnailController.setView(viewId, {
+        sourceKey: media.sourceKey, level: 0, startFrame: frame, endFrame: frame,
+        pattern: 'window', readaheadFrames: 1,
+      });
     }
-    const iw = hit.value.width;
-    const ih = hit.value.height;
-    const scale = Math.max(s.w / iw, s.h / ih); // cover
-    const dw = iw * scale;
-    const dh = ih * scale;
-    s.ctx.drawImage(hit.value, (s.w - dw) / 2, (s.h - dh) / 2, dw, dh);
+    for (const v of [...this.mediaViews]) {
+      if (!want.has(v)) { thumbnailController.dropView(v); this.mediaViews.delete(v); }
+    }
+    for (const v of want) this.mediaViews.add(v);
   }
 
   private drawPlaceholder(_note?: string) {
