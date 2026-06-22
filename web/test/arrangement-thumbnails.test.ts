@@ -7,7 +7,7 @@
  *   + VideoPlaybackService DXV decode → readback → ImageBitmap) → Thumbnail
  *   manager (tiered + views + peek) → WorkerThumbStore (OPFS) → strip repaint.
  *
- * Media: /media/test_trim_Custom.mov (DXV, 1280×720, 57 frames) — DXV is random
+ * Media: /media/test_dxv.mov (DXV, 1280×720, 57 frames) — DXV is random
  * access so it decodes headlessly. Needs WebGPU (jest-puppeteer config):
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-thumbnails
  */
@@ -15,8 +15,8 @@
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
-const MEDIA_URL = '/media/test_trim_Custom.mov';
-const SOURCE_KEY = 'arr-media:test_trim_Custom';
+const MEDIA_URL = '/media/test_dxv.mov';
+const SOURCE_KEY = 'arr-media:test_dxv';
 const FRAME_COUNT = 57;
 
 describe('Arrangement film-strip thumbnails (GPU, real media)', () => {
