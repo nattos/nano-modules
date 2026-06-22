@@ -37,6 +37,16 @@ export interface ClipRender {
 const TRACE = 'arr-monitor';
 
 /**
+ * The engine instance key a clip's device renders under. Engine telemetry
+ * (pluginStates / modulationData) is keyed by this, so any reader mapping a
+ * device back to its live engine state MUST go through here to stay in lock-step
+ * with `buildRealChain`.
+ */
+export function clipInstanceKey(clipId: string, suffix: string): string {
+  return `clip_${clipId}_${suffix}`;
+}
+
+/**
  * Map a clip to a renderable sketch, or null when there's nothing to render
  * (empty / modulation-only clip, or a media clip the monitor previews directly).
  */
@@ -65,7 +75,7 @@ function buildRealChain(clip: Clip, catDevices: Device[]): ClipRender {
   const addEntry = (moduleType: string, keySuffix: string, state: Record<string, unknown>) => {
     const cat = catalogEffect(moduleType);
     bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle); // gpu_test ships in testonly
-    const key = `clip_${clip.id}_${keySuffix}`;
+    const key = clipInstanceKey(clip.id, keySuffix);
     chain.push({ type: 'module', module_type: moduleType, instance_key: key });
     instances[key] = { module_type: moduleType, state };
   };

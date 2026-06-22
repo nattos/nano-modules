@@ -24,6 +24,7 @@ import type { Selectable, EffectClipboard, AvailableEffect } from '../../../stat
 import type { Device } from '../model/composition';
 import { store } from '../state/store';
 import { EFFECT_CATALOG, catalogEffect } from '../engine/effect-catalog';
+import { clipInstanceKey } from '../engine/clip-sketch';
 
 const CAPS: ColumnCapabilities = {
   tracing: false,
@@ -51,6 +52,12 @@ export interface DeviceTarget {
   replace(deviceId: string, snap: Partial<Device>, ck?: string): void;
   insertAt(index: number, type: string, ck?: string): string | null;
   remove(deviceId: string, ck?: string): void;
+  /**
+   * The engine instance key this device renders under, for reading live engine
+   * telemetry (modulationData). Only clip targets render through the engine;
+   * track targets omit it (no live modulation).
+   */
+  engineKeyFor?(deviceId: string): string | undefined;
 }
 
 export function clipTarget(trackId: string, clipId: string): DeviceTarget {
@@ -62,6 +69,7 @@ export function clipTarget(trackId: string, clipId: string): DeviceTarget {
     replace: (d, s, ck) => store.replaceClipDevice(trackId, clipId, d, s, ck),
     insertAt: (i, t, ck) => store.insertClipDeviceAt(trackId, clipId, i, t, ck),
     remove: (d, ck) => store.removeClipDevice(trackId, clipId, d, ck),
+    engineKeyFor: (d) => clipInstanceKey(clipId, d),
   };
 }
 
@@ -145,7 +153,12 @@ export class ArrColumnAdapter implements ColumnAdapter {
       return plugin;
     },
     pluginState: (_instanceKey: string): Record<string, any> | undefined => undefined,
-    modulation: (_instanceKey: string): Record<string, FieldModulation> | undefined => undefined,
+    // instanceKey is the device id (from getSketch); translate to the engine
+    // key the live telemetry is published under, then read the store.
+    modulation: (instanceKey: string): Record<string, FieldModulation> | undefined => {
+      const ek = this.target.engineKeyFor?.(instanceKey);
+      return ek ? store.modulationData[ek] : undefined;
+    },
   };
 
   // ── controller ──

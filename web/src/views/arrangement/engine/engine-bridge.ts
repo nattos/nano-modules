@@ -19,6 +19,7 @@
 
 import { ArrEngine } from './arr-engine';
 import { clipToRender } from './clip-sketch';
+import { store } from '../state/store';
 import type { Clip } from '../model/composition';
 
 /** Receives each traced frame. The bridge closes the bitmap after this returns. */
@@ -57,6 +58,9 @@ export class EngineBridge {
     e.onFrame = (_id, bmp) => this.dispatchFrame(bmp);
     e.onFps = (f) => { this.fps = f; };
     e.onError = (m) => { this.error = m; };
+    // Wire-modulation telemetry → store, mirroring the IDE's
+    // appState.local.engine.modulationData (sliders draw live mod bands from it).
+    e.onModulationDataDiff = (diff) => store.applyModulationDataDiff(diff);
     this.engine = e;
     return e;
   }

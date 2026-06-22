@@ -7,7 +7,8 @@
  * mutations are explicit action methods (no reactions for business logic).
  */
 
-import { makeAutoObservable, runInAction, toJS } from 'mobx';
+import { makeAutoObservable, runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
+import type { StateDiff } from '../../../engine-types';
 import {
   Composition,
   Clip,
@@ -141,6 +142,15 @@ export class ArrangementStore {
   timeSelEnd = 0;
   timeSelTrackIds: string[] = [];
 
+  // ── Engine telemetry (ephemeral; mirrors appState.local.engine) ────────
+  /**
+   * Per-frame wire-modulation telemetry from the live engine, keyed by engine
+   * instance key (`clip_<clipId>_<deviceId>`, see `clipInstanceKey`) → field →
+   * `{value,min,max,neutral}`. Sliders read it (via the column adapter) to draw
+   * live modulation bands. Not persisted, not undoable.
+   */
+  modulationData: Record<string, Record<string, { value: number; min: number; max: number; neutral: number }>> = {};
+
   constructor() {
     makeAutoObservable<
       ArrangementStore,
@@ -226,6 +236,23 @@ export class ArrangementStore {
 
   get hasWorkspace(): boolean {
     return this.backend !== null;
+  }
+
+  // ── Engine telemetry ──────────────────────────────────────────────────
+  /**
+   * Apply a wire-modulation telemetry diff from the engine into
+   * `modulationData` (granular set/remove so animated frames don't re-wrap the
+   * whole map). Mirrors `LocalController.applyModulationDataDiff`.
+   */
+  applyModulationDataDiff(diff: StateDiff) {
+    if (!diff) return;
+    const changedKeys = Object.keys(diff.changed);
+    if (changedKeys.length === 0 && diff.removed.length === 0) return;
+    runInAction(() => {
+      const md = this.modulationData;
+      for (const k of diff.removed) mobxRemove(md as object, k);
+      for (const k of changedKeys) mobxSet(md as object, k, diff.changed[k]);
+    });
   }
 
   // ── Lookups ─────────────────────────────────────────────────────────
