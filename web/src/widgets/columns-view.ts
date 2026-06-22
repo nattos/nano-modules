@@ -257,13 +257,18 @@ export class ColumnsView extends LitElement {
     for (const [, el] of this.attachedColumns) {
       maxH = Math.max(maxH, el.scrollHeight);
     }
-    // Add a tail of empty space so the last card can be scrolled up off the
-    // bottom edge ("scroll past the end") rather than being pinned there. Only
-    // when the content already overflows — short content stays fixed so it
-    // doesn't gain a phantom scrollbar over empty space.
+    // Add a tail of empty space below the content so the last card can be
+    // scrolled up off the bottom edge ("scroll past the end") rather than being
+    // pinned there. Apply it even when the content is shorter than the viewport
+    // — pad up to a full viewport first, then add the tail — so a short column
+    // still lets you scroll past its bottom (matching the overflowing case).
     const vh = this.scrollEl?.clientHeight ?? 0;
-    const tail = (vh > 0 && maxH > vh) ? Math.max(120, Math.round(vh * 0.5)) : 0;
-    this.contentEl.style.height = `${maxH + tail}px`;
+    if (vh > 0) {
+      const tail = Math.max(120, Math.round(vh * 0.5));
+      this.contentEl.style.height = `${Math.max(maxH, vh) + tail}px`;
+    } else {
+      this.contentEl.style.height = `${maxH}px`;
+    }
   }
 
   private updateVisibleRange() {
