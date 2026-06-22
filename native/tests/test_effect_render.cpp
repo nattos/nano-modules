@@ -1396,6 +1396,53 @@ TEST_CASE("debug.gpu_test renders a solid color via create_render_pso_layout",
   CHECK(std::abs((int)px[c + 2] - 255) <= 4);
 }
 
+// Native pixel coverage for debug.spinningtris (compute generates a vertex
+// buffer; a plain vertex-buffer render pass rasterizes it). It is SPV-shaded so
+// it renders on the MSL-only native backend. Previously only its SCHEMA was
+// covered ("bundle registration survives a trapping module_init") — an
+// arrangement workspace then mistook a wrong/aspirational id ("generator."
+// vs the actual "debug." prefix) for a native render regression. The id never
+// resolved, so it "rendered nothing"; the effect itself is fine. This test
+// pins the real render so that ambiguity can't recur: default state = 100
+// triangles over a dark (0.05,0.05,0.08) clear, run a few frames so the time
+// accumulator advances, and assert a healthy count of colored (non-clear)
+// pixels appear.
+TEST_CASE("debug.spinningtris rasterizes its triangles (native vertex-buffer render)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 64, H = 64; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "debug.spinningtris", "instance_key": "g" } ],
+    "instances": {}, "wires": []
+  })JSON");
+  int32_t out = 0;
+  for (int f = 0; f < 5; f++) {
+    out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, f == 0);
+    backend->submit();
+  }
+  auto px = backend->readbackTexture(out, W, H);
+  // Count pixels that differ from the dark clear (~13,13,20). 100 triangles
+  // over a 64x64 frame cover a substantial fraction.
+  int nonClear = 0;
+  for (size_t i = 0; i < (size_t)W * H; i++) {
+    int r = px[i*4], g = px[i*4+1], b = px[i*4+2];
+    if (std::abs(r-13) > 20 || std::abs(g-13) > 20 || std::abs(b-20) > 20) nonClear++;
+  }
+  INFO("nonClear pixels = " << nonClear << " / " << (W*H));
+  CHECK(nonClear > 100);
+}
+
 // Native functional coverage for the MRT factories (create_instanced_render_pso
 // _mrt_layout + begin_render_pass_mrt). debug.mrt_test (SPV-shaded) renders a
 // fullscreen triangle into TWO color attachments — (1,0,0,1) to target0 and
