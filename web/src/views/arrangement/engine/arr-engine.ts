@@ -31,6 +31,16 @@ export interface ShowSketchOpts {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Deep-plain a value so MobX observable contents (e.g. an rgb `[r,g,b]` array a
+ * color editor wrote into device state) can cross the worker `postMessage`
+ * boundary — `structuredClone` can't clone MobX Proxy arrays/objects, but a JSON
+ * round-trip yields plain ones. (House rule: sanitize before postMessage.)
+ */
+function plainSketch(sketch: Sketch): Sketch {
+  return JSON.parse(JSON.stringify(sketch)) as Sketch;
+}
+
 export class ArrEngine {
   private proxy: EngineProxy;
   private readyPromise: Promise<void>;
@@ -114,6 +124,7 @@ export class ArrEngine {
    */
   async showSketch(sketchId: string, sketch: Sketch, opts: ShowSketchOpts = {}) {
     await this.readyPromise;
+    sketch = plainSketch(sketch); // sanitize before any postMessage
     const bundles = [opts.bundle, ...(opts.bundles ?? [])].filter((b): b is string => !!b);
     for (const bundle of bundles) {
       if (this.loadedBundles.has(bundle)) continue;
@@ -153,6 +164,8 @@ export class ArrEngine {
    */
   async showComposite(layers: Array<{ sketchId: string; sketch: Sketch; opts?: ShowSketchOpts }>) {
     await this.readyPromise;
+    // Sanitize each sketch before any postMessage (strip MobX proxies).
+    layers = layers.map((l) => ({ ...l, sketch: plainSketch(l.sketch) }));
     const bundles = new Set<string>();
     for (const l of layers) {
       for (const b of [l.opts?.bundle, ...(l.opts?.bundles ?? [])]) if (b) bundles.add(b);
@@ -187,7 +200,7 @@ export class ArrEngine {
 
   /** Update an already-shown sketch in place (params / chain changes). */
   updateSketch(sketchId: string, sketch: Sketch) {
-    this.proxy.updateSketch(sketchId, sketch);
+    this.proxy.updateSketch(sketchId, plainSketch(sketch));
   }
 
   setPaused(paused: boolean) {
