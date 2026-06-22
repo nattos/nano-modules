@@ -302,3 +302,32 @@ export interface Wire {
   magnitude?: WireMagnitude;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Special module types + wire-connect descriptor
+//
+// These live here (not in state/controller) so widgets like <column-group> can
+// reference them without importing the AppController/appState singletons — the
+// seam that lets the column card be reused outside the effect IDE. controller.ts
+// re-exports them for back-compat.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** The dashboard module: N relay knobs exposed as named sketch inputs. */
+export const DASHBOARD_MODULE_TYPE = 'util.dashboard';
+
+/** The inverse of the dashboard: N OUTPUT traces internal wires write INTO
+ *  (the sketch's exposed scalar outputs). Mirrors util.dashboard's relay fields. */
+export const SKETCH_OUTPUT_MODULE_TYPE = 'util.sketch_output';
+
+/** Identifies one end of a drag-to-connect operation. */
+export interface FieldConnectInfo {
+  sketchId: string;
+  colIdx: number;
+  chainIdx: number;
+  fieldPath: string;
+  isOutput: boolean;
+  /** Viewport Y used to decide writer vs reader when both fields are same direction. */
+  viewportY: number;
+  /** Schema definition for this field (null if legacy / no schema). Used to pick rail type. */
+  schemaDef: any | null;
+}
+

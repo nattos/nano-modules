@@ -13,12 +13,9 @@
 import { html, css, nothing, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
-import { tapsConnect } from './taps-connect';
-import { appState } from '../state/app-state';
-import { appController, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../state/controller';
-import type { FieldConnectInfo } from '../state/controller';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude } from '../sketch-types';
-import { sketchChain, chainEntryAt, isEffectCollapsed } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo } from '../sketch-types';
+import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
+import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
@@ -43,7 +40,6 @@ import './output-trace-card';
 import './texture-drop-zone';
 import '../editors/envelope-field';   // <envelope-field> for the wire Envelope stage
 
-import type { LongEdit } from '../state/history';
 import type { Selectable } from '../state/types';
 import { categoryColor, effectDomain } from './category-color';
 
@@ -158,6 +154,14 @@ export class ColumnGroup extends MobxLitElement {
   @property({ type: Boolean }) isPlaceholder = false;
   @property({ type: Number }) columnWidth = 300;
   @property({ attribute: false }) callbacks: ColumnGroupCallbacks | null = null;
+  /** Injected data/controller/taps seam. The effect IDE passes `ideColumnAdapter`
+   *  (all caps on → original behavior); other surfaces pass their own. */
+  @property({ attribute: false }) adapter: ColumnAdapter | null = null;
+
+  /** Shorthands for the injected adapter facets (assumes `adapter` is set). */
+  private get ds() { return this.adapter!.data; }
+  private get ctl() { return this.adapter!.controller; }
+  private get taps() { return this.adapter!.taps; }
 
   /** Each column-group owns its own layout manager for field position tracking. */
   public readonly layoutManager = new FieldLayoutManager();
@@ -172,8 +176,8 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Which chain entry index is currently being type-edited (smart-input open), or -1 for none. */
   private editingTypeChainIdx = -1;
-  /** The active LongEdit for type preview (null when not previewing). */
-  private typeLongEdit: LongEdit | null = null;
+  /** The active edit handle for type preview (null when not previewing). */
+  private typeLongEdit: EditHandle | null = null;
   /**
    * Set while the open type editor is choosing the type for a *freshly inserted*
    * placeholder effect (vs. retyping an existing one). The whole insertion rides
@@ -709,7 +713,7 @@ export class ColumnGroup extends MobxLitElement {
       `;
     }
 
-    const sketch = appState.database.sketches[this.sketchId];
+    const sketch = this.ds.getSketch(this.sketchId);
     if (!sketch || this.colIdx !== 0) {
       return nothing;
     }
@@ -757,9 +761,9 @@ export class ColumnGroup extends MobxLitElement {
    */
   private renderInputMarker(column: SketchColumn) {
     const path = `input/${this.sketchId}/${this.colIdx}`;
-    const isSelected = appController.isSelected(path);
+    const isSelected = this.ctl.isSelected(path);
     this.registerChainMarkerSelectable(path, 'Texture Input', 'input');
-    const selectMarker = (e: Event) => { e.stopPropagation(); appController.select(path); };
+    const selectMarker = (e: Event) => { e.stopPropagation(); this.ctl.select(path); };
     return html`
       <div class="chain-marker" ?selected=${isSelected}>
         <div class="chain-marker-inner">
@@ -778,9 +782,9 @@ export class ColumnGroup extends MobxLitElement {
    */
   private renderOutputMarker(column: SketchColumn) {
     const path = `output/${this.sketchId}/${this.colIdx}`;
-    const isSelected = appController.isSelected(path);
+    const isSelected = this.ctl.isSelected(path);
     this.registerChainMarkerSelectable(path, 'Texture Output', 'output');
-    const selectMarker = (e: Event) => { e.stopPropagation(); appController.select(path); };
+    const selectMarker = (e: Event) => { e.stopPropagation(); this.ctl.select(path); };
     return html`
       <div class="chain-marker" ?selected=${isSelected}>
         ${this.renderDeviceTab('top', column.chain.length)}
@@ -799,7 +803,7 @@ export class ColumnGroup extends MobxLitElement {
   private renderInputTraceCardRow(column: SketchColumn) {
     if (column.chain.length === 0) return nothing;
     const tracePath = `trace/${this.sketchId}/${this.colIdx}/input`;
-    const traceSelected = appController.isSelected(tracePath);
+    const traceSelected = this.ctl.isSelected(tracePath);
     const traceId = `trace_${this.sketchId}/${this.colIdx}/input`;
     const target: TracePoint['target'] = {
       type: 'chain_entry',
@@ -810,7 +814,7 @@ export class ColumnGroup extends MobxLitElement {
     };
     return html`
       <div class="trace-card-row" ?selected=${traceSelected}
-        @click=${(e: Event) => { e.stopPropagation(); appController.select(tracePath); }}>
+        @click=${(e: Event) => { e.stopPropagation(); this.ctl.select(tracePath); }}>
         <texture-monitor
           .traceId=${traceId}
           .traceTarget=${target}
@@ -846,9 +850,9 @@ export class ColumnGroup extends MobxLitElement {
     // input and output wires attach to the knob, like the old virtual dashboard
     // — and (b) hides the dashboard's output traces.
     if (entry.module_type === DASHBOARD_MODULE_TYPE) return nothing;
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type);
     const outputs = this.collectModuleOutputs(entry);
-    const tappingMode = appState.local.tappingMode;
+    const tappingMode = this.ds.tappingMode;
     const cardKey = `${this.sketchId}/${this.colIdx}/${chainIdx}`;
     const binding = this.buildFieldBinding(chainIdx, entry, plugin);
 
@@ -904,9 +908,9 @@ export class ColumnGroup extends MobxLitElement {
     if (!tappingMode) return;
     // Non-destructive: select the output field (no tap created). Connect via badges.
     const key = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
-    const entry = chainEntryAt(appState.database.sketches[this.sketchId], chainIdx);
+    const entry = chainEntryAt(this.ds.getSketch(this.sketchId), chainIdx);
     if (entry?.type === 'module') this.registerFieldSelectable(key, chainIdx, entry, fieldPath, true);
-    appController.selectField(key);
+    this.ctl.selectField(key);
   }
 
   // ========================================================================
@@ -914,14 +918,14 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
 
   private renderEffectCard(chainIdx: number, entry: ModuleEntry) {
-    const tappingMode = appState.local.tappingMode;
+    const tappingMode = this.ds.tappingMode;
     const isEditingType = this.editingTypeChainIdx === chainIdx;
     const effectPath = `effect/${this.sketchId}/${this.colIdx}/${chainIdx}`;
-    const isSelected = appController.isSelected(effectPath);
-    const isCollapsed = isEffectCollapsed(appState.database.sketches[this.sketchId], entry.instance_key);
+    const isSelected = this.ctl.isSelected(effectPath);
+    const isCollapsed = isEffectCollapsed(this.ds.getSketch(this.sketchId), entry.instance_key);
 
     // Per-effect device controls (reserved engine keys in instance state).
-    const reservedState = appState.database.sketches[this.sketchId]
+    const reservedState = this.ds.getSketch(this.sketchId)
       ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
     const bypass = reservedState?.__bypass__ === true || reservedState?.__bypass__ === 1;
     const opacity = typeof reservedState?.__opacity__ === 'number'
@@ -934,7 +938,7 @@ export class ColumnGroup extends MobxLitElement {
     // the card is selected whether the user intended to click or drag.
     const selectOnPointerDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).closest('smart-input')) return;
-      appController.select(effectPath);
+      this.ctl.select(effectPath);
     };
 
     return html`
@@ -964,14 +968,14 @@ export class ColumnGroup extends MobxLitElement {
               @pointerdown=${(e: Event) => e.stopPropagation()}
               @click=${(e: Event) => {
                 e.stopPropagation();
-                appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
+                this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
               }}>⏻</button>
             <span class="effect-cat-dot" title=${effectDomain(entry.module_type)}
               style="background:${categoryColor(effectDomain(entry.module_type))}"></span>
             <div class="effect-card-name-wrapper" style=${isEditingType ? 'flex:1' : 'flex:0 1 auto'}>
               ${isEditingType ? html`
                 <smart-input
-                  .effects=${appState.local.availableEffects}
+                  .effects=${this.ds.availableEffects}
                   .initialValue=${this.insertCtx ? '' : entry.module_type}
                   .autoSelect=${true}
                   @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
@@ -1020,7 +1024,7 @@ export class ColumnGroup extends MobxLitElement {
     const t = e.target as HTMLElement;
     if (t.closest('.effect-card-name, smart-input, scalar-slider, button')) return;
     e.stopPropagation();
-    appController.toggleEffectCollapsed(this.sketchId, entry.instance_key);
+    this.ctl.toggleEffectCollapsed(this.sketchId, entry.instance_key);
   }
 
   // ========================================================================
@@ -1030,7 +1034,7 @@ export class ColumnGroup extends MobxLitElement {
   /** Human-readable display name for a module type ("Brightness & Contrast"),
    *  falling back to the short id segment when no effect metadata is found. */
   private effectDisplayName(moduleType: string): string {
-    const eff = appState.local.availableEffects?.find(e => e.id === moduleType);
+    const eff = this.ds.availableEffects?.find(e => e.id === moduleType);
     return eff?.name || shortName(moduleType);
   }
 
@@ -1044,14 +1048,14 @@ export class ColumnGroup extends MobxLitElement {
     if (this.insertCtx) {
       // Insertion: the long edit already exists (it added the placeholder) —
       // just re-point it at the previewed type.
-      appController.updateInsertEffect(
+      this.ctl.updateInsertEffect(
         this.typeLongEdit!, this.sketchId, this.colIdx, this.insertCtx.insertIdx,
         this.insertCtx.instanceKey, effectId);
     } else if (!this.typeLongEdit) {
-      this.typeLongEdit = appController.beginChangeEffectType(
+      this.typeLongEdit = this.ctl.beginChangeEffectType(
         this.sketchId, this.colIdx, chainIdx, effectId);
     } else {
-      appController.updateChangeEffectType(
+      this.ctl.updateChangeEffectType(
         this.typeLongEdit, this.sketchId, this.colIdx, chainIdx, effectId);
     }
   }
@@ -1059,18 +1063,18 @@ export class ColumnGroup extends MobxLitElement {
   private handleTypeCommit(chainIdx: number, effectId: string) {
     if (this.insertCtx) {
       // Commit the insertion at the chosen type → one "Add <type>" undo point.
-      appController.updateInsertEffect(
+      this.ctl.updateInsertEffect(
         this.typeLongEdit!, this.sketchId, this.colIdx, this.insertCtx.insertIdx,
         this.insertCtx.instanceKey, effectId);
       this.typeLongEdit!.accept();
     } else if (this.typeLongEdit) {
       // Update to final value, then accept (creates single undo point)
-      appController.updateChangeEffectType(
+      this.ctl.updateChangeEffectType(
         this.typeLongEdit, this.sketchId, this.colIdx, chainIdx, effectId);
       this.typeLongEdit.accept();
     } else {
       // No preview happened — direct change
-      appController.changeEffectType(this.sketchId, this.colIdx, chainIdx, effectId);
+      this.ctl.changeEffectType(this.sketchId, this.colIdx, chainIdx, effectId);
     }
     this.endTypeEdit();
   }
@@ -1082,9 +1086,9 @@ export class ColumnGroup extends MobxLitElement {
    */
   private handleTypeCancel() {
     if (this.insertCtx && this.typeLongEdit) {
-      appController.cancelInsertEffect(this.typeLongEdit);
+      this.ctl.cancelInsertEffect(this.typeLongEdit);
     } else if (this.typeLongEdit) {
-      appController.cancelChangeEffectType(this.typeLongEdit);
+      this.ctl.cancelChangeEffectType(this.typeLongEdit);
     }
     this.endTypeEdit();
   }
@@ -1097,11 +1101,11 @@ export class ColumnGroup extends MobxLitElement {
    */
   private handleTypeDeleteRequest(chainIdx: number) {
     if (this.insertCtx && this.typeLongEdit) {
-      appController.cancelInsertEffect(this.typeLongEdit);
+      this.ctl.cancelInsertEffect(this.typeLongEdit);
     } else {
       if (this.typeLongEdit) this.typeLongEdit.cancel();
-      appController.select(null);
-      appController.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx);
+      this.ctl.select(null);
+      this.ctl.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx);
     }
     this.endTypeEdit();
   }
@@ -1130,7 +1134,7 @@ export class ColumnGroup extends MobxLitElement {
     if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) return names;
     // util.dashboard's knob_i fields are io = in|out, so the generic io&2 scan
     // below surfaces them as outputs (wire sources) like any other effect.
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type);
     // Schema io-declared outputs (io bit 2).
     const schema = plugin?.schema ?? {};
     for (const [name, def] of Object.entries(schema)) {
@@ -1156,7 +1160,7 @@ export class ColumnGroup extends MobxLitElement {
     isTexture: boolean;
     schemaDef: any | null;
   }> {
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type);
     const rows: Array<{
       fieldPath: string;
       displayName: string;
@@ -1218,7 +1222,7 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   private renderTapOverlay(chainIdx: number, entry: ModuleEntry) {
-    const selectedPath = appController.selectedFieldKey();
+    const selectedPath = this.ctl.selectedFieldKey();
     // Anchor the overlay to the effect-card-inner so it can span both the
     // inputs body and the output trace-card row.
     const innerEl = this.renderRoot.querySelector(
@@ -1228,7 +1232,7 @@ export class ColumnGroup extends MobxLitElement {
     if (!innerEl) return html`<div class="tap-overlay-container"></div>`;
 
     const outputFieldNames = this.getOutputFieldNames(entry);
-    const schema = appState.local.plugins.find(p => p.id === entry.module_type)?.schema ?? {};
+    const schema = this.ds.getPlugin(entry.module_type)?.schema ?? {};
 
     const hits: TemplateResult[] = [];
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
@@ -1279,7 +1283,7 @@ export class ColumnGroup extends MobxLitElement {
     // A connect gesture is already in flight (e.g. click-to-connect): don't start
     // a competing drag whose pointerup would cancel/clear it before the click
     // can land the connection. Let onTapOverlayClick complete it.
-    if (tapsConnect.state) return;
+    if (this.taps.state) return;
     const sourceEl = e.currentTarget as HTMLElement;
     const rect = sourceEl.getBoundingClientRect();
     const sourceInfo: FieldConnectInfo = {
@@ -1295,7 +1299,7 @@ export class ColumnGroup extends MobxLitElement {
     // Drag-to-connect, routed through the shared connect controller so the
     // rubber-band line draws and the drop can land on a field OR a rail badge.
     // A short press (no drag) falls through to onTapOverlayClick (select).
-    tapsConnect.beginFromFieldDrag(e, sourceEl, this.sketchId, key, sourceInfo);
+    this.taps.beginFromFieldDrag(e, sourceEl, this.sketchId, key, sourceInfo);
   }
 
   private onTapOverlayClick(
@@ -1306,23 +1310,23 @@ export class ColumnGroup extends MobxLitElement {
     chainIdx: number,
   ) {
     // Swallow the synthetic click that trails a drag-to-connect gesture.
-    if (tapsConnect.consumeClickSuppression()) return;
+    if (this.taps.consumeClickSuppression()) return;
     // If a connect gesture is in flight, this click lands the connection here.
-    if (tapsConnect.state) { tapsConnect.completeOnField(key); return; }
+    if (this.taps.state) { this.taps.completeOnField(key); return; }
     // Non-destructive: first click SELECTS the field (no tap created). Clicking
     // the already-selected field again picks it up for click-to-connect.
-    if (appController.selectedFieldKey() === key) {
+    if (this.ctl.selectedFieldKey() === key) {
       const hit = this.renderRoot.querySelector(
         `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"],
          .field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
       const r = hit?.getBoundingClientRect();
-      tapsConnect.beginFromFieldClick(this.sketchId, key, {
+      this.taps.beginFromFieldClick(this.sketchId, key, {
         sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath,
         isOutput, viewportY: r ? r.top + r.height / 2 : 0, schemaDef,
       });
       return;
     }
-    appController.selectField(key);
+    this.ctl.selectField(key);
   }
 
   private renderFieldWidgets(chainIdx: number, entry: ModuleEntry) {
@@ -1336,7 +1340,7 @@ export class ColumnGroup extends MobxLitElement {
     // exposed only as the output-trace row below (wire DEST endpoints).
     if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) return nothing;
 
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type);
 
     const binding = this.buildFieldBinding(chainIdx, entry, plugin);
 
@@ -1365,19 +1369,19 @@ export class ColumnGroup extends MobxLitElement {
     return {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
-        const st = appState.database.sketches[this.sketchId]
+        const st = this.ds.getSketch(this.sketchId)
           ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
         const v = st?.[fieldPath];
         return typeof v === 'number' ? v : undefined;
       },
       setValue: (fieldPath: string, value: any) => {
-        appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+        this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
       },
       beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
-        const edit = appController.beginSetEffectParam(
+        const edit = this.ctl.beginSetEffectParam(
           this.sketchId, this.colIdx, chainIdx, fieldPath, value);
         return {
-          update: (v: any) => appController.updateSetEffectParam(
+          update: (v: any) => this.ctl.updateSetEffectParam(
             edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
@@ -1390,7 +1394,7 @@ export class ColumnGroup extends MobxLitElement {
   private buildFieldBinding(
     chainIdx: number,
     entry: ModuleEntry,
-    plugin: typeof appState.local.plugins[0] | undefined,
+    plugin: PluginInfo | undefined,
   ): FieldBinding {
     return {
       instanceKey: entry.instance_key,
@@ -1400,10 +1404,10 @@ export class ColumnGroup extends MobxLitElement {
         // value only surfaces as modulation telemetry. Read it from there so the
         // output-trace spark-chart shows the wire value (else it pins at 0).
         if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) {
-          const md = appState.local.engine.modulationData[entry.instance_key]?.[fieldPath];
+          const md = this.ds.modulation(entry.instance_key)?.[fieldPath];
           return md && typeof md.value === 'number' ? md.value : 0;
         }
-        const ps = appState.local.engine.pluginStates[entry.instance_key];
+        const ps = this.ds.pluginState(entry.instance_key);
         // OUTPUT fields are LIVE-published by the running effect — pluginStates
         // is authoritative. Prefer it, and crucially do NOT fall through to the
         // authored state, which a freshly-created instance is seeded with at the
@@ -1415,7 +1419,7 @@ export class ColumnGroup extends MobxLitElement {
         // pluginStates is seeded with schema DEFAULTS for input fields the module
         // never republishes (it only set_val()s its outputs), so trusting it first
         // would shadow just-loaded state with defaults a frame after load.
-        const sketch = appState.database.sketches[this.sketchId];
+        const sketch = this.ds.getSketch(this.sketchId);
         const instState = sketch?.instances?.[entry.instance_key]?.state;
         if (instState && fieldPath in instState) return instState[fieldPath];
         if (entry.params && fieldPath in entry.params) return entry.params[fieldPath];
@@ -1424,28 +1428,28 @@ export class ColumnGroup extends MobxLitElement {
         return plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
       },
       getModulation: (fieldPath: string) => {
-        const md = appState.local.engine.modulationData[entry.instance_key];
+        const md = this.ds.modulation(entry.instance_key);
         const m = md?.[fieldPath];
         return m && typeof m.value === 'number' ? m : null;
       },
       setValue: (fieldPath: string, value: any) => {
-        appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+        this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
       },
       beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
-        const edit = appController.beginSetEffectParam(
+        const edit = this.ctl.beginSetEffectParam(
           this.sketchId, this.colIdx, chainIdx, fieldPath, value);
         return {
-          update: (v: any) => appController.updateSetEffectParam(
+          update: (v: any) => this.ctl.updateSetEffectParam(
             edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
         };
       },
       beginContinuousEditMulti: (values: Record<string, any>): MultiContinuousEditHandle => {
-        const edit = appController.beginSetEffectParams(
+        const edit = this.ctl.beginSetEffectParams(
           this.sketchId, this.colIdx, chainIdx, values);
         return {
-          update: (v: Record<string, any>) => appController.updateSetEffectParams(
+          update: (v: Record<string, any>) => this.ctl.updateSetEffectParams(
             edit, this.sketchId, this.colIdx, chainIdx, v),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
@@ -1455,7 +1459,7 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   private buildInputFieldDefs(
-    plugin: typeof appState.local.plugins[0] | undefined,
+    plugin: PluginInfo | undefined,
   ): InspectorFieldDef[] {
     if (!plugin) return [];
 
@@ -1584,9 +1588,9 @@ export class ColumnGroup extends MobxLitElement {
     const gutterEl = this.renderRoot.querySelector(
       `.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
     if (!gutterEl) return pips;
-    const selKey = appController.selectedFieldKey();
-    const wires = appState.database.sketches[this.sketchId]?.wires ?? [];
-    const sketch = appState.database.sketches[this.sketchId];
+    const selKey = this.ctl.selectedFieldKey();
+    const wires = this.ds.getSketch(this.sketchId)?.wires ?? [];
+    const sketch = this.ds.getSketch(this.sketchId);
     for (let i = 0; i < column.chain.length; i++) {
       const entry = column.chain[i];
       if (entry.type !== 'module') continue;
@@ -1632,7 +1636,7 @@ export class ColumnGroup extends MobxLitElement {
             data-field-key=${fieldKey}
             style="top:${yCenter}px"
             title=${title}
-            @click=${(e: Event) => { e.stopPropagation(); appController.selectField(fieldKey); }}></div>
+            @click=${(e: Event) => { e.stopPropagation(); this.ctl.selectField(fieldKey); }}></div>
         `);
       }
     }
@@ -1665,7 +1669,7 @@ export class ColumnGroup extends MobxLitElement {
     const cardRect = cardEl.getBoundingClientRect();
     const gutterRect = gutterEl.getBoundingClientRect();
     const baseY = cardRect.top + cardRect.height / 2 - gutterRect.top;
-    const schema = appState.local.plugins.find(p => p.id === entry.module_type)?.schema ?? {};
+    const schema = this.ds.getPlugin(entry.module_type)?.schema ?? {};
 
     fieldPaths.forEach((fieldPath, j) => {
       const fieldKey = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
@@ -1704,7 +1708,7 @@ export class ColumnGroup extends MobxLitElement {
     e: PointerEvent, key: string, fieldPath: string,
     isOutput: boolean, schemaDef: any | null, chainIdx: number,
   ) {
-    if (!appState.local.tappingMode) return;
+    if (!this.ds.tappingMode) return;
     this.onTapHitPointerDown(e, key, fieldPath, isOutput, schemaDef, chainIdx);
   }
 
@@ -1715,10 +1719,10 @@ export class ColumnGroup extends MobxLitElement {
     isOutput: boolean, schemaDef: any | null, chainIdx: number,
   ) {
     e.stopPropagation();
-    if (appState.local.tappingMode) {
+    if (this.ds.tappingMode) {
       this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx);
     } else {
-      appController.selectField(key);
+      this.ctl.selectField(key);
     }
   }
 
@@ -1740,9 +1744,9 @@ export class ColumnGroup extends MobxLitElement {
    */
   private renderDeviceTab(position: 'top' | 'bottom', insertIdx: number) {
     const tabPath = `tab/${this.sketchId}/${this.colIdx}/${insertIdx}`;
-    const isSelected = appController.isSelected(tabPath);
+    const isSelected = this.ctl.isSelected(tabPath);
     this.registerTabSelectable(tabPath, insertIdx);
-    const onClick = (e: Event) => { e.stopPropagation(); appController.select(tabPath); };
+    const onClick = (e: Event) => { e.stopPropagation(); this.ctl.select(tabPath); };
     const onDblClick = (e: Event) => { e.stopPropagation(); this.addEffectAndBeginEdit(insertIdx); };
     return html`
       <div class="tab-area ${position}" ?selected=${isSelected}
@@ -1765,7 +1769,7 @@ export class ColumnGroup extends MobxLitElement {
    * brightness_contrast keeps the card populated while they choose.
    */
   private addEffectAndBeginEdit(insertIdx: number) {
-    const { edit, instanceKey } = appController.beginInsertEffect(
+    const { edit, instanceKey } = this.ctl.beginInsertEffect(
       this.sketchId, this.colIdx, insertIdx, 'color.tone.brightness_contrast');
     this.typeLongEdit = edit;
     this.insertCtx = { instanceKey, insertIdx };
@@ -1775,13 +1779,13 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Register a tab (insert hotspot) as a selectable. */
   private registerTabSelectable(path: string, insertIdx: number) {
-    appController.defineSelectable({
+    this.ctl.defineSelectable({
       path,
       label: 'Insert Point',
       // Pasting onto a gap inserts the clipboard effect exactly at this slot.
       paste: (payload) => {
         if (payload.kind !== 'effect') return;
-        appController.insertEffectFromClipboard(this.sketchId, this.colIdx, insertIdx, payload);
+        this.ctl.insertEffectFromClipboard(this.sketchId, this.colIdx, insertIdx, payload);
       },
       renderInspectorContent: () => html`
         <div class="inspector-field">
@@ -1848,10 +1852,10 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Register an effect card as a selectable with full inspector content. */
   private registerEffectSelectable(path: string, chainIdx: number, entry: ModuleEntry) {
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
-    const availEffect = appState.local.availableEffects.find(e => e.id === entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type);
+    const availEffect = this.ds.availableEffects.find(e => e.id === entry.module_type);
 
-    appController.defineSelectable({
+    this.ctl.defineSelectable({
       path,
       label: availEffect?.name ?? shortName(entry.module_type),
       // Selecting an effect drives the main monitor to that effect's output —
@@ -1864,10 +1868,10 @@ export class ColumnGroup extends MobxLitElement {
       // Copy this card's instance state; paste drops the clipboard effect
       // immediately AFTER this one (chainIdx + 1). Keyed by instance_key so
       // copy survives reorders that may stale the captured chainIdx.
-      copy: () => appController.snapshotEffect(this.sketchId, entry.instance_key),
+      copy: () => this.ctl.snapshotEffect(this.sketchId, entry.instance_key),
       paste: (payload) => {
         if (payload.kind !== 'effect') return;
-        appController.insertEffectFromClipboard(this.sketchId, this.colIdx, chainIdx + 1, payload);
+        this.ctl.insertEffectFromClipboard(this.sketchId, this.colIdx, chainIdx + 1, payload);
       },
       renderInspectorContent: () => {
         const binding: FieldBinding = {
@@ -1875,21 +1879,21 @@ export class ColumnGroup extends MobxLitElement {
           getValue: (fieldPath: string) => {
             // Authored value wins over pluginStates (seeded with input defaults
             // the module never republishes); see buildFieldBinding for why.
-            const sketch = appState.database.sketches[this.sketchId];
+            const sketch = this.ds.getSketch(this.sketchId);
             const instState = sketch?.instances?.[entry.instance_key]?.state;
             if (instState && fieldPath in instState) return instState[fieldPath];
-            const ps = appState.local.engine.pluginStates[entry.instance_key];
+            const ps = this.ds.pluginState(entry.instance_key);
             if (ps && fieldPath in ps) return ps[fieldPath];
             return plugin?.params.find(p => p.name === fieldPath)?.defaultValue ?? 0;
           },
           setValue: (fieldPath: string, value: any) => {
-            appController.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+            this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
           },
           beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
-            const edit = appController.beginSetEffectParam(
+            const edit = this.ctl.beginSetEffectParam(
               this.sketchId, this.colIdx, chainIdx, fieldPath, value);
             return {
-              update: (v: any) => appController.updateSetEffectParam(
+              update: (v: any) => this.ctl.updateSetEffectParam(
                 edit, this.sketchId, this.colIdx, chainIdx, fieldPath, v),
               accept: () => edit.accept(),
               cancel: () => edit.cancel(),
@@ -1954,7 +1958,7 @@ export class ColumnGroup extends MobxLitElement {
    */
   private registerFieldSelectable(
     key: string, chainIdx: number, entry: ModuleEntry, fieldPath: string, isOutput: boolean) {
-    appController.defineSelectable({
+    this.ctl.defineSelectable({
       path: `field/${key}`,
       label: fieldPath,
       renderInspectorContent: () => this.renderFieldInspector(chainIdx, entry, fieldPath, isOutput),
@@ -1965,7 +1969,7 @@ export class ColumnGroup extends MobxLitElement {
   private renderFieldInspector(
     chainIdx: number, entry: ModuleEntry, fieldPath: string, isOutput: boolean) {
     const sId = this.sketchId, cI = this.colIdx;
-    const plugin = appState.local.plugins.find(p => p.id === entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type);
     const binding = this.buildFieldBinding(chainIdx, entry, plugin);
 
     // Single field editor (input fields only; pure outputs have no inline editor).
@@ -1983,12 +1987,12 @@ export class ColumnGroup extends MobxLitElement {
         return k === 'enabled' ? (s?.enabled ?? false) : (s?.duration ?? 0.2);
       },
       setValue: (k: string, v: any) =>
-        appController.setFieldSmoothing(sId, cI, chainIdx, fieldPath, { [k]: coerce(k, v) }),
+        this.ctl.setFieldSmoothing(sId, cI, chainIdx, fieldPath, { [k]: coerce(k, v) }),
       beginContinuousEdit: (k: string, v: any): ContinuousEditHandle => {
-        const edit = appController.beginSetFieldSmoothing(
+        const edit = this.ctl.beginSetFieldSmoothing(
           sId, cI, chainIdx, fieldPath, { [k]: coerce(k, v) });
         return {
-          update: (nv: any) => appController.updateSetFieldSmoothing(
+          update: (nv: any) => this.ctl.updateSetFieldSmoothing(
             edit, sId, cI, chainIdx, fieldPath, { [k]: coerce(k, nv) }),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
@@ -2006,7 +2010,7 @@ export class ColumnGroup extends MobxLitElement {
           .binding=${smBinding}></scalar-slider>
       ` : nothing}`;
 
-    const sketch = appState.database.sketches[this.sketchId];
+    const sketch = this.ds.getSketch(this.sketchId);
 
     // Wires connected to this field. A field may be the source
     // (output) or the dest (input) of a wire; show the other endpoint + remove.
@@ -2037,7 +2041,7 @@ export class ColumnGroup extends MobxLitElement {
                   ${isSrc ? '→' : '←'} ${otherName}.${other.field}</span>
                 <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1"
                   title="Remove wire"
-                  @click=${() => appController.removeWire(sId, w.id)}>×</button>
+                  @click=${() => this.ctl.removeWire(sId, w.id)}>×</button>
               </div>
               ${isScalar ? this.renderWireModInspector(w) : nothing}
             `;
@@ -2129,7 +2133,7 @@ export class ColumnGroup extends MobxLitElement {
   private wireModBinding(wireId: string): FieldBinding {
     const sId = this.sketchId;
     const getWire = (): Wire | undefined =>
-      appState.database.sketches[sId]?.wires?.find(w => w.id === wireId);
+      this.ds.getSketch(sId)?.wires?.find(w => w.id === wireId);
     const read = (path: string): any => {
       const wire = getWire();
       if (!wire) return undefined;
@@ -2172,11 +2176,11 @@ export class ColumnGroup extends MobxLitElement {
     return {
       instanceKey: `wire/${sId}/${wireId}`,
       getValue: (path: string) => read(path),
-      setValue: (path: string, v: any) => appController.updateWire(sId, wireId, patchFor(path, v)),
+      setValue: (path: string, v: any) => this.ctl.updateWire(sId, wireId, patchFor(path, v)),
       beginContinuousEdit: (path: string, v: any): ContinuousEditHandle => {
-        const edit = appController.beginUpdateWire(sId, wireId, patchFor(path, v));
+        const edit = this.ctl.beginUpdateWire(sId, wireId, patchFor(path, v));
         return {
-          update: (nv: any) => appController.updateUpdateWire(edit, sId, wireId, patchFor(path, nv)),
+          update: (nv: any) => this.ctl.updateUpdateWire(edit, sId, wireId, patchFor(path, nv)),
           accept: () => edit.accept(),
           cancel: () => edit.cancel(),
         };
@@ -2191,7 +2195,7 @@ export class ColumnGroup extends MobxLitElement {
    * implicit I/O textures.
    */
   private registerChainMarkerSelectable(path: string, label: string, side: 'input' | 'output') {
-    const sketch = appState.database.sketches[this.sketchId];
+    const sketch = this.ds.getSketch(this.sketchId);
     const chainLen = sketch ? sketchChain(sketch).length : 0;
     const chainIdx = side === 'input' ? 0 : Math.max(0, chainLen - 1);
     const traceId = `trace_${this.sketchId}/${this.colIdx}/${side}`;
@@ -2204,7 +2208,7 @@ export class ColumnGroup extends MobxLitElement {
     };
     const previewAvailable = chainLen > 0;
 
-    appController.defineSelectable({
+    this.ctl.defineSelectable({
       path,
       // Selecting a texture marker drives the main monitor to this texture.
       traceTarget: previewAvailable ? target : undefined,

@@ -31,6 +31,7 @@ import { PointerDragOp } from '../../utils/pointer-drag-op';
 
 import '../../widgets/columns-view';
 import '../../widgets/column-group';
+import { ideColumnAdapter } from '../../state/ide-column-adapter';
 import '../../widgets/taps-overlay';
 
 // Custom inspector registrations — a single barrel shared with edit-tab.ts so
@@ -103,6 +104,7 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
     colGroup.sketchId = id;
     colGroup.isPlaceholder = false;
     colGroup.callbacks = this;
+    colGroup.adapter = ideColumnAdapter;
     this.columnCache.set(index, colGroup as HTMLElement);
     return colGroup as HTMLElement;
   }

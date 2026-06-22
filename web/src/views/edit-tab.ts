@@ -27,6 +27,7 @@ import type { ColumnGroupCallbacks } from '../widgets/column-group';
 import type { ColumnGroup } from '../widgets/column-group';
 import '../widgets/columns-view';
 import '../widgets/column-group';
+import { ideColumnAdapter } from '../state/ide-column-adapter';
 import '../widgets/taps-overlay';
 import '../widgets/texture-monitor';
 import '../widgets/spark-chart';
@@ -379,6 +380,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     colGroup.sketchId = sketchId;
     colGroup.isPlaceholder = isPlaceholder;
     colGroup.callbacks = this;
+    colGroup.adapter = ideColumnAdapter;
     this.columnCache.set(index, colGroup as HTMLElement);
     return colGroup as HTMLElement;
   }

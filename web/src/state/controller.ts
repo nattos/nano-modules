@@ -14,8 +14,11 @@ import { traceController } from './trace-controller';
 import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
-import type { Sketch, ChainEntry, Wire, UiOnlyState, InstanceState } from '../sketch-types';
-import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY } from '../sketch-types';
+import type { Sketch, ChainEntry, Wire, UiOnlyState, InstanceState, FieldConnectInfo } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
+// Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
+export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
+export type { FieldConnectInfo } from '../sketch-types';
 import { ENGINE_VERSION, parseVersion } from '../version';
 import {
   isDefaultProjectId,
@@ -38,28 +41,11 @@ export function wireSelectablePath(sketchId: string, wireId: string): string {
 }
 
 /** The executor-handled virtual knob-bank effect (no WASM module). */
-export const DASHBOARD_MODULE_TYPE = 'util.dashboard';
 /** Fixed knob count — create more dashboards if you need more knobs. */
 export const DASHBOARD_KNOB_COUNT = 8;
 
-/** The inverse of the dashboard: 8 OUTPUT traces that internal wires write INTO
- *  (the sketch's exposed scalar outputs). Mirrors util.dashboard's relay fields. */
-export const SKETCH_OUTPUT_MODULE_TYPE = 'util.sketch_output';
 /** Fixed output-trace count (mirrors N_OUT in native/wasm_modules/sketch_output). */
 export const SKETCH_OUTPUT_TRACE_COUNT = 8;
-
-/** Identifies one end of a drag-to-connect operation. */
-export interface FieldConnectInfo {
-  sketchId: string;
-  colIdx: number;
-  chainIdx: number;
-  fieldPath: string;
-  isOutput: boolean;
-  /** Viewport Y used to decide writer vs reader when both fields are same direction. */
-  viewportY: number;
-  /** Schema definition for this field (null if legacy / no schema). Used to pick rail type. */
-  schemaDef: any | null;
-}
 
 export class AppController {
   public readonly history: HistoryManager;
