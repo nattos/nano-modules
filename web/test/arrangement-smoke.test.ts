@@ -6,7 +6,7 @@
  * Point at a running dev server: ARR_BASE_URL=http://localhost:5175 npx jest arrangement-smoke
  */
 
-const BASE = process.env.ARR_BASE_URL || 'http://localhost:5173';
+const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
 describe('Arrangement mockup smoke', () => {

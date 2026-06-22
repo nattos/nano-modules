@@ -54,6 +54,18 @@ export const EFFECT_CATALOG: CatalogEffect[] = [
     role: 'generator',
     fields: [],
   },
+  {
+    // The effect registers as `debug.spinningtris` (testonly bundle), NOT
+    // `generator.spinningtris` — see native/wasm_modules/spinningtris/main.cpp.
+    type: 'debug.spinningtris',
+    name: 'Spinning Triangles',
+    bundle: TESTONLY,
+    role: 'generator',
+    fields: [
+      fld('triangles', 'Triangles', 0, 1, 0.1),
+      fld('speed', 'Speed', 0, 1, 0.5),
+    ],
+  },
   // ── Effects (chain) ─────────────────────────────────────────────────────
   {
     type: 'color.hsl',
