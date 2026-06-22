@@ -5,45 +5,44 @@
  * Responsibilities:
  *  - Own a single `ArrEngine`, booted **lazily** on first renderable selection
  *    (so pages/tests that never render don't spawn a worker + WebGPU device).
- *  - Translate "the selection changed" into engine calls: map the active clip to
- *    a real sketch (`clipToRender`), show it, and re-target the monitor trace —
- *    deduped so steady-state transport ticks don't re-issue commands.
- *  - RETAIN the latest traced frame per active clip (`engineFrame(clipId)`) and
- *    notify a listener (`setOnComposite`) each frame. The monitor is the unified
- *    compositor: it interleaves these engine frames with decoded media frames in
- *    z-order (so a media clip can sit between two effect layers) and applies
- *    per-track opacity — things a single in-bridge composite couldn't express.
- *  - An optional capture tap (Component D live thumbnails) still sees each layer.
+ *  - Translate "the timeline at the playhead" into engine calls: fold all active
+ *    ENGINE layers into ONE combined chain (`buildCompositeSketch`) so effect
+ *    clips process the composite of the tracks above them, and show it — deduped
+ *    so steady-state transport ticks don't re-issue commands.
+ *  - RETAIN the latest combined composite frame (`engineComposite()`) and notify
+ *    a listener (`setOnComposite`) each frame. The monitor draws that composite
+ *    and layers decoded media frames around it (media isn't in the GPU chain).
+ *  - An optional capture tap (Component D live thumbnails) sees the composite.
  */
 
 import { ArrEngine } from './arr-engine';
-import { clipToRender, type ClipRender } from './clip-sketch';
+import { buildCompositeSketch } from './clip-sketch';
 import { store } from '../state/store';
 import type { Clip } from '../model/composition';
 
-/** Fired once per rendered frame after the latest engine frames are retained. */
+/** Fired once per rendered frame after the latest engine frame is retained. */
 export type CompositeListener = () => void;
-/** Best-effort capture of the active clip's frames (Component D). */
+/** Best-effort capture of the composite frame (Component D). */
 export type FrameTap = (clipId: string, bitmap: ImageBitmap) => void;
 
 const RENDER_W = 640;
 const RENDER_H = 360;
+/** Single sketch id the whole engine-layer stack composites into. */
+const COMPOSITE_ID = 'arr-composite';
 
 export class EngineBridge {
   private engine: ArrEngine | null = null;
   private onCompositeCb: CompositeListener | null = null;
   private tap: FrameTap | null = null;
 
-  /** Per composite-layer content signature (sketchId → sig) for dedupe. */
-  private shownSigs = new Map<string, string>();
-  /** Layer sketchIds in composite DRAW order (bottom → top). */
-  private layerOrder: string[] = [];
-  /** Layer sketchId → clip id, so the capture tap attributes frames. */
-  private layerClip = new Map<string, string>();
-  /** Latest retained engine frame per clip id (the monitor reads these). */
-  private latest = new Map<string, ImageBitmap>();
+  /** Signature of the combined composite sketch (for dedupe). */
+  private compositeSig = '';
+  /** Latest retained composite frame (the monitor draws this). */
+  private compositeFrame: ImageBitmap | null = null;
+  /** Number of active ENGINE layers folded into the composite (diagnostic). */
+  private engineLayerN = 0;
 
-  /** Whether the playhead maps to any renderable composite layer. */
+  /** Whether the playhead maps to any renderable engine layer. */
   hasContent = false;
   /** Last reported engine FPS (plain field; poll if you need it). */
   fps = 0;
@@ -52,8 +51,8 @@ export class EngineBridge {
   /** Count of composited frames delivered (test/diagnostic hook). */
   framesSeen = 0;
 
-  /** Number of active composite layers (diagnostic). */
-  layerCount(): number { return this.layerOrder.length; }
+  /** Number of active engine layers in the composite (diagnostic). */
+  layerCount(): number { return this.engineLayerN; }
 
   /** Boot the engine on first real use; idempotent. */
   private ensureEngine(): ArrEngine {
@@ -72,28 +71,23 @@ export class EngineBridge {
     return e;
   }
 
-  /** Retain this frame's layer bitmaps per clip, tap them, then notify. */
+  /** Retain the combined composite frame, tap it, then notify. */
   private onFrameSet(frames: Record<string, ImageBitmap>) {
     this.framesSeen++;
-    const retained = new Set<string>();
-    for (const id of this.layerOrder) {
-      const bmp = frames[id];
-      if (!bmp) continue;
-      const cid = this.layerClip.get(id);
-      if (!cid) continue;
-      if (this.tap) this.tap(cid, bmp); // Component D thumbnails, before retain
-      this.latest.get(cid)?.close();    // drop the previous frame for this clip
-      this.latest.set(cid, bmp);        // retain (closed on replace / departure)
-      retained.add(id);
+    const bmp = frames[COMPOSITE_ID];
+    if (bmp) {
+      if (this.tap) this.tap(COMPOSITE_ID, bmp); // Component D capture, before retain
+      this.compositeFrame?.close();              // drop the previous composite
+      this.compositeFrame = bmp;                 // retain (closed on replace)
     }
-    // Any traced bitmap we didn't retain (no clip mapping) must be freed.
-    for (const id in frames) if (!retained.has(id)) frames[id].close();
+    // Any other traced bitmap (shouldn't happen) must be freed.
+    for (const id in frames) if (id !== COMPOSITE_ID) frames[id].close();
     this.onCompositeCb?.();
   }
 
-  /** The latest retained engine frame for a clip, or undefined. */
-  engineFrame(clipId: string): ImageBitmap | undefined {
-    return this.latest.get(clipId);
+  /** The latest combined composite frame (all engine layers), or undefined. */
+  engineComposite(): ImageBitmap | undefined {
+    return this.compositeFrame ?? undefined;
   }
 
   /** Listen for new engine frames (the monitor recomposites). Returns unsub. */
@@ -130,57 +124,39 @@ export class EngineBridge {
   }
 
   /**
-   * Reflect the timeline at the playhead into the engine: a stack of active
-   * clips (in composite draw order) each rendered as its own traced layer.
-   * Idempotent and cheap to call every frame — it only issues engine commands
-   * when the active set, layer order, or any layer's sketch changes, and drops
-   * sketches for clips that left the playhead.
+   * Reflect the timeline at the playhead into the engine. The ENGINE layers
+   * (clips without decoded media) are folded into ONE combined chain — top track
+   * first — so an effect clip processes the composite of the tracks above it and
+   * per-track opacity / alpha composite correctly (see `buildCompositeSketch`).
+   * Media clips (decoded video) are excluded here; the monitor draws those.
+   * Idempotent + cheap to call every frame: it re-issues only when the combined
+   * composite actually changes, and clears the trace when nothing renders.
    */
-  showComposite(layers: Array<{ clip: Clip }>) {
-    const renders = layers
-      .map((l) => ({ clip: l.clip, render: clipToRender(l.clip) }))
-      .filter((x): x is { clip: Clip; render: ClipRender } => !!x.render);
+  showComposite(layers: Array<{ clip: Clip; opacity?: number }>) {
+    const engineLayers = layers.filter((l) => !l.clip.source?.url);
+    this.engineLayerN = engineLayers.length;
+    this.hasContent = engineLayers.length > 0;
 
-    this.hasContent = renders.length > 0;
-    const order: string[] = [];
-    const active = new Set<string>();
-    const engineLayers: Array<{ sketchId: string } & Pick<ClipRender, 'sketch' | 'opts'>> = [];
-    let changed = false;
+    const render = engineLayers.length
+      ? buildCompositeSketch(engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1 })))
+      : null;
 
-    for (const { clip, render } of renders) {
-      const sketchId = `clip:${clip.id}`;
-      order.push(sketchId);
-      active.add(sketchId);
-      this.layerClip.set(sketchId, clip.id);
-      engineLayers.push({ sketchId, sketch: render.sketch, opts: render.opts });
-      if (this.shownSigs.get(sketchId) !== render.sig) {
-        this.shownSigs.set(sketchId, render.sig);
-        changed = true;
+    if (!render) {
+      if (this.compositeSig !== '') {
+        this.compositeSig = '';
+        this.engine?.deleteSketch(COMPOSITE_ID);
+        void this.engine?.showComposite([]); // clear the trace → placeholder
+        this.compositeFrame?.close();
+        this.compositeFrame = null;
+        this.onCompositeCb?.();
       }
-    }
-    if (order.join('|') !== this.layerOrder.join('|')) changed = true;
-
-    // Drop sketches for clips no longer active (+ free their retained frame).
-    for (const id of [...this.shownSigs.keys()]) {
-      if (!active.has(id)) {
-        this.engine?.deleteSketch(id);
-        const cid = this.layerClip.get(id);
-        if (cid) { this.latest.get(cid)?.close(); this.latest.delete(cid); }
-        this.shownSigs.delete(id);
-        this.layerClip.delete(id);
-        changed = true;
-      }
-    }
-    this.layerOrder = order;
-
-    if (!changed) return;
-    // Boot the engine only when there's something to show; otherwise just clear
-    // traces on an already-booted engine so the monitor falls to placeholder.
-    if (renders.length === 0) {
-      if (this.engine) void this.engine.showComposite([]);
       return;
     }
-    void this.ensureEngine().showComposite(engineLayers);
+    if (render.sig === this.compositeSig) return;
+    this.compositeSig = render.sig;
+    void this.ensureEngine().showComposite([
+      { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
+    ]);
   }
 
   destroy() {
@@ -188,11 +164,10 @@ export class EngineBridge {
     this.engine = null;
     this.onCompositeCb = null;
     this.tap = null;
-    this.shownSigs.clear();
-    this.layerOrder = [];
-    this.layerClip.clear();
-    for (const bmp of this.latest.values()) bmp.close();
-    this.latest.clear();
+    this.compositeSig = '';
+    this.engineLayerN = 0;
+    this.compositeFrame?.close();
+    this.compositeFrame = null;
   }
 }
 

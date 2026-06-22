@@ -67,6 +67,68 @@ export function clipToRender(clip: Clip): ClipRender | null {
   return null;
 }
 
+/** One engine layer to fold into the composite (clip + effective opacity). */
+export interface CompositeLayerInput {
+  clip: Clip;
+  opacity: number;
+}
+
+/**
+ * Build ONE sketch that composites a STACK of engine layers (top track first)
+ * into a single chain. Each layer's devices are appended in order — a generator
+ * first (if any), then its effects — with NO per-clip implicit anchor. So:
+ *   - an effect-only clip processes the RUNNING composite (the tracks above it),
+ *     not an isolated gray stand-in;
+ *   - the executor feeds the first entry transparent black (anchor null), and
+ *     each later entry reads the previous output;
+ *   - per-track opacity rides the reserved `__opacity__` key on the layer's first
+ *     entry — a real wet/dry over-blend, so opacity < 1 lets the stack below show
+ *     through and real alpha (e.g. a crop's transparency) composites correctly.
+ *
+ * Returns null when no layer contributes anything. A `sig` lets the bridge
+ * re-issue only when the composite actually changes.
+ */
+export function buildCompositeSketch(
+  layers: CompositeLayerInput[],
+): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
+  const bundles = new Set<string>();
+  const chain: ChainEntry[] = [];
+  const instances: Record<string, InstanceState> = {};
+
+  const push = (moduleType: string, key: string, state: Record<string, unknown>) => {
+    const cat = catalogEffect(moduleType);
+    bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle);
+    chain.push({ type: 'module', module_type: moduleType, instance_key: key });
+    instances[key] = { module_type: moduleType, state };
+  };
+
+  for (const { clip, opacity } of layers) {
+    const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));
+    const gen = cat.find((d) => catalogEffect(d.moduleType)!.role === 'generator');
+    const fx = cat.filter((d) => catalogEffect(d.moduleType)!.role === 'effect');
+    const segment: Device[] = gen ? [gen, ...fx] : fx;
+
+    const op = (i: number): Record<string, unknown> => (i === 0 && opacity < 1 ? { __opacity__: opacity } : {});
+
+    if (segment.length === 0) {
+      // Non-catalog / legacy clip: a solid stand-in so the layer still draws.
+      push(IMPLICIT_ANCHOR.type, clipInstanceKey(clip.id, 'src'), op(0));
+      continue;
+    }
+    segment.forEach((d, i) => {
+      push(d.moduleType, clipInstanceKey(clip.id, d.id), {
+        ...defaultStateFor(d.moduleType), ...(d.state ?? {}), ...op(i),
+      });
+    });
+  }
+
+  if (chain.length === 0) return null;
+  const sketch: Sketch = { anchor: null, chain, instances };
+  const opts: ShowSketchOpts = { bundles: [...bundles], traceId: TRACE };
+  const sig = JSON.stringify({ chain, instances });
+  return { sig, sketch, opts };
+}
+
 function buildRealChain(clip: Clip, catDevices: Device[]): ClipRender {
   const bundles = new Set<string>();
   const chain: ChainEntry[] = [];

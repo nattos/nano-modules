@@ -99,7 +99,7 @@ export class ArrMonitor extends MobxLitElement {
     // Reflect the TIMELINE at the playhead into the engine (deduped inside the
     // bridge), then repaint. Reading the observables in render() establishes
     // tracking so transport/edit changes drive these updates.
-    engineBridge.showComposite(store.compositeClipsAtBeat(store.positionBeat));
+    engineBridge.showComposite(store.compositeLayersAtBeat(store.positionBeat));
     this.redraw();
   }
 
@@ -109,11 +109,13 @@ export class ArrMonitor extends MobxLitElement {
     void store.positionBeat;
     void store.primaryPath;
     void store.playing;
-    // Track every ACTIVE composite clip's chain + param state so a real param
-    // edit (on any layer) re-renders → showComposite rebuilds → engine update.
-    for (const { clip } of store.compositeClipsAtBeat(store.positionBeat)) {
-      void clip.kind;
-      for (const d of clip.sketch.devices) {
+    // Track every ACTIVE composite layer's chain + param state + opacity so a
+    // real edit (param, device, or track level) re-renders → showComposite
+    // rebuilds the combined sketch → engine update.
+    for (const layer of store.compositeLayersAtBeat(store.positionBeat)) {
+      void layer.kind;
+      void layer.opacity;
+      for (const d of layer.clip.sketch.devices) {
         void d.moduleType;
         const st = d.state;
         if (st) for (const k in st) void (st as Record<string, unknown>)[k];
@@ -178,16 +180,30 @@ export class ArrMonitor extends MobxLitElement {
     ctx.clearRect(0, 0, w, h);
     let drew = false;
     let pending = false;
+    let drewEngine = false;
     for (const layer of layers) {
-      const bmp = layer.kind === 'engine'
-        ? engineBridge.engineFrame(layer.clip.id)
-        : this.mediaTile(layer.clip);
-      if (!bmp) { pending = true; continue; }
-      ctx.save();
-      ctx.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
-      this.drawCover(ctx, bmp, w, h);
-      ctx.restore();
-      drew = true;
+      if (layer.kind === 'engine') {
+        // ALL engine layers are folded into ONE combined composite (the chain
+        // handles cross-track effect input + per-track opacity), so draw it once
+        // at the z of the first engine layer.
+        if (drewEngine) continue;
+        drewEngine = true;
+        const bmp = engineBridge.engineComposite();
+        if (!bmp) { pending = true; continue; }
+        ctx.save();
+        ctx.globalAlpha = 1; // per-track opacity is already baked into the composite
+        this.drawCover(ctx, bmp, w, h);
+        ctx.restore();
+        drew = true;
+      } else {
+        const bmp = this.mediaTile(layer.clip);
+        if (!bmp) { pending = true; continue; }
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
+        this.drawCover(ctx, bmp, w, h);
+        ctx.restore();
+        drew = true;
+      }
     }
     // Nothing ready yet (engine booting / tiles decoding) → booting placeholder.
     if (!drew && pending) this.drawPlaceholder('booting…');
