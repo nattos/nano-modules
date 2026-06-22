@@ -21,6 +21,7 @@ import type {
 import type { Sketch } from '../../../sketch-types';
 import type { ParamValue } from '../../../engine-types';
 import type { Selectable, EffectClipboard, AvailableEffect } from '../../../state/types';
+import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Device } from '../model/composition';
 import { store } from '../state/store';
 import { EFFECT_CATALOG, catalogEffect } from '../engine/effect-catalog';
@@ -82,6 +83,41 @@ export function trackTarget(trackId: string): DeviceTarget {
     replace: (d, s, ck) => store.replaceTrackDevice(trackId, d, s, ck),
     insertAt: (i, t, ck) => store.insertTrackDeviceAt(trackId, i, t, ck),
     remove: (d, ck) => store.removeTrackDevice(trackId, d, ck),
+  };
+}
+
+/**
+ * A standalone `FieldBinding` for one clip device field — used by surfaces that
+ * aren't a `<column-group>` (e.g. the inspector dashboard's knobs + sparks).
+ * Reads/writes the clip's device state through the store (param writes already
+ * coalesce per `param:<dev>:<field>`, so a knob drag is one undo) and reads live
+ * modulation from the telemetry channel keyed by the engine instance key.
+ */
+export function buildClipFieldBinding(trackId: string, clipId: string, deviceId: string): FieldBinding {
+  const device = (): Device | undefined =>
+    store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices.find((d) => d.id === deviceId);
+  const ek = clipInstanceKey(clipId, deviceId);
+  const fallback = (field: string): number => {
+    const cat = catalogEffect(device()?.moduleType ?? '');
+    return cat?.fields.find((f) => f.key === field)?.default ?? 0;
+  };
+  return {
+    instanceKey: deviceId,
+    getValue: (field) => {
+      const v = device()?.state?.[field];
+      return typeof v === 'number' ? v : fallback(field);
+    },
+    getModulation: (field) => store.modulationData[ek]?.[field] ?? null,
+    setValue: (field, value) => store.setClipDeviceField(trackId, clipId, deviceId, field, value),
+    beginContinuousEdit: (field, value) => {
+      const orig = device()?.state?.[field];
+      store.setClipDeviceField(trackId, clipId, deviceId, field, value);
+      return {
+        update: (v: unknown) => store.setClipDeviceField(trackId, clipId, deviceId, field, v),
+        accept: () => {},
+        cancel: () => store.setClipDeviceField(trackId, clipId, deviceId, field, orig),
+      };
+    },
   };
 }
 

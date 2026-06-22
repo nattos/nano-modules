@@ -12,11 +12,15 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { clipProcessesTexture } from '../model/composition';
-import { ArrColumnAdapter, clipTarget, trackTarget, type DeviceTarget } from './arr-column-adapter';
+import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
+import { catalogEffect } from '../engine/effect-catalog';
+import type { FieldBinding } from '../../../widgets/field-editor';
 import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
 import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
+import '../../../widgets/scalar-knob';
+import '../../../widgets/spark-chart';
 import './arr-automation-editor';
 
 /** Minimal callbacks: the arrangement has no custom inspectors or card-reorder. */
@@ -36,6 +40,17 @@ export class ArrInspector extends MobxLitElement {
       this.columnAdapters.set(target.id, a);
     }
     return a;
+  }
+  /** Stable per device-field-source FieldBinding for the dashboard widgets. */
+  private dashBindings = new Map<string, FieldBinding>();
+  private dashBindingFor(trackId: string, clipId: string, deviceId: string): FieldBinding {
+    const key = `${trackId}/${clipId}/${deviceId}`;
+    let b = this.dashBindings.get(key);
+    if (!b) {
+      b = buildClipFieldBinding(trackId, clipId, deviceId);
+      this.dashBindings.set(key, b);
+    }
+    return b;
   }
   static styles = css`
     :host {
@@ -177,6 +192,12 @@ export class ArrInspector extends MobxLitElement {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .dash-empty {
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color2);
+      opacity: 0.6;
+      padding: 2px 4px;
+    }
     .btn {
       font-family: inherit;
       font-size: var(--app-fs-md);
@@ -242,34 +263,15 @@ export class ArrInspector extends MobxLitElement {
     store.openTapPopup({ wireId: wire.wireId, x: e.clientX + 8, y: e.clientY + 8, label: wire.label });
   }
 
-  private renderKnob(label: string, wire?: any): TemplateResult {
-    return html`<div class="dnode">
-      ${wire ? html`<span class="fpip in" title=${wire.label} @pointerdown=${(e: PointerEvent) => this.onDashPip(e, wire)}></span>` : ''}
-      <svg class="knob" viewBox="0 0 28 28">
-        <circle cx="14" cy="14" r="10" fill="var(--app-bg-color1)" stroke="var(--app-tint-4)"></circle>
-        <line x1="14" y1="14" x2="21" y2="8" stroke="var(--app-text-color1)" stroke-width="1.5"></line>
-      </svg>
-      <span class="dlabel">${label}</span>
-    </div>`;
-  }
-
-  private renderOut(label: string, wire?: any): TemplateResult {
-    // Static mock sparkline.
-    const pts = Array.from({ length: 21 }, (_, i) => {
-      const x = i * 2;
-      const y = 8 - Math.sin(i * 0.6) * 5;
-      return `${x},${y.toFixed(1)}`;
-    }).join(' ');
-    return html`<div class="dnode">
-      ${wire ? html`<span class="fpip out" title=${wire.label} @pointerdown=${(e: PointerEvent) => this.onDashPip(e, wire)}></span>` : ''}
-      <svg class="spark" viewBox="0 0 40 16" preserveAspectRatio="none">
-        <polyline points=${pts} fill="none" stroke="var(--app-io-output)" stroke-width="1"></polyline>
-      </svg>
-      <span class="dlabel">${label}</span>
-    </div>`;
+  /** Catalog range + label for a clip device field (for knob/spark scaling). */
+  private fieldMeta(clip: any, deviceId: string, field: string): { min: number; max: number; label: string } {
+    const dev = clip.sketch.devices.find((d: any) => d.id === deviceId);
+    const f = dev ? catalogEffect(dev.moduleType)?.fields.find((x) => x.key === field) : undefined;
+    return { min: f?.min ?? 0, max: f?.max ?? 1, label: f?.label ?? field };
   }
 
   private renderDashboard(clip: any, clipPath: string): TemplateResult {
+    const [, trackId, clipId] = clipPath.split('/');
     const inputs = clip.reads ?? [];
     const outputs = clip.exports ?? [];
     return html`
@@ -278,24 +280,41 @@ export class ArrInspector extends MobxLitElement {
       </div>
       <div class="dash-row">
         ${inputs.length
-          ? inputs.map((r: any) =>
-              this.renderKnob(r.targetField, {
-                wireId: 'r:' + r.id, dir: 'in', clipPath, target: { field: r.targetField },
-                label: `rail → ${r.targetField}`,
-              }),
-            )
-          : html`${this.renderKnob('Macro A')}${this.renderKnob('Macro B')}`}
+          ? inputs.map((r: any) => {
+              const m = this.fieldMeta(clip, r.targetDeviceId, r.targetField);
+              return html`<div class="dnode">
+                <span class="fpip in" title=${`rail → ${m.label}`}
+                  @pointerdown=${(e: PointerEvent) => this.onDashPip(e, {
+                    wireId: 'r:' + r.id, dir: 'in', clipPath, target: { field: r.targetField },
+                    label: `rail → ${m.label}`,
+                  })}></span>
+                <scalar-knob
+                  .binding=${this.dashBindingFor(trackId, clipId, r.targetDeviceId)}
+                  .fieldPath=${r.targetField} .label=${m.label}
+                  .min=${m.min} .max=${m.max}></scalar-knob>
+              </div>`;
+            })
+          : html`<div class="dash-empty">No rail inputs.</div>`}
       </div>
       <div class="group-title">Dashboard · outputs</div>
       <div class="dash-row">
         ${outputs.length
-          ? outputs.map((ex: any) =>
-              this.renderOut(ex.sourceField, {
-                wireId: 'w:' + ex.id, dir: 'out', clipPath, target: {},
-                label: `${ex.sourceField} → rail`,
-              }),
-            )
-          : html`${this.renderOut('out')}`}
+          ? outputs.map((ex: any) => {
+              const m = this.fieldMeta(clip, ex.sourceDeviceId, ex.sourceField);
+              return html`<div class="dnode">
+                <span class="fpip out" title=${`${m.label} → rail`}
+                  @pointerdown=${(e: PointerEvent) => this.onDashPip(e, {
+                    wireId: 'w:' + ex.id, dir: 'out', clipPath, target: {},
+                    label: `${m.label} → rail`,
+                  })}></span>
+                <spark-chart
+                  .binding=${this.dashBindingFor(trackId, clipId, ex.sourceDeviceId)}
+                  .fieldPath=${ex.sourceField} .min=${m.min} .max=${m.max}
+                  .width=${44} .height=${20}></spark-chart>
+                <span class="dlabel">${m.label}</span>
+              </div>`;
+            })
+          : html`<div class="dash-empty">No rail outputs.</div>`}
       </div>
     `;
   }
