@@ -17,6 +17,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
 import { TransportController } from './engine/transport-clock';
+import { importVideoFile } from './media/drop-import';
 
 import './surfaces/transport-bar';
 import './surfaces/arr-ruler';
@@ -118,6 +119,8 @@ export class ArrangementApp extends MobxLitElement {
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onKey);
+    this.addEventListener('dragover', this.onDragOver);
+    this.addEventListener('drop', this.onDrop);
     this.lastT = performance.now();
     this.tick(this.lastT);
   }
@@ -125,8 +128,57 @@ export class ArrangementApp extends MobxLitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onKey);
+    this.removeEventListener('dragover', this.onDragOver);
+    this.removeEventListener('drop', this.onDrop);
     cancelAnimationFrame(this.raf);
   }
+
+  /** Allow file drops anywhere on the page. */
+  private onDragOver = (e: DragEvent) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+
+  /**
+   * Drop a file → a video clip. On the timeline it lands at the quantized cursor
+   * beat on the track under the pointer (nearest eligible track if that row can't
+   * host clips); dropped elsewhere it lands at the play position on the nearest
+   * eligible track. Multiple files stack sequentially. The grid (which owns the
+   * beat↔pixel + track↔Y transforms) resolves the position.
+   */
+  private onDrop = async (e: DragEvent) => {
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    e.preventDefault();
+    const grid = this.shadowRoot?.querySelector('arr-grid') as
+      | (HTMLElement & { resolveDropTarget(x: number, y: number): { trackId: string; startBeat: number } | null })
+      | null;
+    let target = grid?.resolveDropTarget(e.clientX, e.clientY) ?? null;
+    if (!target) {
+      const id = store.addTrack();
+      target = { trackId: id, startBeat: store.quantize(store.positionBeat) };
+    }
+    const bpm = store.composition.meta.baseBPM;
+    let beat = target.startBeat;
+    for (const file of Array.from(files)) {
+      const media = await importVideoFile(file);
+      const lengthBeat = Math.max(1, store.quantize((media.durationSec * bpm) / 60));
+      store.addVideoClip(
+        target.trackId,
+        beat,
+        {
+          sourceKey: media.sourceKey,
+          url: media.url,
+          frameCount: media.frameCount,
+          fps: media.fps,
+          label: media.label,
+        },
+        lengthBeat,
+      );
+      beat += lengthBeat;
+    }
+  };
 
   /**
    * Transport ticker. Explicit rAF loop (no MobX reaction) advances the playhead
@@ -144,7 +196,10 @@ export class ArrangementApp extends MobxLitElement {
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (e.key === 'Backspace' || e.key === 'Delete') {
-      if (store.hasTimeSelection) {
+      if (store.primaryPath?.startsWith('track/')) {
+        e.preventDefault();
+        store.deleteSelectedTracks(); // a focused track → delete it (never the bus)
+      } else if (store.hasTimeSelection) {
         e.preventDefault();
         store.clearTime(); // split + remove center, leave empty time
       } else if (store.selection.size) {

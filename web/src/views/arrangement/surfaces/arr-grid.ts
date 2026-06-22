@@ -10,7 +10,7 @@
  */
 
 import { html, css } from 'lit';
-import { customElement, query } from 'lit/decorators.js';
+import { customElement, query, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths } from '../state/store';
 import {
@@ -305,7 +305,32 @@ export class ArrGrid extends MobxLitElement {
     .timebar button:hover {
       background: var(--app-tint-2);
     }
+    .header.dragsrc {
+      opacity: 0.5;
+    }
+    /* Insertion indicator while reordering track headers. */
+    .reorder-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--app-hi-color2);
+      box-shadow: 0 0 4px var(--app-hi-color2);
+      z-index: 6;
+      pointer-events: none;
+    }
+    /* Clip cross-track drop target highlight. */
+    .lane.dropok {
+      box-shadow: inset 0 0 0 1px var(--app-hi-color2);
+      background: rgba(65, 105, 225, 0.06);
+    }
   `;
+
+  /** Insertion target while dragging a track header to reorder (display id / null = end). */
+  @state() private reorderBeforeId: string | null = null;
+  @state() private reorderActive = false;
+  /** Lane highlighted as the destination of a cross-track clip drag. */
+  @state() private clipDropTrackId: string | null = null;
 
   @query('.scroll') private scrollEl!: HTMLDivElement;
   @query('.grid-canvas') private canvas!: HTMLCanvasElement;
@@ -404,6 +429,7 @@ export class ArrGrid extends MobxLitElement {
         <div class="rows">
           ${tracks.map((t) => this.renderTrack(t))}
           ${store.automationMode ? this.renderBeatWarpRow() : ''}
+          ${this.reorderActive ? this.renderReorderLine() : ''}
         </div>
         <canvas class="grid-canvas-top" style="height:${totalH}px"></canvas>
       </div>
@@ -446,7 +472,8 @@ export class ArrGrid extends MobxLitElement {
     const isBus = store.isMainBus(track);
     const isRail = track.kind === 'rail';
     const depth = isBus ? 0 : store.trackDepth(track);
-    const selected = store.isSelected(paths.track(track.id));
+    const selected = store.isTrackShownSelected(track.id);
+    const dragSrc = this.reorderActive && this.draggedTrackId === track.id;
     const accent = track.color ?? 'var(--app-cat-control)';
     const devices = track.sketch.devices;
     const rail = isRail
@@ -456,7 +483,7 @@ export class ArrGrid extends MobxLitElement {
     return html`
       <div class="row ${isBus ? 'bus' : ''}">
         <div
-          class="header ${isGroup ? 'group' : ''} ${selected ? 'selected' : ''}"
+          class="header ${isGroup ? 'group' : ''} ${selected ? 'selected' : ''} ${dragSrc ? 'dragsrc' : ''}"
           style="padding-left:${8 + depth * 14}px"
           @pointerdown=${(e: PointerEvent) => this.onHeaderDown(e, track)}
         >
@@ -522,7 +549,7 @@ export class ArrGrid extends MobxLitElement {
               <arr-rail-lane .trackId=${track.id}></arr-rail-lane>
             </div>`
           : html`<div
-              class="lane ${isGroup ? 'group' : ''} ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''}"
+              class="lane ${isGroup ? 'group' : ''} ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''} ${this.clipDropTrackId === track.id ? 'dropok' : ''}"
               @dblclick=${(e: MouseEvent) => this.onLaneDblClick(e, track)}
               @pointerdown=${(e: PointerEvent) => this.onLaneDown(e)}
             >
@@ -696,9 +723,113 @@ export class ArrGrid extends MobxLitElement {
   }
 
   // ── Interaction ───────────────────────────────────────────────────────
+  private draggedTrackId: string | null = null;
+  private headerDrag: { y0: number; trackId: string } | null = null;
+
   private onHeaderDown(e: PointerEvent, track: Track) {
+    // Select immediately (a plain click just selects).
     if (e.shiftKey) store.toggleSelect(paths.track(track.id));
     else store.select(paths.track(track.id));
+    // Arm a reorder drag — but not from an inline rename field or a control,
+    // and never for the main bus (pinned).
+    if (!store.canReorderTrack(track.id)) return;
+    if (e.target instanceof Element && e.target.closest('editable-label, button')) return;
+    this.headerDrag = { y0: e.clientY, trackId: track.id };
+    window.addEventListener('pointermove', this.onHeaderMove);
+    window.addEventListener('pointerup', this.onHeaderUp);
+  }
+
+  private onHeaderMove = (e: PointerEvent) => {
+    const d = this.headerDrag;
+    if (!d) return;
+    if (!this.reorderActive) {
+      if (Math.abs(e.clientY - d.y0) < 5) return;
+      this.reorderActive = true;
+      this.draggedTrackId = d.trackId;
+    }
+    this.reorderBeforeId = this.insertionBeforeId(e.clientY);
+  };
+
+  private onHeaderUp = () => {
+    window.removeEventListener('pointermove', this.onHeaderMove);
+    window.removeEventListener('pointerup', this.onHeaderUp);
+    const d = this.headerDrag;
+    this.headerDrag = null;
+    if (this.reorderActive && d) store.moveTrack(d.trackId, this.reorderBeforeId);
+    this.reorderActive = false;
+    this.draggedTrackId = null;
+    this.reorderBeforeId = null;
+  };
+
+  /** Display track id to insert before for a header drag at `clientY` (null = end). */
+  private insertionBeforeId(clientY: number): string | null {
+    const rect = this.scrollEl.getBoundingClientRect();
+    const contentY = clientY - rect.top + this.scrollEl.scrollTop;
+    const layout = this.trackRowLayout();
+    const tracks = store.displayTracks;
+    for (let i = 0; i < tracks.length; i++) {
+      if (store.isMainBus(tracks[i])) return null; // bus is pinned last → insert at end
+      const mid = (layout[i].top + layout[i].bottom) / 2;
+      if (contentY < mid) return tracks[i].id;
+    }
+    return null;
+  }
+
+  private renderReorderLine() {
+    const layout = this.trackRowLayout();
+    const tracks = store.displayTracks;
+    let y = 0;
+    if (this.reorderBeforeId) {
+      y = layout.find((x) => x.id === this.reorderBeforeId)?.top ?? 0;
+    } else {
+      const busIdx = tracks.findIndex((t) => store.isMainBus(t));
+      y = busIdx >= 0
+        ? layout[busIdx].top
+        : layout.length
+          ? layout[layout.length - 1].bottom
+          : 0;
+    }
+    return html`<div class="reorder-line" style="top:${y}px"></div>`;
+  }
+
+  /** Eligible (plain) display track id nearest a clientY, or null if none exist. */
+  eligibleTrackAtClientY(clientY: number): string | null {
+    const rect = this.scrollEl.getBoundingClientRect();
+    const contentY = clientY - rect.top + this.scrollEl.scrollTop;
+    const layout = this.trackRowLayout();
+    const tracks = store.displayTracks;
+    let best: string | null = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < tracks.length; i++) {
+      if (tracks[i].kind !== 'track') continue;
+      const r = layout[i];
+      if (contentY >= r.top && contentY < r.bottom) return tracks[i].id;
+      const dist = Math.abs(contentY - (r.top + r.bottom) / 2);
+      if (dist < bestDist) { bestDist = dist; best = tracks[i].id; }
+    }
+    return best;
+  }
+
+  /** Highlight (or clear) a lane as the destination of a cross-track clip drag. */
+  setClipDropTarget(trackId: string | null) {
+    this.clipDropTrackId = trackId;
+  }
+
+  /**
+   * Resolve a file-drop position: the eligible track + quantized start beat.
+   * On the timeline → the beat under the cursor; off it → the play position.
+   * Always lands on the nearest eligible (plain) track. Null if none exist.
+   */
+  resolveDropTarget(clientX: number, clientY: number): { trackId: string; startBeat: number } | null {
+    const trackId = this.eligibleTrackAtClientY(clientY);
+    if (!trackId) return null;
+    const rect = this.scrollEl.getBoundingClientRect();
+    const laneLeft = rect.left + HEADER_WIDTH;
+    const onTimeline =
+      clientX >= laneLeft && clientX <= rect.right &&
+      clientY >= rect.top && clientY <= rect.bottom;
+    const beat = onTimeline ? buildBeatGrid().xToBeat(clientX - laneLeft) : store.positionBeat;
+    return { trackId, startBeat: store.quantize(beat) };
   }
 
   private onLaneDblClick(e: MouseEvent, track: Track) {

@@ -194,6 +194,15 @@ export class ArrClip extends MobxLitElement {
   private origLen = 0;
   private moved = 0;
   private startClientX = 0;
+  /** Eligible destination track during a cross-track move drag, or null. */
+  private dropTrackId: string | null = null;
+
+  /** The host <arr-grid> (this clip lives in its shadow root). */
+  private gridHost(): any {
+    return this.getRootNode() instanceof ShadowRoot
+      ? ((this.getRootNode() as ShadowRoot).host as any)
+      : null;
+  }
 
   @query('.body.reel canvas') private reelCanvas?: HTMLCanvasElement;
   @query('.trace-card canvas') private traceCanvas?: HTMLCanvasElement;
@@ -456,6 +465,11 @@ export class ArrClip extends MobxLitElement {
     const beatAtCursor = grid.xToBeat(localX);
     if (this.mode === 'move') {
       store.moveClip(this.trackId, this.clip.id, q(beatAtCursor - this.grabBeatOffset));
+      // Cross-track: highlight the eligible destination lane under the cursor.
+      const grid = this.gridHost();
+      const dest = grid?.eligibleTrackAtClientY?.(e.clientY) ?? null;
+      this.dropTrackId = dest && dest !== this.trackId ? dest : null;
+      grid?.setClipDropTarget?.(this.dropTrackId);
     } else if (this.mode === 'resize-r') {
       const len = q(beatAtCursor) - this.clip.startBeat;
       store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, Math.max(0.5, len));
@@ -468,10 +482,21 @@ export class ArrClip extends MobxLitElement {
     }
   };
 
-  private onWinUp = () => {
+  private onWinUp = (e: PointerEvent) => {
+    const wasMove = this.mode === 'move';
     this.mode = null;
     window.removeEventListener('pointermove', this.onWinMove);
     window.removeEventListener('pointerup', this.onWinUp);
+    const grid = this.gridHost();
+    grid?.setClipDropTarget?.(null);
+    // Commit a cross-track move on release (reparenting mid-drag would break
+    // the active pointer gesture, so it lands here instead).
+    if (wasMove && this.dropTrackId && this.dropTrackId !== this.trackId) {
+      const localX = e.clientX - this.laneRect().left;
+      const beat = store.quantize(buildBeatGrid().xToBeat(localX) - this.grabBeatOffset, e.altKey);
+      store.moveClipToTrack(this.trackId, this.clip.id, this.dropTrackId, beat);
+    }
+    this.dropTrackId = null;
     this.requestUpdate();
   };
 }

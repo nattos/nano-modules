@@ -1,0 +1,132 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { store, paths } from './store';
+import { compositionLengthBeats } from '../model/composition';
+
+/**
+ * Track structural ops + selection/time-box semantics: add / delete / reorder
+ * tracks, cross-track clip moves, and the "selecting a track selects a full-track
+ * time box (and shows the track as selected)" behaviour.
+ */
+describe('track structural ops', () => {
+  const plainTracks = () => store.composition.tracks.filter((t) => t.kind === 'track');
+
+  beforeEach(() => {
+    store.clearSelection();
+    store.clearTimeSelection();
+  });
+
+  it('addTrack appends a plain track and selects it', () => {
+    const before = store.composition.tracks.length;
+    const id = store.addTrack();
+    expect(store.composition.tracks.length).toBe(before + 1);
+    expect(store.trackById(id)?.kind).toBe('track');
+    expect(store.isSelected(paths.track(id))).toBe(true);
+  });
+
+  it('addTrack(afterId) inserts immediately after the given track', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    const ids = store.composition.tracks.map((t) => t.id);
+    expect(ids.indexOf(b)).toBe(ids.indexOf(a) + 1);
+  });
+
+  it('addTrackAfterSelection inserts after the last shown-selected track', () => {
+    const a = store.addTrack();
+    store.select(paths.track(a)); // focuses a + sets its time box
+    const created = store.addTrackAfterSelection();
+    const ids = store.composition.tracks.map((t) => t.id);
+    expect(ids.indexOf(created)).toBe(ids.indexOf(a) + 1);
+  });
+
+  it('selecting a track sets a full-track time box and shows it selected', () => {
+    const a = store.addTrack();
+    store.select(paths.track(a));
+    expect(store.hasTimeSelection).toBe(true);
+    expect(store.timeSelStart).toBe(0);
+    expect(store.timeSelEnd).toBe(compositionLengthBeats(store.composition));
+    expect(store.timeSelTrackIds).toEqual([a]);
+    expect(store.isTrackShownSelected(a)).toBe(true);
+  });
+
+  it('a time region shows its covered tracks as selected without focusing them', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.setTimeSelection(0, 8, [a, b]);
+    expect(store.isTrackShownSelected(a)).toBe(true);
+    expect(store.isTrackShownSelected(b)).toBe(true);
+    // Not focused → inspector primary path is unaffected.
+    expect(store.isSelected(paths.track(a))).toBe(false);
+  });
+
+  it('deleteSelectedTracks removes the focused track but never the main bus', () => {
+    const a = store.addTrack();
+    store.select(paths.track(a));
+    store.deleteSelectedTracks();
+    expect(store.trackById(a)).toBeUndefined();
+
+    const bus = store.mainBusTrack!;
+    store.clearSelection();
+    store.selection.add(paths.track(bus.id));
+    (store as any).primaryPath = paths.track(bus.id);
+    store.deleteSelectedTracks();
+    expect(store.trackById(bus.id)).toBeDefined(); // bus survives
+  });
+
+  it('deleting a nested group reparents its children upward', () => {
+    const bus = store.mainBusTrack!;
+    // A nested group (kind group, non-null parent) is deletable, unlike the bus.
+    const group = store.addTrack();
+    const g = store.composition.tracks.find((t) => t.id === group)!;
+    g.kind = 'group';
+    g.parentId = bus.id;
+    const child = store.addTrack();
+    store.composition.tracks.find((t) => t.id === child)!.parentId = group;
+    store.clearSelection();
+    store.selection.add(paths.track(group));
+    (store as any).primaryPath = paths.track(group);
+    store.deleteSelectedTracks();
+    expect(store.trackById(group)).toBeUndefined();
+    expect(store.trackById(child)?.parentId).toBe(bus.id); // reparented to group's parent
+  });
+
+  it('moveTrack reorders among non-bus tracks', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    // b currently right after a; move a to before nothing (end) → a after b.
+    store.moveTrack(a, null);
+    const order = store.composition.tracks.filter((t) => !store.isMainBus(t)).map((t) => t.id);
+    expect(order.indexOf(a)).toBeGreaterThan(order.indexOf(b));
+  });
+
+  it('moveTrack refuses to move the main bus', () => {
+    const bus = store.mainBusTrack!;
+    const before = store.composition.tracks.map((t) => t.id).join(',');
+    store.moveTrack(bus.id, null);
+    expect(store.composition.tracks.map((t) => t.id).join(',')).toBe(before);
+  });
+});
+
+describe('cross-track clip moves', () => {
+  it('moveClipToTrack relocates a clip to an eligible track', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    const path = store.createEmptyClip(a, 4, 8)!;
+    const clipId = path.split('/')[2];
+    store.moveClipToTrack(a, clipId, b, 12);
+    expect(store.trackById(a)!.clips.find((c) => c.id === clipId)).toBeUndefined();
+    const moved = store.trackById(b)!.clips.find((c) => c.id === clipId);
+    expect(moved).toBeDefined();
+    expect(moved!.startBeat).toBe(12);
+  });
+
+  it('an ineligible destination keeps the clip on its source track', () => {
+    const a = store.addTrack();
+    const rail = store.composition.tracks.find((t) => t.kind === 'rail');
+    const path = store.createEmptyClip(a, 4, 8)!;
+    const clipId = path.split('/')[2];
+    store.moveClipToTrack(a, clipId, rail ? rail.id : 'nope', 12);
+    const stay = store.trackById(a)!.clips.find((c) => c.id === clipId);
+    expect(stay).toBeDefined();
+    expect(stay!.startBeat).toBe(12); // still repositioned, just not relocated
+  });
+});

@@ -19,6 +19,21 @@ export interface SliceSketch {
 const TESTONLY = 'com.nano.testonly';
 const CORE = 'com.nano.core';
 
+/**
+ * A real CORE solid-color source (renders, default black) — the production
+ * stand-in for legacy / non-catalog clips so testonly is never loaded.
+ */
+export function solidSketch(traceId = 'arr-monitor'): SliceSketch {
+  return {
+    sketch: {
+      anchor: null,
+      chain: [{ type: 'module', module_type: 'source.solid_color', instance_key: 'sk_solid' }],
+      instances: { sk_solid: { module_type: 'source.solid_color', state: {} } },
+    },
+    opts: { bundles: [CORE], traceId },
+  };
+}
+
 /** Solid blue (0,128,255) — deterministic, ideal for a pixel assertion. */
 export function gpuTestSketch(traceId = 'arr-monitor'): SliceSketch {
   return {

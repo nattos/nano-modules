@@ -25,7 +25,7 @@ import type { ShowSketchOpts } from './arr-engine';
 import type { Clip, Device } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
-import { gpuTestSketch } from './slice-sketches';
+import { solidSketch } from './slice-sketches';
 
 export interface ClipRender {
   /** Signature of the content; bridge re-issues to the engine only when it changes. */
@@ -61,7 +61,7 @@ export function clipToRender(clip: Clip): ClipRender | null {
   // Fallback for legacy fake-data clips (non-catalog devices): a solid stand-in.
   if (clip.kind === 'video' || devices.some(deviceIsSource) ||
       (devices.length > 0 && clipProcessesTexture(clip))) {
-    const s = gpuTestSketch(TRACE);
+    const s = solidSketch(TRACE);
     return { sig: 'fallback:solid', sketch: s.sketch, opts: s.opts };
   }
   return null;
@@ -74,7 +74,7 @@ function buildRealChain(clip: Clip, catDevices: Device[]): ClipRender {
 
   const addEntry = (moduleType: string, keySuffix: string, state: Record<string, unknown>) => {
     const cat = catalogEffect(moduleType);
-    bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle); // gpu_test ships in testonly
+    bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle); // solid_color ships in core
     const key = clipInstanceKey(clip.id, keySuffix);
     chain.push({ type: 'module', module_type: moduleType, instance_key: key });
     instances[key] = { module_type: moduleType, state };

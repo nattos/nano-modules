@@ -20,6 +20,7 @@ import {
   AutomationLane,
   EnvelopePoint,
   deviceIsSource,
+  compositionLengthBeats,
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
@@ -292,7 +293,8 @@ export class ArrangementStore {
       this.primaryPath = path;
       this.selectedWireId = null;
       this.activeRightTab = 'inspector';
-      // Selecting a clip syncs the time region to the clip's extent.
+      // Selecting a clip syncs the time region to the clip's extent;
+      // selecting a track selects a time box spanning the whole track.
       const found = this.clipByPath(path);
       if (found) {
         this.setTimeSelection(
@@ -300,8 +302,43 @@ export class ArrangementStore {
           found.clip.startBeat + found.clip.lengthBeat,
           [found.track.id],
         );
+      } else if (path.startsWith('track/')) {
+        const t = this.trackById(path.split('/')[1]);
+        if (t && t.kind === 'track') {
+          this.setTimeSelection(0, compositionLengthBeats(this.composition), [t.id]);
+        } else {
+          this.clearTimeSelection();
+        }
       }
     });
+  }
+
+  /** Track ids the UI should render as selected: focused OR within the time box. */
+  isTrackShownSelected(trackId: string): boolean {
+    if (this.isSelected(paths.track(trackId))) return true;
+    if (!this.hasTimeSelection) return false;
+    const scope = this.timeSelTrackIds;
+    if (scope.length === 0) {
+      const t = this.trackById(trackId);
+      return !!t && t.kind === 'track';
+    }
+    return scope.includes(trackId);
+  }
+
+  /** All tracks rendered as selected (focused + time-box covered). */
+  get shownSelectedTrackIds(): Set<string> {
+    const out = new Set<string>();
+    for (const t of this.composition.tracks) {
+      if (this.isTrackShownSelected(t.id)) out.add(t.id);
+    }
+    return out;
+  }
+
+  /** Focused track ids (track paths in the selection set). */
+  get selectedTrackIds(): string[] {
+    return [...this.selection]
+      .filter((p) => p.startsWith('track/'))
+      .map((p) => p.split('/')[1]);
   }
 
   toggleSelect(path: string) {
@@ -1072,6 +1109,140 @@ export class ArrangementStore {
       }
     });
     this.clearSelection();
+  }
+
+  // ── Track structure: add / delete / reorder ───────────────────────────
+  private static isMainBusTrack(t: Track): boolean {
+    return t.kind === 'group' && t.parentId === null;
+  }
+
+  /**
+   * Insert a new empty track immediately after `afterTrackId` in the array (or
+   * at the end when omitted). The main bus pins to the bottom via `displayTracks`
+   * regardless of array position, so this never needs special bus handling.
+   * Returns the new track id and selects it.
+   */
+  addTrack(afterTrackId?: string): string {
+    const id = uid('trk');
+    const track: Track = {
+      id,
+      name: 'New Track',
+      kind: 'track',
+      parentId: null,
+      color: 'var(--app-cat-source)',
+      sketch: { devices: [] },
+      automation: [],
+      clips: [],
+    };
+    this.mutate('add track', (d) => {
+      let idx = d.tracks.length;
+      if (afterTrackId) {
+        const ai = d.tracks.findIndex((t) => t.id === afterTrackId);
+        if (ai >= 0) idx = ai + 1;
+      }
+      d.tracks.splice(idx, 0, track);
+    });
+    this.select(paths.track(id));
+    return id;
+  }
+
+  /** "+ Track" affordance: insert after the last (bottom-most) shown-selected track. */
+  addTrackAfterSelection(): string {
+    const shown = this.shownSelectedTrackIds;
+    let after: string | undefined;
+    for (const t of this.displayTracks) {
+      if (shown.has(t.id) && !this.isMainBus(t)) after = t.id;
+    }
+    return this.addTrack(after);
+  }
+
+  /** Delete the focused track(s); never the main bus. Children reparent upward. */
+  deleteSelectedTracks() {
+    const ids = this.selectedTrackIds.filter((id) => {
+      const t = this.trackById(id);
+      return !!t && !this.isMainBus(t);
+    });
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    this.mutate('delete track', (d) => {
+      const resolveParent = (pid: string | null): string | null => {
+        let cur = pid;
+        while (cur && idSet.has(cur)) {
+          cur = d.tracks.find((x) => x.id === cur)?.parentId ?? null;
+        }
+        return cur;
+      };
+      for (const t of d.tracks) {
+        if (t.parentId && idSet.has(t.parentId)) t.parentId = resolveParent(t.parentId);
+      }
+      d.tracks = d.tracks.filter((t) => !idSet.has(t.id));
+    });
+    this.clearSelection();
+    this.clearTimeSelection();
+  }
+
+  /** True if a track may be dragged to reorder (everything but the main bus). */
+  canReorderTrack(trackId: string): boolean {
+    const t = this.trackById(trackId);
+    return !!t && !this.isMainBus(t);
+  }
+
+  /**
+   * Reorder `trackId` to sit immediately before `beforeTrackId` (or at the end of
+   * the non-bus tracks when null). Operates on the underlying array among non-bus
+   * tracks so display order AND composite draw order stay consistent; the main bus
+   * is always kept last. The bus itself can't be moved.
+   */
+  moveTrack(trackId: string, beforeTrackId: string | null) {
+    const t = this.trackById(trackId);
+    if (!t || this.isMainBus(t)) return;
+    if (beforeTrackId === trackId) return;
+    this.mutate('reorder tracks', (d) => {
+      const buses = d.tracks.filter((x) => ArrangementStore.isMainBusTrack(x));
+      const nonbus = d.tracks.filter((x) => !ArrangementStore.isMainBusTrack(x));
+      const from = nonbus.findIndex((x) => x.id === trackId);
+      if (from < 0) return;
+      const [moved] = nonbus.splice(from, 1);
+      let to = beforeTrackId ? nonbus.findIndex((x) => x.id === beforeTrackId) : nonbus.length;
+      if (to < 0) to = nonbus.length;
+      nonbus.splice(to, 0, moved);
+      d.tracks = [...nonbus, ...buses];
+    });
+  }
+
+  /**
+   * Move a clip to another (eligible) track at `newStartBeat`. An ineligible
+   * destination (group/rail/main bus) keeps the clip on its source track. Same
+   * coalesce key as a within-track move so a whole drag gesture is one undo.
+   */
+  moveClipToTrack(fromTrackId: string, clipId: string, toTrackId: string, newStartBeat: number) {
+    const v = Math.max(0, newStartBeat);
+    const dest = this.trackById(toTrackId);
+    const realDest = dest && dest.kind === 'track' ? toTrackId : fromTrackId;
+    this.mutate(
+      'move clip',
+      (d) => {
+        const from = d.tracks.find((t) => t.id === fromTrackId);
+        const to = d.tracks.find((t) => t.id === realDest);
+        if (!from || !to) return;
+        if (from === to) {
+          const c = from.clips.find((x) => x.id === clipId);
+          if (c) c.startBeat = v;
+          return;
+        }
+        const i = from.clips.findIndex((c) => c.id === clipId);
+        if (i < 0) return;
+        const [clip] = from.clips.splice(i, 1);
+        clip.startBeat = v;
+        to.clips.push(clip);
+      },
+      `move:${clipId}`,
+    );
+  }
+
+  /** True if clips may be dropped onto this track (plain playable tracks only). */
+  isClipEligibleTrack(trackId: string): boolean {
+    return this.trackById(trackId)?.kind === 'track';
   }
 
   // ── Track / group / automation toggles ────────────────────────────────

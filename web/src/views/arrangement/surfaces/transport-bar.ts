@@ -25,6 +25,9 @@ export class TransportBar extends MobxLitElement {
       font-size: var(--app-fs-lg);
       color: var(--app-text-color2);
       letter-spacing: 0.04em;
+      display: flex;
+      align-items: center;
+      gap: var(--app-sp-3);
     }
     .brand b {
       color: var(--app-text-color1);
@@ -58,6 +61,13 @@ export class TransportBar extends MobxLitElement {
     }
     button:hover {
       background: var(--app-tint-2);
+    }
+    button[disabled] {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    button[disabled]:hover {
+      background: var(--app-bg-color1);
     }
     button.active {
       border-color: var(--app-hi-color2);
@@ -155,7 +165,23 @@ export class TransportBar extends MobxLitElement {
     const posStr = `${bar}.${beat}.${tick}`;
 
     return html`
-      <div class="brand">nano <b>arrangement</b></div>
+      <div class="brand">
+        nano <b>arrangement</b>
+        <button
+          title="Undo (⌘Z)"
+          ?disabled=${!store.canUndo}
+          @click=${() => store.undo()}
+        >
+          <ui-icon icon="la-undo"></ui-icon>
+        </button>
+        <button
+          title="Redo (⇧⌘Z)"
+          ?disabled=${!store.canRedo}
+          @click=${() => store.redo()}
+        >
+          <ui-icon icon="la-redo"></ui-icon>
+        </button>
+      </div>
 
       <div class="center">
         <button title="Stop" @click=${() => store.stop()}>

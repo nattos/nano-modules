@@ -49,6 +49,16 @@ export class ArrRuler extends MobxLitElement {
       cursor: pointer;
       line-height: 1;
     }
+    .corner button:hover {
+      background: var(--app-tint-2);
+    }
+    .corner button.addtrack {
+      width: auto;
+      padding: 0 6px;
+      color: var(--app-text-color1);
+      white-space: nowrap;
+      font-size: var(--app-fs-xs);
+    }
     .time {
       position: relative;
       flex: 1;
@@ -104,7 +114,13 @@ export class ArrRuler extends MobxLitElement {
         <div class="corner">
           <button title="Zoom out" @click=${() => this.zoomCenter(1 / 1.3)}>−</button>
           <button title="Zoom in" @click=${() => this.zoomCenter(1.3)}>+</button>
-          <span>bars</span>
+          <button
+            class="addtrack"
+            title="Add a track after the last selected track"
+            @click=${() => store.addTrackAfterSelection()}
+          >
+            + Track
+          </button>
         </div>
         <div
           class="time"

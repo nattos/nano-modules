@@ -1,17 +1,19 @@
 /**
- * GPU e2e: the rebased `debug.spinningtris` generator renders in the arrangement.
+ * GPU e2e: a CORE generator renders in the arrangement (testonly is no longer
+ * loaded — the catalog now mounts the production core/nano/lights bundles).
  *
- * Validates two things from the default-rebase: (1) the testonly bundle the dev
- * server serves exposes `debug.spinningtris`, and (2) the arrangement catalog
- * entry uses that id (NOT `generator.spinningtris`) so a clip hosting it builds
- * a real chain and renders. Asserts spatial structure (a spinning-triangles
- * scene is non-uniform, unlike the solid-color stand-in) and animation over time.
+ * Validates: (1) the dev server's core bundle exposes `source.noise`, and (2) the
+ * arrangement catalog entry builds a real chain that renders. Asserts spatial
+ * structure (animated noise is non-uniform, unlike the solid-color stand-in) and
+ * animation over time.
  *
- *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-spinningtris
+ *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-generator
  */
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
+
+const GENERATOR = 'source.noise';
 
 /** Sample a coarse grid and report spread (non-uniformity) of luma. */
 const sampleScene = () =>
@@ -37,7 +39,7 @@ const sampleScene = () =>
     return { spread: max - min, sig: lumas.map((l) => Math.round(l)).join(',') };
   });
 
-describe('Arrangement renders debug.spinningtris (post-rebase)', () => {
+describe('Arrangement renders a core generator (testonly dropped)', () => {
   jest.setTimeout(60_000);
 
   beforeAll(async () => {
@@ -48,7 +50,7 @@ describe('Arrangement renders debug.spinningtris (post-rebase)', () => {
     );
   });
 
-  it('discovers + renders the spinning-triangles generator (non-uniform, animated)', async () => {
+  it('discovers + renders the core generator (non-uniform, animated)', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.removeAllListeners('console');
@@ -60,15 +62,15 @@ describe('Arrangement renders debug.spinningtris (post-rebase)', () => {
       errors.push(`[console] ${t}`);
     });
 
-    // A clip whose sole device is the spinningtris generator → it IS the source.
-    await page.evaluate(() => {
+    // A clip whose sole device is a core generator → it IS the source.
+    await page.evaluate((gen) => {
       const store = (window as any).arrangementStore;
       const track = store.composition.tracks.find((t: any) => t.kind === 'track');
       const path = store.createEmptyClip(track.id, 0, 8);
       const [, trackId, clipId] = path.split('/');
-      store.addClipDeviceType(trackId, clipId, 'debug.spinningtris');
+      store.addClipDeviceType(trackId, clipId, gen);
       store.select(path);
-    });
+    }, GENERATOR);
 
     // Engine boots lazily; wait for real frames of THIS clip's content.
     await page.waitForFunction(
@@ -79,12 +81,12 @@ describe('Arrangement renders debug.spinningtris (post-rebase)', () => {
       { timeout: 30_000 },
     );
 
-    // The effect must be discovered under the rebased id (else the chain is empty).
+    // The effect must be discovered under its core id (else the chain is empty).
     const discovered = await page.evaluate(() =>
       ((window as any).__engineBridge?.discoveredEffects?.() ?? []) as string[]);
-    expect(discovered).toContain('debug.spinningtris');
+    expect(discovered).toContain(GENERATOR);
 
-    // Scene structure: a triangles scene is spatially non-uniform.
+    // Scene structure: animated noise is spatially non-uniform.
     await page.waitForFunction(
       () => {
         const app = document.querySelector('arrangement-app') as any;
@@ -109,7 +111,7 @@ describe('Arrangement renders debug.spinningtris (post-rebase)', () => {
     expect(a).not.toBeNull();
     expect(a!.spread).toBeGreaterThan(8); // structured, not a flat fill
 
-    // Animation: spinning at speed 0.5 → the sampled signature changes over time.
+    // Animation: noise evolves at speed 0.5 → the sampled signature changes.
     await new Promise((r) => setTimeout(r, 600));
     const b = await sampleScene();
     expect(b!.sig).not.toEqual(a!.sig);

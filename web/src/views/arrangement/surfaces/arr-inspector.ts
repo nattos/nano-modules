@@ -415,6 +415,17 @@ export class ArrInspector extends MobxLitElement {
       <div class="section-header">${track.kind === 'group' ? 'Group' : 'Track'} · ${track.name}</div>
       <div class="body">
         <div class="row"><label>Clips</label><span class="val">${track.clips.length}</span></div>
+        ${store.isMainBus(track)
+          ? ''
+          : html`<div class="row">
+              <button
+                title="Delete this track (⌫)"
+                style="font-family:inherit;font-size:var(--app-fs-xs);color:var(--app-error);background:var(--app-bg-color1);border:1px solid var(--app-tint-4);border-radius:2px;padding:3px 8px;cursor:pointer"
+                @click=${() => store.deleteSelectedTracks()}
+              >
+                Delete track
+              </button>
+            </div>`}
         <div class="group-title">Chain (sketch)</div>
         <column-group
           .colIdx=${0}
