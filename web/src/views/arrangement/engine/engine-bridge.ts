@@ -132,13 +132,15 @@ export class EngineBridge {
    * Idempotent + cheap to call every frame: it re-issues only when the combined
    * composite actually changes, and clears the trace when nothing renders.
    */
-  showComposite(layers: Array<{ clip: Clip; opacity?: number }>) {
+  showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number }>) {
     const engineLayers = layers.filter((l) => !l.clip.source?.url);
     this.engineLayerN = engineLayers.length;
     this.hasContent = engineLayers.length > 0;
 
     const render = engineLayers.length
-      ? buildCompositeSketch(engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1 })))
+      ? buildCompositeSketch(
+          engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode })),
+        )
       : null;
 
     if (!render) {

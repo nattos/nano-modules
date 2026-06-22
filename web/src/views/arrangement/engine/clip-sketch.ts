@@ -20,7 +20,7 @@
  * param edits both refresh, while steady-state ticks don't churn.
  */
 
-import type { Sketch, InstanceState, ChainEntry } from '../../../sketch-types';
+import type { Sketch, InstanceState, ChainEntry, Wire } from '../../../sketch-types';
 import type { ShowSketchOpts } from './arr-engine';
 import type { Clip, Device } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
@@ -67,33 +67,43 @@ export function clipToRender(clip: Clip): ClipRender | null {
   return null;
 }
 
-/** One engine layer to fold into the composite (clip + effective opacity). */
+/** One engine layer to fold into the composite (clip + effective opacity + blend). */
 export interface CompositeLayerInput {
   clip: Clip;
   opacity: number;
+  /** composite.blend mode for a source clip (0 = Normal/over). */
+  blendMode?: number;
 }
+
+const BLEND = 'composite.blend';
 
 /**
  * Build ONE sketch that composites a STACK of engine layers (top track first)
- * into a single chain. Each layer's devices are appended in order — a generator
- * first (if any), then its effects — with NO per-clip implicit anchor. So:
- *   - an effect-only clip processes the RUNNING composite (the tracks above it),
- *     not an isolated gray stand-in;
- *   - the executor feeds the first entry transparent black (anchor null), and
- *     each later entry reads the previous output;
- *   - per-track opacity rides the reserved `__opacity__` key on the layer's first
- *     entry — a real wet/dry over-blend, so opacity < 1 lets the stack below show
- *     through and real alpha (e.g. a crop's transparency) composites correctly.
+ * into the final image, distinguishing the two kinds of clip:
  *
- * Returns null when no layer contributes anything. A `sig` lets the bridge
- * re-issue only when the composite actually changes.
+ *   - A SOURCE clip (a generator at the top of its chain) is a self-contained
+ *     image producer: its sub-chain (generator → its effects) renders to its own
+ *     buffer, then a wired `composite.blend` composites that buffer OVER the
+ *     running accumulator using the clip's blend mode (Normal/over default) +
+ *     per-track opacity — so its real alpha reveals the tracks above it.
+ *   - An EFFECT-only clip (no generator) is an adjustment layer: its effects
+ *     chain inline and process the running accumulator (the composite of the
+ *     tracks above it); per-track opacity rides the reserved `__opacity__` key.
+ *
+ * The accumulator starts transparent (the executor feeds the first entry
+ * transparent black). Returns null when no layer contributes. A `sig` lets the
+ * bridge re-issue only when the composite changes.
  */
 export function buildCompositeSketch(
   layers: CompositeLayerInput[],
 ): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
   const bundles = new Set<string>();
   const chain: ChainEntry[] = [];
+  const wires: Wire[] = [];
   const instances: Record<string, InstanceState> = {};
+  let wid = 0;
+  /** Instance key whose `tex_out` is the running composite, or null (empty). */
+  let accKey: string | null = null;
 
   const push = (moduleType: string, key: string, state: Record<string, unknown>) => {
     const cat = catalogEffect(moduleType);
@@ -102,30 +112,57 @@ export function buildCompositeSketch(
     instances[key] = { module_type: moduleType, state };
   };
 
-  for (const { clip, opacity } of layers) {
+  for (const { clip, opacity, blendMode } of layers) {
     const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));
     const gen = cat.find((d) => catalogEffect(d.moduleType)!.role === 'generator');
     const fx = cat.filter((d) => catalogEffect(d.moduleType)!.role === 'effect');
-    const segment: Device[] = gen ? [gen, ...fx] : fx;
 
-    const op = (i: number): Record<string, unknown> => (i === 0 && opacity < 1 ? { __opacity__: opacity } : {});
+    if (gen || cat.length === 0) {
+      // ── SOURCE clip: render standalone, then composite OVER the accumulator ──
+      let firstKey = '';
+      let lastKey = '';
+      if (gen) {
+        const segment: Device[] = [gen, ...fx];
+        segment.forEach((d) => {
+          const key = clipInstanceKey(clip.id, d.id);
+          push(d.moduleType, key, { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) });
+          if (!firstKey) firstKey = key;
+          lastKey = key;
+        });
+      } else {
+        // Legacy / non-catalog clip → a solid stand-in so the layer still draws.
+        firstKey = lastKey = clipInstanceKey(clip.id, 'src');
+        push(IMPLICIT_ANCHOR.type, firstKey, {});
+      }
 
-    if (segment.length === 0) {
-      // Non-catalog / legacy clip: a solid stand-in so the layer still draws.
-      push(IMPLICIT_ANCHOR.type, clipInstanceKey(clip.id, 'src'), op(0));
-      continue;
-    }
-    segment.forEach((d, i) => {
-      push(d.moduleType, clipInstanceKey(clip.id, d.id), {
-        ...defaultStateFor(d.moduleType), ...(d.state ?? {}), ...op(i),
+      if (accKey == null) {
+        // First (top) layer becomes the accumulator. A sub-1 opacity fades it
+        // over the transparent base via the reserved wet/dry key.
+        if (opacity < 1) instances[firstKey].state = { ...instances[firstKey].state, __opacity__: opacity };
+        accKey = lastKey;
+      } else {
+        const b = clipInstanceKey(clip.id, 'blend');
+        push(BLEND, b, { mode: blendMode ?? 0, opacity });
+        // 0 = A (the accumulator / tracks above), 1 = B (this clip, drawn on top).
+        wires.push({ id: `w${wid++}`, src: { instanceKey: accKey, field: 'tex_out' }, dest: { instanceKey: b, field: '0' } });
+        wires.push({ id: `w${wid++}`, src: { instanceKey: lastKey, field: 'tex_out' }, dest: { instanceKey: b, field: '1' } });
+        accKey = b;
+      }
+    } else {
+      // ── EFFECT-only clip: process the accumulator inline (adjustment layer) ──
+      fx.forEach((d, i) => {
+        const state: Record<string, unknown> = { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) };
+        if (i === 0 && opacity < 1) state['__opacity__'] = opacity;
+        push(d.moduleType, clipInstanceKey(clip.id, d.id), state);
+        accKey = clipInstanceKey(clip.id, d.id);
       });
-    });
+    }
   }
 
   if (chain.length === 0) return null;
-  const sketch: Sketch = { anchor: null, chain, instances };
+  const sketch: Sketch = { anchor: null, chain, wires, instances };
   const opts: ShowSketchOpts = { bundles: [...bundles], traceId: TRACE };
-  const sig = JSON.stringify({ chain, instances });
+  const sig = JSON.stringify({ chain, wires, instances });
   return { sig, sketch, opts };
 }
 

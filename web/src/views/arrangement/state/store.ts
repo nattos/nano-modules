@@ -50,6 +50,8 @@ export interface CompositeLayer {
   kind: 'engine' | 'media';
   /** Effective opacity (own × ancestor-group `level`s), 0..1. */
   opacity: number;
+  /** Composite blend mode for a source clip (0 = Normal/over). */
+  blendMode: number;
 }
 
 /** Path builders — stable keys used for selection + DOM data attributes. */
@@ -530,6 +532,7 @@ export class ArrangementStore {
         clip: pick,
         kind: pick.source?.url ? 'media' : 'engine',
         opacity: this.effectiveOpacity(t, anc),
+        blendMode: pick.blendMode ?? 0,
       });
     }
     // `tracks` is already top→bottom; paint in that order so each lower track
