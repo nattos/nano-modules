@@ -222,23 +222,24 @@ TEST_CASE("mod.source.lfo Period mode remaps the speed knob (env_lfo)", "[effect
   const std::string key = host.plugin_key(id);
   REQUIRE(!key.empty());
 
-  // Period mode, period=0 → exponential map bottoms out at 0.5s → 2 Hz. A
-  // dt=0.125 tick advances phase 0.125*2 = 0.25 cycles → sin(pi/2)=1 → output 1.
+  // Period mode: the period knob is the cycle length in seconds directly.
+  // period=0.5s → 2 Hz. A dt=0.125 tick advances phase 0.125*2 = 0.25 cycles →
+  // sin(pi/2)=1 → output 1.
   EffectInstance* fast = rt.instanceFor("mod.source.lfo", "fast");
   REQUIRE(fast != nullptr);
   fast->setParamFloat("mode", 1.0f);    // ModePeriod
-  fast->setParamFloat("period", 0.0f);
+  fast->setParamFloat("period", 0.5f);
   fast->doTick(0.125);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
         Catch::Approx(1.0).margin(1e-4));
 
-  // period=1 → 300s (5 min). The same dt barely moves phase (0.125/300 cycles),
-  // so the output sits essentially at the 0.5 midpoint — far slower than Freq
+  // period=300s (5 min). The same dt barely moves phase (0.125/300 cycles), so
+  // the output sits essentially at the 0.5 midpoint — far slower than Freq
   // mode's 0.1 Hz floor could reach.
   EffectInstance* slow = rt.instanceFor("mod.source.lfo", "slow");
   REQUIRE(slow != nullptr);
   slow->setParamFloat("mode", 1.0f);    // ModePeriod
-  slow->setParamFloat("period", 1.0f);
+  slow->setParamFloat("period", 300.0f);
   slow->doTick(0.125);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
         Catch::Approx(0.5).margin(5e-3));

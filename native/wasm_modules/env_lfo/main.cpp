@@ -13,9 +13,9 @@
  *                                  interpreted; a tab-bar selector. Freq exposes
  *                                  `rate`; Period exposes `period` (see below).
  *   rate      (0..1, default 0.5) — Freq mode: oscillation speed (maps to 0..10 Hz)
- *   period    (0..1, default 0.5) — Period mode: cycle length, exponentially
- *                                  mapped to 0.5s..300s (5 min) so the LFO can run
- *                                  far slower than Freq mode's 0.1 Hz floor allows.
+ *   period    (0.1..300s, def 1s) — Period mode: cycle length in seconds (up to
+ *                                  5 min), so the LFO can run far slower than Freq
+ *                                  mode's 0.1 Hz floor allows.
  *   amplitude (0..1, default 1.0) — output swing around 0.5
  *   waveform  (enum)             — Sine / Square / Triangle / Saw / Random Walk
  *                                  / Random FM
@@ -48,7 +48,7 @@ namespace env_lfo {
 // Speed-knob interpretation (schema `mode` select field + State::mode).
 enum Mode {
   ModeFreq = 0,    // `rate` knob → 0..10 Hz
-  ModePeriod = 1,  // `period` knob → 0.5s..300s cycle length
+  ModePeriod = 1,  // `period` knob → cycle length in seconds (0.1s..300s)
 };
 
 // Waveform selector values (schema `waveform` select field + State::waveform).
@@ -65,7 +65,7 @@ enum Shape {
 struct State {
   int mode = ModeFreq;
   float rate = 0.5f;
-  float period = 0.5f;
+  float period = 1.0f;  // seconds (Period mode)
   float amplitude = 1.0f;
   int waveform = ShapeSine;
   float shape = 0.0f;
@@ -148,8 +148,9 @@ void module_init() {
       .selectField("mode", ModeFreq, state::PrimaryInput,
                    {{"Freq", ModeFreq}, {"Period", ModePeriod}})
       .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
-      // Period mode: exponential 0.5s..300s (mapped in tick). Hidden in Freq mode.
-      .floatField("period", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      // Period mode: cycle length in seconds, up to 5 min. Hidden in Freq mode.
+      .floatField("period", 1.0f, 0.1f, 300.f, state::PrimaryInput,
+                  nullptr, 0.f, "s")
       .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)
       .selectField("waveform", ShapeSine, state::PrimaryInput,
                    {{"Sine", ShapeSine},
@@ -200,7 +201,7 @@ void init(void* self) {
   if (!s) return;
   s->mode = ModeFreq;
   s->rate = 0.5f;
-  s->period = 0.5f;
+  s->period = 1.0f;
   s->amplitude = 1.0f;
   s->waveform = ShapeSine;
   s->shape = 0.0f;
@@ -219,14 +220,12 @@ void init(void* self) {
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  // Cycles per second. Freq mode: 0..10 Hz. Period mode: exponential cycle
-  // length 0.5s..300s (5 min), so the slow end runs far below Freq's 0.1 Hz floor.
+  // Cycles per second. Freq mode: 0..10 Hz. Period mode: the period knob is the
+  // cycle length in seconds directly (up to 5 min), so freq = 1/seconds.
   double rate;
   if (s->mode == ModePeriod) {
-    double p = s->period;
-    if (p < 0.f) p = 0.f;
-    if (p > 1.f) p = 1.f;
-    double seconds = 0.5 * std::pow(600.0, p);  // 0.5s .. 300s
+    double seconds = s->period;
+    if (seconds < 0.01) seconds = 0.01;  // guard div-by-zero
     rate = 1.0 / seconds;
   } else {
     rate = s->rate * 10.0;  // map 0-1 param to 0-10 Hz
