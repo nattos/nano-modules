@@ -20,6 +20,11 @@ export function thumbKey(sourceKey: string, frame: number): ThumbKey {
   return `${sourceKey}#${frame}`;
 }
 
+export function parseThumbKey(key: ThumbKey): { sourceKey: string; frame: number } {
+  const i = key.lastIndexOf('#');
+  return { sourceKey: key.slice(0, i), frame: Number(key.slice(i + 1)) };
+}
+
 export interface ThumbnailProducer<V> {
   /** Decode + downscale one frame. May honor `signal` to abort superseded work. */
   produce(sourceKey: string, frame: number, signal?: AbortSignal): Promise<V>;
@@ -40,6 +45,7 @@ interface Inflight<V> {
 export class ThumbnailCache<V> {
   private cache = new Map<ThumbKey, V>(); // insertion order == LRU recency
   private inflight = new Map<ThumbKey, Inflight<V>>();
+  private pinned = new Set<ThumbKey>(); // protected from eviction
   private capacity: number;
   private dispose?: (value: V) => void;
 
@@ -48,6 +54,8 @@ export class ThumbnailCache<V> {
 
   /** Fired when an async fill completes; redraw in response. */
   onFill: ((sourceKey: string, frame: number, value: V) => void) | null = null;
+  /** Fired when an entry is evicted (capacity pressure); for index upkeep. */
+  onEvict: ((sourceKey: string, frame: number, value: V) => void) | null = null;
 
   constructor(
     private producer: ThumbnailProducer<V>,
@@ -79,6 +87,31 @@ export class ThumbnailCache<V> {
   /** Returns true if a decoded thumbnail is resident (no scheduling side effect). */
   has(sourceKey: string, frame: number): boolean {
     return this.cache.has(thumbKey(sourceKey, frame));
+  }
+
+  /**
+   * Read a resident entry WITHOUT scheduling a fill on miss (touches LRU on a
+   * hit). For draw-time reads where prefetch is driven separately (by views).
+   */
+  peek(sourceKey: string, frame: number): V | null {
+    const key = thumbKey(sourceKey, frame);
+    const hit = this.cache.get(key);
+    if (hit === undefined) return null;
+    this.cache.delete(key);
+    this.cache.set(key, hit);
+    this._hits++;
+    return hit;
+  }
+
+  /** Replace the pin set; pinned keys are never evicted (loop-region tiles). */
+  setPinned(keys: Iterable<ThumbKey>) {
+    this.pinned = keys instanceof Set ? keys : new Set(keys);
+  }
+
+  /** Resize the LRU budget, evicting down to it immediately (pins excepted). */
+  setCapacity(n: number) {
+    this.capacity = Math.max(1, n);
+    this.evict();
   }
 
   /**
@@ -119,12 +152,23 @@ export class ThumbnailCache<V> {
   private insert(key: ThumbKey, value: V) {
     if (this.cache.has(key)) this.cache.delete(key);
     this.cache.set(key, value);
-    // Evict LRU (front of the Map) past capacity.
-    while (this.cache.size > this.capacity) {
-      const oldest = this.cache.keys().next().value as ThumbKey | undefined;
-      if (oldest === undefined) break;
-      const v = this.cache.get(oldest)!;
-      this.cache.delete(oldest);
+    this.evict();
+  }
+
+  /**
+   * Evict least-recently-used UNPINNED entries until at/under capacity. If the
+   * pinned set alone exceeds capacity, pins win and the cache overflows (the
+   * manager sizes capacity to fit its pinned working set).
+   */
+  private evict() {
+    if (this.cache.size <= this.capacity) return;
+    for (const key of [...this.cache.keys()]) {
+      if (this.cache.size <= this.capacity) break;
+      if (this.pinned.has(key)) continue;
+      const v = this.cache.get(key)!;
+      this.cache.delete(key);
+      const { sourceKey, frame } = parseThumbKey(key);
+      this.onEvict?.(sourceKey, frame, v);
       this.dispose?.(v);
     }
   }

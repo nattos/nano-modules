@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ThumbnailCache, type ThumbnailProducer } from './thumbnail-cache';
+import { ThumbnailCache, thumbKey, type ThumbnailProducer } from './thumbnail-cache';
 
 /** A controllable producer: records calls and resolves `produce` on demand. */
 function makeProducer() {
@@ -101,6 +101,47 @@ describe('ThumbnailCache', () => {
     expect(cache.has('s', 1)).toBe(true);
     expect(cache.has('s', 2)).toBe(false);
     expect(cache.has('s', 3)).toBe(true);
+  });
+
+  it('peek() reads without scheduling a fill on a miss', () => {
+    const { producer, calls } = makeProducer();
+    const cache = new ThumbnailCache(producer);
+    expect(cache.peek('s', 1)).toBeNull();
+    expect(calls.length).toBe(0); // no decode scheduled (unlike get())
+  });
+
+  it('setPinned protects entries from capacity eviction', async () => {
+    const { producer, settle } = makeProducer();
+    const evicted: string[] = [];
+    const cache = new ThumbnailCache(producer, { capacity: 2 });
+    cache.onEvict = (sk, f) => evicted.push(`${sk}#${f}`);
+
+    cache.get('s', 1); settle('s', 1);
+    cache.get('s', 2); settle('s', 2);
+    await tick();
+
+    cache.setPinned(new Set([thumbKey('s', 1)])); // pin the OLDEST entry
+    cache.get('s', 3); settle('s', 3);
+    cache.get('s', 4); settle('s', 4);
+    await tick();
+
+    // Capacity 2, but s#1 is pinned → survives despite being LRU.
+    expect(cache.has('s', 1)).toBe(true);
+    expect(cache.stats().size).toBe(2);
+    expect(evicted).toContain('s#2');
+  });
+
+  it('setCapacity evicts down to the new budget immediately', async () => {
+    const { producer, settle } = makeProducer();
+    const cache = new ThumbnailCache(producer, { capacity: 8 });
+    for (const f of [1, 2, 3, 4]) { cache.get('s', f); settle('s', f); }
+    await tick();
+    expect(cache.stats().size).toBe(4);
+    cache.setCapacity(2);
+    expect(cache.stats().size).toBe(2);
+    // The two most-recently-inserted survive.
+    expect(cache.has('s', 4)).toBe(true);
+    expect(cache.has('s', 1)).toBe(false);
   });
 
   it('clear() aborts in-flight work and a superseded fill is discarded', async () => {
