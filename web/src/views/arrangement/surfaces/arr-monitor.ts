@@ -18,6 +18,8 @@ import { customElement, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { engineBridge } from '../engine/engine-bridge';
+import { thumbnailController } from '../media/thumbnail-controller';
+import type { Clip } from '../model/composition';
 
 @customElement('arr-monitor')
 export class ArrMonitor extends MobxLitElement {
@@ -69,6 +71,7 @@ export class ArrMonitor extends MobxLitElement {
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
   private frameSinkOff?: () => void;
+  private thumbOff?: () => void;
   /** A real engine frame has painted the canvas (so don't stomp it). */
   private haveFrame = false;
 
@@ -76,12 +79,18 @@ export class ArrMonitor extends MobxLitElement {
     this.ro = new ResizeObserver(() => this.redraw());
     this.ro.observe(this);
     this.frameSinkOff = engineBridge.setFrameSink((bmp) => this.onFrame(bmp));
+    // Repaint the video preview as decoded frames land for the selected clip.
+    this.thumbOff = thumbnailController.subscribe((sk) => {
+      if (store.selectedClip?.clip?.source?.sourceKey === sk) this.redraw();
+    });
     this.redraw();
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
     this.frameSinkOff?.();
+    this.thumbOff?.();
+    thumbnailController.dropView('monitor');
   }
   updated() {
     // Reflect the current selection into the engine (deduped inside the bridge),
@@ -147,15 +156,57 @@ export class ArrMonitor extends MobxLitElement {
     this.haveFrame = true;
   }
 
-  /** Placeholder paint — only while there's no live engine frame to show. */
+  /** Paint the monitor: decoded video frame → live engine frame → placeholder. */
   private redraw() {
-    // Live frames own the canvas once content is up.
+    const clip = store.selectedClip?.clip ?? null;
+    // Media-backed clip: preview its decoded frame at the playhead (reuses D).
+    if (clip?.source?.url) {
+      this.haveFrame = false;
+      this.drawVideoFrame(clip);
+      return;
+    }
+    // Live engine frames own the canvas once content is up.
     if (engineBridge.hasContent) {
       if (!this.haveFrame) this.drawPlaceholder('booting…');
       return;
     }
     this.haveFrame = false;
     this.drawPlaceholder();
+  }
+
+  /**
+   * Preview a media clip by decoding the frame under the playhead through the
+   * thumbnail cache (Component D) and cover-fitting it. A fine single-frame view
+   * pulls the exact playhead frame; `peek` substitutes the nearest cached tile
+   * (from the film strip) until it lands, so it's never blank while scrubbing.
+   */
+  private drawVideoFrame(clip: Clip) {
+    const media = clip.source!;
+    if (!media.url || !media.sourceKey) return;
+    const fc = Math.max(1, media.durationFrames);
+    const u = clip.lengthBeat > 0 ? (store.positionBeat - clip.startBeat) / clip.lengthBeat : 0;
+    const frame = Math.max(0, Math.min(fc - 1, Math.round(Math.max(0, Math.min(1, u)) * (fc - 1))));
+
+    thumbnailController.registerMedia({ sourceKey: media.sourceKey, url: media.url, frameCount: fc, fps: media.fps });
+    thumbnailController.setView('monitor', {
+      sourceKey: media.sourceKey, level: 0, startFrame: frame, endFrame: frame,
+      pattern: 'window', readaheadFrames: 1,
+    });
+    const hit = thumbnailController.peek(media.sourceKey, frame, 0);
+
+    const s = this.sizedCtx();
+    if (!s) return;
+    s.ctx.clearRect(0, 0, s.w, s.h);
+    if (!hit) {
+      this.drawPlaceholder();
+      return;
+    }
+    const iw = hit.value.width;
+    const ih = hit.value.height;
+    const scale = Math.max(s.w / iw, s.h / ih); // cover
+    const dw = iw * scale;
+    const dh = ih * scale;
+    s.ctx.drawImage(hit.value, (s.w - dw) / 2, (s.h - dh) / 2, dw, dh);
   }
 
   private drawPlaceholder(_note?: string) {

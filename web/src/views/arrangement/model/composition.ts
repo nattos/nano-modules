@@ -183,8 +183,21 @@ export interface Clip {
   /** Promoted from 'effect' to 'video' when a source/generator device is added. */
   kind: ClipKind;
   sketch: ClipSketch;
-  /** Present iff kind === 'video' (display-only ref for the mockup). */
-  source?: { label: string; durationFrames: number };
+  /**
+   * Present iff kind === 'video'. `label` + `durationFrames` are display-only;
+   * the optional media ref (`sourceKey` + `url` + `fps`) links real on-disk
+   * media so the film strip shows decoded thumbnails (Component D). Absent ⇒
+   * the procedural reel stand-in.
+   */
+  source?: {
+    label: string;
+    durationFrames: number;
+    /** Stable cache identity (a file change should change this). */
+    sourceKey?: string;
+    /** Fetchable URL of the media (served asset / object URL). */
+    url?: string;
+    fps?: number;
+  };
   loop: ClipLoopConfig;
   automation: AutomationLane[];
   exports: RailExport[];

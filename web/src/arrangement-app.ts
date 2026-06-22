@@ -11,7 +11,10 @@ import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 
 import { store } from './views/arrangement/state/store';
 import { engineBridge } from './views/arrangement/engine/engine-bridge';
+import { thumbnailController, reelLayout } from './views/arrangement/media/thumbnail-controller';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
 (window as any).__engineBridge = engineBridge;
+(window as any).__thumbCtl = thumbnailController;
+(window as any).__reelLayout = reelLayout;

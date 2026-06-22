@@ -36,6 +36,10 @@ export interface ClipRender {
  * (an empty clip, or a modulation-only clip that produces no frames).
  */
 export function clipToRender(clip: Clip): ClipRender | null {
+  // A clip backed by real on-disk media is previewed from its decoded frames
+  // (the monitor's video path), not the engine — return null so the engine
+  // doesn't render a misleading generator over it.
+  if (clip.source?.url) return null;
   // Carries a source/generator → animated generator content (frames advance).
   if (clip.kind === 'video' || clip.sketch.devices.some(deviceIsSource)) {
     return { id: 'arr-sk-gen', slice: spinningTrisSketch() };

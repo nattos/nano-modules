@@ -654,6 +654,47 @@ export class ArrangementStore {
     return path;
   }
 
+  /** Create a video clip backed by real on-disk media (Component D). */
+  addVideoClip(
+    trackId: string,
+    startBeat: number,
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string },
+    lengthBeat = 8,
+  ): string | null {
+    const track = this.trackById(trackId);
+    if (!track || track.kind !== 'track') return null;
+    const label = media.label ?? 'Video';
+    const clip: Clip = {
+      id: uid('clip'),
+      name: label,
+      startBeat: Math.max(0, startBeat),
+      lengthBeat,
+      kind: 'video',
+      sketch: {
+        devices: [
+          { id: uid('dev'), moduleType: 'source.video.file', name: label, capabilities: ['source'] },
+        ],
+      },
+      source: {
+        label,
+        durationFrames: media.frameCount,
+        sourceKey: media.sourceKey,
+        url: media.url,
+        fps: media.fps,
+      },
+      loop: { mode: 'loop' } as ClipLoopConfig,
+      automation: [],
+      exports: [],
+      warps: [],
+    };
+    this.mutate('add video clip', (d) => {
+      d.tracks.find((t) => t.id === trackId)?.clips.push(clip);
+    });
+    const path = paths.clip(trackId, clip.id);
+    this.select(path);
+    return path;
+  }
+
   /** Build + add a fake device of a kind (used by the inspector chain). */
   addClipDevice(trackId: string, clipId: string, kind: 'source' | 'effect') {
     this.addDeviceToClip(trackId, clipId, this.makeDevice(kind));

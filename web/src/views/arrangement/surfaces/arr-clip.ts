@@ -7,7 +7,8 @@
 import { html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
-import { drawFilmReel } from './film-reel';
+import { drawFilmReel, drawFrameCell } from './film-reel';
+import { thumbnailController, reelLayout } from '../media/thumbnail-controller';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { store, paths } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
@@ -197,6 +198,8 @@ export class ArrClip extends MobxLitElement {
   @query('.body.reel canvas') private reelCanvas?: HTMLCanvasElement;
   @query('.trace-card canvas') private traceCanvas?: HTMLCanvasElement;
   private ro?: ResizeObserver;
+  private thumbOff?: () => void;
+  private reelRedrawQueued = false;
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => {
@@ -204,14 +207,30 @@ export class ArrClip extends MobxLitElement {
       this.drawTrace();
     });
     this.ro.observe(this);
+    // Redraw the strip as real thumbnails land for this clip's media.
+    this.thumbOff = thumbnailController.subscribe((sk) => {
+      if (this.clip?.source?.sourceKey === sk) this.queueReelRedraw();
+    });
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
+    this.thumbOff?.();
     if (this.clip) {
+      thumbnailController.dropView(`clip:${this.clip.id}`);
       clearAnchor(AnchorKeys.clip(this.clip.id));
       clearAnchor(AnchorKeys.trace(this.clip.id));
     }
+  }
+
+  /** Coalesce thumbnail-fill redraws to at most one per frame. */
+  private queueReelRedraw() {
+    if (this.reelRedrawQueued) return;
+    this.reelRedrawQueued = true;
+    requestAnimationFrame(() => {
+      this.reelRedrawQueued = false;
+      this.drawReel();
+    });
   }
   updated() {
     this.drawReel();
@@ -260,7 +279,57 @@ export class ArrClip extends MobxLitElement {
     canvas.height = Math.floor(h * dpr);
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawFilmReel(ctx, w, h, this.reelSeed());
+
+    const media = this.clip.source;
+    if (media?.url && media.sourceKey) {
+      this.drawRealReel(ctx, w, h, media);
+    } else {
+      drawFilmReel(ctx, w, h, this.reelSeed());
+    }
+  }
+
+  /**
+   * Draw the strip from real decoded thumbnails (Component D): declare the
+   * visible frame range as a view (so the cache prefetches), then paint each
+   * cell from `peek()` — exact tile, nearest substitute (stretched), or the
+   * procedural cell as a placeholder until the real frame lands.
+   */
+  private drawRealReel(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    media: NonNullable<Clip['source']>,
+  ) {
+    const sourceKey = media.sourceKey!;
+    const frameCount = Math.max(1, media.durationFrames);
+    thumbnailController.registerMedia({ sourceKey, url: media.url!, frameCount, fps: media.fps });
+
+    const layout = reelLayout(w, h, frameCount);
+    if (layout.cells === 0) return;
+    thumbnailController.setView(`clip:${this.clip.id}`, {
+      sourceKey,
+      level: layout.level,
+      startFrame: 0,
+      endFrame: frameCount - 1,
+      pattern: 'window',
+      readaheadFrames: 0,
+    });
+
+    const step = w / layout.cells;
+    const seed = this.reelSeed();
+    for (let i = 0; i < layout.cells; i++) {
+      const x = i * step;
+      const hit = thumbnailController.peek(sourceKey, layout.frames[i], layout.level);
+      if (hit) {
+        ctx.drawImage(hit.value, x, 0, step, h);
+      } else {
+        drawFrameCell(ctx, x + 0.5, 0, step - 1, h, seed, (i + 0.5) / layout.cells);
+      }
+      if (i > 0) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(x, 0, 1, h);
+      }
+    }
   }
 
   private reelSeed(): number {
