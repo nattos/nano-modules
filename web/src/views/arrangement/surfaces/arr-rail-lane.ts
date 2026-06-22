@@ -10,24 +10,9 @@ import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
-import { compositionLengthBeats, EnvelopePoint } from '../model/composition';
+import { compositionLengthBeats } from '../model/composition';
+import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
-
-function sampleCurve(points: EnvelopePoint[], xn: number): number {
-  if (points.length === 0) return 0;
-  if (xn <= points[0].x) return points[0].y;
-  const last = points[points.length - 1];
-  if (xn >= last.x) return last.y;
-  for (let i = 1; i < points.length; i++) {
-    if (xn <= points[i].x) {
-      const a = points[i - 1];
-      const b = points[i];
-      const t = (xn - a.x) / (b.x - a.x || 1);
-      return a.y * (1 - t) + b.y * t;
-    }
-  }
-  return last.y;
-}
 
 @customElement('arr-rail-lane')
 export class ArrRailLane extends MobxLitElement {
@@ -117,7 +102,7 @@ export class ArrRailLane extends MobxLitElement {
     let started = false;
     for (let x = 0; x <= w; x += 2) {
       const beat = grid.xToBeat(x);
-      const v = sampleCurve(base, beat / totalBeats) + contribAt(beat);
+      const v = evalCurveAt(base, beat / totalBeats) + contribAt(beat);
       const y = yOf(v);
       if (!started) {
         ctx.lineTo(x, y);
@@ -133,7 +118,7 @@ export class ArrRailLane extends MobxLitElement {
     ctx.beginPath();
     for (let x = 0; x <= w; x += 2) {
       const beat = grid.xToBeat(x);
-      const v = sampleCurve(base, beat / totalBeats) + contribAt(beat);
+      const v = evalCurveAt(base, beat / totalBeats) + contribAt(beat);
       const y = yOf(v);
       if (x === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
@@ -146,7 +131,7 @@ export class ArrRailLane extends MobxLitElement {
     ctx.beginPath();
     for (let x = 0; x <= w; x += 3) {
       const beat = grid.xToBeat(x);
-      const y = yOf(sampleCurve(base, beat / totalBeats));
+      const y = yOf(evalCurveAt(base, beat / totalBeats));
       if (x === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -156,11 +141,20 @@ export class ArrRailLane extends MobxLitElement {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Playhead tick.
+    // Playhead tick + the live evaluated value at the playhead (a dot on the
+    // result line — the value this rail currently carries).
     const px = grid.beatToX(store.positionBeat);
     if (px >= 0 && px <= w) {
       ctx.fillStyle = 'rgba(255,140,0,0.7)';
       ctx.fillRect(Math.round(px), 0, 1, h);
+      const vNow = evalCurveAt(base, store.positionBeat / totalBeats) + contribAt(store.positionBeat);
+      ctx.beginPath();
+      ctx.arc(px, yOf(vNow), 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
   }
 }

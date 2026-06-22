@@ -21,6 +21,7 @@ import {
 } from './grid-shared';
 import { Track, AutomationLane, derivedWarpSegments } from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
+import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, AnchorKeys } from './anchor-registry';
 import './arr-clip';
 import './arr-mixer-strip';
@@ -543,13 +544,22 @@ export class ArrGrid extends MobxLitElement {
     const SPAN = 32; // map normalized x∈[0,1] across 32 beats through the warp
     const w = this.scrollEl ? this.scrollEl.clientWidth - HEADER_WIDTH : 600;
     const h = AUTO_LANE_HEIGHT;
-    const pts = lane.points
-      .map((p) => {
-        const x = grid.beatToX(p.x * SPAN);
-        const y = 4 + (1 - p.y) * (h - 8);
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(' ');
+    const yOf = (v: number) => 4 + (1 - v) * (h - 8);
+    // Dense sample so the EASED curve is drawn (straight segments between control
+    // points would miss the per-segment bend); evaluated by the lock-step eval.
+    const SAMPLES = 96;
+    const curve: string[] = [];
+    for (let i = 0; i <= SAMPLES; i++) {
+      const xn = i / SAMPLES;
+      const x = grid.beatToX(xn * SPAN);
+      curve.push(`${x.toFixed(1)},${yOf(evalCurveAt(lane.points, xn)).toFixed(1)}`);
+    }
+    const pts = curve.join(' ');
+    // Live value at the playhead (a dot riding the curve).
+    const headXn = store.positionBeat / SPAN;
+    const showHead = headXn >= 0 && headXn <= 1;
+    const headX = grid.beatToX(store.positionBeat);
+    const headY = yOf(evalCurveAt(lane.points, headXn));
     return html`
       <div class="row auto">
         <div class="auto-header">
@@ -560,9 +570,12 @@ export class ArrGrid extends MobxLitElement {
             <polyline points=${pts} fill="none" stroke="var(--app-cat-mod)" stroke-width="1.5" />
             ${lane.points.map((p) => {
               const x = grid.beatToX(p.x * SPAN);
-              const y = 4 + (1 - p.y) * (h - 8);
+              const y = yOf(p.y);
               return html`<circle cx=${x} cy=${y} r="2.5" fill="var(--app-cat-mod)"></circle>`;
             })}
+            ${showHead
+              ? html`<circle cx=${headX} cy=${headY} r="2.5" fill="#ff8c00" stroke="rgba(0,0,0,0.5)"></circle>`
+              : ''}
           </svg>
         </div>
       </div>
