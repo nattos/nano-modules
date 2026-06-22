@@ -12,12 +12,30 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { clipProcessesTexture } from '../model/composition';
-import './arr-chain';
+import { ArrColumnAdapter, clipTarget, trackTarget, type DeviceTarget } from './arr-column-adapter';
+import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
+import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
 
+/** Minimal callbacks: the arrangement has no custom inspectors or card-reorder. */
+const ARR_COLUMN_CALLBACKS: ColumnGroupCallbacks = {
+  onCardPointerDown: () => {},
+  getInspectorElement: () => null,
+};
+
 @customElement('arr-inspector')
 export class ArrInspector extends MobxLitElement {
+  /** One ColumnAdapter per device-list target (clip/track), stable across re-renders. */
+  private columnAdapters = new Map<string, ArrColumnAdapter>();
+  private adapterFor(target: DeviceTarget): ArrColumnAdapter {
+    let a = this.columnAdapters.get(target.id);
+    if (!a) {
+      a = new ArrColumnAdapter(target);
+      this.columnAdapters.set(target.id, a);
+    }
+    return a;
+  }
   static styles = css`
     :host {
       display: block;
@@ -209,30 +227,6 @@ export class ArrInspector extends MobxLitElement {
     return html`<div class="empty">Selected: ${path}</div>`;
   }
 
-  /** Map device id → read target fields, so the chain can anchor reader wires. */
-  private readFieldsByDevice(clip: { reads?: { targetDeviceId: string; targetField: string }[] }) {
-    const out: Record<string, string[]> = {};
-    for (const r of clip.reads ?? []) {
-      (out[r.targetDeviceId] ??= []).push(r.targetField);
-    }
-    return out;
-  }
-
-  /** Wired chain fields keyed by `deviceId:field` (rail reads = input pips). */
-  private clipFieldWires(clip: any, clipPath: string) {
-    const out: Record<string, any> = {};
-    for (const r of clip.reads ?? []) {
-      out[`${r.targetDeviceId}:${r.targetField}`] = {
-        wireId: 'r:' + r.id,
-        dir: 'in',
-        label: `rail → ${r.targetField}`,
-        clipPath,
-        target: { field: r.targetField },
-      };
-    }
-    return out;
-  }
-
   private onDashPip(e: PointerEvent, wire: any) {
     e.stopPropagation();
     store.selectWire(wire.wireId, wire.clipPath, wire.target);
@@ -344,14 +338,13 @@ export class ArrInspector extends MobxLitElement {
         ${this.renderDashboard(clip, path)}
 
         <div class="group-title">Chain (sketch)</div>
-        <arr-chain
-          .sketch=${clip.sketch}
-          .allowSource=${clip.kind === 'effect'}
-          .highlightFields=${this.readFieldsByDevice(clip)}
-          .fieldWires=${this.clipFieldWires(clip, path)}
-          .onAdd=${(kind: 'source' | 'effect') =>
-            store.addClipDevice(found.track.id, clip.id, kind)}
-        ></arr-chain>
+        <column-group
+          .colIdx=${0}
+          .sketchId=${`clip/${found.track.id}/${clip.id}`}
+          .columnWidth=${280}
+          .adapter=${this.adapterFor(clipTarget(found.track.id, clip.id))}
+          .callbacks=${ARR_COLUMN_CALLBACKS}
+        ></column-group>
 
         ${clip.warps.length
           ? html`<div class="group-title">Beat warp</div>
@@ -392,10 +385,13 @@ export class ArrInspector extends MobxLitElement {
       <div class="body">
         <div class="row"><label>Clips</label><span class="val">${track.clips.length}</span></div>
         <div class="group-title">Chain (sketch)</div>
-        <arr-chain
-          .sketch=${track.sketch}
-          .onAdd=${() => store.addTrackDevice(track.id, 'effect')}
-        ></arr-chain>
+        <column-group
+          .colIdx=${0}
+          .sketchId=${`track/${track.id}`}
+          .columnWidth=${280}
+          .adapter=${this.adapterFor(trackTarget(track.id))}
+          .callbacks=${ARR_COLUMN_CALLBACKS}
+        ></column-group>
         ${track.automation.length
           ? html`<div class="group-title">Track automation</div>
               ${track.automation.map(

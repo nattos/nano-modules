@@ -801,6 +801,7 @@ export class ColumnGroup extends MobxLitElement {
    * stage to trace and we render nothing.
    */
   private renderInputTraceCardRow(column: SketchColumn) {
+    if (!this.ds.caps.tracing) return nothing;
     if (column.chain.length === 0) return nothing;
     const tracePath = `trace/${this.sketchId}/${this.colIdx}/input`;
     const traceSelected = this.ctl.isSelected(tracePath);
@@ -850,6 +851,8 @@ export class ColumnGroup extends MobxLitElement {
     // input and output wires attach to the knob, like the old virtual dashboard
     // — and (b) hides the dashboard's output traces.
     if (entry.module_type === DASHBOARD_MODULE_TYPE) return nothing;
+    // No trace pipeline on this surface → no output-trace monitors.
+    if (!this.ds.caps.tracing) return nothing;
     const plugin = this.ds.getPlugin(entry.module_type);
     const outputs = this.collectModuleOutputs(entry);
     const tappingMode = this.ds.tappingMode;
@@ -1585,6 +1588,7 @@ export class ColumnGroup extends MobxLitElement {
    */
   private renderFieldOptionPips(column: SketchColumn): TemplateResult[] {
     const pips: TemplateResult[] = [];
+    if (!this.ds.caps.wiring && !this.ds.caps.smoothing) return pips;
     const gutterEl = this.renderRoot.querySelector(
       `.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
     if (!gutterEl) return pips;
@@ -1868,11 +1872,15 @@ export class ColumnGroup extends MobxLitElement {
       // Copy this card's instance state; paste drops the clipboard effect
       // immediately AFTER this one (chainIdx + 1). Keyed by instance_key so
       // copy survives reorders that may stale the captured chainIdx.
-      copy: () => this.ctl.snapshotEffect(this.sketchId, entry.instance_key),
-      paste: (payload) => {
-        if (payload.kind !== 'effect') return;
-        this.ctl.insertEffectFromClipboard(this.sketchId, this.colIdx, chainIdx + 1, payload);
-      },
+      copy: this.ds.caps.clipboard
+        ? () => this.ctl.snapshotEffect(this.sketchId, entry.instance_key)
+        : undefined,
+      paste: this.ds.caps.clipboard
+        ? (payload) => {
+            if (payload.kind !== 'effect') return;
+            this.ctl.insertEffectFromClipboard(this.sketchId, this.colIdx, chainIdx + 1, payload);
+          }
+        : undefined,
       renderInspectorContent: () => {
         const binding: FieldBinding = {
           instanceKey: entry.instance_key,
@@ -1999,7 +2007,7 @@ export class ColumnGroup extends MobxLitElement {
         };
       },
     };
-    const smoothing = isOutput ? nothing : html`
+    const smoothing = (isOutput || !this.ds.caps.smoothing) ? nothing : html`
       <div class="section-header" style="margin-top:8px">Smoothing</div>
       <field-toggle style="width:100%"
         .fieldPath=${'enabled'} .label=${'Enable'} .binding=${smBinding}></field-toggle>
@@ -2051,7 +2059,7 @@ export class ColumnGroup extends MobxLitElement {
     return html`
       ${editor}
       ${smoothing}
-      ${wiresSection}
+      ${this.ds.caps.wiring ? wiresSection : nothing}
     `;
   }
 

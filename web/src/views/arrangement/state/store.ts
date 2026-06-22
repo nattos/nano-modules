@@ -714,8 +714,127 @@ export class ArrangementStore {
     });
   }
 
+  // ── Clip device chain edits (drive the real <column-group> inspector) ──
+  /** Assign a partial snapshot onto a clip device (type retype / undo-revert). */
+  replaceClipDevice(
+    trackId: string, clipId: string, deviceId: string,
+    snap: Partial<Device>, coalesceKey?: string,
+  ) {
+    this.mutate('change device', (d) => {
+      const dev = d.tracks.find((t) => t.id === trackId)
+        ?.clips.find((c) => c.id === clipId)
+        ?.sketch.devices.find((x) => x.id === deviceId);
+      if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
+    }, coalesceKey);
+  }
+
+  /** Change a clip device's effect type (resets its state to the type defaults). */
+  setClipDeviceType(
+    trackId: string, clipId: string, deviceId: string,
+    moduleType: string, coalesceKey?: string,
+  ) {
+    const cat = catalogEffect(moduleType);
+    if (!cat) return;
+    this.replaceClipDevice(trackId, clipId, deviceId, {
+      moduleType: cat.type,
+      name: cat.name,
+      capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+      state: defaultStateFor(cat.type),
+    }, coalesceKey);
+  }
+
+  /** Insert a catalog effect at a chain index; returns the new device id (or null). */
+  insertClipDeviceAt(
+    trackId: string, clipId: string, index: number,
+    moduleType: string, coalesceKey?: string,
+  ): string | null {
+    const cat = catalogEffect(moduleType);
+    if (!cat) return null;
+    const id = uid('dev');
+    this.mutate('insert device', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c) return;
+      const dev: Device = {
+        id,
+        moduleType: cat.type,
+        name: cat.name,
+        capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+        state: defaultStateFor(cat.type),
+      };
+      const i = Math.max(0, Math.min(index, c.sketch.devices.length));
+      c.sketch.devices.splice(i, 0, dev);
+      if (deviceIsSource(dev) && c.kind === 'effect') {
+        c.kind = 'video';
+        c.source = c.source ?? { label: dev.name, durationFrames: 300 };
+      }
+    }, coalesceKey);
+    return id;
+  }
+
+  /** Remove a clip device by id. */
+  removeClipDevice(trackId: string, clipId: string, deviceId: string, coalesceKey?: string) {
+    this.mutate('remove device', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c) return;
+      const i = c.sketch.devices.findIndex((x) => x.id === deviceId);
+      if (i >= 0) c.sketch.devices.splice(i, 1);
+    }, coalesceKey);
+  }
+
+  // ── Track device chain edits (track-level sketch; same shape as clip ones) ──
+  setTrackDeviceField(trackId: string, deviceId: string, key: string, value: unknown) {
+    this.mutate('set param', (d) => {
+      const dev = d.tracks.find((t) => t.id === trackId)?.sketch.devices.find((x) => x.id === deviceId);
+      if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
+    }, `param:${deviceId}:${key}`);
+  }
+
+  replaceTrackDevice(trackId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string) {
+    this.mutate('change device', (d) => {
+      const dev = d.tracks.find((t) => t.id === trackId)?.sketch.devices.find((x) => x.id === deviceId);
+      if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
+    }, coalesceKey);
+  }
+
+  setTrackDeviceType(trackId: string, deviceId: string, moduleType: string, coalesceKey?: string) {
+    const cat = catalogEffect(moduleType);
+    if (!cat) return;
+    this.replaceTrackDevice(trackId, deviceId, {
+      moduleType: cat.type, name: cat.name,
+      capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+      state: defaultStateFor(cat.type),
+    }, coalesceKey);
+  }
+
+  insertTrackDeviceAt(trackId: string, index: number, moduleType: string, coalesceKey?: string): string | null {
+    const cat = catalogEffect(moduleType);
+    if (!cat) return null;
+    const id = uid('dev');
+    this.mutate('insert device', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      const dev: Device = {
+        id, moduleType: cat.type, name: cat.name,
+        capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+        state: defaultStateFor(cat.type),
+      };
+      const i = Math.max(0, Math.min(index, t.sketch.devices.length));
+      t.sketch.devices.splice(i, 0, dev);
+    }, coalesceKey);
+    return id;
+  }
+
+  removeTrackDevice(trackId: string, deviceId: string, coalesceKey?: string) {
+    this.mutate('remove device', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      const i = t.sketch.devices.findIndex((x) => x.id === deviceId);
+      if (i >= 0) t.sketch.devices.splice(i, 1);
+    }, coalesceKey);
+  }
+
   /** Set one field on a clip device's param state (a real param edit). */
-  setClipDeviceField(trackId: string, clipId: string, deviceId: string, key: string, value: number) {
+  setClipDeviceField(trackId: string, clipId: string, deviceId: string, key: string, value: unknown) {
     this.mutate(
       'set param',
       (d) => {
