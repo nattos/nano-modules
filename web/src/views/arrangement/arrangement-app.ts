@@ -19,6 +19,7 @@ import { store } from './state/store';
 import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { importVideoFile } from './media/drop-import';
+import { DirectoryBackend } from './workspace/backend';
 
 import './surfaces/transport-bar';
 import './surfaces/arr-ruler';
@@ -188,9 +189,30 @@ export class ArrangementApp extends MobxLitElement {
    * beat↔pixel + track↔Y transforms) resolves the position.
    */
   private onDrop = async (e: DragEvent) => {
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // Capture everything synchronously — `DataTransfer` is cleared once we await.
+    const files = dt.files;
+    const handlePromises = Array.from(dt.items || [])
+      .filter((it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function')
+      .map((it) => (it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>);
+    if (!files?.length && !handlePromises.length) return;
     e.preventDefault();
+
+    // A dropped FOLDER switches the workspace (rather than importing media).
+    if (handlePromises.length) {
+      const handles = await Promise.all(handlePromises);
+      const dir = handles.find(
+        (h): h is FileSystemDirectoryHandle => !!h && h.kind === 'directory',
+      );
+      if (dir) {
+        await store.mountWorkspace(new DirectoryBackend(dir, dir.name || 'workspace'));
+        store.setRightTab('workspace');
+        return;
+      }
+    }
+
+    if (!files || files.length === 0) return;
     const grid = this.shadowRoot?.querySelector('arr-grid') as
       | (HTMLElement & { resolveDropTarget(x: number, y: number): { trackId: string; startBeat: number } | null })
       | null;

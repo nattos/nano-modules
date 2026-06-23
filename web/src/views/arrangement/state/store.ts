@@ -26,7 +26,9 @@ import {
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
-import type { WorkspaceBackend } from '../workspace/backend';
+import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
+import { rememberWorkspace, restoreWorkspace } from '../workspace/workspace-store';
+import { emptyComposition } from '../model/composition';
 
 export type SelectableKind =
   | 'track'
@@ -41,7 +43,7 @@ export interface Selection {
   path: string;
 }
 
-export type RightTab = 'inspector' | 'settings' | 'export';
+export type RightTab = 'inspector' | 'workspace' | 'settings' | 'export';
 
 /** A resolved composite layer (the monitor draws these bottom→top). */
 export interface CompositeLayer {
@@ -133,6 +135,10 @@ export class ArrangementStore {
   private backend: WorkspaceBackend | null = null;
   /** Active arrangement file name within the workspace. */
   currentName: string | null = null;
+  /** Human label of the mounted workspace folder (observable, for the UI). */
+  workspaceLabel: string | null = null;
+  /** Arrangement files in the mounted workspace (observable, for the Files tab). */
+  workspaceEntries: WorkspaceEntry[] = [];
   private persistenceEnabled = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSavedJson = '';
@@ -293,6 +299,68 @@ export class ArrangementStore {
 
   get hasWorkspace(): boolean {
     return this.backend !== null;
+  }
+
+  /**
+   * Mount a workspace folder: bind the backend, list its files, and open the
+   * first arrangement (or seed an "untitled" from the current doc if empty).
+   * A picked on-disk folder is remembered so it can be re-opened after reload.
+   */
+  async mountWorkspace(backend: WorkspaceBackend) {
+    runInAction(() => {
+      this.backend = backend;
+      this.workspaceLabel = backend.label;
+      this.persistenceEnabled = false; // off until an arrangement is open
+    });
+    if (backend instanceof DirectoryBackend) {
+      void rememberWorkspace(backend.dir, backend.label);
+    }
+    await this.refreshWorkspaceList();
+    const entries = this.workspaceEntries;
+    if (entries.length) {
+      const keep = this.currentName ? entries.find((e) => e.name === this.currentName) : undefined;
+      await this.openArrangement(backend, (keep ?? entries[0]).name);
+    } else {
+      // Empty folder → seed it with what's on screen so nothing is lost.
+      await this.createArrangement(backend, 'untitled', toJS(this.composition));
+      await this.refreshWorkspaceList();
+    }
+  }
+
+  /** Prompt for a folder (needs a user gesture) and mount it as the workspace. */
+  async mountFolderViaPicker() {
+    await this.mountWorkspace(await mountViaPicker());
+  }
+
+  /**
+   * Re-open the previously-mounted folder (re-granting permission via the
+   * calling gesture). Returns false if none was remembered / permission denied.
+   */
+  async reopenLastWorkspace(): Promise<boolean> {
+    const backend = await restoreWorkspace();
+    if (!backend) return false;
+    await this.mountWorkspace(backend);
+    return true;
+  }
+
+  /** Re-list the mounted workspace's arrangement files. */
+  async refreshWorkspaceList() {
+    if (!this.backend) return;
+    const entries = await this.backend.list();
+    runInAction(() => { this.workspaceEntries = entries; });
+  }
+
+  /** Open one workspace file (from the Files tab). */
+  async openEntry(name: string) {
+    if (!this.backend || name === this.currentName) return;
+    await this.openArrangement(this.backend, name);
+  }
+
+  /** Create a fresh empty arrangement in the mounted workspace and open it. */
+  async newArrangement(name: string) {
+    if (!this.backend) return;
+    await this.createArrangement(this.backend, name, emptyComposition());
+    await this.refreshWorkspaceList();
   }
 
   // ── Engine telemetry ──────────────────────────────────────────────────

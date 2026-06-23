@@ -8,7 +8,7 @@
  */
 
 import { html, css, TemplateResult } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { clipProcessesTexture } from '../model/composition';
@@ -211,10 +211,73 @@ export class ArrInspector extends MobxLitElement {
       border-color: var(--app-hi-color2);
       color: var(--app-hi-color2);
     }
+    .ws-toolbar {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .ws-cur {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-xs);
+      margin-bottom: 6px;
+    }
+    .ws-cur .folder {
+      color: var(--app-text-color1);
+    }
+    .ws-dir {
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-xs);
+      margin: 8px 0 2px;
+      letter-spacing: 0.02em;
+    }
+    .ws-file {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px;
+      border-radius: 2px;
+      cursor: pointer;
+      color: var(--app-text-color1);
+    }
+    .ws-file:hover {
+      background: var(--app-tint-1);
+    }
+    .ws-file.active {
+      background: var(--app-tint-2);
+      color: var(--app-hi-color2);
+    }
+    .ws-file ui-icon {
+      --icon-size: 13px;
+      color: var(--app-text-color2);
+    }
+    .ws-drop-hint {
+      border: 1px dashed var(--app-tint-4);
+      border-radius: 3px;
+      padding: 14px 10px;
+      text-align: center;
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-xs);
+      margin-bottom: 10px;
+    }
   `;
+
+  @state() private rememberedLabel: string | null = null;
+
+  firstUpdated() {
+    // Surface a "reopen last folder" affordance (label only — re-mounting needs
+    // a user gesture, which the button click provides).
+    void import('../workspace/workspace-store').then(({ rememberedWorkspaceLabel }) =>
+      rememberedWorkspaceLabel().then((l) => { this.rememberedLabel = l; }),
+    );
+  }
 
   render() {
     switch (store.activeRightTab) {
+      case 'workspace':
+        return this.renderWorkspace();
       case 'settings':
         return this.renderSettings();
       case 'export':
@@ -442,6 +505,94 @@ export class ArrInspector extends MobxLitElement {
   }
 
   // ── Settings (composition + app, combined) ────────────────────────────
+  // ── Workspace (files on disk) ──────────────────────────────────────────
+  private async pickFolder() {
+    try {
+      await store.mountFolderViaPicker();
+      store.setRightTab('workspace');
+    } catch (err) {
+      // AbortError = user cancelled the picker; anything else is worth a note.
+      if ((err as Error)?.name !== 'AbortError') console.warn('[workspace] mount failed', err);
+    }
+  }
+
+  private async reopenLast() {
+    if (!(await store.reopenLastWorkspace())) {
+      console.warn('[workspace] could not reopen last folder (permission denied or none remembered)');
+    }
+  }
+
+  private renderWorkspace(): TemplateResult {
+    if (!store.hasWorkspace) {
+      return html`
+        <div class="section-header">Workspace</div>
+        <div class="body">
+          <div class="ws-drop-hint">
+            Drag a folder here to open it as a workspace.<br />
+            Arrangements are saved as <code>.nano-arr</code> files inside it.
+          </div>
+          <div class="ws-toolbar">
+            <button class="btn primary" @click=${() => this.pickFolder()}>
+              <ui-icon icon="la-folder-open"></ui-icon> Open folder…
+            </button>
+            ${this.rememberedLabel
+              ? html`<button class="btn" @click=${() => this.reopenLast()}>
+                  Reopen "${this.rememberedLabel}"
+                </button>`
+              : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    // Group the (recursively listed) files by their directory.
+    const byDir = new Map<string, typeof store.workspaceEntries>();
+    for (const e of store.workspaceEntries) {
+      const arr = byDir.get(e.dir) ?? [];
+      arr.push(e);
+      byDir.set(e.dir, arr);
+    }
+    // Root first, then directories alphabetically.
+    const dirs = [...byDir.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+
+    return html`
+      <div class="section-header">Workspace</div>
+      <div class="body">
+        <div class="ws-cur">
+          <ui-icon icon="la-folder"></ui-icon>
+          <span class="folder">${store.workspaceLabel}</span>
+        </div>
+        <div class="ws-toolbar">
+          <button class="btn" @click=${() => store.newArrangement(`untitled-${Date.now().toString(36)}`)}>
+            <ui-icon icon="la-plus"></ui-icon> New
+          </button>
+          <button class="btn" @click=${() => store.refreshWorkspaceList()} title="Re-scan folder">
+            <ui-icon icon="la-sync"></ui-icon>
+          </button>
+          <button class="btn" @click=${() => this.pickFolder()} title="Switch folder">
+            <ui-icon icon="la-folder-open"></ui-icon>
+          </button>
+        </div>
+        ${store.workspaceEntries.length === 0
+          ? html`<div class="empty" style="padding:12px 0">No arrangements yet.</div>`
+          : dirs.map(
+              (dir) => html`
+                ${dir ? html`<div class="ws-dir">${dir}/</div>` : ''}
+                ${byDir.get(dir)!.map((e) => {
+                  const label = e.fileName.slice(0, -'.nano-arr'.length);
+                  return html`<div
+                    class="ws-file ${e.name === store.currentName ? 'active' : ''}"
+                    @click=${() => store.openEntry(e.name)}
+                  >
+                    <ui-icon icon="la-file"></ui-icon><span>${label}</span>
+                  </div>`;
+                })}
+              `,
+            )}
+      </div>
+    `;
+  }
+
   private renderSettings(): TemplateResult {
     const meta = store.composition.meta;
     return html`

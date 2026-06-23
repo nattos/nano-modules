@@ -26,10 +26,15 @@ export const ARRANGEMENT_EXT = '.nano-arr';
 
 /** One arrangement file in the workspace. */
 export interface WorkspaceEntry {
-  /** Arrangement name (file name without the extension). */
+  /**
+   * Relative path identity WITHOUT the extension, e.g. "intro" or
+   * "scenes/intro". This is what `read`/`write`/`remove` take.
+   */
   name: string;
-  /** On-disk file name, e.g. "intro.nano-arr". */
+  /** On-disk base file name, e.g. "intro.nano-arr". */
   fileName: string;
+  /** Relative directory (POSIX-joined), "" for the workspace root. */
+  dir: string;
 }
 
 /** On-disk envelope around a `Composition` — versioned for future migrations. */
@@ -73,13 +78,23 @@ export function serializeComposition(comp: Composition): string {
   return JSON.stringify(file, null, 2);
 }
 
-/** Parse an arrangement file. Tolerates a bare `Composition` (no envelope). */
+/**
+ * Parse an arrangement file. Tolerates a bare `Composition` (no envelope) and
+ * normalizes against `emptyComposition()` defaults so a partial / old / corrupt
+ * file can never white-screen the surfaces (which assume `tracks`/`rails` etc.).
+ */
 export function deserializeComposition(text: string): Composition {
   const parsed = JSON.parse(text);
-  if (parsed && parsed.format === 'nano-arr' && parsed.composition) {
-    return parsed.composition as Composition;
-  }
-  return parsed as Composition;
+  const comp = (parsed && parsed.format === 'nano-arr' && parsed.composition
+    ? parsed.composition
+    : parsed) as Partial<Composition> | null;
+  const base = emptyComposition();
+  return {
+    meta: { ...base.meta, ...(comp?.meta ?? {}) },
+    tracks: comp?.tracks ?? base.tracks,
+    rails: comp?.rails ?? base.rails,
+    playMode: { ...base.playMode, ...(comp?.playMode ?? {}) },
+  };
 }
 
 /**
@@ -94,27 +109,35 @@ export class DirectoryBackend implements WorkspaceBackend {
 
   async list(): Promise<WorkspaceEntry[]> {
     const out: WorkspaceEntry[] = [];
-    // `values()` is an async iterator over the directory's child handles.
-    for await (const handle of (this.dir as any).values() as AsyncIterable<FileSystemHandle>) {
-      if (handle.kind === 'file' && handle.name.endsWith(ARRANGEMENT_EXT)) {
-        out.push({
-          name: handle.name.slice(0, -ARRANGEMENT_EXT.length),
-          fileName: handle.name,
-        });
+    // Recurse subfolders so the Workspace tab can group files by directory.
+    const walk = async (dir: FileSystemDirectoryHandle, prefix: string): Promise<void> => {
+      // `values()` is an async iterator over the directory's child handles.
+      for await (const handle of (dir as any).values() as AsyncIterable<FileSystemHandle>) {
+        if (handle.kind === 'file' && handle.name.endsWith(ARRANGEMENT_EXT)) {
+          const base = handle.name.slice(0, -ARRANGEMENT_EXT.length);
+          out.push({
+            name: prefix ? `${prefix}/${base}` : base,
+            fileName: handle.name,
+            dir: prefix,
+          });
+        } else if (handle.kind === 'directory' && !handle.name.startsWith('.')) {
+          await walk(handle as FileSystemDirectoryHandle, prefix ? `${prefix}/${handle.name}` : handle.name);
+        }
       }
-    }
+    };
+    await walk(this.dir, '');
     out.sort((a, b) => a.name.localeCompare(b.name));
     return out;
   }
 
   async read(name: string): Promise<Composition> {
-    const fh = await this.dir.getFileHandle(fileNameFor(name));
+    const fh = await this.fileHandle(name);
     const file = await fh.getFile();
     return deserializeComposition(await file.text());
   }
 
   async write(name: string, comp: Composition): Promise<void> {
-    const fh = await this.dir.getFileHandle(fileNameFor(name), { create: true });
+    const fh = await this.fileHandle(name, true);
     const writable = await fh.createWritable();
     await writable.write(serializeComposition(comp));
     await writable.close();
@@ -128,12 +151,27 @@ export class DirectoryBackend implements WorkspaceBackend {
   }
 
   async remove(name: string): Promise<void> {
-    await this.dir.removeEntry(fileNameFor(name));
+    const parts = fileNameFor(name).split('/').filter(Boolean);
+    let dir = this.dir;
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(parts[i]);
+    }
+    await dir.removeEntry(parts[parts.length - 1]);
+  }
+
+  /** Walk a `/`-separated relative path to its `FileSystemFileHandle`. */
+  private async fileHandle(name: string, create = false): Promise<FileSystemFileHandle> {
+    const parts = fileNameFor(name).split('/').filter(Boolean);
+    let dir = this.dir;
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(parts[i], { create });
+    }
+    return dir.getFileHandle(parts[parts.length - 1], { create });
   }
 
   private async exists(name: string): Promise<boolean> {
     try {
-      await this.dir.getFileHandle(fileNameFor(name));
+      await this.fileHandle(name);
       return true;
     } catch {
       return false;

@@ -12,6 +12,7 @@ import '../../../widgets/ui-icon';
 
 const TABS: Array<{ id: RightTab; icon: string; label: string }> = [
   { id: 'inspector', icon: 'la-sliders-h', label: 'Inspector' },
+  { id: 'workspace', icon: 'la-folder', label: 'Files' },
   { id: 'settings', icon: 'la-cog', label: 'Settings' },
   { id: 'export', icon: 'la-file-export', label: 'Export' },
 ];
