@@ -10,7 +10,7 @@
  * like drag-drop, field scanning, and tap overlays.
  */
 
-import { html, css, nothing, TemplateResult } from 'lit';
+import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo } from '../sketch-types';
@@ -64,6 +64,16 @@ const CATEGORY_DEFAULT: Record<string, string> = {
 };
 /** Fallback temporary effect when a category has no good default in core. */
 const CATEGORY_FALLBACK = 'color.tone.brightness_contrast';
+
+// ── Wire arc geometry (gently bowed cubic bezier, writer→reader) ──
+type Pt = { x: number; y: number };
+function arcBezierPath(a: Pt, b: Pt): string {
+  const dy = b.y - a.y;
+  const bow = Math.min(Math.max(Math.abs(dy) * 0.25 + 26, 32), 90);
+  const c1 = { x: a.x + bow, y: a.y + dy * 0.33 };
+  const c2 = { x: b.x + bow, y: b.y - dy * 0.33 };
+  return `M ${a.x} ${a.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${b.x} ${b.y}`;
+}
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -461,6 +471,41 @@ export class ColumnGroup extends MobxLitElement {
       opacity: 0.9;
     }
 
+    /* --- Wire arcs (in-column overlay, shown in wires mode) --- */
+    .wire-lines {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      pointer-events: none;
+      z-index: 6;
+    }
+    .wire-arc {
+      fill: none;
+      stroke: var(--app-hi-color2, #4169E1);
+      stroke-width: 1.5;
+      opacity: 0.55;
+      stroke-dasharray: 5 4;
+      stroke-linecap: round;
+      animation: wire-flow 0.7s linear infinite;
+    }
+    .wire-group:hover .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
+    .wire-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 14;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+    .connect-line {
+      stroke: var(--app-hi-color2, #4169E1);
+      stroke-width: 2;
+      stroke-dasharray: 4 3;
+      pointer-events: none;
+    }
+    @keyframes wire-flow { to { stroke-dashoffset: -9; } }
+
     /* --- Drag insertion marker (absolutely positioned, no layout shift) --- */
     .drag-insert-marker {
       position: absolute;
@@ -604,9 +649,20 @@ export class ColumnGroup extends MobxLitElement {
     this.scanAndRegisterFields();
   }
 
+  private wireRaf = 0;
+  connectedCallback() {
+    super.connectedCallback();
+    // Keep wire arcs glued to their field rows (positions shift on scroll/resize
+    // without a Lit re-render). Cheap no-op when there's no wire overlay.
+    const tick = () => { this.wireRaf = requestAnimationFrame(tick); this.updateWireGeometry(); };
+    this.wireRaf = requestAnimationFrame(tick);
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     this.layoutManager.dispose();
+    if (this.wireRaf) cancelAnimationFrame(this.wireRaf);
+    this.wireRaf = 0;
   }
 
   /**
@@ -699,6 +755,7 @@ export class ColumnGroup extends MobxLitElement {
           ${this.renderChain(sketch, column)}
         </div>
         <div class="drag-insert-marker"></div>
+        ${this.renderWireArcs(sketch)}
       </div>
       ${this.hasGutter ? html`
         <div class="column-gutter" data-col=${this.colIdx}>
@@ -1702,6 +1759,84 @@ export class ColumnGroup extends MobxLitElement {
   // ========================================================================
   // Drop zones
   // ========================================================================
+
+  // ========================================================================
+  // Wire arcs (in-column overlay)
+  // ========================================================================
+
+  /** Committed wires for this sketch as {srcChain, srcField, destChain, destField}. */
+  private wireConnections(sketch: Sketch): { sc: number; sf: string; dc: number; df: string; wireId: string }[] {
+    const loc = new Map<string, number>();
+    sketchChain(sketch).forEach((e, chi) => { if (e.type === 'module') loc.set(e.instance_key, chi); });
+    const out: { sc: number; sf: string; dc: number; df: string; wireId: string }[] = [];
+    for (const w of sketch.wires ?? []) {
+      const sc = loc.get(w.src.instanceKey), dc = loc.get(w.dest.instanceKey);
+      if (sc === undefined || dc === undefined) continue;
+      out.push({ sc, sf: w.src.field, dc, df: w.dest.field, wireId: w.id });
+    }
+    return out;
+  }
+
+  /** Wire overlay SVG, shown in wires mode. Geometry is glued each rAF. */
+  private renderWireArcs(sketch: Sketch) {
+    if (!this.ds.caps.inlineWireArcs) return nothing;
+    const conns = this.wireConnections(sketch);
+    return html`
+      <svg class="wire-lines">
+        ${conns.map((cn) => svg`<g class="wire-group">
+          <path class="wire-hit" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}
+            @dblclick=${() => this.ctl.removeWire(this.sketchId, cn.wireId)}></path>
+          <path class="wire-arc" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}></path>
+        </g>`)}
+        <line class="connect-line" style="display:none"></line>
+      </svg>
+    `;
+  }
+
+  /** Overlay-relative center of a field's connect anchor (tap-port hit, else its
+   *  collapsed-card option pip). Coords relative to `base` (the SVG rect). */
+  private wireFieldCenter(chainIdx: number, field: string, base: DOMRect): Pt | null {
+    const sel = `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${field}"],`
+      + `.field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${field}"]`;
+    const hit = this.renderRoot.querySelector(sel) as HTMLElement | null;
+    if (!hit) return null;
+    const r = hit.getBoundingClientRect();
+    return { x: r.left + r.width / 2 - base.left, y: r.top + r.height / 2 - base.top };
+  }
+
+  /** Per-rAF: glue each wire arc to its field rows + draw the live rubber-band. */
+  private updateWireGeometry() {
+    const svgEl = this.renderRoot.querySelector('svg.wire-lines') as SVGElement | null;
+    if (!svgEl) return;
+    const base = svgEl.getBoundingClientRect();
+    // READ then WRITE to avoid layout thrash.
+    const paths = [...svgEl.querySelectorAll('path.wire-arc, path.wire-hit')] as SVGPathElement[];
+    const geo = paths.map((p) => ({
+      p,
+      a: this.wireFieldCenter(+(p.dataset.sc ?? -1), p.dataset.sf ?? '', base),
+      b: this.wireFieldCenter(+(p.dataset.dc ?? -1), p.dataset.df ?? '', base),
+    }));
+    for (const { p, a, b } of geo) {
+      if (!a || !b) { p.style.display = 'none'; continue; }
+      p.style.display = '';
+      p.setAttribute('d', arcBezierPath(a, b));
+    }
+    // Live rubber-band line during a connect gesture.
+    const line = svgEl.querySelector('line.connect-line') as SVGLineElement | null;
+    const c = this.taps.state as { info?: FieldConnectInfo; pointerX: number; pointerY: number } | null;
+    if (line) {
+      const src = c?.info ? this.wireFieldCenter(c.info.chainIdx, c.info.fieldPath, base) : null;
+      if (c && src) {
+        line.style.display = '';
+        line.setAttribute('x1', String(src.x));
+        line.setAttribute('y1', String(src.y));
+        line.setAttribute('x2', String(c.pointerX - base.left));
+        line.setAttribute('y2', String(c.pointerY - base.top));
+      } else {
+        line.style.display = 'none';
+      }
+    }
+  }
 
   // ========================================================================
   // Category insert header

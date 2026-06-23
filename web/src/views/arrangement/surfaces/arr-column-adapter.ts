@@ -158,7 +158,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
     // Wiring follows the global wires-mode toggle: on → tap overlay + pips +
     // click-to-connect; the gutter reappears to host the pips.
     get caps(): ColumnCapabilities {
-      return { ...CAPS, wiring: store.wiresMode };
+      return { ...CAPS, wiring: store.wiresMode, inlineWireArcs: store.wiresMode };
     },
     get tappingMode() { return store.wiresMode; },
     get availableEffects() { return AVAILABLE; },

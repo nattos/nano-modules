@@ -59,6 +59,9 @@ export interface ColumnCapabilities {
   /** Self-contained drag-to-reorder cards + drag-from-chip insertion. When
    *  false the host drives reordering itself via callbacks (the IDE). */
   reorder?: boolean;
+  /** Draw committed wires as arcs INSIDE the column (the reusable single-column
+   *  editor). The IDE leaves this off — it has its own <taps-overlay>. */
+  inlineWireArcs?: boolean;
 }
 
 /** Reactive reads + plugin/engine lookups. */
