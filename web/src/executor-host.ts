@@ -77,6 +77,10 @@ interface SketchSlot {
   outputTex: number;   // GPUHost handle of the RGBA8 destination texture
   outW: number;
   outH: number;
+  /** Instance keys this executor has ever applied state for (mirrors its native
+   *  `lastAppliedState_`). If a key here is recreated as a FRESH web instance
+   *  (after a prune), the native state cache is stale → rebuild the slot. */
+  appliedKeys: Set<string>;
 }
 
 const decoder = new TextDecoder();
@@ -343,7 +347,8 @@ export class WasmSketchExecutor {
       // Apply the current fusion toggle to the fresh executor (default is on).
       if (!this.fusionEnabled) this.exports.executor_set_fusion_enabled(exPtr, 0);
       slot = { exPtr, lastJson: '',
-               registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0 };
+               registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0,
+               appliedKeys: new Set() };
       this.slots.set(sketchId, slot);
     }
     return slot;
@@ -376,8 +381,25 @@ export class WasmSketchExecutor {
     sketchId: string, sketch: Sketch, inputHandle: number,
     frameState: FrameState, width: number, height: number): Promise<number> {
     this.currentSketchId = sketchId;
-    const slot = this.slotFor(sketchId);
+    let slot = this.slotFor(sketchId);
     const chain = sketchChain(sketch);
+
+    // Stale-state guard: a chain entry whose web instance is GONE (pruned while
+    // it was out of the chain) will be recreated fresh below with DEFAULT params.
+    // If this executor already applied that key's state, its native
+    // `lastAppliedState_` still matches the new (default) JSON → the per-key
+    // apply is skipped → the effect runs with default params (e.g. a
+    // brightness=1.0 effect collapses to identity on a clip's 2nd activation).
+    // Rebuild the slot so ALL state re-applies from scratch. Rare (only when a
+    // previously-seen instance re-enters the chain — a clip boundary re-cross).
+    const reviving = chain.some(
+      (e) => e.type === 'module' && !this.instances.has(e.instance_key) && slot.appliedKeys.has(e.instance_key),
+    );
+    if (reviving) {
+      this.exports.executor_destroy(slot.exPtr);
+      this.slots.delete(sketchId);
+      slot = this.slotFor(sketchId);
+    }
 
     // 1. Pre-create every chain entry's instance, push its schema once, and
     //    thread the frame state onto its host (effrt drives tick/render which
@@ -466,6 +488,9 @@ export class WasmSketchExecutor {
     const structuralJson = JSON.stringify(sketch);
     const dirty = structuralJson !== slot.lastJson;
     slot.lastJson = structuralJson;
+    // On a dirty frame the native executor (re)applies state for every chain
+    // entry — remember those keys so we can detect a later prune+revive.
+    if (dirty) for (const e of chain) if (e.type === 'module') slot.appliedKeys.add(e.instance_key);
     const outTex = this.ensureOutputTexture(slot, width, height);
 
     const json = JSON.stringify(execSketch);

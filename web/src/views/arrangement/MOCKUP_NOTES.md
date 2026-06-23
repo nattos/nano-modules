@@ -53,6 +53,21 @@ since making the two surfaces look and feel the same is a deliberate goal.
   overlay and should stay.
 - **Dev server.** This workspace's vite always runs on **localhost:5174** — never `pkill vite`;
   point e2e/screenshots there (`ARR_BASE_URL=http://localhost:5174`).
+- **Effect-only clip → identity on re-activation (FIXED).** A time-independent effect (e.g.
+  `brightness_contrast` brightness=1.0 → white) rendered correctly the FIRST time a clip was
+  active, then collapsed to identity/passthrough on every later activation (came back for exactly
+  one activation after any param edit / move / a live wire). Root cause is web-side only: the
+  composite is re-issued as the playhead crosses clip boundaries; when a device leaves the chain
+  its web instance is **pruned** (`pruneInstancesExcept`, bounds WASM memory), but the executor's
+  native `lastAppliedState_` cache (in `executor.wasm`, keyed by instance_key) persists. On return
+  the instance is recreated **fresh (default params)** yet `maybeApplyState` skips because the
+  cached state still matches the JSON → the effect runs with defaults → identity. Fix in
+  `executor-host.ts`: track `slot.appliedKeys`; if a chain entry is recreated fresh while its key is
+  in `appliedKeys`, **rebuild the executor slot** (`executor_destroy` + recreate) so all state
+  re-applies. `deleteSketch` also drops the slot (full-teardown path). The native barrel is immune
+  (its instance pool persists). GPU repro: `test/arr-effect-only-repro.test.ts` drives the real
+  `arr-engine-testbed.html` composite (it DOES get a headless GPU adapter — only `arrangement.html`'s
+  worker doesn't), white→solid→white.
 
 ---
 

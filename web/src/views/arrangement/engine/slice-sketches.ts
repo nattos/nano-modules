@@ -42,6 +42,29 @@ export function gpuTestSketch(traceId = 'arr-monitor'): SliceSketch {
   };
 }
 
+/**
+ * An "effect-only"-style chain: solid black → color.tone.brightness_contrast
+ * with brightness=1.0 ⇒ pure white. A time-independent effect; used to repro the
+ * "effect only renders the first activation" bug (white on first show, must stay
+ * white after the composite is torn down + recreated identically).
+ */
+export function brightnessWhiteSketch(traceId = 'arr-monitor'): SliceSketch {
+  return {
+    sketch: {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'sk_solid' },
+        { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'sk_bc' },
+      ],
+      instances: {
+        sk_solid: { module_type: 'source.solid_color', state: {} },
+        sk_bc: { module_type: 'color.tone.brightness_contrast', state: { brightness: 1.0 } },
+      },
+    },
+    opts: { bundles: [CORE], traceId },
+  };
+}
+
 /** A real chain: solid blue (gpu_test) → color.invert ⇒ orange. Proves the
  *  multi-entry chain path and a switch to clearly non-blue content. */
 export function invertSketch(traceId = 'arr-monitor'): SliceSketch {

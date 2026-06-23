@@ -7,7 +7,7 @@
  */
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
-import { gpuTestSketch, invertSketch } from './views/arrangement/engine/slice-sketches';
+import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -48,11 +48,36 @@ const readCenter = () => {
   return { r: d[0], g: d[1], b: d[2], a: d[3] };
 };
 
+// Effect-only composite repro: a brightness=1.0 chain shown as the composite
+// (sketch id 'comp', the same path the arrangement uses), torn down, recreated.
+const COMP = 'comp';
+async function showBrightness() {
+  frames = 0;
+  const s = brightnessWhiteSketch(COMP);
+  await engine.showComposite([{ sketchId: COMP, sketch: s.sketch, opts: s.opts }]);
+}
+async function clearComposite() {
+  frames = 0;
+  engine.deleteSketch(COMP);
+  await engine.showComposite([]); // playhead off all clips → empty composite
+}
+// UPDATE path: the composite never empties — it's re-issued (updateSketch) with a
+// different chain (a plain solid, no brightness), as when the playhead moves to a
+// different clip. Returning to the brightness chain must re-render white.
+async function showSolidOnly() {
+  frames = 0;
+  const s = solidSketch(COMP);
+  await engine.showComposite([{ sketchId: COMP, sketch: s.sketch, opts: s.opts }]);
+}
+
 (window as any).__arrEngine = {
   engine,
   show,
   showGpuTest: () => show('blue'),
   showSpinningTris: () => show('tris'),
+  showBrightness,
+  clearComposite,
+  showSolidOnly,
   get frames() { return frames; },
   readCenter,
 };
