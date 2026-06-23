@@ -60,17 +60,21 @@ const compositor = new VideoCompositor(
   W, H,
   () => ({ beat: (frames * 0.05) % 8, bpm: 120 }), // a slowly advancing fake clock
 );
-function loadDxv() {
+// Decode a media URL through the production VideoCompositor and feed VID_KEY.
+function loadVideo(url: string, sourceKey: string, durationFrames: number) {
   compositor.setActiveClips([{
-    clipId: 'tb', instanceKey: VID_KEY, url: '/media/test_dxv.mov',
-    sourceKey: 'tb-dxv', startBeat: 0, lengthBeat: 8, durationFrames: 57,
+    clipId: 'tb', instanceKey: VID_KEY, url,
+    sourceKey, startBeat: 0, lengthBeat: 8, durationFrames,
   }]);
-  status.textContent = 'loading DXV…';
+  status.textContent = `loading ${url}…`;
 }
+const loadDxv = () => loadVideo('/media/test_dxv.mov', 'tb-dxv', 57);
+const loadH264 = () => loadVideo('/media/test_h264.mp4', 'tb-h264', 57);
 
 document.getElementById('red')!.addEventListener('click', () => injectColor('red'));
 document.getElementById('green')!.addEventListener('click', () => injectColor('green'));
 document.getElementById('dxv')!.addEventListener('click', loadDxv);
+document.getElementById('h264')!.addEventListener('click', loadH264);
 
 const readCenter = () => {
   const d = ctx.getImageData(W >> 1, H >> 1, 1, 1).data;
@@ -78,7 +82,7 @@ const readCenter = () => {
 };
 
 (window as any).__videoTb = {
-  engine, compositor, injectColor, loadDxv, readCenter,
+  engine, compositor, injectColor, loadDxv, loadH264, loadVideo, readCenter,
   get frames() { return frames; },
   videoPumpCount: () => compositor.pumpCount,
   videoLastError: () => compositor.lastError,
