@@ -161,6 +161,13 @@ export class ArrangementStore {
   primaryPath: string | null = null;
   /** Currently highlighted rail wire (writer/reader), if any. */
   selectedWireId: string | null = null;
+  /**
+   * Unified focus for the chain inspector: the selected effect-card path
+   * (`effect/<sketchId>/<colIdx>/<chainIdx>`) and field key, shared by every
+   * <column-group> adapter so highlight, Delete, and click-away all agree.
+   */
+  chainFocusPath: string | null = null;
+  chainFieldKey: string | null = null;
   /** Tap-config popup anchored to a wire pip (mock of the sketch tap card). */
   tapPopup: {
     wireId: string;
@@ -491,6 +498,9 @@ export class ArrangementStore {
       this.selection = new Set([path]);
       this.primaryPath = path;
       this.selectedWireId = null;
+      // A new top-level selection resets any chain card/field focus.
+      this.chainFocusPath = null;
+      this.chainFieldKey = null;
       this.activeRightTab = 'inspector';
       // Selecting a clip syncs the time region to the clip's extent;
       // selecting a track selects a time box spanning the whole track.
@@ -584,7 +594,51 @@ export class ArrangementStore {
       this.selection = new Set();
       this.primaryPath = null;
       this.selectedWireId = null;
+      this.chainFocusPath = null;
+      this.chainFieldKey = null;
     });
+  }
+
+  // ── Chain inspector focus (effect cards / fields) ──────────────────────
+  /** Set the focused effect-card path (or null). Drives highlight + Delete. */
+  setChainFocus(path: string | null) {
+    runInAction(() => { this.chainFocusPath = path; });
+  }
+  /** Set the focused field key (or null). */
+  setChainField(key: string | null) {
+    runInAction(() => { this.chainFieldKey = key; });
+  }
+  /** Clear just the chain card/field focus (e.g. clicking the rack background). */
+  clearChainFocus() {
+    runInAction(() => { this.chainFocusPath = null; this.chainFieldKey = null; });
+  }
+
+  /** True when an effect card is focused (Delete should remove it). */
+  get hasChainFocus(): boolean {
+    return !!this.chainFocusPath && this.chainFocusPath.startsWith('effect/');
+  }
+
+  /** Delete the focused effect card from its chain. Path: effect/<sketchId>/<col>/<idx>. */
+  deleteChainFocus() {
+    const path = this.chainFocusPath;
+    if (!path || !path.startsWith('effect/')) return;
+    // effect / <sketchId...> / <colIdx> / <chainIdx>  — sketchId itself has slashes.
+    const rest = path.slice('effect/'.length);
+    const parts = rest.split('/');
+    const chainIdx = Number(parts.pop());
+    parts.pop(); // colIdx (always 0 here)
+    const sketchId = parts.join('/');
+    if (!Number.isFinite(chainIdx)) return;
+    if (sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = sketchId.split('/');
+      const dev = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
+      if (dev) this.removeClipDevice(trackId, clipId, dev.id);
+    } else if (sketchId.startsWith('track/')) {
+      const trackId = sketchId.split('/')[1];
+      const dev = this.trackById(trackId)?.sketch.devices[chainIdx];
+      if (dev) this.removeTrackDevice(trackId, dev.id);
+    }
+    this.clearChainFocus();
   }
 
   // ── Right tab ─────────────────────────────────────────────────────────

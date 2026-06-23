@@ -250,11 +250,8 @@ export class ColumnGroup extends MobxLitElement {
       flex-direction: column;
       align-items: stretch;
       gap: 0;
-      padding: var(--app-sp-3);
+      padding: var(--app-sp-2) 0;
       gap: var(--app-sp-2);
-      background: var(--app-bg-color1);
-      border: 1px solid var(--app-tint-2);
-      border-radius: 1px;
       box-sizing: border-box;
     }
 
@@ -423,6 +420,10 @@ export class ColumnGroup extends MobxLitElement {
       display: flex;
       align-items: center;
       min-height: 22px;
+      /* Fill the full header height so the name's hit target reaches the header
+       * edges (the text stays centered) — clicking the type is otherwise a thin
+       * single-line target. */
+      align-self: stretch;
     }
     .effect-card-name-wrapper > smart-input {
       flex: 1;

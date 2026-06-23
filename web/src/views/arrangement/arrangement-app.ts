@@ -175,6 +175,16 @@ export class ArrangementApp extends MobxLitElement {
     if (has('ARR-GRID') || has('ARR-RULER')) this.lastSurface = 'timeline';
     else if (has('ARR-INSPECTOR') || has('ARR-TABBAR')) this.lastSurface = 'inspector';
     else this.lastSurface = 'other';
+    // Click-away: a pointer-down that doesn't land on an effect card or a
+    // category chip clears the chain card/field focus. (Clicks ON a card set
+    // focus afterwards in the card's own handler; clicks on a chip insert.)
+    if (store.chainFocusPath || store.chainFieldKey) {
+      const inChain = path.some((n) => {
+        const el = n as Element;
+        return el?.classList?.contains?.('effect-card') || el?.classList?.contains?.('cat-chip');
+      });
+      if (!inChain) store.clearChainFocus();
+    }
   };
 
   /** Allow file drops anywhere on the page. */
@@ -267,8 +277,19 @@ export class ArrangementApp extends MobxLitElement {
     // Resolve focus through shadow roots — typing in any editor consumes the key.
     if (isEditable(deepActiveElement())) return;
     if (e.key === 'Backspace' || e.key === 'Delete') {
-      // Backspace/Delete is timeline-only: deleting an effect in a sketch card or
-      // anywhere else must NOT delete clips/tracks (the bug this guards against).
+      // A focused field widget handles its own Delete (reset to default) — don't
+      // also delete the card it's in.
+      const tag = deepActiveElement()?.tagName ?? '';
+      if (tag === 'SCALAR-SLIDER' || tag.startsWith('FIELD-')) return;
+      // A focused effect card deletes first (works regardless of surface — the
+      // chain lives in the inspector).
+      if (store.hasChainFocus) {
+        e.preventDefault();
+        store.deleteChainFocus();
+        return;
+      }
+      // Otherwise Backspace/Delete is timeline-only: deleting an effect in a
+      // sketch card or anywhere else must NOT delete clips/tracks.
       if (this.lastSurface !== 'timeline') return;
       if (store.primaryPath?.startsWith('track/')) {
         e.preventDefault();

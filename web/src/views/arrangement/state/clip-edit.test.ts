@@ -65,6 +65,23 @@ describe('device reorder (moveClipDevice)', () => {
     store.moveClipDevice(trk, clip, 1, 1);
     expect(types()).toEqual(['source.solid_color', 'color.saturate', 'color.invert']);
   });
+
+  it('deleteChainFocus removes the focused card (path parsing with slashes)', () => {
+    store.setChainFocus(`effect/clip/${trk}/${clip}/0/1`); // the middle device
+    expect(store.hasChainFocus).toBe(true);
+    store.deleteChainFocus();
+    expect(types()).toEqual(['source.solid_color', 'color.invert']);
+    expect(store.chainFocusPath).toBeNull();
+  });
+
+  it('selecting a clip / clearing selection drops chain focus', () => {
+    store.setChainFocus(`effect/clip/${trk}/${clip}/0/0`);
+    store.select(paths.clip(trk, clip));
+    expect(store.chainFocusPath).toBeNull();
+    store.setChainFocus(`effect/clip/${trk}/${clip}/0/0`);
+    store.clearSelection();
+    expect(store.chainFocusPath).toBeNull();
+  });
 });
 
 describe('time-box content move', () => {

@@ -13,7 +13,6 @@
  * (tracing/wiring/smoothing/clipboard) are off; param editing + add/retype are on.
  */
 
-import { observable, runInAction } from 'mobx';
 import type {
   ColumnAdapter, ColumnCapabilities, ColumnDataSource, ColumnController,
   ColumnTaps, EditHandle, PluginInfo, FieldModulation,
@@ -132,8 +131,6 @@ interface ArrEditHandle extends EditHandle {
 }
 
 export class ArrColumnAdapter implements ColumnAdapter {
-  /** Local card/field selection (observable so column-group re-renders). */
-  private sel = observable({ path: null as string | null, fieldKey: null as string | null });
   private pluginCache = new Map<string, PluginInfo>();
 
   constructor(private target: DeviceTarget) {}
@@ -225,10 +222,12 @@ export class ArrColumnAdapter implements ColumnAdapter {
 
   // ── controller ──
   controller: ColumnController = {
-    select: (path) => runInAction(() => { this.sel.path = path; }),
-    isSelected: (path) => this.sel.path === path,
-    selectField: (key) => runInAction(() => { this.sel.fieldKey = key; }),
-    selectedFieldKey: () => this.sel.fieldKey,
+    // Card/field selection is unified on the store (shared by every adapter), so
+    // highlight, Delete, and click-away all agree across the app.
+    select: (path) => store.setChainFocus(path),
+    isSelected: (path) => store.chainFocusPath === path,
+    selectField: (key) => store.setChainField(key),
+    selectedFieldKey: () => store.chainFieldKey,
     defineSelectable: (_s: Selectable) => { /* arrangement routes its own inspector */ },
 
     setEffectParam: (_s, _c, ch, key, v: ParamValue) => {
