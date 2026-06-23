@@ -1,8 +1,7 @@
 /**
- * <arr-mixer-strip> — compact per-track mixer controls for the track header:
- * an output-level fader (drag to set) and an animated level meter. Prototypes
- * the channel-strip feel; in a video tool the "level" is opacity/gain into the
- * bus. The meter is a fake reading driven by transport position (mockup).
+ * <arr-mixer-strip> — compact per-track mixer control for the track header: an
+ * output-level fader (drag to set). In a video tool the "level" is opacity/gain
+ * into the bus. (No audio meter — this is a video tool.)
  */
 
 import { html, css } from 'lit';
@@ -62,32 +61,12 @@ export class ArrMixerStrip extends MobxLitElement {
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
-    .meter {
-      height: 4px;
-      border-radius: 2px;
-      background: var(--app-bg-color1);
-      border: 1px solid var(--app-tint-2);
-      overflow: hidden;
-    }
-    .mfill {
-      height: 100%;
-      transition: width 60ms linear;
-    }
   `;
 
   render() {
     const track = store.trackById(this.trackId);
     if (!track) return html``;
     const level = track.level ?? DEFAULT_LEVEL;
-
-    // Fake meter level from transport position (deterministic per track).
-    const seed = this.trackId.length * 1.7 + this.trackId.charCodeAt(0);
-    const env = store.playing
-      ? 0.25 + 0.65 * Math.abs(Math.sin(store.positionBeat * 1.8 + seed))
-      : 0.04;
-    const meter = Math.min(1, env * level);
-    const mColor =
-      meter > 0.9 ? 'var(--app-error)' : meter > 0.7 ? 'var(--app-warn)' : 'var(--app-ok)';
 
     return html`
       <div class="strip">
@@ -101,9 +80,6 @@ export class ArrMixerStrip extends MobxLitElement {
             <div class="knob" style="left:calc(${level * 100}% - 1px)"></div>
           </div>
           <span class="val">${Math.round(level * 100)}</span>
-        </div>
-        <div class="meter">
-          <div class="mfill" style="width:${meter * 100}%; background:${mColor}"></div>
         </div>
       </div>
     `;

@@ -96,6 +96,8 @@ export class ArrMonitor extends MobxLitElement {
     void store.positionBeat;
     void store.primaryPath;
     void store.playing;
+    void store.backgroundMode;
+    void store.backgroundColor;
     // Track every ACTIVE composite layer's chain + param state + opacity so a
     // real edit (param, device, or track level) re-renders → showComposite
     // rebuilds the combined sketch → engine update.
@@ -163,42 +165,36 @@ export class ArrMonitor extends MobxLitElement {
     const s = this.sizedCtx();
     if (!s) return;
     const { ctx, w, h } = s;
-    if (!engineBridge.hasContent) { this.drawPlaceholder(); return; }
-    const bmp = engineBridge.engineComposite();
-    if (!bmp) { this.drawPlaceholder('booting…'); return; }
     ctx.clearRect(0, 0, w, h);
-    this.drawContain(ctx, bmp, w, h); // opacity/blend already baked into the composite
+    // Composite backdrop (per composition): opaque black by default, a custom
+    // color, or transparent (canvas left clear → the stage checkerboard shows).
+    const fill = this.bgFill();
+    if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, w, h); }
+    if (!engineBridge.hasContent) return;        // backdrop only — no clips yet
+    const bmp = engineBridge.engineComposite();
+    if (!bmp) return;                            // booting — backdrop only
+    this.drawContain(ctx, bmp, w, h);            // opacity/blend baked in
+  }
+
+  /** The composite backdrop fill, or null for transparent (checkerboard). */
+  private bgFill(): string | null {
+    const mode = store.backgroundMode;
+    if (mode === 'transparent') return null;
+    if (mode === 'custom') return store.backgroundColor || '#000';
+    return '#000';
   }
 
   /**
    * Contain-fit (letterbox) a bitmap into w×h centred, so the WHOLE composition
    * frame is visible at its true aspect ratio (the engine renders at the
-   * composition resolution's aspect) rather than cropping to fill.
+   * composition resolution's aspect) rather than cropping to fill. The backdrop
+   * is already painted by `redraw()`, so letterbox bars keep the backdrop color
+   * (or stay transparent → checkerboard).
    */
   private drawContain(ctx: CanvasRenderingContext2D, bmp: ImageBitmap, w: number, h: number) {
     const scale = Math.min(w / bmp.width, h / bmp.height);
     const dw = bmp.width * scale;
     const dh = bmp.height * scale;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, w, h);
     ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  }
-
-  private drawPlaceholder(_note?: string) {
-    const s = this.sizedCtx();
-    if (!s) return;
-    const { ctx, w, h } = s;
-    ctx.clearRect(0, 0, w, h);
-    // A slow gradient that drifts with the playhead so the monitor visibly
-    // reflects transport even with no clip selected.
-    const t = store.positionBeat * 0.1;
-    const g = ctx.createLinearGradient(0, 0, w, h);
-    const hue = (t * 40) % 360;
-    g.addColorStop(0, `hsl(${hue}, 45%, 22%)`);
-    g.addColorStop(1, `hsl(${(hue + 60) % 360}, 45%, 12%)`);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
   }
 }

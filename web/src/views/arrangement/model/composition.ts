@@ -38,11 +38,20 @@ export type TransportMode = 'precise' | 'live';
  */
 export type ScaleMode = 'fit' | 'cover' | 'stretch' | 'none';
 
+/** The composite's backdrop, under all clips. Default (omitted) = opaque black. */
+export interface BackgroundConfig {
+  mode: 'black' | 'transparent' | 'custom';
+  /** CSS color for `custom` mode (e.g. '#1a2b3c'). */
+  color?: string;
+}
+
 export interface CompositionMeta {
   resolution: Resolution;
   baseBPM: number;
   /** [beats per bar, beat unit] e.g. [4, 4]. */
   timeSignature: [number, number];
+  /** Composite backdrop (under all clips). Omitted ⇒ opaque black. */
+  background?: BackgroundConfig;
 }
 
 /**

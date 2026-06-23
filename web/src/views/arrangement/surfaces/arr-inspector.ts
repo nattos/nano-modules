@@ -879,6 +879,25 @@ export class ArrInspector extends MobxLitElement {
           <label>Time signature</label>
           <span class="val">${meta.timeSignature[0]} / ${meta.timeSignature[1]}</span>
         </div>
+        <div class="row">
+          <label>Background</label>
+          <span class="val seg">
+            ${(['black', 'transparent', 'custom'] as const).map(
+              (m) => html`<button
+                class="segbtn ${store.backgroundMode === m ? 'on' : ''}"
+                @click=${() => store.setBackground(m)}
+              >${m}</button>`,
+            )}
+            ${store.backgroundMode === 'custom'
+              ? html`<input
+                  type="color"
+                  .value=${store.backgroundColor}
+                  @input=${(e: Event) => store.setBackground('custom', (e.target as HTMLInputElement).value)}
+                  style="width:26px;height:22px;padding:0;border:1px solid var(--app-tint-4);background:none;cursor:pointer;margin-left:6px"
+                />`
+              : ''}
+          </span>
+        </div>
 
         <div class="group-title">Application</div>
         <div class="row"><label>Theme</label><span class="val"><span class="tag">Dark (Pro)</span></span></div>

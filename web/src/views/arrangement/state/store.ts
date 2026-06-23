@@ -1215,6 +1215,19 @@ export class ArrangementStore {
     this.mutate('set resolution', (d) => { d.meta.resolution = { width, height }; }, 'meta:res');
   }
 
+  // ── Composite background (per composition; default = opaque black) ──────
+  get backgroundMode(): 'black' | 'transparent' | 'custom' {
+    return this.composition.meta.background?.mode ?? 'black';
+  }
+  get backgroundColor(): string {
+    return this.composition.meta.background?.color ?? '#000000';
+  }
+  setBackground(mode: 'black' | 'transparent' | 'custom', color?: string) {
+    this.mutate('set background', (d) => {
+      d.meta.background = { mode, ...(color !== undefined ? { color } : (d.meta.background?.color ? { color: d.meta.background.color } : {})) };
+    }, 'meta:bg');
+  }
+
   // ── Clip mutations ────────────────────────────────────────────────────
 
   // ── Rails ─────────────────────────────────────────────────────────────
