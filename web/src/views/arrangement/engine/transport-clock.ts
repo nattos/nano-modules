@@ -81,6 +81,12 @@ export class TransportController {
     s.setPosition(beat);
   }
 
+  /** Real (warped) seconds at the current playhead — the effect-clock time fed
+   *  to the engine each frame. Static while the playhead is (paused → static). */
+  secondsAt(s: TransportState): number {
+    return this.ensureClock(s.composition).secondsAt(Math.max(0, s.positionBeat));
+  }
+
   /** Force a re-anchor on the next advance (e.g. when playback (re)starts). */
   reanchor() {
     this.clock = null; // also drops the memo so a bpm change mid-pause is picked up

@@ -162,14 +162,20 @@ export class ArrMonitor extends MobxLitElement {
     const bmp = engineBridge.engineComposite();
     if (!bmp) { this.drawPlaceholder('booting…'); return; }
     ctx.clearRect(0, 0, w, h);
-    this.drawCover(ctx, bmp, w, h); // opacity/blend already baked into the composite
+    this.drawContain(ctx, bmp, w, h); // opacity/blend already baked into the composite
   }
 
-  /** Cover-fit a bitmap into w×h centred. */
-  private drawCover(ctx: CanvasRenderingContext2D, bmp: ImageBitmap, w: number, h: number) {
-    const scale = Math.max(w / bmp.width, h / bmp.height);
+  /**
+   * Contain-fit (letterbox) a bitmap into w×h centred, so the WHOLE composition
+   * frame is visible at its true aspect ratio (the engine renders at the
+   * composition resolution's aspect) rather than cropping to fill.
+   */
+  private drawContain(ctx: CanvasRenderingContext2D, bmp: ImageBitmap, w: number, h: number) {
+    const scale = Math.min(w / bmp.width, h / bmp.height);
     const dw = bmp.width * scale;
     const dh = bmp.height * scale;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
     ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
   }
 

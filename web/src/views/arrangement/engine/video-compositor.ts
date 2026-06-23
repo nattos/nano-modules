@@ -73,10 +73,16 @@ export class VideoCompositor {
     /** Push a decoded frame to the executor for `instanceKey`. */
     private readonly setInstanceTexture: (instanceKey: string, bitmap: ImageBitmap | null) => void,
     /** Render size the frames are blitted to (matches the composite sketch). */
-    private readonly renderW: number,
-    private readonly renderH: number,
+    private renderW: number,
+    private renderH: number,
     private readonly clock: TransportClock,
   ) {}
+
+  /** Update the blit render size (composition resolution changed). */
+  setRenderSize(w: number, h: number) {
+    this.renderW = w;
+    this.renderH = h;
+  }
 
   private ensureService(): Promise<VideoPlaybackService> {
     if (this.service) return Promise.resolve(this.service);

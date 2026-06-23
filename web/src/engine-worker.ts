@@ -133,6 +133,11 @@ const MAX_FRAMES_IN_FLIGHT = 2;
 let inFlightFences: Array<Promise<unknown>> = [];
 let lastTime = 0;
 let elapsed = 0;
+// When non-null, the effect clock is driven by this external (transport) time
+// instead of the free-running wall clock: elapsed := transportSeconds each
+// frame, deltaTime := the change since last frame. Same value frame-to-frame
+// (transport paused) ⇒ deltaTime 0 ⇒ a static frame. null ⇒ free-run.
+let transportSeconds: number | null = null;
 let frameCount = 0;
 let fpsTime = 0;
 let fps = 0;
@@ -300,6 +305,9 @@ async function handleCommand(cmd: WorkerCommand) {
       // catch-up jump that breaks animation smoothness. Re-arm the
       // one-shot paused indicator so the next pause re-notifies the UI.
       if (!paused) { lastTime = performance.now() / 1000; pausedFramePosted = false; }
+      break;
+    case 'setTime':
+      transportSeconds = cmd.seconds;
       break;
     case 'stepFrame':
       await stepOneFrame();
@@ -487,9 +495,17 @@ async function frame() {
   }
 
   const now = performance.now() / 1000;
-  const dt = now - lastTime;
+  let dt: number;
+  if (transportSeconds != null) {
+    // Transport-driven: the playhead time IS the effect time. Holding the same
+    // seconds (paused) yields dt 0 → a static frame; scrubbing back clamps dt≥0.
+    dt = Math.max(0, transportSeconds - elapsed);
+    elapsed = transportSeconds;
+  } else {
+    dt = now - lastTime;
+    elapsed += dt;
+  }
   lastTime = now;
-  elapsed += dt;
 
   frameCount++;
   fpsTime += dt;

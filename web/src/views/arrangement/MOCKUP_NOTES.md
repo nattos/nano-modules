@@ -73,6 +73,13 @@ since making the two surfaces look and feel the same is a deliberate goal.
 - **Other display-only edits.** Clip-view loop/in-out markers; track reorder / group DnD.
 - **Compositor features (not holes).** Blend modes (needs a model field) + group-bus effect chains
   (a group's sketch processing its summed children).
+- **Single-keyframe video sources don't advance.** Video clips render via the main-thread decode
+  pump (`engine/video-compositor.ts`), which opens sources with random access
+  (`sequential: false`). Sources with sparse/single keyframes (e.g. some Adobe Stock `.mov`
+  exports) seek to their lone keyframe on every pull → the clip freezes on one frame. DXV + normal
+  H264 (`/media/test_h264.mp4`) work. Fix needs sequential decode (forward play from the keyframe
+  + forward-cache) for sparse-keyframe sources — detect at open via the playback service's
+  seek-strategy probe. See [[host-injected-texture-via-slot]].
 
 ---
 

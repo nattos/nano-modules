@@ -95,6 +95,11 @@ export class EngineProxy {
     this.send({ type: 'resize', width, height });
   }
 
+  /** Drive the effect clock from an external time (transport), or null to free-run. */
+  setTime(seconds: number | null) {
+    this.send({ type: 'setTime', seconds });
+  }
+
   loadModule(moduleType: string) {
     this.send({ type: 'loadModule', moduleType });
   }

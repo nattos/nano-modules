@@ -27,13 +27,18 @@ export type CompositeListener = () => void;
 /** Best-effort capture of the composite frame (Component D). */
 export type FrameTap = (clipId: string, bitmap: ImageBitmap) => void;
 
-const RENDER_W = 640;
-const RENDER_H = 360;
+/** Longest-edge cap for the live preview render (keeps multi-layer compositing
+ *  responsive; the composition's true resolution is the export target, not this
+ *  preview). The render keeps the composition's ASPECT ratio. */
+const PREVIEW_MAX_EDGE = 1280;
 /** Single sketch id the whole engine-layer stack composites into. */
 const COMPOSITE_ID = 'arr-composite';
 
 export class EngineBridge {
   private engine: ArrEngine | null = null;
+  /** Current engine render size (composition aspect, capped). */
+  private renderW = 640;
+  private renderH = 360;
   private onCompositeCb: CompositeListener | null = null;
   private tap: FrameTap | null = null;
 
@@ -62,8 +67,8 @@ export class EngineBridge {
     if (!this.video) {
       this.video = new VideoCompositor(
         (key, bmp) => this.setInstanceTexture(key, bmp),
-        RENDER_W,
-        RENDER_H,
+        this.renderW,
+        this.renderH,
         () => ({ beat: store.positionBeat, bpm: store.composition.meta.baseBPM }),
       );
     }
@@ -79,10 +84,34 @@ export class EngineBridge {
   /** Last pulled frame per clip {frame,handle,w,h} (diagnostic). */
   videoLastPulled(): unknown { return this.video?.lastPulled ?? null; }
 
+  /** Engine render size = composition resolution's aspect, capped to the preview
+   *  max edge (even dimensions for clean GPU textures). */
+  private renderSize(): { w: number; h: number } {
+    const r = store.composition.meta.resolution;
+    const rw = Math.max(1, r.width);
+    const rh = Math.max(1, r.height);
+    const scale = Math.min(1, PREVIEW_MAX_EDGE / Math.max(rw, rh));
+    const even = (n: number) => Math.max(2, Math.round((n * scale) / 2) * 2);
+    return { w: even(rw), h: even(rh) };
+  }
+
+  /** Re-sync the engine + video pump render size to the composition resolution.
+   *  Cheap to call every frame; only acts when the size actually changed. */
+  syncResolution() {
+    const { w, h } = this.renderSize();
+    if (w === this.renderW && h === this.renderH) return;
+    this.renderW = w;
+    this.renderH = h;
+    this.engine?.resize(w, h);
+    this.video?.setRenderSize(w, h);
+    // Force a re-issue so the trace re-renders at the new size next frame.
+    this.compositeSig = '';
+  }
+
   /** Boot the engine on first real use; idempotent. */
   private ensureEngine(): ArrEngine {
     if (this.engine) return this.engine;
-    const e = new ArrEngine(RENDER_W, RENDER_H);
+    const e = new ArrEngine(this.renderW, this.renderH);
     e.onFrameSet = (frames) => this.onFrameSet(frames);
     e.onFps = (f) => { this.fps = f; };
     e.onError = (m) => { this.error = m; };
@@ -120,6 +149,15 @@ export class EngineBridge {
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
     if (this.engine) this.engine.setInstanceTexture(instanceKey, bitmap);
     else bitmap?.close();
+  }
+
+  private lastTimeSent: number | null = null;
+  /** Drive the engine's effect clock from the transport time (seconds). Deduped
+   *  so a paused transport doesn't spam the worker. No-op until booted. */
+  setTime(seconds: number) {
+    if (!this.engine || this.lastTimeSent === seconds) return;
+    this.lastTimeSent = seconds;
+    this.engine.setTime(seconds);
   }
 
   /** Listen for new engine frames (the monitor recomposites). Returns unsub. */
@@ -165,6 +203,9 @@ export class EngineBridge {
    * composite actually changes, and clears the trace when nothing renders.
    */
   showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number }>) {
+    // Keep the engine + video render size matched to the composition resolution
+    // (aspect-correct) before building/issuing this frame.
+    this.syncResolution();
     // Every layer renders through the GPU composite now — video clips included
     // (their source.video.file entry outputs the host-injected decoded frame).
     const engineLayers = layers;

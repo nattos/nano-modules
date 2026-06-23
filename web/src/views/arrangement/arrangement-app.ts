@@ -17,6 +17,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
 import { TransportController } from './engine/transport-clock';
+import { engineBridge } from './engine/engine-bridge';
 import { importVideoFile } from './media/drop-import';
 
 import './surfaces/transport-bar';
@@ -59,6 +60,18 @@ export class ArrangementApp extends MobxLitElement {
       font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
       color: var(--app-text-color1);
       background: var(--app-bg-color1);
+      /* The arrangement is a direct-manipulation surface — text selection on
+         drag is noise. Inputs / editable fields opt back in below. */
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    /* Real text entry must stay selectable/editable. */
+    :host input,
+    :host textarea,
+    :host [contenteditable],
+    :host editable-label {
+      -webkit-user-select: text;
+      user-select: text;
     }
     .transport-row {
       grid-area: transport;
@@ -216,6 +229,10 @@ export class ArrangementApp extends MobxLitElement {
     const dt = (now - this.lastT) / 1000;
     this.lastT = now;
     this.transport.advance(store, dt);
+    // Drive the engine's effect clock from the transport: effects animate in
+    // lock-step with the playhead (and hold still when it's paused), instead of
+    // free-running on wall time. Deduped inside the bridge.
+    engineBridge.setTime(this.transport.secondsAt(store));
     this.raf = requestAnimationFrame(this.tick);
   };
 

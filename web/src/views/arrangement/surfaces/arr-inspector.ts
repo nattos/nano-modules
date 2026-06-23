@@ -21,7 +21,6 @@ import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
 import '../../../widgets/scalar-knob';
 import '../../../widgets/spark-chart';
-import './arr-automation-editor';
 
 /** Minimal callbacks: the arrangement has no custom inspectors or card-reorder. */
 const ARR_COLUMN_CALLBACKS: ColumnGroupCallbacks = {
@@ -394,16 +393,7 @@ export class ArrInspector extends MobxLitElement {
                 </div>`;
               })}`
           : ''}
-
-        ${clip.automation.length
-          ? html`<div class="group-title">Clip automation</div>
-              ${clip.automation.map(
-                (l) => html`<div class="auto-block">
-                  <div class="auto-name">${l.label}</div>
-                  <arr-automation-editor .lane=${l} .ensureLaneId=${() => l.id}></arr-automation-editor>
-                </div>`,
-              )}`
-          : ''}
+        <!-- Clip envelopes are edited ONLY in the clip panel, not the inspector. -->
       </div>
     `;
   }
@@ -434,20 +424,8 @@ export class ArrInspector extends MobxLitElement {
           .adapter=${this.adapterFor(trackTarget(track.id))}
           .callbacks=${ARR_COLUMN_CALLBACKS}
         ></column-group>
-        <div class="group-title">Track automation</div>
-        ${track.automation.length
-          ? track.automation.map(
-              (l) => html`<div class="auto-block">
-                <div class="auto-name">${l.label}</div>
-                <arr-automation-editor .lane=${l} .ensureLaneId=${() => l.id}></arr-automation-editor>
-              </div>`,
-            )
-          : html`<div class="auto-block">
-              <arr-automation-editor
-                .lane=${undefined}
-                .ensureLaneId=${() => store.ensureTrackAutomationLane(track.id)}
-              ></arr-automation-editor>
-            </div>`}
+        <!-- Track envelopes are edited ONLY on the timeline (automation lanes),
+             not the inspector. -->
       </div>
     `;
   }

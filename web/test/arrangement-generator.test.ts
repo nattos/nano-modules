@@ -111,6 +111,18 @@ describe('Arrangement renders a core generator (testonly dropped)', () => {
     expect(a).not.toBeNull();
     expect(a!.spread).toBeGreaterThan(8); // structured, not a flat fill
 
+    // Paused playhead ⇒ static frame: the signature must NOT change while stopped.
+    await new Promise((r) => setTimeout(r, 400));
+    const paused = await sampleScene();
+    expect(paused!.sig).toEqual(a!.sig);
+
+    // Effect time follows the TRANSPORT now (a paused playhead = a static frame),
+    // so start playback before checking that the noise evolves over time.
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      if (!store.playing) store.togglePlay();
+    });
+
     // Animation: noise evolves at speed 0.5 → the sampled signature changes.
     await new Promise((r) => setTimeout(r, 600));
     const b = await sampleScene();

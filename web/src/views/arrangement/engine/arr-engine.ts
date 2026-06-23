@@ -212,6 +212,11 @@ export class ArrEngine {
     this.proxy.setPaused(paused);
   }
 
+  /** Drive the effect clock from a transport time (seconds), or null to free-run. */
+  setTime(seconds: number | null) {
+    this.proxy.setTime(seconds);
+  }
+
   /** Advance exactly one frame while paused (for precise/offline stepping). */
   stepFrame() {
     this.proxy.stepFrame();

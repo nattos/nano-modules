@@ -144,6 +144,12 @@ export type WorkerCommand =
   | { type: 'setParam'; sketchId: string; colIdx: number; chainIdx: number; paramKey: string; value: ParamValue }
   | { type: 'setTracePoints'; tracePoints: TracePoint[] }
   | { type: 'setPaused'; paused: boolean }
+  // Drive the effect clock from an external (transport) time instead of the
+  // free-running wall clock: elapsedTime := seconds, deltaTime := the change
+  // since the last setTime. While the host keeps sending the SAME seconds (e.g.
+  // transport paused) effects hold a static frame. Sending null reverts to the
+  // free-running wall clock (the IDE's live preview).
+  | { type: 'setTime'; seconds: number | null }
   // Advance exactly one frame (the IDE frame-step button). Meant to be sent
   // while paused; the worker simulates one tick with a fixed nominal dt.
   | { type: 'stepFrame' }

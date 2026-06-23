@@ -71,6 +71,9 @@ export class EditableLabel extends LitElement {
     input {
       flex: 1;
       min-width: 0;
+      /* Restore text selection — an ancestor may set user-select:none. */
+      -webkit-user-select: text;
+      user-select: text;
       background: rgba(0, 0, 0, 0.3);
       border: 1px solid var(--app-hi-color2, #4169E1);
       color: var(--app-text-color1, #eaeaea);

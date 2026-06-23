@@ -899,9 +899,10 @@ export class ArrGrid extends MobxLitElement {
   private clipMove: {
     trackId: string;
     clipId: string;
-    grabBeatOffset: number;
+    startBeat: number;
     grabBeat: number;
     x0: number;
+    y0: number;
     active: boolean;
     timebox: boolean;
   } | null = null;
@@ -910,13 +911,13 @@ export class ArrGrid extends MobxLitElement {
   beginClipMove(e: PointerEvent, trackId: string, clip: Clip, fromHeader: boolean) {
     const grid = buildBeatGrid();
     const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
-    const grabBeat = grid.xToBeat(e.clientX - laneLeft);
     this.clipMove = {
       trackId,
       clipId: clip.id,
-      grabBeatOffset: grabBeat - clip.startBeat,
-      grabBeat,
+      startBeat: clip.startBeat,
+      grabBeat: grid.xToBeat(e.clientX - laneLeft),
       x0: e.clientX,
+      y0: e.clientY,
       active: false,
       timebox: fromHeader && store.timeBoxCoversClip(trackId, clip.id),
     };
@@ -924,30 +925,65 @@ export class ArrGrid extends MobxLitElement {
     window.addEventListener('pointerup', this.onClipUp);
   }
 
+  // The drag is DELTA-based: the clip shifts by how far the cursor moved from
+  // pointer-down — NOT to the absolute cursor position. In X, the shift is
+  // quantized to the snap grid (round to nearest step). In Y, the clip moves to
+  // whichever eligible track's center the shifted clip-center lands nearest. So
+  // grabbing a clip anywhere (not just its center) shifts it cleanly by whole
+  // tracks / grid steps.
   private onClipMove = (e: PointerEvent) => {
     const d = this.clipMove;
     if (!d) return;
     if (!d.active) {
-      if (Math.abs(e.clientX - d.x0) < 4) return;
+      // Activate on motion in EITHER axis (a pure vertical between-tracks drag
+      // must start too — an X-only threshold silently dropped those).
+      if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
       d.active = true;
     }
     const grid = buildBeatGrid();
     const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
     const free = e.altKey;
-    const cursorBeat = grid.xToBeat(e.clientX - laneLeft);
+
+    // X: shift in beats from pointer-down, quantized to the snap grid.
+    const deltaBeat = grid.xToBeat(e.clientX - laneLeft) - d.grabBeat;
+    const snap = store.snapStep;
+    const shiftBeat = free ? deltaBeat : Math.round(deltaBeat / snap) * snap;
+
     if (d.timebox) {
-      // Split the scope clips at the box edges and move the in-box content.
-      const delta = store.quantize(cursorBeat, free) - store.quantize(d.grabBeat, free);
-      store.moveTimeBoxContent(delta);
+      store.moveTimeBoxContent(shiftBeat);
       return;
     }
-    const beat = store.quantize(cursorBeat - d.grabBeatOffset, free);
-    const dest = this.eligibleTrackAtClientY(e.clientY) ?? d.trackId;
+
+    const beat = Math.max(0, d.startBeat + shiftBeat);
+    const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
     this.clipDropTrackId = dest !== d.trackId ? dest : null;
     // Always pass the ORIGINAL source track: coalescing reverts to the gesture's
     // base each frame (clip back on its source), then re-applies the move.
     store.moveClipToTrack(d.trackId, d.clipId, dest, beat);
   };
+
+  /**
+   * Delta-based target track: shift the SOURCE track's row center by `dy` px and
+   * return whichever eligible (plain) track's center is nearest. So the clip
+   * only changes tracks once the cursor has moved ~half a row, regardless of
+   * where on the clip it was grabbed.
+   */
+  private trackByCenterShift(sourceTrackId: string, dy: number): string {
+    const layout = this.trackRowLayout();
+    const tracks = store.displayTracks;
+    const srcIdx = tracks.findIndex((t) => t.id === sourceTrackId);
+    if (srcIdx < 0) return sourceTrackId;
+    const center = (r: { top: number; bottom: number }) => (r.top + r.bottom) / 2;
+    const target = center(layout[srcIdx]) + dy;
+    let best = sourceTrackId;
+    let bestDist = Infinity;
+    for (let i = 0; i < tracks.length; i++) {
+      if (tracks[i].kind !== 'track') continue;
+      const dist = Math.abs(center(layout[i]) - target);
+      if (dist < bestDist) { bestDist = dist; best = tracks[i].id; }
+    }
+    return best;
+  }
 
   private onClipUp = () => {
     window.removeEventListener('pointermove', this.onClipMove);
