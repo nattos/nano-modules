@@ -198,7 +198,9 @@ export class ArrangementApp extends MobxLitElement {
     const files = dt.files;
     const handlePromises = Array.from(dt.items || [])
       .filter((it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function')
-      .map((it) => (it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>);
+      .map((it) =>
+        ((it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>).catch(() => null),
+      );
     if (!files?.length && !handlePromises.length) return;
     e.preventDefault();
 

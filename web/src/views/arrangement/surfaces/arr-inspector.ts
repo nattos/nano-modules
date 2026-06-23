@@ -865,7 +865,9 @@ export class ArrInspector extends MobxLitElement {
     // Capture handle promises synchronously — DataTransfer clears once we await.
     const handlePromises = Array.from(dt.items || [])
       .filter((it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function')
-      .map((it) => (it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>);
+      .map((it) =>
+        ((it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>).catch(() => null),
+      );
     if (!handlePromises.length) return;
     e.preventDefault();
     e.stopPropagation();
