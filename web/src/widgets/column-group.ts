@@ -39,9 +39,30 @@ import './scalar-slider';
 import './output-trace-card';
 import './texture-drop-zone';
 import '../editors/envelope-field';   // <envelope-field> for the wire Envelope stage
+import './ui-icon';
 
 import type { Selectable } from '../state/types';
-import { categoryColor, effectDomain } from './category-color';
+import { categoryColor, effectDomain, CATEGORY_DOMAINS } from './category-color';
+
+/** Line-awesome icon per effect category, for the insert-header chips. */
+const CATEGORY_ICON: Record<string, string> = {
+  source: 'la-lightbulb',
+  color: 'la-palette',
+  filter: 'la-filter',
+  warp: 'la-vector-square',
+  motion: 'la-running',
+  composite: 'la-layer-group',
+  mod: 'la-wave-square',
+  control: 'la-sliders-h',
+  debug: 'la-bug',
+};
+/** Preferred "default" effect to seed when inserting from a category chip. */
+const CATEGORY_DEFAULT: Record<string, string> = {
+  source: 'source.solid_color',
+  color: 'color.tone.brightness_contrast',
+};
+/** Fallback temporary effect when a category has no good default in core. */
+const CATEGORY_FALLBACK = 'color.tone.brightness_contrast';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -183,7 +204,7 @@ export class ColumnGroup extends MobxLitElement {
    * placeholder effect (vs. retyping an existing one). The whole insertion rides
    * `typeLongEdit` so it commits as one undo point and disappears on cancel.
    */
-  private insertCtx: { instanceKey: string; insertIdx: number } | null = null;
+  private insertCtx: { instanceKey: string; insertIdx: number; prefill?: string } | null = null;
 
   static styles = css`
     :host {
@@ -214,7 +235,8 @@ export class ColumnGroup extends MobxLitElement {
       width: 100%;
       box-sizing: border-box;
     }
-    /* The body is the recessed "rack" that devices slot into. */
+    /* The body is the "rack" that devices slot into — toned to the app bg like
+     * the arrangement timeline, not a harsh black recess. */
     .column-body {
       width: 100%;
       display: flex;
@@ -222,12 +244,42 @@ export class ColumnGroup extends MobxLitElement {
       align-items: stretch;
       gap: 0;
       padding: 4px 0;
-      background: rgba(0,0,0,0.35);
+      background: var(--app-bg-color1);
       border: 1px solid var(--app-tint-2);
       border-radius: 1px;
-      box-shadow: inset 0 1px 0 rgba(0,0,0,0.4), inset 0 0 0 1px rgba(0,0,0,0.25);
       box-sizing: border-box;
     }
+
+    /* Pinned category insert header — chips that begin inserting a new effect of
+     * that category (with the smart-input drilled into "<category>."). */
+    .insert-header {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 6px 0 8px;
+      background: var(--app-bg-color2);
+    }
+    .cat-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      background: var(--app-tint-2);
+      border: 1px solid var(--chip, var(--app-tint-4));
+      color: var(--app-text-color1);
+      font: inherit;
+      font-size: var(--app-fs-sm);
+      text-transform: capitalize;
+      cursor: pointer;
+      user-select: none;
+    }
+    .cat-chip:hover { background: var(--app-tint-3); }
+    .cat-chip:active { background: var(--app-tint-4); }
+    .cat-chip ui-icon { --icon-size: 12px; color: var(--chip, var(--app-text-color2)); }
     .column-placeholder {
       border: 1px dashed var(--app-tint-3);
       border-radius: 1px;
@@ -249,11 +301,13 @@ export class ColumnGroup extends MobxLitElement {
      * border visually joins in a single outline.
      * ---------------------------------------------------------------- */
 
-    /* Colors used consistently across cards and markers. */
+    /* Colors used consistently across cards and markers — aligned with the
+     * arrangement clip cards / track headers (panel tone + subtle border, blue
+     * selection accent), so the chain reads as native to those surfaces. */
     :host {
-      --device-bg: var(--app-tint-3);
-      --device-border: rgba(255,255,255,0.22);
-      --device-sel-bg: rgba(65, 105, 225, 0.22);
+      --device-bg: var(--app-bg-color2);
+      --device-border: var(--app-tint-4);
+      --device-sel-bg: rgba(65, 105, 225, 0.12);
       --device-sel-border: var(--app-hi-color2, #4169E1);
     }
 
@@ -272,6 +326,11 @@ export class ColumnGroup extends MobxLitElement {
       isolation: isolate;
     }
     .effect-card[dragging] { opacity: 0.4; }
+    /* While the type editor is open, lift the whole card above its siblings so
+     * the smart-input autocomplete dropdown paints over the cards below (each
+     * card is its own stacking context via isolation, so the dropdown can't
+     * otherwise escape). */
+    .effect-card[editing] { z-index: 50; }
 
     /* Inner body of a device — border only on the LEFT and RIGHT so the
      * outline of the whole shape (body + tab joints) reads as one
@@ -727,7 +786,7 @@ export class ColumnGroup extends MobxLitElement {
 
     return html`
       <div class="column" style="position:relative">
-        <div class="column-header">${column.name}</div>
+        ${this.renderInsertHeader(column)}
         <div class="column-body">
           ${this.renderChain(sketch, column)}
         </div>
@@ -946,6 +1005,7 @@ export class ColumnGroup extends MobxLitElement {
 
     return html`
       <div class="effect-card" ?selected=${isSelected} ?collapsed=${isCollapsed}
+        ?editing=${isEditingType}
         data-chain-idx=${chainIdx}
         @click=${(e: Event) => {
           if ((e.target as HTMLElement).closest('smart-input, .tab-area')) return;
@@ -979,7 +1039,7 @@ export class ColumnGroup extends MobxLitElement {
               ${isEditingType ? html`
                 <smart-input
                   .effects=${this.ds.availableEffects}
-                  .initialValue=${this.insertCtx ? '' : entry.module_type}
+                  .initialValue=${this.insertCtx ? (this.insertCtx.prefill ?? '') : entry.module_type}
                   .autoSelect=${true}
                   @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
                   @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
@@ -1777,6 +1837,71 @@ export class ColumnGroup extends MobxLitElement {
       this.sketchId, this.colIdx, insertIdx, 'color.tone.brightness_contrast');
     this.typeLongEdit = edit;
     this.insertCtx = { instanceKey, insertIdx };
+    this.editingTypeChainIdx = insertIdx;
+    this.requestUpdate();
+  }
+
+  // ========================================================================
+  // Category insert header
+  // ========================================================================
+
+  /** The pinned chip header — one chip per effect category present, in canonical
+   *  order. Clicking begins an insertion drilled into that category. */
+  private renderInsertHeader(_column: SketchColumn) {
+    if (!this.ds.caps.typeEditing) return nothing;
+    const present = new Set(this.ds.availableEffects.map((e) => e.category));
+    const cats: string[] = CATEGORY_DOMAINS.filter((c) => present.has(c));
+    for (const c of present) if (!cats.includes(c)) cats.push(c); // any extras last
+    if (cats.length === 0) return nothing;
+    return html`
+      <div class="insert-header">
+        ${cats.map((cat) => html`
+          <button
+            class="cat-chip"
+            style=${`--chip:${categoryColor(cat)}`}
+            title=${`Insert ${cat} effect`}
+            @click=${() => this.insertCategoryEffect(cat)}
+          >
+            <ui-icon icon=${CATEGORY_ICON[cat] ?? 'la-plus'}></ui-icon>
+            <span>${cat}</span>
+          </button>
+        `)}
+      </div>
+    `;
+  }
+
+  /** Insert point like "+ Track": below the selected card, else at the end. */
+  private computeInsertIdx(): number {
+    const sketch = this.ds.getSketch(this.sketchId);
+    const chain = sketch ? sketchChain(sketch) : [];
+    for (let i = 0; i < chain.length; i++) {
+      if (this.ctl.isSelected(`effect/${this.sketchId}/${this.colIdx}/${i}`)) return i + 1;
+    }
+    return chain.length;
+  }
+
+  /** Best temporary effect id for a category (preferred default → first in
+   *  category → core fallback). The user immediately retypes via the prefilled
+   *  smart-input, so this is just the placeholder card content. */
+  private categoryDefault(category: string): string {
+    const avail = this.ds.availableEffects;
+    const has = (id: string) => avail.some((e) => e.id === id);
+    const pref = CATEGORY_DEFAULT[category];
+    if (pref && has(pref)) return pref;
+    const first = avail.find((e) => e.id.startsWith(`${category}.`));
+    if (first) return first.id;
+    return has(CATEGORY_FALLBACK) ? CATEGORY_FALLBACK : (avail[0]?.id ?? CATEGORY_FALLBACK);
+  }
+
+  /** Begin inserting a new effect for a category — seeds the category default and
+   *  opens the smart-input drilled into "<category>." so the user picks the exact
+   *  effect within that category. */
+  private insertCategoryEffect(category: string) {
+    const insertIdx = this.computeInsertIdx();
+    const { edit, instanceKey } = this.ctl.beginInsertEffect(
+      this.sketchId, this.colIdx, insertIdx, this.categoryDefault(category));
+    this.typeLongEdit = edit;
+    this.insertCtx = { instanceKey, insertIdx, prefill: `${category}.` };
     this.editingTypeChainIdx = insertIdx;
     this.requestUpdate();
   }

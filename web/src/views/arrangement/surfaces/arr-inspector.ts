@@ -252,6 +252,11 @@ export class ArrInspector extends MobxLitElement {
       margin: 8px 0 2px;
       letter-spacing: 0.02em;
     }
+    /* Let the chain scroll past its last card (the inspector is the scroller). */
+    column-group.chain {
+      display: block;
+      margin-bottom: 40vh;
+    }
     .ws-list {
       display: flex;
       flex-direction: column;
@@ -539,6 +544,7 @@ export class ArrInspector extends MobxLitElement {
 
         <div class="group-title">Chain (sketch)</div>
         <column-group
+          class="chain"
           .colIdx=${0}
           .sketchId=${`clip/${found.track.id}/${clip.id}`}
           .columnWidth=${280}
@@ -590,6 +596,7 @@ export class ArrInspector extends MobxLitElement {
             </div>`}
         <div class="group-title">Chain (sketch)</div>
         <column-group
+          class="chain"
           .colIdx=${0}
           .sketchId=${`track/${track.id}`}
           .columnWidth=${280}

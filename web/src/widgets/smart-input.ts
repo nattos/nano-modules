@@ -316,11 +316,16 @@ export class SmartInput extends LitElement {
       parent: this.editorContainer,
     });
 
-    // Auto-focus and select all
+    // Auto-focus, then either select-all (retype) or, for a category drill-down
+    // seed ("source."), place the cursor at the end so typing appends within the
+    // category. Either way open the completion dropdown.
     if (this.autoSelect) {
       this.editorView.focus();
+      const drill = this.initialValue.endsWith('.');
       this.editorView.dispatch({
-        selection: { anchor: 0, head: this.initialValue.length },
+        selection: drill
+          ? { anchor: this.initialValue.length }
+          : { anchor: 0, head: this.initialValue.length },
       });
       startCompletion(this.editorView);
     } else {
