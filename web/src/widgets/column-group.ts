@@ -61,6 +61,7 @@ const CATEGORY_DEFAULT: Record<string, string> = {
   source: 'source.solid_color',
   color: 'color.tone.brightness_contrast',
   warp: 'warp.transform',
+  mod: 'mod.source.lfo',
 };
 /** Fallback temporary effect when a category has no good default in core. */
 const CATEGORY_FALLBACK = 'color.tone.brightness_contrast';

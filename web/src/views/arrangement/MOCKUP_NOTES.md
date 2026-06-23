@@ -14,6 +14,17 @@ since making the two surfaces look and feel the same is a deliberate goal.
 > See the per-item status below; the canonical running history lives in the memory note
 > `nano-arrangement-project` and the plan file.
 
+> **WIRES (2026-06-23):** intra-sketch modulation wiring is live behind the inspector "Wires"
+> toggle — click/drag a field port to connect; arcs draw in-column (`column-group`, scoped to
+> its shadow); double-click an arc to remove. `mod.*` sources/shapers (LFO, ADSR, Spectral LFO,
+> Remap, Smooth, Delay) are in the arrangement catalog with a declared `output`. NOT yet wired:
+> (a) **wires don't execute** in the arrangement compositor — connecting an LFO→param has no
+> audible/visual effect yet (the composite render ignores `ClipSketch.wires`); (b) **output trace
+> cards are display-only** — `caps.tracing` is on so output endpoints render, but the compositor
+> emits no per-device trace data, so monitors/sparks show defaults; (c) **rail/return endpoints**
+> for wires are punted (`connectSketchWire` requires same-sketch). The `Wire` model is instanceKey-
+> based and ready to extend.
+
 ---
 
 ## Known pitfalls (hit while building — don't relearn these)

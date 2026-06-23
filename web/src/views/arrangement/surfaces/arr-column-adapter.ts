@@ -28,7 +28,10 @@ import { EFFECT_CATALOG, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effe
 import { clipInstanceKey } from '../engine/clip-sketch';
 
 const CAPS: ColumnCapabilities = {
-  tracing: false,
+  // Tracing on → output trace cards render, exposing output fields as connectable
+  // wire endpoints. The cards are display-only for now (the arrangement
+  // compositor emits no per-device trace data — see MOCKUP_NOTES).
+  tracing: true,
   wiring: false,
   smoothing: false,
   typeEditing: true,
@@ -213,6 +216,13 @@ export class ArrColumnAdapter implements ColumnAdapter {
         schema[f.key] = {
           name: f.label, type: 'float', io: 1,
           min: f.min, max: f.max, default: f.default, order: i,
+        };
+      });
+      // Declared outputs (io&2) → connectable wire sources + output trace cards.
+      (cat.outputs ?? []).forEach((f, i) => {
+        schema[f.key] = {
+          name: f.label, type: 'float', io: 2,
+          min: f.min, max: f.max, default: f.default, order: 1000 + i,
         };
       });
       const plugin: PluginInfo = {

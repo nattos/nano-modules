@@ -42,6 +42,9 @@ export interface CatalogEffect {
   bundle: string;
   role: 'generator' | 'effect';
   fields: EffectField[];
+  /** Declared scalar OUTPUTS (io&2) — e.g. a modulation source's value. Used to
+   *  synthesize output schema entries so wires can connect from them. */
+  outputs?: EffectField[];
 }
 
 const CORE = 'com.nano.core';
@@ -845,6 +848,44 @@ export const EFFECT_CATALOG: CatalogEffect[] = [
       fld('flicker_rate_hz', 'Flicker Rate', 0, 60, 0),
       fld('flicker_duty', 'Flicker Duty', 0, 1, 0.5),
     ],
+  },
+
+  // ══ mod (com.nano.core / com.nano.nano) — modulation sources + shapers ════
+  // Pure-data nodes: no texture I/O. Their scalar `output` is a connectable wire
+  // source. NOTE: live modulation execution through the arrangement compositor
+  // is NOT wired yet (see MOCKUP_NOTES) — the nodes + outputs exist for wiring.
+  {
+    type: 'mod.source.lfo', name: 'LFO', bundle: CORE, role: 'effect',
+    fields: [fld('rate', 'Rate', 0, 1, 0.5), fld('amplitude', 'Amplitude', 0, 1, 1), fld('shape', 'Shape', 0, 1, 0)],
+    outputs: [fld('output', 'Output', 0, 1, 0)],
+  },
+  {
+    type: 'mod.source.adsr', name: 'ADSR', bundle: CORE, role: 'effect',
+    fields: [fld('attack', 'Attack', 0, 1, 0.05), fld('decay', 'Decay', 0, 1, 0.3),
+      fld('sustain', 'Sustain', 0, 1, 0.5), fld('release', 'Release', 0, 1, 0.3)],
+    outputs: [fld('output', 'Output', 0, 1, 0)],
+  },
+  {
+    type: 'mod.source.spectral_lfo', name: 'Spectral LFO', bundle: NANO, role: 'effect',
+    fields: [fld('rate', 'Rate', 0, 1, 0.4), fld('amplitude', 'Amplitude', 0, 1, 1),
+      fld('morph_x', 'Morph X', 0, 1, 0.5), fld('morph_y', 'Morph Y', 0, 1, 0.5)],
+    outputs: [fld('output', 'Output', 0, 1, 0)],
+  },
+  {
+    type: 'mod.shaper.remap', name: 'Remap', bundle: CORE, role: 'effect',
+    fields: [fld('input', 'Input', 0, 1, 0), fld('in_min', 'In Min', -1, 1, 0), fld('in_max', 'In Max', -1, 1, 1),
+      fld('out_min', 'Out Min', -1, 1, 0), fld('out_max', 'Out Max', -1, 1, 1)],
+    outputs: [fld('output', 'Output', 0, 1, 0)],
+  },
+  {
+    type: 'mod.shaper.smooth', name: 'Smooth', bundle: CORE, role: 'effect',
+    fields: [fld('input', 'Input', 0, 1, 0), fld('amount', 'Amount', 0, 1, 0.5)],
+    outputs: [fld('output', 'Output', 0, 1, 0)],
+  },
+  {
+    type: 'mod.shaper.delay', name: 'Delay', bundle: CORE, role: 'effect',
+    fields: [fld('input', 'Input', 0, 1, 0), fld('time', 'Time', 0, 1, 0.2)],
+    outputs: [fld('output', 'Output', 0, 1, 0)],
   },
 ];
 
