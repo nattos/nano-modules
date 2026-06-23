@@ -304,8 +304,9 @@ export class ArrangementApp extends MobxLitElement {
       }
     } else if (e.key === 'Escape') {
       store.clearSelection();
-    } else if (e.key === ' ') {
-      // Option/Alt+Space: rewind to the play-from marker and play instantly.
+    } else if (e.code === 'Space' || e.key === ' ') {
+      // Use e.code: Option/Alt+Space on macOS yields a non-breaking space for
+      // e.key, so matching ' ' alone would miss it. Alt+Space → rewind + play.
       e.preventDefault();
       if (e.altKey) store.rewindAndPlay();
       else store.togglePlay();

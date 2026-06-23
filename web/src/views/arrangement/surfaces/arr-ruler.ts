@@ -122,6 +122,13 @@ export class ArrRuler extends MobxLitElement {
           >
             + Track
           </button>
+          <button
+            class="addtrack"
+            title="Add a return (value-only rail) channel"
+            @click=${() => store.addReturn()}
+          >
+            + Return
+          </button>
         </div>
         <div
           class="time"

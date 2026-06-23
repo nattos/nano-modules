@@ -30,7 +30,7 @@ import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
-import { emptyComposition } from '../model/composition';
+import { emptyComposition, makeMainBus } from '../model/composition';
 
 export type SelectableKind =
   | 'track'
@@ -317,11 +317,19 @@ export class ArrangementStore {
       this.backend = backend;
       this.currentName = name;
       this.composition = comp;
+      this.ensureMainBus(); // legacy / hand-made files may lack the master track
       this.persistenceEnabled = true;
-      this.lastSavedJson = JSON.stringify(toJS(comp));
+      this.lastSavedJson = JSON.stringify(toJS(this.composition));
       this.clearSelection();
     });
     this.history.reset();
+  }
+
+  /** Guarantee the master/main-bus track exists (it's the one mandatory track and
+   *  is never deletable/reorderable — only its absence makes it "disappear"). */
+  private ensureMainBus() {
+    if (this.composition.tracks.some((t) => this.isMainBus(t))) return;
+    this.composition.tracks.push(makeMainBus());
   }
 
   /** Create a new arrangement file (seeded with `comp` or the current doc). */
@@ -1186,10 +1194,14 @@ export class ArrangementStore {
     return false;
   }
 
-  /** "0" shortcut: bypass the focused effect card if one is focused, else the
-   *  selected clips. */
+  /** "0" shortcut: bypass the focused effect card if one is focused, else a
+   *  selected track, else the selected clips. */
   toggleBypassShortcut() {
     if (this.toggleChainFocusBypass()) return;
+    if (this.primaryPath?.startsWith('track/')) {
+      const t = this.trackById(this.primaryPath.split('/')[1]);
+      if (t && !this.isMainBus(t)) { this.toggleBypass(t.id); return; }
+    }
     this.toggleSelectedClipsBypass();
   }
   setTransportMode(mode: 'precise' | 'live') {
@@ -1759,6 +1771,31 @@ export class ArrangementStore {
         const ai = d.tracks.findIndex((t) => t.id === afterTrackId);
         if (ai >= 0) idx = ai + 1;
       }
+      d.tracks.splice(idx, 0, track);
+    });
+    this.select(paths.track(id));
+    return id;
+  }
+
+  /** "+ Return" affordance: a value-only (rail) return channel. Inserted before
+   *  the main bus so the bus stays bottom-most. */
+  addReturn(): string {
+    const id = uid('trk');
+    const track: Track = {
+      id,
+      name: 'Return',
+      kind: 'rail',
+      parentId: null,
+      color: 'var(--app-cat-mod)',
+      sketch: { devices: [] },
+      automation: [],
+      clips: [],
+      railId: uid('rail'),
+      baseCurve: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }],
+    };
+    this.mutate('add return', (d) => {
+      const busIdx = d.tracks.findIndex((t) => ArrangementStore.isMainBusTrack(t));
+      const idx = busIdx >= 0 ? busIdx : d.tracks.length;
       d.tracks.splice(idx, 0, track);
     });
     this.select(paths.track(id));

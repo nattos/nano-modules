@@ -199,6 +199,22 @@ export class WasmSketchExecutor {
   }
 
   /**
+   * Drop a sketch's executor slot entirely (frees the native executor + its
+   * per-instance pool). The next `executeAllColumns` re-creates a fresh slot, so
+   * a sketch re-issued later with an IDENTICAL structure still runs from scratch.
+   * Without this, deleting + recreating the same sketch (e.g. the arrangement's
+   * composite as the playhead leaves and re-enters a clip) leaves the cached
+   * `lastJson` matching → `dirty=0` → a time-independent effect's stale instance
+   * reports identity → renders as passthrough.
+   */
+  deleteSketch(sketchId: string): void {
+    const slot = this.slots.get(sketchId);
+    if (!slot) return;
+    this.exports.executor_destroy(slot.exPtr);
+    this.slots.delete(sketchId);
+  }
+
+  /**
    * Drop chain-entry instances no longer referenced by ANY live sketch, freeing
    * their WASM instance for GC. Bounds memory when a sketch's chain churns — e.g.
    * the arrangement's single combined composite as clips become active/inactive

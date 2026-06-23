@@ -249,6 +249,10 @@ async function handleCommand(cmd: WorkerCommand) {
     }
     case 'deleteSketch': {
       sketches.delete(cmd.sketchId);
+      // Drop the executor slot too (frees the native executor + instance pool) so
+      // a later identical re-create runs from scratch instead of reviving a stale
+      // time-independent instance that reports identity.
+      executor?.deleteSketch(cmd.sketchId);
       // Free any user-injected input texture; the GPU pool reclaims memory.
       sketchInputTextures.delete(cmd.sketchId);
       // Trace points referencing this sketch are unregistered by the UI

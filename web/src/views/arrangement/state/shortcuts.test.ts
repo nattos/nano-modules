@@ -63,4 +63,39 @@ describe('bypass shortcut', () => {
     expect(devs[1].state?.__bypass__).toBe(true);
     expect(store.trackById(trk)!.clips.find((x) => x.id === clip)!.bypassed).toBeFalsy();
   });
+
+  it('selected track: "0" toggles the track bypass (never the main bus)', () => {
+    store.clearSelection();
+    store.setChainFocus(null);
+    const t = store.addTrack();
+    store.select(paths.track(t));
+    store.toggleBypassShortcut();
+    expect(store.trackById(t)!.bypassed).toBe(true);
+    // The main bus is immune.
+    const bus = store.mainBusTrack!;
+    store.select(paths.track(bus.id));
+    const was = !!bus.bypassed;
+    store.toggleBypassShortcut();
+    expect(!!store.trackById(bus.id)!.bypassed).toBe(was);
+  });
+});
+
+describe('main bus + return tracks', () => {
+  it('a main bus always exists and is not deletable', () => {
+    const bus = store.mainBusTrack;
+    expect(bus).toBeDefined();
+    store.select(paths.track(bus!.id));
+    store.deleteSelectedTracks();
+    expect(store.trackById(bus!.id)).toBeDefined(); // survived
+  });
+
+  it('addReturn inserts a rail channel before the main bus', () => {
+    const id = store.addReturn();
+    const t = store.trackById(id)!;
+    expect(t.kind).toBe('rail');
+    expect(t.railId).toBeTruthy();
+    const idx = store.composition.tracks.findIndex((x) => x.id === id);
+    const busIdx = store.composition.tracks.findIndex((x) => store.isMainBus(x));
+    expect(busIdx).toBeGreaterThan(idx);
+  });
 });

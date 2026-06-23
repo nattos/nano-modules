@@ -275,6 +275,22 @@ export interface Composition {
   playMode: PlayModeConfig;
 }
 
+/** The master/main-bus track — a root group every track sums into. It's the one
+ *  mandatory track; the store ensures it exists and never lets it be deleted or
+ *  reordered (it always pins to the bottom). */
+export function makeMainBus(): Track {
+  return {
+    id: 'main-bus',
+    name: 'Main Bus',
+    kind: 'group',
+    parentId: null,
+    color: 'var(--app-cat-composite)',
+    sketch: { devices: [] },
+    automation: [],
+    clips: [],
+  };
+}
+
 /** A blank composition — the seed for a freshly created arrangement file. */
 export function emptyComposition(): Composition {
   return {
@@ -283,7 +299,7 @@ export function emptyComposition(): Composition {
       baseBPM: 120,
       timeSignature: [4, 4],
     },
-    tracks: [],
+    tracks: [makeMainBus()],
     rails: [],
     playMode: { defaultMode: 'loop' },
   };

@@ -75,6 +75,14 @@ export class ArrClip extends MobxLitElement {
       flex-shrink: 0;
       color: #11131a;
     }
+    /* Bypassed (disabled) clip: grayed, semi-transparent header. */
+    .clip.bypassed .bar {
+      background: var(--app-tint-4) !important;
+      color: var(--app-text-color2);
+      opacity: 0.55;
+    }
+    .clip.bypassed .bar .ico { color: var(--app-text-color2); }
+    .clip.bypassed .body { opacity: 0.5; }
     .body {
       flex: 1;
       display: flex;
@@ -368,7 +376,7 @@ export class ArrClip extends MobxLitElement {
     const extra = devices.length - shown.length;
 
     return html`
-      <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''}">
+      <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''} ${clip.bypassed ? 'bypassed' : ''}">
         <div
           class="bar"
           style="background:${barBg}"
@@ -423,9 +431,9 @@ export class ArrClip extends MobxLitElement {
   private onHeaderDown = (e: PointerEvent) => {
     e.stopPropagation();
     const path = paths.clip(this.trackId, this.clip.id);
-    const inBox = store.timeBoxCoversClip(this.trackId, this.clip.id);
+    // Header click always sets the time box to span this clip (even if a box
+    // already exists), so the box tracks the focused clip.
     if (e.shiftKey) store.toggleSelect(path);
-    else if (inBox) store.selectClipOnly(path);
     else store.select(path);
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };

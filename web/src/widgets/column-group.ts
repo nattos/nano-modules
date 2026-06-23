@@ -207,7 +207,12 @@ export class ColumnGroup extends MobxLitElement {
    *  capability (e.g. the arrangement) there's nothing to put there, so the
    *  column goes full-width with no gutter. */
   private get hasGutter(): boolean {
-    return !!(this.adapter && (this.adapter.data.caps.wiring || this.adapter.data.caps.smoothing));
+    if (!this.adapter) return false;
+    const caps = this.adapter.data.caps;
+    // In-column wire arcs (the arrangement) replace the gutter pips, so the
+    // column stays full-width — toggling wires mode doesn't shift its padding.
+    if (caps.inlineWireArcs) return false;
+    return !!(caps.wiring || caps.smoothing);
   }
 
   getGutterWidth(): number {
