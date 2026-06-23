@@ -191,8 +191,15 @@ export class ColumnGroup extends MobxLitElement {
    *  rails are gone (it used to grow per rail). */
   static readonly GUTTER_WIDTH = 20;
 
+  /** The right gutter only exists to host wiring/smoothing pips. With neither
+   *  capability (e.g. the arrangement) there's nothing to put there, so the
+   *  column goes full-width with no gutter. */
+  private get hasGutter(): boolean {
+    return !!(this.adapter && (this.adapter.data.caps.wiring || this.adapter.data.caps.smoothing));
+  }
+
   getGutterWidth(): number {
-    return ColumnGroup.GUTTER_WIDTH;
+    return this.hasGutter ? ColumnGroup.GUTTER_WIDTH : 0;
   }
 
   /** Which chain entry index is currently being type-edited (smart-input open), or -1 for none. */
@@ -243,7 +250,8 @@ export class ColumnGroup extends MobxLitElement {
       flex-direction: column;
       align-items: stretch;
       gap: 0;
-      padding: 4px 0;
+      padding: var(--app-sp-3);
+      gap: var(--app-sp-2);
       background: var(--app-bg-color1);
       border: 1px solid var(--app-tint-2);
       border-radius: 1px;
@@ -339,9 +347,8 @@ export class ColumnGroup extends MobxLitElement {
     .effect-card-inner, .chain-marker-inner {
       width: 100%;
       background: var(--device-bg);
-      border: none;
-      border-left: 1px solid var(--device-border);
-      border-right: 1px solid var(--device-border);
+      border: 1px solid var(--device-border);
+      border-radius: 2px;
       box-sizing: border-box;
       position: relative;
       z-index: 0;
@@ -365,8 +372,7 @@ export class ColumnGroup extends MobxLitElement {
     .effect-card[selected] .effect-card-inner,
     .chain-marker[selected] .chain-marker-inner {
       background: var(--device-sel-bg);
-      border-left-color: var(--device-sel-border);
-      border-right-color: var(--device-sel-border);
+      border-color: var(--device-sel-border);
     }
     .trace-card-row[selected] {
       outline: 1px solid var(--device-sel-border);
@@ -451,108 +457,6 @@ export class ColumnGroup extends MobxLitElement {
     .chain-marker[selected] .trace-card-row {
       border-top-color: var(--device-sel-border);
       opacity: 0.9;
-    }
-
-    /* --- Device tabs — the joint between two stacked devices. Each device's
-     * TOP tab overlaps (margin-top:-8px) the BOTTOM tab of the device above it
-     * so the two share ONE 8px band:
-     *   · the upper device's bottom forms an inverted-U NOTCH — its two 48px
-     *     corners stay at body width (filled + bottom/outer-side border) while
-     *     the middle is recessed (empty);
-     *   · the lower device's top forms a TAB — a full-height middle block
-     *     (filled + top edge + two side walls) that rises into and fills that
-     *     notch, with empty corners so the notch's filled corners show through.
-     * Corners belong to the upper device, the tab to the lower one, and a
-     * single 1px border zig-zags around the joint as one solid object.
-     * ---------------------------------------------------------------- */
-    .tab-area {
-      position: relative;
-      width: 100%;
-      height: 8px;
-      flex-shrink: 0;
-      cursor: pointer;
-    }
-    /* Pull the top tab up over the bottom tab of the device above so they
-     * occupy the same band (the notch and the tab that fills it). z-index lifts
-     * it above this device's own body (contained by the card's isolation) so
-     * the enlarged hit target below can sit over the body's top padding. */
-    .tab-area.top { margin-top: -8px; z-index: 1; }
-    /* The visible tab is only 8px tall — too thin to click comfortably. This
-     * invisible pad enlarges the insert target downward into the device below,
-     * staying within the header's 6px top padding so it never covers the header
-     * controls. Clicks on it bubble to .tab-area's handler (same insert index). */
-    .tab-area.top::after {
-      content: '';
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: 0;
-      height: 14px;
-    }
-
-    .corner-tab {
-      position: absolute;
-      top: 0;
-      width: 48px;
-      height: 8px;
-      box-sizing: border-box;
-    }
-    .corner-tab.left  { left: 0; }
-    .corner-tab.right { right: 0; }
-
-    /* Bottom tab = inverted-U notch: filled corners with the device's bottom +
-     * outer-side border; recessed (empty) middle filled by the tab below. */
-    .tab-area.bottom .corner-tab {
-      background: var(--device-bg);
-      border-bottom: 1px solid var(--device-border);
-    }
-    .tab-area.bottom .corner-tab.left  { border-left:  1px solid var(--device-border); }
-    .tab-area.bottom .corner-tab.right { border-right: 1px solid var(--device-border); }
-    .tab-area.bottom .middle-edge { display: none; }
-
-    /* Top tab = the tab fitting into the notch above: a full-height middle
-     * block (top edge + both side walls) with empty corners. */
-    .tab-area.top .corner-tab { background: none; }
-    .tab-area.top .middle-edge {
-      position: absolute;
-      left: 48px;
-      right: 48px;
-      top: 0;
-      bottom: 0;
-      background: var(--device-bg);
-      border-top:   1px solid var(--device-border);
-      border-left:  1px solid var(--device-border);
-      border-right: 1px solid var(--device-border);
-      box-sizing: border-box;
-    }
-
-    /* Hover / selection — light up whichever pieces this tab actually shows:
-     * the notch corners (bottom tab) or the tab block (top tab). */
-    .tab-area:hover .corner-tab,
-    .tab-area[selected] .corner-tab,
-    .effect-card[selected] > .tab-area .corner-tab,
-    .chain-marker[selected] > .tab-area .corner-tab {
-      border-color: var(--device-sel-border);
-    }
-    .tab-area.bottom:hover .corner-tab,
-    .tab-area.bottom[selected] .corner-tab,
-    .effect-card[selected] > .tab-area.bottom .corner-tab,
-    .chain-marker[selected] > .tab-area.bottom .corner-tab {
-      background: var(--device-sel-bg);
-    }
-    .tab-area:hover .middle-edge,
-    .tab-area[selected] .middle-edge,
-    .effect-card[selected] > .tab-area .middle-edge,
-    .chain-marker[selected] > .tab-area .middle-edge {
-      border-color: var(--device-sel-border);
-      background: var(--device-sel-bg);
-    }
-
-    /* --- Drop zones (invisible hit regions inside tabs, used for drag-drop target discovery) --- */
-    .drop-zone {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
     }
 
     /* --- Drag insertion marker (absolutely positioned, no layout shift) --- */
@@ -689,7 +593,8 @@ export class ColumnGroup extends MobxLitElement {
 
   updated() {
     // Set explicit widths via CSS custom properties on the host element.
-    this.style.setProperty('--column-width', `${this.columnWidth}px`);
+    // No gutter → the column fills its host (full-width cards).
+    this.style.setProperty('--column-width', this.hasGutter ? `${this.columnWidth}px` : '100%');
     this.style.setProperty('--gutter-width', `${this.getGutterWidth()}px`);
 
     const column = this.renderRoot.querySelector('.column') as HTMLElement | null;
@@ -725,21 +630,22 @@ export class ColumnGroup extends MobxLitElement {
       return results;
     }
 
-    // Real column: each drop zone is an insertion point
-    const zones = this.renderRoot.querySelectorAll('.drop-zone');
-    for (const zone of zones) {
-      const zoneRect = zone.getBoundingClientRect();
-      const dropCol = parseInt((zone as HTMLElement).dataset.dropCol!);
-      const dropIdx = parseInt((zone as HTMLElement).dataset.dropIdx!);
-      results.push({
-        colIdx: dropCol,
-        insertIdx: dropIdx,
-        x: centerX,
-        y: zoneRect.top + zoneRect.height / 2,
-        isPlaceholder: false,
-      });
+    // Tabs are gone — insertion points are the gaps between cards. One above
+    // each card (insert at that index) plus one below the last card (append).
+    const cards = [...this.renderRoot.querySelectorAll('.effect-card[data-chain-idx]')] as HTMLElement[];
+    for (const card of cards) {
+      const idx = parseInt(card.dataset.chainIdx!);
+      const r = card.getBoundingClientRect();
+      results.push({ colIdx: this.colIdx, insertIdx: idx, x: centerX, y: r.top, isPlaceholder: false });
     }
-
+    const last = cards[cards.length - 1];
+    if (last) {
+      const r = last.getBoundingClientRect();
+      results.push({ colIdx: this.colIdx, insertIdx: cards.length, x: centerX, y: r.bottom, isPlaceholder: false });
+    } else {
+      // Empty chain: a single insertion slot near the top (below the input marker).
+      results.push({ colIdx: this.colIdx, insertIdx: 0, x: centerX, y: colRect.top + 40, isPlaceholder: false });
+    }
     return results;
   }
 
@@ -792,9 +698,11 @@ export class ColumnGroup extends MobxLitElement {
         </div>
         <div class="drag-insert-marker"></div>
       </div>
-      <div class="column-gutter" data-col=${this.colIdx}>
-        ${this.renderFieldOptionPips(column)}
-      </div>
+      ${this.hasGutter ? html`
+        <div class="column-gutter" data-col=${this.colIdx}>
+          ${this.renderFieldOptionPips(column)}
+        </div>
+      ` : nothing}
     `;
   }
 
@@ -830,7 +738,6 @@ export class ColumnGroup extends MobxLitElement {
           ${this.renderInputTraceCardRow(column)}
         </div>
         <texture-drop-zone .sketchId=${this.sketchId}></texture-drop-zone>
-        ${this.renderDeviceTab('bottom', 0)}
       </div>
     `;
   }
@@ -846,7 +753,6 @@ export class ColumnGroup extends MobxLitElement {
     const selectMarker = (e: Event) => { e.stopPropagation(); this.ctl.select(path); };
     return html`
       <div class="chain-marker" ?selected=${isSelected}>
-        ${this.renderDeviceTab('top', column.chain.length)}
         <div class="chain-marker-inner">
           <div class="chain-marker-label" @click=${selectMarker}>Output</div>
         </div>
@@ -1017,7 +923,6 @@ export class ColumnGroup extends MobxLitElement {
           // longer steals selection out from under it.
           e.stopPropagation();
         }}>
-        ${this.renderDeviceTab('top', chainIdx)}
         <div class="effect-card-inner">
           <div class="effect-card-header"
             @pointerdown=${(e: PointerEvent) => {
@@ -1073,7 +978,6 @@ export class ColumnGroup extends MobxLitElement {
             ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
           `}
         </div>
-        ${this.renderDeviceTab('bottom', chainIdx + 1)}
       </div>
     `;
   }
@@ -1794,53 +1698,6 @@ export class ColumnGroup extends MobxLitElement {
   // Drop zones
   // ========================================================================
 
-  /**
-   * Render a tab strip above or below a device — half of the interlocking
-   * joint between two stacked devices (see the .tab-area CSS for the full
-   * geometry). A 'bottom' strip is the inverted-U notch (filled corners,
-   * recessed middle); a 'top' strip is the tab that overlaps and fills the
-   * notch above it. The notch's `insertIdx` and the tab's below it resolve to
-   * the same chain index, so a click on either inserts at the same spot.
-   *
-   * The whole strip is one insert-point: click to select, double-click
-   * to insert a new effect at `insertIdx`. Drop-zone covers the whole
-   * strip for drag-to-move targets.
-   */
-  private renderDeviceTab(position: 'top' | 'bottom', insertIdx: number) {
-    const tabPath = `tab/${this.sketchId}/${this.colIdx}/${insertIdx}`;
-    const isSelected = this.ctl.isSelected(tabPath);
-    this.registerTabSelectable(tabPath, insertIdx);
-    const onClick = (e: Event) => { e.stopPropagation(); this.ctl.select(tabPath); };
-    const onDblClick = (e: Event) => { e.stopPropagation(); this.addEffectAndBeginEdit(insertIdx); };
-    return html`
-      <div class="tab-area ${position}" ?selected=${isSelected}
-        @click=${onClick} @dblclick=${onDblClick}
-        title="Double-click to insert effect">
-        <div class="corner-tab left"></div>
-        <div class="middle-edge"></div>
-        <div class="corner-tab right"></div>
-        <div class="drop-zone" data-drop-col=${this.colIdx} data-drop-idx=${insertIdx}></div>
-      </div>
-    `;
-  }
-
-  /**
-   * Insert a placeholder effect and immediately open smart-input to choose its
-   * type. The insertion is a single continuous edit (see `beginInsertEffect`):
-   * it commits as one "Add <type>" undo point only if the user picks a type,
-   * and is removed with no history if they cancel / click away / leave it blank.
-   * The smart-input opens *empty* (not pre-filled), but the placeholder
-   * brightness_contrast keeps the card populated while they choose.
-   */
-  private addEffectAndBeginEdit(insertIdx: number) {
-    const { edit, instanceKey } = this.ctl.beginInsertEffect(
-      this.sketchId, this.colIdx, insertIdx, 'color.tone.brightness_contrast');
-    this.typeLongEdit = edit;
-    this.insertCtx = { instanceKey, insertIdx };
-    this.editingTypeChainIdx = insertIdx;
-    this.requestUpdate();
-  }
-
   // ========================================================================
   // Category insert header
   // ========================================================================
@@ -1902,32 +1759,11 @@ export class ColumnGroup extends MobxLitElement {
     edit.accept();
     this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${insertIdx}`);
     this.requestUpdate();
-  }
-
-  /** Register a tab (insert hotspot) as a selectable. */
-  private registerTabSelectable(path: string, insertIdx: number) {
-    this.ctl.defineSelectable({
-      path,
-      label: 'Insert Point',
-      // Pasting onto a gap inserts the clipboard effect exactly at this slot.
-      paste: (payload) => {
-        if (payload.kind !== 'effect') return;
-        this.ctl.insertEffectFromClipboard(this.sketchId, this.colIdx, insertIdx, payload);
-      },
-      renderInspectorContent: () => html`
-        <div class="inspector-field">
-          <span class="inspector-field-label">Column</span>
-          <span class="inspector-field-value">${this.colIdx}</span>
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Position</span>
-          <span class="inspector-field-value">${insertIdx}</span>
-        </div>
-        <div class="inspector-separator"></div>
-        <div style="font-size:10px;color:var(--app-text-color2);padding:4px 0 8px">
-          Double-click the tab to insert a new effect here.
-        </div>
-      `,
+    // Bring the freshly-inserted card into view (the scroller is an ancestor).
+    void this.updateComplete.then(() => {
+      this.renderRoot
+        .querySelector(`.effect-card[data-chain-idx="${insertIdx}"]`)
+        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
   }
 
