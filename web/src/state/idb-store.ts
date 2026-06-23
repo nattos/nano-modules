@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = 'nano-modules';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 export const STORE_PROJECTS = 'projects';
 export const STORE_SETTINGS = 'settings';
@@ -44,6 +44,14 @@ export const STORE_WORKSPACE = 'workspace';
  * after reload — mirrors the video profile-store handle pattern.
  */
 export const STORE_MEDIA = 'mediaHandles';
+/**
+ * Global "library paths" — user-chosen root directories the app can resolve
+ * files under. Keyed by a generated `id`. Stores the `FileSystemDirectoryHandle`
+ * plus a label. File/workspace references express themselves RELATIVE to a
+ * library path (id + subpath) when possible, resolved via `dir.resolve()`, so a
+ * single permission grant on the library root unlocks everything beneath it.
+ */
+export const STORE_LIBRARY = 'libraryPaths';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -73,6 +81,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_MEDIA)) {
         db.createObjectStore(STORE_MEDIA, { keyPath: 'sourceKey' });
+      }
+      if (!db.objectStoreNames.contains(STORE_LIBRARY)) {
+        db.createObjectStore(STORE_LIBRARY, { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);

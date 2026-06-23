@@ -27,7 +27,7 @@ import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
-import { rememberWorkspace, restoreWorkspace, peekWorkspace, hasPermission, ensurePermission } from '../workspace/workspace-store';
+import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { emptyComposition } from '../model/composition';
 
 export type SelectableKind =
@@ -334,22 +334,21 @@ export class ArrangementStore {
    * only prompts inside one — and the folder mounts as soon as it's granted.
    */
   async autoMountRememberedWorkspace() {
-    const remembered = await peekWorkspace();
-    if (!remembered) return;
-    const { handle, label } = remembered;
-    if (await hasPermission(handle, 'readwrite')) {
-      await this.mountWorkspace(new DirectoryBackend(handle, label));
+    const silent = await restoreWorkspaceSilent();
+    if (silent) {
+      await this.mountWorkspace(silent);
       return;
     }
+    // Nothing silently resolvable — if something IS remembered, defer the
+    // permission prompt to the first user gesture and re-open then.
+    if ((await rememberedWorkspaceLabel()) == null) return;
     let done = false;
     const onGesture = () => {
       if (done) return;
       done = true;
       window.removeEventListener('pointerdown', onGesture, true);
       window.removeEventListener('keydown', onGesture, true);
-      void ensurePermission(handle, 'readwrite').then((ok) => {
-        if (ok) void this.mountWorkspace(new DirectoryBackend(handle, label));
-      });
+      void restoreWorkspace().then((b) => { if (b) void this.mountWorkspace(b); });
     };
     window.addEventListener('pointerdown', onGesture, true);
     window.addEventListener('keydown', onGesture, true);

@@ -13,6 +13,9 @@ import { store } from './views/arrangement/state/store';
 import { engineBridge } from './views/arrangement/engine/engine-bridge';
 import { thumbnailController, reelLayout } from './views/arrangement/media/thumbnail-controller';
 import * as workspaceBackend from './views/arrangement/workspace/backend';
+import { libraryPaths } from './state/library-paths';
+import * as handleRef from './state/handle-ref';
+import * as mediaStore from './views/arrangement/workspace/media-store';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -20,3 +23,6 @@ import * as workspaceBackend from './views/arrangement/workspace/backend';
 (window as any).__thumbCtl = thumbnailController;
 (window as any).__reelLayout = reelLayout;
 (window as any).__workspaceBackend = workspaceBackend;
+(window as any).__libraryPaths = libraryPaths;
+(window as any).__handleRef = handleRef;
+(window as any).__mediaStore = mediaStore;

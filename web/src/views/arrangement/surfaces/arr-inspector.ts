@@ -11,6 +11,7 @@ import { html, css, TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { libraryPaths } from '../../../state/library-paths';
 import { clipProcessesTexture } from '../model/composition';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
@@ -314,10 +315,16 @@ export class ArrInspector extends MobxLitElement {
       inset: 0;
       z-index: 40;
     }
+    .lib-hint {
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-xs);
+      line-height: 1.4;
+      margin-bottom: 6px;
+    }
     .confirm-pop {
       position: fixed;
       z-index: 41;
-      width: 200px;
+      width: 220px;
       background: var(--app-bg-color2);
       border: 1px solid var(--app-tint-4);
       border-radius: 4px;
@@ -327,9 +334,8 @@ export class ArrInspector extends MobxLitElement {
     .confirm-pop .cp-msg {
       font-size: var(--app-fs-md);
       margin-bottom: 10px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      line-height: 1.35;
+      word-break: break-word;
     }
     .confirm-pop .cp-actions {
       display: flex;
@@ -352,8 +358,10 @@ export class ArrInspector extends MobxLitElement {
   `;
 
   @state() private rememberedLabel: string | null = null;
-  /** Delete-confirmation popover, anchored near the clicked trash button. */
-  @state() private confirmDelete: { name: string; label: string; x: number; y: number } | null = null;
+  /** Generic confirmation popover, anchored near the click. */
+  @state() private confirm:
+    | { message: string; confirmLabel: string; danger: boolean; x: number; y: number; onYes: () => void | Promise<void> }
+    | null = null;
 
   firstUpdated() {
     // Surface a "reopen last folder" affordance (label only — re-mounting needs
@@ -361,19 +369,19 @@ export class ArrInspector extends MobxLitElement {
     void import('../workspace/workspace-store').then(({ rememberedWorkspaceLabel }) =>
       rememberedWorkspaceLabel().then((l) => { this.rememberedLabel = l; }),
     );
+    void libraryPaths.ensureLoaded();
   }
 
   render() {
+    let content: TemplateResult;
     switch (store.activeRightTab) {
-      case 'workspace':
-        return this.renderWorkspace();
-      case 'settings':
-        return this.renderSettings();
-      case 'export':
-        return this.renderExport();
-      default:
-        return this.renderSelection();
+      case 'workspace': content = this.renderWorkspace(); break;
+      case 'settings': content = this.renderSettings(); break;
+      case 'export': content = this.renderExport(); break;
+      default: content = this.renderSelection(); break;
     }
+    // The confirmation popover overlays whichever tab is active.
+    return html`${content}${this.renderConfirm()}`;
   }
 
   // ── Selection ─────────────────────────────────────────────────────────
@@ -679,7 +687,6 @@ export class ArrInspector extends MobxLitElement {
               )}
             </div>`}
       </div>
-      ${this.renderDeleteConfirm()}
     `;
   }
 
@@ -701,39 +708,55 @@ export class ArrInspector extends MobxLitElement {
       <button
         class="ws-del"
         title="Delete"
-        @click=${(ev: PointerEvent) => this.askDelete(ev, e.name, base)}
+        @click=${(ev: PointerEvent) =>
+          this.openConfirm(ev, {
+            message: `Delete "${base}"?`,
+            confirmLabel: 'Delete',
+            onYes: () => store.deleteEntry(e.name),
+          })}
       ><ui-icon icon="la-trash"></ui-icon></button>
     </div>`;
   }
 
-  private askDelete(ev: PointerEvent, name: string, label: string) {
+  /** Open the shared confirmation popover, anchored leftward of the click. */
+  private openConfirm(
+    ev: { stopPropagation(): void; clientX: number; clientY: number },
+    opts: { message: string; confirmLabel?: string; danger?: boolean; onYes: () => void | Promise<void> },
+  ) {
     ev.stopPropagation();
-    this.confirmDelete = { name, label, x: ev.clientX, y: ev.clientY };
+    this.confirm = {
+      message: opts.message,
+      confirmLabel: opts.confirmLabel ?? 'OK',
+      danger: opts.danger ?? true,
+      x: ev.clientX,
+      y: ev.clientY,
+      onYes: opts.onYes,
+    };
   }
 
-  private renderDeleteConfirm(): TemplateResult | '' {
-    const c = this.confirmDelete;
+  private renderConfirm(): TemplateResult | '' {
+    const c = this.confirm;
     if (!c) return '';
-    // Open leftward from the click (the trash button hugs the panel's right
-    // edge), clamped on-screen. The popover is 200px wide.
-    const x = Math.max(8, Math.min(c.x - 190, window.innerWidth - 212));
-    const y = Math.min(c.y, window.innerHeight - 90);
+    // Open leftward from the click (trash/remove buttons hug the panel's right
+    // edge), clamped on-screen. The popover is 220px wide.
+    const x = Math.max(8, Math.min(c.x - 210, window.innerWidth - 232));
+    const y = Math.min(c.y, window.innerHeight - 110);
     return html`
-      <div class="pop-backdrop" @click=${() => { this.confirmDelete = null; }}></div>
+      <div class="pop-backdrop" @click=${() => { this.confirm = null; }}></div>
       <div class="confirm-pop" style="left:${x}px;top:${y}px" @click=${(e: Event) => e.stopPropagation()}>
-        <div class="cp-msg">Delete "${c.label}"?</div>
+        <div class="cp-msg">${c.message}</div>
         <div class="cp-actions">
-          <button class="btn" @click=${() => { this.confirmDelete = null; }}>Cancel</button>
-          <button class="btn danger" @click=${() => this.doDelete()}>Delete</button>
+          <button class="btn" @click=${() => { this.confirm = null; }}>Cancel</button>
+          <button class="btn ${c.danger ? 'danger' : 'primary'}" @click=${() => this.runConfirm()}>${c.confirmLabel}</button>
         </div>
       </div>
     `;
   }
 
-  private async doDelete() {
-    const c = this.confirmDelete;
-    this.confirmDelete = null;
-    if (c) await store.deleteEntry(c.name);
+  private async runConfirm() {
+    const c = this.confirm;
+    this.confirm = null;
+    if (c) await c.onYes();
   }
 
   private renderSettings(): TemplateResult {
@@ -772,8 +795,54 @@ export class ArrInspector extends MobxLitElement {
         <div class="row"><label>Theme</label><span class="val"><span class="tag">Dark (Pro)</span></span></div>
         <div class="row"><label>Snap to grid</label><span class="val"><span class="tag">¼ beat</span></span></div>
         <div class="row"><label>Default play mode</label><span class="val">${store.composition.playMode.defaultMode}</span></div>
+
+        <div class="group-title">Library paths</div>
+        <div class="lib-hint">
+          Root folders the app can resolve files under. File &amp; workspace
+          references are stored relative to these, so one permission grant covers
+          everything beneath.
+        </div>
+        <div class="ws-list">
+          ${libraryPaths.paths.length === 0
+            ? html`<div class="dash-empty" style="padding:6px 0">No library paths yet.</div>`
+            : libraryPaths.paths.map(
+                (p) => html`<div class="ws-file">
+                  <ui-icon icon="la-folder"></ui-icon>
+                  <span class="ws-name" title=${p.label}>${p.label}</span>
+                  <button
+                    class="ws-del"
+                    title="Remove library path"
+                    @click=${(ev: PointerEvent) =>
+                      this.openConfirm(ev, {
+                        message: `Remove "${p.label}"? This invalidates any files referenced under it (you'd need to relink them).`,
+                        confirmLabel: 'Remove',
+                        onYes: () => libraryPaths.remove(p.id),
+                      })}
+                  ><ui-icon icon="la-trash"></ui-icon></button>
+                </div>`,
+              )}
+        </div>
+        <div class="ws-toolbar" style="margin-top:6px">
+          <button class="btn" @click=${() => this.addLibraryPath()}>
+            <ui-icon icon="la-folder-plus"></ui-icon> Add library path…
+          </button>
+        </div>
       </div>
     `;
+  }
+
+  private async addLibraryPath() {
+    const picker = (window as any).showDirectoryPicker;
+    if (typeof picker !== 'function') {
+      console.warn('[library-paths] showDirectoryPicker unavailable');
+      return;
+    }
+    try {
+      const dir: FileSystemDirectoryHandle = await picker({ mode: 'readwrite' });
+      await libraryPaths.add(dir);
+    } catch (err) {
+      if ((err as Error)?.name !== 'AbortError') console.warn('[library-paths] add failed', err);
+    }
   }
 
   // ── Export ────────────────────────────────────────────────────────────

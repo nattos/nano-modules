@@ -1,20 +1,24 @@
 /**
  * Per-source media handle persistence.
  *
- * Arrangements reference video sources by a stable `sourceKey` (derived from
- * file metadata, never file contents). The actual `FileSystemFileHandle` lives
- * here in IndexedDB so media that sits anywhere on disk — outside the
- * workspace folder — can be relinked after reload. Reuses `deriveSourceKey`
- * and the handle-in-IDB pattern from the video profile-store verbatim.
+ * Arrangements reference video/image sources by a stable `sourceKey` (derived
+ * from file metadata, never contents). The handle itself is stored here as a
+ * `HandleRef` (see `handle-ref.ts`): if the media lives under a library path
+ * it's kept RELATIVE to that library (so one library grant relinks all media
+ * beneath it), otherwise a direct file handle. Legacy records (a raw file
+ * handle from before HandleRef) are still honored.
  */
 
 import { idbGet, idbPut, idbGetAll, idbDelete, STORE_MEDIA } from '../../../state/idb-store';
 import { deriveSourceKey } from '../../../video/profile-store';
-import { ensurePermission } from './workspace-store';
+import { HandleRef, makeHandleRef, resolveFileRef, ensurePermission } from '../../../state/handle-ref';
 
 export interface MediaHandleRecord {
   sourceKey: string; // 'name|size|lastModified'
-  handle: FileSystemFileHandle;
+  /** Library-relative or direct reference to the media file. */
+  ref?: HandleRef;
+  /** Legacy (pre-HandleRef): a raw file handle. */
+  handle?: FileSystemFileHandle;
   name: string;
   size: number;
   lastModified: number;
@@ -27,9 +31,10 @@ export interface MediaHandleRecord {
  */
 export async function linkMedia(handle: FileSystemFileHandle): Promise<string> {
   const { sourceKey, file } = await deriveSourceKey(handle);
+  const ref = await makeHandleRef(handle);
   const rec: MediaHandleRecord = {
     sourceKey,
-    handle,
+    ref,
     name: file.name,
     size: file.size,
     lastModified: file.lastModified,
@@ -52,10 +57,16 @@ export async function resolveMedia(sourceKey: string): Promise<MediaHandleRecord
  */
 export async function openMedia(sourceKey: string): Promise<File | null> {
   const rec = await resolveMedia(sourceKey);
-  if (!rec?.handle) return null;
-  if (!(await ensurePermission(rec.handle, 'read'))) return null;
+  if (!rec) return null;
+  let fh: FileSystemFileHandle | null = null;
+  if (rec.ref) {
+    fh = await resolveFileRef(rec.ref, { prompt: true, mode: 'read' });
+  } else if (rec.handle) {
+    if (await ensurePermission(rec.handle, 'read', true)) fh = rec.handle;
+  }
+  if (!fh) return null;
   try {
-    return await rec.handle.getFile();
+    return await fh.getFile();
   } catch {
     return null;
   }
