@@ -662,58 +662,74 @@ export class ArrangementStore {
   }
 
   /**
-   * True when the time selection is exactly ONE clip's own auto-box (set by
-   * selecting that clip), as opposed to a deliberate region the user drag-
-   * selected. Dragging a clip whose box is just its own auto-box should MOVE the
-   * clip (incl. between tracks), not do a time-box split-move.
+   * Shift the CONTENT inside the time box by `deltaBeat` (X) and `trackDelta`
+   * tracks (Y) across the region's scope: split every scope clip at both box
+   * edges, then move the in-box pieces (carving their destinations so they stay
+   * mutually exclusive) — including ONTO OTHER TRACKS. The box selection itself
+   * follows the move. `deltaBeat`/`trackDelta` are absolute from the gesture
+   * start; pass the gesture's `base` box so coalesced frames don't drift (the
+   * box follows, so reading the live box each frame would compound). Mirrors
+   * Ableton's time-selection move. Coalesced → one undo per drag.
    */
-  timeBoxIsJustClip(trackId: string, clipId: string): boolean {
-    if (!this.hasTimeSelection) return false;
-    const found = this.clipByPath(paths.clip(trackId, clipId));
-    if (!found) return false;
-    const c = found.clip;
-    const scope = this.timeSelTrackIds;
-    return (
-      (scope.length === 0 || (scope.length === 1 && scope[0] === trackId)) &&
-      Math.abs(this.timeSelStart! - c.startBeat) < 1e-6 &&
-      Math.abs(this.timeSelEnd - (c.startBeat + c.lengthBeat)) < 1e-6
-    );
-  }
+  moveTimeBoxContent(
+    deltaBeat: number,
+    trackDelta = 0,
+    base?: { start: number; end: number; scope: string[] },
+  ) {
+    const a = base ? base.start : this.timeSelStart!;
+    const b = base ? base.end : this.timeSelEnd;
+    if (a == null || b <= a) return;
+    if (deltaBeat === 0 && trackDelta === 0) return;
+    const scopeIds = base ? base.scope : [...this.timeSelTrackIds];
 
-  /**
-   * Shift the CONTENT inside the time box by `deltaBeat` across the region's
-   * scope: split every scope clip at both box edges, then move the in-box pieces
-   * (carving their destinations so they stay mutually exclusive). The box itself
-   * stays put. `deltaBeat` is absolute from the gesture start; pass a stable
-   * coalesce so a whole drag is one undo. Mirrors Ableton's time-selection move.
-   */
-  moveTimeBoxContent(deltaBeat: number) {
-    if (!this.hasTimeSelection || deltaBeat === 0) return;
-    const a = this.timeSelStart!;
-    const b = this.timeSelEnd;
-    const scope = this.regionTracks().map((t) => t.id);
+    const plainIds = this.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
+    const scope = scopeIds.length ? scopeIds : plainIds;
+    // Clamp the track shift so the whole scope stays within the plain tracks.
+    let td = trackDelta;
+    const idxs = scope.map((id) => plainIds.indexOf(id)).filter((i) => i >= 0);
+    if (idxs.length) {
+      const lo = Math.min(...idxs), hi = Math.max(...idxs);
+      td = Math.max(-lo, Math.min(plainIds.length - 1 - hi, trackDelta));
+    }
+    const destFor = (id: string): string => {
+      const i = plainIds.indexOf(id);
+      return i < 0 ? id : plainIds[Math.max(0, Math.min(plainIds.length - 1, i + td))];
+    };
+
     this.mutate(
       'move time selection',
       (d) => {
+        // 1. Lift every in-box piece off its source track (split at the edges).
+        const pieces: Array<{ destId: string; clip: Clip }> = [];
         for (const track of d.tracks) {
           if (!scope.includes(track.id)) continue;
           splitClipsAt(track, a);
           splitClipsAt(track, b);
           const inBox = (c: Clip) => c.startBeat >= a - 1e-6 && c.startBeat < b - 1e-6;
-          const moving = track.clips.filter(inBox).map((c) => {
+          for (const c of track.clips.filter(inBox)) {
             const m: Clip = JSON.parse(JSON.stringify(c));
             m.startBeat = Math.max(0, c.startBeat + deltaBeat);
-            return m;
-          });
-          track.clips = track.clips.filter((c) => !inBox(c));
-          for (const m of moving) {
-            carveTrackSpan(track, '__none__', m.startBeat, m.startBeat + m.lengthBeat);
-            track.clips.push(m);
+            pieces.push({ destId: destFor(track.id), clip: m });
           }
+          track.clips = track.clips.filter((c) => !inBox(c));
+        }
+        // 2. Drop them onto their destination tracks, carving what they cover.
+        for (const { destId, clip } of pieces) {
+          const dt = d.tracks.find((t) => t.id === destId);
+          if (!dt) continue;
+          carveTrackSpan(dt, '__none__', clip.startBeat, clip.startBeat + clip.lengthBeat);
+          dt.clips.push(clip);
         }
       },
       'move-time-box',
     );
+
+    // 3. The box selection follows the moved content (live UI state).
+    runInAction(() => {
+      this.timeSelStart = Math.max(0, a + deltaBeat);
+      this.timeSelEnd = this.timeSelStart + (b - a);
+      this.timeSelTrackIds = scopeIds.length ? scope.map(destFor) : [];
+    });
   }
 
   /** Split every clip in scope at both region edges (Ableton split). */

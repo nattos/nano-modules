@@ -52,27 +52,25 @@ describe('time-box content move', () => {
   });
 });
 
-describe('time-box vs single-clip auto-box (drag mode gate)', () => {
-  it('a clip selection sets a box that IS just that clip (→ header drag moves, not splits)', () => {
+describe('time-box move across tracks + box follows', () => {
+  it('moves in-box content to another track and the box follows', () => {
     store.clearSelection();
     store.clearTimeSelection();
     const a = store.addTrack();
+    const b = store.addTrack();
     const path = store.createEmptyClip(a, 4, 8)!;
     const clipId = path.split('/')[2];
-    store.select(path); // sets the auto-box to the clip's span
-    expect(store.timeBoxCoversClip(a, clipId)).toBe(true);
-    expect(store.timeBoxIsJustClip(a, clipId)).toBe(true);
-  });
-
-  it('a deliberate region (≠ the clip span) is NOT just the clip (→ header drag splits)', () => {
-    store.clearSelection();
-    store.clearTimeSelection();
-    const a = store.addTrack();
-    const path = store.createEmptyClip(a, 4, 8)!;
-    const clipId = path.split('/')[2];
-    store.setTimeSelection(0, 6, [a]); // a region overlapping the clip but not its span
-    expect(store.timeBoxCoversClip(a, clipId)).toBe(true);
-    expect(store.timeBoxIsJustClip(a, clipId)).toBe(false);
+    store.setTimeSelection(4, 12, [a]);
+    // Shift +2 beats and +1 track, passing the gesture base box.
+    store.moveTimeBoxContent(2, 1, { start: 4, end: 12, scope: [a] });
+    expect(store.trackById(a)!.clips.find((c) => c.id === clipId)).toBeUndefined();
+    const moved = store.trackById(b)!.clips.find((c) => c.id === clipId);
+    expect(moved).toBeDefined();
+    expect(moved!.startBeat).toBe(6);
+    // The box selection followed to track b at the shifted time.
+    expect(store.timeSelStart).toBe(6);
+    expect(store.timeSelEnd).toBe(14);
+    expect(store.timeSelTrackIds).toEqual([b]);
   });
 });
 

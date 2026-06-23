@@ -905,12 +905,16 @@ export class ArrGrid extends MobxLitElement {
     y0: number;
     active: boolean;
     timebox: boolean;
+    /** The time box at gesture start (so coalesced frames don't drift as the
+     *  box follows the move). Null unless this is a time-box drag. */
+    baseSel: { start: number; end: number; scope: string[] } | null;
   } | null = null;
 
   /** Begin moving `clip` (from arr-clip). `fromHeader` enables time-box split-move. */
   beginClipMove(e: PointerEvent, trackId: string, clip: Clip, fromHeader: boolean) {
     const grid = buildBeatGrid();
     const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
+    const timebox = fromHeader && store.timeBoxCoversClip(trackId, clip.id);
     this.clipMove = {
       trackId,
       clipId: clip.id,
@@ -919,13 +923,13 @@ export class ArrGrid extends MobxLitElement {
       x0: e.clientX,
       y0: e.clientY,
       active: false,
-      // Time-box split-move only when a DELIBERATE region is selected (covers
-      // this clip but isn't merely its own auto-box) — otherwise a header drag
-      // moves the clip normally, incl. between tracks.
-      timebox:
-        fromHeader &&
-        store.timeBoxCoversClip(trackId, clip.id) &&
-        !store.timeBoxIsJustClip(trackId, clip.id),
+      // A header drag moves the in-box content (split at the box edges) — incl.
+      // between tracks — and the box follows. For a single clip the box is just
+      // that clip, so this is also how a plain header drag moves one clip.
+      timebox,
+      baseSel: timebox
+        ? { start: store.timeSelStart!, end: store.timeSelEnd, scope: [...store.timeSelTrackIds] }
+        : null,
     };
     window.addEventListener('pointermove', this.onClipMove);
     window.addEventListener('pointerup', this.onClipUp);
@@ -955,8 +959,14 @@ export class ArrGrid extends MobxLitElement {
     const snap = store.snapStep;
     const shiftBeat = free ? deltaBeat : Math.round(deltaBeat / snap) * snap;
 
-    if (d.timebox) {
-      store.moveTimeBoxContent(shiftBeat);
+    if (d.timebox && d.baseSel) {
+      // Move the in-box content by the X shift AND across tracks (Y); the box
+      // follows. Track delta = source→dest in the plain-track order.
+      const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
+      const plain = store.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
+      const td = plain.indexOf(dest) - plain.indexOf(d.trackId);
+      this.clipDropTrackId = td !== 0 ? dest : null;
+      store.moveTimeBoxContent(shiftBeat, td, d.baseSel);
       return;
     }
 
