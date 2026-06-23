@@ -123,7 +123,7 @@ export function buildClipFieldBinding(trackId: string, clipId: string, deviceId:
 
 /** A store-backed edit handle that carries its coalesce session key. */
 interface ArrEditHandle extends EditHandle {
-  _ck: string;
+  _ck?: string;
 }
 
 export class ArrColumnAdapter implements ColumnAdapter {
@@ -296,17 +296,26 @@ export class ArrColumnAdapter implements ColumnAdapter {
     },
     cancelChangeEffectType: (edit) => edit.cancel(),
     beginInsertEffect: (_s, _c, insertIdx, type) => {
-      const ck = `insert:${this.target.id}:${insertIdx}:${type}`;
-      const id = this.target.insertAt(insertIdx, type, ck);
+      // Insert as its OWN committed undo point (no coalesce key). Crucially, the
+      // insert must NOT share a coalesce key with the subsequent retype: history
+      // coalescing reverts the doc to the entry's base and replays only the
+      // latest recipe, so an insert+retype under one key would revert the insert
+      // away and then setType against a base missing the device — corrupting the
+      // chain (the "edits other effects" blast radius). Keeping them separate,
+      // and retyping under a per-device key (below), reverts to a base that still
+      // contains the device, so only that device changes.
+      const id = this.target.insertAt(insertIdx, type);
       const handle: ArrEditHandle = {
-        _ck: ck,
+        _ck: id ? `retype:${id}` : undefined,
         accept: () => {},
-        cancel: () => { if (id) this.target.remove(id, ck); },
+        cancel: () => { if (id) this.target.remove(id); },
       };
       return { edit: handle, instanceKey: id ?? '' };
     },
     updateInsertEffect: (edit, _s, _c, _idx, instanceKey, type) => {
-      this.target.setType(instanceKey, type, (edit as ArrEditHandle)._ck);
+      // Retype the freshly-inserted device under a per-device key, NOT the
+      // insert's key — see beginInsertEffect.
+      this.target.setType(instanceKey, type, (edit as ArrEditHandle)._ck ?? `retype:${instanceKey}`);
     },
     cancelInsertEffect: (edit) => edit.cancel(),
 

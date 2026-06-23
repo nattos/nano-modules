@@ -1893,16 +1893,14 @@ export class ColumnGroup extends MobxLitElement {
     return has(CATEGORY_FALLBACK) ? CATEGORY_FALLBACK : (avail[0]?.id ?? CATEGORY_FALLBACK);
   }
 
-  /** Begin inserting a new effect for a category — seeds the category default and
-   *  opens the smart-input drilled into "<category>." so the user picks the exact
-   *  effect within that category. */
+  /** Insert the category's default effect as a committed edit and select it — it
+   *  does NOT open the type editor (double-click the card name to retype). */
   private insertCategoryEffect(category: string) {
     const insertIdx = this.computeInsertIdx();
-    const { edit, instanceKey } = this.ctl.beginInsertEffect(
+    const { edit } = this.ctl.beginInsertEffect(
       this.sketchId, this.colIdx, insertIdx, this.categoryDefault(category));
-    this.typeLongEdit = edit;
-    this.insertCtx = { instanceKey, insertIdx, prefill: `${category}.` };
-    this.editingTypeChainIdx = insertIdx;
+    edit.accept();
+    this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${insertIdx}`);
     this.requestUpdate();
   }
 
