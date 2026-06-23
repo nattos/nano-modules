@@ -391,6 +391,42 @@ export class ArrangementStore {
     await this.refreshWorkspaceList();
   }
 
+  /** Rename a workspace file (within its directory). `newBase` is the bare name. */
+  async renameEntry(name: string, newBase: string) {
+    if (!this.backend) return;
+    const trimmed = newBase.trim();
+    if (!trimmed || trimmed.includes('/')) return;
+    const slash = name.lastIndexOf('/');
+    const dir = slash >= 0 ? name.slice(0, slash) : '';
+    const newName = dir ? `${dir}/${trimmed}` : trimmed;
+    if (newName === name) return;
+    await this.backend.rename(name, newName);
+    if (this.currentName === name) {
+      runInAction(() => { this.currentName = newName; });
+    }
+    await this.refreshWorkspaceList();
+  }
+
+  /** Delete a workspace file; if it was open, fall back to another (or blank). */
+  async deleteEntry(name: string) {
+    if (!this.backend) return;
+    await this.backend.remove(name);
+    await this.refreshWorkspaceList();
+    if (this.currentName !== name) return;
+    const next = this.workspaceEntries[0];
+    if (next) {
+      await this.openArrangement(this.backend, next.name);
+    } else {
+      runInAction(() => {
+        this.currentName = null;
+        this.composition = emptyComposition();
+        this.persistenceEnabled = false;
+        this.clearSelection();
+      });
+      this.history.reset();
+    }
+  }
+
   // ── Engine telemetry ──────────────────────────────────────────────────
   /**
    * Apply a wire-modulation telemetry diff from the engine into

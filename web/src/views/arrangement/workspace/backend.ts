@@ -35,6 +35,8 @@ export interface WorkspaceEntry {
   fileName: string;
   /** Relative directory (POSIX-joined), "" for the workspace root. */
   dir: string;
+  /** Last-modified time (epoch ms), for a "… ago" tag. 0 if unknown. */
+  modified: number;
 }
 
 /** On-disk envelope around a `Composition` — versioned for future migrations. */
@@ -56,6 +58,8 @@ export interface WorkspaceBackend {
   write(name: string, comp: Composition): Promise<void>;
   /** Create a new arrangement; throws if one with that name already exists. */
   create(name: string, comp?: Composition): Promise<void>;
+  /** Rename/move one arrangement (content preserved). Throws if `to` exists. */
+  rename(from: string, to: string): Promise<void>;
   /** Delete one arrangement file. */
   remove(name: string): Promise<void>;
 }
@@ -115,10 +119,13 @@ export class DirectoryBackend implements WorkspaceBackend {
       for await (const handle of (dir as any).values() as AsyncIterable<FileSystemHandle>) {
         if (handle.kind === 'file' && handle.name.endsWith(ARRANGEMENT_EXT)) {
           const base = handle.name.slice(0, -ARRANGEMENT_EXT.length);
+          let modified = 0;
+          try { modified = (await (handle as FileSystemFileHandle).getFile()).lastModified; } catch { /* keep 0 */ }
           out.push({
             name: prefix ? `${prefix}/${base}` : base,
             fileName: handle.name,
             dir: prefix,
+            modified,
           });
         } else if (handle.kind === 'directory' && !handle.name.startsWith('.')) {
           await walk(handle as FileSystemDirectoryHandle, prefix ? `${prefix}/${handle.name}` : handle.name);
@@ -148,6 +155,16 @@ export class DirectoryBackend implements WorkspaceBackend {
       throw new Error(`Arrangement "${name}" already exists`);
     }
     await this.write(name, comp ?? emptyComposition());
+  }
+
+  async rename(from: string, to: string): Promise<void> {
+    if (from === to) return;
+    if (await this.exists(to)) {
+      throw new Error(`Arrangement "${to}" already exists`);
+    }
+    // No native move in the FS Access API — read, re-write, delete the original.
+    await this.write(to, await this.read(from));
+    await this.remove(from);
   }
 
   async remove(name: string): Promise<void> {

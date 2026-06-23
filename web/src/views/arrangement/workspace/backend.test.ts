@@ -5,10 +5,14 @@ import { emptyComposition } from '../model/composition';
 // ── Minimal in-memory FileSystemDirectoryHandle (only what the backend uses) ──
 class MemFile {
   kind = 'file' as const;
+  lastModified = 1_700_000_000_000;
   constructor(public name: string, public content = '') {}
-  async getFile() { return { text: async () => this.content } as any; }
+  async getFile() { return { text: async () => this.content, lastModified: this.lastModified } as any; }
   async createWritable() {
-    return { write: async (s: string) => { this.content = s; }, close: async () => {} } as any;
+    return {
+      write: async (s: string) => { this.content = s; this.lastModified = 1_700_000_500_000; },
+      close: async () => {},
+    } as any;
   }
 }
 class MemDir {
@@ -52,6 +56,7 @@ describe('DirectoryBackend', () => {
     expect(entries.map((e) => e.name)).toEqual(['intro', 'scenes/chorus', 'scenes/verse']);
     expect(entries.map((e) => e.dir)).toEqual(['', 'scenes', 'scenes']);
     expect(entries.find((e) => e.name === 'scenes/verse')!.fileName).toBe('verse.nano-arr');
+    expect(entries[0].modified).toBe(1_700_000_000_000);
   });
 
   it('writes + reads a nested arrangement, creating intermediate dirs', async () => {
@@ -71,5 +76,17 @@ describe('DirectoryBackend', () => {
     await expect(be.create('intro')).rejects.toThrow();
     await be.remove('scenes/verse');
     expect((await be.list()).map((e) => e.name)).toEqual(['intro', 'scenes/chorus']);
+  });
+
+  it('rename moves content within a directory and refuses an existing target', async () => {
+    const root = seeded();
+    const be = new DirectoryBackend(root as any, 'proj');
+    const comp = emptyComposition();
+    comp.meta.baseBPM = 77;
+    await be.write('scenes/verse', comp);
+    await be.rename('scenes/verse', 'scenes/bridge');
+    expect((await be.list()).map((e) => e.name)).toEqual(['intro', 'scenes/bridge', 'scenes/chorus']);
+    expect((await be.read('scenes/bridge')).meta.baseBPM).toBe(77);
+    await expect(be.rename('intro', 'scenes/chorus')).rejects.toThrow();
   });
 });

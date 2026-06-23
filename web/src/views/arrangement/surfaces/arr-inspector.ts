@@ -22,6 +22,23 @@ import '../../../widgets/editable-label';
 import '../../../widgets/scalar-knob';
 import '../../../widgets/spark-chart';
 
+/** Compact relative time: "just now", "5m ago", "3h ago", "2d ago", "4w ago". */
+function timeAgo(ms: number): string {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 45) return 'just now';
+  const m = s / 60;
+  if (m < 60) return `${Math.round(m)}m ago`;
+  const h = m / 60;
+  if (h < 24) return `${Math.round(h)}h ago`;
+  const d = h / 24;
+  if (d < 7) return `${Math.round(d)}d ago`;
+  const w = d / 7;
+  if (w < 5) return `${Math.round(w)}w ago`;
+  const mo = d / 30;
+  if (mo < 12) return `${Math.round(mo)}mo ago`;
+  return `${Math.round(d / 365)}y ago`;
+}
+
 /** Minimal callbacks: the arrangement has no custom inspectors or card-reorder. */
 const ARR_COLUMN_CALLBACKS: ColumnGroupCallbacks = {
   onCardPointerDown: () => {},
@@ -237,7 +254,8 @@ export class ArrInspector extends MobxLitElement {
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 6px;
+      padding: 7px 6px;
+      min-height: 30px;
       border-radius: 2px;
       cursor: pointer;
       color: var(--app-text-color1);
@@ -249,9 +267,72 @@ export class ArrInspector extends MobxLitElement {
       background: var(--app-tint-2);
       color: var(--app-hi-color2);
     }
-    .ws-file ui-icon {
+    .ws-file > ui-icon {
       --icon-size: 13px;
       color: var(--app-text-color2);
+      flex-shrink: 0;
+    }
+    .ws-file .ws-name {
+      flex: 1;
+      min-width: 0;
+    }
+    .ws-ago {
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-xs);
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .ws-del {
+      background: none;
+      border: none;
+      color: var(--app-text-color2);
+      cursor: pointer;
+      padding: 2px;
+      border-radius: 2px;
+      display: flex;
+      opacity: 0;
+      flex-shrink: 0;
+    }
+    .ws-del ui-icon {
+      --icon-size: 13px;
+    }
+    .ws-file:hover .ws-del {
+      opacity: 1;
+    }
+    .ws-del:hover {
+      color: var(--app-err-color, #e0564f);
+      background: var(--app-tint-2);
+    }
+    .pop-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+    }
+    .confirm-pop {
+      position: fixed;
+      z-index: 41;
+      width: 200px;
+      background: var(--app-bg-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 4px;
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+      padding: 10px;
+    }
+    .confirm-pop .cp-msg {
+      font-size: var(--app-fs-md);
+      margin-bottom: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .confirm-pop .cp-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .btn.danger {
+      border-color: var(--app-err-color, #e0564f);
+      color: var(--app-err-color, #e0564f);
     }
     .ws-drop-hint {
       border: 1px dashed var(--app-tint-4);
@@ -265,6 +346,8 @@ export class ArrInspector extends MobxLitElement {
   `;
 
   @state() private rememberedLabel: string | null = null;
+  /** Delete-confirmation popover, anchored near the clicked trash button. */
+  @state() private confirmDelete: { name: string; label: string; x: number; y: number } | null = null;
 
   firstUpdated() {
     // Surface a "reopen last folder" affordance (label only — re-mounting needs
@@ -523,7 +606,13 @@ export class ArrInspector extends MobxLitElement {
   }
 
   private renderWorkspace(): TemplateResult {
-    if (!store.hasWorkspace) {
+    // Read the OBSERVABLE label/entries up front so this panel re-renders when a
+    // mount completes — `store.hasWorkspace` reads the non-observable `backend`,
+    // so branching on it alone would never track the mount.
+    const label = store.workspaceLabel;
+    const entries = store.workspaceEntries;
+    const mounted = label != null;
+    if (!mounted) {
       return html`
         <div class="section-header">Workspace</div>
         <div class="body">
@@ -546,8 +635,8 @@ export class ArrInspector extends MobxLitElement {
     }
 
     // Group the (recursively listed) files by their directory.
-    const byDir = new Map<string, typeof store.workspaceEntries>();
-    for (const e of store.workspaceEntries) {
+    const byDir = new Map<string, typeof entries>();
+    for (const e of entries) {
       const arr = byDir.get(e.dir) ?? [];
       arr.push(e);
       byDir.set(e.dir, arr);
@@ -560,7 +649,7 @@ export class ArrInspector extends MobxLitElement {
       <div class="body">
         <div class="ws-cur">
           <ui-icon icon="la-folder"></ui-icon>
-          <span class="folder">${store.workspaceLabel}</span>
+          <span class="folder">${label}</span>
         </div>
         <div class="ws-toolbar">
           <button class="btn" @click=${() => store.newArrangement(`untitled-${Date.now().toString(36)}`)}>
@@ -573,24 +662,68 @@ export class ArrInspector extends MobxLitElement {
             <ui-icon icon="la-folder-open"></ui-icon>
           </button>
         </div>
-        ${store.workspaceEntries.length === 0
+        ${entries.length === 0
           ? html`<div class="empty" style="padding:12px 0">No arrangements yet.</div>`
           : dirs.map(
               (dir) => html`
                 ${dir ? html`<div class="ws-dir">${dir}/</div>` : ''}
-                ${byDir.get(dir)!.map((e) => {
-                  const label = e.fileName.slice(0, -'.nano-arr'.length);
-                  return html`<div
-                    class="ws-file ${e.name === store.currentName ? 'active' : ''}"
-                    @click=${() => store.openEntry(e.name)}
-                  >
-                    <ui-icon icon="la-file"></ui-icon><span>${label}</span>
-                  </div>`;
-                })}
+                ${byDir.get(dir)!.map((e) => this.renderFileRow(e))}
               `,
             )}
       </div>
+      ${this.renderDeleteConfirm()}
     `;
+  }
+
+  private renderFileRow(e: typeof store.workspaceEntries[number]): TemplateResult {
+    const base = e.fileName.slice(0, -'.nano-arr'.length);
+    return html`<div
+      class="ws-file ${e.name === store.currentName ? 'active' : ''}"
+      @click=${() => store.openEntry(e.name)}
+    >
+      <ui-icon icon="la-file"></ui-icon>
+      <editable-label
+        class="ws-name"
+        .value=${base}
+        @commit=${(ev: CustomEvent) => store.renameEntry(e.name, ev.detail as string)}
+      ></editable-label>
+      ${e.modified ? html`<span class="ws-ago" title=${new Date(e.modified).toLocaleString()}>${timeAgo(e.modified)}</span>` : ''}
+      <button
+        class="ws-del"
+        title="Delete"
+        @click=${(ev: PointerEvent) => this.askDelete(ev, e.name, base)}
+      ><ui-icon icon="la-trash"></ui-icon></button>
+    </div>`;
+  }
+
+  private askDelete(ev: PointerEvent, name: string, label: string) {
+    ev.stopPropagation();
+    this.confirmDelete = { name, label, x: ev.clientX, y: ev.clientY };
+  }
+
+  private renderDeleteConfirm(): TemplateResult | '' {
+    const c = this.confirmDelete;
+    if (!c) return '';
+    // Open leftward from the click (the trash button hugs the panel's right
+    // edge), clamped on-screen. The popover is 200px wide.
+    const x = Math.max(8, Math.min(c.x - 190, window.innerWidth - 212));
+    const y = Math.min(c.y, window.innerHeight - 90);
+    return html`
+      <div class="pop-backdrop" @click=${() => { this.confirmDelete = null; }}></div>
+      <div class="confirm-pop" style="left:${x}px;top:${y}px" @click=${(e: Event) => e.stopPropagation()}>
+        <div class="cp-msg">Delete "${c.label}"?</div>
+        <div class="cp-actions">
+          <button class="btn" @click=${() => { this.confirmDelete = null; }}>Cancel</button>
+          <button class="btn danger" @click=${() => this.doDelete()}>Delete</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private async doDelete() {
+    const c = this.confirmDelete;
+    this.confirmDelete = null;
+    if (c) await store.deleteEntry(c.name);
   }
 
   private renderSettings(): TemplateResult {

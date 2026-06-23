@@ -58,13 +58,67 @@ describe('Arrangement workspace', () => {
       const insp = document.querySelector('arrangement-app')?.shadowRoot
         ?.querySelector('arr-inspector')?.shadowRoot;
       const dirHeads = Array.from(insp?.querySelectorAll('.ws-dir') ?? []).map((e) => e.textContent?.trim());
-      const files = Array.from(insp?.querySelectorAll('.ws-file') ?? []).map((e) => e.textContent?.trim());
-      const active = insp?.querySelector('.ws-file.active')?.textContent?.trim();
+      const files = Array.from(insp?.querySelectorAll('.ws-file .ws-name') ?? []).map((e) => (e as any).value);
+      const active = (insp?.querySelector('.ws-file.active .ws-name') as any)?.value;
       return { dirHeads, files, active };
     });
     expect(dom.dirHeads).toContain('scenes/');
     expect(dom.files).toEqual(expect.arrayContaining(['intro', 'verse']));
     expect(dom.active).toBe('verse');
+  }, 30000);
+
+  it('refreshes the panel reactively on mount, and renames + deletes files', async () => {
+    // Switch to the (empty) Files tab FIRST, then mount — the panel must update
+    // without any further tab switch (the mobx-reactivity regression).
+    await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      const mod = (window as any).__workspaceBackend;
+      store.setRightTab('workspace');
+      const be = await mod.mountOpfs('react-' + Math.floor(performance.now()));
+      await be.write('alpha', mod.deserializeComposition('{}'));
+      await be.write('beta', mod.deserializeComposition('{}'));
+      await store.mountWorkspace(be);
+    });
+    // Files appear with NO extra setRightTab call → reactivity works.
+    await page.waitForFunction(() => {
+      const insp = document.querySelector('arrangement-app')?.shadowRoot
+        ?.querySelector('arr-inspector')?.shadowRoot;
+      return (insp?.querySelectorAll('.ws-file').length ?? 0) >= 2;
+    }, { timeout: 5000 });
+
+    // Each row has an editable name + a "… ago" tag.
+    const row = await page.evaluate(() => {
+      const insp = document.querySelector('arrangement-app')?.shadowRoot
+        ?.querySelector('arr-inspector')?.shadowRoot;
+      const first = insp?.querySelector('.ws-file');
+      return {
+        hasEditable: !!first?.querySelector('editable-label'),
+        hasAgo: !!first?.querySelector('.ws-ago'),
+        ago: first?.querySelector('.ws-ago')?.textContent?.trim(),
+      };
+    });
+    expect(row.hasEditable).toBe(true);
+    expect(row.hasAgo).toBe(true);
+    expect(row.ago).toBeTruthy();
+
+    // Rename alpha → gamma via the store action the editable-label commit calls.
+    const renamed = await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      await store.openEntry('alpha');
+      await store.renameEntry('alpha', 'gamma');
+      return { names: store.workspaceEntries.map((e: any) => e.name).sort(), current: store.currentName };
+    });
+    expect(renamed.names).toEqual(['beta', 'gamma']);
+    expect(renamed.current).toBe('gamma'); // open file followed the rename
+
+    // Delete the open file → falls back to the remaining one.
+    const deleted = await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      await store.deleteEntry('gamma');
+      return { names: store.workspaceEntries.map((e: any) => e.name), current: store.currentName };
+    });
+    expect(deleted.names).toEqual(['beta']);
+    expect(deleted.current).toBe('beta');
   }, 30000);
 
   it('auto-restores the remembered workspace on reload', async () => {
