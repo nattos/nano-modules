@@ -37,7 +37,9 @@ export class ArrMonitor extends MobxLitElement {
     }
     .stage {
       position: relative;
-      aspect-ratio: 16 / 9;
+      /* Stable height (the composite is contain-fit into it), so resizing the
+         panel width changes the monitor's ASPECT rather than its height. */
+      height: 180px;
       width: 100%;
       /* Photoshop-style transparency checkerboard. */
       background-color: #777;

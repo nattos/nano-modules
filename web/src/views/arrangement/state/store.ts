@@ -195,6 +195,11 @@ export class ArrangementStore {
 
   activeRightTab: RightTab = 'inspector';
 
+  /** Right inspector panel width (px) — drag-resizable, persisted. */
+  sidePanelWidth = 320;
+  /** Track-header column width (px) — drag-resizable, persisted (HEADER_WIDTH default). */
+  headerWidth = 184;
+
   /** Bottom clip-view panel. */
   clipViewOpen = false;
   clipViewHeight = 230;
@@ -739,6 +744,12 @@ export class ArrangementStore {
   }
   setClipViewHeight(h: number) {
     this.clipViewHeight = Math.max(90, Math.min(520, h));
+  }
+  setSidePanelWidth(w: number) {
+    this.sidePanelWidth = Math.max(220, Math.min(680, Math.round(w)));
+  }
+  setHeaderWidth(w: number) {
+    this.headerWidth = Math.max(120, Math.min(380, Math.round(w)));
   }
   setClipAutoTiming(t: 'loop' | 'clip') {
     this.clipAutoTiming = t;

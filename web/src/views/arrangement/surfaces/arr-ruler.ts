@@ -11,7 +11,7 @@ import { html, css } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
-import { buildBeatGrid, HEADER_WIDTH, RULER_HEIGHT } from './grid-shared';
+import { buildBeatGrid, RULER_HEIGHT } from './grid-shared';
 
 @customElement('arr-ruler')
 export class ArrRuler extends MobxLitElement {
@@ -28,7 +28,6 @@ export class ArrRuler extends MobxLitElement {
       display: flex;
     }
     .corner {
-      width: ${HEADER_WIDTH}px;
       box-sizing: border-box;
       flex-shrink: 0;
       border-right: 1px solid var(--app-tint-3);
@@ -110,9 +109,10 @@ export class ArrRuler extends MobxLitElement {
     void store.timeSelStart;
     void store.timeSelEnd;
     void store.composition.tracks.length;
+    void store.headerWidth;
     return html`
       <div class="wrap">
-        <div class="corner">
+        <div class="corner" style="width:${store.headerWidth}px">
           <button title="Zoom out" @click=${() => this.zoomCenter(1 / 1.3)}>−</button>
           <button title="Zoom in" @click=${() => this.zoomCenter(1.3)}>+</button>
           <button

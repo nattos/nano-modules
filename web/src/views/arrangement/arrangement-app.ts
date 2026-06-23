@@ -98,12 +98,25 @@ export class ArrangementApp extends MobxLitElement {
     }
     .side {
       grid-area: side;
-      width: 320px;
+      position: relative;
       display: flex;
       flex-direction: column;
       overflow: hidden;
       background: var(--app-bg-color2);
       border-left: 1px solid var(--app-tint-3);
+    }
+    .side-resize {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 5px;
+      cursor: ew-resize;
+      z-index: 3;
+    }
+    .side-resize:hover {
+      background: var(--app-hi-color2);
+      opacity: 0.5;
     }
     arr-inspector {
       flex: 1;
@@ -369,7 +382,8 @@ export class ArrangementApp extends MobxLitElement {
         <arr-ruler></arr-ruler>
         <arr-grid></arr-grid>
       </div>
-      <div class="side">
+      <div class="side" style="width:${store.sidePanelWidth}px">
+        <div class="side-resize" @pointerdown=${this.onSideResize}></div>
         <arr-inspector></arr-inspector>
         <arr-monitor></arr-monitor>
       </div>
@@ -384,6 +398,21 @@ export class ArrangementApp extends MobxLitElement {
       <snackbar-host></snackbar-host>
     `;
   }
+
+  private onSideResize = (e: PointerEvent) => {
+    e.preventDefault();
+    const el = e.target as HTMLElement;
+    const right = (el.parentElement as HTMLElement).getBoundingClientRect().right;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => store.setSidePanelWidth(right - ev.clientX);
+    const up = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   private onClipResize = (e: PointerEvent) => {
     e.preventDefault();

@@ -15,7 +15,6 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths } from '../state/store';
 import {
   buildBeatGrid,
-  HEADER_WIDTH,
   ROW_HEIGHT,
   AUTO_LANE_HEIGHT,
 } from './grid-shared';
@@ -44,10 +43,25 @@ export class ArrGrid extends MobxLitElement {
       overflow-y: auto;
       overflow-x: hidden;
     }
+    /* Drag handle to resize the track-header column. */
+    .header-resize {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: var(--arr-hw, 184px);
+      width: 7px;
+      margin-left: -3px;
+      cursor: ew-resize;
+      z-index: 6;
+    }
+    .header-resize:hover {
+      background: var(--app-hi-color2);
+      opacity: 0.4;
+    }
     .grid-canvas {
       position: absolute;
       top: 0;
-      left: ${HEADER_WIDTH}px;
+      left: var(--arr-hw, 184px);
       pointer-events: none;
       z-index: 0;
     }
@@ -55,7 +69,7 @@ export class ArrGrid extends MobxLitElement {
     .grid-canvas-top {
       position: absolute;
       top: 0;
-      left: ${HEADER_WIDTH}px;
+      left: var(--arr-hw, 184px);
       pointer-events: none;
       z-index: 4;
     }
@@ -76,7 +90,7 @@ export class ArrGrid extends MobxLitElement {
       border-top: 2px solid var(--app-tint-4);
     }
     .header {
-      width: ${HEADER_WIDTH}px;
+      width: var(--arr-hw, 184px);
       flex-shrink: 0;
       box-sizing: border-box;
       border-right: 1px solid var(--app-tint-3);
@@ -234,7 +248,7 @@ export class ArrGrid extends MobxLitElement {
       );
     }
     .auto-header {
-      width: ${HEADER_WIDTH}px;
+      width: var(--arr-hw, 184px);
       flex-shrink: 0;
       box-sizing: border-box;
       border-right: 1px solid var(--app-tint-3);
@@ -273,7 +287,7 @@ export class ArrGrid extends MobxLitElement {
       position: absolute;
       bottom: 8px;
       top: auto;
-      left: ${HEADER_WIDTH + 8}px;
+      left: calc(var(--arr-hw, 184px) + 8px);
       z-index: 40;
       display: flex;
       align-items: center;
@@ -350,6 +364,9 @@ export class ArrGrid extends MobxLitElement {
     this.ro?.disconnect();
   }
   updated() {
+    // Drive the (drag-resizable) track-header column width through a CSS var the
+    // styles read (var(--arr-hw)); the canvas geometry reads store.headerWidth.
+    this.style.setProperty('--arr-hw', `${store.headerWidth}px`);
     this.draw();
     // Wire anchors for the main bus lane and (when shown) the beat-warp lane.
     setAnchor(AnchorKeys.mainbus(), this.renderRoot.querySelector('.lane.group'));
@@ -361,7 +378,7 @@ export class ArrGrid extends MobxLitElement {
   private renderBeatWarpRow() {
     const grid = buildBeatGrid();
     const segs = derivedWarpSegments(store.composition);
-    const w = this.scrollEl ? this.scrollEl.clientWidth - HEADER_WIDTH : 600;
+    const w = this.scrollEl ? this.scrollEl.clientWidth - store.headerWidth : 600;
     const h = ROW_HEIGHT;
     const pts: string[] = [];
     for (let x = 0; x <= w; x += 4) {
@@ -394,7 +411,7 @@ export class ArrGrid extends MobxLitElement {
     el.scrollIntoView({ block: 'nearest' });
     const grid = buildBeatGrid();
     const x = grid.beatToX(el.clip.startBeat);
-    const laneW = this.scrollEl.clientWidth - HEADER_WIDTH;
+    const laneW = this.scrollEl.clientWidth - store.headerWidth;
     if (x < 0 || x > laneW - 60) {
       store.setScrollUnits(Math.max(0, grid.curve.unitsAt(el.clip.startBeat) - 2));
     }
@@ -421,6 +438,7 @@ export class ArrGrid extends MobxLitElement {
     void store.timeSelTrackIds.length;
     void store.selectedWireId;
     void store.selection.size;
+    void store.headerWidth; // re-render (→ updated() resets --arr-hw) on resize
 
     const tracks = store.displayTracks;
     const totalH = this.contentHeight(tracks);
@@ -435,9 +453,26 @@ export class ArrGrid extends MobxLitElement {
         </div>
         <canvas class="grid-canvas-top" style="height:${totalH}px"></canvas>
       </div>
+      <div class="header-resize" @pointerdown=${this.onHeaderResize}></div>
       ${this.renderTimeToolbar()}
     `;
   }
+
+  private onHeaderResize = (e: PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.target as HTMLElement;
+    const left = this.getBoundingClientRect().left;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => store.setHeaderWidth(ev.clientX - left);
+    const up = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   private renderTimeToolbar() {
     // Always visible, pinned to the bottom of the timeline (above the clip
@@ -568,7 +603,7 @@ export class ArrGrid extends MobxLitElement {
     void track;
     const grid = buildBeatGrid();
     const SPAN = 32; // map normalized x∈[0,1] across 32 beats through the warp
-    const w = this.scrollEl ? this.scrollEl.clientWidth - HEADER_WIDTH : 600;
+    const w = this.scrollEl ? this.scrollEl.clientWidth - store.headerWidth : 600;
     const h = AUTO_LANE_HEIGHT;
     const yOf = (v: number) => 4 + (1 - v) * (h - 8);
     // Dense sample so the EASED curve is drawn (straight segments between control
@@ -612,7 +647,7 @@ export class ArrGrid extends MobxLitElement {
   private prep(canvas: HTMLCanvasElement | undefined) {
     const scroll = this.scrollEl;
     if (!canvas || !scroll) return null;
-    const w = scroll.clientWidth - HEADER_WIDTH;
+    const w = scroll.clientWidth - store.headerWidth;
     const h = Math.max(this.contentHeight(store.displayTracks), scroll.clientHeight);
     if (w <= 0 || h <= 0) return null;
     const dpr = window.devicePixelRatio || 1;
@@ -815,7 +850,7 @@ export class ArrGrid extends MobxLitElement {
     const trackId = this.eligibleTrackAtClientY(clientY);
     if (!trackId) return null;
     const rect = this.scrollEl.getBoundingClientRect();
-    const laneLeft = rect.left + HEADER_WIDTH;
+    const laneLeft = rect.left + store.headerWidth;
     const onTimeline =
       clientX >= laneLeft && clientX <= rect.right &&
       clientY >= rect.top && clientY <= rect.bottom;
@@ -901,7 +936,7 @@ export class ArrGrid extends MobxLitElement {
   /** Begin moving `clip` (from arr-clip). `fromHeader` enables time-box split-move. */
   beginClipMove(e: PointerEvent, trackId: string, clip: Clip, fromHeader: boolean) {
     const grid = buildBeatGrid();
-    const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
+    const laneLeft = this.scrollEl.getBoundingClientRect().left + store.headerWidth;
     const timebox = fromHeader && store.timeBoxCoversClip(trackId, clip.id);
     this.clipMove = {
       trackId,
@@ -939,7 +974,7 @@ export class ArrGrid extends MobxLitElement {
       d.active = true;
     }
     const grid = buildBeatGrid();
-    const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
+    const laneLeft = this.scrollEl.getBoundingClientRect().left + store.headerWidth;
     const free = e.altKey;
 
     // X: shift in beats from pointer-down, quantized to the snap grid.
@@ -1004,7 +1039,7 @@ export class ArrGrid extends MobxLitElement {
   beginRegionFromClient(e: PointerEvent, clickFocusPath?: string) {
     if (this.drag) return;
     store.closeTapPopup();
-    const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
+    const laneLeft = this.scrollEl.getBoundingClientRect().left + store.headerWidth;
     const grid = buildBeatGrid();
     const startBeat = grid.xToBeat(e.clientX - laneLeft);
     const startTrack = store.displayTracks[this.trackIndexAtClientY(e.clientY)];
@@ -1080,7 +1115,7 @@ export class ArrGrid extends MobxLitElement {
   private onWheel = (e: WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      const cursorX = e.clientX - this.scrollEl.getBoundingClientRect().left - HEADER_WIDTH;
+      const cursorX = e.clientX - this.scrollEl.getBoundingClientRect().left - store.headerWidth;
       if (cursorX < 0) return;
       store.zoomAnchored(Math.exp(-e.deltaY * 0.002), cursorX);
     } else if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
