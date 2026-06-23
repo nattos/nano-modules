@@ -315,6 +315,17 @@ export class ArrInspector extends MobxLitElement {
       inset: 0;
       z-index: 40;
     }
+    .lib-drop {
+      border: 1px dashed transparent;
+      border-radius: 3px;
+      margin: 0 -4px;
+      padding: 2px 4px;
+      transition: border-color 0.1s, background 0.1s;
+    }
+    .lib-drop.over {
+      border-color: var(--app-hi-color2);
+      background: var(--app-tint-1);
+    }
     .lib-hint {
       color: var(--app-text-color2);
       font-size: var(--app-fs-xs);
@@ -358,6 +369,8 @@ export class ArrInspector extends MobxLitElement {
   `;
 
   @state() private rememberedLabel: string | null = null;
+  /** True while a folder is dragged over the Library paths drop zone. */
+  @state() private libDragOver = false;
   /** Generic confirmation popover, anchored near the click. */
   @state() private confirm:
     | { message: string; confirmLabel: string; danger: boolean; x: number; y: number; onYes: () => void | Promise<void> }
@@ -797,39 +810,71 @@ export class ArrInspector extends MobxLitElement {
         <div class="row"><label>Default play mode</label><span class="val">${store.composition.playMode.defaultMode}</span></div>
 
         <div class="group-title">Library paths</div>
-        <div class="lib-hint">
-          Root folders the app can resolve files under. File &amp; workspace
-          references are stored relative to these, so one permission grant covers
-          everything beneath.
-        </div>
-        <div class="ws-list">
-          ${libraryPaths.paths.length === 0
-            ? html`<div class="dash-empty" style="padding:6px 0">No library paths yet.</div>`
-            : libraryPaths.paths.map(
-                (p) => html`<div class="ws-file">
-                  <ui-icon icon="la-folder"></ui-icon>
-                  <span class="ws-name" title=${p.label}>${p.label}</span>
-                  <button
-                    class="ws-del"
-                    title="Remove library path"
-                    @click=${(ev: PointerEvent) =>
-                      this.openConfirm(ev, {
-                        message: `Remove "${p.label}"? This invalidates any files referenced under it (you'd need to relink them).`,
-                        confirmLabel: 'Remove',
-                        onYes: () => libraryPaths.remove(p.id),
-                      })}
-                  ><ui-icon icon="la-trash"></ui-icon></button>
-                </div>`,
-              )}
-        </div>
-        <div class="ws-toolbar" style="margin-top:6px">
-          <button class="btn" @click=${() => this.addLibraryPath()}>
-            <ui-icon icon="la-folder-plus"></ui-icon> Add library path…
-          </button>
+        <div
+          class="lib-drop ${this.libDragOver ? 'over' : ''}"
+          @dragover=${this.onLibraryDragOver}
+          @dragleave=${() => { this.libDragOver = false; }}
+          @drop=${this.onLibraryDrop}
+        >
+          <div class="lib-hint">
+            Root folders the app can resolve files under. File &amp; workspace
+            references are stored relative to these, so one permission grant covers
+            everything beneath. Drag folders here to add them.
+          </div>
+          <div class="ws-list">
+            ${libraryPaths.paths.length === 0
+              ? html`<div class="dash-empty" style="padding:6px 0">No library paths yet.</div>`
+              : libraryPaths.paths.map(
+                  (p) => html`<div class="ws-file">
+                    <ui-icon icon="la-folder"></ui-icon>
+                    <span class="ws-name" title=${p.label}>${p.label}</span>
+                    <button
+                      class="ws-del"
+                      title="Remove library path"
+                      @click=${(ev: PointerEvent) =>
+                        this.openConfirm(ev, {
+                          message: `Remove "${p.label}"? This invalidates any files referenced under it (you'd need to relink them).`,
+                          confirmLabel: 'Remove',
+                          onYes: () => libraryPaths.remove(p.id),
+                        })}
+                    ><ui-icon icon="la-trash"></ui-icon></button>
+                  </div>`,
+                )}
+          </div>
+          <div class="ws-toolbar" style="margin-top:6px">
+            <button class="btn" @click=${() => this.addLibraryPath()}>
+              <ui-icon icon="la-folder-plus"></ui-icon> Add library path…
+            </button>
+          </div>
         </div>
       </div>
     `;
   }
+
+  private onLibraryDragOver = (e: DragEvent) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation(); // don't let arrangement-app's drop handler also fire
+    e.dataTransfer.dropEffect = 'copy';
+    this.libDragOver = true;
+  };
+
+  private onLibraryDrop = async (e: DragEvent) => {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // Capture handle promises synchronously — DataTransfer clears once we await.
+    const handlePromises = Array.from(dt.items || [])
+      .filter((it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function')
+      .map((it) => (it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>);
+    if (!handlePromises.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.libDragOver = false;
+    const handles = await Promise.all(handlePromises);
+    for (const h of handles) {
+      if (h && h.kind === 'directory') await libraryPaths.add(h as FileSystemDirectoryHandle);
+    }
+  };
 
   private async addLibraryPath() {
     const picker = (window as any).showDirectoryPicker;

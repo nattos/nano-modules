@@ -68,6 +68,38 @@ describe('Library paths + HandleRef', () => {
     expect(kind).toBe('direct');
   }, 30000);
 
+  it('adds a library path from a folder dropped on the Settings drop zone', async () => {
+    const added = await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      store.setRightTab('settings');
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      const insp: any = document.querySelector('arrangement-app')!.shadowRoot!
+        .querySelector('arr-inspector');
+      const before = (window as any).__libraryPaths.paths.length;
+
+      const root = await navigator.storage.getDirectory();
+      const dropped = await root.getDirectoryHandle('dropped-lib', { create: true });
+      // Mirror a real folder drop: a DataTransfer whose item yields a dir handle.
+      const fakeEvent = {
+        dataTransfer: { items: [{ kind: 'file', getAsFileSystemHandle: async () => dropped }] },
+        preventDefault() {}, stopPropagation() {},
+      };
+      await insp.onLibraryDrop(fakeEvent);
+      const paths = (window as any).__libraryPaths.paths;
+      return { before, after: paths.length, hasDropped: paths.some((p: any) => p.label === 'dropped-lib') };
+    });
+    expect(added.after).toBeGreaterThanOrEqual(added.before + 1);
+    expect(added.hasDropped).toBe(true);
+
+    // The Settings tab shows the dropped library row.
+    const labels = await page.evaluate(() => {
+      const insp = document.querySelector('arrangement-app')!.shadowRoot!
+        .querySelector('arr-inspector')!.shadowRoot!;
+      return Array.from(insp.querySelectorAll('.lib-drop .ws-file .ws-name')).map((e) => e.textContent?.trim());
+    });
+    expect(labels).toContain('dropped-lib');
+  }, 30000);
+
   it('re-mounts a workspace stored relative to a library after reload', async () => {
     await page.evaluate(async () => {
       const root = await navigator.storage.getDirectory();
