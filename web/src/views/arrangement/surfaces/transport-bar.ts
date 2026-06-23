@@ -240,9 +240,7 @@ export class TransportBar extends MobxLitElement {
         </div>
       </div>
 
-      <div class="right">
-        ${meta.resolution.width}×${meta.resolution.height}
-      </div>
+      <div class="right"></div>
     `;
   }
 

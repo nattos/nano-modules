@@ -436,11 +436,11 @@ export class ArrClip extends MobxLitElement {
     if (!store.clipViewOpen) store.toggleClipView();
   };
 
-  /** Clicking the BODY selects the clip immediately (no time box) and moves it. */
+  /** Clicking/dragging the BODY does a time×track region selection (like the
+   *  grid lane) — NOT a clip move. Only the header moves the clip. */
   private onBodyDown = (e: PointerEvent) => {
     e.stopPropagation();
-    store.selectClipOnly(paths.clip(this.trackId, this.clip.id));
-    this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, false);
+    this.gridHost()?.beginRegionFromClient?.(e);
   };
 
   private onHandleDown(e: PointerEvent, mode: DragMode) {

@@ -404,7 +404,6 @@ export class ArrInspector extends MobxLitElement {
     return html`
       <div class="section-header">${track.kind === 'group' ? 'Group' : 'Track'} · ${track.name}</div>
       <div class="body">
-        <div class="row"><label>Clips</label><span class="val">${track.clips.length}</span></div>
         ${store.isMainBus(track)
           ? ''
           : html`<div class="row">

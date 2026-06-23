@@ -485,10 +485,6 @@ export class ArrGrid extends MobxLitElement {
     const selected = store.isTrackShownSelected(track.id);
     const dragSrc = this.reorderActive && this.draggedTrackId === track.id;
     const accent = track.color ?? 'var(--app-cat-control)';
-    const devices = track.sketch.devices;
-    const rail = isRail
-      ? store.composition.rails.find((r) => r.id === track.railId)
-      : undefined;
 
     return html`
       <div class="row ${isBus ? 'bus' : ''}">
@@ -537,18 +533,7 @@ export class ArrGrid extends MobxLitElement {
                 `}
           </div>
           <div class="h-bottom">
-            ${isRail
-              ? html`<span class="railrange"
-                  >${rail ? `${rail.range.min} … ${rail.range.max}` : 'rail'} ·
-                  ${store.railWriters(track.railId ?? '').length}w
-                  ${store.railReaders(track.railId ?? '').length}r</span
-                >`
-              : html`
-                  <span class="fxcount" title="${devices.length} device(s)">
-                    ${devices.length} fx
-                  </span>
-                  <arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>
-                `}
+            ${isRail ? '' : html`<arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>`}
           </div>
         </div>
         ${isRail

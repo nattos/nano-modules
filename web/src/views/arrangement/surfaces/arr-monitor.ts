@@ -112,7 +112,7 @@ export class ArrMonitor extends MobxLitElement {
     return html`
       <div class="head">
         <span>OUTPUT</span>
-        <span>${res.width}×${res.height} · Precise</span>
+        <span>${res.width}×${res.height}</span>
       </div>
       <div class="stage">
         <canvas></canvas>
