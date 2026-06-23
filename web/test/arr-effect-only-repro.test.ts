@@ -63,4 +63,20 @@ describe('effect-only clip re-activation (GPU)', () => {
     const p3 = await page.evaluate(() => (window as any).__arrEngine.readCenter());
     expect(isWhite(p3)).toBe(true);
   });
+
+  it('bakes the composition background at the compositor level (buildCompositeSketch)', async () => {
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => (document.getElementById('status') as HTMLElement)?.textContent === 'ready',
+      { timeout: 20_000 },
+    );
+    // A neutral (identity) effect over a custom green background → the output IS
+    // the background, proving the solid base is baked into the composite.
+    await page.evaluate(() => (window as any).__arrEngine.showBgProbe('#00cc44'));
+    await page.waitForFunction(() => (window as any).__arrEngine.frames > 4, { timeout: 25_000 });
+    const px = await page.evaluate(() => (window as any).__arrEngine.readCenter());
+    expect(Math.abs(px.r - 0)).toBeLessThan(24);
+    expect(Math.abs(px.g - 204)).toBeLessThan(28);
+    expect(Math.abs(px.b - 68)).toBeLessThan(28);
+  });
 });

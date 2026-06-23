@@ -22,7 +22,7 @@
 
 import type { Sketch, InstanceState, ChainEntry, Wire } from '../../../sketch-types';
 import type { ShowSketchOpts } from './arr-engine';
-import type { Clip, Device } from '../model/composition';
+import type { Clip, Device, BackgroundConfig } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
 import { solidSketch } from './slice-sketches';
@@ -77,6 +77,14 @@ export interface CompositeLayerInput {
 
 const BLEND = 'composite.blend';
 
+/** Parse '#rgb' / '#rrggbb' → normalized [r,g,b] in 0..1 (black on failure). */
+function hexToRgb01(hex: string): [number, number, number] {
+  const h = (hex || '').replace('#', '');
+  const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  const v = (i: number) => { const x = parseInt(n.slice(i, i + 2), 16) / 255; return Number.isFinite(x) ? x : 0; };
+  return n.length >= 6 ? [v(0), v(2), v(4)] : [0, 0, 0];
+}
+
 /**
  * Build ONE sketch that composites a STACK of engine layers (top track first)
  * into the final image, distinguishing the two kinds of clip:
@@ -90,12 +98,15 @@ const BLEND = 'composite.blend';
  *     chain inline and process the running accumulator (the composite of the
  *     tracks above it); per-track opacity rides the reserved `__opacity__` key.
  *
- * The accumulator starts transparent (the executor feeds the first entry
- * transparent black). Returns null when no layer contributes. A `sig` lets the
- * bridge re-issue only when the composite changes.
+ * The accumulator starts from the composition BACKGROUND: an opaque solid-color
+ * base (black, or `bg.color`) is laid down first so every clip composites over
+ * it — baked into the engine output, not just the monitor. `transparent` (or no
+ * bg) keeps the old transparent base. Returns null when no layer contributes. A
+ * `sig` lets the bridge re-issue only when the composite changes.
  */
 export function buildCompositeSketch(
   layers: CompositeLayerInput[],
+  bg?: BackgroundConfig,
 ): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
   const bundles = new Set<string>();
   const chain: ChainEntry[] = [];
@@ -117,6 +128,17 @@ export function buildCompositeSketch(
   // inline (so they execute + can be wired) yet must NOT advance the texture
   // accumulator (a blend reads `<accKey>.tex_out`, which a mod node lacks).
   const isMod = (t: string) => t.startsWith('mod.');
+
+  // Background base: an opaque solid-color layer UNDER all clips (so the bg is
+  // baked into the composite, revealed by clip transparency / between clips).
+  // Only when there ARE clips — an empty timeline renders nothing (the monitor
+  // draws its own backdrop). `transparent` keeps the old transparent base.
+  const bgMode = bg?.mode ?? 'black';
+  if (layers.length > 0 && bgMode !== 'transparent') {
+    const rgb = bgMode === 'custom' ? hexToRgb01(bg?.color ?? '#000000') : [0, 0, 0];
+    push('source.solid_color', 'arr_bg', { color: rgb });
+    accKey = 'arr_bg';
+  }
 
   for (const { clip, opacity, blendMode } of layers) {
     const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));

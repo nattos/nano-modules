@@ -8,6 +8,7 @@
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
+import { buildCompositeSketch } from './views/arrangement/engine/clip-sketch';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -61,6 +62,19 @@ async function clearComposite() {
   engine.deleteSketch(COMP);
   await engine.showComposite([]); // playhead off all clips → empty composite
 }
+// Background baked at the COMPOSITOR level: a neutral effect-only clip over a
+// custom background, built through buildCompositeSketch — the output should read
+// as the background color (the effect passes the bg base through).
+async function showBgProbe(color: string) {
+  frames = 0;
+  const clip = {
+    id: 'p',
+    sketch: { devices: [{ id: 'b', moduleType: 'color.tone.brightness_contrast', name: '', capabilities: [], state: { brightness: 0, contrast: 0 } }] },
+  } as any;
+  const r = buildCompositeSketch([{ clip, opacity: 1 }], { mode: 'custom', color });
+  if (r) await engine.showComposite([{ sketchId: COMP, sketch: r.sketch, opts: r.opts }]);
+}
+
 // UPDATE path: the composite never empties — it's re-issued (updateSketch) with a
 // different chain (a plain solid, no brightness), as when the playhead moves to a
 // different clip. Returning to the brightness chain must re-render white.
@@ -78,6 +92,7 @@ async function showSolidOnly() {
   showBrightness,
   clearComposite,
   showSolidOnly,
+  showBgProbe,
   get frames() { return frames; },
   readCenter,
 };

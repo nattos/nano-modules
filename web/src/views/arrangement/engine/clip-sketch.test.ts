@@ -18,7 +18,7 @@ describe('buildCompositeSketch', () => {
       { clip: clip('A', 'source.solid_color'), opacity: 1 }, // top source = accumulator
       { clip: clip('B', 'source.noise'), opacity: 1 }, // source → blend over A
       { clip: clip('C', 'color.invert'), opacity: 1 }, // effect → inline on the composite
-    ])!;
+    ], { mode: 'transparent' })!;
     expect(r).not.toBeNull();
     const types = r.sketch.chain!.map((e) => e.module_type);
     expect(types).toContain('source.solid_color');
@@ -40,7 +40,7 @@ describe('buildCompositeSketch', () => {
   });
 
   it('a lone effect-only clip processes the transparent base (no blend, no wires)', () => {
-    const r = buildCompositeSketch([{ clip: clip('E', 'color.invert'), opacity: 1 }])!;
+    const r = buildCompositeSketch([{ clip: clip('E', 'color.invert'), opacity: 1 }], { mode: 'transparent' })!;
     expect(r.sketch.chain!.map((e) => e.module_type)).toEqual(['color.invert']);
     expect(r.sketch.wires).toEqual([]);
   });
@@ -50,7 +50,7 @@ describe('buildCompositeSketch', () => {
       { clip: clip('A', 'source.noise'), opacity: 1 },
       { clip: clip('B', 'source.noise'), opacity: 0.5, blendMode: 2 }, // source → blend
       { clip: clip('C', 'color.invert'), opacity: 0.3 }, // effect → __opacity__
-    ])!;
+    ], { mode: 'transparent' })!;
     const blend = r.sketch.chain!.find((e) => e.module_type === 'composite.blend')!;
     const bState = r.sketch.instances![blend.instance_key].state as any;
     expect(bState.opacity).toBe(0.5);
@@ -82,11 +82,43 @@ describe('buildCompositeSketch', () => {
     expect(buildCompositeSketch([])).toBeNull();
   });
 
+  describe('composite background base', () => {
+    it('default (black) lays an opaque solid base UNDER all clips', () => {
+      const r = buildCompositeSketch([{ clip: clip('A', 'source.noise'), opacity: 1 }])!;
+      const base = r.sketch.chain![0];
+      expect(base.module_type).toBe('source.solid_color');
+      expect(base.instance_key).toBe('arr_bg');
+      expect((r.sketch.instances!['arr_bg'].state as any).color).toEqual([0, 0, 0]);
+      // The clip composites OVER the base (a blend appears even for the 1st layer).
+      expect(r.sketch.chain!.some((e) => e.module_type === 'composite.blend')).toBe(true);
+    });
+
+    it('custom color sets the base color (hex → normalized rgb)', () => {
+      const r = buildCompositeSketch(
+        [{ clip: clip('A', 'source.noise'), opacity: 1 }],
+        { mode: 'custom', color: '#ff8000' },
+      )!;
+      const c = (r.sketch.instances!['arr_bg'].state as any).color as number[];
+      expect(c[0]).toBeCloseTo(1);
+      expect(c[1]).toBeCloseTo(128 / 255);
+      expect(c[2]).toBeCloseTo(0);
+    });
+
+    it('transparent adds NO base (keeps a transparent accumulator)', () => {
+      const r = buildCompositeSketch([{ clip: clip('A', 'source.noise'), opacity: 1 }], { mode: 'transparent' })!;
+      expect(r.sketch.chain!.some((e) => e.instance_key === 'arr_bg')).toBe(false);
+    });
+
+    it('an empty stack never gets a base (renders nothing)', () => {
+      expect(buildCompositeSketch([], { mode: 'black' })).toBeNull();
+    });
+  });
+
   it('a video clip uses source.video.file as its source and composites over', () => {
     const r = buildCompositeSketch([
       { clip: clip('A', 'source.noise'), opacity: 1 }, // top background
       { clip: clip('V', 'source.video.file'), opacity: 1 }, // video below → blend over
-    ])!;
+    ], { mode: 'transparent' })!;
     const types = r.sketch.chain!.map((e) => e.module_type);
     expect(types).toContain('source.video.file');
     expect(types.filter((t) => t === 'composite.blend').length).toBe(1);

@@ -296,6 +296,7 @@ export class EngineBridge {
     const render = engineLayers.length
       ? buildCompositeSketch(
           engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode })),
+          store.composition.meta.background,
         )
       : null;
 
