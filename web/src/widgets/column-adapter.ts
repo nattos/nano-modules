@@ -56,6 +56,9 @@ export interface ColumnCapabilities {
   typeEditing: boolean;
   /** Copy/paste of effect cards (selectable copy/paste). */
   clipboard: boolean;
+  /** Self-contained drag-to-reorder cards + drag-from-chip insertion. When
+   *  false the host drives reordering itself via callbacks (the IDE). */
+  reorder?: boolean;
 }
 
 /** Reactive reads + plugin/engine lookups. */
@@ -101,6 +104,8 @@ export interface ColumnController {
   beginInsertEffect(sketchId: string, colIdx: number, insertIdx: number, moduleType: string): { edit: EditHandle; instanceKey: string };
   updateInsertEffect(edit: EditHandle, sketchId: string, colIdx: number, insertIdx: number, instanceKey: string, newModuleType: string): void;
   cancelInsertEffect(edit: EditHandle): void;
+  /** Move the effect at `from` so it lands at insertion index `to` (caps.reorder). */
+  moveEffect?(sketchId: string, colIdx: number, from: number, to: number): void;
 
   // clipboard (caps.clipboard)
   snapshotEffect(sketchId: string, instanceKey: string): EffectClipboard | null;

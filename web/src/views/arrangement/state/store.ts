@@ -124,6 +124,17 @@ function carveTrackSpan(track: Track, exceptId: string, start: number, end: numb
   track.clips = next;
 }
 
+/**
+ * Move `arr[from]` so it lands at insertion index `to` (the index in the
+ * pre-removal array), adjusting for the removal shift. In-place.
+ */
+function moveInArray<T>(arr: T[], from: number, to: number) {
+  if (from < 0 || from >= arr.length || from === to) return;
+  const [item] = arr.splice(from, 1);
+  const dest = to > from ? to - 1 : to;
+  arr.splice(Math.max(0, Math.min(dest, arr.length)), 0, item);
+}
+
 export class ArrangementStore {
   // ── Persisted document ────────────────────────────────────────────────
   composition: Composition = makeFakeComposition();
@@ -1238,6 +1249,14 @@ export class ArrangementStore {
     }, coalesceKey);
   }
 
+  /** Reorder: move the clip device at `from` to insertion index `to`. */
+  moveClipDevice(trackId: string, clipId: string, from: number, to: number) {
+    this.mutate('reorder device', (d) => {
+      const devs = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId)?.sketch.devices;
+      if (devs) moveInArray(devs, from, to);
+    });
+  }
+
   // ── Track device chain edits (track-level sketch; same shape as clip ones) ──
   setTrackDeviceField(trackId: string, deviceId: string, key: string, value: unknown) {
     this.mutate('set param', (d) => {
@@ -1288,6 +1307,14 @@ export class ArrangementStore {
       const i = t.sketch.devices.findIndex((x) => x.id === deviceId);
       if (i >= 0) t.sketch.devices.splice(i, 1);
     }, coalesceKey);
+  }
+
+  /** Reorder: move the track device at `from` to insertion index `to`. */
+  moveTrackDevice(trackId: string, from: number, to: number) {
+    this.mutate('reorder device', (d) => {
+      const devs = d.tracks.find((x) => x.id === trackId)?.sketch.devices;
+      if (devs) moveInArray(devs, from, to);
+    });
   }
 
   /** Set one field on a clip device's param state (a real param edit). */

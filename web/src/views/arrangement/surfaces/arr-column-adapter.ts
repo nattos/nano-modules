@@ -33,6 +33,7 @@ const CAPS: ColumnCapabilities = {
   smoothing: false,
   typeEditing: true,
   clipboard: false,
+  reorder: true,
 };
 
 const AVAILABLE: AvailableEffect[] = EFFECT_CATALOG.filter((c) => c.type !== VIDEO_SOURCE_TYPE).map((c) => ({
@@ -53,6 +54,8 @@ export interface DeviceTarget {
   replace(deviceId: string, snap: Partial<Device>, ck?: string): void;
   insertAt(index: number, type: string, ck?: string): string | null;
   remove(deviceId: string, ck?: string): void;
+  /** Move the device at chain index `from` to insertion index `to`. */
+  move(from: number, to: number): void;
   /**
    * The engine instance key this device renders under, for reading live engine
    * telemetry (modulationData). Only clip targets render through the engine;
@@ -70,6 +73,7 @@ export function clipTarget(trackId: string, clipId: string): DeviceTarget {
     replace: (d, s, ck) => store.replaceClipDevice(trackId, clipId, d, s, ck),
     insertAt: (i, t, ck) => store.insertClipDeviceAt(trackId, clipId, i, t, ck),
     remove: (d, ck) => store.removeClipDevice(trackId, clipId, d, ck),
+    move: (from, to) => store.moveClipDevice(trackId, clipId, from, to),
     engineKeyFor: (d) => clipInstanceKey(clipId, d),
   };
 }
@@ -83,6 +87,7 @@ export function trackTarget(trackId: string): DeviceTarget {
     replace: (d, s, ck) => store.replaceTrackDevice(trackId, d, s, ck),
     insertAt: (i, t, ck) => store.insertTrackDeviceAt(trackId, i, t, ck),
     remove: (d, ck) => store.removeTrackDevice(trackId, d, ck),
+    move: (from, to) => store.moveTrackDevice(trackId, from, to),
   };
 }
 
@@ -318,6 +323,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
       this.target.setType(instanceKey, type, (edit as ArrEditHandle)._ck ?? `retype:${instanceKey}`);
     },
     cancelInsertEffect: (edit) => edit.cancel(),
+    moveEffect: (_s, _c, from, to) => this.target.move(from, to),
 
     // clipboard / smoothing / wiring are capability-gated off → never invoked.
     snapshotEffect: (): EffectClipboard | null => null,

@@ -37,6 +37,36 @@ describe('clip mutual exclusion (carve)', () => {
   });
 });
 
+describe('device reorder (moveClipDevice)', () => {
+  let trk: string;
+  let clip: string;
+  beforeEach(() => {
+    store.clearSelection();
+    trk = store.addTrack();
+    clip = store.createEmptyClip(trk, 0, 8)!.split('/')[2];
+    store.addClipDeviceType(trk, clip, 'source.solid_color');
+    store.addClipDeviceType(trk, clip, 'color.saturate');
+    store.addClipDeviceType(trk, clip, 'color.invert');
+  });
+  const types = () => store.trackById(trk)!.clips.find((c) => c.id === clip)!.sketch.devices.map((d) => d.moduleType);
+
+  it('moves an item down to an insertion index (removal shift applied)', () => {
+    // [solid, saturate, invert] — move index 0 to insertion index 3 (the end).
+    store.moveClipDevice(trk, clip, 0, 3);
+    expect(types()).toEqual(['color.saturate', 'color.invert', 'source.solid_color']);
+  });
+
+  it('moves an item up to an earlier index', () => {
+    store.moveClipDevice(trk, clip, 2, 0); // invert → front
+    expect(types()).toEqual(['color.invert', 'source.solid_color', 'color.saturate']);
+  });
+
+  it('no-op when dropping at its own slot', () => {
+    store.moveClipDevice(trk, clip, 1, 1);
+    expect(types()).toEqual(['source.solid_color', 'color.saturate', 'color.invert']);
+  });
+});
+
 describe('time-box content move', () => {
   it('splits at the box edges and shifts the in-box content', () => {
     store.clearSelection();

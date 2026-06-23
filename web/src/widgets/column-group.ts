@@ -927,7 +927,10 @@ export class ColumnGroup extends MobxLitElement {
           <div class="effect-card-header"
             @pointerdown=${(e: PointerEvent) => {
               selectOnPointerDown(e);
-              if (!isEditingType) this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
+              if (isEditingType) return;
+              // Self-contained reorder (arrangement) vs. host-driven drag (IDE).
+              if (this.ds.caps.reorder) this.beginCardDrag(e, chainIdx);
+              else this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
             }}
             @dblclick=${(e: Event) => this.onHeaderDblClick(e, entry)}>
             <button
@@ -1716,8 +1719,8 @@ export class ColumnGroup extends MobxLitElement {
           <button
             class="cat-chip"
             style=${`--chip:${categoryColor(cat)}`}
-            title=${`Insert ${cat} effect`}
-            @click=${() => this.insertCategoryEffect(cat)}
+            title=${`Insert ${cat} effect — or drag to a position`}
+            @pointerdown=${(e: PointerEvent) => this.onChipPointerDown(e, cat)}
           >
             <ui-icon icon=${CATEGORY_ICON[cat] ?? 'la-plus'}></ui-icon>
             <span>${cat}</span>
@@ -1752,8 +1755,7 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Insert the category's default effect as a committed edit and select it — it
    *  does NOT open the type editor (double-click the card name to retype). */
-  private insertCategoryEffect(category: string) {
-    const insertIdx = this.computeInsertIdx();
+  private insertCategoryEffectAt(category: string, insertIdx: number) {
     const { edit } = this.ctl.beginInsertEffect(
       this.sketchId, this.colIdx, insertIdx, this.categoryDefault(category));
     edit.accept();
@@ -1765,6 +1767,85 @@ export class ColumnGroup extends MobxLitElement {
         .querySelector(`.effect-card[data-chain-idx="${insertIdx}"]`)
         ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
+  }
+
+  // ── Self-contained drag (caps.reorder): drag a chip to insert at a position,
+  //    or drag a card header to reorder. Shows the insert cursor while dragging. ──
+  private drag: {
+    kind: 'card' | 'chip';
+    from: number;           // card: source chainIdx; chip: -1
+    category?: string;      // chip: which category
+    startX: number; startY: number;
+    active: boolean;        // crossed the move threshold
+    targetIdx: number;      // current insertion index under the pointer
+  } | null = null;
+
+  private onChipPointerDown(e: PointerEvent, category: string) {
+    if (e.button !== 0) return;
+    this.startDrag(e, { kind: 'chip', from: -1, category });
+  }
+
+  private beginCardDrag(e: PointerEvent, chainIdx: number) {
+    this.startDrag(e, { kind: 'card', from: chainIdx });
+  }
+
+  private startDrag(e: PointerEvent, partial: { kind: 'card' | 'chip'; from: number; category?: string }) {
+    this.drag = { ...partial, startX: e.clientX, startY: e.clientY, active: false, targetIdx: -1 };
+    const move = (ev: PointerEvent) => this.onDragMove(ev);
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      this.onDragUp(ev);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  private onDragMove(e: PointerEvent) {
+    const d = this.drag;
+    if (!d) return;
+    if (!d.active) {
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 4) return;
+      d.active = true;
+      if (d.kind === 'card') this.markDragging(d.from, true);
+    }
+    const pts = this.getInsertionPoints();
+    if (pts.length === 0) return;
+    let best = pts[0];
+    let bestDist = Infinity;
+    for (const p of pts) {
+      const dist = Math.abs(p.y - e.clientY);
+      if (dist < bestDist) { bestDist = dist; best = p; }
+    }
+    d.targetIdx = best.insertIdx;
+    const colEl = this.renderRoot.querySelector('.column') as HTMLElement | null;
+    if (colEl) this.showInsertMarker(best.y - colEl.getBoundingClientRect().top);
+  }
+
+  private onDragUp(_e: PointerEvent) {
+    const d = this.drag;
+    this.drag = null;
+    this.hideInsertMarker();
+    if (d?.kind === 'card') this.markDragging(d.from, false);
+    if (!d) return;
+    if (!d.active) {
+      // A plain click (no drag): a chip inserts at the default point; a card
+      // header just selects (already handled on pointerdown).
+      if (d.kind === 'chip' && d.category) this.insertCategoryEffectAt(d.category, this.computeInsertIdx());
+      return;
+    }
+    if (d.targetIdx < 0) return;
+    if (d.kind === 'chip' && d.category) {
+      this.insertCategoryEffectAt(d.category, d.targetIdx);
+    } else if (d.kind === 'card' && d.from !== d.targetIdx && d.from + 1 !== d.targetIdx) {
+      this.ctl.moveEffect?.(this.sketchId, this.colIdx, d.from, d.targetIdx);
+    }
+  }
+
+  private markDragging(chainIdx: number, on: boolean) {
+    const card = this.renderRoot.querySelector(`.effect-card[data-chain-idx="${chainIdx}"]`);
+    if (on) card?.setAttribute('dragging', '');
+    else card?.removeAttribute('dragging');
   }
 
   // ========================================================================
