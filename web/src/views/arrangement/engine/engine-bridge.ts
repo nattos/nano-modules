@@ -72,6 +72,12 @@ export class EngineBridge {
 
   /** Count of active video decode pumps (diagnostic / tests). */
   videoPumpCount(): number { return this.video?.pumpCount ?? 0; }
+  /** Decoded frames pushed to the executor so far (diagnostic). */
+  videoFramesInjected(): number { return this.video?.framesInjected ?? 0; }
+  /** Last video decode/inject error, if any (diagnostic). */
+  videoLastError(): string | null { return this.video?.lastError ?? null; }
+  /** Last pulled frame per clip {frame,handle,w,h} (diagnostic). */
+  videoLastPulled(): unknown { return this.video?.lastPulled ?? null; }
 
   /** Boot the engine on first real use; idempotent. */
   private ensureEngine(): ArrEngine {

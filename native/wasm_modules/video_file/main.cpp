@@ -29,9 +29,9 @@ static gpu::ComputePSO s_pso;
 void module_init() {
   state::init("source.video.file", {1, 0, 0},
     state::Schema()
-      // Host-injected decoded frame (not a chain input — the executor never
-      // overwrites a secondary field, so the host binding survives each frame).
-      .textureField("frame", state::SecondaryInput)
+      // The host injects the decoded frame into input SLOT 0 (the worker sets the
+      // instance's numeric "0" texture field; the executor binds it as slot 0,
+      // which render() reads via inputTexture(0)). Same path composite.blend uses.
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::TimeIndependent)
@@ -70,7 +70,8 @@ void render(void* self, int vp_w, int vp_h) {
   auto output = gpu::Device::renderTarget();
   if (!output.valid()) return;
 
-  auto frame = gpu::Device::textureForField("frame");
+  // The decoded frame is the host-injected input slot 0 (see schema comment).
+  auto frame = gpu::Device::inputTexture(0);
   if (!frame.valid()) {
     // No decoded frame bound yet → transparent (reveals the layers below).
     gpu_clear_texture(output.id, 0.f, 0.f, 0.f, 0.f);

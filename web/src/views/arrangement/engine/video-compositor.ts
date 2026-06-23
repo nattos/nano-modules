@@ -61,6 +61,14 @@ export class VideoCompositor {
   private opening = new Set<string>();
   private raf = 0;
 
+  // ── Diagnostics (read via the bridge) ──
+  /** Count of decoded frames pushed to the executor. */
+  framesInjected = 0;
+  /** Last error from a pull/open (pump errors are otherwise debug-only). */
+  lastError: string | null = null;
+  /** Last pulled frame index + the source texture handle (per clip). */
+  lastPulled: Record<string, { frame: number; handle: number; w: number; h: number }> = {};
+
   constructor(
     /** Push a decoded frame to the executor for `instanceKey`. */
     private readonly setInstanceTexture: (instanceKey: string, bitmap: ImageBitmap | null) => void,
@@ -184,12 +192,15 @@ export class VideoCompositor {
       const handle = await this.service.pull(p.clip, frame);
       if (handle <= 0 || !this.pumps.has(p.desc.clipId)) return;
       const tex = this.gpuHost.getTextureByHandle(handle);
-      if (!tex) return;
+      if (!tex) { this.lastError = `no texture for handle ${handle}`; return; }
       // Blit (and scale) to the composite render size so the source.video.file
       // copy is a straight 1:1 write.
       const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH);
+      this.lastPulled[p.desc.clipId] = { frame, handle, w: bitmap.width, h: bitmap.height };
       this.setInstanceTexture(p.desc.instanceKey, bitmap);
+      this.framesInjected++;
     } catch (err) {
+      this.lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       console.debug('[video-compositor] pump failed', err);
     } finally {
       p.busy = false;

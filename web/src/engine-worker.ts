@@ -617,14 +617,15 @@ function handleSetSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
 /**
  * Per-instance host-injected frame textures (the arrangement video pump →
  * `source.video.file` chain entries). Keyed by the global instance key; the
- * decoded frame is bound to that instance's `frame` field each tick.
+ * decoded frame is bound to that instance's input slot 0 each tick (the
+ * executor reads numeric texture field "0" to populate the slot).
  */
 const instanceTextures = new Map<string, { handle: number; width: number; height: number }>();
 
 function handleSetInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
   if (!bitmap) {
     instanceTextures.delete(instanceKey);
-    activeExecutor()?.getInstance(instanceKey)?.host.textureFields.delete('frame');
+    activeExecutor()?.getInstance(instanceKey)?.host.textureFields.delete('0');
     return;
   }
   if (!gpuHost || !gpuDevice) {
@@ -658,7 +659,9 @@ function applyInstanceTextures() {
   const ex = activeExecutor();
   if (!ex || instanceTextures.size === 0) return;
   for (const [instanceKey, entry] of instanceTextures) {
-    ex.getInstance(instanceKey)?.host.textureFields.set('frame', entry.handle);
+    // Bind to input slot 0 (numeric field) — the executor reads this to populate
+    // the instance's slot 0, which source.video.file reads via inputTexture(0).
+    ex.getInstance(instanceKey)?.host.textureFields.set('0', entry.handle);
   }
 }
 

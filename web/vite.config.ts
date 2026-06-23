@@ -35,6 +35,7 @@ export default defineConfig({
         thumbnailMipTestbed: resolve(__dirname, 'thumbnail-mip-testbed.html'),
         opfsThumbTestbed: resolve(__dirname, 'opfs-thumb-testbed.html'),
         warpTestbed: resolve(__dirname, 'warp-testbed.html'),
+        videoCompositorTestbed: resolve(__dirname, 'video-compositor-testbed.html'),
       },
     },
   },
