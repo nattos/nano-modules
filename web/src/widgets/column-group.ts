@@ -943,6 +943,7 @@ export class ColumnGroup extends MobxLitElement {
               .kind=${o.isTexture ? 'texture' : o.kindTag}
               .traceId=${traceId}
               .traceTarget=${target}
+              .traceSource=${this.adapter?.traceSource ?? null}
               .binding=${binding}
               @click=${(e: Event) => this.onOutputCardClick(e, chainIdx, o.fieldPath, o.schemaDef, tappingMode)}
               title="${tappingMode ? 'Click to create write tap' : o.displayName}"

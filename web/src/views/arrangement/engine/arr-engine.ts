@@ -118,6 +118,20 @@ export class ArrEngine {
   private instantiated = new Set<string>();
   /** Stable trace slot the monitor draws from; re-targeted on each show. */
   private monitorTraceId = 'arr-monitor';
+  /** Composite/layer output traces (set by show*); merged with device traces. */
+  private baseTraces: TracePoint[] = [];
+  /** Per-device texture traces (set by the bridge's TraceSource). */
+  private extraTraces: TracePoint[] = [];
+
+  private applyTraces() {
+    this.proxy.setTracePoints([...this.baseTraces, ...this.extraTraces]);
+  }
+
+  /** Replace the per-device texture traces (merged with the base composite trace). */
+  setExtraTracePoints(tps: TracePoint[]) {
+    this.extraTraces = tps;
+    this.applyTraces();
+  }
 
   /**
    * Show `sketch` under `sketchId` and route its output to the monitor trace.
@@ -150,11 +164,8 @@ export class ArrEngine {
     }
     await delay(30);
     if (opts.traceId) this.monitorTraceId = opts.traceId;
-    const trace: TracePoint = {
-      id: this.monitorTraceId,
-      target: { type: 'sketch_output', sketchId },
-    };
-    this.proxy.setTracePoints([trace]);
+    this.baseTraces = [{ id: this.monitorTraceId, target: { type: 'sketch_output', sketchId } }];
+    this.applyTraces();
   }
 
   /**
@@ -189,9 +200,8 @@ export class ArrEngine {
     }
     this.showCount++;
     await delay(30);
-    this.proxy.setTracePoints(
-      layers.map((l) => ({ id: l.sketchId, target: { type: 'sketch_output' as const, sketchId: l.sketchId } })),
-    );
+    this.baseTraces = layers.map((l) => ({ id: l.sketchId, target: { type: 'sketch_output' as const, sketchId: l.sketchId } }));
+    this.applyTraces();
   }
 
   /** Drop a composite layer's sketch entirely. */

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
 import { ArrColumnAdapter, clipTarget, trackTarget } from '../surfaces/arr-column-adapter';
 import { clipInstanceKey } from '../engine/clip-sketch';
+import { engineBridge } from '../engine/engine-bridge';
 
 /**
  * Engine wire-modulation telemetry → store → column adapter (task #40).
@@ -61,6 +62,23 @@ describe('arrangement modulation telemetry', () => {
     // Removal drops it.
     store.applyPluginStatesDiff({ changed: {}, removed: [clipInstanceKey('clipA', 'lfo')] });
     expect(adapter.data.pluginState('lfo')).toBeUndefined();
+  });
+
+  it('traced texture frames route through the store + bridge TraceSource', () => {
+    const flag = { closed: false };
+    const fakeBitmap = { close() { flag.closed = true; } } as unknown as ImageBitmap;
+    store.setTracedFrames({ 'tex/a': fakeBitmap });
+    const g0 = store.traceGeneration;
+    expect(engineBridge.traceSource.frame('tex/a')).toBe(fakeBitmap);
+    expect(engineBridge.traceSource.generation).toBe(g0);
+    // A new frame set closes the previous bitmap + bumps the generation.
+    store.setTracedFrames({});
+    expect(flag.closed).toBe(true);
+    expect(engineBridge.traceSource.frame('tex/a')).toBeUndefined();
+    expect(engineBridge.traceSource.generation).toBe(g0 + 1);
+    // The clip adapter exposes the same trace seam to its column-group.
+    const adapter = new ArrColumnAdapter(clipTarget('t', 'c'));
+    expect(adapter.traceSource).toBe(engineBridge.traceSource);
   });
 
   it('track adapter has no engine telemetry (tracks do not render through the engine)', () => {

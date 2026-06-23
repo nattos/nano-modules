@@ -23,9 +23,12 @@ since making the two surfaces look and feel the same is a deliberate goal.
 > traces are LIVE — the engine's `pluginStatesDiff` is routed to `store.pluginStates` and read by the
 > adapter's `pluginState()`, so an LFO `output` spark animates. (c) the wire-mod inspector is in
 > (select an arc → combine/curve/magnitude/envelope/scale/delay).
-> Still open: **TEXTURE output traces** (tex_out previews) need per-device trace capture the composite
-> compositor doesn't do (it traces only `sketch_output`); and **rail/return endpoints** for wires are
-> punted (`connectSketchWire` requires same-sketch). The `Wire` model is instanceKey-based and ready.
+> (d) TEXTURE output traces are LIVE too — `<texture-monitor>` takes an injectable `TraceSource`; the
+> arrangement's (on `engineBridge`) registers each device's clip-local chain_entry target, remaps it
+> to the live composite chain index, captures via the engine, and routes frames to `store.tracedFrames`.
+> Caveat: a clip's device only previews while the clip is ACTIVE at the playhead (it must be in the
+> composite). Still open: **rail/return endpoints** for wires (`connectSketchWire` requires same-sketch;
+> the `Wire` model is instanceKey-based and ready) and migrating the IDE off `taps-overlay`.
 
 ---
 

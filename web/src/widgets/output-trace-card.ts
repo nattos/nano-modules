@@ -17,6 +17,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding, FieldEditorElement } from './field-editor';
 import type { TracePoint } from '../engine-types';
+import type { TraceSource } from '../state/trace-controller';
 
 import './texture-monitor';
 import './spark-chart';
@@ -30,6 +31,8 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
   @property() traceId = '';
   @property({ attribute: false }) traceTarget: TracePoint['target'] | null = null;
   @property({ attribute: false }) binding: FieldBinding | null = null;
+  /** Injected trace seam (passed to the texture-monitor); null = IDE default. */
+  @property({ attribute: false }) traceSource: TraceSource | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
   getControlElements(): HTMLElement[] { return [this]; }
@@ -79,6 +82,7 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
         <texture-monitor
           .traceId=${this.traceId}
           .traceTarget=${this.traceTarget}
+          .traceSource=${this.traceSource}
           .width=${64}
           .height=${36}
         ></texture-monitor>

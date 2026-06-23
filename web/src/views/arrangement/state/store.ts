@@ -247,6 +247,15 @@ export class ArrangementStore {
   pluginStates: Record<string, Record<string, unknown>> = {};
 
   /**
+   * Per-device traced texture thumbnails (ImageBitmap), keyed by trace id (the
+   * output-trace-card's traceId). Output texture monitors read these via the
+   * arrangement TraceSource. `traceGeneration` bumps each frame so the monitors'
+   * autoruns re-draw. Not persisted.
+   */
+  tracedFrames: Record<string, ImageBitmap> = {};
+  traceGeneration = 0;
+
+  /**
    * Real plugin schemas discovered by the engine (keyed by effect id, e.g.
    * `color.hsl`). The inspector prefers these over the catalog's float-only
    * synthesis so editors are complete (color / bool / enum / vec, exact ranges).
@@ -258,7 +267,7 @@ export class ArrangementStore {
   constructor() {
     makeAutoObservable<
       ArrangementStore,
-      'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson'
+      'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
     >(
       this,
       {
@@ -266,6 +275,8 @@ export class ArrangementStore {
         saveTimer: false,
         persistenceEnabled: false,
         lastSavedJson: false,
+        // Bitmaps aren't deep-observed; reactivity rides `traceGeneration`.
+        tracedFrames: false,
       },
       { autoBind: true },
     );
@@ -496,6 +507,15 @@ export class ArrangementStore {
       const ps = this.pluginStates;
       for (const k of diff.removed) mobxRemove(ps as object, k);
       for (const k of changedKeys) mobxSet(ps as object, k, diff.changed[k]);
+    });
+  }
+
+  /** Replace the per-device traced textures (closes the previous frame's). */
+  setTracedFrames(frames: Record<string, ImageBitmap>) {
+    runInAction(() => {
+      for (const k in this.tracedFrames) this.tracedFrames[k]?.close();
+      this.tracedFrames = frames;
+      this.traceGeneration++;
     });
   }
 

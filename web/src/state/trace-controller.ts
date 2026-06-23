@@ -26,6 +26,20 @@ export interface TraceRegistration {
   size?: { width: number; height: number };
 }
 
+/**
+ * The seam a `<texture-monitor>` uses to register a trace + read its captured
+ * frame. The IDE backs this with the global controller + appState; other
+ * surfaces (the arrangement) inject their own (own engine, own frame store).
+ */
+export interface TraceSource {
+  register(reg: TraceRegistration): void;
+  unregister(id: string): void;
+  /** The latest captured ImageBitmap for a trace id, or undefined. */
+  frame(traceId: string): ImageBitmap | undefined;
+  /** Bumps whenever frames change (drives the monitor's reactive redraw). */
+  readonly generation: number;
+}
+
 /** Low-res thumbnail dimensions — used when a 'low' registration omits its own size. */
 const LOW_RES = { width: 128, height: 72 };
 

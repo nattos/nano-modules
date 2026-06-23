@@ -21,6 +21,8 @@ import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
 import type { Clip } from '../model/composition';
+import type { TracePoint } from '../../../engine-types';
+import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
 /** Fired once per rendered frame after the latest engine frame is retained. */
 export type CompositeListener = () => void;
@@ -48,6 +50,51 @@ export class EngineBridge {
   private compositeFrame: ImageBitmap | null = null;
   /** Number of active ENGINE layers folded into the composite (diagnostic). */
   private engineLayerN = 0;
+
+  /** Composite chain instance keys (in order) — maps a device's composite key to
+   *  its chain index, for remapping per-device texture trace targets. */
+  private compositeKeys: string[] = [];
+  /** Per-device texture trace registrations (from output texture monitors). */
+  private deviceRegs = new Map<string, TraceRegistration>();
+
+  /**
+   * The TraceSource injected into the arrangement's `<column-group>` so its
+   * output texture monitors capture per-device `tex_out` from THIS engine. Each
+   * monitor registers a clip-local chain_entry target; we remap it to the
+   * composite chain and feed the device traces alongside the composite trace.
+   */
+  readonly traceSource: TraceSource = {
+    register: (reg) => { this.deviceRegs.set(reg.id, reg); this.refreshDeviceTraces(); },
+    unregister: (id) => { if (this.deviceRegs.delete(id)) this.refreshDeviceTraces(); },
+    frame: (id) => store.tracedFrames[id],
+    get generation() { return store.traceGeneration; },
+  };
+
+  /** Remap a monitor's clip-local chain_entry target to the live composite. */
+  private remapDeviceTrace(reg: TraceRegistration): TracePoint | null {
+    const t = reg.target;
+    if (t.type !== 'chain_entry') return null;
+    if (!t.sketchId.startsWith('clip/')) return null; // tracks don't render via the engine
+    const [, trackId, clipId] = t.sketchId.split('/');
+    const dev = store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[t.chainIdx];
+    if (!dev) return null;
+    const idx = this.compositeKeys.indexOf(clipInstanceKey(clipId, dev.id));
+    if (idx < 0) return null; // clip not active at the playhead → no live frame
+    const tp: TracePoint = { id: reg.id, target: { type: 'chain_entry', sketchId: COMPOSITE_ID, colIdx: 0, chainIdx: idx, side: t.side } };
+    if (reg.size) tp.size = reg.size;
+    return tp;
+  }
+
+  /** Push the (remapped) per-device texture traces to the engine. */
+  private refreshDeviceTraces() {
+    if (!this.engine) return;
+    const tps: TracePoint[] = [];
+    for (const reg of this.deviceRegs.values()) {
+      const tp = this.remapDeviceTrace(reg);
+      if (tp) tps.push(tp);
+    }
+    this.engine.setExtraTracePoints(tps);
+  }
 
   /** Whether the playhead maps to any renderable engine layer. */
   hasContent = false;
@@ -137,8 +184,11 @@ export class EngineBridge {
       this.compositeFrame?.close();              // drop the previous composite
       this.compositeFrame = bmp;                 // retain (closed on replace)
     }
-    // Any other traced bitmap (shouldn't happen) must be freed.
-    for (const id in frames) if (id !== COMPOSITE_ID) frames[id].close();
+    // Per-device traced textures (output trace cards) → the store (which closes
+    // the previous frame's bitmaps and bumps the trace generation).
+    const deviceFrames: Record<string, ImageBitmap> = {};
+    for (const id in frames) if (id !== COMPOSITE_ID) deviceFrames[id] = frames[id];
+    store.setTracedFrames(deviceFrames);
     this.onCompositeCb?.();
   }
 
@@ -248,6 +298,8 @@ export class EngineBridge {
     if (!render) {
       if (this.compositeSig !== '') {
         this.compositeSig = '';
+        this.compositeKeys = [];
+        this.refreshDeviceTraces();
         this.engine?.deleteSketch(COMPOSITE_ID);
         void this.engine?.showComposite([]); // clear the trace → placeholder
         this.compositeFrame?.close();
@@ -258,9 +310,13 @@ export class EngineBridge {
     }
     if (render.sig === this.compositeSig) return;
     this.compositeSig = render.sig;
+    // Capture the composite chain order so per-device texture traces can map a
+    // device's composite key → its chain index.
+    this.compositeKeys = (render.sketch.chain ?? []).map((e) => (e as { instance_key?: string }).instance_key ?? '');
     void this.ensureEngine().showComposite([
       { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
     ]);
+    this.refreshDeviceTraces();
   }
 
   destroy() {

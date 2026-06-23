@@ -23,6 +23,7 @@ import type { Selectable, EffectClipboard, AvailableEffect } from '../../../stat
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Device } from '../model/composition';
 import { store } from '../state/store';
+import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { EFFECT_CATALOG, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
 import { clipInstanceKey } from '../engine/clip-sketch';
@@ -375,4 +376,8 @@ export class ArrColumnAdapter implements ColumnAdapter {
 
   // ── taps: the shared wire-connect gesture, backed by this adapter ──
   get taps(): ColumnTaps { return this.wire; }
+
+  // ── trace seam: output texture monitors capture per-device tex_out from the
+  //    live composite engine (remapped clip-local → composite by the bridge). ──
+  get traceSource() { return engineBridge.traceSource; }
 }

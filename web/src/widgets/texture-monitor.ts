@@ -10,7 +10,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
-import { traceController } from '../state/trace-controller';
+import { traceController, type TraceSource } from '../state/trace-controller';
 import type { TracePoint } from '../engine-types';
 
 @customElement('texture-monitor')
@@ -20,6 +20,13 @@ export class TextureMonitor extends MobxLitElement {
 
   /** The trace target to capture. */
   @property({ attribute: false }) traceTarget: TracePoint['target'] | null = null;
+
+  /**
+   * Injectable trace seam (register + frame source). Defaults to the IDE's
+   * global controller + appState; the arrangement injects its own (own engine,
+   * own frame store).
+   */
+  @property({ attribute: false }) traceSource: TraceSource | null = null;
 
   /**
    * Capture width in pixels — the internal canvas/trace resolution. In the
@@ -106,8 +113,9 @@ export class TextureMonitor extends MobxLitElement {
     this.registerTrace();
 
     this.frameDisposer = autorun(() => {
-      const _gen = appState.local.engine.frameGeneration;
-      const bitmap = appState.local.engine.tracedFrames[this.traceId];
+      const bitmap = this.traceSource
+        ? (this.traceSource.generation, this.traceSource.frame(this.traceId))
+        : (appState.local.engine.frameGeneration, appState.local.engine.tracedFrames[this.traceId]);
       if (!bitmap) return;
       const canvas = this.renderRoot.querySelector('canvas') as HTMLCanvasElement | null;
       if (!canvas) return;
@@ -122,15 +130,15 @@ export class TextureMonitor extends MobxLitElement {
     super.disconnectedCallback();
     this.frameDisposer?.();
     this.frameDisposer = null;
-    traceController.unregister(this.traceId);
+    (this.traceSource ?? traceController).unregister(this.traceId);
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution')) {
-      // Re-register if target, ID, or resolution changed
+    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource')) {
+      // Re-register if target, ID, resolution, or the source changed.
       if (changed.has('traceId')) {
         const oldId = changed.get('traceId') as string;
-        if (oldId) traceController.unregister(oldId);
+        if (oldId) (this.traceSource ?? traceController).unregister(oldId);
       }
       this.registerTrace();
     }
@@ -143,7 +151,7 @@ export class TextureMonitor extends MobxLitElement {
     // mismatch on a thumbnail is harmless and the next register() call
     // will refresh it.
     const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
-    traceController.register({
+    (this.traceSource ?? traceController).register({
       id: this.traceId,
       target: this.traceTarget,
       resolution: this.resolution,

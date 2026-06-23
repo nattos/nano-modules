@@ -19,6 +19,7 @@
 import type { PluginInfo, AvailableEffect, Selectable, EffectClipboard } from '../state/types';
 import type { Sketch, Wire, ParamSmoothing, FieldConnectInfo } from '../sketch-types';
 import type { ParamValue } from '../engine-types';
+import type { TraceSource } from '../state/trace-controller';
 
 export type { PluginInfo, FieldConnectInfo };
 
@@ -140,4 +141,7 @@ export interface ColumnAdapter {
   data: ColumnDataSource;
   controller: ColumnController;
   taps: ColumnTaps;
+  /** Trace seam for output texture monitors. Omit to use the IDE default
+   *  (global controller + appState). */
+  traceSource?: TraceSource;
 }
