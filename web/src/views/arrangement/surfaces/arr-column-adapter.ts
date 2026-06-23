@@ -235,7 +235,12 @@ export class ArrColumnAdapter implements ColumnAdapter {
       this.pluginCache.set(moduleType, plugin);
       return plugin;
     },
-    pluginState: (_instanceKey: string): Record<string, any> | undefined => undefined,
+    // instanceKey is the device id; translate to the engine key the live output
+    // state is published under, then read the store (so output traces animate).
+    pluginState: (instanceKey: string): Record<string, any> | undefined => {
+      const ek = this.target.engineKeyFor?.(instanceKey);
+      return ek ? store.pluginStates[ek] : undefined;
+    },
     // instanceKey is the device id (from getSketch); translate to the engine
     // key the live telemetry is published under, then read the store.
     modulation: (instanceKey: string): Record<string, FieldModulation> | undefined => {

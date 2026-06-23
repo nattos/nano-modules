@@ -18,12 +18,14 @@ since making the two surfaces look and feel the same is a deliberate goal.
 > toggle — click/drag a field port to connect; arcs draw in-column (`column-group`, scoped to
 > its shadow); double-click an arc to remove. `mod.*` sources/shapers (LFO, ADSR, Spectral LFO,
 > Remap, Smooth, Delay) are in the arrangement catalog with a declared `output`. NOT yet wired:
-> (a) **wires don't execute** in the arrangement compositor — connecting an LFO→param has no
-> audible/visual effect yet (the composite render ignores `ClipSketch.wires`); (b) **output trace
-> cards are display-only** — `caps.tracing` is on so output endpoints render, but the compositor
-> emits no per-device trace data, so monitors/sparks show defaults; (c) **rail/return endpoints**
-> for wires are punted (`connectSketchWire` requires same-sketch). The `Wire` model is instanceKey-
-> based and ready to extend.
+> **DONE since:** (a) wires now EXECUTE — `buildCompositeSketch` folds `ClipSketch.wires` into the
+> composite (remapped to `clip_<clipId>_<deviceId>`); the executor applies them. (b) SCALAR output
+> traces are LIVE — the engine's `pluginStatesDiff` is routed to `store.pluginStates` and read by the
+> adapter's `pluginState()`, so an LFO `output` spark animates. (c) the wire-mod inspector is in
+> (select an arc → combine/curve/magnitude/envelope/scale/delay).
+> Still open: **TEXTURE output traces** (tex_out previews) need per-device trace capture the composite
+> compositor doesn't do (it traces only `sketch_output`); and **rail/return endpoints** for wires are
+> punted (`connectSketchWire` requires same-sketch). The `Wire` model is instanceKey-based and ready.
 
 ---
 

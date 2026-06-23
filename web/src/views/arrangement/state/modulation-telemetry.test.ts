@@ -13,6 +13,7 @@ describe('arrangement modulation telemetry', () => {
   beforeEach(() => {
     // Reset the singleton's telemetry between cases.
     store.modulationData = {};
+    store.pluginStates = {};
   });
 
   it('applyModulationDataDiff applies changed + removed granularly', () => {
@@ -46,6 +47,20 @@ describe('arrangement modulation telemetry', () => {
     expect(adapter.data.modulation('devX')).toEqual({ amount: band });
     // An unknown device → no band, not a throw.
     expect(adapter.data.modulation('devNope')).toBeUndefined();
+  });
+
+  it('applyPluginStatesDiff routes published outputs; adapter translates device id → engine key', () => {
+    store.applyPluginStatesDiff({ changed: { [clipInstanceKey('clipA', 'lfo')]: { output: 0.73 } }, removed: [] });
+    expect(store.pluginStates[clipInstanceKey('clipA', 'lfo')].output).toBe(0.73);
+
+    const adapter = new ArrColumnAdapter(clipTarget('trk1', 'clipA'));
+    // The output trace spark reads this via the bare device id → engine key.
+    expect(adapter.data.pluginState('lfo')).toEqual({ output: 0.73 });
+    expect(adapter.data.pluginState('nope')).toBeUndefined();
+
+    // Removal drops it.
+    store.applyPluginStatesDiff({ changed: {}, removed: [clipInstanceKey('clipA', 'lfo')] });
+    expect(adapter.data.pluginState('lfo')).toBeUndefined();
   });
 
   it('track adapter has no engine telemetry (tracks do not render through the engine)', () => {

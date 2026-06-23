@@ -118,6 +118,9 @@ export class EngineBridge {
     // Wire-modulation telemetry → store, mirroring the IDE's
     // appState.local.engine.modulationData (sliders draw live mod bands from it).
     e.onModulationDataDiff = (diff) => store.applyModulationDataDiff(diff);
+    // Published instance state (outputs/broadcasts) → store, so output trace
+    // spark-charts animate with live values (e.g. an LFO's `output`).
+    e.onPluginStatesDiff = (diff) => store.applyPluginStatesDiff(diff);
     // Real plugin schemas → store, so the inspector renders complete editors
     // (color/bool/enum/vec) instead of the catalog's float-only synthesis.
     e.onPlugins = (plugins) => store.setEnginePlugins(plugins);

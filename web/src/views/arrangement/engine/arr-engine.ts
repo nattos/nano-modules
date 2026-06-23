@@ -57,6 +57,8 @@ export class ArrEngine {
   onError: ((message: string) => void) | null = null;
   /** Per-frame wire-modulation telemetry (keyed by engine instance key). */
   onModulationDataDiff: ((diff: StateDiff) => void) | null = null;
+  /** Per-frame published instance state (outputs/broadcasts), for output traces. */
+  onPluginStatesDiff: ((diff: StateDiff) => void) | null = null;
   /** Full plugin schemas as the worker discovers/warms them (for real editors). */
   onPlugins: ((plugins: PluginInfo[]) => void) | null = null;
   /** Union of effect ids discovered across loaded bundles (diagnostic). */
@@ -77,6 +79,7 @@ export class ArrEngine {
     this.proxy.onFps = (fps) => this.onFps?.(fps);
     this.proxy.onError = (m) => this.onError?.(m);
     this.proxy.onModulationDataDiff = (diff) => this.onModulationDataDiff?.(diff);
+    this.proxy.onPluginStatesDiff = (diff) => this.onPluginStatesDiff?.(diff);
     this.proxy.onStateUpdate = (state) => { if (state.plugins?.length) this.onPlugins?.(state.plugins); };
     this.proxy.onEffectsDiscovered = (effects) => {
       for (const e of effects) this.discovered.add(e.id);

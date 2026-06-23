@@ -239,6 +239,14 @@ export class ArrangementStore {
   modulationData: Record<string, Record<string, { value: number; min: number; max: number; neutral: number }>> = {};
 
   /**
+   * Per-frame published instance state (effect/source OUTPUTS + broadcasts) from
+   * the live engine, keyed by engine instance key (`clip_<clipId>_<deviceId>`).
+   * Output trace spark-charts read it (via the adapter) to animate. Mirrors
+   * `appState.local.engine.pluginStates`. Not persisted, not undoable.
+   */
+  pluginStates: Record<string, Record<string, unknown>> = {};
+
+  /**
    * Real plugin schemas discovered by the engine (keyed by effect id, e.g.
    * `color.hsl`). The inspector prefers these over the catalog's float-only
    * synthesis so editors are complete (color / bool / enum / vec, exact ranges).
@@ -473,6 +481,21 @@ export class ArrangementStore {
       const md = this.modulationData;
       for (const k of diff.removed) mobxRemove(md as object, k);
       for (const k of changedKeys) mobxSet(md as object, k, diff.changed[k]);
+    });
+  }
+
+  /**
+   * Apply a published-instance-state diff from the engine into `pluginStates`
+   * (granular set/remove). Mirrors `LocalController.applyPluginStatesDiff`.
+   */
+  applyPluginStatesDiff(diff: StateDiff) {
+    if (!diff) return;
+    const changedKeys = Object.keys(diff.changed);
+    if (changedKeys.length === 0 && diff.removed.length === 0) return;
+    runInAction(() => {
+      const ps = this.pluginStates;
+      for (const k of diff.removed) mobxRemove(ps as object, k);
+      for (const k of changedKeys) mobxSet(ps as object, k, diff.changed[k]);
     });
   }
 
