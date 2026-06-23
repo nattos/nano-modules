@@ -33,6 +33,12 @@ export type EditableLabelProvider = (opts: { value: string }) => HTMLElement;
 export class EditableLabel extends LitElement {
   @property() value = '';
   @property() placeholder = '';
+  /**
+   * Flat mode: drop the display's own hover background + text cursor so the
+   * label blends into an enclosing hover target (e.g. a list row) instead of
+   * being a second nested one. Double-click still enters edit mode.
+   */
+  @property({ type: Boolean, reflect: true }) flat = false;
   /** Optional autocomplete-editor factory; when set, edit mode hosts its element. */
   @property({ attribute: false }) provider: EditableLabelProvider | null = null;
 
@@ -67,6 +73,9 @@ export class EditableLabel extends LitElement {
     .display:hover { background: var(--app-tint-3, rgba(255,255,255,0.06)); }
     .display:focus-visible { box-shadow: 0 0 0 1px var(--app-hi-color2, #4169E1); }
     .display.placeholder { color: var(--app-text-color2, #888); font-style: italic; }
+    /* Flat: blend into the enclosing hover target — no inner hover / text cursor. */
+    :host([flat]) .display { cursor: inherit; }
+    :host([flat]) .display:hover { background: transparent; }
     .edit-host { flex: 1; min-width: 0; display: flex; }
     input {
       flex: 1;

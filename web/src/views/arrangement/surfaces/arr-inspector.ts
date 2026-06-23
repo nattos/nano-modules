@@ -19,6 +19,7 @@ import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
 import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
+import type { EditableLabel } from '../../../widgets/editable-label';
 import '../../../widgets/scalar-knob';
 import '../../../widgets/spark-chart';
 
@@ -680,9 +681,11 @@ export class ArrInspector extends MobxLitElement {
     return html`<div
       class="ws-file ${e.name === store.currentName ? 'active' : ''}"
       @click=${() => store.openEntry(e.name)}
+      @dblclick=${(ev: Event) => (ev.currentTarget as HTMLElement).querySelector<EditableLabel>('editable-label')?.beginEdit()}
     >
       <ui-icon icon="la-file"></ui-icon>
       <editable-label
+        flat
         class="ws-name"
         .value=${base}
         @commit=${(ev: CustomEvent) => store.renameEntry(e.name, ev.detail as string)}
