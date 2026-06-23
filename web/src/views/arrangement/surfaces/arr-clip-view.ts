@@ -113,8 +113,11 @@ export class ArrClipView extends MobxLitElement {
       height: 100%;
     }
     .top .autoedit {
+      /* No horizontal padding so the curve's frame axis lines up exactly with
+         the film strip below (one shared time grid). */
+      position: absolute;
+      inset: 0;
       display: block;
-      padding: 8px 10px 2px;
       box-sizing: border-box;
     }
     .plabel {
@@ -174,6 +177,7 @@ export class ArrClipView extends MobxLitElement {
   }
 
   render() {
+    void store.positionBeat; // track: during playback the playhead drives the scrub
     const sel = store.selectedClip;
     if (!sel) return html`<div class="empty">Select a clip to inspect it here.</div>`;
     const { clip } = sel;
@@ -203,7 +207,10 @@ export class ArrClipView extends MobxLitElement {
                       class="autoedit"
                       .lane=${clip.automation?.[0]}
                       .ensureLaneId=${() => store.ensureClipAutomationLane(sel.track.id, clip.id)}
-                      .cursor=${this.autoCursor(clip)}
+                      .cursor=${this.autoCursor()}
+                      .pxPerFrame=${this.pxPerFrame}
+                      .scrollFrames=${this.scrollFrames}
+                      .durationFrames=${this.duration()}
                     ></arr-automation-editor>`
                   : html`<canvas></canvas>`}
                 <span class="plabel">${this.topLabel(clip, mode)}</span>
@@ -265,6 +272,15 @@ export class ArrClipView extends MobxLitElement {
   };
   private onScrub = (e: CustomEvent) => {
     this.scrubFrame = e.detail.frame;
+    // Scrubbing the strip scrubs BOTH the film strip and the automation curve
+    // (they share scrubFrame), and moves the timeline playhead so the monitor +
+    // arrangement follow too.
+    const sel = store.selectedClip;
+    const dur = this.duration();
+    if (sel && dur > 0) {
+      const beat = sel.clip.startBeat + (this.scrubFrame / dur) * sel.clip.lengthBeat;
+      store.setPlayFrom(beat);
+    }
   };
   private onHover = (e: CustomEvent) => {
     this.hoverFrame = e.detail.frame;
@@ -281,6 +297,13 @@ export class ArrClipView extends MobxLitElement {
       this.pxPerFrame = Math.max(0.2, w / this.duration());
       this.scrollFrames = 0;
       this.scrubFrame = sel.clip.loop.inFrame ?? 0;
+    }
+    // During playback the timeline playhead drives the shared scrub (so the film
+    // strip + automation cursor track the transport). Paused, the user's scrub
+    // owns it (see onScrub). Reading positionBeat here also keeps this reactive.
+    if (sel && store.playing && sel.clip.lengthBeat > 0) {
+      const frac = (store.positionBeat - sel.clip.startBeat) / sel.clip.lengthBeat;
+      if (frac >= 0 && frac <= 1) this.scrubFrame = frac * this.duration();
     }
     this.drawTop();
     this.drawMini();
@@ -312,10 +335,12 @@ export class ArrClipView extends MobxLitElement {
     drawFrameCell(ctx, 0, 0, w, h, seed, Math.min(1, this.scrubFrame / this.duration()));
   }
 
-  /** Playhead position as normalized x∈[0,1] across the clip, or null if outside. */
-  private autoCursor(clip: any): number | null {
-    const len = clip.lengthBeat || 1;
-    const x = (store.positionBeat - clip.startBeat) / len;
+  /** Cursor as normalized x∈[0,1] on the SHARED frame axis (so the curve cursor
+   *  sits exactly under the film-strip playhead). Null if outside the source. */
+  private autoCursor(): number | null {
+    const dur = this.duration();
+    if (dur <= 0) return null;
+    const x = this.scrubFrame / dur;
     return x >= 0 && x <= 1 ? x : null;
   }
 

@@ -39,6 +39,14 @@ export class ArrAutomationEditor extends MobxLitElement {
   @property({ attribute: false }) ensureLaneId: (() => string) | null = null;
   /** Live signal position x∈[0,1] to draw as a cursor, or null. */
   @property({ attribute: false }) cursor: number | null = null;
+  /**
+   * Optional shared TIME grid (the clip panel's film strip): when set, the curve
+   * maps its x∈[0,1] onto the same frame axis as the strip below it (zoom +
+   * scroll), so the two share one grid. Omitted ⇒ default full-width [0,1].
+   */
+  @property({ attribute: false }) pxPerFrame: number | null = null;
+  @property({ attribute: false }) scrollFrames = 0;
+  @property({ attribute: false }) durationFrames = 0;
 
   private rafId = 0;
   /** Bumped per drag gesture so each drag coalesces into its own single undo. */
@@ -50,6 +58,9 @@ export class ArrAutomationEditor extends MobxLitElement {
 
   static styles = css`
     :host { display: block; }
+    /* When sharing the film-strip grid, fill the panel area above the strip. */
+    :host([gridded]) { height: 100%; }
+    :host([gridded]) .hint { display: none; }
     .hint {
       font-size: var(--app-fs-xs); color: var(--app-text-color2, #b0b0b0);
       opacity: 0.7; padding: 4px 0 0; line-height: 1.4;
@@ -69,6 +80,18 @@ export class ArrAutomationEditor extends MobxLitElement {
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;
+      // Map the curve's x onto the shared film-strip frame axis when provided, so
+      // curve and strip share one zoomable/scrollable time grid.
+      if (this.pxPerFrame != null && this.durationFrames > 0) {
+        const ppf = this.pxPerFrame;
+        const scroll = this.scrollFrames;
+        const dur = this.durationFrames;
+        g.xMap = (dx) => (dx * dur - scroll) * ppf;
+        g.xUnmap = (px) => (scroll + px / ppf) / dur;
+      } else {
+        g.xMap = null;
+        g.xUnmap = null;
+      }
     };
     this.rafId = requestAnimationFrame(tick);
   }
@@ -104,14 +127,18 @@ export class ArrAutomationEditor extends MobxLitElement {
   private onEnd = () => { this.activeLaneId = null; };
 
   render() {
-    // `points`/`cursor` are synced imperatively via rAF (so a drag isn't
+    // `points`/`cursor`/`xMap` are synced imperatively via rAF (so a drag isn't
     // clobbered by re-renders); here we just wire the element + callbacks.
+    const gridded = this.pxPerFrame != null;
+    if (gridded) this.setAttribute('gridded', '');
+    else this.removeAttribute('gridded');
     return html`
       <envelope-graph
+        ?fill=${gridded}
         .onChange=${this.onChange}
         .onInteractionStart=${this.onStart}
         .onInteractionEnd=${this.onEnd}></envelope-graph>
-      <div class="hint">double-click to add / remove a node · drag a segment to bend its easing</div>
+      ${gridded ? '' : html`<div class="hint">double-click to add / remove a node · drag a segment to bend its easing</div>`}
     `;
   }
 }

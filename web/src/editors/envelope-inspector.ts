@@ -40,6 +40,11 @@ export class EnvelopeGraph extends MobxLitElement {
   points: EnvPoint[] = [{ x: 0, y: 0, ease: 0 }, { x: 1, y: 1, ease: 0 }];
   cursor: number | null = null;       // live input x ∈ [0,1], or null
   interactive = true;
+  // Optional X-axis override (data-x [0,1] ↔ pixel-x). When set, the curve maps
+  // its x onto an EXTERNAL time grid (e.g. the clip panel's zoomable film strip)
+  // instead of the default padded full-width. Y is unaffected. Set imperatively.
+  xMap: ((dataX: number) => number) | null = null;
+  xUnmap: ((px: number) => number) | null = null;
   onChange: ((points: EnvPoint[]) => void) | null = null;
   onInteractionStart: (() => void) | null = null;
   onInteractionEnd: (() => void) | null = null;
@@ -58,6 +63,10 @@ export class EnvelopeGraph extends MobxLitElement {
 
   static styles = css`
     :host { display: block; }
+    /* Fill mode: stretch to the host (clip panel stacks the curve over the strip
+       sharing one time grid) instead of the default fixed 132px. */
+    :host([fill]) { height: 100%; }
+    :host([fill]) canvas { height: 100%; }
     canvas {
       width: 100%; height: 132px; display: block;
       background: rgba(0,0,0,0.25);
@@ -88,14 +97,13 @@ export class EnvelopeGraph extends MobxLitElement {
   }
   private toPx(x: number, y: number): [number, number] {
     const { w, h } = this.dims();
-    return [this.pad + x * (w - 2 * this.pad), (h - this.pad) - y * (h - 2 * this.pad)];
+    const xpx = this.xMap ? this.xMap(x) : this.pad + x * (w - 2 * this.pad);
+    return [xpx, (h - this.pad) - y * (h - 2 * this.pad)];
   }
   private fromPx(px: number, py: number): [number, number] {
     const { w, h } = this.dims();
-    return [
-      clamp01((px - this.pad) / (w - 2 * this.pad)),
-      clamp01(((h - this.pad) - py) / (h - 2 * this.pad)),
-    ];
+    const dx = this.xUnmap ? clamp01(this.xUnmap(px)) : clamp01((px - this.pad) / (w - 2 * this.pad));
+    return [dx, clamp01(((h - this.pad) - py) / (h - 2 * this.pad))];
   }
 
   private eventXY(e: PointerEvent | MouseEvent): [number, number] {
