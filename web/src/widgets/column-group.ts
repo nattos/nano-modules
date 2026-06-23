@@ -267,17 +267,19 @@ export class ColumnGroup extends MobxLitElement {
       box-sizing: border-box;
     }
 
-    /* Pinned category insert header — chips that begin inserting a new effect of
-     * that category (with the smart-input drilled into "<category>."). */
+    /* Category insert chips — pinned to the BOTTOM of the chain + scroll area:
+     * a row of chips that begin inserting a new effect of that category. */
     .insert-header {
       position: sticky;
-      top: 0;
+      bottom: 0;
       z-index: 30;
       display: flex;
       flex-wrap: wrap;
       gap: 4px;
-      padding: 6px 0 8px;
+      padding: 8px 0 6px;
+      margin-top: 4px;
       background: var(--app-bg-color2);
+      border-top: 1px solid var(--app-tint-3);
     }
     .cat-chip {
       display: inline-flex;
@@ -785,13 +787,13 @@ export class ColumnGroup extends MobxLitElement {
 
     return html`
       <div class="column" style="position:relative">
-        ${this.renderInsertHeader(column)}
         <div class="column-body">
           ${this.renderChain(sketch, column)}
         </div>
         <div class="drag-insert-marker"></div>
         ${this.renderWireArcs(sketch)}
         ${this.renderSelectedWirePanel(sketch)}
+        ${this.renderInsertHeader(column)}
       </div>
       ${this.hasGutter ? html`
         <div class="column-gutter" data-col=${this.colIdx}>

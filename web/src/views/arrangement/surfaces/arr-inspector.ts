@@ -285,6 +285,22 @@ export class ArrInspector extends MobxLitElement {
       border-color: var(--app-hi-color2);
       background: rgba(65, 105, 225, 0.12);
     }
+    .seg { display: inline-flex; gap: 0; }
+    .segbtn {
+      font: inherit;
+      font-size: var(--app-fs-xs);
+      text-transform: capitalize;
+      color: var(--app-text-color2);
+      background: var(--app-tint-2);
+      border: 1px solid var(--app-tint-4);
+      border-right-width: 0;
+      padding: 2px 7px;
+      cursor: pointer;
+    }
+    .segbtn:first-child { border-radius: 3px 0 0 3px; }
+    .segbtn:last-child { border-right-width: 1px; border-radius: 0 3px 3px 0; }
+    .segbtn:hover { background: var(--app-tint-3); }
+    .segbtn.on { color: var(--app-hi-color2); background: rgba(65, 105, 225, 0.14); border-color: var(--app-hi-color2); }
     .ws-list {
       display: flex;
       flex-direction: column;
@@ -565,6 +581,17 @@ export class ArrInspector extends MobxLitElement {
         ${clip.source
           ? html`<div class="row">
               <label>Source</label><span class="val">${clip.source.label}</span>
+            </div>
+            <div class="row">
+              <label>Scale</label>
+              <span class="val seg">
+                ${(['fit', 'cover', 'stretch', 'none'] as const).map(
+                  (m) => html`<button
+                    class="segbtn ${(clip.source?.scaleMode ?? 'fit') === m ? 'on' : ''}"
+                    @click=${() => store.setClipScaleMode(found.track.id, clip.id, m)}
+                  >${m}</button>`,
+                )}
+              </span>
             </div>`
           : ''}
 

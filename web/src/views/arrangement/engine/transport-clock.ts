@@ -68,10 +68,14 @@ export class TransportController {
       this.playSeconds = clock.secondsAt(Math.max(0, s.positionBeat));
     }
 
+    const prevBeat = clock.beatAtSeconds(this.playSeconds);
     this.playSeconds += Math.max(0, dt);
     let beat = clock.beatAtSeconds(this.playSeconds);
 
-    if (s.loopEnabled && s.loopEndBeat > s.loopStartBeat && beat >= s.loopEndBeat) {
+    // Loop only when we CROSS loopEnd from inside it. A playhead already past
+    // loopEnd (e.g. play-from beyond the loop) keeps playing — never yanked back.
+    if (s.loopEnabled && s.loopEndBeat > s.loopStartBeat
+        && prevBeat < s.loopEndBeat && beat >= s.loopEndBeat) {
       // Carry the overshoot in seconds so the wrap stays warp-correct.
       const overshoot = this.playSeconds - clock.secondsAt(s.loopEndBeat);
       this.playSeconds = clock.secondsAt(s.loopStartBeat) + Math.max(0, overshoot);

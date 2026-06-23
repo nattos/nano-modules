@@ -841,6 +841,9 @@ export class ArrGrid extends MobxLitElement {
     laneLeft: number;
     startTrackId: string;
     active: boolean;
+    /** Set when the gesture began on a clip BODY: a plain click focuses this clip
+     *  (no time box); a drag still does a region selection. */
+    clickFocusPath?: string;
   } | null = null;
 
   /** Track-row vertical layout in content (scroll) coordinates. */
@@ -998,7 +1001,7 @@ export class ArrGrid extends MobxLitElement {
    * clip body can delegate here (clicking a clip's film strip behaves exactly
    * like clicking the grid). The start track is derived from clientY.
    */
-  beginRegionFromClient(e: PointerEvent) {
+  beginRegionFromClient(e: PointerEvent, clickFocusPath?: string) {
     if (this.drag) return;
     store.closeTapPopup();
     const laneLeft = this.scrollEl.getBoundingClientRect().left + HEADER_WIDTH;
@@ -1007,12 +1010,16 @@ export class ArrGrid extends MobxLitElement {
     const startTrack = store.displayTracks[this.trackIndexAtClientY(e.clientY)];
     // Move the cursor immediately on pointerdown (no need to wait for drag/up).
     store.setPlayFrom(store.quantize(startBeat, e.altKey));
+    // Clicking a clip body focuses it right away (no time box); a drag below
+    // overrides this with a region selection.
+    if (clickFocusPath) store.selectClipOnly(clickFocusPath);
     this.drag = {
       x0: e.clientX,
       startBeat,
       laneLeft,
       startTrackId: startTrack?.id ?? '',
       active: false,
+      clickFocusPath,
     };
     window.addEventListener('pointermove', this.onRegionMove);
     window.addEventListener('pointerup', this.onRegionUp);
@@ -1055,12 +1062,18 @@ export class ArrGrid extends MobxLitElement {
     this.drag = null;
     if (!d) return;
     if (!d.active) {
-      // Plain click on empty space → set play-from + collapse region + clear sel.
       const grid = buildBeatGrid();
       const beat = store.quantize(grid.xToBeat(e.clientX - d.laneLeft));
       store.setPlayFrom(beat);
-      store.clearTimeSelection();
-      store.clearSelection();
+      if (d.clickFocusPath) {
+        // Plain click on a clip body → keep it focused (inspector + clip view),
+        // but no time box.
+        store.clearTimeSelection();
+      } else {
+        // Plain click on empty space → collapse region + clear selection.
+        store.clearTimeSelection();
+        store.clearSelection();
+      }
     }
   };
 

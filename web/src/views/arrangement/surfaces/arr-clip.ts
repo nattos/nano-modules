@@ -436,11 +436,12 @@ export class ArrClip extends MobxLitElement {
     if (!store.clipViewOpen) store.toggleClipView();
   };
 
-  /** Clicking/dragging the BODY does a time×track region selection (like the
-   *  grid lane) — NOT a clip move. Only the header moves the clip. */
+  /** Clicking the BODY focuses the clip (inspector + clip view) and re-arms the
+   *  play-from marker, WITHOUT grabbing a time box. DRAGGING the body still does
+   *  a time×track region selection. Only the header moves the clip. */
   private onBodyDown = (e: PointerEvent) => {
     e.stopPropagation();
-    this.gridHost()?.beginRegionFromClient?.(e);
+    this.gridHost()?.beginRegionFromClient?.(e, paths.clip(this.trackId, this.clip.id));
   };
 
   private onHandleDown(e: PointerEvent, mode: DragMode) {

@@ -229,6 +229,8 @@ export interface Clip {
    * (they process the composite below them inline).
    */
   blendMode?: number;
+  /** Bypassed clips are skipped in the composite (the "0" shortcut toggles it). */
+  bypassed?: boolean;
 }
 
 export type TrackKind = 'track' | 'group' | 'rail';

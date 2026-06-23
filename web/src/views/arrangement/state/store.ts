@@ -617,6 +617,8 @@ export class ArrangementStore {
       this.selection = new Set([path]);
       this.primaryPath = path;
       this.selectedWireId = null;
+      this.chainFocusPath = null;
+      this.chainFieldKey = null;
       this.activeRightTab = 'inspector';
     });
   }
@@ -790,7 +792,7 @@ export class ArrangementStore {
         if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty clip
         if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
       }
-      if (!pick) continue;
+      if (!pick || pick.bypassed) continue;
       layers.push({
         track: t,
         clip: pick,
@@ -1105,6 +1107,90 @@ export class ArrangementStore {
   }
   toggleLoop() {
     this.loopEnabled = !this.loopEnabled;
+  }
+
+  /**
+   * Cmd/Ctrl+L (or L): if a time box is set whose range differs from the loop
+   * markers, snap the loop to the box and enable it; otherwise just toggle the
+   * loop on/off.
+   */
+  toggleLoopOrSetToTimeBox() {
+    runInAction(() => {
+      if (this.hasTimeSelection && this.timeSelStart != null) {
+        const a = this.timeSelStart, b = this.timeSelEnd;
+        const sameRange = Math.abs(this.loopStartBeat - a) < 1e-6 && Math.abs(this.loopEndBeat - b) < 1e-6;
+        if (b > a && !sameRange) {
+          this.loopStartBeat = a;
+          this.loopEndBeat = b;
+          this.loopEnabled = true;
+          return;
+        }
+      }
+      this.loopEnabled = !this.loopEnabled;
+    });
+  }
+
+  /** Option+Space: jump the playhead to the play-from marker and play at once. */
+  rewindAndPlay() {
+    runInAction(() => {
+      this.positionBeat = this.playFromBeat;
+      this.playing = true;
+    });
+  }
+
+  /** Toggle one clip's bypass (skipped in the composite). */
+  toggleClipBypass(trackId: string, clipId: string) {
+    this.mutate('toggle clip bypass', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (c) c.bypassed = !c.bypassed;
+    });
+  }
+
+  /** Toggle bypass on all selected clips. */
+  toggleSelectedClipsBypass() {
+    const clipPaths = [...this.selection].filter((p) => p.startsWith('clip/'));
+    if (!clipPaths.length) return;
+    this.mutate('toggle clip bypass', (d) => {
+      for (const p of clipPaths) {
+        const [, trackId, clipId] = p.split('/');
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (c) c.bypassed = !c.bypassed;
+      }
+    });
+  }
+
+  /** Toggle the focused effect card's bypass (__bypass__). Returns false if no
+   *  effect card is focused (so the caller can fall back to clip bypass). */
+  toggleChainFocusBypass(): boolean {
+    const path = this.chainFocusPath;
+    if (!path?.startsWith('effect/')) return false;
+    const rest = path.slice('effect/'.length).split('/');
+    const chainIdx = Number(rest.pop());
+    rest.pop(); // colIdx
+    const sketchId = rest.join('/');
+    if (!Number.isFinite(chainIdx)) return false;
+    if (sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = sketchId.split('/');
+      const dev = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
+      if (!dev) return false;
+      this.setClipDeviceField(trackId, clipId, dev.id, '__bypass__', dev.state?.__bypass__ !== true);
+      return true;
+    }
+    if (sketchId.startsWith('track/')) {
+      const trackId = sketchId.split('/')[1];
+      const dev = this.trackById(trackId)?.sketch.devices[chainIdx];
+      if (!dev) return false;
+      this.setTrackDeviceField(trackId, dev.id, '__bypass__', dev.state?.__bypass__ !== true);
+      return true;
+    }
+    return false;
+  }
+
+  /** "0" shortcut: bypass the focused effect card if one is focused, else the
+   *  selected clips. */
+  toggleBypassShortcut() {
+    if (this.toggleChainFocusBypass()) return;
+    this.toggleSelectedClipsBypass();
   }
   setTransportMode(mode: 'precise' | 'live') {
     this.transportMode = mode;

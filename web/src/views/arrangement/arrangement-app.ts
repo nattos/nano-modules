@@ -305,12 +305,28 @@ export class ArrangementApp extends MobxLitElement {
     } else if (e.key === 'Escape') {
       store.clearSelection();
     } else if (e.key === ' ') {
+      // Option/Alt+Space: rewind to the play-from marker and play instantly.
       e.preventDefault();
-      store.togglePlay();
+      if (e.altKey) store.rewindAndPlay();
+      else store.togglePlay();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) store.redo();
       else store.undo();
+    } else if (e.key.toLowerCase() === 'l') {
+      // Cmd/Ctrl+L (preventDefault'd so the browser doesn't grab it) or plain L:
+      // toggle the loop, or snap it to the time box when one is set.
+      e.preventDefault();
+      store.toggleLoopOrSetToTimeBox();
+    } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      store.toggleAutomationMode();
+    } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'w') {
+      e.preventDefault();
+      store.toggleWiresMode();
+    } else if (!e.metaKey && !e.ctrlKey && e.key === '0') {
+      e.preventDefault();
+      store.toggleBypassShortcut();
     }
   };
 
