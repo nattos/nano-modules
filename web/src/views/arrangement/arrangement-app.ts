@@ -20,6 +20,8 @@ import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { importVideoFile } from './media/drop-import';
 import { DirectoryBackend } from './workspace/backend';
+import { snackbars } from '../../widgets/snackbars';
+import '../../widgets/snackbars';
 
 import './surfaces/transport-bar';
 import './surfaces/arr-ruler';
@@ -157,6 +159,7 @@ export class ArrangementApp extends MobxLitElement {
     // Re-open the last workspace (silently if permission persists, else on the
     // first user gesture — when the browser will let us prompt).
     void store.autoMountRememberedWorkspace();
+    this.installBackTrap();
   }
 
   disconnectedCallback() {
@@ -165,8 +168,36 @@ export class ArrangementApp extends MobxLitElement {
     window.removeEventListener('pointerdown', this.onPointerDownCapture, true);
     this.removeEventListener('dragover', this.onDragOver);
     this.removeEventListener('drop', this.onDrop);
+    window.removeEventListener('popstate', this.onPopState);
     cancelAnimationFrame(this.raf);
   }
+
+  /**
+   * Trap the browser Back gesture (a two-finger swipe is far too easy to trigger
+   * accidentally and would discard the session). We keep one sentinel history
+   * entry; a Back pops it but stays on the document — we re-push it and surface a
+   * snackbar offering a real "Go back". Confirming pops past the sentinel.
+   */
+  private backLeaving = false;
+  private installBackTrap() {
+    history.pushState({ __arrTrap: true }, '');
+    window.addEventListener('popstate', this.onPopState);
+  }
+  private onPopState = () => {
+    if (this.backLeaving) {
+      // Confirmed: we're now on the entry the sentinel sat above — go back once
+      // more to actually leave the app.
+      history.back();
+      return;
+    }
+    // Accidental back: re-establish the sentinel (stay put) and offer a real exit.
+    history.pushState({ __arrTrap: true }, '');
+    snackbars.show({
+      message: 'Back gesture prevented',
+      dedupeKey: 'back-trap',
+      actions: [{ label: 'Go back', run: () => { this.backLeaving = true; history.back(); } }],
+    });
+  };
 
   /** Track the interacted surface via the composed path (crosses shadow roots). */
   private onPointerDownCapture = (e: PointerEvent) => {
@@ -350,6 +381,7 @@ export class ArrangementApp extends MobxLitElement {
           </div>`
         : ''}
       <arr-overlay></arr-overlay>
+      <snackbar-host></snackbar-host>
     `;
   }
 
