@@ -21,6 +21,7 @@ import {
 import type { FrameSource } from './frame-source';
 import { DxvFrameSource } from './dxv-frame-source';
 import { VideoElementFrameSource } from './video-element-frame-source';
+import { ImageFrameSource } from './image-frame-source';
 import { FrameCache, type FrameCacheStats } from './frame-cache';
 import { CostTracker, type CostSnapshot } from './cost-tracker';
 import { AccessClassifier, type AccessMode, type ClassifierSnapshot } from './access-classifier';
@@ -185,6 +186,10 @@ export class VideoPlaybackService {
     // For <video>, pass the persisted seek-strategy verdict so we skip
     // re-probing a source we've classified before.
     let frameSource: FrameSource;
+    if (blob.type.startsWith('image/')) {
+      // A still image masquerades as a 1-frame source (same cache/pump path).
+      frameSource = await ImageFrameSource.create(this.gpuHost, blob);
+    } else {
     try {
       frameSource = await DxvFrameSource.create(this.gpuHost, bytesSource, this.dxvWasmUrl);
     } catch (dxvErr) {
@@ -200,6 +205,7 @@ export class VideoPlaybackService {
           `could not open clip — not DXV (${(dxvErr as Error).message}) `
           + `and <video> rejected it (${(videoErr as Error).message})`);
       }
+    }
     }
     const cache = new FrameCache(this.gpuHost, this.budgetBytes);
     const cost = new CostTracker();

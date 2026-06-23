@@ -19,6 +19,7 @@ import {
   RailRead,
   AutomationLane,
   EnvelopePoint,
+  ScaleMode,
   deviceIsSource,
   compositionLengthBeats,
 } from '../model/composition';
@@ -1007,6 +1008,18 @@ export class ArrangementStore {
     const path = paths.clip(trackId, clip.id);
     this.select(path);
     return path;
+  }
+
+  /** Set how a video/image clip's frame scales into the output canvas. */
+  setClipScaleMode(trackId: string, clipId: string, mode: ScaleMode) {
+    this.mutate(
+      'set scale mode',
+      (d) => {
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (c?.source) c.source.scaleMode = mode;
+      },
+      `scale:${clipId}`,
+    );
   }
 
   /** Build + add a real device of a kind (used by the inspector chain). */

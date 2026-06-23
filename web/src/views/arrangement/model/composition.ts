@@ -27,6 +27,15 @@ export type PlayModeKind =
 /** Precise always waits (M1 focus + offline render). Live is future. */
 export type TransportMode = 'precise' | 'live';
 
+/**
+ * How a video/image frame scales into the output canvas:
+ *  - fit:     contain (preserve aspect, letterbox the remainder transparently)
+ *  - cover:   fill (preserve aspect, crop the overflow)
+ *  - stretch: fill (ignore aspect)
+ *  - none:    1:1 pixels, centred (crop if larger, pad if smaller)
+ */
+export type ScaleMode = 'fit' | 'cover' | 'stretch' | 'none';
+
 export interface CompositionMeta {
   resolution: Resolution;
   baseBPM: number;
@@ -197,6 +206,8 @@ export interface Clip {
     /** Fetchable URL of the media (served asset / object URL). */
     url?: string;
     fps?: number;
+    /** How the frame is scaled into the output canvas. Omitted ⇒ 'fit'. */
+    scaleMode?: ScaleMode;
   };
   loop: ClipLoopConfig;
   automation: AutomationLane[];

@@ -237,11 +237,27 @@ export class ArrClipView extends MobxLitElement {
   }
 
   private renderSourceCtl(clip: any, isVideo: boolean) {
+    const scale = clip.source?.scaleMode ?? 'fit';
     return html`
       <div class="ctl"><span>Source</span><span class="v">${clip.source?.label ?? (isVideo ? 'video' : 'none')}</span></div>
       <div class="ctl"><span>Play mode</span><span class="v">${clip.loop.mode}</span></div>
       <div class="ctl"><span>In / Out</span><span class="v">${clip.loop.inFrame ?? 0} – ${clip.loop.outFrame ?? this.duration()}</span></div>
-      <div class="ctl" style="opacity:.6"><span>Markers are display-only here.</span></div>
+      ${clip.source
+        ? html`<div class="ctl">
+            <span>Scale</span>
+            <div class="seg">
+              ${(['fit', 'cover', 'stretch', 'none'] as const).map(
+                (m) => html`<button
+                  class=${scale === m ? 'on' : ''}
+                  @click=${() => {
+                    const sel = store.selectedClip;
+                    if (sel) store.setClipScaleMode(sel.track.id, clip.id, m);
+                  }}
+                >${m}</button>`,
+              )}
+            </div>
+          </div>`
+        : ''}
     `;
   }
 

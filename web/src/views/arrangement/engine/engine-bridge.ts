@@ -231,6 +231,7 @@ export class EngineBridge {
         durationFrames: src.durationFrames,
         fps: src.fps,
         speed: l.clip.loop?.speed,
+        scaleMode: src.scaleMode ?? 'fit',
       });
     }
     if (videoDescs.length > 0 || this.video) this.videoCompositor().setActiveClips(videoDescs);

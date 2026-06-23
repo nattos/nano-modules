@@ -28,12 +28,41 @@ const BLIT_SHADER = /* wgsl */`
     out.uv = vec2f((x + 1.0) * 0.5, 1.0 - (y + 1.0) * 0.5);
     return out;
   }
+  struct Xform { uvOff: vec2f, uvScale: vec2f };
   @group(0) @binding(0) var src: texture_2d<f32>;
   @group(0) @binding(1) var samp: sampler;
+  @group(0) @binding(2) var<uniform> xf: Xform;
   @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
-    return textureSample(src, samp, uv);
+    return textureSample(src, samp, xf.uvOff + uv * xf.uvScale);
   }
 `;
+
+/** How the source frame scales into the target canvas. */
+export type BlitFit = 'fit' | 'cover' | 'stretch' | 'none';
+
+/** Destination viewport rect (px) + source UV region for a fit mode. */
+function blitGeom(sw: number, sh: number, W: number, H: number, mode: BlitFit) {
+  if (sw <= 0 || sh <= 0 || mode === 'stretch') {
+    return { vx: 0, vy: 0, vw: W, vh: H, uOff: [0, 0], uScale: [1, 1] };
+  }
+  if (mode === 'cover') {
+    const s = Math.max(W / sw, H / sh);
+    const uw = W / (sw * s), uh = H / (sh * s);
+    return { vx: 0, vy: 0, vw: W, vh: H, uOff: [(1 - uw) / 2, (1 - uh) / 2], uScale: [uw, uh] };
+  }
+  if (mode === 'none') {
+    const dw = Math.min(sw, W), dh = Math.min(sh, H);
+    const uw = dw / sw, uh = dh / sh;
+    return { vx: (W - dw) / 2, vy: (H - dh) / 2, vw: dw, vh: dh, uOff: [(1 - uw) / 2, (1 - uh) / 2], uScale: [uw, uh] };
+  }
+  // fit (contain)
+  const s = Math.min(W / sw, H / sh);
+  const dw = sw * s, dh = sh * s;
+  return { vx: (W - dw) / 2, vy: (H - dh) / 2, vw: dw, vh: dh, uOff: [0, 0], uScale: [1, 1] };
+}
+
+/** Test hook — the pure scale-mode geometry. */
+export const __blitGeomForTest = blitGeom;
 
 export class FrameBlitter {
   private device: GPUDevice;
@@ -44,9 +73,11 @@ export class FrameBlitter {
   private ctx: GPUCanvasContext | null = null;
   private w = 0;
   private h = 0;
+  private xformBuf: GPUBuffer;
 
   constructor(device: GPUDevice) {
     this.device = device;
+    this.xformBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const m = device.createShaderModule({ code: BLIT_SHADER });
     this.pipeline = device.createRenderPipeline({
       layout: 'auto',
@@ -56,21 +87,30 @@ export class FrameBlitter {
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   }
 
-  /** Render `srcTexture` (rgba8) to an ImageBitmap of `width × height`. */
-  toImageBitmap(srcTexture: GPUTexture, width: number, height: number): ImageBitmap {
+  /**
+   * Render `srcTexture` (rgba8) to an ImageBitmap of `width × height`, scaling
+   * the frame into the canvas per `mode` (default 'stretch' = the old behavior).
+   * Letterbox/pad areas are left TRANSPARENT so layers below show through.
+   */
+  toImageBitmap(srcTexture: GPUTexture, width: number, height: number, mode: BlitFit = 'stretch'): ImageBitmap {
     if (!this.canvas || this.w !== width || this.h !== height) {
       this.canvas = new OffscreenCanvas(width, height);
       this.ctx = this.canvas.getContext('webgpu') as GPUCanvasContext;
-      this.ctx.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
+      // premultiplied (not opaque) so transparent letterbox bars survive.
+      this.ctx.configure({ device: this.device, format: this.format, alphaMode: 'premultiplied' });
       this.w = width;
       this.h = height;
     }
+    const g = blitGeom(srcTexture.width, srcTexture.height, width, height, mode);
+    this.device.queue.writeBuffer(this.xformBuf, 0,
+      new Float32Array([g.uOff[0], g.uOff[1], g.uScale[0], g.uScale[1]]));
     const target = this.ctx!.getCurrentTexture();
     const bind = this.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: srcTexture.createView() },
         { binding: 1, resource: this.sampler },
+        { binding: 2, resource: { buffer: this.xformBuf } },
       ],
     });
     const enc = this.device.createCommandEncoder();
@@ -79,10 +119,11 @@ export class FrameBlitter {
         view: target.createView(),
         loadOp: 'clear',
         storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        clearValue: { r: 0, g: 0, b: 0, a: 0 }, // transparent padding
       }],
     });
     pass.setPipeline(this.pipeline);
+    pass.setViewport(g.vx, g.vy, Math.max(1, g.vw), Math.max(1, g.vh), 0, 1);
     pass.setBindGroup(0, bind);
     pass.draw(3);
     pass.end();

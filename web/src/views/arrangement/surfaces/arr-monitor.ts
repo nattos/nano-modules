@@ -103,6 +103,7 @@ export class ArrMonitor extends MobxLitElement {
       void layer.opacity;
       void layer.blendMode;
       void layer.clip.source?.url;
+      void layer.clip.source?.scaleMode;
       for (const d of layer.clip.sketch.devices) {
         void d.moduleType;
         const st = d.state;

@@ -16,7 +16,7 @@
 
 import { GPUHost } from '../../../gpu-host';
 import { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
-import { FrameBlitter } from '../../../video/frame-blitter';
+import { FrameBlitter, type BlitFit } from '../../../video/frame-blitter';
 import { thumbnailController } from '../media/thumbnail-controller';
 
 /** One active video clip the pump should feed. */
@@ -33,6 +33,8 @@ export interface VideoClipDesc {
   durationFrames: number;
   fps?: number;
   speed?: number;
+  /** How the frame scales into the output canvas (default 'fit'). */
+  scaleMode?: BlitFit;
 }
 
 /** Current transport position the frame mapping reads. */
@@ -46,6 +48,10 @@ interface Pump {
   frameCount: number;
   fps: number;
   busy: boolean;
+  /** Last injected {frame|scaleMode|size} — skip redundant re-decodes (a static
+   *  image / a paused video would otherwise re-blit the same frame every rAF;
+   *  the worker re-binds the stored texture each tick regardless). */
+  lastKey?: string;
 }
 
 export class VideoCompositor {
@@ -195,15 +201,19 @@ export class VideoCompositor {
     try {
       if (!this.gpuHost || !this.blitter || !this.service) return;
       const frame = this.frameFor(p, beat, bpm);
+      const mode = p.desc.scaleMode ?? 'fit';
+      const key = `${frame}:${mode}:${this.renderW}x${this.renderH}`;
+      if (key === p.lastKey) return; // unchanged → the bound texture is already correct
       const handle = await this.service.pull(p.clip, frame);
       if (handle <= 0 || !this.pumps.has(p.desc.clipId)) return;
       const tex = this.gpuHost.getTextureByHandle(handle);
       if (!tex) { this.lastError = `no texture for handle ${handle}`; return; }
-      // Blit (and scale) to the composite render size so the source.video.file
-      // copy is a straight 1:1 write.
-      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH);
+      // Blit + scale (per the clip's scale mode) to the composite render size,
+      // so source.video.file just copies a ready-to-composite frame.
+      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode);
       this.lastPulled[p.desc.clipId] = { frame, handle, w: bitmap.width, h: bitmap.height };
       this.setInstanceTexture(p.desc.instanceKey, bitmap);
+      p.lastKey = key;
       this.framesInjected++;
     } catch (err) {
       this.lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
