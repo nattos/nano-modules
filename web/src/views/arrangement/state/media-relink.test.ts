@@ -49,5 +49,17 @@ describe('relinkMedia (video sources survive reload)', () => {
 
     expect(store.trackById(trk)!.clips.find((c) => c.id === clipId)!.source!.url).toBe('blob:relinked');
     expect(store.mediaRelPaths['k2']).toBeUndefined();
+    expect(store.sourceMissing('k2')).toBe(false);
+  });
+
+  it('marks the source missing when the handle cannot be resolved', async () => {
+    const trk = store.addTrack();
+    store.addVideoClip(trk, 0, { sourceKey: 'gone', url: 'blob:dead', frameCount: 30, fps: 30, label: 'gone.mp4' }, 4);
+    vi.mocked(media.resolveMedia).mockResolvedValue(null);
+    vi.mocked(media.openMedia).mockResolvedValue(null as never);
+
+    await store.relinkMedia();
+
+    expect(store.sourceMissing('gone')).toBe(true);
   });
 });

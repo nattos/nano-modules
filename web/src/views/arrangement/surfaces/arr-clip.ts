@@ -83,6 +83,18 @@ export class ArrClip extends MobxLitElement {
     }
     .clip.bypassed .bar .ico { color: var(--app-text-color2); }
     .clip.bypassed .body { opacity: 0.5; }
+    /* Missing / inaccessible source: disabled look + a warning tint. */
+    .clip.missing {
+      outline: 1px dashed var(--app-error, #e0564a);
+      outline-offset: -1px;
+    }
+    .clip.missing .bar {
+      background: var(--app-tint-4) !important;
+      color: var(--app-error, #e0564a);
+      opacity: 0.7;
+    }
+    .clip.missing .bar .ico { color: var(--app-error, #e0564a); }
+    .clip.missing .body { opacity: 0.35; }
     .body {
       flex: 1;
       display: flex;
@@ -374,9 +386,10 @@ export class ArrClip extends MobxLitElement {
     const devices = clip.sketch.devices;
     const shown = devices.slice(0, 3);
     const extra = devices.length - shown.length;
+    const missing = store.sourceMissing(clip.source?.sourceKey);
 
     return html`
-      <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''} ${clip.bypassed ? 'bypassed' : ''}">
+      <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''} ${clip.bypassed ? 'bypassed' : ''} ${missing ? 'missing' : ''}">
         <div
           class="bar"
           style="background:${barBg}"
@@ -385,7 +398,7 @@ export class ArrClip extends MobxLitElement {
         >
           <ui-icon
             class="ico"
-            icon=${isVideo ? 'la-film' : modOnly ? 'la-wave-square' : 'la-layer-group'}
+            icon=${missing ? 'la-exclamation-triangle' : isVideo ? 'la-film' : modOnly ? 'la-wave-square' : 'la-layer-group'}
           ></ui-icon>
           <span class="name">${clip.name}</span>
         </div>
@@ -423,20 +436,30 @@ export class ArrClip extends MobxLitElement {
   }
 
   /**
-   * Clicking the HEADER selects the clip (grabbing its time box, unless a time
-   * box already covers it — then keep that box so the drag splits/moves its
-   * content) and starts a move drag. The move is driven by the GRID (it survives
-   * the element being reparented to another track mid-drag).
+   * Clicking the HEADER selects the clip and starts a move drag. Normally the
+   * time box snaps to span this clip (so it tracks the focused clip) — BUT if the
+   * grabbed part of the header is inside an EXISTING time box, keep that box so
+   * the drag splits the clips at the box edges and moves only the in-box region.
+   * The move is driven by the GRID (it survives reparenting mid-drag).
    */
   private onHeaderDown = (e: PointerEvent) => {
     e.stopPropagation();
     const path = paths.clip(this.trackId, this.clip.id);
-    // Header click always sets the time box to span this clip (even if a box
-    // already exists), so the box tracks the focused clip.
     if (e.shiftKey) store.toggleSelect(path);
-    else store.select(path);
+    else if (this.grabWithinTimeBox(e)) store.selectClipOnly(path); // keep the box → split + move region
+    else store.select(path); // box tracks the clip
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };
+
+  /** True when the pointer grabbed a part of the header inside the current time
+   *  box (and this track is in the box's scope). */
+  private grabWithinTimeBox(e: PointerEvent): boolean {
+    if (!store.hasTimeSelection) return false;
+    const scope = store.timeSelTrackIds;
+    if (scope.length && !scope.includes(this.trackId)) return false;
+    const beat = buildBeatGrid().xToBeat(e.clientX - this.laneRect().left);
+    return beat >= store.timeSelStart! && beat <= store.timeSelEnd;
+  }
 
   /** Double-clicking the header opens the bottom clip panel (if not already open). */
   private onHeaderDblClick = (e: MouseEvent) => {

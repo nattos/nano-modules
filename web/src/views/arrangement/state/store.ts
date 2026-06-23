@@ -349,6 +349,14 @@ export class ArrangementStore {
    */
   /** sourceKey → library-relative path (only for media stored under a library). */
   mediaRelPaths: Record<string, string> = {};
+  /** sourceKey → true when the media file couldn't be resolved (moved / deleted /
+   *  permission revoked) at the last relink. Surfaced in the inspector + timeline. */
+  mediaMissing: Record<string, boolean> = {};
+
+  /** True when a clip's media source couldn't be resolved at the last relink. */
+  sourceMissing(sourceKey?: string): boolean {
+    return !!sourceKey && this.mediaMissing[sourceKey] === true;
+  }
 
   async relinkMedia() {
     const keys = new Set<string>();
@@ -364,6 +372,7 @@ export class ArrangementStore {
       }
       let file: File | null = null;
       try { file = await openMedia(key); } catch { file = null; }
+      runInAction(() => { this.mediaMissing[key] = !file; });
       if (!file) continue;
       const url = URL.createObjectURL(file);
       runInAction(() => {

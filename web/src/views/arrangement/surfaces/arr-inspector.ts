@@ -285,6 +285,7 @@ export class ArrInspector extends MobxLitElement {
       border-color: var(--app-hi-color2);
       background: rgba(65, 105, 225, 0.12);
     }
+    .src-missing { color: var(--app-error, #e0564a); font-weight: 600; }
     .seg { display: inline-flex; gap: 0; }
     .segbtn {
       font: inherit;
@@ -580,7 +581,12 @@ export class ArrInspector extends MobxLitElement {
         </div>
         ${clip.source
           ? html`<div class="row">
-              <label>Source</label><span class="val">${clip.source.label}</span>
+              <label>Source</label>
+              <span class="val">
+                ${store.sourceMissing(clip.source.sourceKey)
+                  ? html`<span class="src-missing" title="The source file could not be found or accessed (moved, deleted, or permission revoked).">⚠ missing / inaccessible</span>`
+                  : clip.source.label}
+              </span>
             </div>
             ${clip.source.sourceKey && store.mediaRelPaths[clip.source.sourceKey]
               ? html`<div class="row">
