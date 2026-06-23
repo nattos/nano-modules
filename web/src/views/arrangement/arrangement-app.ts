@@ -19,6 +19,7 @@ import { store } from './state/store';
 import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { importVideoFile } from './media/drop-import';
+import { linkMedia } from './workspace/media-store';
 import { DirectoryBackend } from './workspace/backend';
 import { snackbars } from '../../widgets/snackbars';
 import '../../widgets/snackbars';
@@ -282,10 +283,28 @@ export class ArrangementApp extends MobxLitElement {
       const id = store.addTrack();
       target = { trackId: id, startBeat: store.quantize(store.positionBeat) };
     }
+
+    // Prefer dropped FILE HANDLES (Chrome): linkMedia persists them (library-
+    // relative when possible) so the source RELINKS after reload. Without a
+    // handle (Safari) we fall back to the plain File (session-only blob URL).
+    const fileHandles = (await Promise.all(handlePromises))
+      .filter((h): h is FileSystemFileHandle => !!h && h.kind === 'file');
+    const imports: Array<{ file: File; sourceKey: string }> = [];
+    if (fileHandles.length) {
+      for (const h of fileHandles) {
+        try {
+          const sourceKey = await linkMedia(h); // persist + canonical key
+          imports.push({ file: await h.getFile(), sourceKey });
+        } catch { /* unreadable handle → skip */ }
+      }
+    } else {
+      for (const file of Array.from(files)) imports.push({ file, sourceKey: '' });
+    }
+
     const bpm = store.composition.meta.baseBPM;
     let beat = target.startBeat;
-    for (const file of Array.from(files)) {
-      const media = await importVideoFile(file);
+    for (const { file, sourceKey } of imports) {
+      const media = await importVideoFile(file, sourceKey || undefined);
       const lengthBeat = Math.max(1, store.quantize((media.durationSec * bpm) / 60));
       store.addVideoClip(
         target.trackId,

@@ -24,7 +24,21 @@ export class ArrMonitor extends MobxLitElement {
   static styles = css`
     :host {
       display: block;
+      position: relative;
       background: var(--app-bg-color1);
+    }
+    .mon-resize {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 5px;
+      cursor: ns-resize;
+      z-index: 3;
+    }
+    .mon-resize:hover {
+      background: var(--app-hi-color2);
+      opacity: 0.5;
     }
     .head {
       display: flex;
@@ -100,6 +114,7 @@ export class ArrMonitor extends MobxLitElement {
     void store.playing;
     void store.backgroundMode;
     void store.backgroundColor;
+    void store.monitorHeight;
     // Track every ACTIVE composite layer's chain + param state + opacity so a
     // real edit (param, device, or track level) re-renders → showComposite
     // rebuilds the combined sketch → engine update.
@@ -119,25 +134,41 @@ export class ArrMonitor extends MobxLitElement {
       }
     }
     return html`
+      <div class="mon-resize" @pointerdown=${this.onResize}></div>
       <div class="head">
-        <span>OUTPUT</span>
+        <span>OUTPUT · ${this.sourceLabel()}</span>
         <span>${res.width}×${res.height}</span>
       </div>
-      <div class="stage">
+      <div class="stage" style="height:${store.monitorHeight}px">
         <canvas></canvas>
-        <div class="label">${this.targetLabel()}</div>
       </div>
     `;
   }
 
-  private targetLabel(): string {
-    const p = store.primaryPath;
-    if (p?.startsWith('clip/')) {
-      const f = store.clipByPath(p);
-      if (f) return `▸ ${f.clip.name}`;
-    }
-    return '▸ Composition';
+  /** What the monitor is showing: the composition (MAIN BUS), or — when a track
+   *  is soloed — that track (the soloed lineage is what actually renders). */
+  private sourceLabel(): string {
+    const soloed = store.composition.tracks.filter((t) => t.soloed);
+    if (soloed.length === 1) return soloed[0].name.toUpperCase();
+    if (soloed.length > 1) return `${soloed.length} SOLOED`;
+    return 'MAIN BUS';
   }
+
+  private onResize = (e: PointerEvent) => {
+    e.preventDefault();
+    const el = e.target as HTMLElement;
+    const startY = e.clientY;
+    const startH = store.monitorHeight;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => store.setMonitorHeight(startH + (startY - ev.clientY));
+    const up = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   /** Canvas 2D context sized to the element (DPR-aware). null if unsized. */
   private sizedCtx(): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {

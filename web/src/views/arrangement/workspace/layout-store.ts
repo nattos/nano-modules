@@ -14,6 +14,7 @@ export interface ArrLayout {
   clipViewHeight?: number;
   sidePanelWidth?: number;
   headerWidth?: number;
+  monitorHeight?: number;
   wiresMode?: boolean;
   automationMode?: boolean;
   /** Name of the last-opened arrangement file (re-opened on next mount). */

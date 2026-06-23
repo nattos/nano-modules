@@ -84,13 +84,12 @@ export class SnackbarHost extends MobxLitElement {
   static styles = css`
     :host {
       position: fixed;
-      left: 50%;
+      left: 18px;
       bottom: 18px;
-      transform: translateX(-50%);
       z-index: 9999;
       display: flex;
       flex-direction: column;
-      align-items: center;
+      align-items: flex-start;
       gap: 8px;
       pointer-events: none;
       font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;

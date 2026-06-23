@@ -20,9 +20,14 @@ const DEFAULT_DURATION = 4;
 /** Default on-timeline length for a dropped still image. */
 const IMAGE_DURATION = 1;
 
-export async function importVideoFile(file: File): Promise<DroppedMedia> {
+/**
+ * @param sourceKey  Caller-provided stable key. When the file came from a
+ *   FileSystemFileHandle, pass the `linkMedia()` key so the source can be
+ *   relinked after reload; otherwise a session-only `drop:` key is derived.
+ */
+export async function importVideoFile(file: File, sourceKey?: string): Promise<DroppedMedia> {
   const url = URL.createObjectURL(file);
-  const sourceKey = `drop:${file.name}:${file.size}:${file.lastModified}`;
+  sourceKey ??= `drop:${file.name}:${file.size}:${file.lastModified}`;
 
   // A still image is a one-frame, one-second source.
   if (file.type.startsWith('image/')) {

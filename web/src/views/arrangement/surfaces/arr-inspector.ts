@@ -582,6 +582,12 @@ export class ArrInspector extends MobxLitElement {
           ? html`<div class="row">
               <label>Source</label><span class="val">${clip.source.label}</span>
             </div>
+            ${clip.source.sourceKey && store.mediaRelPaths[clip.source.sourceKey]
+              ? html`<div class="row">
+                  <label>Path</label>
+                  <span class="val" style="opacity:0.8" title=${store.mediaRelPaths[clip.source.sourceKey]}>${store.mediaRelPaths[clip.source.sourceKey]}</span>
+                </div>`
+              : ''}
             <div class="row">
               <label>Scale</label>
               <span class="val seg">

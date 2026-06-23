@@ -31,6 +31,7 @@ import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalo
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
+import { openMedia, resolveMedia } from '../workspace/media-store';
 import { emptyComposition, makeMainBus } from '../model/composition';
 
 export type SelectableKind =
@@ -200,6 +201,9 @@ export class ArrangementStore {
   sidePanelWidth = 320;
   /** Track-header column width (px) — drag-resizable, persisted (HEADER_WIDTH default). */
   headerWidth = 184;
+  /** Output-monitor stage height (px) — drag-resizable, persisted. The composite
+   *  is contain-fit into it (resizing the panel width changes aspect, not this). */
+  monitorHeight = 180;
 
   /** Bottom clip-view panel. */
   clipViewOpen = false;
@@ -333,6 +337,40 @@ export class ArrangementStore {
     });
     this.history.reset();
     this.requestLayoutSave(); // remember this as the last-opened file
+    void this.relinkMedia();  // re-resolve video sources (blob URLs die on reload)
+  }
+
+  /**
+   * Re-resolve every video clip's `source.url` from its persisted media handle —
+   * the stored blob URL is dead after a reload. Library-relative handles relink
+   * via the library grant; direct handles via their stored handle. Best-effort:
+   * silent when the permission persists, otherwise skipped (clip falls back to
+   * the procedural reel until relinked from a user gesture).
+   */
+  /** sourceKey → library-relative path (only for media stored under a library). */
+  mediaRelPaths: Record<string, string> = {};
+
+  async relinkMedia() {
+    const keys = new Set<string>();
+    for (const t of this.composition.tracks)
+      for (const c of t.clips) if (c.source?.sourceKey) keys.add(c.source.sourceKey);
+    for (const key of keys) {
+      // Record the library-relative path (IDB read only, no permission) so the
+      // inspector can show it even if the file itself can't be resolved yet.
+      const rec = await resolveMedia(key);
+      if (rec?.ref?.kind === 'lib' && Array.isArray(rec.ref.path)) {
+        const rel = rec.ref.path.join('/');
+        runInAction(() => { this.mediaRelPaths[key] = rel; });
+      }
+      let file: File | null = null;
+      try { file = await openMedia(key); } catch { file = null; }
+      if (!file) continue;
+      const url = URL.createObjectURL(file);
+      runInAction(() => {
+        for (const t of this.composition.tracks)
+          for (const c of t.clips) if (c.source?.sourceKey === key) c.source.url = url;
+      });
+    }
   }
 
   /** Guarantee the master/main-bus track exists (it's the one mandatory track and
@@ -361,6 +399,7 @@ export class ArrangementStore {
       clipViewHeight: this.clipViewHeight,
       sidePanelWidth: this.sidePanelWidth,
       headerWidth: this.headerWidth,
+      monitorHeight: this.monitorHeight,
       wiresMode: this.wiresMode,
       automationMode: this.automationMode,
       lastFile: this.currentName,
@@ -378,6 +417,7 @@ export class ArrangementStore {
         if (typeof l.clipViewHeight === 'number') this.setClipViewHeight(l.clipViewHeight);
         if (typeof l.sidePanelWidth === 'number') this.setSidePanelWidth(l.sidePanelWidth);
         if (typeof l.headerWidth === 'number') this.setHeaderWidth(l.headerWidth);
+        if (typeof l.monitorHeight === 'number') this.setMonitorHeight(l.monitorHeight);
         if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
         if (typeof l.automationMode === 'boolean') this.automationMode = l.automationMode;
         this.preferredFile = l.lastFile ?? null;
@@ -810,6 +850,10 @@ export class ArrangementStore {
   }
   setHeaderWidth(w: number) {
     this.headerWidth = Math.max(120, Math.min(380, Math.round(w)));
+    this.requestLayoutSave();
+  }
+  setMonitorHeight(h: number) {
+    this.monitorHeight = Math.max(90, Math.min(520, Math.round(h)));
     this.requestLayoutSave();
   }
   setClipAutoTiming(t: 'loop' | 'clip') {
