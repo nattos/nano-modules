@@ -179,9 +179,10 @@ export class ArrangementApp extends MobxLitElement {
     // category chip clears the chain card/field focus. (Clicks ON a card set
     // focus afterwards in the card's own handler; clicks on a chip insert.)
     if (store.chainFocusPath || store.chainFieldKey) {
+      const KEEP = ['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel'];
       const inChain = path.some((n) => {
-        const el = n as Element;
-        return el?.classList?.contains?.('effect-card') || el?.classList?.contains?.('cat-chip');
+        const cl = (n as Element)?.classList;
+        return !!cl && KEEP.some((c) => cl.contains(c));
       });
       if (!inChain) store.clearChainFocus();
     }

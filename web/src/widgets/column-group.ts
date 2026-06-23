@@ -492,6 +492,40 @@ export class ColumnGroup extends MobxLitElement {
       animation: wire-flow 0.7s linear infinite;
     }
     .wire-group:hover .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
+    .wire-arc.selected {
+      stroke: var(--app-hi-color1, #ff4500);
+      opacity: 1;
+      stroke-width: 2.5;
+      stroke-dasharray: none;
+      animation: none;
+    }
+    .wire-mod-panel {
+      margin: var(--app-sp-2) 0 0;
+      padding: var(--app-sp-2) var(--app-sp-3) var(--app-sp-3);
+      border: 1px solid var(--app-hi-color2, #4169E1);
+      border-radius: 2px;
+      background: var(--app-bg-color2);
+    }
+    .wire-mod-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: var(--app-fs-sm);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--app-text-color2);
+      margin-bottom: 4px;
+    }
+    .wire-mod-remove {
+      background: none;
+      border: none;
+      color: var(--app-text-color2);
+      cursor: pointer;
+      padding: 2px;
+      display: flex;
+    }
+    .wire-mod-remove:hover { color: var(--app-err-color, #e0564f); }
+    .wire-mod-remove ui-icon { --icon-size: 12px; }
     .wire-hit {
       fill: none;
       stroke: transparent;
@@ -757,6 +791,7 @@ export class ColumnGroup extends MobxLitElement {
         </div>
         <div class="drag-insert-marker"></div>
         ${this.renderWireArcs(sketch)}
+        ${this.renderSelectedWirePanel(sketch)}
       </div>
       ${this.hasGutter ? html`
         <div class="column-gutter" data-col=${this.colIdx}>
@@ -1784,13 +1819,39 @@ export class ColumnGroup extends MobxLitElement {
     const conns = this.wireConnections(sketch);
     return html`
       <svg class="wire-lines">
-        ${conns.map((cn) => svg`<g class="wire-group">
-          <path class="wire-hit" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}
-            @dblclick=${() => this.ctl.removeWire(this.sketchId, cn.wireId)}></path>
-          <path class="wire-arc" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}></path>
-        </g>`)}
+        ${conns.map((cn) => {
+          const wirePath = `wire/${this.sketchId}/${cn.wireId}`;
+          const sel = this.ctl.isSelected(wirePath);
+          return svg`<g class="wire-group">
+            <path class="wire-hit" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}
+              @click=${(e: Event) => { e.stopPropagation(); this.ctl.select(wirePath); }}
+              @dblclick=${() => this.ctl.removeWire(this.sketchId, cn.wireId)}></path>
+            <path class="wire-arc ${sel ? 'selected' : ''}" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}></path>
+          </g>`;
+        })}
         <line class="connect-line" style="display:none"></line>
       </svg>
+    `;
+  }
+
+  /** When a wire is selected, the inline mod-inspector panel (combine / curve /
+   *  magnitude / envelope / scale / delay), reusing the shared wire editor. */
+  private renderSelectedWirePanel(sketch: Sketch) {
+    if (!this.ds.caps.inlineWireArcs) return nothing;
+    const prefix = `wire/${this.sketchId}/`;
+    const wire = (sketch.wires ?? []).find((w) => this.ctl.isSelected(prefix + w.id));
+    if (!wire) return nothing;
+    return html`
+      <div class="wire-mod-panel">
+        <div class="wire-mod-head">
+          <span>Wire · ${wire.src.field} → ${wire.dest.field}</span>
+          <button class="wire-mod-remove" title="Remove wire"
+            @click=${() => this.ctl.removeWire(this.sketchId, wire.id)}>
+            <ui-icon icon="la-trash"></ui-icon>
+          </button>
+        </div>
+        ${this.renderWireModInspector(wire)}
+      </div>
     `;
   }
 

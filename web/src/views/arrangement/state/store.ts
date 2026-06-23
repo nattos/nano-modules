@@ -628,14 +628,22 @@ export class ArrangementStore {
     runInAction(() => { this.chainFocusPath = null; this.chainFieldKey = null; });
   }
 
-  /** True when an effect card is focused (Delete should remove it). */
+  /** True when a deletable chain item (effect card or wire) is focused. */
   get hasChainFocus(): boolean {
-    return !!this.chainFocusPath && this.chainFocusPath.startsWith('effect/');
+    return !!this.chainFocusPath && (this.chainFocusPath.startsWith('effect/') || this.chainFocusPath.startsWith('wire/'));
   }
 
-  /** Delete the focused effect card from its chain. Path: effect/<sketchId>/<col>/<idx>. */
+  /** Delete the focused effect card or wire. */
   deleteChainFocus() {
     const path = this.chainFocusPath;
+    if (path?.startsWith('wire/')) {
+      // wire / <sketchId...> / <wireId>
+      const rest = path.slice('wire/'.length).split('/');
+      const wireId = rest.pop()!;
+      this.removeSketchWire(rest.join('/'), wireId);
+      this.clearChainFocus();
+      return;
+    }
     if (!path || !path.startsWith('effect/')) return;
     // effect / <sketchId...> / <colIdx> / <chainIdx>  — sketchId itself has slashes.
     const rest = path.slice('effect/'.length);
