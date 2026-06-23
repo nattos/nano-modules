@@ -104,6 +104,10 @@ export class ArrMonitor extends MobxLitElement {
       void layer.blendMode;
       void layer.clip.source?.url;
       void layer.clip.source?.scaleMode;
+      // Track wires so connecting/removing a modulation wire re-issues the
+      // composite (the executor applies them natively).
+      const ws = layer.clip.sketch.wires;
+      if (ws) for (const w of ws) void w.id;
       for (const d of layer.clip.sketch.devices) {
         void d.moduleType;
         const st = d.state;

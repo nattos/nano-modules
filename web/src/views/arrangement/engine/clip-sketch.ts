@@ -112,6 +112,12 @@ export function buildCompositeSketch(
     instances[key] = { module_type: moduleType, state };
   };
 
+  // mod.* nodes are texture-passthrough modulation sources/shapers: they run +
+  // publish their scalar `output` but never touch the image, so they're pushed
+  // inline (so they execute + can be wired) yet must NOT advance the texture
+  // accumulator (a blend reads `<accKey>.tex_out`, which a mod node lacks).
+  const isMod = (t: string) => t.startsWith('mod.');
+
   for (const { clip, opacity, blendMode } of layers) {
     const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));
     const gen = cat.find((d) => catalogEffect(d.moduleType)!.role === 'generator');
@@ -126,8 +132,7 @@ export function buildCompositeSketch(
         segment.forEach((d) => {
           const key = clipInstanceKey(clip.id, d.id);
           push(d.moduleType, key, { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) });
-          if (!firstKey) firstKey = key;
-          lastKey = key;
+          if (!isMod(d.moduleType)) { if (!firstKey) firstKey = key; lastKey = key; }
         });
       } else {
         // Legacy / non-catalog clip → a solid stand-in so the layer still draws.
@@ -135,26 +140,42 @@ export function buildCompositeSketch(
         push(IMPLICIT_ANCHOR.type, firstKey, {});
       }
 
-      if (accKey == null) {
-        // First (top) layer becomes the accumulator. A sub-1 opacity fades it
-        // over the transparent base via the reserved wet/dry key.
-        if (opacity < 1) instances[firstKey].state = { ...instances[firstKey].state, __opacity__: opacity };
-        accKey = lastKey;
-      } else {
-        const b = clipInstanceKey(clip.id, 'blend');
-        push(BLEND, b, { mode: blendMode ?? 0, opacity });
-        // 0 = A (the accumulator / tracks above), 1 = B (this clip, drawn on top).
-        wires.push({ id: `w${wid++}`, src: { instanceKey: accKey, field: 'tex_out' }, dest: { instanceKey: b, field: '0' } });
-        wires.push({ id: `w${wid++}`, src: { instanceKey: lastKey, field: 'tex_out' }, dest: { instanceKey: b, field: '1' } });
-        accKey = b;
+      if (lastKey) {
+        if (accKey == null) {
+          // First (top) layer becomes the accumulator. A sub-1 opacity fades it
+          // over the transparent base via the reserved wet/dry key.
+          if (opacity < 1) instances[firstKey].state = { ...instances[firstKey].state, __opacity__: opacity };
+          accKey = lastKey;
+        } else {
+          const b = clipInstanceKey(clip.id, 'blend');
+          push(BLEND, b, { mode: blendMode ?? 0, opacity });
+          // 0 = A (the accumulator / tracks above), 1 = B (this clip, drawn on top).
+          wires.push({ id: `w${wid++}`, src: { instanceKey: accKey, field: 'tex_out' }, dest: { instanceKey: b, field: '0' } });
+          wires.push({ id: `w${wid++}`, src: { instanceKey: lastKey, field: 'tex_out' }, dest: { instanceKey: b, field: '1' } });
+          accKey = b;
+        }
       }
     } else {
       // ── EFFECT-only clip: process the accumulator inline (adjustment layer) ──
-      fx.forEach((d, i) => {
+      let appliedOpacity = false;
+      fx.forEach((d) => {
         const state: Record<string, unknown> = { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) };
-        if (i === 0 && opacity < 1) state['__opacity__'] = opacity;
+        if (!isMod(d.moduleType) && !appliedOpacity && opacity < 1) { state['__opacity__'] = opacity; appliedOpacity = true; }
         push(d.moduleType, clipInstanceKey(clip.id, d.id), state);
-        accKey = clipInstanceKey(clip.id, d.id);
+        if (!isMod(d.moduleType)) accKey = clipInstanceKey(clip.id, d.id);
+      });
+    }
+
+    // Fold this clip's modulation wires into the composite, remapping device ids
+    // → composite instance keys. Both endpoints must have been pushed.
+    const pushed = new Set(cat.map((d) => d.id));
+    for (const w of clip.sketch.wires ?? []) {
+      if (!pushed.has(w.src.instanceKey) || !pushed.has(w.dest.instanceKey)) continue;
+      wires.push({
+        ...w,
+        id: `cw${wid++}`,
+        src: { instanceKey: clipInstanceKey(clip.id, w.src.instanceKey), field: w.src.field },
+        dest: { instanceKey: clipInstanceKey(clip.id, w.dest.instanceKey), field: w.dest.field },
       });
     }
   }

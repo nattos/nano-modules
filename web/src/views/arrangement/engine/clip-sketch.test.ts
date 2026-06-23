@@ -59,6 +59,25 @@ describe('buildCompositeSketch', () => {
     expect((r.sketch.instances![inv.instance_key].state as any).__opacity__).toBe(0.3);
   });
 
+  it('folds a clip modulation wire into the composite (remapped) and a mod node does not advance the accumulator', () => {
+    const c = {
+      id: 'M',
+      sketch: {
+        devices: [dev('source.solid_color', 'Md0'), dev('mod.source.lfo', 'Md1'), dev('color.saturate', 'Md2')],
+        wires: [{ id: 'wq', src: { instanceKey: 'Md1', field: 'output' }, dest: { instanceKey: 'Md2', field: 'prescale' }, combine: 'add' }],
+      },
+    } as any;
+    const r = buildCompositeSketch([{ clip: c, opacity: 1 }])!;
+    // The LFO is in the chain (so it runs + publishes its output) ...
+    expect(r.sketch.chain!.map((e) => e.module_type)).toContain('mod.source.lfo');
+    // ... and the wire is folded in, remapped to composite instance keys.
+    const w = r.sketch.wires!.find((x) => x.src.field === 'output')!;
+    expect(w.src.instanceKey).toBe(clipInstanceKey('M', 'Md1'));
+    expect(w.dest.instanceKey).toBe(clipInstanceKey('M', 'Md2'));
+    expect(w.dest.field).toBe('prescale');
+    expect(w.combine).toBe('add');
+  });
+
   it('returns null for an empty stack', () => {
     expect(buildCompositeSketch([])).toBeNull();
   });
