@@ -40,8 +40,18 @@ const BLIT_SHADER = /* wgsl */`
 /** How the source frame scales into the target canvas. */
 export type BlitFit = 'fit' | 'cover' | 'stretch' | 'none';
 
-/** Destination viewport rect (px) + source UV region for a fit mode. */
-function blitGeom(sw: number, sh: number, W: number, H: number, mode: BlitFit) {
+/**
+ * Destination viewport rect (px) + source UV region for a fit mode.
+ *
+ * `W`/`H` are the actual blit target (which may be a DOWNSCALED preview).
+ * `logicalW`/`logicalH` are the size 'none' reasons about — the composition
+ * resolution — so "native pixels, no scaling" means 1:1 against the COMPOSITION,
+ * then uniformly scaled into the preview. (Defaults to W/H ⇒ unchanged for
+ * callers that render at composition resolution.) `fit`/`cover`/`stretch` are
+ * resolution-independent and ignore the logical size.
+ */
+function blitGeom(sw: number, sh: number, W: number, H: number, mode: BlitFit,
+                  logicalW = W, logicalH = H) {
   if (sw <= 0 || sh <= 0 || mode === 'stretch') {
     return { vx: 0, vy: 0, vw: W, vh: H, uOff: [0, 0], uScale: [1, 1] };
   }
@@ -51,8 +61,13 @@ function blitGeom(sw: number, sh: number, W: number, H: number, mode: BlitFit) {
     return { vx: 0, vy: 0, vw: W, vh: H, uOff: [(1 - uw) / 2, (1 - uh) / 2], uScale: [uw, uh] };
   }
   if (mode === 'none') {
-    const dw = Math.min(sw, W), dh = Math.min(sh, H);
-    const uw = dw / sw, uh = dh / sh;
+    // 1:1 against the composition, then uniformly scaled into the (maybe
+    // downscaled) preview — so a source the same size as the composition fills it
+    // exactly (no crop), a larger source is center-cropped, a smaller one padded.
+    const Lw = Math.max(1, logicalW), Lh = Math.max(1, logicalH);
+    const dwL = Math.min(sw, Lw), dhL = Math.min(sh, Lh); // dest extent in comp px
+    const uw = dwL / sw, uh = dhL / sh;
+    const dw = dwL * (W / Lw), dh = dhL * (H / Lh);        // → preview px
     return { vx: (W - dw) / 2, vy: (H - dh) / 2, vw: dw, vh: dh, uOff: [(1 - uw) / 2, (1 - uh) / 2], uScale: [uw, uh] };
   }
   // fit (contain)
@@ -92,7 +107,8 @@ export class FrameBlitter {
    * the frame into the canvas per `mode` (default 'stretch' = the old behavior).
    * Letterbox/pad areas are left TRANSPARENT so layers below show through.
    */
-  toImageBitmap(srcTexture: GPUTexture, width: number, height: number, mode: BlitFit = 'stretch'): ImageBitmap {
+  toImageBitmap(srcTexture: GPUTexture, width: number, height: number, mode: BlitFit = 'stretch',
+                logicalW = width, logicalH = height): ImageBitmap {
     if (!this.canvas || this.w !== width || this.h !== height) {
       this.canvas = new OffscreenCanvas(width, height);
       this.ctx = this.canvas.getContext('webgpu') as GPUCanvasContext;
@@ -101,7 +117,7 @@ export class FrameBlitter {
       this.w = width;
       this.h = height;
     }
-    const g = blitGeom(srcTexture.width, srcTexture.height, width, height, mode);
+    const g = blitGeom(srcTexture.width, srcTexture.height, width, height, mode, logicalW, logicalH);
     this.device.queue.writeBuffer(this.xformBuf, 0,
       new Float32Array([g.uOff[0], g.uOff[1], g.uScale[0], g.uScale[1]]));
     const target = this.ctx!.getCurrentTexture();

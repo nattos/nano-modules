@@ -82,12 +82,18 @@ export class VideoCompositor {
     private renderW: number,
     private renderH: number,
     private readonly clock: TransportClock,
+    /** Composition resolution — what 'none' scale reasons about (1:1 vs the
+     *  composition, NOT the possibly-downscaled preview). Defaults to render size. */
+    private compW = renderW,
+    private compH = renderH,
   ) {}
 
-  /** Update the blit render size (composition resolution changed). */
-  setRenderSize(w: number, h: number) {
+  /** Update the blit render (preview) size + the composition resolution. */
+  setRenderSize(w: number, h: number, compW = w, compH = h) {
     this.renderW = w;
     this.renderH = h;
+    this.compW = compW;
+    this.compH = compH;
   }
 
   private ensureService(): Promise<VideoPlaybackService> {
@@ -210,7 +216,7 @@ export class VideoCompositor {
       if (!tex) { this.lastError = `no texture for handle ${handle}`; return; }
       // Blit + scale (per the clip's scale mode) to the composite render size,
       // so source.video.file just copies a ready-to-composite frame.
-      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode);
+      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode, this.compW, this.compH);
       this.lastPulled[p.desc.clipId] = { frame, handle, w: bitmap.width, h: bitmap.height };
       this.setInstanceTexture(p.desc.instanceKey, bitmap);
       p.lastKey = key;

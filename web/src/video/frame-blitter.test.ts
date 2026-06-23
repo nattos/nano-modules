@@ -39,3 +39,27 @@ describe('blitGeom scale modes', () => {
     expect(g.uOff[1]).toBeCloseTo(0.375);
   });
 });
+
+// The bug: 'none' must be 1:1 vs the COMPOSITION, not the (downscaled) preview.
+// Composition 1920×1080 previewed at 1280×720.
+describe('blitGeom none with a downscaled preview', () => {
+  it('a source matching the composition fills the preview (no zoom/crop)', () => {
+    const g = blitGeom(1920, 1080, 1280, 720, 'none', 1920, 1080);
+    expect([g.vx, g.vy, g.vw, g.vh]).toEqual([0, 0, 1280, 720]);
+    expect([...g.uScale]).toEqual([1, 1]); // whole source, no crop
+  });
+
+  it('a source larger than the composition is cropped 1:1 at comp res', () => {
+    const g = blitGeom(3840, 2160, 1280, 720, 'none', 1920, 1080);
+    expect([g.vx, g.vy, g.vw, g.vh]).toEqual([0, 0, 1280, 720]); // fills preview
+    expect(g.uScale[0]).toBeCloseTo(0.5); // centre 1920 of 3840 sampled
+    expect(g.uScale[1]).toBeCloseTo(0.5);
+  });
+
+  it('a source smaller than the composition is padded (1:1 at comp res)', () => {
+    const g = blitGeom(960, 540, 1280, 720, 'none', 1920, 1080);
+    expect([g.vw, g.vh]).toEqual([640, 360]); // half the comp → half the preview
+    expect([g.vx, g.vy]).toEqual([320, 180]); // centred
+    expect([...g.uScale]).toEqual([1, 1]);
+  });
+});

@@ -112,11 +112,14 @@ export class EngineBridge {
   private video: VideoCompositor | null = null;
   private videoCompositor(): VideoCompositor {
     if (!this.video) {
+      const r = store.composition.meta.resolution;
       this.video = new VideoCompositor(
         (key, bmp) => this.setInstanceTexture(key, bmp),
         this.renderW,
         this.renderH,
         () => ({ beat: store.positionBeat, bpm: store.composition.meta.baseBPM }),
+        Math.max(1, r.width),
+        Math.max(1, r.height),
       );
     }
     return this.video;
@@ -150,7 +153,8 @@ export class EngineBridge {
     this.renderW = w;
     this.renderH = h;
     this.engine?.resize(w, h);
-    this.video?.setRenderSize(w, h);
+    const r = store.composition.meta.resolution;
+    this.video?.setRenderSize(w, h, Math.max(1, r.width), Math.max(1, r.height));
     // Force a re-issue so the trace re-renders at the new size next frame.
     this.compositeSig = '';
   }
