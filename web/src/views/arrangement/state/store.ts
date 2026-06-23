@@ -30,6 +30,7 @@ import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
+import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { emptyComposition, makeMainBus } from '../model/composition';
 
 export type SelectableKind =
@@ -273,6 +274,7 @@ export class ArrangementStore {
     makeAutoObservable<
       ArrangementStore,
       'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
+      | 'layoutReady' | 'layoutSaveTimer'
     >(
       this,
       {
@@ -282,6 +284,8 @@ export class ArrangementStore {
         lastSavedJson: false,
         // Bitmaps aren't deep-observed; reactivity rides `traceGeneration`.
         tracedFrames: false,
+        layoutReady: false,
+        layoutSaveTimer: false,
       },
       { autoBind: true },
     );
@@ -328,6 +332,7 @@ export class ArrangementStore {
       this.clearSelection();
     });
     this.history.reset();
+    this.requestLayoutSave(); // remember this as the last-opened file
   }
 
   /** Guarantee the master/main-bus track exists (it's the one mandatory track and
@@ -341,6 +346,54 @@ export class ArrangementStore {
   async createArrangement(backend: WorkspaceBackend, name: string, comp?: Composition) {
     await backend.create(name, comp ?? toJS(this.composition));
     await this.openArrangement(backend, name);
+  }
+
+  // ── Workspace layout persistence (user settings, not the document) ──────
+  /** Last-opened file name, restored from settings before the workspace mounts. */
+  preferredFile: string | null = null;
+  private layoutReady = false;
+  private layoutSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private serializeLayout(): ArrLayout {
+    return {
+      activeRightTab: this.activeRightTab,
+      clipViewOpen: this.clipViewOpen,
+      clipViewHeight: this.clipViewHeight,
+      sidePanelWidth: this.sidePanelWidth,
+      headerWidth: this.headerWidth,
+      wiresMode: this.wiresMode,
+      automationMode: this.automationMode,
+      lastFile: this.currentName,
+    };
+  }
+
+  /** Load + apply the saved layout (panels/tabs/modes) and remember the last file
+   *  so the upcoming workspace mount can re-open it. Call once on boot. */
+  async restoreLayout() {
+    const l = await loadLayout();
+    if (l) {
+      runInAction(() => {
+        if (l.activeRightTab) this.activeRightTab = l.activeRightTab as RightTab;
+        if (typeof l.clipViewOpen === 'boolean') this.clipViewOpen = l.clipViewOpen;
+        if (typeof l.clipViewHeight === 'number') this.setClipViewHeight(l.clipViewHeight);
+        if (typeof l.sidePanelWidth === 'number') this.setSidePanelWidth(l.sidePanelWidth);
+        if (typeof l.headerWidth === 'number') this.setHeaderWidth(l.headerWidth);
+        if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
+        if (typeof l.automationMode === 'boolean') this.automationMode = l.automationMode;
+        this.preferredFile = l.lastFile ?? null;
+      });
+    }
+    this.layoutReady = true; // enable saves only AFTER restore (no clobber)
+  }
+
+  /** Debounced layout autosave (panels/tabs/modes/last file). */
+  requestLayoutSave(debounceMs = 400) {
+    if (!this.layoutReady) return;
+    if (this.layoutSaveTimer) clearTimeout(this.layoutSaveTimer);
+    this.layoutSaveTimer = setTimeout(() => {
+      this.layoutSaveTimer = null;
+      void saveLayout(this.serializeLayout());
+    }, debounceMs);
   }
 
   /** Debounced autosave; a no-op until a workspace is bound. */
@@ -383,7 +436,8 @@ export class ArrangementStore {
     await this.refreshWorkspaceList();
     const entries = this.workspaceEntries;
     if (entries.length) {
-      const keep = this.currentName ? entries.find((e) => e.name === this.currentName) : undefined;
+      const want = this.currentName ?? this.preferredFile;
+      const keep = want ? entries.find((e) => e.name === want) : undefined;
       await this.openArrangement(backend, (keep ?? entries[0]).name);
     } else {
       // Empty folder → seed it with what's on screen so nothing is lost.
@@ -725,31 +779,38 @@ export class ArrangementStore {
   // ── Right tab ─────────────────────────────────────────────────────────
   setRightTab(tab: RightTab) {
     this.activeRightTab = tab;
+    this.requestLayoutSave();
   }
 
   toggleAutomationMode() {
     this.automationMode = !this.automationMode;
+    this.requestLayoutSave();
   }
 
   toggleWiresMode() {
     this.wiresMode = !this.wiresMode;
     if (!this.wiresMode) this.tapPopup = null;
+    this.requestLayoutSave();
   }
 
   toggleClipView() {
     this.clipViewOpen = !this.clipViewOpen;
+    this.requestLayoutSave();
   }
   setClipViewMode(m: 'source' | 'automation') {
     this.clipViewMode = m;
   }
   setClipViewHeight(h: number) {
     this.clipViewHeight = Math.max(90, Math.min(520, h));
+    this.requestLayoutSave();
   }
   setSidePanelWidth(w: number) {
     this.sidePanelWidth = Math.max(220, Math.min(680, Math.round(w)));
+    this.requestLayoutSave();
   }
   setHeaderWidth(w: number) {
     this.headerWidth = Math.max(120, Math.min(380, Math.round(w)));
+    this.requestLayoutSave();
   }
   setClipAutoTiming(t: 'loop' | 'clip') {
     this.clipAutoTiming = t;

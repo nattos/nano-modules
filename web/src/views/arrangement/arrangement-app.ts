@@ -169,9 +169,10 @@ export class ArrangementApp extends MobxLitElement {
     this.addEventListener('drop', this.onDrop);
     this.lastT = performance.now();
     this.tick(this.lastT);
-    // Re-open the last workspace (silently if permission persists, else on the
-    // first user gesture — when the browser will let us prompt).
-    void store.autoMountRememberedWorkspace();
+    // Restore the saved workspace layout (panels/tabs/modes + last file) BEFORE
+    // mounting, so the remembered file re-opens; then re-open the last workspace
+    // (silently if permission persists, else on the first user gesture).
+    void store.restoreLayout().then(() => store.autoMountRememberedWorkspace());
     this.installBackTrap();
   }
 
