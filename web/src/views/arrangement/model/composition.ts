@@ -11,6 +11,8 @@
  * list) that maps onto a real Structor `Sketch` (ChainEntry[]) in M2+.
  */
 
+import type { Wire as SketchWire } from '../../../sketch-types';
+
 export interface Resolution {
   width: number;
   height: number;
@@ -96,9 +98,14 @@ export function deviceIsSource(device: Device): boolean {
   );
 }
 
-/** Lightweight sketch (device list) hosted by a clip or track. */
+/** Lightweight sketch (device list + intra-sketch modulation wires) hosted by a
+ *  clip or track. Wires connect a producer field (`src`) to a destination param
+ *  (`dest`) by device id; the same `Wire` shape as the engine sketch so the
+ *  <column-group> overlay can render them. (Rail/return endpoints will extend
+ *  this later — punted for now.) */
 export interface ClipSketch {
   devices: Device[];
+  wires?: SketchWire[];
 }
 
 /** A point in an automation/envelope lane: x in [0,1] of lane span, y in [0,1]. */

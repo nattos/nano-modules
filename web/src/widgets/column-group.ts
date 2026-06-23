@@ -60,6 +60,7 @@ const CATEGORY_ICON: Record<string, string> = {
 const CATEGORY_DEFAULT: Record<string, string> = {
   source: 'source.solid_color',
   color: 'color.tone.brightness_contrast',
+  warp: 'warp.transform',
 };
 /** Fallback temporary effect when a category has no good default in core. */
 const CATEGORY_FALLBACK = 'color.tone.brightness_contrast';

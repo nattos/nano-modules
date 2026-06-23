@@ -23,6 +23,7 @@ import type { Selectable, EffectClipboard, AvailableEffect } from '../../../stat
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Device } from '../model/composition';
 import { store } from '../state/store';
+import { WireConnect } from '../../../widgets/taps-connect';
 import { EFFECT_CATALOG, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
 import { clipInstanceKey } from '../engine/clip-sketch';
 
@@ -146,11 +147,22 @@ export class ArrColumnAdapter implements ColumnAdapter {
   }
 
   // ── data source ──
+  /** Per-adapter wire-connect gesture machine, backed by the arrangement store. */
+  private readonly wire = new WireConnect({
+    getSketch: (id) => this.data.getSketch(id),
+    getPlugin: (mt) => this.data.getPlugin(mt),
+    connectWire: (a, b) => store.connectSketchWire(a, b),
+  });
+
   data: ColumnDataSource = {
-    get caps() { return CAPS; },
-    get tappingMode() { return false; },
+    // Wiring follows the global wires-mode toggle: on → tap overlay + pips +
+    // click-to-connect; the gutter reappears to host the pips.
+    get caps(): ColumnCapabilities {
+      return { ...CAPS, wiring: store.wiresMode };
+    },
+    get tappingMode() { return store.wiresMode; },
     get availableEffects() { return AVAILABLE; },
-    getSketch: (_sketchId: string): Sketch | undefined => {
+    getSketch: (sketchId: string): Sketch | undefined => {
       const devices = this.target.getDevices();
       if (!devices) return undefined;
       // Rebuilt every call so it reads the CURRENT device.state (the store
@@ -165,6 +177,8 @@ export class ArrColumnAdapter implements ColumnAdapter {
         instances: Object.fromEntries(
           devices.map((d) => [d.id, { module_type: d.moduleType, state: (d.state ?? {}) as Record<string, unknown> }]),
         ),
+        // Read through the store so the overlay re-renders when wires change.
+        wires: store.sketchWires(sketchId),
       };
     },
     getPlugin: (moduleType: string): PluginInfo | undefined => {
@@ -324,25 +338,26 @@ export class ArrColumnAdapter implements ColumnAdapter {
     cancelInsertEffect: (edit) => edit.cancel(),
     moveEffect: (_s, _c, from, to) => this.target.move(from, to),
 
-    // clipboard / smoothing / wiring are capability-gated off → never invoked.
+    // clipboard / smoothing are capability-gated off → never invoked.
     snapshotEffect: (): EffectClipboard | null => null,
     insertEffectFromClipboard: () => {},
     setFieldSmoothing: () => {},
     beginSetFieldSmoothing: (): EditHandle => ({ accept: () => {}, cancel: () => {} }),
     updateSetFieldSmoothing: () => {},
-    connectWire: () => {},
-    removeWire: () => {},
-    updateWire: () => {},
-    beginUpdateWire: (): EditHandle => ({ accept: () => {}, cancel: () => {} }),
-    updateUpdateWire: () => {},
+
+    // wiring → store (intra-sketch modulation; rail endpoints punted for now).
+    connectWire: (a, b) => store.connectSketchWire(a, b),
+    removeWire: (sketchId, wireId) => store.removeSketchWire(sketchId, wireId),
+    updateWire: (sketchId, wireId, patch) => store.updateSketchWire(sketchId, wireId, patch as Record<string, unknown>),
+    beginUpdateWire: (sketchId, wireId, patch): EditHandle => {
+      const ck = `wire:${wireId}`;
+      store.updateSketchWire(sketchId, wireId, patch as Record<string, unknown>, ck);
+      return { _ck: ck, accept: () => {}, cancel: () => {} } as ArrEditHandle;
+    },
+    updateUpdateWire: (edit, sketchId, wireId, patch) =>
+      store.updateSketchWire(sketchId, wireId, patch as Record<string, unknown>, (edit as ArrEditHandle)._ck),
   };
 
-  // ── taps (no-op: wiring off) ──
-  taps: ColumnTaps = {
-    get state() { return null; },
-    beginFromFieldDrag: () => {},
-    beginFromFieldClick: () => {},
-    completeOnField: () => {},
-    consumeClickSuppression: () => false,
-  };
+  // ── taps: the shared wire-connect gesture, backed by this adapter ──
+  get taps(): ColumnTaps { return this.wire; }
 }

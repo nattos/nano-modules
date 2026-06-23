@@ -257,6 +257,34 @@ export class ArrInspector extends MobxLitElement {
       display: block;
       margin-bottom: 40vh;
     }
+    .chain-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .wires-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font: inherit;
+      font-size: var(--app-fs-xs);
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--app-text-color2);
+      background: var(--app-tint-2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      padding: 2px 7px;
+      cursor: pointer;
+    }
+    .wires-toggle ui-icon { --icon-size: 12px; }
+    .wires-toggle:hover { background: var(--app-tint-3); }
+    .wires-toggle.on {
+      color: var(--app-hi-color2);
+      border-color: var(--app-hi-color2);
+      background: rgba(65, 105, 225, 0.12);
+    }
     .ws-list {
       display: flex;
       flex-direction: column;
@@ -542,7 +570,14 @@ export class ArrInspector extends MobxLitElement {
 
         ${this.renderDashboard(clip, path)}
 
-        <div class="group-title">Chain (sketch)</div>
+        <div class="group-title chain-hdr">
+          <span>Chain (sketch)</span>
+          <button
+            class="wires-toggle ${store.wiresMode ? 'on' : ''}"
+            title="Toggle wires mode — click/drag a field port to connect"
+            @click=${() => store.toggleWiresMode()}
+          ><ui-icon icon="la-project-diagram"></ui-icon> Wires</button>
+        </div>
         <column-group
           class="chain"
           .colIdx=${0}
@@ -594,7 +629,14 @@ export class ArrInspector extends MobxLitElement {
                 Delete track
               </button>
             </div>`}
-        <div class="group-title">Chain (sketch)</div>
+        <div class="group-title chain-hdr">
+          <span>Chain (sketch)</span>
+          <button
+            class="wires-toggle ${store.wiresMode ? 'on' : ''}"
+            title="Toggle wires mode — click/drag a field port to connect"
+            @click=${() => store.toggleWiresMode()}
+          ><ui-icon icon="la-project-diagram"></ui-icon> Wires</button>
+        </div>
         <column-group
           class="chain"
           .colIdx=${0}

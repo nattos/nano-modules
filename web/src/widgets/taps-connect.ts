@@ -1,8 +1,8 @@
 /**
  * wire-connect — the shared click/drag-to-connect state machine for wires.
  *
- * A single module-level controller drives "connect" gestures from a source
- * field hit-box to a target field hit-box. Two gestures enter it:
+ * A single controller drives "connect" gestures from a source field hit-box to a
+ * target field hit-box. Two gestures enter it:
  *   - DRAG: press on a field and drag past a threshold (PointerDragOp). The
  *     connection commits to whatever field is under the pointer on release.
  *   - CLICK: click an already-selected field to "pick it up"; the line then
@@ -12,14 +12,26 @@
  * While active, `state` holds the source + live pointer so <taps-overlay> can
  * draw the rubber-band line. Target resolution pierces shadow roots to find the
  * `.tap-overlay-hit` (field ports, in the column-group roots) under the cursor.
- * A committed field→field gesture creates a Wire via controller.connectWire.
+ *
+ * GENERALIZED: the machine is parameterized by a `WireHost` (sketch lookup +
+ * connectWire), so any surface — the effect IDE or the arrangement — gets the
+ * same gesture by handing it a host backed by its own store. `tapsConnect` is
+ * the IDE instance; other surfaces construct their own `new WireConnect(host)`.
  */
 
+import type { FieldConnectInfo, Sketch } from '../sketch-types';
+import { chainEntryAt } from '../sketch-types';
+import type { PluginInfo, ColumnTaps } from './column-adapter';
+import { PointerDragOp } from '../utils/pointer-drag-op';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { FieldConnectInfo } from '../state/controller';
-import { chainEntryAt } from '../sketch-types';
-import { PointerDragOp } from '../utils/pointer-drag-op';
+
+/** The surface-specific data a wire gesture needs. */
+export interface WireHost {
+  getSketch(sketchId: string): Sketch | undefined;
+  getPlugin(moduleType: string): PluginInfo | undefined;
+  connectWire(a: FieldConnectInfo, b: FieldConnectInfo): void;
+}
 
 interface ConnectState {
   /** Field key `<sketch>/<col>/<chain>/<field>`. */
@@ -49,41 +61,41 @@ function hitKey(hit: HTMLElement): string {
   return `${hit.dataset.sketchId}/${hit.dataset.colIdx}/${hit.dataset.chainIdx}/${hit.dataset.fieldPath}`;
 }
 
-function hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
-  const sketchId = hit.dataset.sketchId ?? '';
-  const colIdx = parseInt(hit.dataset.colIdx ?? '-1', 10);
-  const chainIdx = parseInt(hit.dataset.chainIdx ?? '-1', 10);
-  const fieldPath = hit.dataset.fieldPath ?? '';
-  if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
-  const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
-  if (entry?.type !== 'module') return null;
-  const schemaDef = appState.local.plugins.find(p => p.id === entry.module_type)?.schema?.[fieldPath] ?? null;
-  const r = hit.getBoundingClientRect();
-  return { sketchId, colIdx, chainIdx, fieldPath,
-    isOutput: hit.dataset.isOutput === 'true', viewportY: r.top + r.height / 2, schemaDef };
-}
-
-function resolveTargetAt(x: number, y: number): Target | null {
-  const el = deepElementFromPoint(x, y);
-  if (!el) return null;
-  // A field's tap-port hit-box (expanded card) OR a collapsed card's splayed
-  // option pip — both carry the same data-* connect dataset.
-  const hit = el.closest?.('.tap-overlay-hit, .field-option-pip.connectable') as HTMLElement | null;
-  if (!hit) return null;
-  const info = hitToInfo(hit);
-  return info ? { key: hitKey(hit), info } : null;
-}
-
-class TapsConnect {
+export class WireConnect implements ColumnTaps {
   state: ConnectState | null = null;
+
+  constructor(private host: WireHost) {}
+
+  private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
+    const sketchId = hit.dataset.sketchId ?? '';
+    const colIdx = parseInt(hit.dataset.colIdx ?? '-1', 10);
+    const chainIdx = parseInt(hit.dataset.chainIdx ?? '-1', 10);
+    const fieldPath = hit.dataset.fieldPath ?? '';
+    if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
+    const entry = chainEntryAt(this.host.getSketch(sketchId), chainIdx);
+    if (entry?.type !== 'module') return null;
+    const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath] ?? null;
+    const r = hit.getBoundingClientRect();
+    return { sketchId, colIdx, chainIdx, fieldPath,
+      isOutput: hit.dataset.isOutput === 'true', viewportY: r.top + r.height / 2, schemaDef };
+  }
+
+  private resolveTargetAt(x: number, y: number): Target | null {
+    const el = deepElementFromPoint(x, y);
+    if (!el) return null;
+    // A field's tap-port hit-box (expanded card) OR a collapsed card's splayed
+    // option pip — both carry the same data-* connect dataset.
+    const hit = el.closest?.('.tap-overlay-hit, .field-option-pip.connectable') as HTMLElement | null;
+    if (!hit) return null;
+    const info = this.hitToInfo(hit);
+    return info ? { key: hitKey(hit), info } : null;
+  }
 
   // Bound document listeners for CLICK mode (kept so we can remove them).
   private onDocMove = (e: PointerEvent) => this.updatePointer(e.clientX, e.clientY);
   private onDocKey = (e: KeyboardEvent) => { if (e.key === 'Escape') this.cancel(); };
   private onDocDown = (e: PointerEvent) => {
-    // A click in CLICK mode: commit if over a target, else cancel. Element-level
-    // handlers (field) also call complete*, so only act on background here.
-    const t = resolveTargetAt(e.clientX, e.clientY);
+    const t = this.resolveTargetAt(e.clientX, e.clientY);
     if (!t) this.cancel();
   };
   private clickListenersActive = false;
@@ -115,13 +127,9 @@ class TapsConnect {
       },
       accept: (me) => {
         if (this.state) {
-          const t = resolveTargetAt(me.clientX, me.clientY);
+          const t = this.resolveTargetAt(me.clientX, me.clientY);
           if (t) this.commit(t);
         }
-        // A real drag happened → swallow the synthetic click that follows so it
-        // doesn't re-select / re-enter connect mode on the element it lands on.
-        // The trailing click (if any) dispatches before this macrotask; the
-        // timeout clears the flag if no click fires so a later click isn't eaten.
         this.suppressClick = true;
         setTimeout(() => { this.suppressClick = false; }, 0);
         this.end();
@@ -146,7 +154,6 @@ class TapsConnect {
   private installClickListeners() {
     if (this.clickListenersActive) return;
     this.clickListenersActive = true;
-    // Defer so the click that began the gesture doesn't immediately cancel it.
     setTimeout(() => {
       if (!this.state) return;
       document.addEventListener('pointermove', this.onDocMove);
@@ -161,13 +168,6 @@ class TapsConnect {
 
   private updatePointer(x: number, y: number) {
     if (!this.state) return;
-    // Storing the coords is cheap and must happen every move so the rubber-band
-    // line tracks smoothly. The drop-target hit-test below is NOT cheap —
-    // deepElementFromPoint pierces every shadow root with elementFromPoint, and
-    // because the overlay's rAF mutates SVG paths each frame, each call forces a
-    // layout flush. pointermove can fire several times per frame, so running it
-    // per-event meant N forced reflows/frame → ~2 FPS during click-to-connect.
-    // Coalesce it to at most once per animation frame.
     this.state.pointerX = x;
     this.state.pointerY = y;
     if (this.dropRaf) return;
@@ -197,18 +197,18 @@ class TapsConnect {
   }
 
   private fieldTargetByKey(key: string): Target | null {
-    // Build the target straight from app state — the hit elements live inside
+    // Build the target straight from the host — the hit elements live inside
     // nested shadow roots that a document query can't reach. Output bit = io&2.
     const [sketchId, colStr, chainStr, ...fp] = key.split('/');
     const colIdx = +colStr, chainIdx = +chainStr;
     const fieldPath = fp.join('/');
-    const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
+    const entry = chainEntryAt(this.host.getSketch(sketchId), chainIdx);
     if (entry?.type !== 'module') return null;
-    const schemaDef = appState.local.plugins.find(p => p.id === entry.module_type)?.schema?.[fieldPath] ?? null;
+    const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath] ?? null;
     const info: FieldConnectInfo = {
       sketchId, colIdx, chainIdx, fieldPath,
       isOutput: !!(((schemaDef as any)?.io ?? 0) & 2),
-      viewportY: this.state?.pointerY ?? 0, // pointer is over the target → good Y for same-dir
+      viewportY: this.state?.pointerY ?? 0,
       schemaDef,
     };
     return { key, info };
@@ -219,8 +219,7 @@ class TapsConnect {
   private commit(target: Target) {
     const s = this.state;
     if (!s) return;
-    // A field→field gesture commits a Wire (writer/reader resolved in connectWire).
-    appController.connectWire(s.info, target.info);
+    this.host.connectWire(s.info, target.info);
   }
 
   cancel() { this.end(); }
@@ -239,5 +238,9 @@ class TapsConnect {
   }
 }
 
-/** Shared singleton. */
-export const tapsConnect = new TapsConnect();
+/** Shared IDE singleton — backed by appState / appController. */
+export const tapsConnect = new WireConnect({
+  getSketch: (id) => appState.database.sketches[id],
+  getPlugin: (mt) => appState.local.plugins.find((p) => p.id === mt) as PluginInfo | undefined,
+  connectWire: (a, b) => appController.connectWire(a, b),
+});

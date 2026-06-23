@@ -74,6 +74,27 @@ describe('device reorder (moveClipDevice)', () => {
     expect(store.chainFocusPath).toBeNull();
   });
 
+  it('connects, replaces-into-dest, removes, and prunes wires', () => {
+    const sid = `clip/${trk}/${clip}`;
+    const mk = (chainIdx: number, fieldPath: string, viewportY: number) =>
+      ({ sketchId: sid, colIdx: 0, chainIdx, fieldPath, isOutput: false, viewportY, schemaDef: null });
+    // [solid, saturate, invert] — connect solid.<f> (upper) → saturate.prescale.
+    store.connectSketchWire(mk(0, 'amount', 100), mk(1, 'prescale', 200));
+    expect(store.sketchWires(sid).map((w) => `${w.src.field}->${w.dest.field}`)).toEqual(['amount->prescale']);
+    // A second wire into the same dest replaces the first.
+    store.connectSketchWire(mk(2, 'amount', 100), mk(1, 'prescale', 200));
+    expect(store.sketchWires(sid).length).toBe(1);
+    expect(store.sketchWires(sid)[0].src.field).toBe('amount');
+    // Remove it.
+    store.removeSketchWire(sid, store.sketchWires(sid)[0].id);
+    expect(store.sketchWires(sid).length).toBe(0);
+    // Deleting a device prunes wires that touch it.
+    store.connectSketchWire(mk(0, 'amount', 100), mk(1, 'prescale', 200));
+    const satId = store.trackById(trk)!.clips.find((c) => c.id === clip)!.sketch.devices[1].id;
+    store.removeClipDevice(trk, clip, satId);
+    expect(store.sketchWires(sid).length).toBe(0);
+  });
+
   it('selecting a clip / clearing selection drops chain focus', () => {
     store.setChainFocus(`effect/clip/${trk}/${clip}/0/0`);
     store.select(paths.clip(trk, clip));

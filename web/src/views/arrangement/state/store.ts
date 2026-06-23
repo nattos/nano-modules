@@ -9,11 +9,13 @@
 
 import { makeAutoObservable, runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import type { StateDiff, PluginInfo } from '../../../engine-types';
+import type { FieldConnectInfo } from '../../../sketch-types';
 import {
   Composition,
   Clip,
   Track,
   Device,
+  ClipSketch,
   ClipLoopConfig,
   RailExport,
   RailRead,
@@ -122,6 +124,19 @@ function carveTrackSpan(track: Track, exceptId: string, start: number, end: numb
     // a clip wholly inside [start,end) contributes neither piece → removed
   }
   track.clips = next;
+}
+
+/** Resolve a column-group sketchId (`clip/<trk>/<clip>` | `track/<trk>`) to its
+ *  ClipSketch within a draft composition. */
+function draftSketch(d: Composition, sketchId: string): ClipSketch | undefined {
+  if (sketchId.startsWith('clip/')) {
+    const [, trackId, clipId] = sketchId.split('/');
+    return d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId)?.sketch;
+  }
+  if (sketchId.startsWith('track/')) {
+    return d.tracks.find((t) => t.id === sketchId.split('/')[1])?.sketch;
+  }
+  return undefined;
 }
 
 /**
@@ -1293,13 +1308,17 @@ export class ArrangementStore {
     return id;
   }
 
-  /** Remove a clip device by id. */
+  /** Remove a clip device by id. Also drops any wires touching it. */
   removeClipDevice(trackId: string, clipId: string, deviceId: string, coalesceKey?: string) {
     this.mutate('remove device', (d) => {
       const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
       if (!c) return;
       const i = c.sketch.devices.findIndex((x) => x.id === deviceId);
       if (i >= 0) c.sketch.devices.splice(i, 1);
+      if (c.sketch.wires) {
+        c.sketch.wires = c.sketch.wires.filter(
+          (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
+      }
     }, coalesceKey);
   }
 
@@ -1360,6 +1379,10 @@ export class ArrangementStore {
       if (!t) return;
       const i = t.sketch.devices.findIndex((x) => x.id === deviceId);
       if (i >= 0) t.sketch.devices.splice(i, 1);
+      if (t.sketch.wires) {
+        t.sketch.wires = t.sketch.wires.filter(
+          (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
+      }
     }, coalesceKey);
   }
 
@@ -1369,6 +1392,65 @@ export class ArrangementStore {
       const devs = d.tracks.find((x) => x.id === trackId)?.sketch.devices;
       if (devs) moveInArray(devs, from, to);
     });
+  }
+
+  // ── Intra-sketch modulation wires (shared by clip + track chains) ───────
+  /**
+   * Connect two fields into a modulation wire. Mirrors the IDE's connectWire:
+   * resolves writer (output) vs reader (input) — by explicit direction, else by
+   * vertical position — and replaces any existing wire into the same dest field.
+   * Cross-sketch (rail/return) wiring is punted for now: `a` and `b` must share a
+   * sketch.
+   */
+  connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    if (a.sketchId !== b.sketchId) return;
+    if (a.colIdx === b.colIdx && a.chainIdx === b.chainIdx && a.fieldPath === b.fieldPath) return;
+    const writer = a.isOutput !== b.isOutput
+      ? (a.isOutput ? a : b)
+      : (a.viewportY <= b.viewportY ? a : b);
+    const reader = writer === a ? b : a;
+    const id = uid('wire');
+    this.mutate('connect wire', (d) => {
+      const sk = draftSketch(d, writer.sketchId);
+      if (!sk) return;
+      const srcDev = sk.devices[writer.chainIdx];
+      const destDev = sk.devices[reader.chainIdx];
+      if (!srcDev || !destDev) return;
+      sk.wires = (sk.wires ?? []).filter(
+        (w) => !(w.dest.instanceKey === destDev.id && w.dest.field === reader.fieldPath));
+      sk.wires.push({
+        id,
+        src: { instanceKey: srcDev.id, field: writer.fieldPath },
+        dest: { instanceKey: destDev.id, field: reader.fieldPath },
+        combine: 'add',
+      });
+    });
+  }
+
+  removeSketchWire(sketchId: string, wireId: string) {
+    this.mutate('remove wire', (d) => {
+      const sk = draftSketch(d, sketchId);
+      if (sk?.wires) sk.wires = sk.wires.filter((w) => w.id !== wireId);
+    });
+  }
+
+  updateSketchWire(sketchId: string, wireId: string, patch: Record<string, unknown>, coalesceKey?: string) {
+    this.mutate('update wire', (d) => {
+      const w = draftSketch(d, sketchId)?.wires?.find((x) => x.id === wireId);
+      if (w) Object.assign(w, JSON.parse(JSON.stringify(patch)));
+    }, coalesceKey);
+  }
+
+  /** Wires in a sketch (for the column-group adapter / overlay). */
+  sketchWires(sketchId: string) {
+    if (sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = sketchId.split('/');
+      return this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.wires ?? [];
+    }
+    if (sketchId.startsWith('track/')) {
+      return this.trackById(sketchId.split('/')[1])?.sketch.wires ?? [];
+    }
+    return [];
   }
 
   /** Set one field on a clip device's param state (a real param edit). */
