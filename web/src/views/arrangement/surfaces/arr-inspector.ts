@@ -251,6 +251,11 @@ export class ArrInspector extends MobxLitElement {
       margin: 8px 0 2px;
       letter-spacing: 0.02em;
     }
+    .ws-list {
+      display: flex;
+      flex-direction: column;
+      /* No gap — entries sit flush; the parent .body gap would otherwise space them. */
+    }
     .ws-file {
       display: flex;
       align-items: center;
@@ -665,12 +670,14 @@ export class ArrInspector extends MobxLitElement {
         </div>
         ${entries.length === 0
           ? html`<div class="empty" style="padding:12px 0">No arrangements yet.</div>`
-          : dirs.map(
-              (dir) => html`
-                ${dir ? html`<div class="ws-dir">${dir}/</div>` : ''}
-                ${byDir.get(dir)!.map((e) => this.renderFileRow(e))}
-              `,
-            )}
+          : html`<div class="ws-list">
+              ${dirs.map(
+                (dir) => html`
+                  ${dir ? html`<div class="ws-dir">${dir}/</div>` : ''}
+                  ${byDir.get(dir)!.map((e) => this.renderFileRow(e))}
+                `,
+              )}
+            </div>`}
       </div>
       ${this.renderDeleteConfirm()}
     `;
