@@ -27,7 +27,7 @@ import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
-import { rememberWorkspace, restoreWorkspace } from '../workspace/workspace-store';
+import { rememberWorkspace, restoreWorkspace, peekWorkspace, hasPermission, ensurePermission } from '../workspace/workspace-store';
 import { emptyComposition } from '../model/composition';
 
 export type SelectableKind =
@@ -325,6 +325,34 @@ export class ArrangementStore {
       await this.createArrangement(backend, 'untitled', toJS(this.composition));
       await this.refreshWorkspaceList();
     }
+  }
+
+  /**
+   * On boot: re-open the remembered folder. If permission is already held
+   * (browsers increasingly persist it) it mounts silently; otherwise the
+   * permission prompt is deferred to the first user gesture — `requestPermission`
+   * only prompts inside one — and the folder mounts as soon as it's granted.
+   */
+  async autoMountRememberedWorkspace() {
+    const remembered = await peekWorkspace();
+    if (!remembered) return;
+    const { handle, label } = remembered;
+    if (await hasPermission(handle, 'readwrite')) {
+      await this.mountWorkspace(new DirectoryBackend(handle, label));
+      return;
+    }
+    let done = false;
+    const onGesture = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('pointerdown', onGesture, true);
+      window.removeEventListener('keydown', onGesture, true);
+      void ensurePermission(handle, 'readwrite').then((ok) => {
+        if (ok) void this.mountWorkspace(new DirectoryBackend(handle, label));
+      });
+    };
+    window.addEventListener('pointerdown', onGesture, true);
+    window.addEventListener('keydown', onGesture, true);
   }
 
   /** Prompt for a folder (needs a user gesture) and mount it as the workspace. */

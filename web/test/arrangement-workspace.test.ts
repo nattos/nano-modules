@@ -66,4 +66,31 @@ describe('Arrangement workspace', () => {
     expect(dom.files).toEqual(expect.arrayContaining(['intro', 'verse']));
     expect(dom.active).toBe('verse');
   }, 30000);
+
+  it('auto-restores the remembered workspace on reload', async () => {
+    // Mount a fresh OPFS workspace (this remembers the handle in IDB). OPFS
+    // handles report permission granted, exercising the silent re-mount path.
+    const tag = await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      const mod = (window as any).__workspaceBackend;
+      const t = 'auto-' + Math.floor(performance.now());
+      const be = await mod.mountOpfs(t);
+      await be.write('remembered', mod.deserializeComposition('{}'));
+      await store.mountWorkspace(be);
+      return t;
+    });
+
+    // Reload — nothing is mounted at module init; auto-restore runs on boot.
+    await page.reload({ waitUntil: 'networkidle0' });
+    await page.waitForFunction(() => !!(window as any).arrangementStore, { timeout: 10000 });
+    await page.waitForFunction(() => (window as any).arrangementStore.hasWorkspace, { timeout: 10000 });
+
+    const after = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      return { label: store.workspaceLabel, current: store.currentName, count: store.workspaceEntries.length };
+    });
+    expect(after.label).toBe(`opfs:${tag}`);
+    expect(after.current).toBe('remembered');
+    expect(after.count).toBe(1);
+  }, 30000);
 });

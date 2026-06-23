@@ -154,6 +154,9 @@ export class ArrangementApp extends MobxLitElement {
     this.addEventListener('drop', this.onDrop);
     this.lastT = performance.now();
     this.tick(this.lastT);
+    // Re-open the last workspace (silently if permission persists, else on the
+    // first user gesture — when the browser will let us prompt).
+    void store.autoMountRememberedWorkspace();
   }
 
   disconnectedCallback() {

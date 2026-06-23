@@ -72,3 +72,20 @@ export async function rememberedWorkspaceLabel(): Promise<string | null> {
   const rec = await idbGet<WorkspaceHandleRecord>(STORE_WORKSPACE, CURRENT_KEY);
   return rec?.label ?? null;
 }
+
+/** The remembered handle + label, WITHOUT touching permission. */
+export async function peekWorkspace(): Promise<{ handle: FileSystemDirectoryHandle; label: string } | null> {
+  const rec = await idbGet<WorkspaceHandleRecord>(STORE_WORKSPACE, CURRENT_KEY);
+  if (!rec?.handle) return null;
+  return { handle: rec.handle, label: rec.label };
+}
+
+/** Query (NO prompt) whether permission is already held on a handle. */
+export async function hasPermission(
+  handle: FileSystemHandle,
+  mode: 'read' | 'readwrite' = 'readwrite',
+): Promise<boolean> {
+  const h = handle as any;
+  if (typeof h.queryPermission !== 'function') return true; // OPFS / no perm model
+  return (await h.queryPermission({ mode })) === 'granted';
+}
