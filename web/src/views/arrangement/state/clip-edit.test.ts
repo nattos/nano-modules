@@ -52,6 +52,30 @@ describe('time-box content move', () => {
   });
 });
 
+describe('time-box vs single-clip auto-box (drag mode gate)', () => {
+  it('a clip selection sets a box that IS just that clip (→ header drag moves, not splits)', () => {
+    store.clearSelection();
+    store.clearTimeSelection();
+    const a = store.addTrack();
+    const path = store.createEmptyClip(a, 4, 8)!;
+    const clipId = path.split('/')[2];
+    store.select(path); // sets the auto-box to the clip's span
+    expect(store.timeBoxCoversClip(a, clipId)).toBe(true);
+    expect(store.timeBoxIsJustClip(a, clipId)).toBe(true);
+  });
+
+  it('a deliberate region (≠ the clip span) is NOT just the clip (→ header drag splits)', () => {
+    store.clearSelection();
+    store.clearTimeSelection();
+    const a = store.addTrack();
+    const path = store.createEmptyClip(a, 4, 8)!;
+    const clipId = path.split('/')[2];
+    store.setTimeSelection(0, 6, [a]); // a region overlapping the clip but not its span
+    expect(store.timeBoxCoversClip(a, clipId)).toBe(true);
+    expect(store.timeBoxIsJustClip(a, clipId)).toBe(false);
+  });
+});
+
 describe('selection + play-from', () => {
   it('selectClipOnly selects without grabbing a time box', () => {
     store.clearTimeSelection();

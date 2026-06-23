@@ -662,6 +662,25 @@ export class ArrangementStore {
   }
 
   /**
+   * True when the time selection is exactly ONE clip's own auto-box (set by
+   * selecting that clip), as opposed to a deliberate region the user drag-
+   * selected. Dragging a clip whose box is just its own auto-box should MOVE the
+   * clip (incl. between tracks), not do a time-box split-move.
+   */
+  timeBoxIsJustClip(trackId: string, clipId: string): boolean {
+    if (!this.hasTimeSelection) return false;
+    const found = this.clipByPath(paths.clip(trackId, clipId));
+    if (!found) return false;
+    const c = found.clip;
+    const scope = this.timeSelTrackIds;
+    return (
+      (scope.length === 0 || (scope.length === 1 && scope[0] === trackId)) &&
+      Math.abs(this.timeSelStart! - c.startBeat) < 1e-6 &&
+      Math.abs(this.timeSelEnd - (c.startBeat + c.lengthBeat)) < 1e-6
+    );
+  }
+
+  /**
    * Shift the CONTENT inside the time box by `deltaBeat` across the region's
    * scope: split every scope clip at both box edges, then move the in-box pieces
    * (carving their destinations so they stay mutually exclusive). The box itself

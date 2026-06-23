@@ -919,7 +919,13 @@ export class ArrGrid extends MobxLitElement {
       x0: e.clientX,
       y0: e.clientY,
       active: false,
-      timebox: fromHeader && store.timeBoxCoversClip(trackId, clip.id),
+      // Time-box split-move only when a DELIBERATE region is selected (covers
+      // this clip but isn't merely its own auto-box) — otherwise a header drag
+      // moves the clip normally, incl. between tracks.
+      timebox:
+        fromHeader &&
+        store.timeBoxCoversClip(trackId, clip.id) &&
+        !store.timeBoxIsJustClip(trackId, clip.id),
     };
     window.addEventListener('pointermove', this.onClipMove);
     window.addEventListener('pointerup', this.onClipUp);
