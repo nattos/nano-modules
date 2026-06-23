@@ -445,9 +445,15 @@ export class ArrClip extends MobxLitElement {
   private onHeaderDown = (e: PointerEvent) => {
     e.stopPropagation();
     const path = paths.clip(this.trackId, this.clip.id);
-    if (e.shiftKey) store.toggleSelect(path);
-    else if (this.grabWithinTimeBox(e)) store.selectClipOnly(path); // keep the box → split + move region
-    else store.select(path); // box tracks the clip
+    if (e.shiftKey) {
+      store.toggleSelect(path);
+    } else if (this.grabWithinTimeBox(e)) {
+      store.selectClipOnly(path); // keep the box → split + move region
+    } else {
+      store.select(path); // box tracks the clip
+      // …and the play-from cursor (+ playhead, if paused) jumps to the clip start.
+      store.setPlayFrom(this.clip.startBeat);
+    }
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };
 

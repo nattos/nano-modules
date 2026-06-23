@@ -1501,7 +1501,12 @@ export class ArrangementStore {
       warps: [],
     };
     this.mutate('add video clip', (d) => {
-      d.tracks.find((t) => t.id === trackId)?.clips.push(clip);
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      // Clips may not overlap: overwrite whatever sits under the dropped clip
+      // (same as a clip dragged in from another track).
+      carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+      t.clips.push(clip);
     });
     const path = paths.clip(trackId, clip.id);
     this.select(path);

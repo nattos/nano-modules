@@ -1043,8 +1043,11 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const startBeat = grid.xToBeat(e.clientX - laneLeft);
     const startTrack = store.displayTracks[this.trackIndexAtClientY(e.clientY)];
-    // Move the cursor immediately on pointerdown (no need to wait for drag/up).
+    // Move the cursor immediately on pointerdown (no need to wait for drag/up),
+    // and clear any existing time box right away (not on pointer-up). A drag
+    // below builds a fresh box.
     store.setPlayFrom(store.quantize(startBeat, e.altKey));
+    store.clearTimeSelection();
     // Clicking a clip body focuses it right away (no time box); a drag below
     // overrides this with a region selection.
     if (clickFocusPath) store.selectClipOnly(clickFocusPath);

@@ -163,6 +163,22 @@ describe('selection + play-from', () => {
     expect(store.timeBoxCoversClip(a, clipId)).toBe(false);
   });
 
+  it('addVideoClip overwrites whatever it overlaps (clips may not overlap)', () => {
+    const trk = store.addTrack();
+    store.createEmptyClip(trk, 0, 8); // existing clip [0,8]
+    store.addVideoClip(trk, 4, { sourceKey: 'v', url: 'blob:x', frameCount: 30, fps: 30, label: 'v.mp4' }, 8); // [4,12]
+    const clips = store.trackById(trk)!.clips.slice().sort((a, b) => a.startBeat - b.startBeat);
+    // No two clips overlap.
+    for (let i = 1; i < clips.length; i++) {
+      expect(clips[i].startBeat).toBeGreaterThanOrEqual(clips[i - 1].startBeat + clips[i - 1].lengthBeat - 1e-6);
+    }
+    // The video clip occupies [4,12]; the prior clip was trimmed to [0,4].
+    const vid = clips.find((c) => c.source?.sourceKey === 'v')!;
+    expect(vid.startBeat).toBe(4);
+    const prior = clips.find((c) => c.id !== vid.id)!;
+    expect(prior.startBeat + prior.lengthBeat).toBeLessThanOrEqual(4 + 1e-6);
+  });
+
   it('play-from follows the cursor when paused, not while playing', () => {
     store.playing = false;
     store.setPlayFrom(10);

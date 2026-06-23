@@ -167,6 +167,7 @@ export class ArrangementApp extends MobxLitElement {
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('pointerdown', this.onPointerDownCapture, true);
     this.addEventListener('dragover', this.onDragOver);
+    this.addEventListener('dragleave', this.onDragLeave);
     this.addEventListener('drop', this.onDrop);
     this.lastT = performance.now();
     this.tick(this.lastT);
@@ -182,6 +183,7 @@ export class ArrangementApp extends MobxLitElement {
     window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('pointerdown', this.onPointerDownCapture, true);
     this.removeEventListener('dragover', this.onDragOver);
+    this.removeEventListener('dragleave', this.onDragLeave);
     this.removeEventListener('drop', this.onDrop);
     window.removeEventListener('popstate', this.onPopState);
     cancelAnimationFrame(this.raf);
@@ -234,11 +236,26 @@ export class ArrangementApp extends MobxLitElement {
     }
   };
 
-  /** Allow file drops anywhere on the page. */
+  private gridEl(): (HTMLElement & {
+    resolveDropTarget(x: number, y: number): { trackId: string; startBeat: number } | null;
+    setClipDropTarget(trackId: string | null): void;
+  }) | null {
+    return (this.shadowRoot?.querySelector('arr-grid') as any) ?? null;
+  }
+
+  /** Allow file drops anywhere on the page + preview which track they'd land on
+   *  (the same lane highlight a cross-track clip drag shows). */
   private onDragOver = (e: DragEvent) => {
     if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
+    const grid = this.gridEl();
+    grid?.setClipDropTarget(grid.resolveDropTarget(e.clientX, e.clientY)?.trackId ?? null);
+  };
+
+  /** Clear the drop highlight when the drag leaves the window. */
+  private onDragLeave = (e: DragEvent) => {
+    if (e.relatedTarget === null) this.gridEl()?.setClipDropTarget(null);
   };
 
   /**
@@ -320,6 +337,7 @@ export class ArrangementApp extends MobxLitElement {
       );
       beat += lengthBeat;
     }
+    this.gridEl()?.setClipDropTarget(null);
   };
 
   /**
