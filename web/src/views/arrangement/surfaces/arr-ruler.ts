@@ -82,9 +82,6 @@ export class ArrRuler extends MobxLitElement {
   /** Hide the main-timeline corner chrome (zoom buttons + Track/Return) so the
    *  ruler spans the full width — used by the clip-details editor. */
   @property({ type: Boolean }) compact = false;
-  /** Drag = grid-quantized SELECTION (instead of zoom/pan); zoom/pan move to the
-   *  wheel. Used by the clip-details editor so the ruler is its selection surface. */
-  @property({ type: Boolean }) selectMode = false;
 
   @query('canvas') private canvas!: HTMLCanvasElement;
   @query('.time') private timeEl!: HTMLDivElement;
@@ -251,38 +248,23 @@ export class ArrRuler extends MobxLitElement {
     this.view.zoomAnchored(factor, w / 2);
   }
 
-  /** Selection anchor beat captured at pointerdown (select mode). */
-  private selAnchorBeat = 0;
-
   private onDown = (e: PointerEvent) => {
     this.dragging = true;
     this.moved = 0;
     this.lastY = e.clientY;
     const v = this.view;
     const grid = v.grid();
-    if (this.selectMode) {
-      // Collapse to a play-from at the (quantized) click; a drag extends a range.
-      this.selAnchorBeat = v.quantize(grid.xToBeat(this.localX(e)));
-      v.setPlayFrom(this.selAnchorBeat);
-    } else {
-      // Scrub: move the cursor immediately on pointerdown (not just on click-up).
-      v.setPlayFrom(v.quantize(grid.xToBeat(this.localX(e))));
-      // Capture the content position under the cursor — it stays anchored there
-      // for the whole gesture, so hitting the scroll endpoint never drifts.
-      this.anchorUnits = v.scrollUnits + this.localX(e) / v.pxPerBeat;
-    }
+    // Scrub: move the cursor immediately on pointerdown (not just on click-up).
+    v.setPlayFrom(v.quantize(grid.xToBeat(this.localX(e))));
+    // Capture the content position under the cursor — it stays anchored there
+    // for the whole gesture, so hitting the scroll endpoint never drifts.
+    this.anchorUnits = v.scrollUnits + this.localX(e) / v.pxPerBeat;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   private onMove = (e: PointerEvent) => {
     if (!this.dragging) return;
     const v = this.view;
-    if (this.selectMode) {
-      this.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
-      const head = v.quantize(v.grid().xToBeat(this.localX(e)));
-      v.setSelection(this.selAnchorBeat, head);
-      return;
-    }
     const dy = e.clientY - this.lastY;
     this.lastY = e.clientY;
     this.moved += Math.abs(e.movementX) + Math.abs(dy);
@@ -302,9 +284,8 @@ export class ArrRuler extends MobxLitElement {
     } catch {
       /* ignore */
     }
-    // A click (negligible movement) sets the play-from marker. In select mode the
-    // collapse already happened on pointerdown.
-    if (this.moved < 4 && !this.selectMode) {
+    // A click (negligible movement) sets the play-from marker.
+    if (this.moved < 4) {
       const v = this.view;
       v.setPlayFrom(v.quantize(v.grid().xToBeat(this.localX(e))));
     }

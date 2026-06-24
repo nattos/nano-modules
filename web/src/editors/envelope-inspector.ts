@@ -53,6 +53,15 @@ export class EnvelopeGraph extends MobxLitElement {
   onChange: ((points: EnvPoint[]) => void) | null = null;
   onInteractionStart: (() => void) | null = null;
   onInteractionEnd: (() => void) | null = null;
+  /**
+   * Arrangement clip-editor gesture model (default off ⇒ the Effect IDE keeps
+   * its click-anywhere-not-node = bend behavior). When on: a drag OFF the curve
+   * line makes a time-box selection (via `onSelect`); on-curve / node gestures
+   * become time-box-aware (endpoint move, shelf, group move — see onPointer*).
+   */
+  timeboxGestures = false;
+  /** Drag off the curve → selection range in DATA-x (anchor, head). */
+  onSelect: ((anchorX: number, headX: number) => void) | null = null;
 
   private rafId = 0;
   private readonly pad = 10;          // px inset so edge nodes aren't clipped
@@ -60,7 +69,9 @@ export class EnvelopeGraph extends MobxLitElement {
    *  `points` from the field, or it would clobber the in-progress edit. */
   get interacting() { return this.mode !== 'none'; }
   // Drag state.
-  private mode: 'none' | 'node' | 'segment' = 'none';
+  private mode: 'none' | 'node' | 'segment' | 'select' = 'none';
+  /** Selection anchor (DATA-x) captured at pointerdown in 'select' mode. */
+  private selAnchorX = 0;
   private dragIndex = -1;             // node index, or segment's left-node index
   private startPx = 0; private startPy = 0;
   private startEase = 0;
@@ -135,30 +146,51 @@ export class EnvelopeGraph extends MobxLitElement {
     return -1;
   }
 
+  // Is (px,py) within `threshold` px of the drawn (eased) curve line?
+  private onCurveLine(px: number, py: number, threshold = 7): boolean {
+    const [dx] = this.fromPx(px, py);
+    const [, curveY] = this.toPx(dx, evalEnvelope(this.points, dx));
+    return Math.abs(py - curveY) < threshold;
+  }
+
   private onPointerDown(e: PointerEvent) {
     if (!this.interactive) return;
     if (e.button !== 0) return;
     const [px, py] = this.eventXY(e);
-    this.canvas!.setPointerCapture(e.pointerId);
+    try { this.canvas!.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     this.began = false;
     this.startPx = px; this.startPy = py;
     const node = this.hitNode(px, py);
     if (node >= 0) {
       this.mode = 'node';
       this.dragIndex = node;
-    } else {
-      const [dx] = this.fromPx(px, py);
-      const seg = this.segmentAt(dx);
-      if (seg < 0) { this.mode = 'none'; return; }
-      this.mode = 'segment';
-      this.dragIndex = seg;
-      this.startEase = this.points[seg].ease;
+      return;
     }
+    const [dx] = this.fromPx(px, py);
+    if (this.timeboxGestures && !this.onCurveLine(px, py)) {
+      // Off the curve line → a time-box selection drag.
+      this.mode = 'select';
+      this.selAnchorX = dx;
+      this.onSelect?.(dx, dx);
+      return;
+    }
+    // On the curve (or IDE default): grab the segment.
+    const seg = this.segmentAt(dx);
+    if (seg < 0) { this.mode = 'none'; return; }
+    this.mode = 'segment';
+    this.dragIndex = seg;
+    this.startEase = this.points[seg].ease;
   }
 
   private onPointerMove(e: PointerEvent) {
     if (this.mode === 'none') return;
     const [px, py] = this.eventXY(e);
+    if (this.mode === 'select') {
+      // Selection drag isn't a doc edit (no undo) → report anchor + head.
+      const [dx] = this.fromPx(px, py);
+      this.onSelect?.(this.selAnchorX, dx);
+      return;
+    }
     // Start the continuous edit only once the pointer actually moves — so a
     // double-click (two near-stationary downs) doesn't open a spurious edit.
     if (!this.began) {

@@ -70,6 +70,10 @@ export class ArrAutomationEditor extends MobxLitElement {
   @property({ attribute: false }) gridProvider: (() => BeatGrid) | null = null;
   /** Selected range in DATA-x [0,1] (the clip-local selection), shaded behind. */
   @property({ attribute: false }) selection: { x0: number; x1: number } | null = null;
+  /** Enable the arrangement clip-editor gesture model (time-box-aware). */
+  @property({ attribute: false }) timeboxGestures = false;
+  /** Drag off the curve → a selection range in DATA-x (anchor, head). */
+  @property({ attribute: false }) onSelect: ((anchorX: number, headX: number) => void) | null = null;
 
   private rafId = 0;
   /** Bumped per drag gesture so each drag coalesces into its own single undo. */
@@ -104,6 +108,8 @@ export class ArrAutomationEditor extends MobxLitElement {
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;
       g.selection = this.selection;
+      g.timeboxGestures = this.timeboxGestures;
+      g.onSelect = this.onSelect;
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →
         // [0, beats] through the provided straight grid. Recomputed each frame.
