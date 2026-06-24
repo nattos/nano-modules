@@ -27,6 +27,10 @@ import '../../../widgets/editable-label';
 import './arr-clip';
 import './arr-mixer-strip';
 import './arr-rail-lane';
+import './arr-automation-editor';
+
+/** Beats spanned by a track automation lane / overlay (mapped through the warp). */
+const AUTO_SPAN = 32;
 import '../../../widgets/ui-icon';
 
 @customElement('arr-grid')
@@ -669,7 +673,7 @@ export class ArrGrid extends MobxLitElement {
     const lane = store.selectedTrackLane(track.id);
     const points = lane?.points ?? [{ x: 0, y: 0.5, bend: 0 }, { x: 1, y: 0.5, bend: 0 }];
     const grid = buildBeatGrid();
-    const SPAN = 32;
+    const SPAN = AUTO_SPAN;
     const w = this.scrollEl ? this.scrollEl.clientWidth - store.headerWidth : 600;
     const h = ROW_HEIGHT;
     const yOf = (v: number) => 4 + (1 - v) * (h - 8);
@@ -687,43 +691,21 @@ export class ArrGrid extends MobxLitElement {
 
   private renderAutoLane(track: Track, lane: AutomationLane) {
     void track;
-    const grid = buildBeatGrid();
-    const SPAN = 32; // map normalized x∈[0,1] across 32 beats through the warp
-    const w = this.scrollEl ? this.scrollEl.clientWidth - store.headerWidth : 600;
-    const h = AUTO_LANE_HEIGHT;
-    const yOf = (v: number) => 4 + (1 - v) * (h - 8);
-    // Dense sample so the EASED curve is drawn (straight segments between control
-    // points would miss the per-segment bend); evaluated by the lock-step eval.
-    const SAMPLES = 96;
-    const curve: string[] = [];
-    for (let i = 0; i <= SAMPLES; i++) {
-      const xn = i / SAMPLES;
-      const x = grid.beatToX(xn * SPAN);
-      curve.push(`${x.toFixed(1)},${yOf(evalCurveAt(lane.points, xn)).toFixed(1)}`);
-    }
-    const pts = curve.join(' ');
-    // Live value at the playhead (a dot riding the curve).
-    const headXn = store.positionBeat / SPAN;
-    const showHead = headXn >= 0 && headXn <= 1;
-    const headX = grid.beatToX(store.positionBeat);
-    const headY = yOf(evalCurveAt(lane.points, headXn));
+    // EDITABLE: the same shared <arr-automation-editor> the clip view uses, here
+    // mapped onto the live MAIN-TIMELINE beat grid (warp + zoom/pan + playhead).
     return html`
       <div class="row auto">
         <div class="auto-header">
           <ui-icon icon="la-bezier-curve"></ui-icon><span>${lane.label}</span>
         </div>
         <div class="auto-lane">
-          <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-            <polyline points=${pts} fill="none" stroke="var(--app-cat-mod)" stroke-width="1.5" />
-            ${lane.points.map((p) => {
-              const x = grid.beatToX(p.x * SPAN);
-              const y = yOf(p.y);
-              return html`<circle cx=${x} cy=${y} r="2.5" fill="var(--app-cat-mod)"></circle>`;
-            })}
-            ${showHead
-              ? html`<circle cx=${headX} cy=${headY} r="2.5" fill="#ff8c00" stroke="rgba(0,0,0,0.5)"></circle>`
-              : ''}
-          </svg>
+          <arr-automation-editor
+            gridded
+            .lane=${lane}
+            .ensureLaneId=${() => lane.id}
+            .timelineSpan=${AUTO_SPAN}
+            .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
+          ></arr-automation-editor>
         </div>
       </div>
     `;

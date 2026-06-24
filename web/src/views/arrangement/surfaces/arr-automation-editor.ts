@@ -22,6 +22,7 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import type { AutomationLane } from '../model/composition';
 import { toEnvPoints } from '../engine/automation-eval';
+import { buildBeatGrid } from './grid-shared';
 // Registers <envelope-graph> (and the inspector); we only use the graph.
 import { EnvelopeGraph } from '../../../editors/envelope-inspector';
 import type { EnvPoint } from '../../../editors/envelope-math';
@@ -52,6 +53,13 @@ export class ArrAutomationEditor extends MobxLitElement {
    *  Takes precedence over the frame mapping. */
   @property({ attribute: false }) beats = 0;
   @property({ attribute: false }) beatsPerBar = 4;
+  /**
+   * When > 0, the editor maps x∈[0,1] onto the live MAIN-TIMELINE beat grid
+   * (warped, shared zoom/pan), spanning this many beats from beat 0 — used by the
+   * arr-grid track lanes so a track envelope edits on the real timeline. The
+   * cursor follows the transport playhead. Takes precedence over `beats`.
+   */
+  @property({ attribute: false }) timelineSpan = 0;
 
   private rafId = 0;
   /** Bumped per drag gesture so each drag coalesces into its own single undo. */
@@ -85,7 +93,20 @@ export class ArrAutomationEditor extends MobxLitElement {
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;
-      if (this.beats > 0) {
+      if (this.timelineSpan > 0) {
+        // Warped MAIN-TIMELINE axis: x∈[0,1] → [0, span] beats through the live
+        // grid (shared zoom/pan). Recomputed each frame so zoom/pan track live.
+        const span = this.timelineSpan;
+        const grid = buildBeatGrid();
+        g.xMap = (dx) => grid.beatToX(dx * span);
+        g.xUnmap = (px) => grid.xToBeat(px) / span;
+        const bpb = this.beatsPerBar || 4;
+        const lines: Array<{ x: number; bar: boolean }> = [];
+        for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b / span, bar: b % bpb === 0 });
+        g.gridLines = lines;
+        const ph = store.positionBeat / span;
+        g.cursor = ph >= 0 && ph <= 1 ? ph : null;
+      } else if (this.beats > 0) {
         // Beat-based axis: x∈[0,1] spans `beats`, full-width, with a real
         // beat/bar grid. (Straight — clip-local time ignores the timeline warp.)
         g.xMap = null;
