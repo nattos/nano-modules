@@ -1032,6 +1032,10 @@ export class ArrGrid extends MobxLitElement {
     y0: number;
     active: boolean;
     timebox: boolean;
+    /** Cmd/Ctrl held at grab ⇒ DUPLICATE: drag the clip, then drop a clone back
+     *  at the original location on release. */
+    duplicate: boolean;
+    origClip: Clip;
     /** The time box at gesture start (so coalesced frames don't drift as the
      *  box follows the move). Null unless this is a time-box drag. */
     baseSel: { start: number; end: number; scope: string[] } | null;
@@ -1050,6 +1054,8 @@ export class ArrGrid extends MobxLitElement {
       x0: e.clientX,
       y0: e.clientY,
       active: false,
+      duplicate: (e.metaKey || e.ctrlKey) && !timebox,
+      origClip: JSON.parse(JSON.stringify(clip)),
       // A header drag moves the in-box content (split at the box edges) — incl.
       // between tracks — and the box follows. For a single clip the box is just
       // that clip, so this is also how a plain header drag moves one clip.
@@ -1133,6 +1139,10 @@ export class ArrGrid extends MobxLitElement {
   private onClipUp = () => {
     window.removeEventListener('pointermove', this.onClipMove);
     window.removeEventListener('pointerup', this.onClipUp);
+    const d = this.clipMove;
+    // Cmd-drag DUPLICATE: the clip was dragged to its new spot — drop a clone back
+    // at the original location so the source clip "reappears" (net: a duplicate).
+    if (d && d.duplicate && d.active) store.insertClipClone(d.trackId, d.origClip);
     store.endGesture();
     this.clipMove = null;
     this.clipDropTrackId = null;

@@ -377,6 +377,11 @@ export class ArrangementApp extends MobxLitElement {
       // Otherwise Backspace/Delete is timeline-only: deleting an effect in a
       // sketch card or anywhere else must NOT delete clips/tracks.
       if (this.lastSurface !== 'timeline') return;
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+        e.preventDefault();
+        store.deleteTime(); // ripple-delete the time box
+        return;
+      }
       if (store.primaryPath?.startsWith('track/')) {
         e.preventDefault();
         store.deleteSelectedTracks(); // a focused track → delete it (never the bus)
@@ -410,6 +415,35 @@ export class ArrangementApp extends MobxLitElement {
       e.preventDefault();
       if (e.shiftKey) store.redo();
       else store.undo();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
+      e.preventDefault();
+      store.splitAtCursor(); // split at the caret
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'i') {
+      e.preventDefault();
+      store.insertTime();
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.pasteTime(); // insert clipboard-length time, then paste
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'x') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.cutTime(); // copy slices, then ripple-delete
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.copyClips();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'x') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.cutClips();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.pasteClips();
+    } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      store.soloShortcut();
     } else if (e.key.toLowerCase() === 'l') {
       // Cmd/Ctrl+L (preventDefault'd so the browser doesn't grab it) or plain L:
       // toggle the loop, or snap it to the time box when one is set.

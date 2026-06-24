@@ -253,6 +253,10 @@ export class ArrangementStore {
   caretAnchorTrackId = ''; // anchor track ('' = global span)
   caretHeadTrackId = ''; // head track ('' = global span)
 
+  /** Ephemeral clip clipboard (copy/cut → paste). Offsets are relative to the
+   *  copy origin so paste lands at the caret. Not observed / undoable. */
+  private clipClipboard: { items: Array<{ trackOffset: number; startBeat: number; clip: Clip }>; span: number } | null = null;
+
   // ── Engine telemetry (ephemeral; mirrors appState.local.engine) ────────
   /**
    * Per-frame wire-modulation telemetry from the live engine, keyed by engine
@@ -292,7 +296,7 @@ export class ArrangementStore {
     makeAutoObservable<
       ArrangementStore,
       'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
-      | 'layoutReady' | 'layoutSaveTimer'
+      | 'layoutReady' | 'layoutSaveTimer' | 'clipClipboard'
     >(
       this,
       {
@@ -304,6 +308,8 @@ export class ArrangementStore {
         tracedFrames: false,
         layoutReady: false,
         layoutSaveTimer: false,
+        // Ephemeral clip clipboard — no reactivity / undo needed.
+        clipClipboard: false,
       },
       { autoBind: true },
     );
@@ -1422,18 +1428,140 @@ export class ArrangementStore {
   /** Insert blank time of the region's length at its start; later clips shift right. */
   insertTime() {
     if (!this.hasTimeSelection) return;
-    const start = this.timeSelStart!;
-    const span = this.timeSelEnd - start;
-    const scope = this.regionTracks().map((t) => t.id);
+    this.insertTimeSpan(this.timeSelStart!, this.timeSelEnd - this.timeSelStart!);
+  }
+
+  /** Insert `span` blank beats at `start` across every plain track (ripple). */
+  insertTimeSpan(start: number, span: number) {
+    if (span <= 1e-6) return;
     this.mutate('insert time', (d) => {
       for (const track of d.tracks) {
-        if (!scope.includes(track.id)) continue;
+        if (track.kind !== 'track') continue;
         splitClipsAt(track, start);
-        for (const c of track.clips) {
-          if (c.startBeat >= start - 1e-6) c.startBeat += span;
-        }
+        for (const c of track.clips) if (c.startBeat >= start - 1e-6) c.startBeat += span;
       }
     });
+  }
+
+  // ── Clip clipboard (copy / cut / paste, + time variants) ───────────────
+  /** True when the clipboard has clips to paste. */
+  get hasClipboard(): boolean {
+    return !!this.clipClipboard && this.clipClipboard.items.length > 0;
+  }
+
+  /**
+   * Copy the clips under the caret to the clipboard: a time box copies the
+   * trimmed SLICES of overlapping clips; otherwise the whole selected clips.
+   * Offsets are stored relative to the copy origin (top track, earliest beat).
+   */
+  copyClips(): boolean {
+    const order = this.caretTrackOrder;
+    const items: Array<{ trackOffset: number; startBeat: number; clip: Clip }> = [];
+    let span = 0;
+    if (this.hasTimeSelection) {
+      const start = this.timeSelStart!;
+      const end = this.timeSelEnd;
+      span = end - start;
+      const scope = this.regionTracks();
+      const originIdx = scope.length ? order.findIndex((t) => t.id === scope[0].id) : 0;
+      for (const t of scope) {
+        const ti = order.findIndex((x) => x.id === t.id);
+        for (const c of t.clips) {
+          const s = Math.max(c.startBeat, start);
+          const e = Math.min(c.startBeat + c.lengthBeat, end);
+          if (e <= s + 1e-6) continue;
+          const slice: Clip = JSON.parse(JSON.stringify(c));
+          slice.startBeat = s;
+          slice.lengthBeat = e - s;
+          items.push({ trackOffset: ti - originIdx, startBeat: s - start, clip: slice });
+        }
+      }
+    } else {
+      const sel = [...this.selection]
+        .map((p) => this.clipByPath(p))
+        .filter((x): x is { track: Track; clip: Clip } => !!x);
+      if (!sel.length) return false;
+      const start = Math.min(...sel.map((x) => x.clip.startBeat));
+      span = Math.max(...sel.map((x) => x.clip.startBeat + x.clip.lengthBeat)) - start;
+      const idxs = sel.map((x) => order.findIndex((t) => t.id === x.track.id)).filter((i) => i >= 0);
+      const originIdx = idxs.length ? Math.min(...idxs) : 0;
+      for (const { track, clip } of sel) {
+        const ti = order.findIndex((t) => t.id === track.id);
+        items.push({ trackOffset: ti - originIdx, startBeat: clip.startBeat - start, clip: JSON.parse(JSON.stringify(clip)) });
+      }
+    }
+    if (!items.length) return false;
+    this.clipClipboard = { items, span };
+    return true;
+  }
+
+  /** Paste the clipboard at the caret head (time + track), carving overlaps. */
+  pasteClips() {
+    const cb = this.clipClipboard;
+    if (!cb) return;
+    const order = this.caretTrackOrder;
+    if (!order.length) return;
+    const atBeat = this.playFromBeat;
+    const headIdx = order.findIndex((t) => t.id === this.caretHeadTrackId);
+    const atIdx = headIdx >= 0 ? headIdx : 0;
+    const pasted: string[] = [];
+    this.mutate('paste clips', (d) => {
+      for (const item of cb.items) {
+        const destTrack = order[atIdx + item.trackOffset];
+        if (!destTrack) continue;
+        const dt = d.tracks.find((t) => t.id === destTrack.id);
+        if (!dt) continue;
+        const clip: Clip = JSON.parse(JSON.stringify(item.clip));
+        clip.id = uid('clip');
+        clip.startBeat = Math.max(0, atBeat + item.startBeat);
+        carveTrackSpan(dt, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+        dt.clips.push(clip);
+        pasted.push(paths.clip(dt.id, clip.id));
+      }
+    });
+    if (pasted.length) this.setSelection(pasted);
+  }
+
+  /** Copy, then remove the source (box → leave empty time; else delete clips). */
+  cutClips() {
+    if (!this.copyClips()) return;
+    if (this.hasTimeSelection) this.clearTime();
+    else this.deleteSelectedClips();
+  }
+
+  /** Insert blank time the length of the clipboard, then paste (ripple-paste). */
+  pasteTime() {
+    const cb = this.clipClipboard;
+    if (!cb) return;
+    this.insertTimeSpan(this.playFromBeat, cb.span);
+    this.pasteClips();
+  }
+
+  /** Copy the slices/clips, then ripple-delete that time. */
+  cutTime() {
+    if (!this.copyClips()) return;
+    this.deleteTime();
+  }
+
+  /** Insert a clone of `source` (fresh id) at its startBeat on `trackId`,
+   *  carving overlaps. Used by Cmd-drag duplicate to restore the source clip. */
+  insertClipClone(trackId: string, source: Clip) {
+    this.mutate('duplicate clip', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t || t.kind !== 'track') return;
+      const clip: Clip = JSON.parse(JSON.stringify(source));
+      clip.id = uid('clip');
+      carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+      t.clips.push(clip);
+    });
+  }
+
+  /** Solo the focused track, else the caret's head track. */
+  soloShortcut() {
+    const tid = this.primaryPath?.startsWith('track/')
+      ? this.primaryPath.split('/')[1]
+      : this.caretHeadTrackId;
+    if (tid) this.toggleSolo(tid);
   }
 
   // ── Transport ─────────────────────────────────────────────────────────
