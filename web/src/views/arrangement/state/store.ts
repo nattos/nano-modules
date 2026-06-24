@@ -1159,6 +1159,76 @@ export class ArrangementStore {
     });
   }
 
+  // ── Caret keyboard navigation ──────────────────────────────────────────
+  /** Select what's under the caret head: a clip if present, else the track. */
+  selectUnderCaret() {
+    const tid = this.caretHeadTrackId;
+    if (!tid) { this.clearSelection(); return; }
+    const clip = this.clipAtBeat(tid, this.playFromBeat);
+    this.selectClipOnly(clip ? paths.clip(tid, clip.id) : paths.track(tid));
+  }
+
+  /** One grid step left/right from `from`: snaps off-grid positions to the grid
+   *  in the move direction, else advances a full step. */
+  private caretStepBeat(from: number, dir: -1 | 1): number {
+    const s = this.snapStep;
+    const snapped = Math.round(from / s) * s;
+    if (dir > 0) return snapped > from + 1e-6 ? snapped : snapped + s;
+    return snapped < from - 1e-6 ? snapped : Math.max(0, snapped - s);
+  }
+
+  /** Nearest clip start/end (event) across the caret's tracks, in `dir`. */
+  private nextEventBeat(from: number, dir: -1 | 1): number {
+    const events = new Set<number>();
+    for (const t of this.regionTracks()) {
+      for (const c of t.clips) { events.add(c.startBeat); events.add(c.startBeat + c.lengthBeat); }
+    }
+    const sorted = [...events].sort((a, b) => a - b);
+    if (dir > 0) {
+      for (const e of sorted) if (e > from + 1e-6) return e;
+      return from;
+    }
+    for (let i = sorted.length - 1; i >= 0; i--) if (sorted[i] < from - 1e-6) return sorted[i];
+    return 0;
+  }
+
+  /**
+   * Move the caret head horizontally. `extend` keeps the anchor (grow/shrink the
+   * box like a Shift-drag); otherwise the caret collapses to a point and selects
+   * what's under it. `toEvent` jumps to the next/prev clip edge.
+   */
+  caretMoveHorizontal(dir: -1 | 1, opts: { extend?: boolean; toEvent?: boolean } = {}) {
+    const head = opts.toEvent
+      ? this.nextEventBeat(this.playFromBeat, dir)
+      : this.caretStepBeat(this.playFromBeat, dir);
+    this.setCaret({
+      anchorBeat: opts.extend ? this.caretAnchorBeat : head,
+      anchorTrackId: opts.extend ? this.caretAnchorTrackId : this.caretHeadTrackId,
+      headBeat: head,
+      headTrackId: this.caretHeadTrackId,
+    });
+    if (opts.extend) this.selectClipsInCaret();
+    else this.selectUnderCaret();
+  }
+
+  /** Move the caret head one track up/down. `extend` grows the vertical slice. */
+  caretMoveVertical(dir: -1 | 1, extend = false) {
+    const order = this.caretTrackOrder;
+    if (!order.length) return;
+    const curId = this.caretHeadTrackId || order[0].id;
+    let i = order.findIndex((t) => t.id === curId);
+    if (i < 0) i = 0;
+    const headTrackId = order[Math.max(0, Math.min(order.length - 1, i + dir))].id;
+    this.setCaret({
+      anchorBeat: extend ? this.caretAnchorBeat : this.playFromBeat,
+      anchorTrackId: extend ? this.caretAnchorTrackId : headTrackId,
+      headBeat: this.playFromBeat,
+      headTrackId,
+    });
+    if (extend) this.selectClipsInCaret();
+    else this.selectUnderCaret();
+  }
+
   /** Select every clip overlapping the current region (in scope tracks). */
   /**
    * Select the clips the caret intersects: within a time box, clips overlapping

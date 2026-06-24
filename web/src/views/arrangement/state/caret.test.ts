@@ -87,3 +87,52 @@ describe('2D caret model', () => {
     expect(sel.some((p) => p.startsWith(`clip/${t3}/`))).toBe(false);
   });
 });
+
+describe('caret keyboard navigation', () => {
+  let T: string[];
+  beforeEach(() => {
+    store.clearSelection();
+    store.setZoom(22); // snapStep = 1 beat (deterministic)
+    T = [store.addTrack(), store.addTrack()];
+  });
+
+  it('Left/Right step one grid unit, collapse, and select under the head', () => {
+    const [t1] = T;
+    store.setCaret({ anchorBeat: 5, anchorTrackId: t1, headBeat: 5, headTrackId: t1 });
+    store.caretMoveHorizontal(1);
+    expect(store.playFromBeat).toBe(6);
+    expect(store.hasTimeSelection).toBe(false);
+    expect(store.primaryPath).toBe(`track/${t1}`); // empty → track under head
+    store.caretMoveHorizontal(-1);
+    expect(store.playFromBeat).toBe(5);
+  });
+
+  it('Shift+Right extends (keeps the anchor → a box)', () => {
+    const [t1] = T;
+    store.setCaret({ anchorBeat: 5, anchorTrackId: t1, headBeat: 5, headTrackId: t1 });
+    store.caretMoveHorizontal(1, { extend: true });
+    expect(store.timeSelStart).toBe(5);
+    expect(store.timeSelEnd).toBe(6);
+    expect(store.hasTimeSelection).toBe(true);
+  });
+
+  it('Option+Right jumps to the next clip edge across the caret tracks', () => {
+    const [t1] = T;
+    store.createEmptyClip(t1, 4, 8); // edges at 4 and 12
+    store.setCaret({ anchorBeat: 5, anchorTrackId: t1, headBeat: 5, headTrackId: t1 });
+    store.caretMoveHorizontal(1, { toEvent: true });
+    expect(store.playFromBeat).toBe(12); // next edge after 5
+    store.caretMoveHorizontal(-1, { toEvent: true });
+    expect(store.playFromBeat).toBe(4); // prev edge before 12
+  });
+
+  it('Up/Down move the head track; Shift grows the vertical slice', () => {
+    const [t1, t2] = T;
+    store.setCaret({ anchorBeat: 8, anchorTrackId: t1, headBeat: 8, headTrackId: t1 });
+    store.caretMoveVertical(1);
+    expect(store.caretHeadTrackId).toBe(t2);
+    expect(store.caretTrackIds).toEqual([t2]); // collapsed
+    store.caretMoveVertical(-1, true); // extend back up
+    expect(store.caretTrackIds).toEqual([t1, t2]); // slice spans both
+  });
+});

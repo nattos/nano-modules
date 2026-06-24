@@ -387,6 +387,17 @@ export class ArrangementApp extends MobxLitElement {
         e.preventDefault();
         store.deleteSelectedClips();
       }
+    } else if (e.key.startsWith('Arrow')) {
+      // Caret navigation (timeline only). Shift = extend (drag-like); Option/Alt
+      // = jump to the next clip edge; both = extend to the edge.
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      const extend = e.shiftKey;
+      const toEvent = e.altKey;
+      if (e.key === 'ArrowLeft') store.caretMoveHorizontal(-1, { extend, toEvent });
+      else if (e.key === 'ArrowRight') store.caretMoveHorizontal(1, { extend, toEvent });
+      else if (e.key === 'ArrowUp') store.caretMoveVertical(-1, extend);
+      else if (e.key === 'ArrowDown') store.caretMoveVertical(1, extend);
     } else if (e.key === 'Escape') {
       store.clearSelection();
     } else if (e.code === 'Space' || e.key === ' ') {
