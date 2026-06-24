@@ -173,6 +173,29 @@ export class ArrGrid extends MobxLitElement {
       flex: 1;
       min-width: 0;
     }
+    /* Automation-mode header: selected field label + pin button. */
+    .auto-pick {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--app-cat-mod);
+      font-size: var(--app-fs-xs);
+    }
+    .auto-pick .apf {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sb.pin {
+      --icon-size: 11px;
+      color: var(--app-cat-mod);
+      border-color: var(--app-cat-mod);
+    }
+    .sb.pin:hover { background: rgba(120, 110, 200, 0.18); }
     .fxcount {
       font-size: 8px;
       color: var(--app-text-color2);
@@ -232,6 +255,15 @@ export class ArrGrid extends MobxLitElement {
       flex: 1;
       min-width: 0;
       overflow: hidden;
+    }
+    /* Selected track-field automation envelope, drawn over the clips. */
+    .track-auto-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 3;
     }
     .lane.bypassed {
       opacity: 0.4;
@@ -573,7 +605,7 @@ export class ArrGrid extends MobxLitElement {
                 `}
           </div>
           <div class="h-bottom">
-            ${isRail ? '' : html`<arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>`}
+            ${this.renderHeaderBottom(track, isRail, isBus)}
           </div>
         </div>
         ${isRail
@@ -598,12 +630,59 @@ export class ArrGrid extends MobxLitElement {
                   .accent=${accent}
                 ></arr-clip>`,
               )}
+              ${this.renderTrackAutoOverlay(track)}
             </div>`}
       </div>
       ${store.automationMode
         ? track.automation.map((lane) => this.renderAutoLane(track, lane))
         : ''}
     `;
+  }
+
+  /** Track header bottom row: in automation mode with a selected field, show the
+   *  param label + a Pin button (which moves it into a dedicated lane); otherwise
+   *  the mixer strip. */
+  private renderHeaderBottom(track: Track, isRail: boolean, isBus: boolean) {
+    if (isRail) return '';
+    const sel = store.automationMode && !isBus ? store.autoField(`track/${track.id}`) : null;
+    if (sel) {
+      return html`<div class="auto-pick" title=${sel.label}>
+        <ui-icon icon="la-bezier-curve"></ui-icon>
+        <span class="apf">${sel.label}</span>
+        <button
+          class="sb pin"
+          title="Pin to a new automation lane"
+          @pointerdown=${(e: Event) => { e.stopPropagation(); store.pinTrackAutomation(track.id); }}
+        ><ui-icon icon="la-thumbtack"></ui-icon></button>
+      </div>`;
+    }
+    return html`<arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>`;
+  }
+
+  /** The selected track-field's envelope drawn ON TOP of the clip lane (only in
+   *  automation mode, before it's pinned to its own lane). Display-only; a flat
+   *  default is shown until the field gets a lane. */
+  private renderTrackAutoOverlay(track: Track) {
+    if (!store.automationMode) return '';
+    const sel = store.autoField(`track/${track.id}`);
+    if (!sel) return '';
+    const lane = store.selectedTrackLane(track.id);
+    const points = lane?.points ?? [{ x: 0, y: 0.5, bend: 0 }, { x: 1, y: 0.5, bend: 0 }];
+    const grid = buildBeatGrid();
+    const SPAN = 32;
+    const w = this.scrollEl ? this.scrollEl.clientWidth - store.headerWidth : 600;
+    const h = ROW_HEIGHT;
+    const yOf = (v: number) => 4 + (1 - v) * (h - 8);
+    const SAMPLES = 96;
+    const curve: string[] = [];
+    for (let i = 0; i <= SAMPLES; i++) {
+      const xn = i / SAMPLES;
+      curve.push(`${grid.beatToX(xn * SPAN).toFixed(1)},${yOf(evalCurveAt(points, xn)).toFixed(1)}`);
+    }
+    return html`<svg class="track-auto-overlay" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <polyline points=${curve.join(' ')} fill="none" stroke="var(--app-cat-mod)" stroke-width="1.5" />
+      ${points.map((p) => html`<circle cx=${grid.beatToX(p.x * SPAN)} cy=${yOf(p.y)} r="2.5" fill="var(--app-cat-mod)"></circle>`)}
+    </svg>`;
   }
 
   private renderAutoLane(track: Track, lane: AutomationLane) {

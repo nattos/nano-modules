@@ -89,6 +89,11 @@ since making the two surfaces look and feel the same is a deliberate goal.
   bottom→top at per-track opacity.
 
 **⏳ Still open (real TODOs):**
+- **Precache: warm effect/sketch instances (PUNTED).** The Precise transport gate + video-decode
+  lookahead landed (`engine-bridge` Precise hold + `VideoCompositor.clipReady`/warm pulls +
+  `store.videoClipsInWindow`). NOT done: pre-instantiating upcoming clips' WASM effect modules /
+  pre-loading their bundles ahead of the playhead. Video decode is the dominant hiccup (covered);
+  effect-instance warming is the next lever if heavy effect-chain clips still hitch on activation.
 - **Real rail VALUES.** Rails don't yet modulate: the rail lane sums a MOCK oscillation
   (`arr-rail-lane.contribAt`). NOTE the lock-step `web/src/tap-mod.ts` twin was **DELETED** (zombie;
   modulation telemetry now comes from the native executor via the modulationData channel) — so this

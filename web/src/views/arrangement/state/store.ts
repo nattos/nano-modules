@@ -185,6 +185,15 @@ export class ArrangementStore {
    */
   chainFocusPath: string | null = null;
   chainFieldKey: string | null = null;
+
+  /**
+   * Per-owner field selected for AUTOMATION (distinct from the global field
+   * focus). Keyed by owner path (`clip/<trk>/<clip>` or `track/<trk>`) → the
+   * device + field. A clip's selection drives its clip-view automation tab; a
+   * track's selection drives the automation overlay on its timeline + the
+   * header's pin affordance. Ephemeral (not persisted/undoable).
+   */
+  selectedAutoField: Record<string, { deviceId: string; field: string; label: string }> = {};
   /** Tap-config popup anchored to a wire pip (mock of the sketch tap card). */
   tapPopup: {
     wireId: string;
@@ -792,6 +801,42 @@ export class ArrangementStore {
   /** Set the focused field key (or null). */
   setChainField(key: string | null) {
     runInAction(() => { this.chainFieldKey = key; });
+  }
+
+  // ── Per-owner automation-field selection ───────────────────────────────
+  /** Devices of an owner (`clip/<trk>/<clip>` or `track/<trk>`). */
+  private devicesForOwner(ownerKey: string): Device[] | undefined {
+    if (ownerKey.startsWith('clip/')) {
+      const [, trk, clip] = ownerKey.split('/');
+      return this.trackById(trk)?.clips.find((c) => c.id === clip)?.sketch.devices;
+    }
+    if (ownerKey.startsWith('track/')) {
+      return this.trackById(ownerKey.split('/')[1])?.sketch.devices;
+    }
+    return undefined;
+  }
+  private autoFieldLabel(ownerKey: string, deviceId: string, field: string): string {
+    const dev = this.devicesForOwner(ownerKey)?.find((d) => d.id === deviceId);
+    const name = dev ? (catalogEffect(dev.moduleType)?.name ?? dev.moduleType) : '?';
+    return `${name} · ${field}`;
+  }
+  /** Select (or replace) the owner's automation field. */
+  selectAutoField(ownerKey: string, deviceId: string, field: string) {
+    runInAction(() => {
+      const label = this.autoFieldLabel(ownerKey, deviceId, field);
+      this.selectedAutoField = { ...this.selectedAutoField, [ownerKey]: { deviceId, field, label } };
+    });
+  }
+  clearAutoField(ownerKey: string) {
+    runInAction(() => {
+      if (!(ownerKey in this.selectedAutoField)) return;
+      const next = { ...this.selectedAutoField };
+      delete next[ownerKey];
+      this.selectedAutoField = next;
+    });
+  }
+  autoField(ownerKey: string): { deviceId: string; field: string; label: string } | null {
+    return this.selectedAutoField[ownerKey] ?? null;
   }
   /** Clear just the chain card/field focus (e.g. clicking the rack background). */
   clearChainFocus() {
@@ -2215,6 +2260,51 @@ export class ArrangementStore {
         label: t.label, points: ArrangementStore.defaultCurve(), expanded: true,
       });
     });
+    return laneId;
+  }
+
+  // ── Lanes for the SELECTED automation field (per-owner selection) ──────
+  /** The clip's selected-field automation lane, or undefined (no selection / no lane). */
+  selectedClipLane(trackId: string, clipId: string): AutomationLane | undefined {
+    const sel = this.autoField(paths.clip(trackId, clipId));
+    if (!sel) return undefined;
+    return this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.automation
+      .find((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field);
+  }
+  /** Ensure a lane for the clip's selected field; '' if nothing is selected. */
+  ensureSelectedClipLane(trackId: string, clipId: string): string {
+    const sel = this.autoField(paths.clip(trackId, clipId));
+    if (!sel) return '';
+    const existing = this.selectedClipLane(trackId, clipId);
+    if (existing) return existing.id;
+    const laneId = uid('auto');
+    this.mutate('add automation', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c || c.automation.some((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field)) return;
+      c.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
+    });
+    return laneId;
+  }
+  /** The track's selected-field automation lane, or undefined. */
+  selectedTrackLane(trackId: string): AutomationLane | undefined {
+    const sel = this.autoField(paths.track(trackId));
+    if (!sel) return undefined;
+    return this.trackById(trackId)?.automation.find((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field);
+  }
+  /** "Pin" the track's selected field into a new automation lane (the sub-lane
+   *  below the track), then clear the selection. */
+  pinTrackAutomation(trackId: string): string | null {
+    const ownerKey = paths.track(trackId);
+    const sel = this.autoField(ownerKey);
+    if (!sel) return null;
+    const existing = this.selectedTrackLane(trackId);
+    if (existing) { this.clearAutoField(ownerKey); return existing.id; }
+    const laneId = uid('auto');
+    this.mutate('pin automation', (d) => {
+      const dt = d.tracks.find((t) => t.id === trackId);
+      if (dt) dt.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
+    });
+    this.clearAutoField(ownerKey);
     return laneId;
   }
 

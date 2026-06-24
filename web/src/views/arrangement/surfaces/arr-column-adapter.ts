@@ -38,6 +38,7 @@ const CAPS: ColumnCapabilities = {
   typeEditing: true,
   clipboard: false,
   reorder: true,
+  fieldClickSelect: true, // click a field → per-owner automation-field selection
 };
 
 const AVAILABLE: AvailableEffect[] = EFFECT_CATALOG.filter((c) => c.type !== VIDEO_SOURCE_TYPE).map((c) => ({
@@ -256,8 +257,25 @@ export class ArrColumnAdapter implements ColumnAdapter {
     // highlight, Delete, and click-away all agree across the app.
     select: (path) => store.setChainFocus(path),
     isSelected: (path) => store.chainFocusPath === path,
-    selectField: (key) => store.setChainField(key),
-    selectedFieldKey: () => store.chainFieldKey,
+    // Field selection is PER-OWNER in the arrangement (each clip/track remembers
+    // its own automation field), not the global chainFieldKey. Drives the
+    // clip-view automation tab + the track automation overlay.
+    selectField: (key) => {
+      if (key == null) { store.clearAutoField(this.target.id); return; }
+      // key = `${target.id}/${colIdx}/${chainIdx}/${field}`
+      const rest = key.startsWith(this.target.id + '/') ? key.slice(this.target.id.length + 1) : key;
+      const parts = rest.split('/'); // [colIdx, chainIdx, ...field]
+      const chainIdx = Number(parts[1]);
+      const field = parts.slice(2).join('/');
+      const deviceId = this.deviceIdAt(chainIdx);
+      if (deviceId && field) store.selectAutoField(this.target.id, deviceId, field);
+    },
+    selectedFieldKey: () => {
+      const sel = store.autoField(this.target.id);
+      if (!sel) return null;
+      const idx = this.target.getDevices()?.findIndex((d) => d.id === sel.deviceId) ?? -1;
+      return idx < 0 ? null : `${this.target.id}/0/${idx}/${sel.field}`;
+    },
     defineSelectable: (_s: Selectable) => { /* arrangement routes its own inspector */ },
 
     setEffectParam: (_s, _c, ch, key, v: ParamValue) => {

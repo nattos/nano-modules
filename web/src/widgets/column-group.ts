@@ -1428,7 +1428,23 @@ export class ColumnGroup extends MobxLitElement {
     const inputFields = this.buildInputFieldDefs(plugin);
     if (inputFields.length === 0) return nothing;
     const inspector = createGenericInspector(inputFields);
-    return inspector(binding);
+    const body = inspector(binding);
+    // Click-to-select a field (arrangement automation): a click anywhere on a
+    // field row selects it via the field editor's `fieldPath`. Dragging a slider
+    // doesn't fire a click, so value edits are unaffected.
+    if (this.ds.caps.fieldClickSelect) {
+      return html`<div @click=${(e: Event) => this.onFieldRowClick(e, chainIdx)}>${body}</div>`;
+    }
+    return body;
+  }
+
+  /** Resolve the field editor under a click and select its field. */
+  private onFieldRowClick(e: Event, chainIdx: number) {
+    const path = (e.composedPath?.() ?? []) as Array<{ fieldPath?: string }>;
+    const editor = path.find((n) => typeof n?.fieldPath === 'string');
+    const fieldPath = editor?.fieldPath;
+    if (!fieldPath) return;
+    this.ctl.selectField(`${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`);
   }
 
   /**

@@ -205,8 +205,10 @@ export class ArrClipView extends MobxLitElement {
                 ${mode === 'automation'
                   ? html`<arr-automation-editor
                       class="autoedit"
-                      .lane=${clip.automation?.[0]}
-                      .ensureLaneId=${() => store.ensureClipAutomationLane(sel.track.id, clip.id)}
+                      .lane=${store.selectedClipLane(sel.track.id, clip.id) ?? clip.automation?.[0]}
+                      .ensureLaneId=${() => (store.autoField(`clip/${sel.track.id}/${clip.id}`)
+                        ? store.ensureSelectedClipLane(sel.track.id, clip.id)
+                        : store.ensureClipAutomationLane(sel.track.id, clip.id))}
                       .cursor=${this.autoCursor()}
                       .pxPerFrame=${this.pxPerFrame}
                       .scrollFrames=${this.scrollFrames}
@@ -261,10 +263,21 @@ export class ArrClipView extends MobxLitElement {
     `;
   }
 
+  /** Label for the clip's selected automation field (falls back to its 1st lane). */
+  private clipAutoLabel(): string {
+    const sel = store.selectedClip;
+    if (!sel) return 'amount';
+    const f = store.autoField(`clip/${sel.track.id}/${sel.clip.id}`);
+    return f?.label
+      ?? store.selectedClipLane(sel.track.id, sel.clip.id)?.label
+      ?? sel.clip.automation?.[0]?.label
+      ?? 'no field selected';
+  }
+
   private renderAutoCtl(clip: any) {
-    const lane = clip.automation?.[0];
+    void clip;
     return html`
-      <div class="ctl"><span>Parameter</span><span class="v">${lane?.label ?? 'Saturate · amount'}</span></div>
+      <div class="ctl"><span>Parameter</span><span class="v">${this.clipAutoLabel()}</span></div>
       <div class="ctl">
         <span>Timing</span>
         <div class="seg">
@@ -277,7 +290,8 @@ export class ArrClipView extends MobxLitElement {
   }
 
   private topLabel(clip: any, mode: string) {
-    if (mode === 'automation') return `${clip.automation?.[0]?.label ?? 'amount'} · ${store.clipAutoTiming}`;
+    void clip;
+    if (mode === 'automation') return `${this.clipAutoLabel()} · ${store.clipAutoTiming}`;
     return `frame ${Math.round(this.scrubFrame)}`;
   }
 
