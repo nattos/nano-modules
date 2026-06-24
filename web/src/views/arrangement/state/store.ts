@@ -74,6 +74,34 @@ let _uid = 1000;
 const uid = (p: string) => `${p}_${(_uid++).toString(36)}`;
 
 /**
+ * Mint fresh INNER ids on a just-cloned clip (deep copy with a new clip id) so a
+ * duplicate/split/paste doesn't share device + automation-lane ids with its
+ * source. Shared device ids collide on the composite instance key (instance
+ * retype storm); shared lane ids route envelope edits to the wrong clip (laneIn
+ * resolves globally) → the edit snaps back. Remaps in place + rewires the clip's
+ * own wires + automation targets to the new device ids.
+ */
+function freshClipIds(clip: Clip): void {
+  const devMap = new Map<string, string>();
+  for (const d of clip.sketch.devices) {
+    const fresh = uid('dev');
+    devMap.set(d.id, fresh);
+    d.id = fresh;
+  }
+  for (const w of clip.sketch.wires ?? []) {
+    const s = devMap.get(w.src.instanceKey);
+    if (s) w.src.instanceKey = s;
+    const t = devMap.get(w.dest.instanceKey);
+    if (t) w.dest.instanceKey = t;
+  }
+  for (const lane of clip.automation ?? []) {
+    lane.id = uid('auto');
+    const t = devMap.get(lane.targetDeviceId);
+    if (t) lane.targetDeviceId = t;
+  }
+}
+
+/**
  * Split every clip in a track that straddles `beat` into two. Operates on a
  * draft `Track` inside a history recipe (clips are drafts; the JSON clone
  * yields a plain right-hand clip). Shared by all the time-region ops.
@@ -85,6 +113,7 @@ function splitClipsAt(track: Track, beat: number) {
     if (beat > clip.startBeat + 1e-6 && beat < end - 1e-6) {
       const right: Clip = JSON.parse(JSON.stringify(clip));
       right.id = uid('clip');
+      freshClipIds(right);
       right.startBeat = beat;
       right.lengthBeat = end - beat;
       clip.lengthBeat = beat - clip.startBeat;
@@ -119,6 +148,7 @@ function carveTrackSpan(track: Track, exceptId: string, start: number, end: numb
     if (ce > end + 1e-6) {
       const right: Clip = JSON.parse(JSON.stringify(c));
       right.id = uid('clip');
+      freshClipIds(right);
       right.startBeat = end;
       right.lengthBeat = ce - end;
       next.push(right);
@@ -368,7 +398,7 @@ export class ArrangementStore {
   /** Load an existing arrangement file from a mounted workspace. */
   async openArrangement(backend: WorkspaceBackend, name: string) {
     const comp = await backend.read(name);
-    ArrangementStore.repairDeviceIds(comp); // heal duplicate device ids (see method)
+    ArrangementStore.repairIds(comp); // heal duplicate device + lane ids (see method)
     runInAction(() => {
       this.backend = backend;
       this.currentName = name;
@@ -1586,6 +1616,7 @@ export class ArrangementStore {
         if (!dt) continue;
         const clip: Clip = JSON.parse(JSON.stringify(item.clip));
         clip.id = uid('clip');
+        freshClipIds(clip);
         clip.startBeat = Math.max(0, atBeat + item.startBeat);
         carveTrackSpan(dt, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
         dt.clips.push(clip);
@@ -1624,6 +1655,7 @@ export class ArrangementStore {
       if (!t || t.kind !== 'track') return;
       const clip: Clip = JSON.parse(JSON.stringify(source));
       clip.id = uid('clip');
+      freshClipIds(clip);
       carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
       t.clips.push(clip);
     });
@@ -2587,12 +2619,18 @@ export class ArrangementStore {
   /** A flat mid-level curve — the seed for a freshly created lane. `span` is the
    *  trailing endpoint x: 1 for a normalized clip lane, or the beat extent for a
    *  beat-domain track lane (so the flat line spans the visible timeline). */
-  /** Heal duplicate device ids: two devices sharing an id within one sketch emit
-   *  the SAME composite instance key, which the executor then retypes + recreates
-   *  every frame (1000s of "module initialized"). Give each later collision a
-   *  fresh id so both render as distinct instances. Mutates `comp` in place. */
-  private static repairDeviceIds(comp: Composition): void {
-    const heal = (devices: Array<{ id: string }> | undefined) => {
+  /**
+   * Heal duplicate ids left by clip duplication (cmd-drag / paste / split deep-copy
+   * a clip without minting fresh inner ids). Mutates `comp` in place:
+   *  - DEVICE ids unique within each sketch — two devices sharing an id emit the
+   *    same composite instance key → the executor retypes + recreates the instance
+   *    every frame (1000s of "module initialized").
+   *  - AUTOMATION LANE ids unique GLOBALLY — `laneIn` resolves a lane by id across
+   *    the whole comp, so a duplicate lane id routes edits to the WRONG clip's lane
+   *    → the edit never lands on the edited lane and the UI snaps back.
+   */
+  private static repairIds(comp: Composition): void {
+    const healDevices = (devices: Array<{ id: string }> | undefined) => {
       if (!devices) return;
       const seen = new Set<string>();
       for (const d of devices) {
@@ -2600,9 +2638,21 @@ export class ArrangementStore {
         seen.add(d.id);
       }
     };
+    const seenLanes = new Set<string>();
+    const healLanes = (lanes: Array<{ id: string }> | undefined) => {
+      if (!lanes) return;
+      for (const l of lanes) {
+        if (seenLanes.has(l.id)) l.id = uid('auto');
+        seenLanes.add(l.id);
+      }
+    };
     for (const t of comp.tracks) {
-      heal(t.sketch?.devices);
-      for (const c of t.clips) heal(c.sketch?.devices);
+      healDevices(t.sketch?.devices);
+      healLanes(t.automation);
+      for (const c of t.clips) {
+        healDevices(c.sketch?.devices);
+        healLanes(c.automation);
+      }
     }
   }
 
