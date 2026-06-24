@@ -88,6 +88,40 @@ describe('2D caret model', () => {
   });
 });
 
+describe('caret lane rows (automation lanes as navigable rows)', () => {
+  let t1: string;
+  let laneId: string;
+  beforeEach(() => {
+    store.clearSelection();
+    if (!store.automationMode) store.toggleAutomationMode();
+    t1 = store.addTrack();
+    laneId = store.ensureTrackAutomationLane(t1);
+  });
+
+  it('caretRows lists the track clip row + each automation lane row', () => {
+    const rows = store.caretRows.filter((r) => r.trackId === t1);
+    expect(rows).toEqual([{ trackId: t1, laneId: '' }, { trackId: t1, laneId }]);
+  });
+
+  it('arrow-down from the track steps onto ITS lane (not the next track)', () => {
+    store.setCaret({ anchorBeat: 4, anchorTrackId: t1, headBeat: 4, headTrackId: t1 }); // clip row
+    expect(store.caretLaneId).toBeNull();
+    store.caretMoveVertical(1);
+    expect(store.caretHeadTrackId).toBe(t1);
+    expect(store.caretHeadLaneId).toBe(laneId);
+    expect(store.caretLaneId).toBe(laneId);
+  });
+
+  it('a lane caret selects no clips + reports no clip-track span', () => {
+    store.createEmptyClip(t1, 0, 8);
+    store.setCaret({ anchorBeat: 4, anchorTrackId: t1, anchorLaneId: laneId, headBeat: 4, headTrackId: t1, headLaneId: laneId });
+    store.selectClipsInCaret();
+    expect(store.selection.size).toBe(0);
+    expect(store.caretTrackIds).toEqual([]); // no clip rows in the span
+    expect(store.caretLaneIds).toEqual([laneId]);
+  });
+});
+
 describe('caret keyboard navigation', () => {
   let T: string[];
   beforeEach(() => {

@@ -252,6 +252,12 @@ export class ArrangementStore {
   caretAnchorBeat = 0; // caret ANCHOR beat
   caretAnchorTrackId = ''; // anchor track ('' = global span)
   caretHeadTrackId = ''; // head track ('' = global span)
+  // Each track is a stack of ROWS: its clip row (laneId '') + one row per
+  // automation lane. The caret addresses a row, so clicking / arrowing onto a
+  // lane lands ON that lane (not the parent track), and a single-lane region
+  // scopes envelope edits to that one lane.
+  caretAnchorLaneId = ''; // '' = the anchor track's clip row
+  caretHeadLaneId = ''; // '' = the head track's clip row
 
   /** Ephemeral clip clipboard (copy/cut → paste). Offsets are relative to the
    *  copy origin so paste lands at the caret. Not observed / undoable. */
@@ -1093,21 +1099,48 @@ export class ArrangementStore {
     return this.displayTracks.filter((t) => t.kind === 'track');
   }
 
-  /** Ordered plain-track ids the caret spans (anchor→head, inclusive). Empty
-   *  anchor+head ids ⇒ a GLOBAL span (every plain track). */
-  get caretTrackIds(): string[] {
-    const aid = this.caretAnchorTrackId;
-    const hid = this.caretHeadTrackId;
-    if (!aid && !hid) return [];
-    const order = this.caretTrackOrder;
-    const ai = order.findIndex((t) => t.id === aid);
-    const hi = order.findIndex((t) => t.id === hid);
+  /** The vertical ROW axis: each plain track's clip row (laneId '') followed by
+   *  its automation lane rows (in automation mode). */
+  get caretRows(): Array<{ trackId: string; laneId: string }> {
+    const rows: Array<{ trackId: string; laneId: string }> = [];
+    for (const t of this.caretTrackOrder) {
+      rows.push({ trackId: t.id, laneId: '' });
+      if (this.automationMode) for (const lane of t.automation) rows.push({ trackId: t.id, laneId: lane.id });
+    }
+    return rows;
+  }
+
+  /** The rows the caret spans (anchor→head, inclusive). Empty ⇒ a GLOBAL span. */
+  caretRowSpan(): Array<{ trackId: string; laneId: string }> {
+    if (!this.caretAnchorTrackId && !this.caretHeadTrackId) return [];
+    const rows = this.caretRows;
+    const eq = (r: { trackId: string; laneId: string }, t: string, l: string) => r.trackId === t && r.laneId === l;
+    const ai = rows.findIndex((r) => eq(r, this.caretAnchorTrackId, this.caretAnchorLaneId));
+    const hi = rows.findIndex((r) => eq(r, this.caretHeadTrackId, this.caretHeadLaneId));
     if (ai < 0 && hi < 0) return [];
-    if (ai < 0) return [order[hi].id];
-    if (hi < 0) return [order[ai].id];
-    const lo = Math.min(ai, hi);
-    const high = Math.max(ai, hi);
-    return order.slice(lo, high + 1).map((t) => t.id);
+    if (ai < 0) return [rows[hi]];
+    if (hi < 0) return [rows[ai]];
+    return rows.slice(Math.min(ai, hi), Math.max(ai, hi) + 1);
+  }
+
+  /** The single lane the caret is scoped to (head + anchor on the SAME lane), or
+   *  null ⇒ clip mode. Gates clip ops + scopes envelope-region edits. */
+  get caretLaneId(): string | null {
+    return this.caretHeadLaneId && this.caretHeadLaneId === this.caretAnchorLaneId ? this.caretHeadLaneId : null;
+  }
+
+  /** Automation-lane ids the caret span touches (for the lane cursor/highlight). */
+  get caretLaneIds(): string[] {
+    return this.caretRowSpan().filter((r) => r.laneId).map((r) => r.laneId);
+  }
+
+  /** Ordered plain-track ids the caret spans via CLIP rows (lanes contribute no
+   *  clips). Empty anchor+head ⇒ a GLOBAL span (every plain track). */
+  get caretTrackIds(): string[] {
+    if (!this.caretAnchorTrackId && !this.caretHeadTrackId) return [];
+    const ids: string[] = [];
+    for (const r of this.caretRowSpan()) if (r.laneId === '' && !ids.includes(r.trackId)) ids.push(r.trackId);
+    return ids;
   }
 
   /** A non-degenerate time box exists only when the caret has time width. */
@@ -1136,11 +1169,16 @@ export class ArrangementStore {
    * Primary caret API: set the head (current time/track) + anchor. The time box
    * and play-from are derived. Track ids `''` ⇒ a global vertical span.
    */
-  setCaret(opts: { anchorBeat: number; anchorTrackId: string; headBeat: number; headTrackId: string }) {
+  setCaret(opts: {
+    anchorBeat: number; anchorTrackId: string; headBeat: number; headTrackId: string;
+    anchorLaneId?: string; headLaneId?: string;
+  }) {
     runInAction(() => {
       this.caretAnchorBeat = Math.max(0, opts.anchorBeat);
       this.caretAnchorTrackId = opts.anchorTrackId;
       this.caretHeadTrackId = opts.headTrackId;
+      this.caretAnchorLaneId = opts.anchorLaneId ?? '';
+      this.caretHeadLaneId = opts.headLaneId ?? '';
       this.playFromBeat = Math.max(0, opts.headBeat);
       if (!this.playing) this.positionBeat = this.playFromBeat;
     });
@@ -1153,21 +1191,26 @@ export class ArrangementStore {
       this.playFromBeat = Math.max(start, end);
       this.caretAnchorTrackId = trackIds[0] ?? '';
       this.caretHeadTrackId = trackIds[trackIds.length - 1] ?? '';
+      this.caretAnchorLaneId = '';
+      this.caretHeadLaneId = ''; // clip-row selection
       if (!this.playing) this.positionBeat = this.playFromBeat;
     });
   }
 
   clearTimeSelection() {
     runInAction(() => {
-      // Collapse the box to a caret at the head (keeps the head's track).
+      // Collapse the box to a caret at the head (keeps the head's track + lane).
       this.caretAnchorBeat = this.playFromBeat;
       this.caretAnchorTrackId = this.caretHeadTrackId;
+      this.caretAnchorLaneId = this.caretHeadLaneId;
     });
   }
 
   // ── Caret keyboard navigation ──────────────────────────────────────────
-  /** Select what's under the caret head: a clip if present, else the track. */
+  /** Select what's under the caret head: on a lane row nothing (the caret marks
+   *  the lane); on a clip row a clip if present, else the track. */
   selectUnderCaret() {
+    if (this.caretHeadLaneId) { this.clearSelection(); return; }
     const tid = this.caretHeadTrackId;
     if (!tid) { this.clearSelection(); return; }
     const clip = this.clipAtBeat(tid, this.playFromBeat);
@@ -1210,26 +1253,30 @@ export class ArrangementStore {
     this.setCaret({
       anchorBeat: opts.extend ? this.caretAnchorBeat : head,
       anchorTrackId: opts.extend ? this.caretAnchorTrackId : this.caretHeadTrackId,
+      anchorLaneId: opts.extend ? this.caretAnchorLaneId : this.caretHeadLaneId,
       headBeat: head,
       headTrackId: this.caretHeadTrackId,
+      headLaneId: this.caretHeadLaneId,
     });
     if (opts.extend) this.selectClipsInCaret();
     else this.selectUnderCaret();
   }
 
-  /** Move the caret head one track up/down. `extend` grows the vertical slice. */
+  /** Move the caret head one ROW up/down (tracks AND their automation lanes).
+   *  `extend` grows the vertical slice. */
   caretMoveVertical(dir: -1 | 1, extend = false) {
-    const order = this.caretTrackOrder;
-    if (!order.length) return;
-    const curId = this.caretHeadTrackId || order[0].id;
-    let i = order.findIndex((t) => t.id === curId);
+    const rows = this.caretRows;
+    if (!rows.length) return;
+    let i = rows.findIndex((r) => r.trackId === this.caretHeadTrackId && r.laneId === this.caretHeadLaneId);
     if (i < 0) i = 0;
-    const headTrackId = order[Math.max(0, Math.min(order.length - 1, i + dir))].id;
+    const head = rows[Math.max(0, Math.min(rows.length - 1, i + dir))];
     this.setCaret({
       anchorBeat: extend ? this.caretAnchorBeat : this.playFromBeat,
-      anchorTrackId: extend ? this.caretAnchorTrackId : headTrackId,
+      anchorTrackId: extend ? this.caretAnchorTrackId : head.trackId,
+      anchorLaneId: extend ? this.caretAnchorLaneId : head.laneId,
       headBeat: this.playFromBeat,
-      headTrackId,
+      headTrackId: head.trackId,
+      headLaneId: head.laneId,
     });
     if (extend) this.selectClipsInCaret();
     else this.selectUnderCaret();
@@ -1242,6 +1289,7 @@ export class ArrangementStore {
    * caret's track span either way. Empty span selects nothing.
    */
   selectClipsInCaret() {
+    if (this.caretLaneId) { this.setSelection([]); return; } // on an automation lane → no clips
     const scopeIds = this.caretTrackIds;
     if (!scopeIds.length) { this.setSelection([]); return; }
     const box = this.hasTimeSelection;
@@ -1361,6 +1409,7 @@ export class ArrangementStore {
    * caret's track span is affected (a slice spanning tracks 2–4 cuts only those).
    */
   splitAtCursor() {
+    if (this.caretLaneId) return; // clip split doesn't apply on an automation lane
     const scope = this.regionTracks().map((t) => t.id);
     if (scope.length === 0) return;
     const edges = this.hasTimeSelection ? [this.timeSelStart!, this.timeSelEnd] : [this.playFromBeat];

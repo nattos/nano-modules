@@ -709,7 +709,7 @@ export class ArrGrid extends MobxLitElement {
             .ensureLaneId=${() => lane.id}
             .timelineSpan=${AUTO_SPAN}
             .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
-            .cursorEnabled=${store.caretTrackIds.includes(track.id)}
+            .cursorEnabled=${store.caretLaneIds.includes(lane.id)}
             .bubbleOffCurve=${true}
           ></arr-automation-editor>
         </div>
@@ -838,15 +838,14 @@ export class ArrGrid extends MobxLitElement {
   /** Vertical pixel span [top,bottom] of the caret's track slice; full height
    *  for a global span. */
   private caretSpanY(h: number): [number, number] {
-    const ids = store.caretTrackIds;
-    if (!ids.length) return [0, h];
+    const span = store.caretRowSpan();
+    if (!span.length) return [0, h]; // global
+    const layout = this.rowLayout();
     let yTop = Infinity;
     let yBottom = 0;
-    for (const r of this.trackRowLayout()) {
-      if (ids.includes(r.id)) {
-        yTop = Math.min(yTop, r.top);
-        yBottom = Math.max(yBottom, r.bottom);
-      }
+    for (const s of span) {
+      const r = layout.find((q) => q.trackId === s.trackId && q.laneId === s.laneId);
+      if (r) { yTop = Math.min(yTop, r.top); yBottom = Math.max(yBottom, r.bottom); }
     }
     return isFinite(yTop) ? [yTop, yBottom] : [0, h];
   }
@@ -978,6 +977,8 @@ export class ArrGrid extends MobxLitElement {
     startBeat: number;
     laneLeft: number;
     startTrackId: string;
+    /** Automation lane the gesture started on ('' = the track's clip row). */
+    startLaneId: string;
     /** Gesture started on the main bus ⇒ the caret spans ALL plain tracks. */
     startIsBus: boolean;
     active: boolean;
@@ -985,6 +986,33 @@ export class ArrGrid extends MobxLitElement {
      *  (no time box); a drag still does a region selection. */
     clickFocusPath?: string;
   } | null = null;
+
+  /** Per-ROW vertical layout (each track's clip row + its automation lanes). */
+  private rowLayout(): Array<{ trackId: string; laneId: string; top: number; bottom: number }> {
+    const out: Array<{ trackId: string; laneId: string; top: number; bottom: number }> = [];
+    let y = 0;
+    for (const t of store.displayTracks) {
+      out.push({ trackId: t.id, laneId: '', top: y, bottom: y + ROW_HEIGHT });
+      y += ROW_HEIGHT;
+      if (store.automationMode && t.kind === 'track') {
+        for (const lane of t.automation) {
+          out.push({ trackId: t.id, laneId: lane.id, top: y, bottom: y + AUTO_LANE_HEIGHT });
+          y += AUTO_LANE_HEIGHT;
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The row (track + lane) at a client Y. */
+  private rowAtClientY(clientY: number): { trackId: string; laneId: string } {
+    const rect = this.scrollEl.getBoundingClientRect();
+    const contentY = clientY - rect.top + this.scrollEl.scrollTop;
+    const layout = this.rowLayout();
+    for (const r of layout) if (contentY < r.bottom) return { trackId: r.trackId, laneId: r.laneId };
+    const last = layout[layout.length - 1];
+    return last ? { trackId: last.trackId, laneId: last.laneId } : { trackId: '', laneId: '' };
+  }
 
   /** Track-row vertical layout in content (scroll) coordinates. */
   private trackRowLayout(): Array<{ id: string; top: number; bottom: number }> {
@@ -999,16 +1027,6 @@ export class ArrGrid extends MobxLitElement {
       y += h;
     }
     return out;
-  }
-
-  private trackIndexAtClientY(clientY: number): number {
-    const rect = this.scrollEl.getBoundingClientRect();
-    const contentY = clientY - rect.top + this.scrollEl.scrollTop;
-    const layout = this.trackRowLayout();
-    for (let i = 0; i < layout.length; i++) {
-      if (contentY < layout[i].bottom) return i;
-    }
-    return Math.max(0, layout.length - 1);
   }
 
   /**
@@ -1163,34 +1181,31 @@ export class ArrGrid extends MobxLitElement {
     const laneLeft = this.scrollEl.getBoundingClientRect().left + store.headerWidth;
     const grid = buildBeatGrid();
     const startBeat = grid.xToBeat(e.clientX - laneLeft);
-    const startTrack = store.displayTracks[this.trackIndexAtClientY(e.clientY)];
+    const startRow = this.rowAtClientY(e.clientY);
+    const startTrack = store.trackById(startRow.trackId);
     const startIsBus = !!startTrack && store.isMainBus(startTrack);
     const qBeat = store.quantize(startBeat, e.altKey);
-    // Set the 2D caret to a zero-width slice at the clicked time + track (a bus
+    // Set the 2D caret to a zero-width slice at the clicked time + ROW (a bus
     // start spans all plain tracks). A drag below extends it into a box/slice.
-    const trackId = startIsBus ? '' : startTrack?.id ?? '';
-    store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, headBeat: qBeat, headTrackId: trackId });
+    const trackId = startIsBus ? '' : startRow.trackId;
+    const laneId = startIsBus ? '' : startRow.laneId;
+    store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, anchorLaneId: laneId, headBeat: qBeat, headTrackId: trackId, headLaneId: laneId });
     // Clicking a clip body focuses it right away; a drag below overrides this.
     if (clickFocusPath) store.selectClipOnly(clickFocusPath);
+    // An automation lane has no clips — clicking it touches only that lane.
+    else if (laneId) store.clearSelection();
     this.drag = {
       x0: e.clientX,
       startBeat,
       laneLeft,
-      startTrackId: startTrack?.id ?? '',
+      startTrackId: startRow.trackId,
+      startLaneId: startRow.laneId,
       startIsBus,
       active: false,
       clickFocusPath,
     };
     window.addEventListener('pointermove', this.onRegionMove);
     window.addEventListener('pointerup', this.onRegionUp);
-  }
-
-  /** Nearest PLAIN track id at a clientY (clamps off the pinned main bus). */
-  private plainTrackIdAtClientY(clientY: number): string {
-    const order = store.displayTracks;
-    let i = this.trackIndexAtClientY(clientY);
-    while (i > 0 && order[i] && order[i].kind !== 'track') i--;
-    return order[i]?.kind === 'track' ? order[i].id : '';
   }
 
   private onRegionMove = (e: PointerEvent) => {
@@ -1203,12 +1218,19 @@ export class ArrGrid extends MobxLitElement {
     const free = e.altKey;
     const headBeat = cur < 0 ? 0 : store.quantize(cur, free);
     const anchorBeat = store.quantize(d.startBeat, free);
-    // Vertical span: a bus start stays global; otherwise anchor track → the
-    // track currently under the cursor (clamped to plain tracks).
-    const anchorTrackId = d.startIsBus ? '' : d.startTrackId;
-    const headTrackId = d.startIsBus ? '' : this.plainTrackIdAtClientY(e.clientY);
-    store.setCaret({ anchorBeat, anchorTrackId, headBeat, headTrackId });
-    // The caret (box OR vertical slice) selects the clips it intersects.
+    // Vertical span: a bus start stays global; otherwise anchor ROW → the row
+    // currently under the cursor (tracks AND automation lanes).
+    const headRow = d.startIsBus ? { trackId: '', laneId: '' } : this.rowAtClientY(e.clientY);
+    store.setCaret({
+      anchorBeat,
+      anchorTrackId: d.startIsBus ? '' : d.startTrackId,
+      anchorLaneId: d.startIsBus ? '' : d.startLaneId,
+      headBeat,
+      headTrackId: headRow.trackId,
+      headLaneId: headRow.laneId,
+    });
+    // The caret (box OR vertical slice) selects the clips it intersects (no-op on
+    // an automation lane — that's an envelope region, handled by the lane editor).
     store.selectClipsInCaret();
   };
 
@@ -1222,6 +1244,8 @@ export class ArrGrid extends MobxLitElement {
     // focused; otherwise select what's under the head — a clip if present, else
     // the track underneath (text-caret: the cursor always lands somewhere).
     if (d.clickFocusPath) return;
+    // On an automation lane → the caret marks the lane; don't touch clip/track sel.
+    if (d.startLaneId) { store.clearSelection(); return; }
     if (d.startIsBus || !d.startTrackId) {
       store.clearSelection();
       return;
