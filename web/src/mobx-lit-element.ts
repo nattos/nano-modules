@@ -1,4 +1,4 @@
-import { LitElement } from 'lit';
+import { LitElement, PropertyValues } from 'lit';
 import { autorun, IReactionDisposer } from 'mobx';
 
 /**
@@ -41,6 +41,20 @@ export class MobxLitElement extends LitElement {
       isSync = false;
       return result;
     };
+  }
+
+  /**
+   * A Lit reactive-property change (e.g. `.clip=${other}` when the parent reuses
+   * this element for a different item) must re-render FRESH from the current
+   * properties. The autorun's `_cachedTemplate` was computed for the PREVIOUS
+   * properties, so serving it here would render stale (the classic "list desyncs
+   * until you click" bug). Autorun-driven updates carry no changed properties, so
+   * they still use the cache. `changed.size === 0` on the very first update too,
+   * which is fine — there's nothing cached yet.
+   */
+  protected update(changed: PropertyValues): void {
+    if (changed.size > 0) this._cachedTemplate = null;
+    super.update(changed);
   }
 
   disconnectedCallback() {

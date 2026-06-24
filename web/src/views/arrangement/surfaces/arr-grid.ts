@@ -11,6 +11,7 @@
 
 import { html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths } from '../state/store';
 import {
@@ -447,7 +448,7 @@ export class ArrGrid extends MobxLitElement {
       <div class="scroll" @pointerdown=${this.onScrollDown}>
         <canvas class="grid-canvas" style="height:${totalH}px"></canvas>
         <div class="rows">
-          ${tracks.map((t) => this.renderTrack(t))}
+          ${repeat(tracks, (t) => t.id, (t) => this.renderTrack(t))}
           ${store.automationMode ? this.renderBeatWarpRow() : ''}
           ${this.reorderActive ? this.renderReorderLine() : ''}
         </div>
@@ -584,7 +585,9 @@ export class ArrGrid extends MobxLitElement {
                 : track.clips.length === 0
                   ? html`<span class="empty-hint">double-click to add a clip · drag to select</span>`
                   : ''}
-              ${track.clips.map(
+              ${repeat(
+                track.clips,
+                (clip) => clip.id, // keyed: element identity tracks clip identity
                 (clip) => html`<arr-clip
                   .trackId=${track.id}
                   .clip=${clip}
