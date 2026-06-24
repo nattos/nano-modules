@@ -695,7 +695,6 @@ export class ArrGrid extends MobxLitElement {
   }
 
   private renderAutoLane(track: Track, lane: AutomationLane) {
-    void track;
     // EDITABLE: the same shared <arr-automation-editor> the clip view uses, here
     // mapped onto the live MAIN-TIMELINE beat grid (warp + zoom/pan + playhead).
     return html`
@@ -710,6 +709,8 @@ export class ArrGrid extends MobxLitElement {
             .ensureLaneId=${() => lane.id}
             .timelineSpan=${AUTO_SPAN}
             .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
+            .cursorEnabled=${store.caretTrackIds.includes(track.id)}
+            .bubbleOffCurve=${true}
           ></arr-automation-editor>
         </div>
       </div>
@@ -990,9 +991,12 @@ export class ArrGrid extends MobxLitElement {
     const out: Array<{ id: string; top: number; bottom: number }> = [];
     let y = 0;
     for (const t of store.displayTracks) {
-      out.push({ id: t.id, top: y, bottom: y + ROW_HEIGHT });
-      y += ROW_HEIGHT;
-      if (store.automationMode) y += t.automation.length * AUTO_LANE_HEIGHT;
+      // The track's FULL extent (header + its automation lanes) so a click on an
+      // automation lane hit-tests to that track, not the next one down.
+      let h = ROW_HEIGHT;
+      if (store.automationMode) h += t.automation.length * AUTO_LANE_HEIGHT;
+      out.push({ id: t.id, top: y, bottom: y + h });
+      y += h;
     }
     return out;
   }

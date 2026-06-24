@@ -62,6 +62,9 @@ export class EnvelopeGraph extends MobxLitElement {
   timeboxGestures = false;
   /** Drag off the curve → selection range in DATA-x (anchor, head). */
   onSelect: ((anchorX: number, headX: number) => void) | null = null;
+  /** Track-lane mode: an off-curve pointerdown is NOT claimed (it bubbles to the
+   *  grid behind, which sets the caret), while node/curve edits still work. */
+  bubbleOffCurve = false;
 
   private rafId = 0;
   private readonly pad = 10;          // px inset so edge nodes aren't clipped
@@ -166,11 +169,17 @@ export class EnvelopeGraph extends MobxLitElement {
     return Math.abs(py - curveY) < threshold;
   }
 
+  /** Claim the gesture: capture the pointer + stop the event reaching a parent
+   *  (e.g. the arr-grid caret/region drag behind a track lane). */
+  private claim(e: PointerEvent) {
+    try { this.canvas!.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    e.stopPropagation();
+  }
+
   private onPointerDown(e: PointerEvent) {
     if (!this.interactive) return;
     if (e.button !== 0) return;
     const [px, py] = this.eventXY(e);
-    try { this.canvas!.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     this.began = false;
     this.startPx = px; this.startPy = py;
     const [dx] = this.fromPx(px, py);
@@ -182,26 +191,33 @@ export class EnvelopeGraph extends MobxLitElement {
       if (inBox && this.points[node].x >= sel!.x0 - 1e-6 && this.points[node].x <= sel!.x1 + 1e-6) {
         this.mode = 'group';
         this.beginGroup(sel!);
-        return;
+        return this.claim(e);
       }
       this.mode = 'node';
       this.dragIndex = node;
       this.startNodeX = this.points[node].x;
       this.startNodeY = this.points[node].y;
-      return;
+      return this.claim(e);
     }
-    if (this.timeboxGestures && !this.onCurveLine(px, py)) {
+    const offCurve = !this.onCurveLine(px, py);
+    if (this.timeboxGestures && offCurve) {
       // Off the curve line → a time-box selection drag.
       this.mode = 'select';
       this.selAnchorX = dx;
       this.onSelect?.(dx, dx);
+      return this.claim(e);
+    }
+    if (this.bubbleOffCurve && offCurve) {
+      // Track lane: an off-curve click belongs to the timeline behind us (sets
+      // the caret) — don't claim it, let it bubble to the grid.
+      this.mode = 'none';
       return;
     }
     // On the curve INSIDE the box → build a hard SHELF on first move.
     if (inBox && dx >= sel!.x0 - 1e-6 && dx <= sel!.x1 + 1e-6) {
       this.mode = 'shelf';
       this.shelfBuilt = false;
-      return;
+      return this.claim(e);
     }
     // On the curve. IDE default + arrangement Option = bend the segment;
     // arrangement plain drag = move the segment's two endpoints vertically.
@@ -216,6 +232,7 @@ export class EnvelopeGraph extends MobxLitElement {
       this.mode = 'segment';
       this.startEase = this.points[seg].ease;
     }
+    this.claim(e);
   }
 
   private onPointerMove(e: PointerEvent) {

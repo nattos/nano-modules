@@ -61,6 +61,9 @@ export class ArrAutomationEditor extends MobxLitElement {
    * cursor follows the transport playhead. Takes precedence over `beats`.
    */
   @property({ attribute: false }) timelineSpan = 0;
+  /** Show the playhead time/value cursor (track lanes hide it unless the caret is
+   *  on this lane's track). */
+  @property({ attribute: false }) cursorEnabled = true;
   /**
    * Optional EXTERNAL beat grid (e.g. the clip view's zoomable, straight
    * ClipTimelineView): x∈[0,1] maps over [0, `beats`] through `gridProvider()`,
@@ -72,6 +75,8 @@ export class ArrAutomationEditor extends MobxLitElement {
   @property({ attribute: false }) selection: { x0: number; x1: number } | null = null;
   /** Enable the arrangement clip-editor gesture model (time-box-aware). */
   @property({ attribute: false }) timeboxGestures = false;
+  /** Track-lane mode: off-curve clicks bubble to the grid (set the caret). */
+  @property({ attribute: false }) bubbleOffCurve = false;
   /** Drag off the curve → a selection range in DATA-x (anchor, head). */
   @property({ attribute: false }) onSelect: ((anchorX: number, headX: number) => void) | null = null;
 
@@ -109,6 +114,7 @@ export class ArrAutomationEditor extends MobxLitElement {
       g.cursor = this.cursor;
       g.selection = this.selection;
       g.timeboxGestures = this.timeboxGestures;
+      g.bubbleOffCurve = this.bubbleOffCurve;
       g.onSelect = this.onSelect;
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →
@@ -132,8 +138,10 @@ export class ArrAutomationEditor extends MobxLitElement {
         const lines: Array<{ x: number; bar: boolean }> = [];
         for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b / span, bar: b % bpb === 0 });
         g.gridLines = lines;
+        // The playhead time/value cursor only shows when the caret is on this
+        // lane's track (otherwise it reads as a confusing line on every lane).
         const ph = store.positionBeat / span;
-        g.cursor = ph >= 0 && ph <= 1 ? ph : null;
+        g.cursor = this.cursorEnabled && ph >= 0 && ph <= 1 ? ph : null;
       } else if (this.beats > 0) {
         // Beat-based axis: x∈[0,1] spans `beats`, full-width, with a real
         // beat/bar grid. (Straight — clip-local time ignores the timeline warp.)
@@ -195,7 +203,9 @@ export class ArrAutomationEditor extends MobxLitElement {
   render() {
     // `points`/`cursor`/`xMap` are synced imperatively via rAF (so a drag isn't
     // clobbered by re-renders); here we just wire the element + callbacks.
-    const gridded = this.pxPerFrame != null;
+    // Any "embedded in a time grid" mode → fill the host (the clip-panel area or
+    // the track lane) instead of the standalone 132px default canvas.
+    const gridded = this.pxPerFrame != null || this.timelineSpan > 0 || this.beats > 0 || this.gridProvider != null;
     if (gridded) this.setAttribute('gridded', '');
     else this.removeAttribute('gridded');
     return html`
