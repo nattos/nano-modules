@@ -421,6 +421,19 @@ export class ArrClipView extends MobxLitElement {
     return { x0: sel.start / span, x1: sel.end / span };
   }
 
+  /** Delete the envelope nodes inside the clip-local selection. Returns true if
+   *  there was a selection to act on (so the key is consumed). */
+  deleteSelectedAutoNodes(): boolean {
+    const sel = store.selectedClip;
+    const range = this.clipView.timeSel;
+    const span = this.editorBeats();
+    if (!sel || !range || span <= 0 || store.clipViewMode !== 'automation') return false;
+    const lane = store.selectedClipLane(sel.track.id, sel.clip.id) ?? sel.clip.automation?.[0];
+    if (!lane) return false;
+    store.deleteAutoPointsInRange(lane.id, range.start / span, range.end / span);
+    return true;
+  }
+
   /** Envelope drag off the curve → a grid-quantized clip-local selection. */
   private onEnvSelect = (anchorX: number, headX: number) => {
     const span = this.editorBeats();

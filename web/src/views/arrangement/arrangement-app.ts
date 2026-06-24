@@ -160,7 +160,7 @@ export class ArrangementApp extends MobxLitElement {
   private lastT = 0;
   private transport = new TransportController();
   /** Which surface the user last interacted with (gates timeline deletions). */
-  private lastSurface: 'timeline' | 'inspector' | 'other' = 'other';
+  private lastSurface: 'timeline' | 'inspector' | 'clipview' | 'other' = 'other';
 
   connectedCallback() {
     super.connectedCallback();
@@ -220,7 +220,8 @@ export class ArrangementApp extends MobxLitElement {
   private onPointerDownCapture = (e: PointerEvent) => {
     const path = e.composedPath();
     const has = (tag: string) => path.some((n) => (n as Element)?.tagName === tag);
-    if (has('ARR-GRID') || has('ARR-RULER')) this.lastSurface = 'timeline';
+    if (has('ARR-CLIP-VIEW')) this.lastSurface = 'clipview';
+    else if (has('ARR-GRID') || has('ARR-RULER')) this.lastSurface = 'timeline';
     else if (has('ARR-INSPECTOR') || has('ARR-TABBAR')) this.lastSurface = 'inspector';
     else this.lastSurface = 'other';
     // Click-away: a pointer-down that doesn't land on an effect card or a
@@ -367,6 +368,14 @@ export class ArrangementApp extends MobxLitElement {
       // also delete the card it's in.
       const tag = deepActiveElement()?.tagName ?? '';
       if (tag === 'SCALAR-SLIDER' || tag.startsWith('FIELD-')) return;
+      // Clip automation editor focused → delete the envelope nodes in its selection.
+      if (this.lastSurface === 'clipview') {
+        const cv = this.renderRoot?.querySelector('arr-clip-view') as
+          | (HTMLElement & { deleteSelectedAutoNodes?: () => boolean })
+          | null;
+        if (cv?.deleteSelectedAutoNodes?.()) { e.preventDefault(); return; }
+        return;
+      }
       // A focused effect card deletes first (works regardless of surface — the
       // chain lives in the inspector).
       if (store.hasChainFocus) {

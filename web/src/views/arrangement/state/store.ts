@@ -2551,6 +2551,24 @@ export class ArrangementStore {
   }
 
   // ── Lanes for the SELECTED automation field (per-owner selection) ──────
+  /** Delete a lane's control points whose x ∈ [x0,x1] (keeps the pinned 0/1
+   *  endpoints; falls back to a default curve if everything would be removed). */
+  deleteAutoPointsInRange(laneId: string, x0: number, x1: number) {
+    this.mutate('delete automation points', (d) => {
+      for (const t of d.tracks) {
+        for (const c of t.clips) {
+          const lane = c.automation.find((l) => l.id === laneId);
+          if (!lane) continue;
+          lane.points = lane.points.filter(
+            (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
+          );
+          if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
+          return;
+        }
+      }
+    });
+  }
+
   /** The clip's selected-field automation lane, or undefined (no selection / no lane). */
   selectedClipLane(trackId: string, clipId: string): AutomationLane | undefined {
     const sel = this.autoField(paths.clip(trackId, clipId));

@@ -69,12 +69,19 @@ export class EnvelopeGraph extends MobxLitElement {
    *  `points` from the field, or it would clobber the in-progress edit. */
   get interacting() { return this.mode !== 'none'; }
   // Drag state.
-  private mode: 'none' | 'node' | 'segment' | 'select' | 'endpoints' = 'none';
+  private mode: 'none' | 'node' | 'segment' | 'select' | 'endpoints' | 'shelf' | 'group' = 'none';
   /** Selection anchor (DATA-x) captured at pointerdown in 'select' mode. */
   private selAnchorX = 0;
   /** Start y of a segment's two endpoints (for the 'endpoints' vertical drag). */
   private startYL = 0;
   private startYR = 0;
+  /** 'shelf': built lazily on first move; the inner+interior nodes that lift. */
+  private shelfBuilt = false;
+  private shelfMoving: Array<{ idx: number; startY: number }> = [];
+  /** 'group': nodes inside the box + their start x/y, and the box's x extent. */
+  private groupNodes: Array<{ idx: number; startX: number; startY: number; isEnd: boolean }> = [];
+  private groupMinX = 0;
+  private groupMaxX = 1;
   private dragIndex = -1;             // node index, or segment's left-node index
   private startPx = 0; private startPy = 0;
   private startEase = 0;
@@ -163,18 +170,32 @@ export class EnvelopeGraph extends MobxLitElement {
     try { this.canvas!.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     this.began = false;
     this.startPx = px; this.startPy = py;
+    const [dx] = this.fromPx(px, py);
+    const sel = this.timeboxGestures ? this.selection : null;
+    const inBox = !!sel && sel.x1 > sel.x0 + 1e-6;
     const node = this.hitNode(px, py);
     if (node >= 0) {
+      // A node inside the time box → rigid-X / squishy-Y GROUP move.
+      if (inBox && this.points[node].x >= sel!.x0 - 1e-6 && this.points[node].x <= sel!.x1 + 1e-6) {
+        this.mode = 'group';
+        this.beginGroup(sel!);
+        return;
+      }
       this.mode = 'node';
       this.dragIndex = node;
       return;
     }
-    const [dx] = this.fromPx(px, py);
     if (this.timeboxGestures && !this.onCurveLine(px, py)) {
       // Off the curve line → a time-box selection drag.
       this.mode = 'select';
       this.selAnchorX = dx;
       this.onSelect?.(dx, dx);
+      return;
+    }
+    // On the curve INSIDE the box → build a hard SHELF on first move.
+    if (inBox && dx >= sel!.x0 - 1e-6 && dx <= sel!.x1 + 1e-6) {
+      this.mode = 'shelf';
+      this.shelfBuilt = false;
       return;
     }
     // On the curve. IDE default + arrangement Option = bend the segment;
@@ -209,6 +230,41 @@ export class EnvelopeGraph extends MobxLitElement {
       this.onInteractionStart?.();
     }
     const slow = e.shiftKey ? 0.25 : 1; // Shift = fine adjustment
+    const innerH = this.dims().h - 2 * this.pad;
+
+    if (this.mode === 'shelf') {
+      // Build the hard shelf (4 edge nodes) on the first move, then lift the
+      // inner + interior nodes by the vertical drag.
+      if (!this.shelfBuilt) { this.buildShelf(); this.shelfBuilt = true; }
+      const dyData = ((this.startPy - py) / innerH) * slow;
+      const pts = this.points.map(p => ({ ...p }));
+      for (const m of this.shelfMoving) pts[m.idx].y = clamp01(m.startY + dyData);
+      this.points = pts;
+      this.onChange?.(pts);
+      return;
+    }
+
+    if (this.mode === 'group') {
+      // Move every node in the box: X rigid (clipped to the box walls), Y squishy
+      // (per-node clamp; bounces back). Option locks to the dominant axis.
+      const sel = this.selection!;
+      let ddx = ((px - this.startPx) / (this.dims().w - 2 * this.pad)) * slow;
+      let ddy = ((this.startPy - py) / innerH) * slow;
+      if (e.altKey) {
+        if (Math.abs(px - this.startPx) >= Math.abs(py - this.startPy)) ddy = 0; else ddx = 0;
+      }
+      // Rigid X: clamp so the group stays within [x0,x1].
+      ddx = clamp(ddx, sel.x0 - this.groupMinX, sel.x1 - this.groupMaxX);
+      const pts = this.points.map(p => ({ ...p }));
+      for (const g of this.groupNodes) {
+        if (!g.isEnd) pts[g.idx].x = clamp(g.startX + ddx, 0, 1);
+        pts[g.idx].y = clamp01(g.startY + ddy);
+      }
+      this.points = pts;
+      this.onChange?.(pts);
+      return;
+    }
+
     const pts = this.points.map(p => ({ ...p }));
     if (this.mode === 'node') {
       const i = this.dragIndex;
@@ -222,7 +278,7 @@ export class EnvelopeGraph extends MobxLitElement {
     } else if (this.mode === 'endpoints') {
       // Grab the curve, drag vertically → shift the segment's two endpoints' y.
       const i = this.dragIndex;
-      const dyData = ((this.startPy - py) / (this.dims().h - 2 * this.pad)) * slow;
+      const dyData = ((this.startPy - py) / innerH) * slow;
       pts[i].y = clamp01(this.startYL + dyData);
       pts[i + 1].y = clamp01(this.startYR + dyData);
     } else {
@@ -232,6 +288,48 @@ export class EnvelopeGraph extends MobxLitElement {
     }
     this.points = pts;
     this.onChange?.(pts);
+  }
+
+  /** Insert up to 4 nodes to form a hard shelf spanning the time box, and record
+   *  which nodes (inner edges + interior) lift with the drag. */
+  private buildShelf() {
+    const sel = this.selection!;
+    const eps = 0.004;
+    const outerLx = Math.max(0, sel.x0 - eps);
+    const outerRx = Math.min(1, sel.x1 + eps);
+    const near = (a: number, b: number) => Math.abs(a - b) < eps * 0.5;
+    const adds = [
+      { x: outerLx, y: evalEnvelope(this.points, outerLx) }, // outer, fixed
+      { x: sel.x0, y: evalEnvelope(this.points, sel.x0) },   // inner, lifts
+      { x: sel.x1, y: evalEnvelope(this.points, sel.x1) },   // inner, lifts
+      { x: outerRx, y: evalEnvelope(this.points, outerRx) }, // outer, fixed
+    ];
+    let pts = this.points.map(p => ({ ...p }));
+    for (const a of adds) if (!pts.some(p => near(p.x, a.x))) pts.push({ x: a.x, y: a.y, ease: 0 });
+    pts.sort((a, b) => a.x - b.x);
+    this.points = pts;
+    this.onChange?.(pts);
+    // The lifting set: nodes from the left box edge to the right box edge
+    // inclusive (inner edges + interior), but NOT the outer fixed nodes.
+    this.shelfMoving = [];
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i].x >= sel.x0 - eps * 0.5 && pts[i].x <= sel.x1 + eps * 0.5) {
+        this.shelfMoving.push({ idx: i, startY: pts[i].y });
+      }
+    }
+  }
+
+  /** Capture the nodes inside the box (+ their start x/y + the box x-extent). */
+  private beginGroup(sel: { x0: number; x1: number }) {
+    this.groupNodes = [];
+    for (let i = 0; i < this.points.length; i++) {
+      const px = this.points[i].x;
+      if (px >= sel.x0 - 1e-6 && px <= sel.x1 + 1e-6) {
+        this.groupNodes.push({ idx: i, startX: px, startY: this.points[i].y, isEnd: i === 0 || i === this.points.length - 1 });
+      }
+    }
+    this.groupMinX = Math.min(...this.groupNodes.map((g) => g.startX));
+    this.groupMaxX = Math.max(...this.groupNodes.map((g) => g.startX));
   }
 
   private onPointerUp() {
