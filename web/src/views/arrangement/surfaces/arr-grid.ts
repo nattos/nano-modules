@@ -21,7 +21,6 @@ import {
 } from './grid-shared';
 import { Track, Clip, AutomationLane, derivedWarpSegments, compositionLengthBeats } from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
-import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, AnchorKeys } from './anchor-registry';
 import '../../../widgets/editable-label';
 import './arr-clip';
