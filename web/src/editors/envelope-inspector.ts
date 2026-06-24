@@ -75,6 +75,9 @@ export class EnvelopeGraph extends MobxLitElement {
   /** Start y of a segment's two endpoints (for the 'endpoints' vertical drag). */
   private startYL = 0;
   private startYR = 0;
+  /** Dragged node's start x/y (for the Option axis-lock on a single-node drag). */
+  private startNodeX = 0;
+  private startNodeY = 0;
   /** 'shelf': built lazily on first move; the inner+interior nodes that lift. */
   private shelfBuilt = false;
   private shelfMoving: Array<{ idx: number; startY: number }> = [];
@@ -183,6 +186,8 @@ export class EnvelopeGraph extends MobxLitElement {
       }
       this.mode = 'node';
       this.dragIndex = node;
+      this.startNodeX = this.points[node].x;
+      this.startNodeY = this.points[node].y;
       return;
     }
     if (this.timeboxGestures && !this.onCurveLine(px, py)) {
@@ -268,14 +273,20 @@ export class EnvelopeGraph extends MobxLitElement {
     const pts = this.points.map(p => ({ ...p }));
     if (this.mode === 'node') {
       const i = this.dragIndex;
-      const [, dy] = this.fromPx(px, py);
-      const [dx] = this.fromPx(px, py);
+      const [dx, dy] = this.fromPx(px, py);
       const isFirst = i === 0, isLast = i === pts.length - 1;
       // Endpoints pin x at 0/1; interior nodes clamp between neighbours but MAY
       // coincide with them (zero-span segments / hard vertical edges are allowed).
       let nx = isFirst ? 0 : isLast ? 1 : clamp(dx, pts[i - 1].x, pts[i + 1].x);
+      let ny = clamp01(dy);
+      // Option locks to the dominant axis (whichever moved further in px), holding
+      // the other at its start value.
+      if (e.altKey) {
+        if (Math.abs(px - this.startPx) >= Math.abs(py - this.startPy)) ny = this.startNodeY;
+        else nx = isFirst ? 0 : isLast ? 1 : this.startNodeX;
+      }
       pts[i].x = nx;
-      pts[i].y = clamp01(dy);
+      pts[i].y = ny;
     } else if (this.mode === 'endpoints') {
       // Grab the curve, drag vertically → shift the segment's two endpoints' y.
       const i = this.dragIndex;

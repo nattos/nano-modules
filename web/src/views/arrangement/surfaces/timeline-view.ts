@@ -85,9 +85,12 @@ const CLIP_MAX_PPB = 600;
 export class ClipTimelineView implements RulerView {
   pxPerBeat = 32;
   scrollUnits = 0;
-  /** Clip-LOCAL selection anchor (head = playFromBeat). A range exists only when
-   *  the two differ. Drives the same ruler band the main timeline draws. */
+  /** Clip-LOCAL selection range (anchor + head, both clip-local). Kept SEPARATE
+   *  from the global play-from so selecting a clip (which moves the global
+   *  play-from) doesn't conjure a phantom selection band. Drives the same ruler
+   *  band the main timeline draws + the envelope time-box gestures. */
   selAnchorBeat = 0;
+  selHeadBeat = 0;
   /** Identity warp ⇒ unitsAt(beat) == beat (a straight grid). */
   private readonly curve = new WarpCurve([], 4096);
 
@@ -105,9 +108,8 @@ export class ClipTimelineView implements RulerView {
   get loop(): null { return null; }
   /** The clip-local selected range (null when collapsed). */
   get timeSel(): { start: number; end: number } | null {
-    const head = this.playFromBeat;
-    if (Math.abs(this.selAnchorBeat - head) < 1e-6) return null;
-    return { start: Math.min(this.selAnchorBeat, head), end: Math.max(this.selAnchorBeat, head) };
+    if (Math.abs(this.selAnchorBeat - this.selHeadBeat) < 1e-6) return null;
+    return { start: Math.min(this.selAnchorBeat, this.selHeadBeat), end: Math.max(this.selAnchorBeat, this.selHeadBeat) };
   }
 
   get positionBeat(): number {
@@ -139,16 +141,18 @@ export class ClipTimelineView implements RulerView {
   }
   setPlayFrom(beat: number) {
     // Scrub the transport into this clip (clip-local beat → arrangement beat) and
-    // COLLAPSE the selection (a plain click).
+    // COLLAPSE the local selection (a plain click).
     const local = Math.max(0, Math.min(this.spanBeats, beat));
     store.setPlayFrom(this.c().startBeat + local);
     this.selAnchorBeat = local;
+    this.selHeadBeat = local;
   }
   setSelection(anchorBeat: number, headBeat: number) {
-    // Move the head (= play-from) and keep the anchor → a clip-local range.
+    // Set the clip-local range and scrub the play-from to its head.
     const head = Math.max(0, Math.min(this.spanBeats, headBeat));
     store.setPlayFrom(this.c().startBeat + head);
     this.selAnchorBeat = Math.max(0, Math.min(this.spanBeats, anchorBeat));
+    this.selHeadBeat = head;
   }
   /** Snap to the clip-local grid (≈22px between snaps, like the main grid). */
   quantize(beat: number): number {
