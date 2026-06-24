@@ -69,9 +69,12 @@ export class EnvelopeGraph extends MobxLitElement {
    *  `points` from the field, or it would clobber the in-progress edit. */
   get interacting() { return this.mode !== 'none'; }
   // Drag state.
-  private mode: 'none' | 'node' | 'segment' | 'select' = 'none';
+  private mode: 'none' | 'node' | 'segment' | 'select' | 'endpoints' = 'none';
   /** Selection anchor (DATA-x) captured at pointerdown in 'select' mode. */
   private selAnchorX = 0;
+  /** Start y of a segment's two endpoints (for the 'endpoints' vertical drag). */
+  private startYL = 0;
+  private startYR = 0;
   private dragIndex = -1;             // node index, or segment's left-node index
   private startPx = 0; private startPy = 0;
   private startEase = 0;
@@ -174,12 +177,19 @@ export class EnvelopeGraph extends MobxLitElement {
       this.onSelect?.(dx, dx);
       return;
     }
-    // On the curve (or IDE default): grab the segment.
+    // On the curve. IDE default + arrangement Option = bend the segment;
+    // arrangement plain drag = move the segment's two endpoints vertically.
     const seg = this.segmentAt(dx);
     if (seg < 0) { this.mode = 'none'; return; }
-    this.mode = 'segment';
     this.dragIndex = seg;
-    this.startEase = this.points[seg].ease;
+    if (this.timeboxGestures && !e.altKey) {
+      this.mode = 'endpoints';
+      this.startYL = this.points[seg].y;
+      this.startYR = this.points[seg + 1].y;
+    } else {
+      this.mode = 'segment';
+      this.startEase = this.points[seg].ease;
+    }
   }
 
   private onPointerMove(e: PointerEvent) {
@@ -198,6 +208,7 @@ export class EnvelopeGraph extends MobxLitElement {
       this.began = true;
       this.onInteractionStart?.();
     }
+    const slow = e.shiftKey ? 0.25 : 1; // Shift = fine adjustment
     const pts = this.points.map(p => ({ ...p }));
     if (this.mode === 'node') {
       const i = this.dragIndex;
@@ -208,9 +219,15 @@ export class EnvelopeGraph extends MobxLitElement {
       let nx = isFirst ? 0 : isLast ? 1 : clamp(dx, pts[i - 1].x + 1e-3, pts[i + 1].x - 1e-3);
       pts[i].x = nx;
       pts[i].y = clamp01(dy);
+    } else if (this.mode === 'endpoints') {
+      // Grab the curve, drag vertically → shift the segment's two endpoints' y.
+      const i = this.dragIndex;
+      const dyData = ((this.startPy - py) / (this.dims().h - 2 * this.pad)) * slow;
+      pts[i].y = clamp01(this.startYL + dyData);
+      pts[i + 1].y = clamp01(this.startYR + dyData);
     } else {
       // Vertical drag bends the segment's easing (~120px ⇒ full ±1 range).
-      const dyPx = py - this.startPy;
+      const dyPx = (py - this.startPy) * slow;
       pts[this.dragIndex].ease = clamp(this.startEase - dyPx / 120, -1, 1);
     }
     this.points = pts;
