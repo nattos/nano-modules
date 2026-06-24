@@ -47,6 +47,11 @@ export class ArrAutomationEditor extends MobxLitElement {
   @property({ attribute: false }) pxPerFrame: number | null = null;
   @property({ attribute: false }) scrollFrames = 0;
   @property({ attribute: false }) durationFrames = 0;
+  /** When > 0, the editor's x∈[0,1] spans exactly this many BEATS, drawn with a
+   *  real beat/bar grid (loop mode = source-loop beats, clip mode = clip beats).
+   *  Takes precedence over the frame mapping. */
+  @property({ attribute: false }) beats = 0;
+  @property({ attribute: false }) beatsPerBar = 4;
 
   private rafId = 0;
   /** Bumped per drag gesture so each drag coalesces into its own single undo. */
@@ -80,17 +85,29 @@ export class ArrAutomationEditor extends MobxLitElement {
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;
-      // Map the curve's x onto the shared film-strip frame axis when provided, so
-      // curve and strip share one zoomable/scrollable time grid.
-      if (this.pxPerFrame != null && this.durationFrames > 0) {
+      if (this.beats > 0) {
+        // Beat-based axis: x∈[0,1] spans `beats`, full-width, with a real
+        // beat/bar grid. (Straight — clip-local time ignores the timeline warp.)
+        g.xMap = null;
+        g.xUnmap = null;
+        const bpb = this.beatsPerBar || 4;
+        const lines: Array<{ x: number; bar: boolean }> = [];
+        for (let b = 0; b <= Math.floor(this.beats + 1e-6); b++) {
+          lines.push({ x: b / this.beats, bar: b % bpb === 0 });
+        }
+        g.gridLines = lines;
+      } else if (this.pxPerFrame != null && this.durationFrames > 0) {
+        // Legacy: map the curve's x onto the shared film-strip frame axis.
         const ppf = this.pxPerFrame;
         const scroll = this.scrollFrames;
         const dur = this.durationFrames;
         g.xMap = (dx) => (dx * dur - scroll) * ppf;
         g.xUnmap = (px) => (scroll + px / ppf) / dur;
+        g.gridLines = null;
       } else {
         g.xMap = null;
         g.xUnmap = null;
+        g.gridLines = null;
       }
     };
     this.rafId = requestAnimationFrame(tick);

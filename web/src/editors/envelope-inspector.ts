@@ -45,6 +45,9 @@ export class EnvelopeGraph extends MobxLitElement {
   // instead of the default padded full-width. Y is unaffected. Set imperatively.
   xMap: ((dataX: number) => number) | null = null;
   xUnmap: ((px: number) => number) | null = null;
+  /** Optional vertical grid lines in DATA-x [0,1] (e.g. real beat/bar positions).
+   *  `bar` lines draw brighter. When null, the default quarter grid is used. */
+  gridLines: Array<{ x: number; bar: boolean }> | null = null;
   onChange: ((points: EnvPoint[]) => void) | null = null;
   onInteractionStart: (() => void) | null = null;
   onInteractionEnd: (() => void) | null = null;
@@ -227,13 +230,27 @@ export class EnvelopeGraph extends MobxLitElement {
 
     const accent = getComputedStyle(this).getPropertyValue('--app-hi-color1').trim() || '#ff4500';
 
-    // Grid (quarters).
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    // Horizontal grid (value quarters).
     ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
     for (let q = 0; q <= 4; q++) {
-      const [gx] = this.toPx(q / 4, 0); const [, gy] = this.toPx(0, q / 4);
-      ctx.beginPath(); ctx.moveTo(gx, this.pad); ctx.lineTo(gx, ch - this.pad); ctx.stroke();
+      const [, gy] = this.toPx(0, q / 4);
       ctx.beginPath(); ctx.moveTo(this.pad, gy); ctx.lineTo(cw - this.pad, gy); ctx.stroke();
+    }
+    // Vertical grid: real beat/bar lines when provided, else quarters.
+    if (this.gridLines) {
+      for (const g of this.gridLines) {
+        const [gx] = this.toPx(g.x, 0);
+        if (gx < this.pad - 0.5 || gx > cw - this.pad + 0.5) continue;
+        ctx.strokeStyle = g.bar ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)';
+        ctx.beginPath(); ctx.moveTo(gx, this.pad); ctx.lineTo(gx, ch - this.pad); ctx.stroke();
+      }
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+      for (let q = 0; q <= 4; q++) {
+        const [gx] = this.toPx(q / 4, 0);
+        ctx.beginPath(); ctx.moveTo(gx, this.pad); ctx.lineTo(gx, ch - this.pad); ctx.stroke();
+      }
     }
 
     // Curve (sampled) + fill.

@@ -210,9 +210,8 @@ export class ArrClipView extends MobxLitElement {
                         ? store.ensureSelectedClipLane(sel.track.id, clip.id)
                         : store.ensureClipAutomationLane(sel.track.id, clip.id))}
                       .cursor=${this.autoCursor()}
-                      .pxPerFrame=${this.pxPerFrame}
-                      .scrollFrames=${this.scrollFrames}
-                      .durationFrames=${this.duration()}
+                      .beats=${this.editorBeats()}
+                      .beatsPerBar=${this.beatsPerBar()}
                     ></arr-automation-editor>`
                   : html`<canvas></canvas>`}
                 <span class="plabel">${this.topLabel(clip, mode)}</span>
@@ -285,8 +284,17 @@ export class ArrClipView extends MobxLitElement {
           <button class=${store.clipAutoTiming === 'clip' ? 'on' : ''} @click=${() => store.setClipAutoTiming('clip')}>clip</button>
         </div>
       </div>
+      <div class="ctl"><span>Length</span><span class="v">${this.lengthLabel()}</span></div>
       <div class="ctl" style="opacity:.6"><span>${store.clipAutoTiming === 'loop' ? 'Envelope loops with the source.' : 'Envelope spans the clip length.'}</span></div>
     `;
+  }
+
+  /** "<bars> bars · <beats> beats" for the automation editor's span. */
+  private lengthLabel(): string {
+    const beats = this.editorBeats();
+    const bars = beats / this.beatsPerBar();
+    const fmt = (n: number) => (Math.abs(n - Math.round(n)) < 1e-3 ? String(Math.round(n)) : n.toFixed(2));
+    return `${fmt(bars)} bars · ${fmt(beats)} beats`;
   }
 
   private topLabel(clip: any, mode: string) {
@@ -365,12 +373,39 @@ export class ArrClipView extends MobxLitElement {
     drawFrameCell(ctx, 0, 0, w, h, seed, Math.min(1, this.scrubFrame / this.duration()));
   }
 
-  /** Cursor as normalized x∈[0,1] on the SHARED frame axis (so the curve cursor
-   *  sits exactly under the film-strip playhead). Null if outside the source. */
+  /** Beats spanned by the automation editor: the source-loop length (loop mode)
+   *  or the clip's arrangement length (clip mode). The editor's x∈[0,1] maps to
+   *  exactly this many real beats. */
+  private editorBeats(): number {
+    const sel = store.selectedClip;
+    if (!sel) return 4;
+    const clip = sel.clip;
+    if (store.clipAutoTiming === 'loop' && clip.source) {
+      const fps = clip.source.fps ?? 30;
+      const dur = clip.source.durationFrames ?? 0;
+      const loopFrames = Math.max(1, (clip.loop.outFrame ?? dur) - (clip.loop.inFrame ?? 0));
+      return Math.max(0.25, (loopFrames / Math.max(1, fps)) * (store.composition.meta.baseBPM / 60));
+    }
+    return Math.max(0.25, clip.lengthBeat);
+  }
+  private beatsPerBar(): number {
+    return store.composition.meta.timeSignature?.[0] ?? 4;
+  }
+
+  /** Cursor as normalized x∈[0,1] along the editor's BEAT axis (under the
+   *  playhead). Null when the playhead isn't over the clip. */
   private autoCursor(): number | null {
-    const dur = this.duration();
-    if (dur <= 0) return null;
-    const x = this.scrubFrame / dur;
+    const sel = store.selectedClip;
+    if (!sel) return null;
+    const clip = sel.clip;
+    const beats = this.editorBeats();
+    if (beats <= 0) return null;
+    const elapsed = store.positionBeat - clip.startBeat;
+    if (elapsed < -1e-6 || store.positionBeat >= clip.startBeat + clip.lengthBeat) return null;
+    // Clip mode: position within the clip; loop mode: phase within the loop.
+    const x = store.clipAutoTiming === 'loop'
+      ? (elapsed % beats) / beats
+      : elapsed / clip.lengthBeat;
     return x >= 0 && x <= 1 ? x : null;
   }
 
