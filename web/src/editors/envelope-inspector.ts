@@ -45,6 +45,14 @@ export class EnvelopeGraph extends MobxLitElement {
   // instead of the default padded full-width. Y is unaffected. Set imperatively.
   xMap: ((dataX: number) => number) | null = null;
   xUnmap: ((px: number) => number) | null = null;
+  /** DATA-x domain. Default [0,1] (the IDE's normalized envelope). The
+   *  arrangement's beat-domain editors widen this (e.g. [0, clipSpanBeats], or
+   *  [0, ∞) for an open track lane) so points carry real beats, not fractions. */
+  xMin = 0;
+  xMax = 1;
+  /** Pin the first/last node to xMin/xMax (the normalized + clip-bounded curves).
+   *  Open track lanes set this false so their end nodes float at any beat. */
+  pinEndpoints = true;
   /** Optional vertical grid lines in DATA-x [0,1] (e.g. real beat/bar positions).
    *  `bar` lines draw brighter. When null, the default quarter grid is used. */
   gridLines: Array<{ x: number; bar: boolean }> | null = null;
@@ -138,9 +146,19 @@ export class EnvelopeGraph extends MobxLitElement {
     const xpx = this.xMap ? this.xMap(x) : this.pad + x * (w - 2 * this.pad);
     return [xpx, (h - this.vpad) - y * (h - 2 * this.vpad)];
   }
+  /** Clamp a data-x into the editor's domain (default [0,1]). */
+  private clampX(x: number): number {
+    return clamp(x, this.xMin, this.xMax);
+  }
+  /** Resolve a dragged node's x, honouring endpoint pinning + neighbour order. */
+  private nodeX(i: number, dx: number, pts: EnvPoint[]): number {
+    if (i === 0) return this.pinEndpoints ? this.xMin : clamp(dx, this.xMin, pts[1]?.x ?? this.xMax);
+    if (i === pts.length - 1) return this.pinEndpoints ? this.xMax : clamp(dx, pts[pts.length - 2]?.x ?? this.xMin, this.xMax);
+    return clamp(dx, pts[i - 1].x, pts[i + 1].x);
+  }
   private fromPx(px: number, py: number): [number, number] {
     const { w, h } = this.dims();
-    const dx = this.xUnmap ? clamp01(this.xUnmap(px)) : clamp01((px - this.pad) / (w - 2 * this.pad));
+    const dx = this.xUnmap ? this.clampX(this.xUnmap(px)) : this.clampX((px - this.pad) / (w - 2 * this.pad));
     return [dx, clamp01(((h - this.vpad) - py) / (h - 2 * this.vpad))];
   }
 
@@ -287,7 +305,7 @@ export class EnvelopeGraph extends MobxLitElement {
       ddx = clamp(ddx, sel.x0 - this.groupMinX, sel.x1 - this.groupMaxX);
       const pts = this.points.map(p => ({ ...p }));
       for (const g of this.groupNodes) {
-        if (!g.isEnd) pts[g.idx].x = clamp(g.startX + ddx, 0, 1);
+        if (!g.isEnd) pts[g.idx].x = this.clampX(g.startX + ddx);
         pts[g.idx].y = clamp01(g.startY + ddy);
       }
       this.points = pts;
@@ -299,16 +317,16 @@ export class EnvelopeGraph extends MobxLitElement {
     if (this.mode === 'node') {
       const i = this.dragIndex;
       const [dx, dy] = this.fromPx(px, py);
-      const isFirst = i === 0, isLast = i === pts.length - 1;
-      // Endpoints pin x at 0/1; interior nodes clamp between neighbours but MAY
-      // coincide with them (zero-span segments / hard vertical edges are allowed).
-      let nx = isFirst ? 0 : isLast ? 1 : clamp(dx, pts[i - 1].x, pts[i + 1].x);
+      const pinned = (i === 0 || i === pts.length - 1) && this.pinEndpoints;
+      // Endpoints pin x (to xMin/xMax) unless the lane floats them; interior nodes
+      // clamp between neighbours but MAY coincide (zero-span / hard vertical edges).
+      let nx = this.nodeX(i, dx, pts);
       let ny = clamp01(dy);
       // Option locks to the dominant axis (whichever moved further in px), holding
       // the other at its start value.
       if (e.altKey) {
         if (Math.abs(px - this.startPx) >= Math.abs(py - this.startPy)) ny = this.startNodeY;
-        else nx = isFirst ? 0 : isLast ? 1 : this.startNodeX;
+        else nx = pinned ? nx : this.startNodeX;
       }
       pts[i].x = nx;
       pts[i].y = ny;
@@ -394,7 +412,7 @@ export class EnvelopeGraph extends MobxLitElement {
     }
     // Add a node at the click position (sorted by x), linear easing.
     const [dx, dy] = this.fromPx(px, py);
-    const x = clamp(dx, 1e-3, 1 - 1e-3);
+    const x = this.clampX(dx);
     const pts = [...this.points.map(p => ({ ...p })), { x, y: clamp01(dy), ease: 0 }];
     pts.sort((a, b) => a.x - b.x);
     this.points = pts;

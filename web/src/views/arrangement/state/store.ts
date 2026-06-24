@@ -2583,9 +2583,15 @@ export class ArrangementStore {
     );
   }
 
-  /** A flat mid-level curve — the seed for a freshly created lane. */
-  private static defaultCurve(): EnvelopePoint[] {
-    return [{ x: 0, y: 0.5, bend: 0 }, { x: 1, y: 0.5, bend: 0 }];
+  /** A flat mid-level curve — the seed for a freshly created lane. `span` is the
+   *  trailing endpoint x: 1 for a normalized clip lane, or the beat extent for a
+   *  beat-domain track lane (so the flat line spans the visible timeline). */
+  private static defaultCurve(span = 1): EnvelopePoint[] {
+    return [{ x: 0, y: 0.5, bend: 0 }, { x: span, y: 0.5, bend: 0 }];
+  }
+  /** Beat-domain seed for a TRACK lane — flat across the whole timeline. */
+  private trackDefaultCurve(): EnvelopePoint[] {
+    return ArrangementStore.defaultCurve(compositionLengthBeats(this.composition));
   }
 
   // ── Automation clipboard (envelope regions; data-x in [0,1]) ───────────
@@ -2658,13 +2664,14 @@ export class ArrangementStore {
         if (!target?.laneId) continue;
         const lane = ArrangementStore.laneIn(d, target.laneId);
         if (!lane) continue;
+        const last = lane.points.length - 1;
         lane.points = lane.points.filter(
-          (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < xHead - 1e-6 || p.x > x1 + 1e-6,
+          (p, i) => i === 0 || i === last || p.x < xHead - 1e-6 || p.x > x1 + 1e-6,
         );
         for (const n of item.nodes) {
           const nx = xHead + n.x;
-          if (nx < -1e-6 || nx > 1 + 1e-6) continue; // out of range → drop
-          lane.points.push({ x: Math.max(0, Math.min(1, nx)), y: n.y, bend: n.bend ?? 0 });
+          if (nx < -1e-6) continue; // before the start → drop
+          lane.points.push({ x: Math.max(0, nx), y: n.y, bend: n.bend ?? 0 });
         }
         lane.points.sort((a, b) => a.x - b.x);
         if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
@@ -2680,8 +2687,9 @@ export class ArrangementStore {
       for (const id of laneIds) {
         const lane = ArrangementStore.laneIn(d, id);
         if (!lane) continue;
+        const last = lane.points.length - 1;
         lane.points = lane.points.filter(
-          (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
+          (p, i) => i === 0 || i === last || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
         );
         if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
       }
@@ -2730,21 +2738,23 @@ export class ArrangementStore {
       if (!dt || dt.automation.length) return;
       dt.automation.push({
         id: laneId, targetDeviceId: t.deviceId, targetField: t.field,
-        label: t.label, points: ArrangementStore.defaultCurve(), expanded: true,
+        label: t.label, points: this.trackDefaultCurve(), expanded: true,
       });
     });
     return laneId;
   }
 
   // ── Lanes for the SELECTED automation field (per-owner selection) ──────
-  /** Delete a lane's control points whose x ∈ [x0,x1] (keeps the pinned 0/1
-   *  endpoints; falls back to a default curve if everything would be removed). */
+  /** Delete a lane's control points whose x ∈ [x0,x1] (in the lane's own units —
+   *  beats for a track lane). Keeps the first + last node (the curve's outer
+   *  bounds); falls back to a default if everything would be removed. */
   deleteAutoPointsInRange(laneId: string, x0: number, x1: number) {
     this.mutate('delete automation points', (d) => {
       const lane = ArrangementStore.laneIn(d, laneId); // track OR clip lanes
       if (!lane) return;
+      const last = lane.points.length - 1;
       lane.points = lane.points.filter(
-        (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
+        (p, i) => i === 0 || i === last || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
       );
       if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
     });
@@ -2787,7 +2797,7 @@ export class ArrangementStore {
     this.mutate('add automation', (d) => {
       const t = d.tracks.find((x) => x.id === trackId);
       if (!t || t.automation.some((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field)) return;
-      t.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
+      t.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: this.trackDefaultCurve(), expanded: true });
     });
     return laneId;
   }
@@ -2802,7 +2812,7 @@ export class ArrangementStore {
     const laneId = uid('auto');
     this.mutate('pin automation', (d) => {
       const dt = d.tracks.find((t) => t.id === trackId);
-      if (dt) dt.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
+      if (dt) dt.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: this.trackDefaultCurve(), expanded: true });
     });
     this.clearAutoField(ownerKey);
     return laneId;

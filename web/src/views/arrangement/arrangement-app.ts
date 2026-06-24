@@ -16,7 +16,6 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
-import { AUTO_SPAN } from './surfaces/grid-shared';
 import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { importVideoFile } from './media/drop-import';
@@ -390,7 +389,7 @@ export class ArrangementApp extends MobxLitElement {
       // Caret on an automation lane with a region → delete that lane's nodes.
       if (store.caretLaneId && store.hasTimeSelection) {
         e.preventDefault();
-        store.deleteAutoPointsInRange(store.caretLaneId, store.timeSelStart! / AUTO_SPAN, store.timeSelEnd / AUTO_SPAN);
+        store.deleteAutoPointsInRange(store.caretLaneId, store.timeSelStart!, store.timeSelEnd);
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
@@ -450,20 +449,20 @@ export class ArrangementApp extends MobxLitElement {
       e.preventDefault();
       // Automation mode: every row is an envelope → copy the region's nodes.
       if (store.automationMode) {
-        if (store.hasTimeSelection) store.copyAutomation(store.timeSelStart! / AUTO_SPAN, store.timeSelEnd / AUTO_SPAN);
+        if (store.hasTimeSelection) store.copyAutomation(store.timeSelStart!, store.timeSelEnd);
       } else store.copyClips();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'x') {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
       if (store.automationMode) {
-        if (store.hasTimeSelection) store.cutAutomation(store.timeSelStart! / AUTO_SPAN, store.timeSelEnd / AUTO_SPAN);
+        if (store.hasTimeSelection) store.cutAutomation(store.timeSelStart!, store.timeSelEnd);
       } else store.cutClips();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
       // Paste follows the CLIPBOARD, not the current mode — pasting in the "wrong"
       // mode still applies the data (and never flips the mode on you).
-      if (store.lastClipboardKind === 'auto') store.pasteAutomation(store.playFromBeat / AUTO_SPAN);
+      if (store.lastClipboardKind === 'auto') store.pasteAutomation(store.playFromBeat);
       else if (store.lastClipboardKind === 'clips') store.pasteClips();
     } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 's') {
       e.preventDefault();

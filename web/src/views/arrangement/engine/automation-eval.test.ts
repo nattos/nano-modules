@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toEnvPoints, evalCurveAt, sampleCurve } from './automation-eval';
+import { toEnvPoints, evalCurveAt, sampleCurve, evalLaneAtBeat } from './automation-eval';
 import { evalEnvelope, applyEase } from '../../../editors/envelope-math';
 import type { EnvelopePoint } from '../model/composition';
 
@@ -53,5 +53,31 @@ describe('automation-eval', () => {
     expect(mid[0]).toBeCloseTo(0.5, 6);
     expect(mid[1]).toBeCloseTo(applyEase(0.5, 1), 6);
     expect(mid[1]).toBeGreaterThan(0.5);
+  });
+});
+
+/** The engine seam: an absolute arrangement beat → the lane's value, per the
+ *  owner's time domain (track = absolute beats; clip = wrap/clamp per mode). */
+describe('evalLaneAtBeat', () => {
+  it('track lane: points carry ABSOLUTE beats, flat past the last node (no 32 cap)', () => {
+    const pts: EnvelopePoint[] = [{ x: 0, y: 0 }, { x: 40, y: 1 }];
+    expect(evalLaneAtBeat(pts, { kind: 'track' }, 20)).toBeCloseTo(0.5, 6);
+    expect(evalLaneAtBeat(pts, { kind: 'track' }, 40)).toBeCloseTo(1, 6);
+    expect(evalLaneAtBeat(pts, { kind: 'track' }, 200)).toBeCloseTo(1, 6); // way past 32
+  });
+
+  it('clip lane LOOP mode: wraps within the loop span', () => {
+    const pts: EnvelopePoint[] = [{ x: 0, y: 0 }, { x: 1, y: 1 }];
+    const ctx = { kind: 'clip' as const, startBeat: 0, spanBeats: 8, loopMode: true };
+    expect(evalLaneAtBeat(pts, ctx, 4)).toBeCloseTo(0.5, 6);
+    expect(evalLaneAtBeat(pts, ctx, 12)).toBeCloseTo(0.5, 6); // 12 % 8 = 4
+  });
+
+  it('clip lane CLIP mode: clamps at the clip end (no wrap)', () => {
+    const pts: EnvelopePoint[] = [{ x: 0, y: 0 }, { x: 1, y: 1 }];
+    const ctx = { kind: 'clip' as const, startBeat: 4, spanBeats: 8, loopMode: false };
+    expect(evalLaneAtBeat(pts, ctx, 8)).toBeCloseTo(0.5, 6); // elapsed 4 of 8
+    expect(evalLaneAtBeat(pts, ctx, 100)).toBeCloseTo(1, 6); // clamped to the end
+    expect(evalLaneAtBeat(pts, ctx, 2)).toBeCloseTo(0, 6); // before start
   });
 });

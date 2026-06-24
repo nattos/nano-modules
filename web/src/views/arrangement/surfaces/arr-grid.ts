@@ -18,9 +18,8 @@ import {
   buildBeatGrid,
   ROW_HEIGHT,
   AUTO_LANE_HEIGHT,
-  AUTO_SPAN,
 } from './grid-shared';
-import { Track, Clip, AutomationLane, derivedWarpSegments } from '../model/composition';
+import { Track, Clip, AutomationLane, derivedWarpSegments, compositionLengthBeats } from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
 import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, AnchorKeys } from './anchor-registry';
@@ -690,14 +689,14 @@ export class ArrGrid extends MobxLitElement {
         gridded
         .lane=${lane}
         .ensureLaneId=${() => store.ensureSelectedTrackLane(track.id)}
-        .timelineSpan=${AUTO_SPAN}
+        .timelineSpan=${compositionLengthBeats(store.composition)}
         .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
         .hideCurve=${!sel}
         .timeboxGestures=${true}
         .bubbleOffCurve=${true}
         .cursorEnabled=${!!laneId && store.caretLaneIds.includes(laneId)}
         .selection=${laneId && store.caretLaneId === laneId && store.hasTimeSelection
-          ? { x0: store.timeSelStart! / AUTO_SPAN, x1: store.timeSelEnd / AUTO_SPAN }
+          ? { x0: store.timeSelStart!, x1: store.timeSelEnd }
           : null}
       ></arr-automation-editor>
     </div>`;
@@ -716,13 +715,13 @@ export class ArrGrid extends MobxLitElement {
             gridded
             .lane=${lane}
             .ensureLaneId=${() => lane.id}
-            .timelineSpan=${AUTO_SPAN}
+            .timelineSpan=${compositionLengthBeats(store.composition)}
             .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
             .cursorEnabled=${store.caretLaneIds.includes(lane.id)}
             .bubbleOffCurve=${true}
             .timeboxGestures=${true}
             .selection=${store.caretLaneId === lane.id && store.hasTimeSelection
-              ? { x0: store.timeSelStart! / AUTO_SPAN, x1: store.timeSelEnd / AUTO_SPAN }
+              ? { x0: store.timeSelStart!, x1: store.timeSelEnd }
               : null}
           ></arr-automation-editor>
         </div>

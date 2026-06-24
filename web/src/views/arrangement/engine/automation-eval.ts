@@ -35,6 +35,30 @@ export function evalCurveAt(points: EnvelopePoint[], xNorm: number): number {
 }
 
 /**
+ * Owner context for a lane, deciding how an arrangement beat maps into the
+ * curve's x-domain. A TRACK lane's points carry absolute arrangement beats; a
+ * CLIP lane's points are normalized [0,1] over the clip/loop span, wrapping in
+ * loop mode and clamping in clip mode.
+ */
+export type LaneOwnerCtx =
+  | { kind: 'track' }
+  | { kind: 'clip'; startBeat: number; spanBeats: number; loopMode: boolean };
+
+/**
+ * Evaluate a lane at an absolute arrangement beat — the seam the engine calls
+ * each frame to drive the lane's target parameter. Returns the normalized curve
+ * value (the y∈[0,1] the executor then maps into the field's [min,max]).
+ */
+export function evalLaneAtBeat(points: EnvelopePoint[], ctx: LaneOwnerCtx, arrangementBeat: number): number {
+  if (ctx.kind === 'track') return evalCurveAt(points, arrangementBeat); // points ARE beats
+  const span = Math.max(1e-6, ctx.spanBeats);
+  const elapsed = arrangementBeat - ctx.startBeat;
+  if (elapsed <= 0) return evalCurveAt(points, 0);
+  const local = ctx.loopMode ? elapsed % span : Math.min(elapsed, span);
+  return evalCurveAt(points, local / span); // clip points are normalized [0,1]
+}
+
+/**
  * Sample a curve at `samples+1` evenly spaced points across [0,1]. Used to draw
  * the eased curve as a dense polyline (straight segments between control points
  * would miss the easing). Returns `[xNorm, value]` pairs.

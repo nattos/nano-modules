@@ -120,6 +120,9 @@ export class ArrAutomationEditor extends MobxLitElement {
       g.hideCurve = this.hideCurve;
       g.vpad = 3; // fill the (compact) lane top-to-bottom, not the inspector's roomy inset
       g.onSelect = this.onSelect;
+      // Default x-domain is the normalized [0,1] curve (clip lanes + inspector);
+      // the track-lane branch below widens it to open beat-domain.
+      g.xMin = 0; g.xMax = 1; g.pinEndpoints = true;
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →
         // [0, beats] through the provided straight grid. Recomputed each frame.
@@ -132,20 +135,22 @@ export class ArrAutomationEditor extends MobxLitElement {
         for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b / span, bar: b % bpb === 0 });
         g.gridLines = lines;
       } else if (this.timelineSpan > 0) {
-        // Warped MAIN-TIMELINE axis: x∈[0,1] → [0, span] beats through the live
-        // grid (shared zoom/pan). Recomputed each frame so zoom/pan track live.
+        // Track lane: BEAT-DOMAIN over the live warped main grid. Points carry real
+        // arrangement beats (open-ended — no window/cap), so x maps beat→px
+        // directly. `timelineSpan` here is just the composition length, used for the
+        // bar-grid extent. End nodes float at any beat (pinEndpoints off).
         const span = this.timelineSpan;
         const grid = buildBeatGrid();
-        g.xMap = (dx) => grid.beatToX(dx * span);
-        g.xUnmap = (px) => grid.xToBeat(px) / span;
+        g.xMap = (beat) => grid.beatToX(beat);
+        g.xUnmap = (px) => grid.xToBeat(px);
+        g.xMin = 0; g.xMax = Infinity; g.pinEndpoints = false;
         const bpb = this.beatsPerBar || 4;
         const lines: Array<{ x: number; bar: boolean }> = [];
-        for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b / span, bar: b % bpb === 0 });
+        for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b, bar: b % bpb === 0 });
         g.gridLines = lines;
         // The playhead time/value cursor only shows when the caret is on this
         // lane's track (otherwise it reads as a confusing line on every lane).
-        const ph = store.positionBeat / span;
-        g.cursor = this.cursorEnabled && ph >= 0 && ph <= 1 ? ph : null;
+        g.cursor = this.cursorEnabled && store.positionBeat >= 0 ? store.positionBeat : null;
       } else if (this.beats > 0) {
         // Beat-based axis: x∈[0,1] spans `beats`, full-width, with a real
         // beat/bar grid. (Straight — clip-local time ignores the timeline warp.)

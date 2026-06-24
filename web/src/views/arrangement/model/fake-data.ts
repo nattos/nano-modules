@@ -174,11 +174,12 @@ export function makeFakeComposition(): Composition {
     parentId: null,
     color: 'var(--app-cat-source)',
     sketch: { devices: [bloomDev] },
+    // Track automation is BEAT-DOMAIN (absolute arrangement beats), not [0,1].
     automation: [
       envLane('Bloom · intensity', 'intensity', bloomDev.id, [
         [0, 0.2],
-        [0.4, 0.8],
-        [1, 0.4],
+        [20, 0.8],
+        [48, 0.4],
       ]),
     ],
     clips: [videoClipA, videoClipB, effectClip],
