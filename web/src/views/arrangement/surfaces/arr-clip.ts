@@ -492,6 +492,7 @@ export class ArrClip extends MobxLitElement {
     this.mode = mode;
     this.origStart = this.clip.startBeat;
     this.origLen = this.clip.lengthBeat;
+    store.beginGesture(); // one coalesced undo entry for the whole resize
     window.addEventListener('pointermove', this.onWinMove);
     window.addEventListener('pointerup', this.onWinUp);
   }
@@ -516,6 +517,7 @@ export class ArrClip extends MobxLitElement {
 
   private onWinUp = () => {
     this.mode = null;
+    store.endGesture();
     window.removeEventListener('pointermove', this.onWinMove);
     window.removeEventListener('pointerup', this.onWinUp);
     this.requestUpdate();

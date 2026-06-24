@@ -957,6 +957,8 @@ export class ArrGrid extends MobxLitElement {
         ? { start: store.timeSelStart!, end: store.timeSelEnd, scope: [...store.timeSelTrackIds] }
         : null,
     };
+    // One coalesced undo entry for the whole drag — immune to pointer dwell.
+    store.beginGesture();
     window.addEventListener('pointermove', this.onClipMove);
     window.addEventListener('pointerup', this.onClipUp);
   }
@@ -1030,6 +1032,7 @@ export class ArrGrid extends MobxLitElement {
   private onClipUp = () => {
     window.removeEventListener('pointermove', this.onClipMove);
     window.removeEventListener('pointerup', this.onClipUp);
+    store.endGesture();
     this.clipMove = null;
     this.clipDropTrackId = null;
   };

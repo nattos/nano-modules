@@ -35,6 +35,28 @@ export class DocHistory<T extends object> {
   /** Consecutive same-key records within this window collapse to one undo point. */
   public coalesceWindowMs = 500;
 
+  /**
+   * Active continuous-gesture coalescing (a pointer drag). Between
+   * `beginGesture()`/`endGesture()`, every keyed record folds into ONE undo
+   * entry regardless of the time between frames — so a drag where the pointer
+   * DWELLS past `coalesceWindowMs` doesn't split into multiple commits (which
+   * would strand the gesture's base mid-drag). `gestureEntry` is the entry the
+   * gesture is folding into (-1 until its first record pushes one).
+   */
+  private gestureActive = false;
+  private gestureEntry = -1;
+
+  /** Begin a continuous drag: subsequent keyed records coalesce, no time limit. */
+  beginGesture(): void {
+    this.gestureActive = true;
+    this.gestureEntry = -1;
+  }
+  /** End the drag: the next record starts a fresh undo entry. */
+  endGesture(): void {
+    this.gestureActive = false;
+    this.gestureEntry = -1;
+  }
+
   /** @param read returns the live observable document to patch in place. */
   constructor(private read: () => T) {
     makeObservable(this);
@@ -54,8 +76,12 @@ export class DocHistory<T extends object> {
     const coalescing =
       coalesceKey != null &&
       this.redoStack.length === 0 &&
-      top?.coalesceKey === coalesceKey &&
-      Date.now() - top.timestamp < this.coalesceWindowMs;
+      (this.gestureActive
+        // Inside a drag: fold into this gesture's entry as long as it's still on
+        // top — no time window, so dwelling never splits the gesture.
+        ? this.gestureEntry >= 0 && this.gestureEntry === this.undoStack.length - 1
+        // Outside a drag: legacy same-key-within-window coalescing (slider scrub).
+        : top?.coalesceKey === coalesceKey && Date.now() - top.timestamp < this.coalesceWindowMs);
 
     // When coalescing, revert the live doc to the entry's pre-edit base so the
     // recipe re-derives from the same starting point as the first step.
@@ -89,6 +115,8 @@ export class DocHistory<T extends object> {
       } else {
         this.undoStack.push({ description, patches, inverse, timestamp: Date.now(), coalesceKey });
         this.redoStack.length = 0;
+        // Remember this as the gesture's fold-into entry (first record of a drag).
+        if (this.gestureActive) this.gestureEntry = this.undoStack.length - 1;
       }
     });
     this.postRecordHook?.(description);

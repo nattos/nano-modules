@@ -315,6 +315,15 @@ export class ArrangementStore {
   redo() {
     this.history.redo();
   }
+  /** Begin/end a continuous pointer drag (clip move/resize): every record in
+   *  between folds into ONE undo entry no matter how long the pointer dwells, so
+   *  the gesture's base stays fixed for its whole duration. */
+  beginGesture() {
+    this.history.beginGesture();
+  }
+  endGesture() {
+    this.history.endGesture();
+  }
   get canUndo(): boolean {
     return this.history.canUndo;
   }
