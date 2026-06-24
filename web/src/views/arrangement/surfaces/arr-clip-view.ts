@@ -16,6 +16,8 @@ import { store } from '../state/store';
 import { drawFrameCell, reelSeedFor } from './film-reel';
 import './time-strip';
 import './arr-automation-editor';
+import './arr-ruler';
+import { ClipTimelineView, type ClipViewContext } from './timeline-view';
 import '../../../widgets/ui-icon';
 
 @customElement('arr-clip-view')
@@ -160,6 +162,21 @@ export class ArrClipView extends MobxLitElement {
     }
   `;
 
+  /** Clip-local, straight zoom/pan axis shared by the ruler + envelope editor. */
+  private clipView = new ClipTimelineView(() => this.clipCtx());
+  /** Stable grid provider (same ref each render) for the envelope editor. */
+  private clipGrid = (): import('../model/beat-grid').BeatGrid => this.clipView.grid();
+  private clipCtx(): ClipViewContext {
+    const clip = store.selectedClip?.clip;
+    return {
+      startBeat: clip?.startBeat ?? 0,
+      lengthBeat: clip?.lengthBeat ?? 4,
+      spanBeats: this.editorBeats(),
+      loopMode: store.clipAutoTiming === 'loop',
+      beatsPerBar: this.beatsPerBar(),
+    };
+  }
+
   @state() private pxPerFrame = 2;
   @state() private scrollFrames = 0;
   @state() private scrubFrame = 0;
@@ -199,6 +216,9 @@ export class ArrClipView extends MobxLitElement {
           ${mode === 'source' ? this.renderSourceCtl(clip, isVideo) : this.renderAutoCtl(clip)}
         </div>
         <div class="body ${short ? 'strip-fill' : ''}">
+          ${!short && mode === 'automation'
+            ? html`<arr-ruler compact .view=${this.clipView}></arr-ruler>`
+            : ''}
           ${short
             ? ''
             : html`<div class="top">
@@ -212,25 +232,28 @@ export class ArrClipView extends MobxLitElement {
                       .cursor=${this.autoCursor()}
                       .beats=${this.editorBeats()}
                       .beatsPerBar=${this.beatsPerBar()}
+                      .gridProvider=${this.clipGrid}
                     ></arr-automation-editor>`
                   : html`<canvas></canvas>`}
                 <span class="plabel">${this.topLabel(clip, mode)}</span>
               </div>`}
-          ${isVideo || mode === 'automation'
-            ? html`<time-strip
-                .clipId=${clip.id}
-                .durationFrames=${this.duration()}
-                .pxPerFrame=${this.pxPerFrame}
-                .scrollFrames=${this.scrollFrames}
-                .loopIn=${clip.loop.inFrame ?? 0}
-                .loopOut=${clip.loop.outFrame ?? this.duration()}
-                .playMode=${clip.loop.mode}
-                .playheadFrame=${this.scrubFrame}
-                @viewchange=${this.onView}
-                @scrub=${this.onScrub}
-                @hover=${this.onHover}
-              ></time-strip>`
-            : html`<div class="empty">Generator sources aren't supported in the clip view yet.</div>`}
+          ${mode === 'source'
+            ? (isVideo
+              ? html`<time-strip
+                  .clipId=${clip.id}
+                  .durationFrames=${this.duration()}
+                  .pxPerFrame=${this.pxPerFrame}
+                  .scrollFrames=${this.scrollFrames}
+                  .loopIn=${clip.loop.inFrame ?? 0}
+                  .loopOut=${clip.loop.outFrame ?? this.duration()}
+                  .playMode=${clip.loop.mode}
+                  .playheadFrame=${this.scrubFrame}
+                  @viewchange=${this.onView}
+                  @scrub=${this.onScrub}
+                  @hover=${this.onHover}
+                ></time-strip>`
+              : html`<div class="empty">Generator sources aren't supported in the clip view yet.</div>`)
+            : ''}
         </div>
       </div>
       <canvas class="mini"></canvas>
