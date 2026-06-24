@@ -2593,9 +2593,27 @@ export class ArrangementStore {
     return !!this.autoClipboard && this.autoClipboard.lanes.length > 0;
   }
 
-  /** Index of the caret head row in caretRows (or -1). */
-  private caretHeadRowIndex(): number {
-    return this.caretRows.findIndex((r) => r.trackId === this.caretHeadTrackId && r.laneId === this.caretHeadLaneId);
+  /** Mode-INDEPENDENT rows (always include every lane), so the automation
+   *  clipboard can address lanes even in clip mode — paste applies the data
+   *  without forcing a mode switch. */
+  private autoRows(): Array<{ trackId: string; laneId: string }> {
+    const rows: Array<{ trackId: string; laneId: string }> = [];
+    for (const t of this.caretTrackOrder) {
+      const overlay = this.selectedTrackLane(t.id)?.id ?? '';
+      rows.push({ trackId: t.id, laneId: overlay });
+      for (const lane of t.automation) if (lane.id !== overlay) rows.push({ trackId: t.id, laneId: lane.id });
+    }
+    return rows;
+  }
+  /** The caret span over autoRows (anchor→head). */
+  private autoRowSpan(): Array<{ trackId: string; laneId: string }> {
+    const rows = this.autoRows();
+    const ai = rows.findIndex((r) => r.trackId === this.caretAnchorTrackId && r.laneId === this.caretAnchorLaneId);
+    const hi = rows.findIndex((r) => r.trackId === this.caretHeadTrackId && r.laneId === this.caretHeadLaneId);
+    if (ai < 0 && hi < 0) return [];
+    if (ai < 0) return [rows[hi]];
+    if (hi < 0) return [rows[ai]];
+    return rows.slice(Math.min(ai, hi), Math.max(ai, hi) + 1);
   }
 
   /**
@@ -2605,11 +2623,11 @@ export class ArrangementStore {
    */
   copyAutomation(x0: number, x1: number): boolean {
     if (x1 <= x0 + 1e-6) return false;
-    const rows = this.caretRows;
-    const headIdx = this.caretHeadRowIndex();
+    const rows = this.autoRows();
+    const headIdx = rows.findIndex((r) => r.trackId === this.caretHeadTrackId && r.laneId === this.caretHeadLaneId);
     if (headIdx < 0) return false;
     const lanes: Array<{ rowOffset: number; nodes: EnvelopePoint[] }> = [];
-    for (const r of this.caretRowSpan()) {
+    for (const r of this.autoRowSpan()) {
       if (!r.laneId) continue;
       const lane = ArrangementStore.laneIn(this.composition, r.laneId);
       if (!lane) continue;
@@ -2630,8 +2648,8 @@ export class ArrangementStore {
   pasteAutomation(xHead: number) {
     const cb = this.autoClipboard;
     if (!cb) return;
-    const rows = this.caretRows;
-    const headIdx = this.caretHeadRowIndex();
+    const rows = this.autoRows();
+    const headIdx = rows.findIndex((r) => r.trackId === this.caretHeadTrackId && r.laneId === this.caretHeadLaneId);
     if (headIdx < 0) return;
     const x1 = xHead + cb.span;
     this.mutate('paste automation', (d) => {
@@ -2657,7 +2675,7 @@ export class ArrangementStore {
   /** Copy then remove the region from the caret's lanes (one undo). */
   cutAutomation(x0: number, x1: number) {
     if (!this.copyAutomation(x0, x1)) return;
-    const laneIds = this.caretRowSpan().filter((r) => r.laneId).map((r) => r.laneId);
+    const laneIds = this.autoRowSpan().filter((r) => r.laneId).map((r) => r.laneId);
     this.mutate('cut automation', (d) => {
       for (const id of laneIds) {
         const lane = ArrangementStore.laneIn(d, id);

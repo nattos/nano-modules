@@ -462,13 +462,9 @@ export class ArrangementApp extends MobxLitElement {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
       // Paste follows the CLIPBOARD, not the current mode — pasting in the "wrong"
-      // mode still applies the copied data.
-      if (store.lastClipboardKind === 'auto') {
-        if (!store.automationMode) store.toggleAutomationMode(); // make lanes addressable
-        store.pasteAutomation(store.playFromBeat / AUTO_SPAN);
-      } else if (store.lastClipboardKind === 'clips') {
-        store.pasteClips();
-      }
+      // mode still applies the data (and never flips the mode on you).
+      if (store.lastClipboardKind === 'auto') store.pasteAutomation(store.playFromBeat / AUTO_SPAN);
+      else if (store.lastClipboardKind === 'clips') store.pasteClips();
     } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       store.soloShortcut();
