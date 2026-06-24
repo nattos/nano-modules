@@ -121,6 +121,11 @@ export class ClipTimelineView implements RulerView {
     this.setScrollUnits(before - anchorX / this.pxPerBeat);
   }
   scrollBy(beats: number) { this.setScrollUnits(this.scrollUnits + beats); }
+  /** Fit the whole span into `widthPx` and reset the scroll (on clip change). */
+  fitTo(widthPx: number) {
+    this.pxPerBeat = Math.max(CLIP_MIN_PPB, Math.min(CLIP_MAX_PPB, widthPx / this.spanBeats));
+    this.scrollUnits = 0;
+  }
   setPlayFrom(beat: number) {
     // Scrub the transport into this clip (clip-local beat → arrangement beat).
     const local = Math.max(0, Math.min(this.spanBeats, beat));

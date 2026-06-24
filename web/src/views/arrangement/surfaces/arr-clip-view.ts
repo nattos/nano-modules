@@ -177,8 +177,6 @@ export class ArrClipView extends MobxLitElement {
     };
   }
 
-  @state() private pxPerFrame = 2;
-  @state() private scrollFrames = 0;
   @state() private scrubFrame = 0;
   @state() private hoverFrame: number | null = null;
   @state() private hoverClientX = 0;
@@ -216,7 +214,7 @@ export class ArrClipView extends MobxLitElement {
           ${mode === 'source' ? this.renderSourceCtl(clip, isVideo) : this.renderAutoCtl(clip)}
         </div>
         <div class="body ${short ? 'strip-fill' : ''}">
-          ${!short && mode === 'automation'
+          ${!short && (mode === 'automation' || isVideo)
             ? html`<arr-ruler compact .view=${this.clipView}></arr-ruler>`
             : ''}
           ${short
@@ -242,12 +240,12 @@ export class ArrClipView extends MobxLitElement {
               ? html`<time-strip
                   .clipId=${clip.id}
                   .durationFrames=${this.duration()}
-                  .pxPerFrame=${this.pxPerFrame}
-                  .scrollFrames=${this.scrollFrames}
+                  .pxPerFrame=${this.stripPxPerFrame()}
+                  .scrollFrames=${this.stripScrollFrames()}
                   .loopIn=${clip.loop.inFrame ?? 0}
                   .loopOut=${clip.loop.outFrame ?? this.duration()}
                   .playMode=${clip.loop.mode}
-                  .playheadFrame=${this.scrubFrame}
+                  .playheadFrame=${this.stripPlayheadFrame()}
                   @viewchange=${this.onView}
                   @scrub=${this.onScrub}
                   @hover=${this.onHover}
@@ -328,19 +326,21 @@ export class ArrClipView extends MobxLitElement {
 
   // ── Events ──────────────────────────────────────────────────────────────
   private onView = (e: CustomEvent) => {
-    this.pxPerFrame = e.detail.pxPerFrame;
-    this.scrollFrames = e.detail.scrollFrames;
+    // Wheel-zoom over the film strip drives the SHARED clip-local view (inverse
+    // of stripPxPerFrame/stripScrollFrames), so strip + ruler stay locked.
+    const { inFrame, framesPerBeat } = this.frameMap();
+    this.clipView.setZoom(e.detail.pxPerFrame * framesPerBeat);
+    this.clipView.setScrollUnits((e.detail.scrollFrames - inFrame) / framesPerBeat);
   };
   private onScrub = (e: CustomEvent) => {
     this.scrubFrame = e.detail.frame;
-    // Scrubbing the strip scrubs BOTH the film strip and the automation curve
-    // (they share scrubFrame), and moves the timeline playhead so the monitor +
-    // arrangement follow too.
+    // Scrubbing the strip moves the timeline playhead (frame → clip-local beat →
+    // arrangement beat) so the monitor + arrangement follow.
     const sel = store.selectedClip;
-    const dur = this.duration();
-    if (sel && dur > 0) {
-      const beat = sel.clip.startBeat + (this.scrubFrame / dur) * sel.clip.lengthBeat;
-      store.setPlayFrom(beat);
+    if (sel) {
+      const { inFrame, framesPerBeat } = this.frameMap();
+      const localBeat = (this.scrubFrame - inFrame) / framesPerBeat;
+      store.setPlayFrom(sel.clip.startBeat + Math.max(0, localBeat));
     }
   };
   private onHover = (e: CustomEvent) => {
@@ -354,9 +354,8 @@ export class ArrClipView extends MobxLitElement {
     const sel = store.selectedClip;
     if (sel && sel.clip.id !== this.lastClipId) {
       this.lastClipId = sel.clip.id;
-      const w = this.bodyEl?.clientWidth ?? 600;
-      this.pxPerFrame = Math.max(0.2, w / this.duration());
-      this.scrollFrames = 0;
+      // Fit the clip-local view's span to the available width on clip change.
+      this.clipView.fitTo(this.bodyEl?.clientWidth ?? 600);
       this.scrubFrame = sel.clip.loop.inFrame ?? 0;
     }
     // During playback the timeline playhead drives the shared scrub (so the film
@@ -368,10 +367,6 @@ export class ArrClipView extends MobxLitElement {
     }
     this.drawTop();
     this.drawMini();
-  }
-
-  private frameToX(f: number) {
-    return (f - this.scrollFrames) * this.pxPerFrame;
   }
 
   private drawTop() {
@@ -413,6 +408,33 @@ export class ArrClipView extends MobxLitElement {
   }
   private beatsPerBar(): number {
     return store.composition.meta.timeSignature?.[0] ?? 4;
+  }
+
+  /** Linear map between the editor's clip-local beats and source frames: the
+   *  editor span [0,spanBeats] covers the loop's [inFrame, inFrame+loopFrames].
+   *  Lets the SOURCE film strip share the clip-local ruler's zoom/pan exactly. */
+  private frameMap(): { inFrame: number; framesPerBeat: number } {
+    const clip = store.selectedClip?.clip;
+    const dur = this.duration();
+    const inFrame = clip?.loop.inFrame ?? 0;
+    const outFrame = clip?.loop.outFrame ?? dur;
+    const loopFrames = Math.max(1, outFrame - inFrame);
+    return { inFrame, framesPerBeat: loopFrames / this.editorBeats() };
+  }
+  /** Film-strip transform DERIVED from the clip-local view, so frameToX lines up
+   *  with the ruler's beatToX (zoom/pan/playhead all shared). */
+  private stripPxPerFrame(): number {
+    return this.clipView.pxPerBeat / this.frameMap().framesPerBeat;
+  }
+  private stripScrollFrames(): number {
+    const { inFrame, framesPerBeat } = this.frameMap();
+    return inFrame + this.clipView.scrollUnits * framesPerBeat;
+  }
+  private stripPlayheadFrame(): number {
+    const pos = this.clipView.positionBeat; // clip-local beat, < 0 ⇒ off
+    if (pos < 0) return -1;
+    const { inFrame, framesPerBeat } = this.frameMap();
+    return inFrame + pos * framesPerBeat;
   }
 
   /** Cursor as normalized x∈[0,1] along the editor's BEAT axis (under the
