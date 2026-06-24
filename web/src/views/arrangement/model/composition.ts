@@ -135,6 +135,12 @@ export interface AutomationLane {
   points: EnvelopePoint[];
   /** Collapsed in the UI by default. */
   expanded?: boolean;
+  /** How the curve folds into the target field (shared with the wire/tap_mod
+   *  vocab). Default 'replace' — the curve drives the param across its range. */
+  combine?: RailCombine;
+  /** Polarity of the normalized curve when mapped into the field's range.
+   *  Default 'unsigned' (0→min, 1→max). */
+  magnitude?: RailMagnitude;
 }
 
 /** A value-only return channel. range = its modulation contract. */

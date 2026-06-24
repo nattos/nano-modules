@@ -357,6 +357,9 @@ export class ArrangementApp extends MobxLitElement {
     // lock-step with the playhead (and hold still when it's paused), instead of
     // free-running on wall time. Deduped inside the bridge.
     engineBridge.setTime(this.transport.secondsAt(store));
+    // Evaluate automation curves at the playhead and push them to the executor
+    // (deduped inside the bridge, so a paused/unedited playhead stays quiet).
+    engineBridge.pushAutomation();
     this.raf = requestAnimationFrame(this.tick);
   };
 

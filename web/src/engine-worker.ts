@@ -347,6 +347,9 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'setFusionMode':
       executor?.setFusionMode(cmd.mode);
       break;
+    case 'setAutomation':
+      executor?.setAutomation(cmd.json);
+      break;
     case 'setDebugMode':
       debugMode = !!cmd.on;
       // Clear the console buffer on toggle so the UI doesn't flash

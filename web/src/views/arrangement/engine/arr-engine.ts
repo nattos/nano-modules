@@ -17,6 +17,16 @@ import { EngineProxy } from '../../../engine-proxy';
 import type { Sketch } from '../../../sketch-types';
 import type { TracePoint, StateDiff, PluginInfo } from '../../../engine-types';
 
+/** One parameter-automation write for a frame: the host's evaluated curve value
+ *  for a composite instance's field, plus how it folds in (tap_mod vocab). */
+export interface AutomationEntry {
+  instance: string;
+  field: string;
+  value: number;
+  combine?: string;
+  magnitude?: string;
+}
+
 export interface ShowSketchOpts {
   /** Effect bundle to load first (e.g. 'com.nano.testonly', 'com.nano.core'). */
   bundle?: string;
@@ -219,6 +229,12 @@ export class ArrEngine {
   /** Bind a decoded video frame to a `source.video.file` instance (null clears). */
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
     this.proxy.setInstanceTexture(instanceKey, bitmap);
+  }
+
+  /** Push this frame's parameter automation (the host evaluated its curves at the
+   *  playhead). The executor folds each entry into its field via tap_mod. */
+  setAutomation(entries: AutomationEntry[]) {
+    this.proxy.setAutomation(JSON.stringify(entries));
   }
 
   setPaused(paused: boolean) {

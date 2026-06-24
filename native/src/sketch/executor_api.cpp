@@ -90,6 +90,18 @@ void executor_register_capabilities(SketchExecutor* ex, const char* mt, int32_t 
   ex->registerModuleCapabilities(std::string(mt, mt_len), std::move(tags));
 }
 
+// Push this frame's parameter AUTOMATION (the host evaluated its curves at the
+// playhead). `json` is an array of {instance, field, value, combine, magnitude}.
+// The executor folds each into its field via the same tap_mod range-map + combine
+// the wires use, without touching the sketch JSON. Call before executor_execute;
+// replaces the previous frame's set (empty array / "[]" clears).
+EXEC_EXPORT("executor_set_automation")
+void executor_set_automation(SketchExecutor* ex, const char* json, int32_t len) {
+  if (!ex) return;
+  auto j = nlohmann::json::parse(std::string(json, len), nullptr, false);
+  ex->setAutomation(j.is_discarded() ? nlohmann::json::array() : j);
+}
+
 // Render one frame. `sketch` is the {chain|columns, instances, wires} JSON.
 // Returns the output texture handle (or `inTex` for a passthrough). `dirty`
 // signals the sketch changed since last frame (rebuild the plan).

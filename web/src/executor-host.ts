@@ -64,6 +64,7 @@ interface ExecutorExports {
                    inTex: number, outTex: number, w: number, h: number,
                    dt: number, dirty: number): number;
   executor_set_fusion_enabled(ex: number, enabled: number): void;
+  executor_set_automation(ex: number, json: number, len: number): void;
   executor_debug_stats(ex: number, out: number): void;
   executor_modulation_json(ex: number, out: number, cap: number): number;
 }
@@ -362,6 +363,21 @@ export class WasmSketchExecutor {
     for (const slot of this.slots.values()) {
       this.exports.executor_set_fusion_enabled(slot.exPtr, this.fusionEnabled ? 1 : 0);
     }
+  }
+
+  /** Push this frame's parameter automation (a JSON array of
+   *  {instance,field,value,combine,magnitude}) to every live slot. The executor
+   *  folds it through tap_mod against each field's schema range. Entries whose
+   *  instance isn't in a slot's chain are ignored, so one batch is safe across
+   *  slots. Empty array clears. */
+  setAutomation(json: string): void {
+    const bytes = encoder.encode(json);
+    const ptr = this.exports.malloc(bytes.length);
+    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+    for (const slot of this.slots.values()) {
+      this.exports.executor_set_automation(slot.exPtr, ptr, bytes.length);
+    }
+    this.exports.free(ptr);
   }
 
   /**

@@ -15,8 +15,9 @@
  *  - An optional capture tap (Component D live thumbnails) sees the composite.
  */
 
-import { ArrEngine } from './arr-engine';
+import { ArrEngine, type AutomationEntry } from './arr-engine';
 import { buildCompositeSketch, clipInstanceKey } from './clip-sketch';
+import { evalLaneAtBeat } from './automation-eval';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
@@ -271,6 +272,43 @@ export class EngineBridge {
     this.lastTimeSent = seconds;
     this.engine.setTime(seconds);
   }
+
+  /**
+   * Per frame: evaluate every active CLIP's automation lanes at the playhead and
+   * push the values to the executor, which folds each into its target field via
+   * tap_mod (no sketch re-issue). Deduped so a paused, unedited playhead is quiet.
+   *
+   * NOTE: only CLIP automation drives params today — clip devices are in the
+   * composite. TRACK lanes target track-level devices that aren't composited yet
+   * (group-bus, a separate piece), so they're intentionally skipped here.
+   */
+  pushAutomation() {
+    if (!this.engine) return;
+    const beat = store.positionBeat;
+    const entries: AutomationEntry[] = [];
+    for (const { clip } of store.compositeLayersAtBeat(beat)) {
+      for (const lane of clip.automation ?? []) {
+        const ctx = {
+          kind: 'clip' as const,
+          startBeat: clip.startBeat,
+          spanBeats: clip.lengthBeat,
+          loopMode: store.clipAutoTiming === 'loop',
+        };
+        entries.push({
+          instance: clipInstanceKey(clip.id, lane.targetDeviceId),
+          field: lane.targetField,
+          value: evalLaneAtBeat(lane.points, ctx, beat),
+          combine: lane.combine ?? 'replace',
+          magnitude: lane.magnitude ?? 'unsigned',
+        });
+      }
+    }
+    const sig = JSON.stringify(entries);
+    if (sig === this.lastAutoSig) return;
+    this.lastAutoSig = sig;
+    this.engine.setAutomation(entries);
+  }
+  private lastAutoSig = '';
 
   /** Listen for new engine frames (the monitor recomposites). Returns unsub. */
   setOnComposite(cb: CompositeListener | null): () => void {

@@ -114,6 +114,19 @@ class SketchExecutor {
   void registerModuleCapabilities(const std::string& moduleType,
                                   std::vector<std::string> capabilities);
 
+  /**
+   * Per-frame parameter AUTOMATION side-channel. The host (arrangement) draws
+   * automation curves over time, evaluates them at the playhead each frame, and
+   * pushes the normalized values here as a JSON array
+   * `[{ "instance": <instanceKey>, "field": <fieldPath>, "value": <0..1>,
+   *     "combine": "replace|mix|add|mul", "magnitude": "signed|unsigned" }, …]`.
+   * execute() folds each into its target field through the SAME tap_mod range-map
+   * + combine the wire system uses (applyMagnitude against the field's schema
+   * [min,max]) — so the math isn't duplicated in TS and the sketch JSON / its
+   * cached plan are untouched. Replaces the previous frame's set; empty clears.
+   */
+  void setAutomation(const nlohmann::json& entries);
+
   /** Set (or clear with empty) the per-chain-entry capture hook. */
   void setChainEntryHook(ChainEntryHook hook) { chainEntryHook_ = std::move(hook); }
   /** Set (or clear with empty) the sketch-output hook. */
@@ -263,6 +276,10 @@ class SketchExecutor {
   // on the standalone path after read taps; smoothing forces an entry standalone.
   std::unordered_map<std::string,
       std::unordered_map<std::string, param_smoothing::SmoothState>> smoothState_;
+
+  // This frame's parameter automation (setAutomation), keyed by instance key →
+  // array of {field,value,combine,magnitude}. Folded in execute() after read taps.
+  std::unordered_map<std::string, nlohmann::json> automationByInstance_;
 
   // Per-(instance,field) modulation DELAY lines (the wire's continuous-time
   // `mod.shaper.delay`, seconds), persisted across frames. A wire shaper stage parallel
@@ -419,6 +436,14 @@ class SketchExecutor {
       // When non-null, records each modulated FLOAT field's final post-fold
       // value (the target the smoothing pass ramps toward). See applySmoothing.
       std::unordered_map<std::string, float>* outModulatedScalars = nullptr);
+
+  // Fold this frame's automation entries (setAutomation) for `instanceKey` into
+  // their target fields, via applyMagnitude against each field's schema range —
+  // the same math applyReadTaps uses for wires. Run right after applyReadTaps.
+  void applyAutomation(int32_t inst, const nlohmann::json& entry,
+                       const nlohmann::json& sketchInstances,
+                       const std::string& instanceKey,
+                       std::unordered_map<std::string, float>* outModulatedScalars);
 
   // Apply a wire's continuous-time `delay` (seconds) to a modulated field's final
   // post-fold `value`, via a per-(instance,field) delay line in delayState_. The

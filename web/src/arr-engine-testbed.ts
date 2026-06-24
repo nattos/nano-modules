@@ -8,7 +8,7 @@
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
-import { buildCompositeSketch } from './views/arrangement/engine/clip-sketch';
+import { buildCompositeSketch, clipInstanceKey } from './views/arrangement/engine/clip-sketch';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -84,9 +84,19 @@ async function showSolidOnly() {
   await engine.showComposite([{ sketchId: COMP, sketch: s.sketch, opts: s.opts }]);
 }
 
+// Phase-B automation side-channel: drive the showBgProbe clip's brightness via
+// engine.setAutomation (the executor folds the normalized value into the field's
+// range). Set once; the executor re-applies it every frame until changed.
+function setAuto(field: string, value: number, combine = 'replace') {
+  engine.setAutomation([
+    { instance: clipInstanceKey('p', 'b'), field, value, combine, magnitude: 'unsigned' },
+  ]);
+}
+
 (window as any).__arrEngine = {
   engine,
   show,
+  setAuto,
   showGpuTest: () => show('blue'),
   showSpinningTris: () => show('tris'),
   showBrightness,

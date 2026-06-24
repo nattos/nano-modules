@@ -188,6 +188,12 @@ export class EngineProxy {
    * fusion). Used by per-effect E2E tests to verify the standalone and
    * fused paths produce identical pixels.
    */
+  /** Push this frame's parameter automation (JSON array of
+   *  {instance,field,value,combine,magnitude}) to the executor. */
+  setAutomation(json: string) {
+    this.send({ type: 'setAutomation', json });
+  }
+
   setFusionMode(mode: 'auto' | 'force-on' | 'force-off') {
     this.send({ type: 'setFusionMode', mode });
   }

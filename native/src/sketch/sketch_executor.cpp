@@ -1089,11 +1089,16 @@ int32_t SketchExecutor::execute(
       // after applyState so the predicate sees current params. --
       const bool hasTaps = entry.contains("taps") && entry["taps"].is_array()
                            && !entry["taps"].empty();
+      // Host automation for this instance can drive an otherwise-identity effect
+      // off identity this frame, so it must NOT be skipped (like a wired/smoothed
+      // entry). Without this, a clip whose param sits at its identity value never
+      // runs, and applyAutomation below never gets to change it.
+      const bool hasAuto = automationByInstance_.find(instKey) != automationByInstance_.end();
       // A smoothed entry must run the standalone path EVERY frame so its ramp
       // state stays seeded/advanced — even while the (smoothed) value is momentarily
       // identity. Skipping here would leave the SmoothState unseeded, so the first
       // non-identity frame would snap to the new target instead of ramping.
-      if (!hasTaps && !entryHasSmoothing(entry) && inst.isIdentity()) {
+      if (!hasTaps && !hasAuto && !entryHasSmoothing(entry) && inst.isIdentity()) {
         ++stats_.identitySkipped;
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
@@ -1126,6 +1131,7 @@ int32_t SketchExecutor::execute(
         std::unordered_map<std::string, float> modScalars;
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
                       railBuffers, instances, instKey, &modScalars);
+        applyAutomation(inst.h, entry, instances, instKey, &modScalars);
         applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
         markWriteTapOutputsConnected(inst.h, entry);
         inst.doTick(dt);
@@ -1160,6 +1166,7 @@ int32_t SketchExecutor::execute(
       std::unordered_map<std::string, float> modScalars;
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
                     railBuffers, instances, instKey, &modScalars);
+      applyAutomation(inst.h, entry, instances, instKey, &modScalars);
       applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
       markWriteTapOutputsConnected(inst.h, entry);
 
@@ -1651,6 +1658,66 @@ void SketchExecutor::applyReadTaps(
       });
     }
     inst.setFieldConnected(fieldPath, true, false);
+  }
+}
+
+void SketchExecutor::setAutomation(const json& entries) {
+  automationByInstance_.clear();
+  if (!entries.is_array()) return;
+  for (const auto& e : entries) {
+    if (!e.is_object()) continue;
+    const std::string inst = e.value("instance", std::string());
+    if (!inst.empty()) automationByInstance_[inst].push_back(e);
+  }
+}
+
+void SketchExecutor::applyAutomation(
+    int32_t inst_handle, const json& entry, const json& sketchInstances,
+    const std::string& instanceKey,
+    std::unordered_map<std::string, float>* outModulatedScalars) {
+  auto it = automationByInstance_.find(instanceKey);
+  if (it == automationByInstance_.end() || !it->second.is_array()) return;
+  const EffectRef inst{inst_handle};
+  const RegisteredModule* reg = findSchema(entry.value("module_type", std::string()));
+  // Authored ("before automation") state — the base a non-replace combine folds
+  // from. Read from the serialized JSON (not the runtime), like applyReadTaps, so
+  // add/mul don't compound frame-over-frame.
+  const json* canonState = nullptr;
+  if (sketchInstances.is_object()) {
+    auto iit = sketchInstances.find(instanceKey);
+    if (iit != sketchInstances.end() && iit->is_object()) {
+      auto sit = iit->find("state");
+      if (sit != iit->end() && sit->is_object()) canonState = &(*sit);
+    }
+  }
+  for (const auto& a : it->second) {
+    if (!a.is_object()) continue;
+    const std::string field = a.value("field", std::string());
+    if (field.empty()) continue;
+    const float value = (float)a.value("value", 0.0);
+    // Dest field [min,max] from the schema (defaults 0..1) — the range the
+    // normalized curve value maps into, exactly as a wire's destMin/destMax.
+    float dmin = 0.0f, dmax = 1.0f;
+    if (reg && reg->schemaFields.is_object()) {
+      auto f = reg->schemaFields.find(field);
+      if (f != reg->schemaFields.end() && f->is_object()) {
+        dmin = (float)f->value("min", 0.0);
+        dmax = (float)f->value("max", 1.0);
+      }
+    }
+    float canon = dmin;
+    bool hasCanon = false;
+    if (canonState && canonState->contains(field) && (*canonState)[field].is_number()) {
+      canon = (float)(*canonState)[field].get<double>();
+      hasCanon = true;
+    }
+    const tap_mod::Combine combine = parseCombine(a);
+    const bool isSigned = a.value("magnitude", std::string("unsigned")) == "signed";
+    const float combined = tap_mod::applyMagnitude(
+        hasCanon ? canon : dmin, value, isSigned, combine, 1.0f, dmin, dmax);
+    inst.setParamFloat(field, combined);
+    inst.setFieldConnected(field, true, false);
+    if (outModulatedScalars) (*outModulatedScalars)[field] = combined;
   }
 }
 
