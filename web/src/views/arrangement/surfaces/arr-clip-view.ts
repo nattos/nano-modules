@@ -223,7 +223,9 @@ export class ArrClipView extends MobxLitElement {
                 ${mode === 'automation'
                   ? html`<arr-automation-editor
                       class="autoedit"
-                      .lane=${store.selectedClipLane(sel.track.id, clip.id) ?? clip.automation?.[0]}
+                      .lane=${store.autoField(`clip/${sel.track.id}/${clip.id}`)
+                        ? store.selectedClipLane(sel.track.id, clip.id) // selected field → ITS lane (undefined ⇒ empty default curve)
+                        : clip.automation?.[0]}                          // nothing selected → the first lane
                       .ensureLaneId=${() => (store.autoField(`clip/${sel.track.id}/${clip.id}`)
                         ? store.ensureSelectedClipLane(sel.track.id, clip.id)
                         : store.ensureClipAutomationLane(sel.track.id, clip.id))}
