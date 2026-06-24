@@ -782,25 +782,11 @@ export class ArrGrid extends MobxLitElement {
     if (store.hasTimeSelection && !store.caretLaneId) {
       const rx0 = grid.beatToX(store.timeSelStart!);
       const rx1 = grid.beatToX(store.timeSelEnd);
-      const scope = store.timeSelTrackIds;
-      let yTop = 0;
-      let yBottom = h;
-      let bounded = false;
-      if (scope.length > 0) {
-        bounded = true;
-        yTop = Infinity;
-        yBottom = 0;
-        for (const r of this.trackRowLayout()) {
-          if (scope.includes(r.id)) {
-            yTop = Math.min(yTop, r.top);
-            yBottom = Math.max(yBottom, r.bottom);
-          }
-        }
-        if (!isFinite(yTop)) {
-          yTop = 0;
-          yBottom = h;
-        }
-      }
+      // The box spans exactly the caret's ROW span (tracks AND lanes), so a
+      // partial-lane or multi-lane selection is bounded — not the whole height
+      // and not just the clip-row tracks.
+      const [yTop, yBottom] = this.caretSpanY(h);
+      const bounded = store.caretRowSpan().length > 0;
       ctx.fillStyle = 'rgba(65,105,225,0.16)';
       ctx.fillRect(rx0, yTop, rx1 - rx0, yBottom - yTop);
       ctx.fillStyle = 'rgba(65,105,225,0.85)';
