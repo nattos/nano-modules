@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCompositeSketch, clipInstanceKey } from './clip-sketch';
+import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
 
 /**
  * buildCompositeSketch — the layer pipeline. A SOURCE clip (generator at the top)
@@ -37,6 +37,29 @@ describe('buildCompositeSketch', () => {
     // The effect (invert) comes after the blend in the chain and adds no wire —
     // it reads the blend's output (the composite) as its linear input.
     expect(types.indexOf('color.invert')).toBeGreaterThan(types.indexOf('composite.blend'));
+  });
+
+  it('runs a track FX bus over the clip output, keyed per TRACK', () => {
+    const track = { id: 'T', sketch: { devices: [dev('color.invert', 'tfx')] } } as any;
+    const r = buildCompositeSketch([
+      { clip: clip('A', 'source.solid_color'), track, opacity: 1 },
+    ], { mode: 'transparent' })!;
+    const keys = r.sketch.chain!.map((e) => (e as { instance_key?: string }).instance_key);
+    // The track FX is keyed track_<id>_<dev> and chains AFTER the clip's device.
+    expect(keys).toContain(trackInstanceKey('T', 'tfx'));
+    expect(keys.indexOf(trackInstanceKey('T', 'tfx'))).toBeGreaterThan(keys.indexOf(clipInstanceKey('A', 'Ad0')));
+    expect(r.sketch.chain!.find((e) => (e as { instance_key?: string }).instance_key === trackInstanceKey('T', 'tfx'))!.module_type)
+      .toBe('color.invert');
+  });
+
+  it('a track FX instance is STABLE across the track\'s clips', () => {
+    const track = { id: 'T', sketch: { devices: [dev('color.invert', 'tfx')] } } as any;
+    const ka = buildCompositeSketch([{ clip: clip('A', 'source.solid_color'), track, opacity: 1 }], { mode: 'transparent' })!;
+    const kb = buildCompositeSketch([{ clip: clip('B', 'source.noise'), track, opacity: 1 }], { mode: 'transparent' })!;
+    // Different active clips, SAME track FX key (one persistent instance).
+    const has = (r: typeof ka, k: string) => r.sketch.chain!.some((e) => (e as { instance_key?: string }).instance_key === k);
+    expect(has(ka, trackInstanceKey('T', 'tfx'))).toBe(true);
+    expect(has(kb, trackInstanceKey('T', 'tfx'))).toBe(true);
   });
 
   it('emits a colliding instance key ONCE (duplicate device id → no retype thrash)', () => {

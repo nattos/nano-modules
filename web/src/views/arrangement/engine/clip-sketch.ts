@@ -22,7 +22,7 @@
 
 import type { Sketch, InstanceState, ChainEntry, Wire } from '../../../sketch-types';
 import type { ShowSketchOpts } from './arr-engine';
-import type { Clip, Device, BackgroundConfig } from '../model/composition';
+import type { Clip, Device, Track, BackgroundConfig } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
 import { solidSketch } from './slice-sketches';
@@ -44,6 +44,16 @@ const TRACE = 'arr-monitor';
  */
 export function clipInstanceKey(clipId: string, suffix: string): string {
   return `clip_${clipId}_${suffix}`;
+}
+
+/**
+ * The engine instance key a TRACK-level device renders under. Keyed per TRACK
+ * (not per clip), so a track's effect chain is ONE stable instance shared across
+ * whichever clip is active on the track — its state + automation persist as the
+ * active clip changes. Track automation targets these keys.
+ */
+export function trackInstanceKey(trackId: string, suffix: string): string {
+  return `track_${trackId}_${suffix}`;
 }
 
 /**
@@ -73,6 +83,9 @@ export interface CompositeLayerInput {
   opacity: number;
   /** composite.blend mode for a source clip (0 = Normal/over). */
   blendMode?: number;
+  /** The owning track — its `sketch` effect chain runs over the clip output (a
+   *  per-track FX bus), keyed `track_<id>_<dev>` so track automation can target it. */
+  track?: Track;
 }
 
 const BLEND = 'composite.blend';
@@ -134,6 +147,33 @@ export function buildCompositeSketch(
   // accumulator (a blend reads `<accKey>.tex_out`, which a mod node lacks).
   const isMod = (t: string) => t.startsWith('mod.');
 
+  // A track's own effect chain (`track.sketch`) run OVER the clip output, as a
+  // per-track FX bus: each device chained (implicit linear input) after `startKey`,
+  // keyed per TRACK so it's one stable instance across the track's clips. Returns
+  // the new last texture key. mod.* nodes execute but don't advance the texture.
+  const pushTrackFx = (track: Track | undefined, startKey: string): string => {
+    if (!track) return startKey;
+    const tcat = track.sketch.devices.filter((d) => catalogEffect(d.moduleType));
+    const tfx = tcat.filter((d) => catalogEffect(d.moduleType)!.role === 'effect');
+    let last = startKey;
+    for (const d of tfx) {
+      const key = trackInstanceKey(track.id, d.id);
+      push(d.moduleType, key, { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) });
+      if (!isMod(d.moduleType)) last = key;
+    }
+    const tpushed = new Set(tcat.map((d) => d.id));
+    for (const w of track.sketch.wires ?? []) {
+      if (!tpushed.has(w.src.instanceKey) || !tpushed.has(w.dest.instanceKey)) continue;
+      wires.push({
+        ...w,
+        id: `tw${wid++}`,
+        src: { instanceKey: trackInstanceKey(track.id, w.src.instanceKey), field: w.src.field },
+        dest: { instanceKey: trackInstanceKey(track.id, w.dest.instanceKey), field: w.dest.field },
+      });
+    }
+    return last;
+  };
+
   // Background base: an opaque solid-color layer UNDER all clips (so the bg is
   // baked into the composite, revealed by clip transparency / between clips).
   // Only when there ARE clips — an empty timeline renders nothing (the monitor
@@ -145,7 +185,7 @@ export function buildCompositeSketch(
     accKey = 'arr_bg';
   }
 
-  for (const { clip, opacity, blendMode } of layers) {
+  for (const { clip, opacity, blendMode, track } of layers) {
     const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));
     const gen = cat.find((d) => catalogEffect(d.moduleType)!.role === 'generator');
     const fx = cat.filter((d) => catalogEffect(d.moduleType)!.role === 'effect');
@@ -168,6 +208,7 @@ export function buildCompositeSketch(
       }
 
       if (lastKey) {
+        lastKey = pushTrackFx(track, lastKey); // track FX bus over the clip output
         if (accKey == null) {
           // First (top) layer becomes the accumulator. A sub-1 opacity fades it
           // over the transparent base via the reserved wet/dry key.
@@ -191,6 +232,7 @@ export function buildCompositeSketch(
         push(d.moduleType, clipInstanceKey(clip.id, d.id), state);
         if (!isMod(d.moduleType)) accKey = clipInstanceKey(clip.id, d.id);
       });
+      if (accKey) accKey = pushTrackFx(track, accKey); // track FX bus over the adjustment
     }
 
     // Fold this clip's modulation wires into the composite, remapping device ids

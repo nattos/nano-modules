@@ -47,4 +47,27 @@ describe('parameter automation drives a param (GPU)', () => {
     // applied it (no sketch re-issue).
     expect(lum(bright)).toBeGreaterThan(lum(dark) + 40);
   });
+
+  it('a TRACK-level FX (per-track bus) is driven the same way', async () => {
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => (document.getElementById('status') as HTMLElement)?.textContent === 'ready',
+      { timeout: 20_000 },
+    );
+
+    // A solid-source clip on a track whose OWN brightness FX runs over the output.
+    await page.evaluate(() => (window as any).__arrEngine.showTrackFxProbe());
+    await waitFrames();
+
+    await page.evaluate(() => (window as any).__arrEngine.setTrackAuto('brightness', 1.0));
+    await waitFrames();
+    const bright = await page.evaluate(() => (window as any).__arrEngine.readCenter());
+
+    await page.evaluate(() => (window as any).__arrEngine.setTrackAuto('brightness', 0.0));
+    await waitFrames();
+    const dark = await page.evaluate(() => (window as any).__arrEngine.readCenter());
+
+    // The track FX rendered AND the track-keyed automation drove it.
+    expect(lum(bright)).toBeGreaterThan(lum(dark) + 40);
+  });
 });

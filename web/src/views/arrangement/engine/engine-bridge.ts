@@ -16,12 +16,12 @@
  */
 
 import { ArrEngine, type AutomationEntry } from './arr-engine';
-import { buildCompositeSketch, clipInstanceKey } from './clip-sketch';
+import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
 import { evalLaneAtBeat } from './automation-eval';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
-import type { Clip } from '../model/composition';
+import type { Clip, Track } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
@@ -278,15 +278,17 @@ export class EngineBridge {
    * push the values to the executor, which folds each into its target field via
    * tap_mod (no sketch re-issue). Deduped so a paused, unedited playhead is quiet.
    *
-   * NOTE: only CLIP automation drives params today — clip devices are in the
-   * composite. TRACK lanes target track-level devices that aren't composited yet
-   * (group-bus, a separate piece), so they're intentionally skipped here.
+   * Both CLIP lanes (clip devices, clip-relative beats) and TRACK lanes (the
+   * track's FX bus, absolute beats) drive — each active layer contributes its
+   * clip's lanes (keyed `clip_*`) AND its track's lanes (keyed `track_*`). A
+   * track's lanes are evaluated only here, where the track has an active clip and
+   * its FX chain is in the composite.
    */
   pushAutomation() {
     if (!this.engine) return;
     const beat = store.positionBeat;
     const entries: AutomationEntry[] = [];
-    for (const { clip } of store.compositeLayersAtBeat(beat)) {
+    for (const { clip, track } of store.compositeLayersAtBeat(beat)) {
       for (const lane of clip.automation ?? []) {
         const ctx = {
           kind: 'clip' as const,
@@ -298,6 +300,15 @@ export class EngineBridge {
           instance: clipInstanceKey(clip.id, lane.targetDeviceId),
           field: lane.targetField,
           value: evalLaneAtBeat(lane.points, ctx, beat),
+          combine: lane.combine ?? 'replace',
+          magnitude: lane.magnitude ?? 'unsigned',
+        });
+      }
+      for (const lane of track.automation ?? []) {
+        entries.push({
+          instance: trackInstanceKey(track.id, lane.targetDeviceId),
+          field: lane.targetField,
+          value: evalLaneAtBeat(lane.points, { kind: 'track' }, beat),
           combine: lane.combine ?? 'replace',
           magnitude: lane.magnitude ?? 'unsigned',
         });
@@ -352,7 +363,7 @@ export class EngineBridge {
    * Idempotent + cheap to call every frame: it re-issues only when the combined
    * composite actually changes, and clears the trace when nothing renders.
    */
-  showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number }>, force = false) {
+  showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number; track?: Track }>, force = false) {
     // Keep the engine + video render size matched to the composition resolution
     // (aspect-correct) before building/issuing this frame.
     this.syncResolution();
@@ -405,7 +416,7 @@ export class EngineBridge {
 
     const render = engineLayers.length
       ? buildCompositeSketch(
-          engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode })),
+          engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode, track: l.track })),
           store.composition.meta.background,
         )
       : null;

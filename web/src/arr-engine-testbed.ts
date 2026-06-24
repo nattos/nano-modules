@@ -8,7 +8,7 @@
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
-import { buildCompositeSketch, clipInstanceKey } from './views/arrangement/engine/clip-sketch';
+import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './views/arrangement/engine/clip-sketch';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -93,10 +93,32 @@ function setAuto(field: string, value: number, combine = 'replace') {
   ]);
 }
 
+// Phase: TRACK FX bus — a solid-source clip on a track whose own effect chain
+// (brightness_contrast, keyed track_<id>_<dev>) runs over the clip output. Drives
+// the TRACK device via setAutomation to prove track automation reaches it.
+async function showTrackFxProbe() {
+  frames = 0;
+  const clip = { id: 'p', sketch: { devices: [
+    { id: 's', moduleType: 'source.solid_color', name: '', capabilities: ['generator'], state: { color: [0.4, 0.4, 0.4] } },
+  ] } } as any;
+  const track = { id: 'tk', sketch: { devices: [
+    { id: 'b', moduleType: 'color.tone.brightness_contrast', name: '', capabilities: [], state: { brightness: 0, contrast: 0 } },
+  ] } } as any;
+  const r = buildCompositeSketch([{ clip, track, opacity: 1 }], { mode: 'transparent' });
+  if (r) await engine.showComposite([{ sketchId: COMP, sketch: r.sketch, opts: r.opts }]);
+}
+function setTrackAuto(field: string, value: number, combine = 'replace') {
+  engine.setAutomation([
+    { instance: trackInstanceKey('tk', 'b'), field, value, combine, magnitude: 'unsigned' },
+  ]);
+}
+
 (window as any).__arrEngine = {
   engine,
   show,
   setAuto,
+  showTrackFxProbe,
+  setTrackAuto,
   showGpuTest: () => show('blue'),
   showSpinningTris: () => show('tris'),
   showBrightness,
