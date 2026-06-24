@@ -118,6 +118,7 @@ export class ArrAutomationEditor extends MobxLitElement {
       g.timeboxGestures = this.timeboxGestures;
       g.bubbleOffCurve = this.bubbleOffCurve;
       g.hideCurve = this.hideCurve;
+      g.vpad = 3; // fill the (compact) lane top-to-bottom, not the inspector's roomy inset
       g.onSelect = this.onSelect;
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →

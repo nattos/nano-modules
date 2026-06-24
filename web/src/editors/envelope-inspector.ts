@@ -70,7 +70,10 @@ export class EnvelopeGraph extends MobxLitElement {
   hideCurve = false;
 
   private rafId = 0;
-  private readonly pad = 10;          // px inset so edge nodes aren't clipped
+  private readonly pad = 10;          // horizontal inset so edge nodes aren't clipped
+  /** Vertical inset. Small for the compact lane editors so the envelope fills the
+   *  lane top-to-bottom; the standalone inspector keeps a roomier inset. */
+  vpad = 10;
   /** True while the user is actively dragging — the parent must not overwrite
    *  `points` from the field, or it would clobber the in-progress edit. */
   get interacting() { return this.mode !== 'none'; }
@@ -133,12 +136,12 @@ export class EnvelopeGraph extends MobxLitElement {
   private toPx(x: number, y: number): [number, number] {
     const { w, h } = this.dims();
     const xpx = this.xMap ? this.xMap(x) : this.pad + x * (w - 2 * this.pad);
-    return [xpx, (h - this.pad) - y * (h - 2 * this.pad)];
+    return [xpx, (h - this.vpad) - y * (h - 2 * this.vpad)];
   }
   private fromPx(px: number, py: number): [number, number] {
     const { w, h } = this.dims();
     const dx = this.xUnmap ? clamp01(this.xUnmap(px)) : clamp01((px - this.pad) / (w - 2 * this.pad));
-    return [dx, clamp01(((h - this.pad) - py) / (h - 2 * this.pad))];
+    return [dx, clamp01(((h - this.vpad) - py) / (h - 2 * this.vpad))];
   }
 
   private eventXY(e: PointerEvent | MouseEvent): [number, number] {
@@ -257,7 +260,7 @@ export class EnvelopeGraph extends MobxLitElement {
       this.onInteractionStart?.();
     }
     const slow = e.shiftKey ? 0.25 : 1; // Shift = fine adjustment
-    const innerH = this.dims().h - 2 * this.pad;
+    const innerH = this.dims().h - 2 * this.vpad;
 
     if (this.mode === 'shelf') {
       // Build the hard shelf (4 edge nodes) on the first move, then lift the
@@ -429,13 +432,13 @@ export class EnvelopeGraph extends MobxLitElement {
         const [gx] = this.toPx(g.x, 0);
         if (gx < this.pad - 0.5 || gx > cw - this.pad + 0.5) continue;
         ctx.strokeStyle = g.bar ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)';
-        ctx.beginPath(); ctx.moveTo(gx, this.pad); ctx.lineTo(gx, ch - this.pad); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(gx, this.vpad); ctx.lineTo(gx, ch - this.vpad); ctx.stroke();
       }
     } else {
       ctx.strokeStyle = 'rgba(255,255,255,0.07)';
       for (let q = 0; q <= 4; q++) {
         const [gx] = this.toPx(q / 4, 0);
-        ctx.beginPath(); ctx.moveTo(gx, this.pad); ctx.lineTo(gx, ch - this.pad); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(gx, this.vpad); ctx.lineTo(gx, ch - this.vpad); ctx.stroke();
       }
     }
 
@@ -444,10 +447,10 @@ export class EnvelopeGraph extends MobxLitElement {
       const [bx0] = this.toPx(this.selection.x0, 0);
       const [bx1] = this.toPx(this.selection.x1, 0);
       ctx.fillStyle = 'rgba(65,105,225,0.16)';
-      ctx.fillRect(bx0, this.pad, bx1 - bx0, ch - 2 * this.pad);
+      ctx.fillRect(bx0, this.vpad, bx1 - bx0, ch - 2 * this.vpad);
       ctx.fillStyle = 'rgba(65,105,225,0.85)';
-      ctx.fillRect(Math.round(bx0), this.pad, 1, ch - 2 * this.pad);
-      ctx.fillRect(Math.round(bx1), this.pad, 1, ch - 2 * this.pad);
+      ctx.fillRect(Math.round(bx0), this.vpad, 1, ch - 2 * this.vpad);
+      ctx.fillRect(Math.round(bx1), this.vpad, 1, ch - 2 * this.vpad);
     }
 
     // Empty overlay: render just the grid (+ any selection band), no curve.
@@ -493,7 +496,7 @@ export class EnvelopeGraph extends MobxLitElement {
       const [dotx, doty] = this.toPx(cx, cy);
       ctx.strokeStyle = 'rgba(255,255,255,0.5)';
       ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(lx, this.pad); ctx.lineTo(lx, ch - this.pad); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(lx, this.vpad); ctx.lineTo(lx, ch - this.vpad); ctx.stroke();
       ctx.fillStyle = '#fff';
       ctx.beginPath(); ctx.arc(dotx, doty, 3.5, 0, Math.PI * 2); ctx.fill();
     }
