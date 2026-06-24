@@ -215,7 +215,7 @@ export class ArrClipView extends MobxLitElement {
         </div>
         <div class="body ${short ? 'strip-fill' : ''}">
           ${!short && (mode === 'automation' || isVideo)
-            ? html`<arr-ruler compact .view=${this.clipView}></arr-ruler>`
+            ? html`<arr-ruler compact selectMode .view=${this.clipView}></arr-ruler>`
             : ''}
           ${short
             ? ''
@@ -231,6 +231,7 @@ export class ArrClipView extends MobxLitElement {
                       .beats=${this.editorBeats()}
                       .beatsPerBar=${this.beatsPerBar()}
                       .gridProvider=${this.clipGrid}
+                      .selection=${this.autoSelection()}
                     ></arr-automation-editor>`
                   : html`<canvas></canvas>`}
                 <span class="plabel">${this.topLabel(clip, mode)}</span>
@@ -408,6 +409,14 @@ export class ArrClipView extends MobxLitElement {
   }
   private beatsPerBar(): number {
     return store.composition.meta.timeSignature?.[0] ?? 4;
+  }
+
+  /** The clip-local selection mapped to envelope data-x [0,1], or null. */
+  private autoSelection(): { x0: number; x1: number } | null {
+    const sel = this.clipView.timeSel;
+    const span = this.editorBeats();
+    if (!sel || span <= 0) return null;
+    return { x0: sel.start / span, x1: sel.end / span };
   }
 
   /** Linear map between the editor's clip-local beats and source frames: the

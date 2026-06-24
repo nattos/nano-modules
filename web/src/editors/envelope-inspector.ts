@@ -48,6 +48,8 @@ export class EnvelopeGraph extends MobxLitElement {
   /** Optional vertical grid lines in DATA-x [0,1] (e.g. real beat/bar positions).
    *  `bar` lines draw brighter. When null, the default quarter grid is used. */
   gridLines: Array<{ x: number; bar: boolean }> | null = null;
+  /** Optional selected range in DATA-x [0,1] — shaded band + edges. */
+  selection: { x0: number; x1: number } | null = null;
   onChange: ((points: EnvPoint[]) => void) | null = null;
   onInteractionStart: (() => void) | null = null;
   onInteractionEnd: (() => void) | null = null;
@@ -251,6 +253,17 @@ export class EnvelopeGraph extends MobxLitElement {
         const [gx] = this.toPx(q / 4, 0);
         ctx.beginPath(); ctx.moveTo(gx, this.pad); ctx.lineTo(gx, ch - this.pad); ctx.stroke();
       }
+    }
+
+    // Selected range: a shaded band with bright edges (matches the timeline box).
+    if (this.selection && this.selection.x1 > this.selection.x0 + 1e-6) {
+      const [bx0] = this.toPx(this.selection.x0, 0);
+      const [bx1] = this.toPx(this.selection.x1, 0);
+      ctx.fillStyle = 'rgba(65,105,225,0.16)';
+      ctx.fillRect(bx0, this.pad, bx1 - bx0, ch - 2 * this.pad);
+      ctx.fillStyle = 'rgba(65,105,225,0.85)';
+      ctx.fillRect(Math.round(bx0), this.pad, 1, ch - 2 * this.pad);
+      ctx.fillRect(Math.round(bx1), this.pad, 1, ch - 2 * this.pad);
     }
 
     // Curve (sampled) + fill.

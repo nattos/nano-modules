@@ -35,8 +35,10 @@ export interface RulerView {
   zoomAnchored(factor: number, anchorX: number): void;
   scrollBy(beats: number): void;
   setPlayFrom(beat: number): void;
-  /** Snap a beat (grid-quantize on the main timeline; identity in the clip view). */
+  /** Grid-quantize a beat to the view's snap grid. */
   quantize(beat: number): number;
+  /** Drag-select a range [anchor,head] (head = the moving edge / play-from). */
+  setSelection(anchorBeat: number, headBeat: number): void;
 }
 
 /** The main arrangement timeline: a thin forwarder to the global store state. */
@@ -56,6 +58,7 @@ export const mainTimelineView: RulerView = {
   scrollBy: (b) => store.scrollBy(b),
   setPlayFrom: (b) => store.setPlayFrom(b),
   quantize: (b) => store.quantize(b),
+  setSelection: (a, h) => store.setTimeSelection(a, h),
 };
 
 /** Clip context the clip-local view maps the transport playhead through. */
@@ -82,6 +85,9 @@ const CLIP_MAX_PPB = 600;
 export class ClipTimelineView implements RulerView {
   pxPerBeat = 32;
   scrollUnits = 0;
+  /** Clip-LOCAL selection anchor (head = playFromBeat). A range exists only when
+   *  the two differ. Drives the same ruler band the main timeline draws. */
+  selAnchorBeat = 0;
   /** Identity warp ⇒ unitsAt(beat) == beat (a straight grid). */
   private readonly curve = new WarpCurve([], 4096);
 
@@ -97,7 +103,12 @@ export class ClipTimelineView implements RulerView {
   get beatsPerBar(): number { return this.c().beatsPerBar || 4; }
   get headerWidth(): number { return 0; }
   get loop(): null { return null; }
-  get timeSel(): null { return null; }
+  /** The clip-local selected range (null when collapsed). */
+  get timeSel(): { start: number; end: number } | null {
+    const head = this.playFromBeat;
+    if (Math.abs(this.selAnchorBeat - head) < 1e-6) return null;
+    return { start: Math.min(this.selAnchorBeat, head), end: Math.max(this.selAnchorBeat, head) };
+  }
 
   get positionBeat(): number {
     const c = this.c();
@@ -127,11 +138,25 @@ export class ClipTimelineView implements RulerView {
     this.scrollUnits = 0;
   }
   setPlayFrom(beat: number) {
-    // Scrub the transport into this clip (clip-local beat → arrangement beat).
+    // Scrub the transport into this clip (clip-local beat → arrangement beat) and
+    // COLLAPSE the selection (a plain click).
     const local = Math.max(0, Math.min(this.spanBeats, beat));
     store.setPlayFrom(this.c().startBeat + local);
+    this.selAnchorBeat = local;
   }
-  quantize(beat: number): number { return beat; }
+  setSelection(anchorBeat: number, headBeat: number) {
+    // Move the head (= play-from) and keep the anchor → a clip-local range.
+    const head = Math.max(0, Math.min(this.spanBeats, headBeat));
+    store.setPlayFrom(this.c().startBeat + head);
+    this.selAnchorBeat = Math.max(0, Math.min(this.spanBeats, anchorBeat));
+  }
+  /** Snap to the clip-local grid (≈22px between snaps, like the main grid). */
+  quantize(beat: number): number {
+    const raw = 22 / this.pxPerBeat;
+    let step = 16;
+    for (const s of [0.25, 0.5, 1, 2, 4, 8, 16]) if (s >= raw) { step = s; break; }
+    return Math.max(0, Math.round(beat / step) * step);
+  }
 
   private clampScroll() {
     // Keep at least a sliver of content on-screen; never scroll before 0.

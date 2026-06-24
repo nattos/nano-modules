@@ -68,6 +68,8 @@ export class ArrAutomationEditor extends MobxLitElement {
    * is supplied via `cursor` (x∈[0,1]). Highest precedence.
    */
   @property({ attribute: false }) gridProvider: (() => BeatGrid) | null = null;
+  /** Selected range in DATA-x [0,1] (the clip-local selection), shaded behind. */
+  @property({ attribute: false }) selection: { x0: number; x1: number } | null = null;
 
   private rafId = 0;
   /** Bumped per drag gesture so each drag coalesces into its own single undo. */
@@ -101,6 +103,7 @@ export class ArrAutomationEditor extends MobxLitElement {
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;
+      g.selection = this.selection;
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →
         // [0, beats] through the provided straight grid. Recomputed each frame.
