@@ -2618,17 +2618,12 @@ export class ArrangementStore {
    *  endpoints; falls back to a default curve if everything would be removed). */
   deleteAutoPointsInRange(laneId: string, x0: number, x1: number) {
     this.mutate('delete automation points', (d) => {
-      for (const t of d.tracks) {
-        for (const c of t.clips) {
-          const lane = c.automation.find((l) => l.id === laneId);
-          if (!lane) continue;
-          lane.points = lane.points.filter(
-            (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
-          );
-          if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
-          return;
-        }
-      }
+      const lane = ArrangementStore.laneIn(d, laneId); // track OR clip lanes
+      if (!lane) return;
+      lane.points = lane.points.filter(
+        (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
+      );
+      if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
     });
   }
 

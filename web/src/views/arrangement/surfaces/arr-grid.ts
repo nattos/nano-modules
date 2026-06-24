@@ -18,6 +18,7 @@ import {
   buildBeatGrid,
   ROW_HEIGHT,
   AUTO_LANE_HEIGHT,
+  AUTO_SPAN,
 } from './grid-shared';
 import { Track, Clip, AutomationLane, derivedWarpSegments } from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
@@ -28,9 +29,6 @@ import './arr-clip';
 import './arr-mixer-strip';
 import './arr-rail-lane';
 import './arr-automation-editor';
-
-/** Beats spanned by a track automation lane / overlay (mapped through the warp). */
-const AUTO_SPAN = 32;
 import '../../../widgets/ui-icon';
 
 @customElement('arr-grid')
@@ -711,6 +709,10 @@ export class ArrGrid extends MobxLitElement {
             .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
             .cursorEnabled=${store.caretLaneIds.includes(lane.id)}
             .bubbleOffCurve=${true}
+            .timeboxGestures=${true}
+            .selection=${store.caretLaneId === lane.id && store.hasTimeSelection
+              ? { x0: store.timeSelStart! / AUTO_SPAN, x1: store.timeSelEnd / AUTO_SPAN }
+              : null}
           ></arr-automation-editor>
         </div>
       </div>
@@ -775,8 +777,9 @@ export class ArrGrid extends MobxLitElement {
 
     // Time-region selection. Global scope (empty trackIds) fills the full
     // height with no top/bottom edges; a track-range scope draws a bounded
-    // rectangle (all four edges) spanning exactly the selected tracks.
-    if (store.hasTimeSelection) {
+    // rectangle (all four edges) spanning exactly the selected tracks. A LANE
+    // region is drawn by the lane editor itself (a band over the curve).
+    if (store.hasTimeSelection && !store.caretLaneId) {
       const rx0 = grid.beatToX(store.timeSelStart!);
       const rx1 = grid.beatToX(store.timeSelEnd);
       const scope = store.timeSelTrackIds;

@@ -16,6 +16,7 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
+import { AUTO_SPAN } from './surfaces/grid-shared';
 import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { importVideoFile } from './media/drop-import';
@@ -386,6 +387,12 @@ export class ArrangementApp extends MobxLitElement {
       // Otherwise Backspace/Delete is timeline-only: deleting an effect in a
       // sketch card or anywhere else must NOT delete clips/tracks.
       if (this.lastSurface !== 'timeline') return;
+      // Caret on an automation lane with a region → delete that lane's nodes.
+      if (store.caretLaneId && store.hasTimeSelection) {
+        e.preventDefault();
+        store.deleteAutoPointsInRange(store.caretLaneId, store.timeSelStart! / AUTO_SPAN, store.timeSelEnd / AUTO_SPAN);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
         e.preventDefault();
         store.deleteTime(); // ripple-delete the time box

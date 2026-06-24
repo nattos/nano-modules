@@ -200,18 +200,20 @@ export class EnvelopeGraph extends MobxLitElement {
       return this.claim(e);
     }
     const offCurve = !this.onCurveLine(px, py);
-    if (this.timeboxGestures && offCurve) {
-      // Off the curve line → a time-box selection drag.
-      this.mode = 'select';
-      this.selAnchorX = dx;
-      this.onSelect?.(dx, dx);
-      return this.claim(e);
-    }
-    if (this.bubbleOffCurve && offCurve) {
-      // Track lane: an off-curve click belongs to the timeline behind us (sets
-      // the caret) — don't claim it, let it bubble to the grid.
-      this.mode = 'none';
-      return;
+    if (offCurve) {
+      if (this.bubbleOffCurve) {
+        // Track lane: an off-curve click belongs to the timeline behind us (it
+        // sets the caret / lane region) — don't claim it, let it bubble.
+        this.mode = 'none';
+        return;
+      }
+      if (this.timeboxGestures) {
+        // Clip editor: off the curve line → a time-box selection drag.
+        this.mode = 'select';
+        this.selAnchorX = dx;
+        this.onSelect?.(dx, dx);
+        return this.claim(e);
+      }
     }
     // On the curve INSIDE the box → build a hard SHELF on first move.
     if (inBox && dx >= sel!.x0 - 1e-6 && dx <= sel!.x1 + 1e-6) {

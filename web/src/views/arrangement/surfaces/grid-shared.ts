@@ -17,6 +17,8 @@ export const HEADER_WIDTH = 184;
 export const ROW_HEIGHT = 56;
 export const AUTO_LANE_HEIGHT = 48;
 export const RULER_HEIGHT = 30;
+/** Beats a track automation lane / overlay spans (mapped through the warp). */
+export const AUTO_SPAN = 32;
 
 /**
  * Build the current BeatGrid (warp curve + zoom + scroll). Rebuilt per call;
