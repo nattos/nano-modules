@@ -35,6 +35,8 @@ export type FrameTap = (clipId: string, bitmap: ImageBitmap) => void;
 const PREVIEW_MAX_EDGE = 1280;
 /** Single sketch id the whole engine-layer stack composites into. */
 const COMPOSITE_ID = 'arr-composite';
+/** How far ahead (in beats) to pre-open + pre-decode upcoming video clips. */
+const LOOKAHEAD_BEATS = 8;
 
 export class EngineBridge {
   private engine: ArrEngine | null = null;
@@ -46,6 +48,13 @@ export class EngineBridge {
 
   /** Signature of the combined composite sketch (for dedupe). */
   private compositeSig = '';
+
+  /** Active video clips from the last showComposite (for the Precise gate). */
+  private lastVideoDescs: VideoClipDesc[] = [];
+  /** "Precise" mode: layers held back from the engine until their video inputs
+   *  decode (so we never flash a not-yet-ready clip). Null = nothing held. */
+  private pendingPrecise: Array<{ clip: Clip; opacity?: number; blendMode?: number }> | null = null;
+  private preciseTimer: ReturnType<typeof setTimeout> | null = null;
   /** Latest retained composite frame (the monitor draws this). */
   private compositeFrame: ImageBitmap | null = null;
   /** Number of active ENGINE layers folded into the composite (diagnostic). */
@@ -123,6 +132,26 @@ export class EngineBridge {
       );
     }
     return this.video;
+  }
+
+  /** Build the decode-pump descriptor for a video-backed clip (or null). */
+  private videoDescFor(clip: Clip): VideoClipDesc | null {
+    const src = clip.source;
+    if (!src?.url) return null;
+    const dev = clip.sketch.devices.find((d) => d.moduleType === VIDEO_SOURCE_TYPE);
+    if (!dev) return null;
+    return {
+      clipId: clip.id,
+      instanceKey: clipInstanceKey(clip.id, dev.id),
+      url: src.url,
+      sourceKey: src.sourceKey ?? clip.id,
+      startBeat: clip.startBeat,
+      lengthBeat: clip.lengthBeat,
+      durationFrames: src.durationFrames,
+      fps: src.fps,
+      speed: clip.loop?.speed,
+      scaleMode: src.scaleMode ?? 'fit',
+    };
   }
 
   /** Count of active video decode pumps (diagnostic / tests). */
@@ -206,6 +235,32 @@ export class EngineBridge {
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
     if (this.engine) this.engine.setInstanceTexture(instanceKey, bitmap);
     else bitmap?.close();
+    // A video frame just landed — a held "Precise" composite may now have all
+    // its inputs. Re-evaluate (showComposite re-holds if others are still out).
+    if (this.pendingPrecise && this.videoInputsReady()) {
+      const layers = this.pendingPrecise;
+      this.pendingPrecise = null;
+      this.showComposite(layers);
+    }
+  }
+
+  /** True when every active video clip has its current-beat frame injected. */
+  private videoInputsReady(): boolean {
+    if (!this.video || this.lastVideoDescs.length === 0) return true;
+    const beat = store.positionBeat;
+    const bpm = store.composition.meta.baseBPM;
+    return this.lastVideoDescs.every((d) => this.video!.clipReady(d.clipId, beat, bpm));
+  }
+
+  /** Whether the transport may step this frame (Precise mode stalls on unready
+   *  video inputs so time never runs ahead of the picture). */
+  inputsReady(): boolean {
+    return store.transportMode !== 'precise' || this.videoInputsReady();
+  }
+
+  private clearPreciseHold() {
+    this.pendingPrecise = null;
+    if (this.preciseTimer) { clearTimeout(this.preciseTimer); this.preciseTimer = null; }
   }
 
   private lastTimeSent: number | null = null;
@@ -259,7 +314,7 @@ export class EngineBridge {
    * Idempotent + cheap to call every frame: it re-issues only when the combined
    * composite actually changes, and clears the trace when nothing renders.
    */
-  showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number }>) {
+  showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number }>, force = false) {
     // Keep the engine + video render size matched to the composition resolution
     // (aspect-correct) before building/issuing this frame.
     this.syncResolution();
@@ -274,24 +329,41 @@ export class EngineBridge {
     // rAF maps the live transport clock → frame, so this only handles the set.
     const videoDescs: VideoClipDesc[] = [];
     for (const l of engineLayers) {
-      const src = l.clip.source;
-      if (!src?.url) continue;
-      const dev = l.clip.sketch.devices.find((d) => d.moduleType === VIDEO_SOURCE_TYPE);
-      if (!dev) continue;
-      videoDescs.push({
-        clipId: l.clip.id,
-        instanceKey: clipInstanceKey(l.clip.id, dev.id),
-        url: src.url,
-        sourceKey: src.sourceKey ?? l.clip.id,
-        startBeat: l.clip.startBeat,
-        lengthBeat: l.clip.lengthBeat,
-        durationFrames: src.durationFrames,
-        fps: src.fps,
-        speed: l.clip.loop?.speed,
-        scaleMode: src.scaleMode ?? 'fit',
-      });
+      const d = this.videoDescFor(l.clip);
+      if (d) videoDescs.push(d);
     }
-    if (videoDescs.length > 0 || this.video) this.videoCompositor().setActiveClips(videoDescs);
+    this.lastVideoDescs = videoDescs; // the Precise gate checks ACTIVE clips only
+
+    // Lookahead precache: also pre-open + pre-decode video clips coming up soon,
+    // so reaching them doesn't stall (Precise) or hiccup. They warm the decode
+    // cache but aren't composited until active.
+    const warmDescs = [...videoDescs];
+    const seen = new Set(videoDescs.map((d) => d.clipId));
+    for (const clip of store.videoClipsInWindow(store.positionBeat, store.positionBeat + LOOKAHEAD_BEATS)) {
+      if (seen.has(clip.id)) continue;
+      const d = this.videoDescFor(clip);
+      if (d) { warmDescs.push(d); seen.add(clip.id); }
+    }
+    if (warmDescs.length > 0 || this.video) this.videoCompositor().setActiveClips(warmDescs);
+
+    // ── "Precise" transport gate ──────────────────────────────────────────
+    // Hold the displayed composite until every ACTIVE video clip has its frame
+    // for the current beat decoded + injected, so we never flash a clip that's
+    // visually present on the timeline but not yet ready. `force` bypasses it (a
+    // fail-safe timeout, so a stuck decode can't freeze the monitor forever).
+    if (!force && store.transportMode === 'precise' && videoDescs.length > 0 && !this.videoInputsReady()) {
+      this.pendingPrecise = layers;
+      if (!this.preciseTimer) {
+        this.preciseTimer = setTimeout(() => {
+          this.preciseTimer = null;
+          const held = this.pendingPrecise;
+          this.pendingPrecise = null;
+          if (held) this.showComposite(held, /*force*/ true);
+        }, 400);
+      }
+      return; // hold — leave the previous frame on screen
+    }
+    this.clearPreciseHold();
 
     const render = engineLayers.length
       ? buildCompositeSketch(
@@ -325,6 +397,7 @@ export class EngineBridge {
   }
 
   destroy() {
+    this.clearPreciseHold();
     this.video?.destroy();
     this.video = null;
     this.engine?.destroy();

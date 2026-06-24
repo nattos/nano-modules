@@ -52,6 +52,8 @@ interface Pump {
    *  image / a paused video would otherwise re-blit the same frame every rAF;
    *  the worker re-binds the stored texture each tick regardless). */
   lastKey?: string;
+  /** Last frame decoded for LOOKAHEAD warming (not injected) — dedupe warm pulls. */
+  warmedKey?: string;
 }
 
 export class VideoCompositor {
@@ -206,9 +208,20 @@ export class VideoCompositor {
   private async pumpClip(p: Pump, beat: number, bpm: number) {
     try {
       if (!this.gpuHost || !this.blitter || !this.service) return;
+      const d = p.desc;
+      const active = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
       const frame = this.frameFor(p, beat, bpm);
-      const mode = p.desc.scaleMode ?? 'fit';
+      const mode = d.scaleMode ?? 'fit';
       const key = `${frame}:${mode}:${this.renderW}x${this.renderH}`;
+      if (!active) {
+        // LOOKAHEAD warming: decode the upcoming frame into the service cache so
+        // reaching this clip doesn't stall — but DON'T inject (the instance isn't
+        // composited yet, so the texture would go nowhere and poison `lastKey`).
+        if (key === p.warmedKey) return;
+        const h = await this.service.pull(p.clip, frame);
+        if (h > 0) p.warmedKey = key;
+        return;
+      }
       if (key === p.lastKey) return; // unchanged → the bound texture is already correct
       const handle = await this.service.pull(p.clip, frame);
       if (handle <= 0 || !this.pumps.has(p.desc.clipId)) return;
@@ -234,6 +247,21 @@ export class VideoCompositor {
     for (const pump of this.pumps.values()) this.service?.close(pump.clip).catch(() => {});
     this.pumps.clear();
     this.opening.clear();
+  }
+
+  /**
+   * Has this clip's decoded frame for `beat` been injected yet? Used by the
+   * bridge's "Precise" transport gate to avoid compositing/stepping before a
+   * video input is ready (which flashes a not-yet-decoded clip). A clip with no
+   * pump (still opening) is NOT ready.
+   */
+  clipReady(clipId: string, beat: number, bpm: number): boolean {
+    if (this.opening.has(clipId)) return false;
+    const pump = this.pumps.get(clipId);
+    if (!pump) return false;
+    const frame = this.frameFor(pump, beat, bpm);
+    const key = `${frame}:${pump.desc.scaleMode ?? 'fit'}:${this.renderW}x${this.renderH}`;
+    return pump.lastKey === key;
   }
 
   /** Active pump count (diagnostic / tests). */

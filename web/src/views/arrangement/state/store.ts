@@ -960,6 +960,21 @@ export class ArrangementStore {
       .map(({ track, clip }) => ({ track, clip }));
   }
 
+  /** Video clips overlapping [beatStart, beatEnd) on non-bypassed tracks — the
+   *  lookahead set the compositor pre-opens + pre-decodes (precache warming). */
+  videoClipsInWindow(beatStart: number, beatEnd: number): Clip[] {
+    const out: Clip[] = [];
+    for (const t of this.composition.tracks) {
+      if (t.kind !== 'track') continue;
+      if (this.effectiveBypassed(t, this.ancestorsOf(t))) continue;
+      for (const c of t.clips) {
+        if (!c.source?.url) continue;
+        if (c.startBeat < beatEnd && c.startBeat + c.lengthBeat > beatStart) out.push(c);
+      }
+    }
+    return out;
+  }
+
   // ── Viewport ──────────────────────────────────────────────────────────
   setZoom(pxPerBeat: number) {
     this.pxPerBeat = Math.max(4, Math.min(200, pxPerBeat));

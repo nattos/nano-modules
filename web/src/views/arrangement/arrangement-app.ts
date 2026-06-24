@@ -348,7 +348,10 @@ export class ArrangementApp extends MobxLitElement {
   private tick = (now: number) => {
     const dt = (now - this.lastT) / 1000;
     this.lastT = now;
-    this.transport.advance(store, dt);
+    // Precise mode: don't step the transport while a video input for the current
+    // beat is still decoding (time must never run ahead of the picture). The
+    // pump keeps decoding the held beat, so the stall self-resolves.
+    if (!(store.playing && !engineBridge.inputsReady())) this.transport.advance(store, dt);
     // Drive the engine's effect clock from the transport: effects animate in
     // lock-step with the playhead (and hold still when it's paused), instead of
     // free-running on wall time. Deduped inside the bridge.
