@@ -265,6 +265,9 @@ export class ArrangementStore {
   /** Ephemeral automation clipboard: per-lane envelope slices (nodes relative to
    *  the region start) + their row offset from the caret head, for paste. */
   private autoClipboard: { lanes: Array<{ rowOffset: number; nodes: EnvelopePoint[] }>; span: number } | null = null;
+  /** Which clipboard was filled last — paste applies THAT, regardless of the
+   *  current mode (paste in the "wrong" mode still applies the data). */
+  lastClipboardKind: 'clips' | 'auto' | null = null;
 
   // ── Engine telemetry (ephemeral; mirrors appState.local.engine) ────────
   /**
@@ -1560,6 +1563,7 @@ export class ArrangementStore {
     }
     if (!items.length) return false;
     this.clipClipboard = { items, span };
+    this.lastClipboardKind = 'clips';
     return true;
   }
 
@@ -2617,6 +2621,7 @@ export class ArrangementStore {
     }
     if (!lanes.length) return false;
     this.autoClipboard = { lanes, span: x1 - x0 };
+    this.lastClipboardKind = 'auto';
     return true;
   }
 

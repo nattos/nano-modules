@@ -461,8 +461,14 @@ export class ArrangementApp extends MobxLitElement {
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
-      if (store.automationMode) store.pasteAutomation(store.playFromBeat / AUTO_SPAN);
-      else store.pasteClips();
+      // Paste follows the CLIPBOARD, not the current mode — pasting in the "wrong"
+      // mode still applies the copied data.
+      if (store.lastClipboardKind === 'auto') {
+        if (!store.automationMode) store.toggleAutomationMode(); // make lanes addressable
+        store.pasteAutomation(store.playFromBeat / AUTO_SPAN);
+      } else if (store.lastClipboardKind === 'clips') {
+        store.pasteClips();
+      }
     } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       store.soloShortcut();
