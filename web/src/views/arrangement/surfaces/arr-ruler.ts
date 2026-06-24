@@ -8,10 +8,11 @@
  */
 
 import { html, css } from 'lit';
-import { customElement, query } from 'lit/decorators.js';
+import { customElement, query, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
-import { buildBeatGrid, RULER_HEIGHT } from './grid-shared';
+import { RULER_HEIGHT } from './grid-shared';
+import { mainTimelineView, type RulerView } from './timeline-view';
 
 @customElement('arr-ruler')
 export class ArrRuler extends MobxLitElement {
@@ -75,6 +76,13 @@ export class ArrRuler extends MobxLitElement {
     }
   `;
 
+  /** Zoom/pan/scrub model. Defaults to the main (warped, global) timeline; the
+   *  clip-details editor passes a clip-local ClipTimelineView. */
+  @property({ attribute: false }) view: RulerView = mainTimelineView;
+  /** Hide the main-timeline corner chrome (zoom buttons + Track/Return) so the
+   *  ruler spans the full width — used by the clip-details editor. */
+  @property({ type: Boolean }) compact = false;
+
   @query('canvas') private canvas!: HTMLCanvasElement;
   @query('.time') private timeEl!: HTMLDivElement;
   private ro?: ResizeObserver;
@@ -98,21 +106,21 @@ export class ArrRuler extends MobxLitElement {
   }
 
   render() {
-    // Touch observables so MobX re-renders → updated() redraws.
-    void store.pxPerBeat;
-    void store.scrollUnits;
-    void store.positionBeat;
-    void store.playFromBeat;
-    void store.loopEnabled;
-    void store.loopStartBeat;
-    void store.loopEndBeat;
-    void store.timeSelStart;
-    void store.timeSelEnd;
-    void store.composition.tracks.length;
-    void store.headerWidth;
+    // Touch the view's observables so MobX re-renders → updated() redraws.
+    const v = this.view;
+    void v.pxPerBeat;
+    void v.scrollUnits;
+    void v.positionBeat;
+    void v.playFromBeat;
+    void v.loop;
+    void v.timeSel;
+    void v.beatsPerBar;
+    void v.headerWidth;
     return html`
       <div class="wrap">
-        <div class="corner" style="width:${store.headerWidth}px">
+        ${this.compact
+          ? ''
+          : html`<div class="corner" style="width:${v.headerWidth}px">
           <button title="Zoom out" @click=${() => this.zoomCenter(1 / 1.3)}>−</button>
           <button title="Zoom in" @click=${() => this.zoomCenter(1.3)}>+</button>
           <button
@@ -129,7 +137,7 @@ export class ArrRuler extends MobxLitElement {
           >
             + Return
           </button>
-        </div>
+        </div>`}
         <div
           class="time"
           @pointerdown=${this.onDown}
@@ -157,13 +165,15 @@ export class ArrRuler extends MobxLitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const grid = buildBeatGrid();
-    const beatsPerBar = store.composition.meta.timeSignature[0];
+    const v = this.view;
+    const grid = v.grid();
+    const beatsPerBar = v.beatsPerBar;
 
-    // Loop brace.
-    if (store.loopEnabled) {
-      const x0 = grid.beatToX(store.loopStartBeat);
-      const x1 = grid.beatToX(store.loopEndBeat);
+    // Loop brace (main timeline only).
+    const loop = v.loop;
+    if (loop) {
+      const x0 = grid.beatToX(loop.start);
+      const x1 = grid.beatToX(loop.end);
       ctx.fillStyle = 'rgba(65,105,225,0.18)';
       ctx.fillRect(x0, 0, x1 - x0, 6);
       ctx.fillStyle = 'rgba(65,105,225,0.8)';
@@ -172,7 +182,7 @@ export class ArrRuler extends MobxLitElement {
     }
 
     // Beat/bar lines. Stride: only bar lines when zoomed out.
-    const stride = store.pxPerBeat >= 13 ? 1 : beatsPerBar;
+    const stride = v.pxPerBeat >= 13 ? 1 : beatsPerBar;
     const lines = grid.visibleBeatLines(w, beatsPerBar, stride);
     ctx.font =
       "9px 'JetBrains Mono','SF Mono',Menlo,monospace";
@@ -191,10 +201,11 @@ export class ArrRuler extends MobxLitElement {
       }
     }
 
-    // Time-region selection highlight.
-    if (store.hasTimeSelection) {
-      const rx0 = grid.beatToX(store.timeSelStart!);
-      const rx1 = grid.beatToX(store.timeSelEnd);
+    // Time-region selection highlight (main timeline only).
+    const sel = v.timeSel;
+    if (sel) {
+      const rx0 = grid.beatToX(sel.start);
+      const rx1 = grid.beatToX(sel.end);
       ctx.fillStyle = 'rgba(65,105,225,0.18)';
       ctx.fillRect(rx0, 0, rx1 - rx0, h);
       ctx.fillStyle = 'rgba(65,105,225,0.9)';
@@ -202,8 +213,8 @@ export class ArrRuler extends MobxLitElement {
     }
 
     // Play-from / insert marker (hollow triangle).
-    const fx = grid.beatToX(store.playFromBeat);
-    if (fx >= -6 && fx <= w + 6) {
+    const fx = grid.beatToX(v.playFromBeat);
+    if (v.playFromBeat >= 0 && fx >= -6 && fx <= w + 6) {
       ctx.fillStyle = '#EAEAEA';
       ctx.beginPath();
       ctx.moveTo(fx, h - 1);
@@ -214,8 +225,8 @@ export class ArrRuler extends MobxLitElement {
     }
 
     // Playhead.
-    const px = grid.beatToX(store.positionBeat);
-    if (px >= 0 && px <= w) {
+    const px = grid.beatToX(v.positionBeat);
+    if (v.positionBeat >= 0 && px >= 0 && px <= w) {
       ctx.fillStyle = '#FF8C00';
       ctx.fillRect(Math.round(px), 0, 2, h);
       ctx.beginPath();
@@ -234,25 +245,27 @@ export class ArrRuler extends MobxLitElement {
   /** +/- buttons: zoom anchored at the center of the viewport. */
   private zoomCenter(factor: number) {
     const w = this.timeEl?.clientWidth ?? 0;
-    store.zoomAnchored(factor, w / 2);
+    this.view.zoomAnchored(factor, w / 2);
   }
 
   private onDown = (e: PointerEvent) => {
     this.dragging = true;
     this.moved = 0;
     this.lastY = e.clientY;
+    const v = this.view;
     // Scrub: move the cursor immediately on pointerdown (not just on click-up).
-    const grid = buildBeatGrid();
-    store.setPlayFrom(store.quantize(grid.xToBeat(this.localX(e))));
+    const grid = v.grid();
+    v.setPlayFrom(v.quantize(grid.xToBeat(this.localX(e))));
     // Capture the content position under the cursor — it stays anchored there
     // for the whole gesture, so hitting the scroll endpoint never makes the
     // anchor drift (it just stops following until you drag back).
-    this.anchorUnits = store.scrollUnits + this.localX(e) / store.pxPerBeat;
+    this.anchorUnits = v.scrollUnits + this.localX(e) / v.pxPerBeat;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   private onMove = (e: PointerEvent) => {
     if (!this.dragging) return;
+    const v = this.view;
     const dy = e.clientY - this.lastY;
     this.lastY = e.clientY;
     this.moved += Math.abs(e.movementX) + Math.abs(dy);
@@ -260,8 +273,8 @@ export class ArrRuler extends MobxLitElement {
     // Vertical zoom first (changes pxPerBeat), then re-pin the anchor under the
     // current cursor X. One absolute computation per move → no drift.
     // Drag DOWN (dy > 0) zooms IN.
-    if (dy) store.setZoom(store.pxPerBeat * Math.exp(dy * 0.006));
-    store.setScrollUnits(this.anchorUnits - this.localX(e) / store.pxPerBeat);
+    if (dy) v.setZoom(v.pxPerBeat * Math.exp(dy * 0.006));
+    v.setScrollUnits(this.anchorUnits - this.localX(e) / v.pxPerBeat);
   };
 
   private onUp = (e: PointerEvent) => {
@@ -274,19 +287,20 @@ export class ArrRuler extends MobxLitElement {
     }
     // A click (negligible movement) sets the play-from marker.
     if (this.moved < 4) {
-      const grid = buildBeatGrid();
-      const beat = grid.xToBeat(this.localX(e));
-      store.setPlayFrom(store.quantize(beat));
+      const v = this.view;
+      const beat = v.grid().xToBeat(this.localX(e));
+      v.setPlayFrom(v.quantize(beat));
     }
   };
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    const v = this.view;
     if (e.ctrlKey || e.metaKey) {
       const cursorX = e.clientX - this.timeEl.getBoundingClientRect().left;
-      store.zoomAnchored(Math.exp(-e.deltaY * 0.002), cursorX);
+      v.zoomAnchored(Math.exp(-e.deltaY * 0.002), cursorX);
     } else {
-      store.scrollBy(e.deltaY / store.pxPerBeat);
+      v.scrollBy(e.deltaY / v.pxPerBeat);
     }
   };
 }
