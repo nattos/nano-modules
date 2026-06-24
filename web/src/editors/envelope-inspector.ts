@@ -294,26 +294,30 @@ export class EnvelopeGraph extends MobxLitElement {
    *  which nodes (inner edges + interior) lift with the drag. */
   private buildShelf() {
     const sel = this.selection!;
-    const eps = 0.004;
-    const outerLx = Math.max(0, sel.x0 - eps);
-    const outerRx = Math.min(1, sel.x1 + eps);
-    const near = (a: number, b: number) => Math.abs(a - b) < eps * 0.5;
+    // Outer (fixed) nodes sit EXACTLY on the box edges (grid-aligned); the inner
+    // (free) nodes a hair inside, so the edge is near-vertical. `eps` is just
+    // above the node-drag x-clamp so the inner node stays editable later.
+    const mid = (sel.x0 + sel.x1) / 2;
+    const eps = 0.0015;
+    const innerLx = Math.min(sel.x0 + eps, mid);
+    const innerRx = Math.max(sel.x1 - eps, mid);
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-4;
     const adds = [
-      { x: outerLx, y: evalEnvelope(this.points, outerLx) }, // outer, fixed
-      { x: sel.x0, y: evalEnvelope(this.points, sel.x0) },   // inner, lifts
-      { x: sel.x1, y: evalEnvelope(this.points, sel.x1) },   // inner, lifts
-      { x: outerRx, y: evalEnvelope(this.points, outerRx) }, // outer, fixed
+      { x: sel.x0, y: evalEnvelope(this.points, sel.x0) },   // outer L (fixed)
+      { x: innerLx, y: evalEnvelope(this.points, innerLx) }, // inner L (lifts)
+      { x: innerRx, y: evalEnvelope(this.points, innerRx) }, // inner R (lifts)
+      { x: sel.x1, y: evalEnvelope(this.points, sel.x1) },   // outer R (fixed)
     ];
     let pts = this.points.map(p => ({ ...p }));
     for (const a of adds) if (!pts.some(p => near(p.x, a.x))) pts.push({ x: a.x, y: a.y, ease: 0 });
     pts.sort((a, b) => a.x - b.x);
     this.points = pts;
     this.onChange?.(pts);
-    // The lifting set: nodes from the left box edge to the right box edge
-    // inclusive (inner edges + interior), but NOT the outer fixed nodes.
+    // Lifting set: inner edges + interior (strictly inside the box, NOT the outer
+    // nodes pinned to the box edges).
     this.shelfMoving = [];
     for (let i = 0; i < pts.length; i++) {
-      if (pts[i].x >= sel.x0 - eps * 0.5 && pts[i].x <= sel.x1 + eps * 0.5) {
+      if (pts[i].x > sel.x0 + 1e-4 && pts[i].x < sel.x1 - 1e-4) {
         this.shelfMoving.push({ idx: i, startY: pts[i].y });
       }
     }
@@ -413,13 +417,15 @@ export class EnvelopeGraph extends MobxLitElement {
       ctx.fillRect(Math.round(bx1), this.pad, 1, ch - 2 * this.pad);
     }
 
-    // Curve (sampled) + fill.
+    // Curve (sampled) + fill. Sample at the uniform grid PLUS every node x, so a
+    // near-vertical step (two nodes a hair apart) renders as a hard edge instead
+    // of being skipped between uniform samples and drawn as a slope.
     const N = 96;
-    const samples: [number, number][] = [];
-    for (let i = 0; i <= N; i++) {
-      const x = i / N;
-      samples.push(this.toPx(x, evalEnvelope(this.points, x)));
-    }
+    const xset = new Set<number>();
+    for (let i = 0; i <= N; i++) xset.add(i / N);
+    for (const p of this.points) xset.add(clamp01(p.x));
+    const xs = [...xset].sort((a, b) => a - b);
+    const samples: [number, number][] = xs.map((x) => this.toPx(x, evalEnvelope(this.points, x)));
     const [, baseY] = this.toPx(0, 0);
     ctx.beginPath();
     ctx.moveTo(samples[0][0], baseY);
