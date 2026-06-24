@@ -65,6 +65,9 @@ export class EnvelopeGraph extends MobxLitElement {
   /** Track-lane mode: an off-curve pointerdown is NOT claimed (it bubbles to the
    *  grid behind, which sets the caret), while node/curve edits still work. */
   bubbleOffCurve = false;
+  /** Render only the grid (+ selection band) — no curve/nodes. Used for a track
+   *  row's "empty" automation overlay when no parameter is selected. */
+  hideCurve = false;
 
   private rafId = 0;
   private readonly pad = 10;          // px inset so edge nodes aren't clipped
@@ -446,6 +449,9 @@ export class EnvelopeGraph extends MobxLitElement {
       ctx.fillRect(Math.round(bx0), this.pad, 1, ch - 2 * this.pad);
       ctx.fillRect(Math.round(bx1), this.pad, 1, ch - 2 * this.pad);
     }
+
+    // Empty overlay: render just the grid (+ any selection band), no curve.
+    if (this.hideCurve) return;
 
     // Curve + fill, sampled per SEGMENT so a zero-span segment (two coincident
     // control nodes) renders as a hard VERTICAL edge instead of being skipped by

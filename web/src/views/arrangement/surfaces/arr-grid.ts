@@ -259,13 +259,18 @@ export class ArrGrid extends MobxLitElement {
       overflow: hidden;
     }
     /* Selected track-field automation envelope, drawn over the clips. */
-    .track-auto-overlay {
+    /* Editable automation overlay over a track's clip row (covers the clips so
+       the row edits automation, not clips). */
+    .track-auto-edit {
       position: absolute;
       inset: 0;
+      z-index: 3;
+      pointer-events: auto;
+    }
+    .track-auto-edit arr-automation-editor {
+      display: block;
       width: 100%;
       height: 100%;
-      pointer-events: none;
-      z-index: 3;
     }
     .lane.bypassed {
       opacity: 0.4;
@@ -641,7 +646,9 @@ export class ArrGrid extends MobxLitElement {
             </div>`}
       </div>
       ${store.automationMode
-        ? track.automation.map((lane) => this.renderAutoLane(track, lane))
+        ? track.automation
+            .filter((lane) => lane.id !== store.overlayLaneId(track.id)) // overlay = clip row
+            .map((lane) => this.renderAutoLane(track, lane))
         : ''}
     `;
   }
@@ -666,30 +673,34 @@ export class ArrGrid extends MobxLitElement {
     return html`<arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>`;
   }
 
-  /** The selected track-field's envelope drawn ON TOP of the clip lane (only in
-   *  automation mode, before it's pinned to its own lane). Display-only; a flat
-   *  default is shown until the field gets a lane. */
+  /**
+   * The track's clip-row automation overlay (automation mode only): an EDITABLE
+   * envelope for the track's selected field — the same editor the lanes use. It
+   * covers the clips (pointer-events on) so the row edits automation, not clips;
+   * with no field selected it's an empty grid. Off-curve drags bubble to the grid
+   * (which scopes the caret to this field's lane).
+   */
   private renderTrackAutoOverlay(track: Track) {
     if (!store.automationMode) return '';
     const sel = store.autoField(`track/${track.id}`);
-    if (!sel) return '';
-    const lane = store.selectedTrackLane(track.id);
-    const points = lane?.points ?? [{ x: 0, y: 0.5, bend: 0 }, { x: 1, y: 0.5, bend: 0 }];
-    const grid = buildBeatGrid();
-    const SPAN = AUTO_SPAN;
-    const w = this.scrollEl ? this.scrollEl.clientWidth - store.headerWidth : 600;
-    const h = ROW_HEIGHT;
-    const yOf = (v: number) => 4 + (1 - v) * (h - 8);
-    const SAMPLES = 96;
-    const curve: string[] = [];
-    for (let i = 0; i <= SAMPLES; i++) {
-      const xn = i / SAMPLES;
-      curve.push(`${grid.beatToX(xn * SPAN).toFixed(1)},${yOf(evalCurveAt(points, xn)).toFixed(1)}`);
-    }
-    return html`<svg class="track-auto-overlay" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-      <polyline points=${curve.join(' ')} fill="none" stroke="var(--app-cat-mod)" stroke-width="1.5" />
-      ${points.map((p) => html`<circle cx=${grid.beatToX(p.x * SPAN)} cy=${yOf(p.y)} r="2.5" fill="var(--app-cat-mod)"></circle>`)}
-    </svg>`;
+    const lane = sel ? store.selectedTrackLane(track.id) : undefined;
+    const laneId = lane?.id;
+    return html`<div class="track-auto-edit">
+      <arr-automation-editor
+        gridded
+        .lane=${lane}
+        .ensureLaneId=${() => store.ensureSelectedTrackLane(track.id)}
+        .timelineSpan=${AUTO_SPAN}
+        .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
+        .hideCurve=${!sel}
+        .timeboxGestures=${true}
+        .bubbleOffCurve=${true}
+        .cursorEnabled=${!!laneId && store.caretLaneIds.includes(laneId)}
+        .selection=${laneId && store.caretLaneId === laneId && store.hasTimeSelection
+          ? { x0: store.timeSelStart! / AUTO_SPAN, x1: store.timeSelEnd / AUTO_SPAN }
+          : null}
+      ></arr-automation-editor>
+    </div>`;
   }
 
   private renderAutoLane(track: Track, lane: AutomationLane) {
@@ -981,10 +992,14 @@ export class ArrGrid extends MobxLitElement {
     const out: Array<{ trackId: string; laneId: string; top: number; bottom: number }> = [];
     let y = 0;
     for (const t of store.displayTracks) {
-      out.push({ trackId: t.id, laneId: '', top: y, bottom: y + ROW_HEIGHT });
+      // The clip row carries the overlay lane id in automation mode (the row edits
+      // the selected-field automation), matching store.caretRows.
+      const overlay = t.kind === 'track' ? store.overlayLaneId(t.id) : '';
+      out.push({ trackId: t.id, laneId: overlay, top: y, bottom: y + ROW_HEIGHT });
       y += ROW_HEIGHT;
       if (store.automationMode && t.kind === 'track') {
         for (const lane of t.automation) {
+          if (lane.id === overlay) continue; // shown as the clip-row overlay
           out.push({ trackId: t.id, laneId: lane.id, top: y, bottom: y + AUTO_LANE_HEIGHT });
           y += AUTO_LANE_HEIGHT;
         }
@@ -1177,7 +1192,13 @@ export class ArrGrid extends MobxLitElement {
     // Set the 2D caret to a zero-width slice at the clicked time + ROW (a bus
     // start spans all plain tracks). A drag below extends it into a box/slice.
     const trackId = startIsBus ? '' : startRow.trackId;
-    const laneId = startIsBus ? '' : startRow.laneId;
+    let laneId = startIsBus ? '' : startRow.laneId;
+    // A clip-row click in automation mode on a track with a selected field edits
+    // that field's automation — materialize its overlay lane so the caret scopes
+    // there (and clips aren't selected).
+    if (!startIsBus && !laneId && store.automationMode && store.autoField(`track/${trackId}`)) {
+      laneId = store.ensureSelectedTrackLane(trackId);
+    }
     store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, anchorLaneId: laneId, headBeat: qBeat, headTrackId: trackId, headLaneId: laneId });
     // Clicking a clip body focuses it right away; a drag below overrides this.
     if (clickFocusPath) store.selectClipOnly(clickFocusPath);

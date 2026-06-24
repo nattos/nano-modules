@@ -1099,13 +1099,28 @@ export class ArrangementStore {
     return this.displayTracks.filter((t) => t.kind === 'track');
   }
 
-  /** The vertical ROW axis: each plain track's clip row (laneId '') followed by
-   *  its automation lane rows (in automation mode). */
+  /** Lane shown AS the track's clip-row overlay (its selected-field lane, in
+   *  automation mode) — that row edits this lane, so it isn't also a lane row. */
+  overlayLaneId(trackId: string): string {
+    if (!this.automationMode) return '';
+    return this.selectedTrackLane(trackId)?.id ?? '';
+  }
+
+  /** The vertical ROW axis: each plain track's clip row, then its automation lane
+   *  rows (in automation mode). In automation mode the clip row carries the
+   *  track's overlay lane id (its selected-field lane), so clicking/arrowing it
+   *  edits that automation; that lane is skipped from the lane rows below. */
   get caretRows(): Array<{ trackId: string; laneId: string }> {
     const rows: Array<{ trackId: string; laneId: string }> = [];
     for (const t of this.caretTrackOrder) {
-      rows.push({ trackId: t.id, laneId: '' });
-      if (this.automationMode) for (const lane of t.automation) rows.push({ trackId: t.id, laneId: lane.id });
+      const overlay = this.overlayLaneId(t.id);
+      rows.push({ trackId: t.id, laneId: overlay });
+      if (this.automationMode) {
+        for (const lane of t.automation) {
+          if (lane.id === overlay) continue;
+          rows.push({ trackId: t.id, laneId: lane.id });
+        }
+      }
     }
     return rows;
   }
@@ -2653,6 +2668,20 @@ export class ArrangementStore {
     const sel = this.autoField(paths.track(trackId));
     if (!sel) return undefined;
     return this.trackById(trackId)?.automation.find((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field);
+  }
+  /** Ensure a lane for the track's selected field; '' if nothing is selected. */
+  ensureSelectedTrackLane(trackId: string): string {
+    const sel = this.autoField(paths.track(trackId));
+    if (!sel) return '';
+    const existing = this.selectedTrackLane(trackId);
+    if (existing) return existing.id;
+    const laneId = uid('auto');
+    this.mutate('add automation', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t || t.automation.some((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field)) return;
+      t.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
+    });
+    return laneId;
   }
   /** "Pin" the track's selected field into a new automation lane (the sub-lane
    *  below the track), then clear the selection. */

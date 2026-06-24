@@ -77,6 +77,8 @@ export class ArrAutomationEditor extends MobxLitElement {
   @property({ attribute: false }) timeboxGestures = false;
   /** Track-lane mode: off-curve clicks bubble to the grid (set the caret). */
   @property({ attribute: false }) bubbleOffCurve = false;
+  /** Render only the grid (no curve) — an "empty" overlay when no param is set. */
+  @property({ attribute: false }) hideCurve = false;
   /** Drag off the curve → a selection range in DATA-x (anchor, head). */
   @property({ attribute: false }) onSelect: ((anchorX: number, headX: number) => void) | null = null;
 
@@ -115,6 +117,7 @@ export class ArrAutomationEditor extends MobxLitElement {
       g.selection = this.selection;
       g.timeboxGestures = this.timeboxGestures;
       g.bubbleOffCurve = this.bubbleOffCurve;
+      g.hideCurve = this.hideCurve;
       g.onSelect = this.onSelect;
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →
