@@ -15,6 +15,7 @@ import { libraryPaths } from '../../../state/library-paths';
 import { clipProcessesTexture } from '../model/composition';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
+import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
 import '../../../widgets/column-group';
@@ -70,7 +71,7 @@ export class ArrInspector extends MobxLitElement {
     }
     return b;
   }
-  static styles = css`
+  static styles = [playModeControlsStyles, css`
     :host {
       display: block;
       overflow-y: auto;
@@ -416,7 +417,7 @@ export class ArrInspector extends MobxLitElement {
       font-size: var(--app-fs-xs);
       margin-bottom: 10px;
     }
-  `;
+  `];
 
   @state() private rememberedLabel: string | null = null;
   /** True while a folder is dragged over the Library paths drop zone. */
@@ -565,26 +566,11 @@ export class ArrInspector extends MobxLitElement {
             >
           </span>
         </div>
-        <div class="row">
-          <label>Start (beat)</label><span class="val">${clip.startBeat.toFixed(2)}</span>
-        </div>
-        <div class="row">
-          <label>Length (beats)</label><span class="val">${clip.lengthBeat.toFixed(2)}</span>
-        </div>
-        <div class="row">
-          <label>Play mode</label>
-          <select
-            .value=${clip.loop.mode}
-            @change=${(e: Event) => {
-              const tid = store.selectedClip?.track.id;
-              if (tid) store.updateClipLoop(tid, clip.id, { mode: (e.target as HTMLSelectElement).value as any });
-            }}
-          >
-            ${(['one-shot', 'time', 'beat-sync', 'random'] as const).map(
-              (m) => html`<option value=${m} ?selected=${m === clip.loop.mode}>${m}</option>`,
-            )}
-          </select>
-        </div>
+        ${renderPlayModeControls(
+          clip.loop,
+          clip.source && clip.source.fps ? clip.source.durationFrames / clip.source.fps : 0,
+          (patch) => store.updateClipLoop(found.track.id, clip.id, patch),
+        )}
         ${clip.source
           ? html`<div class="row">
               <label>Source</label>

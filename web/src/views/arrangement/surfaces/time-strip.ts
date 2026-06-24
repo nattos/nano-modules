@@ -14,6 +14,8 @@ import { html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { LitElement } from 'lit';
 import { drawFrameCell, reelSeedFor } from './film-reel';
+import { thumbnailController } from '../media/thumbnail-controller';
+import { levelForFramesPerThumb } from '../media/thumbnail-mip';
 
 function niceStep(approx: number): number {
   const pow = Math.pow(10, Math.floor(Math.log10(Math.max(1, approx))));
@@ -29,9 +31,14 @@ export class TimeStrip extends LitElement {
   @property({ type: Number }) scrollFrames = 0;
   @property({ type: Number }) loopIn = 0;
   @property({ type: Number }) loopOut = 0;
-  @property({ type: String }) playMode = 'loop';
+  @property({ type: String }) playMode = 'time';
   @property({ type: Number }) playheadFrame = -1;
   @property({ type: Boolean }) showLabels = true;
+  /** Optional real media — when set, cells draw decoded thumbnails (else the
+   *  procedural placeholder). */
+  @property({ attribute: false }) sourceKey = '';
+  @property({ attribute: false }) url = '';
+  @property({ type: Number }) fps = 30;
 
   static styles = css`
     :host {
@@ -54,15 +61,22 @@ export class TimeStrip extends LitElement {
   private ro?: ResizeObserver;
   private dragging = false;
   private hoverFrame: number | null = null;
+  private thumbOff?: () => void;
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(this);
+    // Repaint as decoded tiles land for this source.
+    this.thumbOff = thumbnailController.subscribe((sk) => {
+      if (sk === this.sourceKey) this.draw();
+    });
     this.draw();
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
+    this.thumbOff?.();
+    if (this.clipId) thumbnailController.dropView(`tstrip:${this.clipId}`);
   }
   updated() {
     this.draw();
@@ -105,12 +119,29 @@ export class TimeStrip extends LitElement {
     const cellW = Math.max(8, h * (16 / 9));
     const frameStep = Math.max(1, Math.round(cellW / this.pxPerFrame));
     const firstFrame = Math.max(0, Math.floor(this.xToFrame(0) / frameStep) * frameStep);
+
+    // Real decoded thumbnails when a source is wired; else the procedural cell.
+    const real = !!(this.sourceKey && this.url);
+    const level = levelForFramesPerThumb(frameStep);
+    if (real) {
+      thumbnailController.registerMedia({ sourceKey: this.sourceKey, url: this.url, frameCount: dur, fps: this.fps });
+      thumbnailController.setView(`tstrip:${this.clipId}`, {
+        sourceKey: this.sourceKey,
+        level,
+        startFrame: Math.max(0, Math.floor(this.xToFrame(0))),
+        endFrame: Math.min(dur - 1, Math.ceil(this.xToFrame(w))),
+        pattern: 'window',
+        readaheadFrames: 0,
+      });
+    }
     for (let f = firstFrame; ; f += frameStep) {
       const x = this.frameToX(f);
       if (x > w) break;
       const cw = frameStep * this.pxPerFrame;
       if (x + cw < 0) continue;
-      drawFrameCell(ctx, x, 0, cw - 1, h, seed, Math.min(1, f / dur));
+      const hit = real ? thumbnailController.peek(this.sourceKey, Math.min(dur - 1, f), level) : null;
+      if (hit) ctx.drawImage(hit.value, x, 0, cw, h);
+      else drawFrameCell(ctx, x, 0, cw - 1, h, seed, Math.min(1, f / dur));
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fillRect(x, 0, 1, h);
     }
@@ -127,8 +158,8 @@ export class TimeStrip extends LitElement {
       ctx.fillRect(Math.round(xi), 0, 2, h);
       ctx.fillRect(Math.round(xo) - 2, 0, 2, h);
     }
-    // random-jumps: scatter a few faked jump ticks.
-    if (this.playMode === 'random-jumps') {
+    // random: scatter a few jump ticks.
+    if (this.playMode === 'random') {
       ctx.fillStyle = 'rgba(255,218,99,0.7)';
       for (let i = 1; i <= 6; i++) {
         const fr = (dur * ((i * 6353) % 997)) / 997;

@@ -14,6 +14,9 @@ import { customElement, query, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { drawFrameCell, reelSeedFor } from './film-reel';
+import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
+import { thumbnailController } from '../media/thumbnail-controller';
+import { levelForFramesPerThumb } from '../media/thumbnail-mip';
 import './time-strip';
 import './arr-automation-editor';
 import './arr-ruler';
@@ -22,7 +25,7 @@ import '../../../widgets/ui-icon';
 
 @customElement('arr-clip-view')
 export class ArrClipView extends MobxLitElement {
-  static styles = css`
+  static styles = [playModeControlsStyles, css`
     :host {
       display: block;
       height: 100%;
@@ -185,7 +188,7 @@ export class ArrClipView extends MobxLitElement {
       opacity: 0.6;
       font-size: var(--app-fs-md);
     }
-  `;
+  `];
 
   /** Clip-local, straight zoom/pan axis shared by the ruler + envelope editor. */
   private clipView = new ClipTimelineView(() => this.clipCtx());
@@ -210,6 +213,18 @@ export class ArrClipView extends MobxLitElement {
   @query('.top canvas') private topCanvas?: HTMLCanvasElement;
   @query('.mini') private miniCanvas?: HTMLCanvasElement;
   @query('.body') private bodyEl?: HTMLDivElement;
+  private thumbOff?: () => void;
+
+  connectedCallback() {
+    super.connectedCallback();
+    // Repaint the preview/mini as decoded thumbnails land (async, no MobX change).
+    this.thumbOff = thumbnailController.subscribe(() => this.requestUpdate());
+  }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.thumbOff?.();
+    if (this.lastClipId) thumbnailController.dropView(`clipview:${this.lastClipId}`);
+  }
 
   private duration(): number {
     const sel = store.selectedClip;
@@ -292,6 +307,9 @@ export class ArrClipView extends MobxLitElement {
                   .loopIn=${this.sliceFrames(clip).inFrame}
                   .loopOut=${this.sliceFrames(clip).outFrame}
                   .playMode=${clip.loop.mode}
+                  .sourceKey=${clip.source?.sourceKey ?? ''}
+                  .url=${clip.source?.url ?? ''}
+                  .fps=${this.fpsOf(clip)}
                   .playheadFrame=${this.stripPlayheadFrame()}
                   @viewchange=${this.onView}
                   @scrub=${this.onScrub}
@@ -305,51 +323,14 @@ export class ArrClipView extends MobxLitElement {
     `;
   }
 
-  /** Editable play-mode timing: the source slice (seconds), mode, speed, direction,
-   *  ping-pong, and the beat-sync lock. All routed through the undoable store action. */
+  /** Editable play-mode timing — the shared controls (also used in the inspector),
+   *  routed through the undoable store action. */
   private renderPlayMode(clip: any) {
-    const loop = clip.loop ?? {};
     const tid = store.selectedClip?.track.id;
-    const set = (patch: Record<string, unknown>) => {
+    const videoDurSec = clip.source ? this.duration() / this.fpsOf(clip) : 0;
+    return renderPlayModeControls(clip.loop, videoDurSec, (patch) => {
       if (tid) store.updateClipLoop(tid, clip.id, patch);
-    };
-    const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
-    const endDefault = this.duration() / this.fpsOf(clip);
-    const num = (val: number, on: (n: number) => void, step = 0.1) => html`<input
-      type="number"
-      class="num"
-      .value=${String(Number.isFinite(val) ? +(+val).toFixed(3) : 0)}
-      step=${step}
-      @change=${(e: Event) => {
-        const n = parseFloat((e.target as HTMLInputElement).value);
-        if (Number.isFinite(n)) on(n);
-      }}
-    />`;
-    const seg = <T extends string>(opts: readonly T[], cur: T, on: (v: T) => void) => html`<div class="seg">
-      ${opts.map((o) => html`<button class=${cur === o ? 'on' : ''} @click=${() => on(o)}>${o}</button>`)}
-    </div>`;
-    return html`
-      <div class="ctl"><span>Play mode</span>
-        ${seg(['one-shot', 'time', 'beat-sync', 'random'] as const, loop.mode, (m) => set({ mode: m }))}
-      </div>
-      <div class="ctl"><span>Start (s)</span>${num(loop.startSec ?? 0, (n) => set({ startSec: n }))}</div>
-      ${loop.mode === 'one-shot'
-        ? ''
-        : html`<div class="ctl"><span>End (s)</span>${num(loop.endSec ?? endDefault, (n) => set({ endSec: n }))}</div>`}
-      ${loop.mode === 'beat-sync'
-        ? html`<div class="ctl"><span>Loop (beats)</span>${num(loop.syncBeats ?? 4, (n) => set({ syncBeats: n }), 1)}</div>`
-        : html`<div class="ctl"><span>Speed</span>${num(loop.speed ?? 1, (n) => set({ speed: n }))}</div>`}
-      <div class="ctl"><span>Direction</span>
-        ${seg(['forward', 'reverse'] as const, loop.direction ?? 'forward', (d) => set({ direction: d }))}
-      </div>
-      ${looping
-        ? html`<div class="ctl"><span>Ping-pong</span>
-            <button class=${loop.pingpong ? 'on' : ''} @click=${() => set({ pingpong: !loop.pingpong })}>
-              ${loop.pingpong ? 'on' : 'off'}
-            </button>
-          </div>`
-        : ''}
-    `;
+    });
   }
 
   private renderSourceCtl(clip: any, isVideo: boolean) {
@@ -477,11 +458,35 @@ export class ArrClipView extends MobxLitElement {
 
     const sel = store.selectedClip;
     if (!sel) return;
-    const clip = sel.clip;
-    const seed = reelSeedFor(clip.id);
     // Automation mode renders the editable <arr-automation-editor> (no canvas);
     // this canvas only exists in source mode → big preview at the scrub frame.
-    drawFrameCell(ctx, 0, 0, w, h, seed, Math.min(1, this.scrubFrame / this.duration()));
+    this.drawSourceFrame(ctx, w, h, sel.clip, this.scrubFrame);
+  }
+
+  /** Draw one source frame: a real decoded thumbnail when available, else the
+   *  procedural placeholder. Used by the big preview + the hover mini. */
+  private drawSourceFrame(ctx: CanvasRenderingContext2D, w: number, h: number, clip: any, frame: number) {
+    const src = clip.source;
+    if (src?.url && src.sourceKey) {
+      const frameCount = Math.max(1, src.durationFrames);
+      const f = Math.max(0, Math.min(frameCount - 1, Math.round(frame)));
+      const level = levelForFramesPerThumb(1); // finest level for a single big frame
+      thumbnailController.registerMedia({ sourceKey: src.sourceKey, url: src.url, frameCount, fps: src.fps });
+      thumbnailController.setView(`clipview:${clip.id}`, {
+        sourceKey: src.sourceKey,
+        level,
+        startFrame: Math.max(0, f - 2),
+        endFrame: Math.min(frameCount - 1, f + 2),
+        pattern: 'window',
+        readaheadFrames: 0,
+      });
+      const hit = thumbnailController.peek(src.sourceKey, f, level);
+      if (hit) {
+        ctx.drawImage(hit.value, 0, 0, w, h);
+        return;
+      }
+    }
+    drawFrameCell(ctx, 0, 0, w, h, reelSeedFor(clip.id), Math.min(1, frame / this.duration()));
   }
 
   /** Beats spanned by the automation editor: the source-loop length (loop mode)
@@ -597,6 +602,6 @@ export class ArrClipView extends MobxLitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const sel = store.selectedClip;
     if (!sel) return;
-    drawFrameCell(ctx, 0, 0, w, h, reelSeedFor(sel.clip.id), Math.min(1, this.hoverFrame / this.duration()));
+    this.drawSourceFrame(ctx, w, h, sel.clip, this.hoverFrame);
   }
 }

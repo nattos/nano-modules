@@ -9,6 +9,7 @@ import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { drawFilmReel, drawFrameCell } from './film-reel';
 import { thumbnailController, reelLayout } from '../media/thumbnail-controller';
+import { clipSourceFrameAt, type ClipTimeCtx } from '../engine/clip-time';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { store, paths } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
@@ -313,10 +314,11 @@ export class ArrClip extends MobxLitElement {
   }
 
   /**
-   * Draw the strip from real decoded thumbnails (Component D): declare the
-   * visible frame range as a view (so the cache prefetches), then paint each
-   * cell from `peek()` — exact tile, nearest substitute (stretched), or the
-   * procedural cell as a placeholder until the real frame lands.
+   * Draw the strip from real decoded thumbnails (Component D), REFLECTING the clip's
+   * play mode: each cell maps its timeline beat → the source frame the engine will
+   * actually show there (slice / speed / loop / direction via clipSourceFrameAt), so
+   * a looping clip repeats its slice, a sped-up clip races, and a one-shot clip goes
+   * dark past the source end. Vertical bars mark loop boundaries.
    */
   private drawRealReel(
     ctx: CanvasRenderingContext2D,
@@ -326,33 +328,93 @@ export class ArrClip extends MobxLitElement {
   ) {
     const sourceKey = media.sourceKey!;
     const frameCount = Math.max(1, media.durationFrames);
+    const fps = media.fps && media.fps > 0 ? media.fps : 30;
     thumbnailController.registerMedia({ sourceKey, url: media.url!, frameCount, fps: media.fps });
 
     const layout = reelLayout(w, h, frameCount);
     if (layout.cells === 0) return;
+
+    const loop = this.clip.loop;
+    const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
+    const startBeat = this.clip.startBeat;
+    const lengthBeat = Math.max(1e-6, this.clip.lengthBeat);
+    // Linear (warp-approx) clock — the strip is a visual aid; exact warp isn't needed.
+    const timeCtx: ClipTimeCtx = {
+      startBeat,
+      lengthBeat,
+      videoDurSec: frameCount / fps,
+      secondsAt: (b) => b * spb,
+    };
+
+    // The source frame shown at each cell (null ⇒ transparent / off the slice).
+    const cells = layout.cells;
+    const frames: Array<number | null> = [];
+    let minF = Infinity;
+    let maxF = -Infinity;
+    for (let i = 0; i < cells; i++) {
+      const beat = startBeat + ((i + 0.5) / cells) * lengthBeat;
+      const f = loop ? clipSourceFrameAt(loop, timeCtx, beat, fps, frameCount) : layout.frames[i];
+      frames.push(f);
+      if (f != null) { minF = Math.min(minF, f); maxF = Math.max(maxF, f); }
+    }
+    // Prefetch only the source range actually shown.
     thumbnailController.setView(`clip:${this.clip.id}`, {
       sourceKey,
       level: layout.level,
-      startFrame: 0,
-      endFrame: frameCount - 1,
+      startFrame: minF <= maxF ? Math.max(0, Math.floor(minF)) : 0,
+      endFrame: minF <= maxF ? Math.min(frameCount - 1, Math.ceil(maxF)) : frameCount - 1,
       pattern: 'window',
       readaheadFrames: 0,
     });
 
-    const step = w / layout.cells;
+    const step = w / cells;
     const seed = this.reelSeed();
-    for (let i = 0; i < layout.cells; i++) {
+    for (let i = 0; i < cells; i++) {
       const x = i * step;
-      const hit = thumbnailController.peek(sourceKey, layout.frames[i], layout.level);
-      if (hit) {
-        ctx.drawImage(hit.value, x, 0, step, h);
+      const f = frames[i];
+      if (f == null) {
+        ctx.fillStyle = 'rgba(8,9,12,0.6)'; // off-slice (one-shot past the source) → dark
+        ctx.fillRect(x, 0, step, h);
       } else {
-        drawFrameCell(ctx, x + 0.5, 0, step - 1, h, seed, (i + 0.5) / layout.cells);
+        const hit = thumbnailController.peek(sourceKey, f, layout.level);
+        if (hit) ctx.drawImage(hit.value, x, 0, step, h);
+        else drawFrameCell(ctx, x + 0.5, 0, step - 1, h, seed, f / frameCount);
       }
       if (i > 0) {
         ctx.fillStyle = 'rgba(0,0,0,0.5)';
         ctx.fillRect(x, 0, 1, h);
       }
+    }
+
+    this.drawLoopBars(ctx, w, h, loop, timeCtx, spb);
+  }
+
+  /** Vertical bars at each loop restart for looping modes (none for one-shot/random). */
+  private drawLoopBars(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    loop: Clip['loop'] | undefined,
+    timeCtx: ClipTimeCtx,
+    spb: number,
+  ) {
+    if (!loop) return;
+    let periodBeats = 0;
+    const startSec = loop.startSec ?? 0;
+    const loopLen = (loop.endSec ?? timeCtx.videoDurSec) - startSec;
+    if (loop.mode === 'time') {
+      const speed = loop.speed ?? 1;
+      if (loopLen > 1e-6 && speed > 1e-6 && spb > 1e-9) periodBeats = loopLen / speed / spb;
+    } else if (loop.mode === 'beat-sync') {
+      periodBeats = loop.syncUseBpm ? loopLen * ((loop.syncBpm ?? 120) / 60) : loop.syncBeats ?? 4;
+    } else {
+      return; // one-shot / random: no loop boundaries
+    }
+    if (periodBeats <= 1e-3) return;
+    ctx.fillStyle = 'rgba(108,192,112,0.85)';
+    for (let k = 1; k * periodBeats < timeCtx.lengthBeat - 1e-6; k++) {
+      const x = Math.round((k * periodBeats / timeCtx.lengthBeat) * w);
+      ctx.fillRect(x, 0, 1, h);
     }
   }
 
