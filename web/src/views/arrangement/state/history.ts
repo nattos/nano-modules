@@ -100,8 +100,18 @@ export class DocHistory<T extends object> {
     });
 
     if (patches.length === 0) {
-      // No-op vs. the (possibly reverted) base. If we were coalescing, the doc
-      // is back at the entry's base — keep the entry, it already encodes that.
+      // No-op vs. the (possibly reverted) base — e.g. a drag returning a clip to
+      // EXACTLY its start. If we were coalescing we already reverted the doc to
+      // the entry's base, so the entry must now encode "no change" (empty
+      // patches). Leaving its previous patches would make the next frame revert
+      // them against an already-reverted doc → corruption (clip can't go back).
+      if (coalescing) {
+        runInAction(() => {
+          top!.patches = [];
+          top!.inverse = [];
+          top!.timestamp = Date.now();
+        });
+      }
       return;
     }
 

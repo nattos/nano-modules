@@ -179,6 +179,24 @@ describe('selection + play-from', () => {
     expect(prior.startBeat + prior.lengthBeat).toBeLessThanOrEqual(4 + 1e-6);
   });
 
+  it('a drag back to EXACTLY the start returns the clip (gesture, no stranding)', () => {
+    const trk = store.addTrack();
+    const path = store.createEmptyClip(trk, 8, 8)!; // [8,16]
+    const clipId = path.split('/')[2];
+    store.select(path); // box = [8,16]
+    const base = { start: 8, end: 16, scope: [trk] };
+    store.beginGesture();
+    store.moveTimeBoxContent(8, 0, base); // → 16
+    store.moveTimeBoxContent(4, 0, base); // → 12
+    store.moveTimeBoxContent(0, 0, base); // back to EXACTLY the start
+    store.endGesture();
+    const clips = store.trackById(trk)!.clips;
+    expect(clips.length).toBe(1); // not duplicated / corrupted
+    expect(clips.find((c) => c.id === clipId || true)!.startBeat).toBe(8); // back at the origin
+    store.undo();
+    expect(store.trackById(trk)!.clips[0].startBeat).toBe(8);
+  });
+
   it('play-from follows the cursor when paused, not while playing', () => {
     store.playing = false;
     store.setPlayFrom(10);

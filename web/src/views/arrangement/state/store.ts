@@ -1086,7 +1086,10 @@ export class ArrangementStore {
     const a = base ? base.start : this.timeSelStart!;
     const b = base ? base.end : this.timeSelEnd;
     if (a == null || b <= a) return;
-    if (deltaBeat === 0 && trackDelta === 0) return;
+    // NOTE: don't early-return on a zero delta. During a coalesced drag every
+    // frame reverts to the gesture's base then re-applies; a zero-delta frame
+    // (the clip dragged back to EXACTLY its start) must run so it returns to base
+    // — bailing here would strand the clip one step out.
     const scopeIds = base ? base.scope : [...this.timeSelTrackIds];
 
     const plainIds = this.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
