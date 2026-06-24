@@ -32,7 +32,7 @@ import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaP
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMedia, resolveMedia } from '../workspace/media-store';
-import { emptyComposition, makeMainBus } from '../model/composition';
+import { emptyComposition, makeMainBus, defaultClipLoop } from '../model/composition';
 
 export type SelectableKind =
   | 'track'
@@ -1918,7 +1918,7 @@ export class ArrangementStore {
       lengthBeat,
       kind: 'effect',
       sketch: { devices: [] },
-      loop: { mode: 'hold' } as ClipLoopConfig,
+      loop: defaultClipLoop(),
       automation: [],
       exports: [],
       warps: [],
@@ -1959,7 +1959,7 @@ export class ArrangementStore {
         url: media.url,
         fps: media.fps,
       },
-      loop: { mode: 'loop' } as ClipLoopConfig,
+      loop: defaultClipLoop(media.fps ? media.frameCount / media.fps : undefined),
       automation: [],
       exports: [],
       warps: [],
@@ -2350,6 +2350,23 @@ export class ArrangementStore {
     );
   }
 
+  /** Patch a clip's play-mode timing (mode / slice seconds / speed / direction / …).
+   *  Undoable; shallow-merges so a single field can change without clobbering the rest. */
+  updateClipLoop(trackId: string, clipId: string, patch: Partial<ClipLoopConfig>) {
+    // Coalesce key is scoped to the PATCHED fields so a slider scrub of one field
+    // folds into one undo, but editing a different field is its own step (a shallow
+    // patch isn't absolute, so coalescing across fields would clobber the others).
+    const fields = Object.keys(patch).sort().join(',');
+    this.mutate(
+      'clip play mode',
+      (d) => {
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (c) c.loop = { ...c.loop, ...patch };
+      },
+      `loop:${trackId}:${clipId}:${fields}`,
+    );
+  }
+
   deleteSelectedClips() {
     const sel = [...this.selection];
     this.mutate('delete clips', (d) => {
@@ -2652,8 +2669,39 @@ export class ArrangementStore {
       for (const c of t.clips) {
         healDevices(c.sketch?.devices);
         healLanes(c.automation);
+        ArrangementStore.repairClipLoop(c);
       }
     }
+  }
+
+  /** Heal a clip's loop config to the play-mode model: fill any missing field, and
+   *  best-effort-map an old-shaped `mode` ('loop'/'hold'/… → time/one-shot/…). Clips
+   *  predating the play-mode rework have no `startSec`/`speed`/`direction`. */
+  private static repairClipLoop(c: Clip): void {
+    const raw = (c.loop ?? {}) as Partial<ClipLoopConfig> & { inFrame?: number; outFrame?: number };
+    const videoDurSec =
+      c.source && c.source.fps && c.source.fps > 0 ? c.source.durationFrames / c.source.fps : undefined;
+    const base = defaultClipLoop(videoDurSec);
+    const KNOWN = new Set<ClipLoopConfig['mode']>(['one-shot', 'time', 'beat-sync', 'random']);
+    // Map legacy mode names; unknown/missing ⇒ the default 'time'.
+    const legacy: Record<string, ClipLoopConfig['mode']> = {
+      loop: 'time',
+      'reverse-loop': 'time',
+      pingpong: 'time',
+      'random-jumps': 'random',
+      hold: 'one-shot',
+    };
+    const rawMode = raw.mode as string | undefined;
+    const mode = raw.mode && KNOWN.has(raw.mode) ? raw.mode : legacy[rawMode ?? ''] ?? base.mode;
+    c.loop = {
+      ...base,
+      ...raw,
+      mode,
+      startSec: typeof raw.startSec === 'number' ? raw.startSec : base.startSec,
+      speed: typeof raw.speed === 'number' ? raw.speed : base.speed,
+      direction: raw.direction === 'reverse' ? 'reverse' : base.direction,
+      pingpong: raw.pingpong ?? (rawMode === 'pingpong' ? true : undefined),
+    };
   }
 
   private static defaultCurve(span = 1): EnvelopePoint[] {

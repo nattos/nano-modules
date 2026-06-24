@@ -53,7 +53,7 @@ export function makeFakeComposition(): Composition {
     kind: 'video',
     source: { label: 'Clip A.mov', durationFrames: 480 },
     sketch: { devices: [srcDev, satDev] },
-    loop: { mode: 'loop', inFrame: 0, outFrame: 480, speed: 1 },
+    loop: { mode: 'time', startSec: 0, endSec: 16, speed: 1, direction: 'forward' },
     automation: [
       envLane('Saturate · amount', 'amount', satDev.id, [
         [0, 0.3],
@@ -88,7 +88,7 @@ export function makeFakeComposition(): Composition {
     kind: 'video',
     source: { label: 'Clip B.mov', durationFrames: 300 },
     sketch: { devices: [srcDev2, blurDev] },
-    loop: { mode: 'random-jumps', inFrame: 0, outFrame: 300, speed: 1 },
+    loop: { mode: 'one-shot', startSec: 0, speed: 1, direction: 'forward' },
     automation: [],
     exports: [],
     reads: [
@@ -113,7 +113,7 @@ export function makeFakeComposition(): Composition {
     lengthBeat: 10,
     kind: 'effect',
     sketch: { devices: [warpDev] },
-    loop: { mode: 'hold' },
+    loop: { mode: 'time', startSec: 0, speed: 1, direction: 'forward' },
     automation: [],
     exports: [],
     warps: [],
@@ -133,7 +133,7 @@ export function makeFakeComposition(): Composition {
     lengthBeat: 24,
     kind: 'effect',
     sketch: { devices: [lfoDev] },
-    loop: { mode: 'loop' },
+    loop: { mode: 'beat-sync', startSec: 0, endSec: 4, speed: 1, direction: 'forward', syncBeats: 8 },
     automation: [],
     exports: [
       {
@@ -262,6 +262,6 @@ export function makeFakeComposition(): Composition {
       { id: 'rail_pulse', name: 'Pulse', defaultValue: 0, range: { min: 0, max: 1 } },
       { id: 'rail_sweep', name: 'Sweep', defaultValue: 0.5, range: { min: -1, max: 1 } },
     ],
-    playMode: { defaultMode: 'loop' },
+    playMode: { defaultMode: 'time' },
   };
 }

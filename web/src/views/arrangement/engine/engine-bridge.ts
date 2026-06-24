@@ -19,6 +19,7 @@ import { ArrEngine, type AutomationEntry } from './arr-engine';
 import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
 import { evalLaneAtBeat } from './automation-eval';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
+import { makeWarpClock } from './warp-clock';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
 import type { Clip, Track } from '../model/composition';
@@ -120,6 +121,22 @@ export class EngineBridge {
 
   /** Main-thread video decode pump (lazily created on first video clip). */
   private video: VideoCompositor | null = null;
+  /** Signature of the warp resolver currently installed on the pump; rebuilt only
+   *  when the base tempo or any clip warp changes. */
+  private warpSig = '';
+
+  /** Keep the pump's warp-aware beat→seconds resolver in sync with the composition,
+   *  so video timing seeks through warped regions the same way the grid draws them. */
+  private refreshWarpResolver() {
+    const comp = store.composition;
+    const warps = comp.tracks.flatMap((t) => (t.clips ?? []).flatMap((c) => c.warps ?? []));
+    const sig = `${comp.meta.baseBPM}|${JSON.stringify(warps)}`;
+    if (sig === this.warpSig) return;
+    this.warpSig = sig;
+    const clock = makeWarpClock(comp);
+    this.videoCompositor().setTimeResolver((beat) => clock.secondsAt(beat));
+  }
+
   private videoCompositor(): VideoCompositor {
     if (!this.video) {
       const r = store.composition.meta.resolution;
@@ -152,6 +169,7 @@ export class EngineBridge {
       fps: src.fps,
       speed: clip.loop?.speed,
       scaleMode: src.scaleMode ?? 'fit',
+      loop: clip.loop,
     };
   }
 
@@ -393,7 +411,10 @@ export class EngineBridge {
       const d = this.videoDescFor(clip);
       if (d) { warmDescs.push(d); seen.add(clip.id); }
     }
-    if (warmDescs.length > 0 || this.video) this.videoCompositor().setActiveClips(warmDescs);
+    if (warmDescs.length > 0 || this.video) {
+      this.refreshWarpResolver();
+      this.videoCompositor().setActiveClips(warmDescs);
+    }
 
     // ── "Precise" transport gate ──────────────────────────────────────────
     // Hold the displayed composite until every ACTIVE video clip has its frame

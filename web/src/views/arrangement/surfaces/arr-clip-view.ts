@@ -94,6 +94,31 @@ export class ArrClipView extends MobxLitElement {
       background: var(--app-hi-color2);
       color: #fff;
     }
+    .ctl .num {
+      font-family: inherit;
+      font-size: var(--app-fs-xs);
+      width: 64px;
+      background: var(--app-bg-color1);
+      color: var(--app-text-color1);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 2px;
+      padding: 1px 4px;
+    }
+    .ctl > button {
+      font-family: inherit;
+      font-size: var(--app-fs-xs);
+      width: fit-content;
+      background: var(--app-bg-color1);
+      color: var(--app-text-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 2px;
+      padding: 2px 7px;
+      cursor: pointer;
+    }
+    .ctl > button.on {
+      background: var(--app-hi-color2);
+      color: #fff;
+    }
     .body {
       position: relative;
       flex: 1;
@@ -191,6 +216,23 @@ export class ArrClipView extends MobxLitElement {
     return sel?.clip.source?.durationFrames ?? 300;
   }
 
+  private fpsOf(clip: any): number {
+    return clip?.source?.fps && clip.source.fps > 0 ? clip.source.fps : 30;
+  }
+
+  /** The play-mode slice [startSec,endSec] mapped to source FRAMES (clamped to the
+   *  file), for the film strip + clip-local ruler. one-shot's open-ended slice
+   *  falls back to the whole source. */
+  private sliceFrames(clip: any): { inFrame: number; outFrame: number } {
+    const fps = this.fpsOf(clip);
+    const dur = this.duration();
+    const startSec = clip?.loop?.startSec ?? 0;
+    const endSec = clip?.loop?.endSec ?? dur / fps;
+    const inFrame = Math.max(0, Math.min(dur, Math.round(startSec * fps)));
+    const outFrame = Math.max(inFrame + 1, Math.min(dur, Math.round(endSec * fps)));
+    return { inFrame, outFrame };
+  }
+
   render() {
     void store.positionBeat; // track: during playback the playhead drives the scrub
     const sel = store.selectedClip;
@@ -247,8 +289,8 @@ export class ArrClipView extends MobxLitElement {
                   .durationFrames=${this.duration()}
                   .pxPerFrame=${this.stripPxPerFrame()}
                   .scrollFrames=${this.stripScrollFrames()}
-                  .loopIn=${clip.loop.inFrame ?? 0}
-                  .loopOut=${clip.loop.outFrame ?? this.duration()}
+                  .loopIn=${this.sliceFrames(clip).inFrame}
+                  .loopOut=${this.sliceFrames(clip).outFrame}
                   .playMode=${clip.loop.mode}
                   .playheadFrame=${this.stripPlayheadFrame()}
                   @viewchange=${this.onView}
@@ -263,12 +305,58 @@ export class ArrClipView extends MobxLitElement {
     `;
   }
 
+  /** Editable play-mode timing: the source slice (seconds), mode, speed, direction,
+   *  ping-pong, and the beat-sync lock. All routed through the undoable store action. */
+  private renderPlayMode(clip: any) {
+    const loop = clip.loop ?? {};
+    const tid = store.selectedClip?.track.id;
+    const set = (patch: Record<string, unknown>) => {
+      if (tid) store.updateClipLoop(tid, clip.id, patch);
+    };
+    const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
+    const endDefault = this.duration() / this.fpsOf(clip);
+    const num = (val: number, on: (n: number) => void, step = 0.1) => html`<input
+      type="number"
+      class="num"
+      .value=${String(Number.isFinite(val) ? +(+val).toFixed(3) : 0)}
+      step=${step}
+      @change=${(e: Event) => {
+        const n = parseFloat((e.target as HTMLInputElement).value);
+        if (Number.isFinite(n)) on(n);
+      }}
+    />`;
+    const seg = <T extends string>(opts: readonly T[], cur: T, on: (v: T) => void) => html`<div class="seg">
+      ${opts.map((o) => html`<button class=${cur === o ? 'on' : ''} @click=${() => on(o)}>${o}</button>`)}
+    </div>`;
+    return html`
+      <div class="ctl"><span>Play mode</span>
+        ${seg(['one-shot', 'time', 'beat-sync', 'random'] as const, loop.mode, (m) => set({ mode: m }))}
+      </div>
+      <div class="ctl"><span>Start (s)</span>${num(loop.startSec ?? 0, (n) => set({ startSec: n }))}</div>
+      ${loop.mode === 'one-shot'
+        ? ''
+        : html`<div class="ctl"><span>End (s)</span>${num(loop.endSec ?? endDefault, (n) => set({ endSec: n }))}</div>`}
+      ${loop.mode === 'beat-sync'
+        ? html`<div class="ctl"><span>Loop (beats)</span>${num(loop.syncBeats ?? 4, (n) => set({ syncBeats: n }), 1)}</div>`
+        : html`<div class="ctl"><span>Speed</span>${num(loop.speed ?? 1, (n) => set({ speed: n }))}</div>`}
+      <div class="ctl"><span>Direction</span>
+        ${seg(['forward', 'reverse'] as const, loop.direction ?? 'forward', (d) => set({ direction: d }))}
+      </div>
+      ${looping
+        ? html`<div class="ctl"><span>Ping-pong</span>
+            <button class=${loop.pingpong ? 'on' : ''} @click=${() => set({ pingpong: !loop.pingpong })}>
+              ${loop.pingpong ? 'on' : 'off'}
+            </button>
+          </div>`
+        : ''}
+    `;
+  }
+
   private renderSourceCtl(clip: any, isVideo: boolean) {
     const scale = clip.source?.scaleMode ?? 'fit';
     return html`
       <div class="ctl"><span>Source</span><span class="v">${clip.source?.label ?? (isVideo ? 'video' : 'none')}</span></div>
-      <div class="ctl"><span>Play mode</span><span class="v">${clip.loop.mode}</span></div>
-      <div class="ctl"><span>In / Out</span><span class="v">${clip.loop.inFrame ?? 0} – ${clip.loop.outFrame ?? this.duration()}</span></div>
+      ${this.renderPlayMode(clip)}
       ${clip.source
         ? html`<div class="ctl">
             <span>Scale</span>
@@ -361,7 +449,7 @@ export class ArrClipView extends MobxLitElement {
       this.lastClipId = sel.clip.id;
       // Fit the clip-local view's span to the available width on clip change.
       this.clipView.fitTo(this.bodyEl?.clientWidth ?? 600);
-      this.scrubFrame = sel.clip.loop.inFrame ?? 0;
+      this.scrubFrame = this.sliceFrames(sel.clip).inFrame;
     }
     // During playback the timeline playhead drives the shared scrub (so the film
     // strip + automation cursor track the transport). Paused, the user's scrub
@@ -405,8 +493,8 @@ export class ArrClipView extends MobxLitElement {
     const clip = sel.clip;
     if (store.clipAutoTiming === 'loop' && clip.source) {
       const fps = clip.source.fps ?? 30;
-      const dur = clip.source.durationFrames ?? 0;
-      const loopFrames = Math.max(1, (clip.loop.outFrame ?? dur) - (clip.loop.inFrame ?? 0));
+      const { inFrame, outFrame } = this.sliceFrames(clip);
+      const loopFrames = Math.max(1, outFrame - inFrame);
       return Math.max(0.25, (loopFrames / Math.max(1, fps)) * (store.composition.meta.baseBPM / 60));
     }
     return Math.max(0.25, clip.lengthBeat);
@@ -450,9 +538,7 @@ export class ArrClipView extends MobxLitElement {
    *  Lets the SOURCE film strip share the clip-local ruler's zoom/pan exactly. */
   private frameMap(): { inFrame: number; framesPerBeat: number } {
     const clip = store.selectedClip?.clip;
-    const dur = this.duration();
-    const inFrame = clip?.loop.inFrame ?? 0;
-    const outFrame = clip?.loop.outFrame ?? dur;
+    const { inFrame, outFrame } = this.sliceFrames(clip);
     const loopFrames = Math.max(1, outFrame - inFrame);
     return { inFrame, framesPerBeat: loopFrames / this.editorBeats() };
   }

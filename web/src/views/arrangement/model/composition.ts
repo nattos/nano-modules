@@ -18,13 +18,21 @@ export interface Resolution {
   height: number;
 }
 
-/** Video playback modes, mirroring web/src/video/playhead-controllers.ts. */
-export type PlayModeKind =
-  | 'loop'
-  | 'reverse-loop'
-  | 'pingpong'
-  | 'random-jumps'
-  | 'hold';
+/**
+ * How a video clip's source SLICE ([startSec,endSec] in neutral-speed seconds)
+ * maps onto the clip's beat span on the timeline:
+ *  - one-shot:  play once from startSec at `speed`; never loops. The end-into-source
+ *               is a free variable (clip length × BPM × speed). Off the source ends
+ *               (before 0 / past the file) ⇒ transparent.
+ *  - time:      loop the slice; the loop count follows clip length × BPM (warp-aware).
+ *  - beat-sync: loop the slice locked to `syncBeats` beats per loop — count follows
+ *               clip length but NOT BPM; the playback speed floats with tempo instead.
+ *  - random:    (Phase 3) dwell on a point, then jump; doesn't loop per se.
+ */
+export type ClipPlayMode = 'one-shot' | 'time' | 'beat-sync' | 'random';
+
+/** Playback direction through the slice. Looping modes can also ping-pong. */
+export type PlayDirection = 'forward' | 'reverse';
 
 /** Precise always waits (M1 focus + offline render). Live is future. */
 export type TransportMode = 'precise' | 'live';
@@ -196,12 +204,34 @@ export interface WarpBinding {
   phase: number;
 }
 
+/**
+ * A video clip's playback timing. The source SLICE is [startSec, endSec] measured in
+ * the file's own (neutral-speed) seconds; `mode` decides how that slice maps onto the
+ * clip's beat span. See {@link ClipPlayMode} and engine/clip-time.ts (the read-side
+ * beat→source-time mapper).
+ */
 export interface ClipLoopConfig {
-  mode: PlayModeKind;
-  /** Source in/out frames consumed by the play-mode timing (video clips). */
-  inFrame?: number;
-  outFrame?: number;
-  speed?: number;
+  mode: ClipPlayMode;
+  /** Slice start into the source, neutral-speed seconds. May be < 0 (one-shot ⇒
+   *  transparent before the file start). */
+  startSec: number;
+  /** Slice end into the source, seconds. Used by time/beat-sync/random; one-shot
+   *  ignores it (its end-into-source free-floats with clip length). */
+  endSec?: number;
+  /** Playback speed scale factor (default 1). Ignored by beat-sync (speed is implied
+   *  by the beat lock). */
+  speed: number;
+  /** forward | reverse through the slice. */
+  direction: PlayDirection;
+  /** Looping modes: reflect at the slice ends (anchored so the slice start is the ping). */
+  pingpong?: boolean;
+  /** beat-sync: the slice's duration in beats — one loop spans this many beats. */
+  syncBeats?: number;
+  /** beat-sync alt: a 'natural' clip BPM; the slice's beats are derived from its
+   *  seconds + this (instead of `syncBeats`). */
+  syncBpm?: number;
+  /** beat-sync sub-mode: use `syncBpm` instead of `syncBeats`. */
+  syncUseBpm?: boolean;
 }
 
 export type ClipKind = 'effect' | 'video';
@@ -279,7 +309,7 @@ export interface Track {
 }
 
 export interface PlayModeConfig {
-  defaultMode: PlayModeKind;
+  defaultMode: ClipPlayMode;
 }
 
 export interface Composition {
@@ -306,6 +336,18 @@ export function makeMainBus(): Track {
   };
 }
 
+/** The default playback timing for a new clip (looping `time` mode over the whole
+ *  source). `videoDurSec` sets the slice end when the media duration is known. */
+export function defaultClipLoop(videoDurSec?: number): ClipLoopConfig {
+  return {
+    mode: 'time',
+    startSec: 0,
+    endSec: videoDurSec && videoDurSec > 0 ? videoDurSec : undefined,
+    speed: 1,
+    direction: 'forward',
+  };
+}
+
 /** A blank composition — the seed for a freshly created arrangement file. */
 export function emptyComposition(): Composition {
   return {
@@ -316,7 +358,7 @@ export function emptyComposition(): Composition {
     },
     tracks: [makeMainBus()],
     rails: [],
-    playMode: { defaultMode: 'loop' },
+    playMode: { defaultMode: 'time' },
   };
 }
 

@@ -21,7 +21,7 @@ function buildComp(warp: boolean): Composition {
     id: 't', name: 'T', kind: 'track', parentId: null,
     sketch: { devices: [] }, automation: [], clips: [{
       id: 'c', name: 'C', startBeat: 0, lengthBeat: N_BEATS, kind: 'effect',
-      sketch: { devices: [] }, loop: { mode: 'hold' }, automation: [], exports: [],
+      sketch: { devices: [] }, loop: { mode: 'time', startSec: 0, speed: 1, direction: 'forward' }, automation: [], exports: [],
       warps: warp
         ? [{ id: 'w', sourceDeviceId: 'd', waveform: 'sine', amplitude: 0.45, periodBeats: 8, phase: 0 }]
         : [],

@@ -573,8 +573,14 @@ export class ArrInspector extends MobxLitElement {
         </div>
         <div class="row">
           <label>Play mode</label>
-          <select .value=${clip.loop.mode} @change=${(e: Event) => (clip.loop.mode = (e.target as HTMLSelectElement).value as any)}>
-            ${['loop', 'reverse-loop', 'pingpong', 'random-jumps', 'hold'].map(
+          <select
+            .value=${clip.loop.mode}
+            @change=${(e: Event) => {
+              const tid = store.selectedClip?.track.id;
+              if (tid) store.updateClipLoop(tid, clip.id, { mode: (e.target as HTMLSelectElement).value as any });
+            }}
+          >
+            ${(['one-shot', 'time', 'beat-sync', 'random'] as const).map(
               (m) => html`<option value=${m} ?selected=${m === clip.loop.mode}>${m}</option>`,
             )}
           </select>

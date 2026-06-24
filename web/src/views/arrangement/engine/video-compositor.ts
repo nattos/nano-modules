@@ -18,6 +18,8 @@ import { GPUHost } from '../../../gpu-host';
 import { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
 import { FrameBlitter, type BlitFit } from '../../../video/frame-blitter';
 import { thumbnailController } from '../media/thumbnail-controller';
+import { clipSourceFrameAt, type ClipTimeCtx } from './clip-time';
+import type { ClipLoopConfig } from '../model/composition';
 
 /** One active video clip the pump should feed. */
 export interface VideoClipDesc {
@@ -35,10 +37,19 @@ export interface VideoClipDesc {
   speed?: number;
   /** How the frame scales into the output canvas (default 'fit'). */
   scaleMode?: BlitFit;
+  /** Play-mode timing (slice + mode); drives the beat→source-frame mapping. */
+  loop?: ClipLoopConfig;
 }
 
 /** Current transport position the frame mapping reads. */
 export type TransportClock = () => { beat: number; bpm: number };
+
+/** Warp-aware beat→real-seconds resolver (WarpClock.secondsAt). */
+export type TimeResolver = (beat: number) => number;
+
+/** Fallback timing for a clip missing its loop config (older/repaired data): loop
+ *  the whole source in `time` mode at neutral speed. */
+const DEFAULT_LOOP: ClipLoopConfig = { mode: 'time', startSec: 0, speed: 1, direction: 'forward' };
 
 interface Pump {
   desc: VideoClipDesc;
@@ -69,6 +80,10 @@ export class VideoCompositor {
   private opening = new Set<string>();
   private raf = 0;
 
+  /** Warp-aware beat→seconds. Defaults to the un-warped base-BPM clock; the bridge
+   *  pushes a WarpClock-backed resolver (engine-bridge.ts) when the composition changes. */
+  private secondsAt: TimeResolver | null = null;
+
   // ── Diagnostics (read via the bridge) ──
   /** Count of decoded frames pushed to the executor. */
   framesInjected = 0;
@@ -89,6 +104,11 @@ export class VideoCompositor {
     private compW = renderW,
     private compH = renderH,
   ) {}
+
+  /** Install the warp-aware beat→seconds resolver (shared with the visual grid). */
+  setTimeResolver(fn: TimeResolver | null) {
+    this.secondsAt = fn;
+  }
 
   /** Update the blit render (preview) size + the composition resolution. */
   setRenderSize(w: number, h: number, compW = w, compH = h) {
@@ -194,15 +214,22 @@ export class VideoCompositor {
     }
   }
 
-  /** Map the transport position to a clip-local source frame (loops). */
-  private frameFor(p: Pump, beat: number, bpm: number): number {
+  /**
+   * Map the transport position to a clip-local source frame per the clip's play mode,
+   * or `null` to render transparent (one-shot off the slice). Warp-aware via the
+   * installed time resolver; falls back to the base-BPM clock.
+   */
+  private frameFor(p: Pump, beat: number, bpm: number): number | null {
     const d = p.desc;
-    const secPerBeat = 60 / Math.max(1, bpm);
-    const localSec = (beat - d.startBeat) * secPerBeat;
-    if (localSec <= 0) return 0;
-    const raw = Math.floor(localSec * p.fps * (d.speed ?? 1));
-    const fc = p.frameCount;
-    return ((raw % fc) + fc) % fc; // loop within the source
+    const secondsAt = this.secondsAt ?? ((b: number) => b * (60 / Math.max(1, bpm)));
+    const ctx: ClipTimeCtx = {
+      startBeat: d.startBeat,
+      lengthBeat: d.lengthBeat,
+      videoDurSec: p.frameCount / Math.max(1, p.fps),
+      secondsAt,
+    };
+    const loop = d.loop ?? DEFAULT_LOOP;
+    return clipSourceFrameAt(loop, ctx, beat, p.fps, p.frameCount);
   }
 
   private async pumpClip(p: Pump, beat: number, bpm: number) {
@@ -212,17 +239,24 @@ export class VideoCompositor {
       const active = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
       const frame = this.frameFor(p, beat, bpm);
       const mode = d.scaleMode ?? 'fit';
-      const key = `${frame}:${mode}:${this.renderW}x${this.renderH}`;
+      const key = `${frame ?? 'null'}:${mode}:${this.renderW}x${this.renderH}`;
       if (!active) {
         // LOOKAHEAD warming: decode the upcoming frame into the service cache so
         // reaching this clip doesn't stall — but DON'T inject (the instance isn't
         // composited yet, so the texture would go nowhere and poison `lastKey`).
-        if (key === p.warmedKey) return;
+        if (frame === null || key === p.warmedKey) return; // nothing to warm off-slice
         const h = await this.service.pull(p.clip, frame);
         if (h > 0) p.warmedKey = key;
         return;
       }
       if (key === p.lastKey) return; // unchanged → the bound texture is already correct
+      if (frame === null) {
+        // Off the slice (one-shot before/after the source): clear the bound texture so
+        // the clip composites as transparent rather than holding a stale frame.
+        this.setInstanceTexture(p.desc.instanceKey, null);
+        p.lastKey = key;
+        return;
+      }
       const handle = await this.service.pull(p.clip, frame);
       if (handle <= 0 || !this.pumps.has(p.desc.clipId)) return;
       const tex = this.gpuHost.getTextureByHandle(handle);
@@ -260,7 +294,7 @@ export class VideoCompositor {
     const pump = this.pumps.get(clipId);
     if (!pump) return false;
     const frame = this.frameFor(pump, beat, bpm);
-    const key = `${frame}:${pump.desc.scaleMode ?? 'fit'}:${this.renderW}x${this.renderH}`;
+    const key = `${frame ?? 'null'}:${pump.desc.scaleMode ?? 'fit'}:${this.renderW}x${this.renderH}`;
     return pump.lastKey === key;
   }
 

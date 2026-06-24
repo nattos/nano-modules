@@ -27,7 +27,7 @@ function warpedClip(): Clip {
     lengthBeat: 32,
     kind: 'effect',
     sketch: { devices: [] },
-    loop: { mode: 'hold' },
+    loop: { mode: 'time', startSec: 0, speed: 1, direction: 'forward' },
     automation: [],
     exports: [],
     warps: [

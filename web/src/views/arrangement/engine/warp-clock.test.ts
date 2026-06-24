@@ -17,7 +17,7 @@ function warpedComp(bpm = 120): Composition {
   const c = compAt(bpm);
   c.tracks[0].clips.push({
     id: 'c', name: 'C', startBeat: 0, lengthBeat: 16, kind: 'effect',
-    sketch: { devices: [] }, loop: { mode: 'hold' }, automation: [], exports: [],
+    sketch: { devices: [] }, loop: { mode: 'time', startSec: 0, speed: 1, direction: 'forward' }, automation: [], exports: [],
     warps: [{ id: 'w', sourceDeviceId: 'd', waveform: 'sine', amplitude: 0.4, periodBeats: 8, phase: 0 }],
   });
   return c;
