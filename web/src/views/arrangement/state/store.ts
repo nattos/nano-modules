@@ -262,6 +262,9 @@ export class ArrangementStore {
   /** Ephemeral clip clipboard (copy/cut → paste). Offsets are relative to the
    *  copy origin so paste lands at the caret. Not observed / undoable. */
   private clipClipboard: { items: Array<{ trackOffset: number; startBeat: number; clip: Clip }>; span: number } | null = null;
+  /** Ephemeral automation clipboard: per-lane envelope slices (nodes relative to
+   *  the region start) + their row offset from the caret head, for paste. */
+  private autoClipboard: { lanes: Array<{ rowOffset: number; nodes: EnvelopePoint[] }>; span: number } | null = null;
 
   // ── Engine telemetry (ephemeral; mirrors appState.local.engine) ────────
   /**
@@ -302,7 +305,7 @@ export class ArrangementStore {
     makeAutoObservable<
       ArrangementStore,
       'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
-      | 'layoutReady' | 'layoutSaveTimer' | 'clipClipboard'
+      | 'layoutReady' | 'layoutSaveTimer' | 'clipClipboard' | 'autoClipboard'
     >(
       this,
       {
@@ -316,6 +319,7 @@ export class ArrangementStore {
         layoutSaveTimer: false,
         // Ephemeral clip clipboard — no reactivity / undo needed.
         clipClipboard: false,
+        autoClipboard: false,
       },
       { autoBind: true },
     );
@@ -2578,6 +2582,87 @@ export class ArrangementStore {
   /** A flat mid-level curve — the seed for a freshly created lane. */
   private static defaultCurve(): EnvelopePoint[] {
     return [{ x: 0, y: 0.5, bend: 0 }, { x: 1, y: 0.5, bend: 0 }];
+  }
+
+  // ── Automation clipboard (envelope regions; data-x in [0,1]) ───────────
+  get hasAutoClipboard(): boolean {
+    return !!this.autoClipboard && this.autoClipboard.lanes.length > 0;
+  }
+
+  /** Index of the caret head row in caretRows (or -1). */
+  private caretHeadRowIndex(): number {
+    return this.caretRows.findIndex((r) => r.trackId === this.caretHeadTrackId && r.laneId === this.caretHeadLaneId);
+  }
+
+  /**
+   * Copy the envelope SLICE [x0,x1] (data-x) from every lane the caret spans.
+   * Nodes are stored relative to x0, with each lane's row offset from the head so
+   * paste re-lands them. Returns false if there's no region or no lane.
+   */
+  copyAutomation(x0: number, x1: number): boolean {
+    if (x1 <= x0 + 1e-6) return false;
+    const rows = this.caretRows;
+    const headIdx = this.caretHeadRowIndex();
+    if (headIdx < 0) return false;
+    const lanes: Array<{ rowOffset: number; nodes: EnvelopePoint[] }> = [];
+    for (const r of this.caretRowSpan()) {
+      if (!r.laneId) continue;
+      const lane = ArrangementStore.laneIn(this.composition, r.laneId);
+      if (!lane) continue;
+      const idx = rows.findIndex((q) => q.trackId === r.trackId && q.laneId === r.laneId);
+      const nodes = lane.points
+        .filter((p) => p.x >= x0 - 1e-6 && p.x <= x1 + 1e-6)
+        .map((p) => ({ x: p.x - x0, y: p.y, bend: p.bend ?? 0 }));
+      lanes.push({ rowOffset: idx - headIdx, nodes });
+    }
+    if (!lanes.length) return false;
+    this.autoClipboard = { lanes, span: x1 - x0 };
+    return true;
+  }
+
+  /** Paste the clipboard at `xHead` (data-x), onto the lanes from the caret head
+   *  row down (by row offset). Clears the paste window first (keeps 0/1 ends). */
+  pasteAutomation(xHead: number) {
+    const cb = this.autoClipboard;
+    if (!cb) return;
+    const rows = this.caretRows;
+    const headIdx = this.caretHeadRowIndex();
+    if (headIdx < 0) return;
+    const x1 = xHead + cb.span;
+    this.mutate('paste automation', (d) => {
+      for (const item of cb.lanes) {
+        const target = rows[headIdx + item.rowOffset];
+        if (!target?.laneId) continue;
+        const lane = ArrangementStore.laneIn(d, target.laneId);
+        if (!lane) continue;
+        lane.points = lane.points.filter(
+          (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < xHead - 1e-6 || p.x > x1 + 1e-6,
+        );
+        for (const n of item.nodes) {
+          const nx = xHead + n.x;
+          if (nx < -1e-6 || nx > 1 + 1e-6) continue; // out of range → drop
+          lane.points.push({ x: Math.max(0, Math.min(1, nx)), y: n.y, bend: n.bend ?? 0 });
+        }
+        lane.points.sort((a, b) => a.x - b.x);
+        if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
+      }
+    });
+  }
+
+  /** Copy then remove the region from the caret's lanes (one undo). */
+  cutAutomation(x0: number, x1: number) {
+    if (!this.copyAutomation(x0, x1)) return;
+    const laneIds = this.caretRowSpan().filter((r) => r.laneId).map((r) => r.laneId);
+    this.mutate('cut automation', (d) => {
+      for (const id of laneIds) {
+        const lane = ArrangementStore.laneIn(d, id);
+        if (!lane) continue;
+        lane.points = lane.points.filter(
+          (p) => p.x <= 1e-6 || p.x >= 1 - 1e-6 || p.x < x0 - 1e-6 || p.x > x1 + 1e-6,
+        );
+        if (lane.points.length < 2) lane.points = ArrangementStore.defaultCurve();
+      }
+    });
   }
 
   /** Label/target for a new lane from a sketch's first catalog device field. */

@@ -448,15 +448,21 @@ export class ArrangementApp extends MobxLitElement {
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
-      store.copyClips();
+      // Automation mode: every row is an envelope → copy the region's nodes.
+      if (store.automationMode) {
+        if (store.hasTimeSelection) store.copyAutomation(store.timeSelStart! / AUTO_SPAN, store.timeSelEnd / AUTO_SPAN);
+      } else store.copyClips();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'x') {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
-      store.cutClips();
+      if (store.automationMode) {
+        if (store.hasTimeSelection) store.cutAutomation(store.timeSelStart! / AUTO_SPAN, store.timeSelEnd / AUTO_SPAN);
+      } else store.cutClips();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
-      store.pasteClips();
+      if (store.automationMode) store.pasteAutomation(store.playFromBeat / AUTO_SPAN);
+      else store.pasteClips();
     } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       store.soloShortcut();
