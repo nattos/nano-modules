@@ -368,6 +368,7 @@ export class ArrangementStore {
   /** Load an existing arrangement file from a mounted workspace. */
   async openArrangement(backend: WorkspaceBackend, name: string) {
     const comp = await backend.read(name);
+    ArrangementStore.repairDeviceIds(comp); // heal duplicate device ids (see method)
     runInAction(() => {
       this.backend = backend;
       this.currentName = name;
@@ -2586,6 +2587,25 @@ export class ArrangementStore {
   /** A flat mid-level curve — the seed for a freshly created lane. `span` is the
    *  trailing endpoint x: 1 for a normalized clip lane, or the beat extent for a
    *  beat-domain track lane (so the flat line spans the visible timeline). */
+  /** Heal duplicate device ids: two devices sharing an id within one sketch emit
+   *  the SAME composite instance key, which the executor then retypes + recreates
+   *  every frame (1000s of "module initialized"). Give each later collision a
+   *  fresh id so both render as distinct instances. Mutates `comp` in place. */
+  private static repairDeviceIds(comp: Composition): void {
+    const heal = (devices: Array<{ id: string }> | undefined) => {
+      if (!devices) return;
+      const seen = new Set<string>();
+      for (const d of devices) {
+        if (seen.has(d.id)) d.id = uid('dev');
+        seen.add(d.id);
+      }
+    };
+    for (const t of comp.tracks) {
+      heal(t.sketch?.devices);
+      for (const c of t.clips) heal(c.sketch?.devices);
+    }
+  }
+
   private static defaultCurve(span = 1): EnvelopePoint[] {
     return [{ x: 0, y: 0.5, bend: 0 }, { x: span, y: 0.5, bend: 0 }];
   }

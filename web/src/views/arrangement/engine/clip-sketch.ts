@@ -117,6 +117,11 @@ export function buildCompositeSketch(
   let accKey: string | null = null;
 
   const push = (moduleType: string, key: string, state: Record<string, unknown>) => {
+    // A key must appear ONCE. Duplicate device ids within a clip (a data bug)
+    // would otherwise emit the same instance key twice with different module
+    // types → the executor retypes + recreates the instance every frame (1000s of
+    // "module initialized"). Keep the first; drop the collision.
+    if (instances[key]) return;
     const cat = catalogEffect(moduleType);
     bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle);
     chain.push({ type: 'module', module_type: moduleType, instance_key: key });

@@ -39,6 +39,25 @@ describe('buildCompositeSketch', () => {
     expect(types.indexOf('color.invert')).toBeGreaterThan(types.indexOf('composite.blend'));
   });
 
+  it('emits a colliding instance key ONCE (duplicate device id → no retype thrash)', () => {
+    // Regression: a clip with two devices sharing an id (a data bug) maps both to
+    // the SAME composite instance key. Emitting it twice with different module
+    // types made the executor retype + recreate the instance every frame (1000s of
+    // "module initialized"). The collision must be dropped, keeping the first.
+    const broken = {
+      id: 'X',
+      sketch: { devices: [
+        { id: 'dup', moduleType: 'source.solid_color', name: '', capabilities: [], state: {} },
+        { id: 'dup', moduleType: 'color.invert', name: '', capabilities: [], state: {} },
+      ] },
+    } as any;
+    const r = buildCompositeSketch([{ clip: broken, opacity: 1 }], { mode: 'transparent' })!;
+    const key = clipInstanceKey('X', 'dup');
+    const occ = r.sketch.chain!.filter((e) => (e as { instance_key?: string }).instance_key === key);
+    expect(occ.length).toBe(1); // collision dropped, not emitted twice
+    expect(occ[0].module_type).toBe('source.solid_color'); // first wins
+  });
+
   it('a lone effect-only clip processes the transparent base (no blend, no wires)', () => {
     const r = buildCompositeSketch([{ clip: clip('E', 'color.invert'), opacity: 1 }], { mode: 'transparent' })!;
     expect(r.sketch.chain!.map((e) => e.module_type)).toEqual(['color.invert']);

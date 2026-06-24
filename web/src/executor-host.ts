@@ -93,6 +93,11 @@ export class WasmSketchExecutor {
 
   // Effect instances, keyed by chain-entry instance_key (stable across frames).
   private instances = new Map<string, WebEffectInstance>();
+  /** Keys whose instance is mid-instantiation (async WASM compile). A pending key
+   *  is NOT "missing" — without tracking it, the per-frame drive + the reviving
+   *  check would destroy + respawn it every frame (1000s of instances) before it
+   *  ever finishes. Used to dedup concurrent creates AND to exempt it from revive. */
+  private inflight = new Map<string, Promise<WebEffectInstance | null>>();
   // Frame-local handle table the effrt imports resolve against. Cleared each
   // executeAllColumns; effrt_instance_for assigns indices as the executor asks.
   private byHandle: WebEffectInstance[] = [];
@@ -183,20 +188,35 @@ export class WasmSketchExecutor {
     const resolvedId = found?.resolvedId ?? mt;
     const existing = this.instances.get(key);
     if (existing) {
-      const currentId = existing.host.metadata?.id ?? '';
-      if (currentId === resolvedId || currentId === mt) return existing;
+      // Reuse unless the device's TYPE actually changed (smart-input retype).
+      // Compare the stored moduleType — NOT host.metadata.id, which falls back to
+      // '' when metadata isn't populated and then mismatches every frame, deleting
+      // + recreating the instance forever (1000s of "module initialized").
+      if (existing.moduleType === mt) return existing;
       this.instances.delete(key);  // module type changed (smart-input) — rebuild
     }
     if (!found) return null;
-    const host = new WasmHost();
-    host.bridgeCore = this.bridgeCore;
-    host.gpuHost = this.gpuHost;
-    host.onSchemaChanged = this.onHostSchemaChanged;
-    await host.load(found.compiled);
-    const module = host.activateEffect(found.resolvedId);
-    const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
-    this.instances.set(key, inst);
-    return inst;
+    // Dedup concurrent creates: WASM instantiation is async (>1 frame), and the
+    // per-frame drive re-enters here before it finishes — return the same promise.
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+      const host = new WasmHost();
+      host.bridgeCore = this.bridgeCore;
+      host.gpuHost = this.gpuHost;
+      host.onSchemaChanged = this.onHostSchemaChanged;
+      await host.load(found.compiled);
+      const module = host.activateEffect(found.resolvedId);
+      const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
+      this.instances.set(key, inst);
+      return inst;
+    })();
+    this.inflight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inflight.delete(key);
+    }
   }
 
   invalidateInstance(instanceKey: string): void {
@@ -420,7 +440,9 @@ export class WasmSketchExecutor {
     // Rebuild the slot so ALL state re-applies from scratch. Rare (only when a
     // previously-seen instance re-enters the chain — a clip boundary re-cross).
     const reviving = chain.some(
-      (e) => e.type === 'module' && !this.instances.has(e.instance_key) && slot.appliedKeys.has(e.instance_key),
+      (e) => e.type === 'module' && !this.instances.has(e.instance_key)
+        && !this.inflight.has(e.instance_key) // mid-instantiation, not pruned — don't tear it down
+        && slot.appliedKeys.has(e.instance_key),
     );
     if (reviving) {
       this.destroySlot(slot);
