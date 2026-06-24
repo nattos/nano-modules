@@ -2222,9 +2222,23 @@ export class ArrangementStore {
         const t = d.tracks.find((t) => t.id === trackId);
         const c = t?.clips.find((x) => x.id === clipId);
         if (t && c) {
+          const oldLen = c.lengthBeat;
           c.startBeat = start;
           c.lengthBeat = len;
           carveTrackSpan(t, clipId, start, start + len);
+          // Pin automation to BEATS (clip mode): the editor span = clip length, so
+          // rescale interior nodes by oldLen/newLen to hold their clip-beat. The
+          // 0/1 endpoints stay (they track the clip boundaries). Nodes pushed past
+          // the range are left (spec), not clamped.
+          if (this.clipAutoTiming === 'clip' && oldLen > 1e-6 && Math.abs(oldLen - len) > 1e-6) {
+            const k = oldLen / len;
+            for (const lane of c.automation) {
+              for (const pt of lane.points) {
+                if (pt.x <= 1e-6 || pt.x >= 1 - 1e-6) continue; // keep pinned endpoints
+                pt.x = pt.x * k;
+              }
+            }
+          }
         }
       },
       `resize:${trackId}:${clipId}`,
