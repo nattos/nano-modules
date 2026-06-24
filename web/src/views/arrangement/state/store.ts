@@ -233,20 +233,25 @@ export class ArrangementStore {
   // Transport
   playing = false;
   positionBeat = 0;
-  /** Insert / "play from" marker — playback starts here; click to set. */
-  playFromBeat = 0;
   loopEnabled = true;
   loopStartBeat = 0;
   loopEndBeat = 32;
   transportMode: 'precise' | 'live' = 'precise';
 
   /**
-   * Selected time region (beats). Drives insert/delete time and split. `null`
-   * start means no region. Empty `trackIds` = all tracks (global time).
+   * 2D edit caret (text-cursor model). The caret has a HEAD (current time =
+   * `playFromBeat`, on `caretHeadTrackId`) and an ANCHOR (where the gesture /
+   * selection started). The selected region is the rectangle anchor→head in BOTH
+   * time and tracks. Zero time-width ⇒ a vertical "slice" caret (infinitely thin
+   * in time, but spanning the anchor→head track range). The time box
+   * (`timeSel*`) + play-from are DERIVED from these — see the getters below.
+   *
+   * Track ids `''` ⇒ a global vertical span (all plain tracks).
    */
-  timeSelStart: number | null = null;
-  timeSelEnd = 0;
-  timeSelTrackIds: string[] = [];
+  playFromBeat = 0; // caret HEAD beat — playback starts here
+  caretAnchorBeat = 0; // caret ANCHOR beat
+  caretAnchorTrackId = ''; // anchor track ('' = global span)
+  caretHeadTrackId = ''; // head track ('' = global span)
 
   // ── Engine telemetry (ephemeral; mirrors appState.local.engine) ────────
   /**
@@ -680,6 +685,13 @@ export class ArrangementStore {
     return undefined;
   }
 
+  /** The clip on `trackId` whose span contains `beat` (start ≤ beat < end). */
+  clipAtBeat(trackId: string, beat: number): Clip | undefined {
+    return this.trackById(trackId)?.clips.find(
+      (c) => beat >= c.startBeat - 1e-6 && beat < c.startBeat + c.lengthBeat - 1e-6,
+    );
+  }
+
   // ── Selection ───────────────────────────────────────────────────────
   isSelected(path: string): boolean {
     return this.selection.has(path);
@@ -1067,50 +1079,113 @@ export class ArrangementStore {
     return Math.max(0, Math.round(beat / s) * s);
   }
 
-  // ── Time-region selection ─────────────────────────────────────────────
+  // ── 2D caret + derived time-region selection ──────────────────────────
 
-  get hasTimeSelection(): boolean {
-    return this.timeSelStart !== null && this.timeSelEnd > this.timeSelStart;
+  /** Plain (non-group/rail) tracks in render order — the vertical axis the
+   *  caret indexes over. */
+  private get caretTrackOrder(): Track[] {
+    return this.displayTracks.filter((t) => t.kind === 'track');
   }
 
-  /** Tracks the region applies to (empty scope = every non-group track). */
+  /** Ordered plain-track ids the caret spans (anchor→head, inclusive). Empty
+   *  anchor+head ids ⇒ a GLOBAL span (every plain track). */
+  get caretTrackIds(): string[] {
+    const aid = this.caretAnchorTrackId;
+    const hid = this.caretHeadTrackId;
+    if (!aid && !hid) return [];
+    const order = this.caretTrackOrder;
+    const ai = order.findIndex((t) => t.id === aid);
+    const hi = order.findIndex((t) => t.id === hid);
+    if (ai < 0 && hi < 0) return [];
+    if (ai < 0) return [order[hi].id];
+    if (hi < 0) return [order[ai].id];
+    const lo = Math.min(ai, hi);
+    const high = Math.max(ai, hi);
+    return order.slice(lo, high + 1).map((t) => t.id);
+  }
+
+  /** A non-degenerate time box exists only when the caret has time width. */
+  get hasTimeSelection(): boolean {
+    return Math.abs(this.caretAnchorBeat - this.playFromBeat) > 1e-6;
+  }
+  get timeSelStart(): number | null {
+    return this.hasTimeSelection ? Math.min(this.caretAnchorBeat, this.playFromBeat) : null;
+  }
+  get timeSelEnd(): number {
+    return Math.max(this.caretAnchorBeat, this.playFromBeat);
+  }
+  get timeSelTrackIds(): string[] {
+    return this.caretTrackIds;
+  }
+
+  /** Tracks the region applies to (empty span = every plain track). */
   private regionTracks(): Track[] {
-    const scope = this.timeSelTrackIds;
+    const scope = this.caretTrackIds;
     return this.composition.tracks.filter(
       (t) => t.kind === 'track' && (scope.length === 0 || scope.includes(t.id)),
     );
   }
 
+  /**
+   * Primary caret API: set the head (current time/track) + anchor. The time box
+   * and play-from are derived. Track ids `''` ⇒ a global vertical span.
+   */
+  setCaret(opts: { anchorBeat: number; anchorTrackId: string; headBeat: number; headTrackId: string }) {
+    runInAction(() => {
+      this.caretAnchorBeat = Math.max(0, opts.anchorBeat);
+      this.caretAnchorTrackId = opts.anchorTrackId;
+      this.caretHeadTrackId = opts.headTrackId;
+      this.playFromBeat = Math.max(0, opts.headBeat);
+      if (!this.playing) this.positionBeat = this.playFromBeat;
+    });
+  }
+
   setTimeSelection(start: number, end: number, trackIds: string[] = []) {
     runInAction(() => {
-      this.timeSelStart = Math.max(0, Math.min(start, end));
-      this.timeSelEnd = Math.max(start, end);
-      this.timeSelTrackIds = trackIds;
+      // Map the [start,end] × trackIds box onto the caret (anchor=start, head=end).
+      this.caretAnchorBeat = Math.max(0, Math.min(start, end));
+      this.playFromBeat = Math.max(start, end);
+      this.caretAnchorTrackId = trackIds[0] ?? '';
+      this.caretHeadTrackId = trackIds[trackIds.length - 1] ?? '';
+      if (!this.playing) this.positionBeat = this.playFromBeat;
     });
   }
 
   clearTimeSelection() {
     runInAction(() => {
-      this.timeSelStart = null;
-      this.timeSelTrackIds = [];
+      // Collapse the box to a caret at the head (keeps the head's track).
+      this.caretAnchorBeat = this.playFromBeat;
+      this.caretAnchorTrackId = this.caretHeadTrackId;
     });
   }
 
   /** Select every clip overlapping the current region (in scope tracks). */
-  selectClipsInRegion() {
-    if (!this.hasTimeSelection) return;
-    const start = this.timeSelStart!;
-    const end = this.timeSelEnd;
+  /**
+   * Select the clips the caret intersects: within a time box, clips overlapping
+   * [start,end); as a vertical slice, clips containing the head beat — on the
+   * caret's track span either way. Empty span selects nothing.
+   */
+  selectClipsInCaret() {
+    const scopeIds = this.caretTrackIds;
+    if (!scopeIds.length) { this.setSelection([]); return; }
+    const box = this.hasTimeSelection;
+    const start = box ? this.timeSelStart! : this.playFromBeat;
+    const end = box ? this.timeSelEnd : this.playFromBeat;
     const found: string[] = [];
     for (const t of this.regionTracks()) {
       for (const c of t.clips) {
         const cEnd = c.startBeat + c.lengthBeat;
-        if (cEnd > start + 1e-6 && c.startBeat < end - 1e-6) {
-          found.push(paths.clip(t.id, c.id));
-        }
+        const hit = box
+          ? cEnd > start + 1e-6 && c.startBeat < end - 1e-6
+          : c.startBeat <= start + 1e-6 && cEnd > start + 1e-6;
+        if (hit) found.push(paths.clip(t.id, c.id));
       }
     }
     this.setSelection(found);
+  }
+  /** @deprecated use selectClipsInCaret. */
+  selectClipsInRegion() {
+    this.selectClipsInCaret();
   }
 
   /** True if the time box exists, covers this clip's track, and overlaps it. */
@@ -1194,25 +1269,35 @@ export class ArrangementStore {
       'move-time-box',
     );
 
-    // 3. The box selection follows the moved content (live UI state).
+    // 3. The caret/box follows the moved content (live UI state).
     runInAction(() => {
-      this.timeSelStart = Math.max(0, a + deltaBeat);
-      this.timeSelEnd = this.timeSelStart + (b - a);
-      this.timeSelTrackIds = scopeIds.length ? scope.map(destFor) : [];
+      const movedScope = scopeIds.length ? scope.map(destFor) : [];
+      this.caretAnchorBeat = Math.max(0, a + deltaBeat);
+      this.playFromBeat = this.caretAnchorBeat + (b - a);
+      this.caretAnchorTrackId = movedScope[0] ?? '';
+      this.caretHeadTrackId = movedScope[movedScope.length - 1] ?? '';
     });
   }
 
-  /** Split every clip in scope at both region edges (Ableton split). */
-  splitAtRegion() {
-    if (!this.hasTimeSelection) return;
-    const edges = [this.timeSelStart!, this.timeSelEnd];
+  /**
+   * Split at the caret: with a time box, split every in-scope clip at both edges;
+   * with just the caret (a vertical slice), split at the head beat. Only the
+   * caret's track span is affected (a slice spanning tracks 2–4 cuts only those).
+   */
+  splitAtCursor() {
     const scope = this.regionTracks().map((t) => t.id);
+    if (scope.length === 0) return;
+    const edges = this.hasTimeSelection ? [this.timeSelStart!, this.timeSelEnd] : [this.playFromBeat];
     this.mutate('split', (d) => {
       for (const track of d.tracks) {
         if (!scope.includes(track.id)) continue;
         for (const edge of edges) splitClipsAt(track, edge);
       }
     });
+  }
+  /** @deprecated kept for callers — splits at the caret/region. */
+  splitAtRegion() {
+    this.splitAtCursor();
   }
 
   /** Remove the region's span; later clips shift left, spanning clips trim. */
@@ -1237,8 +1322,9 @@ export class ArrangementStore {
       }
     });
     runInAction(() => {
-      this.timeSelEnd = start;
-      this.timeSelStart = start;
+      // Collapse the caret to the cut point (box closes).
+      this.caretAnchorBeat = start;
+      this.playFromBeat = start;
     });
   }
 
@@ -1307,6 +1393,9 @@ export class ArrangementStore {
   setPlayFrom(beat: number) {
     runInAction(() => {
       this.playFromBeat = Math.max(0, beat);
+      // A horizontal scrub (ruler/transport) collapses any time box to a caret,
+      // keeping the head's vertical track span.
+      this.caretAnchorBeat = this.playFromBeat;
       if (!this.playing) this.positionBeat = this.playFromBeat;
     });
   }

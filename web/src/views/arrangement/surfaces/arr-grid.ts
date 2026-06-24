@@ -515,9 +515,14 @@ export class ArrGrid extends MobxLitElement {
     // Always visible, pinned to the bottom of the timeline (above the clip
     // panel when open). With no time selection it shows the play-from cursor.
     if (!store.hasTimeSelection) {
+      const nScope = store.caretTrackIds.length;
+      const slice = nScope === 0 ? 'all tracks' : `${nScope} track${nScope === 1 ? '' : 's'}`;
       return html`
         <div class="timebar">
-          <span class="trange">▸ play from ${store.playFromBeat.toFixed(2)}b</span>
+          <span class="trange">▸ play from ${store.playFromBeat.toFixed(2)}b · ${slice}</span>
+          <button @click=${() => store.splitAtCursor()} title="Split clips at the cursor">
+            <ui-icon icon="la-cut"></ui-icon> Split
+          </button>
         </div>
       `;
     }
@@ -803,17 +808,46 @@ export class ArrGrid extends MobxLitElement {
       }
     }
 
-    // Play-from marker (dim) then playhead (bright).
+    // The 2D caret: an I-beam spanning its vertical track slice + an orange
+    // inverted triangle at the top (the head). When PAUSED this is all that's
+    // drawn — no sweeping orange line (it would just sit under the triangle).
     const fx = grid.beatToX(store.playFromBeat);
-    if (fx >= 0 && fx <= w) {
-      ctx.fillStyle = 'rgba(234,234,234,0.4)';
-      ctx.fillRect(Math.round(fx), 0, 1, h);
-    }
-    const px = grid.beatToX(store.positionBeat);
-    if (px >= 0 && px <= w) {
+    if (fx >= -2 && fx <= w + 2) {
+      const [yTop, yBottom] = this.caretSpanY(h);
+      ctx.fillStyle = 'rgba(234,234,234,0.5)';
+      ctx.fillRect(Math.round(fx), yTop, 1, yBottom - yTop);
       ctx.fillStyle = 'rgba(255,140,0,0.95)';
-      ctx.fillRect(Math.round(px), 0, 1.5, h);
+      ctx.beginPath();
+      ctx.moveTo(fx - 4, 0);
+      ctx.lineTo(fx + 5, 0);
+      ctx.lineTo(fx + 0.5, 6);
+      ctx.closePath();
+      ctx.fill();
     }
+    // Playhead: the bright orange sweeping line, only WHILE PLAYING.
+    if (store.playing) {
+      const px = grid.beatToX(store.positionBeat);
+      if (px >= 0 && px <= w) {
+        ctx.fillStyle = 'rgba(255,140,0,0.95)';
+        ctx.fillRect(Math.round(px), 0, 1.5, h);
+      }
+    }
+  }
+
+  /** Vertical pixel span [top,bottom] of the caret's track slice; full height
+   *  for a global span. */
+  private caretSpanY(h: number): [number, number] {
+    const ids = store.caretTrackIds;
+    if (!ids.length) return [0, h];
+    let yTop = Infinity;
+    let yBottom = 0;
+    for (const r of this.trackRowLayout()) {
+      if (ids.includes(r.id)) {
+        yTop = Math.min(yTop, r.top);
+        yBottom = Math.max(yBottom, r.bottom);
+      }
+    }
+    return isFinite(yTop) ? [yTop, yBottom] : [0, h];
   }
 
   // ── Interaction ───────────────────────────────────────────────────────
@@ -943,6 +977,8 @@ export class ArrGrid extends MobxLitElement {
     startBeat: number;
     laneLeft: number;
     startTrackId: string;
+    /** Gesture started on the main bus ⇒ the caret spans ALL plain tracks. */
+    startIsBus: boolean;
     active: boolean;
     /** Set when the gesture began on a clip BODY: a plain click focuses this clip
      *  (no time box); a drag still does a region selection. */
@@ -1114,24 +1150,33 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const startBeat = grid.xToBeat(e.clientX - laneLeft);
     const startTrack = store.displayTracks[this.trackIndexAtClientY(e.clientY)];
-    // Move the cursor immediately on pointerdown (no need to wait for drag/up),
-    // and clear any existing time box right away (not on pointer-up). A drag
-    // below builds a fresh box.
-    store.setPlayFrom(store.quantize(startBeat, e.altKey));
-    store.clearTimeSelection();
-    // Clicking a clip body focuses it right away (no time box); a drag below
-    // overrides this with a region selection.
+    const startIsBus = !!startTrack && store.isMainBus(startTrack);
+    const qBeat = store.quantize(startBeat, e.altKey);
+    // Set the 2D caret to a zero-width slice at the clicked time + track (a bus
+    // start spans all plain tracks). A drag below extends it into a box/slice.
+    const trackId = startIsBus ? '' : startTrack?.id ?? '';
+    store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, headBeat: qBeat, headTrackId: trackId });
+    // Clicking a clip body focuses it right away; a drag below overrides this.
     if (clickFocusPath) store.selectClipOnly(clickFocusPath);
     this.drag = {
       x0: e.clientX,
       startBeat,
       laneLeft,
       startTrackId: startTrack?.id ?? '',
+      startIsBus,
       active: false,
       clickFocusPath,
     };
     window.addEventListener('pointermove', this.onRegionMove);
     window.addEventListener('pointerup', this.onRegionUp);
+  }
+
+  /** Nearest PLAIN track id at a clientY (clamps off the pinned main bus). */
+  private plainTrackIdAtClientY(clientY: number): string {
+    const order = store.displayTracks;
+    let i = this.trackIndexAtClientY(clientY);
+    while (i > 0 && order[i] && order[i].kind !== 'track') i--;
+    return order[i]?.kind === 'track' ? order[i].id : '';
   }
 
   private onRegionMove = (e: PointerEvent) => {
@@ -1142,26 +1187,15 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const cur = grid.xToBeat(e.clientX - d.laneLeft);
     const free = e.altKey;
-    const a = store.quantize(Math.min(d.startBeat, cur), free);
-    const b = store.quantize(Math.max(d.startBeat, cur), free);
-
-    // Track scope: starting in the main bus selects ALL tracks (global); any
-    // other start selects the contiguous track range the drag spans.
-    const startTrack = store.trackById(d.startTrackId);
-    let trackIds: string[] = [];
-    if (startTrack && !store.isMainBus(startTrack)) {
-      const tracks = store.displayTracks;
-      const startIdx = tracks.findIndex((t) => t.id === d.startTrackId);
-      const endIdx = this.trackIndexAtClientY(e.clientY);
-      const lo = Math.min(startIdx, endIdx);
-      const hi = Math.max(startIdx, endIdx);
-      trackIds = tracks.slice(lo, hi + 1).map((t) => t.id);
-    }
-    store.setTimeSelection(a, b, trackIds);
-    // The cursor follows the latest drag position (paused → playhead follows too).
-    store.setPlayFrom(cur < 0 ? 0 : store.quantize(cur, free));
-    // The region also selects the clips it covers (no multi-edit yet).
-    store.selectClipsInRegion();
+    const headBeat = cur < 0 ? 0 : store.quantize(cur, free);
+    const anchorBeat = store.quantize(d.startBeat, free);
+    // Vertical span: a bus start stays global; otherwise anchor track → the
+    // track currently under the cursor (clamped to plain tracks).
+    const anchorTrackId = d.startIsBus ? '' : d.startTrackId;
+    const headTrackId = d.startIsBus ? '' : this.plainTrackIdAtClientY(e.clientY);
+    store.setCaret({ anchorBeat, anchorTrackId, headBeat, headTrackId });
+    // The caret (box OR vertical slice) selects the clips it intersects.
+    store.selectClipsInCaret();
   };
 
   private onRegionUp = (e: PointerEvent) => {
@@ -1169,21 +1203,17 @@ export class ArrGrid extends MobxLitElement {
     window.removeEventListener('pointerup', this.onRegionUp);
     const d = this.drag;
     this.drag = null;
-    if (!d) return;
-    if (!d.active) {
-      const grid = buildBeatGrid();
-      const beat = store.quantize(grid.xToBeat(e.clientX - d.laneLeft));
-      store.setPlayFrom(beat);
-      if (d.clickFocusPath) {
-        // Plain click on a clip body → keep it focused (inspector + clip view),
-        // but no time box.
-        store.clearTimeSelection();
-      } else {
-        // Plain click on empty space → collapse region + clear selection.
-        store.clearTimeSelection();
-        store.clearSelection();
-      }
+    if (!d || d.active) return;
+    // Plain click (no drag): the caret was set on pointerdown. A clip body stays
+    // focused; otherwise select what's under the head — a clip if present, else
+    // the track underneath (text-caret: the cursor always lands somewhere).
+    if (d.clickFocusPath) return;
+    if (d.startIsBus || !d.startTrackId) {
+      store.clearSelection();
+      return;
     }
+    const clip = store.clipAtBeat(d.startTrackId, store.playFromBeat);
+    store.selectClipOnly(clip ? paths.clip(d.startTrackId, clip.id) : paths.track(d.startTrackId));
   };
 
   private onWheel = (e: WheelEvent) => {
