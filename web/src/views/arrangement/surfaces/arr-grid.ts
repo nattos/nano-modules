@@ -448,7 +448,7 @@ export class ArrGrid extends MobxLitElement {
       <div class="scroll" @pointerdown=${this.onScrollDown}>
         <canvas class="grid-canvas" style="height:${totalH}px"></canvas>
         <div class="rows">
-          ${repeat(tracks, (t) => t.id, (t) => this.renderTrack(t))}
+          ${tracks.map((t) => this.renderTrack(t))}
           ${store.automationMode ? this.renderBeatWarpRow() : ''}
           ${this.reorderActive ? this.renderReorderLine() : ''}
         </div>
@@ -521,6 +521,10 @@ export class ArrGrid extends MobxLitElement {
     const selected = store.isTrackShownSelected(track.id);
     const dragSrc = this.reorderActive && this.draggedTrackId === track.id;
     const accent = track.color ?? 'var(--app-cat-control)';
+    // Touch the clips array structure SYNCHRONOUSLY so the MobX reaction tracks
+    // add/remove/move/undo — the repeat() directive below evaluates its template
+    // lazily (during commit), which is outside the reaction's tracking window.
+    for (const c of track.clips) void c.id;
 
     return html`
       <div class="row ${isBus ? 'bus' : ''}">
