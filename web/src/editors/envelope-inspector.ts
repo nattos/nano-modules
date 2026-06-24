@@ -271,8 +271,9 @@ export class EnvelopeGraph extends MobxLitElement {
       const [, dy] = this.fromPx(px, py);
       const [dx] = this.fromPx(px, py);
       const isFirst = i === 0, isLast = i === pts.length - 1;
-      // Endpoints pin x at 0/1; interior nodes clamp x between neighbours.
-      let nx = isFirst ? 0 : isLast ? 1 : clamp(dx, pts[i - 1].x + 1e-3, pts[i + 1].x - 1e-3);
+      // Endpoints pin x at 0/1; interior nodes clamp between neighbours but MAY
+      // coincide with them (zero-span segments / hard vertical edges are allowed).
+      let nx = isFirst ? 0 : isLast ? 1 : clamp(dx, pts[i - 1].x, pts[i + 1].x);
       pts[i].x = nx;
       pts[i].y = clamp01(dy);
     } else if (this.mode === 'endpoints') {
@@ -294,33 +295,32 @@ export class EnvelopeGraph extends MobxLitElement {
    *  which nodes (inner edges + interior) lift with the drag. */
   private buildShelf() {
     const sel = this.selection!;
-    // Outer (fixed) nodes sit EXACTLY on the box edges (grid-aligned); the inner
-    // (free) nodes a hair inside, so the edge is near-vertical. `eps` is just
-    // above the node-drag x-clamp so the inner node stays editable later.
-    const mid = (sel.x0 + sel.x1) / 2;
-    const eps = 0.0015;
-    const innerLx = Math.min(sel.x0 + eps, mid);
-    const innerRx = Math.max(sel.x1 - eps, mid);
-    const near = (a: number, b: number) => Math.abs(a - b) < 1e-4;
-    const adds = [
-      { x: sel.x0, y: evalEnvelope(this.points, sel.x0) },   // outer L (fixed)
-      { x: innerLx, y: evalEnvelope(this.points, innerLx) }, // inner L (lifts)
-      { x: innerRx, y: evalEnvelope(this.points, innerRx) }, // inner R (lifts)
-      { x: sel.x1, y: evalEnvelope(this.points, sel.x1) },   // outer R (fixed)
+    // Both nodes at each box edge sit at EXACTLY the same x → a true zero-span
+    // (vertical) edge. Outer = fixed (original value); inner = lifts. Existing
+    // nodes on the edges are dropped so we never stack more than the pair.
+    const vL = evalEnvelope(this.points, sel.x0);
+    const vR = evalEnvelope(this.points, sel.x1);
+    const E = 1e-6;
+    const left = this.points.filter((p) => p.x < sel.x0 - E);
+    const mid = this.points.filter((p) => p.x > sel.x0 + E && p.x < sel.x1 - E);
+    const right = this.points.filter((p) => p.x > sel.x1 + E);
+    const pts: EnvPoint[] = [
+      ...left,
+      { x: sel.x0, y: vL, ease: 0 }, // outer L (fixed)
+      { x: sel.x0, y: vL, ease: 0 }, // inner L (lifts)
+      ...mid,
+      { x: sel.x1, y: vR, ease: 0 }, // inner R (lifts)
+      { x: sel.x1, y: vR, ease: 0 }, // outer R (fixed)
+      ...right,
     ];
-    let pts = this.points.map(p => ({ ...p }));
-    for (const a of adds) if (!pts.some(p => near(p.x, a.x))) pts.push({ x: a.x, y: a.y, ease: 0 });
-    pts.sort((a, b) => a.x - b.x);
     this.points = pts;
     this.onChange?.(pts);
-    // Lifting set: inner edges + interior (strictly inside the box, NOT the outer
-    // nodes pinned to the box edges).
-    this.shelfMoving = [];
-    for (let i = 0; i < pts.length; i++) {
-      if (pts[i].x > sel.x0 + 1e-4 && pts[i].x < sel.x1 - 1e-4) {
-        this.shelfMoving.push({ idx: i, startY: pts[i].y });
-      }
-    }
+    // Lifting set: inner-left + interior + inner-right (NOT the outer fixed pair).
+    const L = left.length;
+    const M = mid.length;
+    this.shelfMoving = [{ idx: L + 1, startY: vL }];
+    for (let i = 0; i < M; i++) this.shelfMoving.push({ idx: L + 2 + i, startY: mid[i].y });
+    this.shelfMoving.push({ idx: L + 2 + M, startY: vR });
   }
 
   /** Capture the nodes inside the box (+ their start x/y + the box x-extent). */
@@ -417,15 +417,23 @@ export class EnvelopeGraph extends MobxLitElement {
       ctx.fillRect(Math.round(bx1), this.pad, 1, ch - 2 * this.pad);
     }
 
-    // Curve (sampled) + fill. Sample at the uniform grid PLUS every node x, so a
-    // near-vertical step (two nodes a hair apart) renders as a hard edge instead
-    // of being skipped between uniform samples and drawn as a slope.
+    // Curve + fill, sampled per SEGMENT so a zero-span segment (two coincident
+    // control nodes) renders as a hard VERTICAL edge instead of being skipped by
+    // a uniform sampler and drawn as a slope.
     const N = 96;
-    const xset = new Set<number>();
-    for (let i = 0; i <= N; i++) xset.add(i / N);
-    for (const p of this.points) xset.add(clamp01(p.x));
-    const xs = [...xset].sort((a, b) => a - b);
-    const samples: [number, number][] = xs.map((x) => this.toPx(x, evalEnvelope(this.points, x)));
+    const samples: [number, number][] = [this.toPx(this.points[0].x, this.points[0].y)];
+    for (let i = 0; i < this.points.length - 1; i++) {
+      const a = this.points[i], b = this.points[i + 1];
+      if (b.x - a.x < 1e-9) {
+        samples.push(this.toPx(b.x, b.y)); // vertical jump
+        continue;
+      }
+      const steps = Math.max(2, Math.round((b.x - a.x) * N));
+      for (let s = 1; s <= steps; s++) {
+        const x = a.x + (b.x - a.x) * (s / steps);
+        samples.push(this.toPx(x, evalEnvelope(this.points, x)));
+      }
+    }
     const [, baseY] = this.toPx(0, 0);
     ctx.beginPath();
     ctx.moveTo(samples[0][0], baseY);
