@@ -214,7 +214,7 @@ export class WasmSketchExecutor {
   deleteSketch(sketchId: string): void {
     const slot = this.slots.get(sketchId);
     if (!slot) return;
-    this.exports.executor_destroy(slot.exPtr);
+    this.destroySlot(slot);
     this.slots.delete(sketchId);
   }
 
@@ -262,7 +262,7 @@ export class WasmSketchExecutor {
     // an effect we drop the live instances (invalidateInstance, called by the
     // worker) and recreate the whole executor so its caches reset cleanly.
     for (const slot of this.slots.values()) {
-      this.exports.executor_destroy(slot.exPtr);
+      this.destroySlot(slot);
     }
     this.slots.clear();
   }
@@ -364,6 +364,17 @@ export class WasmSketchExecutor {
     }
   }
 
+  /**
+   * Fully tear down a slot: RELEASE its output texture (a ~W×H RGBA8 GPU texture)
+   * THEN destroy the native executor. Forgetting the texture release here leaked
+   * one per slot teardown — and the per-frame "reviving" rebuild can destroy a
+   * slot every time the playhead crosses a clip boundary → GPU/WASM OOM.
+   */
+  private destroySlot(slot: SketchSlot): void {
+    if (slot.outputTex) { this.gpuHost.release(slot.outputTex); slot.outputTex = 0; }
+    this.exports.executor_destroy(slot.exPtr);
+  }
+
   private ensureOutputTexture(slot: SketchSlot, w: number, h: number): number {
     if (slot.outputTex && slot.outW === w && slot.outH === h) return slot.outputTex;
     if (slot.outputTex) this.gpuHost.release(slot.outputTex);
@@ -396,7 +407,7 @@ export class WasmSketchExecutor {
       (e) => e.type === 'module' && !this.instances.has(e.instance_key) && slot.appliedKeys.has(e.instance_key),
     );
     if (reviving) {
-      this.exports.executor_destroy(slot.exPtr);
+      this.destroySlot(slot);
       this.slots.delete(sketchId);
       slot = this.slotFor(sketchId);
     }
