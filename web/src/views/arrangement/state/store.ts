@@ -158,6 +158,25 @@ function carveTrackSpan(track: Track, exceptId: string, start: number, end: numb
   track.clips = next;
 }
 
+/**
+ * Resolve clip overlaps on a track by MAINTAINING STARTS and trimming ENDS: each
+ * clip's end is capped at the next clip's start. Used after a global length change
+ * (BPM reflow lengthens one-shot clips) so the "clips never overlap" invariant holds
+ * without moving any clip's start. A single left-to-right pass suffices — once clip
+ * i ends at clip i+1's start it can't reach i+2 either.
+ */
+function resolveOverlapsKeepStarts(track: Track) {
+  const clips = [...track.clips].sort((a, b) => a.startBeat - b.startBeat);
+  for (let i = 0; i < clips.length - 1; i++) {
+    const a = clips[i];
+    const b = clips[i + 1];
+    const gap = b.startBeat - a.startBeat;
+    if (a.startBeat + a.lengthBeat > b.startBeat + 1e-6 && gap > 1e-6) {
+      a.lengthBeat = gap; // trim a's end back to b's start (keep both starts)
+    }
+  }
+}
+
 /** Resolve a column-group sketchId (`clip/<trk>/<clip>` | `track/<trk>`) to its
  *  ClipSketch within a draft composition. */
 function draftSketch(d: Composition, sketchId: string): ClipSketch | undefined {
@@ -1798,7 +1817,31 @@ export class ArrangementStore {
   }
   setBpm(bpm: number) {
     const v = Math.max(20, Math.min(300, bpm));
-    this.mutate('set BPM', (d) => { d.meta.baseBPM = v; }, 'meta:bpm');
+    this.mutate(
+      'set BPM',
+      (d) => {
+        const old = d.meta.baseBPM;
+        d.meta.baseBPM = v;
+        if (old <= 0 || Math.abs(old - v) < 1e-9) return;
+        // Ableton warp-off behaviour: a one-shot clip holds a FIXED real-seconds slice
+        // of video, so its length in BEATS scales with tempo (more beats at higher BPM).
+        // time/beat-sync clips keep their length (loop count / speed re-derive on read).
+        // Coalescing reverts to base before re-running, so this stays absolute.
+        const ratio = v / old;
+        for (const t of d.tracks) {
+          let reflowed = false;
+          for (const c of t.clips) {
+            if (c.kind === 'video' && c.loop?.mode === 'one-shot') {
+              c.lengthBeat = Math.max(0.5, c.lengthBeat * ratio);
+              reflowed = true;
+            }
+          }
+          // Lengthening may overlap later clips: keep starts, trim ends.
+          if (reflowed && ratio > 1) resolveOverlapsKeepStarts(t);
+        }
+      },
+      'meta:bpm',
+    );
   }
   setResolution(width: number, height: number) {
     this.mutate('set resolution', (d) => { d.meta.resolution = { width, height }; }, 'meta:res');
@@ -2319,8 +2362,8 @@ export class ArrangementStore {
     newStartBeat: number,
     newLengthBeat: number,
   ) {
-    const start = Math.max(0, newStartBeat);
-    const len = Math.max(0.5, newLengthBeat);
+    let start = Math.max(0, newStartBeat);
+    let len = Math.max(0.5, newLengthBeat);
     this.mutate(
       'resize clip',
       (d) => {
@@ -2328,6 +2371,14 @@ export class ArrangementStore {
         const c = t?.clips.find((x) => x.id === clipId);
         if (t && c) {
           const oldLen = c.lengthBeat;
+          // The gesture re-runs this recipe from its base each tick, so c.startBeat /
+          // c.loop.startSec here are the PRE-resize values — couplings below compute
+          // absolute targets from them (never increment).
+          const end0 = start + len; // the edge the drag is holding fixed
+          this.applyOneShotResizeTiming(c, d.meta.baseBPM, start, end0, (s, l) => {
+            start = s;
+            len = l;
+          });
           c.startBeat = start;
           c.lengthBeat = len;
           carveTrackSpan(t, clipId, start, start + len);
@@ -2348,6 +2399,55 @@ export class ArrangementStore {
       },
       `resize:${trackId}:${clipId}`,
     );
+  }
+
+  /**
+   * One-shot manual-resize timing coupling (no-op for other modes). LEFT-edge trim
+   * moves the slice start (`loop.startSec`) so the video content stays pinned to the
+   * timeline, capped at the source start (startSec ≥ 0 ⇒ the edge stops at source
+   * frame 0). Length is capped so the floating end-into-source never runs past the
+   * source end. Linear in tempo (warp-ignored) — exact at neutral warp.
+   *
+   * `c` is the gesture-BASE draft (startBeat / loop.startSec are pre-drag values).
+   * Reports the possibly-clamped `(start, len)` via `emit`; may mutate `c.loop.startSec`.
+   */
+  private applyOneShotResizeTiming(
+    c: Clip,
+    bpm: number,
+    start: number,
+    end: number,
+    emit: (start: number, len: number) => void,
+  ) {
+    if (c.kind !== 'video' || c.loop?.mode !== 'one-shot') {
+      emit(start, Math.max(0.5, end - start));
+      return;
+    }
+    const fps = c.source?.fps && c.source.fps > 0 ? c.source.fps : 30;
+    const videoDurSec = c.source ? c.source.durationFrames / fps : Infinity;
+    const spb = 60 / Math.max(1, bpm);
+    const speed = c.loop.speed ?? 1;
+    const oldStartBeat = c.startBeat;
+    const oldStartSec = c.loop.startSec ?? 0;
+
+    let startSec = oldStartSec;
+    if (Math.abs(start - oldStartBeat) > 1e-6 && speed > 1e-6) {
+      const raw = oldStartSec + (start - oldStartBeat) * spb * speed;
+      if (raw < 0) {
+        // Can't show before the source start: stop the edge where startSec hits 0.
+        start = Math.max(0, oldStartBeat - oldStartSec / (spb * speed));
+        startSec = 0;
+      } else {
+        startSec = raw;
+      }
+    }
+    let len = Math.max(0.5, end - start);
+
+    if (Number.isFinite(videoDurSec) && speed > 1e-6) {
+      const maxLen = (videoDurSec - startSec) / (speed * spb);
+      len = Math.max(0.5, Math.min(len, maxLen));
+    }
+    c.loop.startSec = startSec;
+    emit(start, len);
   }
 
   /** Patch a clip's play-mode timing (mode / slice seconds / speed / direction / …).
