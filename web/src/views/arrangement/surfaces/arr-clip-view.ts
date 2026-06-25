@@ -17,6 +17,7 @@ import { drawFrameCell, reelSeedFor } from './film-reel';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
+import { clipSourceFrameAt, type ClipTimeCtx } from '../engine/clip-time';
 import './time-strip';
 import './arr-automation-editor';
 import './arr-ruler';
@@ -209,6 +210,7 @@ export class ArrClipView extends MobxLitElement {
   @state() private hoverFrame: number | null = null;
   @state() private hoverClientX = 0;
   private lastClipId = '';
+  private lastMode = '';
 
   @query('.top canvas') private topCanvas?: HTMLCanvasElement;
   @query('.mini') private miniCanvas?: HTMLCanvasElement;
@@ -414,7 +416,9 @@ export class ArrClipView extends MobxLitElement {
     if (sel) {
       const { inFrame, framesPerBeat } = this.frameMap();
       const localBeat = (this.scrubFrame - inFrame) / framesPerBeat;
-      store.setPlayFrom(sel.clip.startBeat + Math.max(0, localBeat));
+      // Keep the transport within the clip (the source view spans the whole video,
+      // which is far longer than the clip).
+      store.setPlayFrom(sel.clip.startBeat + Math.max(0, Math.min(sel.clip.lengthBeat, localBeat)));
     }
   };
   private onHover = (e: CustomEvent) => {
@@ -424,20 +428,23 @@ export class ArrClipView extends MobxLitElement {
 
   // ── Drawing ──────────────────────────────────────────────────────────────
   updated() {
-    // Reset the transform to fit when the selected clip changes.
+    // Re-fit the shared view when the clip OR the mode changes (the source view spans
+    // the whole video, the automation view spans the loop/clip — different extents).
     const sel = store.selectedClip;
-    if (sel && sel.clip.id !== this.lastClipId) {
+    const clipChanged = !!sel && sel.clip.id !== this.lastClipId;
+    const modeChanged = store.clipViewMode !== this.lastMode;
+    if (sel && (clipChanged || modeChanged)) {
       this.lastClipId = sel.clip.id;
-      // Fit the clip-local view's span to the available width on clip change.
+      this.lastMode = store.clipViewMode;
       this.clipView.fitTo(this.bodyEl?.clientWidth ?? 600);
-      this.scrubFrame = this.sliceFrames(sel.clip).inFrame;
+      if (clipChanged) this.scrubFrame = this.sliceFrames(sel.clip).inFrame;
     }
-    // During playback the timeline playhead drives the shared scrub (so the film
-    // strip + automation cursor track the transport). Paused, the user's scrub
-    // owns it (see onScrub). Reading positionBeat here also keeps this reactive.
+    // During playback the preview tracks the actual played source frame (play mode
+    // applied). Paused, the user's scrub owns it (see onScrub). Reading positionBeat
+    // here also keeps this reactive.
     if (sel && store.playing && sel.clip.lengthBeat > 0) {
-      const frac = (store.positionBeat - sel.clip.startBeat) / sel.clip.lengthBeat;
-      if (frac >= 0 && frac <= 1) this.scrubFrame = frac * this.duration();
+      const f = this.currentSourceFrame();
+      if (f != null) this.scrubFrame = f;
     }
     this.drawTop();
     this.drawMini();
@@ -482,20 +489,52 @@ export class ArrClipView extends MobxLitElement {
       });
       const hit = thumbnailController.peek(src.sourceKey, f, level);
       if (hit) {
-        ctx.drawImage(hit.value, 0, 0, w, h);
+        // FIT (preserve aspect, letterbox) — never stretch/cover.
+        const bmp = hit.value;
+        const ar = bmp.width / Math.max(1, bmp.height);
+        let dw = w;
+        let dh = w / ar;
+        if (dh > h) { dh = h; dw = h * ar; }
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
         return;
       }
     }
     drawFrameCell(ctx, 0, 0, w, h, reelSeedFor(clip.id), Math.min(1, frame / this.duration()));
   }
 
-  /** Beats spanned by the automation editor: the source-loop length (loop mode)
-   *  or the clip's arrangement length (clip mode). The editor's x∈[0,1] maps to
-   *  exactly this many real beats. */
+  /** The source frame the engine is actually showing at the transport position (play
+   *  mode applied), or null when the playhead is off this clip. */
+  private currentSourceFrame(): number | null {
+    const sel = store.selectedClip;
+    const clip = sel?.clip;
+    if (!clip?.source) return null;
+    const beat = store.positionBeat;
+    if (beat < clip.startBeat - 1e-6 || beat >= clip.startBeat + clip.lengthBeat) return null;
+    const fps = this.fpsOf(clip);
+    const frameCount = this.duration();
+    const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
+    const ctx: ClipTimeCtx = {
+      startBeat: clip.startBeat,
+      lengthBeat: clip.lengthBeat,
+      videoDurSec: frameCount / fps,
+      secondsAt: (b) => b * spb,
+    };
+    return clipSourceFrameAt(clip.loop, ctx, beat, fps, frameCount);
+  }
+
+  /** Beats spanned by the shared clip-local view. In SOURCE mode the strip + ruler
+   *  span the WHOLE video (its inherent start→end), so the active slice is just a
+   *  sub-region and you can always pan to the real video start. In AUTOMATION mode it's
+   *  the source-loop length (loop timing) or the clip's arrangement length. */
   private editorBeats(): number {
     const sel = store.selectedClip;
     if (!sel) return 4;
     const clip = sel.clip;
+    if (store.clipViewMode === 'source' && clip.source) {
+      // The whole source video, in beats at the project tempo.
+      return Math.max(0.25, (this.duration() / this.fpsOf(clip)) * (store.composition.meta.baseBPM / 60));
+    }
     if (store.clipAutoTiming === 'loop' && clip.source) {
       const fps = clip.source.fps ?? 30;
       const { inFrame, outFrame } = this.sliceFrames(clip);
@@ -543,6 +582,10 @@ export class ArrClipView extends MobxLitElement {
    *  Lets the SOURCE film strip share the clip-local ruler's zoom/pan exactly. */
   private frameMap(): { inFrame: number; framesPerBeat: number } {
     const clip = store.selectedClip?.clip;
+    if (store.clipViewMode === 'source' && clip?.source) {
+      // Whole-video span: [0 beats, videoBeats] ↔ [frame 0, durationFrames].
+      return { inFrame: 0, framesPerBeat: (this.fpsOf(clip) * 60) / store.composition.meta.baseBPM };
+    }
     const { inFrame, outFrame } = this.sliceFrames(clip);
     const loopFrames = Math.max(1, outFrame - inFrame);
     return { inFrame, framesPerBeat: loopFrames / this.editorBeats() };
@@ -557,10 +600,10 @@ export class ArrClipView extends MobxLitElement {
     return inFrame + this.clipView.scrollUnits * framesPerBeat;
   }
   private stripPlayheadFrame(): number {
-    const pos = this.clipView.positionBeat; // clip-local beat, < 0 ⇒ off
-    if (pos < 0) return -1;
-    const { inFrame, framesPerBeat } = this.frameMap();
-    return inFrame + pos * framesPerBeat;
+    // The actual played source frame (play mode applied) — tracks the loop, not a
+    // linear sweep across the whole video. Falls back to the scrub when off-clip.
+    const live = store.playing ? this.currentSourceFrame() : null;
+    return live != null ? live : Math.max(0, this.scrubFrame);
   }
 
   /** Cursor as normalized x∈[0,1] along the editor's BEAT axis (under the
