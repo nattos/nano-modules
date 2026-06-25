@@ -15,7 +15,7 @@
 
 import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { placeGeom, type BlitFit, type BlitTransform } from '../../../video/frame-blitter';
+import { placeGeom, type BlitFit, type BlitTransform, type PlaceGeom } from '../../../video/frame-blitter';
 
 @customElement('source-transform-widget')
 export class SourceTransformWidget extends LitElement {
@@ -74,10 +74,22 @@ export class SourceTransformWidget extends LitElement {
     .flip button.on { background: var(--app-hi-color2, #4169e1); color: #fff; }
   `;
 
-  private get aspect() {
-    const vw = this.videoW > 0 ? this.videoW : this.canvasW;
-    const vh = this.videoH > 0 ? this.videoH : this.canvasH;
-    return { vw, vh };
+  /** The frame's placement geometry. When the source aspect is KNOWN, this is the
+   *  real `placeGeom` (matches the blit). When UNKNOWN (no probed dimensions), draw a
+   *  centred square ~60% of the canvas's short side (× scale) instead of snapping to
+   *  the canvas aspect — so it's not snug to either edge and the anchor stays
+   *  draggable on both axes (the actual render still uses the real texture size). */
+  private framePlaceGeom(): PlaceGeom {
+    if (this.videoW > 0 && this.videoH > 0) {
+      return placeGeom(this.videoW, this.videoH, this.canvasW, this.canvasH, this.mode, this.transform, this.canvasW, this.canvasH);
+    }
+    const side = 0.6 * Math.min(this.canvasW, this.canvasH) * Math.max(1e-3, this.transform.scale);
+    const w = side / Math.max(1, this.canvasW);
+    const h = side / Math.max(1, this.canvasH);
+    return {
+      rect: [this.transform.anchorX * (1 - w), this.transform.anchorY * (1 - h), w, h],
+      rot: 0, flipH: this.transform.flipH, flipV: this.transform.flipV,
+    };
   }
 
   updated(_c: PropertyValues) {
@@ -107,8 +119,7 @@ export class SourceTransformWidget extends LitElement {
     ctx.clearRect(0, 0, W, H);
 
     const box = this.canvasBox(W, H);
-    const { vw, vh } = this.aspect;
-    const g = placeGeom(vw, vh, this.canvasW, this.canvasH, this.mode, this.transform, this.canvasW, this.canvasH);
+    const g = this.framePlaceGeom();
     // Source frame rect in pad px (may extend beyond the canvas box).
     const fx = box.x + g.rect[0] * box.w;
     const fy = box.y + g.rect[1] * box.h;
@@ -145,8 +156,7 @@ export class SourceTransformWidget extends LitElement {
     const { r, box } = this.padBox();
     const px = (e.clientX - r.left - box.x) / box.w; // canvas-normalised pointer
     const py = (e.clientY - r.top - box.y) / box.h;
-    const { vw, vh } = this.aspect;
-    const g = placeGeom(vw, vh, this.canvasW, this.canvasH, this.mode, this.transform, this.canvasW, this.canvasH);
+    const g = this.framePlaceGeom();
     this.drag = { offX: px - g.rect[0], offY: py - g.rect[1], rectW: g.rect[2], rectH: g.rect[3] };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     (this.renderRoot.querySelector('.pad') as HTMLElement)?.classList.add('grabbing');
