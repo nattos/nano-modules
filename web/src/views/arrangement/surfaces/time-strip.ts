@@ -134,17 +134,34 @@ export class TimeStrip extends LitElement {
         readaheadFrames: 0,
       });
     }
-    for (let f = firstFrame; ; f += frameStep) {
-      const x = this.frameToX(f);
-      if (x > w) break;
-      const cw = frameStep * this.pxPerFrame;
-      if (x + cw < 0) continue;
-      const hit = real ? thumbnailController.peek(this.sourceKey, Math.min(dur - 1, f), level) : null;
-      if (hit) ctx.drawImage(hit.value, x, 0, cw, h);
-      else drawFrameCell(ctx, x, 0, cw - 1, h, seed, Math.min(1, f / dur));
-      ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.fillRect(x, 0, 1, h);
+    // The video occupies [x0, x1] in px; clip the cells to it so the strip never tiles
+    // past the source, and the final/first panel's edge lands exactly on the end/start.
+    const x0 = this.frameToX(0);
+    const x1 = this.frameToX(dur);
+    const clipL = Math.max(0, x0);
+    const clipR = Math.min(w, x1);
+    if (clipR > clipL) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(clipL, 0, clipR - clipL, h);
+      ctx.clip();
+      for (let f = firstFrame; f < dur; f += frameStep) {
+        const x = this.frameToX(f);
+        if (x > w) break;
+        const cw = frameStep * this.pxPerFrame;
+        if (x + cw < 0) continue;
+        const hit = real ? thumbnailController.peek(this.sourceKey, Math.min(dur - 1, f), level) : null;
+        if (hit) ctx.drawImage(hit.value, x, 0, cw, h);
+        else drawFrameCell(ctx, x, 0, cw - 1, h, seed, Math.min(1, f / dur));
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.fillRect(x, 0, 1, h);
+      }
+      ctx.restore();
     }
+    // Past the video's ends (zoomed/panned beyond start or end) ⇒ solid black.
+    ctx.fillStyle = '#000';
+    if (x0 > 0) ctx.fillRect(0, 0, Math.min(w, x0), h);
+    if (x1 < w) ctx.fillRect(Math.max(0, x1), 0, w - Math.max(0, x1), h);
 
     // Play-mode shading: dim outside the loop region.
     if (this.loopOut > this.loopIn) {
@@ -176,7 +193,7 @@ export class TimeStrip extends LitElement {
     for (let f = startTick; ; f += step) {
       const x = this.frameToX(f);
       if (x > w) break;
-      if (x < 0) continue;
+      if (x < 0 || f < 0 || f > dur) continue; // ticks only within the video
       ctx.strokeStyle = 'rgba(255,255,255,0.10)';
       ctx.beginPath();
       ctx.moveTo(Math.round(x) + 0.5, 0);
