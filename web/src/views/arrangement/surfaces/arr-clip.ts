@@ -349,14 +349,31 @@ export class ArrClip extends MobxLitElement {
     const aspect = probe ? probe.value.width / Math.max(1, probe.value.height) : 16 / 9;
     const panelW = Math.max(4, h * aspect);
 
-    const frameAtX = (cx: number): number | null => {
-      const beat = startBeat + (cx / w) * lengthBeat;
-      return loop ? clipSourceFrameAt(loop, timeCtx, beat, fps, frameCount) : Math.round((cx / w) * (frameCount - 1));
-    };
+    const beatAtX = (cx: number) => startBeat + (cx / w) * lengthBeat;
+    const frameAtBeat = (beat: number): number | null =>
+      loop
+        ? clipSourceFrameAt(loop, timeCtx, beat, fps, frameCount)
+        : Math.round(((beat - startBeat) / lengthBeat) * (frameCount - 1));
+    const frameAtX = (cx: number) => frameAtBeat(beatAtX(cx));
+
+    // Pin the loop-END thumbnail just BEFORE the wrap — sampling AT a marker returns the
+    // wrapped loop-START frame. endEps = half a source frame in beats, loop-derived so
+    // it's identical at every zoom (the pinned boundary frames never drift).
+    const loopStart = loop?.startSec ?? 0;
+    const loopEnd = loop?.endSec ?? timeCtx.videoDurSec;
+    const loopLen = loopEnd - loopStart;
+    let perBeat = (loop?.speed ?? 1) * spb;
+    if (loop?.mode === 'beat-sync') {
+      const vb = loop.syncUseBpm ? loopLen * ((loop.syncBpm ?? 120) / 60) : loop.syncBeats ?? 4;
+      perBeat = vb > 1e-9 ? loopLen / vb : perBeat;
+    }
+    const endEps = perBeat > 1e-9 && fps > 0 ? 0.5 / fps / perBeat : 1e-4;
 
     // Loop-aware segments: clip edges + each loop marker. Within a segment, tile panels
     // left-anchored from its start, plus one right-anchored panel ending at its end —
-    // so both segment edges (= markers) land a panel edge.
+    // so both segment edges (= markers) land a panel edge. The boundary thumbnails are
+    // PINNED to the boundary content (loop start/end frames) so they don't change as the
+    // panels reflow on zoom/resize.
     const markerXs = this.loopMarkerBeats(loop, timeCtx, spb, w).map((b) => (b / lengthBeat) * w);
     const bounds = [0, ...markerXs, w];
     const panels: Array<{ x: number; cl: number; cr: number; frame: number | null }> = [];
@@ -365,18 +382,19 @@ export class ArrClip extends MobxLitElement {
       const R = bounds[s + 1];
       const segW = R - L;
       if (segW <= 0.5) continue;
+      const startFrame = frameAtX(L); // content at the loop/clip start (pinned)
+      const endFrame = frameAtBeat(beatAtX(R) - endEps); // content at the loop/clip end (pinned)
       if (segW <= panelW) {
         // Too tight: one aspect-correct panel centred on the segment, cropped to it.
-        const px = (L + R) / 2 - panelW / 2;
-        panels.push({ x: px, cl: L, cr: R, frame: frameAtX((L + R) / 2) });
+        panels.push({ x: (L + R) / 2 - panelW / 2, cl: L, cr: R, frame: startFrame });
       } else {
         const nFull = Math.floor(segW / panelW);
         for (let i = 0; i < nFull; i++) {
           const px = L + i * panelW;
-          panels.push({ x: px, cl: L, cr: R, frame: frameAtX(px + panelW / 2) });
+          panels.push({ x: px, cl: L, cr: R, frame: i === 0 ? startFrame : frameAtX(px + panelW / 2) });
         }
         const px = R - panelW; // right-anchored final panel (may overlap the last full one)
-        panels.push({ x: px, cl: L, cr: R, frame: frameAtX(px + panelW / 2) });
+        panels.push({ x: px, cl: L, cr: R, frame: endFrame });
       }
     }
 
@@ -440,19 +458,23 @@ export class ArrClip extends MobxLitElement {
     if (periodBeats <= 1e-3 || loopLen <= 1e-6) return [];
     if ((periodBeats / timeCtx.lengthBeat) * w < 3) return []; // sub-pixel loops → don't segment
     const playStart = loop.playStartSec ?? loopStart;
-    let b = ((loopEnd - playStart) / loopLen) * periodBeats;
-    while (b <= 1e-6) b += periodBeats; // skip any pre-edge wraps
+    let first = ((loopEnd - playStart) / loopLen) * periodBeats;
+    while (first <= 1e-6) first += periodBeats; // first restart strictly inside the clip
     const out: number[] = [];
-    for (; b < timeCtx.lengthBeat - 1e-6; b += periodBeats) out.push(b);
+    // Compute each marker as first + k·period (not accumulated) to avoid FP drift.
+    for (let k = 0; first + k * periodBeats < timeCtx.lengthBeat - 1e-6; k++) {
+      out.push(first + k * periodBeats);
+    }
     return out;
   }
 
-  /** Vertical bars at the loop restarts (pixel xs already resolved). */
+  /** Vertical bars at the loop restarts. Drawn at the EXACT (un-rounded) x so they
+   *  don't snap/jump by a pixel as the clip's fractional offset shifts on zoom/resize. */
   private drawLoopBars(ctx: CanvasRenderingContext2D, w: number, h: number, markerXs: number[]) {
     ctx.fillStyle = 'rgba(108,192,112,0.85)';
     for (const mx of markerXs) {
       if (mx <= 0 || mx >= w) continue;
-      ctx.fillRect(Math.round(mx), 0, 1, h);
+      ctx.fillRect(mx, 0, 1, h);
     }
   }
 
