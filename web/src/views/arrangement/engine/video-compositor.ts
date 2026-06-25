@@ -20,6 +20,7 @@ import { FrameBlitter, type BlitFit } from '../../../video/frame-blitter';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import type { ClipLoopConfig } from '../model/composition';
+import { RANDOM_DEFAULTS } from '../model/composition';
 
 /** One active video clip the pump should feed. */
 export interface VideoClipDesc {
@@ -65,6 +66,10 @@ interface Pump {
   lastKey?: string;
   /** Last frame decoded for LOOKAHEAD warming (not injected) — dedupe warm pulls. */
   warmedKey?: string;
+  /** Stateful 'random' play-mode walk: hold a source position for a (jittered) dwell,
+   *  then jump. Advanced only as the beat moves FORWARD, and cached at `atBeat` so a
+   *  same-beat re-query (the Precise gate's clipReady) returns the identical frame. */
+  rand?: { srcSec: number; nextJumpBeat: number; atBeat: number };
 }
 
 export class VideoCompositor {
@@ -240,7 +245,49 @@ export class VideoCompositor {
       seed: clipNoiseSeed(p.desc.clipId),
     };
     const loop = d.loop ?? DEFAULT_LOOP;
+    // 'random' is the REAL stochastic dwell-jump algorithm for playback (the strips use
+    // the deterministic smooth-noise approximation in the mapper instead).
+    if (loop.mode === 'random') return this.randomFrame(p, loop, ctx, beat);
     return clipSourceFrameAt(loop, ctx, beat, p.fps, p.frameCount);
+  }
+
+  /**
+   * Stateful stochastic 'random' driver: hold a source position for a jittered dwell,
+   * then jump to a new random position (anywhere in the slice, or within ±jumpDistance
+   * of the current one). Truly non-deterministic (Math.random). Advances only as the
+   * beat moves forward; a same-beat re-query returns the cached frame (so the Precise
+   * gate's clipReady agrees with what pumpClip injected).
+   */
+  private randomFrame(p: Pump, loop: ClipLoopConfig, ctx: ClipTimeCtx, beat: number): number {
+    const lo = loop.startSec ?? 0;
+    const hi = loop.endSec ?? ctx.videoDurSec;
+    const range = Math.max(0, hi - lo);
+    const dwell = loop.dwell ?? RANDOM_DEFAULTS.dwell;
+    const unit = loop.dwellUnit ?? RANDOM_DEFAULTS.dwellUnit;
+    const jitter = loop.dwellJitter ?? RANDOM_DEFAULTS.dwellJitter;
+    const jumpDist = loop.jumpDistanceSec ?? RANDOM_DEFAULTS.jumpDistanceSec;
+    // Dwell → beats (warp-ignoring: convert seconds via the clip's local sec/beat rate).
+    const secPerBeat = Math.max(1e-3, ctx.secondsAt(ctx.startBeat + 1) - ctx.secondsAt(ctx.startBeat));
+    const dwellBeats = Math.max(0.05, unit === 'sec' ? dwell / secPerBeat : dwell);
+    const pick = (from: number): number => {
+      if (range <= 1e-9) return lo;
+      if (jumpDist > 0) {
+        const t = from + (Math.random() * 2 - 1) * jumpDist;
+        return Math.min(hi, Math.max(lo, t));
+      }
+      return lo + Math.random() * range;
+    };
+    let st = p.rand;
+    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), nextJumpBeat: beat + dwellBeats, atBeat: beat };
+    if (beat > st.atBeat + 1e-9) {
+      let guard = 0;
+      while (beat >= st.nextJumpBeat && guard++ < 4096) {
+        st.srcSec = pick(st.srcSec);
+        st.nextJumpBeat += dwellBeats * (1 + jitter * (Math.random() * 2 - 1)); // stays > 0
+      }
+      st.atBeat = beat;
+    }
+    return Math.min(p.frameCount - 1, Math.max(0, Math.floor(st.srcSec * p.fps)));
   }
 
   private async pumpClip(p: Pump, beat: number, bpm: number) {

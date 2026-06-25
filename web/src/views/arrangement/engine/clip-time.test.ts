@@ -235,9 +235,9 @@ describe('clipSourceTimeAt — random (deterministic seeded noise)', () => {
     expect(Math.abs(a - b)).toBeLessThan(0.05);
   });
 
-  it('evolution rate (speed) advances the wander faster', () => {
-    const slow = clipSourceTimeAt(rnd({ speed: 0.2 }), ctx({ seed: 0.5 }), 7)!;
-    const fast = clipSourceTimeAt(rnd({ speed: 4 }), ctx({ seed: 0.5 }), 7)!;
+  it('evolution rate follows the dwell (shorter dwell ⇒ faster wander)', () => {
+    const slow = clipSourceTimeAt(rnd({ dwell: 8 }), ctx({ seed: 0.5 }), 7)!;
+    const fast = clipSourceTimeAt(rnd({ dwell: 0.5 }), ctx({ seed: 0.5 }), 7)!;
     expect(slow).not.toBeCloseTo(fast); // different phase reached by the same beat
   });
 

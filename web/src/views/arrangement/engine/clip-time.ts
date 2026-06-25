@@ -22,6 +22,7 @@
  */
 
 import type { ClipLoopConfig } from '../model/composition';
+import { RANDOM_DEFAULTS } from '../model/composition';
 
 /** Everything the mapper needs about a clip's placement + its source, besides the loop config. */
 export interface ClipTimeCtx {
@@ -125,15 +126,19 @@ export function clipSourceTimeAt(
   }
 
   if (loop.mode === 'random') {
-    // Approximate stochastic playback with a smooth seeded noise of the (absolute)
-    // timeline beat, wandering the source SLICE [startSec, endSec]. `speed` is the
-    // evolution rate (how fast the noise advances per beat). Deterministic ⇒ the film
-    // strips match playback and scrubbing back shows the same frame.
+    // STRIP/preview approximation of the stochastic dwell-jump playback (the real
+    // algorithm lives in the compositor): a smooth seeded noise of the timeline beat
+    // wandering the slice [startSec, endSec], its evolution rate ≈ the jump rate (1 per
+    // dwell). Deterministic ⇒ the strips are drawable and scrubbing is reproducible.
     const lo = startSec;
     const hi = loop.endSec ?? ctx.videoDurSec;
     const range = hi - lo;
     if (range <= EPS) return lo;
-    const vt = lo + range * smoothNoise(beat * speed, ctx.seed ?? 0);
+    const secPerBeat = Math.max(1e-3, ctx.secondsAt(ctx.startBeat + 1) - ctx.secondsAt(ctx.startBeat));
+    const dwellBeats = Math.max(0.05, loop.dwellUnit === 'sec'
+      ? (loop.dwell ?? RANDOM_DEFAULTS.dwell) / secPerBeat
+      : (loop.dwell ?? RANDOM_DEFAULTS.dwell));
+    const vt = lo + range * smoothNoise(beat / dwellBeats, ctx.seed ?? 0);
     if (vt < -EPS || vt >= ctx.videoDurSec - EPS) return null;
     return vt;
   }

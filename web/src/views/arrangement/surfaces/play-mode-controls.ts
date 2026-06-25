@@ -11,6 +11,7 @@
 
 import { html, css, type TemplateResult } from 'lit';
 import type { ClipLoopConfig } from '../model/composition';
+import { RANDOM_DEFAULTS } from '../model/composition';
 
 export const playModeControlsStyles = css`
   .pm-row {
@@ -105,7 +106,30 @@ export function renderPlayModeControls(
       : ''}
     ${loop.mode === 'beat-sync'
       ? html`<div class="pm-row"><span>Loop (beats)</span>${num(loop.syncBeats ?? 4, (n) => onPatch({ syncBeats: n }), 1)}</div>`
-      : html`<div class="pm-row"><span>${random ? 'Evolution rate' : 'Speed'}</span>${num(loop.speed ?? 1, (n) => onPatch({ speed: n }))}</div>`}
+      : random
+        ? ''
+        : html`<div class="pm-row"><span>Speed</span>${num(loop.speed ?? 1, (n) => onPatch({ speed: n }))}</div>`}
+    ${random
+      ? html`<div class="pm-row"><span>Dwell</span>
+          <div style="display:flex; gap:4px; align-items:center;">
+            ${num(loop.dwell ?? RANDOM_DEFAULTS.dwell, (n) => onPatch({ dwell: n }))}
+            ${seg(['beat', 'sec'] as const, loop.dwellUnit ?? RANDOM_DEFAULTS.dwellUnit, (u) => onPatch({ dwellUnit: u }))}
+          </div>
+        </div>
+        <div class="pm-row"><span>Dwell jitter</span>${num(loop.dwellJitter ?? RANDOM_DEFAULTS.dwellJitter, (n) => onPatch({ dwellJitter: n }))}</div>
+        <div class="pm-row"><span>Jump distance (s)</span><input
+          type="number"
+          class="pm-num"
+          title="Max jump distance from current position in source seconds (0 = jump anywhere in the slice)"
+          placeholder="0 = anywhere"
+          .value=${String(+(loop.jumpDistanceSec ?? RANDOM_DEFAULTS.jumpDistanceSec).toFixed(3))}
+          step="0.1"
+          @change=${(e: Event) => {
+            const n = parseFloat((e.target as HTMLInputElement).value);
+            if (Number.isFinite(n)) onPatch({ jumpDistanceSec: n });
+          }}
+        /></div>`
+      : ''}
     ${random
       ? ''
       : html`<div class="pm-row"><span>Direction</span>
