@@ -33,15 +33,17 @@ describe('assembleRailCurve', () => {
     expect(Array.from(a.hi)).toEqual(Array.from(b.hi));
   });
 
-  it('a deterministic writer keeps lo == hi (no error band)', () => {
-    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [writer({ stochastic: false })], beats: beats(24) });
+  it('a KNOWN deterministic modulator (mirrored LFO sine) has no error band (lo == hi)', () => {
+    const lfoSine = writer({ kind: 'lfo', lfo: { mode: 0, rate: 0.5, period: 1, amplitude: 1, waveform: 0, shape: 0, invert: false } });
+    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [lfoSine], beats: beats(24) });
     for (let i = 0; i < c.mean.length; i++) expect(c.hi[i] - c.lo[i]).toBeCloseTo(0, 5);
   });
 
-  it('a stochastic writer widens the band (hi > lo) somewhere in its span', () => {
-    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [writer({ stochastic: true })], beats: beats(48) });
+  it('an UNKNOWN (un-mirrored) modulator renders an uncertainty band (hi > lo)', () => {
+    // No kind ⇒ generic: we cannot predict its output, so it must show a swing band.
+    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [writer()], beats: beats(48) });
     let widened = false;
-    for (let i = 0; i < c.mean.length; i++) if (c.hi[i] - c.lo[i] > 0.01) { widened = true; break; }
+    for (let i = 0; i < c.mean.length; i++) if (c.hi[i] - c.lo[i] > 0.05) { widened = true; break; }
     expect(widened).toBe(true);
   });
 

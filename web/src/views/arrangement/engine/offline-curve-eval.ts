@@ -124,8 +124,12 @@ function lfoBlockAt(w: WriterSpec, secPerBeat: number, beat: number): Block {
 
 /**
  * Per-writer block at `beat`. `mod.source.lfo` uses its real (mirrored) math from the
- * transferred instance params; other effects fall back to a deterministic seeded stub
- * until they grow their own mirror. Returns null outside the writer's active span.
+ * transferred instance params. Every OTHER (un-mirrored) effect is an UNKNOWN
+ * modulator: we can't predict its output, so rather than draw a confident — and
+ * wrong — line, it renders an uncertainty band spanning its full possible swing,
+ * ballooning over the clip span (pinched to a neutral centre at the edges, the whole
+ * [0,1] at the middle). A faint wander on the centre keeps it from reading as a fixed
+ * value. Returns null outside the writer's active span.
  */
 function writerBlockAt(w: WriterSpec, secPerBeat: number, beat: number): Block | null {
   if (beat < w.startBeat || beat > w.endBeat) return null; // inactive → no contribution
@@ -133,14 +137,9 @@ function writerBlockAt(w: WriterSpec, secPerBeat: number, beat: number): Block |
   const span = Math.max(1e-3, w.endBeat - w.startBeat);
   const fade = Math.sin(Math.min(1, Math.max(0, (beat - w.startBeat) / span)) * Math.PI);
   const s = w.scale;
-  if (!w.stochastic) {
-    const v = (0.15 + 0.7 * osc(beat, w.seed, 0.7)) * fade * s;
-    return { mean: v, lo: v, hi: v };
-  }
-  // Stochastic: a wandering centre with a time-varying spread → an error-bar band.
-  const centre = (0.2 + 0.6 * osc(beat, w.seed, 0.31)) * fade;
-  const spread = (0.12 + 0.18 * osc(beat, w.seed * 2 + 9, 0.13)) * fade;
-  return { mean: centre * s, lo: Math.max(0, centre - spread) * s, hi: (centre + spread) * s };
+  const centre = 0.5 + (osc(beat, w.seed, 0.5) - 0.5) * 0.25 * fade; // gentle wander near 0.5
+  const half = 0.5 * fade; // balloon to the full [0,1] swing at the clip centre
+  return { mean: centre * s, lo: Math.max(0, centre - half) * s, hi: Math.min(1, centre + half) * s };
 }
 
 function fold(acc: number, v: number, combine: RailCombine): number {
