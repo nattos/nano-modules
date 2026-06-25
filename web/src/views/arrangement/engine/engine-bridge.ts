@@ -20,6 +20,7 @@ import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-
 import { evalLaneAtBeat } from './automation-eval';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { makeWarpClock } from './warp-clock';
+import { videoInputsReady as gateVideoReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
 import type { Clip, Track } from '../model/composition';
@@ -39,15 +40,6 @@ const PREVIEW_MAX_EDGE = 1280;
 const COMPOSITE_ID = 'arr-composite';
 /** How far ahead (in beats) to pre-open + pre-decode upcoming video clips. */
 const LOOKAHEAD_BEATS = 8;
-
-/** Union two video-desc lists by clipId; `primary` wins on conflict (it has the
- *  current desc). Used to keep on-screen clips alive while warming the next set. */
-function mergeVideoDescs(primary: VideoClipDesc[], extra: VideoClipDesc[]): VideoClipDesc[] {
-  const m = new Map<string, VideoClipDesc>();
-  for (const d of extra) m.set(d.clipId, d);
-  for (const d of primary) m.set(d.clipId, d);
-  return [...m.values()];
-}
 
 export class EngineBridge {
   private engine: ArrEngine | null = null;
@@ -284,15 +276,12 @@ export class EngineBridge {
     }
   }
 
-  /** True when every active video clip has its current-beat frame injected. */
+  /** True when every active video clip has its current-beat frame injected (see
+   *  precise-gate.videoInputsReady for the invariants). */
   private videoInputsReady(): boolean {
-    if (this.lastVideoDescs.length === 0) return true; // no video clips → nothing to wait on
-    // There ARE video clips: if the decode pump isn't even up yet (first video reached
-    // on a fresh page), they can't be ready — hold, DON'T composite them transparent.
-    if (!this.video) return false;
     const beat = store.positionBeat;
     const bpm = store.composition.meta.baseBPM;
-    return this.lastVideoDescs.every((d) => this.video!.clipReady(d.clipId, beat, bpm));
+    return gateVideoReady(this.lastVideoDescs, !!this.video, (id) => this.video!.clipReady(id, beat, bpm));
   }
 
   /** Whether the transport may step this frame (Precise mode stalls on unready
@@ -441,15 +430,17 @@ export class EngineBridge {
     // Never composite a frame that isn't fully possible: hold the displayed composite
     // until every ACTIVE video clip has its current-beat frame decoded + injected.
     // `force` bypasses (a fail-safe timeout so a stuck decode can't freeze forever).
-    const holding = !force
-      && store.transportMode === 'precise'
-      && videoDescs.length > 0
-      && !this.videoInputsReady();
+    const holding = shouldHoldPrecise({
+      precise: store.transportMode === 'precise',
+      force,
+      activeVideoCount: videoDescs.length,
+      ready: this.videoInputsReady(),
+    });
 
     if (holding) {
       // Warm the target AND keep the clips CURRENTLY ON SCREEN alive (their textures
       // must not be torn down while we hold on them); leave the issued composite as-is.
-      this.reconcilePump(mergeVideoDescs(warmDescs, this.displayedVideoDescs));
+      this.reconcilePump(pumpActiveSet(true, warmDescs, this.displayedVideoDescs));
       this.pendingPrecise = layers;
       if (!this.preciseTimer) {
         this.preciseTimer = setTimeout(() => {
