@@ -10,11 +10,10 @@ import { store } from './store';
 import type { Composition } from '../model/composition';
 
 /**
- * Duplicate clip/device ids (from the `_uid`-reset-on-reload collision: the first id
- * minted after a load is `*_rs` = 1000, which a saved project already used) make two
- * clips share a composite instance key + a single decode pump → the second clip plays
- * the first's video. Loading must heal the duplicates AND advance the id counter past
- * the loaded ids so freshly-created clips don't re-collide.
+ * Duplicate clip/device ids make two clips share a composite instance key + a single
+ * decode pump → the second clip plays the first's video. Legacy files (saved with the
+ * old per-session counter ids, which could collide across reloads) must heal on load;
+ * and new ids are UUIDs, so a freshly-created clip can never reuse a loaded id.
  */
 const videoClip = (id: string, devId: string, startBeat: number) => ({
   id,

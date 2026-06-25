@@ -13,8 +13,10 @@ import type {
   AutomationLane,
 } from './composition';
 
-let _id = 0;
-const uid = (prefix: string) => `${prefix}_${(_id++).toString(36)}`;
+const uid = (prefix: string): string => {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return `${prefix}_${c?.randomUUID ? c.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
+};
 
 function device(
   moduleType: string,

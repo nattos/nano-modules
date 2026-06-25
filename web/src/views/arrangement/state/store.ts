@@ -70,44 +70,20 @@ export const paths = {
   composition: () => `composition`,
 };
 
-let _uid = 1000;
-const uid = (p: string) => `${p}_${(_uid++).toString(36)}`;
-
 /**
- * Advance the id counter past every id already in `comp`. `_uid` resets to its
- * initial value on each page load, but a loaded project keeps the ids it was saved
- * with — so without this the FIRST id minted after a reload (`uid_rs` = 1000) reuses
- * the project's first-ever id, producing two clips with the same id + device id (one
- * pump / one executor instance for two videos → the "second clip plays the wrong
- * video" bug). Seed BEFORE any healing so reminted ids also clear the loaded set.
+ * Mint a globally-unique id. UUID-based (not a per-session counter) so ids never
+ * collide across reloads, copy/paste, or distinct sources — a counter resets to its
+ * seed each page load while loaded projects keep last session's ids, which used to
+ * make a new clip reuse an existing id (two clips → one decode pump → "the second
+ * clip plays the wrong video"). The `<prefix>_` is just a human-readable tag.
  */
-function seedUidFrom(comp: Composition): void {
-  let max = _uid - 1;
-  const consider = (id: string | undefined | null) => {
-    if (!id) return;
-    const m = /^(?:auto|clip|dev|rail|trk|wire)_([0-9a-z]+)$/.exec(id);
-    if (!m) return;
-    const n = parseInt(m[1], 36);
-    if (Number.isFinite(n)) max = Math.max(max, n);
-  };
-  const walkWires = (wires: Array<{ id?: string }> | undefined) => (wires ?? []).forEach((w) => consider(w.id));
-  for (const t of comp.tracks ?? []) {
-    consider(t.id);
-    (t.sketch?.devices ?? []).forEach((d) => consider(d.id));
-    walkWires(t.sketch?.wires);
-    (t.automation ?? []).forEach((l) => consider(l.id));
-    for (const c of t.clips ?? []) {
-      consider(c.id);
-      (c.sketch?.devices ?? []).forEach((d) => consider(d.id));
-      walkWires(c.sketch?.wires);
-      (c.automation ?? []).forEach((l) => consider(l.id));
-      (c.exports ?? []).forEach((e) => consider(e.id));
-      (c.reads ?? []).forEach((e) => consider(e.id));
-    }
-  }
-  (comp.rails ?? []).forEach((r) => consider(r.id));
-  _uid = max + 1;
-}
+const genId = (): string => {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  // Fallback for non-secure contexts / very old runtimes.
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
+const uid = (p: string) => `${p}_${genId()}`;
 
 /**
  * Mint fresh INNER ids on a just-cloned clip (deep copy with a new clip id) so a
@@ -453,8 +429,7 @@ export class ArrangementStore {
   /** Load an existing arrangement file from a mounted workspace. */
   async openArrangement(backend: WorkspaceBackend, name: string) {
     const comp = await backend.read(name);
-    seedUidFrom(comp); // advance the id counter past loaded ids BEFORE healing/minting
-    ArrangementStore.repairIds(comp); // heal duplicate clip + device + lane ids (see method)
+    ArrangementStore.repairIds(comp); // heal duplicate clip + device + lane ids (legacy files)
     runInAction(() => {
       this.backend = backend;
       this.currentName = name;
@@ -2351,7 +2326,7 @@ export class ArrangementStore {
       };
     }
     // Rotate through the real effect catalog.
-    const pick = EFFECTS[(_uid >>> 0) % EFFECTS.length];
+    const pick = EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
     return {
       id: uid('dev'),
       moduleType: pick.type,
