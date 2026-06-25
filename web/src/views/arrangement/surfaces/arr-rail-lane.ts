@@ -150,7 +150,10 @@ export class ArrRailLane extends MobxLitElement {
     this.cancelReq?.();
     this.cancelReq = offlineCurveService.request(
       t.railId,
-      { baseCurve: t.baseCurve ?? [{ x: 0, y: 0.3 }], totalBeats: compositionLengthBeats(store.composition),
+      // Plain copies — MobX observable arrays/proxies can't be structured-cloned
+      // across postMessage. `writerSpecs` already returns plain objects.
+      { baseCurve: (t.baseCurve ?? [{ x: 0, y: 0.3 }]).map((p) => ({ x: p.x, y: p.y })),
+        totalBeats: compositionLengthBeats(store.composition),
         writers: this.writerSpecs(t.railId), beats },
       (curve) => { this.curve = curve; this.draw(); },
     );
