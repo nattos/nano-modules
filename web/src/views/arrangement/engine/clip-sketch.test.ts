@@ -124,6 +124,46 @@ describe('buildCompositeSketch', () => {
     expect(buildCompositeSketch([])).toBeNull();
   });
 
+  describe('rail (return) routing → cross-clip wires', () => {
+    const writerClip = (railId: string) => ({
+      id: 'W',
+      sketch: { devices: [dev('source.solid_color', 'Wsrc'), dev('mod.source.lfo', 'Wlfo')] },
+      exports: [{ id: 'e1', railId, sourceDeviceId: 'Wlfo', sourceField: 'output', combine: 'add', magnitude: 'auto' }],
+    }) as any;
+    const readerClip = (railId: string, magnitude = 'signed') => ({
+      id: 'R',
+      sketch: { devices: [dev('source.noise', 'Rsrc')] },
+      reads: [{ id: 'r1', railId, targetDeviceId: 'Rsrc', targetField: 'scale', combine: 'add', magnitude }],
+    }) as any;
+
+    it('wires an active writer output to an active reader param, carrying combine + magnitude', () => {
+      const r = buildCompositeSketch([
+        { clip: writerClip('rail1'), opacity: 1 },
+        { clip: readerClip('rail1'), opacity: 1 },
+      ], { mode: 'transparent' })!;
+      const w = r.sketch.wires!.find((x) => x.src.instanceKey === clipInstanceKey('W', 'Wlfo'));
+      expect(w).toBeTruthy();
+      expect(w!.src.field).toBe('output');
+      expect(w!.dest.instanceKey).toBe(clipInstanceKey('R', 'Rsrc'));
+      expect(w!.dest.field).toBe('scale');
+      expect(w!.combine).toBe('add');
+      expect(w!.magnitude).toBe('signed');
+    });
+
+    it('emits NO rail wire when the writer is not active (reader alone)', () => {
+      const r = buildCompositeSketch([{ clip: readerClip('rail1'), opacity: 1 }], { mode: 'transparent' })!;
+      expect((r.sketch.wires ?? []).some((x) => x.dest.field === 'scale')).toBe(false);
+    });
+
+    it('does not cross rails (different railId ⇒ no wire)', () => {
+      const r = buildCompositeSketch([
+        { clip: writerClip('railA'), opacity: 1 },
+        { clip: readerClip('railB'), opacity: 1 },
+      ], { mode: 'transparent' })!;
+      expect((r.sketch.wires ?? []).some((x) => x.src.instanceKey === clipInstanceKey('W', 'Wlfo'))).toBe(false);
+    });
+  });
+
   describe('composite background base', () => {
     it('default (black) lays an opaque solid base UNDER all clips', () => {
       const r = buildCompositeSketch([{ clip: clip('A', 'source.noise'), opacity: 1 }])!;

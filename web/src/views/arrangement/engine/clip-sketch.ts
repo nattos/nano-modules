@@ -22,7 +22,7 @@
 
 import type { Sketch, InstanceState, ChainEntry, Wire } from '../../../sketch-types';
 import type { ShowSketchOpts } from './arr-engine';
-import type { Clip, Device, Track, BackgroundConfig } from '../model/composition';
+import type { Clip, Device, Track, BackgroundConfig, RailRead } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
 import { solidSketch } from './slice-sketches';
@@ -128,6 +128,15 @@ export function buildCompositeSketch(
   let wid = 0;
   /** Instance key whose `tex_out` is the running composite, or null (empty). */
   let accKey: string | null = null;
+
+  // Rail (return) routing: collect active writers + readers across all layers, then
+  // emit a cross-clip wire per (writer, reader) pair so the executor's native wire
+  // pipeline (tap_mod: combine / magnitude / scale) does the value routing — no
+  // separate rail engine. A reader only resolves when a writer of the same rail is
+  // ALSO active at this beat (both clips' devices are in the composite). Base-curve
+  // seeding + per-export combine staging are deferred (Phase 2).
+  const railWriters = new Map<string, Array<{ key: string; field: string; scale: number }>>();
+  const railReaders: Array<{ railId: string; key: string; field: string; tap: RailRead }> = [];
 
   const push = (moduleType: string, key: string, state: Record<string, unknown>) => {
     // A key must appear ONCE. Duplicate device ids within a clip (a data bug)
@@ -245,6 +254,33 @@ export function buildCompositeSketch(
         id: `cw${wid++}`,
         src: { instanceKey: clipInstanceKey(clip.id, w.src.instanceKey), field: w.src.field },
         dest: { instanceKey: clipInstanceKey(clip.id, w.dest.instanceKey), field: w.dest.field },
+      });
+    }
+
+    // Collect this clip's rail writers/readers (only devices actually pushed).
+    for (const exp of clip.exports ?? []) {
+      if (!pushed.has(exp.sourceDeviceId)) continue;
+      const arr = railWriters.get(exp.railId) ?? [];
+      arr.push({ key: clipInstanceKey(clip.id, exp.sourceDeviceId), field: exp.sourceField, scale: exp.scale ?? 1 });
+      railWriters.set(exp.railId, arr);
+    }
+    for (const read of clip.reads ?? []) {
+      if (!pushed.has(read.targetDeviceId)) continue;
+      railReaders.push({ railId: read.railId, key: clipInstanceKey(clip.id, read.targetDeviceId), field: read.targetField, tap: read });
+    }
+  }
+
+  // Emit cross-clip rail wires: each reader pulls from every active writer of its rail.
+  for (const r of railReaders) {
+    for (const w of railWriters.get(r.railId) ?? []) {
+      const scale = w.scale * (r.tap.scale ?? 1);
+      wires.push({
+        id: `rw${wid++}`,
+        src: { instanceKey: w.key, field: w.field },
+        dest: { instanceKey: r.key, field: r.field },
+        combine: r.tap.combine,
+        magnitude: r.tap.magnitude,
+        ...(scale !== 1 ? { mod: { scale } } : {}),
       });
     }
   }

@@ -132,6 +132,10 @@ export class ArrMonitor extends MobxLitElement {
       // composite (the executor applies them natively).
       const ws = layer.clip.sketch.wires;
       if (ws) for (const w of ws) void w.id;
+      // Track rail exports/reads: adding/removing a return wire must rebuild the
+      // composite (rail links are folded into cross-clip wires by buildCompositeSketch).
+      for (const ex of layer.clip.exports ?? []) { void ex.railId; void ex.sourceField; }
+      for (const rd of layer.clip.reads ?? []) { void rd.railId; void rd.targetField; void rd.combine; }
       for (const d of layer.clip.sketch.devices) {
         void d.moduleType;
         const st = d.state;
