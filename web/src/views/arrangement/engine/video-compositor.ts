@@ -280,15 +280,21 @@ export class VideoCompositor {
     const secPerBeat = Math.max(1e-3, ctx.secondsAt(ctx.startBeat + 1) - ctx.secondsAt(ctx.startBeat));
     const dwellBeats = Math.max(0.05, unit === 'sec' ? dwell / secPerBeat : dwell);
     const wrap = (s: number): number => (range <= 1e-9 ? lo : lo + (((s - lo) % range) + range) % range);
+    // Billiard-fold any target back into [lo,hi]. Handles a distance larger than the gap
+    // to one wall (e.g. a full-range jump from the middle) — a single ± flip + clamp
+    // would snap to the slice START, i.e. a once-per-dwell flash of frame 0.
+    const reflectInto = (x: number): number => {
+      const period = 2 * range;
+      let t = (((x - lo) % period) + period) % period; // [0, 2·range)
+      if (t > range) t = period - t; // fold the far half back
+      return lo + t;
+    };
     const pick = (from: number): number => {
       if (range <= 1e-9) return lo;
-      // Distance ~ U(min, max); random ± direction; reflect off the slice edges so the
-      // sampled magnitude is preserved (rather than clamped to the edge).
+      // Distance ~ U(min, max); random ± direction; reflected (not clamped) into the slice.
       const dist = toSec(jMin + Math.random() * (jMax - jMin));
       const sign = Math.random() < 0.5 ? -1 : 1;
-      let t = from + sign * dist;
-      if (t < lo || t > hi) t = from - sign * dist; // reflect
-      return Math.min(hi, Math.max(lo, t));
+      return reflectInto(from + sign * dist);
     };
     let st = p.rand;
     if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), dwellAccum: 0, nextDwell: dwellBeats, lastBeat: beat };

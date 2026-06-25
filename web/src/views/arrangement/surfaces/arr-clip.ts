@@ -491,6 +491,11 @@ export class ArrClip extends MobxLitElement {
 
   render() {
     const clip = this.clip;
+    // Tracked read: the film strip (drawReel, in updated()) depends on every play-mode /
+    // loop param, but render() otherwise never reads them — so an in-place loop edit from
+    // the inspector wouldn't re-render this element and the strip would stay stale until
+    // another store change kicked an update. Touch them all so any change redraws.
+    if (clip.loop) void Object.values(clip.loop).join('|');
     const grid = buildBeatGrid();
     const left = grid.beatToX(clip.startBeat);
     const width = Math.max(8, grid.spanWidth(clip.startBeat, clip.lengthBeat));
