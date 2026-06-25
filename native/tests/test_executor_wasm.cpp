@@ -149,6 +149,71 @@ TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[exec
   CHECK(std::abs(m - 128.0) < 24.0);  // gray
 }
 
+TEST_CASE("multiple wires into one field accumulate per combine (not last-wins)", "[executor_wasm]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> inPix(W * H * 4, 255);  // white
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  // Read the folded value of so@0/out_0 directly from modulation telemetry — no
+  // brittle pixel math. Two `add` knobs (0.3 + 0.3) into out_0 must SUM to ~0.6;
+  // under the old last-wins fold only the last wire survived ⇒ ~0.3.
+  auto outVal = [&](const std::string& sketch) -> double {
+    SketchExecutor ex(&rt, &registry, backend.get());
+    auto j = nlohmann::json::parse(sketch);
+    ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+    backend->submit();
+    const auto& md = ex.lastModulationData();
+    REQUIRE(md.contains("so@0"));
+    REQUIRE(md["so@0"].contains("out_0"));
+    return md["so@0"]["out_0"].value("value", -1.0);
+  };
+
+  const double one = outVal(R"JSON({
+    "chain": [
+      { "type":"module","module_type":"util.dashboard","instance_key":"d1@0" },
+      { "type":"module","module_type":"util.sketch_output","instance_key":"so@0" }
+    ],
+    "instances": {
+      "d1@0": { "module_type":"util.dashboard","state":{ "knob_0":0.3 } },
+      "so@0": { "module_type":"util.sketch_output","state":{} }
+    },
+    "wires": [
+      { "id":"w1","combine":"add","src":{"instanceKey":"d1@0","field":"knob_0"},"dest":{"instanceKey":"so@0","field":"out_0"} }
+    ]
+  })JSON");
+
+  const double two = outVal(R"JSON({
+    "chain": [
+      { "type":"module","module_type":"util.dashboard","instance_key":"d1@0" },
+      { "type":"module","module_type":"util.dashboard","instance_key":"d2@0" },
+      { "type":"module","module_type":"util.sketch_output","instance_key":"so@0" }
+    ],
+    "instances": {
+      "d1@0": { "module_type":"util.dashboard","state":{ "knob_0":0.3 } },
+      "d2@0": { "module_type":"util.dashboard","state":{ "knob_0":0.3 } },
+      "so@0": { "module_type":"util.sketch_output","state":{} }
+    },
+    "wires": [
+      { "id":"w1","combine":"add","src":{"instanceKey":"d1@0","field":"knob_0"},"dest":{"instanceKey":"so@0","field":"out_0"} },
+      { "id":"w2","combine":"add","src":{"instanceKey":"d2@0","field":"knob_0"},"dest":{"instanceKey":"so@0","field":"out_0"} }
+    ]
+  })JSON");
+
+  INFO("one wire " << one << "  two wires " << two);
+  CHECK(std::abs(one - 0.3) < 0.05);  // single wire = the knob value
+  CHECK(std::abs(two - 0.6) < 0.05);  // two `add` wires SUM (was 0.3 under last-wins)
+}
+
 TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", "[executor_wasm]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");

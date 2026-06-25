@@ -1536,6 +1536,13 @@ void SketchExecutor::applyReadTaps(
       if (sit != iit->end() && sit->is_object()) canonState = &(*sit);
     }
   }
+  // Running per-field accumulator: multiple read-taps (wires) into the SAME field
+  // ACCUMULATE rather than overwrite. The first tap folds from the authored value;
+  // each later tap folds from the running result — so e.g. two `add` wires SUM, and
+  // a `mul` after an `add` multiplies the sum. Wires were always meant to support
+  // multiple connections; without this each tap re-folded from canon and the last
+  // `setParamFloat` won (last-wins).
+  std::unordered_map<std::string, float> runningFloat;
   for (const auto& tap : entry["taps"]) {
     if (tap.value("direction", std::string()) != "read") continue;
     const std::string railId    = tap.value("railId", std::string());
@@ -1562,6 +1569,10 @@ void SketchExecutor::applyReadTaps(
           if (cv.is_number())       { canon = (float)cv.get<double>(); hasCanon = true; }
           else if (cv.is_boolean()) { canon = cv.get<bool>() ? 1.0f : 0.0f; hasCanon = true; }
         }
+        // Accumulate: a prior tap on this field already produced a value → fold from
+        // it (not the authored canon), so multiple wires stack per their combines.
+        auto runIt = runningFloat.find(fieldPath);
+        if (runIt != runningFloat.end()) { canon = runIt->second; hasCanon = true; }
         // Wire magnitude mode (resolved during normalization). Present →
         // range-aware fold into [destMin,destMax]; absent → legacy combineTap
         // (the wire's `absolute` mode, or a plain rail tap). Mirrors web's
@@ -1601,6 +1612,7 @@ void SketchExecutor::applyReadTaps(
         const float delaySec = tap.contains("mod") && tap["mod"].is_object()
             ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
         combined = applyModDelay(instanceKey, fieldPath, combined, delaySec);
+        runningFloat[fieldPath] = combined; // next tap on this field folds from here
         inst.setParamFloat(fieldPath, combined);
         inst.setFieldConnected(fieldPath, true, false);
         // Hand the smoothing pass this field's post-modulation target.
