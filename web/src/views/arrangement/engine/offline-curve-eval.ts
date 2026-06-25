@@ -19,25 +19,42 @@ import { evalCurveAt } from './automation-eval';
 
 export type RailCombine = 'replace' | 'mix' | 'add' | 'mul';
 
+/** `mod.source.lfo` instance parameters — a TypeScript mirror of the native LFO
+ *  (env_lfo/main.cpp), so its writer block is an APPROXIMATE-but-real curve rather
+ *  than a generic stub. Random Walk / Random FM are stochastic (a band, not a line). */
+export interface LfoParams {
+  mode: number;       // 0 = Freq, 1 = Period
+  rate: number;       // [0,1] → 0..10 Hz (Freq mode)
+  period: number;     // seconds (Period mode); freq = 1/period
+  amplitude: number;  // [0,1] swing around 0.5
+  waveform: number;   // 0 Sine · 1 Square · 2 Triangle · 3 Saw · 4 RandomWalk · 5 RandomFM
+  shape: number;      // [0,1] morph
+  invert: boolean;
+}
+
 /** One writer (a clip's export) contributing to a rail. */
 export interface WriterSpec {
-  /** Stable identity hash → deterministic stub output (a real eval keys on the
-   *  effect + its state instead). */
+  /** Stable identity hash → deterministic stub output (used by the generic kind). */
   seed: number;
-  /** Declares the offline-evaluable capability as STOCHASTIC: the block is a range
-   *  band, not a point (random/sample-hold/noise generators). */
+  /** STOCHASTIC capability: the block is a range band, not a point. */
   stochastic: boolean;
   combine: RailCombine;
   scale: number;
   /** Active beat span — the writer only contributes while its clip plays. */
   startBeat: number;
   endBeat: number;
+  /** Which offline mirror to use. `'lfo'` carries `lfo`; anything else → the generic
+   *  seeded stub until that effect gets its own mirror. */
+  kind?: 'lfo' | 'generic';
+  lfo?: LfoParams;
 }
 
 export interface RailCurveSpec {
   baseCurve: EnvelopePoint[];
   totalBeats: number;
   writers: WriterSpec[];
+  /** Beats→seconds for time-based mirrors (LFO). Approximate: 60/bpm, warp ignored. */
+  secondsPerBeat: number;
   /** Sample beats (already warp-mapped by the caller — the worker stays grid-free). */
   beats: Float32Array;
 }
@@ -57,17 +74,64 @@ function osc(beat: number, seed: number, rate: number): number {
   return Math.sin(beat * rate + seed * 1.7) * 0.5 + 0.5; // [0,1]
 }
 
+/** Mirror of env_lfo `deterministicWave`: f(phase∈[0,1)) → [-1,1], morphed by shape. */
+function lfoWave(wf: number, shape: number, p: number): number {
+  const s = Math.max(0, Math.min(1, shape));
+  switch (wf) {
+    case 1: { // Square — `shape` narrows the duty 0.5 → 0.05
+      const duty = 0.5 - 0.45 * s;
+      return p < duty ? 1 : -1;
+    }
+    case 2: { // Triangle — tilt the peak toward the end
+      const peak = 0.5 + 0.49 * s;
+      const tri = p < peak ? p / peak : (1 - p) / (1 - peak);
+      return tri * 2 - 1;
+    }
+    case 3: { // Saw — `shape` bows the ramp (exp ease)
+      const e = Math.pow(2, s * 3);
+      return Math.pow(p, e) * 2 - 1;
+    }
+    default: { // Sine → soft-clipped sine
+      const sinv = Math.sin(p * Math.PI * 2);
+      const drive = 1 + 7 * s;
+      const clipped = Math.tanh(drive * sinv) / Math.tanh(drive);
+      return sinv + (clipped - sinv) * s;
+    }
+  }
+}
+
+/** Approximate-but-real LFO block: phase = elapsedSec·freq from the clip start (the
+ *  LFO begins when its clip becomes active). Deterministic waveforms → a point;
+ *  Random Walk/FM → the swing band (the exact random path can't be reproduced). */
+function lfoBlockAt(w: WriterSpec, secPerBeat: number, beat: number): Block {
+  const p = w.lfo!;
+  const amp = Math.max(0, Math.min(1, p.amplitude));
+  const flip = (v: number) => (p.invert ? 1 - v : v);
+  // Random Walk (4) / Random FM (5): output wanders the full amplitude swing.
+  if (p.waveform === 4 || p.waveform === 5) {
+    const a = flip(0.5 - amp * 0.5) * w.scale;
+    const b = flip(0.5 + amp * 0.5) * w.scale;
+    return { mean: flip(0.5) * w.scale, lo: Math.min(a, b), hi: Math.max(a, b) };
+  }
+  const freq = p.mode === 1 ? 1 / Math.max(0.01, p.period) : p.rate * 10; // Hz
+  const elapsed = (beat - w.startBeat) * secPerBeat; // seconds since clip start
+  let phase = elapsed * freq;
+  phase -= Math.floor(phase);
+  let v = lfoWave(p.waveform, p.shape, phase) * amp * 0.5 + 0.5;
+  v = flip(Math.max(0, Math.min(1, v))) * w.scale;
+  return { mean: v, lo: v, hi: v };
+}
+
 /**
- * Pretend per-writer block: the writer's modulation output at `beat`. Deterministic
- * by (seed, beat). Stochastic writers return a band (mean ± a time-varying spread);
- * deterministic ones a point. A gentle fade at the clip edges keeps contributions
- * reading as "layered on". Replaced later by the effect's real offline block.
+ * Per-writer block at `beat`. `mod.source.lfo` uses its real (mirrored) math from the
+ * transferred instance params; other effects fall back to a deterministic seeded stub
+ * until they grow their own mirror. Returns null outside the writer's active span.
  */
-function writerBlockAt(w: WriterSpec, beat: number): Block | null {
+function writerBlockAt(w: WriterSpec, secPerBeat: number, beat: number): Block | null {
   if (beat < w.startBeat || beat > w.endBeat) return null; // inactive → no contribution
+  if (w.kind === 'lfo' && w.lfo) return lfoBlockAt(w, secPerBeat, beat);
   const span = Math.max(1e-3, w.endBeat - w.startBeat);
-  const t = (beat - w.startBeat) / span;
-  const fade = Math.sin(Math.min(1, Math.max(0, t)) * Math.PI); // 0→1→0 across the clip
+  const fade = Math.sin(Math.min(1, Math.max(0, (beat - w.startBeat) / span)) * Math.PI);
   const s = w.scale;
   if (!w.stochastic) {
     const v = (0.15 + 0.7 * osc(beat, w.seed, 0.7)) * fade * s;
@@ -106,7 +170,7 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
     const base = evalCurveAt(spec.baseCurve, beat / T);
     let m = base, l = base, h = base;
     for (const w of spec.writers) {
-      const b = writerBlockAt(w, beat);
+      const b = writerBlockAt(w, spec.secondsPerBeat, beat);
       if (!b) continue;
       m = fold(m, b.mean, w.combine);
       // Interval fold (approximate for non-add combines): keep the bounds ordered.
@@ -126,7 +190,7 @@ export function railMeanAt(spec: Omit<RailCurveSpec, 'beats'>, beat: number): nu
   const base = evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats));
   let m = base;
   for (const w of spec.writers) {
-    const b = writerBlockAt(w, beat);
+    const b = writerBlockAt(w, spec.secondsPerBeat, beat);
     if (b) m = fold(m, b.mean, w.combine);
   }
   return m;

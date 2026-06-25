@@ -100,12 +100,14 @@ export class ArrRailLane extends MobxLitElement {
 
   // ── offline curve request ───────────────────────────────────────────────
 
-  /** Gather the active writers contributing to this rail (cheap store reads). */
+  /** Gather the active writers contributing to this rail (cheap store reads). For
+   *  `mod.source.lfo` we transfer the instance params so the worker mirrors its real
+   *  curve; other effects fall back to the generic seeded stub. */
   private writerSpecs(railId: string): WriterSpec[] {
     const out: WriterSpec[] = [];
     for (const { clip, exp } of store.railWriters(railId)) {
       const dev = clip.sketch.devices.find((d) => d.id === exp.sourceDeviceId);
-      out.push({
+      const spec: WriterSpec = {
         seed: hashStr(clip.id + '/' + exp.id),
         // TODO: read a declared `modulation_stochastic` capability. Heuristic for now.
         stochastic: /noise|random|spectral/i.test(dev?.moduleType ?? ''),
@@ -113,9 +115,25 @@ export class ArrRailLane extends MobxLitElement {
         scale: exp.scale ?? 1,
         startBeat: clip.startBeat,
         endBeat: clip.startBeat + clip.lengthBeat,
-      });
+      };
+      if (dev?.moduleType === 'mod.source.lfo') {
+        const st = (dev.state ?? {}) as Record<string, unknown>;
+        const num = (k: string, d: number) => (typeof st[k] === 'number' ? (st[k] as number) : d);
+        spec.kind = 'lfo';
+        spec.lfo = {
+          mode: num('mode', 0), rate: num('rate', 0.5), period: num('period', 1),
+          amplitude: num('amplitude', 1), waveform: num('waveform', 0),
+          shape: num('shape', 0), invert: st['invert'] === true || st['invert'] === 1,
+        };
+        spec.stochastic = spec.lfo.waveform === 4 || spec.lfo.waveform === 5; // Random Walk/FM
+      }
+      out.push(spec);
     }
     return out;
+  }
+
+  private secondsPerBeat(): number {
+    return 60 / Math.max(1e-3, store.composition.meta.baseBPM);
   }
 
   /** A fingerprint of everything the curve depends on EXCEPT the playhead. */
@@ -124,9 +142,10 @@ export class ArrRailLane extends MobxLitElement {
     if (!t?.railId) return '';
     const w = this.canvas?.clientWidth ?? 0;
     const writers = this.writerSpecs(t.railId)
-      .map((s) => `${s.seed}:${s.combine}:${s.scale}:${s.startBeat}:${s.endBeat}:${s.stochastic ? 1 : 0}`)
+      .map((s) => `${s.seed}:${s.combine}:${s.scale}:${s.startBeat}:${s.endBeat}:${s.stochastic ? 1 : 0}`
+        + (s.lfo ? `:lfo(${s.lfo.mode},${s.lfo.rate},${s.lfo.period},${s.lfo.amplitude},${s.lfo.waveform},${s.lfo.shape},${s.lfo.invert ? 1 : 0})` : ''))
       .join(',');
-    return `${w}|${store.pxPerBeat}|${store.scrollUnits}|${JSON.stringify(t.baseCurve)}|${writers}`;
+    return `${w}|${store.pxPerBeat}|${store.scrollUnits}|${this.secondsPerBeat()}|${JSON.stringify(t.baseCurve)}|${writers}`;
   }
 
   private scheduleRequest() {
@@ -154,6 +173,7 @@ export class ArrRailLane extends MobxLitElement {
       // across postMessage. `writerSpecs` already returns plain objects.
       { baseCurve: (t.baseCurve ?? [{ x: 0, y: 0.3 }]).map((p) => ({ x: p.x, y: p.y })),
         totalBeats: compositionLengthBeats(store.composition),
+        secondsPerBeat: this.secondsPerBeat(),
         writers: this.writerSpecs(t.railId), beats },
       (curve) => { this.curve = curve; this.draw(); },
     );
@@ -213,7 +233,7 @@ export class ArrRailLane extends MobxLitElement {
       ctx.fillRect(Math.round(px), 0, 1, h);
       const vNow = railMeanAt(
         { baseCurve: track.baseCurve ?? [{ x: 0, y: 0.3 }], totalBeats: compositionLengthBeats(store.composition),
-          writers: this.writerSpecs(track.railId ?? '') },
+          secondsPerBeat: this.secondsPerBeat(), writers: this.writerSpecs(track.railId ?? '') },
         store.positionBeat);
       ctx.beginPath();
       ctx.arc(px, yOf(vNow), 2.5, 0, Math.PI * 2);
