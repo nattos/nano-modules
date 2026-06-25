@@ -13,7 +13,7 @@ import { html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
-import { drawFrameCell, reelSeedFor } from './film-reel';
+import { drawPlaceholderCell } from './film-reel';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
@@ -470,8 +470,8 @@ export class ArrClipView extends MobxLitElement {
     this.drawSourceFrame(ctx, w, h, sel.clip, this.scrubFrame);
   }
 
-  /** Draw one source frame: a real decoded thumbnail when available, else the
-   *  procedural placeholder. Used by the big preview + the hover mini. */
+  /** Draw one source frame: a real decoded thumbnail when available, else a
+   *  static neutral placeholder. Used by the big preview + the hover mini. */
   private drawSourceFrame(ctx: CanvasRenderingContext2D, w: number, h: number, clip: any, frame: number) {
     const src = clip.source;
     if (src?.url && src.sourceKey) {
@@ -500,7 +500,7 @@ export class ArrClipView extends MobxLitElement {
         return;
       }
     }
-    drawFrameCell(ctx, 0, 0, w, h, reelSeedFor(clip.id), Math.min(1, frame / this.duration()));
+    drawPlaceholderCell(ctx, 0, 0, w, h);
   }
 
   /** The source frame the engine is actually showing at the transport position (play

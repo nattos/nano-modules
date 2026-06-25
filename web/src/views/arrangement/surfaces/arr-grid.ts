@@ -959,6 +959,8 @@ export class ArrGrid extends MobxLitElement {
   }
 
   private onLaneDblClick(e: MouseEvent, track: Track) {
+    // In automation mode the clip row edits envelopes, not clips — never insert one.
+    if (store.automationMode) return;
     if (track.kind === 'group') return;
     if (e.target instanceof Element && e.target.closest('arr-clip')) return;
     const laneRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1129,7 +1131,10 @@ export class ArrGrid extends MobxLitElement {
       return;
     }
 
-    const beat = Math.max(0, d.startBeat + shiftBeat);
+    // Snap the clip's ABSOLUTE resulting START to the grid (not the delta), so a
+    // clip that started off-grid lands on a grid line after the move.
+    const targetStart = d.startBeat + deltaBeat;
+    const beat = free ? Math.max(0, targetStart) : store.quantize(targetStart);
     const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
     this.clipDropTrackId = dest !== d.trackId ? dest : null;
     // Always pass the ORIGINAL source track: coalescing reverts to the gesture's

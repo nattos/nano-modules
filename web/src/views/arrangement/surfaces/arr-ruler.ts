@@ -11,8 +11,9 @@ import { html, css } from 'lit';
 import { customElement, query, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { compositionLengthBeats } from '../model/composition';
 import { RULER_HEIGHT } from './grid-shared';
-import { mainTimelineView, type RulerView } from './timeline-view';
+import { mainTimelineView, ClipTimelineView, type RulerView } from './timeline-view';
 
 @customElement('arr-ruler')
 export class ArrRuler extends MobxLitElement {
@@ -144,6 +145,7 @@ export class ArrRuler extends MobxLitElement {
           @pointermove=${this.onMove}
           @pointerup=${this.onUp}
           @pointercancel=${this.onUp}
+          @dblclick=${this.onDblClick}
           @wheel=${this.onWheel}
         >
           <canvas></canvas>
@@ -253,9 +255,7 @@ export class ArrRuler extends MobxLitElement {
     this.moved = 0;
     this.lastY = e.clientY;
     const v = this.view;
-    const grid = v.grid();
-    // Scrub: move the cursor immediately on pointerdown (not just on click-up).
-    v.setPlayFrom(v.quantize(grid.xToBeat(this.localX(e))));
+    // Navigation surface only — pointer interaction never moves the playhead/caret.
     // Capture the content position under the cursor — it stays anchored there
     // for the whole gesture, so hitting the scroll endpoint never drifts.
     this.anchorUnits = v.scrollUnits + this.localX(e) / v.pxPerBeat;
@@ -284,11 +284,50 @@ export class ArrRuler extends MobxLitElement {
     } catch {
       /* ignore */
     }
-    // A click (negligible movement) sets the play-from marker.
-    if (this.moved < 4) {
-      const v = this.view;
-      v.setPlayFrom(v.quantize(v.grid().xToBeat(this.localX(e))));
+    // Navigation surface only — a click does NOT move the playhead/caret.
+  };
+
+  /**
+   * Double-click: zoom + pan so the relevant content fills the view (small margin
+   * each side). Arrangement context fits beat 0 → the furthest clip end across all
+   * tracks; the clip-details (envelope) context fits the clip's local 0 → span.
+   */
+  private onDblClick = (e: MouseEvent) => {
+    e.preventDefault();
+    const v = this.view;
+    const w = this.timeEl?.clientWidth ?? 0;
+    if (w <= 0) return;
+
+    // Content beat range in this view's beat space.
+    let rangeStart = 0;
+    let rangeEnd: number;
+    if (v instanceof ClipTimelineView) {
+      // Clip-envelope context: fit the clip's local extents (0 .. span).
+      rangeEnd = v.spanBeats;
+    } else {
+      // Arrangement context: 0 .. furthest clip end across ALL tracks.
+      let maxEnd = 0;
+      let hasClip = false;
+      for (const t of store.composition.tracks) {
+        for (const c of t.clips) {
+          maxEnd = Math.max(maxEnd, c.startBeat + c.lengthBeat);
+          hasClip = true;
+        }
+      }
+      rangeEnd = hasClip ? maxEnd : compositionLengthBeats(store.composition);
     }
+    if (!(rangeEnd > rangeStart)) return;
+
+    // Work in warped units so the fit is exact under the warp curve (units == beats
+    // for the straight clip view). beatToX(beat) = (unitsAt(beat) - scroll) * ppb,
+    // so placing `units` at the left edge means scrollUnits = units.
+    const grid = v.grid();
+    const u0 = grid.curve.unitsAt(rangeStart);
+    const u1 = grid.curve.unitsAt(rangeEnd);
+    const span = Math.max(0.25, u1 - u0);
+    const margin = 0.05; // 5% breathing room each side
+    v.setZoom(w / (span * (1 + 2 * margin)));
+    v.setScrollUnits(u0 - margin * span);
   };
 
   private onWheel = (e: WheelEvent) => {

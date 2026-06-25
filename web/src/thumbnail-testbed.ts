@@ -7,7 +7,7 @@
  */
 
 import { ThumbnailCache, type ThumbnailProducer } from './views/arrangement/media/thumbnail-cache';
-import { drawFrameCell, reelSeedFor } from './views/arrangement/surfaces/film-reel';
+import { drawFrameCell, reelSeedFor } from './thumbnail-testbed-frame';
 
 const THUMB_W = 96;
 const THUMB_H = 54;

@@ -13,7 +13,7 @@
 import { html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { LitElement } from 'lit';
-import { drawFrameCell, reelSeedFor } from './film-reel';
+import { drawPlaceholderCell } from './film-reel';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
 
@@ -112,7 +112,6 @@ export class TimeStrip extends LitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const seed = reelSeedFor(this.clipId);
     const dur = Math.max(1, this.durationFrames);
 
     // Film cells: choose a frame step so cells are ~16:9.
@@ -152,7 +151,7 @@ export class TimeStrip extends LitElement {
         if (x + cw < 0) continue;
         const hit = real ? thumbnailController.peek(this.sourceKey, Math.min(dur - 1, f), level) : null;
         if (hit) ctx.drawImage(hit.value, x, 0, cw, h);
-        else drawFrameCell(ctx, x, 0, cw - 1, h, seed, Math.min(1, f / dur));
+        else drawPlaceholderCell(ctx, x, 0, cw - 1, h);
         ctx.fillStyle = 'rgba(0,0,0,0.45)';
         ctx.fillRect(x, 0, 1, h);
       }

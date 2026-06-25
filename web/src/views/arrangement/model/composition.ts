@@ -323,6 +323,13 @@ export interface Composition {
   tracks: Track[];
   rails: Rail[];
   playMode: PlayModeConfig;
+  /**
+   * Persisted loop markers (transport loop brace). Saved with the document but
+   * NEVER goes through undo/redo — it's written directly + flushed like a
+   * preference. Omitted on legacy files ⇒ the store keeps its defaults
+   * (enabled, [0, 32]).
+   */
+  loop?: { enabled: boolean; startBeat: number; endBeat: number };
 }
 
 /** The master/main-bus track — a root group every track sums into. It's the one

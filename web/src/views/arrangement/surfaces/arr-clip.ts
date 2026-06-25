@@ -7,7 +7,7 @@
 import { html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
-import { drawFilmReel, drawFrameCell } from './film-reel';
+import { drawFilmReel, drawPlaceholderCell } from './film-reel';
 import { thumbnailController, reelLayout } from '../media/thumbnail-controller';
 import { clipSourceFrameAt, type ClipTimeCtx } from '../engine/clip-time';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
@@ -309,7 +309,7 @@ export class ArrClip extends MobxLitElement {
     if (media?.url && media.sourceKey) {
       this.drawRealReel(ctx, w, h, media);
     } else {
-      drawFilmReel(ctx, w, h, this.reelSeed());
+      drawFilmReel(ctx, w, h);
     }
   }
 
@@ -413,7 +413,6 @@ export class ArrClip extends MobxLitElement {
       readaheadFrames: 0,
     });
 
-    const seed = this.reelSeed();
     for (const p of panels) {
       ctx.save();
       ctx.beginPath();
@@ -425,7 +424,7 @@ export class ArrClip extends MobxLitElement {
       } else {
         const hit = thumbnailController.peek(sourceKey, p.frame, level);
         if (hit) ctx.drawImage(hit.value, p.x, 0, panelW, h);
-        else drawFrameCell(ctx, p.x, 0, panelW, h, seed, p.frame / frameCount);
+        else drawPlaceholderCell(ctx, p.x, 0, panelW, h);
       }
       // A subtle seam at the panel's left edge (skip the segment start = a marker/edge).
       if (p.x > p.cl + 0.5) {
@@ -605,9 +604,24 @@ export class ArrClip extends MobxLitElement {
     this.gridHost()?.beginRegionFromClient?.(e, paths.clip(this.trackId, this.clip.id));
   };
 
+  /**
+   * Clicking a RESIZE EDGE focuses the clip and drops a zero-width caret AT that
+   * edge — left handle → clip start, right handle → clip end — instead of selecting
+   * the whole clip span. `selectClipOnly` focuses the clip without grabbing a time
+   * box; `setCaret` (anchor == head) collapses any existing box to a caret on this
+   * clip's track. A DRAG still resizes the clip — `beginDrag` is armed unchanged.
+   */
   private onHandleDown(e: PointerEvent, mode: DragMode) {
     e.stopPropagation();
-    store.select(paths.clip(this.trackId, this.clip.id));
+    store.selectClipOnly(paths.clip(this.trackId, this.clip.id));
+    const edgeBeat =
+      mode === 'resize-l' ? this.clip.startBeat : this.clip.startBeat + this.clip.lengthBeat;
+    store.setCaret({
+      anchorBeat: edgeBeat,
+      anchorTrackId: this.trackId,
+      headBeat: edgeBeat,
+      headTrackId: this.trackId,
+    });
     this.beginDrag(e, mode);
   }
 

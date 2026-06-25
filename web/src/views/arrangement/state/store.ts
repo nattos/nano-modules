@@ -404,10 +404,44 @@ export class ArrangementStore {
   }
 
   undo() {
-    this.history.undo();
+    this.applyHistoryWithAutoSelect(() => this.history.undo());
   }
   redo() {
-    this.history.redo();
+    this.applyHistoryWithAutoSelect(() => this.history.redo());
+  }
+
+  /** Snapshot every clip id + track id across the document. */
+  private snapshotIds(): { clips: Map<string, string>; tracks: Set<string> } {
+    const clips = new Map<string, string>(); // clipId → trackId
+    const tracks = new Set<string>();
+    for (const t of this.composition.tracks) {
+      tracks.add(t.id);
+      for (const c of t.clips) clips.set(c.id, t.id);
+    }
+    return { clips, tracks };
+  }
+
+  /**
+   * Run an undo/redo and, if it created EXACTLY ONE new clip or track, select it
+   * — so re-creating a thing (or redoing its creation) focuses it, the way the
+   * original creating action did. Zero or multiple additions leave selection as-is.
+   */
+  private applyHistoryWithAutoSelect(apply: () => void) {
+    const before = this.snapshotIds();
+    apply();
+    const after = this.snapshotIds();
+    const newClips: Array<{ trackId: string; clipId: string }> = [];
+    for (const [clipId, trackId] of after.clips) {
+      if (!before.clips.has(clipId)) newClips.push({ trackId, clipId });
+    }
+    if (newClips.length === 1) {
+      this.select(paths.clip(newClips[0].trackId, newClips[0].clipId));
+      return;
+    }
+    const newTracks = [...after.tracks].filter((id) => !before.tracks.has(id));
+    if (newClips.length === 0 && newTracks.length === 1) {
+      this.select(paths.track(newTracks[0]));
+    }
   }
   /** Begin/end a continuous pointer drag (clip move/resize): every record in
    *  between folds into ONE undo entry no matter how long the pointer dwells, so
@@ -435,6 +469,12 @@ export class ArrangementStore {
       this.currentName = name;
       this.composition = comp;
       this.ensureMainBus(); // legacy / hand-made files may lack the master track
+      // Restore persisted loop markers (omitted on legacy files ⇒ keep defaults).
+      if (comp.loop) {
+        this.loopEnabled = comp.loop.enabled;
+        this.loopStartBeat = comp.loop.startBeat;
+        this.loopEndBeat = comp.loop.endBeat;
+      }
       this.persistenceEnabled = true;
       this.lastSavedJson = JSON.stringify(toJS(this.composition));
       this.clearSelection();
@@ -799,7 +839,9 @@ export class ArrangementStore {
       } else if (path.startsWith('track/')) {
         const t = this.trackById(path.split('/')[1]);
         if (t && t.kind === 'track') {
-          this.setTimeSelection(0, compositionLengthBeats(this.composition), [t.id]);
+          // Selecting a track sets the time box (all beats × that track) but must
+          // NOT yank the play-from marker / playhead — keep them where they are.
+          this.setTimeSelection(0, compositionLengthBeats(this.composition), [t.id], { movePlayhead: false });
         } else {
           this.clearTimeSelection();
         }
@@ -1268,16 +1310,24 @@ export class ArrangementStore {
     });
   }
 
-  setTimeSelection(start: number, end: number, trackIds: string[] = []) {
+  setTimeSelection(start: number, end: number, trackIds: string[] = [], opts?: { movePlayhead?: boolean }) {
+    const movePlayhead = opts?.movePlayhead ?? true;
     runInAction(() => {
-      // Map the [start,end] × trackIds box onto the caret (anchor=start, head=end).
-      this.caretAnchorBeat = Math.max(0, Math.min(start, end));
-      this.playFromBeat = Math.max(start, end);
       this.caretAnchorTrackId = trackIds[0] ?? '';
       this.caretHeadTrackId = trackIds[trackIds.length - 1] ?? '';
       this.caretAnchorLaneId = '';
       this.caretHeadLaneId = ''; // clip-row selection
-      if (!this.playing) this.positionBeat = this.playFromBeat;
+      if (movePlayhead) {
+        // Map the [start,end] × trackIds box onto the caret (anchor=start, head=end).
+        this.caretAnchorBeat = Math.max(0, Math.min(start, end));
+        this.playFromBeat = Math.max(start, end);
+        if (!this.playing) this.positionBeat = this.playFromBeat;
+      } else {
+        // Set the time box WITHOUT moving the play-from marker / playhead: anchor
+        // the far end so [min,max] still spans the region, leaving playFromBeat /
+        // positionBeat exactly where they were (e.g. selecting a track).
+        this.caretAnchorBeat = Math.max(0, Math.max(start, end));
+      }
     });
   }
 
@@ -1735,6 +1785,23 @@ export class ArrangementStore {
   }
   toggleLoop() {
     this.loopEnabled = !this.loopEnabled;
+    this.persistLoop();
+  }
+
+  /**
+   * Write the current loop markers into `composition.loop` and schedule a save.
+   * Deliberately NOT routed through `mutate()`: loop is a transport preference,
+   * not a document edit, so it must add NO undo/redo entry — but it IS persisted
+   * with the file. `mobxSet` makes the (possibly fresh) key observable so it
+   * survives `toJS`/serialization.
+   */
+  private persistLoop() {
+    mobxSet(this.composition as object, 'loop', {
+      enabled: this.loopEnabled,
+      startBeat: this.loopStartBeat,
+      endBeat: this.loopEndBeat,
+    });
+    this.requestSave();
   }
 
   /**
@@ -1751,10 +1818,12 @@ export class ArrangementStore {
           this.loopStartBeat = a;
           this.loopEndBeat = b;
           this.loopEnabled = true;
+          this.persistLoop();
           return;
         }
       }
       this.loopEnabled = !this.loopEnabled;
+      this.persistLoop();
     });
   }
 

@@ -5,8 +5,9 @@
  * Live (Component C): the selected clip is mapped to a real sketch and rendered
  * through executor.wasm by the shared `engineBridge`; traced frames paint here.
  * When the selection has no renderable content (empty / modulation-only clip, or
- * nothing selected) the monitor falls back to the placeholder render that drifts
- * with the transport playhead.
+ * nothing selected) the monitor shows only the static composite backdrop (the
+ * configured background color, or the stage checkerboard when transparent) — no
+ * animated placeholder.
  *
  * The engine free-runs a live preview; the warped transport clock drives the
  * playhead/grid. Precise pause-and-seek-to-beat (freezing the exact frame at the
@@ -108,7 +109,7 @@ export class ArrMonitor extends MobxLitElement {
 
   render() {
     const res = store.composition.meta.resolution;
-    // Tracked reads — drive reactive updates of the live engine + placeholder.
+    // Tracked reads — drive reactive updates of the live engine + backdrop.
     void store.positionBeat;
     void store.primaryPath;
     void store.playing;
