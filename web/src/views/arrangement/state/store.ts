@@ -840,9 +840,9 @@ export class ArrangementStore {
         );
       } else if (path.startsWith('track/')) {
         const t = this.trackById(path.split('/')[1]);
-        if (t && t.kind === 'track') {
-          // Selecting a track sets the time box (all beats × that track) but must
-          // NOT yank the play-from marker / playhead — keep them where they are.
+        if (t && (t.kind === 'track' || t.kind === 'rail')) {
+          // Selecting a track OR return/rail sets the time box (all beats × that
+          // track) but must NOT yank the play-from marker / playhead — keep them put.
           this.setTimeSelection(0, compositionLengthBeats(this.composition), [t.id], { movePlayhead: false });
         } else {
           this.clearTimeSelection();
@@ -858,7 +858,7 @@ export class ArrangementStore {
     const scope = this.timeSelTrackIds;
     if (scope.length === 0) {
       const t = this.trackById(trackId);
-      return !!t && t.kind === 'track';
+      return !!t && (t.kind === 'track' || t.kind === 'rail');
     }
     return scope.includes(trackId);
   }
@@ -1208,10 +1208,12 @@ export class ArrangementStore {
 
   // ── 2D caret + derived time-region selection ──────────────────────────
 
-  /** Plain (non-group/rail) tracks in render order — the vertical axis the
-   *  caret indexes over. */
+  /** Tracks the caret indexes over (the vertical axis): plain tracks AND rail/return
+   *  tracks, in render order. Rails carry no clips or automation lanes, so they each
+   *  contribute exactly one caret row — but they DO participate in selection + the
+   *  time box, matching how the grid hit-tests their rows. Groups stay excluded. */
   private get caretTrackOrder(): Track[] {
-    return this.displayTracks.filter((t) => t.kind === 'track');
+    return this.displayTracks.filter((t) => t.kind === 'track' || t.kind === 'rail');
   }
 
   /** Lane shown AS the track's clip-row overlay (its selected-field lane, in

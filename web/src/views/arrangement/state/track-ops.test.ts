@@ -34,6 +34,20 @@ describe('track structural ops', () => {
     expect(store.trackById(id)?.blendMode).toBe(3);
   });
 
+  it('selecting a return (rail) track selects all time on it (unified caret)', () => {
+    const id = store.addReturn();
+    store.select(paths.track(id));
+    expect(store.hasTimeSelection).toBe(true);
+    expect(store.timeSelTrackIds).toContain(id);
+    expect(store.isTrackShownSelected(id)).toBe(true);
+  });
+
+  it('a return track participates in the caret span (caretTrackIds)', () => {
+    const id = store.addReturn();
+    store.setCaret({ anchorBeat: 0, anchorTrackId: id, headBeat: 4, headTrackId: id });
+    expect(store.caretTrackIds).toContain(id);
+  });
+
   it('track blend mode drives the composite layer (track wins over clip)', () => {
     const id = store.addTrack();
     store.addVideoClip(id, 0, { sourceKey: 'k', url: 'blob:x', frameCount: 30, fps: 30, label: 'v' }, 4);
