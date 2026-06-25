@@ -114,6 +114,9 @@ export class ArrRuler extends MobxLitElement {
     void v.positionBeat;
     void v.playFromBeat;
     void v.loop;
+    // Track the raw loop range + enabled flag too: `v.loop` is null while disabled
+    // (so it stops tracking start/end), but we still draw the markers then.
+    void store.loopEnabled; void store.loopStartBeat; void store.loopEndBeat;
     void v.timeSel;
     void v.beatsPerBar;
     void v.headerWidth;
@@ -171,14 +174,18 @@ export class ArrRuler extends MobxLitElement {
     const grid = v.grid();
     const beatsPerBar = v.beatsPerBar;
 
-    // Loop brace (main timeline only).
-    const loop = v.loop;
-    if (loop) {
-      const x0 = grid.beatToX(loop.start);
-      const x1 = grid.beatToX(loop.end);
-      ctx.fillStyle = 'rgba(65,105,225,0.18)';
-      ctx.fillRect(x0, 0, x1 - x0, 6);
-      ctx.fillStyle = 'rgba(65,105,225,0.8)';
+    // Loop markers (main timeline only — the compact editor ruler has no loop).
+    // Drawn even when the loop is DISABLED, so you can see where it's parked: in that
+    // case the markers use a dimmed colour and the brace bar BETWEEN them is omitted.
+    if (!this.compact) {
+      const on = store.loopEnabled;
+      const x0 = grid.beatToX(store.loopStartBeat);
+      const x1 = grid.beatToX(store.loopEndBeat);
+      if (on) {
+        ctx.fillStyle = 'rgba(65,105,225,0.18)';
+        ctx.fillRect(x0, 0, x1 - x0, 6); // brace bar between markers — enabled only
+      }
+      ctx.fillStyle = on ? 'rgba(65,105,225,0.8)' : 'rgba(150,158,178,0.4)';
       ctx.fillRect(x0, 0, 2, h);
       ctx.fillRect(x1 - 2, 0, 2, h);
     }

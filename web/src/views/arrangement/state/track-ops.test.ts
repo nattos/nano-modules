@@ -23,6 +23,11 @@ describe('track structural ops', () => {
     expect(store.isSelected(paths.track(id))).toBe(true);
   });
 
+  it('addTrack starts fully opaque (level 1, not the mixer default 0.85)', () => {
+    const id = store.addTrack();
+    expect(store.trackById(id)?.level).toBe(1);
+  });
+
   it('addTrack(afterId) inserts immediately after the given track', () => {
     const a = store.addTrack();
     const b = store.addTrack(a);

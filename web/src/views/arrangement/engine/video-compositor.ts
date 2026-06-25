@@ -66,12 +66,15 @@ interface Pump {
   lastKey?: string;
   /** Last frame decoded for LOOKAHEAD warming (not injected) — dedupe warm pulls. */
   warmedKey?: string;
-  /** Stateful 'random' play-mode walk. `dwellAccum` accumulates FORWARD beat progress
-   *  (relative, not an absolute beat timer — so rewinding then replaying keeps jumping
-   *  instead of waiting to reach the old position); a jump fires when it crosses
-   *  `nextDwell`. `lastBeat` is the previous query beat (delta source). `srcSec` also
-   *  drifts forward at `speed` between jumps, looping at the slice end. */
-  rand?: { srcSec: number; dwellAccum: number; nextDwell: number; lastBeat: number };
+  /** Stateful 'random' play-mode walk, driven like a synth oscillator. `phase` is the
+   *  NORMALISED progress [0,1) through the current dwell cycle; each frame it advances by
+   *  `delta / effectiveDwell`, where `effectiveDwell` is read fresh from the live `dwell`
+   *  param every frame — so a dwell change re-rates the in-flight cycle IMMEDIATELY (no
+   *  waiting for the old interval to elapse). A jump fires whenever `phase` wraps past 1
+   *  (or below 0 when scrubbing back). `jitterFactor` is this cycle's dwell multiplier
+   *  (resampled at each jump). `lastBeat` is the previous query beat (delta source); `srcSec`
+   *  drifts at `speed` between jumps, looping at the slice end. */
+  rand?: { srcSec: number; phase: number; jitterFactor: number; lastBeat: number };
 }
 
 export class VideoCompositor {
@@ -260,10 +263,11 @@ export class VideoCompositor {
    * jittered `dwell`) elapses, relocating by a ±distance sampled uniformly in
    * [jumpDistanceMin, jumpDistanceMax] (fraction-of-slice or seconds), reflected at the
    * slice edges. Truly
-   * non-deterministic (Math.random). The dwell is an ACCUMULATOR of forward beat progress
-   * (not an absolute beat timer), so rewinding then replaying keeps jumping rather than
-   * stalling until the playhead reaches its pre-seek position. A same-beat re-query (the
-   * Precise gate's clipReady) sees delta 0 ⇒ returns the identical frame as pumpClip.
+   * non-deterministic (Math.random). The dwell runs as a NORMALISED phase accumulator whose
+   * rate is `1 / dwell` sampled live each frame (synth-style), so editing `dwell` re-rates the
+   * current cycle immediately, and rewinding then replaying keeps jumping rather than stalling
+   * until the playhead reaches its pre-seek position. A same-beat re-query (the Precise gate's
+   * clipReady) sees delta 0 ⇒ returns the identical frame as pumpClip.
    */
   private randomFrame(p: Pump, loop: ClipLoopConfig, ctx: ClipTimeCtx, beat: number): number {
     const lo = loop.startSec ?? 0;
@@ -297,29 +301,33 @@ export class VideoCompositor {
       const sign = Math.random() < 0.5 ? -1 : 1;
       return reflectInto(from + sign * dist);
     };
-    const nextDwellOf = () => Math.max(0.01, dwellBeats * (1 + jitter * (Math.random() * 2 - 1)));
+    // This cycle's dwell multiplier ∈ ~[1-jitter, 1+jitter], clamped positive.
+    const newJitter = () => Math.max(0.05, 1 + jitter * (Math.random() * 2 - 1));
     let st = p.rand;
-    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), dwellAccum: 0, nextDwell: nextDwellOf(), lastBeat: beat };
+    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), phase: 0, jitterFactor: newJitter(), lastBeat: beat };
     const delta = beat - st.lastBeat;
     st.lastBeat = beat;
     if (delta !== 0) {
       // Playback drifts through the source at `speed` (signed ⇒ reverse when scrubbing
-      // back), looping the slice. The dwell is an ACCUMULATOR of beat progress: jumps fire
-      // forward each time it fills, and — symmetrically — backward when it empties (a
-      // backward scrub runs the dwell timer in reverse and re-jumps; jumps are stochastic
-      // so they're re-randomized, not literally undone).
+      // back), looping the slice. The dwell phase advances like a synth oscillator: its
+      // rate is `1 / effectiveDwell` evaluated from the LIVE `dwell` param each frame, so
+      // turning the knob re-rates the current cycle instantly. Jumps fire forward each time
+      // the phase wraps past 1, and — symmetrically — backward when it falls below 0 (a
+      // backward scrub runs the phase in reverse and re-jumps; jumps are stochastic, so
+      // they're re-randomized, not literally undone).
       st.srcSec = wrap(st.srcSec + speed * delta * secPerBeat);
-      st.dwellAccum += delta;
+      const effDwell = Math.max(0.01, dwellBeats * st.jitterFactor);
+      st.phase += delta / effDwell;
       let guard = 0;
-      while (st.dwellAccum >= st.nextDwell && guard++ < 4096) {
-        st.dwellAccum -= st.nextDwell;
+      while (st.phase >= 1 && guard++ < 4096) {
+        st.phase -= 1;
         st.srcSec = pick(st.srcSec);
-        st.nextDwell = nextDwellOf();
+        st.jitterFactor = newJitter();
       }
-      while (st.dwellAccum < 0 && guard++ < 4096) {
+      while (st.phase < 0 && guard++ < 4096) {
         st.srcSec = pick(st.srcSec);
-        st.nextDwell = nextDwellOf();
-        st.dwellAccum += st.nextDwell;
+        st.jitterFactor = newJitter();
+        st.phase += 1;
       }
     }
     return Math.min(p.frameCount - 1, Math.max(0, Math.floor(st.srcSec * p.fps)));

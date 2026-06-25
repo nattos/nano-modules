@@ -15,8 +15,9 @@ import { TextEngine } from './text-engine';
 import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { WasmSketchExecutor } from './executor-host';
 import { TraceCapture } from './trace-capture';
+import { traceBarrierKeys } from './engine-trace-barriers';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
-import { BUCKET_SKETCH_ID, normalizeSketchChains, sketchChain, type Sketch } from './sketch-types';
+import { BUCKET_SKETCH_ID, chainEntryAt, normalizeSketchChains, sketchChain, type Sketch } from './sketch-types';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -719,12 +720,7 @@ async function simulateTick(dt: number) {
   // stages of fused runs need their pixels persisted to a real
   // texture (rather than collapsed into in-register chaining).
   exec.tracedChainEntries.clear();
-  for (const tp of tracePoints) {
-    if (tp.target.type === 'chain_entry') {
-      exec.tracedChainEntries.add(
-        `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`);
-    }
-  }
+  for (const key of traceBarrierKeys(tracePoints)) exec.tracedChainEntries.add(key);
 
   // NOTE: A real module instance appearing in multiple sketches will only be
   // ticked/rendered once (by whichever sketch chain processes it first). The
@@ -861,6 +857,20 @@ async function simulateTick(dt: number) {
       const entry = exec.chainEntryHandles.get(key);
       if (entry) {
         handle = tp.target.side === 'input' ? entry.input : entry.output;
+      }
+      // Generator-led chains (the arrangement's per-clip video chains) inject the
+      // source frame straight into the chain entry's slot 0 (`source.video.file`
+      // reads `inputTexture(0)`). When the resolved handle is unset (-1) — e.g. a
+      // source fused as the first stage of a group has no materialized output —
+      // fall back to that injected texture so the trace previews the actual video
+      // frame instead of an empty (transparent) image. `instanceTextures` only
+      // holds video-source instances, so this never fires for a plain effect.
+      if (handle < 0) {
+        const ce = chainEntryAt(sketches.get(tp.target.sketchId), tp.target.chainIdx);
+        if (ce && ce.type === 'module') {
+          const inj = instanceTextures.get(ce.instance_key);
+          if (inj) handle = inj.handle;
+        }
       }
     }
     const prevHandle = traceHandles.get(tp.id);

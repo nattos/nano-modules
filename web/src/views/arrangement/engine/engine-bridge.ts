@@ -23,7 +23,7 @@ import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
-import type { Clip, Track } from '../model/composition';
+import { deviceIsSource, type Clip, type Track } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
@@ -97,7 +97,13 @@ export class EngineBridge {
     if (!dev) return null;
     const idx = this.compositeKeys.indexOf(clipInstanceKey(clipId, dev.id));
     if (idx < 0) return null; // clip not active at the playhead → no live frame
-    const tp: TracePoint = { id: reg.id, target: { type: 'chain_entry', sketchId: COMPOSITE_ID, colIdx: 0, chainIdx: idx, side: t.side } };
+    // The "Input" card (chain[0], side 'input') previews what feeds the chain.
+    // For a source-led clip (video/generator at chain[0]) nothing flows INTO the
+    // generator — its 'input' side is the upstream composite (transparent for a
+    // topmost layer). The chain's actual content is the source's OUTPUT (the
+    // injected video frame), so trace that instead.
+    const side = t.side === 'input' && deviceIsSource(dev) ? 'output' : t.side;
+    const tp: TracePoint = { id: reg.id, target: { type: 'chain_entry', sketchId: COMPOSITE_ID, colIdx: 0, chainIdx: idx, side } };
     if (reg.size) tp.size = reg.size;
     return tp;
   }

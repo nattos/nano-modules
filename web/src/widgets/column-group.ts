@@ -886,6 +886,7 @@ export class ColumnGroup extends MobxLitElement {
         <texture-monitor
           .traceId=${traceId}
           .traceTarget=${target}
+          .traceSource=${this.adapter?.traceSource ?? null}
           .width=${64}
           .height=${36}
         ></texture-monitor>

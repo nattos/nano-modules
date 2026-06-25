@@ -2634,6 +2634,7 @@ export class ArrangementStore {
       kind: 'track',
       parentId: null,
       color: 'var(--app-cat-source)',
+      level: 1, // start fully opaque (the mixer fader defaults undefined → 85%)
       sketch: { devices: [] },
       automation: [],
       clips: [],

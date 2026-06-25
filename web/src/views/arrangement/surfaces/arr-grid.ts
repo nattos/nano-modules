@@ -974,6 +974,7 @@ export class ArrGrid extends MobxLitElement {
   // selects the whole time range across ALL tracks (rendered full-height).
   private drag: {
     x0: number;
+    y0: number;
     startBeat: number;
     laneLeft: number;
     startTrackId: string;
@@ -1220,6 +1221,7 @@ export class ArrGrid extends MobxLitElement {
     else if (laneId) store.clearSelection();
     this.drag = {
       x0: e.clientX,
+      y0: e.clientY,
       startBeat,
       laneLeft,
       startTrackId: startRow.trackId,
@@ -1235,7 +1237,10 @@ export class ArrGrid extends MobxLitElement {
   private onRegionMove = (e: PointerEvent) => {
     const d = this.drag;
     if (!d) return;
-    if (!d.active && Math.abs(e.clientX - d.x0) > 4) d.active = true;
+    // Activate on movement along EITHER axis: a purely vertical drag (clientX
+    // unchanged) still arms a region selection — it extends the caret up/down as a
+    // vertical I-beam slice (zero-width time box across the dragged rows).
+    if (!d.active && (Math.abs(e.clientX - d.x0) > 4 || Math.abs(e.clientY - d.y0) > 4)) d.active = true;
     if (!d.active) return;
     const grid = buildBeatGrid();
     const cur = grid.xToBeat(e.clientX - d.laneLeft);
