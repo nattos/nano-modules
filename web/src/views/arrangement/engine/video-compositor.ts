@@ -66,10 +66,12 @@ interface Pump {
   lastKey?: string;
   /** Last frame decoded for LOOKAHEAD warming (not injected) — dedupe warm pulls. */
   warmedKey?: string;
-  /** Stateful 'random' play-mode walk: hold a source position for a (jittered) dwell,
-   *  then jump. Advanced only as the beat moves FORWARD, and cached at `atBeat` so a
-   *  same-beat re-query (the Precise gate's clipReady) returns the identical frame. */
-  rand?: { srcSec: number; nextJumpBeat: number; atBeat: number };
+  /** Stateful 'random' play-mode walk. `dwellAccum` accumulates FORWARD beat progress
+   *  (relative, not an absolute beat timer — so rewinding then replaying keeps jumping
+   *  instead of waiting to reach the old position); a jump fires when it crosses
+   *  `nextDwell`. `lastBeat` is the previous query beat (delta source). `srcSec` also
+   *  drifts forward at `speed` between jumps, looping at the slice end. */
+  rand?: { srcSec: number; dwellAccum: number; nextDwell: number; lastBeat: number };
 }
 
 export class VideoCompositor {
@@ -252,40 +254,50 @@ export class VideoCompositor {
   }
 
   /**
-   * Stateful stochastic 'random' driver: hold a source position for a jittered dwell,
-   * then jump to a new random position (anywhere in the slice, or within ±jumpDistance
-   * of the current one). Truly non-deterministic (Math.random). Advances only as the
-   * beat moves forward; a same-beat re-query returns the cached frame (so the Precise
-   * gate's clipReady agrees with what pumpClip injected).
+   * Stateful stochastic 'random' driver. Between jumps the source position drifts forward
+   * at `speed` (looping at the slice end); a jump fires when the accumulated dwell (a
+   * jittered `dwell`) elapses, relocating to a new random position — anywhere in the slice,
+   * or within ±`jumpDistance` of the current one (fraction-of-slice or seconds). Truly
+   * non-deterministic (Math.random). The dwell is an ACCUMULATOR of forward beat progress
+   * (not an absolute beat timer), so rewinding then replaying keeps jumping rather than
+   * stalling until the playhead reaches its pre-seek position. A same-beat re-query (the
+   * Precise gate's clipReady) sees delta 0 ⇒ returns the identical frame as pumpClip.
    */
   private randomFrame(p: Pump, loop: ClipLoopConfig, ctx: ClipTimeCtx, beat: number): number {
     const lo = loop.startSec ?? 0;
     const hi = loop.endSec ?? ctx.videoDurSec;
     const range = Math.max(0, hi - lo);
+    const speed = loop.speed ?? 1;
     const dwell = loop.dwell ?? RANDOM_DEFAULTS.dwell;
     const unit = loop.dwellUnit ?? RANDOM_DEFAULTS.dwellUnit;
     const jitter = loop.dwellJitter ?? RANDOM_DEFAULTS.dwellJitter;
-    const jumpDist = loop.jumpDistanceSec ?? RANDOM_DEFAULTS.jumpDistanceSec;
-    // Dwell → beats (warp-ignoring: convert seconds via the clip's local sec/beat rate).
+    const jumpVal = loop.jumpDistance ?? RANDOM_DEFAULTS.jumpDistance;
+    const jumpUnit = loop.jumpDistanceUnit ?? RANDOM_DEFAULTS.jumpDistanceUnit;
+    const jumpDist = jumpVal <= 0 ? 0 : jumpUnit === 'fraction' ? jumpVal * range : jumpVal;
+    // Warp-ignoring: convert seconds↔beats via the clip's local sec/beat rate.
     const secPerBeat = Math.max(1e-3, ctx.secondsAt(ctx.startBeat + 1) - ctx.secondsAt(ctx.startBeat));
     const dwellBeats = Math.max(0.05, unit === 'sec' ? dwell / secPerBeat : dwell);
+    const wrap = (s: number): number => (range <= 1e-9 ? lo : lo + (((s - lo) % range) + range) % range);
     const pick = (from: number): number => {
       if (range <= 1e-9) return lo;
-      if (jumpDist > 0) {
-        const t = from + (Math.random() * 2 - 1) * jumpDist;
-        return Math.min(hi, Math.max(lo, t));
-      }
+      if (jumpDist > 0) return Math.min(hi, Math.max(lo, from + (Math.random() * 2 - 1) * jumpDist));
       return lo + Math.random() * range;
     };
     let st = p.rand;
-    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), nextJumpBeat: beat + dwellBeats, atBeat: beat };
-    if (beat > st.atBeat + 1e-9) {
+    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), dwellAccum: 0, nextDwell: dwellBeats, lastBeat: beat };
+    const delta = beat - st.lastBeat;
+    st.lastBeat = beat;
+    if (delta > 0) {
+      // Playback drifts forward through the source during the dwell, looping the slice.
+      st.srcSec = wrap(st.srcSec + speed * delta * secPerBeat);
+      // Accumulate forward progress; jump each time a (jittered) dwell elapses.
+      st.dwellAccum += delta;
       let guard = 0;
-      while (beat >= st.nextJumpBeat && guard++ < 4096) {
+      while (st.dwellAccum >= st.nextDwell && guard++ < 4096) {
+        st.dwellAccum -= st.nextDwell;
         st.srcSec = pick(st.srcSec);
-        st.nextJumpBeat += dwellBeats * (1 + jitter * (Math.random() * 2 - 1)); // stays > 0
+        st.nextDwell = Math.max(0.01, dwellBeats * (1 + jitter * (Math.random() * 2 - 1)));
       }
-      st.atBeat = beat;
     }
     return Math.min(p.frameCount - 1, Math.max(0, Math.floor(st.srcSec * p.fps)));
   }
