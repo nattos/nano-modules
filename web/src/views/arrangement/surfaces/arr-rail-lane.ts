@@ -1,8 +1,10 @@
 /**
- * <arr-rail-lane> — value preview for a rail (return) track. Draws the base
- * automation curve plus the contributions layered on top from modulation
- * "writers" (clips that export to this rail), summed into a result envelope.
- * Spans the full warped timeline. Editing the base curve isn't prototyped.
+ * <arr-rail-lane> — value preview for a rail (return) track. Draws the rail's real
+ * value curve: the base automation plus every active writer's modulation, evaluated
+ * OFFLINE in a worker (off the main + composition threads) and folded into a mean
+ * line. Stochastic writers can't yield one value per beat, so they contribute an
+ * "error-bar" band (lo..hi) drawn behind the line. The curve is recomputed
+ * asynchronously on scroll / zoom / edit; the playhead dot redraws live from cache.
  */
 
 import { html, css } from 'lit';
@@ -11,34 +13,24 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
 import { compositionLengthBeats } from '../model/composition';
-import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { WireConnect } from '../../../widgets/taps-connect';
+import { offlineCurveService } from '../engine/offline-curve-service';
+import { railMeanAt, type RailCurve, type WriterSpec, type RailCombine } from '../engine/offline-curve-eval';
+
+/** One screen-space sample per this many CSS px (the worker fills the rest). */
+const SAMPLE_PX = 3;
 
 @customElement('arr-rail-lane')
 export class ArrRailLane extends MobxLitElement {
   @property({ attribute: false }) trackId!: string;
 
   static styles = css`
-    :host {
-      position: absolute;
-      inset: 0;
-      display: block;
-    }
-    canvas {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
+    :host { position: absolute; inset: 0; display: block; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
     /* Wires-mode drop target: drag a device field pip onto a return rail to export
        (output field) or read (input field) it. Highlights while hovered mid-drag. */
-    .rail-drop {
-      position: absolute;
-      inset: 0;
-      cursor: crosshair;
-    }
+    .rail-drop { position: absolute; inset: 0; cursor: crosshair; }
     .rail-drop[tap-drop-target] {
       background: rgba(70, 194, 194, 0.18);
       box-shadow: inset 0 0 0 2px var(--app-cat-mod, #46c2c2);
@@ -48,56 +40,129 @@ export class ArrRailLane extends MobxLitElement {
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
 
+  /** Latest offline-evaluated curve (mean + lo/hi band), parallel to evenly-spaced x. */
+  private curve: RailCurve | null = null;
+  /** The dispose handle for THIS lane's in-flight request listener. */
+  private cancelReq: (() => void) | null = null;
+  /** Signature of the inputs the last request was built from — re-request only when
+   *  it changes (so the playhead moving redraws the dot without re-evaluating). */
+  private lastReqSig = '';
+  private reqTimer = 0;
+
   firstUpdated() {
-    this.ro = new ResizeObserver(() => this.draw());
+    this.ro = new ResizeObserver(() => { this.lastReqSig = ''; this.scheduleRequest(); this.draw(); });
     this.ro.observe(this);
+    this.scheduleRequest();
     this.draw();
   }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
+    this.cancelReq?.();
+    if (this.reqTimer) clearTimeout(this.reqTimer);
     const t = store.trackById(this.trackId);
     if (t?.railId) clearAnchor(AnchorKeys.rail(t.railId));
   }
+
   updated() {
+    // Re-request the curve only when its INPUTS changed; otherwise (e.g. the playhead
+    // moved) just redraw the cached curve + the live dot.
+    const sig = this.requestSig();
+    if (sig !== this.lastReqSig) { this.lastReqSig = sig; this.scheduleRequest(); }
     this.draw();
     const t = store.trackById(this.trackId);
     if (t?.railId) setAnchor(AnchorKeys.rail(t.railId), this);
   }
 
   render() {
-    // Touch observables that affect the curve so it redraws.
-    void store.pxPerBeat;
-    void store.scrollUnits;
+    // Tracked reads: grid (pxPerBeat/scroll) + playhead drive redraws; the base curve
+    // + writers drive re-requests (read here so MobX fires updated() on any change).
+    void store.pxPerBeat; void store.scrollUnits; void store.positionBeat;
     const t = store.trackById(this.trackId);
-    // In wires mode, expose the rail as a wire DROP target. `.tap-overlay-hit` lets the
-    // shared WireConnect gesture (drag from a device field pip) resolve + highlight it;
-    // `data-rail-id` routes the drop to a rail export/read in connectSketchWire.
+    if (t?.baseCurve) for (const p of t.baseCurve) { void p.x; void p.y; }
+    for (const w of store.railWriters(t?.railId ?? '')) {
+      void w.clip.startBeat; void w.clip.lengthBeat; void w.exp.combine; void w.exp.scale;
+    }
     return html`<canvas></canvas>${store.wiresMode && t?.railId
       ? html`<div class="tap-overlay-hit rail-drop" data-rail-id=${t.railId}
           @pointerdown=${(e: PointerEvent) => this.onRailDown(e, t.railId!)}></div>`
       : ''}`;
   }
 
-  /** Complete a CLICK-mode wire onto this rail. We finish the connection HERE (and
-   *  swallow the event) because letting it bubble would both deselect the source clip
-   *  and stop the document listener that would otherwise resolve the drop — breaking
-   *  the transaction. Drag-to-connect resolves via the gesture's own drop handler, so
-   *  this only fires for an active click gesture. */
   private onRailDown(e: PointerEvent, railId: string) {
     const g = WireConnect.active;
-    if (!g) return; // no pickup in progress → let the click pass through normally
+    if (!g) return;
     e.preventDefault();
     e.stopPropagation();
     g.completeOnRail(railId);
   }
 
+  // ── offline curve request ───────────────────────────────────────────────
+
+  /** Gather the active writers contributing to this rail (cheap store reads). */
+  private writerSpecs(railId: string): WriterSpec[] {
+    const out: WriterSpec[] = [];
+    for (const { clip, exp } of store.railWriters(railId)) {
+      const dev = clip.sketch.devices.find((d) => d.id === exp.sourceDeviceId);
+      out.push({
+        seed: hashStr(clip.id + '/' + exp.id),
+        // TODO: read a declared `modulation_stochastic` capability. Heuristic for now.
+        stochastic: /noise|random|spectral/i.test(dev?.moduleType ?? ''),
+        combine: (exp.combine ?? 'add') as RailCombine,
+        scale: exp.scale ?? 1,
+        startBeat: clip.startBeat,
+        endBeat: clip.startBeat + clip.lengthBeat,
+      });
+    }
+    return out;
+  }
+
+  /** A fingerprint of everything the curve depends on EXCEPT the playhead. */
+  private requestSig(): string {
+    const t = store.trackById(this.trackId);
+    if (!t?.railId) return '';
+    const w = this.canvas?.clientWidth ?? 0;
+    const writers = this.writerSpecs(t.railId)
+      .map((s) => `${s.seed}:${s.combine}:${s.scale}:${s.startBeat}:${s.endBeat}:${s.stochastic ? 1 : 0}`)
+      .join(',');
+    return `${w}|${store.pxPerBeat}|${store.scrollUnits}|${JSON.stringify(t.baseCurve)}|${writers}`;
+  }
+
+  private scheduleRequest() {
+    if (this.reqTimer) clearTimeout(this.reqTimer);
+    // Coalesce bursts (rapid scroll/zoom) into one request; the service also keeps
+    // only the latest per rail and drops stale results.
+    this.reqTimer = window.setTimeout(() => { this.reqTimer = 0; this.sendRequest(); }, 24);
+  }
+
+  private sendRequest() {
+    const t = store.trackById(this.trackId);
+    const canvas = this.canvas;
+    if (!t?.railId || !canvas) return;
+    const w = canvas.clientWidth;
+    if (w <= 0) return;
+    const n = Math.max(2, Math.ceil(w / SAMPLE_PX) + 1);
+    const grid = buildBeatGrid();
+    const step = w / (n - 1);
+    const beats = new Float32Array(n);
+    for (let i = 0; i < n; i++) beats[i] = grid.xToBeat(i * step);
+    this.cancelReq?.();
+    this.cancelReq = offlineCurveService.request(
+      t.railId,
+      { baseCurve: t.baseCurve ?? [{ x: 0, y: 0.3 }], totalBeats: compositionLengthBeats(store.composition),
+        writers: this.writerSpecs(t.railId), beats },
+      (curve) => { this.curve = curve; this.draw(); },
+    );
+  }
+
+  // ── draw ────────────────────────────────────────────────────────────────
+
   private draw() {
     const track = store.trackById(this.trackId);
     const canvas = this.canvas;
     if (!track || !canvas) return;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
     if (w <= 0 || h <= 0) return;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(w * dpr);
@@ -106,80 +171,47 @@ export class ArrRailLane extends MobxLitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const grid = buildBeatGrid();
-    const totalBeats = compositionLengthBeats(store.composition);
-    const base = track.baseCurve ?? [{ x: 0, y: 0.3 }];
     const accent = track.color ?? 'var(--app-cat-mod)';
-    const writers = store.railWriters(track.railId ?? '');
-
     const yOf = (v: number) => h - 4 - Math.max(0, Math.min(1, v)) * (h - 8);
-    const contribAt = (beat: number) => {
-      let sum = 0;
-      for (let i = 0; i < writers.length; i++) {
-        const c = writers[i].clip;
-        const end = c.startBeat + c.lengthBeat;
-        if (beat < c.startBeat || beat > end) continue;
-        const seed = (i + 1) * 1.3;
-        // Smooth fade-in/out window × a slow oscillation (mock writer signal).
-        const tt = (beat - c.startBeat) / Math.max(0.001, c.lengthBeat);
-        const win = Math.sin(tt * Math.PI); // 0→1→0 across the clip
-        sum += 0.32 * win * (0.55 + 0.45 * Math.sin(beat * 0.7 + seed));
-      }
-      return sum;
-    };
+    const curve = this.curve;
 
-    // Filled result envelope (base + contributions).
-    ctx.beginPath();
-    ctx.moveTo(0, h);
-    let started = false;
-    for (let x = 0; x <= w; x += 2) {
-      const beat = grid.xToBeat(x);
-      const v = evalCurveAt(base, beat / totalBeats) + contribAt(beat);
-      const y = yOf(v);
-      if (!started) {
-        ctx.lineTo(x, y);
-        started = true;
-      } else ctx.lineTo(x, y);
+    if (curve && curve.mean.length >= 2) {
+      const n = curve.mean.length;
+      const xOf = (i: number) => (i / (n - 1)) * w;
+      // Error-bar band (lo..hi) — only widens where a stochastic writer contributes.
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) ctx.lineTo(xOf(i), yOf(curve.hi[i]));
+      for (let i = n - 1; i >= 0; i--) ctx.lineTo(xOf(i), yOf(curve.lo[i]));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(70,194,194,0.16)';
+      ctx.fill();
+      // Filled mean envelope (down to the baseline) for body.
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      for (let i = 0; i < n; i++) ctx.lineTo(xOf(i), yOf(curve.mean[i]));
+      ctx.lineTo(w, h);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(70,194,194,0.08)';
+      ctx.fill();
+      // Mean line on top.
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) (i === 0 ? ctx.moveTo : ctx.lineTo).call(ctx, xOf(i), yOf(curve.mean[i]));
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
-    ctx.lineTo(w, h);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(70,194,194,0.10)';
-    ctx.fill();
 
-    // Result line on top.
-    ctx.beginPath();
-    for (let x = 0; x <= w; x += 2) {
-      const beat = grid.xToBeat(x);
-      const v = evalCurveAt(base, beat / totalBeats) + contribAt(beat);
-      const y = yOf(v);
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Base curve (dashed, dim) so contributions read as "on top".
-    ctx.beginPath();
-    for (let x = 0; x <= w; x += 3) {
-      const beat = grid.xToBeat(x);
-      const y = yOf(evalCurveAt(base, beat / totalBeats));
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Playhead tick + the live evaluated value at the playhead (a dot on the
-    // result line — the value this rail currently carries).
+    // Playhead tick + the live mean value at the playhead (cheap CPU eval — no worker
+    // round-trip, so it tracks the transport smoothly).
+    const grid = buildBeatGrid();
     const px = grid.beatToX(store.positionBeat);
     if (px >= 0 && px <= w) {
       ctx.fillStyle = 'rgba(255,140,0,0.7)';
       ctx.fillRect(Math.round(px), 0, 1, h);
-      const vNow = evalCurveAt(base, store.positionBeat / totalBeats) + contribAt(store.positionBeat);
+      const vNow = railMeanAt(
+        { baseCurve: track.baseCurve ?? [{ x: 0, y: 0.3 }], totalBeats: compositionLengthBeats(store.composition),
+          writers: this.writerSpecs(track.railId ?? '') },
+        store.positionBeat);
       ctx.beginPath();
       ctx.arc(px, yOf(vNow), 2.5, 0, Math.PI * 2);
       ctx.fillStyle = accent;
@@ -189,4 +221,11 @@ export class ArrRailLane extends MobxLitElement {
       ctx.stroke();
     }
   }
+}
+
+/** Cheap deterministic string → small int hash (writer identity seed). */
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) % 100000;
 }
