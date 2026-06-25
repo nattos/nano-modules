@@ -22,6 +22,16 @@ const ASSUMED_FPS = 30;
 const DEFAULT_DURATION = 4;
 /** Default on-timeline length for a dropped still image. */
 const IMAGE_DURATION = 1;
+/** Still-image extensions — a fallback when the dropped File has no MIME type
+ *  (FileSystem-handle drops on Chrome frequently report an empty `type`). Without
+ *  this an extension-only PNG misroutes to the <video> probe → 0×0 dimensions. */
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg|ico|tiff?|heic)$/i;
+
+/** A dropped file is a still image if its MIME type says so OR (when the type is
+ *  absent/wrong, as FileSystem-handle drops often are) its extension does. */
+export function isImageFile(file: { type: string; name: string }): boolean {
+  return file.type.startsWith('image/') || IMAGE_EXT.test(file.name);
+}
 
 /**
  * @param sourceKey  Caller-provided stable key. When the file came from a
@@ -33,7 +43,9 @@ export async function importVideoFile(file: File, sourceKey?: string): Promise<D
   sourceKey ??= `drop:${file.name}:${file.size}:${file.lastModified}`;
 
   // A still image is a one-frame, one-second source — probe its pixel size too.
-  if (file.type.startsWith('image/')) {
+  // Detect by MIME type OR extension (an empty `type` would otherwise misroute a
+  // PNG to the <video> probe, which fails → 0×0 → the placement widget loses aspect).
+  if (isImageFile(file)) {
     const dim = await probeImageSize(url).catch(() => ({ width: 0, height: 0 }));
     return { sourceKey, url, frameCount: 1, fps: 1, label: file.name, durationSec: IMAGE_DURATION, ...dim };
   }
