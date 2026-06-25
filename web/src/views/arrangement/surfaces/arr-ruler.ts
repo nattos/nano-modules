@@ -315,6 +315,10 @@ export class ArrRuler extends MobxLitElement {
         }
       }
       rangeEnd = hasClip ? maxEnd : compositionLengthBeats(store.composition);
+      // Also frame the loop markers (always, regardless of loopEnabled).
+      rangeEnd = Math.max(rangeEnd, store.loopEndBeat);
+      rangeStart = Math.min(rangeStart, store.loopStartBeat);
+      rangeStart = Math.max(0, rangeStart);
     }
     if (!(rangeEnd > rangeStart)) return;
 

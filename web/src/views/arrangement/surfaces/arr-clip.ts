@@ -642,13 +642,28 @@ export class ArrClip extends MobxLitElement {
     const grid = buildBeatGrid();
     const beatAtCursor = grid.xToBeat(e.clientX - this.laneRect().left);
     if (this.mode === 'resize-r') {
-      const len = q(beatAtCursor) - this.clip.startBeat;
-      store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, Math.max(0.5, len));
+      const len = Math.max(0.5, q(beatAtCursor) - this.clip.startBeat);
+      store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, len);
+      // Caret (+ playhead when paused) follows the dragging RIGHT edge live.
+      const edgeBeat = this.clip.startBeat + len;
+      store.setCaret({
+        anchorBeat: edgeBeat,
+        anchorTrackId: this.trackId,
+        headBeat: edgeBeat,
+        headTrackId: this.trackId,
+      });
     } else if (this.mode === 'resize-l') {
       const newStart = q(beatAtCursor);
       const end = this.origStart + this.origLen;
       if (newStart < end - 0.5) {
         store.resizeClip(this.trackId, this.clip.id, newStart, end - newStart);
+        // Caret (+ playhead when paused) follows the dragging LEFT edge live.
+        store.setCaret({
+          anchorBeat: newStart,
+          anchorTrackId: this.trackId,
+          headBeat: newStart,
+          headTrackId: this.trackId,
+        });
       }
     }
   };

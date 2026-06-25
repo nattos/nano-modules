@@ -2,39 +2,36 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { store, paths } from './store';
 
 /**
- * Selecting a TRACK sets a full-track time box but must NOT move the play-from
- * marker / playhead (only clip selection + ruler scrubs do that).
+ * Selecting a TRACK selects ALL its time and moves the caret to the beginning of
+ * time (play-from → 0), but must NOT move the visible playhead (`positionBeat`).
+ * Only clip selection + ruler scrubs move the playhead.
  */
-describe('selecting a track leaves the playhead put', () => {
+describe('selecting a track selects all time without moving the playhead', () => {
   beforeEach(() => {
     store.clearSelection();
     store.clearTimeSelection();
   });
 
-  it('sets a track-scoped time box without moving positionBeat/playFromBeat', () => {
+  it('sets a full-track time box; caret to 0; positionBeat untouched', () => {
     const a = store.addTrack();
     store.setPlayFrom(0); // park the playhead at 0
     store.clearSelection();
     store.clearTimeSelection();
-    const pos = store.positionBeat;
-    const pf = store.playFromBeat;
 
     store.select(paths.track(a));
 
     expect(store.hasTimeSelection).toBe(true);
     expect(store.timeSelTrackIds).toEqual([a]);
     expect(store.isTrackShownSelected(a)).toBe(true);
-    // The playhead / play-from marker are untouched.
-    expect(store.positionBeat).toBe(pos);
-    expect(store.playFromBeat).toBe(pf);
+    expect(store.positionBeat).toBe(0); // visible playhead unchanged
   });
 
-  it('keeps a NON-zero playhead exactly where it was', () => {
+  it('keeps a NON-zero playhead put while caret jumps to the beginning of time', () => {
     const a = store.addTrack();
     store.setPlayFrom(7); // pf = pos = 7 (paused)
     store.select(paths.track(a));
-    expect(store.playFromBeat).toBe(7);
-    expect(store.positionBeat).toBe(7);
+    expect(store.positionBeat).toBe(7); // playhead stays where it was
+    expect(store.playFromBeat).toBe(0); // caret/play-from jumped to the start
     expect(store.timeSelTrackIds).toEqual([a]);
   });
 

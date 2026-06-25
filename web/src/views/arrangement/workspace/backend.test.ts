@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DirectoryBackend } from './backend';
+import { DirectoryBackend, serializeComposition, deserializeComposition } from './backend';
 import { emptyComposition } from '../model/composition';
 
 // ── Minimal in-memory FileSystemDirectoryHandle (only what the backend uses) ──
@@ -88,5 +88,19 @@ describe('DirectoryBackend', () => {
     expect((await be.list()).map((e) => e.name)).toEqual(['intro', 'scenes/bridge', 'scenes/chorus']);
     expect((await be.read('scenes/bridge')).meta.baseBPM).toBe(77);
     await expect(be.rename('intro', 'scenes/chorus')).rejects.toThrow();
+  });
+});
+
+describe('composition (de)serialization', () => {
+  it('round-trips the persisted loop markers (regression: deserialize dropped loop)', () => {
+    const comp = emptyComposition();
+    comp.loop = { enabled: false, startBeat: 4, endBeat: 20 };
+    const back = deserializeComposition(serializeComposition(comp));
+    expect(back.loop).toEqual({ enabled: false, startBeat: 4, endBeat: 20 });
+  });
+
+  it('leaves loop undefined for a legacy file without one', () => {
+    const back = deserializeComposition(serializeComposition(emptyComposition()));
+    expect(back.loop).toBeUndefined();
   });
 });

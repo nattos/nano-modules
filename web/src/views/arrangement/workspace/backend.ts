@@ -98,6 +98,7 @@ export function deserializeComposition(text: string): Composition {
     tracks: comp?.tracks ?? base.tracks,
     rails: comp?.rails ?? base.rails,
     playMode: { ...base.playMode, ...(comp?.playMode ?? {}) },
+    loop: comp?.loop, // persisted loop markers (undefined on legacy files ⇒ store keeps defaults)
   };
 }
 

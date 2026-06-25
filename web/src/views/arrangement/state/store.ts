@@ -1323,10 +1323,12 @@ export class ArrangementStore {
         this.playFromBeat = Math.max(start, end);
         if (!this.playing) this.positionBeat = this.playFromBeat;
       } else {
-        // Set the time box WITHOUT moving the play-from marker / playhead: anchor
-        // the far end so [min,max] still spans the region, leaving playFromBeat /
-        // positionBeat exactly where they were (e.g. selecting a track).
+        // Select the FULL region and move the caret (anchor at the far end, head/
+        // play-from at the start) WITHOUT moving the visible playhead. Selecting a
+        // track still selects all its time; only `positionBeat` is left untouched.
         this.caretAnchorBeat = Math.max(0, Math.max(start, end));
+        this.playFromBeat = Math.max(0, Math.min(start, end));
+        // (intentionally NOT touching this.positionBeat)
       }
     });
   }
