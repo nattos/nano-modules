@@ -115,9 +115,11 @@ export function renderPlayModeControls(
           </div>
         </div>
         <div class="pm-row"><span>Dwell jitter</span>${num(loop.dwellJitter ?? RANDOM_DEFAULTS.dwellJitter, (n) => onPatch({ dwellJitter: n }))}</div>
-        <div class="pm-row"><span title="Max jump distance from the current position (0 = jump anywhere in the slice)">Jump distance</span>
+        <div class="pm-row"><span title="Each jump samples a distance uniformly in [min, max] from the current position">Jump distance</span>
           <div style="display:flex; gap:4px; align-items:center;">
-            ${num(loop.jumpDistance ?? RANDOM_DEFAULTS.jumpDistance, (n) => onPatch({ jumpDistance: n }))}
+            ${num(loop.jumpDistanceMin ?? RANDOM_DEFAULTS.jumpDistanceMin, (n) => onPatch({ jumpDistanceMin: n }))}
+            <span style="opacity:0.6">–</span>
+            ${num(loop.jumpDistanceMax ?? RANDOM_DEFAULTS.jumpDistanceMax, (n) => onPatch({ jumpDistanceMax: n }))}
             ${seg(['fraction', 'sec'] as const, loop.jumpDistanceUnit ?? RANDOM_DEFAULTS.jumpDistanceUnit, (u) => onPatch({ jumpDistanceUnit: u }))}
           </div>
         </div>`

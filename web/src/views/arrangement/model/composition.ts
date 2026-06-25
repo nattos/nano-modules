@@ -28,7 +28,7 @@ export interface Resolution {
  *  - beat-sync: loop the slice locked to `syncBeats` beats per loop — count follows
  *               clip length but NOT BPM; the playback speed floats with tempo instead.
  *  - random:    dwell on a source point for a (jittered) `dwell`, then jump (anywhere in
- *               the slice, or within ±`jumpDistance`). Stochastic at playback; the
+ *               a ±distance sampled in [jumpDistanceMin, jumpDistanceMax]). Stochastic at playback; the
  *               film strips show a deterministic smooth-noise approximation instead.
  */
 export type ClipPlayMode = 'one-shot' | 'time' | 'beat-sync' | 'random';
@@ -245,10 +245,12 @@ export interface ClipLoopConfig {
   dwellUnit?: 'sec' | 'beat';
   /** random: 0..1, fraction of each dwell that's randomized (0 = exact, 1 = ±100%). */
   dwellJitter?: number;
-  /** random: max jump distance from the current position. 0 ⇒ jump anywhere in the
-   *  slice. Interpreted per {@link jumpDistanceUnit}. */
-  jumpDistance?: number;
-  /** random: units for `jumpDistance` — 'fraction' of the slice (default) or 'sec'. */
+  /** random: min/max jump distance from the current position. Each jump samples a
+   *  distance uniformly in [min, max] (then a random ± direction). Interpreted per
+   *  {@link jumpDistanceUnit}. */
+  jumpDistanceMin?: number;
+  jumpDistanceMax?: number;
+  /** random: units for the jump distance — 'fraction' of the slice (default) or 'sec'. */
   jumpDistanceUnit?: 'fraction' | 'sec';
 }
 
@@ -259,7 +261,8 @@ export const RANDOM_DEFAULTS = {
   dwell: 1,
   dwellUnit: 'beat' as const,
   dwellJitter: 0.3,
-  jumpDistance: 0,
+  jumpDistanceMin: 0,
+  jumpDistanceMax: 1,
   jumpDistanceUnit: 'fraction' as const,
 };
 

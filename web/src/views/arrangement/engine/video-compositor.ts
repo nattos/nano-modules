@@ -256,8 +256,9 @@ export class VideoCompositor {
   /**
    * Stateful stochastic 'random' driver. Between jumps the source position drifts forward
    * at `speed` (looping at the slice end); a jump fires when the accumulated dwell (a
-   * jittered `dwell`) elapses, relocating to a new random position — anywhere in the slice,
-   * or within ±`jumpDistance` of the current one (fraction-of-slice or seconds). Truly
+   * jittered `dwell`) elapses, relocating by a ±distance sampled uniformly in
+   * [jumpDistanceMin, jumpDistanceMax] (fraction-of-slice or seconds), reflected at the
+   * slice edges. Truly
    * non-deterministic (Math.random). The dwell is an ACCUMULATOR of forward beat progress
    * (not an absolute beat timer), so rewinding then replaying keeps jumping rather than
    * stalling until the playhead reaches its pre-seek position. A same-beat re-query (the
@@ -271,17 +272,23 @@ export class VideoCompositor {
     const dwell = loop.dwell ?? RANDOM_DEFAULTS.dwell;
     const unit = loop.dwellUnit ?? RANDOM_DEFAULTS.dwellUnit;
     const jitter = loop.dwellJitter ?? RANDOM_DEFAULTS.dwellJitter;
-    const jumpVal = loop.jumpDistance ?? RANDOM_DEFAULTS.jumpDistance;
+    const jMin = Math.max(0, loop.jumpDistanceMin ?? RANDOM_DEFAULTS.jumpDistanceMin);
+    const jMax = Math.max(jMin, loop.jumpDistanceMax ?? RANDOM_DEFAULTS.jumpDistanceMax);
     const jumpUnit = loop.jumpDistanceUnit ?? RANDOM_DEFAULTS.jumpDistanceUnit;
-    const jumpDist = jumpVal <= 0 ? 0 : jumpUnit === 'fraction' ? jumpVal * range : jumpVal;
+    const toSec = (v: number) => (jumpUnit === 'fraction' ? v * range : v);
     // Warp-ignoring: convert seconds↔beats via the clip's local sec/beat rate.
     const secPerBeat = Math.max(1e-3, ctx.secondsAt(ctx.startBeat + 1) - ctx.secondsAt(ctx.startBeat));
     const dwellBeats = Math.max(0.05, unit === 'sec' ? dwell / secPerBeat : dwell);
     const wrap = (s: number): number => (range <= 1e-9 ? lo : lo + (((s - lo) % range) + range) % range);
     const pick = (from: number): number => {
       if (range <= 1e-9) return lo;
-      if (jumpDist > 0) return Math.min(hi, Math.max(lo, from + (Math.random() * 2 - 1) * jumpDist));
-      return lo + Math.random() * range;
+      // Distance ~ U(min, max); random ± direction; reflect off the slice edges so the
+      // sampled magnitude is preserved (rather than clamped to the edge).
+      const dist = toSec(jMin + Math.random() * (jMax - jMin));
+      const sign = Math.random() < 0.5 ? -1 : 1;
+      let t = from + sign * dist;
+      if (t < lo || t > hi) t = from - sign * dist; // reflect
+      return Math.min(hi, Math.max(lo, t));
     };
     let st = p.rand;
     if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), dwellAccum: 0, nextDwell: dwellBeats, lastBeat: beat };
