@@ -643,9 +643,10 @@ export class ArrClip extends MobxLitElement {
     const beatAtCursor = grid.xToBeat(e.clientX - this.laneRect().left);
     if (this.mode === 'resize-r') {
       const len = Math.max(0.5, q(beatAtCursor) - this.clip.startBeat);
-      store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, len);
-      // Caret (+ playhead when paused) follows the dragging RIGHT edge live.
-      const edgeBeat = this.clip.startBeat + len;
+      const res = store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, len);
+      // Caret (+ playhead when paused) follows the dragging RIGHT edge live — using the
+      // CLAMPED end (one-shot can't grow past the file), so the caret stops with the clip.
+      const edgeBeat = res.start + res.len;
       store.setCaret({
         anchorBeat: edgeBeat,
         anchorTrackId: this.trackId,
@@ -656,12 +657,12 @@ export class ArrClip extends MobxLitElement {
       const newStart = q(beatAtCursor);
       const end = this.origStart + this.origLen;
       if (newStart < end - 0.5) {
-        store.resizeClip(this.trackId, this.clip.id, newStart, end - newStart);
-        // Caret (+ playhead when paused) follows the dragging LEFT edge live.
+        const res = store.resizeClip(this.trackId, this.clip.id, newStart, end - newStart);
+        // Caret follows the CLAMPED left edge (left-trim caps the start at frame 0).
         store.setCaret({
-          anchorBeat: newStart,
+          anchorBeat: res.start,
           anchorTrackId: this.trackId,
-          headBeat: newStart,
+          headBeat: res.start,
           headTrackId: this.trackId,
         });
       }

@@ -2482,6 +2482,10 @@ export class ArrangementStore {
       },
       `resize:${trackId}:${clipId}`,
     );
+    // The COMMITTED edges after clamping (one-shot caps length so the end never runs
+    // past the file; left-trim caps the start at frame 0) — callers drive the caret
+    // from these so it stops with the clip rather than the raw pointer.
+    return { start, len };
   }
 
   /**
