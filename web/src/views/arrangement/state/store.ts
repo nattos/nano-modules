@@ -2406,9 +2406,10 @@ export class ArrangementStore {
    *  - one-shot: LEFT-edge trim moves the slice start (`loop.startSec`) so the content
    *    stays pinned, capped at the source start (startSec ≥ 0 ⇒ the edge stops at
    *    frame 0); length is capped so the end-into-source never runs past the file.
-   *  - time / beat-sync: LEFT-edge trim moves the play-start (`loop.playStartSec`) so
-   *    the LOOP boundaries stay fixed on the timeline (the loop brace startSec/endSec
-   *    is untouched); capped ≤ the loop end.
+   *  - time / beat-sync: LEFT-edge trim moves the play-start (`loop.playStartSec`),
+   *    WRAPPED within the loop, so the LOOP boundaries stay fixed on the timeline (the
+   *    brace startSec/endSec is untouched) without the drag ever creating a pre-roll. A
+   *    pre-roll the user already set is expanded/contracted linearly instead of wrapped.
    * Linear in tempo (warp-ignored) — exact at neutral warp. `c` is the gesture-BASE
    * draft (startBeat / loop fields are pre-drag), so targets below are absolute.
    */
@@ -2462,10 +2463,24 @@ export class ArrangementStore {
         perBeat = (c.loop.speed ?? 1) * spb;
       }
       // Shift the play-start by the same amount the left edge moved → loops stay put.
+      // `base` is the gesture-base value (constant for the whole drag), so the
+      // pre-roll/no-pre-roll branch never flips mid-drag (no round-off flicker).
       const base = c.loop.playStartSec ?? loopStart;
-      let ps = base + perBeat * dBeats;
-      if (loopLen > 1e-9) ps = Math.min(ps, loopEnd); // generally not after the loop end
-      c.loop.playStartSec = ps;
+      const linear = base + perBeat * dBeats;
+      if (loopLen > 1e-9) {
+        const wrap = (x: number) => loopStart + (((x - loopStart) % loopLen) + loopLen) % loopLen;
+        if (base < loopStart - 1e-6) {
+          // An existing (user-set) pre-roll: expand/contract it linearly so it's not
+          // destroyed; if it contracts back into the loop, fold so we never overrun.
+          c.loop.playStartSec = linear >= loopStart ? wrap(linear) : linear;
+        } else {
+          // No pre-roll: WRAP within the loop — keeps the loops anchored AND never
+          // creates a pre-roll by dragging (those are user-configured only).
+          c.loop.playStartSec = wrap(linear);
+        }
+      } else {
+        c.loop.playStartSec = linear;
+      }
     }
     emit(start, Math.max(0.5, end - start));
   }

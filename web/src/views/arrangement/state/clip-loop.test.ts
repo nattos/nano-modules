@@ -166,27 +166,43 @@ describe('looping left-edge trim — play-start anchor', () => {
     trk = store.addTrack();
   });
 
-  it('moves playStartSec so the loops stay fixed on the timeline', () => {
+  it('WRAPS playStartSec within the loop (no pre-roll), loops stay fixed', () => {
     // time clip [4,12], slice [0,4]s, 600f@30fps.
     const id = store.addVideoClip(trk, 4, { sourceKey: 'kL', url: 'uL', frameCount: 600, fps: 30 }, 8)!.split('/')[2];
     store.updateClipLoop(trk, id, { mode: 'time', startSec: 0, endSec: 4, speed: 1 });
     const before = frameAt(id, 10); // a beat inside the clip
 
-    // Drag the left edge from beat 4 → 2 (end held at 12).
+    // Drag the left edge from beat 4 → 2 (end held at 12). Linear would be −1 (a
+    // pre-roll); instead it wraps into the loop: 0 + mod(−1, 4) = 3.
     store.resizeClip(trk, id, 2, 10);
     expect(clipOf(id).startBeat).toBe(2);
-    expect(clipOf(id).loop.playStartSec).toBeCloseTo(-1); // 0 + (−2 beats · 0.5 s/beat · speed 1)
-
+    const ps = clipOf(id).loop.playStartSec!;
+    expect(ps).toBeGreaterThanOrEqual(0); // never a pre-roll
+    expect(ps).toBeLessThanOrEqual(4);
+    expect(ps).toBeCloseTo(3);
     // The SAME timeline beat shows the SAME source frame — loops didn't drift.
     expect(frameAt(id, 10)).toBe(before);
   });
 
-  it('caps the play-start at the loop end (generally not after)', () => {
+  it('dragging right wraps too (no overrun past the loop end)', () => {
     const id = store.addVideoClip(trk, 0, { sourceKey: 'kC', url: 'uC', frameCount: 600, fps: 30 }, 8)!.split('/')[2];
     store.updateClipLoop(trk, id, { mode: 'time', startSec: 0, endSec: 2, speed: 1 });
-    // Drag the left edge far to the right (trim front) → play-start would exceed the loop end.
-    store.resizeClip(trk, id, 20, 4);
-    expect(clipOf(id).loop.playStartSec).toBeCloseTo(2); // capped at endSec
+    store.resizeClip(trk, id, 20, 4); // trim the front far to the right
+    const ps = clipOf(id).loop.playStartSec!;
+    expect(ps).toBeGreaterThanOrEqual(0);
+    expect(ps).toBeLessThanOrEqual(2); // wrapped within the loop, never after the end
+  });
+
+  it('an existing user pre-roll is expanded/contracted, NOT wrapped away', () => {
+    const id = store.addVideoClip(trk, 4, { sourceKey: 'kP', url: 'uP', frameCount: 600, fps: 30 }, 8)!.split('/')[2];
+    // Loop brace [2,4]s with a manual pre-roll starting at 0s (< loopStart).
+    store.updateClipLoop(trk, id, { mode: 'time', startSec: 2, endSec: 4, speed: 1, playStartSec: 0 });
+    const before = frameAt(id, 10);
+
+    // Drag the left edge from beat 4 → 2 → the pre-roll EXPANDS linearly to −1.
+    store.resizeClip(trk, id, 2, 10);
+    expect(clipOf(id).loop.playStartSec).toBeCloseTo(-1); // pre-roll preserved + expanded
+    expect(frameAt(id, 10)).toBe(before); // loops still anchored
   });
 });
 
