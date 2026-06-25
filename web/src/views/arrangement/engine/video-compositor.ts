@@ -267,8 +267,10 @@ export class VideoCompositor {
       if (frame === null) {
         // Off the slice (one-shot before/after the source): clear the bound texture so
         // the clip composites as transparent rather than holding a stale frame.
-        this.setInstanceTexture(p.desc.instanceKey, null);
+        // Mark lastKey BEFORE injecting: setInstanceTexture fires the bridge's Precise
+        // re-check synchronously, which reads lastKey via clipReady.
         p.lastKey = key;
+        this.setInstanceTexture(p.desc.instanceKey, null);
         return;
       }
       const handle = await this.service.pull(p.clip, frame);
@@ -279,9 +281,11 @@ export class VideoCompositor {
       // so source.video.file just copies a ready-to-composite frame.
       const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode, this.compW, this.compH);
       this.lastPulled[p.desc.clipId] = { frame, handle, w: bitmap.width, h: bitmap.height };
-      this.setInstanceTexture(p.desc.instanceKey, bitmap);
+      // Mark lastKey BEFORE injecting: setInstanceTexture fires the bridge's Precise
+      // re-check synchronously, and it reads lastKey via clipReady to know we're ready.
       p.lastKey = key;
       this.framesInjected++;
+      this.setInstanceTexture(p.desc.instanceKey, bitmap);
     } catch (err) {
       this.lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       console.debug('[video-compositor] pump failed', err);
