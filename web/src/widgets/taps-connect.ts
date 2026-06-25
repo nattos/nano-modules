@@ -64,7 +64,24 @@ function hitKey(hit: HTMLElement): string {
 export class WireConnect implements ColumnTaps {
   state: ConnectState | null = null;
 
+  /** The gesture currently in CLICK mode (picked up, awaiting a target click), or
+   *  null. Lets a target OUTSIDE the column-group (e.g. a return-rail lane) complete
+   *  the connection itself — it must, because stopping the click from deselecting the
+   *  clip also stops the document listener that would otherwise resolve the drop. */
+  static active: WireConnect | null = null;
+
   constructor(private host: WireHost) {}
+
+  /** Complete a CLICK-mode connection onto a rail / return endpoint. */
+  completeOnRail(railId: string) {
+    if (!this.state) return;
+    const info: FieldConnectInfo = {
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+      viewportY: this.state.pointerY, schemaDef: null, railId,
+    };
+    this.commit({ key: `rail/${railId}`, info });
+    this.end();
+  }
 
   private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
     // A rail / return endpoint (e.g. an <arr-rail-lane> drop target) carries only a
@@ -161,6 +178,7 @@ export class WireConnect implements ColumnTaps {
   private installClickListeners() {
     if (this.clickListenersActive) return;
     this.clickListenersActive = true;
+    WireConnect.active = this;
     setTimeout(() => {
       if (!this.state) return;
       document.addEventListener('pointermove', this.onDocMove);
@@ -233,6 +251,7 @@ export class WireConnect implements ColumnTaps {
 
   private end() {
     this.state = null;
+    if (WireConnect.active === this) WireConnect.active = null;
     if (this.dropRaf) { cancelAnimationFrame(this.dropRaf); this.dropRaf = 0; }
     this.lastDropEl?.removeAttribute('tap-drop-target');
     this.lastDropEl = null;

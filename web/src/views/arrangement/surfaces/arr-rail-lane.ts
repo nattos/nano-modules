@@ -13,6 +13,7 @@ import { buildBeatGrid } from './grid-shared';
 import { compositionLengthBeats } from '../model/composition';
 import { evalCurveAt } from '../engine/automation-eval';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
+import { WireConnect } from '../../../widgets/taps-connect';
 
 @customElement('arr-rail-lane')
 export class ArrRailLane extends MobxLitElement {
@@ -73,8 +74,22 @@ export class ArrRailLane extends MobxLitElement {
     // shared WireConnect gesture (drag from a device field pip) resolve + highlight it;
     // `data-rail-id` routes the drop to a rail export/read in connectSketchWire.
     return html`<canvas></canvas>${store.wiresMode && t?.railId
-      ? html`<div class="tap-overlay-hit rail-drop" data-rail-id=${t.railId}></div>`
+      ? html`<div class="tap-overlay-hit rail-drop" data-rail-id=${t.railId}
+          @pointerdown=${(e: PointerEvent) => this.onRailDown(e, t.railId!)}></div>`
       : ''}`;
+  }
+
+  /** Complete a CLICK-mode wire onto this rail. We finish the connection HERE (and
+   *  swallow the event) because letting it bubble would both deselect the source clip
+   *  and stop the document listener that would otherwise resolve the drop — breaking
+   *  the transaction. Drag-to-connect resolves via the gesture's own drop handler, so
+   *  this only fires for an active click gesture. */
+  private onRailDown(e: PointerEvent, railId: string) {
+    const g = WireConnect.active;
+    if (!g) return; // no pickup in progress → let the click pass through normally
+    e.preventDefault();
+    e.stopPropagation();
+    g.completeOnRail(railId);
   }
 
   private draw() {
