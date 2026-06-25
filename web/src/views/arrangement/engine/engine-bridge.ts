@@ -434,17 +434,10 @@ export class EngineBridge {
       && videoDescs.length > 0
       && !this.videoInputsReady();
 
-    // Feed the decode pump. While HOLDING, also keep the clips CURRENTLY ON SCREEN
-    // alive — else they're treated as departed and their textures are torn down, so the
-    // held composite goes transparent and the layers beneath flash through. On commit,
-    // only the target set stays (the old clips drop after the new composite is issued).
-    const pumpDescs = holding ? mergeVideoDescs(warmDescs, this.displayedVideoDescs) : warmDescs;
-    if (pumpDescs.length > 0 || this.video) {
-      this.refreshWarpResolver();
-      this.videoCompositor().setActiveClips(pumpDescs);
-    }
-
     if (holding) {
+      // Warm the target AND keep the clips CURRENTLY ON SCREEN alive (their textures
+      // must not be torn down while we hold on them); leave the issued composite as-is.
+      this.reconcilePump(mergeVideoDescs(warmDescs, this.displayedVideoDescs));
       this.pendingPrecise = layers;
       if (!this.preciseTimer) {
         this.preciseTimer = setTimeout(() => {
@@ -466,7 +459,8 @@ export class EngineBridge {
       : null;
 
     if (!render) {
-      this.displayedVideoDescs = []; // now displaying the background (no video to wait on)
+      // Issue the empty composite (clear the trace) BEFORE dropping pumps, so an on-
+      // screen clip's texture isn't torn down while its composite is still displayed.
       if (this.compositeSig !== '') {
         this.compositeSig = '';
         this.compositeKeys = [];
@@ -477,19 +471,34 @@ export class EngineBridge {
         this.compositeFrame = null;
         this.onCompositeCb?.();
       }
+      this.reconcilePump(warmDescs);
+      this.displayedVideoDescs = [];
       return;
     }
-    // Inputs are ready — commit to displaying the target composite.
+
+    // Issue the target composite FIRST (its inputs are ready), THEN switch the pump to
+    // the target set. ORDER MATTERS: dropping the old on-screen clips clears their
+    // textures, and that must reach the worker AFTER the new composite — else a render
+    // tick landing between the two messages shows the OLD composite with a torn-down
+    // texture (the layers beneath flash through). This is the video→video flash.
+    if (render.sig !== this.compositeSig) {
+      this.compositeSig = render.sig;
+      this.compositeKeys = (render.sketch.chain ?? []).map((e) => (e as { instance_key?: string }).instance_key ?? '');
+      void this.ensureEngine().showComposite([
+        { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
+      ]);
+      this.refreshDeviceTraces();
+    }
+    this.reconcilePump(warmDescs);
     this.displayedVideoDescs = videoDescs;
-    if (render.sig === this.compositeSig) return;
-    this.compositeSig = render.sig;
-    // Capture the composite chain order so per-device texture traces can map a
-    // device's composite key → its chain index.
-    this.compositeKeys = (render.sketch.chain ?? []).map((e) => (e as { instance_key?: string }).instance_key ?? '');
-    void this.ensureEngine().showComposite([
-      { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
-    ]);
-    this.refreshDeviceTraces();
+  }
+
+  /** Reconcile the video decode pump with `descs` (active target + lookahead). */
+  private reconcilePump(descs: VideoClipDesc[]) {
+    if (descs.length > 0 || this.video) {
+      this.refreshWarpResolver();
+      this.videoCompositor().setActiveClips(descs);
+    }
   }
 
   destroy() {
