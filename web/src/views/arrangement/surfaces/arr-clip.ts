@@ -315,10 +315,12 @@ export class ArrClip extends MobxLitElement {
 
   /**
    * Draw the strip from real decoded thumbnails (Component D), REFLECTING the clip's
-   * play mode: each cell maps its timeline beat → the source frame the engine will
-   * actually show there (slice / speed / loop / direction via clipSourceFrameAt), so
-   * a looping clip repeats its slice, a sped-up clip races, and a one-shot clip goes
-   * dark past the source end. Vertical bars mark loop boundaries.
+   * play mode AND its loops. Thumbnails keep their native aspect (never stretched):
+   * each panel is `h·aspect` wide and tiled LOOP-AWARELY — the layout resets at every
+   * loop marker, so two panels meet edge-to-edge there (one ending the loop, one
+   * starting the next). When a segment is narrower than a panel the panel is cropped
+   * (overflow-hidden), not squashed. Each panel's centre beat picks the source frame
+   * the engine actually shows there (clipSourceFrameAt). Vertical bars mark the loops.
    */
   private drawRealReel(
     ctx: CanvasRenderingContext2D,
@@ -333,94 +335,124 @@ export class ArrClip extends MobxLitElement {
 
     const layout = reelLayout(w, h, frameCount);
     if (layout.cells === 0) return;
+    const level = layout.level;
 
     const loop = this.clip.loop;
     const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
     const startBeat = this.clip.startBeat;
     const lengthBeat = Math.max(1e-6, this.clip.lengthBeat);
     // Linear (warp-approx) clock — the strip is a visual aid; exact warp isn't needed.
-    const timeCtx: ClipTimeCtx = {
-      startBeat,
-      lengthBeat,
-      videoDurSec: frameCount / fps,
-      secondsAt: (b) => b * spb,
+    const timeCtx: ClipTimeCtx = { startBeat, lengthBeat, videoDurSec: frameCount / fps, secondsAt: (b) => b * spb };
+
+    // Aspect-correct panel width (default 16:9 until the first tile lands, then refined).
+    const probe = thumbnailController.peek(sourceKey, 0, level);
+    const aspect = probe ? probe.value.width / Math.max(1, probe.value.height) : 16 / 9;
+    const panelW = Math.max(4, h * aspect);
+
+    const frameAtX = (cx: number): number | null => {
+      const beat = startBeat + (cx / w) * lengthBeat;
+      return loop ? clipSourceFrameAt(loop, timeCtx, beat, fps, frameCount) : Math.round((cx / w) * (frameCount - 1));
     };
 
-    // The source frame shown at each cell (null ⇒ transparent / off the slice).
-    const cells = layout.cells;
-    const frames: Array<number | null> = [];
+    // Loop-aware segments: clip edges + each loop marker. Within a segment, tile panels
+    // left-anchored from its start, plus one right-anchored panel ending at its end —
+    // so both segment edges (= markers) land a panel edge.
+    const markerXs = this.loopMarkerBeats(loop, timeCtx, spb, w).map((b) => (b / lengthBeat) * w);
+    const bounds = [0, ...markerXs, w];
+    const panels: Array<{ x: number; cl: number; cr: number; frame: number | null }> = [];
+    for (let s = 0; s < bounds.length - 1; s++) {
+      const L = bounds[s];
+      const R = bounds[s + 1];
+      const segW = R - L;
+      if (segW <= 0.5) continue;
+      if (segW <= panelW) {
+        // Too tight: one aspect-correct panel centred on the segment, cropped to it.
+        const px = (L + R) / 2 - panelW / 2;
+        panels.push({ x: px, cl: L, cr: R, frame: frameAtX((L + R) / 2) });
+      } else {
+        const nFull = Math.floor(segW / panelW);
+        for (let i = 0; i < nFull; i++) {
+          const px = L + i * panelW;
+          panels.push({ x: px, cl: L, cr: R, frame: frameAtX(px + panelW / 2) });
+        }
+        const px = R - panelW; // right-anchored final panel (may overlap the last full one)
+        panels.push({ x: px, cl: L, cr: R, frame: frameAtX(px + panelW / 2) });
+      }
+    }
+
+    // Prefetch only the source range actually shown.
     let minF = Infinity;
     let maxF = -Infinity;
-    for (let i = 0; i < cells; i++) {
-      const beat = startBeat + ((i + 0.5) / cells) * lengthBeat;
-      const f = loop ? clipSourceFrameAt(loop, timeCtx, beat, fps, frameCount) : layout.frames[i];
-      frames.push(f);
-      if (f != null) { minF = Math.min(minF, f); maxF = Math.max(maxF, f); }
-    }
-    // Prefetch only the source range actually shown.
+    for (const p of panels) if (p.frame != null) { minF = Math.min(minF, p.frame); maxF = Math.max(maxF, p.frame); }
     thumbnailController.setView(`clip:${this.clip.id}`, {
       sourceKey,
-      level: layout.level,
+      level,
       startFrame: minF <= maxF ? Math.max(0, Math.floor(minF)) : 0,
       endFrame: minF <= maxF ? Math.min(frameCount - 1, Math.ceil(maxF)) : frameCount - 1,
       pattern: 'window',
       readaheadFrames: 0,
     });
 
-    const step = w / cells;
     const seed = this.reelSeed();
-    for (let i = 0; i < cells; i++) {
-      const x = i * step;
-      const f = frames[i];
-      if (f == null) {
+    for (const p of panels) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(p.cl, 0, p.cr - p.cl, h); // clip to the segment → crop, never stretch
+      ctx.clip();
+      if (p.frame == null) {
         ctx.fillStyle = 'rgba(8,9,12,0.6)'; // off-slice (one-shot past the source) → dark
-        ctx.fillRect(x, 0, step, h);
+        ctx.fillRect(p.cl, 0, p.cr - p.cl, h);
       } else {
-        const hit = thumbnailController.peek(sourceKey, f, layout.level);
-        if (hit) ctx.drawImage(hit.value, x, 0, step, h);
-        else drawFrameCell(ctx, x + 0.5, 0, step - 1, h, seed, f / frameCount);
+        const hit = thumbnailController.peek(sourceKey, p.frame, level);
+        if (hit) ctx.drawImage(hit.value, p.x, 0, panelW, h);
+        else drawFrameCell(ctx, p.x, 0, panelW, h, seed, p.frame / frameCount);
       }
-      if (i > 0) {
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(x, 0, 1, h);
+      // A subtle seam at the panel's left edge (skip the segment start = a marker/edge).
+      if (p.x > p.cl + 0.5) {
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.fillRect(p.x, 0, 1, h);
       }
+      ctx.restore();
     }
 
-    this.drawLoopBars(ctx, w, h, loop, timeCtx, spb);
+    this.drawLoopBars(ctx, w, h, markerXs);
   }
 
-  /** Vertical bars at each loop restart for looping modes (none for one-shot/random). */
-  private drawLoopBars(
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    loop: Clip['loop'] | undefined,
-    timeCtx: ClipTimeCtx,
-    spb: number,
-  ) {
-    if (!loop) return;
-    let periodBeats = 0;
+  /**
+   * Local beats of each loop RESTART within (0, lengthBeat), offset by the play-start
+   * phase. Empty for one-shot/random, or when loops are sub-pixel dense (so we don't
+   * draw a blur). Shared by the strip layout + the loop bars.
+   */
+  private loopMarkerBeats(loop: Clip['loop'] | undefined, timeCtx: ClipTimeCtx, spb: number, w: number): number[] {
+    if (!loop) return [];
     const loopStart = loop.startSec ?? 0;
     const loopEnd = loop.endSec ?? timeCtx.videoDurSec;
     const loopLen = loopEnd - loopStart;
+    let periodBeats = 0;
     if (loop.mode === 'time') {
       const speed = loop.speed ?? 1;
       if (loopLen > 1e-6 && speed > 1e-6 && spb > 1e-9) periodBeats = loopLen / speed / spb;
     } else if (loop.mode === 'beat-sync') {
       periodBeats = loop.syncUseBpm ? loopLen * ((loop.syncBpm ?? 120) / 60) : loop.syncBeats ?? 4;
     } else {
-      return; // one-shot / random: no loop boundaries
+      return [];
     }
-    if (periodBeats <= 1e-3 || loopLen <= 1e-6) return;
-    // The first loop restart is where the play-start reaches the loop end; with the
-    // default play-start (= loop start) that's exactly one period in.
+    if (periodBeats <= 1e-3 || loopLen <= 1e-6) return [];
+    if ((periodBeats / timeCtx.lengthBeat) * w < 3) return []; // sub-pixel loops → don't segment
     const playStart = loop.playStartSec ?? loopStart;
-    let firstWrapBeat = ((loopEnd - playStart) / loopLen) * periodBeats;
-    while (firstWrapBeat <= 1e-6) firstWrapBeat += periodBeats; // skip any pre-edge wraps
+    let b = ((loopEnd - playStart) / loopLen) * periodBeats;
+    while (b <= 1e-6) b += periodBeats; // skip any pre-edge wraps
+    const out: number[] = [];
+    for (; b < timeCtx.lengthBeat - 1e-6; b += periodBeats) out.push(b);
+    return out;
+  }
+
+  /** Vertical bars at the loop restarts (pixel xs already resolved). */
+  private drawLoopBars(ctx: CanvasRenderingContext2D, w: number, h: number, markerXs: number[]) {
     ctx.fillStyle = 'rgba(108,192,112,0.85)';
-    for (let b = firstWrapBeat; b < timeCtx.lengthBeat - 1e-6; b += periodBeats) {
-      const x = Math.round((b / timeCtx.lengthBeat) * w);
-      ctx.fillRect(x, 0, 1, h);
+    for (const mx of markerXs) {
+      if (mx <= 0 || mx >= w) continue;
+      ctx.fillRect(Math.round(mx), 0, 1, h);
     }
   }
 
