@@ -67,6 +67,13 @@ export class WireConnect implements ColumnTaps {
   constructor(private host: WireHost) {}
 
   private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
+    // A rail / return endpoint (e.g. an <arr-rail-lane> drop target) carries only a
+    // rail id — the other endpoint supplies the device field.
+    if (hit.dataset.railId) {
+      const rr = hit.getBoundingClientRect();
+      return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+        viewportY: rr.top + rr.height / 2, schemaDef: null, railId: hit.dataset.railId };
+    }
     const sketchId = hit.dataset.sketchId ?? '';
     const colIdx = parseInt(hit.dataset.colIdx ?? '-1', 10);
     const chainIdx = parseInt(hit.dataset.chainIdx ?? '-1', 10);

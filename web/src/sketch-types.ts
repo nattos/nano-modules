@@ -329,5 +329,9 @@ export interface FieldConnectInfo {
   viewportY: number;
   /** Schema definition for this field (null if legacy / no schema). Used to pick rail type. */
   schemaDef: any | null;
+  /** Set when this endpoint is a RAIL / return track (not a device field). The
+   *  other endpoint must be a device field; the wire becomes a rail export (from an
+   *  output field) or rail read (into an input field). */
+  railId?: string;
 }
 

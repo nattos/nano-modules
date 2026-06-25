@@ -31,6 +31,17 @@ export class ArrRailLane extends MobxLitElement {
       height: 100%;
       display: block;
     }
+    /* Wires-mode drop target: drag a device field pip onto a return rail to export
+       (output field) or read (input field) it. Highlights while hovered mid-drag. */
+    .rail-drop {
+      position: absolute;
+      inset: 0;
+      cursor: crosshair;
+    }
+    .rail-drop[tap-drop-target] {
+      background: rgba(70, 194, 194, 0.18);
+      box-shadow: inset 0 0 0 2px var(--app-cat-mod, #46c2c2);
+    }
   `;
 
   @query('canvas') private canvas!: HTMLCanvasElement;
@@ -57,7 +68,13 @@ export class ArrRailLane extends MobxLitElement {
     // Touch observables that affect the curve so it redraws.
     void store.pxPerBeat;
     void store.scrollUnits;
-    return html`<canvas></canvas>`;
+    const t = store.trackById(this.trackId);
+    // In wires mode, expose the rail as a wire DROP target. `.tap-overlay-hit` lets the
+    // shared WireConnect gesture (drag from a device field pip) resolve + highlight it;
+    // `data-rail-id` routes the drop to a rail export/read in connectSketchWire.
+    return html`<canvas></canvas>${store.wiresMode && t?.railId
+      ? html`<div class="tap-overlay-hit rail-drop" data-rail-id=${t.railId}></div>`
+      : ''}`;
   }
 
   private draw() {

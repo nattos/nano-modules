@@ -2365,6 +2365,14 @@ export class ArrangementStore {
    * sketch.
    */
   connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    // Rail / return endpoint: one side is a rail, the other a device field. An OUTPUT
+    // field becomes a rail EXPORT (writes the rail); an INPUT field becomes a rail READ.
+    const rail = a.railId ? a : b.railId ? b : null;
+    if (rail) {
+      const field = rail === a ? b : a;
+      if (!field.railId) this.connectFieldToRail(field, rail.railId!);
+      return;
+    }
     if (a.sketchId !== b.sketchId) return;
     if (a.colIdx === b.colIdx && a.chainIdx === b.chainIdx && a.fieldPath === b.fieldPath) return;
     const writer = a.isOutput !== b.isOutput
@@ -2386,6 +2394,35 @@ export class ArrangementStore {
         dest: { instanceKey: destDev.id, field: reader.fieldPath },
         combine: 'add',
       });
+    });
+  }
+
+  /** Connect a clip device field to a return rail: an output field exports to the
+   *  rail, an input field reads from it. Rail taps live on the clip (exports/reads),
+   *  so this only applies to a clip sketch (`clip/<trk>/<clip>`). */
+  private connectFieldToRail(field: FieldConnectInfo, railId: string) {
+    if (!field.sketchId.startsWith('clip/')) return;
+    const [, trackId, clipId] = field.sketchId.split('/');
+    this.mutate('connect rail', (d) => {
+      const clip = d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId);
+      const dev = clip?.sketch.devices[field.chainIdx];
+      if (!clip || !dev) return;
+      if (field.isOutput) {
+        clip.exports = (clip.exports ?? []).filter(
+          (e) => !(e.railId === railId && e.sourceDeviceId === dev.id && e.sourceField === field.fieldPath));
+        clip.exports.push({
+          id: uid('rail'), railId, sourceDeviceId: dev.id, sourceField: field.fieldPath,
+          combine: 'add', magnitude: 'auto',
+        });
+      } else {
+        // One read per destination field — replace any existing read into it.
+        clip.reads = (clip.reads ?? []).filter(
+          (r) => !(r.targetDeviceId === dev.id && r.targetField === field.fieldPath));
+        clip.reads.push({
+          id: uid('rail'), railId, targetDeviceId: dev.id, targetField: field.fieldPath,
+          combine: 'add', magnitude: 'auto',
+        });
+      }
     });
   }
 
