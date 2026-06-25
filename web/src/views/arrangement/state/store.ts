@@ -1122,7 +1122,9 @@ export class ArrangementStore {
         clip: pick,
         kind: 'engine',
         opacity: this.effectiveOpacity(t, anc),
-        blendMode: pick.blendMode ?? 0,
+        // Track-level blend wins (edited in the track inspector); clip blend is a
+        // fallback for clips that set their own.
+        blendMode: t.blendMode ?? pick.blendMode ?? 0,
       });
     }
     // `tracks` is already top→bottom; paint in that order so each lower track
@@ -2874,6 +2876,14 @@ export class ArrangementStore {
       },
       `level:${trackId}`,
     );
+  }
+
+  /** Set a track's composite blend mode (a BLEND_MODE_NAMES index). */
+  setTrackBlendMode(trackId: string, mode: number) {
+    this.mutate('set blend mode', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (t) t.blendMode = mode;
+    });
   }
 
   /** Select every clip whose path is in `clipPaths` (marquee result). */

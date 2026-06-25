@@ -28,6 +28,20 @@ describe('track structural ops', () => {
     expect(store.trackById(id)?.level).toBe(1);
   });
 
+  it('setTrackBlendMode sets the track blend index', () => {
+    const id = store.addTrack();
+    store.setTrackBlendMode(id, 3); // Screen
+    expect(store.trackById(id)?.blendMode).toBe(3);
+  });
+
+  it('track blend mode drives the composite layer (track wins over clip)', () => {
+    const id = store.addTrack();
+    store.addVideoClip(id, 0, { sourceKey: 'k', url: 'blob:x', frameCount: 30, fps: 30, label: 'v' }, 4);
+    store.setTrackBlendMode(id, 5); // Darken
+    const layer = store.compositeLayersAtBeat(1).find((l) => l.track.id === id);
+    expect(layer?.blendMode).toBe(5);
+  });
+
   it('addTrack(afterId) inserts immediately after the given track', () => {
     const a = store.addTrack();
     const b = store.addTrack(a);

@@ -12,8 +12,9 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, resolveSourceTransform } from '../model/composition';
+import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES } from '../model/composition';
 import './source-transform-widget';
+import './arr-mixer-strip';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
@@ -304,6 +305,10 @@ export class ArrInspector extends MobxLitElement {
     .segbtn:last-child { border-right-width: 1px; border-radius: 0 3px 3px 0; }
     .segbtn:hover { background: var(--app-tint-3); }
     .segbtn.on { color: var(--app-hi-color2); background: rgba(65, 105, 225, 0.14); border-color: var(--app-hi-color2); }
+    /* Wrapping variant (the 16-mode blend selector): discrete chips that flow onto
+       multiple rows, each individually rounded. */
+    .seg.wrap { display: flex; flex-wrap: wrap; gap: 3px; }
+    .seg.wrap .segbtn { border-right-width: 1px; border-radius: 3px; }
     .ws-list {
       display: flex;
       flex-direction: column;
@@ -666,6 +671,23 @@ export class ArrInspector extends MobxLitElement {
     return html`
       <div class="section-header">${track.kind === 'group' ? 'Group' : 'Track'} · ${track.name}</div>
       <div class="body">
+        <div class="row">
+          <label>Opacity</label>
+          <span class="val" style="flex:1; min-width:0;">
+            <arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>
+          </span>
+        </div>
+        <div class="row">
+          <label>Blend</label>
+          <span class="val seg wrap">
+            ${BLEND_MODE_NAMES.map(
+              (name, i) => html`<button
+                class="segbtn ${(track.blendMode ?? 0) === i ? 'on' : ''}"
+                @click=${() => store.setTrackBlendMode(track.id, i)}
+              >${name}</button>`,
+            )}
+          </span>
+        </div>
         ${store.isMainBus(track)
           ? ''
           : html`<div class="row">

@@ -48,6 +48,17 @@ export type TransportMode = 'precise' | 'live';
  */
 export type ScaleMode = 'fit' | 'cover' | 'stretch' | 'none';
 
+/**
+ * Composite blend mode names, indexed to match the native `composite.blend`
+ * (video_blend) enum exactly — the index IS the mode value sent to the executor.
+ * Keep in lock-step with native/wasm_modules/video_blend/main.cpp.
+ */
+export const BLEND_MODE_NAMES = [
+  'Normal', 'Add', 'Multiply', 'Screen', 'Overlay', 'Darken', 'Lighten',
+  'Dodge', 'Burn', 'Hard Light', 'Soft Light', 'Difference', 'Exclusion',
+  'Subtract', 'Divide', 'Linear Burn',
+] as const;
+
 /** Quarter-turn rotations applied to a clip's source frame, clockwise degrees. */
 export type SourceRotation = 0 | 90 | 180 | 270;
 
@@ -383,6 +394,9 @@ export interface Track {
   bypassed?: boolean;
   /** Mixer output level / opacity into the bus, 0..1 (default ~0.85). */
   level?: number;
+  /** Composite blend mode for this track's clips, layered over the tracks above —
+   *  a {@link BLEND_MODE_NAMES} index (0 = Normal). Omitted ⇒ Normal. */
+  blendMode?: number;
   /** For kind 'rail': the rail this track visualizes. */
   railId?: string;
   /** For kind 'rail': the base value envelope (automation), points x,y in [0,1]. */
