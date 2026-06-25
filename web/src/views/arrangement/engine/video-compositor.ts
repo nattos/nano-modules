@@ -154,7 +154,17 @@ export class VideoCompositor {
     for (const d of descs) {
       const existing = this.pumps.get(d.clipId);
       if (existing) {
-        existing.desc = d; // startBeat/length/instanceKey may have changed
+        // If the SOURCE changed under this clipId (a source swap, or — defensively —
+        // duplicate clip ids), the open decoder is for the wrong video: tear it down
+        // so it re-opens, else the pump keeps injecting the old clip's frames.
+        if (existing.desc.sourceKey !== d.sourceKey || existing.desc.url !== d.url) {
+          this.setInstanceTexture(existing.desc.instanceKey, null);
+          this.service?.close(existing.clip).catch(() => {});
+          this.pumps.delete(d.clipId);
+          if (!this.opening.has(d.clipId)) void this.openClip(d);
+        } else {
+          existing.desc = d; // startBeat/length/instanceKey may have changed
+        }
       } else if (!this.opening.has(d.clipId)) {
         void this.openClip(d);
       }

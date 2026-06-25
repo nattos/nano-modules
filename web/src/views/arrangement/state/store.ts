@@ -74,6 +74,42 @@ let _uid = 1000;
 const uid = (p: string) => `${p}_${(_uid++).toString(36)}`;
 
 /**
+ * Advance the id counter past every id already in `comp`. `_uid` resets to its
+ * initial value on each page load, but a loaded project keeps the ids it was saved
+ * with — so without this the FIRST id minted after a reload (`uid_rs` = 1000) reuses
+ * the project's first-ever id, producing two clips with the same id + device id (one
+ * pump / one executor instance for two videos → the "second clip plays the wrong
+ * video" bug). Seed BEFORE any healing so reminted ids also clear the loaded set.
+ */
+function seedUidFrom(comp: Composition): void {
+  let max = _uid - 1;
+  const consider = (id: string | undefined | null) => {
+    if (!id) return;
+    const m = /^(?:auto|clip|dev|rail|trk|wire)_([0-9a-z]+)$/.exec(id);
+    if (!m) return;
+    const n = parseInt(m[1], 36);
+    if (Number.isFinite(n)) max = Math.max(max, n);
+  };
+  const walkWires = (wires: Array<{ id?: string }> | undefined) => (wires ?? []).forEach((w) => consider(w.id));
+  for (const t of comp.tracks ?? []) {
+    consider(t.id);
+    (t.sketch?.devices ?? []).forEach((d) => consider(d.id));
+    walkWires(t.sketch?.wires);
+    (t.automation ?? []).forEach((l) => consider(l.id));
+    for (const c of t.clips ?? []) {
+      consider(c.id);
+      (c.sketch?.devices ?? []).forEach((d) => consider(d.id));
+      walkWires(c.sketch?.wires);
+      (c.automation ?? []).forEach((l) => consider(l.id));
+      (c.exports ?? []).forEach((e) => consider(e.id));
+      (c.reads ?? []).forEach((e) => consider(e.id));
+    }
+  }
+  (comp.rails ?? []).forEach((r) => consider(r.id));
+  _uid = max + 1;
+}
+
+/**
  * Mint fresh INNER ids on a just-cloned clip (deep copy with a new clip id) so a
  * duplicate/split/paste doesn't share device + automation-lane ids with its
  * source. Shared device ids collide on the composite instance key (instance
@@ -417,7 +453,8 @@ export class ArrangementStore {
   /** Load an existing arrangement file from a mounted workspace. */
   async openArrangement(backend: WorkspaceBackend, name: string) {
     const comp = await backend.read(name);
-    ArrangementStore.repairIds(comp); // heal duplicate device + lane ids (see method)
+    seedUidFrom(comp); // advance the id counter past loaded ids BEFORE healing/minting
+    ArrangementStore.repairIds(comp); // heal duplicate clip + device + lane ids (see method)
     runInAction(() => {
       this.backend = backend;
       this.currentName = name;
@@ -2798,6 +2835,20 @@ export class ArrangementStore {
         seenLanes.add(l.id);
       }
     };
+    // CLIP ids unique GLOBALLY: a duplicate clip id (e.g. from the _uid-reset collision
+    // above) makes two clips share a composite instance key + a single decode pump, so
+    // the second clip plays the first's video. Remint + freshen the whole clip's
+    // internal ids (it's effectively a duplicate).
+    const seenClips = new Set<string>();
+    for (const t of comp.tracks) {
+      for (const c of t.clips ?? []) {
+        if (seenClips.has(c.id)) {
+          c.id = uid('clip');
+          freshClipIds(c);
+        }
+        seenClips.add(c.id);
+      }
+    }
     for (const t of comp.tracks) {
       healDevices(t.sketch?.devices);
       healLanes(t.automation);
