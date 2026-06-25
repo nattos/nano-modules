@@ -790,7 +790,12 @@ async function simulateTick(dt: number) {
     if (userInput) inputHandle = userInput.handle;
 
     try {
-      const outputHandle = await exec.executeAllColumns(sketchId, sketch, inputHandle, frameState, w, h);
+      // Re-bind injected video textures AFTER the executor (re)creates this frame's
+      // instances — a freshly-created instance (first frame, or after a slot rebuild)
+      // has empty textureFields, so binding only beforehand leaves slot 0 unbound and
+      // source.video.file renders transparent (a 1-frame flash of the layers beneath).
+      const outputHandle = await exec.executeAllColumns(
+        sketchId, sketch, inputHandle, frameState, w, h, applyInstanceTextures);
       // (debug) if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {

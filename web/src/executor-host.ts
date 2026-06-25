@@ -426,7 +426,11 @@ export class WasmSketchExecutor {
    */
   async executeAllColumns(
     sketchId: string, sketch: Sketch, inputHandle: number,
-    frameState: FrameState, width: number, height: number): Promise<number> {
+    frameState: FrameState, width: number, height: number,
+    /** Called once this frame's instances are ensured (created/revived) but BEFORE the
+     *  native drive — so the host can (re)bind per-instance input textures onto the
+     *  fresh instances, else a just-created instance renders with unbound slots. */
+    onInstancesReady?: () => void): Promise<number> {
     this.currentSketchId = sketchId;
     let slot = this.slotFor(sketchId);
     const chain = sketchChain(sketch);
@@ -490,6 +494,11 @@ export class WasmSketchExecutor {
         slot.registeredSchemas.add(entry.module_type);
       }
     }
+
+    // Instances for this frame now exist (created/revived above). Let the host bind
+    // per-instance input textures NOW, so a freshly-created instance doesn't render a
+    // frame with unbound slots (the video→solid flash).
+    onInstancesReady?.();
 
     // 2. Reset the frame-local handle table (effrt_instance_for repopulates it).
     this.byHandle = [];

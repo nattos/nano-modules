@@ -246,9 +246,16 @@ export class EngineBridge {
     this.framesSeen++;
     const bmp = frames[COMPOSITE_ID];
     if (bmp) {
-      if (this.tap) this.tap(COMPOSITE_ID, bmp); // Component D capture, before retain
-      this.compositeFrame?.close();              // drop the previous composite
-      this.compositeFrame = bmp;                 // retain (closed on replace)
+      if (this.hasContent) {
+        if (this.tap) this.tap(COMPOSITE_ID, bmp); // Component D capture, before retain
+        this.compositeFrame?.close();              // drop the previous composite
+        this.compositeFrame = bmp;                 // retain (closed on replace)
+      } else {
+        // Background-only (nothing committed): ignore a stale composite frame still in
+        // flight from a just-deleted composite — else it lingers as the retained frame
+        // and the next clip's commit draws it for a frame (the video→video flash).
+        bmp.close();
+      }
     }
     // Per-device traced textures (output trace cards) → the store (which closes
     // the previous frame's bitmaps and bumps the trace generation).
@@ -403,7 +410,9 @@ export class EngineBridge {
     // (their source.video.file entry outputs the host-injected decoded frame).
     const engineLayers = layers;
     this.engineLayerN = engineLayers.length;
-    this.hasContent = engineLayers.length > 0;
+    // NOTE: `hasContent` is updated only on COMMIT (below), never here from the target
+    // — else during a Precise hold it flips true while the retained frame is still the
+    // previous clip's, and the monitor draws that stale frame (the video→video flash).
 
     // Reconcile the main-thread video decode pumps with the active video clips
     // (each feeds its `source.video.file` entry). Cheap + diffed; the pump's own
@@ -473,6 +482,7 @@ export class EngineBridge {
       }
       this.reconcilePump(warmDescs);
       this.displayedVideoDescs = [];
+      this.hasContent = false; // committed: background only → the monitor draws the backdrop
       return;
     }
 
@@ -491,6 +501,7 @@ export class EngineBridge {
     }
     this.reconcilePump(warmDescs);
     this.displayedVideoDescs = videoDescs;
+    this.hasContent = true; // committed: a composite is on screen
   }
 
   /** Reconcile the video decode pump with `descs` (active target + lookahead). */
