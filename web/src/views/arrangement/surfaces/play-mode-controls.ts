@@ -99,6 +99,9 @@ export function renderPlayModeControls(
     ${loop.mode === 'one-shot'
       ? ''
       : html`<div class="pm-row"><span>End (s)</span>${num(loop.endSec ?? endDefault, (n) => onPatch({ endSec: n }))}</div>`}
+    ${looping
+      ? html`<div class="pm-row"><span>Play start (s)</span>${num(loop.playStartSec ?? loop.startSec ?? 0, (n) => onPatch({ playStartSec: n }))}</div>`
+      : ''}
     ${loop.mode === 'beat-sync'
       ? html`<div class="pm-row"><span>Loop (beats)</span>${num(loop.syncBeats ?? 4, (n) => onPatch({ syncBeats: n }), 1)}</div>`
       : html`<div class="pm-row"><span>Speed</span>${num(loop.speed ?? 1, (n) => onPatch({ speed: n }))}</div>`}

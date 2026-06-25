@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
+import { clipSourceFrameAt, type ClipTimeCtx } from '../engine/clip-time';
 
 /**
  * Clip play-mode timing (the read-side play modes): the `updateClipLoop` store
@@ -140,6 +141,62 @@ describe('BPM reflow (one-shot clip lengths)', () => {
     expect(clipOf(a).lengthBeat).toBeCloseTo(8); // A trimmed back to B's start
     expect(clipOf(b).startBeat).toBe(8); // B's start preserved
     expect(clipOf(b).lengthBeat).toBeCloseTo(16);
+  });
+
+});
+
+describe('looping left-edge trim — play-start anchor', () => {
+  let trk: string;
+  const clipOf = (id: string) => store.trackById(trk)!.clips.find((c) => c.id === id)!;
+  // The engine's frame at an absolute beat, via a linear (un-warped) clock at 120 bpm.
+  const frameAt = (id: string, beat: number): number | null => {
+    const c = clipOf(id);
+    const fps = c.source!.fps!;
+    const ctx: ClipTimeCtx = {
+      startBeat: c.startBeat,
+      lengthBeat: c.lengthBeat,
+      videoDurSec: c.source!.durationFrames / fps,
+      secondsAt: (b) => b * 0.5, // 120 bpm
+    };
+    return clipSourceFrameAt(c.loop, ctx, beat, fps, c.source!.durationFrames);
+  };
+  beforeEach(() => {
+    store.clearSelection();
+    store.setBpm(120);
+    trk = store.addTrack();
+  });
+
+  it('moves playStartSec so the loops stay fixed on the timeline', () => {
+    // time clip [4,12], slice [0,4]s, 600f@30fps.
+    const id = store.addVideoClip(trk, 4, { sourceKey: 'kL', url: 'uL', frameCount: 600, fps: 30 }, 8)!.split('/')[2];
+    store.updateClipLoop(trk, id, { mode: 'time', startSec: 0, endSec: 4, speed: 1 });
+    const before = frameAt(id, 10); // a beat inside the clip
+
+    // Drag the left edge from beat 4 → 2 (end held at 12).
+    store.resizeClip(trk, id, 2, 10);
+    expect(clipOf(id).startBeat).toBe(2);
+    expect(clipOf(id).loop.playStartSec).toBeCloseTo(-1); // 0 + (−2 beats · 0.5 s/beat · speed 1)
+
+    // The SAME timeline beat shows the SAME source frame — loops didn't drift.
+    expect(frameAt(id, 10)).toBe(before);
+  });
+
+  it('caps the play-start at the loop end (generally not after)', () => {
+    const id = store.addVideoClip(trk, 0, { sourceKey: 'kC', url: 'uC', frameCount: 600, fps: 30 }, 8)!.split('/')[2];
+    store.updateClipLoop(trk, id, { mode: 'time', startSec: 0, endSec: 2, speed: 1 });
+    // Drag the left edge far to the right (trim front) → play-start would exceed the loop end.
+    store.resizeClip(trk, id, 20, 4);
+    expect(clipOf(id).loop.playStartSec).toBeCloseTo(2); // capped at endSec
+  });
+});
+
+describe('BPM reflow leftovers', () => {
+  let trk: string;
+  const clipOf = (id: string) => store.trackById(trk)!.clips.find((c) => c.id === id)!;
+  beforeEach(() => {
+    store.clearSelection();
+    store.setBpm(100);
+    trk = store.addTrack();
   });
 
   it('reflow undoes in one step', () => {

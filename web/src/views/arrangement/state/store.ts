@@ -2375,7 +2375,7 @@ export class ArrangementStore {
           // c.loop.startSec here are the PRE-resize values — couplings below compute
           // absolute targets from them (never increment).
           const end0 = start + len; // the edge the drag is holding fixed
-          this.applyOneShotResizeTiming(c, d.meta.baseBPM, start, end0, (s, l) => {
+          this.applyResizeTiming(c, d.meta.baseBPM, start, end0, (s, l) => {
             start = s;
             len = l;
           });
@@ -2402,52 +2402,72 @@ export class ArrangementStore {
   }
 
   /**
-   * One-shot manual-resize timing coupling (no-op for other modes). LEFT-edge trim
-   * moves the slice start (`loop.startSec`) so the video content stays pinned to the
-   * timeline, capped at the source start (startSec ≥ 0 ⇒ the edge stops at source
-   * frame 0). Length is capped so the floating end-into-source never runs past the
-   * source end. Linear in tempo (warp-ignored) — exact at neutral warp.
-   *
-   * `c` is the gesture-BASE draft (startBeat / loop.startSec are pre-drag values).
-   * Reports the possibly-clamped `(start, len)` via `emit`; may mutate `c.loop.startSec`.
+   * Manual-resize timing coupling for video clips (no-op for other clips).
+   *  - one-shot: LEFT-edge trim moves the slice start (`loop.startSec`) so the content
+   *    stays pinned, capped at the source start (startSec ≥ 0 ⇒ the edge stops at
+   *    frame 0); length is capped so the end-into-source never runs past the file.
+   *  - time / beat-sync: LEFT-edge trim moves the play-start (`loop.playStartSec`) so
+   *    the LOOP boundaries stay fixed on the timeline (the loop brace startSec/endSec
+   *    is untouched); capped ≤ the loop end.
+   * Linear in tempo (warp-ignored) — exact at neutral warp. `c` is the gesture-BASE
+   * draft (startBeat / loop fields are pre-drag), so targets below are absolute.
    */
-  private applyOneShotResizeTiming(
+  private applyResizeTiming(
     c: Clip,
     bpm: number,
     start: number,
     end: number,
     emit: (start: number, len: number) => void,
   ) {
-    if (c.kind !== 'video' || c.loop?.mode !== 'one-shot') {
-      emit(start, Math.max(0.5, end - start));
+    const spb = 60 / Math.max(1, bpm);
+    const oldStartBeat = c.startBeat;
+    const dBeats = start - oldStartBeat;
+
+    if (c.kind === 'video' && c.loop?.mode === 'one-shot') {
+      const fps = c.source?.fps && c.source.fps > 0 ? c.source.fps : 30;
+      const videoDurSec = c.source ? c.source.durationFrames / fps : Infinity;
+      const speed = c.loop.speed ?? 1;
+      const oldStartSec = c.loop.startSec ?? 0;
+      let startSec = oldStartSec;
+      if (Math.abs(dBeats) > 1e-6 && speed > 1e-6) {
+        const raw = oldStartSec + dBeats * spb * speed;
+        if (raw < 0) {
+          start = Math.max(0, oldStartBeat - oldStartSec / (spb * speed));
+          startSec = 0;
+        } else {
+          startSec = raw;
+        }
+      }
+      let len = Math.max(0.5, end - start);
+      if (Number.isFinite(videoDurSec) && speed > 1e-6) {
+        const maxLen = (videoDurSec - startSec) / (speed * spb);
+        len = Math.max(0.5, Math.min(len, maxLen));
+      }
+      c.loop.startSec = startSec;
+      emit(start, len);
       return;
     }
-    const fps = c.source?.fps && c.source.fps > 0 ? c.source.fps : 30;
-    const videoDurSec = c.source ? c.source.durationFrames / fps : Infinity;
-    const spb = 60 / Math.max(1, bpm);
-    const speed = c.loop.speed ?? 1;
-    const oldStartBeat = c.startBeat;
-    const oldStartSec = c.loop.startSec ?? 0;
 
-    let startSec = oldStartSec;
-    if (Math.abs(start - oldStartBeat) > 1e-6 && speed > 1e-6) {
-      const raw = oldStartSec + (start - oldStartBeat) * spb * speed;
-      if (raw < 0) {
-        // Can't show before the source start: stop the edge where startSec hits 0.
-        start = Math.max(0, oldStartBeat - oldStartSec / (spb * speed));
-        startSec = 0;
+    if (c.kind === 'video' && (c.loop?.mode === 'time' || c.loop?.mode === 'beat-sync') && Math.abs(dBeats) > 1e-6) {
+      const loopStart = c.loop.startSec ?? 0;
+      const fps = c.source?.fps && c.source.fps > 0 ? c.source.fps : 30;
+      const loopEnd = c.loop.endSec ?? (c.source ? c.source.durationFrames / fps : loopStart);
+      const loopLen = loopEnd - loopStart;
+      // Source-seconds consumed per beat (how fast the playhead moves into the source).
+      let perBeat: number;
+      if (c.loop.mode === 'beat-sync') {
+        const videoBeats = c.loop.syncUseBpm ? loopLen * ((c.loop.syncBpm ?? 120) / 60) : c.loop.syncBeats ?? 4;
+        perBeat = videoBeats > 1e-9 ? loopLen / videoBeats : 0;
       } else {
-        startSec = raw;
+        perBeat = (c.loop.speed ?? 1) * spb;
       }
+      // Shift the play-start by the same amount the left edge moved → loops stay put.
+      const base = c.loop.playStartSec ?? loopStart;
+      let ps = base + perBeat * dBeats;
+      if (loopLen > 1e-9) ps = Math.min(ps, loopEnd); // generally not after the loop end
+      c.loop.playStartSec = ps;
     }
-    let len = Math.max(0.5, end - start);
-
-    if (Number.isFinite(videoDurSec) && speed > 1e-6) {
-      const maxLen = (videoDurSec - startSec) / (speed * spb);
-      len = Math.max(0.5, Math.min(len, maxLen));
-    }
-    c.loop.startSec = startSec;
-    emit(start, len);
+    emit(start, Math.max(0.5, end - start));
   }
 
   /** Patch a clip's play-mode timing (mode / slice seconds / speed / direction / …).

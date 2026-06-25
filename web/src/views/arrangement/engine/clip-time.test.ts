@@ -151,6 +151,39 @@ describe('clipSourceTimeAt — beat-sync (loops locked to beats, BPM-independent
   });
 });
 
+describe('clipSourceTimeAt — playStartSec (the loop "Start" marker)', () => {
+  it('within the loop: begins partway through, then wraps to the loop start', () => {
+    // slice [0,4], start playback at 3s → 3 → 4(wrap to 0) → 1 ...
+    const l = loop({ mode: 'time', startSec: 0, endSec: 4, playStartSec: 3 });
+    expect(clipSourceTimeAt(l, ctx(), 0)).toBeCloseTo(3); // left edge plays 3s
+    expect(clipSourceTimeAt(l, ctx(), 1)).toBeCloseTo(3.5); // +0.5s, still first pass
+    expect(clipSourceTimeAt(l, ctx(), 2)).toBeCloseTo(0); // +1s → 4 = loopEnd → wraps to 0
+    expect(clipSourceTimeAt(l, ctx(), 4)).toBeCloseTo(1); // elapsed 2s → 3+2=5 → wrapped: 0 + (5-4) = 1
+  });
+
+  it('before the loop start: a pre-roll plays once, then the loop kicks in', () => {
+    // slice [4,6], play-start 2s (before loopStart). Pre-roll 2→4 then loop [4,6].
+    const l = loop({ mode: 'time', startSec: 4, endSec: 6, playStartSec: 2 });
+    expect(clipSourceTimeAt(l, ctx(), 0)).toBeCloseTo(2); // left edge: pre-roll
+    expect(clipSourceTimeAt(l, ctx(), 4)).toBeCloseTo(4); // elapsed 2s → 2+2=4 = loopStart
+    expect(clipSourceTimeAt(l, ctx(), 8)).toBeCloseTo(4); // elapsed 4s → 2+4=6=loopEnd → wrap → 4
+    expect(clipSourceTimeAt(l, ctx(), 6)).toBeCloseTo(5); // elapsed 3s → 2+3=5 (in loop)
+  });
+
+  it('a pre-roll that runs off the file start is transparent until the source begins', () => {
+    const l = loop({ mode: 'time', startSec: 2, endSec: 4, playStartSec: -1 });
+    expect(clipSourceTimeAt(l, ctx(), 0)).toBeNull(); // play-start -1 < 0 ⇒ before the file
+    expect(clipSourceTimeAt(l, ctx(), 2)).toBeCloseTo(0); // elapsed 1s → -1+1 = 0 (file start)
+  });
+
+  it('beat-sync respects the play-start anchor too', () => {
+    const l = loop({ mode: 'beat-sync', startSec: 0, endSec: 8, syncBeats: 4, playStartSec: 4 });
+    // consumed/beat = loopLen/videoBeats = 2; left edge plays 4s.
+    expect(clipSourceTimeAt(l, ctx(), 0)).toBeCloseTo(4);
+    expect(clipSourceTimeAt(l, ctx(), 2)).toBeCloseTo(0); // 4 + (2·2)=8=loopEnd → wrap → 0
+  });
+});
+
 describe('clipSourceTimeAt — warp', () => {
   it('redistributes one-shot/time but leaves beat-sync beat-locked', () => {
     // A non-linear clock that spends MORE real time in the first half (warp spread).

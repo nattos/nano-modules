@@ -400,8 +400,9 @@ export class ArrClip extends MobxLitElement {
   ) {
     if (!loop) return;
     let periodBeats = 0;
-    const startSec = loop.startSec ?? 0;
-    const loopLen = (loop.endSec ?? timeCtx.videoDurSec) - startSec;
+    const loopStart = loop.startSec ?? 0;
+    const loopEnd = loop.endSec ?? timeCtx.videoDurSec;
+    const loopLen = loopEnd - loopStart;
     if (loop.mode === 'time') {
       const speed = loop.speed ?? 1;
       if (loopLen > 1e-6 && speed > 1e-6 && spb > 1e-9) periodBeats = loopLen / speed / spb;
@@ -410,10 +411,15 @@ export class ArrClip extends MobxLitElement {
     } else {
       return; // one-shot / random: no loop boundaries
     }
-    if (periodBeats <= 1e-3) return;
+    if (periodBeats <= 1e-3 || loopLen <= 1e-6) return;
+    // The first loop restart is where the play-start reaches the loop end; with the
+    // default play-start (= loop start) that's exactly one period in.
+    const playStart = loop.playStartSec ?? loopStart;
+    let firstWrapBeat = ((loopEnd - playStart) / loopLen) * periodBeats;
+    while (firstWrapBeat <= 1e-6) firstWrapBeat += periodBeats; // skip any pre-edge wraps
     ctx.fillStyle = 'rgba(108,192,112,0.85)';
-    for (let k = 1; k * periodBeats < timeCtx.lengthBeat - 1e-6; k++) {
-      const x = Math.round((k * periodBeats / timeCtx.lengthBeat) * w);
+    for (let b = firstWrapBeat; b < timeCtx.lengthBeat - 1e-6; b += periodBeats) {
+      const x = Math.round((b / timeCtx.lengthBeat) * w);
       ctx.fillRect(x, 0, 1, h);
     }
   }

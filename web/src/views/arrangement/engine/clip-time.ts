@@ -38,17 +38,43 @@ export interface ClipTimeCtx {
 
 const EPS = 1e-9;
 
+const mod = (x: number, m: number) => ((x % m) + m) % m;
+/** Triangle wave: 0 at 0, `period` at `period`, back to 0 at 2·period. */
+const tri = (x: number, period: number) => {
+  const m = mod(x, 2 * period);
+  return period - Math.abs(m - period);
+};
+
 /**
- * Fold a position `x` into `[0, period)` — wrap for a normal loop, or reflect over
- * `2·period` for ping-pong. Ping-pong is anchored at 0 (the slice start is the "ping",
- * playing forward), so the first half-period plays forward and the next reverses.
+ * Map a play-START position into the looping source SLICE [loopStart, loopEnd].
+ *
+ * `playStart` is where the clip's left edge begins (Ableton's "Start" marker) — it
+ * may sit BEFORE `loopStart` (a pre-roll that plays linearly until it first reaches
+ * the loop, then loops) or partway inside the loop. `consumed` is the (unsigned)
+ * source-seconds of playback since the left edge; `dirSign` is the play direction.
+ * This decouples the loop phase from the clip's timeline start, so trimming the left
+ * edge (which adjusts `playStart`) leaves the loop boundaries fixed on the timeline.
  */
-function fold(x: number, period: number, pingpong: boolean): number {
-  if (period <= EPS) return 0;
-  if (!pingpong) return ((x % period) + period) % period;
-  const span = 2 * period;
-  const m = ((x % span) + span) % span;
-  return m < period ? m : span - m;
+function loopedSourceTime(
+  playStart: number,
+  consumed: number,
+  loopStart: number,
+  loopEnd: number,
+  pingpong: boolean,
+  dirSign: number,
+): number {
+  const loopLen = loopEnd - loopStart;
+  if (loopLen <= EPS) return loopStart;
+  if (dirSign >= 0) {
+    const p = playStart + consumed; // tape advances up from the play-start
+    if (p < loopEnd) return p; // first pass: pre-roll + up to the loop end
+    const over = p - loopEnd;
+    return pingpong ? loopEnd - tri(over, loopLen) : loopStart + mod(over, loopLen);
+  }
+  const p = playStart - consumed; // reverse: tape descends from the play-start
+  if (p > loopStart) return p;
+  const over = loopStart - p;
+  return pingpong ? loopStart + tri(over, loopLen) : loopEnd - mod(over, loopLen);
 }
 
 /**
@@ -73,25 +99,32 @@ export function clipSourceTimeAt(
     return vt;
   }
 
-  // Looping modes need a finite slice.
-  const endSec = loop.endSec ?? ctx.videoDurSec;
-  const loopLen = endSec - startSec;
-  if (loopLen <= EPS) return startSec;
+  // Looping modes (time / beat-sync) share one slice + play-start anchor; they differ
+  // only in how fast the source is consumed per beat.
+  const loopStart = startSec;
+  const loopEnd = loop.endSec ?? ctx.videoDurSec;
+  const loopLen = loopEnd - loopStart;
+  if (loopLen <= EPS) return loopStart;
+  const playStart = loop.playStartSec ?? loopStart;
+  const pingpong = loop.pingpong ?? false;
 
+  let consumed: number; // unsigned source-seconds consumed since the clip's left edge
   if (loop.mode === 'beat-sync') {
-    // Loop count locked to beats (BPM-independent): one loop spans `videoBeats` beats.
+    // Loop locked to beats (BPM-independent): one loop spans `videoBeats` beats.
     const videoBeats = loop.syncUseBpm
       ? loopLen * ((loop.syncBpm ?? 120) / 60)
       : loop.syncBeats ?? 4;
-    if (videoBeats <= EPS) return startSec;
-    const localBeat = beat - ctx.startBeat;
-    const phase = fold(dir * localBeat, videoBeats, loop.pingpong ?? false) / videoBeats;
-    return startSec + phase * loopLen;
+    if (videoBeats <= EPS) return loopStart;
+    consumed = ((beat - ctx.startBeat) / videoBeats) * loopLen;
+  } else {
+    // 'time' (and the Phase-3 'random' stand-in): consumed at the real-time rate.
+    consumed = speed * elapsedSec;
   }
 
-  // 'time' (and the Phase-3 'random' stand-in): loop count follows clip length × BPM.
-  const consumed = dir * speed * elapsedSec;
-  return startSec + fold(consumed, loopLen, loop.pingpong ?? false);
+  const vt = loopedSourceTime(playStart, consumed, loopStart, loopEnd, pingpong, dir);
+  // A play-start before the loop can pre-roll off the file ends → transparent.
+  if (vt < -EPS || vt >= ctx.videoDurSec - EPS) return null;
+  return vt;
 }
 
 /**

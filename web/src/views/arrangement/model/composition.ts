@@ -218,6 +218,11 @@ export interface ClipLoopConfig {
   /** Slice end into the source, seconds. Used by time/beat-sync/random; one-shot
    *  ignores it (its end-into-source free-floats with clip length). */
   endSec?: number;
+  /** Looping modes: where playback BEGINS at the clip's left edge, in source seconds
+   *  (Ableton's "Start" marker). May sit before `startSec` (a pre-roll played once
+   *  before the loop kicks in) but generally not after `endSec`. Omitted ⇒ `startSec`.
+   *  Trimming the left edge adjusts this so the loop boundaries stay fixed in time. */
+  playStartSec?: number;
   /** Playback speed scale factor (default 1). Ignored by beat-sync (speed is implied
    *  by the beat lock). */
   speed: number;
