@@ -247,7 +247,11 @@ export class VideoCompositor {
       if (!this.gpuHost || !this.blitter || !this.service) return;
       const d = p.desc;
       const active = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
-      const frame = this.frameFor(p, beat, bpm);
+      const ahead = beat < d.startBeat - 1e-6;
+      // For a clip not yet reached, warm its ENTRY frame (what it shows AT its start),
+      // not the current beat extrapolated into the future (which is null / a wrong loop
+      // phase) — so the lookahead actually pre-decodes the frame we'll need on arrival.
+      const frame = this.frameFor(p, ahead ? d.startBeat : beat, bpm);
       const mode = d.scaleMode ?? 'fit';
       const key = `${frame ?? 'null'}:${mode}:${this.renderW}x${this.renderH}`;
       if (!active) {
