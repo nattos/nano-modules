@@ -286,7 +286,10 @@ export class EngineBridge {
 
   /** True when every active video clip has its current-beat frame injected. */
   private videoInputsReady(): boolean {
-    if (!this.video || this.lastVideoDescs.length === 0) return true;
+    if (this.lastVideoDescs.length === 0) return true; // no video clips → nothing to wait on
+    // There ARE video clips: if the decode pump isn't even up yet (first video reached
+    // on a fresh page), they can't be ready — hold, DON'T composite them transparent.
+    if (!this.video) return false;
     const beat = store.positionBeat;
     const bpm = store.composition.meta.baseBPM;
     return this.lastVideoDescs.every((d) => this.video!.clipReady(d.clipId, beat, bpm));
