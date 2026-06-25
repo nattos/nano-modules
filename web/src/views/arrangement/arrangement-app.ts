@@ -323,7 +323,9 @@ export class ArrangementApp extends MobxLitElement {
     let beat = target.startBeat;
     for (const { file, sourceKey } of imports) {
       const media = await importVideoFile(file, sourceKey || undefined);
-      const lengthBeat = Math.max(1, store.quantize((media.durationSec * bpm) / 60));
+      // Match the clip length to the REAL video duration (metadata already probed in
+      // importVideoFile) — exact beats, NOT snapped, so the clip spans the whole file.
+      const lengthBeat = Math.max(0.25, (media.durationSec * bpm) / 60);
       store.addVideoClip(
         target.trackId,
         beat,
@@ -333,6 +335,8 @@ export class ArrangementApp extends MobxLitElement {
           frameCount: media.frameCount,
           fps: media.fps,
           label: media.label,
+          width: media.width,
+          height: media.height,
         },
         lengthBeat,
       );

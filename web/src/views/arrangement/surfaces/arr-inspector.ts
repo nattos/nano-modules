@@ -12,7 +12,8 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture } from '../model/composition';
+import { clipProcessesTexture, resolveSourceTransform } from '../model/composition';
+import './source-transform-widget';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
@@ -596,7 +597,23 @@ export class ArrInspector extends MobxLitElement {
                   >${m}</button>`,
                 )}
               </span>
-            </div>`
+            </div>
+            ${(['fit', 'cover', 'none'] as const).includes((clip.source?.scaleMode ?? 'fit') as any)
+              ? html`<div class="row">
+                  <label>Placement</label>
+                  <span class="val" style="flex:1; min-width:0;">
+                    <source-transform-widget
+                      .canvasW=${store.composition.meta.resolution.width}
+                      .canvasH=${store.composition.meta.resolution.height}
+                      .videoW=${clip.source?.width ?? 0}
+                      .videoH=${clip.source?.height ?? 0}
+                      .mode=${clip.source?.scaleMode ?? 'fit'}
+                      .transform=${resolveSourceTransform(clip.source?.transform)}
+                      .onChange=${(patch: any, ck?: string) => store.setClipSourceTransform(found.track.id, clip.id, patch, ck)}
+                    ></source-transform-widget>
+                  </span>
+                </div>`
+              : ''}`
           : ''}
 
         ${this.renderDashboard(clip, path)}

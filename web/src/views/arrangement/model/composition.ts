@@ -48,6 +48,49 @@ export type TransportMode = 'precise' | 'live';
  */
 export type ScaleMode = 'fit' | 'cover' | 'stretch' | 'none';
 
+/** Quarter-turn rotations applied to a clip's source frame, clockwise degrees. */
+export type SourceRotation = 0 | 90 | 180 | 270;
+
+/**
+ * Placement transform for a clip's source frame within the output canvas, applied
+ * ON TOP of the base `scaleMode` fit. All optional — the omitted/default transform
+ * is a centred, unscaled, unrotated, unflipped frame.
+ *
+ *  - anchorX/anchorY ∈ [0,1]: alignment of the (scaled) frame within the canvas.
+ *    X: 0 = left edges aligned, 1 = right edges aligned, 0.5 = centres. Y likewise
+ *    (0 = tops). The same formula `offset = anchor·(canvas − frame)` covers both the
+ *    letterbox regime (frame smaller ⇒ moves inside) and the crop regime (frame
+ *    larger ⇒ pans the visible window).
+ *  - scale: extra zoom about the frame's own centre (default 1). Lets a source
+ *    larger than the canvas be shown at a higher resolution than 'fit' would.
+ *  - rotation: 0/90/180/270 quarter turns.
+ *  - flipH/flipV: mirror across the vertical / horizontal axis.
+ */
+export interface SourceTransform {
+  anchorX: number;
+  anchorY: number;
+  scale: number;
+  rotation: SourceRotation;
+  flipH: boolean;
+  flipV: boolean;
+}
+
+export const DEFAULT_SOURCE_TRANSFORM: SourceTransform = {
+  anchorX: 0.5, anchorY: 0.5, scale: 1, rotation: 0, flipH: false, flipV: false,
+};
+
+/** Fill the transform with defaults for any omitted field (read-side helper). */
+export function resolveSourceTransform(t?: Partial<SourceTransform>): SourceTransform {
+  return {
+    anchorX: t?.anchorX ?? 0.5,
+    anchorY: t?.anchorY ?? 0.5,
+    scale: t?.scale ?? 1,
+    rotation: t?.rotation ?? 0,
+    flipH: t?.flipH ?? false,
+    flipV: t?.flipV ?? false,
+  };
+}
+
 /** The composite's backdrop, under all clips. Default (omitted) = opaque black. */
 export interface BackgroundConfig {
   mode: 'black' | 'transparent' | 'custom';
@@ -290,8 +333,14 @@ export interface Clip {
     /** Fetchable URL of the media (served asset / object URL). */
     url?: string;
     fps?: number;
+    /** Native pixel dimensions (aspect for the placement widget). 0/absent ⇒ unknown. */
+    width?: number;
+    height?: number;
     /** How the frame is scaled into the output canvas. Omitted ⇒ 'fit'. */
     scaleMode?: ScaleMode;
+    /** Placement transform (anchor / scale / rotation / flip) layered on the base
+     *  scaleMode fit. Omitted fields default per {@link resolveSourceTransform}. */
+    transform?: Partial<SourceTransform>;
   };
   loop: ClipLoopConfig;
   automation: AutomationLane[];

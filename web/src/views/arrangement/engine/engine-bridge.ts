@@ -23,7 +23,7 @@ import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
-import { deviceIsSource, type Clip, type Track } from '../model/composition';
+import { deviceIsSource, resolveSourceTransform, type Clip, type Track } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
@@ -181,6 +181,7 @@ export class EngineBridge {
       fps: src.fps,
       speed: clip.loop?.speed,
       scaleMode: src.scaleMode ?? 'fit',
+      transform: resolveSourceTransform(src.transform),
       loop: clip.loop,
     };
   }

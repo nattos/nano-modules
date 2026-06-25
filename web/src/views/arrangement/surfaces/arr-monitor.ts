@@ -124,6 +124,10 @@ export class ArrMonitor extends MobxLitElement {
       void layer.blendMode;
       void layer.clip.source?.url;
       void layer.clip.source?.scaleMode;
+      // Placement transform (anchor / scale / rotation / flip): read each field so a
+      // widget drag re-issues the composite → the pump re-blits with the new transform.
+      const tf = layer.clip.source?.transform;
+      if (tf) { void tf.anchorX; void tf.anchorY; void tf.scale; void tf.rotation; void tf.flipH; void tf.flipV; }
       // Track wires so connecting/removing a modulation wire re-issues the
       // composite (the executor applies them natively).
       const ws = layer.clip.sketch.wires;

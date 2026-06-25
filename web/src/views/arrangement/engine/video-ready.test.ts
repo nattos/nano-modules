@@ -36,8 +36,9 @@ describe('VideoCompositor.clipReady', () => {
     internal.pumps.set('c', pump);
     expect(vc.clipReady('c', 8, 120)).toBe(false); // frame 0 at beat 8, but nothing injected
 
-    // Inject the matching frame (beat 8 → local frame 0 → key '0:fit:640x360').
-    pump.lastKey = '0:fit:640x360';
+    // Inject the matching frame (beat 8 → local frame 0). The key folds in the
+    // identity placement transform (anchor .5,.5 / scale 1 / rot 0 / no flip).
+    pump.lastKey = '0:fit:0.5,0.5,1,0,00:640x360';
     expect(vc.clipReady('c', 8, 120)).toBe(true);
 
     // A different beat needs a different frame → not ready until re-injected.

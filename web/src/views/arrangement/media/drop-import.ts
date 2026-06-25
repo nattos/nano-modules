@@ -13,6 +13,9 @@ export interface DroppedMedia {
   fps: number;
   label: string;
   durationSec: number;
+  /** Native pixel dimensions (0 if unknown) — drives the placement widget's aspect. */
+  width: number;
+  height: number;
 }
 
 const ASSUMED_FPS = 30;
@@ -29,16 +32,21 @@ export async function importVideoFile(file: File, sourceKey?: string): Promise<D
   const url = URL.createObjectURL(file);
   sourceKey ??= `drop:${file.name}:${file.size}:${file.lastModified}`;
 
-  // A still image is a one-frame, one-second source.
+  // A still image is a one-frame, one-second source — probe its pixel size too.
   if (file.type.startsWith('image/')) {
-    return { sourceKey, url, frameCount: 1, fps: 1, label: file.name, durationSec: IMAGE_DURATION };
+    const dim = await probeImageSize(url).catch(() => ({ width: 0, height: 0 }));
+    return { sourceKey, url, frameCount: 1, fps: 1, label: file.name, durationSec: IMAGE_DURATION, ...dim };
   }
 
   let durationSec = DEFAULT_DURATION;
+  let width = 0, height = 0;
   try {
-    durationSec = await probeDuration(url);
+    const m = await probeVideo(url);
+    durationSec = m.durationSec;
+    width = m.width;
+    height = m.height;
   } catch {
-    /* non-decodable → keep the default length */
+    /* non-decodable → keep the defaults */
   }
   const fps = ASSUMED_FPS;
   return {
@@ -48,19 +56,34 @@ export async function importVideoFile(file: File, sourceKey?: string): Promise<D
     fps,
     label: file.name,
     durationSec,
+    width,
+    height,
   };
 }
 
-function probeDuration(url: string): Promise<number> {
+function probeVideo(url: string): Promise<{ durationSec: number; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const v = document.createElement('video');
     v.preload = 'metadata';
     v.muted = true;
     v.onloadedmetadata = () => {
       const d = v.duration;
-      resolve(Number.isFinite(d) && d > 0 ? d : DEFAULT_DURATION);
+      resolve({
+        durationSec: Number.isFinite(d) && d > 0 ? d : DEFAULT_DURATION,
+        width: v.videoWidth || 0,
+        height: v.videoHeight || 0,
+      });
     };
     v.onerror = () => reject(new Error('probe failed'));
     v.src = url;
+  });
+}
+
+function probeImageSize(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
+    img.onerror = () => reject(new Error('probe failed'));
+    img.src = url;
   });
 }

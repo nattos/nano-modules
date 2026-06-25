@@ -16,11 +16,16 @@
 
 import { GPUHost } from '../../../gpu-host';
 import { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
-import { FrameBlitter, type BlitFit } from '../../../video/frame-blitter';
+import { FrameBlitter, type BlitFit, type BlitTransform } from '../../../video/frame-blitter';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
+
+/** The neutral placement transform (centred, unscaled, unrotated, unflipped). */
+const IDENTITY_TRANSFORM: BlitTransform = {
+  anchorX: 0.5, anchorY: 0.5, scale: 1, rotation: 0, flipH: false, flipV: false,
+};
 
 /** One active video clip the pump should feed. */
 export interface VideoClipDesc {
@@ -38,6 +43,8 @@ export interface VideoClipDesc {
   speed?: number;
   /** How the frame scales into the output canvas (default 'fit'). */
   scaleMode?: BlitFit;
+  /** Placement transform (anchor / scale / rotation / flip) over the scale mode. */
+  transform?: BlitTransform;
   /** Play-mode timing (slice + mode); drives the beat→source-frame mapping. */
   loop?: ClipLoopConfig;
 }
@@ -344,7 +351,8 @@ export class VideoCompositor {
       // phase) — so the lookahead actually pre-decodes the frame we'll need on arrival.
       const frame = this.frameFor(p, ahead ? d.startBeat : beat, bpm);
       const mode = d.scaleMode ?? 'fit';
-      const key = `${frame ?? 'null'}:${mode}:${this.renderW}x${this.renderH}`;
+      const xf = d.transform ?? IDENTITY_TRANSFORM;
+      const key = this.frameKey(p, frame);
       if (!active) {
         // LOOKAHEAD warming: decode the upcoming frame into the service cache so
         // reaching this clip doesn't stall — but DON'T inject (the instance isn't
@@ -370,7 +378,7 @@ export class VideoCompositor {
       if (!tex) { this.lastError = `no texture for handle ${handle}`; return; }
       // Blit + scale (per the clip's scale mode) to the composite render size,
       // so source.video.file just copies a ready-to-composite frame.
-      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode, this.compW, this.compH);
+      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode, xf, this.compW, this.compH);
       this.lastPulled[p.desc.clipId] = { frame, handle, w: bitmap.width, h: bitmap.height };
       // Mark lastKey BEFORE injecting: setInstanceTexture fires the bridge's Precise
       // re-check synchronously, and it reads lastKey via clipReady to know we're ready.
@@ -403,8 +411,17 @@ export class VideoCompositor {
     const pump = this.pumps.get(clipId);
     if (!pump) return false;
     const frame = this.frameFor(pump, beat, bpm);
-    const key = `${frame ?? 'null'}:${pump.desc.scaleMode ?? 'fit'}:${this.renderW}x${this.renderH}`;
-    return pump.lastKey === key;
+    return pump.lastKey === this.frameKey(pump, frame);
+  }
+
+  /** Per-frame inject/dedup key. Folds in the scale mode + placement transform +
+   *  render size, so a mode/transform/resize edit re-blits AND the Precise gate's
+   *  `clipReady` agrees with what `pumpClip` last injected (shared, no drift). */
+  private frameKey(p: Pump, frame: number | null): string {
+    const mode = p.desc.scaleMode ?? 'fit';
+    const x = p.desc.transform ?? IDENTITY_TRANSFORM;
+    const xfSig = `${x.anchorX},${x.anchorY},${x.scale},${x.rotation},${x.flipH ? 1 : 0}${x.flipV ? 1 : 0}`;
+    return `${frame ?? 'null'}:${mode}:${xfSig}:${this.renderW}x${this.renderH}`;
   }
 
   /** Active pump count (diagnostic / tests). */

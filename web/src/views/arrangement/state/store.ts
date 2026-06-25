@@ -22,7 +22,9 @@ import {
   AutomationLane,
   EnvelopePoint,
   ScaleMode,
+  SourceTransform,
   deviceIsSource,
+  resolveSourceTransform,
   compositionLengthBeats,
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
@@ -2074,7 +2076,7 @@ export class ArrangementStore {
   addVideoClip(
     trackId: string,
     startBeat: number,
-    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string },
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number },
     lengthBeat = 8,
   ): string | null {
     const track = this.trackById(trackId);
@@ -2097,6 +2099,8 @@ export class ArrangementStore {
         sourceKey: media.sourceKey,
         url: media.url,
         fps: media.fps,
+        width: media.width,
+        height: media.height,
       },
       loop: defaultClipLoop(media.fps ? media.frameCount / media.fps : undefined),
       automation: [],
@@ -2126,6 +2130,65 @@ export class ArrangementStore {
       },
       `scale:${clipId}`,
     );
+  }
+
+  /** Adjust a clip's source placement transform (anchor / scale / rotation / flip).
+   *  `coalesceKey` groups a drag gesture into one undo entry (default: per clip). */
+  setClipSourceTransform(
+    trackId: string, clipId: string, patch: Partial<SourceTransform>, coalesceKey?: string,
+  ) {
+    this.mutate(
+      'adjust source placement',
+      (d) => {
+        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        if (!c?.source) return;
+        c.source.transform = { ...resolveSourceTransform(c.source.transform), ...patch };
+      },
+      coalesceKey ?? `xform:${clipId}`,
+    );
+  }
+
+  /**
+   * Point an existing clip at a (possibly new) video source — used by the clip
+   * inspector's drop zone. An effect/empty clip is CONVERTED to a video clip (a
+   * `source.video.file` device is prepended); an existing video clip just swaps its
+   * media (the pump re-opens on the sourceKey/url change). The clip's span is kept;
+   * pass `lengthBeat` to also resize it (e.g. to the new media's duration).
+   */
+  setClipSource(
+    trackId: string, clipId: string,
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number },
+    lengthBeat?: number,
+  ) {
+    this.mutate('set clip source', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      const c = t?.clips.find((x) => x.id === clipId);
+      if (!t || !c) return;
+      const label = media.label ?? c.name ?? 'Video';
+      c.kind = 'video';
+      // Preserve any existing scale mode + placement transform across a swap.
+      c.source = {
+        label,
+        durationFrames: media.frameCount,
+        sourceKey: media.sourceKey,
+        url: media.url,
+        fps: media.fps,
+        width: media.width,
+        height: media.height,
+        scaleMode: c.source?.scaleMode,
+        transform: c.source?.transform,
+      };
+      if (!c.sketch.devices.some((dv) => dv.moduleType === 'source.video.file')) {
+        c.sketch.devices.unshift({
+          id: uid('dev'), moduleType: 'source.video.file', name: label, capabilities: ['source'],
+        });
+      }
+      if (lengthBeat && lengthBeat > 0) {
+        c.lengthBeat = lengthBeat;
+        carveTrackSpan(t, c.id, c.startBeat, c.startBeat + c.lengthBeat);
+      }
+    });
+    this.select(paths.clip(trackId, clipId));
   }
 
   /** Build + add a real device of a kind (used by the inspector chain). */

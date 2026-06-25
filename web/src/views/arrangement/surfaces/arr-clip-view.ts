@@ -18,6 +18,10 @@ import { renderPlayModeControls, playModeControlsStyles } from './play-mode-cont
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
+import { resolveSourceTransform } from '../model/composition';
+import { importVideoFile } from '../media/drop-import';
+import { linkMedia } from '../workspace/media-store';
+import './source-transform-widget';
 import './time-strip';
 import './arr-automation-editor';
 import './arr-ruler';
@@ -77,6 +81,24 @@ export class ArrClipView extends MobxLitElement {
     }
     .ctl .v {
       color: var(--app-text-color1);
+    }
+    .source-drop {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border: 1px dashed transparent;
+      border-radius: 3px;
+      padding: 3px;
+      margin: -3px;
+    }
+    .source-drop.over {
+      border-color: var(--app-hi-color2, #4169e1);
+      background: rgba(65, 105, 225, 0.08);
+    }
+    .source-drop .drop-hint {
+      font-size: var(--app-fs-xs, 11px);
+      color: var(--app-text-color2, #888);
+      opacity: 0.6;
     }
     .seg {
       display: inline-flex;
@@ -335,10 +357,54 @@ export class ArrClipView extends MobxLitElement {
     });
   }
 
+  /** Accept a dropped video/image file onto the clip inspector → swap (or convert to)
+   *  this clip's source. Stops propagation so the app-level drop (which creates a NEW
+   *  timeline clip) doesn't also fire. */
+  private onSourceDrop = async (e: DragEvent) => {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const sel = store.selectedClip;
+    const file = dt.files?.[0];
+    const handleItem = Array.from(dt.items || []).find(
+      (it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function',
+    );
+    if ((!file && !handleItem) || !sel) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.dropActive = false;
+    let f = file;
+    let sourceKey = '';
+    if (handleItem) {
+      try {
+        const h = await (handleItem as any).getAsFileSystemHandle() as FileSystemFileHandle | null;
+        if (h && h.kind === 'file') { sourceKey = await linkMedia(h); f = await h.getFile(); }
+      } catch { /* fall back to the plain File */ }
+    }
+    if (!f) return;
+    const media = await importVideoFile(f, sourceKey || undefined);
+    store.setClipSource(sel.track.id, sel.clip.id, {
+      sourceKey: media.sourceKey, url: media.url, frameCount: media.frameCount,
+      fps: media.fps, label: media.label, width: media.width, height: media.height,
+    });
+  };
+
+  @state() private dropActive = false;
+
   private renderSourceCtl(clip: any, isVideo: boolean) {
     const scale = clip.source?.scaleMode ?? 'fit';
+    const xf = resolveSourceTransform(clip.source?.transform);
+    const res = store.composition.meta.resolution;
+    const showPlacement = !!clip.source && (scale === 'fit' || scale === 'cover' || scale === 'none');
     return html`
-      <div class="ctl"><span>Source</span><span class="v">${clip.source?.label ?? (isVideo ? 'video' : 'none')}</span></div>
+      <div
+        class="source-drop ${this.dropActive ? 'over' : ''}"
+        @dragover=${(e: DragEvent) => { e.preventDefault(); e.stopPropagation(); this.dropActive = true; }}
+        @dragleave=${() => { this.dropActive = false; }}
+        @drop=${this.onSourceDrop}
+      >
+        <div class="ctl"><span>Source</span><span class="v">${clip.source?.label ?? (isVideo ? 'video' : 'none')}</span></div>
+        <div class="drop-hint">Drop a video/image here to ${clip.source ? 'replace the source' : 'make this a video clip'}</div>
+      </div>
       ${this.renderPlayMode(clip)}
       ${clip.source
         ? html`<div class="ctl">
@@ -355,6 +421,20 @@ export class ArrClipView extends MobxLitElement {
               )}
             </div>
           </div>`
+        : ''}
+      ${showPlacement
+        ? html`<source-transform-widget
+            .canvasW=${res.width}
+            .canvasH=${res.height}
+            .videoW=${clip.source?.width ?? 0}
+            .videoH=${clip.source?.height ?? 0}
+            .mode=${scale}
+            .transform=${xf}
+            .onChange=${(patch: any, ck?: string) => {
+              const sel = store.selectedClip;
+              if (sel) store.setClipSourceTransform(sel.track.id, clip.id, patch, ck);
+            }}
+          ></source-transform-widget>`
         : ''}
     `;
   }
