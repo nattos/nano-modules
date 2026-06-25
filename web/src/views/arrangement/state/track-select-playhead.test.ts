@@ -45,3 +45,25 @@ describe('selecting a track selects all time without moving the playhead', () =>
     expect(store.positionBeat).toBe(16);
   });
 });
+
+describe('slideCaret (clip-drag follow)', () => {
+  it('shifts caret + paused playhead by the delta from base, keeping relative offset', () => {
+    store.setPlayFrom(4); // anchor = head = pos = 4 (paused)
+    const base = {
+      anchorBeat: store.caretAnchorBeat,
+      headBeat: store.playFromBeat,
+      posBeat: store.positionBeat,
+    };
+    store.slideCaret(base, 3);
+    expect(store.caretAnchorBeat).toBe(7);
+    expect(store.playFromBeat).toBe(7);
+    expect(store.positionBeat).toBe(7); // playhead follows when paused
+  });
+
+  it('clamps at 0 (a leftward over-drag parks at the start)', () => {
+    store.setPlayFrom(2);
+    store.slideCaret({ anchorBeat: 2, headBeat: 2, posBeat: 2 }, -10);
+    expect(store.positionBeat).toBe(0);
+    expect(store.playFromBeat).toBe(0);
+  });
+});

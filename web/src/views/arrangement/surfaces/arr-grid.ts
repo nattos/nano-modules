@@ -1065,6 +1065,8 @@ export class ArrGrid extends MobxLitElement {
     /** The time box at gesture start (so coalesced frames don't drift as the
      *  box follows the move). Null unless this is a time-box drag. */
     baseSel: { start: number; end: number; scope: string[] } | null;
+    /** Caret + playhead at gesture start, so they can slide with the moved content. */
+    baseCaret: { anchorBeat: number; headBeat: number; posBeat: number };
   } | null = null;
 
   /** Begin moving `clip` (from arr-clip). `fromHeader` enables time-box split-move. */
@@ -1089,6 +1091,11 @@ export class ArrGrid extends MobxLitElement {
       baseSel: timebox
         ? { start: store.timeSelStart!, end: store.timeSelEnd, scope: [...store.timeSelTrackIds] }
         : null,
+      baseCaret: {
+        anchorBeat: store.caretAnchorBeat,
+        headBeat: store.playFromBeat,
+        posBeat: store.positionBeat,
+      },
     };
     // One coalesced undo entry for the whole drag — immune to pointer dwell.
     store.beginGesture();
@@ -1128,6 +1135,8 @@ export class ArrGrid extends MobxLitElement {
       const td = plain.indexOf(dest) - plain.indexOf(d.trackId);
       this.clipDropTrackId = td !== 0 ? dest : null;
       store.moveTimeBoxContent(shiftBeat, td, d.baseSel);
+      // Caret + (paused) playhead slide with the box by the same beat shift.
+      store.slideCaret(d.baseCaret, shiftBeat);
       return;
     }
 
@@ -1140,6 +1149,8 @@ export class ArrGrid extends MobxLitElement {
     // Always pass the ORIGINAL source track: coalescing reverts to the gesture's
     // base each frame (clip back on its source), then re-applies the move.
     store.moveClipToTrack(d.trackId, d.clipId, dest, beat);
+    // Caret + (paused) playhead follow by the ACTUAL applied shift (post-snap).
+    store.slideCaret(d.baseCaret, beat - d.startBeat);
   };
 
   /**

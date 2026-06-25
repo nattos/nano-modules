@@ -1540,6 +1540,19 @@ export class ArrangementStore {
   }
 
   /**
+   * Slide the caret + (when paused) the playhead by `deltaBeat` from a captured base,
+   * so they keep their position relative to content dragged underneath them. Track ids
+   * are left as-is (a clip drag's box-follow sets those). Used during clip-move drags.
+   */
+  slideCaret(base: { anchorBeat: number; headBeat: number; posBeat: number }, deltaBeat: number) {
+    runInAction(() => {
+      this.caretAnchorBeat = Math.max(0, base.anchorBeat + deltaBeat);
+      this.playFromBeat = Math.max(0, base.headBeat + deltaBeat);
+      if (!this.playing) this.positionBeat = Math.max(0, base.posBeat + deltaBeat);
+    });
+  }
+
+  /**
    * Split at the caret: with a time box, split every in-scope clip at both edges;
    * with just the caret (a vertical slice), split at the head beat. Only the
    * caret's track span is affected (a slice spanning tracks 2–4 cuts only those).
