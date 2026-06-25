@@ -254,8 +254,9 @@ export class VideoCompositor {
   }
 
   /**
-   * Stateful stochastic 'random' driver. Between jumps the source position drifts forward
-   * at `speed` (looping at the slice end); a jump fires when the accumulated dwell (a
+   * Stateful stochastic 'random' driver. Between jumps the source position drifts at
+   * `speed` (forward, or BACKWARD when scrubbing back) looping at the slice end; a jump
+   * fires when the accumulated dwell (a
    * jittered `dwell`) elapses, relocating by a ±distance sampled uniformly in
    * [jumpDistanceMin, jumpDistanceMax] (fraction-of-slice or seconds), reflected at the
    * slice edges. Truly
@@ -296,20 +297,29 @@ export class VideoCompositor {
       const sign = Math.random() < 0.5 ? -1 : 1;
       return reflectInto(from + sign * dist);
     };
+    const nextDwellOf = () => Math.max(0.01, dwellBeats * (1 + jitter * (Math.random() * 2 - 1)));
     let st = p.rand;
-    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), dwellAccum: 0, nextDwell: dwellBeats, lastBeat: beat };
+    if (!st) st = p.rand = { srcSec: pick(lo + range * 0.5), dwellAccum: 0, nextDwell: nextDwellOf(), lastBeat: beat };
     const delta = beat - st.lastBeat;
     st.lastBeat = beat;
-    if (delta > 0) {
-      // Playback drifts forward through the source during the dwell, looping the slice.
+    if (delta !== 0) {
+      // Playback drifts through the source at `speed` (signed ⇒ reverse when scrubbing
+      // back), looping the slice. The dwell is an ACCUMULATOR of beat progress: jumps fire
+      // forward each time it fills, and — symmetrically — backward when it empties (a
+      // backward scrub runs the dwell timer in reverse and re-jumps; jumps are stochastic
+      // so they're re-randomized, not literally undone).
       st.srcSec = wrap(st.srcSec + speed * delta * secPerBeat);
-      // Accumulate forward progress; jump each time a (jittered) dwell elapses.
       st.dwellAccum += delta;
       let guard = 0;
       while (st.dwellAccum >= st.nextDwell && guard++ < 4096) {
         st.dwellAccum -= st.nextDwell;
         st.srcSec = pick(st.srcSec);
-        st.nextDwell = Math.max(0.01, dwellBeats * (1 + jitter * (Math.random() * 2 - 1)));
+        st.nextDwell = nextDwellOf();
+      }
+      while (st.dwellAccum < 0 && guard++ < 4096) {
+        st.srcSec = pick(st.srcSec);
+        st.nextDwell = nextDwellOf();
+        st.dwellAccum += st.nextDwell;
       }
     }
     return Math.min(p.frameCount - 1, Math.max(0, Math.floor(st.srcSec * p.fps)));
