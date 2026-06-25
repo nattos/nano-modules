@@ -356,9 +356,11 @@ export class ArrClip extends MobxLitElement {
         : Math.round(((beat - startBeat) / lengthBeat) * (frameCount - 1));
     const frameAtX = (cx: number) => frameAtBeat(beatAtX(cx));
 
-    // Pin the loop-END thumbnail just BEFORE the wrap — sampling AT a marker returns the
-    // wrapped loop-START frame. endEps = half a source frame in beats, loop-derived so
-    // it's identical at every zoom (the pinned boundary frames never drift).
+    // Sample the boundary thumbnails just INSIDE the loop (not AT the wrap): a sample
+    // exactly at a marker is the wrap point, where round-off flips between the loop
+    // START and END frames — and if the slice runs to the file end, the END side reads
+    // vt ≈ videoDurSec and clipSourceTimeAt returns null ⇒ a black flicker. frameEps =
+    // half a source frame in beats (loop-derived, so it's identical at every zoom).
     const loopStart = loop?.startSec ?? 0;
     const loopEnd = loop?.endSec ?? timeCtx.videoDurSec;
     const loopLen = loopEnd - loopStart;
@@ -367,7 +369,7 @@ export class ArrClip extends MobxLitElement {
       const vb = loop.syncUseBpm ? loopLen * ((loop.syncBpm ?? 120) / 60) : loop.syncBeats ?? 4;
       perBeat = vb > 1e-9 ? loopLen / vb : perBeat;
     }
-    const endEps = perBeat > 1e-9 && fps > 0 ? 0.5 / fps / perBeat : 1e-4;
+    const frameEps = perBeat > 1e-9 && fps > 0 ? 0.5 / fps / perBeat : 1e-4;
 
     // Loop-aware segments: clip edges + each loop marker. Within a segment, tile panels
     // left-anchored from its start, plus one right-anchored panel ending at its end —
@@ -382,8 +384,8 @@ export class ArrClip extends MobxLitElement {
       const R = bounds[s + 1];
       const segW = R - L;
       if (segW <= 0.5) continue;
-      const startFrame = frameAtX(L); // content at the loop/clip start (pinned)
-      const endFrame = frameAtBeat(beatAtX(R) - endEps); // content at the loop/clip end (pinned)
+      const startFrame = frameAtBeat(beatAtX(L) + frameEps); // loop/clip start, just past the wrap
+      const endFrame = frameAtBeat(beatAtX(R) - frameEps); // loop/clip end, just before the wrap
       if (segW <= panelW) {
         // Too tight: one aspect-correct panel centred on the segment, cropped to it.
         panels.push({ x: (L + R) / 2 - panelW / 2, cl: L, cr: R, frame: startFrame });
