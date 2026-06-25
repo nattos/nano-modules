@@ -47,8 +47,10 @@ const BLIT_SHADER = /* wgsl */`
     else               { s = r; }
     if (place.rotFlip.y > 0.5) { s.x = 1.0 - s.x; }
     if (place.rotFlip.z > 0.5) { s.y = 1.0 - s.y; }
-    if (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0) { return vec4f(0.0); }
-    return textureSample(src, samp, s);
+    // Sample unconditionally (uniform control flow — no branch around the sample),
+    // then mask outside-source pixels to transparent.
+    let inside = select(0.0, 1.0, s.x >= 0.0 && s.x <= 1.0 && s.y >= 0.0 && s.y <= 1.0);
+    return textureSample(src, samp, clamp(s, vec2f(0.0), vec2f(1.0))) * inside;
   }
 `;
 
