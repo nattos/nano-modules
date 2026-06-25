@@ -174,15 +174,8 @@ export class TimeStrip extends LitElement {
       ctx.fillRect(Math.round(xi), 0, 2, h);
       ctx.fillRect(Math.round(xo) - 2, 0, 2, h);
     }
-    // random: scatter a few jump ticks.
-    if (this.playMode === 'random') {
-      ctx.fillStyle = 'rgba(255,218,99,0.7)';
-      for (let i = 1; i <= 6; i++) {
-        const fr = (dur * ((i * 6353) % 997)) / 997;
-        const x = this.frameToX(fr);
-        if (x >= 0 && x <= w) ctx.fillRect(Math.round(x), h - 6, 1, 6);
-      }
-    }
+    // random: the shaded [loopIn,loopOut] region above already shows the wander RANGE;
+    // the wander itself is smooth + continuous (no discrete jumps), so no extra ticks.
 
     // Grid ticks + labels.
     const step = niceStep(60 / this.pxPerFrame);

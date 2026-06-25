@@ -18,7 +18,7 @@ import { GPUHost } from '../../../gpu-host';
 import { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
 import { FrameBlitter, type BlitFit } from '../../../video/frame-blitter';
 import { thumbnailController } from '../media/thumbnail-controller';
-import { clipSourceFrameAt, type ClipTimeCtx } from './clip-time';
+import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import type { ClipLoopConfig } from '../model/composition';
 
 /** One active video clip the pump should feed. */
@@ -237,6 +237,7 @@ export class VideoCompositor {
       lengthBeat: d.lengthBeat,
       videoDurSec: p.frameCount / Math.max(1, p.fps),
       secondsAt,
+      seed: clipNoiseSeed(p.desc.clipId),
     };
     const loop = d.loop ?? DEFAULT_LOOP;
     return clipSourceFrameAt(loop, ctx, beat, p.fps, p.frameCount);

@@ -9,7 +9,7 @@ import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { drawFilmReel, drawPlaceholderCell } from './film-reel';
 import { thumbnailController, reelLayout } from '../media/thumbnail-controller';
-import { clipSourceFrameAt, type ClipTimeCtx } from '../engine/clip-time';
+import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { store, paths } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
@@ -342,7 +342,7 @@ export class ArrClip extends MobxLitElement {
     const startBeat = this.clip.startBeat;
     const lengthBeat = Math.max(1e-6, this.clip.lengthBeat);
     // Linear (warp-approx) clock — the strip is a visual aid; exact warp isn't needed.
-    const timeCtx: ClipTimeCtx = { startBeat, lengthBeat, videoDurSec: frameCount / fps, secondsAt: (b) => b * spb };
+    const timeCtx: ClipTimeCtx = { startBeat, lengthBeat, videoDurSec: frameCount / fps, secondsAt: (b) => b * spb, seed: clipNoiseSeed(this.clip.id) };
 
     // Aspect-correct panel width (default 16:9 until the first tile lands, then refined).
     const probe = thumbnailController.peek(sourceKey, 0, level);

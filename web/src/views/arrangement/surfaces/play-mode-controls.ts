@@ -77,6 +77,7 @@ export function renderPlayModeControls(
   onPatch: (patch: Partial<ClipLoopConfig>) => void,
 ): TemplateResult {
   const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
+  const random = loop.mode === 'random';
   const endDefault = videoDurSec > 0 ? videoDurSec : 0;
   const num = (val: number, on: (n: number) => void, step = 0.1) => html`<input
     type="number"
@@ -95,19 +96,21 @@ export function renderPlayModeControls(
     <div class="pm-row"><span>Play mode</span>
       ${seg(['one-shot', 'time', 'beat-sync', 'random'] as const, loop.mode, (m) => onPatch({ mode: m }))}
     </div>
-    <div class="pm-row"><span>Start (s)</span>${num(loop.startSec ?? 0, (n) => onPatch({ startSec: n }))}</div>
+    <div class="pm-row"><span>${random ? 'Range start (s)' : 'Start (s)'}</span>${num(loop.startSec ?? 0, (n) => onPatch({ startSec: n }))}</div>
     ${loop.mode === 'one-shot'
       ? ''
-      : html`<div class="pm-row"><span>End (s)</span>${num(loop.endSec ?? endDefault, (n) => onPatch({ endSec: n }))}</div>`}
+      : html`<div class="pm-row"><span>${random ? 'Range end (s)' : 'End (s)'}</span>${num(loop.endSec ?? endDefault, (n) => onPatch({ endSec: n }))}</div>`}
     ${looping
       ? html`<div class="pm-row"><span>Play start (s)</span>${num(loop.playStartSec ?? loop.startSec ?? 0, (n) => onPatch({ playStartSec: n }))}</div>`
       : ''}
     ${loop.mode === 'beat-sync'
       ? html`<div class="pm-row"><span>Loop (beats)</span>${num(loop.syncBeats ?? 4, (n) => onPatch({ syncBeats: n }), 1)}</div>`
-      : html`<div class="pm-row"><span>Speed</span>${num(loop.speed ?? 1, (n) => onPatch({ speed: n }))}</div>`}
-    <div class="pm-row"><span>Direction</span>
-      ${seg(['forward', 'reverse'] as const, loop.direction ?? 'forward', (d) => onPatch({ direction: d }))}
-    </div>
+      : html`<div class="pm-row"><span>${random ? 'Evolution rate' : 'Speed'}</span>${num(loop.speed ?? 1, (n) => onPatch({ speed: n }))}</div>`}
+    ${random
+      ? ''
+      : html`<div class="pm-row"><span>Direction</span>
+          ${seg(['forward', 'reverse'] as const, loop.direction ?? 'forward', (d) => onPatch({ direction: d }))}
+        </div>`}
     ${looping
       ? html`<div class="pm-row"><span>Ping-pong</span>
           <button class="pm-toggle ${loop.pingpong ? 'on' : ''}" @click=${() => onPatch({ pingpong: !loop.pingpong })}>

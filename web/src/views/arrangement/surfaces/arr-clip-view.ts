@@ -17,7 +17,7 @@ import { drawPlaceholderCell } from './film-reel';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
-import { clipSourceFrameAt, type ClipTimeCtx } from '../engine/clip-time';
+import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
 import './time-strip';
 import './arr-automation-editor';
 import './arr-ruler';
@@ -519,6 +519,7 @@ export class ArrClipView extends MobxLitElement {
       lengthBeat: clip.lengthBeat,
       videoDurSec: frameCount / fps,
       secondsAt: (b) => b * spb,
+      seed: clipNoiseSeed(clip.id),
     };
     return clipSourceFrameAt(clip.loop, ctx, beat, fps, frameCount);
   }

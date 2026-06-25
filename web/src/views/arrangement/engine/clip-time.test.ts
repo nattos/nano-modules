@@ -200,3 +200,51 @@ describe('clipSourceTimeAt — warp', () => {
     expect(clipSourceTimeAt(bs, cw, 3)).toBeCloseTo(clipSourceTimeAt(bs, cl, 3)!);
   });
 });
+
+describe('clipSourceTimeAt — random (deterministic seeded noise)', () => {
+  const rnd = (over: Partial<ClipLoopConfig> = {}) =>
+    loop({ mode: 'random', startSec: 2, endSec: 8, ...over });
+
+  it('stays within the slice [startSec, endSec] for all beats', () => {
+    const l = rnd();
+    for (let b = 0; b < 64; b += 0.37) {
+      const vt = clipSourceTimeAt(l, ctx({ seed: 0.3 }), b)!;
+      expect(vt).toBeGreaterThanOrEqual(2 - 1e-9);
+      expect(vt).toBeLessThanOrEqual(8 + 1e-9);
+    }
+  });
+
+  it('is deterministic — same beat + seed ⇒ same source time (reproducible scrub)', () => {
+    const l = rnd();
+    expect(clipSourceTimeAt(l, ctx({ seed: 0.42 }), 5.5)).toBe(
+      clipSourceTimeAt(l, ctx({ seed: 0.42 }), 5.5),
+    );
+  });
+
+  it('decorrelates by seed — different clips wander differently', () => {
+    const l = rnd();
+    const a = clipSourceTimeAt(l, ctx({ seed: 0.1 }), 5.5)!;
+    const b = clipSourceTimeAt(l, ctx({ seed: 0.9 }), 5.5)!;
+    expect(Math.abs(a - b)).toBeGreaterThan(1e-3);
+  });
+
+  it('is continuous — a tiny beat step makes a tiny source-time step (smooth)', () => {
+    const l = rnd({ speed: 1 });
+    const a = clipSourceTimeAt(l, ctx({ seed: 0.5 }), 10)!;
+    const b = clipSourceTimeAt(l, ctx({ seed: 0.5 }), 10.001)!;
+    expect(Math.abs(a - b)).toBeLessThan(0.05);
+  });
+
+  it('evolution rate (speed) advances the wander faster', () => {
+    const slow = clipSourceTimeAt(rnd({ speed: 0.2 }), ctx({ seed: 0.5 }), 7)!;
+    const fast = clipSourceTimeAt(rnd({ speed: 4 }), ctx({ seed: 0.5 }), 7)!;
+    expect(slow).not.toBeCloseTo(fast); // different phase reached by the same beat
+  });
+
+  it('frame selection clamps into the file', () => {
+    const f = clipSourceFrameAt(rnd(), { ...ctx({ seed: 0.5 }) }, 9.3, 30, 300);
+    expect(f).not.toBeNull();
+    expect(f!).toBeGreaterThanOrEqual(0);
+    expect(f!).toBeLessThanOrEqual(299);
+  });
+});

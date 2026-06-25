@@ -34,6 +34,9 @@ export interface ClipTimeCtx {
   /** Warp-aware beat→real-seconds (WarpClock.secondsAt). For an un-warped clock this
    *  is just `beat · 60/bpm`. */
   secondsAt: (beat: number) => number;
+  /** Per-clip noise seed for `random` mode (decorrelates clips). Use {@link clipNoiseSeed}
+   *  from the clip id. Ignored by every other mode; defaults to 0. */
+  seed?: number;
 }
 
 const EPS = 1e-9;
@@ -44,6 +47,28 @@ const tri = (x: number, period: number) => {
   const m = mod(x, 2 * period);
   return period - Math.abs(m - period);
 };
+
+/**
+ * Smooth, deterministic, seeded noise in [0,1] — a sum of sines, so it is C∞-continuous,
+ * bounded, and recurrent (quasi-periodic). Used to APPROXIMATE stochastic `random` play
+ * mode with a reproducible wander: the same function drives playback AND the film strips,
+ * so they agree and scrubbing is repeatable. `seed` (∈[0,1)) decorrelates clips.
+ */
+const smoothNoise = (t: number, seed: number): number => {
+  const p = seed * 6.2831853; // seed → a phase offset, spread differently per term
+  const s =
+    Math.sin(t + p) +
+    0.6 * Math.sin(t * 1.7 + p * 2.3 + 1.1) +
+    0.35 * Math.sin(t * 2.9 + p * 4.1 + 2.3);
+  return 0.5 + (0.5 * s) / (1 + 0.6 + 0.35); // ∈ [0,1]
+};
+
+/** Stable per-clip noise seed (∈[0,1)) from its id, so each `random` clip wanders distinctly. */
+export function clipNoiseSeed(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return (h % 10007) / 10007;
+}
 
 /**
  * Map a play-START position into the looping source SLICE [loopStart, loopEnd].
@@ -79,8 +104,8 @@ function loopedSourceTime(
 
 /**
  * The source time (seconds into the file) to display at arrangement `beat`, or `null`
- * to render transparent. `random` is not implemented yet (Phase 3) and falls through
- * to `time`-like looping so a random clip still shows something.
+ * to render transparent. `random` is approximated by a deterministic seeded smooth-noise
+ * wander over the slice (so the strips can show it + scrubbing is reproducible).
  */
 export function clipSourceTimeAt(
   loop: ClipLoopConfig,
@@ -95,6 +120,20 @@ export function clipSourceTimeAt(
   if (loop.mode === 'one-shot') {
     // Plays once; the end-into-source free-floats. Off either file end ⇒ transparent.
     const vt = startSec + dir * speed * elapsedSec;
+    if (vt < -EPS || vt >= ctx.videoDurSec - EPS) return null;
+    return vt;
+  }
+
+  if (loop.mode === 'random') {
+    // Approximate stochastic playback with a smooth seeded noise of the (absolute)
+    // timeline beat, wandering the source SLICE [startSec, endSec]. `speed` is the
+    // evolution rate (how fast the noise advances per beat). Deterministic ⇒ the film
+    // strips match playback and scrubbing back shows the same frame.
+    const lo = startSec;
+    const hi = loop.endSec ?? ctx.videoDurSec;
+    const range = hi - lo;
+    if (range <= EPS) return lo;
+    const vt = lo + range * smoothNoise(beat * speed, ctx.seed ?? 0);
     if (vt < -EPS || vt >= ctx.videoDurSec - EPS) return null;
     return vt;
   }
@@ -117,7 +156,7 @@ export function clipSourceTimeAt(
     if (videoBeats <= EPS) return loopStart;
     consumed = ((beat - ctx.startBeat) / videoBeats) * loopLen;
   } else {
-    // 'time' (and the Phase-3 'random' stand-in): consumed at the real-time rate.
+    // 'time': consumed at the real-time rate.
     consumed = speed * elapsedSec;
   }
 
