@@ -136,26 +136,45 @@ describe('buildCompositeSketch', () => {
       reads: [{ id: 'r1', railId, targetDeviceId: 'Rsrc', targetField: 'scale', combine: 'add', magnitude }],
     }) as any;
 
-    it('wires an active writer output to an active reader param, carrying combine + magnitude', () => {
+    it('routes writer → rail accumulator → reader in two stages (combine + magnitude)', () => {
       const r = buildCompositeSketch([
         { clip: writerClip('rail1'), opacity: 1 },
         { clip: readerClip('rail1'), opacity: 1 },
       ], { mode: 'transparent' })!;
-      const w = r.sketch.wires!.find((x) => x.src.instanceKey === clipInstanceKey('W', 'Wlfo'));
-      expect(w).toBeTruthy();
-      expect(w!.src.field).toBe('output');
-      expect(w!.dest.instanceKey).toBe(clipInstanceKey('R', 'Rsrc'));
-      expect(w!.dest.field).toBe('scale');
-      expect(w!.combine).toBe('add');
-      expect(w!.magnitude).toBe('signed');
+      const railKey = 'rail_rail1';
+      // A `mod.shaper.remap` accumulator node was inserted for the rail.
+      expect(r.sketch.chain!.some((e) => (e as any).instance_key === railKey
+        && e.module_type === 'mod.shaper.remap')).toBe(true);
+      // Stage 1: writer output → rail.input (carries the EXPORT combine/magnitude).
+      const s1 = r.sketch.wires!.find((x) => x.src.instanceKey === clipInstanceKey('W', 'Wlfo'));
+      expect(s1).toBeTruthy();
+      expect(s1!.dest).toEqual({ instanceKey: railKey, field: 'input' });
+      expect(s1!.combine).toBe('add');
+      // Stage 2: rail.output → reader param (carries the READ combine/magnitude).
+      const s2 = r.sketch.wires!.find((x) => x.dest.instanceKey === clipInstanceKey('R', 'Rsrc') && x.dest.field === 'scale');
+      expect(s2).toBeTruthy();
+      expect(s2!.src).toEqual({ instanceKey: railKey, field: 'output' });
+      expect(s2!.magnitude).toBe('signed');
     });
 
-    it('emits NO rail wire when the writer is not active (reader alone)', () => {
+    it('a writer-less reader still gets the rail (base-curve) value: node + stage-2 wire, no stage-1', () => {
       const r = buildCompositeSketch([{ clip: readerClip('rail1'), opacity: 1 }], { mode: 'transparent' })!;
-      expect((r.sketch.wires ?? []).some((x) => x.dest.field === 'scale')).toBe(false);
+      expect(r.sketch.chain!.some((e) => (e as any).instance_key === 'rail_rail1')).toBe(true);
+      // stage 2 exists (rail → reader); no stage-1 writer wire into the rail input.
+      expect((r.sketch.wires ?? []).some((x) => x.src.instanceKey === 'rail_rail1' && x.dest.field === 'scale')).toBe(true);
+      expect((r.sketch.wires ?? []).some((x) => x.dest.instanceKey === 'rail_rail1')).toBe(false);
     });
 
-    it('does not cross rails (different railId ⇒ no wire)', () => {
+    it('bakes the rail base value into the accumulator input (writers fold onto it)', () => {
+      const r = buildCompositeSketch(
+        [{ clip: writerClip('rail1'), opacity: 1 }, { clip: readerClip('rail1'), opacity: 1 }],
+        { mode: 'transparent' },
+        new Map([['rail1', 0.42]]),
+      )!;
+      expect((r.sketch.instances!['rail_rail1'].state as any).input).toBe(0.42);
+    });
+
+    it('does not cross rails (writer on railA, reader on railB ⇒ no writer wire)', () => {
       const r = buildCompositeSketch([
         { clip: writerClip('railA'), opacity: 1 },
         { clip: readerClip('railB'), opacity: 1 },

@@ -17,13 +17,13 @@
 
 import { ArrEngine, type AutomationEntry } from './arr-engine';
 import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
-import { evalLaneAtBeat } from './automation-eval';
+import { evalLaneAtBeat, evalCurveAt } from './automation-eval';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import { store } from '../state/store';
-import { deviceIsSource, resolveSourceTransform, type Clip, type Track } from '../model/composition';
+import { deviceIsSource, resolveSourceTransform, compositionLengthBeats, type Clip, type Track } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
@@ -461,10 +461,24 @@ export class EngineBridge {
     }
     this.clearPreciseHold();
 
+    // Per-rail base-curve value at the playhead — baked into each rail accumulator so
+    // writer wires fold onto it (see buildCompositeSketch). A flat base (the default)
+    // is constant ⇒ no recompile; an animated base re-issues the composite as it moves.
+    const totalBeats = compositionLengthBeats(store.composition);
+    const railBases = new Map<string, number>();
+    for (const l of engineLayers) {
+      for (const read of l.clip.reads ?? []) {
+        if (railBases.has(read.railId)) continue;
+        const base = store.railTrackFor(read.railId)?.baseCurve;
+        railBases.set(read.railId, base ? evalCurveAt(base, totalBeats > 0 ? store.positionBeat / totalBeats : 0) : 0);
+      }
+    }
+
     const render = engineLayers.length
       ? buildCompositeSketch(
           engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode, track: l.track })),
           store.composition.meta.background,
+          railBases,
         )
       : null;
 

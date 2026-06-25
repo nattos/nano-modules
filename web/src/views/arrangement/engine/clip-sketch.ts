@@ -22,7 +22,7 @@
 
 import type { Sketch, InstanceState, ChainEntry, Wire } from '../../../sketch-types';
 import type { ShowSketchOpts } from './arr-engine';
-import type { Clip, Device, Track, BackgroundConfig, RailRead } from '../model/composition';
+import type { Clip, Device, Track, BackgroundConfig, RailRead, RailExport } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
 import { solidSketch } from './slice-sketches';
@@ -120,6 +120,11 @@ function hexToRgb01(hex: string): [number, number, number] {
 export function buildCompositeSketch(
   layers: CompositeLayerInput[],
   bg?: BackgroundConfig,
+  /** Per-rail base-curve value at the current beat — baked into the rail accumulator's
+   *  authored `input` so writer wires fold ONTO it (the standard authored-value + wire
+   *  path). Omitted ⇒ 0. (A moving base recompiles the composite; a flat base — the
+   *  default — is constant, so no recompile.) */
+  railBases?: Map<string, number>,
 ): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
   const bundles = new Set<string>();
   const chain: ChainEntry[] = [];
@@ -129,14 +134,22 @@ export function buildCompositeSketch(
   /** Instance key whose `tex_out` is the running composite, or null (empty). */
   let accKey: string | null = null;
 
-  // Rail (return) routing: collect active writers + readers across all layers, then
-  // emit a cross-clip wire per (writer, reader) pair so the executor's native wire
-  // pipeline (tap_mod: combine / magnitude / scale) does the value routing — no
-  // separate rail engine. A reader only resolves when a writer of the same rail is
-  // ALSO active at this beat (both clips' devices are in the composite). Base-curve
-  // seeding + per-export combine staging are deferred (Phase 2).
-  const railWriters = new Map<string, Array<{ key: string; field: string; scale: number }>>();
+  // Rail (return) routing — TWO-STAGE, reusing the executor's native wire pipeline
+  // (tap_mod: combine / magnitude / scale), no separate rail engine:
+  //   stage 1 (writers → rail): each active writer wires into a per-rail accumulator
+  //     node's `input` field (folded per the EXPORT's combine), on top of the base
+  //     curve value (seeded per-frame via the automation channel — see
+  //     engine-bridge.pushAutomation, so a moving base doesn't recompile);
+  //   stage 2 (rail → readers): the accumulator's `output` wires into each reader's
+  //     param (folded per the READ's combine).
+  // The accumulator is a `mod.shaper.remap` with default (identity) params — a
+  // seedable scalar relay (PrimaryInput `input` → PrimaryOutput `output`). One per
+  // rail that has an active reader; pushed EARLY (a trailing mod node must never
+  // become the composite's output texture). A reader resolves even with no writer
+  // (it just gets the base value).
+  const railWriters = new Map<string, Array<{ key: string; field: string; tap: RailExport }>>();
   const railReaders: Array<{ railId: string; key: string; field: string; tap: RailRead }> = [];
+  const railNodeKeys = new Set<string>(); // rails with an active reader → accumulator node
 
   const push = (moduleType: string, key: string, state: Record<string, unknown>) => {
     // A key must appear ONCE. Duplicate device ids within a clip (a data bug)
@@ -192,6 +205,24 @@ export function buildCompositeSketch(
     const rgb = bgMode === 'custom' ? hexToRgb01(bg?.color ?? '#000000') : [0, 0, 0];
     push('source.solid_color', 'arr_bg', { color: rgb });
     accKey = 'arr_bg';
+  }
+
+  // Rail accumulator nodes (one per rail with an active reader), pushed BEFORE the
+  // clip layers so a mod node never ends the chain (which would lose the output
+  // texture). Each is an identity `mod.shaper.remap` relay: writers fold into its
+  // `input`, readers pull its `output`. mod nodes are texture-passthrough.
+  for (const { clip } of layers) {
+    const catIds = new Set(clip.sketch.devices.filter((d) => catalogEffect(d.moduleType)).map((d) => d.id));
+    for (const read of clip.reads ?? []) {
+      if (!catIds.has(read.targetDeviceId)) continue;
+      const key = `rail_${read.railId}`;
+      if (railNodeKeys.has(key)) continue;
+      railNodeKeys.add(key);
+      // Seed `input` with the rail's base value — the baseline writer wires fold onto
+      // (and the value a writer-less reader gets). Authored state, so the executor's
+      // wire fold reads it as the canonical baseline.
+      push('mod.shaper.remap', key, { input: railBases?.get(read.railId) ?? 0 });
+    }
   }
 
   for (const { clip, opacity, blendMode, track } of layers) {
@@ -261,7 +292,7 @@ export function buildCompositeSketch(
     for (const exp of clip.exports ?? []) {
       if (!pushed.has(exp.sourceDeviceId)) continue;
       const arr = railWriters.get(exp.railId) ?? [];
-      arr.push({ key: clipInstanceKey(clip.id, exp.sourceDeviceId), field: exp.sourceField, scale: exp.scale ?? 1 });
+      arr.push({ key: clipInstanceKey(clip.id, exp.sourceDeviceId), field: exp.sourceField, tap: exp });
       railWriters.set(exp.railId, arr);
     }
     for (const read of clip.reads ?? []) {
@@ -270,19 +301,33 @@ export function buildCompositeSketch(
     }
   }
 
-  // Emit cross-clip rail wires: each reader pulls from every active writer of its rail.
-  for (const r of railReaders) {
-    for (const w of railWriters.get(r.railId) ?? []) {
-      const scale = w.scale * (r.tap.scale ?? 1);
+  // Stage 1 — writers → the rail accumulator's `input` (per EXPORT combine/magnitude).
+  for (const [railId, writers] of railWriters) {
+    const railKey = `rail_${railId}`;
+    if (!railNodeKeys.has(railKey)) continue; // no active reader → nothing pulls it
+    for (const w of writers) {
       wires.push({
-        id: `rw${wid++}`,
+        id: `rwin${wid++}`,
         src: { instanceKey: w.key, field: w.field },
-        dest: { instanceKey: r.key, field: r.field },
-        combine: r.tap.combine,
-        magnitude: r.tap.magnitude,
-        ...(scale !== 1 ? { mod: { scale } } : {}),
+        dest: { instanceKey: railKey, field: 'input' },
+        combine: w.tap.combine,
+        magnitude: w.tap.magnitude,
+        ...((w.tap.scale ?? 1) !== 1 ? { mod: { scale: w.tap.scale } } : {}),
       });
     }
+  }
+  // Stage 2 — the rail accumulator's `output` → each reader's param (per READ combine).
+  for (const r of railReaders) {
+    const railKey = `rail_${r.railId}`;
+    if (!railNodeKeys.has(railKey)) continue;
+    wires.push({
+      id: `rwout${wid++}`,
+      src: { instanceKey: railKey, field: 'output' },
+      dest: { instanceKey: r.key, field: r.field },
+      combine: r.tap.combine,
+      magnitude: r.tap.magnitude,
+      ...((r.tap.scale ?? 1) !== 1 ? { mod: { scale: r.tap.scale } } : {}),
+    });
   }
 
   if (chain.length === 0) return null;
