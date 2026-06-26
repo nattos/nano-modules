@@ -46,6 +46,7 @@ struct PUpdateUniforms {
   float boundary, boundary_size, boundary_stiffness, boundary_speed;
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
+  float to_big_range, _p0, _p1, _p2;
 };
 struct BigUpdateUniforms {
   uint32_t count, frame_index; float dt, motion_rate;
@@ -79,7 +80,7 @@ struct State {
   float motion_rate = 1.0f;
   float field_speed = 0.25f, field_scale = 1.0f, field_skew = 0.0f, field_squash = 0.5f;
   float momentum = 0.6f, momentum_decay = 0.98f;
-  float to_big = 0.3f, to_big_curl = 0.2f, curl_dir = 1.0f, sink = 0.0f;
+  float to_big = 0.3f, to_big_curl = 0.2f, to_big_range = 0.4f, curl_dir = 1.0f, sink = 0.0f;
   float jitter = 0.04f;
   float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 1.2f;
   float to_image = 0.0f, to_image_curl = 0.0f;
@@ -143,6 +144,7 @@ void module_init() {
       .floatField("momentum",       0.6f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("to_big",         0.3f,  0.0f, 3.0f,    state::PrimaryInput)
       .floatField("to_big_curl",    0.2f, -3.0f, 3.0f,    state::PrimaryInput)
+      .floatField("to_big_range",   0.4f,  0.0f, 2.0f,    state::PrimaryInput)
       .floatField("jitter",         0.04f, 0.0f, 1.0f,    state::PrimaryInput)
       .floatField("color_contrib",  0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("to_image",       0.0f, -2.0f, 2.0f,    state::PrimaryInput)
@@ -282,6 +284,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "momentum"))       s->momentum = state::patchFloat(i);
     else if (state::pathIs(p, l, "to_big"))         s->to_big = state::patchFloat(i);
     else if (state::pathIs(p, l, "to_big_curl"))    s->to_big_curl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "to_big_range"))   s->to_big_range = state::patchFloat(i);
     else if (state::pathIs(p, l, "jitter"))         s->jitter = state::patchFloat(i);
     else if (state::pathIs(p, l, "color_contrib"))  s->color_contrib = state::patchFloat(i);
     else if (state::pathIs(p, l, "to_image"))       s->to_image = state::patchFloat(i);
@@ -357,6 +360,7 @@ void render(void* self, int vp_w, int vp_h) {
   pu.boundary = s->boundary; pu.boundary_size = s->boundary_size; pu.boundary_stiffness = s->boundary_stiffness; pu.boundary_speed = s->boundary_speed;
   pu.to_image = s->to_image; pu.to_image_curl = s->to_image_curl; pu.undertow_skew = s->undertow_skew; pu.undertow_squash = s->undertow_squash;
   pu.ttl = s->ttl; pu.spawn_size = s->spawn_size; pu.aspect_x = ax; pu.aspect_y = ay;
+  pu.to_big_range = s->to_big_range;
   s->p_uniform.writeOne(pu);
 
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };

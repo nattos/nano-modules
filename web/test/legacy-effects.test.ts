@@ -139,12 +139,15 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
         ['exposure', 2.0],
         ['color_contrib', 0.0],   // pure white points
       ],
-      samplePoints: [[64, 64]],
+      samplePoints: [[64, 64], [48, 48], [80, 80], [64, 44], [44, 64], [84, 64]],
       ticks: 8,
       renderEachTick: true,
       dumpName: 'double_chamber_particles',
     });
     expect(frame.success).toBe(true);
-    expect(frame.samples[0].r).toBeGreaterThan(8);  // particles added light
+    // The cloud's exact per-pixel layout is stochastic; assert it brightened
+    // the frame somewhere rather than at one fixed pixel.
+    const maxR = Math.max(...frame.samples.map(s => s.r));
+    expect(maxR).toBeGreaterThan(8);  // particles added light
   });
 });

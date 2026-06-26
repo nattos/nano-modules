@@ -53,6 +53,9 @@ cbuffer Uniforms : register(b4) {
   float spawn_size;
   float aspect_x;        // min/W
   float aspect_y;        // min/H
+
+  float to_big_range;    // s-space radius of Big influence (0 → effectively global)
+  float _p0, _p1, _p2;
 }
 
 static const float DC_FORCE_MAX = 6.0;
@@ -91,14 +94,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float2 fx = clamp(s * field_scale, -3.0, 3.0);
     force += dc_field(fx, field_skew, field_squash) * field_speed;
 
-    // Big-attractor pull + curl (Big positions converted to s-space).
+    // Big-attractor pull + curl (Big positions converted to s-space). The pull
+    // is a spring with a smooth distance cutoff at to_big_range so it's a LOCAL
+    // attractor, not a global tilt; range <= 0 disables the cutoff (global).
     if (to_big != 0.0 || to_big_curl != 0.0) {
+      float rng = to_big_range;
       for (uint b = 0u; b < big_count; b++) {
         if (bigs[b].a.z <= 0.0) continue;
         float2 bs = (bigs[b].a.xy - 0.5) / max(aspect, 1e-4);
         float2 d = bs - s;
-        force += d * to_big;
-        force += dc_perp(d) * to_big_curl * curl_dir * curl_factor;
+        float fall = (rng > 1e-4) ? (1.0 - smoothstep(rng * 0.6, rng, length(d))) : 1.0;
+        force += d * to_big * fall;
+        force += dc_perp(d) * to_big_curl * curl_dir * curl_factor * fall;
       }
     }
 
