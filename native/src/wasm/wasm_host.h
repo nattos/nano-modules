@@ -56,7 +56,8 @@ public:
   /// version it was built against; see NANO_ABI_VERSION in module_api.h), store
   /// it on the module context, and return it. 0 when the export is absent (a
   /// legacy bundle). Call once after load_module, BEFORE nano_module_main —
-  /// register_effect reads the context value to gate trailing descriptor fields.
+  /// register_effect_begin stamps the context value onto each captured effect
+  /// as a coarse compatibility signal (it no longer gates descriptor layout).
   int32_t query_abi_version(int32_t module_id);
 
   // --- Generic dispatch primitives (for effect lifecycle, EffectDesc_v2). ---
@@ -85,8 +86,8 @@ public:
   std::string read_cstring(int32_t module_id, uint32_t app_addr);
 
   /// Effects this module's nano_module_main registered (captured by the
-  /// `module.register_effect` host import). Empty for an unknown id or a module
-  /// whose nano_module_main hasn't been called yet.
+  /// name-keyed `module.register_effect_*` builder imports). Empty for an
+  /// unknown id or a module whose nano_module_main hasn't been called yet.
   const std::vector<WasmEffectDesc>& registered_effects(int32_t module_id);
 
   /// The bridge_core plugin key the module's state writes land under (set when

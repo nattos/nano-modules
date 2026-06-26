@@ -1368,70 +1368,81 @@ static NativeSymbol gpu_symbols[] = {
 // Module "module" — effect registration (captures EffectDesc_v2)
 // ========================================================================
 
-// A bundle's nano_module_main() calls this once per effect it provides,
-// passing a pointer to a nano::EffectDesc_v2 in its linear memory. We read the
-// descriptor out — resolving the char* metadata + the 10 indirect-function-
-// table indices — and stash it on the context for the runtime to drive.
-static void module_register_effect(wasm_exec_env_t env, int32_t desc_ptr) {
+// A bundle's nano_module_main() registers each effect it provides via a small
+// name-keyed builder: begin() allocates a builder and returns its handle;
+// str()/fn() fill metadata strings + lifecycle callback table-indices BY NAME;
+// end() finalizes. Nothing about a descriptor's byte layout is baked in here,
+// so a new metadata field or lifecycle hook is just a new name captured
+// generically — no offset/version changes on this boundary.
+
+static std::string read_app_string(wasm_module_inst_t inst, int32_t ptr,
+                                   int32_t len) {
+  if (len <= 0 || !wasm_runtime_validate_app_addr(inst, ptr, len)) return {};
+  const char* p = static_cast<const char*>(
+      wasm_runtime_addr_app_to_native(inst, ptr));
+  return p ? std::string(p, len) : std::string();
+}
+
+static int32_t module_register_effect_begin(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return 0;
+  int32_t h = ctx->next_effect_builder++;
+  WasmEffectDesc& d = ctx->effect_builders[h];
+  d.abi_version = ctx->abi_version;
+  return h;
+}
+
+static void module_register_effect_str(wasm_exec_env_t env, int32_t handle,
+                                       int32_t name_ptr, int32_t name_len,
+                                       int32_t val_ptr, int32_t val_len) {
   auto* ctx = get_ctx(env);
   if (!ctx) return;
+  auto it = ctx->effect_builders.find(handle);
+  if (it == ctx->effect_builders.end()) return;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  std::string name = read_app_string(inst, name_ptr, name_len);
+  std::string val = read_app_string(inst, val_ptr, val_len);
+  WasmEffectDesc& d = it->second;
+  if (name == "id") d.id = std::move(val);
+  else if (name == "name") d.name = std::move(val);
+  else if (name == "description") d.description = std::move(val);
+  else if (name == "category") d.category = std::move(val);
+  else if (name == "keywords") d.keywords = std::move(val);
+  // Unknown metadata names are ignored (forward-compatible).
+}
 
-  // EffectDesc_v2 base layout (wasm32): struct_version, 5 char*
-  // (id/name/description/category/keywords), then 9 function-table indices
-  // (module_init, create, destroy, init, tick, render, on_state_patched,
-  // is_identity, on_active) = 15 i32 fields. The trailing `seek` (d[15]) was
-  // added in ABI v1; a legacy (v0) bundle's descriptor stops at 15, so validate
-  // the base set first and read seek only when the bundle's ABI version says
-  // it's present. This is the canonical compat-shim shape — gate a trailing
-  // descriptor field on ctx->abi_version. (See NANO_ABI_VERSION / module_api.h.)
-  constexpr uint32_t kBaseFieldCount = 15;
-  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, kBaseFieldCount * 4)) return;
-  const uint32_t* d = static_cast<const uint32_t*>(
-      wasm_runtime_addr_app_to_native(inst, desc_ptr));
-  if (!d) return;
+static void module_register_effect_fn(wasm_exec_env_t env, int32_t handle,
+                                      int32_t name_ptr, int32_t name_len,
+                                      int32_t fn_idx) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return;
+  if (fn_idx == 0) return;  // null callback == "not provided"
+  auto it = ctx->effect_builders.find(handle);
+  if (it == ctx->effect_builders.end()) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  std::string name = read_app_string(inst, name_ptr, name_len);
+  if (name.empty()) return;
+  it->second.fns[name] = static_cast<uint32_t>(fn_idx);
+}
 
-  auto rd_str = [&](uint32_t app_ptr) -> std::string {
-    if (app_ptr == 0 || !wasm_runtime_validate_app_str_addr(inst, app_ptr)) return {};
-    const char* p = static_cast<const char*>(
-        wasm_runtime_addr_app_to_native(inst, app_ptr));
-    return p ? std::string(p) : std::string();
-  };
-
-  WasmEffectDesc desc;
-  desc.struct_version        = static_cast<int32_t>(d[0]);
-  desc.id                    = rd_str(d[1]);
-  desc.name                  = rd_str(d[2]);
-  desc.description           = rd_str(d[3]);
-  desc.category              = rd_str(d[4]);
-  desc.keywords              = rd_str(d[5]);
-  desc.idx_module_init       = d[6];
-  desc.idx_create            = d[7];
-  desc.idx_destroy           = d[8];
-  desc.idx_init              = d[9];
-  desc.idx_tick              = d[10];
-  desc.idx_render            = d[11];
-  desc.idx_on_state_patched  = d[12];
-  desc.idx_is_identity       = d[13];
-  desc.idx_on_active         = d[14];
-  desc.abi_version           = ctx->abi_version;
-  // seek (d[15]) exists only in ABI v1+ descriptors. For a legacy (v0) bundle
-  // leave it 0 — and don't read past the validated base, which may be the end
-  // of the descriptor's storage.
-  if (ctx->abi_version >= 1 &&
-      wasm_runtime_validate_app_addr(inst, desc_ptr, 16 * 4)) {
-    desc.idx_seek            = d[15];
-  }
-
+static void module_register_effect_end(wasm_exec_env_t env, int32_t handle) {
+  auto* ctx = get_ctx(env);
+  if (!ctx) return;
+  auto it = ctx->effect_builders.find(handle);
+  if (it == ctx->effect_builders.end()) return;
+  WasmEffectDesc desc = std::move(it->second);
+  ctx->effect_builders.erase(it);
   if (auto* host = get_host(env)) {
-    host->log("module.register_effect: " + desc.id +
-              " (v" + std::to_string(desc.struct_version) + ")");
+    host->log("module.register_effect: " + desc.id);
   }
   ctx->registered_effects.push_back(std::move(desc));
 }
 
 static NativeSymbol module_symbols[] = {
-    {"register_effect", reinterpret_cast<void*>(module_register_effect), "(i)", nullptr},
+    {"register_effect_begin", reinterpret_cast<void*>(module_register_effect_begin), "()i", nullptr},
+    {"register_effect_str", reinterpret_cast<void*>(module_register_effect_str), "(iiiii)", nullptr},
+    {"register_effect_fn", reinterpret_cast<void*>(module_register_effect_fn), "(iiii)", nullptr},
+    {"register_effect_end", reinterpret_cast<void*>(module_register_effect_end), "(i)", nullptr},
 };
 
 // ========================================================================

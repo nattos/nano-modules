@@ -108,16 +108,24 @@ NANO_EXPORT_ABI_VERSION()
 
 __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
-    nano::registerEffect({
-        2,
-        "color.tone.brightness_contrast",
-        "Brightness & Contrast",
-        "Adjusts brightness and contrast of a texture input",
-        "color",
-        "color,adjust,filter",
-        NANO_INSTANCE_LIFECYCLE(brightness_contrast),
-        &brightness_contrast::is_identity,
-    });
+    // "New style" name-keyed registration (see nano::EffectBuilder). Each hook
+    // is registered by name, so optional ones are simply mentioned (or omitted)
+    // at the call site rather than positioned in a struct. Equivalent to the
+    // registerEffect({...}) form the other effects below still use.
+    nano::EffectBuilder("color.tone.brightness_contrast")
+        .name("Brightness & Contrast")
+        .description("Adjusts brightness and contrast of a texture input")
+        .category("color")
+        .keywords("color,adjust,filter")
+        .moduleInit(&brightness_contrast::module_init)
+        .create(&brightness_contrast::create)
+        .destroy(&brightness_contrast::destroy)
+        .init(&brightness_contrast::init)
+        .tick(&brightness_contrast::tick)
+        .render(&brightness_contrast::render)
+        .onStatePatched(&brightness_contrast::on_state_patched)
+        .isIdentity(&brightness_contrast::is_identity)
+        .register_();
 
     nano::registerEffect({
         2,

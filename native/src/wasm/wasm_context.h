@@ -39,41 +39,41 @@ struct FrameState {
 
 using AudioTriggerCallback = void (*)(int channel, void* userdata);
 
-// A captured nano::EffectDesc_v2 from a bundle's nano_module_main →
-// `module.register_effect`. The function fields are WASM indirect-function-
-// table indices (invoke via WasmHost::call_indirect); 0 means "not provided".
-// The host reads the descriptor struct out of the module's linear memory at
-// registration time and stashes the resolved strings + indices here, so the
-// effect runtime can drive the lifecycle without re-touching wasm memory.
+// An effect captured from a bundle's nano_module_main via the name-keyed
+// `module.register_effect_*` builder imports. `fns` maps each provided
+// lifecycle callback's NAME (e.g. "module_init","create","tick","render",
+// "on_state_patched","is_identity","on_active","seek") to its WASM indirect-
+// function-table index (invoke via WasmHost::call_indirect). A name absent
+// from the map means the effect doesn't provide that hook. Adding a new hook
+// needs no change here — it's just another name in the map.
 struct WasmEffectDesc {
-  int32_t struct_version = 0;
   std::string id;
   std::string name;
   std::string description;
   std::string category;
   std::string keywords;
-  uint32_t idx_module_init = 0;
-  uint32_t idx_create = 0;
-  uint32_t idx_destroy = 0;
-  uint32_t idx_init = 0;
-  uint32_t idx_tick = 0;
-  uint32_t idx_render = 0;
-  uint32_t idx_on_state_patched = 0;
-  uint32_t idx_is_identity = 0;
-  uint32_t idx_on_active = 0;
-  uint32_t idx_seek = 0;   // optional seek(self, from, to); 0 = not provided
+  std::unordered_map<std::string, uint32_t> fns;
   // Host<->effect ABI version of the bundle this effect came from (copied from
   // WasmContext::abi_version at register time). 0 = legacy bundle that exports
   // no nano_abi_version(). See NANO_ABI_VERSION in module_api.h.
   int32_t abi_version = 0;
+
+  // Convenience: the table index for a named callback, or 0 ("not provided").
+  uint32_t fn(const char* name) const {
+    auto it = fns.find(name);
+    return it != fns.end() ? it->second : 0u;
+  }
 };
 
 struct WasmContext {
   WasmHost* host = nullptr;
   // Host<->effect ABI version this bundle was built against (read from the
   // bundle's nano_abi_version() export before nano_module_main runs). 0 when
-  // the export is absent (legacy bundle). register_effect copies it onto each
-  // WasmEffectDesc and gates trailing descriptor fields (e.g. seek) on it.
+  // the export is absent (legacy bundle). register_effect_begin copies it onto
+  // each WasmEffectDesc as a coarse compatibility signal. With name-keyed
+  // registration it no longer gates descriptor layout (absent names are simply
+  // "not provided"); a bump is only needed for a changed import/callback
+  // signature. See NANO_ABI_VERSION in module_api.h.
   int32_t abi_version = 0;
   canvas::DrawList* draw_list = nullptr;
   FrameState* frame_state = nullptr;
@@ -90,9 +90,15 @@ struct WasmContext {
   // GPU backend
   gpu::GPUBackend* gpu_backend = nullptr;
 
-  // Effects this module's nano_module_main registered (EffectDesc_v2 capture).
+  // Effects this module's nano_module_main registered (name-keyed capture).
   // One bundle may register many effects; the runtime drives each by index.
   std::vector<WasmEffectDesc> registered_effects;
+
+  // In-progress effect registrations. module.register_effect_begin allocates a
+  // builder (returns its handle); register_effect_str/_fn fill it by name;
+  // register_effect_end moves it into registered_effects.
+  int32_t next_effect_builder = 1;
+  std::unordered_map<int32_t, WasmEffectDesc> effect_builders;
 
   // The effect (chain entry) currently being driven. The WASM driver sets this
   // before each lifecycle call_indirect — the WASM analogue of

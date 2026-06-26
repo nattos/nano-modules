@@ -77,15 +77,7 @@ TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect
   desc.name = w->name;
   desc.wasm_host = &host;
   desc.wasm_module_id = id;
-  desc.w_module_init = w->idx_module_init;
-  desc.w_create = w->idx_create;
-  desc.w_destroy = w->idx_destroy;
-  desc.w_init = w->idx_init;
-  desc.w_tick = w->idx_tick;
-  desc.w_render = w->idx_render;
-  desc.w_on_state_patched = w->idx_on_state_patched;
-  desc.w_is_identity = w->idx_is_identity;
-  desc.w_on_active = w->idx_on_active;
+  desc.wasm_fns = w->fns;
   REQUIRE(desc.isWasm());
 
   EffectRuntime rt(nullptr);  // mod.source.lfo is GPU-free
@@ -152,12 +144,7 @@ TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "
   desc.id = w->id;
   desc.wasm_host = &host;
   desc.wasm_module_id = id;
-  desc.w_module_init = w->idx_module_init;
-  desc.w_create = w->idx_create;
-  desc.w_destroy = w->idx_destroy;
-  desc.w_init = w->idx_init;
-  desc.w_tick = w->idx_tick;
-  desc.w_on_state_patched = w->idx_on_state_patched;
+  desc.wasm_fns = w->fns;
 
   EffectRuntime rt(nullptr);
   rt.registerEffect(desc);
@@ -210,12 +197,7 @@ TEST_CASE("mod.source.lfo Period mode remaps the speed knob (env_lfo)", "[effect
   desc.id = w->id;
   desc.wasm_host = &host;
   desc.wasm_module_id = id;
-  desc.w_module_init = w->idx_module_init;
-  desc.w_create = w->idx_create;
-  desc.w_destroy = w->idx_destroy;
-  desc.w_init = w->idx_init;
-  desc.w_tick = w->idx_tick;
-  desc.w_on_state_patched = w->idx_on_state_patched;
+  desc.wasm_fns = w->fns;
 
   EffectRuntime rt(nullptr);
   rt.registerEffect(desc);
@@ -309,12 +291,7 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
   desc.id = w->id;
   desc.wasm_host = &host;
   desc.wasm_module_id = id;
-  desc.w_module_init = w->idx_module_init;
-  desc.w_create = w->idx_create;
-  desc.w_destroy = w->idx_destroy;
-  desc.w_init = w->idx_init;
-  desc.w_tick = w->idx_tick;
-  desc.w_on_state_patched = w->idx_on_state_patched;
+  desc.wasm_fns = w->fns;
 
   EffectRuntime rt(nullptr);
   rt.registerEffect(desc);
@@ -460,12 +437,7 @@ TEST_CASE("mod.source.adsr envelope phases + retrigger", "[effect_driver]") {
   desc.id = w->id;
   desc.wasm_host = &host;
   desc.wasm_module_id = id;
-  desc.w_module_init = w->idx_module_init;
-  desc.w_create = w->idx_create;
-  desc.w_destroy = w->idx_destroy;
-  desc.w_init = w->idx_init;
-  desc.w_tick = w->idx_tick;
-  desc.w_on_state_patched = w->idx_on_state_patched;
+  desc.wasm_fns = w->fns;
 
   EffectRuntime rt(nullptr);
   rt.registerEffect(desc);

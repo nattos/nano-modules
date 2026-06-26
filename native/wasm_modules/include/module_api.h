@@ -25,20 +25,20 @@
 
 // ── Host↔effect ABI version ────────────────────────────────────────────────
 // Version of the host<->effect CONTRACT: which host imports exist (and their
-// signatures), which effect exports the host drives, and the EffectDesc_v2
-// trailing-field set. This is DISTINCT from:
-//   - EffectDesc_v2::struct_version — the descriptor STRUCT identity (still 2);
-//   - a Schema's effectVersion / moduleVersion — per-effect/module SEMANTICS.
-// Bump it on ANY change to the contract (a new/renamed host import, a new
-// effect export, an added descriptor field) so the executor can detect an
-// older-ABI bundle and shim it (synthesize a missing export's default, skip a
-// descriptor field that didn't exist, adapt a changed import). A bundle built
-// before this existed exports no `nano_abi_version()`; the host reads that
-// absence as version 0 (legacy / pre-versioning).
+// signatures) and which effect callbacks the host drives. This is DISTINCT
+// from a Schema's effectVersion / moduleVersion (per-effect/module SEMANTICS).
 //
-//   1 — first versioned contract: EffectDesc_v2 carries the trailing `seek`
-//       field; effrt + state/gpu/host/canvas/resolume/text/module/io/val import
-//       surface as of 2026-06.
+// The effect descriptor is registered by STRING NAME (see the builder protocol
+// below), so the common kinds of growth no longer touch this version: adding a
+// new optional lifecycle hook or a new metadata field is fully back/forward
+// compatible — the host looks names up and treats an absent name as "not
+// provided". Only a SMALLER class of changes needs a bump: changing the
+// signature/semantics of an EXISTING import or callback, or renaming/removing
+// one. A bundle built before this existed exports no `nano_abi_version()`; the
+// host reads that absence as version 0.
+//
+//   1 — name-keyed effect registration + the effrt + state/gpu/host/canvas/
+//       resolume/text/module/io/val import surface as of 2026-06.
 #define NANO_ABI_VERSION 1
 
 // Emit the exported `nano_abi_version()` accessor. Each bundle's aggregator
@@ -49,11 +49,39 @@
   extern "C" __attribute__((used, export_name("nano_abi_version")))           \
   int32_t nano_abi_version(void) { return NANO_ABI_VERSION; }
 
-// The host provides this callback as an import.
+// The host provides effect registration as imports.
+//
+// Boundary representation: on WASM the effect descriptor is NOT passed as a
+// fixed-layout struct (no byte offsets cross the host boundary). Each piece is
+// registered by STRING NAME via a small builder protocol — begin() → a
+// sequence of str()/fn() → end(). Adding a new metadata field or lifecycle
+// hook later needs no change to the host-side readers and no ABI version bump;
+// the host just looks the name up and treats an absent name as "not provided".
+// `register_effect_fn` takes the callback as a void*: on wasm32 a function
+// pointer's value IS its indirect-function-table index (an i32), so the host
+// stores that index keyed by name and call_indirects it.
+//
+// On a NATIVE build (statically-linked effects, no WASM in the loop) there is
+// no boundary to cross — registerEffect() hands the in-process struct straight
+// to nano_register_effect(), which the runtime reads directly.
+#if defined(__wasm__)
 extern "C" {
-__attribute__((import_module("module"), import_name("register_effect")))
+__attribute__((import_module("module"), import_name("register_effect_begin")))
+int32_t nano_register_effect_begin(void);
+__attribute__((import_module("module"), import_name("register_effect_str")))
+void nano_register_effect_str(int32_t handle, const char* name, int32_t name_len,
+                              const char* value, int32_t value_len);
+__attribute__((import_module("module"), import_name("register_effect_fn")))
+void nano_register_effect_fn(int32_t handle, const char* name, int32_t name_len,
+                             void* fn);
+__attribute__((import_module("module"), import_name("register_effect_end")))
+void nano_register_effect_end(int32_t handle);
+}
+#else
+extern "C" {
 void nano_register_effect(const void* desc_ptr);
 }
+#endif
 
 namespace nano {
 
@@ -120,10 +148,82 @@ struct EffectDesc_v2 {
     void (*seek)(void* self, double from_seconds, double to_seconds);
 };
 
-/// Register an effect with the host.
-inline void registerEffect(const EffectDesc_v2& desc) {
-    nano_register_effect(&desc);
+/// Register an effect with the host. On WASM this emits the name-keyed builder
+/// protocol (the descriptor struct is just a local staging buffer and never
+/// crosses the boundary); on native it hands the struct straight to the
+/// in-process runtime.
+inline void registerEffect(const EffectDesc_v2& d) {
+#if defined(__wasm__)
+    const int32_t h = nano_register_effect_begin();
+    auto str = [&](const char* key, const char* val) {
+        if (val) nano_register_effect_str(h, key, __builtin_strlen(key),
+                                          val, __builtin_strlen(val));
+    };
+    auto fn = [&](const char* key, const void* f) {
+        if (f) nano_register_effect_fn(h, key, __builtin_strlen(key),
+                                       const_cast<void*>(f));
+    };
+    str("id", d.id);
+    str("name", d.name);
+    str("description", d.description);
+    str("category", d.category);
+    str("keywords", d.keywords);
+    fn("module_init",      reinterpret_cast<void*>(d.module_init));
+    fn("create",           reinterpret_cast<void*>(d.create));
+    fn("destroy",          reinterpret_cast<void*>(d.destroy));
+    fn("init",             reinterpret_cast<void*>(d.init));
+    fn("tick",             reinterpret_cast<void*>(d.tick));
+    fn("render",           reinterpret_cast<void*>(d.render));
+    fn("on_state_patched", reinterpret_cast<void*>(d.on_state_patched));
+    fn("is_identity",      reinterpret_cast<void*>(d.is_identity));
+    fn("on_active",        reinterpret_cast<void*>(d.on_active));
+    fn("seek",             reinterpret_cast<void*>(d.seek));
+    nano_register_effect_end(h);
+#else
+    nano_register_effect(&d);
+#endif
 }
+
+/// Fluent "new style" registration. Equivalent to filling an EffectDesc_v2 and
+/// calling registerEffect(), but reads as named per-callback registration at
+/// the call site and only mentions the hooks an effect actually provides:
+///
+///   nano::EffectBuilder("com.nano.foo")
+///       .name("Foo").category("Video").keywords("a,b")
+///       .moduleInit(&foo::module_init)
+///       .create(&foo::create).destroy(&foo::destroy).init(&foo::init)
+///       .tick(&foo::tick).render(&foo::render)
+///       .onStatePatched(&foo::on_state_patched)
+///       .isIdentity(&foo::is_identity)   // optional: omit to not register it
+///       .register_();
+class EffectBuilder {
+public:
+    explicit EffectBuilder(const char* id) { d_.struct_version = 2; d_.id = id; }
+
+    EffectBuilder& name(const char* v)        { d_.name = v; return *this; }
+    EffectBuilder& description(const char* v)  { d_.description = v; return *this; }
+    EffectBuilder& category(const char* v)     { d_.category = v; return *this; }
+    EffectBuilder& keywords(const char* v)     { d_.keywords = v; return *this; }
+
+    EffectBuilder& moduleInit(void (*f)())             { d_.module_init = f; return *this; }
+    EffectBuilder& create(void* (*f)())                { d_.create = f; return *this; }
+    EffectBuilder& destroy(void (*f)(void*))           { d_.destroy = f; return *this; }
+    EffectBuilder& init(void (*f)(void*))              { d_.init = f; return *this; }
+    EffectBuilder& tick(void (*f)(void*, double))      { d_.tick = f; return *this; }
+    EffectBuilder& render(void (*f)(void*, int, int))  { d_.render = f; return *this; }
+    EffectBuilder& onStatePatched(
+        void (*f)(void*, int, const char*, const int*, const int*, const int*)) {
+        d_.on_state_patched = f; return *this;
+    }
+    EffectBuilder& isIdentity(int32_t (*f)(void*))     { d_.is_identity = f; return *this; }
+    EffectBuilder& onActive(void (*f)(void*, int32_t)) { d_.on_active = f; return *this; }
+    EffectBuilder& seek(void (*f)(void*, double, double)) { d_.seek = f; return *this; }
+
+    void register_() const { registerEffect(d_); }
+
+private:
+    EffectDesc_v2 d_{};
+};
 
 } // namespace nano
 

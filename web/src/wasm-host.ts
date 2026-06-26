@@ -55,17 +55,15 @@ export interface EffectInfo {
   description: string;
   category: string;
   keywords: string[];
-  /** @internal function table indices (EffectDesc_v2: instance ABI) */
-  _moduleInitIdx: number;   // type-level setup, run once per effect type
-  _createIdx: number;       // returns per-instance self pointer
-  _destroyIdx: number;
-  _initIdx: number;
-  _tickIdx: number;
-  _renderIdx: number;
-  _onStatePatchedIdx: number;
-  _isIdentityIdx: number; // 0 = not supported (never skippable)
-  _onActiveIdx: number; // 0 = not supported (no device on/off callback)
-  _seekIdx: number; // 0 = not supported (not seekable via prefill)
+  /**
+   * @internal Lifecycle callbacks by name → WASM indirect-function-table index,
+   * captured from the name-keyed `module.register_effect_*` builder imports.
+   * Known names: module_init, create, destroy, init, tick, render,
+   * on_state_patched, is_identity, on_active, seek. A name absent from the map
+   * means the effect doesn't provide that hook — adding a new hook needs no
+   * change here.
+   */
+  _fns: Map<string, number>;
 }
 
 export interface ConsoleEntry {
@@ -195,6 +193,14 @@ export class WasmHost {
   /** Effects registered by the module during nano_module_main. */
   registeredEffects: EffectInfo[] = [];
 
+  /**
+   * In-progress effect registrations. `module.register_effect_begin` allocates
+   * a builder (returns its handle); `register_effect_str`/`_fn` fill it by name;
+   * `register_effect_end` moves it into registeredEffects.
+   */
+  private effectBuilders = new Map<number, { meta: Map<string, string>; fns: Map<string, number> }>();
+  private nextEffectBuilder = 1;
+
   /** The compiled WebAssembly.Module (for reuse across instances). */
   compiledModule: WebAssembly.Module | null = null;
 
@@ -227,9 +233,9 @@ export class WasmHost {
 
   // Host<->effect ABI version this bundle was built against (its
   // `nano_abi_version()` export; see NANO_ABI_VERSION in module_api.h). 0 when
-  // the export is absent (a legacy bundle). Read in load() before
-  // nano_module_main, so register_effect can gate trailing descriptor fields
-  // (e.g. seek at +60) on it. The web twin of RegisteredModule::abiVersion.
+  // the export is absent (a legacy bundle). A coarse compatibility signal — the
+  // web twin of RegisteredModule::abiVersion. With name-keyed registration it
+  // no longer gates descriptor layout (absent names are simply "not provided").
   abiVersion = 0;
 
   // Bundle (module) version "major.minor.patch" from the schema's top-level
@@ -438,6 +444,7 @@ export class WasmHost {
     }
     this.compiledModule = compiled;
     this.registeredEffects = [];
+    this.effectBuilders.clear();
     const bc = this.bridgeCore;
 
     const importObject: WebAssembly.Imports = {
@@ -1184,54 +1191,41 @@ export class WasmHost {
         release: (id: number): void => { TextEngine.instance?.release(id); },
       },
       module: {
-        register_effect: (descPtr: number) => {
-          const mem = new DataView(this.memory.buffer);
-          const version = mem.getInt32(descPtr, true);
-          if (version !== 2) return; // Unknown version, skip
-
-          // EffectDesc_v2 layout (wasm32, 4-byte ptrs/fn-indices):
-          //  +0 version, +4..+20 id/name/desc/category/keywords,
-          //  +24 module_init, +28 create, +32 destroy, +36 init,
-          //  +40 tick, +44 render, +48 on_state_patched,
-          //  +52 is_identity (optional; 0/absent => never skippable),
-          //  +56 on_active (optional device on/off transition callback),
-          //  +60 seek (optional seek/prefill; 0/absent => not seekable).
-          const idPtr = mem.getUint32(descPtr + 4, true);
-          const namePtr = mem.getUint32(descPtr + 8, true);
-          const descriptionPtr = mem.getUint32(descPtr + 12, true);
-          const categoryPtr = mem.getUint32(descPtr + 16, true);
-          const keywordsPtr = mem.getUint32(descPtr + 20, true);
-
-          const moduleInitIdx = mem.getUint32(descPtr + 24, true);
-          const createIdx = mem.getUint32(descPtr + 28, true);
-          const destroyIdx = mem.getUint32(descPtr + 32, true);
-          const initIdx = mem.getUint32(descPtr + 36, true);
-          const tickIdx = mem.getUint32(descPtr + 40, true);
-          const renderIdx = mem.getUint32(descPtr + 44, true);
-          const onStatePatchedIdx = mem.getUint32(descPtr + 48, true);
-          const isIdentityIdx = mem.getUint32(descPtr + 52, true);
-          const onActiveIdx = mem.getUint32(descPtr + 56, true);
-          // seek (+60) exists only in ABI v1+ descriptors; a legacy bundle's
-          // descriptor stops at +56, so don't read past it (canonical shim:
-          // gate a trailing descriptor field on the bundle's ABI version).
-          const seekIdx = this.abiVersion >= 1 ? mem.getUint32(descPtr + 60, true) : 0;
-
+        // Name-keyed effect registration (mirror of the native host_functions.cpp
+        // module_register_effect_* handlers). The effect descriptor is NOT a
+        // fixed-layout struct here: each metadata string and lifecycle callback
+        // is registered by string name, so a new hook or field needs no byte-
+        // offset/version change on this boundary.
+        register_effect_begin: (): number => {
+          const handle = this.nextEffectBuilder++;
+          this.effectBuilders.set(handle, { meta: new Map(), fns: new Map() });
+          return handle;
+        },
+        register_effect_str: (handle: number, namePtr: number, nameLen: number,
+                              valPtr: number, valLen: number): void => {
+          const b = this.effectBuilders.get(handle);
+          if (!b) return;
+          b.meta.set(this.readString(namePtr, nameLen), this.readString(valPtr, valLen));
+        },
+        register_effect_fn: (handle: number, namePtr: number, nameLen: number,
+                             fnIdx: number): void => {
+          const b = this.effectBuilders.get(handle);
+          if (!b || fnIdx === 0) return; // null callback == "not provided"
+          const name = this.readString(namePtr, nameLen);
+          if (name) b.fns.set(name, fnIdx >>> 0);
+        },
+        register_effect_end: (handle: number): void => {
+          const b = this.effectBuilders.get(handle);
+          if (!b) return;
+          this.effectBuilders.delete(handle);
+          const keywords = b.meta.get('keywords') ?? '';
           this.registeredEffects.push({
-            id: this.readCString(idPtr),
-            name: this.readCString(namePtr),
-            description: this.readCString(descriptionPtr),
-            category: this.readCString(categoryPtr),
-            keywords: this.readCString(keywordsPtr).split(',').filter(k => k.length > 0),
-            _moduleInitIdx: moduleInitIdx,
-            _createIdx: createIdx,
-            _destroyIdx: destroyIdx,
-            _initIdx: initIdx,
-            _tickIdx: tickIdx,
-            _renderIdx: renderIdx,
-            _onStatePatchedIdx: onStatePatchedIdx,
-            _isIdentityIdx: isIdentityIdx,
-            _onActiveIdx: onActiveIdx,
-            _seekIdx: seekIdx,
+            id: b.meta.get('id') ?? '',
+            name: b.meta.get('name') ?? '',
+            description: b.meta.get('description') ?? '',
+            category: b.meta.get('category') ?? '',
+            keywords: keywords.split(',').filter(k => k.length > 0),
+            _fns: b.fns,
           });
         },
       },
@@ -1244,9 +1238,9 @@ export class WasmHost {
     const _initialize = this.instance.exports._initialize as (() => void) | undefined;
     if (_initialize) _initialize();
 
-    // Read the host<->effect ABI version BEFORE nano_module_main so
-    // register_effect can gate trailing descriptor fields on it. Absent export
-    // (legacy bundle) → 0.
+    // Read the host<->effect ABI version BEFORE nano_module_main as a coarse
+    // compatibility signal (it no longer gates descriptor layout). Absent
+    // export (legacy bundle) → 0.
     const abiVersionFn = this.instance.exports.nano_abi_version as (() => number) | undefined;
     this.abiVersion = abiVersionFn ? (abiVersionFn() | 0) : 0;
 
@@ -1269,68 +1263,46 @@ export class WasmHost {
     }
 
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
+    // Resolve a named callback to a table function, or undefined when the
+    // effect didn't register that name ("not provided").
+    const fn = <T>(name: string): T | undefined => {
+      const idx = effect._fns.get(name);
+      return idx ? (table.get(idx) as T) : undefined;
+    };
 
-    // EffectDesc_v2 / class-like instance ABI: module_init (once per
-    // type) → create() → init(self), then instance callbacks thread self.
-    if (effect._moduleInitIdx && !this.moduleInitedIds.has(effect.id)) {
-      const moduleInitFn = table.get(effect._moduleInitIdx) as (() => void) | null;
+    // Class-like instance ABI: module_init (once per type) → create() →
+    // init(self), then instance callbacks thread self.
+    if (!this.moduleInitedIds.has(effect.id)) {
+      const moduleInitFn = fn<() => void>('module_init');
       if (moduleInitFn) moduleInitFn();
       this.moduleInitedIds.add(effect.id);
     }
 
     let self = 0;
-    if (effect._createIdx) {
-      const createFn = table.get(effect._createIdx) as (() => number) | null;
-      if (createFn) self = createFn() | 0;
-    }
+    const createFn = fn<() => number>('create');
+    if (createFn) self = createFn() | 0;
     this.activeSelf = self;
 
-    const initFn = table.get(effect._initIdx) as (self: number) => void;
-    const tickFn = table.get(effect._tickIdx) as (self: number, dt: number) => void;
-    const renderFn = table.get(effect._renderIdx) as (self: number, vpW: number, vpH: number) => void;
-    const onStatePatchedFn = table.get(effect._onStatePatchedIdx) as
-      (self: number, n: number, pb: number, off: number, len: number, ops: number) => void;
-    // is_identity is a trailing/optional descriptor field (offset +52).
-    // A bundle built before the field existed has no value there, so the
-    // decoded index may be garbage; guard the table lookup and treat any
-    // out-of-range index as "no predicate" (never skippable). Properly
-    // built bundles leave it 0 (aggregate-init) when unsupplied.
-    let isIdentityFn: ((self: number) => number) | undefined;
-    if (effect._isIdentityIdx !== 0) {
-      try {
-        isIdentityFn = table.get(effect._isIdentityIdx) as (self: number) => number;
-      } catch {
-        isIdentityFn = undefined;
-      }
-    }
-    // on_active is the next trailing/optional field (offset +56); same guard.
-    let onActiveFn: ((self: number, active: number) => void) | undefined;
-    if (effect._onActiveIdx !== 0) {
-      try {
-        onActiveFn = table.get(effect._onActiveIdx) as (self: number, active: number) => void;
-      } catch {
-        onActiveFn = undefined;
-      }
-    }
-    // seek is the next trailing/optional field (offset +60); same guard.
-    let seekFn: ((self: number, from: number, to: number) => void) | undefined;
-    if (effect._seekIdx !== 0) {
-      try {
-        seekFn = table.get(effect._seekIdx) as (self: number, from: number, to: number) => void;
-      } catch {
-        seekFn = undefined;
-      }
-    }
+    const initFn = fn<(self: number) => void>('init');
+    const tickFn = fn<(self: number, dt: number) => void>('tick');
+    const renderFn = fn<(self: number, vpW: number, vpH: number) => void>('render');
+    const onStatePatchedFn = fn<
+      (self: number, n: number, pb: number, off: number, len: number, ops: number) => void>('on_state_patched');
+    // Optional hooks: absent from the name map => the effect doesn't provide
+    // them (is_identity never skippable, no on_active, not seekable).
+    const isIdentityFn = fn<(self: number) => number>('is_identity');
+    const onActiveFn = fn<(self: number, active: number) => void>('on_active');
+    const seekFn = fn<(self: number, from: number, to: number) => void>('seek');
 
     // Call init immediately, threading the instance's self pointer.
-    initFn(self);
+    if (initFn) initFn(self);
 
     return {
       init: () => {}, // Already called
-      tick: (dt: number) => tickFn(self, dt),
-      render: (vpW: number, vpH: number) => renderFn(self, vpW, vpH),
+      tick: (dt: number) => tickFn?.(self, dt),
+      render: (vpW: number, vpH: number) => renderFn?.(self, vpW, vpH),
       onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) =>
-        onStatePatchedFn(self, n, pb, off, len, ops),
+        onStatePatchedFn?.(self, n, pb, off, len, ops),
       isIdentity: () => isIdentityFn ? (isIdentityFn(self) | 0) !== 0 : false,
       onActive: onActiveFn ? (active: boolean) => onActiveFn!(self, active ? 1 : 0) : undefined,
       seek: seekFn ? (from: number, to: number) => seekFn!(self, from, to) : undefined,

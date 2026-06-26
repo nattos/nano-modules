@@ -52,7 +52,7 @@ void EffectInstance::doModuleInit() {
     uint32_t argv[4] = {0};
     desc_.wasm_host->set_effect_instance(desc_.wasm_module_id, this);
     bool ok = desc_.wasm_host->call_indirect(desc_.wasm_module_id,
-                                             desc_.w_module_init, 0, argv);
+                                             desc_.wfn("module_init"), 0, argv);
     desc_.wasm_host->set_effect_instance(desc_.wasm_module_id, nullptr);
     if (!ok) {
       // A trapped module_init can't be cleanly contained (WAMR doesn't unwind
@@ -84,9 +84,9 @@ void EffectInstance::doCreate() {
     // create() returns the State* (a wasm offset); init() applies defaults.
     uint32_t argv[4] = {0};
     user_state_ = reinterpret_cast<void*>(
-        static_cast<uintptr_t>(driveWasm(desc_.w_create, 0, argv)));
+        static_cast<uintptr_t>(driveWasm(desc_.wfn("create"), 0, argv)));
     argv[0] = wasmSelf();
-    driveWasm(desc_.w_init, 1, argv);
+    driveWasm(desc_.wfn("init"), 1, argv);
     // NOTE: on_state_ready for WASM effects is deferred — it arrives via the
     // state.set_on_state_ready host import, part of the remaining ABI surface.
     return;
@@ -106,7 +106,7 @@ void EffectInstance::doDestroy() {
   if (!user_state_) return;
   if (desc_.isWasm()) {
     uint32_t argv[4] = {wasmSelf()};
-    driveWasm(desc_.w_destroy, 1, argv);
+    driveWasm(desc_.wfn("destroy"), 1, argv);
     user_state_ = nullptr;
     return;
   }
@@ -121,7 +121,7 @@ void EffectInstance::doTick(double dt) {
     // tick(self, dt): self i32 @argv[0], dt f64 @argv[1..2] (packed).
     uint32_t argv[4] = {wasmSelf()};
     std::memcpy(&argv[1], &dt, sizeof(double));
-    driveWasm(desc_.w_tick, 3, argv);
+    driveWasm(desc_.wfn("tick"), 3, argv);
     return;
   }
   runtime_->setActive(this);
@@ -143,7 +143,7 @@ void EffectInstance::doRender(int vp_w, int vp_h) {
   if (desc_.isWasm()) {
     uint32_t argv[4] = {wasmSelf(), static_cast<uint32_t>(vp_w),
                         static_cast<uint32_t>(vp_h)};
-    driveWasm(desc_.w_render, 3, argv);
+    driveWasm(desc_.wfn("render"), 3, argv);
     return;
   }
   runtime_->setActive(this);
@@ -155,9 +155,9 @@ void EffectInstance::doSetActive(bool active) {
   if (active == active_) return;
   active_ = active;
   if (desc_.isWasm()) {
-    if (desc_.w_on_active) {
+    if (uint32_t idx = desc_.wfn("on_active")) {
       uint32_t argv[4] = {wasmSelf(), static_cast<uint32_t>(active ? 1 : 0)};
-      driveWasm(desc_.w_on_active, 2, argv);
+      driveWasm(idx, 2, argv);
     }
     return;
   }
@@ -170,13 +170,14 @@ void EffectInstance::doSetActive(bool active) {
 
 void EffectInstance::doSeek(double from, double to) {
   if (desc_.isWasm()) {
-    if (!desc_.w_seek) return;
+    uint32_t idx = desc_.wfn("seek");
+    if (!idx) return;
     // seek(self, from, to): self i32 @argv[0], from f64 @argv[1..2],
     // to f64 @argv[3..4] (both doubles packed little-endian).
     uint32_t argv[5] = {wasmSelf()};
     std::memcpy(&argv[1], &from, sizeof(double));
     std::memcpy(&argv[3], &to, sizeof(double));
-    driveWasm(desc_.w_seek, 5, argv);
+    driveWasm(idx, 5, argv);
     return;
   }
   if (desc_.seek) {
@@ -202,9 +203,10 @@ void EffectInstance::doPrepare(int vp_w, int vp_h) {
 
 bool EffectInstance::isIdentity() {
   if (desc_.isWasm()) {
-    if (!desc_.w_is_identity) return false;
+    uint32_t idx = desc_.wfn("is_identity");
+    if (!idx) return false;
     uint32_t argv[4] = {wasmSelf()};
-    return driveWasm(desc_.w_is_identity, 1, argv) != 0;
+    return driveWasm(idx, 1, argv) != 0;
   }
   if (!desc_.is_identity) return false;
   // Set the active pointer for parity with the other lifecycle calls, in
@@ -328,7 +330,8 @@ void EffectInstance::setParamArray(const std::string& path,
 // — those resolve via the active instance + the in-scope val table.
 void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
   if (desc_.isWasm()) {
-    if (!desc_.w_on_state_patched || patches.empty()) return;
+    const uint32_t on_patched = desc_.wfn("on_state_patched");
+    if (!on_patched || patches.empty()) return;
     auto* h = desc_.wasm_host;
     const int32_t mid = desc_.wasm_module_id;
 
@@ -376,7 +379,7 @@ void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
 
     uint32_t argv[6] = {wasmSelf(), n, pb_off, off_off, len_off, ops_off};
     h->set_effect_instance(mid, this);
-    h->call_indirect(mid, desc_.w_on_state_patched, 6, argv);
+    h->call_indirect(mid, on_patched, 6, argv);
     h->set_effect_instance(mid, nullptr);
 
     h->app_free(mid, pb_off);

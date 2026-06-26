@@ -307,39 +307,46 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       begin_render_pass_load: () => -1,
       begin_render_pass_mrt: () => -1,
     },
-    module: {
-      register_effect: (descPtr: number) => {
-        const mem = new DataView(getMemory().buffer);
-        const memBytes = new Uint8Array(getMemory().buffer);
-        const version = mem.getInt32(descPtr, true);
-        if (version !== 2) return;
-
-        const readCStr = (ptr: number) => {
-          let end = ptr;
-          while (memBytes[end] !== 0) end++;
-          return new TextDecoder().decode(memBytes.slice(ptr, end));
-        };
-
-        // EffectDesc_v2 layout — see module_api.h / wasm-host register_effect.
-        host.registeredEffects.push({
-          id: readCStr(mem.getUint32(descPtr + 4, true)),
-          name: readCStr(mem.getUint32(descPtr + 8, true)),
-          description: readCStr(mem.getUint32(descPtr + 12, true)),
-          category: readCStr(mem.getUint32(descPtr + 16, true)),
-          keywords: readCStr(mem.getUint32(descPtr + 20, true)).split(',').filter((k: string) => k.length > 0),
-          _moduleInitIdx: mem.getUint32(descPtr + 24, true),
-          _createIdx: mem.getUint32(descPtr + 28, true),
-          _destroyIdx: mem.getUint32(descPtr + 32, true),
-          _initIdx: mem.getUint32(descPtr + 36, true),
-          _tickIdx: mem.getUint32(descPtr + 40, true),
-          _renderIdx: mem.getUint32(descPtr + 44, true),
-          _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
-          _isIdentityIdx: mem.getUint32(descPtr + 52, true),
-          _onActiveIdx: mem.getUint32(descPtr + 56, true),
-          _seekIdx: mem.getUint32(descPtr + 60, true),
-        });
-      },
-    },
+    // Name-keyed effect registration — mirrors the production
+    // module.register_effect_* builder imports in wasm-host.ts load().
+    module: (() => {
+      const builders = new Map<number, { meta: Map<string, string>; fns: Map<string, number> }>();
+      let nextHandle = 1;
+      return {
+        register_effect_begin: (): number => {
+          const h = nextHandle++;
+          builders.set(h, { meta: new Map(), fns: new Map() });
+          return h;
+        },
+        register_effect_str: (handle: number, namePtr: number, nameLen: number,
+                              valPtr: number, valLen: number): void => {
+          const b = builders.get(handle);
+          if (!b) return;
+          b.meta.set(readString(namePtr, nameLen), readString(valPtr, valLen));
+        },
+        register_effect_fn: (handle: number, namePtr: number, nameLen: number,
+                             fnIdx: number): void => {
+          const b = builders.get(handle);
+          if (!b || fnIdx === 0) return;
+          const name = readString(namePtr, nameLen);
+          if (name) b.fns.set(name, fnIdx >>> 0);
+        },
+        register_effect_end: (handle: number): void => {
+          const b = builders.get(handle);
+          if (!b) return;
+          builders.delete(handle);
+          const keywords = b.meta.get('keywords') ?? '';
+          host.registeredEffects.push({
+            id: b.meta.get('id') ?? '',
+            name: b.meta.get('name') ?? '',
+            description: b.meta.get('description') ?? '',
+            category: b.meta.get('category') ?? '',
+            keywords: keywords.split(',').filter((k: string) => k.length > 0),
+            _fns: b.fns,
+          });
+        },
+      };
+    })(),
     val: {
       null: () => valStore.alloc(null),
       bool: (v: number) => valStore.alloc(v !== 0),
@@ -510,48 +517,28 @@ describe('WasmHost', () => {
 });
 
 // ---------------------------------------------------------------------------
-// is_identity ABI decode
+// is_identity ABI dispatch
 //
-// The EffectDesc_v2 descriptor grew a trailing optional `is_identity`
-// predicate at byte offset +56 (wasm32, 4-byte fn-table indices). The host
-// decodes it in register_effect and exposes it as the activated module's
-// isIdentity() method, threading the per-instance `self` through the indirect
-// function table exactly like tick/render/on_state_patched.
+// The effect's optional `is_identity` predicate is registered by name (it may
+// be absent). The host exposes it as the activated module's isIdentity()
+// method, threading the per-instance `self` through the indirect function table
+// exactly like tick/render/on_state_patched.
 //
-// We can't easily rebuild the wasm bundles in CI, so this test synthesizes a
-// descriptor in a real WebAssembly.Memory and a fake indirect-function-table
-// (an object exposing .get(idx)), drives the host's real register_effect +
-// activateEffect, and asserts isIdentity() resolves through the table. This
-// covers both the +56 decode and the self-threading wrapper without GPU.
+// This test synthesizes a name-keyed EffectInfo and a fake indirect-function-
+// table (an object exposing .get(idx)), drives the host's real activateEffect,
+// and asserts isIdentity() resolves through the table — covering both the
+// name→index lookup and the self-threading wrapper without GPU.
 // ---------------------------------------------------------------------------
-describe('EffectDesc_v2 is_identity decode', () => {
-  // Build a host with a synthetic descriptor + fake function table.
+describe('is_identity name-keyed dispatch', () => {
+  // Build a host with a synthetic name-keyed descriptor + fake function table.
   // `identityResult` is what the fake is_identity table entry returns
   // (a number, like the wasm function would); pass `null` to omit the
-  // predicate entirely (index 0 => never skippable).
+  // predicate entirely (absent name => never skippable).
   function makeHostWithDescriptor(identityResult: number | null): {
     host: WasmHost; capturedSelf: { value: number };
   } {
     const host = new WasmHost();
     const memory = new WebAssembly.Memory({ initial: 1 });
-    const mem = new DataView(memory.buffer);
-    const bytes = new Uint8Array(memory.buffer);
-
-    // Lay out the strings + descriptor in linear memory.
-    let cursor = 64;
-    const writeStr = (s: string): number => {
-      const ptr = cursor;
-      const enc = new TextEncoder().encode(s);
-      bytes.set(enc, ptr);
-      bytes[ptr + enc.length] = 0;
-      cursor += enc.length + 1;
-      return ptr;
-    };
-    const idPtr = writeStr('video.test_identity');
-    const namePtr = writeStr('Test Identity');
-    const descPtrStr = writeStr('desc');
-    const catPtr = writeStr('video');
-    const kwPtr = writeStr('');
 
     // Fake indirect function table: we only ever need .get(idx).
     const SELF = 0xABCD;       // sentinel "self" pointer create() returns
@@ -576,40 +563,23 @@ describe('EffectDesc_v2 is_identity decode', () => {
     (host as any).memory = memory;
     (host as any).instance = { exports: { __indirect_function_table: table } };
 
-    // Write the descriptor: version, 5 string ptrs, then fn-table indices.
-    const descPtr = cursor;
-    mem.setInt32(descPtr + 0, 2, true);            // struct_version
-    mem.setUint32(descPtr + 4, idPtr, true);
-    mem.setUint32(descPtr + 8, namePtr, true);
-    mem.setUint32(descPtr + 12, descPtrStr, true);
-    mem.setUint32(descPtr + 16, catPtr, true);
-    mem.setUint32(descPtr + 20, kwPtr, true);
-    mem.setUint32(descPtr + 24, 0, true);          // module_init
-    mem.setUint32(descPtr + 28, IDX_CREATE, true); // create
-    mem.setUint32(descPtr + 32, 0, true);          // destroy
-    mem.setUint32(descPtr + 36, IDX_INIT, true);   // init
-    mem.setUint32(descPtr + 40, IDX_TICK, true);   // tick
-    mem.setUint32(descPtr + 44, IDX_RENDER, true); // render
-    mem.setUint32(descPtr + 48, IDX_ONPATCH, true);// on_state_patched
-    mem.setUint32(descPtr + 52,                    // is_identity
-      identityResult === null ? 0 : IDX_IS_IDENTITY, true);
+    // Name-keyed callbacks. is_identity is simply absent when not provided.
+    const fns = new Map<string, number>([
+      ['create', IDX_CREATE],
+      ['init', IDX_INIT],
+      ['tick', IDX_TICK],
+      ['render', IDX_RENDER],
+      ['on_state_patched', IDX_ONPATCH],
+    ]);
+    if (identityResult !== null) fns.set('is_identity', IDX_IS_IDENTITY);
 
-    // Drive the host's real decode (mirrors register_effect in load()).
     (host as any).registeredEffects.push({
       id: 'video.test_identity',
       name: 'Test Identity',
       description: 'desc',
       category: 'video',
       keywords: [],
-      _moduleInitIdx: mem.getUint32(descPtr + 24, true),
-      _createIdx: mem.getUint32(descPtr + 28, true),
-      _destroyIdx: mem.getUint32(descPtr + 32, true),
-      _initIdx: mem.getUint32(descPtr + 36, true),
-      _tickIdx: mem.getUint32(descPtr + 40, true),
-      _renderIdx: mem.getUint32(descPtr + 44, true),
-      _onStatePatchedIdx: mem.getUint32(descPtr + 48, true),
-      _isIdentityIdx: mem.getUint32(descPtr + 52, true),
-      _onActiveIdx: 0,
+      _fns: fns,
     });
 
     return { host, capturedSelf };

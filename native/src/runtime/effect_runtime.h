@@ -64,25 +64,22 @@ struct EffectDesc {
   // --- WASM-backed dispatch (barrel-loads-WASM migration) ---
   // When `wasm_host` is non-null this descriptor is WASM-backed: the
   // EffectInstance drives the lifecycle through WasmHost::call_indirect on the
-  // `w_*` function-table indices below (captured from the bundle's
-  // EffectDesc_v2) instead of the native function pointers above, which stay
-  // null. `user_state_` then holds the wasm State* (a linear-memory offset)
-  // returned by create(). Host imports during these calls are served by
-  // host_functions.cpp and routed to this instance via
-  // WasmHost::set_effect_instance (the WASM analogue of setActive).
+  // function-table indices in `wasm_fns` (keyed by callback NAME, captured from
+  // the bundle's name-keyed registration) instead of the native function
+  // pointers above, which stay null. `user_state_` then holds the wasm State*
+  // (a linear-memory offset) returned by create(). Host imports during these
+  // calls are served by host_functions.cpp and routed to this instance via
+  // WasmHost::set_effect_instance (the WASM analogue of setActive). Adding a
+  // new hook needs only a name here + a wfn("...") call site in the dispatch.
   wasm::WasmHost* wasm_host = nullptr;
   int32_t wasm_module_id = -1;
-  uint32_t w_module_init = 0;
-  uint32_t w_create = 0;
-  uint32_t w_destroy = 0;
-  uint32_t w_init = 0;
-  uint32_t w_tick = 0;
-  uint32_t w_render = 0;
-  uint32_t w_on_state_patched = 0;
-  uint32_t w_is_identity = 0;
-  uint32_t w_on_active = 0;
-  uint32_t w_seek = 0;
+  std::unordered_map<std::string, uint32_t> wasm_fns;
   bool isWasm() const { return wasm_host != nullptr; }
+  // Table index for a named WASM callback, or 0 ("not provided").
+  uint32_t wfn(const char* name) const {
+    auto it = wasm_fns.find(name);
+    return it != wasm_fns.end() ? it->second : 0u;
+  }
 };
 
 // One EffectInstance per (effect type, sketch instance_key). Each owns the
@@ -133,7 +130,7 @@ class EffectInstance : public wasm::EffectHostSink {
   // on_active callback only on a transition. New instances start active, so
   // the first doSetActive(false) fires an OFF; re-enabling fires an ON.
   void doSetActive(bool active);
-  // Drive the optional seek/prefill (desc.seek / w_seek). No-op when the
+  // Drive the optional seek/prefill (desc.seek / wfn("seek")). No-op when the
   // effect doesn't export seek. Only valid for `seekable_prefill` effects.
   // See nano::EffectDesc_v2::seek. No executor caller yet (declared ABI).
   void doSeek(double from_seconds, double to_seconds);

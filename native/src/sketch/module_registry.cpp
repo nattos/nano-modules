@@ -77,19 +77,11 @@ bool ModuleRegistry::registerWasmEffect(
   effect_runtime::EffectDesc d;
   d.id   = moduleType;
   d.name = displayName;
-  // WASM binding: dispatch the lifecycle through call_indirect on these indices.
+  // WASM binding: dispatch the lifecycle through call_indirect on the
+  // name-keyed function-table indices captured at registration.
   d.wasm_host           = host;
   d.wasm_module_id      = moduleId;
-  d.w_module_init       = wd.idx_module_init;
-  d.w_create            = wd.idx_create;
-  d.w_destroy           = wd.idx_destroy;
-  d.w_init              = wd.idx_init;
-  d.w_tick              = wd.idx_tick;
-  d.w_render            = wd.idx_render;
-  d.w_on_state_patched  = wd.idx_on_state_patched;
-  d.w_is_identity       = wd.idx_is_identity;
-  d.w_on_active         = wd.idx_on_active;
-  d.w_seek              = wd.idx_seek;
+  d.wasm_fns            = wd.fns;
 
   // Runs module_init() — schema is published onto the prototype via the WASM
   // host-import forwarding (EffectHostSink), then parsed below as for native.

@@ -1,9 +1,10 @@
-// test_effect_abi.cpp — validates the v2 effect ABI load path used by the
+// test_effect_abi.cpp — validates the effect ABI load path used by the
 // barrel-loads-WASM migration: a real effect bundle's nano_module_main() runs
-// under WAMR, its `module.register_effect` import lands, and the host captures
-// each nano::EffectDesc_v2 (strings + indirect-function-table indices) out of
-// the module's linear memory. testonly.wasm bundles mod.source.lfo (env_lfo), a pure
-// data effect with no GPU dependency — the smallest end-to-end exercise.
+// under WAMR, its name-keyed `module.register_effect_*` builder imports land,
+// and the host captures each effect's metadata strings + lifecycle callback
+// table indices (keyed by name). testonly.wasm bundles mod.source.lfo
+// (env_lfo), a pure data effect with no GPU dependency — the smallest
+// end-to-end exercise.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -49,8 +50,8 @@ TEST_CASE("testonly.wasm registers mod.source.lfo via nano_module_main", "[effec
   INFO("last_error: " << host.last_error());
   REQUIRE(id >= 0);
 
-  // nano_module_main() is the bundle entry point; it calls
-  // module.register_effect once per effect the bundle provides.
+  // nano_module_main() is the bundle entry point; it registers each effect via
+  // the module.register_effect_* builder imports.
   INFO("nano_module_main error: " << host.last_error());
   REQUIRE(host.call_function(id, "nano_module_main") == 0);
 
@@ -64,17 +65,18 @@ TEST_CASE("testonly.wasm registers mod.source.lfo via nano_module_main", "[effec
   }
   REQUIRE(lfo != nullptr);
 
-  // Descriptor fields marshalled out of linear memory.
-  CHECK(lfo->struct_version == 2);
+  // Metadata captured via the name-keyed register_effect_str builder calls.
   CHECK(!lfo->name.empty());
 
-  // Lifecycle table indices the runtime will call_indirect. clang reserves
-  // table slot 0, so every address-taken function gets a non-zero index;
-  // env_lfo supplies these four (it omits is_identity / on_active → 0).
-  CHECK(lfo->idx_module_init != 0);
-  CHECK(lfo->idx_create != 0);
-  CHECK(lfo->idx_tick != 0);
-  CHECK(lfo->idx_on_state_patched != 0);
+  // Lifecycle table indices the runtime will call_indirect, captured by name.
+  // clang reserves table slot 0, so every address-taken function gets a
+  // non-zero index; env_lfo supplies these four (it omits is_identity /
+  // on_active, which therefore never appear in the map).
+  CHECK(lfo->fn("module_init") != 0);
+  CHECK(lfo->fn("create") != 0);
+  CHECK(lfo->fn("tick") != 0);
+  CHECK(lfo->fn("on_state_patched") != 0);
+  CHECK(lfo->fn("is_identity") == 0);  // not provided → absent from the map
 
   host.shutdown();
 }
@@ -113,26 +115,26 @@ TEST_CASE("mod.source.lfo executes via call_indirect and writes output", "[effec
   uint32_t argv[8] = {0};
 
   // module_init() — registers the schema (sets plugin_key) + state defaults.
-  REQUIRE(host.call_indirect(id, lfo->idx_module_init, 0, argv));
+  REQUIRE(host.call_indirect(id, lfo->fn("module_init"), 0, argv));
   const std::string key = host.plugin_key(id);
   INFO("plugin_key: " << key);
   REQUIRE(!key.empty());
 
   // create() -> self (a State* in the module's linear memory).
   argv[0] = 0;
-  REQUIRE(host.call_indirect(id, lfo->idx_create, 0, argv));
+  REQUIRE(host.call_indirect(id, lfo->fn("create"), 0, argv));
   const uint32_t self = argv[0];
   REQUIRE(self != 0);
 
   // init(self) — applies defaults (rate 0.5, amplitude 1.0).
   argv[0] = self;
-  REQUIRE(host.call_indirect(id, lfo->idx_init, 1, argv));
+  REQUIRE(host.call_indirect(id, lfo->fn("init"), 1, argv));
 
   // tick(self, dt): self i32 @argv[0], dt f64 @argv[1..2].
   argv[0] = self;
   double dt = 0.016;
   std::memcpy(&argv[1], &dt, sizeof(double));
-  REQUIRE(host.call_indirect(id, lfo->idx_tick, 3, argv));
+  REQUIRE(host.call_indirect(id, lfo->fn("tick"), 3, argv));
 
   // tick wrote state::setValPath("output", ...) into the state doc.
   auto state = doc.get_plugin_state(key);
