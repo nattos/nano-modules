@@ -32,6 +32,7 @@ import './surfaces/arr-inspector';
 import './surfaces/arr-monitor';
 import './surfaces/arr-overlay';
 import './surfaces/arr-clip-view';
+import './surfaces/arr-export-dialog';
 
 /** The focused element, resolved through nested shadow roots. */
 function deepActiveElement(): Element | null {
@@ -525,6 +526,10 @@ export class ArrangementApp extends MobxLitElement {
           </div>`
         : ''}
       <arr-overlay></arr-overlay>
+      <arr-export-dialog
+        ?open=${store.exportOpen}
+        @close=${() => store.closeExport()}
+      ></arr-export-dialog>
       <snackbar-host></snackbar-host>
     `;
   }

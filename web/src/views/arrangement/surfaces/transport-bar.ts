@@ -5,18 +5,15 @@
  */
 
 import { html, css } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-number';
 import '../../../widgets/bars-beats-field';
-import './arr-export-dialog';
 
 @customElement('transport-bar')
 export class TransportBar extends MobxLitElement {
-  /** Whether the export modal is open (local UI state). */
-  @state() private exportOpen = false;
   static styles = css`
     :host {
       display: grid;
@@ -254,15 +251,10 @@ export class TransportBar extends MobxLitElement {
       </div>
 
       <div class="right">
-        <button class="export" title="Export video (MP4 / H.264)" @click=${() => { this.exportOpen = true; }}>
+        <button class="export" title="Export video (MP4 / H.264)" @click=${() => store.openExport()}>
           <ui-icon icon="la-file-export"></ui-icon> Export
         </button>
       </div>
-
-      <arr-export-dialog
-        ?open=${this.exportOpen}
-        @close=${() => { this.exportOpen = false; }}
-      ></arr-export-dialog>
     `;
   }
 

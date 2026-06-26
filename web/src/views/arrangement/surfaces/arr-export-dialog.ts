@@ -12,7 +12,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import {
-  exportComposition, canExport, planExportFrames, evenDim,
+  exportComposition, canExport, planExportFrames, evenDim, defaultBitrate,
   type ExportResult,
 } from '../engine/export-renderer';
 import { makeWarpClock } from '../engine/warp-clock';
@@ -21,6 +21,11 @@ import '../../../widgets/editable-number';
 import '../../../widgets/ui-icon';
 
 type Phase = 'idle' | 'rendering' | 'done' | 'error' | 'canceled';
+type RangeKind = 'all' | 'loop';
+type Quality = 'low' | 'medium' | 'high';
+
+/** Bits-per-pixel-per-frame budget per quality tier (→ H.264 bitrate). */
+const QUALITY_BPP: Record<Quality, number> = { low: 0.06, medium: 0.12, high: 0.24 };
 
 @customElement('arr-export-dialog')
 export class ArrExportDialog extends MobxLitElement {
@@ -29,6 +34,8 @@ export class ArrExportDialog extends MobxLitElement {
   @state() private width = 1920;
   @state() private height = 1080;
   @state() private fps = 60;
+  @state() private range: RangeKind = 'all';
+  @state() private quality: Quality = 'high';
   @state() private phase: Phase = 'idle';
   @state() private done = 0;
   @state() private totalFrames = 0;
@@ -77,6 +84,15 @@ export class ArrExportDialog extends MobxLitElement {
     }
     .muted { color: var(--app-text-color2); font-size: var(--app-fs-sm); }
     .fmt { color: var(--app-text-color1); }
+    .seg { display: inline-flex; border: 1px solid var(--app-tint-4); border-radius: 3px; overflow: hidden; }
+    .seg button {
+      height: 22px; border: none; border-radius: 0; border-left: 1px solid var(--app-tint-4);
+      background: var(--app-bg-color1); color: var(--app-text-color2);
+      font-size: var(--app-fs-sm); padding: 0 var(--app-sp-3); cursor: pointer;
+    }
+    .seg button:first-child { border-left: none; }
+    .seg button.on { background: var(--app-hi-color2); color: #fff; }
+    .seg button:disabled { opacity: 0.4; cursor: default; }
     .progress {
       height: 6px; border-radius: 3px; overflow: hidden;
       background: var(--app-tint-3);
@@ -109,11 +125,26 @@ export class ArrExportDialog extends MobxLitElement {
       this.width = r.width;
       this.height = r.height;
       this.fps = compositionFps(store.composition);
+      // Default to the loop region when one is set, else the whole arrangement.
+      this.range = this.hasLoop ? 'loop' : 'all';
       this.phase = 'idle';
       this.message = '';
       this.done = 0;
       this.clearResult();
     }
+  }
+
+  /** Whether a usable loop region exists to export. */
+  private get hasLoop(): boolean {
+    return store.loopEnabled && store.loopEndBeat > store.loopStartBeat;
+  }
+
+  /** The beat range to export (loop region or the whole arrangement). */
+  private get exportRange(): { startBeat: number; endBeat: number } {
+    if (this.range === 'loop' && this.hasLoop) {
+      return { startBeat: store.loopStartBeat, endBeat: store.loopEndBeat };
+    }
+    return { startBeat: 0, endBeat: compositionLengthBeats(store.composition) };
   }
 
   private clearResult() {
@@ -128,11 +159,12 @@ export class ArrExportDialog extends MobxLitElement {
     this.dispatchEvent(new CustomEvent('close', { bubbles: true, composed: true }));
   };
 
-  /** Estimated output frame count for the current settings. */
+  /** Estimated output frame count for the current settings (range-aware). */
   private get estimate(): { frames: number; seconds: number } {
     try {
       const clock = makeWarpClock(store.composition);
-      const frames = planExportFrames(clock, Math.max(1, Math.round(this.fps)), 0, compositionLengthBeats(store.composition)).length;
+      const { startBeat, endBeat } = this.exportRange;
+      const frames = planExportFrames(clock, Math.max(1, Math.round(this.fps)), startBeat, endBeat).length;
       return { frames, seconds: frames / Math.max(1, this.fps) };
     } catch {
       return { frames: 0, seconds: 0 };
@@ -165,10 +197,17 @@ export class ArrExportDialog extends MobxLitElement {
     this.abort = new AbortController();
     const t0 = performance.now();
     try {
+      const w = evenDim(this.width);
+      const h = evenDim(this.height);
+      const fps = Math.max(1, Math.round(this.fps));
+      const { startBeat, endBeat } = this.exportRange;
       const result = await exportComposition({
-        width: evenDim(this.width),
-        height: evenDim(this.height),
-        fps: Math.max(1, Math.round(this.fps)),
+        width: w,
+        height: h,
+        fps,
+        startBeat,
+        endBeat,
+        bitrate: defaultBitrate(w, h, fps, QUALITY_BPP[this.quality]),
         signal: this.abort.signal,
         onProgress: (done, total) => { this.done = done; this.totalFrames = total; },
       });
@@ -227,6 +266,28 @@ export class ArrExportDialog extends MobxLitElement {
                   ?disabled=${rendering}
                   @input=${(e: CustomEvent<number>) => { this.fps = e.detail; }}></editable-number>
                 <span class="muted">fps</span>
+              </span>
+            </div>
+            <div class="row">
+              <label>Range</label>
+              <span class="val seg">
+                <button class=${this.range === 'all' ? 'on' : ''} ?disabled=${rendering}
+                  @click=${() => { this.range = 'all'; }}>Whole</button>
+                <button class=${this.range === 'loop' ? 'on' : ''}
+                  ?disabled=${rendering || !this.hasLoop}
+                  title=${this.hasLoop ? 'Export the loop region' : 'No loop region set'}
+                  @click=${() => { this.range = 'loop'; }}>Loop</button>
+              </span>
+            </div>
+            <div class="row">
+              <label>Quality</label>
+              <span class="val seg">
+                <button class=${this.quality === 'low' ? 'on' : ''} ?disabled=${rendering}
+                  @click=${() => { this.quality = 'low'; }}>Low</button>
+                <button class=${this.quality === 'medium' ? 'on' : ''} ?disabled=${rendering}
+                  @click=${() => { this.quality = 'medium'; }}>Medium</button>
+                <button class=${this.quality === 'high' ? 'on' : ''} ?disabled=${rendering}
+                  @click=${() => { this.quality = 'high'; }}>High</button>
               </span>
             </div>
             <div class="row">

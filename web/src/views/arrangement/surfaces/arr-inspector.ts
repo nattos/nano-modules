@@ -1143,17 +1143,15 @@ export class ArrInspector extends MobxLitElement {
     return html`
       <div class="section-header">Export</div>
       <div class="body">
-        <div class="row"><label>Mode</label><span class="val"><span class="tag">Precise (waits)</span></span></div>
         <div class="row"><label>Resolution</label><span class="val">${meta.resolution.width}×${meta.resolution.height}</span></div>
+        <div class="row"><label>Frame rate</label><span class="val">${store.exportFps} fps</span></div>
         <div class="row">
           <label>Range</label>
-          <span class="val">${store.loopEnabled ? 'Loop brace' : 'Whole arrangement'}</span>
+          <span class="val">${store.loopEnabled ? 'Loop region' : 'Whole arrangement'}</span>
         </div>
-        <div class="row"><label>Format</label>
-          <select><option>ProRes 4444</option><option>H.264</option><option>PNG sequence</option></select>
-        </div>
-        <button class="btn primary" style="margin-top:8px" @click=${() => alert('Offline render — wired in a later milestone.')}>
-          <ui-icon icon="la-play"></ui-icon> Render
+        <div class="row"><label>Format</label><span class="val">MP4 · H.264</span></div>
+        <button class="btn primary" style="margin-top:8px" @click=${() => store.openExport()}>
+          <ui-icon icon="la-file-export"></ui-icon> Render…
         </button>
       </div>
     `;

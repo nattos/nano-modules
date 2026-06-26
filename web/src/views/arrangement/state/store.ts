@@ -303,6 +303,8 @@ export class ArrangementStore {
   automationMode = false;
   /** Global wires mode: reveals the rail modulation wires. */
   wiresMode = true;
+  /** Whether the export modal is open (UI state; non-undoable). */
+  exportOpen = false;
 
   // Viewport (warped-units horizontal transform lives in beat-grid.ts).
   pxPerBeat = 22;
@@ -2073,6 +2075,10 @@ export class ArrangementStore {
     const v = Math.max(1, Math.min(240, Math.round(fps)));
     this.mutate('set fps', (d) => { d.meta.fps = v; }, 'meta:fps');
   }
+
+  /** Open / close the export modal (the transport + inspector both trigger it). */
+  openExport() { this.exportOpen = true; }
+  closeExport() { this.exportOpen = false; }
 
   // ── Composite background (per composition; default = opaque black) ──────
   get backgroundMode(): 'black' | 'transparent' | 'custom' {
