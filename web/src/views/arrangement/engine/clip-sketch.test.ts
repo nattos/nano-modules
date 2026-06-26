@@ -87,6 +87,15 @@ describe('buildCompositeSketch', () => {
     expect(r.sketch.wires).toEqual([]);
   });
 
+  it('bakes the clip start (startSec) onto the clip effect chain entries (for effect seeks)', () => {
+    const r = buildCompositeSketch([{ clip: clip('E', 'color.invert'), opacity: 1, startSec: 4.5 }], { mode: 'transparent' })!;
+    const entry = r.sketch.chain!.find((e) => e.module_type === 'color.invert') as { startSec?: number };
+    expect(entry.startSec).toBe(4.5);
+    // Omitted ⇒ no startSec key (defaults to 0 in the executor).
+    const r2 = buildCompositeSketch([{ clip: clip('E', 'color.invert'), opacity: 1 }], { mode: 'transparent' })!;
+    expect((r2.sketch.chain!.find((e) => e.module_type === 'color.invert') as { startSec?: number }).startSec).toBeUndefined();
+  });
+
   it('per-track opacity rides the blend for sources and __opacity__ for effects', () => {
     const r = buildCompositeSketch([
       { clip: clip('A', 'source.noise'), opacity: 1 },

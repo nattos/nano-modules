@@ -67,6 +67,8 @@ interface ExecutorExports {
                    inTex: number, outTex: number, w: number, h: number,
                    dt: number, dirty: number): number;
   executor_set_fusion_enabled(ex: number, enabled: number): void;
+  /** Optional: push the absolute transport time (s) before execute (effect seeks). */
+  executor_set_time?(ex: number, sec: number): void;
   executor_set_automation(ex: number, json: number, len: number): void;
   executor_debug_stats(ex: number, out: number): void;
   executor_modulation_json(ex: number, out: number, cap: number): number;
@@ -560,6 +562,9 @@ export class WasmSketchExecutor {
     new Uint8Array(this.memory.buffer, jptr, jbytes.length).set(jbytes);
     let outHandle = inputHandle;
     try {
+      // Push the absolute transport time so the executor can seek effects on a backward
+      // jump OR a clip activation (to clip-relative time). Optional export — guard it.
+      this.exports.executor_set_time?.(slot.exPtr, frameState.elapsedTime);
       outHandle = this.exports.executor_execute(
         slot.exPtr, jptr, jbytes.length, inputHandle, outTex,
         // Signed delta: a backward scrub seeks seekable effects instead of freezing.

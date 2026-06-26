@@ -86,6 +86,11 @@ export interface CompositeLayerInput {
   /** The owning track — its `sketch` effect chain runs over the clip output (a
    *  per-track FX bus), keyed `track_<id>_<dev>` so track automation can target it. */
   track?: Track;
+  /** Absolute transport time (s) of the clip's start. Baked onto the clip's effect
+   *  chain entries so the executor can seek a freshly-activated modulation source
+   *  (e.g. an LFO) to its CLIP-RELATIVE phase — keeps the displayed curve and the live
+   *  output aligned even when you jump into the middle of the clip. */
+  startSec?: number;
 }
 
 const BLEND = 'composite.blend';
@@ -155,7 +160,7 @@ export function buildCompositeSketch(
   const railReaders: Array<{ railId: string; key: string; field: string; tap: RailRead }> = [];
   const railNodeKeys = new Set<string>(); // rails with an active reader → accumulator node
 
-  const push = (moduleType: string, key: string, state: Record<string, unknown>) => {
+  const push = (moduleType: string, key: string, state: Record<string, unknown>, startSec?: number) => {
     // A key must appear ONCE. Duplicate device ids within a clip (a data bug)
     // would otherwise emit the same instance key twice with different module
     // types → the executor retypes + recreates the instance every frame (1000s of
@@ -163,7 +168,11 @@ export function buildCompositeSketch(
     if (instances[key]) return;
     const cat = catalogEffect(moduleType);
     bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle);
-    chain.push({ type: 'module', module_type: moduleType, instance_key: key });
+    const entry: ChainEntry = { type: 'module', module_type: moduleType, instance_key: key };
+    // Static per clip (clip start in seconds) → doesn't churn the sketch hash; the
+    // executor seeks a newly-activated effect to (transportSec − startSec).
+    if (startSec !== undefined) (entry as ChainEntry & { startSec: number }).startSec = startSec;
+    chain.push(entry);
     instances[key] = { module_type: moduleType, state };
   };
 
@@ -229,7 +238,7 @@ export function buildCompositeSketch(
     }
   }
 
-  for (const { clip, opacity, blendMode, track } of layers) {
+  for (const { clip, opacity, blendMode, track, startSec } of layers) {
     const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));
     const gen = cat.find((d) => catalogEffect(d.moduleType)!.role === 'generator');
     const fx = cat.filter((d) => catalogEffect(d.moduleType)!.role === 'effect');
@@ -242,7 +251,7 @@ export function buildCompositeSketch(
         const segment: Device[] = [gen, ...fx];
         segment.forEach((d) => {
           const key = clipInstanceKey(clip.id, d.id);
-          push(d.moduleType, key, { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) });
+          push(d.moduleType, key, { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) }, startSec);
           if (!isMod(d.moduleType)) { if (!firstKey) firstKey = key; lastKey = key; }
         });
       } else {
@@ -273,7 +282,7 @@ export function buildCompositeSketch(
       fx.forEach((d) => {
         const state: Record<string, unknown> = { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) };
         if (!isMod(d.moduleType) && !appliedOpacity && opacity < 1) { state['__opacity__'] = opacity; appliedOpacity = true; }
-        push(d.moduleType, clipInstanceKey(clip.id, d.id), state);
+        push(d.moduleType, clipInstanceKey(clip.id, d.id), state, startSec);
         if (!isMod(d.moduleType)) accKey = clipInstanceKey(clip.id, d.id);
       });
       if (accKey) accKey = pushTrackFx(track, accKey); // track FX bus over the adjustment

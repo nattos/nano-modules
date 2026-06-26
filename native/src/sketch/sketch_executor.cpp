@@ -498,15 +498,29 @@ int32_t SketchExecutor::execute(
     int W, int H, double dt, bool sketchDirty) {
   if (!rawSketch.is_object()) return inputHandle;
 
-  // A negative `dt` is a BACKWARD scrub. Seekable effects get doSeek(from,to) to land
-  // deterministically; everyone else (and all smoothing/delay state) advances by a
-  // CLAMPED dt so they freeze rather than run backwards. `seekFrom`/`seekTo` are the
-  // signed transport clock around this frame.
-  const bool seeking = dt < 0.0;
-  const double seekFrom = transportClock_;
-  transportClock_ += dt;
-  const double seekTo = transportClock_;
-  const double tickDt = seeking ? 0.0 : dt;
+  // Deterministic effect seeks (see setFrameTime). Two triggers land an effect on the
+  // exact phase it should have at this frame's time rather than wherever a clamped tick
+  // left it: a BACKWARD jump in transport time, or a freshly-ACTIVATED instance (its
+  // clip just started playing — without this its phase would start from the jump point,
+  // not the clip start). Both seek to the instance's CLIP-RELATIVE time
+  // (frameAbsSec_ − the entry's `startSec`). Smoothing/delay always advance by a
+  // CLAMPED (≥0) tickDt so they never run backwards.
+  const double absNow = frameAbsSec_;
+  const double absPrev = prevAbsSec_;
+  prevAbsSec_ = absNow;
+  const bool jumpedBack = absNow < absPrev - 1e-6;
+  const double tickDt = dt < 0.0 ? 0.0 : dt;
+  std::unordered_set<std::string> framedKeys; // instance keys ticked this frame
+  // Seek `inst` to its clip-relative time when it's new this frame or transport jumped
+  // back. doSeek is a no-op for effects with no seek handler. Also records the key as
+  // active so a later frame knows it isn't new.
+  auto maybeSeek = [&](const EffectRef& inst, double startSec, const std::string& instKey) {
+    const bool isNew = !knownKeys_.count(instKey);
+    framedKeys.insert(instKey);
+    if (!isNew && !jumpedBack) return;
+    const double to = absNow - startSec;
+    inst.doSeek(to - tickDt, to);
+  };
 
   // Advance the shared modulation clock once per frame — the time base the wire
   // delay lines (delayState_) push/read against (style guide §2.1: accumulate dt,
@@ -1145,7 +1159,7 @@ int32_t SketchExecutor::execute(
         applyAutomation(inst.h, entry, instances, instKey, &modScalars);
         applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
         markWriteTapOutputsConnected(inst.h, entry);
-        if (seeking) inst.doSeek(seekFrom, seekTo); // backward scrub → deterministic land
+        maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
         inst.doTick(tickDt);
         // A buffer-producing modulation source (e.g. debug.particles_emitter) has
         // no texture output, but its render() UPLOADS its GPU buffers — run it so
@@ -1214,7 +1228,7 @@ int32_t SketchExecutor::execute(
       }
       gpu_set_surface(fxHandle, W, H);
 
-      if (seeking) inst.doSeek(seekFrom, seekTo); // backward scrub → deterministic land
+      maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
       inst.doTick(tickDt);
       inst.doRender(W, H);
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
@@ -1254,7 +1268,9 @@ int32_t SketchExecutor::execute(
         if (const json* st = findState(instances, instKey)) {
           maybeApplyState(inst, instKey, *st);
         }
-        if (seeking) inst.doSeek(seekFrom, seekTo); // backward scrub → deterministic land
+        // Fused stages are GPU texture effects, never modulation sources (LFO), so none
+        // currently has a seek handler — clip-relative startSec isn't threaded here.
+        maybeSeek(inst, 0.0, instKey);
         inst.doTick(tickDt);
         allStages.push_back(inst);
       }
@@ -1441,6 +1457,10 @@ int32_t SketchExecutor::execute(
   if (anyDispatched && sketchOutputHook_) {
     sketchOutputHook_(finalHandle, W, H);
   }
+  // Remember which instances ticked this frame so the NEXT frame can tell which keys
+  // are newly activated (and seek them to clip-relative time). A key that dropped out
+  // (clip stopped) leaves the set, so re-activation re-seeks.
+  knownKeys_.swap(framedKeys);
   return anyDispatched ? finalHandle : inputHandle;
 }
 

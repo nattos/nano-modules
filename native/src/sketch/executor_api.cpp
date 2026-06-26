@@ -102,6 +102,14 @@ void executor_set_automation(SketchExecutor* ex, const char* json, int32_t len) 
   ex->setAutomation(j.is_discarded() ? nlohmann::json::array() : j);
 }
 
+// Push the absolute transport time (seconds) for the NEXT execute() — drives
+// deterministic effect seeks (backward jump + clip activation). Optional: a host that
+// never calls it leaves the executor at 0 (no jump seeks). See SketchExecutor::setFrameTime.
+EXEC_EXPORT("executor_set_time")
+void executor_set_time(SketchExecutor* ex, double sec) {
+  if (ex) ex->setFrameTime(sec);
+}
+
 // Render one frame. `sketch` is the {chain|columns, instances, wires} JSON.
 // Returns the output texture handle (or `inTex` for a passthrough). `dirty`
 // signals the sketch changed since last frame (rebuild the plan).

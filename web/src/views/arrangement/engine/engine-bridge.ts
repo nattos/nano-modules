@@ -476,9 +476,16 @@ export class EngineBridge {
       }
     }
 
+    // Clip start in absolute transport seconds — baked onto each clip's effect chain
+    // entries so the executor can seek a freshly-activated modulation source to its
+    // clip-relative phase (display ⇄ live alignment on a mid-clip jump).
+    const clock = makeWarpClock(store.composition);
     const render = engineLayers.length
       ? buildCompositeSketch(
-          engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode, track: l.track })),
+          engineLayers.map((l) => ({
+            clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode, track: l.track,
+            startSec: clock.secondsAt(l.clip.startBeat),
+          })),
           store.composition.meta.background,
           railBases,
           railSigned,

@@ -45,6 +45,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <tuple>
@@ -294,10 +295,23 @@ class SketchExecutor {
   // Monotonic modulation clock (seconds), advanced by the CLAMPED (≥0) `dt` once per
   // execute(). The shared time base the delay lines push/read against.
   double modClock_ = 0.0;
-  // Absolute transport clock (seconds), advanced by the SIGNED `dt` — can move
-  // backward. A negative step is a backward scrub: seekable effects get doSeek(from,to)
-  // to land deterministically rather than freezing on a clamped-to-0 tick.
-  double transportClock_ = 0.0;
+
+ public:
+  // Absolute transport time (seconds) for THIS frame, pushed by the host before
+  // execute() (web: executor_set_time). Drives deterministic effect seeks:
+  //  - a backward jump (frameAbsSec_ < last) seeks seekable effects to the new time;
+  //  - a newly-activated instance (a clip that just started playing) seeks to its
+  //    CLIP-RELATIVE time (frameAbsSec_ − the chain entry's baked `startSec`), so its
+  //    phase lands where a play-through would have it — not at 0 from the jump point.
+  // Untouched (0) for hosts that don't push it (native barrel/tests): no jump seeks,
+  // and a new instance just seeks to 0 == its fresh phase. See execute().
+  void setFrameTime(double sec) { frameAbsSec_ = sec; }
+
+ private:
+  double frameAbsSec_ = 0.0;
+  double prevAbsSec_ = 0.0;
+  // Instance keys ticked last frame — a key absent here is newly activated this frame.
+  std::unordered_set<std::string> knownKeys_;
 
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;
