@@ -43,6 +43,9 @@ export class ArrGrid extends MobxLitElement {
       height: 100%;
       overflow-y: auto;
       overflow-x: hidden;
+      /* Belt-and-suspenders against the browser swipe-back gesture (the JS
+         axis-lock in onWheel is the primary guard). */
+      overscroll-behavior-x: none;
     }
     /* Drag handle to resize the track-header column. */
     .header-resize {
@@ -390,6 +393,9 @@ export class ArrGrid extends MobxLitElement {
   @query('.grid-canvas') private canvas!: HTMLCanvasElement;
   @query('.grid-canvas-top') private canvasTop!: HTMLCanvasElement;
   private ro?: ResizeObserver;
+  /** Per-gesture wheel axis lock (kills spurious swipe-back). See onWheel. */
+  private wheelAxis: 'h' | 'v' | null = null;
+  private wheelIdleTimer = 0;
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => this.draw());
@@ -1310,7 +1316,21 @@ export class ArrGrid extends MobxLitElement {
       const cursorX = e.clientX - this.scrollEl.getBoundingClientRect().left - store.headerWidth;
       if (cursorX < 0) return;
       store.zoomAnchored(Math.exp(-e.deltaY * 0.002), cursorX);
-    } else if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      return;
+    }
+    // Axis-lock the gesture. The browser's swipe-back navigation accumulates raw
+    // horizontal wheel delta, so it's not enough to preventDefault only when
+    // deltaX dominates: mid-swipe frames where deltaY momentarily spikes would
+    // slip through and still feed the back gesture. Instead we decide the axis
+    // on the first event of a gesture and, for a horizontal gesture, consume
+    // EVERY subsequent event (preventDefault) until the gesture goes idle. A
+    // vertical gesture is left entirely to native scrolling.
+    clearTimeout(this.wheelIdleTimer);
+    this.wheelIdleTimer = window.setTimeout(() => (this.wheelAxis = null), 140);
+    if (this.wheelAxis == null) {
+      this.wheelAxis = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 'h' : 'v';
+    }
+    if (this.wheelAxis === 'h') {
       e.preventDefault();
       store.scrollBy(e.deltaX / store.pxPerBeat);
     }

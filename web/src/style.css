@@ -63,6 +63,12 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html, body {
+  /* Full-screen app — never let a horizontal trackpad swipe trigger the
+     browser's back/forward navigation gesture. */
+  overscroll-behavior-x: none;
+}
+
 body {
   background: var(--app-bg-color1);
   color: var(--app-text-color1);
