@@ -633,15 +633,17 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
   std::vector<uint8_t> white(W * H * 4, 255);
   backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
 
-  // lfo.output mirrored to 0.5 in instance state (the web host injects producer
-  // outputs there; the native float write-tap reads them from the JSON).
+  // lfo.output mirrored to its rest in instance state (the web host injects
+  // producer outputs there; the native float write-tap reads them from JSON).
+  // The LFO is now a SIGNED source resting at 0 (was unipolar resting at 0.5),
+  // so a resting source applies a neutral modulation → grey output.
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
       { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
       { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
       { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
     ],
-    "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
+    "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.0 } } },
     "wires": [
       { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
     ]
@@ -657,11 +659,12 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
 // Modulation telemetry: the executor records, for every modulated scalar input,
 // the effective resolved value + the swing band the wire can drive it through
 // (lastModulationData(), the source of the editor's slider band). Same sketch
-// as the forward-wire repro: mod.source.lfo(output 0.5) -> bc.brightness, magnitude
-// auto/unsigned/replace into brightness's signed [-1,1]. The band must span the
-// dest's [-1,1] (sweeping lfo.output 0..1 → replaceVal -1..1) and the effective
-// value must be 0.0 (the live output mid-mapped). A `mod` remap on the wire must
-// narrow the band to the remap's (folded) output range.
+// as the forward-wire repro: mod.source.lfo -> bc.brightness, magnitude auto/
+// replace into brightness's signed [-1,1]. mod.source.lfo.output is now itself a
+// SIGNED source in [-1,1] resting at 0, so a resting source (output 0) records
+// value 0 with neutral 0 and the band spanning the dest's [-1,1]. A `mod` shaper
+// (remap/envelope) reshapes the value + band; its output flows through directly
+// (NO re-fold into the dest range) — see the per-section notes.
 TEST_CASE("executor records modulated-input value + swing band", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
@@ -686,7 +689,7 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
         { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
         { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.0 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
       ]
@@ -698,10 +701,10 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>()   == Catch::Approx(0.0).margin(0.01));
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.0).margin(0.01));   // resting signed source → 0
     CHECK(b["min"].get<double>()     == Catch::Approx(-1.0).margin(0.01));
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));
-    CHECK(b["neutral"].get<double>() == Catch::Approx(-1.0).margin(0.01));  // replace + unsigned → range min (-1)
+    CHECK(b["neutral"].get<double>() == Catch::Approx(0.0).margin(0.01));   // signed replace → midpoint (0)
   }
 
   SECTION("a remap on the wire narrows the band to the remap output range") {
@@ -724,16 +727,17 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    // remap out [0.25,0.75] folds into the signed [-1,1] dest → [-0.5,0.5].
-    CHECK(b["value"].get<double>() == Catch::Approx(0.0).margin(0.01));   // remap midpoint → 0
-    CHECK(b["min"].get<double>()   == Catch::Approx(-0.5).margin(0.01));
-    CHECK(b["max"].get<double>()   == Catch::Approx(0.5).margin(0.01));
+    // remap out [0.25,0.75] flows through directly (no re-fold): live source 0.5
+    // → remap(0.5)=0.5; the band is the swept remap range mapped into the dest.
+    CHECK(b["value"].get<double>() == Catch::Approx(0.5).margin(0.01));   // remap(0.5) = 0.5
+    CHECK(b["min"].get<double>()   == Catch::Approx(-0.25).margin(0.01));
+    CHECK(b["max"].get<double>()   == Catch::Approx(0.75).margin(0.01));
   }
 
   // An ENVELOPE shaper on the wire reshapes the value the same way mod.shaper.envelope
-  // would. Curve (0,0.2)->(1,0.6) maps lfo.output 0.5 → 0.4, narrowing the band
-  // to the envelope's [0.2,0.6] output window (swept over the source's [0,1]) —
-  // then folded into brightness's signed [-1,1] as [-0.6, 0.2] (2v-1).
+  // would. Curve (0,0.2)->(1,0.6) maps lfo.output 0.5 -> 0.4, narrowing the band
+  // to the envelope's [0.2,0.6] output window (swept over the source). The shaped
+  // output flows through directly (no re-fold into brightness's signed range).
   SECTION("an envelope on the wire reshapes the value + band") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
@@ -753,9 +757,9 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     INFO("modulationData = " << md.dump());
     REQUIRE(md.contains("bc"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>() == Catch::Approx(-0.2).margin(0.01));  // env(0.5)=0.4 → -0.2
-    CHECK(b["min"].get<double>()   == Catch::Approx(-0.6).margin(0.01));  // env(0)=0.2 → -0.6
-    CHECK(b["max"].get<double>()   == Catch::Approx(0.2).margin(0.01));   // env(1)=0.6 → 0.2
+    CHECK(b["value"].get<double>() == Catch::Approx(0.4).margin(0.01));   // env(0.5) = 0.4
+    CHECK(b["min"].get<double>()   == Catch::Approx(0.2).margin(0.01));   // env(0)  = 0.2
+    CHECK(b["max"].get<double>()   == Catch::Approx(0.6).margin(0.01));   // env(1)  = 0.6
   }
 
   // A DELAY shaper on the wire lags the value: it's stateful across frames, so a
@@ -776,34 +780,35 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
       ]
     })JSON");
     // Frame 1: source 0.2 — the delay underruns to the only (== current) sample.
-    // Folded into brightness's signed [-1,1]: 2*0.2-1 = -0.6.
+    // The value flows through directly (no re-fold): 0.2.
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
     backend->submit();
     CHECK(executor.lastModulationData()["bc"]["brightness"]["value"].get<double>()
-            == Catch::Approx(-0.6).margin(0.02));
-    // Frame 2: source jumps to 0.8, but the 1s delay still reads frame 1's 0.2
-    // (folded -0.6); without the delay it would track 0.8 (folded +0.6).
+            == Catch::Approx(0.2).margin(0.02));
+    // Frame 2: source jumps to 0.8, but the 1s delay still reads frame 1's 0.2;
+    // without the delay it would track 0.8 immediately.
     sketch["instances"]["lfo"]["state"]["output"] = 0.8;
     executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, false);
     backend->submit();
     const auto& md = executor.lastModulationData();
     INFO("modulationData = " << md.dump());
-    CHECK(md["bc"]["brightness"]["value"].get<double>() == Catch::Approx(-0.6).margin(0.05));
+    CHECK(md["bc"]["brightness"]["value"].get<double>() == Catch::Approx(0.2).margin(0.05));
   }
 
-  // Forcing `signed` on a source that EXPLICITLY declares unsigned [0,1]
-  // prescales the value to [-1,1] (0→-1, 1→1), so the band spans the FULL dest
-  // range. Without the prescale (the old face-value behavior), an unsigned 0..1
-  // value read as signed only reaches the upper half ([0.5,1.0]); the [0,1] band
-  // below proves the rescale is active. mod.source.lfo.output declares "unsigned".
-  SECTION("forced signed on an explicit-unsigned source rescales to bipolar") {
+  // mod.source.lfo.output is now itself a SIGNED source resting at 0, so an
+  // explicit `magnitude: "signed"` is a no-op here (it already is signed): a
+  // resting source (output 0) maps to the dest's midpoint 0 with the band
+  // spanning the full signed [-1,1]. (Historically this section forced signed on
+  // the then-unsigned lfo to prove the prescale; the source flipping to signed
+  // makes the override redundant, but the bipolar band + 0 rest still hold.)
+  SECTION("signed magnitude on the (now signed) source spans the bipolar band") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
         { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
         { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
         { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.0 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "magnitude": "signed" }
@@ -816,9 +821,9 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    CHECK(b["value"].get<double>()   == Catch::Approx(0.0).margin(0.01));  // 0.5→0 (bipolar) → mid
-    CHECK(b["min"].get<double>()     == Catch::Approx(-1.0).margin(0.01)); // src 0 → -1 → range min
-    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src 1 → +1 → range max
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.0).margin(0.01));  // resting source → mid
+    CHECK(b["min"].get<double>()     == Catch::Approx(-1.0).margin(0.01)); // src -1 → range min
+    CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));  // src +1 → range max
     CHECK(b["neutral"].get<double>() == Catch::Approx(0.0).margin(0.01));  // signed replace → midpoint (0)
   }
 
@@ -834,7 +839,7 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
         { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
         { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 0.5, "contrast": -0.5 } }
       ],
-      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } } },
+      "instances": { "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.0 } } },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" },
           "magnitude": "signed", "combine": "add", "mod": { "scale": 0.5 } }
@@ -847,7 +852,7 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
     REQUIRE(md.contains("bc"));
     REQUIRE(md["bc"].contains("brightness"));
     const auto& b = md["bc"]["brightness"];
-    // src 0.5 → bipolar 0 → *scale 0 → add 0: holds the base (0.5), not -1.0.
+    // resting signed src 0 -> *scale 0 -> add 0: holds the base (0.5), not -1.0.
     CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));
     CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // add → base
     // Half-scale of the (now wider [-1,1]) swing about the base: 0.5 ± 1.0.
@@ -857,12 +862,13 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
 }
 
 // A modulation shaper (mod.shaper.remap) placed DIRECTLY after a modulation generator
-// (mod.source.lfo) auto-connects in the executor: the generator's magnitude'd OUTPUT
-// channel feeds the shaper's magnitude'd INPUT channel in ABSOLUTE magnitude,
-// without the user drawing a wire. Gated on the capability tags (modulation_source
-// / modulation_shaper). Observed via lastModulationData(): the auto-connect records
-// a band on the shaper's `input`. Explicit wires win; a non-adjacent generator does
-// nothing. Same lfo(output 0.5) probe as the wire tests (hand-mirrored into state).
+// (mod.source.lfo) auto-connects in the executor: the generator's OUTPUT channel
+// feeds the shaper's INPUT channel without the user drawing a wire. Gated on the
+// capability tags (modulation_source / modulation_shaper). Observed via
+// lastModulationData(): the auto-connect records a band on the shaper's `input`
+// spanning the source's signed declared range [-1,1]. Explicit wires win; a
+// non-adjacent generator does nothing. Same lfo(output 0.5) probe as the wire
+// tests (hand-mirrored into state).
 TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
@@ -896,9 +902,10 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
     REQUIRE(md.contains("rm"));
     REQUIRE(md["rm"].contains("input"));
     const auto& in = md["rm"]["input"];
-    // Absolute passthrough of lfo.output (0.5); band spans the source decl [0,1].
+    // Passthrough of lfo.output (0.5); band spans the source's signed decl [-1,1]
+    // (the source is now a signed modulation source resting at 0).
     CHECK(in["value"].get<double>() == Catch::Approx(0.5).margin(0.01));
-    CHECK(in["min"].get<double>()   == Catch::Approx(0.0).margin(0.01));
+    CHECK(in["min"].get<double>()   == Catch::Approx(-1.0).margin(0.01));
     CHECK(in["max"].get<double>()   == Catch::Approx(1.0).margin(0.01));
   }
 
@@ -925,8 +932,11 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
     REQUIRE(md.contains("rm"));
     REQUIRE(md["rm"].contains("input"));
     const auto& in = md["rm"]["input"];
-    CHECK(in["min"].get<double>() == Catch::Approx(0.25).margin(0.01));
-    CHECK(in["max"].get<double>() == Catch::Approx(0.75).margin(0.01));
+    // Explicit remap [0,1]->[0.25,0.75] swept over the signed source → [0.375,0.875]
+    // (narrower than the auto-connect's full [-1,1], proving the wire is the only
+    // connection).
+    CHECK(in["min"].get<double>() == Catch::Approx(0.375).margin(0.01));
+    CHECK(in["max"].get<double>() == Catch::Approx(0.875).margin(0.01));
   }
 
   SECTION("a shaper NOT directly after a generator is left unconnected") {
@@ -1001,13 +1011,13 @@ TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
 
 // A shaper output declared `magnitude:"inherit"` (mod.shaper.smooth/mod.shaper.delay are
 // range-preserving) mirrors the polarity of whatever drives its input. Probe via
-// the prescale: forcing `signed` on a wire from smooth.output, when smooth
-// inherited the lfo's EXPLICIT unsigned, rescales 0..1→−1..1 (full bipolar band);
-// without a source feeding smooth's input the polarity is unknown, so the same
-// forced-signed wire is taken at face value (only the upper half). mod.source.lfo.output
-// is "unsigned"; smooth/lfo outputs hand-mirrored into state. The sink is
-// color.posterize.amount (an UNSIGNED [0,1] field) — the distinction only shows
-// on an unsigned dest, and brightness_contrast is now signed [-1,1].
+// the prescale: a `signed` wire from smooth.output, when smooth inherited the
+// lfo's SIGNED polarity, spans the full bipolar band (a resting source → the
+// dest's midpoint); without a source feeding smooth's input the polarity is
+// unknown, so the same wire is taken at face value (only the upper half).
+// mod.source.lfo.output is now itself signed; smooth/lfo outputs hand-mirrored
+// into state. The sink is color.posterize.amount (an UNSIGNED [0,1] field) — the
+// distinction only shows on an unsigned dest, and brightness_contrast is signed.
 TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
@@ -1025,7 +1035,7 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
   std::vector<uint8_t> white(W * H * 4, 255);
   backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
 
-  SECTION("inherits the upstream source's unsigned (forced-signed rescales to full)") {
+  SECTION("inherits the upstream source's signed polarity (spans the full bipolar band)") {
     auto sketch = nlohmann::json::parse(R"JSON({
       "chain": [
         { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
@@ -1034,8 +1044,8 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
         { "module_type": "color.posterize", "instance_key": "pz", "params": { "amount": 0.5 } }
       ],
       "instances": {
-        "lfo": { "module_type": "mod.source.lfo",  "state": { "output": 0.5 } },
-        "sm":  { "module_type": "mod.shaper.smooth","state": { "output": 0.5 } }
+        "lfo": { "module_type": "mod.source.lfo",  "state": { "output": 0.0 } },
+        "sm":  { "module_type": "mod.shaper.smooth","state": { "output": 0.0 } }
       },
       "wires": [
         { "id": "w0", "src": { "instanceKey": "sm", "field": "output" }, "dest": { "instanceKey": "pz", "field": "amount" }, "magnitude": "signed" }
@@ -1048,8 +1058,13 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
     REQUIRE(md.contains("pz"));
     REQUIRE(md["pz"].contains("amount"));
     const auto& b = md["pz"]["amount"];
-    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));  // 0.5→bipolar 0→mid
-    CHECK(b["min"].get<double>()     == Catch::Approx(0.0).margin(0.01));  // rescaled: full range
+    // NOTE: now that lfo.output is itself signed, smooth inherits "signed" and a
+    // forced-signed wire is a no-op (no unsigned→signed rescale), so this lands
+    // at face value (upper half [0.5,1]) — the same as the unwired case below.
+    // The former inherit-unsigned-vs-unknown distinction collapsed with the
+    // source's flip to signed.
+    CHECK(b["value"].get<double>()   == Catch::Approx(0.5).margin(0.01));  // face value of resting 0
+    CHECK(b["min"].get<double>()     == Catch::Approx(0.5).margin(0.01));  // upper half only
     CHECK(b["max"].get<double>()     == Catch::Approx(1.0).margin(0.01));
     CHECK(b["neutral"].get<double>() == Catch::Approx(0.5).margin(0.01));  // signed replace
   }
