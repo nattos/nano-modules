@@ -27,8 +27,17 @@ export class ArrRailLane extends MobxLitElement {
   @property({ attribute: false }) trackId!: string;
 
   static styles = css`
-    :host { position: absolute; inset: 0; display: block; }
-    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    :host { position: absolute; inset: 0; display: block; overflow: hidden; }
+    /* Over-rendered 2× (½ host width of margin each side) so a pan/zoom can be
+       applied as a cheap GPU transform of the baked pixels without revealing empty
+       edges. transform-origin sits at the host's left (25% of the 200%-wide canvas)
+       so scaleX is exact. */
+    canvas {
+      position: absolute; top: 0; bottom: 0;
+      left: -50%; width: 200%; height: 100%; display: block;
+      transform-origin: 25% 0;
+      will-change: transform;
+    }
     /* Wires-mode drop target: drag a device field pip onto a return rail to export
        (output field) or read (input field) it. Highlights while hovered mid-drag. */
     .rail-drop { position: absolute; inset: 0; cursor: crosshair; }
@@ -53,31 +62,47 @@ export class ArrRailLane extends MobxLitElement {
   private lastReqSig = '';
   private reqTimer = 0;
   private rafId = 0;
-  /** Cheap grid/playhead fingerprint — drives the per-frame reproject. */
-  private lastDrawSig = '';
+  // ── Bake-and-transform state ──────────────────────────────────────────────
+  // The canvas is "baked" (drawn) at one grid, then a continuous pan/light-zoom is
+  // applied as a cheap CSS transform of those pixels every frame; we only re-bake
+  // (redraw) when the transform drifts too far, the playhead moves on its own, or
+  // it's time to settle. The wheel handler mutates pxPerBeat/scrollUnits in a tight
+  // burst, so this rides the GPU compositor instead of redrawing the canvas.
+  private bakedPp = 22;
+  private bakedSu = 0;
+  private bakedPos = -1;
+  private bakedAt = 0;
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => { this.lastReqSig = ''; this.scheduleRequest(); this.draw(); });
     this.ro.observe(this);
     this.scheduleRequest();
     this.draw();
-    // Reproject the cached curve from a rAF loop so a continuous pan/zoom updates
-    // LIVE, not just on release. The wheel handler mutates pxPerBeat/scrollUnits in
-    // a tight burst that MobX→Lit `updated()` doesn't track frame-by-frame; the
-    // automation editor stays smooth the same way. Redraw only when the grid or
-    // playhead actually moved (cheap signature), so an idle lane costs nothing.
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
-      const sig = `${store.pxPerBeat}|${store.scrollUnits}|${store.positionBeat}|${this.canvas?.clientWidth ?? 0}`;
-      if (sig === this.lastDrawSig) return;
-      this.lastDrawSig = sig;
-      // The grid moved: reproject the cached curve NOW (smooth shift), and refresh
-      // coverage so beats scrolled into view get sampled DURING the motion. The
-      // request is throttled (not debounced) so continuous scroll/zoom keeps
-      // re-sampling instead of waiting for a dwell.
+      const pp = store.pxPerBeat, su = store.scrollUnits, pos = store.positionBeat;
+      if (pp === this.bakedPp && su === this.bakedSu && pos === this.bakedPos) return; // idle
+      // Keep coverage fresh during continuous motion (throttled re-sample).
       const reqSig = this.requestSig();
       if (reqSig !== this.lastReqSig) { this.lastReqSig = reqSig; this.scheduleRequest(); }
-      this.draw();
+      // The exact affine that maps the baked grid → the current grid (origin at the
+      // host's left, i.e. 25% of the over-rendered canvas): scaleX = pp/bakedPp,
+      // translateX = (bakedSu − su)·pp. Holds even under a warp (the warp is baked
+      // into the sampled x; only the units→px mapping changes here).
+      const scaleX = pp / this.bakedPp;
+      const tx = (this.bakedSu - su) * pp;
+      const margin = (this.canvas?.clientWidth ?? 0) / 4; // ½ host width, in px
+      const drifted = Math.abs(scaleX - 1) > 0.18 || Math.abs(tx) > margin * 0.85;
+      const now = (globalThis.performance?.now?.() ?? 0);
+      // Re-bake when the transform would stretch visibly / run past the over-render
+      // margin, when the playhead moved INDEPENDENTLY (during a scroll the dot rides
+      // the transform, so only a real transport move forces a redraw), or after a
+      // short while to settle at full density. Otherwise just transform — no redraw.
+      if (pos !== this.bakedPos || drifted || now - this.bakedAt > 250) {
+        this.draw();
+      } else {
+        this.canvas.style.transform = `translateX(${tx}px) scaleX(${scaleX})`;
+      }
     };
     this.rafId = requestAnimationFrame(tick);
   }
@@ -93,11 +118,12 @@ export class ArrRailLane extends MobxLitElement {
   }
 
   updated() {
-    // Re-request the curve only when its INPUTS changed; otherwise (e.g. the playhead
-    // moved) just redraw the cached curve + the live dot.
+    // Re-request when the curve's INPUTS changed (the worker callback then re-bakes
+    // on the fresh data). Do NOT draw here: the rAF loop is the sole driver of
+    // pan/zoom (transform-or-rebake) — re-baking from `updated()` on every Lit
+    // update would clear the transform each microtask and defeat the trick.
     const sig = this.requestSig();
     if (sig !== this.lastReqSig) { this.lastReqSig = sig; this.scheduleRequest(); }
-    this.draw();
     const t = store.trackById(this.trackId);
     if (t?.railId) setAnchor(AnchorKeys.rail(t.railId), this);
   }
@@ -211,13 +237,16 @@ export class ArrRailLane extends MobxLitElement {
     const t = store.trackById(this.trackId);
     const canvas = this.canvas;
     if (!t?.railId || !canvas) return;
-    const w = canvas.clientWidth;
+    const w = canvas.clientWidth; // over-rendered (2× host)
     if (w <= 0) return;
+    const margin = w / 4; // host-x 0 sits at canvas-x `margin`
     const n = Math.max(2, Math.ceil(w / SAMPLE_PX) + 1);
     const grid = buildBeatGrid();
     const step = w / (n - 1);
     const beats = new Float32Array(n);
-    for (let i = 0; i < n; i++) beats[i] = grid.xToBeat(i * step);
+    // Sample across the FULL over-rendered canvas (host-x −margin … +margin beyond
+    // each edge) so a pan within the margin always has baked curve to show.
+    for (let i = 0; i < n; i++) beats[i] = grid.xToBeat(i * step - margin);
     this.cancelReq?.();
     this.cancelReq = offlineCurveService.request(
       t.railId,
@@ -246,6 +275,17 @@ export class ArrRailLane extends MobxLitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
+    // This is a BAKE at the current grid: drop any pan/zoom transform and record the
+    // grid we drew at, so the rAF loop transforms from here until the next re-bake.
+    canvas.style.transform = '';
+    this.bakedPp = store.pxPerBeat;
+    this.bakedSu = store.scrollUnits;
+    this.bakedPos = store.positionBeat;
+    this.bakedAt = (globalThis.performance?.now?.() ?? 0);
+    // The canvas is over-rendered 2× (½ host width of margin each side); host-x 0
+    // sits at canvas-x `margin`, so every x is offset by it.
+    const margin = w / 4;
+
     const grid = buildBeatGrid();
     const accent = track.color ?? 'var(--app-cat-mod)';
     const signed = this.signed();
@@ -272,7 +312,7 @@ export class ArrRailLane extends MobxLitElement {
       // debounce to refill density). Fall back to even spacing if beats are absent
       // or out of sync with the sample count.
       const xOf = (beats && beats.length === n)
-        ? (i: number) => grid.beatToX(beats[i])
+        ? (i: number) => grid.beatToX(beats[i]) + margin
         : (i: number) => (i / (n - 1)) * w;
       // Error-bar band (lo..hi) — only widens where a stochastic writer contributes.
       ctx.beginPath();
@@ -298,8 +338,9 @@ export class ArrRailLane extends MobxLitElement {
     }
 
     // Playhead tick + the live mean value at the playhead (cheap CPU eval — no worker
-    // round-trip, so it tracks the transport smoothly).
-    const px = grid.beatToX(store.positionBeat);
+    // round-trip, so it tracks the transport smoothly). During a scroll the tick is
+    // baked and rides the transform; an independent transport move re-bakes (above).
+    const px = grid.beatToX(store.positionBeat) + margin;
     if (px >= 0 && px <= w) {
       ctx.fillStyle = 'rgba(255,140,0,0.7)';
       ctx.fillRect(Math.round(px), 0, 1, h);
