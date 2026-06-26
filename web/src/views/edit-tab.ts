@@ -139,8 +139,9 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   private handleGlobalKeyDown = (e: KeyboardEvent) => {
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
-    // `T` toggles taps mode (global, when not typing).
-    if (e.key === 't' || e.key === 'T') {
+    // `W` toggles wires (taps) mode (global, when not typing) — same key as the
+    // arrangement view, so the two surfaces are consistent.
+    if (e.key === 'w' || e.key === 'W') {
       e.preventDefault();
       appController.setTappingMode(!appState.local.tappingMode);
       return;
@@ -496,7 +497,8 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       <div class="section-header">Tools</div>
       <div class="btn-row">
         <button class="btn" ?active=${tappingMode}
-          @click=${() => appController.setTappingMode(!tappingMode)}>Taps</button>
+          title="Toggle wires mode (W)"
+          @click=${() => appController.setTappingMode(!tappingMode)}>Wires</button>
         <button class="btn" ?disabled=${!appController.history.canUndo}
           @click=${() => appController.undo()}>Undo</button>
         <button class="btn" ?disabled=${!appController.history.canRedo}

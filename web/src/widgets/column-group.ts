@@ -1335,7 +1335,7 @@ export class ColumnGroup extends MobxLitElement {
           style="top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px"
           @pointerdown=${(e: PointerEvent) => this.onTapHitPointerDown(
             e, key, fieldPath, isOutput, schemaDef, chainIdx)}
-          @click=${() => this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx)}></div>
+          @click=${(e: Event) => this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx, e)}></div>
       `);
     }
 
@@ -1357,9 +1357,13 @@ export class ColumnGroup extends MobxLitElement {
   ) {
     if (e.button !== 0) return;
     // A connect gesture is already in flight (e.g. click-to-connect): don't start
-    // a competing drag whose pointerup would cancel/clear it before the click
-    // can land the connection. Let onTapOverlayClick complete it.
-    if (this.taps.state) return;
+    // a competing drag whose pointerup would cancel/clear it before the click can
+    // land the connection. Let onTapOverlayClick complete it. STOP PROPAGATION so the
+    // pointerdown doesn't reach the document `onDocDown` (which would cancel the
+    // gesture) NOR the arrangement clip's pointerdown (which would deselect + re-render,
+    // destroying this hit before its click fires) — that's why click-to-connect was
+    // broken within a clip's sketch in the arrangement.
+    if (this.taps.state) { e.stopPropagation(); return; }
     const sourceEl = e.currentTarget as HTMLElement;
     const rect = sourceEl.getBoundingClientRect();
     const sourceInfo: FieldConnectInfo = {
@@ -1384,11 +1388,13 @@ export class ColumnGroup extends MobxLitElement {
     isOutput: boolean,
     schemaDef: any | null,
     chainIdx: number,
+    e?: Event,
   ) {
     // Swallow the synthetic click that trails a drag-to-connect gesture.
     if (this.taps.consumeClickSuppression()) return;
-    // If a connect gesture is in flight, this click lands the connection here.
-    if (this.taps.state) { this.taps.completeOnField(key); return; }
+    // If a connect gesture is in flight, this click lands the connection here. Stop it
+    // bubbling so it doesn't also deselect the arrangement clip after connecting.
+    if (this.taps.state) { e?.stopPropagation(); this.taps.completeOnField(key); return; }
     // Non-destructive: first click SELECTS the field (no tap created). Clicking
     // the already-selected field again picks it up for click-to-connect.
     if (this.ctl.selectedFieldKey() === key) {
