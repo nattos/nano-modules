@@ -106,10 +106,12 @@ TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect
   INFO("state: " << state.dump());
   REQUIRE(state.contains("output"));
   // Phase is a dt accumulator (style guide §2.1): default rate 0.5 → 5 Hz, so a
-  // single 16 ms tick advances phase to 0.08 cycles → sin(0.08*2π)*0.5+0.5.
+  // single 16 ms tick advances phase to 0.08 cycles. The LFO is a SIGNED
+  // (bipolar [-1,1]) source resting at 0: output = sin(0.08*2π) * amplitude
+  // (default 1.0) — not the old unipolar sin*0.5+0.5.
   const double kPi = 3.14159265358979323846;
   CHECK(state["output"].get<double>() ==
-        Catch::Approx(std::sin(0.08 * 2.0 * kPi) * 0.5 + 0.5).margin(1e-6));
+        Catch::Approx(std::sin(0.08 * 2.0 * kPi)).margin(1e-6));
 
   host.shutdown();
 }
@@ -128,7 +130,7 @@ TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "
   host.set_state_doc(id, &doc);
   // phase accumulates as dt*(rate*10) cycles. rate=0.5 (default) => 5 Hz, so a
   // dt=0.05 tick advances phase to 0.25 cycles (=pi/2 in radians) => sin=1 and
-  // amplitude becomes observable: output = sin(phase*2π)*amplitude*0.5 + 0.5.
+  // amplitude becomes observable: bipolar output = sin(phase*2π)*amplitude.
   FrameState fs;
   fs.elapsed_time = 0.0;
   host.set_frame_state(id, &fs);
@@ -153,19 +155,18 @@ TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "
   EffectInstance* inst = rt.instanceFor("mod.source.lfo", "k0");
   REQUIRE(inst != nullptr);
 
-  // Defaults (amplitude 1.0): advance phase to 0.25 cycles → sin(pi/2)*1*0.5+0.5
-  // = 1.0 (clamped).
+  // Defaults (amplitude 1.0): advance phase to 0.25 cycles → sin(pi/2)*1 = 1.0.
   inst->doTick(0.05);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
         Catch::Approx(1.0).margin(1e-4));
 
   // Patch amplitude -> 0.5, then a dt=0 tick holds phase at 0.25:
-  // sin(pi/2)*0.5*0.5+0.5 = 0.75. Proves the patch marshalled into linear memory
-  // and on_state_patched applied it.
+  // sin(pi/2)*0.5 = 0.5. Proves the patch marshalled into linear memory and
+  // on_state_patched applied it.
   inst->setParamFloat("amplitude", 0.5f);
   inst->doTick(0.0);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
-        Catch::Approx(0.75).margin(1e-4));
+        Catch::Approx(0.5).margin(1e-4));
 
   host.shutdown();
 }
@@ -216,15 +217,15 @@ TEST_CASE("mod.source.lfo Period mode remaps the speed knob (env_lfo)", "[effect
         Catch::Approx(1.0).margin(1e-4));
 
   // period=300s (5 min). The same dt barely moves phase (0.125/300 cycles), so
-  // the output sits essentially at the 0.5 midpoint — far slower than Freq
-  // mode's 0.1 Hz floor could reach.
+  // the bipolar output sits essentially at its 0 rest point — far slower than
+  // Freq mode's 0.1 Hz floor could reach.
   EffectInstance* slow = rt.instanceFor("mod.source.lfo", "slow");
   REQUIRE(slow != nullptr);
   slow->setParamFloat("mode", 1.0f);    // ModePeriod
   slow->setParamFloat("period", 300.0f);
   slow->doTick(0.125);
   CHECK(doc.get_plugin_state(key)["output"].get<double>() ==
-        Catch::Approx(0.5).margin(5e-3));
+        Catch::Approx(0.0).margin(5e-3));
 
   host.shutdown();
 }
@@ -318,9 +319,10 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
     }
     return out;
   };
+  // Output is a SIGNED (bipolar) source in [-1,1] resting at 0.
   auto inRange = [](const std::vector<double>& v) {
     for (double x : v)
-      if (x < -1e-6 || x > 1.0 + 1e-6) return false;
+      if (x < -1.0 - 1e-6 || x > 1.0 + 1e-6) return false;
     return true;
   };
   auto countAbove = [](const std::vector<double>& v, double t) {
@@ -334,18 +336,18 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
     return c;
   };
 
-  // Sine (shape 0): smooth, in range, reaches both rails.
+  // Sine (shape 0): smooth, in range, reaches both rails (+1 and -1).
   {
     auto v = sweep("sine", WfSine, 0.0f);
     CHECK(inRange(v));
     CHECK(countAbove(v, 0.95) > 0);
-    CHECK(countBelow(v, 0.05) > 0);
+    CHECK(countBelow(v, -0.95) > 0);
   }
   // Square (shape 0): bimodal ±1, ~50% duty, essentially no mid values.
   {
     auto v = sweep("sq", WfSquare, 0.0f);
     CHECK(inRange(v));
-    int hi = countAbove(v, 0.99), lo = countBelow(v, 0.01);
+    int hi = countAbove(v, 0.99), lo = countBelow(v, -0.99);
     CHECK(hi + lo >= kN - 2);
     CHECK(hi > 30);
     CHECK(hi < 70);
@@ -387,9 +389,10 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
     auto v = sweep("fm", WfRandomFM, 0.9f);
     CHECK(inRange(v));
     CHECK(countAbove(v, 0.9) > 0);
-    CHECK(countBelow(v, 0.1) > 0);
+    CHECK(countBelow(v, -0.9) > 0);
   }
-  // Invert: a saw at shape 0 has value == phase, so inverting yields 1 - phase.
+  // Invert: a bipolar saw at shape 0 is value == 2*phase - 1, so inverting
+  // (negate) yields 1 - 2*phase.
   {
     EffectInstance* inst = rt.instanceFor("mod.source.lfo", "inv");
     REQUIRE(inst != nullptr);
@@ -400,7 +403,7 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
     for (int i = 1; i <= 20; i++) {
       inst->doTick(kDt);
       double v = doc.get_plugin_state(key)["output"].get<double>();
-      CHECK(v == Catch::Approx(1.0 - i * kDt).margin(1e-4));
+      CHECK(v == Catch::Approx(1.0 - 2.0 * i * kDt).margin(1e-4));
     }
   }
 

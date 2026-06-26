@@ -143,8 +143,11 @@ TEST_CASE("mod.source.lfo executes via call_indirect and writes output", "[effec
   // tick advances a phase accumulator by dt*rate (style guide §2.1) rather than
   // reading time()*rate, so turning the rate knob never causes a phase jump.
   // Default rate 0.5 → 5 Hz; one 16 ms tick advances phase to 0.08 cycles.
+  // The LFO is a SIGNED (bipolar [-1,1]) modulation source: output = sin(phase)
+  // * amplitude (default amplitude 1.0), resting at 0 — not the old unipolar
+  // sin*0.5+0.5.
   const double kPi = 3.14159265358979323846;
-  double expected = std::sin(0.08 * 2.0 * kPi) * 0.5 + 0.5;
+  double expected = std::sin(0.08 * 2.0 * kPi);
   CHECK(state["output"].get<double>() == Catch::Approx(expected).margin(1e-6));
 
   host.shutdown();
