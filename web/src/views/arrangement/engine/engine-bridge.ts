@@ -466,11 +466,13 @@ export class EngineBridge {
     // is constant ⇒ no recompile; an animated base re-issues the composite as it moves.
     const totalBeats = compositionLengthBeats(store.composition);
     const railBases = new Map<string, number>();
+    const railSigned = new Map<string, boolean>(); // the return track's signed mode
     for (const l of engineLayers) {
       for (const read of l.clip.reads ?? []) {
         if (railBases.has(read.railId)) continue;
-        const base = store.railTrackFor(read.railId)?.baseCurve;
-        railBases.set(read.railId, base ? evalCurveAt(base, totalBeats > 0 ? store.positionBeat / totalBeats : 0) : 0);
+        const rt = store.railTrackFor(read.railId);
+        railBases.set(read.railId, rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? store.positionBeat / totalBeats : 0) : 0);
+        railSigned.set(read.railId, rt?.railSigned ?? false);
       }
     }
 
@@ -479,6 +481,7 @@ export class EngineBridge {
           engineLayers.map((l) => ({ clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode, track: l.track })),
           store.composition.meta.background,
           railBases,
+          railSigned,
         )
       : null;
 

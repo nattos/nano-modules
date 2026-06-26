@@ -668,26 +668,39 @@ export class ArrInspector extends MobxLitElement {
   private renderTrackInspector(path: string): TemplateResult {
     const track = store.trackById(path.split('/')[1]);
     if (!track) return html`<div class="empty">Track not found.</div>`;
+    const isRail = track.kind === 'rail';
     return html`
-      <div class="section-header">${track.kind === 'group' ? 'Group' : 'Track'} · ${track.name}</div>
+      <div class="section-header">${track.kind === 'group' ? 'Group' : isRail ? 'Return' : 'Track'} · ${track.name}</div>
       <div class="body">
-        <div class="row">
-          <label>Opacity</label>
-          <span class="val" style="flex:1; min-width:0;">
-            <arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>
-          </span>
-        </div>
-        <div class="row">
-          <label>Blend</label>
-          <span class="val seg wrap">
-            ${BLEND_MODE_NAMES.map(
-              (name, i) => html`<button
-                class="segbtn ${(track.blendMode ?? 0) === i ? 'on' : ''}"
-                @click=${() => store.setTrackBlendMode(track.id, i)}
-              >${name}</button>`,
-            )}
-          </span>
-        </div>
+        ${isRail
+          ? html`<div class="row">
+              <label>Range</label>
+              <span class="val seg">
+                ${([['Unsigned', false], ['Signed', true]] as const).map(
+                  ([label, signed]) => html`<button
+                    class="segbtn ${(track.railSigned ?? false) === signed ? 'on' : ''}"
+                    @click=${() => store.setRailSigned(track.id, signed)}
+                  >${label}</button>`,
+                )}
+              </span>
+            </div>`
+          : html`<div class="row">
+              <label>Opacity</label>
+              <span class="val" style="flex:1; min-width:0;">
+                <arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>
+              </span>
+            </div>
+            <div class="row">
+              <label>Blend</label>
+              <span class="val seg wrap">
+                ${BLEND_MODE_NAMES.map(
+                  (name, i) => html`<button
+                    class="segbtn ${(track.blendMode ?? 0) === i ? 'on' : ''}"
+                    @click=${() => store.setTrackBlendMode(track.id, i)}
+                  >${name}</button>`,
+                )}
+              </span>
+            </div>`}
         ${store.isMainBus(track)
           ? ''
           : html`<div class="row">
@@ -699,22 +712,24 @@ export class ArrInspector extends MobxLitElement {
                 Delete track
               </button>
             </div>`}
-        <div class="group-title chain-hdr">
-          <span>Chain (sketch)</span>
-          <button
-            class="wires-toggle ${store.wiresMode ? 'on' : ''}"
-            title="Toggle wires mode — click/drag a field port to connect"
-            @click=${() => store.toggleWiresMode()}
-          ><ui-icon icon="la-project-diagram"></ui-icon> Wires</button>
-        </div>
-        <column-group
-          class="chain"
-          .colIdx=${0}
-          .sketchId=${`track/${track.id}`}
-          .columnWidth=${280}
-          .adapter=${this.adapterFor(trackTarget(track.id))}
-          .callbacks=${ARR_COLUMN_CALLBACKS}
-        ></column-group>
+        ${isRail
+          ? '' /* Returns carry no effect chain — they're value-only rails. */
+          : html`<div class="group-title chain-hdr">
+              <span>Chain (sketch)</span>
+              <button
+                class="wires-toggle ${store.wiresMode ? 'on' : ''}"
+                title="Toggle wires mode — click/drag a field port to connect"
+                @click=${() => store.toggleWiresMode()}
+              ><ui-icon icon="la-project-diagram"></ui-icon> Wires</button>
+            </div>
+            <column-group
+              class="chain"
+              .colIdx=${0}
+              .sketchId=${`track/${track.id}`}
+              .columnWidth=${280}
+              .adapter=${this.adapterFor(trackTarget(track.id))}
+              .callbacks=${ARR_COLUMN_CALLBACKS}
+            ></column-group>`}
         <!-- Track envelopes are edited ONLY on the timeline (automation lanes),
              not the inspector. -->
       </div>

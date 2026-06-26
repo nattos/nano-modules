@@ -2925,6 +2925,14 @@ export class ArrangementStore {
     });
   }
 
+  /** Set a return/rail track's signed (bipolar) vs unsigned mode. */
+  setRailSigned(trackId: string, signed: boolean) {
+    this.mutate('set return range', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (t) t.railSigned = signed;
+    });
+  }
+
   /** Select every clip whose path is in `clipPaths` (marquee result). */
   selectClips(clipPaths: string[], additive: boolean) {
     runInAction(() => {

@@ -80,6 +80,7 @@ export class ArrRailLane extends MobxLitElement {
     // + writers drive re-requests (read here so MobX fires updated() on any change).
     void store.pxPerBeat; void store.scrollUnits; void store.positionBeat;
     const t = store.trackById(this.trackId);
+    void t?.railSigned;
     if (t?.baseCurve) for (const p of t.baseCurve) { void p.x; void p.y; }
     for (const w of store.railWriters(t?.railId ?? '')) {
       void w.clip.startBeat; void w.clip.lengthBeat; void w.exp.combine; void w.exp.scale;
@@ -136,6 +137,10 @@ export class ArrRailLane extends MobxLitElement {
     return 60 / Math.max(1e-3, store.composition.meta.baseBPM);
   }
 
+  private signed(): boolean {
+    return store.trackById(this.trackId)?.railSigned ?? false;
+  }
+
   /** A fingerprint of everything the curve depends on EXCEPT the playhead. */
   private requestSig(): string {
     const t = store.trackById(this.trackId);
@@ -145,7 +150,7 @@ export class ArrRailLane extends MobxLitElement {
       .map((s) => `${s.seed}:${s.combine}:${s.scale}:${s.startBeat}:${s.endBeat}:${s.stochastic ? 1 : 0}`
         + (s.lfo ? `:lfo(${s.lfo.mode},${s.lfo.rate},${s.lfo.period},${s.lfo.amplitude},${s.lfo.waveform},${s.lfo.shape},${s.lfo.invert ? 1 : 0})` : ''))
       .join(',');
-    return `${w}|${store.pxPerBeat}|${store.scrollUnits}|${this.secondsPerBeat()}|${JSON.stringify(t.baseCurve)}|${writers}`;
+    return `${w}|${store.pxPerBeat}|${store.scrollUnits}|${this.secondsPerBeat()}|${this.signed() ? 1 : 0}|${JSON.stringify(t.baseCurve)}|${writers}`;
   }
 
   private scheduleRequest() {
@@ -173,7 +178,7 @@ export class ArrRailLane extends MobxLitElement {
       // across postMessage. `writerSpecs` already returns plain objects.
       { baseCurve: (t.baseCurve ?? [{ x: 0, y: 0.3 }]).map((p) => ({ x: p.x, y: p.y })),
         totalBeats: compositionLengthBeats(store.composition),
-        secondsPerBeat: this.secondsPerBeat(),
+        secondsPerBeat: this.secondsPerBeat(), signed: this.signed(),
         writers: this.writerSpecs(t.railId), beats },
       (curve) => { this.curve = curve; this.draw(); },
     );
@@ -195,7 +200,19 @@ export class ArrRailLane extends MobxLitElement {
     ctx.clearRect(0, 0, w, h);
 
     const accent = track.color ?? 'var(--app-cat-mod)';
-    const yOf = (v: number) => h - 4 - Math.max(0, Math.min(1, v)) * (h - 8);
+    const signed = this.signed();
+    // Unsigned: 0 at the bottom, 1 at the top. Signed: 0 centred, ±1 at the edges.
+    const yOf = signed
+      ? (v: number) => h / 2 - Math.max(-1, Math.min(1, v)) * (h / 2 - 4)
+      : (v: number) => h - 4 - Math.max(0, Math.min(1, v)) * (h - 8);
+    if (signed) { // faint zero line
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, Math.round(h / 2) + 0.5);
+      ctx.lineTo(w, Math.round(h / 2) + 0.5);
+      ctx.stroke();
+    }
     const curve = this.curve;
 
     if (curve && curve.mean.length >= 2) {
@@ -208,11 +225,13 @@ export class ArrRailLane extends MobxLitElement {
       ctx.closePath();
       ctx.fillStyle = 'rgba(70,194,194,0.16)';
       ctx.fill();
-      // Filled mean envelope (down to the baseline) for body.
+      // Filled mean envelope (down to the baseline — the bottom unsigned, the zero
+      // line signed) for body.
+      const baseY = signed ? h / 2 : h;
       ctx.beginPath();
-      ctx.moveTo(0, h);
+      ctx.moveTo(0, baseY);
       for (let i = 0; i < n; i++) ctx.lineTo(xOf(i), yOf(curve.mean[i]));
-      ctx.lineTo(w, h);
+      ctx.lineTo(w, baseY);
       ctx.closePath();
       ctx.fillStyle = 'rgba(70,194,194,0.08)';
       ctx.fill();
@@ -233,7 +252,7 @@ export class ArrRailLane extends MobxLitElement {
       ctx.fillRect(Math.round(px), 0, 1, h);
       const vNow = railMeanAt(
         { baseCurve: track.baseCurve ?? [{ x: 0, y: 0.3 }], totalBeats: compositionLengthBeats(store.composition),
-          secondsPerBeat: this.secondsPerBeat(), writers: this.writerSpecs(track.railId ?? '') },
+          secondsPerBeat: this.secondsPerBeat(), signed, writers: this.writerSpecs(track.railId ?? '') },
         store.positionBeat);
       ctx.beginPath();
       ctx.arc(px, yOf(vNow), 2.5, 0, Math.PI * 2);

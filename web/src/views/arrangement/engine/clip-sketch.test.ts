@@ -136,7 +136,7 @@ describe('buildCompositeSketch', () => {
       reads: [{ id: 'r1', railId, targetDeviceId: 'Rsrc', targetField: 'scale', combine: 'add', magnitude }],
     }) as any;
 
-    it('routes writer → rail accumulator → reader in two stages (combine + magnitude)', () => {
+    it('routes writer → rail accumulator → reader in two stages; magnitude follows the return mode', () => {
       const r = buildCompositeSketch([
         { clip: writerClip('rail1'), opacity: 1 },
         { clip: readerClip('rail1'), opacity: 1 },
@@ -145,15 +145,27 @@ describe('buildCompositeSketch', () => {
       // A `mod.shaper.remap` accumulator node was inserted for the rail.
       expect(r.sketch.chain!.some((e) => (e as any).instance_key === railKey
         && e.module_type === 'mod.shaper.remap')).toBe(true);
-      // Stage 1: writer output → rail.input (carries the EXPORT combine/magnitude).
+      // Stage 1: writer output → rail.input (EXPORT combine).
       const s1 = r.sketch.wires!.find((x) => x.src.instanceKey === clipInstanceKey('W', 'Wlfo'));
       expect(s1).toBeTruthy();
       expect(s1!.dest).toEqual({ instanceKey: railKey, field: 'input' });
       expect(s1!.combine).toBe('add');
-      // Stage 2: rail.output → reader param (carries the READ combine/magnitude).
+      // Stage 2: rail.output → reader param (READ combine). Default return mode is
+      // unsigned, so the wire magnitude is unsigned regardless of the tap's own value.
       const s2 = r.sketch.wires!.find((x) => x.dest.instanceKey === clipInstanceKey('R', 'Rsrc') && x.dest.field === 'scale');
       expect(s2).toBeTruthy();
       expect(s2!.src).toEqual({ instanceKey: railKey, field: 'output' });
+      expect(s2!.magnitude).toBe('unsigned');
+    });
+
+    it('a SIGNED return makes the rail wires signed', () => {
+      const r = buildCompositeSketch(
+        [{ clip: writerClip('rail1'), opacity: 1 }, { clip: readerClip('rail1'), opacity: 1 }],
+        { mode: 'transparent' }, undefined, new Map([['rail1', true]]),
+      )!;
+      const s1 = r.sketch.wires!.find((x) => x.dest.instanceKey === 'rail_rail1' && x.dest.field === 'input');
+      const s2 = r.sketch.wires!.find((x) => x.src.instanceKey === 'rail_rail1' && x.src.field === 'output');
+      expect(s1!.magnitude).toBe('signed');
       expect(s2!.magnitude).toBe('signed');
     });
 

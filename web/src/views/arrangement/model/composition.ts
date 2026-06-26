@@ -401,6 +401,10 @@ export interface Track {
   railId?: string;
   /** For kind 'rail': the base value envelope (automation), points x,y in [0,1]. */
   baseCurve?: EnvelopePoint[];
+  /** For kind 'rail': SIGNED (bipolar −1..1, summed around 0) vs UNSIGNED (0..1). Sets
+   *  how writer wires fold AND the lane's display range. Omitted ⇒ unsigned (most
+   *  modulation sources are unsigned, and the default combine is add). */
+  railSigned?: boolean;
 }
 
 export interface PlayModeConfig {

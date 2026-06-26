@@ -125,6 +125,10 @@ export function buildCompositeSketch(
    *  path). Omitted ⇒ 0. (A moving base recompiles the composite; a flat base — the
    *  default — is constant, so no recompile.) */
   railBases?: Map<string, number>,
+  /** Per-rail SIGNED flag (the return track's mode). Overrides the rail wires'
+   *  magnitude — signed ⇒ writers/readers interpret the source as bipolar −1..1,
+   *  unsigned ⇒ 0..1. Omitted/false ⇒ unsigned. */
+  railSigned?: Map<string, boolean>,
 ): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
   const bundles = new Set<string>();
   const chain: ChainEntry[] = [];
@@ -301,7 +305,10 @@ export function buildCompositeSketch(
     }
   }
 
-  // Stage 1 — writers → the rail accumulator's `input` (per EXPORT combine/magnitude).
+  // The return's signed mode governs the rail wires' magnitude (how the source maps
+  // into the dest range), overriding each tap's own magnitude.
+  const railMag = (railId: string): 'signed' | 'unsigned' => (railSigned?.get(railId) ? 'signed' : 'unsigned');
+  // Stage 1 — writers → the rail accumulator's `input` (per EXPORT combine).
   for (const [railId, writers] of railWriters) {
     const railKey = `rail_${railId}`;
     if (!railNodeKeys.has(railKey)) continue; // no active reader → nothing pulls it
@@ -311,7 +318,7 @@ export function buildCompositeSketch(
         src: { instanceKey: w.key, field: w.field },
         dest: { instanceKey: railKey, field: 'input' },
         combine: w.tap.combine,
-        magnitude: w.tap.magnitude,
+        magnitude: railMag(railId),
         ...((w.tap.scale ?? 1) !== 1 ? { mod: { scale: w.tap.scale } } : {}),
       });
     }
@@ -325,7 +332,7 @@ export function buildCompositeSketch(
       src: { instanceKey: railKey, field: 'output' },
       dest: { instanceKey: r.key, field: r.field },
       combine: r.tap.combine,
-      magnitude: r.tap.magnitude,
+      magnitude: railMag(r.railId),
       ...((r.tap.scale ?? 1) !== 1 ? { mod: { scale: r.tap.scale } } : {}),
     });
   }

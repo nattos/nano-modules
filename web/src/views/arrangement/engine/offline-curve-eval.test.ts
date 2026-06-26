@@ -17,7 +17,7 @@ const SPB = 0.5; // 120 bpm
 
 describe('assembleRailCurve', () => {
   it('a writer-less rail is just the base curve, with a zero-width band', () => {
-    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [], beats: beats(8) });
+    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [], beats: beats(8) });
     for (let i = 0; i < c.mean.length; i++) {
       expect(c.mean[i]).toBeCloseTo(0.2, 5);
       expect(c.lo[i]).toBeCloseTo(c.mean[i], 5); // deterministic ⇒ no band
@@ -26,7 +26,7 @@ describe('assembleRailCurve', () => {
   });
 
   it('is deterministic — same spec ⇒ identical samples', () => {
-    const spec = { baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [writer()], beats: beats(32) };
+    const spec = { baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [writer()], beats: beats(32) };
     const a = assembleRailCurve({ ...spec, beats: beats(32) });
     const b = assembleRailCurve({ ...spec, beats: beats(32) });
     expect(Array.from(a.mean)).toEqual(Array.from(b.mean));
@@ -35,13 +35,13 @@ describe('assembleRailCurve', () => {
 
   it('a KNOWN deterministic modulator (mirrored LFO sine) has no error band (lo == hi)', () => {
     const lfoSine = writer({ kind: 'lfo', lfo: { mode: 0, rate: 0.5, period: 1, amplitude: 1, waveform: 0, shape: 0, invert: false } });
-    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [lfoSine], beats: beats(24) });
+    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [lfoSine], beats: beats(24) });
     for (let i = 0; i < c.mean.length; i++) expect(c.hi[i] - c.lo[i]).toBeCloseTo(0, 5);
   });
 
   it('an UNKNOWN (un-mirrored) modulator renders an uncertainty band (hi > lo)', () => {
     // No kind ⇒ generic: we cannot predict its output, so it must show a swing band.
-    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [writer()], beats: beats(48) });
+    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [writer()], beats: beats(48) });
     let widened = false;
     for (let i = 0; i < c.mean.length; i++) if (c.hi[i] - c.lo[i] > 0.05) { widened = true; break; }
     expect(widened).toBe(true);
@@ -49,7 +49,7 @@ describe('assembleRailCurve', () => {
 
   it('a writer only contributes within its active span (outside ⇒ base)', () => {
     const c = assembleRailCurve({
-      baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [writer({ startBeat: 4, endBeat: 8 })], beats: beats(2, 12, 14),
+      baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [writer({ startBeat: 4, endBeat: 8 })], beats: beats(2, 12, 14),
     });
     // Samples at beats 12..14 are outside [4,8] → pure base.
     for (let i = 0; i < c.mean.length; i++) expect(c.mean[i]).toBeCloseTo(0.2, 5);
@@ -57,12 +57,21 @@ describe('assembleRailCurve', () => {
 
   it('two `add` writers sum onto the base at the same beat', () => {
     const at = (writers: WriterSpec[]) =>
-      railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers }, 5);
+      railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers }, 5);
     const base = at([]);
     const one = at([writer()]);
     const two = at([writer(), writer({ seed: 99 })]);
     expect(one).toBeGreaterThan(base);
     expect(two).toBeGreaterThan(one); // a second add-writer raises the mean further
+  });
+
+  it('signed mode prescales contributions to bipolar [-1,1] (0.5 output → 0)', () => {
+    const sine = writer({ kind: 'lfo', lfo: lfo({ waveform: 0 }), combine: 'replace' });
+    // Sine at phase 0 = 0.5 output. Unsigned ⇒ 0.5; signed ⇒ 0.5·2−1 = 0 (centred).
+    const spec = (signed: boolean) =>
+      railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed, writers: [sine] }, 0);
+    expect(spec(false)).toBeCloseTo(0.5, 4);
+    expect(spec(true)).toBeCloseTo(0, 4);
   });
 });
 
@@ -73,7 +82,7 @@ describe('LFO mirror (mod.source.lfo)', () => {
   };
   // `replace` so the result IS the LFO value (base ignored), at 120 bpm (SPB 0.5).
   const at = (w: WriterSpec, beat: number) =>
-    railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, writers: [w] }, beat);
+    railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [w] }, beat);
 
   it('a sine LFO sits at 0.5 at the clip start (phase 0)', () => {
     expect(at(lw({ waveform: 0 }), 0)).toBeCloseTo(0.5, 4);
@@ -100,7 +109,7 @@ describe('LFO mirror (mod.source.lfo)', () => {
 
   it('Random Walk is stochastic → a band, not a point', () => {
     const c = assembleRailCurve({
-      baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB,
+      baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false,
       writers: [lw({ waveform: 4 }, 'add')], beats: beats(8),
     });
     let widened = false;

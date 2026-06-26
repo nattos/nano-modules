@@ -55,6 +55,10 @@ export interface RailCurveSpec {
   writers: WriterSpec[];
   /** Beats→seconds for time-based mirrors (LFO). Approximate: 60/bpm, warp ignored. */
   secondsPerBeat: number;
+  /** SIGNED return: each unsigned [0,1] contribution (and the base) is prescaled to
+   *  bipolar [-1,1] (v·2−1) before folding — so writers swing around 0 and the lane's
+   *  display range is [-1,1]. Unsigned ⇒ values stay [0,1]. */
+  signed: boolean;
   /** Sample beats (already warp-mapped by the caller — the worker stays grid-free). */
   beats: Float32Array;
 }
@@ -164,17 +168,18 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
   const lo = new Float32Array(n);
   const hi = new Float32Array(n);
   const T = Math.max(1e-6, spec.totalBeats);
+  const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v); // unsigned [0,1] → bipolar [-1,1]
   for (let i = 0; i < n; i++) {
     const beat = spec.beats[i];
-    const base = evalCurveAt(spec.baseCurve, beat / T);
+    const base = sgn(evalCurveAt(spec.baseCurve, beat / T));
     let m = base, l = base, h = base;
     for (const w of spec.writers) {
       const b = writerBlockAt(w, spec.secondsPerBeat, beat);
       if (!b) continue;
-      m = fold(m, b.mean, w.combine);
+      m = fold(m, sgn(b.mean), w.combine);
       // Interval fold (approximate for non-add combines): keep the bounds ordered.
-      const a = fold(l, b.lo, w.combine);
-      const c = fold(h, b.hi, w.combine);
+      const a = fold(l, sgn(b.lo), w.combine);
+      const c = fold(h, sgn(b.hi), w.combine);
       l = Math.min(a, c);
       h = Math.max(a, c);
     }
@@ -186,11 +191,11 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
 /** Sample the assembled mean at a single beat (the live playhead dot — cheap, no
  *  worker round-trip). Mirrors assembleRailCurve's fold for one point. */
 export function railMeanAt(spec: Omit<RailCurveSpec, 'beats'>, beat: number): number {
-  const base = evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats));
-  let m = base;
+  const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v);
+  let m = sgn(evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats)));
   for (const w of spec.writers) {
     const b = writerBlockAt(w, spec.secondsPerBeat, beat);
-    if (b) m = fold(m, b.mean, w.combine);
+    if (b) m = fold(m, sgn(b.mean), w.combine);
   }
   return m;
 }
