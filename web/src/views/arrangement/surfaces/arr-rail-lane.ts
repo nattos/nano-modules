@@ -71,6 +71,12 @@ export class ArrRailLane extends MobxLitElement {
       const sig = `${store.pxPerBeat}|${store.scrollUnits}|${store.positionBeat}|${this.canvas?.clientWidth ?? 0}`;
       if (sig === this.lastDrawSig) return;
       this.lastDrawSig = sig;
+      // The grid moved: reproject the cached curve NOW (smooth shift), and refresh
+      // coverage so beats scrolled into view get sampled DURING the motion. The
+      // request is throttled (not debounced) so continuous scroll/zoom keeps
+      // re-sampling instead of waiting for a dwell.
+      const reqSig = this.requestSig();
+      if (reqSig !== this.lastReqSig) { this.lastReqSig = reqSig; this.scheduleRequest(); }
       this.draw();
     };
     this.rafId = requestAnimationFrame(tick);
@@ -178,11 +184,27 @@ export class ArrRailLane extends MobxLitElement {
     return `${w}|${store.pxPerBeat}|${store.scrollUnits}|${this.secondsPerBeat()}|${this.signed() ? 1 : 0}|${JSON.stringify(t.baseCurve)}|${writers}`;
   }
 
+  private lastSentAt = -1e9;
   private scheduleRequest() {
-    if (this.reqTimer) clearTimeout(this.reqTimer);
-    // Coalesce bursts (rapid scroll/zoom) into one request; the service also keeps
-    // only the latest per rail and drops stale results.
-    this.reqTimer = window.setTimeout(() => { this.reqTimer = 0; this.sendRequest(); }, 24);
+    // THROTTLE (not debounce): during a continuous scroll/zoom the request must
+    // keep firing so newly-revealed beats are sampled mid-motion — a debounce
+    // would reset every frame and only fire once the gesture settled (the "only
+    // redraws on dwell" bug). Fire on the leading edge if enough time has passed,
+    // else schedule one trailing call. The service keeps only the latest per rail.
+    if (this.reqTimer) return; // a trailing request is already queued
+    const THROTTLE_MS = 60;
+    const now = (globalThis.performance?.now?.() ?? 0);
+    const since = now - this.lastSentAt;
+    if (since >= THROTTLE_MS) {
+      this.lastSentAt = now;
+      this.sendRequest();
+    } else {
+      this.reqTimer = window.setTimeout(() => {
+        this.reqTimer = 0;
+        this.lastSentAt = (globalThis.performance?.now?.() ?? 0);
+        this.sendRequest();
+      }, THROTTLE_MS - since);
+    }
   }
 
   private sendRequest() {
