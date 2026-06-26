@@ -334,4 +334,22 @@ void render(void* self, int vp_w, int vp_h) {
   // No rendering — pure data module
 }
 
+// Seek to an absolute time `to` (seconds) without ticking every intervening frame —
+// the host calls this on a discontinuity (notably a BACKWARD scrub, where a clamped
+// dt would otherwise freeze the phase). For the deterministic waveforms the output is
+// a pure function of phase, so we recompute phase = to·freq exactly; backward seeks
+// then land on the same value the forward pass had at `to`. Random Walk / FM can't be
+// replayed, so their walk restarts cleanly at the new time.
+void seek(void* self, double /*from*/, double to) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  double rate = (s->mode == ModePeriod) ? 1.0 / (s->period < 0.01 ? 0.01 : s->period)
+                                        : s->rate * 10.0;
+  double ph = to * rate;
+  s->phase = ph - std::floor(ph);
+  s->fmWalkPhase = 0.0;
+  s->rwPhase = 0.0;
+  s->rwInit = false;
+}
+
 } // namespace env_lfo

@@ -33,6 +33,9 @@ import type { BridgeCore } from './bridge-core';
 interface FrameState {
   elapsedTime: number;
   deltaTime: number;
+  /** Signed delta for the executor (backward scrub → effect seek). Falls back to
+   *  `deltaTime` when absent. */
+  execDeltaTime?: number;
   barPhase: number;
   bpm: number;
 }
@@ -559,7 +562,8 @@ export class WasmSketchExecutor {
     try {
       outHandle = this.exports.executor_execute(
         slot.exPtr, jptr, jbytes.length, inputHandle, outTex,
-        width, height, frameState.deltaTime, dirty ? 1 : 0);
+        // Signed delta: a backward scrub seeks seekable effects instead of freezing.
+        width, height, frameState.execDeltaTime ?? frameState.deltaTime, dirty ? 1 : 0);
     } finally {
       this.exports.free(jptr);
     }

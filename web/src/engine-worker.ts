@@ -504,13 +504,18 @@ async function frame() {
 
   const now = performance.now() / 1000;
   let dt: number;
+  // Signed delta handed to the EXECUTOR only: a negative step (backward scrub) lets
+  // seekable effects (e.g. the LFO) seek to the exact time instead of freezing. Real
+  // modules + smoothing still get the clamped (≥0) `dt`.
+  let execDt: number;
   if (transportSeconds != null) {
     // Transport-driven: the playhead time IS the effect time. Holding the same
-    // seconds (paused) yields dt 0 → a static frame; scrubbing back clamps dt≥0.
-    dt = Math.max(0, transportSeconds - elapsed);
+    // seconds (paused) yields dt 0 → a static frame.
+    execDt = transportSeconds - elapsed;
+    dt = Math.max(0, execDt);
     elapsed = transportSeconds;
   } else {
-    dt = now - lastTime;
+    dt = execDt = now - lastTime;
     elapsed += dt;
   }
   lastTime = now;
@@ -525,7 +530,7 @@ async function frame() {
 
   if (bridgeCore) bridgeCore.tick();
 
-  await simulateTick(dt);
+  await simulateTick(dt, execDt);
   captureAndSendFrame();
 
   if (stateGeneration !== lastBroadcastGeneration) {
@@ -692,7 +697,7 @@ function applyInstanceTextures() {
 /**
  * Simulate one frame of the entire composition.
  */
-async function simulateTick(dt: number) {
+async function simulateTick(dt: number, execDt: number = dt) {
   if (!gpuHost || !gpuContext || !canvas || !executor) return;
   const w = canvas.width;
   const h = canvas.height;
@@ -701,6 +706,9 @@ async function simulateTick(dt: number) {
   const frameState = {
     elapsedTime: elapsed,
     deltaTime: dt,
+    // Signed delta for the executor (backward scrub → effect seek); real modules
+    // read `deltaTime` (clamped ≥0). Equal except on a backward transport jump.
+    execDeltaTime: execDt,
     barPhase: (elapsed * 120 / 60 / 4) % 1.0,
     bpm: 120,
     viewportW: w,

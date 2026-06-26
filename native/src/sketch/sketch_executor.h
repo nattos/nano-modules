@@ -291,9 +291,13 @@ class SketchExecutor {
   // used for cycle breaking — this is a user-set wall-clock delay.
   std::unordered_map<std::string,
       std::unordered_map<std::string, delay_line::DelayLine<512>>> delayState_;
-  // Monotonic modulation clock (seconds), advanced by `dt` once per execute().
-  // The shared time base the delay lines push/read against.
+  // Monotonic modulation clock (seconds), advanced by the CLAMPED (≥0) `dt` once per
+  // execute(). The shared time base the delay lines push/read against.
   double modClock_ = 0.0;
+  // Absolute transport clock (seconds), advanced by the SIGNED `dt` — can move
+  // backward. A negative step is a backward scrub: seekable effects get doSeek(from,to)
+  // to land deterministically rather than freezing on a clamped-to-0 tick.
+  double transportClock_ = 0.0;
 
   ChainEntryHook chainEntryHook_;
   SketchOutputHook sketchOutputHook_;

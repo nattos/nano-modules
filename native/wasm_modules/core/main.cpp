@@ -98,6 +98,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 NANO_DECLARE_INSTANCE_EFFECT(mod_envelope)
 
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
+namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
@@ -495,6 +496,9 @@ void nano_module_main() {
         "mod",
         "oscillator,modulation,automation,lfo,wave",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
+        nullptr,            // is_identity
+        nullptr,            // on_active
+        env_lfo::seek,      // backward-seekable: recompute phase from absolute time
     });
 
     nano::registerEffect({

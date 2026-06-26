@@ -70,6 +70,7 @@ struct EffectRef {
   }
   void setWillRender(bool v) const { effrt_set_will_render(h, v ? 1 : 0); }
   void doTick(double dt) const { effrt_tick(h, dt); }
+  void doSeek(double from, double to) const { effrt_seek(h, from, to); } // no-op if the effect has no seek
   void doRender(int w, int hh) const { effrt_render(h, w, hh); }
   void doPrepare(int w, int hh) const { effrt_prepare(h, w, hh); }
   void doSetActive(bool a) const { effrt_set_active(h, a ? 1 : 0); }
@@ -497,10 +498,20 @@ int32_t SketchExecutor::execute(
     int W, int H, double dt, bool sketchDirty) {
   if (!rawSketch.is_object()) return inputHandle;
 
+  // A negative `dt` is a BACKWARD scrub. Seekable effects get doSeek(from,to) to land
+  // deterministically; everyone else (and all smoothing/delay state) advances by a
+  // CLAMPED dt so they freeze rather than run backwards. `seekFrom`/`seekTo` are the
+  // signed transport clock around this frame.
+  const bool seeking = dt < 0.0;
+  const double seekFrom = transportClock_;
+  transportClock_ += dt;
+  const double seekTo = transportClock_;
+  const double tickDt = seeking ? 0.0 : dt;
+
   // Advance the shared modulation clock once per frame — the time base the wire
   // delay lines (delayState_) push/read against (style guide §2.1: accumulate dt,
   // never time*rate). Done before any tap processing this frame.
-  modClock_ += dt;
+  modClock_ += tickDt;
 
 #ifndef __wasm__
   // Native: point the effrt_* instance ABI at this runtime and reset the frame's
@@ -1132,9 +1143,10 @@ int32_t SketchExecutor::execute(
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
                       railBuffers, instances, instKey, &modScalars);
         applyAutomation(inst.h, entry, instances, instKey, &modScalars);
-        applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
+        applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
         markWriteTapOutputsConnected(inst.h, entry);
-        inst.doTick(dt);
+        if (seeking) inst.doSeek(seekFrom, seekTo); // backward scrub → deterministic land
+        inst.doTick(tickDt);
         // A buffer-producing modulation source (e.g. debug.particles_emitter) has
         // no texture output, but its render() UPLOADS its GPU buffers — run it so
         // downstream readers see fresh data. It doesn't touch the chain texture,
@@ -1167,7 +1179,7 @@ int32_t SketchExecutor::execute(
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
                     railBuffers, instances, instKey, &modScalars);
       applyAutomation(inst.h, entry, instances, instKey, &modScalars);
-      applySmoothing(inst.h, entry, instKey, instances, modScalars, dt);
+      applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
       markWriteTapOutputsConnected(inst.h, entry);
 
       // -- Positional input slots + per-stage render target (slot-based GPU
@@ -1202,7 +1214,8 @@ int32_t SketchExecutor::execute(
       }
       gpu_set_surface(fxHandle, W, H);
 
-      inst.doTick(dt);
+      if (seeking) inst.doSeek(seekFrom, seekTo); // backward scrub → deterministic land
+      inst.doTick(tickDt);
       inst.doRender(W, H);
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
@@ -1241,7 +1254,8 @@ int32_t SketchExecutor::execute(
         if (const json* st = findState(instances, instKey)) {
           maybeApplyState(inst, instKey, *st);
         }
-        inst.doTick(dt);
+        if (seeking) inst.doSeek(seekFrom, seekTo); // backward scrub → deterministic land
+        inst.doTick(tickDt);
         allStages.push_back(inst);
       }
       if (!stagesOK) {
