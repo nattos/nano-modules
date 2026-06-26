@@ -55,7 +55,8 @@ cbuffer Uniforms : register(b4) {
   float aspect_y;        // min/H
 
   float to_big_range;    // s-space radius of Big influence (0 → effectively global)
-  float _p0, _p1, _p2;
+  float image_smoothing; // matches the blur radius → scales the gradient step
+  float _p1, _p2;
 }
 
 static const float DC_FORCE_MAX = 6.0;
@@ -127,8 +128,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
     }
 
     // Image gradient (+curl), sampled over equal pixel steps → s-space gradient.
+    // The step widens with image_smoothing so it reads the broad (blurred)
+    // gradient instead of a near-flat local difference.
     if (to_image != 0.0 || to_image_curl != 0.0) {
-      float e = 0.01;
+      float e = lerp(0.004, 0.04, saturate(image_smoothing));
       float2 du = e * aspect;
       float vl = dc_lum(inputTex.SampleLevel(samp, saturate(uv - float2(du.x, 0)), 0).rgb);
       float vr = dc_lum(inputTex.SampleLevel(samp, saturate(uv + float2(du.x, 0)), 0).rgb);

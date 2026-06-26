@@ -22,6 +22,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_blur.h>
 #include "double_chamber_shaders.h"
 
 #include <cstdint>
@@ -46,7 +47,7 @@ struct PUpdateUniforms {
   float boundary, boundary_size, boundary_stiffness, boundary_speed;
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
-  float to_big_range, _p0, _p1, _p2;
+  float to_big_range, image_smoothing, _p1, _p2;
 };
 struct BigUpdateUniforms {
   uint32_t count, frame_index; float dt, motion_rate;
@@ -54,7 +55,7 @@ struct BigUpdateUniforms {
   float repel, direction, curl, curl_dir;
   float sink, boundary, boundary_size, boundary_stiffness;
   float boundary_speed, spread, ttl, aspect_x;
-  float aspect_y, _p0, _p1, _p2;
+  float aspect_y, image_smoothing, _p1, _p2;
 };
 struct PrefillUniforms { float sr, sg, sb, sa; };
 struct VsUniforms { float aspect_x, aspect_y, point_size, _pad; };
@@ -72,6 +73,8 @@ struct State {
   gpu::Buffer  vs_uniform_p, vs_uniform_big, fs_uniform_p, fs_uniform_big;
   gpu::Sampler sampler;
   gpu::Texture black_tex;   // 1×1 fallback when no input is wired (true generator)
+  gpu::Texture field_tex;   // smoothed input for gradient/colour sampling
+  int field_w = 0, field_h = 0;
   bool initialized = false;
   uint32_t frame_index = 0;
 
@@ -83,7 +86,7 @@ struct State {
   float to_big = 0.3f, to_big_curl = 0.2f, to_big_range = 0.4f, curl_dir = 1.0f, sink = 0.0f;
   float jitter = 0.04f;
   float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 1.2f;
-  float to_image = 0.0f, to_image_curl = 0.0f;
+  float to_image = 0.0f, to_image_curl = 0.0f, image_smoothing = 0.3f;
   float undertow_skew = 0.0f, undertow_squash = 1.0f;
   float ttl = 0.4f, spawn_size = 0.5f;
   // p_point_size is a [0,1] slider (2-decimal IDE clipping needs the wide
@@ -103,6 +106,7 @@ struct State {
   int   blend_mode = BLEND_ADD;
 };
 
+static fx::GaussianBlur s_blur;   // shared image-smoothing helper
 static gpu::ComputePSO s_pso_big_update;
 static gpu::ComputePSO s_pso_p_update;
 static gpu::ComputePSO s_pso_prefill;
@@ -135,7 +139,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 1, 0},
+  state::init("source.legacy.double_chamber", {1, 1, 1},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -148,6 +152,7 @@ void module_init() {
       .floatField("jitter",         0.04f, 0.0f, 1.0f,    state::PrimaryInput)
       .floatField("color_contrib",  0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("to_image",       0.0f, -2.0f, 2.0f,    state::PrimaryInput)
+      .floatField("image_smoothing", 0.3f, 0.0f, 1.0f,    state::PrimaryInput)
       // ---- P tuning ----
       .floatField("field_scale",    1.0f,  0.1f, 4.0f,    state::SecondaryInput)
       .floatField("field_skew",     0.0f, -2.0f, 2.0f,    state::SecondaryInput)
@@ -225,6 +230,7 @@ void module_init() {
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::AlphaOver);
 
+  s_blur.init();
   state::log("double_chamber: module initialized");
 }
 
@@ -254,6 +260,7 @@ void destroy(void* self) {
   s->fs_uniform_p.release(); s->fs_uniform_big.release();
   s->sampler.release();
   s->black_tex.release();
+  s->field_tex.release();
   delete s;
 }
 
@@ -288,6 +295,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "jitter"))         s->jitter = state::patchFloat(i);
     else if (state::pathIs(p, l, "color_contrib"))  s->color_contrib = state::patchFloat(i);
     else if (state::pathIs(p, l, "to_image"))       s->to_image = state::patchFloat(i);
+    else if (state::pathIs(p, l, "image_smoothing")) s->image_smoothing = state::patchFloat(i);
     else if (state::pathIs(p, l, "field_scale"))    s->field_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "field_skew"))     s->field_skew = state::patchFloat(i);
     else if (state::pathIs(p, l, "field_squash"))   s->field_squash = state::patchFloat(i);
@@ -344,12 +352,30 @@ void render(void* self, int vp_w, int vp_h) {
   float min_dim = float(vp_w < vp_h ? vp_w : vp_h);
   float ax = min_dim / float(vp_w), ay = min_dim / float(vp_h);
 
+  // Image smoothing: blur the input into field_tex so the steering gradients
+  // read broad structure, not per-pixel noise. Only when image steering is
+  // actually active (else the blur is wasted and we keep sharp colour capture).
+  bool image_coupled = s->to_image != 0.0f || s->to_image_curl != 0.0f
+                       || s->big_repel != 0.0f || s->big_curl != 0.0f;
+  if (has_in && image_coupled && s->image_smoothing > 0.001f && s_blur.valid()) {
+    if (!s->field_tex.valid() || s->field_w != vp_w || s->field_h != vp_h) {
+      s->field_tex.release();
+      s->field_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA8);
+      s->field_w = vp_w; s->field_h = vp_h;
+    }
+    if (s->field_tex.valid()) {
+      s_blur.applyWithRadius(in, s->field_tex, vp_w, vp_h, s->image_smoothing, 1.0f);
+      sample_tex = s->field_tex;
+    }
+  }
+
   BigUpdateUniforms bu = {};
   bu.count = (uint32_t)s->big_count; bu.frame_index = s->frame_index; bu.dt = dt; bu.motion_rate = s->motion_rate;
   bu.big_speed = s->big_speed; bu.big_momentum = s->big_momentum; bu.big_momentum_decay = s->big_momentum_decay; bu.drift = s->big_drift;
   bu.repel = s->big_repel; bu.direction = 1.0f; bu.curl = s->big_curl; bu.curl_dir = s->curl_dir;
   bu.sink = s->sink; bu.boundary = s->boundary; bu.boundary_size = s->boundary_size; bu.boundary_stiffness = s->boundary_stiffness;
   bu.boundary_speed = s->boundary_speed; bu.spread = s->big_spread; bu.ttl = s->big_ttl; bu.aspect_x = ax; bu.aspect_y = ay;
+  bu.image_smoothing = s->image_smoothing;
   s->big_uniform.writeOne(bu);
 
   PUpdateUniforms pu = {};
@@ -361,6 +387,7 @@ void render(void* self, int vp_w, int vp_h) {
   pu.to_image = s->to_image; pu.to_image_curl = s->to_image_curl; pu.undertow_skew = s->undertow_skew; pu.undertow_squash = s->undertow_squash;
   pu.ttl = s->ttl; pu.spawn_size = s->spawn_size; pu.aspect_x = ax; pu.aspect_y = ay;
   pu.to_big_range = s->to_big_range;
+  pu.image_smoothing = s->image_smoothing;
   s->p_uniform.writeOne(pu);
 
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };

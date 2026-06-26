@@ -37,7 +37,8 @@ cbuffer Uniforms : register(b3) {
   float aspect_x;
 
   float aspect_y;
-  float _p0, _p1, _p2;
+  float image_smoothing;
+  float _p1, _p2;
 }
 
 static const float DC_BIG_VEL_MAX = 3.0;
@@ -65,7 +66,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     force += dc_perp(s) * drift;       // orbital swirl
 
     if (repel != 0.0 || curl != 0.0) {
-      float e = 0.012;
+      float e = lerp(0.006, 0.05, saturate(image_smoothing));
       float2 du = e * aspect;
       float vl = dc_lum(inputTex.SampleLevel(samp, saturate(uv - float2(du.x, 0)), 0).rgb);
       float vr = dc_lum(inputTex.SampleLevel(samp, saturate(uv + float2(du.x, 0)), 0).rgb);

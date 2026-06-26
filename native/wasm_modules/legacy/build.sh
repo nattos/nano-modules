@@ -50,6 +50,10 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var double_chamber big_update p_update prefill vs fs
 echo "  double_chamber shaders compiled (SPV: big_update + p_update + prefill + vs + fs)"
 
+# Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
+compile_shaders_compute_spv blur
+echo "  blur shader compiled (SPV) for effect_blur.h"
+
 echo "=== Building WASM (legacy) ==="
 
 WASM_COMMON_EXPORTS=(
