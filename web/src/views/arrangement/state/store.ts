@@ -839,6 +839,7 @@ export class ArrangementStore {
       this.selection = new Set([path]);
       this.primaryPath = path;
       this.selectedWireId = null;
+      this.tapPopup = null;
       // A new top-level selection resets any chain card/field focus.
       this.chainFocusPath = null;
       this.chainFieldKey = null;
@@ -902,6 +903,7 @@ export class ArrangementStore {
       this.selection = new Set([path]);
       this.primaryPath = path;
       this.selectedWireId = null;
+      this.tapPopup = null;
       this.chainFocusPath = null;
       this.chainFieldKey = null;
       this.activeRightTab = 'inspector';
@@ -939,15 +941,35 @@ export class ArrangementStore {
       this.selection = new Set();
       this.primaryPath = null;
       this.selectedWireId = null;
+      this.tapPopup = null;
       this.chainFocusPath = null;
       this.chainFieldKey = null;
+    });
+  }
+
+  /**
+   * Dismiss every transient wire/field option popup — the rail-wire popup
+   * (timeline + dashboard, `tapPopup`/`selectedWireId`) AND the in-sketch
+   * wire-mod panel (`chainFocusPath` === `wire/…`, drives column-group's
+   * floating panel). Single entry point so "click away" is one rule everywhere,
+   * driven off the selection subpath rather than per-popup ad-hoc state.
+   */
+  dismissPopups() {
+    runInAction(() => {
+      this.selectedWireId = null;
+      this.tapPopup = null;
+      if (this.chainFocusPath?.startsWith('wire/')) this.chainFocusPath = null;
     });
   }
 
   // ── Chain inspector focus (effect cards / fields) ──────────────────────
   /** Set the focused effect-card path (or null). Drives highlight + Delete. */
   setChainFocus(path: string | null) {
-    runInAction(() => { this.chainFocusPath = path; });
+    runInAction(() => {
+      this.chainFocusPath = path;
+      // Focusing an in-sketch card/wire supersedes any open rail-wire popup.
+      if (path) { this.selectedWireId = null; this.tapPopup = null; }
+    });
   }
   /** Set the focused field key (or null). */
   setChainField(key: string | null) {
@@ -976,6 +998,10 @@ export class ArrangementStore {
     runInAction(() => {
       const label = this.autoFieldLabel(ownerKey, deviceId, field);
       this.selectedAutoField = { ...this.selectedAutoField, [ownerKey]: { deviceId, field, label } };
+      // Selecting a field dismisses any open wire popup (rail or in-sketch).
+      this.selectedWireId = null;
+      this.tapPopup = null;
+      if (this.chainFocusPath?.startsWith('wire/')) this.chainFocusPath = null;
     });
   }
   clearAutoField(ownerKey: string) {

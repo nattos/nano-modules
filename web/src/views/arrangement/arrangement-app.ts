@@ -224,16 +224,22 @@ export class ArrangementApp extends MobxLitElement {
     else if (has('ARR-GRID') || has('ARR-RULER')) this.lastSurface = 'timeline';
     else if (has('ARR-INSPECTOR') || has('ARR-TABBAR')) this.lastSurface = 'inspector';
     else this.lastSurface = 'other';
-    // Click-away: a pointer-down that doesn't land on an effect card or a
-    // category chip clears the chain card/field focus. (Clicks ON a card set
-    // focus afterwards in the card's own handler; clicks on a chip insert.)
-    if (store.chainFocusPath || store.chainFieldKey) {
-      const KEEP = ['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel'];
-      const inChain = path.some((n) => {
+    // Click-away (one rule for BOTH focus systems): a pointer-down that doesn't
+    // land on a card/chip/pip/popup clears the chain card/field focus AND
+    // dismisses the rail-wire popup. Clicks ON those re-establish focus
+    // afterwards in their own handlers (pips that open a popup set it after this
+    // capture-phase clear, so switching pips still works).
+    if (store.chainFocusPath || store.chainFieldKey || store.selectedWireId || store.tapPopup) {
+      const KEEP = ['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel',
+        'tap-card', 'field-option-pip', 'fpip'];
+      const keep = path.some((n) => {
         const cl = (n as Element)?.classList;
         return !!cl && KEEP.some((c) => cl.contains(c));
       });
-      if (!inChain) store.clearChainFocus();
+      if (!keep) {
+        store.clearChainFocus();
+        store.dismissPopups();
+      }
     }
   };
 

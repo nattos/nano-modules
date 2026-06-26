@@ -55,4 +55,53 @@ describe('field ⇄ rail wiring', () => {
     const reads = (store.trackById(trk)!.clips[0].reads ?? []).filter((r) => r.targetField === 'gain');
     expect(reads.length).toBe(1);
   });
+
+  it('deleteWire removes a rail export and clears its selection + popup', () => {
+    store.connectSketchWire(fieldInfo(`clip/${trk}/${clipId}`, 'level', true), railInfo(railId));
+    const expId = store.trackById(trk)!.clips[0].exports[0].id;
+    const wireId = 'w:' + expId;
+    store.selectWire(wireId, `clip/${trk}/${clipId}`, {});
+    store.openTapPopup({ wireId, x: 0, y: 0, label: 'x' });
+    expect(store.deleteSelectedWire()).toBe(true);
+    expect(store.trackById(trk)!.clips[0].exports.length).toBe(0);
+    expect(store.selectedWireId).toBeNull();
+    expect(store.tapPopup).toBeNull();
+  });
+
+  it('deleteWire removes a rail read by r: id', () => {
+    store.connectSketchWire(fieldInfo(`clip/${trk}/${clipId}`, 'gain', false), railInfo(railId));
+    const readId = store.trackById(trk)!.clips[0].reads![0].id;
+    store.deleteWire('r:' + readId);
+    expect(store.trackById(trk)!.clips[0].reads!.length).toBe(0);
+  });
+
+  it('dismissPopups closes the rail popup (click-away)', () => {
+    store.connectSketchWire(fieldInfo(`clip/${trk}/${clipId}`, 'level', true), railInfo(railId));
+    const wireId = 'w:' + store.trackById(trk)!.clips[0].exports[0].id;
+    store.selectWire(wireId, `clip/${trk}/${clipId}`, {});
+    store.openTapPopup({ wireId, x: 0, y: 0, label: 'x' });
+    store.dismissPopups();
+    expect(store.selectedWireId).toBeNull();
+    expect(store.tapPopup).toBeNull();
+  });
+
+  it('selecting a field dismisses an open rail popup (unified focus)', () => {
+    store.connectSketchWire(fieldInfo(`clip/${trk}/${clipId}`, 'level', true), railInfo(railId));
+    const wireId = 'w:' + store.trackById(trk)!.clips[0].exports[0].id;
+    store.selectWire(wireId, `clip/${trk}/${clipId}`, {});
+    store.openTapPopup({ wireId, x: 0, y: 0, label: 'x' });
+    store.selectAutoField(`clip/${trk}/${clipId}`, devId, 'gain');
+    expect(store.selectedWireId).toBeNull();
+    expect(store.tapPopup).toBeNull();
+  });
+
+  it('focusing an in-sketch card supersedes an open rail popup', () => {
+    store.connectSketchWire(fieldInfo(`clip/${trk}/${clipId}`, 'level', true), railInfo(railId));
+    const wireId = 'w:' + store.trackById(trk)!.clips[0].exports[0].id;
+    store.selectWire(wireId, `clip/${trk}/${clipId}`, {});
+    store.openTapPopup({ wireId, x: 0, y: 0, label: 'x' });
+    store.setChainFocus(`effect/clip/${trk}/${clipId}/0/0`);
+    expect(store.selectedWireId).toBeNull();
+    expect(store.tapPopup).toBeNull();
+  });
 });
