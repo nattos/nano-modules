@@ -134,7 +134,7 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
       inputColor: [0.0, 0.0, 0.0, 1.0],
       params: [
         ['p_count', 8000],
-        ['p_point_size', 0.03],
+        ['p_point_size', 1.0],    // [0,1] slider → 0.01 uv effective
         ['p_opacity', 1.0],
         ['exposure', 2.0],
         ['color_contrib', 0.0],   // pure white points

@@ -32,6 +32,8 @@ namespace double_chamber {
 static constexpr int MAX_P   = 50000;
 static constexpr int MAX_BIG = 64;
 static constexpr int SEED_CHUNK = 512;
+// p_point_size slider [0,1] → effective isotropic-uv size [0, 0.01].
+static constexpr float POINT_SIZE_SCALE = 0.01f;
 
 struct GpuParticle { float a[4]; float b[4]; };
 static_assert(sizeof(GpuParticle) == 32, "particle must be 32 bytes");
@@ -83,7 +85,9 @@ struct State {
   float to_image = 0.0f, to_image_curl = 0.0f;
   float undertow_skew = 0.0f, undertow_squash = 1.0f;
   float ttl = 0.4f, spawn_size = 0.5f;
-  float p_point_size = 0.005f, p_opacity = 0.25f, p_alpha_curve = 1.0f, render_hue = 0.0f;
+  // p_point_size is a [0,1] slider (2-decimal IDE clipping needs the wide
+  // range for fine control) → effective uv size = slider * POINT_SIZE_SCALE.
+  float p_point_size = 0.5f, p_opacity = 0.25f, p_alpha_curve = 1.0f, render_hue = 0.0f;
   float tint_r = 1.0f, tint_g = 1.0f, tint_b = 1.0f, exposure = 1.0f;
   float color_contrib = 0.5f;
   int   p_shape = 1;  // gaussian
@@ -130,7 +134,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 0, 0},
+  state::init("source.legacy.double_chamber", {1, 1, 0},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -159,7 +163,7 @@ void module_init() {
       .floatField("ttl",            0.4f,  0.02f, 1.0f,   state::SecondaryInput)
       .floatField("spawn_size",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
       // ---- P render ----
-      .floatField("p_point_size",   0.005f, 0.001f, 0.05f, state::SecondaryInput)
+      .floatField("p_point_size",   0.5f,  0.0f,  1.0f,    state::SecondaryInput)
       .floatField("p_opacity",      0.25f, 0.0f, 1.0f,    state::SecondaryInput)
       .floatField("p_alpha_curve",  1.0f,  0.25f, 4.0f,   state::SecondaryInput)
       .floatField("render_hue",     0.0f,  0.0f, 1.0f,    state::SecondaryInput)
@@ -358,7 +362,7 @@ void render(void* self, int vp_w, int vp_h) {
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
   s->prefill_uniform.writeOne(pf);
 
-  VsUniforms vp = { ax, ay, s->p_point_size, 0.f };   s->vs_uniform_p.writeOne(vp);
+  VsUniforms vp = { ax, ay, s->p_point_size * POINT_SIZE_SCALE, 0.f }; s->vs_uniform_p.writeOne(vp);
   VsUniforms vb = { ax, ay, s->big_point_size, 0.f }; s->vs_uniform_big.writeOne(vb);
 
   FsUniforms fp = {};
