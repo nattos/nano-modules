@@ -96,15 +96,37 @@ export class TapsOverlay extends MobxLitElement {
    * the selection on their own handlers); dismiss everywhere else.
    */
   private onDocPointerDown = (e: PointerEvent) => {
-    const p = appState.local.selection?.path ?? '';
-    if (!p.startsWith('field/') && !p.startsWith('wire/')) return; // no popup open
-    const KEEP = ['field-card', 'tap-overlay-hit', 'field-option-pip',
-      'effect-card-header', 'effect-card-body', 'wire-hit', 'wire-dot'];
-    const keep = e.composedPath().some((n) => {
-      const cl = (n as Element)?.classList;
-      return !!cl && KEEP.some((c) => cl.contains(c));
-    });
-    if (!keep) appController.select(null);
+    const sel = appState.local.selection?.path ?? '';
+    if (!sel.startsWith('field/') && !sel.startsWith('wire/')) return; // no popup open
+    const composed = e.composedPath();
+    const hasClass = (c: string) =>
+      composed.some((n) => (n as Element)?.classList?.contains?.(c));
+    // Always keep: the popup itself; the pips / tap hit-ports + wire arcs (they set
+    // their OWN selection on click → the popup switches); the card header (its
+    // pointerdown selects the card, replacing the field → the popup closes anyway).
+    if (hasClass('field-card') || hasClass('tap-overlay-hit') || hasClass('field-option-pip')
+      || hasClass('wire-hit') || hasClass('wire-dot') || hasClass('effect-card-header')) return;
+    // A click inside a FIELD body keeps the popup only when it's the SELECTED
+    // field's OWN inline widget. Any OTHER field (different fieldPath, or a field
+    // in another card), the trace area, or blank space dismisses it — so clicking
+    // a different field closes the popup. (The IDE doesn't select-on-field-click,
+    // so without this the field row would never clear the prior selection.)
+    if (sel.startsWith('field/')) {
+      const body = composed.find(
+        (n) => (n as Element)?.classList?.contains?.('effect-card-body')) as HTMLElement | undefined;
+      if (body) {
+        const cardKey = body.dataset.cardKey ?? ''; // `<sketchId>/<col>/<chain>`
+        const selField = sel.slice('field/'.length); // `<sketchId>/<col>/<chain>/<fieldPath>`
+        if (selField.startsWith(cardKey + '/')) {
+          // Click is inside the selected field's own card; keep iff it's that
+          // field's widget (or a non-field custom editor in that card).
+          const editor = composed.find(
+            (n) => typeof (n as { fieldPath?: unknown }).fieldPath === 'string') as { fieldPath: string } | undefined;
+          if (!editor || `${cardKey}/${editor.fieldPath}` === selField) return;
+        }
+      }
+    }
+    appController.select(null);
   };
 
   static styles = css`
