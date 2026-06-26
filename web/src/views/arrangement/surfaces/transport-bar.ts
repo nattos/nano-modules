@@ -9,6 +9,8 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import '../../../widgets/ui-icon';
+import '../../../widgets/editable-number';
+import '../../../widgets/bars-beats-field';
 
 @customElement('transport-bar')
 export class TransportBar extends MobxLitElement {
@@ -102,9 +104,9 @@ export class TransportBar extends MobxLitElement {
       background: var(--app-bg-color1);
       border: 1px solid var(--app-tint-3);
       border-radius: 2px;
-      padding: 3px var(--app-sp-4);
+      padding: 2px var(--app-sp-3);
       min-width: 92px;
-      text-align: center;
+      justify-content: center;
     }
     .field {
       display: flex;
@@ -113,16 +115,13 @@ export class TransportBar extends MobxLitElement {
       font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
     }
-    input.bpm {
-      width: 46px;
-      font-family: inherit;
+    editable-number.bpm {
+      width: 52px;
       font-size: var(--app-fs-md);
       color: var(--app-text-color1);
       background: var(--app-bg-color1);
       border: 1px solid var(--app-tint-4);
       border-radius: 2px;
-      padding: 3px var(--app-sp-2);
-      text-align: right;
     }
     select {
       font-family: inherit;
@@ -159,10 +158,6 @@ export class TransportBar extends MobxLitElement {
     const meta = store.composition.meta;
     const beatsPerBar = meta.timeSignature[0];
     const pos = store.positionBeat;
-    const bar = Math.floor(pos / beatsPerBar) + 1;
-    const beat = Math.floor(pos % beatsPerBar) + 1;
-    const tick = Math.floor((pos % 1) * 4) + 1;
-    const posStr = `${bar}.${beat}.${tick}`;
 
     return html`
       <div class="brand">
@@ -202,15 +197,24 @@ export class TransportBar extends MobxLitElement {
           <ui-icon icon="la-redo-alt"></ui-icon>
         </button>
 
-        <div class="pos">${posStr}</div>
+        <bars-beats-field
+          class="pos"
+          .value=${pos}
+          .beatsPerBar=${beatsPerBar}
+          .sixPerBeat=${4}
+          @input=${(e: CustomEvent<number>) => store.setPosition(e.detail)}
+        ></bars-beats-field>
 
         <div class="field">
-          <input
+          <editable-number
             class="bpm"
-            type="number"
-            .value=${String(meta.baseBPM)}
-            @change=${this.onBpm}
-          />
+            label="BPM"
+            .value=${meta.baseBPM}
+            .step=${1}
+            .min=${1}
+            .max=${999}
+            @input=${(e: CustomEvent<number>) => store.setBpm(e.detail)}
+          ></editable-number>
           <span>BPM</span>
         </div>
 
@@ -244,8 +248,4 @@ export class TransportBar extends MobxLitElement {
     `;
   }
 
-  private onBpm = (e: Event) => {
-    const v = Number((e.target as HTMLInputElement).value);
-    if (!Number.isNaN(v)) store.setBpm(v);
-  };
 }

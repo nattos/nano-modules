@@ -12,6 +12,7 @@
 import { html, css, type TemplateResult } from 'lit';
 import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
+import '../../../widgets/editable-number';
 
 export const playModeControlsStyles = css`
   .pm-row {
@@ -42,14 +43,13 @@ export const playModeControlsStyles = css`
     color: #fff;
   }
   .pm-num {
-    font-family: inherit;
     font-size: var(--app-fs-xs);
     width: 64px;
     background: var(--app-bg-color1);
     color: var(--app-text-color1);
     border: 1px solid var(--app-tint-4);
     border-radius: 2px;
-    padding: 1px 4px;
+    --editable-text-pad: 1px 4px;
   }
   .pm-toggle {
     font-family: inherit;
@@ -80,16 +80,13 @@ export function renderPlayModeControls(
   const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
   const random = loop.mode === 'random';
   const endDefault = videoDurSec > 0 ? videoDurSec : 0;
-  const num = (val: number, on: (n: number) => void, step = 0.1) => html`<input
-    type="number"
+  const num = (val: number, on: (n: number) => void, step = 0.1) => html`<editable-number
     class="pm-num"
-    .value=${String(Number.isFinite(val) ? +(+val).toFixed(3) : 0)}
-    step=${step}
-    @change=${(e: Event) => {
-      const n = parseFloat((e.target as HTMLInputElement).value);
-      if (Number.isFinite(n)) on(n);
-    }}
-  />`;
+    .value=${Number.isFinite(val) ? val : 0}
+    .step=${step}
+    .precision=${step >= 1 ? 0 : 3}
+    @input=${(e: CustomEvent<number>) => on(e.detail)}
+  ></editable-number>`;
   const seg = <T extends string>(opts: readonly T[], cur: T, on: (v: T) => void) => html`<div class="pm-seg">
     ${opts.map((o) => html`<button class=${cur === o ? 'on' : ''} @click=${() => on(o)}>${o}</button>`)}
   </div>`;

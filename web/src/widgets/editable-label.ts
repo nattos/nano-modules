@@ -46,6 +46,9 @@ export class EditableLabel extends LitElement {
 
   @state() private editing = false;
 
+  /** Seed for the plain edit box this session: a typed char (type-to-edit,
+   *  caret at end) or null (Enter/dblclick → seed the full value + select). */
+  private editSeed: string | null = null;
   /** The provider's editor element for the current session (provider variant). */
   private editorEl: HTMLElement | null = null;
   /** Guards against a second terminal event racing in (e.g. blur after Enter). */
@@ -90,11 +93,14 @@ export class EditableLabel extends LitElement {
     editable-text::part(control) { line-height: 20px; }
   `;
 
-  /** Enter edit mode programmatically (also the dblclick / Enter-key path). */
-  beginEdit() {
+  /** Enter edit mode programmatically (also the dblclick / Enter-key path).
+   *  `seed` (plain variant only) starts the edit with that text + caret at end
+   *  instead of the full value selected — the type-to-edit entry point. */
+  beginEdit(seed: string | null = null) {
     if (this.editing) return;
     this.finished = false;
     this.justEntered = true;
+    this.editSeed = this.provider ? null : seed;
     if (this.provider) {
       const el = this.provider({ value: this.value });
       el.addEventListener('preview', this.onProviderPreview);
@@ -115,6 +121,7 @@ export class EditableLabel extends LitElement {
       this.editorEl = null;
     }
     this.editing = false;
+    this.editSeed = null;
   }
 
   // --- Provider (autocomplete) variant: pass terminal events straight through.
@@ -160,6 +167,13 @@ export class EditableLabel extends LitElement {
     if (e.key === 'Enter' || e.key === 'F2') {
       e.preventDefault();
       this.beginEdit();
+    } else if (
+      // Type-to-edit: a printable character starts editing seeded with it
+      // (replace), so focus + typing flows straight into the edit box.
+      e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
+    ) {
+      e.preventDefault();
+      this.beginEdit(e.key);
     }
   };
 
@@ -189,7 +203,7 @@ export class EditableLabel extends LitElement {
           role="button"
           tabindex="0"
           aria-label=${this.value || this.placeholder}
-          @dblclick=${this.beginEdit}
+          @dblclick=${() => this.beginEdit()}
           @keydown=${this.onDisplayKeydown}
         >${empty ? this.placeholder : this.value}</span>
       `;
@@ -197,12 +211,15 @@ export class EditableLabel extends LitElement {
     if (this.provider && this.editorEl) {
       return html`<div class="edit-host">${this.editorEl}</div>`;
     }
+    // Type-to-edit seeds the box with the typed char (caret at end); otherwise
+    // seed the full value and select it (Enter / double-click).
+    const seeded = this.editSeed != null;
     return html`
       <div class="edit-host">
         <editable-text
-          .value=${this.value}
+          .value=${seeded ? this.editSeed! : this.value}
           placeholder=${this.placeholder}
-          selectOnFocus
+          ?selectOnFocus=${!seeded}
           @commit=${this.onTextCommit}
           @cancel=${this.onTextCancel}
         ></editable-text>

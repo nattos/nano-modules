@@ -5,6 +5,8 @@
  */
 
 export { EditableText } from './editable-text';
+export { EditableNumber } from './editable-number';
+export { BarsBeatsField } from './bars-beats-field';
 export { FieldSlider } from './field-slider';
 export { FieldToggle } from './field-toggle';
 export { FieldTrigger } from './field-trigger';
