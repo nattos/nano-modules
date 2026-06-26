@@ -23,6 +23,8 @@
 
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import './editable-text';
+import type { EditableText } from './editable-text';
 
 /** Builds the editor element for the provider (autocomplete) variant. The
  *  returned element must dispatch `preview`/`commit`/`cancel`/`delete-request`
@@ -77,22 +79,15 @@ export class EditableLabel extends LitElement {
     :host([flat]) .display { cursor: inherit; }
     :host([flat]) .display:hover { background: transparent; }
     .edit-host { flex: 1; min-width: 0; display: flex; }
-    input {
+    /* The plain variant hosts <editable-text>; keep the label's tight,
+       accent-bordered look via its themable parts/vars. */
+    editable-text {
       flex: 1;
       min-width: 0;
-      /* Restore text selection — an ancestor may set user-select:none. */
-      -webkit-user-select: text;
-      user-select: text;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--app-hi-color2, #4169E1);
-      color: var(--app-text-color1, #eaeaea);
-      border-radius: 1px;
-      padding: 0 3px;
-      font: inherit;
-      font-size: inherit;
-      line-height: 20px;
+      --editable-text-border: var(--app-hi-color2, #4169E1);
+      --editable-text-pad: 0 3px;
     }
-    input:focus { outline: none; }
+    editable-text::part(control) { line-height: 20px; }
   `;
 
   /** Enter edit mode programmatically (also the dblclick / Enter-key path). */
@@ -156,20 +151,10 @@ export class EditableLabel extends LitElement {
     this.dispatchEvent(new CustomEvent('cancel'));
   }
 
-  private onInputKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      this.commitPlain((e.target as HTMLInputElement).value);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      this.cancel();
-    }
-  };
-
-  private onInputBlur = (e: FocusEvent) => {
-    // Blur commits (plain variant). A no-op if Enter/Escape already finished.
-    this.commitPlain((e.target as HTMLInputElement).value);
-  };
+  // Plain variant: <editable-text> already maps Enter/blur→commit, Escape→cancel
+  // and owns the IME guard. Forward its terminal events to our event surface.
+  private onTextCommit = (e: Event) => this.commitPlain((e as CustomEvent<string>).detail);
+  private onTextCancel = () => this.cancel();
 
   private onDisplayKeydown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === 'F2') {
@@ -185,11 +170,9 @@ export class EditableLabel extends LitElement {
       // The provider element manages its own focus (smart-input autofocuses).
       return;
     }
-    const input = this.renderRoot.querySelector('input') as HTMLInputElement | null;
-    if (input) {
-      input.focus();
-      input.select();
-    }
+    // selectOnFocus selects the whole value once focus lands.
+    const text = this.renderRoot.querySelector('editable-text') as EditableText | null;
+    text?.focus();
   }
 
   disconnectedCallback() {
@@ -216,14 +199,13 @@ export class EditableLabel extends LitElement {
     }
     return html`
       <div class="edit-host">
-        <input
-          type="text"
+        <editable-text
           .value=${this.value}
           placeholder=${this.placeholder}
-          spellcheck="false"
-          @keydown=${this.onInputKeydown}
-          @blur=${this.onInputBlur}
-        />
+          selectOnFocus
+          @commit=${this.onTextCommit}
+          @cancel=${this.onTextCancel}
+        ></editable-text>
       </div>
     `;
   }

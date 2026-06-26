@@ -22,14 +22,16 @@
  * (opened via "+"/pencil), APPENDS a new chip. List parse/serialize go through
  * the shared font-list helpers (parity with the C++ engine).
  *
- * The search box is an UNCONTROLLED input (no reactive `.value`) so IME
- * composition isn't clobbered — font names are commonly typed with an IME.
+ * The search box is the shared <editable-text> primitive, which owns the IME
+ * composition guard (font names are commonly typed with an IME).
  */
 
 import { html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding, FieldEditorElement } from './field-editor';
+import './editable-text';
+import type { EditableText } from './editable-text';
 import { parseFamilyList, formatFamilyList } from '../font-list';
 import {
   COMMON_FONT_SUGGESTIONS,
@@ -128,7 +130,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     // the OS families (localFontFamilies() isn't observable).
     void primeLocalFonts().then(() => this.requestUpdate());
     void this.updateComplete.then(() => {
-      (this.renderRoot.querySelector('.search') as HTMLInputElement | null)?.focus();
+      (this.renderRoot.querySelector('.search') as EditableText | null)?.focus();
     });
   }
 
@@ -157,8 +159,8 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
     this.applyFont(value, false);
     this.query = '';
     void this.updateComplete.then(() => {
-      const s = this.renderRoot.querySelector('.search') as HTMLInputElement | null;
-      if (s) { s.value = ''; s.focus(); }
+      // Controlled by `query` now, so the cleared value reflects automatically.
+      (this.renderRoot.querySelector('.search') as EditableText | null)?.focus();
     });
   }
 
@@ -215,7 +217,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
   // --- Search box (uncontrolled; IME-safe) ----------------------------------
 
   private onSearchInput(e: Event) {
-    this.query = (e.target as HTMLInputElement).value;
+    this.query = (e as CustomEvent<string>).detail;
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -232,8 +234,7 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
         this.applyFont(items[0].value, true);
         this.query = '';
         void this.updateComplete.then(() => {
-          const s = this.renderRoot.querySelector('.search') as HTMLInputElement | null;
-          if (s) { s.value = ''; s.focus(); }
+          (this.renderRoot.querySelector('.search') as EditableText | null)?.focus();
         });
       } else {
         this.closeEditor();
@@ -340,15 +341,13 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       border-radius: 1px;
       overflow: hidden;
     }
-    .search {
+    .search { display: block; width: 100%; font-size: var(--app-fs-md); }
+    .search::part(control) {
       border: none;
       border-bottom: 1px solid var(--app-tint-4);
       background: rgba(0, 0, 0, 0.35);
-      color: var(--app-text-color1, #eaeaea);
+      border-radius: 0;
       padding: 5px 7px;
-      font-size: var(--app-fs-md);
-      font-family: inherit;
-      outline: none;
     }
     .list { overflow-y: auto; max-height: 220px; }
     .item {
@@ -413,8 +412,8 @@ export class FieldFont extends MobxLitElement implements FieldEditorElement {
       : 'Adding to end of list';
     return html`
       <div class="editor">
-        <input class="search" type="text" placeholder="Search fonts…"
-               @input=${this.onSearchInput} />
+        <editable-text class="search" .value=${this.query} placeholder="Search fonts…"
+               @input=${this.onSearchInput}></editable-text>
         <div class="list">
           ${items.length === 0
             ? html`<div class="empty">No matches</div>`

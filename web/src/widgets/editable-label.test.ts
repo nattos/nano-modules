@@ -20,8 +20,20 @@ async function mount(value = '', placeholder = ''): Promise<EditableLabel> {
 function $display(el: EditableLabel) {
   return el.renderRoot.querySelector('.display') as HTMLElement | null;
 }
+// The plain variant hosts <editable-text>; reach through its shadow root to the
+// inner control (null when not in edit mode / not yet rendered).
 function $input(el: EditableLabel) {
-  return el.renderRoot.querySelector('input') as HTMLInputElement | null;
+  const text = el.renderRoot.querySelector('editable-text');
+  return (text?.renderRoot?.querySelector('input') as HTMLInputElement | null) ?? null;
+}
+// The nested <editable-text> renders on its own microtask, so await it before
+// reading/driving the inner control.
+async function readyInput(el: EditableLabel): Promise<HTMLInputElement> {
+  await el.updateComplete;
+  const text = el.renderRoot.querySelector('editable-text') as
+    (HTMLElement & { updateComplete: Promise<unknown>; renderRoot: ParentNode });
+  await text.updateComplete;
+  return text.renderRoot.querySelector('input') as HTMLInputElement;
 }
 
 describe('<editable-label> plain variant', () => {
@@ -44,8 +56,8 @@ describe('<editable-label> plain variant', () => {
   it('dblclick enters edit mode with the input seeded', async () => {
     el = await mount('Bass');
     $display(el)!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-    await el.updateComplete;
-    expect($input(el)?.value).toBe('Bass');
+    const input = await readyInput(el);
+    expect(input.value).toBe('Bass');
   });
 
   it('Enter commits the edited value', async () => {
@@ -53,8 +65,7 @@ describe('<editable-label> plain variant', () => {
     const onCommit = vi.fn();
     el.addEventListener('commit', (e) => onCommit((e as CustomEvent).detail));
     el.beginEdit();
-    await el.updateComplete;
-    const input = $input(el)!;
+    const input = await readyInput(el);
     input.value = 'Bassline';
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(onCommit).toHaveBeenCalledExactlyOnceWith('Bassline');
@@ -69,8 +80,7 @@ describe('<editable-label> plain variant', () => {
     el.addEventListener('commit', onCommit);
     el.addEventListener('cancel', onCancel);
     el.beginEdit();
-    await el.updateComplete;
-    const input = $input(el)!;
+    const input = await readyInput(el);
     input.value = 'changed';
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(onCancel).toHaveBeenCalledOnce();
@@ -82,8 +92,7 @@ describe('<editable-label> plain variant', () => {
     const onCommit = vi.fn();
     el.addEventListener('commit', (e) => onCommit((e as CustomEvent).detail));
     el.beginEdit();
-    await el.updateComplete;
-    const input = $input(el)!;
+    const input = await readyInput(el);
     input.value = 'Sub Bass';
     input.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
     expect(onCommit).toHaveBeenCalledExactlyOnceWith('Sub Bass');
@@ -94,8 +103,7 @@ describe('<editable-label> plain variant', () => {
     const onCommit = vi.fn();
     el.addEventListener('commit', onCommit);
     el.beginEdit();
-    await el.updateComplete;
-    const input = $input(el)!;
+    const input = await readyInput(el);
     input.value = 'X';
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     input.dispatchEvent(new FocusEvent('blur', { bubbles: false }));

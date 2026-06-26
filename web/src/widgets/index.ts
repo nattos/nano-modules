@@ -4,6 +4,7 @@
  * Import this module to register all widget custom elements.
  */
 
+export { EditableText } from './editable-text';
 export { FieldSlider } from './field-slider';
 export { FieldToggle } from './field-toggle';
 export { FieldTrigger } from './field-trigger';
