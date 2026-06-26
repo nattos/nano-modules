@@ -26,7 +26,7 @@ import { ExportVideoPump } from './export-video-pump';
 import { automationEntriesAtBeat, buildCompositeRenderAtBeat, videoDescFor } from './composite-frame';
 import { makeWarpClock, type WarpClock } from './warp-clock';
 import { store } from '../state/store';
-import { compositionLengthBeats, compositionFps, type BackgroundConfig } from '../model/composition';
+import { compositionLengthBeats, exportFps, type BackgroundConfig } from '../model/composition';
 
 /** The export engine's single composite sketch id (its sole trace target). */
 const EXPORT_SKETCH_ID = 'arr-export';
@@ -120,6 +120,8 @@ export interface ExportOptions {
   endBeat?: number;
   /** H.264 bitrate, bits/s (default: derived from resolution + fps). */
   bitrate?: number;
+  /** Export the full mix, ignoring any soloed-track restriction. */
+  ignoreSolo?: boolean;
   /**
    * Stream the MP4 to this writable as it encodes (low memory — the file never
    * lives fully in the page heap). When omitted the output is buffered in memory
@@ -159,7 +161,7 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   const comp = store.composition;
   const width = evenDim(opts.width ?? comp.meta.resolution.width);
   const height = evenDim(opts.height ?? comp.meta.resolution.height);
-  const fps = Math.max(1, Math.round(opts.fps ?? compositionFps(comp)));
+  const fps = Math.max(1, Math.round(opts.fps ?? exportFps(comp)));
   const clock = makeWarpClock(comp);
   const startBeat = Math.max(0, opts.startBeat ?? 0);
   const endBeat = opts.endBeat ?? compositionLengthBeats(comp);
@@ -218,7 +220,7 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
       if (opts.signal?.aborted) throw new DOMException('Export canceled', 'AbortError');
       if (encErr) throw encErr instanceof Error ? encErr : new Error(String(encErr));
 
-      const layers = store.compositeLayersAtBeat(fr.beat);
+      const layers = store.compositeLayersAtBeat(fr.beat, opts.ignoreSolo);
       // Await-decode + inject every active video clip's exact frame (null = clear).
       for (const l of layers) {
         const d = videoDescFor(l.clip);
@@ -234,7 +236,7 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
           lastSig = render.sig;
           await engine.showComposite([{ sketchId: EXPORT_SKETCH_ID, sketch: render.sketch, opts: render.opts }]);
         }
-        engine.setAutomation(automationEntriesAtBeat(fr.beat));
+        engine.setAutomation(automationEntriesAtBeat(fr.beat, opts.ignoreSolo));
         engine.setTime(fr.tSec);
         bitmap = await stepAndCapture();
       }

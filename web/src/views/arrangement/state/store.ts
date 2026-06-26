@@ -26,9 +26,10 @@ import {
   deviceIsSource,
   resolveSourceTransform,
   compositionLengthBeats,
-  compositionFps,
+  compositionFps as fnCompositionFps,
   exportSettings,
   exportResolution,
+  exportFps as fnExportFps,
   DEFAULT_EXPORT_SETTINGS,
   type ExportSettings,
 } from '../model/composition';
@@ -1146,10 +1147,11 @@ export class ArrangementStore {
    * effective `opacity` + blend mode, and respects bypass + solo propagated
    * through the group hierarchy. Empty clips (no devices, no media) are skipped.
    */
-  compositeLayersAtBeat(beat: number): CompositeLayer[] {
+  compositeLayersAtBeat(beat: number, ignoreSolo = false): CompositeLayer[] {
     const tracks = this.composition.tracks.filter((t) => t.kind === 'track');
-    // Solo on ANY track or group restricts the mix to soloed lineages.
-    const anySolo = this.composition.tracks.some((t) => t.soloed);
+    // Solo on ANY track or group restricts the mix to soloed lineages — unless the
+    // caller (e.g. the exporter's "ignore solo") asks for the full mix.
+    const anySolo = !ignoreSolo && this.composition.tracks.some((t) => t.soloed);
     const layers: CompositeLayer[] = [];
     for (const t of tracks) {
       const anc = this.ancestorsOf(t);
@@ -2071,12 +2073,14 @@ export class ArrangementStore {
     this.mutate('set resolution', (d) => { d.meta.resolution = { width, height }; }, 'meta:res');
   }
 
-  /** Render/export frame rate (default {@link DEFAULT_FPS}). */
-  get exportFps(): number { return compositionFps(this.composition); }
-  setExportFps(fps: number) {
+  /** The composition's frame rate (composition setting; edited in Settings). */
+  get compositionFps(): number { return fnCompositionFps(this.composition); }
+  setCompositionFps(fps: number) {
     const v = Math.max(1, Math.min(240, Math.round(fps)));
     this.mutate('set fps', (d) => { d.meta.fps = v; }, 'meta:fps');
   }
+  /** Effective EXPORT frame rate (the composition fps, or a custom override). */
+  get exportFps(): number { return fnExportFps(this.composition); }
 
   /** Persisted export settings (resolution mode, quality, range), defaults filled. */
   get exportSettings(): ExportSettings { return exportSettings(this.composition); }

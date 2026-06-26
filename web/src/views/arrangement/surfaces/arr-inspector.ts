@@ -12,7 +12,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type ExportResolutionMode } from '../model/composition';
+import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
@@ -1022,12 +1022,12 @@ export class ArrInspector extends MobxLitElement {
           <span class="val">
             <editable-number
               class="num"
-              .value=${store.exportFps}
+              .value=${store.compositionFps}
               .step=${1}
               .min=${1}
               .max=${240}
               .precision=${0}
-              @input=${(e: CustomEvent<number>) => store.setExportFps(e.detail)}
+              @input=${(e: CustomEvent<number>) => store.setCompositionFps(e.detail)}
             ></editable-number> fps
           </span>
         </div>
@@ -1197,12 +1197,22 @@ export class ArrInspector extends MobxLitElement {
         <div class="row"><label></label><span class="val muted">→ ${eff.width}×${eff.height}</span></div>
         <div class="row">
           <label>Frame rate</label>
-          <span class="val">
-            <editable-number class="num" .value=${store.exportFps} .step=${1} .min=${1} .max=${240} .precision=${0}
-              ?disabled=${rendering}
-              @input=${(e: CustomEvent<number>) => store.setExportFps(e.detail)}></editable-number> fps
-          </span>
+          <select .value=${s.fpsMode} ?disabled=${rendering}
+            @change=${(e: Event) => store.setExportSettings({ fpsMode: (e.target as HTMLSelectElement).value as ExportFpsMode })}>
+            <option value="default">Default (composition)</option>
+            <option value="custom">Custom</option>
+          </select>
         </div>
+        ${s.fpsMode === 'custom' ? html`
+          <div class="row">
+            <label>FPS</label>
+            <span class="val">
+              <editable-number class="num" .value=${s.fps} .step=${1} .min=${1} .max=${240} .precision=${0}
+                ?disabled=${rendering}
+                @input=${(e: CustomEvent<number>) => store.setExportSettings({ fps: e.detail })}></editable-number> fps
+            </span>
+          </div>` : html`
+          <div class="row"><label></label><span class="val muted">→ ${store.exportFps} fps</span></div>`}
         <div class="row">
           <label>Range</label>
           <span class="val seg">
@@ -1212,6 +1222,17 @@ export class ArrInspector extends MobxLitElement {
               ?disabled=${rendering || !ec.hasLoop}
               title=${ec.hasLoop ? 'Export the loop region' : 'No loop region set'}
               @click=${() => store.setExportSettings({ range: 'loop' })}>Loop</button>
+          </span>
+        </div>
+        <div class="row">
+          <label>Solo</label>
+          <span class="val seg">
+            <button class="segbtn ${!s.ignoreSolo ? 'on' : ''}" ?disabled=${rendering}
+              title="Respect soloed tracks (export only the soloed mix)"
+              @click=${() => store.setExportSettings({ ignoreSolo: false })}>Respect</button>
+            <button class="segbtn ${s.ignoreSolo ? 'on' : ''}" ?disabled=${rendering}
+              title="Ignore solo — export the full mix"
+              @click=${() => store.setExportSettings({ ignoreSolo: true })}>Ignore</button>
           </span>
         </div>
         <div class="row">

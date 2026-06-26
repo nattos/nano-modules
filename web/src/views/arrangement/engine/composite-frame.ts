@@ -106,11 +106,11 @@ export function buildCompositeRenderAtBeat(layers: EngineLayer[], beat: number) 
  * resets the rail to base instead of holding the last modulated value). The
  * executor folds each entry into its target field via tap_mod.
  */
-export function automationEntriesAtBeat(beat: number): AutomationEntry[] {
+export function automationEntriesAtBeat(beat: number, ignoreSolo = false): AutomationEntry[] {
   const totalBeats = compositionLengthBeats(store.composition);
   const entries: AutomationEntry[] = [];
   const seenRail = new Set<string>();
-  for (const { clip, track } of store.compositeLayersAtBeat(beat)) {
+  for (const { clip, track } of store.compositeLayersAtBeat(beat, ignoreSolo)) {
     for (const lane of clip.automation ?? []) {
       const ctx = {
         kind: 'clip' as const,

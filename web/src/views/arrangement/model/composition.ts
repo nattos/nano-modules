@@ -133,6 +133,8 @@ export function compositionFps(comp: Composition): number {
 
 /** How the export's pixel dimensions derive from the composition resolution. */
 export type ExportResolutionMode = 'default' | '2x' | 'scale' | 'custom';
+/** Whether the export uses the composition frame rate or a custom override. */
+export type ExportFpsMode = 'default' | 'custom';
 /** H.264 quality tier (→ a bits-per-pixel budget in the exporter). */
 export type ExportQuality = 'low' | 'medium' | 'high';
 /** Which beat span to export. */
@@ -146,12 +148,19 @@ export interface ExportSettings {
   /** Explicit pixel dimensions for `custom` mode. */
   width: number;
   height: number;
+  /** Frame-rate source: the composition's fps, or a custom override below. */
+  fpsMode: ExportFpsMode;
+  /** Custom export frame rate (used when `fpsMode === 'custom'`). */
+  fps: number;
   quality: ExportQuality;
   range: ExportRangeKind;
+  /** Export the full mix, ignoring any soloed-track restriction. */
+  ignoreSolo: boolean;
 }
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
-  resolutionMode: 'default', scale: 1, width: 1920, height: 1080, quality: 'high', range: 'all',
+  resolutionMode: 'default', scale: 1, width: 1920, height: 1080,
+  fpsMode: 'default', fps: 60, quality: 'high', range: 'all', ignoreSolo: false,
 };
 
 /** The composition's export settings, with defaults filled in for missing fields. */
@@ -169,6 +178,12 @@ export function exportResolution(comp: Composition): { width: number; height: nu
     case 'custom': return { width: s.width, height: s.height };
     default: return { width: r.width, height: r.height };
   }
+}
+
+/** Effective export frame rate: the composition's fps, or a custom override. */
+export function exportFps(comp: Composition): number {
+  const s = exportSettings(comp);
+  return s.fpsMode === 'custom' && s.fps > 0 ? Math.round(s.fps) : compositionFps(comp);
 }
 
 /**

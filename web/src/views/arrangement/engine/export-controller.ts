@@ -112,6 +112,7 @@ class ExportController {
     try {
       const res = await exportComposition({
         width: w, height: h, fps, startBeat, endBeat, bitrate, writable,
+        ignoreSolo: store.exportSettings.ignoreSolo,
         signal: this.abortCtl.signal,
         onProgress: (done, total) => runInAction(() => { this.framesDone = done; this.framesTotal = total; }),
       });
