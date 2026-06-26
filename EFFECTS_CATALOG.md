@@ -11,7 +11,47 @@ Glossary (dnode): **Ponk** = laser/line-point output format; **Tri** = textured-
 
 ---
 
-## Curated port shortlist
+## Real-world usage & port priority (team-validated)
+
+This list comes from how these effects were *actually* used live — it supersedes the analytic "Curated port shortlist" below wherever they disagree (the analytic list ranks by distinctiveness; this one by real play-time and demand).
+
+**Cross-cutting decisions that shape every port:**
+- **PONK/laser output is not used.** Ports should target texture output (and, where effects pass data between stages, **struct-typed outputs**), not the Ponk laser path. The Ponk passes in Chamber/Darkburst/Mad*/etc. can be dropped.
+- **"v2" rewrites are welcome over direct ports** for the older/inefficient effects (DoubleChamber, ChromaWobble, the Wobble Master family). Prefer re-architecting for efficiency to faithfully reproducing the old graph.
+- Several **SPHR** effects are useful **even when not mapped to a sphere** (SPHR Blur, SPHR BicolorGrad) — don't gate them behind a spherical-display assumption.
+
+### Tier A — actively used, port early
+
+- **BicolorGrad** — used as-is.
+- **Glisten** — used as-is.
+- **DoubleChamber** — our "all-in" particle effect to date. In practice the **"particle accelerator" bits are almost always OFF**; what we use is the **particles, "bridgers" (in bursts), the curl, and the tracers**. No PONK. Old — **open to a v2** with upgraded compute/render. Could be split into a constellation of struct-output effects, but that risks making it *harder* to use; decide deliberately.
+- **Darkburst** — in practice we **turn off everything except the distortion field ("D wave")**; the rest is rarely used. No PONK. Could be reorganized as separate effects with struct outputs between them if needed for efficiency.
+- **Burn Out** — useful for more emotional "fade outs."
+- **ChromaWobble** — needs re-architecting; **open to a v2** for efficiency.
+- **Freeze Pulse** — very useful.
+- **LUT 2** — keep, but **implement more efficiently**. The baked static LUT resources are good as-is — happy to keep them.
+- **SPHR Blur** — amazingly useful **even off-sphere**. Math is likely wrong but the look is fine; don't over-invest in "correctness."
+- **Stutter Scale 2** — very useful for overlays and logos.
+- **Subtle Blur** — good for breaking up sharp edges.
+- **Wobble Master / Wobble Master 2 / Fast** — useful but **likely needs re-architecting** (v2).
+- **ZoomScroller** — very useful for idle moments.
+
+### Tier B — good, lower priority
+
+- **SPHR BicolorGrad** — useful **even when not on a sphere**.
+- **SPHR Magneto Dynamics** — very unique; takes full advantage of spherical displays. *(Catalogued under the bundle's typo'd name "SPHR Magento Dynamics".)*
+- **SPHR Rand Billboard** — easy way to fill a spherical display, but **very buggy — has visual artifacts** (fix on port).
+- **SPHR Billboard**.
+- **Character Sweeper**, **Character Prompter** — text effects.
+- **Glitch Revolver 2**.
+- **HVEN Sphere Sim**.
+- **Horizontal Glitch**.
+- **Pixulant** — the shader is a bit weird / has dead code, but **infinitely useful**. The "dive" reportedly relied on a quirk of Wire's *difference* blend mode: subtracting an image from itself didn't yield pure black — it left a halo. A faithful port must **deliberately reproduce or replace that non-black-difference behavior** (it's load-bearing, not a bug).
+- **Pulsed Tunnel 2**.
+
+---
+
+## Curated port shortlist (analytic — see team list above for real priority)
 
 Ranked by distinctiveness + how cleanly each maps onto nano-modules' compute/particle/feedback model. Skip the dozens of trivial blend/alpha/color utilities (clearly marked "trivial/utility" below) — nano-modules already has those primitives.
 
@@ -128,6 +168,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Complexity:** High (very large graph, 319 nodes / ~105 Math; envelope-routed multi-block sim, no kernel).
 - **Port interest:** High — particle sim + gradient-descent star attractor + audio-envelope routing + laser output; visually strong and on-brand for the family.
 - **Parameters (46):** Star Decimate, Env Rate Curve, Star Points, Core Env > Boost, D Wave Soften, Star Squash, Env Decay, D Wave Speed, D Squeeze, D Rate, D Env > Rate, Star Scale, Env Curve, D Render Alpha, L Render Alpha, Debug D Wave Alpha, L State Rate, Debug L Mask Alpha, L Back Boost, L Back Rate, Debug Input Alpha, Color Contrib, TexIn Color Offset, Env Constant, Star Center Size, Star Env > Big, Env Trigger, Env Rate, Core Env Smoothing, D Env Smoothing, Star Env > Points, Env Gain, Core Scale, Core Subsmoothing, Core Boost, Core Jitter, L Smoothing, D Density, D Scale, D Distortion, Core Smoothing, Star Squeeze, D Wave Decay, D Env > Wave Speed, Anchor X, Anchor Y.
+- **Usage (team):** In practice we **turn off everything except the distortion field ("D wave")**; the other blocks are rarely used. PONK not used. Could be reorganized as separate effects with struct outputs if needed for efficiency.
 - **Source:** `dnode/Products/Darkburst.bundle` (no kernel — graph-only)
 
 ### DepthEffects
@@ -146,6 +187,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Port interest:** High — a genuine multi-system composite (charged-line collision + field-particle + attractor + bridging) with laser output; the most ambitious of the family.
 - **Parameters (97):** K Energy Decay Linear, K Init Angle Dir, L Count, P Boundary Speed, K Energy Threshold, P To Image, K Energy Decay Factor, K Col Deflection, L Grad Stop Threshold, Image Scale, P To Big Curl, K Anchor Y, L Adv Momentum, L Momentum, Image Smoothing, K Same Mode Rate, K Init Angle, K Collision Rate, L Value Stop Threshold, K Col Continue Rate, Bridger Rate, K Col Deflection Squash, L Step Speed, L Length, K Anchor X, K Col Energy Loss Max, L Adv Step Speed, Bridger Hue, P Render Alpha, TexIn Color Offset, Color Contrib, Ponk Line Limit, Ponk Point Limit, Debug Ponk, K Col Energy Loss Min, K Render Hue, K Init Dist Spread, K Scale, K Render Alpha, K Random Walk Strength, P Render Hue, K Init Distance, K Col Threshold, K Motion Rate, Bridger Alpha, P To Big, Image Smooth Balance, Debug Image View, P Momentum Decay, P Field Scale, P Jitter, Bridger Count, Big Boundary Shrink, P Field Speed, P Count, Image Subsmoothing, Debug View, Big Speed, P TimeToLive, Big Repel Speed, P To Line Rate, P Spawn Size, P Sink, P Boundary Stiffness, Big Momentum Decay, Big Count, P Point Size, Image Smoothing Mix, P Momentum, K Count, K Init Angle Spread, P To Image Curl Direction, L Time Stop Decay, Big Direction, L Time Decay, L Gradient Descent, L Glitch, P To Big Curl Direction, Image Subsmoothing, P Undertow Skew, P Boundary, Big Momentum, Big Sink, P Undertow Squash, Big Spread Jitter, Big Curl, Big Spread, P Squash, P Field Squash, Image Smoothing, P To Image Curl, Big Curl Direction, Big Point Size, Big TimeToLive, P Field Skew, P Boundary Size, P Z Depth.
 - **Key expressions:** the shared P-particle vector field `float2((x.y*x.y - 1.0 - (x.x*skew*-0.6 + skew*0.1)), (x.x + skew*0.7) * sign(x.y) * pow(abs(x.y) + 0.7 + squash*0.8, 3) * -0.1 * squash)`; conditional write `if (cond) WriteBuffer(output0, gid, value);`; spawn select `cond ? b : a`.
+- **Usage (team):** Our "all-in" particle effect to date. In practice the **"particle accelerator" block is almost always OFF**; we use the **particles, "bridgers" (fired in bursts), the curl, and the tracers**. PONK not used. Old — **open to a v2** (upgraded compute/render). Splitting into a struct-output constellation is possible but may hurt usability.
 - **Source:** `dnode/Products/DoubleChamber.bundle` (no kernel — graph-only)
 
 ### FTLStream
@@ -332,6 +374,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Port interest:** High — the equirect seam + z-plane triangle splicing/wrapping is tricky and reusable; the splay/jitter quaternion billboard system is a strong dome building block.
 - **Parameters (28):** Center Roll, Plane Size, Center Yaw, Size Jitter, Center Pitch, Motion Manual, Count, Splay Roll, Splay Angle, Splay Distance, Jitter, Motion Phase Align, Jitter X, Jitter Y, Jitter Z, Projection, Plane Skew H, Plane Skew W, Skew W Jitter, Skew H Jitter, Alpha Jitter, Alpha < Env, Splay < Env, TimeScale, Splay < Env Curve, Alpha < Env Curve, Plane Size < Env Curve, Plane Size < Env
 - **Key expressions:** envelope `1.0 - F::Wrap01(proffsetPreFine + pindexFine)`; z-plane splice `float proj = (1 - (p1.z / delta.z)); spliceap = p0 + delta * proj;`; seam-wrap `uvs[0].x -= round(uvs[0].x * 0.5) * 2.0 - newuvBias.x;`. Graph also carries a ternary `c ? a : b` and a fold `(x < 0 ? (x + 1.0f) : ((x+1) * 4))`.
+- **Usage (team):** Easy way to fill a spherical display, but **very buggy — has visual artifacts**; the seam/z-plane clipping is the likely culprit and should be fixed on port.
 - **Source:** `dnode/Products/SPHR Rand Billboard.bundle` (+ kernels: "SPHR Rand Billboard GenTri.txt", "SPHR Rand Billboard Vertex.txt")
 
 ---
@@ -488,6 +531,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Technique:** `Fractal Noise` + Saw + `UV Offset`/`Displace` for the wobble field; `Hue Rotate` (x2) + per-channel offset for chroma split; `Attack Release` (Duration) + Trigger/Greater/If gating; `Blur` + `Temporal Smoothing` (Delay) + `Video Mixer`.
 - **Complexity:** Medium — 45 nodes / 54 conns.
 - **Port interest:** Compelling — noise-driven UV displacement + chroma split is a clean fragment/compute effect worth porting.
+- **Usage (team):** Used, but needs re-architecting — **port as a v2** tuned for efficiency rather than a faithful copy.
 - **Source:** `Wire/Patches/ChromaWobble`
 
 ### Dodge Blend
@@ -628,6 +672,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Technique:** Same ISF `LUTShader` cube-LUT lookup; simpler wiring (Switch/Add to pick LUT, Pregain, Multiply, 1/x).
 - **Complexity:** Low (24 nodes / 25 conns)
 - **Port interest:** Trivial/utility — simplified variant of `LUT`.
+- **Usage (team):** Actively used — but **implement more efficiently** on port. The baked static LUT resources are good; keep them as-is.
 - **Source:** `Wire/Patches/LUT 2`
 
 ### LUT Glitch
@@ -719,6 +764,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Technique:** ISF `Radial Stretch Sample` (per-pixel random scatter displacement, salt-seeded hash, aspect-corrected) + ISF `Difference` (abs frame-difference blend). Dive/Scatter/Exposure with On Change/Saw/Smooth and many Curves drive an iterative feedback loop.
 - **Complexity:** High (44 nodes / 53 conns)
 - **Port interest:** Compelling — signature scatter-feedback "simulant" look; the Radial Stretch + Difference pair is the reusable core.
+- **Usage (team):** **Infinitely useful** despite a weird shader with dead code. Critical port note: the "dive" reportedly relied on a quirk of Wire's *difference* blend — subtracting an image from itself did NOT yield pure black, it left a halo. That non-black-difference behavior is **load-bearing**; reproduce or deliberately replace it, don't "fix" it away.
 - **Source:** `Wire/Patches/Pixulant`
 
 ### Playground
@@ -782,6 +828,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Technique:** ISF `SPHR Expand` (`latlonTranspose` computes sphere-aware horizontal sample spacing, then a max/dilate accumulation across the grid; invert→min/erode) combined with a Gaussian Blur and Quality control.
 - **Complexity:** Low–Medium (15 nodes / 16 conns)
 - **Port interest:** Distinctive — equirect-aware blur; useful infrastructure for any spherical pipeline.
+- **Usage (team):** Amazingly useful **even off-sphere** — don't gate it behind a spherical assumption. The math is likely wrong but the look is fine; don't over-invest in correctness.
 - **Source:** `Wire/Patches/SPHR Blur`
 
 ### SPHR ChromaSplit
@@ -1055,6 +1102,7 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Technique:** Custom ISF `ChromaOffset` (YIQ-space hue shift + per-channel UV offset driven by an offsetMap red channel) and `Magnitude` (RGB length → displacement magnitude). Retrigger logic (`Pulse Retrigger`/`Gate`/`Retrigger Phase`/`Counter`/`Max BPM`), `Ripple`/`Sin`/`Cos` UV field, `Pulse Texture`/`Pulse Attack`.
 - **Complexity:** Very High (204 nodes / 246 conns, 2 ISF).
 - **Port interest:** Compelling — the YIQ ChromaOffset shader (hue-rotated chromatic aberration via displacement map) is a clean, reusable port candidate.
+- **Usage (team):** The Wobble Master family (Master / 2 / Fast) is used but **likely needs re-architecting — port as a v2**. The YIQ `ChromaOffset` shader is the keeper.
 - **Source:** `Wire/Patches/Wobble Master 2`
 
 ### Wobble Master Fast
