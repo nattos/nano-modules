@@ -16,6 +16,7 @@ import * as workspaceBackend from './views/arrangement/workspace/backend';
 import { libraryPaths } from './state/library-paths';
 import * as handleRef from './state/handle-ref';
 import * as mediaStore from './views/arrangement/workspace/media-store';
+import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -26,3 +27,4 @@ import * as mediaStore from './views/arrangement/workspace/media-store';
 (window as any).__libraryPaths = libraryPaths;
 (window as any).__handleRef = handleRef;
 (window as any).__mediaStore = mediaStore;
+(window as any).__export = { exportComposition, canExport };

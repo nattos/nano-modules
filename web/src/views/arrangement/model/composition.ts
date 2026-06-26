@@ -116,6 +116,17 @@ export interface CompositionMeta {
   timeSignature: [number, number];
   /** Composite backdrop (under all clips). Omitted ⇒ opaque black. */
   background?: BackgroundConfig;
+  /** Render/export frame rate (frames per second). Omitted ⇒ {@link DEFAULT_FPS}. */
+  fps?: number;
+}
+
+/** Default render/export frame rate when the composition doesn't set one. */
+export const DEFAULT_FPS = 60;
+
+/** The composition's render/export frame rate (with the default applied). */
+export function compositionFps(comp: Composition): number {
+  const f = comp.meta.fps;
+  return typeof f === 'number' && Number.isFinite(f) && f > 0 ? f : DEFAULT_FPS;
 }
 
 /**
@@ -461,6 +472,7 @@ export function emptyComposition(): Composition {
       resolution: { width: 1920, height: 1080 },
       baseBPM: 120,
       timeSignature: [4, 4],
+      fps: DEFAULT_FPS,
     },
     tracks: [makeMainBus()],
     rails: [],

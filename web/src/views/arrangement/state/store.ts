@@ -26,6 +26,7 @@ import {
   deviceIsSource,
   resolveSourceTransform,
   compositionLengthBeats,
+  compositionFps,
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
@@ -2064,6 +2065,13 @@ export class ArrangementStore {
   }
   setResolution(width: number, height: number) {
     this.mutate('set resolution', (d) => { d.meta.resolution = { width, height }; }, 'meta:res');
+  }
+
+  /** Render/export frame rate (default {@link DEFAULT_FPS}). */
+  get exportFps(): number { return compositionFps(this.composition); }
+  setExportFps(fps: number) {
+    const v = Math.max(1, Math.min(240, Math.round(fps)));
+    this.mutate('set fps', (d) => { d.meta.fps = v; }, 'meta:fps');
   }
 
   // ── Composite background (per composition; default = opaque black) ──────

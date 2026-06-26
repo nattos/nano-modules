@@ -15,15 +15,14 @@
  *  - An optional capture tap (Component D live thumbnails) sees the composite.
  */
 
-import { ArrEngine, type AutomationEntry } from './arr-engine';
-import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
-import { evalLaneAtBeat, evalCurveAt } from './automation-eval';
+import { ArrEngine } from './arr-engine';
+import { clipInstanceKey } from './clip-sketch';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
-import { VIDEO_SOURCE_TYPE } from './effect-catalog';
+import { automationEntriesAtBeat, buildCompositeRenderAtBeat, videoDescFor } from './composite-frame';
 import { store } from '../state/store';
-import { deviceIsSource, resolveSourceTransform, compositionLengthBeats, type Clip, type Track } from '../model/composition';
+import { deviceIsSource, type Clip, type Track } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
@@ -164,28 +163,6 @@ export class EngineBridge {
     return this.video;
   }
 
-  /** Build the decode-pump descriptor for a video-backed clip (or null). */
-  private videoDescFor(clip: Clip): VideoClipDesc | null {
-    const src = clip.source;
-    if (!src?.url) return null;
-    const dev = clip.sketch.devices.find((d) => d.moduleType === VIDEO_SOURCE_TYPE);
-    if (!dev) return null;
-    return {
-      clipId: clip.id,
-      instanceKey: clipInstanceKey(clip.id, dev.id),
-      url: src.url,
-      sourceKey: src.sourceKey ?? clip.id,
-      startBeat: clip.startBeat,
-      lengthBeat: clip.lengthBeat,
-      durationFrames: src.durationFrames,
-      fps: src.fps,
-      speed: clip.loop?.speed,
-      scaleMode: src.scaleMode ?? 'fit',
-      transform: resolveSourceTransform(src.transform),
-      loop: clip.loop,
-    };
-  }
-
   /** Count of active video decode pumps (diagnostic / tests). */
   videoPumpCount(): number { return this.video?.pumpCount ?? 0; }
   /** Decoded frames pushed to the executor so far (diagnostic). */
@@ -324,51 +301,7 @@ export class EngineBridge {
    */
   pushAutomation() {
     if (!this.engine) return;
-    const beat = store.positionBeat;
-    const totalBeats = compositionLengthBeats(store.composition);
-    const entries: AutomationEntry[] = [];
-    const seenRail = new Set<string>();
-    for (const { clip, track } of store.compositeLayersAtBeat(beat)) {
-      for (const lane of clip.automation ?? []) {
-        const ctx = {
-          kind: 'clip' as const,
-          startBeat: clip.startBeat,
-          spanBeats: clip.lengthBeat,
-          loopMode: store.clipAutoTiming === 'loop',
-        };
-        entries.push({
-          instance: clipInstanceKey(clip.id, lane.targetDeviceId),
-          field: lane.targetField,
-          value: evalLaneAtBeat(lane.points, ctx, beat),
-          combine: lane.combine ?? 'replace',
-          magnitude: lane.magnitude ?? 'unsigned',
-        });
-      }
-      for (const lane of track.automation ?? []) {
-        entries.push({
-          instance: trackInstanceKey(track.id, lane.targetDeviceId),
-          field: lane.targetField,
-          value: evalLaneAtBeat(lane.points, { kind: 'track' }, beat),
-          combine: lane.combine ?? 'replace',
-          magnitude: lane.magnitude ?? 'unsigned',
-        });
-      }
-      // Re-assert each active rail's base value onto its accumulator `input` every
-      // frame. clip-sketch seeds `input` only at build time; without this, when a
-      // writer wire drops out (its clip ended) the rail HOLDS the last modulated
-      // value instead of resetting to base. 'replace' sets the baseline; surviving
-      // writer wires fold on top (the executor applies automation before wires).
-      for (const read of clip.reads ?? []) {
-        if (seenRail.has(read.railId)) continue;
-        seenRail.add(read.railId);
-        const rt = store.railTrackFor(read.railId);
-        const base = rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? beat / totalBeats : 0) : 0;
-        entries.push({
-          instance: `rail_${read.railId}`, field: 'input', value: base,
-          combine: 'replace', magnitude: 'unsigned',
-        });
-      }
-    }
+    const entries = automationEntriesAtBeat(store.positionBeat);
     const sig = JSON.stringify(entries);
     if (sig === this.lastAutoSig) return;
     this.lastAutoSig = sig;
@@ -435,7 +368,7 @@ export class EngineBridge {
     // rAF maps the live transport clock → frame, so this only handles the set.
     const videoDescs: VideoClipDesc[] = [];
     for (const l of engineLayers) {
-      const d = this.videoDescFor(l.clip);
+      const d = videoDescFor(l.clip);
       if (d) videoDescs.push(d);
     }
     this.lastVideoDescs = videoDescs; // the Precise gate waits on these (the target)
@@ -446,7 +379,7 @@ export class EngineBridge {
     const seen = new Set(videoDescs.map((d) => d.clipId));
     for (const clip of store.videoClipsInWindow(store.positionBeat, store.positionBeat + LOOKAHEAD_BEATS)) {
       if (seen.has(clip.id)) continue;
-      const d = this.videoDescFor(clip);
+      const d = videoDescFor(clip);
       if (d) { warmDescs.push(d); seen.add(clip.id); }
     }
 
@@ -478,36 +411,10 @@ export class EngineBridge {
     }
     this.clearPreciseHold();
 
-    // Per-rail base-curve value at the playhead — baked into each rail accumulator so
-    // writer wires fold onto it (see buildCompositeSketch). A flat base (the default)
-    // is constant ⇒ no recompile; an animated base re-issues the composite as it moves.
-    const totalBeats = compositionLengthBeats(store.composition);
-    const railBases = new Map<string, number>();
-    const railSigned = new Map<string, boolean>(); // the return track's signed mode
-    for (const l of engineLayers) {
-      for (const read of l.clip.reads ?? []) {
-        if (railBases.has(read.railId)) continue;
-        const rt = store.railTrackFor(read.railId);
-        railBases.set(read.railId, rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? store.positionBeat / totalBeats : 0) : 0);
-        railSigned.set(read.railId, rt?.railSigned ?? false);
-      }
-    }
-
-    // Clip start in absolute transport seconds — baked onto each clip's effect chain
-    // entries so the executor can seek a freshly-activated modulation source to its
-    // clip-relative phase (display ⇄ live alignment on a mid-clip jump).
-    const clock = makeWarpClock(store.composition);
-    const render = engineLayers.length
-      ? buildCompositeSketch(
-          engineLayers.map((l) => ({
-            clip: l.clip, opacity: l.opacity ?? 1, blendMode: l.blendMode, track: l.track,
-            startSec: clock.secondsAt(l.clip.startBeat),
-          })),
-          store.composition.meta.background,
-          railBases,
-          railSigned,
-        )
-      : null;
+    // Fold the active engine layers into ONE composite sketch — rail base-curve
+    // values + each clip's absolute start-seconds baked in (warp-aware). Shared
+    // VERBATIM with the offline exporter (composite-frame.ts) so they render alike.
+    const render = buildCompositeRenderAtBeat(engineLayers, store.positionBeat);
 
     if (!render) {
       // Issue the empty composite (clear the trace) BEFORE dropping pumps, so an on-

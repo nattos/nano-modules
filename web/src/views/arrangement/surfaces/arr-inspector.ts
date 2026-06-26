@@ -1012,6 +1012,20 @@ export class ArrInspector extends MobxLitElement {
           ></editable-number>
         </div>
         <div class="row">
+          <label>Frame rate</label>
+          <span class="val">
+            <editable-number
+              class="num"
+              .value=${store.exportFps}
+              .step=${1}
+              .min=${1}
+              .max=${240}
+              .precision=${0}
+              @input=${(e: CustomEvent<number>) => store.setExportFps(e.detail)}
+            ></editable-number> fps
+          </span>
+        </div>
+        <div class="row">
           <label>Time signature</label>
           <span class="val">${meta.timeSignature[0]} / ${meta.timeSignature[1]}</span>
         </div>

@@ -572,12 +572,25 @@ async function stepOneFrame() {
   if (!running || frameInFlight) return;
   frameInFlight = true;
   try {
-    const dt = 1 / 60;
-    elapsed += dt;
+    // Transport-driven step (offline export / precise scrub): the requested
+    // `transportSeconds` IS the effect time, so a step lands exactly on the
+    // playhead at ANY fps (not a fixed 1/60). A negative execDt (backward step)
+    // lets seekable effects seek; real modules + smoothing still get dt≥0.
+    // No transport set ⇒ a fixed nominal 1/60 nudge (the IDE frame-step button).
+    let dt: number;
+    let execDt: number;
+    if (transportSeconds != null) {
+      execDt = transportSeconds - elapsed;
+      dt = Math.max(0, execDt);
+      elapsed = transportSeconds;
+    } else {
+      dt = execDt = 1 / 60;
+      elapsed += dt;
+    }
 
     if (bridgeCore) bridgeCore.tick();
 
-    await simulateTick(dt);
+    await simulateTick(dt, execDt);
     captureAndSendFrame();
 
     if (stateGeneration !== lastBroadcastGeneration) {
