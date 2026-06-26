@@ -204,11 +204,14 @@ export class ColumnGroup extends MobxLitElement {
   static readonly GUTTER_WIDTH = 20;
 
   /** Modulation/option pips render in a thin strip on the LEFT of the column (for
-   *  every surface — IDE and arrangement alike) whenever wiring/smoothing is on. The
-   *  old right-hand "gutter" is retired (single linear stack, no multi-column). */
+   *  every surface — IDE and arrangement alike). The old right-hand "gutter" is retired
+   *  (single linear stack, no multi-column). The strip is ALWAYS present for a real
+   *  column — it's an always-on indicator, independent of wires MODE (which only gates
+   *  the connect interaction). renderFieldOptionPips emits a dot only for fields that
+   *  are actually wired or have smoothing, so the strip is invisible until there's
+   *  something to show. */
   private get showPips(): boolean {
-    const caps = this.adapter?.data.caps;
-    return !!(caps && (caps.wiring || caps.smoothing));
+    return !!this.adapter;
   }
 
   getGutterWidth(): number {
@@ -1707,7 +1710,9 @@ export class ColumnGroup extends MobxLitElement {
    */
   private renderFieldOptionPips(column: SketchColumn): TemplateResult[] {
     const pips: TemplateResult[] = [];
-    if (!this.ds.caps.wiring && !this.ds.caps.smoothing) return pips;
+    // No caps/mode gate: a pip is an always-visible indicator for a field that is wired
+    // or has smoothing (computed below). Wires-MODE only governs the connect gesture,
+    // not whether the modulation indicator shows.
     // The pips live in the left strip; positions resolve relative to it.
     const gutterEl = this.renderRoot.querySelector(
       `.pip-strip[data-col="${this.colIdx}"]`) as HTMLElement | null;
