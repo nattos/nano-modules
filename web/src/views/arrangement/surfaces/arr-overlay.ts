@@ -55,13 +55,21 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
 }
 
+// A wire between a clip and an immediately-adjacent return track spans only a
+// few vertical pixels; left as a straight segment it's an invisible, unhittable
+// sliver. Bow the bezier in the travel direction so short wires still read as a
+// grabbable arc. Long wires (|dy| past the threshold) are unchanged.
+const MIN_WIRE_BOW = 26;
+
 function wirePath(a: Pt, b: Pt): string {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const vert = Math.abs(dx) < 30;
   const c1x = a.x + (vert ? 18 : dx * 0.2);
   const c2x = b.x - (vert ? 18 : dx * 0.2);
-  const my = a.y + dy * 0.5;
+  const dir = dy >= 0 ? 1 : -1;
+  const bow = Math.max(0, MIN_WIRE_BOW - Math.abs(dy) * 0.5);
+  const my = a.y + dy * 0.5 + dir * bow;
   return `M ${a.x} ${a.y} C ${c1x} ${my}, ${c2x} ${my}, ${b.x} ${b.y}`;
 }
 
@@ -304,7 +312,16 @@ export class ArrOverlay extends MobxLitElement {
           e.stopPropagation();
           store.selectWire(w.id, w.clipPath, w.target);
         };
+        // Double-click a modulation wire (export/read, not the warp link) to
+        // delete it. Look up `w.popup` live — `w` is captured per-create only.
+        const onDblClick = (e: Event) => {
+          e.stopPropagation();
+          if (w.popup === false) return;
+          store.deleteWire(w.id);
+        };
         hit.addEventListener('pointerdown', onClick);
+        hit.addEventListener('dblclick', onDblClick);
+        pip.addEventListener('dblclick', onDblClick);
         pip.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
           store.selectWire(w.id, w.clipPath, w.target);

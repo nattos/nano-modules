@@ -113,6 +113,20 @@ function freshClipIds(clip: Clip): void {
     const t = devMap.get(lane.targetDeviceId);
     if (t) lane.targetDeviceId = t;
   }
+  // Rail taps (return-track modulation wires) reference clip-local devices and
+  // carry a tap id that keys the wire selection path (`w:`/`r:` + id). A clone
+  // that kept the source's device refs would modulate the ORIGINAL clip's
+  // devices; a shared tap id would alias the source's wire in tapByWireId.
+  for (const exp of clip.exports ?? []) {
+    exp.id = uid('rail');
+    const s = devMap.get(exp.sourceDeviceId);
+    if (s) exp.sourceDeviceId = s;
+  }
+  for (const read of clip.reads ?? []) {
+    read.id = uid('rail');
+    const t = devMap.get(read.targetDeviceId);
+    if (t) read.targetDeviceId = t;
+  }
 }
 
 /**
@@ -2033,6 +2047,32 @@ export class ArrangementStore {
   }
   closeTapPopup() {
     this.tapPopup = null;
+  }
+
+  /** Delete a rail wire by id (`w:<id>` export / `r:<id>` read). Undoable. */
+  deleteWire(wireId: string) {
+    const kind = wireId[0];
+    const id = wireId.slice(2);
+    this.mutate('delete wire', (d) => {
+      for (const t of d.tracks) {
+        for (const c of t.clips) {
+          if (kind === 'w') {
+            c.exports = (c.exports ?? []).filter((x) => x.id !== id);
+          } else if (kind === 'r') {
+            c.reads = (c.reads ?? []).filter((x) => x.id !== id);
+          }
+        }
+      }
+    });
+    if (this.selectedWireId === wireId) this.selectedWireId = null;
+    if (this.tapPopup?.wireId === wireId) this.closeTapPopup();
+  }
+
+  /** Delete the currently-selected rail wire, if any. Returns true if it acted. */
+  deleteSelectedWire(): boolean {
+    if (!this.selectedWireId) return false;
+    this.deleteWire(this.selectedWireId);
+    return true;
   }
 
   /** Find a rail export/read tap object by wire id (`w:<id>` / `r:<id>`). */

@@ -512,11 +512,12 @@ export class ArrInspector extends MobxLitElement {
           ? inputs.map((r: any) => {
               const m = this.fieldMeta(clip, r.targetDeviceId, r.targetField);
               return html`<div class="dnode">
-                <span class="fpip in" title=${`rail → ${m.label}`}
+                <span class="fpip in" title=${`rail → ${m.label} (double-click to delete)`}
                   @pointerdown=${(e: PointerEvent) => this.onDashPip(e, {
                     wireId: 'r:' + r.id, dir: 'in', clipPath, target: { field: r.targetField },
                     label: `rail → ${m.label}`,
-                  })}></span>
+                  })}
+                  @dblclick=${(e: Event) => { e.stopPropagation(); store.deleteWire('r:' + r.id); }}></span>
                 <scalar-knob
                   .binding=${this.dashBindingFor(trackId, clipId, r.targetDeviceId)}
                   .fieldPath=${r.targetField} .label=${m.label}
@@ -531,11 +532,12 @@ export class ArrInspector extends MobxLitElement {
           ? outputs.map((ex: any) => {
               const m = this.fieldMeta(clip, ex.sourceDeviceId, ex.sourceField);
               return html`<div class="dnode">
-                <span class="fpip out" title=${`${m.label} → rail`}
+                <span class="fpip out" title=${`${m.label} → rail (double-click to delete)`}
                   @pointerdown=${(e: PointerEvent) => this.onDashPip(e, {
                     wireId: 'w:' + ex.id, dir: 'out', clipPath, target: {},
                     label: `${m.label} → rail`,
-                  })}></span>
+                  })}
+                  @dblclick=${(e: Event) => { e.stopPropagation(); store.deleteWire('w:' + ex.id); }}></span>
                 <spark-chart
                   .binding=${this.dashBindingFor(trackId, clipId, ex.sourceDeviceId)}
                   .fieldPath=${ex.sourceField} .min=${m.min} .max=${m.max}

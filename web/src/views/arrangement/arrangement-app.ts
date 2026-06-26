@@ -390,6 +390,14 @@ export class ArrangementApp extends MobxLitElement {
         store.deleteChainFocus();
         return;
       }
+      // A selected rail wire deletes first — works from either the timeline
+      // overlay or a dashboard pip, and takes priority over the clip it rode in
+      // on (selectWire also selects the clip, so check this before that branch).
+      if (store.selectedWireId) {
+        e.preventDefault();
+        store.deleteSelectedWire();
+        return;
+      }
       // Otherwise Backspace/Delete is timeline-only: deleting an effect in a
       // sketch card or anywhere else must NOT delete clips/tracks.
       if (this.lastSurface !== 'timeline') return;
