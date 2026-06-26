@@ -251,7 +251,8 @@ export class TransportBar extends MobxLitElement {
       </div>
 
       <div class="right">
-        <button class="export" title="Export video (MP4 / H.264)" @click=${() => store.openExport()}>
+        <button class="export ${store.activeRightTab === 'export' ? 'active' : ''}"
+          title="Export video (MP4 / H.264)" @click=${() => store.setRightTab('export')}>
           <ui-icon icon="la-file-export"></ui-icon> Export
         </button>
       </div>

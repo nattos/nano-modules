@@ -120,6 +120,13 @@ export interface ExportOptions {
   endBeat?: number;
   /** H.264 bitrate, bits/s (default: derived from resolution + fps). */
   bitrate?: number;
+  /**
+   * Stream the MP4 to this writable as it encodes (low memory — the file never
+   * lives fully in the page heap). When omitted the output is buffered in memory
+   * and returned as `result.blob`. Obtain one from
+   * `showSaveFilePicker().createWritable()`.
+   */
+  writable?: FileSystemWritableFileStream;
   /** Per-frame progress (1-based done / total). */
   onProgress?: (done: number, total: number) => void;
   /** Abort the export between frames. */
@@ -127,7 +134,8 @@ export interface ExportOptions {
 }
 
 export interface ExportResult {
-  blob: Blob;
+  /** The encoded MP4 — only when buffered in memory (no `writable`). */
+  blob?: Blob;
   width: number;
   height: number;
   fps: number;
@@ -160,12 +168,18 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   const bitrate = opts.bitrate ?? defaultBitrate(width, height, fps);
 
   // ── Muxer + encoder ─────────────────────────────────────────────────────
-  const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
-  const target = new ArrayBufferTarget();
+  // Streaming-to-disk (a file-handle writable) keeps memory flat: data flushes to
+  // the file as it encodes, so only a small index is held (moov lands at the end,
+  // `fastStart: false`). No writable ⇒ buffer in memory + relocate moov to front.
+  const { Muxer, ArrayBufferTarget, FileSystemWritableFileStreamTarget } = await import('mp4-muxer');
+  const memTarget = opts.writable ? null : new ArrayBufferTarget();
+  const target = opts.writable
+    ? new FileSystemWritableFileStreamTarget(opts.writable)
+    : memTarget!;
   const muxer = new Muxer({
     target,
     video: { codec: 'avc', width, height, frameRate: fps },
-    fastStart: 'in-memory',
+    fastStart: opts.writable ? false : 'in-memory',
   });
   let encErr: unknown = null;
   const encoder = new VideoEncoder({
@@ -246,7 +260,11 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
     await encoder.flush();
     if (encErr) throw encErr instanceof Error ? encErr : new Error(String(encErr));
     muxer.finalize();
-    const blob = new Blob([target.buffer], { type: 'video/mp4' });
+    if (opts.writable) {
+      await opts.writable.close(); // commit the streamed file to disk
+      return { width, height, fps, frames: total, durationSec: total / fps };
+    }
+    const blob = new Blob([memTarget!.buffer], { type: 'video/mp4' });
     return { blob, width, height, fps, frames: total, durationSec: total / fps };
   } finally {
     try { encoder.close(); } catch { /* already errored / closed */ }

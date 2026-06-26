@@ -12,11 +12,12 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES } from '../model/composition';
+import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type ExportResolutionMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
+import { exportController } from '../engine/export-controller';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
@@ -262,6 +263,11 @@ export class ArrInspector extends MobxLitElement {
       border-color: var(--app-hi-color2);
       color: var(--app-hi-color2);
     }
+    .btn[disabled] { opacity: 0.5; cursor: default; }
+    .muted { color: var(--app-text-color2); font-size: var(--app-fs-sm); }
+    .err { color: var(--app-hi-color1); font-size: var(--app-fs-sm); white-space: pre-wrap; }
+    .exp-progress { height: 6px; border-radius: 3px; overflow: hidden; background: var(--app-tint-3); margin-top: 8px; }
+    .exp-progress > i { display: block; height: 100%; background: var(--app-hi-color2); transition: width 0.1s linear; }
     .ws-toolbar {
       display: flex;
       gap: 6px;
@@ -1138,21 +1144,103 @@ export class ArrInspector extends MobxLitElement {
   }
 
   // ── Export ────────────────────────────────────────────────────────────
+  private onResMode(mode: string) {
+    if (mode === 'custom') {
+      // Seed the explicit dimensions from the current effective resolution.
+      const r = store.exportResolution;
+      store.setExportSettings({ resolutionMode: 'custom', width: r.width, height: r.height });
+    } else {
+      store.setExportSettings({ resolutionMode: mode as ExportResolutionMode });
+    }
+  }
+
   private renderExport(): TemplateResult {
-    const meta = store.composition.meta;
+    const s = store.exportSettings;
+    const eff = store.exportResolution;
+    const ec = exportController;
+    const rendering = ec.phase === 'rendering';
+    const pct = Math.round(ec.progress * 100);
     return html`
       <div class="section-header">Export</div>
       <div class="body">
-        <div class="row"><label>Resolution</label><span class="val">${meta.resolution.width}×${meta.resolution.height}</span></div>
-        <div class="row"><label>Frame rate</label><span class="val">${store.exportFps} fps</span></div>
+        <div class="row">
+          <label>Resolution</label>
+          <select .value=${s.resolutionMode} ?disabled=${rendering}
+            @change=${(e: Event) => this.onResMode((e.target as HTMLSelectElement).value)}>
+            <option value="default">Default (composition)</option>
+            <option value="2x">2× composition</option>
+            <option value="scale">Custom scale</option>
+            <option value="custom">Custom resolution</option>
+          </select>
+        </div>
+        ${s.resolutionMode === 'scale' ? html`
+          <div class="row">
+            <label>Scale</label>
+            <span class="val">
+              <editable-number class="num" .value=${s.scale} .step=${0.25} .min=${0.1} .max=${8} .precision=${2}
+                ?disabled=${rendering}
+                @input=${(e: CustomEvent<number>) => store.setExportSettings({ scale: e.detail })}></editable-number> ×
+            </span>
+          </div>` : ''}
+        ${s.resolutionMode === 'custom' ? html`
+          <div class="row">
+            <label>Dimensions</label>
+            <span class="val">
+              <editable-number class="num" .value=${s.width} .step=${2} .min=${2} .precision=${0}
+                ?disabled=${rendering}
+                @input=${(e: CustomEvent<number>) => store.setExportSettings({ width: e.detail })}></editable-number> ×
+              <editable-number class="num" .value=${s.height} .step=${2} .min=${2} .precision=${0}
+                ?disabled=${rendering}
+                @input=${(e: CustomEvent<number>) => store.setExportSettings({ height: e.detail })}></editable-number>
+            </span>
+          </div>` : ''}
+        <div class="row"><label></label><span class="val muted">→ ${eff.width}×${eff.height}</span></div>
+        <div class="row">
+          <label>Frame rate</label>
+          <span class="val">
+            <editable-number class="num" .value=${store.exportFps} .step=${1} .min=${1} .max=${240} .precision=${0}
+              ?disabled=${rendering}
+              @input=${(e: CustomEvent<number>) => store.setExportFps(e.detail)}></editable-number> fps
+          </span>
+        </div>
         <div class="row">
           <label>Range</label>
-          <span class="val">${store.loopEnabled ? 'Loop region' : 'Whole arrangement'}</span>
+          <span class="val seg">
+            <button class="segbtn ${s.range === 'all' ? 'on' : ''}" ?disabled=${rendering}
+              @click=${() => store.setExportSettings({ range: 'all' })}>Whole</button>
+            <button class="segbtn ${s.range === 'loop' ? 'on' : ''}"
+              ?disabled=${rendering || !ec.hasLoop}
+              title=${ec.hasLoop ? 'Export the loop region' : 'No loop region set'}
+              @click=${() => store.setExportSettings({ range: 'loop' })}>Loop</button>
+          </span>
+        </div>
+        <div class="row">
+          <label>Quality</label>
+          <span class="val seg">
+            <button class="segbtn ${s.quality === 'low' ? 'on' : ''}" ?disabled=${rendering}
+              @click=${() => store.setExportSettings({ quality: 'low' })}>Low</button>
+            <button class="segbtn ${s.quality === 'medium' ? 'on' : ''}" ?disabled=${rendering}
+              @click=${() => store.setExportSettings({ quality: 'medium' })}>Med</button>
+            <button class="segbtn ${s.quality === 'high' ? 'on' : ''}" ?disabled=${rendering}
+              @click=${() => store.setExportSettings({ quality: 'high' })}>High</button>
+          </span>
         </div>
         <div class="row"><label>Format</label><span class="val">MP4 · H.264</span></div>
-        <button class="btn primary" style="margin-top:8px" @click=${() => store.openExport()}>
-          <ui-icon icon="la-file-export"></ui-icon> Render…
-        </button>
+        <div class="row"><label>Length</label><span class="val muted">~${ec.estimateFrames} frames · ${(ec.estimateFrames / Math.max(1, store.exportFps)).toFixed(1)}s</span></div>
+
+        ${rendering ? html`
+          <div class="exp-progress"><i style="width:${pct}%"></i></div>
+          <div class="muted" style="margin-top:4px">${ec.framesDone} / ${ec.framesTotal} frames (${pct}%)</div>
+          <button class="btn" style="margin-top:8px" @click=${() => ec.cancel()}>Cancel</button>
+        ` : html`
+          <button class="btn primary" style="margin-top:8px" ?disabled=${ec.estimateFrames === 0}
+            @click=${() => ec.run()}>
+            <ui-icon icon="la-file-export"></ui-icon> Render…
+          </button>
+          ${ec.phase === 'done' ? html`<div class="muted" style="margin-top:6px">✓ ${ec.message}</div>` : ''}
+          ${ec.phase === 'canceled' ? html`<div class="muted" style="margin-top:6px">${ec.message}</div>` : ''}
+          ${ec.phase === 'error' ? html`<div class="err" style="margin-top:6px">${ec.message}</div>` : ''}
+        `}
       </div>
     `;
   }

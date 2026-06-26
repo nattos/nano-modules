@@ -27,6 +27,10 @@ import {
   resolveSourceTransform,
   compositionLengthBeats,
   compositionFps,
+  exportSettings,
+  exportResolution,
+  DEFAULT_EXPORT_SETTINGS,
+  type ExportSettings,
 } from '../model/composition';
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
@@ -303,8 +307,6 @@ export class ArrangementStore {
   automationMode = false;
   /** Global wires mode: reveals the rail modulation wires. */
   wiresMode = true;
-  /** Whether the export modal is open (UI state; non-undoable). */
-  exportOpen = false;
 
   // Viewport (warped-units horizontal transform lives in beat-grid.ts).
   pxPerBeat = 22;
@@ -2076,9 +2078,17 @@ export class ArrangementStore {
     this.mutate('set fps', (d) => { d.meta.fps = v; }, 'meta:fps');
   }
 
-  /** Open / close the export modal (the transport + inspector both trigger it). */
-  openExport() { this.exportOpen = true; }
-  closeExport() { this.exportOpen = false; }
+  /** Persisted export settings (resolution mode, quality, range), defaults filled. */
+  get exportSettings(): ExportSettings { return exportSettings(this.composition); }
+  /** Effective export pixel dimensions for the current resolution mode. */
+  get exportResolution(): { width: number; height: number } { return exportResolution(this.composition); }
+  /** Patch the persisted export settings (saved on the composition). */
+  setExportSettings(patch: Partial<ExportSettings>) {
+    this.mutate('export settings', (d) => {
+      const cur = { ...DEFAULT_EXPORT_SETTINGS, ...(d.meta.export ?? {}) };
+      d.meta.export = { ...cur, ...patch };
+    }, 'meta:export');
+  }
 
   // ── Composite background (per composition; default = opaque black) ──────
   get backgroundMode(): 'black' | 'transparent' | 'custom' {

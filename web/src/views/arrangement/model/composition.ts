@@ -118,6 +118,8 @@ export interface CompositionMeta {
   background?: BackgroundConfig;
   /** Render/export frame rate (frames per second). Omitted ⇒ {@link DEFAULT_FPS}. */
   fps?: number;
+  /** Persisted export/render settings (resolution mode, quality, range). */
+  export?: ExportSettings;
 }
 
 /** Default render/export frame rate when the composition doesn't set one. */
@@ -127,6 +129,46 @@ export const DEFAULT_FPS = 60;
 export function compositionFps(comp: Composition): number {
   const f = comp.meta.fps;
   return typeof f === 'number' && Number.isFinite(f) && f > 0 ? f : DEFAULT_FPS;
+}
+
+/** How the export's pixel dimensions derive from the composition resolution. */
+export type ExportResolutionMode = 'default' | '2x' | 'scale' | 'custom';
+/** H.264 quality tier (→ a bits-per-pixel budget in the exporter). */
+export type ExportQuality = 'low' | 'medium' | 'high';
+/** Which beat span to export. */
+export type ExportRangeKind = 'all' | 'loop';
+
+/** Persisted export/render settings (saved on the composition's `meta.export`). */
+export interface ExportSettings {
+  resolutionMode: ExportResolutionMode;
+  /** Multiplier for `scale` mode (× composition resolution). */
+  scale: number;
+  /** Explicit pixel dimensions for `custom` mode. */
+  width: number;
+  height: number;
+  quality: ExportQuality;
+  range: ExportRangeKind;
+}
+
+export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  resolutionMode: 'default', scale: 1, width: 1920, height: 1080, quality: 'high', range: 'all',
+};
+
+/** The composition's export settings, with defaults filled in for missing fields. */
+export function exportSettings(comp: Composition): ExportSettings {
+  return { ...DEFAULT_EXPORT_SETTINGS, ...(comp.meta.export ?? {}) };
+}
+
+/** Effective export pixel dimensions from the resolution mode + composition resolution. */
+export function exportResolution(comp: Composition): { width: number; height: number } {
+  const r = comp.meta.resolution;
+  const s = exportSettings(comp);
+  switch (s.resolutionMode) {
+    case '2x': return { width: r.width * 2, height: r.height * 2 };
+    case 'scale': return { width: Math.round(r.width * s.scale), height: Math.round(r.height * s.scale) };
+    case 'custom': return { width: s.width, height: s.height };
+    default: return { width: r.width, height: r.height };
+  }
 }
 
 /**
