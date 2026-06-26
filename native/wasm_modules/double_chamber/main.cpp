@@ -68,6 +68,7 @@ struct State {
   gpu::Buffer  p_uniform, big_uniform, prefill_uniform;
   gpu::Buffer  vs_uniform_p, vs_uniform_big, fs_uniform_p, fs_uniform_big;
   gpu::Sampler sampler;
+  gpu::Texture black_tex;   // 1×1 fallback when no input is wired (true generator)
   bool initialized = false;
   uint32_t frame_index = 0;
 
@@ -76,13 +77,13 @@ struct State {
   float motion_rate = 1.0f;
   float field_speed = 0.25f, field_scale = 1.0f, field_skew = 0.0f, field_squash = 0.5f;
   float momentum = 0.6f, momentum_decay = 0.98f;
-  float to_big = 0.3f, to_big_curl = 0.4f, curl_dir = 1.0f, sink = 0.0f;
+  float to_big = 0.3f, to_big_curl = 0.2f, curl_dir = 1.0f, sink = 0.0f;
   float jitter = 0.04f;
-  float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 0.6f;
+  float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 1.2f;
   float to_image = 0.0f, to_image_curl = 0.0f;
-  float undertow_skew = 0.0f, undertow_squash = 6.0f;
+  float undertow_skew = 0.0f, undertow_squash = 1.0f;
   float ttl = 0.4f, spawn_size = 0.5f;
-  float p_point_size = 0.006f, p_opacity = 0.6f, p_alpha_curve = 1.0f, render_hue = 0.0f;
+  float p_point_size = 0.005f, p_opacity = 0.25f, p_alpha_curve = 1.0f, render_hue = 0.0f;
   float tint_r = 1.0f, tint_g = 1.0f, tint_b = 1.0f, exposure = 1.0f;
   float color_contrib = 0.5f;
   int   p_shape = 1;  // gaussian
@@ -137,7 +138,7 @@ void module_init() {
       .floatField("field_speed",    0.25f, 0.0f, 2.0f,    state::PrimaryInput)
       .floatField("momentum",       0.6f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("to_big",         0.3f,  0.0f, 3.0f,    state::PrimaryInput)
-      .floatField("to_big_curl",    0.4f, -3.0f, 3.0f,    state::PrimaryInput)
+      .floatField("to_big_curl",    0.2f, -3.0f, 3.0f,    state::PrimaryInput)
       .floatField("jitter",         0.04f, 0.0f, 1.0f,    state::PrimaryInput)
       .floatField("color_contrib",  0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("to_image",       0.0f, -2.0f, 2.0f,    state::PrimaryInput)
@@ -150,16 +151,16 @@ void module_init() {
       .floatField("sink",           0.0f, -1.0f, 1.0f,    state::SecondaryInput)
       .floatField("to_image_curl",  0.0f, -2.0f, 2.0f,    state::SecondaryInput)
       .floatField("undertow_skew",  0.0f, -1.0f, 1.0f,    state::SecondaryInput)
-      .floatField("undertow_squash",6.0f,  0.0f, 24.0f,   state::SecondaryInput)
+      .floatField("undertow_squash",1.0f,  0.0f, 8.0f,    state::SecondaryInput)
       .floatField("boundary",       1.0f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("boundary_size",  0.42f, 0.05f, 0.7f,   state::SecondaryInput)
       .floatField("boundary_stiffness", 8.0f, 0.5f, 32.0f, state::SecondaryInput)
-      .floatField("boundary_speed", 0.6f,  0.0f, 4.0f,    state::SecondaryInput)
+      .floatField("boundary_speed", 1.2f,  0.0f, 6.0f,    state::SecondaryInput)
       .floatField("ttl",            0.4f,  0.02f, 1.0f,   state::SecondaryInput)
       .floatField("spawn_size",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
       // ---- P render ----
-      .floatField("p_point_size",   0.006f, 0.001f, 0.05f, state::SecondaryInput)
-      .floatField("p_opacity",      0.6f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("p_point_size",   0.005f, 0.001f, 0.05f, state::SecondaryInput)
+      .floatField("p_opacity",      0.25f, 0.0f, 1.0f,    state::SecondaryInput)
       .floatField("p_alpha_curve",  1.0f,  0.25f, 4.0f,   state::SecondaryInput)
       .floatField("render_hue",     0.0f,  0.0f, 1.0f,    state::SecondaryInput)
       .selectField("p_shape",       1,                    state::SecondaryInput, {
@@ -233,6 +234,8 @@ void* create() {
   s->fs_uniform_p    = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
   s->fs_uniform_big  = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
   s->sampler         = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  s->black_tex       = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA8);
+  if (s->black_tex.valid()) gpu::Device::clear(s->black_tex, 0.f, 0.f, 0.f, 1.f);
   return s;
 }
 
@@ -244,6 +247,7 @@ void destroy(void* self) {
   s->vs_uniform_p.release(); s->vs_uniform_big.release();
   s->fs_uniform_p.release(); s->fs_uniform_big.release();
   s->sampler.release();
+  s->black_tex.release();
   delete s;
 }
 
@@ -320,9 +324,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
-  auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
-  if (!in.valid() || !out.valid()) return;
+  if (!out.valid()) return;
+  // tex_in is optional — a true source renders on black when nothing is wired.
+  auto in = gpu::Device::textureForField("tex_in");
+  bool has_in = in.valid();
+  auto sample_tex = has_in ? in : s->black_tex;
+  if (!sample_tex.valid()) return;
 
   s->frame_index++;
   float dt = (float)host::deltaTime();
@@ -368,7 +376,7 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_big_update);
     cp.setBuffer(s->big_buf, 0);
-    cp.setTexture(in, 1, 0);
+    cp.setTexture(sample_tex, 1, 0);
     cp.setSampler(s->sampler, 2);
     cp.setBuffer(s->big_uniform, 3);
     cp.dispatch((s->big_count + 63) / 64, 1, 1);
@@ -381,15 +389,15 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_p_update);
     cp.setBuffer(s->p_buf, 0);
     cp.setBuffer(s->big_buf, 1);
-    cp.setTexture(in, 2, 0);
+    cp.setTexture(sample_tex, 2, 0);
     cp.setSampler(s->sampler, 3);
     cp.setBuffer(s->p_uniform, 4);
     cp.dispatch((s->p_count + 63) / 64, 1, 1);
     cp.end();
   }
 
-  // Pass 3 — prefill base.
-  {
+  // Pass 3 — base: composite over the input, or clear to black (no input).
+  if (has_in) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_prefill);
     cp.setTexture(in, 0, 0);
@@ -397,6 +405,8 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->prefill_uniform, 2);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
+  } else {
+    gpu::Device::clear(out, 0.f, 0.f, 0.f, 1.f);
   }
 
   // Pass 4 — render P points then Big points.
