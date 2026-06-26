@@ -1014,9 +1014,19 @@ export class ArrGrid extends MobxLitElement {
     const rect = this.scrollEl.getBoundingClientRect();
     const contentY = clientY - rect.top + this.scrollEl.scrollTop;
     const layout = this.rowLayout();
-    for (const r of layout) if (contentY < r.bottom) return { trackId: r.trackId, laneId: r.laneId };
-    const last = layout[layout.length - 1];
-    return last ? { trackId: last.trackId, laneId: last.laneId } : { trackId: '', laneId: '' };
+    // The caret / time-box system only targets track + rail rows (groups like the
+    // main bus aren't in store.caretRows). Clamp the hit to the last selectable
+    // row at-or-above it, so dragging past the bottom (over/below the main bus)
+    // extends the selection to the final lane instead of collapsing to one track.
+    const caretOK = (trackId: string) => {
+      const k = store.trackById(trackId)?.kind;
+      return k === 'track' || k === 'rail';
+    };
+    let idx = layout.findIndex((r) => contentY < r.bottom);
+    if (idx < 0) idx = layout.length - 1;
+    while (idx >= 0 && !caretOK(layout[idx].trackId)) idx--;
+    const r = idx >= 0 ? layout[idx] : layout[layout.length - 1];
+    return r ? { trackId: r.trackId, laneId: r.laneId } : { trackId: '', laneId: '' };
   }
 
   /** Track-row vertical layout in content (scroll) coordinates. */
@@ -1083,7 +1093,9 @@ export class ArrGrid extends MobxLitElement {
       x0: e.clientX,
       y0: e.clientY,
       active: false,
-      duplicate: (e.metaKey || e.ctrlKey) && !timebox,
+      // Cmd/Ctrl = duplicate (a COPY), for a single clip OR a multi-clip/slice
+      // time box. The copy is made live per drag-frame (originals never move).
+      duplicate: e.metaKey || e.ctrlKey,
       origClip: JSON.parse(JSON.stringify(clip)),
       // A header drag moves the in-box content (split at the box edges) — incl.
       // between tracks — and the box follows. For a single clip the box is just
@@ -1129,15 +1141,20 @@ export class ArrGrid extends MobxLitElement {
     const shiftBeat = free ? deltaBeat : Math.round(deltaBeat / snap) * snap;
 
     if (d.timebox && d.baseSel) {
-      // Move the in-box content by the X shift AND across tracks (Y); the box
-      // follows. Track delta = source→dest in the plain-track order.
+      // Move (or, with Cmd, COPY) the in-box content by the X shift AND across
+      // tracks (Y). Track delta = source→dest in the plain-track order.
       const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
       const plain = store.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
       const td = plain.indexOf(dest) - plain.indexOf(d.trackId);
       this.clipDropTrackId = td !== 0 ? dest : null;
-      store.moveTimeBoxContent(shiftBeat, td, d.baseSel);
-      // Caret + (paused) playhead slide with the box by the same beat shift.
-      store.slideCaret(d.baseCaret, shiftBeat);
+      if (d.duplicate) {
+        // Copy the slices to the shifted spot; originals + box stay put.
+        store.copyTimeBoxContent(shiftBeat, td, d.baseSel);
+      } else {
+        store.moveTimeBoxContent(shiftBeat, td, d.baseSel);
+        // Caret + (paused) playhead slide with the box by the same beat shift.
+        store.slideCaret(d.baseCaret, shiftBeat);
+      }
       return;
     }
 
@@ -1147,11 +1164,17 @@ export class ArrGrid extends MobxLitElement {
     const beat = free ? Math.max(0, targetStart) : store.quantize(targetStart);
     const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
     this.clipDropTrackId = dest !== d.trackId ? dest : null;
-    // Always pass the ORIGINAL source track: coalescing reverts to the gesture's
-    // base each frame (clip back on its source), then re-applies the move.
-    store.moveClipToTrack(d.trackId, d.clipId, dest, beat);
-    // Caret + (paused) playhead follow by the ACTUAL applied shift (post-snap).
-    store.slideCaret(d.baseCaret, beat - d.startBeat);
+    if (d.duplicate) {
+      // A live COPY tracking the cursor (the original never moves); per-frame
+      // under one key so the whole drag is a single undo.
+      store.insertClipCopyAt(d.origClip, dest, beat, `dup:${d.clipId}`);
+    } else {
+      // Always pass the ORIGINAL source track: coalescing reverts to the gesture's
+      // base each frame (clip back on its source), then re-applies the move.
+      store.moveClipToTrack(d.trackId, d.clipId, dest, beat);
+      // Caret + (paused) playhead follow by the ACTUAL applied shift (post-snap).
+      store.slideCaret(d.baseCaret, beat - d.startBeat);
+    }
   };
 
   /**
@@ -1180,10 +1203,8 @@ export class ArrGrid extends MobxLitElement {
   private onClipUp = () => {
     window.removeEventListener('pointermove', this.onClipMove);
     window.removeEventListener('pointerup', this.onClipUp);
-    const d = this.clipMove;
-    // Cmd-drag DUPLICATE: the clip was dragged to its new spot — drop a clone back
-    // at the original location so the source clip "reappears" (net: a duplicate).
-    if (d && d.duplicate && d.active) store.insertClipClone(d.trackId, d.origClip);
+    // Cmd-drag DUPLICATE now makes its copy live during the drag (per-frame,
+    // coalesced) — nothing to finalize here beyond closing the gesture.
     store.endGesture();
     this.clipMove = null;
     this.clipDropTrackId = null;

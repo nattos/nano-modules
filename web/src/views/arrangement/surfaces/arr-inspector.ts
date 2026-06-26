@@ -50,6 +50,25 @@ const ARR_COLUMN_CALLBACKS: ColumnGroupCallbacks = {
   getInspectorElement: () => null,
 };
 
+/**
+ * Per-selection inspector scroll memory: when you re-select a thing, its panel
+ * restores where you'd left it scrolled. Keyed by the selection path
+ * (`clip/<trk>/<clip>`, `track/<id>`, `rail/<id>`). An insertion-ordered Map acts
+ * as an LRU — re-touching a key moves it to the end; the oldest is evicted past
+ * the cap. Module-level so it survives the (singleton) inspector's re-renders.
+ */
+const SCROLL_MEMORY_N = 64;
+const inspectorScrollMemory = new Map<string, number>();
+function rememberInspectorScroll(path: string, top: number) {
+  inspectorScrollMemory.delete(path);
+  inspectorScrollMemory.set(path, top);
+  while (inspectorScrollMemory.size > SCROLL_MEMORY_N) {
+    const oldest = inspectorScrollMemory.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    inspectorScrollMemory.delete(oldest);
+  }
+}
+
 @customElement('arr-inspector')
 export class ArrInspector extends MobxLitElement {
   /** One ColumnAdapter per device-list target (clip/track), stable across re-renders. */
@@ -433,6 +452,26 @@ export class ArrInspector extends MobxLitElement {
     | { message: string; confirmLabel: string; danger: boolean; x: number; y: number; onYes: () => void | Promise<void> }
     | null = null;
 
+  /** The selection path whose panel is currently displayed (for scroll memory). */
+  private inspectedPath: string | null = null;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.addEventListener('scroll', this.onScroll, { passive: true });
+  }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.removeEventListener('scroll', this.onScroll);
+  }
+
+  /** Stash the live scroll under the path currently on screen (the inspector tab
+   *  only — other tabs don't participate in per-selection memory). */
+  private onScroll = () => {
+    if (store.activeRightTab === 'inspector' && this.inspectedPath) {
+      rememberInspectorScroll(this.inspectedPath, this.scrollTop);
+    }
+  };
+
   firstUpdated() {
     // Surface a "reopen last folder" affordance (label only — re-mounting needs
     // a user gesture, which the button click provides).
@@ -440,6 +479,20 @@ export class ArrInspector extends MobxLitElement {
       rememberedWorkspaceLabel().then((l) => { this.rememberedLabel = l; }),
     );
     void libraryPaths.ensureLoaded();
+  }
+
+  updated() {
+    // When the inspected thing changes, restore its remembered scroll (or top).
+    // The prior path's offset was already captured by onScroll. Restore after a
+    // frame so the new content has laid out (scrollTop clamps to scrollHeight).
+    const path = store.activeRightTab === 'inspector' ? store.primaryPath : null;
+    if (path !== this.inspectedPath) {
+      this.inspectedPath = path;
+      const saved = path ? inspectorScrollMemory.get(path) ?? 0 : 0;
+      requestAnimationFrame(() => {
+        if (this.inspectedPath === path) this.scrollTop = saved;
+      });
+    }
   }
 
   render() {

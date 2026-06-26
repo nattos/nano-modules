@@ -86,7 +86,8 @@ export class EnvelopeGraph extends MobxLitElement {
    *  `points` from the field, or it would clobber the in-progress edit. */
   get interacting() { return this.mode !== 'none'; }
   // Drag state.
-  private mode: 'none' | 'node' | 'segment' | 'select' | 'endpoints' | 'shelf' | 'group' = 'none';
+  private mode: 'none' | 'node' | 'segment' | 'select' | 'endpoints' | 'shelf' | 'group'
+    | 'leadShelf' | 'trailShelf' = 'none';
   /** Selection anchor (DATA-x) captured at pointerdown in 'select' mode. */
   private selAnchorX = 0;
   /** Start y of a segment's two endpoints (for the 'endpoints' vertical drag). */
@@ -248,7 +249,26 @@ export class EnvelopeGraph extends MobxLitElement {
     // On the curve. IDE default + arrangement Option = bend the segment;
     // arrangement plain drag = move the segment's two endpoints vertically.
     const seg = this.segmentAt(dx);
-    if (seg < 0) { this.mode = 'none'; return; }
+    if (seg < 0) {
+      // The leading / trailing flat "shelf to infinity" (before the first point /
+      // after the last). It evaluates as a held value, so onCurveLine already put
+      // us here; let a plain vertical drag raise/lower the first (resp. last)
+      // point, exactly like the inner 'endpoints' segments behave.
+      if (this.points.length >= 1) {
+        if (dx <= this.points[0].x + 1e-9) {
+          this.mode = 'leadShelf';
+          this.startYL = this.points[0].y;
+          return this.claim(e);
+        }
+        if (dx >= this.points[this.points.length - 1].x - 1e-9) {
+          this.mode = 'trailShelf';
+          this.startYR = this.points[this.points.length - 1].y;
+          return this.claim(e);
+        }
+      }
+      this.mode = 'none';
+      return;
+    }
     this.dragIndex = seg;
     if (this.timeboxGestures && !e.altKey) {
       this.mode = 'endpoints';
@@ -336,6 +356,14 @@ export class EnvelopeGraph extends MobxLitElement {
       const dyData = ((this.startPy - py) / innerH) * slow;
       pts[i].y = clamp01(this.startYL + dyData);
       pts[i + 1].y = clamp01(this.startYR + dyData);
+    } else if (this.mode === 'leadShelf') {
+      // Drag the leading infinite shelf → move the first point's y.
+      const dyData = ((this.startPy - py) / innerH) * slow;
+      pts[0].y = clamp01(this.startYL + dyData);
+    } else if (this.mode === 'trailShelf') {
+      // Drag the trailing infinite shelf → move the last point's y.
+      const dyData = ((this.startPy - py) / innerH) * slow;
+      pts[pts.length - 1].y = clamp01(this.startYR + dyData);
     } else {
       // Vertical drag bends the segment's easing (~120px ⇒ full ±1 range).
       const dyPx = (py - this.startPy) * slow;
@@ -478,7 +506,18 @@ export class EnvelopeGraph extends MobxLitElement {
     // control nodes) renders as a hard VERTICAL edge instead of being skipped by
     // a uniform sampler and drawn as a slope.
     const N = 96;
-    const samples: [number, number][] = [this.toPx(this.points[0].x, this.points[0].y)];
+    const first = this.points[0];
+    const last = this.points[this.points.length - 1];
+    const firstPx = this.toPx(first.x, first.y);
+    const lastPx = this.toPx(last.x, last.y);
+    // Leading/trailing flat "shelf to infinity": the envelope evaluates as a held
+    // value before the first point and after the last, so draw those flats out to
+    // the canvas edges (pixel-space — robust to an open xMax=Infinity domain)
+    // instead of leaving dead flat space. Skip if the endpoint is already past the
+    // edge (scrolled off), where the visible curve is mid-segment.
+    const samples: [number, number][] = [];
+    if (firstPx[0] > 0) samples.push([0, firstPx[1]]);
+    samples.push(firstPx);
     for (let i = 0; i < this.points.length - 1; i++) {
       const a = this.points[i], b = this.points[i + 1];
       if (b.x - a.x < 1e-9) {
@@ -491,6 +530,7 @@ export class EnvelopeGraph extends MobxLitElement {
         samples.push(this.toPx(x, evalEnvelope(this.points, x)));
       }
     }
+    if (lastPx[0] < cw) samples.push([cw, lastPx[1]]);
     const [, baseY] = this.toPx(0, 0);
     ctx.beginPath();
     ctx.moveTo(samples[0][0], baseY);

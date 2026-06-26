@@ -1586,6 +1586,64 @@ export class ArrangementStore {
   }
 
   /**
+   * Cmd-drag duplicate of a TIME BOX (possibly partial clip slices across several
+   * tracks): COPY the in-box slices to the shifted location, leaving the originals
+   * intact. Mirrors moveTimeBoxContent but (a) never removes the source clips and
+   * (b) slices a deep copy so the source isn't even fragmented. Coalesced under one
+   * key so a whole drag is ONE undo; the box/caret stay on the source.
+   */
+  copyTimeBoxContent(
+    deltaBeat: number,
+    trackDelta = 0,
+    base?: { start: number; end: number; scope: string[] },
+  ) {
+    const a = base ? base.start : this.timeSelStart!;
+    const b = base ? base.end : this.timeSelEnd;
+    if (a == null || b <= a) return;
+    const scopeIds = base ? base.scope : [...this.timeSelTrackIds];
+    const plainIds = this.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
+    const scope = scopeIds.length ? scopeIds : plainIds;
+    let td = trackDelta;
+    const idxs = scope.map((id) => plainIds.indexOf(id)).filter((i) => i >= 0);
+    if (idxs.length) {
+      const lo = Math.min(...idxs), hi = Math.max(...idxs);
+      td = Math.max(-lo, Math.min(plainIds.length - 1 - hi, trackDelta));
+    }
+    const destFor = (id: string): string => {
+      const i = plainIds.indexOf(id);
+      return i < 0 ? id : plainIds[Math.max(0, Math.min(plainIds.length - 1, i + td))];
+    };
+    this.mutate(
+      'duplicate time selection',
+      (d) => {
+        const pieces: Array<{ destId: string; clip: Clip }> = [];
+        for (const track of d.tracks) {
+          if (!scope.includes(track.id)) continue;
+          // Slice a DEEP COPY at the box edges so the source track is untouched.
+          const tmp = { clips: JSON.parse(JSON.stringify(track.clips)) } as Track;
+          splitClipsAt(tmp, a);
+          splitClipsAt(tmp, b);
+          const inBox = (c: Clip) => c.startBeat >= a - 1e-6 && c.startBeat < b - 1e-6;
+          for (const c of tmp.clips.filter(inBox)) {
+            const m: Clip = JSON.parse(JSON.stringify(c));
+            m.id = uid('clip');
+            freshClipIds(m);
+            m.startBeat = Math.max(0, c.startBeat + deltaBeat);
+            pieces.push({ destId: destFor(track.id), clip: m });
+          }
+        }
+        for (const { destId, clip } of pieces) {
+          const dt = d.tracks.find((t) => t.id === destId);
+          if (!dt) continue;
+          carveTrackSpan(dt, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+          dt.clips.push(clip);
+        }
+      },
+      'copy-time-box',
+    );
+  }
+
+  /**
    * Slide the caret + (when paused) the playhead by `deltaBeat` from a captured base,
    * so they keep their position relative to content dragged underneath them. Track ids
    * are left as-is (a clip drag's box-follow sets those). Used during clip-move drags.
@@ -1801,6 +1859,25 @@ export class ArrangementStore {
       carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
       t.clips.push(clip);
     });
+  }
+
+  /**
+   * Cmd-drag duplicate of a SINGLE clip: drop a fresh clone of `source` at
+   * (`destTrackId`, `beat`), leaving the original untouched. Driven per-frame
+   * during the drag under one `coalesceKey`, so the whole gesture is ONE undo and
+   * the copy tracks the cursor (the original never moves — a true copy).
+   */
+  insertClipCopyAt(source: Clip, destTrackId: string, beat: number, coalesceKey?: string) {
+    this.mutate('duplicate clip', (d) => {
+      const t = d.tracks.find((x) => x.id === destTrackId);
+      if (!t || t.kind !== 'track') return;
+      const clip: Clip = JSON.parse(JSON.stringify(source));
+      clip.id = uid('clip');
+      freshClipIds(clip);
+      clip.startBeat = Math.max(0, beat);
+      carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+      t.clips.push(clip);
+    }, coalesceKey);
   }
 
   /** Solo the focused track, else the caret's head track. */

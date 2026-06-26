@@ -126,6 +126,10 @@ export class ArrAutomationEditor extends MobxLitElement {
       if (this.gridProvider && this.beats > 0) {
         // External clip-local grid (zoom/pan via a ClipTimelineView): x∈[0,1] →
         // [0, beats] through the provided straight grid. Recomputed each frame.
+        // Endpoints FLOAT (like track lanes) so the first/last point can sit
+        // interior, leaving a flat leading/trailing "shelf to infinity" that the
+        // graph draws to the edges and lets you drag / shelf / paste onto.
+        g.pinEndpoints = false;
         const span = this.beats;
         const grid = this.gridProvider();
         g.xMap = (dx) => grid.beatToX(dx * span);

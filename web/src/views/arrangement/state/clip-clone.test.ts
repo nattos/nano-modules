@@ -65,4 +65,48 @@ describe('clip duplication mints fresh inner ids', () => {
     // The rail target is preserved (both still modulate the same return).
     expect(clone.exports[0].railId).toBe(railId);
   });
+
+  it('single-clip cmd-drag copy is ONE undo and leaves the original intact', () => {
+    const t1 = store.addTrack();
+    const clipId = store.createEmptyClip(t1, 0, 4)!.split('/')[2];
+    const src = JSON.parse(JSON.stringify(store.trackById(t1)!.clips.find((c) => c.id === clipId)));
+    const before = store.trackById(t1)!.clips.length;
+    // Two drag frames under the same coalesce key (simulating the live drag).
+    store.beginGesture();
+    store.insertClipCopyAt(src, t1, 8, `dup:${clipId}`);
+    store.insertClipCopyAt(src, t1, 12, `dup:${clipId}`);
+    store.endGesture();
+    const tr = store.trackById(t1)!;
+    expect(tr.clips.length).toBe(before + 1); // original + ONE copy (coalesced)
+    expect(tr.clips.some((c) => c.id === clipId)).toBe(true); // original untouched
+    const copy = tr.clips.find((c) => c.id !== clipId)!;
+    expect(copy.startBeat).toBe(12); // last frame's position won
+    expect(copy.id).not.toBe(clipId);
+    // A SINGLE undo fully reverts the duplicate (not two).
+    store.undo();
+    const tr2 = store.trackById(t1)!;
+    expect(tr2.clips.length).toBe(before);
+    expect(tr2.clips.some((c) => c.id === clipId)).toBe(true);
+  });
+
+  it('copyTimeBoxContent duplicates EVERY in-box clip, leaving the originals', () => {
+    const t1 = store.addTrack();
+    const t2 = store.addTrack();
+    store.createEmptyClip(t1, 0, 4);
+    store.createEmptyClip(t2, 0, 4);
+    store.beginGesture();
+    store.copyTimeBoxContent(8, 0, { start: 0, end: 4, scope: [t1, t2] });
+    store.endGesture();
+    // Each track keeps its original [0,4] and gains a copy at [8,12].
+    for (const t of [t1, t2]) {
+      const clips = store.trackById(t)!.clips;
+      expect(clips.length).toBe(2);
+      expect(clips.some((c) => Math.abs(c.startBeat) < 1e-6)).toBe(true); // original
+      expect(clips.some((c) => Math.abs(c.startBeat - 8) < 1e-6)).toBe(true); // copy
+    }
+    // One undo removes all copies.
+    store.undo();
+    expect(store.trackById(t1)!.clips.length).toBe(1);
+    expect(store.trackById(t2)!.clips.length).toBe(1);
+  });
 });
