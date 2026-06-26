@@ -52,12 +52,28 @@ export class ArrRailLane extends MobxLitElement {
    *  it changes (so the playhead moving redraws the dot without re-evaluating). */
   private lastReqSig = '';
   private reqTimer = 0;
+  private rafId = 0;
+  /** Cheap grid/playhead fingerprint — drives the per-frame reproject. */
+  private lastDrawSig = '';
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => { this.lastReqSig = ''; this.scheduleRequest(); this.draw(); });
     this.ro.observe(this);
     this.scheduleRequest();
     this.draw();
+    // Reproject the cached curve from a rAF loop so a continuous pan/zoom updates
+    // LIVE, not just on release. The wheel handler mutates pxPerBeat/scrollUnits in
+    // a tight burst that MobX→Lit `updated()` doesn't track frame-by-frame; the
+    // automation editor stays smooth the same way. Redraw only when the grid or
+    // playhead actually moved (cheap signature), so an idle lane costs nothing.
+    const tick = () => {
+      this.rafId = requestAnimationFrame(tick);
+      const sig = `${store.pxPerBeat}|${store.scrollUnits}|${store.positionBeat}|${this.canvas?.clientWidth ?? 0}`;
+      if (sig === this.lastDrawSig) return;
+      this.lastDrawSig = sig;
+      this.draw();
+    };
+    this.rafId = requestAnimationFrame(tick);
   }
 
   disconnectedCallback() {
@@ -65,6 +81,7 @@ export class ArrRailLane extends MobxLitElement {
     this.ro?.disconnect();
     this.cancelReq?.();
     if (this.reqTimer) clearTimeout(this.reqTimer);
+    if (this.rafId) cancelAnimationFrame(this.rafId);
     const t = store.trackById(this.trackId);
     if (t?.railId) clearAnchor(AnchorKeys.rail(t.railId));
   }
