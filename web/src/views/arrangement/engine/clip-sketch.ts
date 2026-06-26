@@ -234,7 +234,12 @@ export function buildCompositeSketch(
       // Seed `input` with the rail's base value — the baseline writer wires fold onto
       // (and the value a writer-less reader gets). Authored state, so the executor's
       // wire fold reads it as the canonical baseline.
-      push('mod.shaper.remap', key, { input: railBases?.get(read.railId) ?? 0 });
+      // SIGNED rails carry bipolar values: the relay's remap is widened to [-1,1]→[-1,1]
+      // (identity over the bipolar domain, no saturation) so accumulated ± contributions
+      // pass through instead of clamping at 0. Unsigned keeps the default [0,1] identity.
+      const railState: Record<string, unknown> = { input: railBases?.get(read.railId) ?? 0 };
+      if (railSigned?.get(read.railId)) Object.assign(railState, { in_min: -1, in_max: 1, out_min: -1, out_max: 1 });
+      push('mod.shaper.remap', key, railState);
     }
   }
 
@@ -314,21 +319,27 @@ export function buildCompositeSketch(
     }
   }
 
-  // The return's signed mode governs the rail wires' magnitude (how the source maps
-  // into the dest range), overriding each tap's own magnitude.
   const railMag = (railId: string): 'signed' | 'unsigned' => (railSigned?.get(railId) ? 'signed' : 'unsigned');
   // Stage 1 — writers → the rail accumulator's `input` (per EXPORT combine).
   for (const [railId, writers] of railWriters) {
     const railKey = `rail_${railId}`;
     if (!railNodeKeys.has(railKey)) continue; // no active reader → nothing pulls it
+    const signed = railSigned?.get(railId) ?? false;
     for (const w of writers) {
+      const scale = w.tap.scale ?? 1;
       wires.push({
         id: `rwin${wid++}`,
         src: { instanceKey: w.key, field: w.field },
         dest: { instanceKey: railKey, field: 'input' },
         combine: w.tap.combine,
-        magnitude: railMag(railId),
-        ...((w.tap.scale ?? 1) !== 1 ? { mod: { scale: w.tap.scale } } : {}),
+        // SIGNED: prescale each unsigned [0,1] source to bipolar [-1,1] (matches the
+        // offline mirror's v·2−1) via the wire remap, so combine='add' sums a true ±
+        // swing into the bipolar rail. No `magnitude` ⇒ the prescaled value folds as-is
+        // (applyMagnitude's add path ignores polarity; combineTap keeps it bipolar).
+        // UNSIGNED: the source maps into the rail.input [0,1] range via its magnitude.
+        ...(signed
+          ? { mod: { remap: { inMin: 0, inMax: 1, outMin: -1, outMax: 1 }, ...(scale !== 1 ? { scale } : {}) } }
+          : { magnitude: 'unsigned' as const, ...(scale !== 1 ? { mod: { scale } } : {}) }),
       });
     }
   }

@@ -214,6 +214,58 @@ TEST_CASE("multiple wires into one field accumulate per combine (not last-wins)"
   CHECK(std::abs(two - 0.6) < 0.05);  // two `add` wires SUM (was 0.3 under last-wins)
 }
 
+TEST_CASE("signed return rail carries bipolar values (no clamp at the relay)", "[executor_wasm]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  // A SIGNED rail the arrangement builds: a dashboard knob (an authored [0,1] source)
+  // is prescaled to bipolar [-1,1] by the writer wire's remap, then folded into the
+  // relay's `input` (relay widened to [-1,1]→[-1,1]). We read the rail input's folded
+  // value from modulation telemetry (the relay's `output` is computed, so a downstream
+  // wire can't see it without the web host's output mirroring). knob 0 → −1, 0.5 → 0,
+  // 1 → +1. A clamp at the [0,1]-declared input field would pin knob 0 at 0 (the tell).
+  auto railIn = [&](double knob) -> double {
+    SketchExecutor ex(&rt, &registry, backend.get());
+    const std::string sketch = std::string(R"JSON({
+      "chain": [
+        { "type":"module","module_type":"util.dashboard","instance_key":"d@0" },
+        { "type":"module","module_type":"mod.shaper.remap","instance_key":"rail_r" },
+        { "type":"module","module_type":"util.sketch_output","instance_key":"so@0" }
+      ],
+      "instances": {
+        "d@0": { "module_type":"util.dashboard","state":{ "knob_0":)JSON") + std::to_string(knob) + R"JSON( } },
+        "rail_r": { "module_type":"mod.shaper.remap","state":{ "input":0,"in_min":-1,"in_max":1,"out_min":-1,"out_max":1 } },
+        "so@0": { "module_type":"util.sketch_output","state":{} }
+      },
+      "wires": [
+        { "id":"w1","combine":"add","src":{"instanceKey":"d@0","field":"knob_0"},"dest":{"instanceKey":"rail_r","field":"input"},"mod":{"remap":{"inMin":0,"inMax":1,"outMin":-1,"outMax":1}} }
+      ]
+    })JSON";
+    auto j = nlohmann::json::parse(sketch);
+    ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+    backend->submit();
+    const auto& md = ex.lastModulationData();
+    REQUIRE(md.contains("rail_r"));
+    REQUIRE(md["rail_r"].contains("input"));
+    return md["rail_r"]["input"].value("value", -999.0);
+  };
+
+  const double lo = railIn(0.0), mid = railIn(0.5), hi = railIn(1.0);
+  INFO("knob 0 → " << lo << "  0.5 → " << mid << "  1 → " << hi);
+  CHECK(std::abs(lo + 1.0) < 0.05);   // bipolar −1 survived (a [0,1] clamp would give 0)
+  CHECK(std::abs(mid - 0.0) < 0.05);  // bipolar 0 = centre
+  CHECK(std::abs(hi - 1.0) < 0.05);   // bipolar +1
+}
+
 TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", "[executor_wasm]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");

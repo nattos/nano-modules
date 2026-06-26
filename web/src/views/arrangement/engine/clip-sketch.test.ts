@@ -167,15 +167,22 @@ describe('buildCompositeSketch', () => {
       expect(s2!.magnitude).toBe('unsigned');
     });
 
-    it('a SIGNED return makes the rail wires signed', () => {
+    it('a SIGNED return makes the rail bipolar: prescaled writers, [-1,1] relay, signed read', () => {
       const r = buildCompositeSketch(
         [{ clip: writerClip('rail1'), opacity: 1 }, { clip: readerClip('rail1'), opacity: 1 }],
         { mode: 'transparent' }, undefined, new Map([['rail1', true]]),
       )!;
-      const s1 = r.sketch.wires!.find((x) => x.dest.instanceKey === 'rail_rail1' && x.dest.field === 'input');
-      const s2 = r.sketch.wires!.find((x) => x.src.instanceKey === 'rail_rail1' && x.src.field === 'output');
-      expect(s1!.magnitude).toBe('signed');
-      expect(s2!.magnitude).toBe('signed');
+      // The relay node carries bipolar values: remap widened to [-1,1]→[-1,1].
+      const railNode = r.sketch.instances!['rail_rail1'] as { state?: Record<string, number> };
+      expect(railNode.state).toMatchObject({ in_min: -1, in_max: 1, out_min: -1, out_max: 1 });
+      // Stage 1 (writer → input): prescale [0,1]→[-1,1] via the wire remap, NO magnitude
+      // (so combine='add' sums a true ± swing).
+      const s1 = r.sketch.wires!.find((x) => x.dest.instanceKey === 'rail_rail1' && x.dest.field === 'input')!;
+      expect(s1.magnitude).toBeUndefined();
+      expect(s1.mod?.remap).toMatchObject({ inMin: 0, inMax: 1, outMin: -1, outMax: 1 });
+      // Stage 2 (output → reader): signed magnitude maps the bipolar rail into the param.
+      const s2 = r.sketch.wires!.find((x) => x.src.instanceKey === 'rail_rail1' && x.src.field === 'output')!;
+      expect(s2.magnitude).toBe('signed');
     });
 
     it('a writer-less reader still gets the rail (base-curve) value: node + stage-2 wire, no stage-1', () => {
