@@ -63,6 +63,10 @@ export interface ColumnCapabilities {
   /** Draw committed wires as arcs INSIDE the column (the reusable single-column
    *  editor). The IDE leaves this off — it has its own <taps-overlay>. */
   inlineWireArcs?: boolean;
+  /** This surface shows wire/field options as an in-column floating panel (not the
+   *  IDE's <taps-overlay> field card). STABLE — independent of wires mode — so a pip
+   *  click opens the options popup even when wires mode is off. */
+  inlineWirePanel?: boolean;
   /** Clicking anywhere on a field row selects it (via controller.selectField) —
    *  the arrangement uses this for per-owner automation-field selection. The IDE
    *  leaves it off (it selects fields through the tap overlay / gutter pips). */

@@ -1789,7 +1789,7 @@ export class ColumnGroup extends MobxLitElement {
       });
       return;
     }
-    if (this.ds.caps.inlineWireArcs) {
+    if (this.ds.caps.inlineWirePanel) {
       const wire = (this.ds.getSketch(this.sketchId)?.wires ?? []).find((w) =>
         (w.dest.instanceKey === instanceKey && w.dest.field === fieldPath) ||
         (w.src.instanceKey === instanceKey && w.src.field === fieldPath));
@@ -1930,7 +1930,7 @@ export class ColumnGroup extends MobxLitElement {
   /** When a wire is selected, the inline mod-inspector panel (combine / curve /
    *  magnitude / envelope / scale / delay), reusing the shared wire editor. */
   private renderSelectedWirePanel(sketch: Sketch) {
-    if (!this.ds.caps.inlineWireArcs) return nothing;
+    if (!this.ds.caps.inlineWirePanel) return nothing;
     const prefix = `wire/${this.sketchId}/`;
     const wire = (sketch.wires ?? []).find((w) => this.ctl.isSelected(prefix + w.id));
     if (!wire) return nothing;

@@ -39,6 +39,7 @@ const CAPS: ColumnCapabilities = {
   clipboard: false,
   reorder: true,
   fieldClickSelect: true, // click a field → per-owner automation-field selection
+  inlineWirePanel: true,  // STABLE: pip click opens the floating wire-mod panel (any mode)
 };
 
 const AVAILABLE: AvailableEffect[] = EFFECT_CATALOG.filter((c) => c.type !== VIDEO_SOURCE_TYPE).map((c) => ({
