@@ -34,7 +34,7 @@ describe('assembleRailCurve', () => {
   });
 
   it('a KNOWN deterministic modulator (mirrored LFO sine) has no error band (lo == hi)', () => {
-    const lfoSine = writer({ kind: 'lfo', lfo: { mode: 0, rate: 0.5, period: 1, amplitude: 1, waveform: 0, shape: 0, invert: false } });
+    const lfoSine = writer({ kind: 'lfo', sourceSigned: true, lfo: { mode: 0, rate: 0.5, period: 1, amplitude: 1, waveform: 0, shape: 0, invert: false } });
     const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [lfoSine], beats: beats(24) });
     for (let i = 0; i < c.mean.length; i++) expect(c.hi[i] - c.lo[i]).toBeCloseTo(0, 5);
   });
@@ -73,8 +73,9 @@ describe('assembleRailCurve', () => {
   });
 
   it('signed mode prescales contributions to bipolar [-1,1] (0.5 output → 0)', () => {
-    const sine = writer({ kind: 'lfo', lfo: lfo({ waveform: 0 }), combine: 'replace' });
-    // Sine at phase 0 = 0.5 output. Unsigned ⇒ 0.5; signed ⇒ 0.5·2−1 = 0 (centred).
+    const sine = writer({ kind: 'lfo', sourceSigned: true, lfo: lfo({ waveform: 0 }), combine: 'replace' });
+    // Bipolar sine at phase 0 = 0. Into an unsigned rail ⇒ 0.5 (centre); into a signed
+    // rail ⇒ 0 (identity).
     const spec = (signed: boolean) =>
       railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed, writers: [sine] }, 0);
     expect(spec(false)).toBeCloseTo(0.5, 4);
@@ -85,7 +86,8 @@ describe('assembleRailCurve', () => {
 describe('LFO mirror (mod.source.lfo)', () => {
   const lw = (p: Partial<LfoParams>, combine: RailCombine = 'replace'): WriterSpec => {
     const l = lfo(p);
-    return writer({ kind: 'lfo', lfo: l, combine, stochastic: l.waveform === 4 || l.waveform === 5 });
+    // The LFO is a SIGNED source ([-1,1]); into an unsigned rail it maps to [0,1].
+    return writer({ kind: 'lfo', lfo: l, combine, sourceSigned: true, stochastic: l.waveform === 4 || l.waveform === 5 });
   };
   // `replace` so the result IS the LFO value (base ignored), at 120 bpm (SPB 0.5).
   const at = (w: WriterSpec, beat: number) =>

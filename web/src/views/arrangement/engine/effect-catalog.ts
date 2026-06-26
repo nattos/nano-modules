@@ -857,7 +857,7 @@ export const EFFECT_CATALOG: CatalogEffect[] = [
   {
     type: 'mod.source.lfo', name: 'LFO', bundle: CORE, role: 'effect',
     fields: [fld('rate', 'Rate', 0, 1, 0.5), fld('amplitude', 'Amplitude', 0, 1, 1), fld('shape', 'Shape', 0, 1, 0)],
-    outputs: [fld('output', 'Output', 0, 1, 0)],
+    outputs: [fld('output', 'Output', -1, 1, 0)], // bipolar (signed) — rests at 0
   },
   {
     type: 'mod.source.adsr', name: 'ADSR', bundle: CORE, role: 'effect',

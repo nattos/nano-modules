@@ -161,12 +161,12 @@ void module_init() {
                     {"Random FM", ShapeRandomFM}}, /*wrap=*/true)
       // Morphs the active waveform (see file header for the per-shape meaning).
       .floatField("shape", 0.0f, 0.f, 1.f, state::PrimaryInput)
-      // Flip the output: 1 - value (stays in [0,1]).
+      // Flip the output: negate (stays in [-1,1]).
       .boolField("invert", false, state::PrimaryInput)
-      // Unipolar [0,1] output — declared so a wire's "Auto" magnitude maps it as
-      // unsigned. min/max is the modulation-range contract: the UI band samples
-      // this declared range, NOT the live amplitude-scaled swing (intentional).
-      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
+      // BIPOLAR [-1,1] output — declared so a wire's "Auto" magnitude maps it as
+      // signed (rest at 0). min/max is the modulation-range contract: the UI band
+      // samples this declared range, NOT the live amplitude-scaled swing (intentional).
+      .floatField("output", 0.0f, -1.f, 1.f, state::PrimaryOutput, "signed")
       // A single-channel modulation source: one canonical scalar output.
       .capability(state::Capability::ModulationSource)
       .capability(state::Capability::ModulationSourceSingle)
@@ -289,10 +289,14 @@ void tick(void* self, double dt) {
     }
   }
 
-  float value = w * s->amplitude * 0.5f + 0.5f;
-  if (value < 0.0f) value = 0.0f;
+  // Bipolar [-1,1] output: a signed modulation source rests at 0, so stacking several
+  // (combine='add') cancels/reinforces around the unmodulated value instead of all
+  // pushing one direction. Wires normalize it into a param's range via the source's
+  // declared polarity (a direct wire's "Auto" magnitude reads "signed").
+  float value = w * s->amplitude;
+  if (value < -1.0f) value = -1.0f;
   if (value > 1.0f) value = 1.0f;
-  if (s->invert) value = 1.0f - value;  // flip in [0,1]
+  if (s->invert) value = -value;  // flip in [-1,1]
 
   // Write to instance state at /output
   auto vh = val::number(value);

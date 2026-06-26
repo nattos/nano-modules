@@ -154,13 +154,16 @@ describe('buildCompositeSketch', () => {
       // A `mod.shaper.remap` accumulator node was inserted for the rail.
       expect(r.sketch.chain!.some((e) => (e as any).instance_key === railKey
         && e.module_type === 'mod.shaper.remap')).toBe(true);
-      // Stage 1: writer output → rail.input (EXPORT combine).
+      // Stage 1: writer output → rail.input (EXPORT combine). The LFO is a signed
+      // [-1,1] source; into the default UNSIGNED rail it maps to [0,1] via the wire
+      // remap (no magnitude — the combine folds the remapped value).
       const s1 = r.sketch.wires!.find((x) => x.src.instanceKey === clipInstanceKey('W', 'Wlfo'));
       expect(s1).toBeTruthy();
       expect(s1!.dest).toEqual({ instanceKey: railKey, field: 'input' });
       expect(s1!.combine).toBe('add');
-      // Stage 2: rail.output → reader param (READ combine). Default return mode is
-      // unsigned, so the wire magnitude is unsigned regardless of the tap's own value.
+      expect(s1!.magnitude).toBeUndefined();
+      expect(s1!.mod?.remap).toMatchObject({ inMin: -1, inMax: 1, outMin: 0, outMax: 1 });
+      // Stage 2: rail.output → reader param. Default return mode is unsigned.
       const s2 = r.sketch.wires!.find((x) => x.dest.instanceKey === clipInstanceKey('R', 'Rsrc') && x.dest.field === 'scale');
       expect(s2).toBeTruthy();
       expect(s2!.src).toEqual({ instanceKey: railKey, field: 'output' });
@@ -175,11 +178,11 @@ describe('buildCompositeSketch', () => {
       // The relay node carries bipolar values: remap widened to [-1,1]→[-1,1].
       const railNode = r.sketch.instances!['rail_rail1'] as { state?: Record<string, number> };
       expect(railNode.state).toMatchObject({ in_min: -1, in_max: 1, out_min: -1, out_max: 1 });
-      // Stage 1 (writer → input): prescale [0,1]→[-1,1] via the wire remap, NO magnitude
-      // (so combine='add' sums a true ± swing).
+      // Stage 1 (writer → input): the LFO is already signed [-1,1], so into a signed
+      // rail the remap is identity ([-1,1]→[-1,1]); NO magnitude (combine sums ±).
       const s1 = r.sketch.wires!.find((x) => x.dest.instanceKey === 'rail_rail1' && x.dest.field === 'input')!;
       expect(s1.magnitude).toBeUndefined();
-      expect(s1.mod?.remap).toMatchObject({ inMin: 0, inMax: 1, outMin: -1, outMax: 1 });
+      expect(s1.mod?.remap).toMatchObject({ inMin: -1, inMax: 1, outMin: -1, outMax: 1 });
       // Stage 2 (output → reader): signed magnitude maps the bipolar rail into the param.
       const s2 = r.sketch.wires!.find((x) => x.src.instanceKey === 'rail_rail1' && x.src.field === 'output')!;
       expect(s2.magnitude).toBe('signed');

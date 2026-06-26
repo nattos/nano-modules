@@ -156,7 +156,7 @@ export function buildCompositeSketch(
   // rail that has an active reader; pushed EARLY (a trailing mod node must never
   // become the composite's output texture). A reader resolves even with no writer
   // (it just gets the base value).
-  const railWriters = new Map<string, Array<{ key: string; field: string; tap: RailExport }>>();
+  const railWriters = new Map<string, Array<{ key: string; field: string; tap: RailExport; srcMin: number; srcMax: number }>>();
   const railReaders: Array<{ railId: string; key: string; field: string; tap: RailRead }> = [];
   const railNodeKeys = new Set<string>(); // rails with an active reader → accumulator node
 
@@ -309,8 +309,14 @@ export function buildCompositeSketch(
     // Collect this clip's rail writers/readers (only devices actually pushed).
     for (const exp of clip.exports ?? []) {
       if (!pushed.has(exp.sourceDeviceId)) continue;
+      // The source output's declared range (the modulation-range contract) — a signed
+      // source (e.g. the LFO, [-1,1]) folds into the rail without the [0,1]→[-1,1]
+      // prescale a unsigned source needs.
+      const dev = clip.sketch.devices.find((d) => d.id === exp.sourceDeviceId);
+      const out = dev ? catalogEffect(dev.moduleType)?.outputs?.find((o) => o.key === exp.sourceField) : undefined;
       const arr = railWriters.get(exp.railId) ?? [];
-      arr.push({ key: clipInstanceKey(clip.id, exp.sourceDeviceId), field: exp.sourceField, tap: exp });
+      arr.push({ key: clipInstanceKey(clip.id, exp.sourceDeviceId), field: exp.sourceField, tap: exp,
+        srcMin: out?.min ?? 0, srcMax: out?.max ?? 1 });
       railWriters.set(exp.railId, arr);
     }
     for (const read of clip.reads ?? []) {
@@ -324,22 +330,21 @@ export function buildCompositeSketch(
   for (const [railId, writers] of railWriters) {
     const railKey = `rail_${railId}`;
     if (!railNodeKeys.has(railKey)) continue; // no active reader → nothing pulls it
-    const signed = railSigned?.get(railId) ?? false;
+    const railMin = railSigned?.get(railId) ? -1 : 0; // rail value domain ([-1,1] / [0,1])
     for (const w of writers) {
       const scale = w.tap.scale ?? 1;
+      // Normalize the source's declared output range into the rail's domain via the wire
+      // remap, then fold with the combine ALONE (no magnitude — applyMagnitude's `add`
+      // ignores polarity, so it can't convert; combineTap keeps the remapped value). A
+      // signed source ([-1,1]) into a signed rail is identity; an unsigned source ([0,1])
+      // into a signed rail becomes [0,1]→[-1,1]; a signed source into an unsigned rail
+      // becomes [-1,1]→[0,1]; etc. — so signed/unsigned sources + rails compose cleanly.
       wires.push({
         id: `rwin${wid++}`,
         src: { instanceKey: w.key, field: w.field },
         dest: { instanceKey: railKey, field: 'input' },
         combine: w.tap.combine,
-        // SIGNED: prescale each unsigned [0,1] source to bipolar [-1,1] (matches the
-        // offline mirror's v·2−1) via the wire remap, so combine='add' sums a true ±
-        // swing into the bipolar rail. No `magnitude` ⇒ the prescaled value folds as-is
-        // (applyMagnitude's add path ignores polarity; combineTap keeps it bipolar).
-        // UNSIGNED: the source maps into the rail.input [0,1] range via its magnitude.
-        ...(signed
-          ? { mod: { remap: { inMin: 0, inMax: 1, outMin: -1, outMax: 1 }, ...(scale !== 1 ? { scale } : {}) } }
-          : { magnitude: 'unsigned' as const, ...(scale !== 1 ? { mod: { scale } } : {}) }),
+        mod: { remap: { inMin: w.srcMin, inMax: w.srcMax, outMin: railMin, outMax: 1 }, ...(scale !== 1 ? { scale } : {}) },
       });
     }
   }

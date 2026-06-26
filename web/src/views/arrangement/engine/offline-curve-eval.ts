@@ -47,6 +47,10 @@ export interface WriterSpec {
    *  seeded stub until that effect gets its own mirror. */
   kind?: 'lfo' | 'generic';
   lfo?: LfoParams;
+  /** Source output polarity — `true` ⇒ the block is already bipolar [-1,1] (e.g. the
+   *  LFO); `false`/absent ⇒ unipolar [0,1]. Governs the conversion into the rail's
+   *  domain (a signed source into a signed rail needs no prescale). */
+  sourceSigned?: boolean;
 }
 
 export interface RailCurveSpec {
@@ -110,19 +114,19 @@ function lfoWave(wf: number, shape: number, p: number): number {
 function lfoBlockAt(w: WriterSpec, secPerBeat: number, beat: number): Block {
   const p = w.lfo!;
   const amp = Math.max(0, Math.min(1, p.amplitude));
-  const flip = (v: number) => (p.invert ? 1 - v : v);
-  // Random Walk (4) / Random FM (5): output wanders the full amplitude swing.
+  const flip = (v: number) => (p.invert ? -v : v); // bipolar negate
+  // Random Walk (4) / Random FM (5): output wanders the full ±amplitude swing about 0.
   if (p.waveform === 4 || p.waveform === 5) {
-    const a = flip(0.5 - amp * 0.5) * w.scale;
-    const b = flip(0.5 + amp * 0.5) * w.scale;
-    return { mean: flip(0.5) * w.scale, lo: Math.min(a, b), hi: Math.max(a, b) };
+    const a = flip(-amp) * w.scale;
+    const b = flip(amp) * w.scale;
+    return { mean: flip(0) * w.scale, lo: Math.min(a, b), hi: Math.max(a, b) };
   }
   const freq = p.mode === 1 ? 1 / Math.max(0.01, p.period) : p.rate * 10; // Hz
   const elapsed = (beat - w.startBeat) * secPerBeat; // seconds since clip start
   let phase = elapsed * freq;
   phase -= Math.floor(phase);
-  let v = lfoWave(p.waveform, p.shape, phase) * amp * 0.5 + 0.5;
-  v = flip(Math.max(0, Math.min(1, v))) * w.scale;
+  let v = lfoWave(p.waveform, p.shape, phase) * amp; // bipolar [-1,1] (rests at 0)
+  v = flip(Math.max(-1, Math.min(1, v))) * w.scale;
   return { mean: v, lo: v, hi: v };
 }
 
@@ -168,21 +172,19 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
   const lo = new Float32Array(n);
   const hi = new Float32Array(n);
   const T = Math.max(1e-6, spec.totalBeats);
-  // Only WRITER contributions get the signed prescale ([0,1]→[-1,1]); the base curve
-  // is the rail's rest value DIRECTLY (0 ⇒ bottom unsigned / centre signed), so a flat
-  // base doesn't drag the whole curve up and clip.
-  const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v);
   for (let i = 0; i < n; i++) {
     const beat = spec.beats[i];
+    // Base is the rail's rest value DIRECTLY (already in the rail's domain — 0 ⇒ bottom
+    // unsigned / centre signed), so a flat base never drags the curve up and clips.
     const base = evalCurveAt(spec.baseCurve, beat / T);
     let m = base, l = base, h = base;
     for (const w of spec.writers) {
       const b = writerBlockAt(w, spec.secondsPerBeat, beat);
       if (!b) continue;
-      m = fold(m, sgn(b.mean), w.combine);
+      m = fold(m, toRail(b.mean, w.sourceSigned, spec.signed), w.combine);
       // Interval fold (approximate for non-add combines): keep the bounds ordered.
-      const a = fold(l, sgn(b.lo), w.combine);
-      const c = fold(h, sgn(b.hi), w.combine);
+      const a = fold(l, toRail(b.lo, w.sourceSigned, spec.signed), w.combine);
+      const c = fold(h, toRail(b.hi, w.sourceSigned, spec.signed), w.combine);
       l = Math.min(a, c);
       h = Math.max(a, c);
     }
@@ -191,14 +193,22 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
   return { mean, lo, hi };
 }
 
+/** Convert a writer's block value from its SOURCE polarity into the rail's domain —
+ *  identity when they match, [0,1]→[-1,1] for an unsigned source into a signed rail,
+ *  and [-1,1]→[0,1] for a signed source into an unsigned rail. Mirrors the executor's
+ *  stage-1 wire remap (src range → rail range). */
+function toRail(v: number, sourceSigned: boolean | undefined, railSigned: boolean): number {
+  if (!!sourceSigned === railSigned) return v;
+  return railSigned ? v * 2 - 1 : (v + 1) / 2;
+}
+
 /** Sample the assembled mean at a single beat (the live playhead dot — cheap, no
  *  worker round-trip). Mirrors assembleRailCurve's fold for one point. */
 export function railMeanAt(spec: Omit<RailCurveSpec, 'beats'>, beat: number): number {
-  const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v);
-  let m = evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats)); // base not prescaled
+  let m = evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats)); // base in rail domain
   for (const w of spec.writers) {
     const b = writerBlockAt(w, spec.secondsPerBeat, beat);
-    if (b) m = fold(m, sgn(b.mean), w.combine);
+    if (b) m = fold(m, toRail(b.mean, w.sourceSigned, spec.signed), w.combine);
   }
   return m;
 }

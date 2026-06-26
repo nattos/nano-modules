@@ -16,6 +16,7 @@ import { compositionLengthBeats } from '../model/composition';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { offlineCurveService } from '../engine/offline-curve-service';
+import { catalogEffect } from '../engine/effect-catalog';
 import { railMeanAt, type RailCurve, type WriterSpec, type RailCombine } from '../engine/offline-curve-eval';
 
 /** One screen-space sample per this many CSS px (the worker fills the rest). */
@@ -108,6 +109,9 @@ export class ArrRailLane extends MobxLitElement {
     const out: WriterSpec[] = [];
     for (const { clip, exp } of store.railWriters(railId)) {
       const dev = clip.sketch.devices.find((d) => d.id === exp.sourceDeviceId);
+      // Source output polarity from the catalog (a signed source like the LFO declares a
+      // [-1,1] output) — drives the rail-domain conversion in the offline mirror.
+      const srcOut = catalogEffect(dev?.moduleType ?? '')?.outputs?.find((o) => o.key === exp.sourceField);
       const spec: WriterSpec = {
         seed: hashStr(clip.id + '/' + exp.id),
         // TODO: read a declared `modulation_stochastic` capability. Heuristic for now.
@@ -116,6 +120,7 @@ export class ArrRailLane extends MobxLitElement {
         scale: exp.scale ?? 1,
         startBeat: clip.startBeat,
         endBeat: clip.startBeat + clip.lengthBeat,
+        sourceSigned: (srcOut?.min ?? 0) < 0,
       };
       if (dev?.moduleType === 'mod.source.lfo') {
         const st = (dev.state ?? {}) as Record<string, unknown>;
