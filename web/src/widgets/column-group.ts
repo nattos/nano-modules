@@ -949,6 +949,8 @@ export class ColumnGroup extends MobxLitElement {
               .fieldPath=${o.fieldPath}
               .label=${o.displayName}
               .kind=${o.isTexture ? 'texture' : o.kindTag}
+              .min=${typeof o.schemaDef?.min === 'number' ? o.schemaDef.min : 0}
+              .max=${typeof o.schemaDef?.max === 'number' ? o.schemaDef.max : 1}
               .traceId=${traceId}
               .traceTarget=${target}
               .traceSource=${this.adapter?.traceSource ?? null}

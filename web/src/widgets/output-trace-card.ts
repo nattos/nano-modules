@@ -29,6 +29,10 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
   /** Schema type label, e.g. 'texture', 'float', 'struct', 'gpu buffer', 'vec4'. */
   @property() kind = '';
   @property() traceId = '';
+  /** Declared output range (the schema floatField min/max) — the sparkline's vertical
+   *  scale, so a bipolar output (e.g. the LFO's [-1,1]) isn't drawn against [0,1]. */
+  @property({ type: Number }) min = 0;
+  @property({ type: Number }) max = 1;
   @property({ attribute: false }) traceTarget: TracePoint['target'] | null = null;
   @property({ attribute: false }) binding: FieldBinding | null = null;
   /** Injected trace seam (passed to the texture-monitor); null = IDE default. */
@@ -94,6 +98,8 @@ export class OutputTraceCard extends MobxLitElement implements FieldEditorElemen
         <spark-chart
           .fieldPath=${this.fieldPath}
           .binding=${this.binding}
+          .min=${this.min}
+          .max=${this.max}
           .width=${64}
           .height=${36}
         ></spark-chart>

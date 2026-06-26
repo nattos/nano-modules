@@ -100,6 +100,17 @@ export class SparkChart extends MobxLitElement {
     const n = Math.min(this.writeIndex, this.samples);
     const startIdx = this.writeIndex - n;
 
+    // Faint zero baseline when the range straddles 0 (bipolar output, e.g. the LFO).
+    if (this.min < 0 && this.max > 0) {
+      const zy = ch - ((0 - this.min) / range) * ch;
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = dpr;
+      ctx.moveTo(0, zy);
+      ctx.lineTo(cw, zy);
+      ctx.stroke();
+    }
+
     ctx.beginPath();
     ctx.strokeStyle = 'rgba(65, 105, 225, 0.8)';
     ctx.lineWidth = dpr;
