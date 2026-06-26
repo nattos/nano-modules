@@ -1,0 +1,426 @@
+/*
+ * source.legacy.double_chamber — v2 of the shipped NanoGraph "DoubleChamber".
+ *
+ * DoubleChamber was a 613-node graph fusing three coupled particle systems and
+ * emitting laser (PONK) lines. This is a clean re-architecture of the SUBSET
+ * the team actually used: the "P" field-particles (a PetriDish polynomial
+ * vector field), the "Big" attractors they orbit, curl steering, and optional
+ * image coupling. The charged-collision "K accelerator" block and the PONK
+ * output are intentionally dropped; output is a normal texture. (Tracers and
+ * bridgers are planned follow-on phases.)
+ *
+ * Two persistent GPU storage buffers replace the old graph's LatchNode feedback
+ * registers — a clean read-prev / write-next pool per system:
+ *   1. big_update (compute) — drift / image-ride / boundary the few attractors.
+ *   2. p_update   (compute) — field + Big pull + sink + jitter + boundary +
+ *                             image; integrate; respawn + colour-capture.
+ *   3. prefill    (compute) — tex_in × input_alpha → tex_out base.
+ *   4. render     (instanced, additive) — P points then Big points.
+ *
+ * Per-instance ABI: mutable state in `State`; PSOs file-static (compiled once).
+ */
+
+#include <gpu.h>
+#include <host.h>
+#include "double_chamber_shaders.h"
+
+#include <cstdint>
+#include <cstring>
+
+namespace double_chamber {
+
+static constexpr int MAX_P   = 50000;
+static constexpr int MAX_BIG = 64;
+static constexpr int SEED_CHUNK = 512;
+
+struct GpuParticle { float a[4]; float b[4]; };
+static_assert(sizeof(GpuParticle) == 32, "particle must be 32 bytes");
+
+struct PUpdateUniforms {
+  uint32_t count, big_count, frame_index; float dt;
+  float motion_rate, momentum, momentum_decay, field_speed;
+  float field_scale, field_skew, field_squash, jitter;
+  float to_big, to_big_curl, curl_dir, sink;
+  float boundary, boundary_size, boundary_stiffness, boundary_speed;
+  float to_image, to_image_curl, undertow_skew, undertow_squash;
+  float ttl, spawn_size, aspect_x, aspect_y;
+};
+struct BigUpdateUniforms {
+  uint32_t count, frame_index; float dt, motion_rate;
+  float big_speed, big_momentum, big_momentum_decay, drift;
+  float repel, direction, curl, curl_dir;
+  float sink, boundary, boundary_size, boundary_stiffness;
+  float boundary_speed, spread, ttl, aspect_x;
+  float aspect_y, _p0, _p1, _p2;
+};
+struct PrefillUniforms { float sr, sg, sb, sa; };
+struct VsUniforms { float aspect_x, aspect_y, point_size, _pad; };
+struct FsUniforms {
+  float color_contrib, render_hue, opacity, alpha_curve;
+  float tint_r, tint_g, tint_b, exposure;
+  uint32_t shape_kind; float shape_param, _p0, _p1;
+};
+
+enum BlendMode : int { BLEND_ADD = 0, BLEND_ALPHA = 1 };
+
+struct State {
+  gpu::Buffer  p_buf, big_buf;
+  gpu::Buffer  p_uniform, big_uniform, prefill_uniform;
+  gpu::Buffer  vs_uniform_p, vs_uniform_big, fs_uniform_p, fs_uniform_big;
+  gpu::Sampler sampler;
+  bool initialized = false;
+  uint32_t frame_index = 0;
+
+  // CPU param mirrors.
+  int   p_count = 12000;
+  float motion_rate = 1.0f;
+  float field_speed = 0.25f, field_scale = 1.0f, field_skew = 0.0f, field_squash = 0.5f;
+  float momentum = 0.6f, momentum_decay = 0.98f;
+  float to_big = 0.3f, to_big_curl = 0.4f, curl_dir = 1.0f, sink = 0.0f;
+  float jitter = 0.04f;
+  float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 0.6f;
+  float to_image = 0.0f, to_image_curl = 0.0f;
+  float undertow_skew = 0.0f, undertow_squash = 6.0f;
+  float ttl = 0.4f, spawn_size = 0.5f;
+  float p_point_size = 0.006f, p_opacity = 0.6f, p_alpha_curve = 1.0f, render_hue = 0.0f;
+  float tint_r = 1.0f, tint_g = 1.0f, tint_b = 1.0f, exposure = 1.0f;
+  float color_contrib = 0.5f;
+  int   p_shape = 1;  // gaussian
+  // Big.
+  int   big_count = 6;
+  float big_speed = 0.5f, big_drift = 0.3f, big_repel = 0.2f, big_curl = 0.3f;
+  float big_momentum = 0.85f, big_momentum_decay = 0.99f;
+  float big_spread = 0.5f, big_ttl = 0.6f;
+  float big_point_size = 0.04f, big_opacity = 0.25f, big_render_hue = 0.0f;
+  // Composite.
+  float input_alpha = 1.0f;
+  int   blend_mode = BLEND_ADD;
+};
+
+static gpu::ComputePSO s_pso_big_update;
+static gpu::ComputePSO s_pso_p_update;
+static gpu::ComputePSO s_pso_prefill;
+static gpu::RenderPSO  s_pso_render_add;
+static gpu::RenderPSO  s_pso_render_alpha;
+
+static inline uint32_t lcg(uint32_t& s) { s = s * 1664525u + 1013904223u; return s; }
+static inline float lcgf(uint32_t& s) { return (lcg(s) >> 8) * (1.0f / float(1u << 24)); }
+static inline float as_float(uint32_t u) { float f; std::memcpy(&f, &u, 4); return f; }
+
+// Seed a pool's slots [0, n) with random uv + staggered life so they don't all
+// respawn on the same frame. Chunked to keep the wasm stack small.
+static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
+  uint32_t rng = 0x12345678u ^ salt;
+  GpuParticle chunk[SEED_CHUNK];
+  for (int start = 0; start < n; start += SEED_CHUNK) {
+    int end = start + SEED_CHUNK; if (end > n) end = n;
+    int m = end - start;
+    for (int k = 0; k < m; k++) {
+      float ux = lcgf(rng), uy = lcgf(rng);
+      float life = lcgf(rng) * lifetime;
+      uint32_t zbyte = (uint32_t)(lcgf(rng) * 255.0f) & 0xFFu;
+      uint32_t packed = 0x00FFFFFFu | (zbyte << 24);
+      GpuParticle& p = chunk[k];
+      p.a[0] = ux; p.a[1] = uy; p.a[2] = life; p.a[3] = (life > 1e-4f ? life : lifetime);
+      p.b[0] = 0.f; p.b[1] = 0.f; p.b[2] = 1.0f; p.b[3] = as_float(packed);
+    }
+    buf.writeBytes(chunk, int(sizeof(GpuParticle)) * m, int(sizeof(GpuParticle)) * start);
+  }
+}
+
+void module_init() {
+  state::init("source.legacy.double_chamber", {1, 0, 0},
+    state::Schema()
+      // ---- P system (standard) ----
+      .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
+      .floatField("motion_rate",    1.0f,  0.0f, 4.0f,    state::PrimaryInput)
+      .floatField("field_speed",    0.25f, 0.0f, 2.0f,    state::PrimaryInput)
+      .floatField("momentum",       0.6f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("to_big",         0.3f,  0.0f, 3.0f,    state::PrimaryInput)
+      .floatField("to_big_curl",    0.4f, -3.0f, 3.0f,    state::PrimaryInput)
+      .floatField("jitter",         0.04f, 0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("color_contrib",  0.5f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("to_image",       0.0f, -2.0f, 2.0f,    state::PrimaryInput)
+      // ---- P tuning ----
+      .floatField("field_scale",    1.0f,  0.1f, 4.0f,    state::SecondaryInput)
+      .floatField("field_skew",     0.0f, -2.0f, 2.0f,    state::SecondaryInput)
+      .floatField("field_squash",   0.5f,  0.0f, 2.0f,    state::SecondaryInput)
+      .floatField("momentum_decay", 0.98f, 0.8f, 1.0f,    state::SecondaryInput)
+      .floatField("curl_dir",       1.0f, -1.0f, 1.0f,    state::SecondaryInput)
+      .floatField("sink",           0.0f, -1.0f, 1.0f,    state::SecondaryInput)
+      .floatField("to_image_curl",  0.0f, -2.0f, 2.0f,    state::SecondaryInput)
+      .floatField("undertow_skew",  0.0f, -1.0f, 1.0f,    state::SecondaryInput)
+      .floatField("undertow_squash",6.0f,  0.0f, 24.0f,   state::SecondaryInput)
+      .floatField("boundary",       1.0f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("boundary_size",  0.42f, 0.05f, 0.7f,   state::SecondaryInput)
+      .floatField("boundary_stiffness", 8.0f, 0.5f, 32.0f, state::SecondaryInput)
+      .floatField("boundary_speed", 0.6f,  0.0f, 4.0f,    state::SecondaryInput)
+      .floatField("ttl",            0.4f,  0.02f, 1.0f,   state::SecondaryInput)
+      .floatField("spawn_size",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
+      // ---- P render ----
+      .floatField("p_point_size",   0.006f, 0.001f, 0.05f, state::SecondaryInput)
+      .floatField("p_opacity",      0.6f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("p_alpha_curve",  1.0f,  0.25f, 4.0f,   state::SecondaryInput)
+      .floatField("render_hue",     0.0f,  0.0f, 1.0f,    state::SecondaryInput)
+      .selectField("p_shape",       1,                    state::SecondaryInput, {
+        {"Point", 0}, {"Gaussian", 1}, {"Circle", 2} })
+      .rgbField  ("tint",           1.0f, 1.0f, 1.0f,     state::SecondaryInput)
+      .floatField("exposure",       1.0f,  0.0f, 4.0f,    state::SecondaryInput)
+      // ---- Big attractors ----
+      .intField  ("big_count",      6,     0, MAX_BIG,    state::SecondaryInput)
+      .floatField("big_speed",      0.5f,  0.0f, 4.0f,    state::SecondaryInput)
+      .floatField("big_drift",      0.3f, -2.0f, 2.0f,    state::SecondaryInput)
+      .floatField("big_repel",      0.2f, -2.0f, 2.0f,    state::SecondaryInput)
+      .floatField("big_curl",       0.3f, -2.0f, 2.0f,    state::SecondaryInput)
+      .floatField("big_momentum",   0.85f, 0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("big_spread",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("big_ttl",        0.6f,  0.05f, 1.0f,   state::SecondaryInput)
+      .floatField("big_point_size", 0.04f, 0.002f, 0.2f,  state::SecondaryInput)
+      .floatField("big_opacity",    0.25f, 0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("big_render_hue", 0.0f,  0.0f, 1.0f,    state::SecondaryInput)
+      // ---- Composite ----
+      .selectField("blend_mode",    BLEND_ADD,            state::SecondaryInput, {
+        {"Add", BLEND_ADD}, {"Alpha", BLEND_ALPHA} })
+      .floatField("input_alpha",    1.0f,  0.0f, 1.0f,    state::SecondaryInput)
+      // ---- I/O ----
+      .textureField("tex_in",  state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::Generator)
+  );
+
+  if (gpu::Device::backend() == gpu::Backend::None) return;
+
+  state::registerShaderSPV("dc_big_update", BIG_UPDATE_SPV, BIG_UPDATE_SPV_SIZE);
+  state::registerShaderSPV("dc_p_update",   P_UPDATE_SPV,   P_UPDATE_SPV_SIZE);
+  state::registerShaderSPV("dc_prefill",    PREFILL_SPV,    PREFILL_SPV_SIZE);
+  state::registerShaderSPV("dc_vs",         VS_SPV,         VS_SPV_SIZE);
+  state::registerShaderSPV("dc_fs",         FS_SPV,         FS_SPV_SIZE);
+
+  auto cs_big = gpu::Device::createShaderModuleByName("dc_big_update");
+  auto cs_p   = gpu::Device::createShaderModuleByName("dc_p_update");
+  auto cs_pre = gpu::Device::createShaderModuleByName("dc_prefill");
+  auto vs     = gpu::Device::createShaderModuleByName("dc_vs");
+  auto fs     = gpu::Device::createShaderModuleByName("dc_fs");
+  if (!cs_big || !cs_p || !cs_pre || !vs || !fs) return;
+
+  s_pso_big_update = gpu::Device::createComputePSO(cs_big, "main", gpu::Bindings()
+      .storageRW(0).tex2d(1).sampler(2).uniform(3));
+  s_pso_p_update = gpu::Device::createComputePSO(cs_p, "main", gpu::Bindings()
+      .storageRW(0).storage(1).tex2d(2).sampler(3).uniform(4));
+  s_pso_prefill = gpu::Device::createComputePSO(cs_pre, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso_render_add = gpu::Device::createInstancedRenderPSO(vs, "main", fs, "main",
+      gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::Additive);
+  s_pso_render_alpha = gpu::Device::createInstancedRenderPSO(vs, "main", fs, "main",
+      gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::AlphaOver);
+
+  state::log("double_chamber: module initialized");
+}
+
+void* create() {
+  auto* s = new State();
+  s->p_buf   = gpu::Device::createBuffer(sizeof(GpuParticle) * MAX_P, gpu::BufferUsage::Storage);
+  s->big_buf = gpu::Device::createBuffer(sizeof(GpuParticle) * MAX_BIG, gpu::BufferUsage::Storage);
+  s->p_uniform       = gpu::Device::createBuffer(sizeof(PUpdateUniforms), gpu::BufferUsage::Uniform);
+  s->big_uniform     = gpu::Device::createBuffer(sizeof(BigUpdateUniforms), gpu::BufferUsage::Uniform);
+  s->prefill_uniform = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
+  s->vs_uniform_p    = gpu::Device::createBuffer(sizeof(VsUniforms), gpu::BufferUsage::Uniform);
+  s->vs_uniform_big  = gpu::Device::createBuffer(sizeof(VsUniforms), gpu::BufferUsage::Uniform);
+  s->fs_uniform_p    = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
+  s->fs_uniform_big  = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
+  s->sampler         = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->p_buf.release(); s->big_buf.release();
+  s->p_uniform.release(); s->big_uniform.release(); s->prefill_uniform.release();
+  s->vs_uniform_p.release(); s->vs_uniform_big.release();
+  s->fs_uniform_p.release(); s->fs_uniform_big.release();
+  s->sampler.release();
+  delete s;
+}
+
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!s_pso_p_update.valid() || !s_pso_big_update.valid() || !s_pso_render_add.valid()) return;
+  if (!s->p_buf.valid() || !s->big_buf.valid()) return;
+  s->frame_index = 0;
+  seed_pool(s->p_buf,   MAX_P,   s->ttl * 8.0f,  0x1111u);
+  seed_pool(s->big_buf, MAX_BIG, s->big_ttl * 20.0f, 0x2222u);
+  s->initialized = true;
+}
+
+void tick(void* self, double dt) { (void)self; (void)dt; }
+void on_resolume_param(void*, long long, double) {}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i]; int l = len[i];
+    if      (state::pathIs(p, l, "p_count"))        s->p_count = state::patchInt(i);
+    else if (state::pathIs(p, l, "motion_rate"))    s->motion_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "field_speed"))    s->field_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "momentum"))       s->momentum = state::patchFloat(i);
+    else if (state::pathIs(p, l, "to_big"))         s->to_big = state::patchFloat(i);
+    else if (state::pathIs(p, l, "to_big_curl"))    s->to_big_curl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "jitter"))         s->jitter = state::patchFloat(i);
+    else if (state::pathIs(p, l, "color_contrib"))  s->color_contrib = state::patchFloat(i);
+    else if (state::pathIs(p, l, "to_image"))       s->to_image = state::patchFloat(i);
+    else if (state::pathIs(p, l, "field_scale"))    s->field_scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "field_skew"))     s->field_skew = state::patchFloat(i);
+    else if (state::pathIs(p, l, "field_squash"))   s->field_squash = state::patchFloat(i);
+    else if (state::pathIs(p, l, "momentum_decay")) s->momentum_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "curl_dir"))       s->curl_dir = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sink"))           s->sink = state::patchFloat(i);
+    else if (state::pathIs(p, l, "to_image_curl"))  s->to_image_curl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "undertow_skew"))  s->undertow_skew = state::patchFloat(i);
+    else if (state::pathIs(p, l, "undertow_squash")) s->undertow_squash = state::patchFloat(i);
+    else if (state::pathIs(p, l, "boundary"))       s->boundary = state::patchFloat(i);
+    else if (state::pathIs(p, l, "boundary_size"))  s->boundary_size = state::patchFloat(i);
+    else if (state::pathIs(p, l, "boundary_stiffness")) s->boundary_stiffness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "boundary_speed")) s->boundary_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ttl"))            s->ttl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "spawn_size"))     s->spawn_size = state::patchFloat(i);
+    else if (state::pathIs(p, l, "p_point_size"))   s->p_point_size = state::patchFloat(i);
+    else if (state::pathIs(p, l, "p_opacity"))      s->p_opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "p_alpha_curve"))  s->p_alpha_curve = state::patchFloat(i);
+    else if (state::pathIs(p, l, "render_hue"))     s->render_hue = state::patchFloat(i);
+    else if (state::pathIs(p, l, "p_shape"))        s->p_shape = state::patchInt(i);
+    else if (state::pathIs(p, l, "tint"))           { auto v = state::patchVec3(i); s->tint_r = v.x; s->tint_g = v.y; s->tint_b = v.z; }
+    else if (state::pathIs(p, l, "exposure"))       s->exposure = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_count"))      s->big_count = state::patchInt(i);
+    else if (state::pathIs(p, l, "big_speed"))      s->big_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_drift"))      s->big_drift = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_repel"))      s->big_repel = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_curl"))       s->big_curl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_momentum"))   s->big_momentum = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_spread"))     s->big_spread = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_ttl"))        s->big_ttl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_point_size")) s->big_point_size = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_opacity"))    s->big_opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "big_render_hue")) s->big_render_hue = state::patchFloat(i);
+    else if (state::pathIs(p, l, "blend_mode"))     s->blend_mode = state::patchInt(i);
+    else if (state::pathIs(p, l, "input_alpha"))    s->input_alpha = state::patchFloat(i);
+  }
+  if (s->p_count < 1) s->p_count = 1; if (s->p_count > MAX_P) s->p_count = MAX_P;
+  if (s->big_count < 0) s->big_count = 0; if (s->big_count > MAX_BIG) s->big_count = MAX_BIG;
+}
+
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
+  auto in  = gpu::Device::textureForField("tex_in");
+  auto out = gpu::Device::textureForField("tex_out");
+  if (!in.valid() || !out.valid()) return;
+
+  s->frame_index++;
+  float dt = (float)host::deltaTime();
+  float min_dim = float(vp_w < vp_h ? vp_w : vp_h);
+  float ax = min_dim / float(vp_w), ay = min_dim / float(vp_h);
+
+  BigUpdateUniforms bu = {};
+  bu.count = (uint32_t)s->big_count; bu.frame_index = s->frame_index; bu.dt = dt; bu.motion_rate = s->motion_rate;
+  bu.big_speed = s->big_speed; bu.big_momentum = s->big_momentum; bu.big_momentum_decay = s->big_momentum_decay; bu.drift = s->big_drift;
+  bu.repel = s->big_repel; bu.direction = 1.0f; bu.curl = s->big_curl; bu.curl_dir = s->curl_dir;
+  bu.sink = s->sink; bu.boundary = s->boundary; bu.boundary_size = s->boundary_size; bu.boundary_stiffness = s->boundary_stiffness;
+  bu.boundary_speed = s->boundary_speed; bu.spread = s->big_spread; bu.ttl = s->big_ttl; bu.aspect_x = ax; bu.aspect_y = ay;
+  s->big_uniform.writeOne(bu);
+
+  PUpdateUniforms pu = {};
+  pu.count = (uint32_t)s->p_count; pu.big_count = (uint32_t)s->big_count; pu.frame_index = s->frame_index; pu.dt = dt;
+  pu.motion_rate = s->motion_rate; pu.momentum = s->momentum; pu.momentum_decay = s->momentum_decay; pu.field_speed = s->field_speed;
+  pu.field_scale = s->field_scale; pu.field_skew = s->field_skew; pu.field_squash = s->field_squash; pu.jitter = s->jitter;
+  pu.to_big = s->to_big; pu.to_big_curl = s->to_big_curl; pu.curl_dir = s->curl_dir; pu.sink = s->sink;
+  pu.boundary = s->boundary; pu.boundary_size = s->boundary_size; pu.boundary_stiffness = s->boundary_stiffness; pu.boundary_speed = s->boundary_speed;
+  pu.to_image = s->to_image; pu.to_image_curl = s->to_image_curl; pu.undertow_skew = s->undertow_skew; pu.undertow_squash = s->undertow_squash;
+  pu.ttl = s->ttl; pu.spawn_size = s->spawn_size; pu.aspect_x = ax; pu.aspect_y = ay;
+  s->p_uniform.writeOne(pu);
+
+  PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
+  s->prefill_uniform.writeOne(pf);
+
+  VsUniforms vp = { ax, ay, s->p_point_size, 0.f };   s->vs_uniform_p.writeOne(vp);
+  VsUniforms vb = { ax, ay, s->big_point_size, 0.f }; s->vs_uniform_big.writeOne(vb);
+
+  FsUniforms fp = {};
+  fp.color_contrib = s->color_contrib; fp.render_hue = s->render_hue; fp.opacity = s->p_opacity; fp.alpha_curve = s->p_alpha_curve;
+  fp.tint_r = s->tint_r; fp.tint_g = s->tint_g; fp.tint_b = s->tint_b; fp.exposure = s->exposure;
+  fp.shape_kind = (uint32_t)s->p_shape; fp.shape_param = 0.5f;
+  s->fs_uniform_p.writeOne(fp);
+
+  FsUniforms fb = fp;
+  fb.render_hue = s->big_render_hue; fb.opacity = s->big_opacity; fb.shape_kind = 1u; // gaussian
+  s->fs_uniform_big.writeOne(fb);
+
+  // Pass 1 — Big update (must precede P so P reads fresh attractors).
+  if (s->big_count > 0) {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_big_update);
+    cp.setBuffer(s->big_buf, 0);
+    cp.setTexture(in, 1, 0);
+    cp.setSampler(s->sampler, 2);
+    cp.setBuffer(s->big_uniform, 3);
+    cp.dispatch((s->big_count + 63) / 64, 1, 1);
+    cp.end();
+  }
+
+  // Pass 2 — P update.
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_p_update);
+    cp.setBuffer(s->p_buf, 0);
+    cp.setBuffer(s->big_buf, 1);
+    cp.setTexture(in, 2, 0);
+    cp.setSampler(s->sampler, 3);
+    cp.setBuffer(s->p_uniform, 4);
+    cp.dispatch((s->p_count + 63) / 64, 1, 1);
+    cp.end();
+  }
+
+  // Pass 3 — prefill base.
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_prefill);
+    cp.setTexture(in, 0, 0);
+    cp.setTexture(out, 1, 1);
+    cp.setBuffer(s->prefill_uniform, 2);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
+
+  // Pass 4 — render P points then Big points.
+  auto pso = (s->blend_mode == BLEND_ALPHA) ? s_pso_render_alpha : s_pso_render_add;
+  {
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(pso);
+    rp.setBuffer(s->p_buf, 0);
+    rp.setBuffer(s->vs_uniform_p, 1);
+    rp.setBuffer(s->fs_uniform_p, 2);
+    rp.draw(6, s->p_count);
+    rp.end();
+  }
+  if (s->big_count > 0 && s->big_opacity > 0.0f) {
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(pso);
+    rp.setBuffer(s->big_buf, 0);
+    rp.setBuffer(s->vs_uniform_big, 1);
+    rp.setBuffer(s->fs_uniform_big, 2);
+    rp.draw(6, s->big_count);
+    rp.end();
+  }
+
+  gpu::Device::submit();
+}
+
+} // namespace double_chamber

@@ -37,6 +37,19 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var glisten findanchor prefill vs fs
 echo "  glisten shaders compiled (SPV: findanchor + prefill + vs + fs)"
 
+# double_chamber — P field-particles + Big attractors (DoubleChamber v2).
+compile_shaders_compute_var_spv double_chamber big_update
+compile_shaders_compute_var_spv double_chamber p_update
+compile_shaders_compute_var_spv double_chamber prefill
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/vs.hlsl -Fo "$TMP_DIR/double_chamber_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/fs.hlsl -Fo "$TMP_DIR/double_chamber_fs.spv"
+_emit_spv_header_var double_chamber big_update p_update prefill vs fs
+echo "  double_chamber shaders compiled (SPV: big_update + p_update + prefill + vs + fs)"
+
 echo "=== Building WASM (legacy) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -52,6 +65,7 @@ wasm_build \
   -I../../src \
   main.cpp \
   ../bicolor_grad/main.cpp \
-  ../glisten/main.cpp
+  ../glisten/main.cpp \
+  ../double_chamber/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

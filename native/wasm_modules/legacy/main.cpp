@@ -15,6 +15,7 @@
 
 NANO_DECLARE_INSTANCE_EFFECT(bicolor_grad)
 NANO_DECLARE_INSTANCE_EFFECT(glisten)
+NANO_DECLARE_INSTANCE_EFFECT(double_chamber)
 
 extern "C" {
 
@@ -46,6 +47,20 @@ void nano_module_main() {
         "filter",
         "sparkle,glint,glisten,lens,star,legacy",
         NANO_INSTANCE_LIFECYCLE(glisten),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.legacy.double_chamber",
+        "Double Chamber",
+        "Particle field-chamber: a pool of particles flows through a chaotic "
+        "polynomial vector field, pulled and curled around a few drifting "
+        "attractors, bounded in a soft disc, coloured from the input image. v2 "
+        "of the shipped NanoGraph DoubleChamber (the used subset — no charged "
+        "accelerator, no laser output).",
+        "source",
+        "particles,field,chamber,attractor,curl,generative,legacy",
+        NANO_INSTANCE_LIFECYCLE(double_chamber),
     });
 }
 

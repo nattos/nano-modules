@@ -104,3 +104,47 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
     expect(Math.abs(far.r - 77)).toBeLessThan(12); // far corner ~ input (0.3*255)
   });
 });
+
+describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
+  jest.setTimeout(30000);
+
+  it('declares metadata and its parameters', async () => {
+    const frame = await runGpuEffectTest({
+      module: 'double_chamber.wasm',
+      bundle: 'legacy',
+      inputColor: [0.0, 0.0, 0.0, 1.0],
+      dumpName: 'double_chamber_metadata',
+    });
+    expect(frame.success).toBe(true);
+    expect(frame.metadata?.id).toBe('source.legacy.double_chamber');
+    const names = frame.params.map(p => p.name);
+    expect(names).toContain('p_count');
+    expect(names).toContain('field_speed');
+    expect(names).toContain('to_big');
+    expect(names).toContain('big_count');
+  });
+
+  it('renders additive particles over a black input', async () => {
+    // Particles seed as white points, blend additively over the black input.
+    // After a few ticks the cloud has clearly brightened the frame.
+    const frame = await runGpuEffectTest({
+      module: 'double_chamber.wasm',
+      bundle: 'legacy',
+      width: 128, height: 128,
+      inputColor: [0.0, 0.0, 0.0, 1.0],
+      params: [
+        ['p_count', 8000],
+        ['p_point_size', 0.03],
+        ['p_opacity', 1.0],
+        ['exposure', 2.0],
+        ['color_contrib', 0.0],   // pure white points
+      ],
+      samplePoints: [[64, 64]],
+      ticks: 8,
+      renderEachTick: true,
+      dumpName: 'double_chamber_particles',
+    });
+    expect(frame.success).toBe(true);
+    expect(frame.samples[0].r).toBeGreaterThan(8);  // particles added light
+  });
+});
