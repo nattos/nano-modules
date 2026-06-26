@@ -17,6 +17,7 @@ RWStructuredBuffer<Particle> particles    : register(u0);
 StructuredBuffer<Particle>   bigs          : register(t1);
 Texture2D<float4>            inputTex      : register(t2);
 SamplerState                 samp          : register(s3);
+StructuredBuffer<Seg>        segs          : register(t5);   // tracer segments (spawn-on-line)
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -56,7 +57,8 @@ cbuffer Uniforms : register(b4) {
 
   float to_big_range;    // s-space radius of Big influence (0 → effectively global)
   float image_smoothing; // matches the blur radius → scales the gradient step
-  float _p1, _p2;
+  float to_line_rate;    // P(respawn onto a tracer line vertex)
+  float seg_total;       // number of tracer segment slots (l_count * max_seg)
 }
 
 static const float DC_FORCE_MAX = 6.0;
@@ -161,6 +163,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float theta = 6.28318530718 * dc_unit(dc_hash(h ^ 0xA17Fu));
     float2 sp = rad * float2(cos(theta), sin(theta));
     float2 nuv = saturate(0.5 + sp * aspect);
+
+    // Spawn-on-line: with prob to_line_rate, snap onto a tracer vertex instead
+    // (biased toward the line end, like the original's ChamberSpawnSelect).
+    uint segTotal = (uint)seg_total;
+    if (to_line_rate > 0.0 && segTotal > 0u
+        && dc_unit(dc_hash(h ^ 0x0777u)) < to_line_rate) {
+      float rr = dc_unit(dc_hash(h ^ 0x0999u));
+      float r2 = 1.0 - (1.0 - rr) * (1.0 - rr);          // bias toward end
+      uint si = min(segTotal - 1u, (uint)(r2 * (float)segTotal));
+      if (segs[si].b.w > 0.0) nuv = saturate(segs[si].a.xy);
+    }
+
     float4 capt = inputTex.SampleLevel(samp, nuv, 0);
     float zr = dc_unit(dc_hash2(i + 0x27D4EB2Fu, frame_index));
     packed = dc_pack_rgbz(capt.rgb, zr);

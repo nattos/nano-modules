@@ -41,14 +41,21 @@ echo "  glisten shaders compiled (SPV: findanchor + prefill + vs + fs)"
 compile_shaders_compute_var_spv double_chamber big_update
 compile_shaders_compute_var_spv double_chamber p_update
 compile_shaders_compute_var_spv double_chamber prefill
+compile_shaders_compute_var_spv double_chamber trace
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../double_chamber/vs.hlsl -Fo "$TMP_DIR/double_chamber_vs.spv"
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../double_chamber/fs.hlsl -Fo "$TMP_DIR/double_chamber_fs.spv"
-_emit_spv_header_var double_chamber big_update p_update prefill vs fs
-echo "  double_chamber shaders compiled (SPV: big_update + p_update + prefill + vs + fs)"
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/line_vs.hlsl -Fo "$TMP_DIR/double_chamber_line_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/line_fs.hlsl -Fo "$TMP_DIR/double_chamber_line_fs.spv"
+_emit_spv_header_var double_chamber big_update p_update prefill trace vs fs line_vs line_fs
+echo "  double_chamber shaders compiled (SPV: big_update + p_update + prefill + trace + vs + fs + line)"
 
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
 compile_shaders_compute_spv blur

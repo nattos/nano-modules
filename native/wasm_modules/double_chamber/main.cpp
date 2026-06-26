@@ -33,8 +33,12 @@ namespace double_chamber {
 static constexpr int MAX_P   = 50000;
 static constexpr int MAX_BIG = 64;
 static constexpr int SEED_CHUNK = 512;
+static constexpr int MAX_TRACERS = 96;
+static constexpr int MAX_SEG     = 96;   // segment slots per tracer (half each dir)
 // p_point_size slider [0,1] → effective isotropic-uv size [0, 0.01].
 static constexpr float POINT_SIZE_SCALE = 0.01f;
+// l_width slider [0,1] → effective line half-extent uv [0, 0.02].
+static constexpr float LINE_WIDTH_SCALE = 0.02f;
 
 struct GpuParticle { float a[4]; float b[4]; };
 static_assert(sizeof(GpuParticle) == 32, "particle must be 32 bytes");
@@ -47,8 +51,18 @@ struct PUpdateUniforms {
   float boundary, boundary_size, boundary_stiffness, boundary_speed;
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
-  float to_big_range, image_smoothing, _p1, _p2;
+  float to_big_range, image_smoothing, to_line_rate, seg_total;
 };
+struct TraceUniforms {
+  uint32_t count, max_seg, frame_index; float dt;
+  float field_scale, field_skew, field_squash, field_speed;
+  float to_image, momentum, step_speed, length01;
+  float time_decay, adv_step, color_contrib, l_opacity;
+  float aspect_x, aspect_y, tint_r, tint_g;
+  float tint_b, reseed_spread, image_smoothing, _p2;
+};
+struct LineVsUniforms { float aspect_x, aspect_y, width, _pad; };
+struct LineFsUniforms { float soft, _a, _b, _c; };
 struct BigUpdateUniforms {
   uint32_t count, frame_index; float dt, motion_rate;
   float big_speed, big_momentum, big_momentum_decay, drift;
@@ -68,9 +82,10 @@ struct FsUniforms {
 enum BlendMode : int { BLEND_ADD = 0, BLEND_ALPHA = 1 };
 
 struct State {
-  gpu::Buffer  p_buf, big_buf;
-  gpu::Buffer  p_uniform, big_uniform, prefill_uniform;
+  gpu::Buffer  p_buf, big_buf, tracer_buf, seg_buf;
+  gpu::Buffer  p_uniform, big_uniform, prefill_uniform, trace_uniform;
   gpu::Buffer  vs_uniform_p, vs_uniform_big, fs_uniform_p, fs_uniform_big;
+  gpu::Buffer  line_vs_uniform, line_fs_uniform;
   gpu::Sampler sampler;
   gpu::Texture black_tex;   // 1×1 fallback when no input is wired (true generator)
   gpu::Texture field_tex;   // smoothed input for gradient/colour sampling
@@ -101,6 +116,11 @@ struct State {
   float big_momentum = 0.85f, big_momentum_decay = 0.99f;
   float big_spread = 0.5f, big_ttl = 0.6f;
   float big_point_size = 0.04f, big_opacity = 0.25f, big_render_hue = 0.0f;
+  // Tracers (L block).
+  int   l_count = 24;
+  float to_line_rate = 0.0f;
+  float l_length = 0.5f, l_step_speed = 0.02f, l_momentum = 0.5f, l_opacity = 0.5f;
+  float l_width = 0.2f, l_soft = 1.0f, l_time_decay = 0.1f, l_adv_step = 0.1f, l_reseed_spread = 0.4f;
   // Composite.
   float input_alpha = 1.0f;
   int   blend_mode = BLEND_ADD;
@@ -110,8 +130,11 @@ static fx::GaussianBlur s_blur;   // shared image-smoothing helper
 static gpu::ComputePSO s_pso_big_update;
 static gpu::ComputePSO s_pso_p_update;
 static gpu::ComputePSO s_pso_prefill;
+static gpu::ComputePSO s_pso_trace;
 static gpu::RenderPSO  s_pso_render_add;
 static gpu::RenderPSO  s_pso_render_alpha;
+static gpu::RenderPSO  s_pso_line_add;
+static gpu::RenderPSO  s_pso_line_alpha;
 
 static inline uint32_t lcg(uint32_t& s) { s = s * 1664525u + 1013904223u; return s; }
 static inline float lcgf(uint32_t& s) { return (lcg(s) >> 8) * (1.0f / float(1u << 24)); }
@@ -139,7 +162,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 1, 1},
+  state::init("source.legacy.double_chamber", {1, 1, 2},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -190,6 +213,18 @@ void module_init() {
       .floatField("big_point_size", 0.04f, 0.002f, 0.2f,  state::SecondaryInput)
       .floatField("big_opacity",    0.25f, 0.0f, 1.0f,    state::SecondaryInput)
       .floatField("big_render_hue", 0.0f,  0.0f, 1.0f,    state::SecondaryInput)
+      // ---- Tracers (L block) ----
+      .intField  ("l_count",        24,    0, MAX_TRACERS, state::PrimaryInput)
+      .floatField("to_line_rate",   0.0f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("l_length",       0.5f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("l_opacity",      0.5f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("l_step_speed",   0.02f, 0.005f, 0.1f,  state::SecondaryInput)
+      .floatField("l_momentum",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_width",        0.2f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_soft",         1.0f,  0.1f, 4.0f,    state::SecondaryInput)
+      .floatField("l_time_decay",   0.1f,  0.0f, 2.0f,    state::SecondaryInput)
+      .floatField("l_adv_step",     0.1f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_reseed_spread", 0.4f, 0.0f, 1.0f,    state::SecondaryInput)
       // ---- Composite ----
       .selectField("blend_mode",    BLEND_ADD,            state::SecondaryInput, {
         {"Add", BLEND_ADD}, {"Alpha", BLEND_ALPHA} })
@@ -207,25 +242,41 @@ void module_init() {
   state::registerShaderSPV("dc_prefill",    PREFILL_SPV,    PREFILL_SPV_SIZE);
   state::registerShaderSPV("dc_vs",         VS_SPV,         VS_SPV_SIZE);
   state::registerShaderSPV("dc_fs",         FS_SPV,         FS_SPV_SIZE);
+  state::registerShaderSPV("dc_trace",      TRACE_SPV,      TRACE_SPV_SIZE);
+  state::registerShaderSPV("dc_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
+  state::registerShaderSPV("dc_line_fs",    LINE_FS_SPV,    LINE_FS_SPV_SIZE);
 
   auto cs_big = gpu::Device::createShaderModuleByName("dc_big_update");
   auto cs_p   = gpu::Device::createShaderModuleByName("dc_p_update");
   auto cs_pre = gpu::Device::createShaderModuleByName("dc_prefill");
+  auto cs_tr  = gpu::Device::createShaderModuleByName("dc_trace");
   auto vs     = gpu::Device::createShaderModuleByName("dc_vs");
   auto fs     = gpu::Device::createShaderModuleByName("dc_fs");
-  if (!cs_big || !cs_p || !cs_pre || !vs || !fs) return;
+  auto lvs    = gpu::Device::createShaderModuleByName("dc_line_vs");
+  auto lfs    = gpu::Device::createShaderModuleByName("dc_line_fs");
+  if (!cs_big || !cs_p || !cs_pre || !cs_tr || !vs || !fs || !lvs || !lfs) return;
 
   s_pso_big_update = gpu::Device::createComputePSO(cs_big, "main", gpu::Bindings()
       .storageRW(0).tex2d(1).sampler(2).uniform(3));
   s_pso_p_update = gpu::Device::createComputePSO(cs_p, "main", gpu::Bindings()
-      .storageRW(0).storage(1).tex2d(2).sampler(3).uniform(4));
+      .storageRW(0).storage(1).tex2d(2).sampler(3).uniform(4).storage(5));
   s_pso_prefill = gpu::Device::createComputePSO(cs_pre, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso_trace = gpu::Device::createComputePSO(cs_tr, "main", gpu::Bindings()
+      .storageRW(0).storageRW(1).tex2d(2).sampler(3).uniform(4));
   s_pso_render_add = gpu::Device::createInstancedRenderPSO(vs, "main", fs, "main",
       gpu::TextureFormat::Surface,
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::Additive);
   s_pso_render_alpha = gpu::Device::createInstancedRenderPSO(vs, "main", fs, "main",
+      gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::AlphaOver);
+  s_pso_line_add = gpu::Device::createInstancedRenderPSO(lvs, "main", lfs, "main",
+      gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::Additive);
+  s_pso_line_alpha = gpu::Device::createInstancedRenderPSO(lvs, "main", lfs, "main",
       gpu::TextureFormat::Surface,
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::AlphaOver);
@@ -238,13 +289,18 @@ void* create() {
   auto* s = new State();
   s->p_buf   = gpu::Device::createBuffer(sizeof(GpuParticle) * MAX_P, gpu::BufferUsage::Storage);
   s->big_buf = gpu::Device::createBuffer(sizeof(GpuParticle) * MAX_BIG, gpu::BufferUsage::Storage);
+  s->tracer_buf = gpu::Device::createBuffer(16 * MAX_TRACERS, gpu::BufferUsage::Storage);
+  s->seg_buf = gpu::Device::createBuffer(32 * MAX_TRACERS * MAX_SEG, gpu::BufferUsage::Storage);
   s->p_uniform       = gpu::Device::createBuffer(sizeof(PUpdateUniforms), gpu::BufferUsage::Uniform);
   s->big_uniform     = gpu::Device::createBuffer(sizeof(BigUpdateUniforms), gpu::BufferUsage::Uniform);
   s->prefill_uniform = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
+  s->trace_uniform   = gpu::Device::createBuffer(sizeof(TraceUniforms), gpu::BufferUsage::Uniform);
   s->vs_uniform_p    = gpu::Device::createBuffer(sizeof(VsUniforms), gpu::BufferUsage::Uniform);
   s->vs_uniform_big  = gpu::Device::createBuffer(sizeof(VsUniforms), gpu::BufferUsage::Uniform);
   s->fs_uniform_p    = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
   s->fs_uniform_big  = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
+  s->line_vs_uniform = gpu::Device::createBuffer(sizeof(LineVsUniforms), gpu::BufferUsage::Uniform);
+  s->line_fs_uniform = gpu::Device::createBuffer(sizeof(LineFsUniforms), gpu::BufferUsage::Uniform);
   s->sampler         = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   s->black_tex       = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA8);
   if (s->black_tex.valid()) gpu::Device::clear(s->black_tex, 0.f, 0.f, 0.f, 1.f);
@@ -254,10 +310,11 @@ void* create() {
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->p_buf.release(); s->big_buf.release();
-  s->p_uniform.release(); s->big_uniform.release(); s->prefill_uniform.release();
+  s->p_buf.release(); s->big_buf.release(); s->tracer_buf.release(); s->seg_buf.release();
+  s->p_uniform.release(); s->big_uniform.release(); s->prefill_uniform.release(); s->trace_uniform.release();
   s->vs_uniform_p.release(); s->vs_uniform_big.release();
   s->fs_uniform_p.release(); s->fs_uniform_big.release();
+  s->line_vs_uniform.release(); s->line_fs_uniform.release();
   s->sampler.release();
   s->black_tex.release();
   s->field_tex.release();
@@ -272,6 +329,11 @@ void init(void* self) {
   s->frame_index = 0;
   seed_pool(s->p_buf,   MAX_P,   s->ttl * 8.0f,  0x1111u);
   seed_pool(s->big_buf, MAX_BIG, s->big_ttl * 20.0f, 0x2222u);
+  // Zero tracers (time=0 → each seeds itself on the first trace).
+  {
+    float zeros[4 * MAX_TRACERS] = {0};
+    s->tracer_buf.write(zeros, 4 * MAX_TRACERS);
+  }
   s->initialized = true;
 }
 
@@ -329,9 +391,21 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "big_point_size")) s->big_point_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "big_opacity"))    s->big_opacity = state::patchFloat(i);
     else if (state::pathIs(p, l, "big_render_hue")) s->big_render_hue = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_count"))        s->l_count = state::patchInt(i);
+    else if (state::pathIs(p, l, "to_line_rate"))   s->to_line_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_length"))       s->l_length = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_opacity"))      s->l_opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_step_speed"))   s->l_step_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_momentum"))     s->l_momentum = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_width"))        s->l_width = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_soft"))         s->l_soft = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_time_decay"))   s->l_time_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_adv_step"))     s->l_adv_step = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_reseed_spread")) s->l_reseed_spread = state::patchFloat(i);
     else if (state::pathIs(p, l, "blend_mode"))     s->blend_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "input_alpha"))    s->input_alpha = state::patchFloat(i);
   }
+  if (s->l_count < 0) s->l_count = 0; if (s->l_count > MAX_TRACERS) s->l_count = MAX_TRACERS;
   if (s->p_count < 1) s->p_count = 1; if (s->p_count > MAX_P) s->p_count = MAX_P;
   if (s->big_count < 0) s->big_count = 0; if (s->big_count > MAX_BIG) s->big_count = MAX_BIG;
 }
@@ -388,6 +462,9 @@ void render(void* self, int vp_w, int vp_h) {
   pu.ttl = s->ttl; pu.spawn_size = s->spawn_size; pu.aspect_x = ax; pu.aspect_y = ay;
   pu.to_big_range = s->to_big_range;
   pu.image_smoothing = s->image_smoothing;
+  int seg_total = (s->l_count > 0) ? s->l_count * MAX_SEG : 0;
+  pu.to_line_rate = (seg_total > 0) ? s->to_line_rate : 0.0f;
+  pu.seg_total = (float)seg_total;
   s->p_uniform.writeOne(pu);
 
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
@@ -406,6 +483,20 @@ void render(void* self, int vp_w, int vp_h) {
   fb.render_hue = s->big_render_hue; fb.opacity = s->big_opacity; fb.shape_kind = 1u; // gaussian
   s->fs_uniform_big.writeOne(fb);
 
+  TraceUniforms tu = {};
+  tu.count = (uint32_t)s->l_count; tu.max_seg = (uint32_t)MAX_SEG; tu.frame_index = s->frame_index; tu.dt = dt;
+  tu.field_scale = s->field_scale; tu.field_skew = s->field_skew; tu.field_squash = s->field_squash; tu.field_speed = s->field_speed;
+  tu.to_image = s->to_image; tu.momentum = s->l_momentum; tu.step_speed = s->l_step_speed; tu.length01 = s->l_length;
+  tu.time_decay = s->l_time_decay; tu.adv_step = s->l_adv_step; tu.color_contrib = s->color_contrib; tu.l_opacity = s->l_opacity;
+  tu.aspect_x = ax; tu.aspect_y = ay; tu.tint_r = s->tint_r; tu.tint_g = s->tint_g;
+  tu.tint_b = s->tint_b; tu.reseed_spread = s->l_reseed_spread; tu.image_smoothing = s->image_smoothing;
+  s->trace_uniform.writeOne(tu);
+
+  LineVsUniforms lv = { ax, ay, s->l_width * LINE_WIDTH_SCALE, 0.f };
+  s->line_vs_uniform.writeOne(lv);
+  LineFsUniforms lf = { s->l_soft, 0.f, 0.f, 0.f };
+  s->line_fs_uniform.writeOne(lf);
+
   // Pass 1 — Big update (must precede P so P reads fresh attractors).
   if (s->big_count > 0) {
     auto cp = gpu::ComputePass::begin();
@@ -418,6 +509,19 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
+  // Pass 1b — tracers (before P so P can spawn onto the current lines).
+  if (s->l_count > 0) {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_trace);
+    cp.setBuffer(s->tracer_buf, 0);
+    cp.setBuffer(s->seg_buf, 1);
+    cp.setTexture(sample_tex, 2, 0);
+    cp.setSampler(s->sampler, 3);
+    cp.setBuffer(s->trace_uniform, 4);
+    cp.dispatch((s->l_count + 63) / 64, 1, 1);
+    cp.end();
+  }
+
   // Pass 2 — P update.
   {
     auto cp = gpu::ComputePass::begin();
@@ -427,6 +531,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(sample_tex, 2, 0);
     cp.setSampler(s->sampler, 3);
     cp.setBuffer(s->p_uniform, 4);
+    cp.setBuffer(s->seg_buf, 5);
     cp.dispatch((s->p_count + 63) / 64, 1, 1);
     cp.end();
   }
@@ -462,6 +567,18 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->vs_uniform_big, 1);
     rp.setBuffer(s->fs_uniform_big, 2);
     rp.draw(6, s->big_count);
+    rp.end();
+  }
+
+  // Pass 5 — tracer lines (one instanced quad per segment slot).
+  if (s->l_count > 0 && s->l_opacity > 0.0f) {
+    auto lpso = (s->blend_mode == BLEND_ALPHA) ? s_pso_line_alpha : s_pso_line_add;
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(lpso);
+    rp.setBuffer(s->seg_buf, 0);
+    rp.setBuffer(s->line_vs_uniform, 1);
+    rp.setBuffer(s->line_fs_uniform, 2);
+    rp.draw(6, s->l_count * MAX_SEG);
     rp.end();
   }
 

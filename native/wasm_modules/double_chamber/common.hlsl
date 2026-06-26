@@ -103,12 +103,25 @@ float dc_mask(float2 n, uint kind, float param) {
 //   b.xy = velocity (uv/s),  b.z = size (isotropic uv), b.w = asfloat(packed rgbz)
 struct Particle { float4 a; float4 b; };
 
-// VS → FS varyings.
+// VS → FS varyings (points).
 struct VsOut {
   float4 pos    : SV_Position;
   float2 corner : TEXCOORD0;
   nointerpolation float4 col_life : TEXCOORD1;  // rgb = color, w = life_norm
   nointerpolation float4 extra    : TEXCOORD2;  // x = speed
+};
+
+// ---- tracers (L block): gradient/field-following line tracers ----
+//   TracerState.a = (seedPos.xy in s-space, time, seedAngle)
+//   Seg.a = (p0.xy, p1.xy) in uv;  Seg.b = (rgb, alpha)
+struct TracerState { float4 a; };
+struct Seg { float4 a; float4 b; };
+
+// Line VS → FS varyings.
+struct LineVsOut {
+  float4 pos    : SV_Position;
+  float2 local  : TEXCOORD0;   // .x along [0,1], .y across [-1,1]
+  nointerpolation float4 col : TEXCOORD1;
 };
 
 #endif // DOUBLE_CHAMBER_COMMON_HLSL

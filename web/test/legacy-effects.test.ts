@@ -150,4 +150,32 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     const maxR = Math.max(...frame.samples.map(s => s.r));
     expect(maxR).toBeGreaterThan(8);  // particles added light
   });
+
+  it('renders tracer lines (no particles)', async () => {
+    // Particles off, tracers on: the field streamlines should draw bright
+    // lines over the black input.
+    const frame = await runGpuEffectTest({
+      module: 'double_chamber.wasm',
+      bundle: 'legacy',
+      width: 128, height: 128,
+      inputColor: [0.0, 0.0, 0.0, 1.0],
+      params: [
+        ['p_count', 0],
+        ['big_opacity', 0.0],
+        ['l_count', 48],
+        ['l_opacity', 1.0],
+        ['l_length', 0.8],
+        ['l_width', 0.4],
+        ['color_contrib', 0.0],   // white lines
+        ['field_speed', 0.3],
+      ],
+      samplePoints: [[64, 64], [40, 50], [88, 64], [50, 80], [64, 30]],
+      ticks: 16,
+      renderEachTick: true,
+      dumpName: 'double_chamber_tracers',
+    });
+    expect(frame.success).toBe(true);
+    const maxR = Math.max(...frame.samples.map(s => s.r));
+    expect(maxR).toBeGreaterThan(8);  // tracer lines drew light
+  });
 });
