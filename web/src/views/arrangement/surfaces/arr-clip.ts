@@ -517,7 +517,8 @@ export class ArrClip extends MobxLitElement {
     const missing = store.sourceMissing(clip.source?.sourceKey);
 
     return html`
-      <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''} ${clip.bypassed ? 'bypassed' : ''} ${missing ? 'missing' : ''}">
+      <div class="clip ${selected ? 'selected' : ''} ${this.mode ? 'dragging' : ''} ${clip.bypassed ? 'bypassed' : ''} ${missing ? 'missing' : ''}"
+        @pointerdown=${this.onBodyDown}>
         <div
           class="bar"
           style="background:${barBg}"

@@ -325,7 +325,9 @@ export class EngineBridge {
   pushAutomation() {
     if (!this.engine) return;
     const beat = store.positionBeat;
+    const totalBeats = compositionLengthBeats(store.composition);
     const entries: AutomationEntry[] = [];
+    const seenRail = new Set<string>();
     for (const { clip, track } of store.compositeLayersAtBeat(beat)) {
       for (const lane of clip.automation ?? []) {
         const ctx = {
@@ -349,6 +351,21 @@ export class EngineBridge {
           value: evalLaneAtBeat(lane.points, { kind: 'track' }, beat),
           combine: lane.combine ?? 'replace',
           magnitude: lane.magnitude ?? 'unsigned',
+        });
+      }
+      // Re-assert each active rail's base value onto its accumulator `input` every
+      // frame. clip-sketch seeds `input` only at build time; without this, when a
+      // writer wire drops out (its clip ended) the rail HOLDS the last modulated
+      // value instead of resetting to base. 'replace' sets the baseline; surviving
+      // writer wires fold on top (the executor applies automation before wires).
+      for (const read of clip.reads ?? []) {
+        if (seenRail.has(read.railId)) continue;
+        seenRail.add(read.railId);
+        const rt = store.railTrackFor(read.railId);
+        const base = rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? beat / totalBeats : 0) : 0;
+        entries.push({
+          instance: `rail_${read.railId}`, field: 'input', value: base,
+          combine: 'replace', magnitude: 'unsigned',
         });
       }
     }

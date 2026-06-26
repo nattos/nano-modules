@@ -230,16 +230,16 @@ export class ArrangementApp extends MobxLitElement {
     // afterwards in their own handlers (pips that open a popup set it after this
     // capture-phase clear, so switching pips still works).
     if (store.chainFocusPath || store.chainFieldKey || store.selectedWireId || store.tapPopup) {
-      const KEEP = ['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel',
-        'tap-card', 'field-option-pip', 'fpip'];
-      const keep = path.some((n) => {
+      const inClass = (classes: string[]) => path.some((n) => {
         const cl = (n as Element)?.classList;
-        return !!cl && KEEP.some((c) => cl.contains(c));
+        return !!cl && classes.some((c) => cl.contains(c));
       });
-      if (!keep) {
-        store.clearChainFocus();
-        store.dismissPopups();
-      }
+      // Chain card/field focus is preserved when the click lands on a card/chip
+      // (the card's own handler then sets focus). The wire POPUP is preserved
+      // ONLY when the click lands on the popup itself or a pip — so clicking an
+      // effect card (incl. its output-trace area) still dismisses an open popup.
+      if (!inClass(['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel'])) store.clearChainFocus();
+      if (!inClass(['tap-card', 'wire-mod-panel', 'field-option-pip', 'fpip'])) store.dismissPopups();
     }
   };
 

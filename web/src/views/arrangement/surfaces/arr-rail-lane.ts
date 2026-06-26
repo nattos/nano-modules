@@ -41,8 +41,11 @@ export class ArrRailLane extends MobxLitElement {
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
 
-  /** Latest offline-evaluated curve (mean + lo/hi band), parallel to evenly-spaced x. */
+  /** Latest offline-evaluated curve (mean + lo/hi band). */
   private curve: RailCurve | null = null;
+  /** The beats each curve sample was evaluated at — reprojected through the CURRENT
+   *  grid every draw so a continuous zoom/pan re-maps the cached curve immediately. */
+  private curveBeats: Float32Array | null = null;
   /** The dispose handle for THIS lane's in-flight request listener. */
   private cancelReq: (() => void) | null = null;
   /** Signature of the inputs the last request was built from — re-request only when
@@ -185,7 +188,7 @@ export class ArrRailLane extends MobxLitElement {
         totalBeats: compositionLengthBeats(store.composition),
         secondsPerBeat: this.secondsPerBeat(), signed: this.signed(),
         writers: this.writerSpecs(t.railId), beats },
-      (curve) => { this.curve = curve; this.draw(); },
+      (curve) => { this.curve = curve; this.curveBeats = beats; this.draw(); },
     );
   }
 
@@ -204,6 +207,7 @@ export class ArrRailLane extends MobxLitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
+    const grid = buildBeatGrid();
     const accent = track.color ?? 'var(--app-cat-mod)';
     const signed = this.signed();
     // Same drawing for both modes; only where 0 sits differs. Unsigned: 0 at the
@@ -220,10 +224,17 @@ export class ArrRailLane extends MobxLitElement {
     ctx.lineTo(w, zeroY);
     ctx.stroke();
     const curve = this.curve;
+    const beats = this.curveBeats;
 
     if (curve && curve.mean.length >= 2) {
       const n = curve.mean.length;
-      const xOf = (i: number) => (i / (n - 1)) * w;
+      // Project each cached sample by its BEAT through the current grid, so a live
+      // zoom/pan re-maps the curve immediately (the worker re-samples after a
+      // debounce to refill density). Fall back to even spacing if beats are absent
+      // or out of sync with the sample count.
+      const xOf = (beats && beats.length === n)
+        ? (i: number) => grid.beatToX(beats[i])
+        : (i: number) => (i / (n - 1)) * w;
       // Error-bar band (lo..hi) — only widens where a stochastic writer contributes.
       ctx.beginPath();
       for (let i = 0; i < n; i++) ctx.lineTo(xOf(i), yOf(curve.hi[i]));
@@ -233,9 +244,9 @@ export class ArrRailLane extends MobxLitElement {
       ctx.fill();
       // Filled mean envelope down to the rail's zero line (consistent in both modes).
       ctx.beginPath();
-      ctx.moveTo(0, zeroY);
+      ctx.moveTo(xOf(0), zeroY);
       for (let i = 0; i < n; i++) ctx.lineTo(xOf(i), yOf(curve.mean[i]));
-      ctx.lineTo(w, zeroY);
+      ctx.lineTo(xOf(n - 1), zeroY);
       ctx.closePath();
       ctx.fillStyle = 'rgba(70,194,194,0.08)';
       ctx.fill();
@@ -249,7 +260,6 @@ export class ArrRailLane extends MobxLitElement {
 
     // Playhead tick + the live mean value at the playhead (cheap CPU eval — no worker
     // round-trip, so it tracks the transport smoothly).
-    const grid = buildBeatGrid();
     const px = grid.beatToX(store.positionBeat);
     if (px >= 0 && px <= w) {
       ctx.fillStyle = 'rgba(255,140,0,0.7)';
