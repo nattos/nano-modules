@@ -55,6 +55,7 @@ export class SourceTransformWidget extends LitElement {
     .rows { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
     .row { display: flex; align-items: center; gap: 6px; font-size: var(--app-fs-xs, 11px); color: var(--app-text-color2, #aaa); }
     .row > span { min-width: 48px; }
+    .row > span.sub { min-width: 0; opacity: 0.85; }
     scalar-slider { flex: 1; min-width: 0; font-size: var(--app-fs-xs, 11px); }
     editable-number.num {
       font-size: var(--app-fs-xs, 11px); width: 56px;
@@ -222,8 +223,11 @@ export class SourceTransformWidget extends LitElement {
         <canvas></canvas>
       </div>
       <div class="rows">
-        <div class="row">${this.slider('Anchor X', t.anchorX, 'anchorX')}</div>
-        <div class="row">${this.slider('Anchor Y', t.anchorY, 'anchorY')}</div>
+        <div class="row">
+          <span>Anchor</span>
+          <span class="sub">X</span>${this.slider('', t.anchorX, 'anchorX')}
+          <span class="sub">Y</span>${this.slider('', t.anchorY, 'anchorY')}
+        </div>
         <div class="row">${this.num('Scale', t.scale, 'scale', 0.1)}</div>
         <div class="row"><span>Rotation</span>
           <div class="seg">

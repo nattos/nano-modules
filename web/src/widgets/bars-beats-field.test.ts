@@ -50,6 +50,23 @@ describe('<bars-beats-field>', () => {
     expect(onInput).toHaveBeenLastCalledWith(5.25);
   });
 
+  it('Left/Right move focus between segments (they do not jog)', async () => {
+    el = await mount({ value: 17 });
+    const before = el.value;
+    const s = segs(el);
+    const focused = () => (el.renderRoot as ShadowRoot).activeElement;
+    s[0].focus();
+    s[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(focused()).toBe(s[1]); // moved to the beat segment
+    expect(el.value).toBe(before); // no jog
+    s[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(focused()).toBe(s[2]);
+    s[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(focused()).toBe(s[2]); // clamped at the last
+    s[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    expect(focused()).toBe(s[1]);
+  });
+
   it('jogging a segment past its bound carries into the neighbour', async () => {
     el = await mount({ value: 3.75 }); // bar1 beat4 six4
     expect(segs(el).map((s) => s.textContent)).toEqual(['1', '4', '4']);

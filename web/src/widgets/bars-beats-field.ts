@@ -2,10 +2,10 @@
  * <bars-beats-field> — an Ableton-style `bar.beat.sixteenth` position field.
  *
  * Three focusable segments sharing one underlying beat value:
- *  - Each segment focuses independently (Tab / click) and JOGS with the arrow
- *    keys (Up/Right +, Down/Left −) by its own musical amount — a bar, a beat,
- *    or a sixteenth. Jogging past a bound carries into the neighbour naturally
- *    (the math is linear; see bbs.ts).
+ *  - Each segment focuses independently (Tab / click); Up/Down JOG it by its own
+ *    musical amount — a bar, a beat, or a sixteenth — while Left/Right move
+ *    between the segments. Jogging past a bound carries into the neighbour
+ *    naturally (the math is linear; see bbs.ts).
  *  - Typing a digit or pressing Enter on a segment edits THAT segment inline.
  *  - DOUBLE-CLICK edits the whole value as one `bar.beat.sixteenth` string.
  *
@@ -122,11 +122,19 @@ export class BarsBeatsField extends LitElement {
     this.pendingFocusEdit = true;
   }
 
+  private focusSeg(i: number) {
+    const clamped = Math.max(0, Math.min(2, i));
+    (this.renderRoot.querySelectorAll('.seg')[clamped] as HTMLElement | undefined)?.focus();
+  }
+
   private onSegKeydown(i: number, e: KeyboardEvent) {
     if (this.disabled) return;
     switch (e.key) {
-      case 'ArrowUp': case 'ArrowRight': e.preventDefault(); this.jog(i, 1); return;
-      case 'ArrowDown': case 'ArrowLeft': e.preventDefault(); this.jog(i, -1); return;
+      // Up/Down jog the focused segment; Left/Right move between segments.
+      case 'ArrowUp': e.preventDefault(); this.jog(i, 1); return;
+      case 'ArrowDown': e.preventDefault(); this.jog(i, -1); return;
+      case 'ArrowRight': e.preventDefault(); this.focusSeg(i + 1); return;
+      case 'ArrowLeft': e.preventDefault(); this.focusSeg(i - 1); return;
       case 'Enter': {
         const cur = this.bbs;
         const v = i === 0 ? cur.bar : i === 1 ? cur.beat : cur.six;
