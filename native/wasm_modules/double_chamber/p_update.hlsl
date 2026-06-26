@@ -142,10 +142,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
     life_remain -= dt;
     if (length(s) > DC_ESCAPE_R) life_remain = 0.0;   // kill runaways
   } else {
-    // Respawn near centre (in s-space), capture colour.
+    // Respawn on a uniform-area disc about centre (the original's spawn shape:
+    // radius = spawn_size·sqrt(rand) gives equal density per unit area; full-
+    // circle angle, no directional bias). Disc lives in s-space → round on
+    // screen, concentric with the boundary circle.
     uint h = dc_hash3(i + 0x85EBCA77u, frame_index, 0x55u);
-    float2 sp = float2(dc_signed(dc_hash(h)), dc_signed(dc_hash(h ^ 0xA17Fu)))
-                * 0.5 * spawn_size;
+    float rad = spawn_size * sqrt(dc_unit(dc_hash(h)));
+    float theta = 6.28318530718 * dc_unit(dc_hash(h ^ 0xA17Fu));
+    float2 sp = rad * float2(cos(theta), sin(theta));
     float2 nuv = saturate(0.5 + sp * aspect);
     float4 capt = inputTex.SampleLevel(samp, nuv, 0);
     float zr = dc_unit(dc_hash2(i + 0x27D4EB2Fu, frame_index));
