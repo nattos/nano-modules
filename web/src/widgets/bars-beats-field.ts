@@ -29,6 +29,11 @@ export class BarsBeatsField extends LitElement {
   @property({ type: Number }) sixPerBeat = 4;
   @property({ type: Number }) min = 0;
   @property({ type: Boolean }) disabled = false;
+  /**
+   * DURATION mode: components are 0-based, so exactly one bar reads `1.0.0`
+   * (rather than the 1-based POSITION `2.1.1`). Use for loop lengths etc.
+   */
+  @property({ type: Boolean }) length = false;
 
   @state() private edit: EditTarget = null;
 
@@ -69,8 +74,11 @@ export class BarsBeatsField extends LitElement {
     editable-text::part(control) { font-variant-numeric: tabular-nums; }
   `;
 
+  /** Index origin: 1 for a position, 0 for a duration (`length`). */
+  private get base(): number { return this.length ? 0 : 1; }
+
   private get bbs(): BBS {
-    return beatsToBBS(this.value, this.beatsPerBar, this.sixPerBeat);
+    return beatsToBBS(this.value, this.beatsPerBar, this.sixPerBeat, this.base);
   }
   /** Beat delta represented by ±1 of segment `i` (bar / beat / sixteenth). */
   private segBeatDelta(i: number): number {
@@ -90,13 +98,13 @@ export class BarsBeatsField extends LitElement {
     this.setValue(this.value + dir * this.segBeatDelta(i));
   }
 
-  /** Replace a single 1-based segment, recompose (carry-aware), commit. */
+  /** Replace a single segment, recompose (carry-aware), commit. */
   private setSegment(i: number, raw: number) {
-    const n = Math.max(1, Math.floor(raw));
+    const n = Math.max(this.base, Math.floor(raw));
     const cur = this.bbs;
     const next: BBS = { ...cur };
     if (i === 0) next.bar = n; else if (i === 1) next.beat = n; else next.six = n;
-    this.setValue(bbsToBeats(next, this.beatsPerBar, this.sixPerBeat));
+    this.setValue(bbsToBeats(next, this.beatsPerBar, this.sixPerBeat, this.base));
   }
 
   private enterSegEdit(i: number, seed: string, selectAll: boolean) {
@@ -142,8 +150,8 @@ export class BarsBeatsField extends LitElement {
     this.endEdit(i);
   }
   private onWholeCommit(e: Event) {
-    const bbs = parseBBS((e as CustomEvent<string>).detail);
-    if (bbs) this.setValue(bbsToBeats(bbs, this.beatsPerBar, this.sixPerBeat));
+    const bbs = parseBBS((e as CustomEvent<string>).detail, this.base);
+    if (bbs) this.setValue(bbsToBeats(bbs, this.beatsPerBar, this.sixPerBeat, this.base));
     this.endEdit(0);
   }
 

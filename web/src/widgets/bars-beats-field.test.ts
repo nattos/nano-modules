@@ -90,6 +90,18 @@ describe('<bars-beats-field>', () => {
     expect(onInput).toHaveBeenLastCalledWith(17);
   });
 
+  it('length mode shows duration components (one bar = 1.0.0)', async () => {
+    el = await mount({ value: 4, length: true }); // exactly one bar
+    expect(segs(el).map((s) => s.textContent)).toEqual(['1', '0', '0']);
+    // Whole-edit round-trips in duration format.
+    segs(el)[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const input = await editInput(el);
+    expect(input.value).toBe('1.0.0');
+    input.value = '2.1.0';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(el.value).toBe(9); // 2 bars + 1 beat
+  });
+
   it('Escape cancels a whole edit without changing the value', async () => {
     el = await mount({ value: 17 });
     segs(el)[1].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));

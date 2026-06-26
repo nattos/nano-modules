@@ -33,6 +33,21 @@ describe('bbs conversions', () => {
     expect(beatsToBBS(beats, 4, 4)).toEqual({ bar: 2, beat: 2, six: 1 });
   });
 
+  it('duration mode (base 0): one bar reads 1.0.0, not 2.1.1', () => {
+    expect(beatsToBBS(4, 4, 4, 0)).toEqual({ bar: 1, beat: 0, six: 0 });
+    expect(beatsToBBS(0, 4, 4, 0)).toEqual({ bar: 0, beat: 0, six: 0 });
+    expect(beatsToBBS(1.5, 4, 4, 0)).toEqual({ bar: 0, beat: 1, six: 2 });
+    expect(bbsToBeats({ bar: 1, beat: 0, six: 0 }, 4, 4, 0)).toBe(4);
+    expect(bbsToBeats({ bar: 0, beat: 2, six: 0 }, 4, 4, 0)).toBe(2);
+    // Round-trips on the sixteenth grid in duration mode too.
+    for (const beats of [0, 0.25, 2, 5.75, 16]) {
+      expect(bbsToBeats(beatsToBBS(beats, 4, 4, 0), 4, 4, 0)).toBeCloseTo(beats, 9);
+    }
+    // Parse clamps to base 0.
+    expect(parseBBS('1.0.0', 0)).toEqual({ bar: 1, beat: 0, six: 0 });
+    expect(parseBBS('-1.-1', 0)).toEqual({ bar: 0, beat: 0, six: 0 });
+  });
+
   it('formats and tolerantly parses', () => {
     expect(formatBBS({ bar: 5, beat: 2, six: 1 })).toBe('5.2.1');
     expect(parseBBS('5.2.1')).toEqual({ bar: 5, beat: 2, six: 1 });

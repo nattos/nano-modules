@@ -19,15 +19,19 @@ export interface BBS {
 
 const EPS = 1e-9;
 
-/** Decompose a beat position into 1-based bar/beat/sixteenth. */
-export function beatsToBBS(beats: number, beatsPerBar: number, sixPerBeat: number): BBS {
+/**
+ * Decompose a beat value into bar/beat/sixteenth components.
+ * `base` is the index origin: 1 for a 1-based POSITION (`1.1.1` = the start),
+ * 0 for a DURATION/length (`1.0.0` = exactly one bar).
+ */
+export function beatsToBBS(beats: number, beatsPerBar: number, sixPerBeat: number, base = 1): BBS {
   const b = Math.max(0, beats);
   const bar = Math.floor(b / beatsPerBar + EPS);
   const within = b - bar * beatsPerBar;
   const beat = Math.floor(within + EPS);
   const frac = within - beat;
   const six = Math.floor(frac * sixPerBeat + EPS);
-  return { bar: bar + 1, beat: beat + 1, six: six + 1 };
+  return { bar: bar + base, beat: beat + base, six: six + base };
 }
 
 /**
@@ -35,8 +39,8 @@ export function beatsToBBS(beats: number, beatsPerBar: number, sixPerBeat: numbe
  * naturally (e.g. beat 6 in 4/4 rolls into the next bar) — which is exactly what
  * makes jogging a single segment past its bound "just work".
  */
-export function bbsToBeats(bbs: BBS, beatsPerBar: number, sixPerBeat: number): number {
-  return (bbs.bar - 1) * beatsPerBar + (bbs.beat - 1) + (bbs.six - 1) / sixPerBeat;
+export function bbsToBeats(bbs: BBS, beatsPerBar: number, sixPerBeat: number, base = 1): number {
+  return (bbs.bar - base) * beatsPerBar + (bbs.beat - base) + (bbs.six - base) / sixPerBeat;
 }
 
 /** `bar.beat.six`. */
@@ -46,15 +50,14 @@ export function formatBBS(bbs: BBS): string {
 
 /**
  * Parse a tolerant `bar[.beat[.six]]` string; missing trailing components
- * default to 1. Returns null if no leading number parses. Each component is
- * floored to an integer ≥ 1 EXCEPT it preserves user intent for carry: values
- * are passed through to bbsToBeats which handles overflow, so we only guard the
- * lower bound here.
+ * default to `base`. Returns null if no leading number parses. Each component is
+ * floored to an integer ≥ base (overflow is fine — bbsToBeats carries it; we
+ * only guard the lower bound here).
  */
-export function parseBBS(str: string): BBS | null {
+export function parseBBS(str: string, base = 1): BBS | null {
   const parts = str.trim().split('.').map((p) => p.trim());
   const nums = parts.map((p) => (p === '' ? NaN : Number(p)));
   if (!Number.isFinite(nums[0])) return null;
-  const at = (i: number) => (Number.isFinite(nums[i]) ? Math.max(1, Math.floor(nums[i])) : 1);
+  const at = (i: number) => (Number.isFinite(nums[i]) ? Math.max(base, Math.floor(nums[i])) : base);
   return { bar: at(0), beat: at(1), six: at(2) };
 }

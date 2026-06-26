@@ -354,7 +354,7 @@ export class ArrClipView extends MobxLitElement {
     const videoDurSec = clip.source ? this.duration() / this.fpsOf(clip) : 0;
     return renderPlayModeControls(clip.loop, videoDurSec, (patch) => {
       if (tid) store.updateClipLoop(tid, clip.id, patch);
-    });
+    }, store.composition.meta.timeSignature[0]);
   }
 
   /** Accept a dropped video/image file onto the clip inspector → swap (or convert to)

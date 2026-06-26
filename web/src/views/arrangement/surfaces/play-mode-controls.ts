@@ -13,6 +13,7 @@ import { html, css, type TemplateResult } from 'lit';
 import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
 import '../../../widgets/editable-number';
+import '../../../widgets/bars-beats-field';
 
 export const playModeControlsStyles = css`
   .pm-row {
@@ -51,6 +52,15 @@ export const playModeControlsStyles = css`
     border-radius: 2px;
     --editable-text-pad: 1px 4px;
   }
+  .pm-bbs {
+    font-size: var(--app-fs-xs);
+    width: fit-content;
+    background: var(--app-bg-color1);
+    color: var(--app-text-color1);
+    border: 1px solid var(--app-tint-4);
+    border-radius: 2px;
+    padding: 1px 4px;
+  }
   .pm-toggle {
     font-family: inherit;
     font-size: var(--app-fs-xs);
@@ -76,6 +86,7 @@ export function renderPlayModeControls(
   loop: ClipLoopConfig,
   videoDurSec: number,
   onPatch: (patch: Partial<ClipLoopConfig>) => void,
+  beatsPerBar = 4,
 ): TemplateResult {
   const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
   const random = loop.mode === 'random';
@@ -102,7 +113,17 @@ export function renderPlayModeControls(
       ? html`<div class="pm-row"><span>Play start (s)</span>${num(loop.playStartSec ?? loop.startSec ?? 0, (n) => onPatch({ playStartSec: n }))}</div>`
       : ''}
     ${loop.mode === 'beat-sync'
-      ? html`<div class="pm-row"><span>Loop (beats)</span>${num(loop.syncBeats ?? 4, (n) => onPatch({ syncBeats: n }), 1)}</div>`
+      ? html`<div class="pm-row"><span>Loop (bars.beats.16ths)</span>
+          <bars-beats-field
+            class="pm-bbs"
+            length
+            .value=${loop.syncBeats ?? 4}
+            .beatsPerBar=${beatsPerBar}
+            .sixPerBeat=${4}
+            .min=${0.25}
+            @input=${(e: CustomEvent<number>) => onPatch({ syncBeats: e.detail })}
+          ></bars-beats-field>
+        </div>`
       : html`<div class="pm-row"><span>Speed</span>${num(loop.speed ?? 1, (n) => onPatch({ speed: n }))}</div>`}
     ${random
       ? html`<div class="pm-row"><span>Dwell</span>

@@ -16,6 +16,8 @@
 import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { placeGeom, type BlitFit, type BlitTransform, type PlaceGeom } from '../../../video/frame-blitter';
+import '../../../widgets/scalar-slider';
+import '../../../widgets/editable-number';
 
 @customElement('source-transform-widget')
 export class SourceTransformWidget extends LitElement {
@@ -53,10 +55,12 @@ export class SourceTransformWidget extends LitElement {
     .rows { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
     .row { display: flex; align-items: center; gap: 6px; font-size: var(--app-fs-xs, 11px); color: var(--app-text-color2, #aaa); }
     .row > span { min-width: 48px; }
-    input.num {
-      font-family: inherit; font-size: var(--app-fs-xs, 11px); width: 56px;
+    scalar-slider { flex: 1; min-width: 0; font-size: var(--app-fs-xs, 11px); }
+    editable-number.num {
+      font-size: var(--app-fs-xs, 11px); width: 56px;
       background: var(--app-bg-color1, #1a1a1a); color: var(--app-text-color1, #eee);
-      border: 1px solid var(--app-tint-4, #3a3a3a); border-radius: 2px; padding: 1px 4px;
+      border: 1px solid var(--app-tint-4, #3a3a3a); border-radius: 2px;
+      --editable-text-pad: 1px 4px;
     }
     .seg { display: inline-flex; border: 1px solid var(--app-tint-4, #3a3a3a); border-radius: 2px; overflow: hidden; }
     .seg button {
@@ -185,13 +189,29 @@ export class SourceTransformWidget extends LitElement {
     try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
   };
 
-  private num(label: string, val: number, key: keyof BlitTransform, step = 0.05) {
-    return html`<span>${label}</span><input class="num" type="number" step=${step}
-      .value=${String(+(+val).toFixed(3))}
-      @change=${(e: Event) => {
-        const n = parseFloat((e.target as HTMLInputElement).value);
-        if (Number.isFinite(n)) this.onChange?.({ [key]: n } as Partial<BlitTransform>, `xform-text:${key}`);
-      }} />`;
+  /** A 0..1 anchor as a scalar-slider (text entry escapes the bounds, matching
+   *  the Option-drag "leave the canvas" affordance). */
+  private slider(label: string, val: number, key: keyof BlitTransform) {
+    const apply = (e: Event) =>
+      this.onChange?.({ [key]: (e as CustomEvent<number>).detail } as Partial<BlitTransform>, `xform-text:${key}`);
+    return html`<scalar-slider
+      label=${label}
+      .value=${val}
+      .min=${0}
+      .max=${1}
+      .step=${0.01}
+      .defaultValue=${0.5}
+      @input=${apply}
+      @change=${apply}
+    ></scalar-slider>`;
+  }
+
+  /** A range-free number (scale) as an editable-number with jog + text entry. */
+  private num(label: string, val: number, key: keyof BlitTransform, step = 0.1) {
+    return html`<span>${label}</span><editable-number class="num" .value=${val} .step=${step} .precision=${3} .min=${0}
+      @input=${(e: CustomEvent<number>) =>
+        this.onChange?.({ [key]: e.detail } as Partial<BlitTransform>, `xform-text:${key}`)}
+    ></editable-number>`;
   }
 
   render() {
@@ -202,7 +222,8 @@ export class SourceTransformWidget extends LitElement {
         <canvas></canvas>
       </div>
       <div class="rows">
-        <div class="row">${this.num('Anchor X', t.anchorX, 'anchorX')}${this.num('Y', t.anchorY, 'anchorY')}</div>
+        <div class="row">${this.slider('Anchor X', t.anchorX, 'anchorX')}</div>
+        <div class="row">${this.slider('Anchor Y', t.anchorY, 'anchorY')}</div>
         <div class="row">${this.num('Scale', t.scale, 'scale', 0.1)}</div>
         <div class="row"><span>Rotation</span>
           <div class="seg">

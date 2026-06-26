@@ -24,6 +24,7 @@ import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
 import type { EditableLabel } from '../../../widgets/editable-label';
+import '../../../widgets/editable-number';
 import '../../../widgets/scalar-knob';
 import '../../../widgets/spark-chart';
 
@@ -138,6 +139,15 @@ export class ArrInspector extends MobxLitElement {
       border-radius: 2px;
       padding: 3px var(--app-sp-3);
       max-width: 130px;
+    }
+    editable-number.num {
+      font-size: var(--app-fs-md);
+      color: var(--app-text-color1);
+      background: var(--app-bg-color1);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 2px;
+      width: 64px;
+      --editable-text-pad: 3px var(--app-sp-3);
     }
     .group-title {
       font-size: var(--app-fs-sm);
@@ -631,6 +641,7 @@ export class ArrInspector extends MobxLitElement {
           clip.loop,
           clip.source && clip.source.fps ? clip.source.durationFrames / clip.source.fps : 0,
           (patch) => store.updateClipLoop(found.track.id, clip.id, patch),
+          store.composition.meta.timeSignature[0],
         )}
         ${clip.source
           ? html`<div class="row">
@@ -970,23 +981,35 @@ export class ArrInspector extends MobxLitElement {
         <div class="row">
           <label>Resolution</label>
           <span class="val">
-            <input
-              type="number"
-              .value=${String(meta.resolution.width)}
-              @change=${(e: Event) => store.setResolution(Number((e.target as HTMLInputElement).value), meta.resolution.height)}
-              style="max-width:64px"
-            />×
-            <input
-              type="number"
-              .value=${String(meta.resolution.height)}
-              @change=${(e: Event) => store.setResolution(meta.resolution.width, Number((e.target as HTMLInputElement).value))}
-              style="max-width:64px"
-            />
+            <editable-number
+              class="num"
+              .value=${meta.resolution.width}
+              .step=${1}
+              .min=${1}
+              .precision=${0}
+              @input=${(e: CustomEvent<number>) => store.setResolution(e.detail, meta.resolution.height)}
+            ></editable-number>×
+            <editable-number
+              class="num"
+              .value=${meta.resolution.height}
+              .step=${1}
+              .min=${1}
+              .precision=${0}
+              @input=${(e: CustomEvent<number>) => store.setResolution(meta.resolution.width, e.detail)}
+            ></editable-number>
           </span>
         </div>
         <div class="row">
           <label>Base BPM</label>
-          <input type="number" .value=${String(meta.baseBPM)} @change=${(e: Event) => store.setBpm(Number((e.target as HTMLInputElement).value))} style="max-width:64px" />
+          <editable-number
+            class="num"
+            .value=${meta.baseBPM}
+            .step=${1}
+            .min=${1}
+            .max=${999}
+            .precision=${0}
+            @input=${(e: CustomEvent<number>) => store.setBpm(e.detail)}
+          ></editable-number>
         </div>
         <div class="row">
           <label>Time signature</label>
