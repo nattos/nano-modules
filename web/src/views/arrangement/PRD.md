@@ -218,9 +218,11 @@ indicator. Selecting a header shows the track's sketch + track-level automation 
 
 ### Right vertical tab bar
 Built-in tabs, each rendering into the inspector area:
-- **Settings** — composition settings (resolution, BPM, time signature) **and** app-wide user
-  settings, combined in one list.
-- **Export** — offline render (Precise mode, always-waits) to file.
+- **Settings** — composition settings (resolution, BPM, frame rate, time signature) **and**
+  app-wide user settings, combined in one list.
+- **Export** — *as-built*: the inline offline-render panel (resolution mode, frame rate, range,
+  solo, quality) → MP4/H.264, with live progress. The transport Export button just selects this
+  tab. See the Export milestone.
 - (room for: rails/returns manager, browser, …)
 
 ### Inspector + pinned output monitor (right)
@@ -341,9 +343,11 @@ mode (which always waits for reads to catch up — and is also the offline-rende
 
 ## Composition / output settings & Sketch scalar outputs
 
-- **Resolution** is settable in composition settings (right-tab Settings). Drives the render
-  target size for the monitor and export.
-- **Export** (right-tab) does an offline Precise render (always-waits) to a file.
+- **Resolution** + **frame rate** are settable in composition settings (right-tab Settings).
+  They drive the monitor render target and the export defaults. Frame rate lives on
+  `meta.fps` (default 60) via `compositionFps()`.
+- **Export** (right-tab) does an offline render to an **MP4 (H.264)** file — ✅ **BUILT**, see
+  the Export milestone below.
 - **Sketch scalar outputs ("dashboard for outputs"):** today there is no way to declare a
   *sketch-level* scalar output. We need a **"dashboard"-style mechanism, but for outputs** — a
   way to promote chosen instance fields to named sketch outputs. These named outputs are what a
@@ -399,11 +403,32 @@ lock-step eval (`automation-eval.ts` → `envelope.h` twin). ✅ **Dashboard**: 
 architecture fork (the TS `tap-mod.ts` twin was deleted; reintroduce it +goldens vs. native
 cross-clip integration). ⏳ **Sketch-output "dashboard for outputs"** (promote fields → named outputs).
 
+### Export — offline render to MP4 — ✅ BUILT
+Renders the timeline to an **MP4 (H.264)** file offline. A SECOND `ArrEngine` (own worker +
+WebGPU device, full composition resolution) is held `setPaused(true)` and stepped one frame at
+a time — the live preview engine is untouched, so editing continues during an export. Per output
+frame (`engine/export-renderer.ts`): map real (warp-aware) seconds → beat, **await**-decode each
+active video clip's exact source frame (`engine/export-video-pump.ts`), build the composite via
+the SAME builder the live preview uses (`engine/composite-frame.ts` — `EngineBridge` shares it,
+so export ≡ preview), `setAutomation` + `setTime` + `stepFrame`, capture the traced composite,
+and feed a WebCodecs `VideoEncoder` → `mp4-muxer`. The enabling worker change: `stepOneFrame`
+honors `transportSeconds` (a step lands exactly on the playhead at any fps).
+- **Settings persist** on the composition (`meta.export`): resolution mode (default / 2× / custom
+  scale / custom resolution), frame-rate mode (default = composition fps, or custom), range
+  (whole / loop region), ignore-solo, quality (low/med/high → bitrate). UI = the inline Export
+  tab panel + an `export-controller` singleton (observable run-state survives tab switches).
+- **Streams to disk** via the File System Access API (`showSaveFilePicker` →
+  `FileSystemWritableFileStreamTarget`, `fastStart:false`) so memory stays flat; falls back to an
+  in-memory render + download when the API is absent.
+- **Verified**: unit-tested pure planner (`export-renderer.test.ts`); live headless run produces
+  a valid MP4 (VideoToolbox avc) and the streamed-to-file path yields a valid MP4 with no
+  in-memory blob. Video-only (the arrangement model has no audio).
+
 ### Later
 Real empty-state/file-open boot (Component A is built but unused at boot); compositor blend modes +
 group-bus chains; overlay rAF-gating + z-order; time-view unification; clip loop/in-out editing +
 track reorder/group DnD; `offline_renderable` (generalize warps); Live mode; instancing; clip
-library/packages; session view; media manager.
+library/packages; session view; media manager; export audio (when the model grows audio).
 
 ---
 

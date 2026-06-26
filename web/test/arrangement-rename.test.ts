@@ -22,7 +22,12 @@ async function renameVia(findExpr: string, text: string) {
   await page.evaluate(
     ({ find, value }) => {
       const el = (window as any).__find(find) as any;
-      const input = el.shadowRoot.querySelector('input') as HTMLInputElement;
+      // <editable-label> now hosts the IME-guarded <editable-text>, so the real
+      // <input> lives in the nested element's shadow root (fallback to a direct
+      // input for any provider variant that still renders one inline).
+      const et = el.shadowRoot.querySelector('editable-text') as any;
+      const input = (et?.shadowRoot?.querySelector('input') ??
+        el.shadowRoot.querySelector('input')) as HTMLInputElement;
       input.value = value;
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     },
