@@ -203,20 +203,16 @@ export class ColumnGroup extends MobxLitElement {
    *  rails are gone (it used to grow per rail). */
   static readonly GUTTER_WIDTH = 20;
 
-  /** The right gutter only exists to host wiring/smoothing pips. With neither
-   *  capability (e.g. the arrangement) there's nothing to put there, so the
-   *  column goes full-width with no gutter. */
-  private get hasGutter(): boolean {
-    if (!this.adapter) return false;
-    const caps = this.adapter.data.caps;
-    // In-column wire arcs (the arrangement) replace the gutter pips, so the
-    // column stays full-width — toggling wires mode doesn't shift its padding.
-    if (caps.inlineWireArcs) return false;
-    return !!(caps.wiring || caps.smoothing);
+  /** Modulation/option pips render in a thin strip on the LEFT of the column (for
+   *  every surface — IDE and arrangement alike) whenever wiring/smoothing is on. The
+   *  old right-hand "gutter" is retired (single linear stack, no multi-column). */
+  private get showPips(): boolean {
+    const caps = this.adapter?.data.caps;
+    return !!(caps && (caps.wiring || caps.smoothing));
   }
 
   getGutterWidth(): number {
-    return this.hasGutter ? ColumnGroup.GUTTER_WIDTH : 0;
+    return 0; // retired — the column is always full-width; pips float on the left
   }
 
   /** Which chain entry index is currently being type-edited (smart-input open), or -1 for none. */
@@ -632,18 +628,27 @@ export class ColumnGroup extends MobxLitElement {
        generous transparent hit box; the visible 6px green dot (the device-on
        accent, distinct from the blue/red tap rails) is drawn via ::after so the
        click target is the whole box, not just the dot. */
+    /* Left strip hosting the modulation/option pips (the right gutter is retired). */
+    .pip-strip {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 14px;
+      pointer-events: none;
+      z-index: 4;
+    }
     .field-option-pip {
       position: absolute;
-      left: -3px;
-      width: 16px; height: 22px;
+      left: 0;
+      width: 14px; height: 22px;
       transform: translateY(-50%);
       cursor: pointer;
+      pointer-events: auto;
       z-index: 3;
     }
     .field-option-pip::after {
       content: '';
       position: absolute;
-      left: 6px; top: 50%; margin-top: -3px;
+      left: 2px; top: 50%; margin-top: -3px;
       width: 6px; height: 6px;
       border-radius: 50%;
       background: var(--app-ok);
@@ -694,8 +699,8 @@ export class ColumnGroup extends MobxLitElement {
   updated() {
     // Set explicit widths via CSS custom properties on the host element.
     // No gutter → the column fills its host (full-width cards).
-    this.style.setProperty('--column-width', this.hasGutter ? `${this.columnWidth}px` : '100%');
-    this.style.setProperty('--gutter-width', `${this.getGutterWidth()}px`);
+    this.style.setProperty('--column-width', '100%');
+    this.style.setProperty('--gutter-width', '0px');
 
     const column = this.renderRoot.querySelector('.column') as HTMLElement | null;
     if (column) this.layoutManager.observeContainer(column);
@@ -785,7 +790,6 @@ export class ColumnGroup extends MobxLitElement {
           </div>
           <div class="drag-insert-marker"></div>
         </div>
-        <div class="column-gutter"></div>
       `;
     }
 
@@ -810,12 +814,11 @@ export class ColumnGroup extends MobxLitElement {
         ${this.renderWireArcs(sketch)}
         ${this.renderSelectedWirePanel(sketch)}
         ${this.renderInsertHeader(column)}
+        ${this.showPips ? html`
+          <div class="pip-strip" data-col=${this.colIdx}>
+            ${this.renderFieldOptionPips(column)}
+          </div>` : nothing}
       </div>
-      ${this.hasGutter ? html`
-        <div class="column-gutter" data-col=${this.colIdx}>
-          ${this.renderFieldOptionPips(column)}
-        </div>
-      ` : nothing}
     `;
   }
 
@@ -1705,8 +1708,9 @@ export class ColumnGroup extends MobxLitElement {
   private renderFieldOptionPips(column: SketchColumn): TemplateResult[] {
     const pips: TemplateResult[] = [];
     if (!this.ds.caps.wiring && !this.ds.caps.smoothing) return pips;
+    // The pips live in the left strip; positions resolve relative to it.
     const gutterEl = this.renderRoot.querySelector(
-      `.column-gutter[data-col="${this.colIdx}"]`) as HTMLElement | null;
+      `.pip-strip[data-col="${this.colIdx}"]`) as HTMLElement | null;
     if (!gutterEl) return pips;
     const selKey = this.ctl.selectedFieldKey();
     const wires = this.ds.getSketch(this.sketchId)?.wires ?? [];
