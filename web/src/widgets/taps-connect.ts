@@ -214,9 +214,12 @@ export class WireConnect implements ColumnTaps {
 
   // --- Completes (called from field-hit element handlers) ---
 
-  completeOnField(key: string) {
+  completeOnField(key: string, info?: FieldConnectInfo) {
     if (!this.state) return;
-    const t = this.fieldTargetByKey(key);
+    // Prefer the caller's structured info (the column-group has it directly). Re-parsing
+    // the key by '/' breaks when the sketchId itself contains slashes — e.g. the
+    // arrangement's `clip/<track>/<clip>` — which silently dropped click-to-connect there.
+    const t = info ? { key, info } : this.fieldTargetByKey(key);
     if (t) this.commit(t);
     this.end();
   }

@@ -513,6 +513,17 @@ export class ColumnGroup extends MobxLitElement {
       border-radius: 2px;
       background: var(--app-bg-color2);
     }
+    /* Floating variant — a popup anchored at the click point (matches the IDE's
+       floating field card) instead of pushing the column layout from the bottom. */
+    .wire-mod-panel.floating {
+      position: fixed;
+      z-index: 61;
+      width: 210px;
+      margin: 0;
+      max-height: 70vh;
+      overflow-y: auto;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+    }
     .wire-mod-head {
       display: flex;
       align-items: center;
@@ -1393,8 +1404,18 @@ export class ColumnGroup extends MobxLitElement {
     // Swallow the synthetic click that trails a drag-to-connect gesture.
     if (this.taps.consumeClickSuppression()) return;
     // If a connect gesture is in flight, this click lands the connection here. Stop it
-    // bubbling so it doesn't also deselect the arrangement clip after connecting.
-    if (this.taps.state) { e?.stopPropagation(); this.taps.completeOnField(key); return; }
+    // bubbling so it doesn't also deselect the arrangement clip after connecting. Pass
+    // the STRUCTURED target info (not the re-parsed key) so a slashed sketchId — the
+    // arrangement's `clip/<track>/<clip>` — resolves correctly.
+    if (this.taps.state) {
+      e?.stopPropagation();
+      const rect = (e?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
+      this.taps.completeOnField(key, {
+        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath, isOutput,
+        viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef,
+      });
+      return;
+    }
     // Non-destructive: first click SELECTS the field (no tap created). Clicking
     // the already-selected field again picks it up for click-to-connect.
     if (this.ctl.selectedFieldKey() === key) {
@@ -1857,7 +1878,7 @@ export class ColumnGroup extends MobxLitElement {
           const sel = this.ctl.isSelected(wirePath);
           return svg`<g class="wire-group">
             <path class="wire-hit" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}
-              @click=${(e: Event) => { e.stopPropagation(); this.ctl.select(wirePath); }}
+              @click=${(e: PointerEvent) => { e.stopPropagation(); this.wirePanelPos = { x: e.clientX + 10, y: e.clientY }; this.ctl.select(wirePath); }}
               @dblclick=${() => this.ctl.removeWire(this.sketchId, cn.wireId)}></path>
             <path class="wire-arc ${sel ? 'selected' : ''}" data-sc=${cn.sc} data-sf=${cn.sf} data-dc=${cn.dc} data-df=${cn.df}></path>
           </g>`;
@@ -1874,8 +1895,13 @@ export class ColumnGroup extends MobxLitElement {
     const prefix = `wire/${this.sketchId}/`;
     const wire = (sketch.wires ?? []).find((w) => this.ctl.isSelected(prefix + w.id));
     if (!wire) return nothing;
+    // Float the panel at the click point (a popup in place), matching the IDE's
+    // floating field card, rather than pushing the column from the bottom.
+    const pos = this.wirePanelPos;
+    const floatStyle = pos ? `left:${pos.x}px; top:${pos.y}px` : '';
     return html`
-      <div class="wire-mod-panel">
+      <div class="wire-mod-panel ${pos ? 'floating' : ''}" style=${floatStyle}
+        @pointerdown=${(e: Event) => e.stopPropagation()}>
         <div class="wire-mod-head">
           <span>Wire · ${wire.src.field} → ${wire.dest.field}</span>
           <button class="wire-mod-remove" title="Remove wire"
@@ -1887,6 +1913,9 @@ export class ColumnGroup extends MobxLitElement {
       </div>
     `;
   }
+
+  /** Viewport position for the floating wire-mod popup (set on a wire click). */
+  private wirePanelPos: { x: number; y: number } | null = null;
 
   /** Overlay-relative center of a field's connect anchor (tap-port hit, else its
    *  collapsed-card option pip). Coords relative to `base` (the SVG rect). */

@@ -278,8 +278,9 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
         return;
       }
     }
-    // `T` toggles taps mode (global, when not typing).
-    if (e.key === 't' || e.key === 'T') {
+    // `W` toggles wires (taps) mode (global, when not typing) — same key as the
+    // arrangement view, so the surfaces are consistent.
+    if (e.key === 'w' || e.key === 'W') {
       e.preventDefault();
       appController.setTappingMode(!appState.local.tappingMode);
       return;
