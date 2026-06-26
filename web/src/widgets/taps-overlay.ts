@@ -155,10 +155,23 @@ export class TapsOverlay extends MobxLitElement {
     return this.showArcs || this.cardFieldKey() !== null;
   }
 
-  /** The field key whose card to show: a directly-selected `field/…`. */
+  /** The field key whose card to show: a directly-selected `field/…`, OR — for a
+   *  selected `wire/…` — its DEST (reader) field, whose inspector holds this wire's mod
+   *  controls. Resolving the wire here is what makes clicking a wire open the popup in
+   *  place (it showed nothing before, since the card only rendered for field selections). */
   private cardFieldKey(): string | null {
     const p = appState.local.selection?.path ?? '';
     if (p.startsWith('field/')) return p.slice('field/'.length);
+    if (p.startsWith('wire/')) {
+      const [, sId, wireId] = p.split('/');
+      const sk = appState.database.sketches[sId];
+      const wire = sk?.wires?.find((w) => w.id === wireId);
+      if (!wire) return null;
+      const idx = sketchChain(sk).findIndex(
+        (e) => e.type === 'module' && e.instance_key === wire.dest.instanceKey);
+      if (idx < 0) return null;
+      return `${sId}/0/${idx}/${wire.dest.field}`;
+    }
     return null;
   }
 
