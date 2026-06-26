@@ -292,15 +292,27 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
   int outTex = backend->createTexture(W, H, RGBA8);
   REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
 
-  const uint8_t IN = 160;
-  std::vector<uint8_t> inPix(W * H * 4, IN);
-  for (size_t i = 3; i < inPix.size(); i += 4) inPix[i] = 255;
-  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
-  const double inMean = mean_rgb(inPix);  // 160
+  auto writeInput = [&](uint8_t v) {
+    std::vector<uint8_t> px(W * H * 4, v);
+    for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;  // opaque
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+  };
 
-  // acc(blend).tex_a = linear input; acc.tex_b = DELAYED feedback from fb's
-  // output (fb sits below acc → delayed). fb is a neutral brightness pass so
-  // fb.tex_out == acc's output. opacity 0.5 → frame-blend accumulator.
+  // acc(blend).tex_a = input; acc.tex_b = DELAYED feedback from fb's output (fb
+  // sits below acc → the wire is a back-edge delivering fb's PREVIOUS-frame
+  // output). fb is a near-neutral pass so fb.tex_out tracks acc's output.
+  // opacity 0.5 → a one-pole frame blend: out ≈ 0.5*input + 0.5*(prev output).
+  //
+  // Under alpha-correct source-over a CONSTANT opaque input reaches steady state
+  // on frame 0 (a transparent first feedback reveals the base), so it shows no
+  // transient. Instead we STEP the input: settle on a low value, then jump high
+  // and watch the output RAMP toward the new value over several frames. That
+  // ramp exists ONLY because the feedback delivers a delayed (previous-frame)
+  // value — with no delay the output would jump to the new input immediately.
+  //
+  // fb uses a tiny non-zero contrast so it is NOT an identity passthrough (an
+  // identity stage is aliased to its input, which would collapse the one-frame
+  // delay) while staying close enough to neutral for the blend math above.
   auto sketch = nlohmann::json::parse(R"JSON({
     "chain": [
       { "module_type": "composite.blend", "instance_key": "acc" },
@@ -308,7 +320,7 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
     ],
     "instances": {
       "acc": { "module_type": "composite.blend", "state": { "opacity": 0.5 } },
-      "fb":  { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.0 } }
+      "fb":  { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.0, "contrast": 0.01 } }
     },
     "wires": [
       { "id": "wfb", "src": { "instanceKey": "fb", "field": "tex_out" },
@@ -316,21 +328,38 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
     ]
   })JSON");
 
-  double earlyMean = 0.0, lateMean = 0.0;
-  for (int frame = 0; frame < 30; ++frame) {
-    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
-                                   /*sketchDirty=*/frame == 0);
-    backend->submit();
-    if (frame == 2) earlyMean = mean_rgb(backend->readbackTexture(out, W, H));
-    if (frame == 29) lateMean = mean_rgb(backend->readbackTexture(out, W, H));
-  }
+  const uint8_t LO = 40, HI = 200;
+  int32_t out = 0;
 
-  INFO("input " << inMean << "  early(f3) " << earlyMean << "  late(f30) " << lateMean);
-  // Converged to the input within RGBA8 rounding.
-  CHECK(std::abs(lateMean - inMean) < 6.0);
-  // Still mid-transient early — well below the converged value. Proves the
-  // feedback is accumulating frame-over-frame (i.e. the delayed wire delivers).
-  CHECK(earlyMean < lateMean - 10.0);
+  // Settle the accumulator on LO.
+  writeInput(LO);
+  for (int f = 0; f < 24; ++f) {
+    out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                           /*sketchDirty=*/f == 0);
+    backend->submit();
+  }
+  const double settledLo = mean_rgb(backend->readbackTexture(out, W, H));
+
+  // Step the input to HI. One frame later the output is dragged by the feedback
+  // (still carrying the LO-ish previous output), so it lands well below HI.
+  writeInput(HI);
+  out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, false);
+  backend->submit();
+  const double earlyMean = mean_rgb(backend->readbackTexture(out, W, H));
+
+  // After many frames the feedback catches up and the output converges to HI.
+  for (int f = 0; f < 30; ++f) {
+    out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, false);
+    backend->submit();
+  }
+  const double lateMean = mean_rgb(backend->readbackTexture(out, W, H));
+
+  INFO("settledLo " << settledLo << "  early(step) " << earlyMean
+       << "  late " << lateMean);
+  CHECK(std::abs(settledLo - LO) < 8.0);   // converged to LO before the step
+  CHECK(std::abs(lateMean - HI) < 8.0);    // eventually converges to HI
+  CHECK(earlyMean > settledLo + 10.0);     // it HAS started moving up after the step
+  CHECK(earlyMean < lateMean - 20.0);      // ...but lags — proof the delayed wire delivers
 }
 
 // Disabling an effect makes it INVISIBLE to modulation auto-connect: a
