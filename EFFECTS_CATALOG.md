@@ -39,7 +39,7 @@ This list comes from how these effects were *actually* used live — it supersed
 ### Tier B — good, lower priority
 
 - **SPHR BicolorGrad** — useful **even when not on a sphere**.
-- **SPHR Magneto Dynamics** — very unique; takes full advantage of spherical displays. *(Catalogued under the bundle's typo'd name "SPHR Magento Dynamics".)*
+- **SPHR Magneto Dynamics** — very unique; takes full advantage of spherical displays. *(Shipped bundle/asset files misspell it "Magento".)*
 - **SPHR Rand Billboard** — easy way to fill a spherical display, but **very buggy — has visual artifacts** (fix on port).
 - **SPHR Billboard**.
 - **Character Sweeper**, **Character Prompter** — text effects.
@@ -66,7 +66,7 @@ These are dnode effects that ran at live events and have no easy equivalent else
 - **MadScanner** — trigger/rate-clock "slash" beam generator: a growing flaring flash-quad + flickering Ponk laser line + a distortion-field hand-off. (Mad* laser-beam family; the decoded kernel corrected an earlier mis-read of this as a blob analyzer.)
 - **Darkburst** — gradient-descent particles self-organizing into bursting star shapes (laser output).
 - **GenIkedaMap / GenLogisticMap / LogisticRadial** — self-contained chaotic-attractor / bifurcation generators. Trivially portable; high visual payoff per line of code.
-- **SPHR Magento Dynamics** — magnetic-dipole / curl-field particle dynamics on a sphere.
+- **SPHR Magneto Dynamics** — magnetic-dipole / curl-field particle dynamics on a sphere. *(Shipped files misspell it "Magento".)*
 - **SPHR Rand Billboard** — scattered textured billboards on a dome with correct equirectangular seam + z-plane clipping (the clipping math is the reusable gem).
 - **Glisten** — coarse/fine image anchor-finding + gradient-shaded stretched sparkle fans.
 
@@ -359,7 +359,8 @@ Notes on terms used throughout: **Ponk** = laser/line-point output format (Pango
 - **Key expressions:** ToHSL: `float hue = abs(I) <= (1.0/(256*256)) ? 0.0 : atan2(Q, I); float chroma = sqrt(I*I + Q*Q); hue /= Pi*2; hue -= floor(hue); Out = float4(hue, chroma, YPrime, In.a);`; histogram atomic splat `atomic_fetch_add_explicit(&(output0[(int)round(Index)]), (int)round(16 * Amount), memory_order_relaxed);`; balance `clamp(tanh((rawBalance + MajorBias) * Scale) + MajorBias * 0.01, -1.0, 1.0)`.
 - **Source:** `dnode/Products/SPHR BicolorGrad.bundle` (+ kernels: "SPHR BicolorGradFindColors.txt", "SPHR BicolorGradLocateColors.txt", "SPHR BicolorGradRenderPoles.txt")
 
-### SPHR Magento Dynamics
+### SPHR Magneto Dynamics
+- **Name:** The intended name is **Magneto**; the shipped bundle/asset files are misspelled "Magento" (the `.txt` kernels and the graph `title` already use "Magneto"). Use **Magneto** for the port.
 - **What it does:** Particles flow through a magnetic-dipole vector field on a sphere — two poles (Pole+, Pole-) emit curl + divergence that push particles along field lines, blended with image-gradient steering and an "undertow", rendered as TWO independent systems: a soft point/particle render ("P") and a trailing line render ("L"), for a dome/360 magnetic-field dynamics look.
 - **Technique:** Graph-only (no generated kernel; 239 nodes, 62 value inputs). A ScalarCompute (50)/Math (52) field integrator evaluates a curl/divergence field around `Pole+ Pitch/Yaw` and `Pole- Pitch/Yaw` about `Curl Axis Pitch/Yaw` (Curl Strength, Pole Strength, Pole Curl, Pole Divergence, Grad Curl, Grad Descent, Grad Mix), with Momentum/ZMomentum integration, Undertow + Respawn Rate recycling, and an image gradient search (Img Search/Grad Sweep+Intensity, Grad H Distance, Search Temperature, Img Smoothing). Two FillArrayNodes seed two particle pools; the duplicated `P …`/`L …` param banks drive two separate renderers (2 VertexShaderCompute + 2 FragmentShaderCompute), the L bank adding line Length/Advance/Adv Momentum and a Value Threshold/Decay envelope. Debug Grad/Search expose the raw fields.
 - **Complexity:** High (239 nodes; dual-pool field integrator with two-pole curl/divergence + image-gradient coupling + two render pipelines).
