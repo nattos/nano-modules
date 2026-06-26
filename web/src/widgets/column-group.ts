@@ -1765,11 +1765,41 @@ export class ColumnGroup extends MobxLitElement {
             data-field-key=${fieldKey}
             style="top:${yCenter}px"
             title=${title}
-            @click=${(e: Event) => { e.stopPropagation(); this.ctl.selectField(fieldKey); }}></div>
+            @click=${(e: PointerEvent) => this.onPipClick(e, fieldKey, i, fieldPath, entry.instance_key)}></div>
         `);
       }
     }
     return pips;
+  }
+
+  /** Click a modulation/option pip → open its options popup. A connect gesture in
+   *  flight completes here (pip is a connect endpoint too). Otherwise, in the
+   *  arrangement (inline arcs, no field-card system) selecting the wire on this field
+   *  surfaces the floating wire-mod panel; the IDE selects the field, which surfaces
+   *  its own floating field card. Smoothing-only / unwired fields select the field. */
+  private onPipClick(e: PointerEvent, fieldKey: string, chainIdx: number, fieldPath: string, instanceKey: string) {
+    e.stopPropagation();
+    if (this.taps.state) {
+      const rect = (e.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
+      const ent = chainEntryAt(this.ds.getSketch(this.sketchId), chainIdx);
+      const isOutput = ent?.type === 'module' ? this.getOutputFieldNames(ent).has(fieldPath) : false;
+      this.taps.completeOnField(fieldKey, {
+        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath, isOutput,
+        viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef: null,
+      });
+      return;
+    }
+    if (this.ds.caps.inlineWireArcs) {
+      const wire = (this.ds.getSketch(this.sketchId)?.wires ?? []).find((w) =>
+        (w.dest.instanceKey === instanceKey && w.dest.field === fieldPath) ||
+        (w.src.instanceKey === instanceKey && w.src.field === fieldPath));
+      if (wire) {
+        this.wirePanelPos = { x: e.clientX + 10, y: e.clientY };
+        this.ctl.select(`wire/${this.sketchId}/${wire.id}`);
+        return;
+      }
+    }
+    this.ctl.selectField(fieldKey);
   }
 
   /**
