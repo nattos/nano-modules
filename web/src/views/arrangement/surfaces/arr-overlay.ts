@@ -14,6 +14,22 @@ import { customElement, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { anchorRect, AnchorKeys } from './anchor-registry';
+import { createGenericInspector, type InspectorFieldDef } from '../../../widgets/generic-inspector';
+import type { FieldBinding, ContinuousEditHandle } from '../../../widgets/field-editor';
+
+// Wire (tap) options, rendered through the SAME generic field editors the effect IDE
+// uses (createGenericInspector) so the two surfaces share one layout. Bound to the
+// arrangement's tap object below.
+const TAP_FIELDS: InspectorFieldDef[] = [
+  { type: 'select', label: 'Combine', path: 'combine', default: 'add',
+    options: ['replace', 'mix', 'add', 'mul'].map((v) => ({ label: v, value: v })) },
+  { type: 'select', label: 'Magnitude', path: 'magnitude', default: 'auto',
+    options: ['auto', 'signed', 'unsigned', 'absolute'].map((v) => ({ label: v, value: v })) },
+  { type: 'slider', label: 'Scale', path: 'scale', min: 0, max: 2, step: 0.01, default: 1 },
+  { type: 'boolean', label: 'Smooth', path: 'smoothing', default: false },
+  { type: 'boolean', label: 'Remap', path: 'remap', default: false },
+];
+const tapInspector = createGenericInspector(TAP_FIELDS);
 
 interface Pt {
   x: number;
@@ -326,52 +342,28 @@ export class ArrOverlay extends MobxLitElement {
         @pointerdown=${(e: Event) => e.stopPropagation()}
       >
         <div class="tc-head">${pop.label}</div>
-        <div class="tc-row">
-          <span>Combine</span>
-          <select
-            .value=${tap.combine}
-            @change=${(e: Event) => (tap.combine = (e.target as HTMLSelectElement).value as any)}
-          >
-            ${['replace', 'mix', 'add', 'mul'].map(
-              (m) => html`<option value=${m} ?selected=${m === tap.combine}>${m}</option>`,
-            )}
-          </select>
-        </div>
-        <div class="tc-row">
-          <span>Magnitude</span>
-          <select
-            .value=${tap.magnitude}
-            @change=${(e: Event) => (tap.magnitude = (e.target as HTMLSelectElement).value as any)}
-          >
-            ${['auto', 'signed', 'unsigned', 'absolute'].map(
-              (m) => html`<option value=${m} ?selected=${m === tap.magnitude}>${m}</option>`,
-            )}
-          </select>
-        </div>
-        <div class="tc-row">
-          <span>Shapers</span>
-          <span style="display:flex; gap:4px">
-            <span
-              class="tc-toggle ${tap.smoothing ? 'on' : ''}"
-              @click=${() => { tap.smoothing = !tap.smoothing; this.requestUpdate(); }}
-              >smooth</span
-            >
-            <span
-              class="tc-toggle ${tap.remap ? 'on' : ''}"
-              @click=${() => { tap.remap = !tap.remap; this.requestUpdate(); }}
-              >remap</span
-            >
-          </span>
-        </div>
-        <div class="tc-row">
-          <span>Scale</span>
-          <input
-            type="range" min="0" max="2" step="0.01"
-            .value=${String(tap.scale ?? 1)}
-            @input=${(e: Event) => (tap.scale = Number((e.target as HTMLInputElement).value))}
-          />
-        </div>
+        ${tapInspector(this.tapBinding(tap))}
       </div>
     `;
+  }
+
+  /** FieldBinding over a tap object (RailExport | RailRead) so the shared generic
+   *  inspector can drive its combine / magnitude / scale / shaper toggles. Direct
+   *  MobX mutation (matching the previous inline controls) — the monitor tracks these
+   *  fields and recompiles the composite. */
+  private tapBinding(tap: any): FieldBinding {
+    return {
+      instanceKey: `tap/${tap.id ?? ''}`,
+      getValue: (path: string) => tap[path],
+      setValue: (path: string, v: any) => { tap[path] = v; },
+      beginContinuousEdit: (path: string, v: any): ContinuousEditHandle => {
+        tap[path] = v;
+        return {
+          update: (nv: any) => { tap[path] = nv; },
+          accept: () => {},
+          cancel: () => {},
+        };
+      },
+    };
   }
 }
