@@ -176,7 +176,7 @@ export class ArrRailLane extends MobxLitElement {
       t.railId,
       // Plain copies — MobX observable arrays/proxies can't be structured-cloned
       // across postMessage. `writerSpecs` already returns plain objects.
-      { baseCurve: (t.baseCurve ?? [{ x: 0, y: 0.3 }]).map((p) => ({ x: p.x, y: p.y })),
+      { baseCurve: (t.baseCurve ?? [{ x: 0, y: 0 }]).map((p) => ({ x: p.x, y: p.y })),
         totalBeats: compositionLengthBeats(store.composition),
         secondsPerBeat: this.secondsPerBeat(), signed: this.signed(),
         writers: this.writerSpecs(t.railId), beats },
@@ -201,18 +201,19 @@ export class ArrRailLane extends MobxLitElement {
 
     const accent = track.color ?? 'var(--app-cat-mod)';
     const signed = this.signed();
-    // Unsigned: 0 at the bottom, 1 at the top. Signed: 0 centred, ±1 at the edges.
+    // Same drawing for both modes; only where 0 sits differs. Unsigned: 0 at the
+    // bottom, 1 at the top. Signed: 0 centred, ±1 at the edges.
     const yOf = signed
       ? (v: number) => h / 2 - Math.max(-1, Math.min(1, v)) * (h / 2 - 4)
       : (v: number) => h - 4 - Math.max(0, Math.min(1, v)) * (h - 8);
-    if (signed) { // faint zero line
-      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, Math.round(h / 2) + 0.5);
-      ctx.lineTo(w, Math.round(h / 2) + 0.5);
-      ctx.stroke();
-    }
+    const zeroY = Math.round(yOf(0)) + 0.5; // the rail's rest reference (floor / centre)
+    // Faint zero/floor reference line (both modes — keeps the look consistent).
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(w, zeroY);
+    ctx.stroke();
     const curve = this.curve;
 
     if (curve && curve.mean.length >= 2) {
@@ -225,13 +226,11 @@ export class ArrRailLane extends MobxLitElement {
       ctx.closePath();
       ctx.fillStyle = 'rgba(70,194,194,0.16)';
       ctx.fill();
-      // Filled mean envelope (down to the baseline — the bottom unsigned, the zero
-      // line signed) for body.
-      const baseY = signed ? h / 2 : h;
+      // Filled mean envelope down to the rail's zero line (consistent in both modes).
       ctx.beginPath();
-      ctx.moveTo(0, baseY);
+      ctx.moveTo(0, zeroY);
       for (let i = 0; i < n; i++) ctx.lineTo(xOf(i), yOf(curve.mean[i]));
-      ctx.lineTo(w, baseY);
+      ctx.lineTo(w, zeroY);
       ctx.closePath();
       ctx.fillStyle = 'rgba(70,194,194,0.08)';
       ctx.fill();
@@ -251,7 +250,7 @@ export class ArrRailLane extends MobxLitElement {
       ctx.fillStyle = 'rgba(255,140,0,0.7)';
       ctx.fillRect(Math.round(px), 0, 1, h);
       const vNow = railMeanAt(
-        { baseCurve: track.baseCurve ?? [{ x: 0, y: 0.3 }], totalBeats: compositionLengthBeats(store.composition),
+        { baseCurve: track.baseCurve ?? [{ x: 0, y: 0 }], totalBeats: compositionLengthBeats(store.composition),
           secondsPerBeat: this.secondsPerBeat(), signed, writers: this.writerSpecs(track.railId ?? '') },
         store.positionBeat);
       ctx.beginPath();

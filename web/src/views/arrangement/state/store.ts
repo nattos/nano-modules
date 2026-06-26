@@ -2769,7 +2769,9 @@ export class ArrangementStore {
       automation: [],
       clips: [],
       railId: uid('rail'),
-      baseCurve: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }],
+      // Rest at 0 — unsigned reads it as the floor (writers add up from it), signed as
+      // the centre. A 0.5 default would centre the lane at rest AND clip on +add.
+      baseCurve: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
     };
     this.mutate('add return', (d) => {
       const busIdx = d.tracks.findIndex((t) => ArrangementStore.isMainBusTrack(t));
@@ -3036,6 +3038,13 @@ export class ArrangementStore {
     for (const t of comp.tracks) {
       healDevices(t.sketch?.devices);
       healLanes(t.automation);
+      // Returns rested at a centred 0.5 default that clipped on unsigned +add. Reset
+      // the UNTOUCHED default to a 0 floor (base editing isn't prototyped, so a flat
+      // 0.5 curve is always the old default, never an intentional user value).
+      if (t.kind === 'rail' && (t.baseCurve?.length ?? 0) > 0
+          && t.baseCurve!.every((p) => Math.abs(p.y - 0.5) < 1e-6)) {
+        t.baseCurve = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
+      }
       for (const c of t.clips) {
         healDevices(c.sketch?.devices);
         healLanes(c.automation);

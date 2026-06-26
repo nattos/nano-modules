@@ -65,6 +65,13 @@ describe('assembleRailCurve', () => {
     expect(two).toBeGreaterThan(one); // a second add-writer raises the mean further
   });
 
+  it('the base is the rest value directly (not prescaled) in either mode', () => {
+    const at = (signed: boolean) =>
+      railMeanAt({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed, writers: [] }, 5);
+    expect(at(false)).toBeCloseTo(0.2, 5);
+    expect(at(true)).toBeCloseTo(0.2, 5); // NOT 0.2·2−1 = −0.6 — only writers prescale
+  });
+
   it('signed mode prescales contributions to bipolar [-1,1] (0.5 output → 0)', () => {
     const sine = writer({ kind: 'lfo', lfo: lfo({ waveform: 0 }), combine: 'replace' });
     // Sine at phase 0 = 0.5 output. Unsigned ⇒ 0.5; signed ⇒ 0.5·2−1 = 0 (centred).

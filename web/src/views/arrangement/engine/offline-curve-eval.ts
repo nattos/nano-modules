@@ -168,10 +168,13 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
   const lo = new Float32Array(n);
   const hi = new Float32Array(n);
   const T = Math.max(1e-6, spec.totalBeats);
-  const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v); // unsigned [0,1] → bipolar [-1,1]
+  // Only WRITER contributions get the signed prescale ([0,1]→[-1,1]); the base curve
+  // is the rail's rest value DIRECTLY (0 ⇒ bottom unsigned / centre signed), so a flat
+  // base doesn't drag the whole curve up and clip.
+  const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v);
   for (let i = 0; i < n; i++) {
     const beat = spec.beats[i];
-    const base = sgn(evalCurveAt(spec.baseCurve, beat / T));
+    const base = evalCurveAt(spec.baseCurve, beat / T);
     let m = base, l = base, h = base;
     for (const w of spec.writers) {
       const b = writerBlockAt(w, spec.secondsPerBeat, beat);
@@ -192,7 +195,7 @@ export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
  *  worker round-trip). Mirrors assembleRailCurve's fold for one point. */
 export function railMeanAt(spec: Omit<RailCurveSpec, 'beats'>, beat: number): number {
   const sgn = (v: number) => (spec.signed ? v * 2 - 1 : v);
-  let m = sgn(evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats)));
+  let m = evalCurveAt(spec.baseCurve, beat / Math.max(1e-6, spec.totalBeats)); // base not prescaled
   for (const w of spec.writers) {
     const b = writerBlockAt(w, spec.secondsPerBeat, beat);
     if (b) m = fold(m, sgn(b.mean), w.combine);
