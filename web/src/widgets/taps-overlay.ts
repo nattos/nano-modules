@@ -75,13 +75,37 @@ export class TapsOverlay extends MobxLitElement {
       this.position();
     };
     this.rafId = requestAnimationFrame(tick);
+    window.addEventListener('pointerdown', this.onDocPointerDown, true);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
+    window.removeEventListener('pointerdown', this.onDocPointerDown, true);
   }
+
+  /**
+   * Click-away: dismiss the field/wire options popup (it's selection-driven) when
+   * the pointer lands outside the popup itself or an element that sets its own
+   * selection. Crucially the effect card swallows its own clicks
+   * (stopPropagation), so without this a click on the output-trace area (a sibling
+   * of the card body, inside the card but on no field) never cleared the
+   * selection and the popup stayed stuck. Mirrors the arrangement's capture-phase
+   * dismissal: keep on the popup + pips + the field widgets/header (which replace
+   * the selection on their own handlers); dismiss everywhere else.
+   */
+  private onDocPointerDown = (e: PointerEvent) => {
+    const p = appState.local.selection?.path ?? '';
+    if (!p.startsWith('field/') && !p.startsWith('wire/')) return; // no popup open
+    const KEEP = ['field-card', 'tap-overlay-hit', 'field-option-pip',
+      'effect-card-header', 'effect-card-body', 'wire-hit', 'wire-dot'];
+    const keep = e.composedPath().some((n) => {
+      const cl = (n as Element)?.classList;
+      return !!cl && KEEP.some((c) => cl.contains(c));
+    });
+    if (!keep) appController.select(null);
+  };
 
   static styles = css`
     :host {
