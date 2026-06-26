@@ -45,7 +45,7 @@ const NATIVE_RUNNER_PATH = path.resolve(
  * common test infrastructure can stick with `'testonly'` (default) for
  * pixel-stable assertions.
  */
-export type WasmBundle = 'core' | 'nano' | 'testonly' | 'lights';
+export type WasmBundle = 'core' | 'nano' | 'testonly' | 'lights' | 'legacy';
 
 /// A single param-set entry. The first element selects the param:
 ///   - `number` — legacy: index into the wasm host's scalar params[] list.

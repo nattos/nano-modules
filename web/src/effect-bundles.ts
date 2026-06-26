@@ -12,6 +12,7 @@ export const EFFECT_BUNDLES = [
   'com.nano.lights',
   'com.nano.text', // source.text.plain
   'com.nano.richtext', // source.text.rich (Blitz HTML/CSS)
+  'com.nano.legacy', // ports of shipped NanoGraph effects
 ] as const;
 
 export type EffectBundleId = (typeof EFFECT_BUNDLES)[number];
