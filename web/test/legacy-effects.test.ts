@@ -15,11 +15,13 @@ describe('Bicolor Gradient (color.legacy.bicolor_grad) E2E', () => {
     });
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('color.legacy.bicolor_grad');
+    // `neutral` is a vec3/colour field, so it lives in the schema, not the
+    // scalar params[] list — assert on the scalar knobs.
     const names = frame.params.map(p => p.name);
-    expect(names).toContain('neutral');
     expect(names).toContain('scale');
     expect(names).toContain('blend');
     expect(names).toContain('smoothing');
+    expect(names).toContain('mode');
   });
 
   it('blend=0 is a passthrough (output equals input)', async () => {
