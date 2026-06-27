@@ -898,6 +898,23 @@ export class ArrangementStore {
     return clip.name.includes('#') ? clip.name.replace(/#/g, this.clipContextLabel(clip)) : clip.name;
   }
 
+  /** Backfill a clip's authoritative native pixel size (from the decode pump) when
+   *  it's missing — so the placement widget shows the real aspect. Metadata only:
+   *  applied directly (not undoable), and skipped when already known. */
+  noteClipSourceDims(clipId: string, width: number, height: number) {
+    if (!(width > 0 && height > 0)) return;
+    runInAction(() => {
+      for (const t of this.composition.tracks) {
+        const c = t.clips.find((x) => x.id === clipId);
+        if (!c || !c.source) continue;
+        if (c.source.width === width && c.source.height === height) return;
+        c.source.width = width;
+        c.source.height = height;
+        return;
+      }
+    });
+  }
+
   clipByPath(path: string): { track: Track; clip: Clip } | undefined {
     const [kind, trackId, clipId] = path.split('/');
     if (kind !== 'clip') return undefined;

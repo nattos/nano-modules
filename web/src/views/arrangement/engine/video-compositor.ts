@@ -101,6 +101,11 @@ export class VideoCompositor {
   private failedClips = new Set<string>();
   private raf = 0;
 
+  /** Notified with a clip's TRUE decoded pixel size the first time it opens, so the
+   *  host can backfill `source.width/height` (authoritative — fixes the placement
+   *  widget's aspect for clips whose stored dimensions are missing). */
+  onClipInfo?: (clipId: string, width: number, height: number) => void;
+
   /** Warp-aware beat→seconds. Defaults to the un-warped base-BPM clock; the bridge
    *  pushes a WarpClock-backed resolver (engine-bridge.ts) when the composition changes. */
   private secondsAt: TimeResolver | null = null;
@@ -217,6 +222,8 @@ export class VideoCompositor {
         fps: info.fps > 0 ? info.fps : d.fps ?? 30,
         busy: false,
       });
+      // Backfill the clip's authoritative native size (the placement widget's aspect).
+      if (info.width > 0 && info.height > 0) this.onClipInfo?.(d.clipId, info.width, info.height);
     } catch (err) {
       console.warn('[video-compositor] open failed:', d.url, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
       // Mark broken so the Precise gate stops waiting on it (the playhead barrels

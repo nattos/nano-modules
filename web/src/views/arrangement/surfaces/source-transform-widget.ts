@@ -121,25 +121,33 @@ export class SourceTransformWidget extends LitElement {
 
   /** When the source size wasn't supplied, probe the media URL for its native size
    *  (a hidden <video>/<img> metadata load) so the frame rect shows the real aspect.
-   *  Idempotent per URL; cheap for an already-decoded blob URL. */
+   *  Runs once per URL; resets stale dims whenever the URL changes (incl. to empty)
+   *  so a previous clip's aspect never leaks onto a clip we can't probe. */
   private maybeProbe() {
-    if ((this.videoW > 0 && this.videoH > 0) || !this.srcUrl) return;
-    if (this.probedUrl === this.srcUrl) return; // already probed (or in-flight) this url
+    if (this.videoW > 0 && this.videoH > 0) { this.probedUrl = this.srcUrl; return; }
+    if (this.probedUrl === this.srcUrl) return; // already handled this url
     this.probedUrl = this.srcUrl;
-    this.probedW = 0; this.probedH = 0;
+    this.probedW = 0; this.probedH = 0; // clear any prior clip's probed aspect
     const url = this.srcUrl;
+    if (!url) return; // nothing to probe (unresolved / missing media)
     const apply = (w: number, h: number) => {
       if (url !== this.srcUrl) return; // source swapped while probing
       if (w > 0 && h > 0) { this.probedW = w; this.probedH = h; }
     };
+    // Try as a video first (the common case); fall back to an image on failure OR
+    // when the video yields no dimensions (e.g. the URL is actually an image).
     const v = document.createElement('video');
     v.preload = 'metadata';
     v.muted = true;
-    v.onloadedmetadata = () => {
-      if (v.videoWidth > 0) { apply(v.videoWidth, v.videoHeight); return; }
-      this.probeImage(url, apply);
+    let done = false;
+    const finish = (asVideo: boolean) => {
+      if (done) return;
+      done = true;
+      if (asVideo && v.videoWidth > 0) apply(v.videoWidth, v.videoHeight);
+      else this.probeImage(url, apply);
     };
-    v.onerror = () => this.probeImage(url, apply);
+    v.onloadedmetadata = () => finish(true);
+    v.onerror = () => finish(false);
     v.src = url;
   }
 

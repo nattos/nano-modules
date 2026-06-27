@@ -159,6 +159,9 @@ export class EngineBridge {
         Math.max(1, r.width),
         Math.max(1, r.height),
       );
+      // Backfill authoritative source dimensions as clips decode (fixes the
+      // placement widget's aspect for clips with no stored width/height).
+      this.video.onClipInfo = (clipId, w, h) => store.noteClipSourceDims(clipId, w, h);
     }
     return this.video;
   }
