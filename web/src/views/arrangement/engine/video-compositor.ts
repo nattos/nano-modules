@@ -303,6 +303,13 @@ export class VideoCompositor {
       }
       this.pumps.set(d.clipId, pump);
       this.failedAt.delete(d.clipId); // opened cleanly → clear any prior failure
+      // Pre-seek the cursor to the clip's ENTRY now, while it's still blank — so the cold
+      // <video> decode + mid-file seek (e.g. to a slice 40s into the file) happens during
+      // open instead of popping in ~1s after playback first reaches the clip.
+      if (pump.cursor) {
+        const entry = this.targetSecFor(pump, d.startBeat, this.clock().bpm) ?? d.loop?.startSec ?? 0;
+        pump.cursor.seek(entry);
+      }
       // Backfill the clip's authoritative native size (the placement widget's aspect).
       if (pump.width > 0 && pump.height > 0) this.onClipInfo?.(d.clipId, pump.width, pump.height);
     } catch (err) {
