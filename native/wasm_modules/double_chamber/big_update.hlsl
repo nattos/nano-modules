@@ -73,8 +73,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float vd = dc_lum(inputTex.SampleLevel(samp, saturate(uv - float2(0, du.y)), 0).rgb);
       float vu = dc_lum(inputTex.SampleLevel(samp, saturate(uv + float2(0, du.y)), 0).rgb);
       float2 g = float2(vr - vl, vu - vd) * 6.0;
-      force += g * repel * direction;
-      force += dc_perp(g) * curl * curl_dir;
+      float2 ed = min(uv, 1.0 - uv);
+      float edgeFade = smoothstep(0.0, 0.05, min(ed.x, ed.y));
+      force += g * repel * direction * edgeFade;
+      force += dc_perp(g) * curl * curl_dir * edgeFade;
     }
 
     force += rad * sink;

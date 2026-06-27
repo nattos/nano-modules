@@ -58,7 +58,9 @@ float2 flowDir(float2 s, float2 aspect) {
     float vr = dc_lum(fieldTex.SampleLevel(samp, saturate(uv + float2(du.x, 0)), 0).rgb);
     float vd = dc_lum(fieldTex.SampleLevel(samp, saturate(uv - float2(0, du.y)), 0).rgb);
     float vu = dc_lum(fieldTex.SampleLevel(samp, saturate(uv + float2(0, du.y)), 0).rgb);
-    f += float2(vr - vl, vu - vd) * to_image * 6.0;
+    float2 ed = min(uv, 1.0 - uv);
+    float edgeFade = smoothstep(0.0, 0.05, min(ed.x, ed.y));
+    f += float2(vr - vl, vu - vd) * to_image * 6.0 * edgeFade;
   }
   return f;
 }

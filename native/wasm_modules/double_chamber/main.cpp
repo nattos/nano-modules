@@ -165,7 +165,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 3, 0},
+  state::init("source.legacy.double_chamber", {1, 3, 1},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)

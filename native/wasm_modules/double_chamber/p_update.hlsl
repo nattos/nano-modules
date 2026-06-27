@@ -144,8 +144,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float vd = dc_lum(inputTex.SampleLevel(samp, saturate(uv - float2(0, du.y)), 0).rgb);
       float vu = dc_lum(inputTex.SampleLevel(samp, saturate(uv + float2(0, du.y)), 0).rgb);
       float2 g = float2(vr - vl, vu - vd) * DC_IMG_GAIN;
-      force += g * to_image;
-      force += dc_perp(g) * to_image_curl * curl_dir * curl_factor;
+      // Taper the image force to zero at the frame edge: ClampToEdge sampling
+      // makes the gradient vanish past the border, which would otherwise trap
+      // particles in a pile right at the viewport edge.
+      float2 ed = min(uv, 1.0 - uv);
+      float edgeFade = smoothstep(0.0, 0.05, min(ed.x, ed.y));
+      force += g * to_image * edgeFade;
+      force += dc_perp(g) * to_image_curl * curl_dir * curl_factor * edgeFade;
     }
 
     // Clamp force + velocity so the field can't fling particles to infinity.
