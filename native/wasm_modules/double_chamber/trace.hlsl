@@ -44,6 +44,11 @@ cbuffer Uniforms : register(b4) {
   float reseed_spread;
   float image_smoothing;
   float gradient_descent; // 0 = follow the tangent (level curves), 1 = follow the gradient
+
+  float value_stop;       // stop tracing where luma < this (0 = off)
+  float grad_stop;        // stop tracing where field magnitude < this (0 = off)
+  float time_stop_decay;  // extra life decay when a tracer stopped early (0 = off)
+  float _tp0;
 }
 
 float dc_lum(float3 c) { return max(c.r, max(c.g, c.b)); }
@@ -76,6 +81,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float  time = t.a.z;
   float  ang  = t.a.w;
 
+  bool reseeded = false;
   if (time <= 0.0) {
     // Reseed on a uniform-area disc of radius reseed_spread (s-space).
     uint h = dc_hash3(i + 0x1234u, frame_index, 0x99u);
@@ -86,6 +92,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // Staggered initial life so tracers don't all expire/reseed in lockstep —
     // each gets a random time in [0.15, 1], decorrelated per tracer + frame.
     time = lerp(0.15, 1.0, dc_unit(dc_hash(h ^ 0x0033u)));
+    reseeded = true;
   } else {
     float2 fd = flowDir(seed, aspect);
     float fl = length(fd);
@@ -98,6 +105,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int steps = max(2, (int)(saturate(length01) * (float)half));
   float3 tint = float3(tint_r, tint_g, tint_b);
   uint segIdx = 0u;
+  bool didStop = false;
 
   // Forward then reverse from the seed → a streamline through it.
   [unroll(1)]
@@ -107,6 +115,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
     for (int k = 0; k < steps; ++k) {
       float2 fd = flowDir(pos, aspect);
       float fl = length(fd);
+      // Stop conditions (parity with the L tracer): terminate the line where the
+      // field is too weak ("off gradient", i.e. near a critical point) or — with
+      // image coupling — too dark. grad_stop is normalized by field_speed so it's
+      // in field-shape units (a fraction), independent of the speed scale.
+      if (grad_stop > 0.0 && fl < grad_stop * field_speed) { didStop = true; break; }
+      if (value_stop > 0.0) {
+        float lum = dc_lum(fieldTex.SampleLevel(samp, saturate(0.5 + pos * aspect), 0).rgb);
+        if (lum < value_stop) { didStop = true; break; }
+      }
       if (fl > 1e-5) {
         float2 g = fd / fl;                       // gradient direction
         float2 tangent = float2(g.y, -g.x);       // perpendicular → along the level curve
@@ -135,6 +152,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     segs[base + z].a = float4(0, 0, 0, 0);
     segs[base + z].b = float4(0, 0, 0, 0);
   }
+
+  // A tracer that stopped early (stuck in a weak/dark region) dies faster.
+  if (didStop && !reseeded) time = max(time - time_stop_decay * dt, 0.0);
 
   t.a = float4(seed, time, ang);
   tracers[i] = t;

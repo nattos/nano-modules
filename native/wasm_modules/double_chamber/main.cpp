@@ -60,6 +60,7 @@ struct TraceUniforms {
   float time_decay, adv_step, color_contrib, l_opacity;
   float aspect_x, aspect_y, tint_r, tint_g;
   float tint_b, reseed_spread, image_smoothing, gradient_descent;
+  float value_stop, grad_stop, time_stop_decay, _tp0;
 };
 struct LineVsUniforms { float aspect_x, aspect_y, width, _pad; };
 struct LineFsUniforms { float soft, _a, _b, _c; };
@@ -123,6 +124,7 @@ struct State {
   float l_length = 0.5f, l_step_speed = 0.02f, l_momentum = 0.5f, l_opacity = 0.5f;
   float l_width = 0.2f, l_soft = 1.0f, l_time_decay = 0.1f, l_adv_step = 0.1f, l_reseed_spread = 0.4f;
   float l_gradient_descent = 0.2f;  // 0 = level-curve/tangent, 1 = down-gradient
+  float l_value_stop = 0.0f, l_grad_stop = 0.0f, l_time_stop_decay = 0.0f;  // early-death (0=off)
   // Composite.
   float input_alpha = 1.0f;
   int   blend_mode = BLEND_ADD;
@@ -167,7 +169,7 @@ static void seed_pool(gpu::Buffer& buf, int from, int to, float lifetime, uint32
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 0},
+  state::init("source.legacy.double_chamber", {1, 4, 1},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -231,6 +233,9 @@ void module_init() {
       .floatField("l_time_decay",   0.1f,  0.0f, 2.0f,    state::SecondaryInput)
       .floatField("l_adv_step",     0.1f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("l_reseed_spread", 0.4f, 0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_value_stop",    0.0f, 0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_grad_stop",     0.0f, 0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_time_stop_decay", 0.0f, 0.0f, 2.0f,  state::SecondaryInput)
       // ---- Composite ----
       .selectField("blend_mode",    BLEND_ADD,            state::SecondaryInput, {
         {"Add", BLEND_ADD}, {"Alpha", BLEND_ALPHA} })
@@ -410,6 +415,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "l_time_decay"))   s->l_time_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_adv_step"))     s->l_adv_step = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_reseed_spread")) s->l_reseed_spread = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_value_stop"))    s->l_value_stop = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_grad_stop"))     s->l_grad_stop = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_time_stop_decay")) s->l_time_stop_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "blend_mode"))     s->blend_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "input_alpha"))    s->input_alpha = state::patchFloat(i);
   }
@@ -504,6 +512,7 @@ void render(void* self, int vp_w, int vp_h) {
   tu.aspect_x = ax; tu.aspect_y = ay; tu.tint_r = s->tint_r; tu.tint_g = s->tint_g;
   tu.tint_b = s->tint_b; tu.reseed_spread = s->l_reseed_spread; tu.image_smoothing = s->image_smoothing;
   tu.gradient_descent = s->l_gradient_descent;
+  tu.value_stop = s->l_value_stop; tu.grad_stop = s->l_grad_stop; tu.time_stop_decay = s->l_time_stop_decay;
   s->trace_uniform.writeOne(tu);
 
   LineVsUniforms lv = { ax, ay, s->l_width * LINE_WIDTH_SCALE, 0.f };
