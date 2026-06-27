@@ -698,6 +698,7 @@ export class ArrInspector extends MobxLitElement {
                       .canvasH=${store.composition.meta.resolution.height}
                       .videoW=${clip.source?.width ?? 0}
                       .videoH=${clip.source?.height ?? 0}
+                      .srcUrl=${clip.source?.url ?? ''}
                       .mode=${clip.source?.scaleMode ?? 'fit'}
                       .transform=${resolveSourceTransform(clip.source?.transform)}
                       .onChange=${(patch: any, ck?: string) => store.setClipSourceTransform(found.track.id, clip.id, patch, ck)}
