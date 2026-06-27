@@ -209,4 +209,56 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     const maxR = Math.max(...frame.samples.map(s => s.r));
     expect(maxR).toBeGreaterThan(8);  // bridger chords drew light
   });
+
+  it('boundary_death confines the cloud (proportional kill at the boundary)', async () => {
+    // Isolate boundary_death by turning the soft boundary FORCE off, so the
+    // only thing containing the cloud is the kill. A mild outward sink pushes
+    // particles past boundary_size; with death off they stream to the edges,
+    // with death on they die there and recycle to centre → confined disc.
+    const W = 128, H = 128;
+    const common: [string, number | number[]][] = [
+      ['p_count', 12000],
+      ['p_point_size', 0.6],
+      ['p_opacity', 1.0],
+      ['exposure', 2.0],
+      ['color_contrib', 0.0],
+      ['boundary', 0.0],         // soft boundary FORCE off
+      ['boundary_size', 0.3],
+      ['field_speed', 0.4],
+      ['motion_rate', 2.0],
+      ['sink', 0.3],             // gentle outward drift toward the boundary
+      ['jitter', 0.05],
+      ['to_big', 0.0],
+      ['big_opacity', 0.0],
+      ['l_count', 0],
+    ];
+    const outerLit = (frame: { forEachPixel: (fn: (c: { r: number; g: number; b: number }, x: number, y: number) => void) => void }) => {
+      const cx = W / 2, cy = H / 2; let n = 0;
+      frame.forEachPixel((c, x, y) => {
+        const dx = x - cx, dy = y - cy;
+        if (Math.sqrt(dx * dx + dy * dy) > 55 && c.r + c.g + c.b > 24) n++;
+      });
+      return n;
+    };
+
+    const off = await runGpuEffectTest({
+      module: 'double_chamber.wasm', bundle: 'legacy', width: W, height: H,
+      inputColor: [0, 0, 0, 1],
+      params: [...common, ['boundary_death', 0.0]],
+      ticks: 24, renderEachTick: true,
+      dumpName: 'double_chamber_bdeath_off',
+    });
+    const on = await runGpuEffectTest({
+      module: 'double_chamber.wasm', bundle: 'legacy', width: W, height: H,
+      inputColor: [0, 0, 0, 1],
+      params: [...common, ['boundary_death', 1.0]],
+      ticks: 24, renderEachTick: true,
+      dumpName: 'double_chamber_bdeath_on',
+    });
+    expect(off.success && on.success).toBe(true);
+
+    const offOuter = outerLit(off), onOuter = outerLit(on);  // ~906 vs ~229
+    expect(offOuter).toBeGreaterThan(150);            // death-off spreads outward
+    expect(onOuter).toBeLessThan(offOuter * 0.5);     // death-on confines it
+  });
 });

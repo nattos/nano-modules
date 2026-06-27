@@ -59,12 +59,17 @@ cbuffer Uniforms : register(b4) {
   float image_smoothing; // matches the blur radius → scales the gradient step
   float to_line_rate;    // P(respawn onto a tracer line vertex)
   float seg_total;       // number of tracer segment slots (l_count * max_seg)
+
+  float boundary_death;  // P(die+respawn) when over the boundary, ∝ overshoot
+  float _bp0, _bp1, _bp2;
 }
 
 static const float DC_FORCE_MAX = 6.0;
 static const float DC_VEL_MAX    = 6.0;
 static const float DC_IMG_GAIN   = 6.0;   // image gradients are small; amplify
 static const float DC_ESCAPE_R   = 1.3;   // s-radius past which a particle dies
+// s-space overshoot at which the boundary-death proportional factor saturates.
+static const float DC_BDEATH_REF = 0.25;
 
 float dc_lum(float3 c) { return max(c.r, max(c.g, c.b)); }
 float2 dc_clamp_mag(float2 v, float m) {
@@ -85,6 +90,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 vel         = p.b.xy;          // s-space velocity
   float  size_cur    = p.b.z;
   uint   packed      = asuint(p.b.w);
+
+  // Respawn this frame if already dead, OR if a boundary kill fires below
+  // (same-frame recycle — "die and respawn right away"). Natural ttl expiry
+  // and the escape kill keep their next-frame respawn (respawn stays false).
+  bool respawn = (life_remain <= 0.0);
 
   if (life_remain > 0.0) {
     float2 s = (uv - 0.5) / max(aspect, 1e-4);   // aspect-corrected centred coord
@@ -158,7 +168,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
     uv = 0.5 + s * aspect;
     life_remain -= dt;
     if (length(s) > DC_ESCAPE_R) life_remain = 0.0;   // safety kill for runaways
-  } else {
+
+    // Boundary death: a particle past the boundary has a per-frame chance to
+    // die + respawn, PROPORTIONAL to how far it has overshot (and scaled by
+    // boundary_death). dt·60 keeps the rate frame-rate independent. This
+    // recycles particles that would otherwise pile up against the boundary.
+    if (boundary_death > 0.0) {
+      float over_b = length(s) - boundary_size;
+      if (over_b > 0.0) {
+        float ov = saturate(over_b / DC_BDEATH_REF);
+        float prob = saturate(boundary_death * ov * dt * 60.0);
+        uint hd = dc_hash3(i + 0x5151BEEFu, frame_index, 0xD1u);
+        if (dc_unit(dc_hash(hd)) < prob) respawn = true;
+      }
+    }
+  }
+
+  if (respawn) {
     // Respawn on a uniform-area disc about centre (the original's spawn shape:
     // radius = spawn_size·sqrt(rand) gives equal density per unit area; full-
     // circle angle, no directional bias). Disc lives in s-space → round on

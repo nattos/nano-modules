@@ -64,6 +64,7 @@ struct PUpdateUniforms {
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
   float to_big_range, image_smoothing, to_line_rate, seg_total;
+  float boundary_death, _bp0, _bp1, _bp2;
 };
 struct TraceUniforms {
   uint32_t count, max_seg, frame_index; float dt;
@@ -130,6 +131,7 @@ struct State {
   float to_big = 0.3f, to_big_curl = 0.2f, to_big_range = 0.4f, curl_dir = 1.0f, sink = 0.0f;
   float jitter = 0.04f;
   float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 1.2f;
+  float boundary_death = 0.0f;  // P(die+respawn) at the boundary, ∝ overshoot (0 = off)
   float to_image = 0.0f, to_image_curl = 0.0f, image_smoothing = 0.3f;
   float undertow_skew = 0.0f, undertow_squash = 1.0f;
   float ttl = 0.4f, spawn_size = 0.5f;
@@ -245,7 +247,7 @@ static void seed_bridgers(gpu::Buffer& buf, int p_count) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 6},
+  state::init("source.legacy.double_chamber", {1, 4, 7},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -273,6 +275,7 @@ void module_init() {
       .floatField("boundary_size",  0.42f, 0.05f, 0.7f,   state::SecondaryInput)
       .floatField("boundary_stiffness", 8.0f, 0.5f, 32.0f, state::SecondaryInput)
       .floatField("boundary_speed", 1.2f,  0.0f, 6.0f,    state::SecondaryInput)
+      .floatField("boundary_death", 0.0f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("ttl",            0.4f,  0.02f, 1.0f,   state::SecondaryInput)
       .floatField("spawn_size",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
       // ---- P render ----
@@ -522,6 +525,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "boundary_size"))  s->boundary_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "boundary_stiffness")) s->boundary_stiffness = state::patchFloat(i);
     else if (state::pathIs(p, l, "boundary_speed")) s->boundary_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "boundary_death")) s->boundary_death = state::patchFloat(i);
     else if (state::pathIs(p, l, "ttl"))            s->ttl = state::patchFloat(i);
     else if (state::pathIs(p, l, "spawn_size"))     s->spawn_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "p_point_size"))   s->p_point_size = state::patchFloat(i);
@@ -636,6 +640,7 @@ void render(void* self, int vp_w, int vp_h) {
   int seg_total = (s->l_count > 0) ? s->l_count * MAX_SEG : 0;
   pu.to_line_rate = (seg_total > 0) ? s->spawn_on_line : 0.0f;
   pu.seg_total = (float)seg_total;
+  pu.boundary_death = s->boundary_death;
   s->p_uniform.writeOne(pu);
 
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
