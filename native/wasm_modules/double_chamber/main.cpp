@@ -10,6 +10,13 @@
  * block, field streamlines) and bridgers (stochastic chords between particles)
  * are ported as additional default-off line systems sharing the line raster.
  *
+ * Motion vectors: when a downstream sink reads the canonical render_outputs
+ * rail, a final pass rasterizes each element's screen-space velocity into
+ * render_outputs/motion (RGBA16F) — particles emit their integrated per-frame
+ * displacement, lines emit a tangent-along-segment velocity — composed over an
+ * optional upstream motion field (render_outputs_in). Skipped entirely when no
+ * sink is attached (state::isOutputConnected).
+ *
  * Two persistent GPU storage buffers replace the old graph's LatchNode feedback
  * registers — a clean read-prev / write-next pool per system:
  *   1. big_update (compute) — drift / image-ride / boundary the few attractors.
@@ -42,6 +49,8 @@ static constexpr int MAX_BRIDGERS = 1024;  // chords between particles (one Seg 
 static constexpr float POINT_SIZE_SCALE = 0.01f;
 // l_width slider [0,1] → effective line half-extent uv [0, 0.02].
 static constexpr float LINE_WIDTH_SCALE = 0.02f;
+// motion_line_speed slider [0,1] → effective uv/frame along-line motion [0, 0.05].
+static constexpr float MOTION_LINE_SCALE = 0.05f;
 
 struct GpuParticle { float a[4]; float b[4]; };
 static_assert(sizeof(GpuParticle) == 32, "particle must be 32 bytes");
@@ -72,6 +81,9 @@ struct BridgerUniforms {
   float rate, motion, opacity, color_contrib;
   float hue, tint_r, tint_g, tint_b;
 };
+struct MotionVsUniforms { float aspect_x, aspect_y, point_size, dt; float motion_rate, _m0, _m1, _m2; };
+struct MotionFsUniforms { uint32_t shape_kind; float shape_param, _f0, _f1; };
+struct LineMotionVsUniforms { float aspect_x, aspect_y, width, line_speed; };
 struct BigUpdateUniforms {
   uint32_t count, frame_index; float dt, motion_rate;
   float big_speed, big_momentum, big_momentum_decay, drift;
@@ -97,10 +109,15 @@ struct State {
   gpu::Buffer  vs_uniform_p, vs_uniform_big, fs_uniform_p, fs_uniform_big;
   gpu::Buffer  line_vs_uniform, line_fs_uniform;
   gpu::Buffer  bridger_uniform, bridger_vs_uniform, bridger_fs_uniform;
+  gpu::Buffer  motion_vs_uniform_p, motion_vs_uniform_big, motion_fs_uniform;
+  gpu::Buffer  lm_vs_uniform_l, lm_vs_uniform_b;
   gpu::Sampler sampler;
   gpu::Texture black_tex;   // 1×1 fallback when no input is wired (true generator)
   gpu::Texture field_tex;   // smoothed input for gradient/colour sampling
+  gpu::Texture motion_tex;       // render_outputs/motion (RGBA16F, when a sink reads it)
+  gpu::Texture zero_motion_tex;  // 1×1 fallback for an unwired upstream motion input
   int field_w = 0, field_h = 0;
+  int motion_w = 0, motion_h = 0;
   bool initialized = false;
   uint32_t frame_index = 0;
   int  inited_count = 0;   // P slots seeded so far (lazy growth to p_count)
@@ -144,6 +161,9 @@ struct State {
   float bridger_opacity = 0.4f;
   float bridger_width = 0.15f, bridger_soft = 1.0f;
   float bridger_hue = 0.0f, bridger_color_contrib = 0.5f;
+  // Motion-vector output (render_outputs/motion) — only produced when a sink
+  // is wired. Particles emit their integrated velocity; lines emit a tangent.
+  float motion_line_speed = 0.3f;  // [0,1] slider → uv/frame via MOTION_LINE_SCALE
   // Composite.
   float input_alpha = 1.0f;
   int   blend_mode = BLEND_ADD;
@@ -159,6 +179,9 @@ static gpu::RenderPSO  s_pso_render_add;
 static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_line_add;
 static gpu::RenderPSO  s_pso_line_alpha;
+static gpu::ComputePSO s_pso_motion_prefill;
+static gpu::RenderPSO  s_pso_motion_point;   // particle velocity → motion (RGBA16F)
+static gpu::RenderPSO  s_pso_motion_line;    // line tangent → motion (RGBA16F)
 
 static inline uint32_t lcg(uint32_t& s) { s = s * 1664525u + 1013904223u; return s; }
 static inline float lcgf(uint32_t& s) { return (lcg(s) >> 8) * (1.0f / float(1u << 24)); }
@@ -221,7 +244,7 @@ static void seed_bridgers(gpu::Buffer& buf, int p_count) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 3},
+  state::init("source.legacy.double_chamber", {1, 4, 4},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -297,6 +320,8 @@ void module_init() {
       .floatField("bridger_soft",   1.0f,  0.1f, 4.0f,    state::SecondaryInput)
       .floatField("bridger_hue",    0.0f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("bridger_color_contrib", 0.5f, 0.0f, 1.0f, state::SecondaryInput)
+      // ---- Motion-vector output ----
+      .floatField("motion_line_speed", 0.3f, 0.0f, 1.0f,  state::SecondaryInput)
       // ---- Composite ----
       .selectField("blend_mode",    BLEND_ADD,            state::SecondaryInput, {
         {"Add", BLEND_ADD}, {"Alpha", BLEND_ALPHA} })
@@ -304,6 +329,11 @@ void module_init() {
       // ---- I/O ----
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      // Canonical depth+motion rail. The motion pass only runs when a
+      // downstream sink reads it (state::isOutputConnected). render_outputs_in
+      // lets this compose its motion OVER an upstream motion field.
+      .renderOutputs(state::PrimaryOutput)
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
       .capability(state::Capability::Generator)
   );
 
@@ -318,6 +348,12 @@ void module_init() {
   state::registerShaderSPV("dc_bridger",    BRIDGER_SPV,    BRIDGER_SPV_SIZE);
   state::registerShaderSPV("dc_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
   state::registerShaderSPV("dc_line_fs",    LINE_FS_SPV,    LINE_FS_SPV_SIZE);
+  state::registerShaderSPV("dc_motion_prefill", MOTION_PREFILL_SPV, MOTION_PREFILL_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("dc_motion_vs",  MOTION_VS_SPV,  MOTION_VS_SPV_SIZE);
+  state::registerShaderSPV("dc_motion_fs",  MOTION_FS_SPV,  MOTION_FS_SPV_SIZE);
+  state::registerShaderSPV("dc_line_motion_vs", LINE_MOTION_VS_SPV, LINE_MOTION_VS_SPV_SIZE);
+  state::registerShaderSPV("dc_line_motion_fs", LINE_MOTION_FS_SPV, LINE_MOTION_FS_SPV_SIZE);
 
   auto cs_big = gpu::Device::createShaderModuleByName("dc_big_update");
   auto cs_p   = gpu::Device::createShaderModuleByName("dc_p_update");
@@ -328,7 +364,13 @@ void module_init() {
   auto fs     = gpu::Device::createShaderModuleByName("dc_fs");
   auto lvs    = gpu::Device::createShaderModuleByName("dc_line_vs");
   auto lfs    = gpu::Device::createShaderModuleByName("dc_line_fs");
+  auto cs_mpf = gpu::Device::createShaderModuleByName("dc_motion_prefill");
+  auto mvs    = gpu::Device::createShaderModuleByName("dc_motion_vs");
+  auto mfs    = gpu::Device::createShaderModuleByName("dc_motion_fs");
+  auto lmvs   = gpu::Device::createShaderModuleByName("dc_line_motion_vs");
+  auto lmfs   = gpu::Device::createShaderModuleByName("dc_line_motion_fs");
   if (!cs_big || !cs_p || !cs_pre || !cs_tr || !cs_br || !vs || !fs || !lvs || !lfs) return;
+  if (!cs_mpf || !mvs || !mfs || !lmvs || !lmfs) return;
 
   s_pso_big_update = gpu::Device::createComputePSO(cs_big, "main", gpu::Bindings()
       .storageRW(0).tex2d(1).sampler(2).uniform(3));
@@ -357,6 +399,19 @@ void module_init() {
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::AlphaOver);
 
+  // Motion-vector PSOs. The render targets are RGBA16F; AlphaOver composes each
+  // footprint's velocity over the (upstream-seeded) motion field by coverage.
+  s_pso_motion_prefill = gpu::Device::createComputePSO(cs_mpf, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
+  s_pso_motion_point = gpu::Device::createInstancedRenderPSO(mvs, "main", mfs, "main",
+      gpu::TextureFormat::RGBA16F,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::AlphaOver);
+  s_pso_motion_line = gpu::Device::createInstancedRenderPSO(lmvs, "main", lmfs, "main",
+      gpu::TextureFormat::RGBA16F,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::AlphaOver);
+
   s_blur.init();
   state::log("double_chamber: module initialized");
 }
@@ -382,6 +437,11 @@ void* create() {
   s->bridger_uniform    = gpu::Device::createBuffer(sizeof(BridgerUniforms), gpu::BufferUsage::Uniform);
   s->bridger_vs_uniform = gpu::Device::createBuffer(sizeof(LineVsUniforms), gpu::BufferUsage::Uniform);
   s->bridger_fs_uniform = gpu::Device::createBuffer(sizeof(LineFsUniforms), gpu::BufferUsage::Uniform);
+  s->motion_vs_uniform_p   = gpu::Device::createBuffer(sizeof(MotionVsUniforms), gpu::BufferUsage::Uniform);
+  s->motion_vs_uniform_big = gpu::Device::createBuffer(sizeof(MotionVsUniforms), gpu::BufferUsage::Uniform);
+  s->motion_fs_uniform     = gpu::Device::createBuffer(sizeof(MotionFsUniforms), gpu::BufferUsage::Uniform);
+  s->lm_vs_uniform_l       = gpu::Device::createBuffer(sizeof(LineMotionVsUniforms), gpu::BufferUsage::Uniform);
+  s->lm_vs_uniform_b       = gpu::Device::createBuffer(sizeof(LineMotionVsUniforms), gpu::BufferUsage::Uniform);
   s->sampler         = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   s->black_tex       = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA8);
   if (s->black_tex.valid()) gpu::Device::clear(s->black_tex, 0.f, 0.f, 0.f, 1.f);
@@ -398,9 +458,13 @@ void destroy(void* self) {
   s->fs_uniform_p.release(); s->fs_uniform_big.release();
   s->line_vs_uniform.release(); s->line_fs_uniform.release();
   s->bridger_uniform.release(); s->bridger_vs_uniform.release(); s->bridger_fs_uniform.release();
+  s->motion_vs_uniform_p.release(); s->motion_vs_uniform_big.release(); s->motion_fs_uniform.release();
+  s->lm_vs_uniform_l.release(); s->lm_vs_uniform_b.release();
   s->sampler.release();
   s->black_tex.release();
   s->field_tex.release();
+  s->motion_tex.release();
+  s->zero_motion_tex.release();
   delete s;
 }
 
@@ -499,6 +563,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "bridger_soft"))   s->bridger_soft = state::patchFloat(i);
     else if (state::pathIs(p, l, "bridger_hue"))    s->bridger_hue = state::patchFloat(i);
     else if (state::pathIs(p, l, "bridger_color_contrib")) s->bridger_color_contrib = state::patchFloat(i);
+    else if (state::pathIs(p, l, "motion_line_speed")) s->motion_line_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "blend_mode"))     s->blend_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "input_alpha"))    s->input_alpha = state::patchFloat(i);
   }
@@ -722,6 +787,76 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->bridger_fs_uniform, 2);
     rp.draw(6, s->bridger_count);
     rp.end();
+  }
+
+  // Pass 7 — motion vectors (render_outputs/motion). Only run when a downstream
+  // SINK reads the rail; pure overhead otherwise. Particles emit their
+  // per-frame integrated velocity; lines emit a tangent-along-segment velocity.
+  // All footprints compose (AlphaOver) over an upstream-seeded motion field.
+  if (state::isOutputConnected("render_outputs")) {
+    if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
+      s->motion_tex.release();
+      s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+      s->motion_w = vp_w; s->motion_h = vp_h;
+      if (s->motion_tex.valid()) state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
+    }
+    if (s->motion_tex.valid()) {
+      // Seed from upstream motion (1×1 zero fallback → effectively a clear).
+      auto up = gpu::Device::textureForField("render_outputs_in/motion");
+      if (!up.valid()) {
+        if (!s->zero_motion_tex.valid())
+          s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+        up = s->zero_motion_tex;
+      }
+      if (up.valid()) {
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_motion_prefill);
+        cp.setTexture(up, 0, 0);
+        cp.setTexture(s->motion_tex, 1, 1);
+        cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+        cp.end();
+      }
+
+      MotionVsUniforms mvp = { ax, ay, s->p_point_size * POINT_SIZE_SCALE, dt, s->motion_rate, 0.f, 0.f, 0.f };
+      s->motion_vs_uniform_p.writeOne(mvp);
+      MotionVsUniforms mvb = { ax, ay, s->big_point_size, dt, s->motion_rate, 0.f, 0.f, 0.f };
+      s->motion_vs_uniform_big.writeOne(mvb);
+      MotionFsUniforms mfu = { (uint32_t)s->p_shape, 0.5f, 0.f, 0.f };
+      s->motion_fs_uniform.writeOne(mfu);
+      float line_spd = s->motion_line_speed * MOTION_LINE_SCALE;
+      LineMotionVsUniforms lml = { ax, ay, s->l_width * LINE_WIDTH_SCALE, line_spd };
+      s->lm_vs_uniform_l.writeOne(lml);
+      LineMotionVsUniforms lmb = { ax, ay, s->bridger_width * LINE_WIDTH_SCALE, line_spd };
+      s->lm_vs_uniform_b.writeOne(lmb);
+
+      auto rp = gpu::RenderPass::beginLoad(s->motion_tex);
+      rp.setPSO(s_pso_motion_point);
+      rp.setBuffer(s->p_buf, 0);
+      rp.setBuffer(s->motion_vs_uniform_p, 1);
+      rp.setBuffer(s->motion_fs_uniform, 2);
+      rp.draw(6, s->p_count);
+      if (s->big_count > 0) {
+        rp.setBuffer(s->big_buf, 0);
+        rp.setBuffer(s->motion_vs_uniform_big, 1);
+        rp.draw(6, s->big_count);
+      }
+      if (line_spd > 0.0f) {
+        rp.setPSO(s_pso_motion_line);
+        if (s->l_count > 0) {
+          rp.setBuffer(s->seg_buf, 0);
+          rp.setBuffer(s->lm_vs_uniform_l, 1);
+          rp.setBuffer(s->line_fs_uniform, 2);   // reuse tracer soft
+          rp.draw(6, s->l_count * MAX_SEG);
+        }
+        if (s->bridger_count > 0) {
+          rp.setBuffer(s->bridger_seg_buf, 0);
+          rp.setBuffer(s->lm_vs_uniform_b, 1);
+          rp.setBuffer(s->bridger_fs_uniform, 2);  // reuse bridger soft
+          rp.draw(6, s->bridger_count);
+        }
+      }
+      rp.end();
+    }
   }
 
   gpu::Device::submit();

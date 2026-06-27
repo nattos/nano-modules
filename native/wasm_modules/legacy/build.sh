@@ -43,6 +43,7 @@ compile_shaders_compute_var_spv double_chamber p_update
 compile_shaders_compute_var_spv double_chamber prefill
 compile_shaders_compute_var_spv double_chamber trace
 compile_shaders_compute_var_spv double_chamber bridger
+compile_shaders_compute_var_spv double_chamber motion_prefill
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../double_chamber/vs.hlsl -Fo "$TMP_DIR/double_chamber_vs.spv"
@@ -55,8 +56,21 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../double_chamber/line_fs.hlsl -Fo "$TMP_DIR/double_chamber_line_fs.spv"
-_emit_spv_header_var double_chamber big_update p_update prefill trace bridger vs fs line_vs line_fs
-echo "  double_chamber shaders compiled (SPV: big_update + p_update + prefill + trace + bridger + vs + fs + line)"
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/motion_vs.hlsl -Fo "$TMP_DIR/double_chamber_motion_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/motion_fs.hlsl -Fo "$TMP_DIR/double_chamber_motion_fs.spv"
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/line_motion_vs.hlsl -Fo "$TMP_DIR/double_chamber_line_motion_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/line_motion_fs.hlsl -Fo "$TMP_DIR/double_chamber_line_motion_fs.spv"
+_emit_spv_header_var double_chamber big_update p_update prefill trace bridger motion_prefill \
+  vs fs line_vs line_fs motion_vs motion_fs line_motion_vs line_motion_fs
+echo "  double_chamber shaders compiled (SPV: + motion_prefill/vs/fs + line_motion vs/fs)"
 
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
 compile_shaders_compute_spv blur

@@ -1,0 +1,98 @@
+import { runEngineTest } from './engine-test-helpers';
+import type { Sketch } from '../src/sketch-types';
+
+/**
+ * E2E for source.legacy.double_chamber's motion-vector output. The effect only
+ * produces render_outputs/motion when a downstream SINK reads it; here we wire
+ * `double_chamber → motion.blur` (wires:[] → struct auto-connect), so the
+ * motion pass runs and motion.blur smears the particle cloud along its
+ * per-particle velocity.
+ *
+ * Isolation: the double_chamber stage is byte-identical across both runs (same
+ * params, same deterministic frame count), so the ONLY difference between
+ * blur strength 0 (pass-through) and 32 is whether the motion field carried
+ * real velocity. A visible difference proves the whole rail: produced →
+ * published (setGpuTexture) → auto-connected → consumed.
+ */
+function buildChain(blurStrength: number): Sketch {
+  return {
+    anchor: null,
+    wires: [],
+    chain: [
+      {
+        type: 'module',
+        module_type: 'source.legacy.double_chamber',
+        instance_key: 'dc@0',
+        params: {
+          p_count: 6000,
+          p_point_size: 1.0,   // [0,1] → 0.01 uv
+          p_opacity: 1.0,
+          exposure: 2.0,
+          color_contrib: 0.0,  // white cloud
+          field_speed: 0.6,    // brisk field → clear velocities
+          motion_rate: 2.0,    // large per-frame displacement → strong motion
+          jitter: 0.0,
+          to_big: 0.5,
+          big_count: 4,
+          // Tracers on so the line-motion path is exercised too.
+          l_count: 8,
+          l_opacity: 1.0,
+          motion_line_speed: 0.6,
+          bridger_count: 0,
+        },
+      },
+      {
+        type: 'module',
+        module_type: 'motion.blur',
+        instance_key: 'blur@0',
+        params: { strength: blurStrength, samples: 16, quality: 1 },
+      },
+    ],
+  };
+}
+
+describe('Double Chamber motion-vector output (render_outputs/motion) E2E', () => {
+  jest.setTimeout(60000);
+
+  it('drives downstream motion blur from per-particle velocity', async () => {
+    const blurred = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.legacy', 'com.nano.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'dc_blur', sketch: buildChain(32.0) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'dc_blur' } },
+        ]},
+      ],
+      waitFrames: 24,
+      captureTraceIds: ['out'],
+      dumpName: 'double_chamber_motion_blurred',
+    });
+    expect(blurred.success).toBe(true);
+
+    const sharp = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.legacy', 'com.nano.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'dc_sharp', sketch: buildChain(0.0) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'dc_sharp' } },
+        ]},
+      ],
+      waitFrames: 24,
+      captureTraceIds: ['out'],
+      dumpName: 'double_chamber_motion_sharp',
+    });
+    expect(sharp.success).toBe(true);
+
+    // The cloud must actually be present (not a degenerate black frame), else
+    // "frames differ" would be meaningless.
+    let lit = 0;
+    sharp.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) lit++; });
+    expect(lit).toBeGreaterThan(100);
+
+    // strength=32 smears each particle along its motion vector; strength=0 is a
+    // pass-through. They must differ → the motion rail carried real velocity.
+    blurred.trace('out').expectDifferentFrom(sharp.trace('out'), 100);
+  });
+});
