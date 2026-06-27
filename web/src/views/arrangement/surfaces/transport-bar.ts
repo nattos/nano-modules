@@ -239,14 +239,19 @@ export class TransportBar extends MobxLitElement {
           <ui-icon icon="la-project-diagram"></ui-icon> W
         </button>
 
-        <div class="seg" title="Precise always waits. Live is future.">
+        <div class="seg" title="Precise waits until every active frame is decoded. Live plays straight through (may briefly show an undecoded frame).">
           <button
             class=${store.transportMode === 'precise' ? 'on' : ''}
             @click=${() => store.setTransportMode('precise')}
           >
             Precise
           </button>
-          <button disabled title="Live mode — future">Live</button>
+          <button
+            class=${store.transportMode === 'live' ? 'on' : ''}
+            @click=${() => store.setTransportMode('live')}
+          >
+            Live
+          </button>
         </div>
       </div>
 

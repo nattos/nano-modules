@@ -1058,7 +1058,7 @@ export class ColumnGroup extends MobxLitElement {
             @dblclick=${(e: Event) => this.onHeaderDblClick(e, entry)}>
             <button
               title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
-              style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-ok)'}"
+              style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-text-color1)'}"
               @pointerdown=${(e: Event) => e.stopPropagation()}
               @click=${(e: Event) => {
                 e.stopPropagation();

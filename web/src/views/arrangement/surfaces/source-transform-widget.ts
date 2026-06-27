@@ -82,7 +82,7 @@ export class SourceTransformWidget extends LitElement {
       font-family: inherit; font-size: var(--app-fs-xs, 11px); border: none;
       border-left: 1px solid var(--app-tint-4, #3a3a3a);
       background: transparent; color: var(--app-text-color2, #aaa);
-      padding: 3px 9px; cursor: pointer; transition: background 0.1s, color 0.1s;
+      padding: 3px 9px; cursor: pointer;
     }
     .seg button:first-child { border-left: none; }
     .seg button:hover { background: var(--app-tint-2); color: var(--app-text-color1); }

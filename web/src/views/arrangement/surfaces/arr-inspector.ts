@@ -345,7 +345,6 @@ export class ArrInspector extends MobxLitElement {
       border-left: 1px solid var(--app-tint-4);
       padding: 3px 9px;
       cursor: pointer;
-      transition: background 0.1s, color 0.1s;
     }
     .segbtn:first-child { border-left: none; }
     .segbtn:hover { background: var(--app-tint-2); color: var(--app-text-color1); }

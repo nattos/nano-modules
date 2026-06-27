@@ -119,7 +119,6 @@ export class ArrClipView extends MobxLitElement {
       color: var(--app-text-color2);
       padding: 3px 9px;
       cursor: pointer;
-      transition: background 0.1s, color 0.1s;
     }
     .seg button:first-child { border-left: none; }
     .seg button:hover { background: var(--app-tint-2); color: var(--app-text-color1); }

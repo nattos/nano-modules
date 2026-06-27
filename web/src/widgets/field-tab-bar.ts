@@ -65,60 +65,55 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    /* Shared with the arrangement "segbtn": one connected control, segments sharing
+       1px dividers, the active one marked by a subtle raised tint + an accent
+       underline (no bright fill). */
     .tabs {
       display: inline-flex;
       flex: 1;
       min-width: 0;
       border: 1px solid var(--app-tint-4);
-      border-radius: 1px;
+      border-radius: 4px;
       overflow: hidden;
+      background: var(--app-bg-color1);
     }
     button {
       flex: 1 1 0;
       min-width: 0;
-      background: rgba(0, 0, 0, 0.2);
+      background: transparent;
       border: none;
-      border-right: 1px solid var(--app-tint-3);
+      border-left: 1px solid var(--app-tint-4);
       color: var(--app-text-color2, #b0b0b0);
       font-size: var(--app-fs-sm);
       font-family: inherit;
-      padding: 3px 6px;
+      padding: 3px 9px;
       cursor: pointer;
       text-align: center;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      transition: background 60ms ease-out;
     }
-    button:last-child { border-right: none; }
+    button:first-child { border-left: none; }
     button:hover {
       background: var(--app-tint-2);
       color: var(--app-text-color1, #eaeaea);
     }
     button[active] {
-      background: var(--app-hi-color2, #4169E1);
-      color: #fff;
+      color: var(--app-hi-color2, #4169E1);
+      background: var(--app-tint-3);
+      box-shadow: inset 0 -2px 0 var(--app-hi-color2, #4169E1);
     }
-    button[active]:hover {
-      background: var(--app-hi-color2, #4169E1);
-    }
+    button[active]:hover { background: var(--app-tint-3); }
 
-    /* Wrap mode: options flow onto multiple rows as discrete chips (each
-     * keeps its own border + corner) rather than one seamless segmented
-     * strip. Used for large enums like blend modes. */
+    /* Wrap mode (large enums like blend modes): the connected segments flow onto
+       multiple rows, centred. */
     :host([wrap]) { align-items: flex-start; }
     :host([wrap]) .label { padding-top: 4px; }
     :host([wrap]) .tabs {
       flex-wrap: wrap;
-      gap: 2px;
-      border: none;
-      overflow: visible;
+      justify-content: center;
     }
-    :host([wrap]) button {
-      flex: 0 1 auto;
-      border: 1px solid var(--app-tint-4);
-      border-radius: 1px;
-    }
+    :host([wrap]) button { flex: 0 1 auto; }
   `;
 
   render() {
