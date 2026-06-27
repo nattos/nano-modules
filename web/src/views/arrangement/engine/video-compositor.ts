@@ -82,6 +82,12 @@ interface Pump {
   lastTargetSec?: number;
   lastTickMs?: number;
   rateEwma: number;
+  // Telemetry (logged when `globalThis.__arrVideoLog` is on): inject cadence + scenario-once.
+  lastInjectMs?: number;
+  injectGapSumMs: number;
+  injectGapMax: number;
+  injectCount: number;
+  loggedScenario?: boolean;
   /** Last injected {frame|scaleMode|size} — skip redundant re-decodes (a static
    *  image / a paused video would otherwise re-blit the same frame every rAF;
    *  the worker re-binds the stored texture each tick regardless). */
@@ -242,6 +248,9 @@ export class VideoCompositor {
         durationSec: info.durationSec,
         busy: false,
         rateEwma: 0,
+        injectGapSumMs: 0,
+        injectGapMax: 0,
+        injectCount: 0,
       });
       this.failedAt.delete(d.clipId); // opened cleanly → clear any prior failure
       // Backfill the clip's authoritative native size (the placement widget's aspect).
@@ -281,6 +290,38 @@ export class VideoCompositor {
       if (pump.busy) continue;
       pump.busy = true;
       void this.pumpClip(pump, beat, bpm);
+    }
+    this.maybeLog(beat);
+  }
+
+  private lastLogMs = 0;
+  /** Periodic playback telemetry (≈1Hz). Enable in the console with
+   *  `globalThis.__arrVideoLog = true`. Logs each clip's action mix (play/seek/hold),
+   *  drift, seek durations, and the real inject cadence — so a stutter's cause (loop-wrap
+   *  seeks vs decode lag vs gate holds) is visible. */
+  private maybeLog(beat: number) {
+    if (!(globalThis as unknown as { __arrVideoLog?: boolean }).__arrVideoLog) return;
+    const t = nowMs();
+    if (this.lastLogMs && t - this.lastLogMs < 1000) return;
+    this.lastLogMs = t;
+    for (const [id, p] of this.pumps) {
+      if (!p.loggedScenario) {
+        p.loggedScenario = true;
+        const l = p.desc.loop;
+        console.log(`[vid ${id}] scenario ${p.width}x${p.height} fps=${p.fps.toFixed(2)} frames=${p.frameCount} dur=${p.durationSec.toFixed(2)}s mode=${l?.mode ?? 'time'} slice=[${(l?.startSec ?? 0).toFixed(2)},${(l?.endSec ?? p.durationSec).toFixed(2)}]s speed=${l?.speed ?? 1} dir=${l?.direction ?? 'forward'}`);
+      }
+      const s = p.cursor.snapshotStats();
+      const driftAvg = s.ticks ? (s.driftSumSec / s.ticks) * 1000 : 0;
+      const seekAvg = s.seeksDone ? s.seekMsSum / s.seeksDone : 0;
+      const injAvg = p.injectCount ? p.injectGapSumMs / p.injectCount : 0;
+      console.log(
+        `[vid ${id}] ${s.ticks}t play=${s.play} seek=${s.seek} hold=${s.hold} notReady=${s.notReady}` +
+        ` | drift avg=${driftAvg.toFixed(0)}ms max=${(s.driftMaxSec * 1000).toFixed(0)}ms` +
+        ` | seeks=${s.seeksDone} avg=${seekAvg.toFixed(0)}ms max=${s.seekMsMax.toFixed(0)}ms` +
+        ` | inject n=${p.injectCount} avg=${injAvg.toFixed(0)}ms max=${p.injectGapMax.toFixed(0)}ms` +
+        ` | beat=${beat.toFixed(2)} rate=${p.rateEwma.toFixed(3)}`,
+      );
+      p.injectGapSumMs = 0; p.injectGapMax = 0; p.injectCount = 0;
     }
   }
 
@@ -448,6 +489,15 @@ export class VideoCompositor {
       this.lastPulled[d.clipId] = { frame: presentedFrame, handle: res.handle, w: bitmap.width, h: bitmap.height };
       p.lastKey = key;
       this.framesInjected++;
+      // Telemetry: gap since the last NEW frame was pushed (the real cadence the viewer sees).
+      const tNow = nowMs();
+      if (p.lastInjectMs != null) {
+        const gap = tNow - p.lastInjectMs;
+        p.injectGapSumMs += gap;
+        if (gap > p.injectGapMax) p.injectGapMax = gap;
+        p.injectCount++;
+      }
+      p.lastInjectMs = tNow;
       this.setInstanceTexture(d.instanceKey, bitmap);
     } catch (err) {
       this.lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);

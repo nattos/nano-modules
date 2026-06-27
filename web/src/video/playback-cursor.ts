@@ -101,6 +101,23 @@ function awaitFrame(video: HTMLVideoElement, timeoutMs: number): Promise<void> {
 /** Cap on a single seek's wait (matches the service's seekable budget). */
 const SEEK_TIMEOUT_MS = 300;
 
+const now = (): number => globalThis.performance?.now?.() ?? Date.now();
+
+/** Per-cursor rolling telemetry (drained + reset by the pump's periodic logger). Answers
+ *  "is playback a steady forward play, or is it thrashing seeks / drifting / stalling?" */
+export interface CursorStats {
+  ticks: number;
+  play: number; seek: number; hold: number;
+  /** present() returned a frame but it WASN'T within tolerance of the target (gate would hold). */
+  notReady: number;
+  driftSumSec: number; driftMaxSec: number; // |presented − target|
+  seeksDone: number; seekMsSum: number; seekMsMax: number; // begin→landed durations
+}
+
+function freshStats(): CursorStats {
+  return { ticks: 0, play: 0, seek: 0, hold: 0, notReady: 0, driftSumSec: 0, driftMaxSec: 0, seeksDone: 0, seekMsSum: 0, seekMsMax: 0 };
+}
+
 export class PlaybackCursor {
   private device: GPUDevice;
   private seeking = false;
@@ -110,6 +127,8 @@ export class PlaybackCursor {
   /** Source second of the frame actually IN the texture (not the element's currentTime,
    *  which jumps to a seek target before that frame has decoded). */
   private lastPresentedSec = 0;
+  private stats = freshStats();
+  private seekStartMs = 0;
 
   /**
    * @param gpuHost   the shared GPU stack.
@@ -158,6 +177,9 @@ export class PlaybackCursor {
       seeking: this.seeking,
     });
 
+    this.stats.ticks++;
+    this.stats[action.kind]++;
+
     switch (action.kind) {
       case 'play': {
         // Phase-lock: nudge playbackRate to close any standing offset between the presented
@@ -182,7 +204,19 @@ export class PlaybackCursor {
     // jumped to the target while the old frame is still presented; copying it would
     // mislabel a stale frame as the target). beginSeek's landing callback copies instead.
     if (!this.seeking && v.readyState >= 2) this.copyFrame();
+    // Telemetry: how far the presented frame is from the target, and whether it'd pass the gate.
+    const drift = Math.abs(this.lastPresentedSec - targetSec);
+    this.stats.driftSumSec += drift;
+    if (drift > this.stats.driftMaxSec) this.stats.driftMaxSec = drift;
+    if (!this.ready(targetSec)) this.stats.notReady++;
     return this.hasFrame ? { handle: this.texHandle, sec: this.lastPresentedSec } : null;
+  }
+
+  /** Drain + reset the rolling telemetry (the pump logs it periodically). */
+  snapshotStats(): CursorStats {
+    const s = this.stats;
+    this.stats = freshStats();
+    return s;
   }
 
   /** Explicit seek (e.g. a scrub) — pauses + seeks; ready() flips true when it lands. */
@@ -197,11 +231,16 @@ export class PlaybackCursor {
     if (this.seeking) return;
     if (Math.abs(v.currentTime - sec) < 0.5 / Math.max(1, this.fps) && v.readyState >= 2) return; // already there
     this.seeking = true;
+    this.seekStartMs = now();
     try { v.currentTime = sec; } catch { this.seeking = false; return; }
     void awaitFrame(v, SEEK_TIMEOUT_MS).then(() => {
       if (this.released) return;
       this.seeking = false;
       if (v.readyState >= 2) this.copyFrame();
+      const ms = now() - this.seekStartMs;
+      this.stats.seeksDone++;
+      this.stats.seekMsSum += ms;
+      if (ms > this.stats.seekMsMax) this.stats.seekMsMax = ms;
     });
   }
 
