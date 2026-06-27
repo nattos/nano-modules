@@ -529,7 +529,7 @@ export class ArrClip extends MobxLitElement {
             class="ico"
             icon=${missing ? 'la-exclamation-triangle' : isVideo ? 'la-film' : modOnly ? 'la-wave-square' : 'la-layer-group'}
           ></ui-icon>
-          <span class="name">${clip.name}</span>
+          <span class="name">${store.clipDisplayName(clip)}</span>
         </div>
         ${isVideo
           ? html`<div class="body reel" @pointerdown=${this.onBodyDown}><canvas></canvas></div>`

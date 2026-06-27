@@ -71,6 +71,10 @@ export class ArrMonitor extends MobxLitElement {
       width: 100%;
       height: 100%;
       display: block;
+      /* The canvas backing store is the COMPOSITION resolution (so a right-click
+         "Save image as" yields a clean full-res frame); the browser letterboxes it
+         into the stage at the composition aspect, checkerboard showing in the bars. */
+      object-fit: contain;
     }
     .label {
       position: absolute;
@@ -203,29 +207,30 @@ export class ArrMonitor extends MobxLitElement {
     window.addEventListener('pointerup', up);
   };
 
-  /** Canvas 2D context sized to the element (DPR-aware). null if unsized. */
+  /** Canvas 2D context, backing store sized to the COMPOSITION resolution (so the
+   *  saved frame is full-res; the browser scales the canvas down for display via
+   *  `object-fit: contain`). null if unsized. */
   private sizedCtx(): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
     const canvas = this.canvas;
     if (!canvas) return null;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    if (w <= 0 || h <= 0) return null;
-    const dpr = window.devicePixelRatio || 1;
-    const bw = Math.floor(w * dpr);
-    const bh = Math.floor(h * dpr);
-    if (canvas.width !== bw || canvas.height !== bh) {
-      canvas.width = bw;
-      canvas.height = bh;
+    const res = store.composition.meta.resolution;
+    const w = Math.max(1, Math.round(res.width));
+    const h = Math.max(1, Math.round(res.height));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
     }
     const ctx = canvas.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     return { ctx, w, h };
   }
 
   /**
    * Draw the single combined composite (all active layers — effect chains AND
    * video clips — are folded into ONE GPU sketch by the bridge, with cross-track
-   * effect input, per-track opacity, and blend modes already applied).
+   * effect input, per-track opacity, and blend modes already applied). The canvas
+   * IS the composition frame (resolution + aspect), so the composite fills it
+   * edge-to-edge — CSS `object-fit: contain` letterboxes it into the stage.
    */
   private redraw() {
     const s = this.sizedCtx();
@@ -239,7 +244,9 @@ export class ArrMonitor extends MobxLitElement {
     if (!engineBridge.hasContent) return;        // backdrop only — no clips yet
     const bmp = engineBridge.engineComposite();
     if (!bmp) return;                            // booting — backdrop only
-    this.drawContain(ctx, bmp, w, h);            // opacity/blend baked in
+    // Both the canvas and the engine output are at the composition aspect, so fill
+    // the whole frame (opacity/blend already baked into bmp).
+    ctx.drawImage(bmp, 0, 0, w, h);
   }
 
   /** The composite backdrop fill, or null for transparent (checkerboard). */
@@ -248,19 +255,5 @@ export class ArrMonitor extends MobxLitElement {
     if (mode === 'transparent') return null;
     if (mode === 'custom') return store.backgroundColor || '#000';
     return '#000';
-  }
-
-  /**
-   * Contain-fit (letterbox) a bitmap into w×h centred, so the WHOLE composition
-   * frame is visible at its true aspect ratio (the engine renders at the
-   * composition resolution's aspect) rather than cropping to fill. The backdrop
-   * is already painted by `redraw()`, so letterbox bars keep the backdrop color
-   * (or stay transparent → checkerboard).
-   */
-  private drawContain(ctx: CanvasRenderingContext2D, bmp: ImageBitmap, w: number, h: number) {
-    const scale = Math.min(w / bmp.width, h / bmp.height);
-    const dw = bmp.width * scale;
-    const dh = bmp.height * scale;
-    ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
   }
 }

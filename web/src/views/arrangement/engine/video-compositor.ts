@@ -95,6 +95,10 @@ export class VideoCompositor {
   private pumps = new Map<string, Pump>();
   /** Clips currently being opened (async), to avoid double-open. */
   private opening = new Set<string>();
+  /** Clips whose source FAILED to open/decode (missing file, bad codec, …). They'll
+   *  never produce a frame, so the Precise transport gate must treat them as "ready"
+   *  (don't hold the playhead) and render them transparent. Cleared on source swap. */
+  private failedClips = new Set<string>();
   private raf = 0;
 
   /** Warp-aware beat→seconds. Defaults to the un-warped base-BPM clock; the bridge
@@ -167,6 +171,8 @@ export class VideoCompositor {
         this.service?.close(pump.clip).catch(() => {});
       }
     }
+    // Forget broken clips that are no longer active (re-adding retries fresh).
+    for (const id of [...this.failedClips]) if (!wanted.has(id)) this.failedClips.delete(id);
     // Open new / update existing timing.
     for (const d of descs) {
       const existing = this.pumps.get(d.clipId);
@@ -178,11 +184,13 @@ export class VideoCompositor {
           this.setInstanceTexture(existing.desc.instanceKey, null);
           this.service?.close(existing.clip).catch(() => {});
           this.pumps.delete(d.clipId);
+          this.failedClips.delete(d.clipId); // new source → give it a fresh chance
           if (!this.opening.has(d.clipId)) void this.openClip(d);
         } else {
           existing.desc = d; // startBeat/length/instanceKey may have changed
         }
-      } else if (!this.opening.has(d.clipId)) {
+      } else if (!this.opening.has(d.clipId) && !this.failedClips.has(d.clipId)) {
+        // Skip clips already known-broken at this URL — don't re-attempt every frame.
         void this.openClip(d);
       }
     }
@@ -211,6 +219,10 @@ export class VideoCompositor {
       });
     } catch (err) {
       console.warn('[video-compositor] open failed:', d.url, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+      // Mark broken so the Precise gate stops waiting on it (the playhead barrels
+      // through; the clip renders transparent) and we don't re-open it every frame.
+      this.failedClips.add(d.clipId);
+      this.setInstanceTexture(d.instanceKey, null);
     } finally {
       this.opening.delete(d.clipId);
       if (this.pumps.size > 0) this.start();
@@ -407,6 +419,7 @@ export class VideoCompositor {
    * pump (still opening) is NOT ready.
    */
   clipReady(clipId: string, beat: number, bpm: number): boolean {
+    if (this.failedClips.has(clipId)) return true; // broken → "ready" so the gate stops waiting
     if (this.opening.has(clipId)) return false;
     const pump = this.pumps.get(clipId);
     if (!pump) return false;

@@ -854,6 +854,50 @@ export class ArrangementStore {
     return this.composition.tracks.find((t) => t.id === id);
   }
 
+  // ── Display names (the `#` token) ─────────────────────────────────────
+  // A name containing `#` is a smart default: `#` is replaced AT DISPLAY TIME by
+  // context, so the raw stored name (e.g. "Track #") stays a template and auto-
+  // renumbers, while a user-typed name (no `#`) is shown verbatim.
+
+  /** 1-based index of `track` among its OWN kind (groups skip the main bus). */
+  trackNumber(track: Track): number {
+    let n = 0;
+    for (const t of this.composition.tracks) {
+      if (t.kind !== track.kind) continue;
+      if (t.kind === 'group' && this.isMainBus(t)) continue;
+      n++;
+      if (t.id === track.id) return n;
+    }
+    return n;
+  }
+
+  /** Track/group name with `#` → its index (raw name returned unchanged if no `#`). */
+  trackDisplayName(track: Track): string {
+    return track.name.includes('#') ? track.name.replace(/#/g, String(this.trackNumber(track))) : track.name;
+  }
+
+  /** What a clip's `#` resolves to: the video filename, else the first generator's
+   *  name, else the first effect/modulator's name, else "Empty". */
+  clipContextLabel(clip: Clip): string {
+    if (clip.source?.url || clip.source?.label) {
+      const label = clip.source.label || clip.source.url || '';
+      // Strip any path + trailing query, keep the bare filename.
+      const base = label.split(/[\\/]/).pop() ?? label;
+      return base.split('?')[0] || 'Video';
+    }
+    const role = (d: Device) => catalogEffect(d.moduleType)?.role;
+    const gen = clip.sketch.devices.find((d) => role(d) === 'generator' || deviceIsSource(d));
+    if (gen) return gen.name || gen.moduleType;
+    const fx = clip.sketch.devices.find((d) => role(d) === 'effect');
+    if (fx) return fx.name || fx.moduleType;
+    return 'Empty';
+  }
+
+  /** Clip name with `#` → its context label (raw name unchanged if no `#`). */
+  clipDisplayName(clip: Clip): string {
+    return clip.name.includes('#') ? clip.name.replace(/#/g, this.clipContextLabel(clip)) : clip.name;
+  }
+
   clipByPath(path: string): { track: Track; clip: Clip } | undefined {
     const [kind, trackId, clipId] = path.split('/');
     if (kind !== 'clip') return undefined;
@@ -2399,7 +2443,7 @@ export class ArrangementStore {
     if (!track || track.kind !== 'track') return null;
     const clip: Clip = {
       id: uid('clip'),
-      name: 'New Clip',
+      name: '#',
       startBeat: Math.max(0, startBeat),
       lengthBeat,
       kind: 'effect',
@@ -3075,7 +3119,7 @@ export class ArrangementStore {
     const id = uid('trk');
     const track: Track = {
       id,
-      name: 'New Track',
+      name: 'Track #',
       kind: 'track',
       parentId,
       color: 'var(--app-cat-source)',
@@ -3145,7 +3189,7 @@ export class ArrangementStore {
     const groupId = uid('grp');
     const group: Track = {
       id: groupId,
-      name: 'New Group',
+      name: 'Group #',
       kind: 'group',
       parentId: null,
       color: 'var(--app-cat-composite)',
@@ -3182,7 +3226,7 @@ export class ArrangementStore {
         // Nothing selected → group + one empty child track, placed above the bus.
         const child: Track = {
           id: uid('trk'),
-          name: 'New Track',
+          name: 'Track #',
           kind: 'track',
           parentId: groupId,
           color: 'var(--app-cat-source)',

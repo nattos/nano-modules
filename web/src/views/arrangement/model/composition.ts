@@ -554,7 +554,7 @@ export function defaultClipLoop(videoDurSec?: number): ClipLoopConfig {
 export function makeStarterTrack(): Track {
   return {
     id: 'track-1',
-    name: 'Track 1',
+    name: 'Track #',
     kind: 'track',
     parentId: null,
     color: 'var(--app-cat-source)',

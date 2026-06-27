@@ -34,6 +34,10 @@ export type EditableLabelProvider = (opts: { value: string }) => HTMLElement;
 @customElement('editable-label')
 export class EditableLabel extends LitElement {
   @property() value = '';
+  /** Optional resolved text shown when NOT editing (e.g. a `#`-token name expanded
+   *  to its context). Edit mode still seeds from the raw {@link value}. Empty ⇒ show
+   *  {@link value}. */
+  @property() displayValue = '';
   @property() placeholder = '';
   /**
    * Flat mode: drop the display's own hover background + text cursor so the
@@ -196,16 +200,17 @@ export class EditableLabel extends LitElement {
 
   render() {
     if (!this.editing) {
-      const empty = this.value.length === 0;
+      const shown = this.displayValue !== '' ? this.displayValue : this.value;
+      const empty = shown.length === 0;
       return html`
         <span
           class="display ${empty ? 'placeholder' : ''}"
           role="button"
           tabindex="0"
-          aria-label=${this.value || this.placeholder}
+          aria-label=${shown || this.placeholder}
           @dblclick=${() => this.beginEdit()}
           @keydown=${this.onDisplayKeydown}
-        >${empty ? this.placeholder : this.value}</span>
+        >${empty ? this.placeholder : shown}</span>
       `;
     }
     if (this.provider && this.editorEl) {

@@ -14,7 +14,7 @@
  */
 
 import { LitElement, html, css, type PropertyValues } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { placeGeom, type BlitFit, type BlitTransform, type PlaceGeom } from '../../../video/frame-blitter';
 import '../../../widgets/scalar-slider';
 import '../../../widgets/editable-number';
@@ -27,6 +27,10 @@ export class SourceTransformWidget extends LitElement {
   /** Source native pixel size — the frame rect's aspect. Falls back to canvas aspect. */
   @property({ type: Number }) videoW = 0;
   @property({ type: Number }) videoH = 0;
+  /** Source media URL — probed for its native size when {@link videoW}/{@link videoH}
+   *  aren't supplied (legacy clips / un-probed sources), so the frame rect still shows
+   *  the real aspect instead of falling back to a square. */
+  @property() srcUrl = '';
   @property() mode: BlitFit = 'fit';
   @property({ attribute: false }) transform: BlitTransform = {
     anchorX: 0.5, anchorY: 0.5, scale: 1, rotation: 0, flipH: false, flipV: false,
@@ -36,6 +40,16 @@ export class SourceTransformWidget extends LitElement {
 
   /** Drag state: pointer grab offset (canvas-normalised) from the frame's top-left. */
   private drag: { offX: number; offY: number; rectW: number; rectH: number } | null = null;
+
+  /** Probed native size (when not supplied via videoW/videoH), keyed by the URL we
+   *  probed so a source swap re-probes. */
+  @state() private probedW = 0;
+  @state() private probedH = 0;
+  private probedUrl = '';
+
+  /** Effective source size — the supplied dimensions, else the probed ones. */
+  private get effW(): number { return this.videoW > 0 ? this.videoW : this.probedW; }
+  private get effH(): number { return this.videoH > 0 ? this.videoH : this.probedH; }
 
   static styles = css`
     :host { display: block; }
@@ -63,13 +77,16 @@ export class SourceTransformWidget extends LitElement {
       border: 1px solid var(--app-tint-4, #3a3a3a); border-radius: 2px;
       --editable-text-pad: 1px 4px;
     }
-    .seg { display: inline-flex; border: 1px solid var(--app-tint-4, #3a3a3a); border-radius: 2px; overflow: hidden; }
+    .seg { display: inline-flex; border: 1px solid var(--app-tint-4, #3a3a3a); border-radius: 4px; overflow: hidden; background: var(--app-bg-color1, #1a1a1a); }
     .seg button {
       font-family: inherit; font-size: var(--app-fs-xs, 11px); border: none;
-      background: var(--app-bg-color1, #1a1a1a); color: var(--app-text-color2, #aaa);
-      padding: 2px 7px; cursor: pointer;
+      border-left: 1px solid var(--app-tint-4, #3a3a3a);
+      background: transparent; color: var(--app-text-color2, #aaa);
+      padding: 3px 9px; cursor: pointer; transition: background 0.1s, color 0.1s;
     }
-    .seg button.on { background: var(--app-hi-color2, #4169e1); color: #fff; }
+    .seg button:first-child { border-left: none; }
+    .seg button:hover { background: var(--app-tint-2); color: var(--app-text-color1); }
+    .seg button.on { color: var(--app-hi-color2, #4169e1); background: var(--app-tint-3); box-shadow: inset 0 -2px 0 var(--app-hi-color2, #4169e1); }
     .flip { display: inline-flex; gap: 4px; }
     .flip button {
       font-family: inherit; font-size: var(--app-fs-xs, 11px); display: inline-flex; align-items: center; gap: 3px;
@@ -85,8 +102,8 @@ export class SourceTransformWidget extends LitElement {
    *  the canvas aspect — so it's not snug to either edge and the anchor stays
    *  draggable on both axes (the actual render still uses the real texture size). */
   private framePlaceGeom(): PlaceGeom {
-    if (this.videoW > 0 && this.videoH > 0) {
-      return placeGeom(this.videoW, this.videoH, this.canvasW, this.canvasH, this.mode, this.transform, this.canvasW, this.canvasH);
+    if (this.effW > 0 && this.effH > 0) {
+      return placeGeom(this.effW, this.effH, this.canvasW, this.canvasH, this.mode, this.transform, this.canvasW, this.canvasH);
     }
     const side = 0.6 * Math.min(this.canvasW, this.canvasH) * Math.max(1e-3, this.transform.scale);
     const w = side / Math.max(1, this.canvasW);
@@ -98,7 +115,38 @@ export class SourceTransformWidget extends LitElement {
   }
 
   updated(_c: PropertyValues) {
+    this.maybeProbe();
     this.draw();
+  }
+
+  /** When the source size wasn't supplied, probe the media URL for its native size
+   *  (a hidden <video>/<img> metadata load) so the frame rect shows the real aspect.
+   *  Idempotent per URL; cheap for an already-decoded blob URL. */
+  private maybeProbe() {
+    if ((this.videoW > 0 && this.videoH > 0) || !this.srcUrl) return;
+    if (this.probedUrl === this.srcUrl) return; // already probed (or in-flight) this url
+    this.probedUrl = this.srcUrl;
+    this.probedW = 0; this.probedH = 0;
+    const url = this.srcUrl;
+    const apply = (w: number, h: number) => {
+      if (url !== this.srcUrl) return; // source swapped while probing
+      if (w > 0 && h > 0) { this.probedW = w; this.probedH = h; }
+    };
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.muted = true;
+    v.onloadedmetadata = () => {
+      if (v.videoWidth > 0) { apply(v.videoWidth, v.videoHeight); return; }
+      this.probeImage(url, apply);
+    };
+    v.onerror = () => this.probeImage(url, apply);
+    v.src = url;
+  }
+
+  private probeImage(url: string, apply: (w: number, h: number) => void) {
+    const img = new Image();
+    img.onload = () => apply(img.naturalWidth, img.naturalHeight);
+    img.src = url;
   }
 
   /** The canvas box (px, in the pad) the output rect occupies — fit by aspect with
@@ -219,7 +267,9 @@ export class SourceTransformWidget extends LitElement {
     const t = this.transform;
     return html`
       <div class="pad" @pointerdown=${this.onDown} @pointermove=${this.onMove}
-        @pointerup=${this.onUp} @pointercancel=${this.onUp} title="Drag to reposition · hold Option to move past the canvas edge">
+        @pointerup=${this.onUp} @pointercancel=${this.onUp}
+        style="aspect-ratio: ${Math.max(1, this.canvasW)} / ${Math.max(1, this.canvasH)}"
+        title="Drag to reposition · hold Option to move past the canvas edge">
         <canvas></canvas>
       </div>
       <div class="rows">

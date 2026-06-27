@@ -100,25 +100,33 @@ export class ArrClipView extends MobxLitElement {
       color: var(--app-text-color2, #888);
       opacity: 0.6;
     }
+    /* Enum tab bar: connected segments, active one marked by a subtle raised tint +
+       accent underline (not a bright solid fill). */
     .seg {
       display: inline-flex;
       border: 1px solid var(--app-tint-4);
-      border-radius: 2px;
+      border-radius: 4px;
       overflow: hidden;
       width: fit-content;
+      background: var(--app-bg-color1);
     }
     .seg button {
       font-family: inherit;
       font-size: var(--app-fs-xs);
       border: none;
-      background: var(--app-bg-color1);
+      border-left: 1px solid var(--app-tint-4);
+      background: transparent;
       color: var(--app-text-color2);
-      padding: 2px 7px;
+      padding: 3px 9px;
       cursor: pointer;
+      transition: background 0.1s, color 0.1s;
     }
+    .seg button:first-child { border-left: none; }
+    .seg button:hover { background: var(--app-tint-2); color: var(--app-text-color1); }
     .seg button.on {
-      background: var(--app-hi-color2);
-      color: #fff;
+      color: var(--app-hi-color2);
+      background: var(--app-tint-3);
+      box-shadow: inset 0 -2px 0 var(--app-hi-color2);
     }
     .ctl .num {
       font-family: inherit;
@@ -428,6 +436,7 @@ export class ArrClipView extends MobxLitElement {
             .canvasH=${res.height}
             .videoW=${clip.source?.width ?? 0}
             .videoH=${clip.source?.height ?? 0}
+            .srcUrl=${clip.source?.url ?? ''}
             .mode=${scale}
             .transform=${xf}
             .onChange=${(patch: any, ck?: string) => {

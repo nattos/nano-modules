@@ -84,10 +84,14 @@ export class ArrGrid extends MobxLitElement {
     .row {
       display: flex;
       height: ${ROW_HEIGHT}px;
+      /* border-box so the 1px divider is INSIDE the row height — else each row
+         renders ROW_HEIGHT+1 and the marquee / row hit-test drift 1px per row. */
+      box-sizing: border-box;
       border-bottom: 1px solid var(--app-tint-2);
     }
     .row.auto {
       height: ${AUTO_LANE_HEIGHT}px;
+      box-sizing: border-box;
       border-bottom: 1px solid var(--app-tint-2);
     }
     .row.bus {
@@ -648,10 +652,11 @@ export class ArrGrid extends MobxLitElement {
               : ''}
             <span class="dot" style="background:${accent}"></span>
             ${isBus || isRail
-              ? html`<span class="tname">${isBus ? '▸ ' + track.name : track.name}</span>`
+              ? html`<span class="tname">${isBus ? '▸ ' + track.name : store.trackDisplayName(track)}</span>`
               : html`<editable-label
                   class="tname"
                   .value=${track.name}
+                  .displayValue=${store.trackDisplayName(track)}
                   placeholder="Untitled track"
                   @commit=${(e: CustomEvent) => store.renameTrack(track.id, e.detail)}
                 ></editable-label>`}

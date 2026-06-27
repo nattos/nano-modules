@@ -324,26 +324,39 @@ export class ArrInspector extends MobxLitElement {
       background: rgba(65, 105, 225, 0.12);
     }
     .src-missing { color: var(--app-error, #e0564a); font-weight: 600; }
-    .seg { display: inline-flex; gap: 0; }
+    /* Enum tab bar: one connected control, segments sharing 1px dividers, the
+       active one marked by a subtle raised tint + an accent underline (no bright
+       fill). The outer border + radius + overflow:hidden round the whole group. */
+    .seg {
+      display: inline-flex;
+      gap: 0;
+      border: 1px solid var(--app-tint-4);
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--app-bg-color1);
+    }
     .segbtn {
       font: inherit;
       font-size: var(--app-fs-xs);
       text-transform: capitalize;
       color: var(--app-text-color2);
-      background: var(--app-tint-2);
-      border: 1px solid var(--app-tint-4);
-      border-right-width: 0;
-      padding: 2px 7px;
+      background: transparent;
+      border: none;
+      border-left: 1px solid var(--app-tint-4);
+      padding: 3px 9px;
       cursor: pointer;
+      transition: background 0.1s, color 0.1s;
     }
-    .segbtn:first-child { border-radius: 3px 0 0 3px; }
-    .segbtn:last-child { border-right-width: 1px; border-radius: 0 3px 3px 0; }
-    .segbtn:hover { background: var(--app-tint-3); }
-    .segbtn.on { color: var(--app-hi-color2); background: rgba(65, 105, 225, 0.14); border-color: var(--app-hi-color2); }
-    /* Wrapping variant (the 16-mode blend selector): discrete chips that flow onto
-       multiple rows, each individually rounded. */
-    .seg.wrap { display: flex; flex-wrap: wrap; gap: 3px; }
-    .seg.wrap .segbtn { border-right-width: 1px; border-radius: 3px; }
+    .segbtn:first-child { border-left: none; }
+    .segbtn:hover { background: var(--app-tint-2); color: var(--app-text-color1); }
+    .segbtn.on {
+      color: var(--app-hi-color2);
+      background: var(--app-tint-3);
+      box-shadow: inset 0 -2px 0 var(--app-hi-color2);
+    }
+    /* Wrapping variant (the 16-mode blend selector): segments still connected, but
+       the row flows onto multiple lines. */
+    .seg.wrap { display: flex; flex-wrap: wrap; }
     .ws-list {
       display: flex;
       flex-direction: column;
@@ -629,6 +642,7 @@ export class ArrInspector extends MobxLitElement {
         Clip ·
         <editable-label
           .value=${clip.name}
+          .displayValue=${store.clipDisplayName(clip)}
           placeholder="Untitled clip"
           @commit=${(e: CustomEvent) => store.renameClip(found.track.id, clip.id, e.detail)}
         ></editable-label>
@@ -742,7 +756,7 @@ export class ArrInspector extends MobxLitElement {
     if (!track) return html`<div class="empty">Track not found.</div>`;
     const isRail = track.kind === 'rail';
     return html`
-      <div class="section-header">${track.kind === 'group' ? 'Group' : isRail ? 'Return' : 'Track'} · ${track.name}</div>
+      <div class="section-header">${track.kind === 'group' ? 'Group' : isRail ? 'Return' : 'Track'} · ${store.trackDisplayName(track)}</div>
       <div class="body">
         ${isRail
           ? html`<div class="row">
@@ -794,17 +808,6 @@ export class ArrInspector extends MobxLitElement {
                   >${name}</button>`,
                 )}
               </span>
-            </div>`}
-        ${store.isMainBus(track)
-          ? ''
-          : html`<div class="row">
-              <button
-                title="Delete this track (⌫)"
-                style="font-family:inherit;font-size:var(--app-fs-xs);color:var(--app-error);background:var(--app-bg-color1);border:1px solid var(--app-tint-4);border-radius:2px;padding:3px 8px;cursor:pointer"
-                @click=${() => store.deleteSelectedTracks()}
-              >
-                Delete track
-              </button>
             </div>`}
         ${isRail
           ? '' /* Returns carry no effect chain — they're value-only rails. */

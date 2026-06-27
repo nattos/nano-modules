@@ -14,6 +14,7 @@ import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
 import '../../../widgets/editable-number';
 import '../../../widgets/bars-beats-field';
+import '../../../widgets/scalar-slider';
 
 export const playModeControlsStyles = css`
   .pm-row {
@@ -42,6 +43,11 @@ export const playModeControlsStyles = css`
   .pm-seg button.on {
     background: var(--app-hi-color2);
     color: #fff;
+  }
+  .pm-slider {
+    font-size: var(--app-fs-xs);
+    width: 100%;
+    min-width: 0;
   }
   .pm-num {
     font-size: var(--app-fs-xs);
@@ -98,6 +104,19 @@ export function renderPlayModeControls(
     .precision=${step >= 1 ? 0 : 3}
     @input=${(e: CustomEvent<number>) => on(e.detail)}
   ></editable-number>`;
+  // A seconds-into-the-source SLIDER bounded by the source duration (double-click to
+  // type an exact value). Falls back to the number input when the duration is unknown.
+  const secSlider = (val: number, on: (n: number) => void, max: number) => max > 0
+    ? html`<scalar-slider
+        class="pm-slider"
+        .value=${Number.isFinite(val) ? val : 0}
+        .min=${0}
+        .max=${max}
+        .step=${Math.max(0.01, Math.round((max / 200) * 100) / 100)}
+        .units=${'s'}
+        @input=${(e: CustomEvent<number>) => on(e.detail)}
+      ></scalar-slider>`
+    : num(val, on);
   const seg = <T extends string>(opts: readonly T[], cur: T, on: (v: T) => void) => html`<div class="pm-seg">
     ${opts.map((o) => html`<button class=${cur === o ? 'on' : ''} @click=${() => on(o)}>${o}</button>`)}
   </div>`;
@@ -105,12 +124,17 @@ export function renderPlayModeControls(
     <div class="pm-row"><span>Play mode</span>
       ${seg(['one-shot', 'time', 'beat-sync', 'random'] as const, loop.mode, (m) => onPatch({ mode: m }))}
     </div>
-    <div class="pm-row"><span>${random ? 'Range start (s)' : 'Start (s)'}</span>${num(loop.startSec ?? 0, (n) => onPatch({ startSec: n }))}</div>
+    <div class="pm-row"><span>${random ? 'Range start (s)' : 'Start (s)'}</span>
+      ${loop.mode === 'one-shot'
+        // one-shot start may be negative (transparent lead-in) → free number input.
+        ? num(loop.startSec ?? 0, (n) => onPatch({ startSec: n }))
+        : secSlider(loop.startSec ?? 0, (n) => onPatch({ startSec: n }), endDefault)}
+    </div>
     ${loop.mode === 'one-shot'
       ? ''
-      : html`<div class="pm-row"><span>${random ? 'Range end (s)' : 'End (s)'}</span>${num(loop.endSec ?? endDefault, (n) => onPatch({ endSec: n }))}</div>`}
+      : html`<div class="pm-row"><span>${random ? 'Range end (s)' : 'End (s)'}</span>${secSlider(loop.endSec ?? endDefault, (n) => onPatch({ endSec: n }), endDefault)}</div>`}
     ${looping
-      ? html`<div class="pm-row"><span>Play start (s)</span>${num(loop.playStartSec ?? loop.startSec ?? 0, (n) => onPatch({ playStartSec: n }))}</div>`
+      ? html`<div class="pm-row"><span>Play start (s)</span>${secSlider(loop.playStartSec ?? loop.startSec ?? 0, (n) => onPatch({ playStartSec: n }), endDefault)}</div>`
       : ''}
     ${loop.mode === 'beat-sync'
       ? html`<div class="pm-row"><span>Loop (bars.beats.16ths)</span>
