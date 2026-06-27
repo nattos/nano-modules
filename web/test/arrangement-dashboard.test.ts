@@ -30,6 +30,9 @@ describe('Arrangement dashboard (real widgets)', () => {
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },
     );
+    // Boot is now an empty document; this suite exercises rich dashboard widgets,
+    // so load the bundled demo composition (clips with rail reads/exports).
+    await page.evaluate(() => (window as any).arrangementStore.loadDemoComposition());
   });
 
   it('renders a real <scalar-knob> for a rail read; its binding reads/writes the store', async () => {

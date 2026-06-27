@@ -863,6 +863,14 @@ export class ArrInspector extends MobxLitElement {
                 </button>`
               : ''}
           </div>
+          <div class="ws-drop-hint" style="margin-top:14px">
+            Or explore a populated example (not saved to disk):
+          </div>
+          <div class="ws-toolbar">
+            <button class="btn" @click=${() => store.loadDemoComposition()}>
+              <ui-icon icon="la-play"></ui-icon> Load demo
+            </button>
+          </div>
         </div>
       `;
     }

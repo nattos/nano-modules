@@ -20,6 +20,8 @@ describe('compositeLayersAtBeat depth', () => {
   };
 
   beforeEach(() => {
+    // Boot is an empty doc with one starter track — ensure two (tA nests, tB sibling).
+    while (store.composition.tracks.filter((t) => t.kind === 'track').length < 2) store.addTrack();
     // Reset hierarchy/flags so cases don't bleed.
     for (const t of store.composition.tracks) {
       t.soloed = false; t.bypassed = false; t.level = undefined; t.parentId = null;

@@ -51,6 +51,8 @@ describe('Arrangement layer pipeline (GPU)', () => {
 
     await page.evaluate(() => {
       const store = (window as any).arrangementStore;
+      // Boot is an empty doc with one starter track — ensure two empty tracks.
+      while (store.composition.tracks.filter((t: any) => t.kind === 'track').length < 2) store.addTrack();
       const tracks = store.composition.tracks.filter((t: any) => t.kind === 'track');
       // Top track: a noise generator (spatially varied).
       let path = store.createEmptyClip(tracks[0].id, 40, 8);

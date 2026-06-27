@@ -50,15 +50,19 @@ describe('Arrangement mockup smoke', () => {
       tabbar: true,
     });
 
-    // The fake composition seeded clips.
-    const clipCount = await page.evaluate(() => {
+    // Boot is now a real EMPTY document: one starter track over the main bus,
+    // zero clips (the old fake-data mockup is retired — opt-in via loadDemoComposition).
+    const boot = await page.evaluate(() => {
       const s = (window as any).arrangementStore;
-      return s.composition.tracks.reduce(
-        (n: number, t: any) => n + t.clips.length,
-        0,
-      );
+      const tracks = s.composition.tracks;
+      return {
+        trackKinds: tracks.map((t: any) => t.kind),
+        clipCount: tracks.reduce((n: number, t: any) => n + t.clips.length, 0),
+      };
     });
-    expect(clipCount).toBeGreaterThan(0);
+    expect(boot.trackKinds).toContain('track'); // a usable starter track
+    expect(boot.trackKinds).toContain('group'); // the main bus
+    expect(boot.clipCount).toBe(0); // nothing seeded
 
     // Programmatic create-clip via the store (double-click path it backs).
     const created = await page.evaluate(() => {

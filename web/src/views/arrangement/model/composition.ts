@@ -522,7 +522,25 @@ export function defaultClipLoop(videoDurSec?: number): ClipLoopConfig {
   };
 }
 
-/** A blank composition — the seed for a freshly created arrangement file. */
+/** A single empty track — the starter content of a fresh document so the timeline
+ *  opens ready to use (drop a clip / add a device) instead of blank. Deterministic
+ *  id; one per composition, so no collision with the bus. */
+export function makeStarterTrack(): Track {
+  return {
+    id: 'track-1',
+    name: 'Track 1',
+    kind: 'track',
+    parentId: null,
+    color: 'var(--app-cat-source)',
+    level: 1, // fully opaque
+    sketch: { devices: [] },
+    automation: [],
+    clips: [],
+  };
+}
+
+/** A blank composition — the seed for a freshly created arrangement file AND the
+ *  app's boot document. Starts with one empty track above the main bus. */
 export function emptyComposition(): Composition {
   return {
     meta: {
@@ -531,7 +549,7 @@ export function emptyComposition(): Composition {
       timeSignature: [4, 4],
       fps: DEFAULT_FPS,
     },
-    tracks: [makeMainBus()],
+    tracks: [makeStarterTrack(), makeMainBus()],
     rails: [],
     playMode: { defaultMode: 'time' },
   };

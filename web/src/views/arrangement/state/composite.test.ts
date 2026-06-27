@@ -19,6 +19,8 @@ describe('compositeClipsAtBeat', () => {
   };
 
   beforeEach(() => {
+    // Boot is an empty doc with one starter track — ensure two for top/bottom.
+    while (store.composition.tracks.filter((t) => t.kind === 'track').length < 2) store.addTrack();
     const tracks = store.composition.tracks.filter((t) => t.kind === 'track');
     topId = tracks[0].id;
     botId = tracks[1].id;

@@ -9,7 +9,8 @@ since making the two surfaces look and feel the same is a deliberate goal.
 > disk persistence, real clip chains, editable automation, real dashboard, real thumbnails,
 > multi-track compositing). `surfaces/fake-binding.ts` + `surfaces/arr-chain.ts` are RETIRED
 > (the inspector mounts the real shared `<column-group>`). Mockup-only leftovers still standing:
-> `model/fake-data.ts` (still the boot default — no real empty-state/file-open flow yet) and
+> `model/fake-data.ts` (RETIRED as the boot default — the app now boots an empty document;
+> it's an opt-in DEMO via `store.loadDemoComposition()` + a "Load demo" button) and
 > `surfaces/film-reel.ts` (procedural fallback when no decoded thumbnail is available).
 > See the per-item status below; the canonical running history lives in the memory note
 > `nano-arrangement-project` and the plan file.
@@ -104,8 +105,11 @@ since making the two surfaces look and feel the same is a deliberate goal.
   evaluable modulation-block effect ABI** (effects emit their own `{mean,lo,hi}` blocks) — makes the
   preview real for ALL modulators and retires the TS mirror. (The old "MOCK oscillation /
   `contribAt`" claim here was stale — that code is gone.)
-- **Real empty-state / file-open flow.** App still boots `makeFakeComposition()`; Component A
-  (workspace mount) is built but not wired into boot.
+- ~~**Real empty-state / file-open flow.**~~ DONE — the app boots an empty document (one starter
+  track over the main bus via `emptyComposition()`); a remembered workspace re-opens over it on
+  boot, the Files tab opens/creates `.nano-arr` files, and the old mockup is opt-in
+  (`store.loadDemoComposition()` + a "Load demo" button). `fake-data.ts` survives only as that demo
+  + an e2e fixture.
 - **Continuous rAF overlay.** `arr-overlay` reconciles wires every frame even when idle — gate it.
 - **Overlay z-order.** Viewport overlay (z 60) draws wires *over* the bottom clip view.
 - **Warp single-source + faked.** Beat-warp lane is a direct sine sum, not the integrated tempo the

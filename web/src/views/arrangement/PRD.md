@@ -429,7 +429,7 @@ honors `transportSeconds` (a step lands exactly on the playhead at any fps).
   in-memory blob. Video-only (the arrangement model has no audio).
 
 ### Later
-Real empty-state/file-open boot (Component A is built but unused at boot); compositor group-bus
+Compositor group-bus
 chains (a group's sketch processing its summed children — blend modes are DONE); offline-evaluable
 modulation-block effect ABI (real rail-lane previews for all modulators, retiring the `env_lfo` TS
 mirror); dynamic-generator film-strip thumbnails (push-capture, `media/THUMBNAIL_CACHE.md`); overlay

@@ -44,6 +44,8 @@ describe('Arrangement multi-track compositing (GPU)', () => {
     // A clear beat (fake clips end by 32). Two real generator clips on two tracks.
     const ids = await page.evaluate(() => {
       const store = (window as any).arrangementStore;
+      // Boot is an empty doc with one starter track — ensure two empty tracks.
+      while (store.composition.tracks.filter((t: any) => t.kind === 'track').length < 2) store.addTrack();
       const tracks = store.composition.tracks.filter((t: any) => t.kind === 'track');
       const top = tracks[0].id, bot = tracks[1].id;
       const mk = (trackId: string) => {

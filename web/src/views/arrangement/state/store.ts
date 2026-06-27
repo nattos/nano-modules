@@ -33,6 +33,8 @@ import {
   DEFAULT_EXPORT_SETTINGS,
   type ExportSettings,
 } from '../model/composition';
+// The bundled demo composition — NOT booted (the app starts empty); loaded only
+// on demand via `loadDemoComposition()` (a "Load demo" affordance + e2e fixtures).
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
@@ -237,7 +239,9 @@ function moveInArray<T>(arr: T[], from: number, to: number) {
 
 export class ArrangementStore {
   // ── Persisted document ────────────────────────────────────────────────
-  composition: Composition = makeFakeComposition();
+  // Boot empty (one starter track over the main bus). A remembered workspace
+  // re-opens over this on boot; the demo is opt-in via `loadDemoComposition()`.
+  composition: Composition = emptyComposition();
 
   // ── Persistence + undo (non-observable infra) ─────────────────────────
   /** Undo/redo over `composition`; all document writes go through `mutate`. */
@@ -722,6 +726,27 @@ export class ArrangementStore {
     if (!this.backend) return;
     await this.createArrangement(this.backend, name, emptyComposition());
     await this.refreshWorkspaceList();
+  }
+
+  /**
+   * Replace the working document with the bundled DEMO composition (the former
+   * fake-data mockup — a populated arrangement to explore). Not booted; this is
+   * an opt-in affordance (and the fixture e2e tests load to exercise rich state).
+   * Behaves like an unsaved scratch doc: detaches from any open file so it can't
+   * overwrite real work, and resets undo history.
+   */
+  loadDemoComposition() {
+    const demo = makeFakeComposition();
+    ArrangementStore.repairIds(demo);
+    runInAction(() => {
+      this.backend = null;
+      this.currentName = null;
+      this.persistenceEnabled = false;
+      this.composition = demo;
+      this.ensureMainBus();
+      this.clearSelection();
+    });
+    this.history.reset();
   }
 
   /** Rename a workspace file (within its directory). `newBase` is the bare name. */
