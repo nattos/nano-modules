@@ -56,7 +56,7 @@ export class ArrRuler extends MobxLitElement {
     }
     .corner button.addtrack {
       width: auto;
-      padding: 0 6px;
+      padding: 0 5px;
       color: var(--app-text-color1);
       white-space: nowrap;
       font-size: var(--app-fs-xs);
@@ -67,6 +67,32 @@ export class ArrRuler extends MobxLitElement {
       min-width: 0;
       cursor: ew-resize;
       touch-action: none;
+    }
+    /* Zoom −/+ float over the right edge of the ruler (no longer in the corner). */
+    .zoomfloat {
+      position: absolute;
+      top: 50%;
+      right: 6px;
+      transform: translateY(-50%);
+      display: flex;
+      gap: var(--app-sp-2);
+      z-index: 4;
+    }
+    .zoomfloat button {
+      font-family: inherit;
+      color: var(--app-text-color2);
+      background: var(--app-bg-color1);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 2px;
+      width: 18px;
+      height: 16px;
+      cursor: pointer;
+      line-height: 1;
+      opacity: 0.85;
+    }
+    .zoomfloat button:hover {
+      background: var(--app-tint-2);
+      opacity: 1;
     }
     canvas {
       position: absolute;
@@ -125,14 +151,12 @@ export class ArrRuler extends MobxLitElement {
         ${this.compact
           ? ''
           : html`<div class="corner" style="width:${v.headerWidth}px">
-          <button title="Zoom out" @click=${() => this.zoomCenter(1 / 1.3)}>−</button>
-          <button title="Zoom in" @click=${() => this.zoomCenter(1.3)}>+</button>
           <button
             class="addtrack"
-            title="Add a track after the last selected track"
-            @click=${() => store.addTrackAfterSelection()}
+            title="Group the selected tracks (or add a group with one empty track)"
+            @click=${() => store.addGroup()}
           >
-            + Track
+            + Group
           </button>
           <button
             class="addtrack"
@@ -140,6 +164,13 @@ export class ArrRuler extends MobxLitElement {
             @click=${() => store.addReturn()}
           >
             + Return
+          </button>
+          <button
+            class="addtrack"
+            title="Add a track after the last selected track"
+            @click=${() => store.addTrackAfterSelection()}
+          >
+            + Track
           </button>
         </div>`}
         <div
@@ -152,6 +183,12 @@ export class ArrRuler extends MobxLitElement {
           @wheel=${this.onWheel}
         >
           <canvas></canvas>
+          ${this.compact
+            ? ''
+            : html`<div class="zoomfloat">
+                <button title="Zoom out" @pointerdown=${(e: Event) => e.stopPropagation()} @click=${() => this.zoomCenter(1 / 1.3)}>−</button>
+                <button title="Zoom in" @pointerdown=${(e: Event) => e.stopPropagation()} @click=${() => this.zoomCenter(1.3)}>+</button>
+              </div>`}
         </div>
       </div>
     `;

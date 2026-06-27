@@ -35,6 +35,12 @@ since making the two surfaces look and feel the same is a deliberate goal.
 
 ## Known pitfalls (hit while building — don't relearn these)
 
+- **Main-bus identity is by ID, not shape.** `isMainBus` once tested `kind==='group' &&
+  parentId===null`, which silently matched ANY user-created top-level group — so the new group
+  got pinned to the bottom like the bus and its children rendered above it. The master bus is now
+  keyed by the reserved id `MAIN_BUS_ID` (`'main-bus'`). A user group is a normal top-level group:
+  it renders ABOVE its (indented) children; the bus stays pinned last.
+
 - **Lit host height collapse.** A component whose only content is an absolutely-positioned
   canvas collapses to height 0 unless the host is `position:absolute; inset:0` (or the parent is
   flex). Bit us on `arr-rail-lane` (canvas drew into a 0-px host → blank envelopes). Probe with

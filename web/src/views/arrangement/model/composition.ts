@@ -494,12 +494,16 @@ export interface Composition {
   loop?: { enabled: boolean; startBeat: number; endBeat: number };
 }
 
+/** Stable id of the master/main-bus group. Identity is by THIS id (not just
+ *  "a top-level group"), so user-created top-level groups aren't mistaken for it. */
+export const MAIN_BUS_ID = 'main-bus';
+
 /** The master/main-bus track — a root group every track sums into. It's the one
  *  mandatory track; the store ensures it exists and never lets it be deleted or
  *  reordered (it always pins to the bottom). */
 export function makeMainBus(): Track {
   return {
-    id: 'main-bus',
+    id: MAIN_BUS_ID,
     name: 'Main Bus',
     kind: 'group',
     parentId: null,

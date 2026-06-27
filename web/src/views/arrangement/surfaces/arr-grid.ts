@@ -633,7 +633,7 @@ export class ArrGrid extends MobxLitElement {
               @dblclick=${(e: MouseEvent) => this.onLaneDblClick(e, track)}
             >
               ${isGroup
-                ? html`<span class="empty-hint">main bus — all tracks sum here</span>`
+                ? html`<span class="empty-hint">${isBus ? 'main bus — all tracks sum here' : 'group — child tracks sum here'}</span>`
                 : track.clips.length === 0
                   ? html`<span class="empty-hint">double-click to add a clip · drag to select</span>`
                   : ''}

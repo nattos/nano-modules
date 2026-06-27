@@ -137,6 +137,56 @@ describe('track structural ops', () => {
     store.moveTrack(bus.id, null);
     expect(store.composition.tracks.map((t) => t.id).join(',')).toBe(before);
   });
+
+  it('addGroup with no selection creates a group containing one empty track', () => {
+    store.clearSelection();
+    const gid = store.addGroup();
+    const g = store.trackById(gid);
+    expect(g?.kind).toBe('group');
+    expect(g?.parentId).toBeNull();
+    const children = store.composition.tracks.filter((t) => t.parentId === gid);
+    expect(children.length).toBe(1);
+    expect(children[0].kind).toBe('track');
+    expect(children[0].clips.length).toBe(0);
+    expect(store.isSelected(paths.track(gid))).toBe(true);
+  });
+
+  it('addGroup with selected tracks moves them under the group, contiguous below it', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    store.selection.add(paths.track(b));
+    (store as any).primaryPath = paths.track(a);
+    const gid = store.addGroup();
+    expect(store.trackById(a)?.parentId).toBe(gid);
+    expect(store.trackById(b)?.parentId).toBe(gid);
+    // The group is placed immediately above its children (so the display nests).
+    const ids = store.composition.tracks.map((t) => t.id);
+    expect(ids.indexOf(a)).toBe(ids.indexOf(gid) + 1);
+    expect(ids.indexOf(b)).toBe(ids.indexOf(gid) + 2);
+  });
+
+  it('addGroup never grabs the main bus or rail/return tracks', () => {
+    const t = store.addTrack();
+    const r = store.addReturn();
+    store.clearSelection();
+    store.selection.add(paths.track(t));
+    store.selection.add(paths.track(r));
+    (store as any).primaryPath = paths.track(t);
+    const gid = store.addGroup();
+    expect(store.trackById(t)?.parentId).toBe(gid);
+    expect(store.trackById(r)?.parentId).toBeNull(); // a return is not grouped
+  });
+
+  it('addGroup is a single undoable action', () => {
+    store.clearSelection();
+    const before = store.composition.tracks.length;
+    store.addGroup();
+    expect(store.composition.tracks.length).toBe(before + 2); // group + empty child
+    store.undo();
+    expect(store.composition.tracks.length).toBe(before);
+  });
 });
 
 describe('cross-track clip moves', () => {

@@ -42,7 +42,7 @@ import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaP
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMedia, resolveMedia } from '../workspace/media-store';
-import { emptyComposition, makeMainBus, defaultClipLoop } from '../model/composition';
+import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID } from '../model/composition';
 
 export type SelectableKind =
   | 'track'
@@ -2917,7 +2917,7 @@ export class ArrangementStore {
 
   // ── Track structure: add / delete / reorder ───────────────────────────
   private static isMainBusTrack(t: Track): boolean {
-    return t.kind === 'group' && t.parentId === null;
+    return t.kind === 'group' && t.id === MAIN_BUS_ID;
   }
 
   /**
@@ -2976,6 +2976,97 @@ export class ArrangementStore {
     });
     this.select(paths.track(id));
     return id;
+  }
+
+  /**
+   * "+ Group" affordance. With NO track selection, create a group containing one
+   * fresh empty track. With tracks selected, create a group and move those tracks
+   * (each with its whole subtree) into it. The group is placed immediately above
+   * its children so the display nests correctly; rails/returns and the main bus
+   * are never grouped. Returns the group id and selects it.
+   */
+  addGroup(): string {
+    const groupId = uid('grp');
+    const group: Track = {
+      id: groupId,
+      name: 'New Group',
+      kind: 'group',
+      parentId: null,
+      color: 'var(--app-cat-composite)',
+      level: 1,
+      sketch: { devices: [] },
+      automation: [],
+      clips: [],
+    };
+
+    // Deliberately-focused, groupable tracks (not the bus, not rails). Reparent
+    // only the OUTERMOST selected tracks — a selected subtree moves as a unit.
+    const selected = new Set(
+      this.selectedTrackIds.filter((id) => {
+        const t = this.trackById(id);
+        return !!t && !this.isMainBus(t) && t.kind !== 'rail';
+      }),
+    );
+    const hasSelectedAncestor = (t: Track): boolean => {
+      let pid = t.parentId;
+      while (pid) {
+        if (selected.has(pid)) return true;
+        pid = this.trackById(pid)?.parentId ?? null;
+      }
+      return false;
+    };
+    const roots = new Set(
+      [...selected].filter((id) => !hasSelectedAncestor(this.trackById(id)!)),
+    );
+
+    this.mutate('add group', (d) => {
+      const isBusT = (t: Track) => t.kind === 'group' && t.parentId === null;
+
+      if (roots.size === 0) {
+        // Nothing selected → group + one empty child track, placed above the bus.
+        const child: Track = {
+          id: uid('trk'),
+          name: 'New Track',
+          kind: 'track',
+          parentId: groupId,
+          color: 'var(--app-cat-source)',
+          level: 1,
+          sketch: { devices: [] },
+          automation: [],
+          clips: [],
+        };
+        const busIdx = d.tracks.findIndex(isBusT);
+        d.tracks.splice(busIdx >= 0 ? busIdx : d.tracks.length, 0, group, child);
+        return;
+      }
+
+      // Move the selected subtrees under the group. A track is in the block if it
+      // is a root or descends from one; the block keeps its current relative order.
+      const byId = new Map(d.tracks.map((t) => [t.id, t] as const));
+      const inBlock = (t: Track): boolean => {
+        let cur: Track | undefined = t;
+        while (cur) {
+          if (roots.has(cur.id)) return true;
+          cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        }
+        return false;
+      };
+      const blockSet = new Set(d.tracks.filter((t) => !isBusT(t) && inBlock(t)).map((t) => t.id));
+      // Anchor on the non-block track that precedes the block, so insertion is stable.
+      const firstIdx = d.tracks.findIndex((t) => blockSet.has(t.id));
+      const anchorId = firstIdx > 0 ? d.tracks[firstIdx - 1].id : null;
+
+      for (const id of roots) { const t = byId.get(id); if (t) t.parentId = groupId; }
+      const block = d.tracks.filter((t) => blockSet.has(t.id));
+      d.tracks = d.tracks.filter((t) => !blockSet.has(t.id));
+
+      let at = anchorId ? d.tracks.findIndex((t) => t.id === anchorId) + 1 : 0;
+      const busIdx = d.tracks.findIndex(isBusT);
+      if (busIdx >= 0 && at > busIdx) at = busIdx; // never below the bus
+      d.tracks.splice(at, 0, group, ...block);
+    });
+    this.select(paths.track(groupId));
+    return groupId;
   }
 
   /** "+ Track" affordance: insert after the last (bottom-most) shown-selected track. */
@@ -3550,9 +3641,10 @@ export class ArrangementStore {
     });
   }
 
-  /** True for the master/main-bus track that pins to the bottom. */
+  /** True for the master/main-bus track that pins to the bottom. Identity is by
+   *  the reserved id — a user-created top-level group is NOT the main bus. */
   isMainBus(track: Track): boolean {
-    return track.kind === 'group' && track.parentId === null;
+    return track.kind === 'group' && track.id === MAIN_BUS_ID;
   }
 
   /** Render order: normal tracks first, main-bus group(s) pinned to bottom. */
