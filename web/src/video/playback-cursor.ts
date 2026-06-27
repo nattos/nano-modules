@@ -195,7 +195,7 @@ export class PlaybackCursor {
    * current frame into the cursor's texture, and returns its handle. The compositor
    * blits this texture to the render size. Returns null until the first frame is ready.
    */
-  present(targetSec: number, rate: number): { handle: number; sec: number } | null {
+  present(targetSec: number, rate: number, speed = rate): { handle: number; sec: number } | null {
     if (this.released) return null;
     const v = this.video;
     if (v.readyState < 1 || !Number.isFinite(v.duration)) return null; // metadata not loaded yet
@@ -215,16 +215,14 @@ export class PlaybackCursor {
 
     switch (action.kind) {
       case 'play': {
-        // Keep playbackRate STEADY. A native <video> plays at exactly 1.0, so its frames
-        // decode at an even cadence; wobbling the rate to phase-lock makes the VIDEO judder
-        // (variable speed → uneven frame times) even though the compositor is perfectly
-        // smooth. So: snap to native speed for normal playback, and phase-lock only GENTLY
-        // (±3%, imperceptible) to close slow drift — never the old ±50% lurch.
-        let base = clampPlaybackRate(action.rate);
-        if (Math.abs(base - 1) < 0.03) base = 1; // normal-speed playback ⇒ exactly native
-        const err = -this.foldedOffset(targetSec); // target − presented (s)
-        const corr = Math.max(-0.03, Math.min(0.03, err * 0.3));
-        v.playbackRate = base * (1 + corr);
+        // playbackRate is a KNOWN value, never a measured one — a measured rate wobbles with
+        // rAF-dt jitter, and ANY playbackRate wobble plays the video at a variable speed →
+        // uneven frame times → judder (proven: a plain `= 1` is glass-smooth). `speed` is the
+        // clip's clean nominal rate from the pump; snap ~1 to exactly native. NO phase-lock:
+        // drift is corrected by the seek path (and, later, frame-selection from a buffer).
+        let pr = clampPlaybackRate(speed);
+        if (Math.abs(pr - 1) < 0.03) pr = 1; // normal-speed playback ⇒ exactly native
+        v.playbackRate = pr;
         if (v.paused) void v.play().catch(() => { /* autoplay blocked */ });
         break;
       }

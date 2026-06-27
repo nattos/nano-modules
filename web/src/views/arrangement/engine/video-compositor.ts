@@ -445,6 +445,31 @@ export class VideoCompositor {
     return p.rateEwma;
   }
 
+  /**
+   * The clip's KNOWN nominal playback rate at `beat` (source-seconds per real-second),
+   * computed analytically from the clip-time mapper on the IDEAL clock — NOT measured from
+   * rAF samples (which jitter). For normal playback this is exactly the clip speed (≈1), so
+   * the cursor can hold a rock-steady playbackRate instead of a wobbling measured one (the
+   * wobble was the video judder). `random` has no analytic rate → 1 (it seeks anyway).
+   */
+  private nominalSpeed(p: Pump, beat: number, bpm: number): number {
+    const d = p.desc;
+    const loop = d.loop ?? DEFAULT_LOOP;
+    if (loop.mode === 'random') return 1;
+    const secondsAt = this.secondsAt ?? ((b: number) => b * (60 / Math.max(1, bpm)));
+    const ctx: ClipTimeCtx = {
+      startBeat: d.startBeat, lengthBeat: d.lengthBeat,
+      videoDurSec: p.frameCount / Math.max(1, p.fps), secondsAt, seed: clipNoiseSeed(d.clipId),
+    };
+    const eps = 0.05; // beats — small, so a loop wrap rarely falls inside (snap handles it if so)
+    const a = clipSourceTimeAt(loop, ctx, beat);
+    const b2 = clipSourceTimeAt(loop, ctx, beat + eps);
+    const ds = secondsAt(beat + eps) - secondsAt(beat);
+    if (a == null || b2 == null || ds <= 1e-9) return 1;
+    const r = (b2 - a) / ds;
+    return Number.isFinite(r) && r > 0 ? Math.min(8, r) : 1;
+  }
+
   private async pumpClip(p: Pump, beat: number, bpm: number) {
     try {
       if (!this.gpuHost || !this.blitter) return;
@@ -454,7 +479,8 @@ export class VideoCompositor {
       // For a clip not yet reached, target its ENTRY (what it shows AT its start) so the
       // cursor pre-seeks there rather than chasing a future / wrong-phase frame.
       const targetSec = this.targetSecFor(p, ahead ? d.startBeat : beat, bpm);
-      const rate = this.trackRate(p, targetSec);
+      const rate = this.trackRate(p, targetSec); // play/seek/hold DECISION (0 ⇒ paused)
+      const speed = this.nominalSpeed(p, ahead ? d.startBeat : beat, bpm); // clean playbackRate magnitude
       // Seamless native loop (like a plain <video loop>, no per-wrap seek) for a FORWARD,
       // WHOLE-FILE looping slice — the wrap point matches the file end. Sub-slice / one-shot
       // / reverse keep seek-on-wrap.
@@ -484,7 +510,7 @@ export class VideoCompositor {
       }
 
       // Drive the cursor (play forward / seek / hold) and sample the current frame.
-      const res = p.cursor.present(targetSec, rate);
+      const res = p.cursor.present(targetSec, rate, speed);
       if (!res || !this.pumps.has(d.clipId)) return; // no frame ready yet
       // Dedup on the PRESENTED frame: a playing frame advances (inject each new one); a
       // held/paused frame repeats (skip the re-blit — the worker keeps the bound texture).
