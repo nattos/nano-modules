@@ -59,6 +59,13 @@ export type TimeResolver = (beat: number) => number;
  *  the whole source in `time` mode at neutral speed. */
 const DEFAULT_LOOP: ClipLoopConfig = { mode: 'time', startSec: 0, speed: 1, direction: 'forward' };
 
+/** Open-retry policy (see {@link VideoCompositor.failedAt}): give a failing clip a few
+ *  spaced attempts before declaring it permanently broken (cold-start failures recover). */
+const FAIL_GIVEUP_TRIES = 4;
+const FAIL_RETRY_MS = 350;
+/** Monotonic-ish millis for the retry backoff (test/headless-safe fallback). */
+const nowMs = (): number => globalThis.performance?.now?.() ?? Date.now();
+
 interface Pump {
   desc: VideoClipDesc;
   clip: ClipHandle;
@@ -95,10 +102,13 @@ export class VideoCompositor {
   private pumps = new Map<string, Pump>();
   /** Clips currently being opened (async), to avoid double-open. */
   private opening = new Set<string>();
-  /** Clips whose source FAILED to open/decode (missing file, bad codec, …). They'll
-   *  never produce a frame, so the Precise transport gate must treat them as "ready"
-   *  (don't hold the playhead) and render them transparent. Cleared on source swap. */
-  private failedClips = new Set<string>();
+  /** Open failures per clip (timestamp of the last attempt + count). A SINGLE failure
+   *  is often transient — the very first clip is warmed before the decode service /
+   *  GPU host is hot, so its open can throw once and then succeed. We therefore RETRY
+   *  (with a short backoff) and only treat a clip as permanently broken — letting the
+   *  Precise gate barrel past it (transparent, no stall) — after {@link FAIL_GIVEUP_TRIES}
+   *  attempts. Cleared on success / source swap. */
+  private failedAt = new Map<string, { at: number; tries: number }>();
   private raf = 0;
 
   /** Notified with a clip's TRUE decoded pixel size the first time it opens, so the
@@ -177,7 +187,7 @@ export class VideoCompositor {
       }
     }
     // Forget broken clips that are no longer active (re-adding retries fresh).
-    for (const id of [...this.failedClips]) if (!wanted.has(id)) this.failedClips.delete(id);
+    for (const id of [...this.failedAt.keys()]) if (!wanted.has(id)) this.failedAt.delete(id);
     // Open new / update existing timing.
     for (const d of descs) {
       const existing = this.pumps.get(d.clipId);
@@ -189,14 +199,18 @@ export class VideoCompositor {
           this.setInstanceTexture(existing.desc.instanceKey, null);
           this.service?.close(existing.clip).catch(() => {});
           this.pumps.delete(d.clipId);
-          this.failedClips.delete(d.clipId); // new source → give it a fresh chance
+          this.failedAt.delete(d.clipId); // new source → give it a fresh chance
           if (!this.opening.has(d.clipId)) void this.openClip(d);
         } else {
           existing.desc = d; // startBeat/length/instanceKey may have changed
         }
-      } else if (!this.opening.has(d.clipId) && !this.failedClips.has(d.clipId)) {
-        // Skip clips already known-broken at this URL — don't re-attempt every frame.
-        void this.openClip(d);
+      } else if (!this.opening.has(d.clipId)) {
+        // Open new — or RETRY a recent failure after a backoff (cold-start failures
+        // recover), but stop re-attempting once it's declared permanently broken.
+        const f = this.failedAt.get(d.clipId);
+        if (!f || (f.tries < FAIL_GIVEUP_TRIES && nowMs() - f.at >= FAIL_RETRY_MS)) {
+          void this.openClip(d);
+        }
       }
     }
     if (this.pumps.size > 0 || this.opening.size > 0) this.start();
@@ -222,17 +236,20 @@ export class VideoCompositor {
         fps: info.fps > 0 ? info.fps : d.fps ?? 30,
         busy: false,
       });
+      this.failedAt.delete(d.clipId); // opened cleanly → clear any prior failure
       // Backfill the clip's authoritative native size (the placement widget's aspect).
       if (info.width > 0 && info.height > 0) this.onClipInfo?.(d.clipId, info.width, info.height);
     } catch (err) {
       console.warn('[video-compositor] open failed:', d.url, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
-      // Mark broken so the Precise gate stops waiting on it (the playhead barrels
-      // through; the clip renders transparent) and we don't re-open it every frame.
-      this.failedClips.add(d.clipId);
-      this.setInstanceTexture(d.instanceKey, null);
+      // Record the failure (count + time). It's RETRIED with a backoff (the first clip
+      // often fails once on a cold service, then opens) and only declared permanently
+      // broken after FAIL_GIVEUP_TRIES, at which point the Precise gate barrels past it.
+      const prev = this.failedAt.get(d.clipId);
+      this.failedAt.set(d.clipId, { at: nowMs(), tries: (prev?.tries ?? 0) + 1 });
+      if (!this.pumps.has(d.clipId)) this.setInstanceTexture(d.instanceKey, null);
     } finally {
       this.opening.delete(d.clipId);
-      if (this.pumps.size > 0) this.start();
+      if (this.pumps.size > 0 || this.opening.size > 0) this.start();
     }
   }
 
@@ -426,7 +443,10 @@ export class VideoCompositor {
    * pump (still opening) is NOT ready.
    */
   clipReady(clipId: string, beat: number, bpm: number): boolean {
-    if (this.failedClips.has(clipId)) return true; // broken → "ready" so the gate stops waiting
+    // Only treat as "ready" (barrel the gate past it) once it's PERMANENTLY broken;
+    // while it still has retries left it stays not-ready so the gate waits for one to land.
+    const f = this.failedAt.get(clipId);
+    if (f && f.tries >= FAIL_GIVEUP_TRIES) return true;
     if (this.opening.has(clipId)) return false;
     const pump = this.pumps.get(clipId);
     if (!pump) return false;
