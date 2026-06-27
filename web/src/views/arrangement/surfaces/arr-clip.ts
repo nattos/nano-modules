@@ -296,20 +296,41 @@ export class ArrClip extends MobxLitElement {
     if (this.clip?.kind !== 'video') return;
     const canvas = this.reelCanvas;
     if (!canvas) return;
-    const w = canvas.clientWidth;
     const h = canvas.clientHeight;
-    if (w <= 0 || h <= 0) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
-    const ctx = canvas.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const clip = this.clip;
+    // Full clip pixel width from the grid (the clip element is sized to this).
+    const grid = buildBeatGrid();
+    const leftX = grid.beatToX(clip.startBeat);
+    const clipW = grid.beatToX(clip.startBeat + clip.lengthBeat) - leftX;
+    if (clipW <= 0 || h <= 0) return;
 
-    const media = this.clip.source;
+    // WINDOW the reel to the visible slice of the clip (clip-local px, plus a small
+    // margin) — a long clip zoomed-in must NOT size a giant canvas or lay out / fetch
+    // every off-screen thumbnail. leftX is the clip's left edge in lane coords (negative
+    // when scrolled off the left); the lane viewport is [0, laneW].
+    const scrollEl = this.gridHost()?.renderRoot?.querySelector?.('.scroll') as HTMLElement | undefined;
+    const laneW = scrollEl ? Math.max(0, scrollEl.clientWidth - store.headerWidth) : clipW;
+    const MARGIN = 240;
+    const visL = Math.max(0, Math.min(clipW, -leftX - MARGIN));
+    const visR = Math.max(0, Math.min(clipW, (laneW - leftX) + MARGIN));
+    const visW = Math.max(0, visR - visL);
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.left = `${visL}px`;
+    canvas.style.right = 'auto';
+    canvas.style.width = `${visW}px`;
+    canvas.width = Math.max(1, Math.floor(visW * dpr));
+    canvas.height = Math.max(1, Math.floor(h * dpr));
+    const ctx = canvas.getContext('2d')!;
+    // Draw in CLIP-LOCAL x (0..clipW); the window's left edge maps to canvas x 0.
+    ctx.setTransform(dpr, 0, 0, dpr, -visL * dpr, 0);
+    if (visW < 1) return; // wholly off-screen
+
+    const media = clip.source;
     if (media?.url && media.sourceKey) {
-      this.drawRealReel(ctx, w, h, media);
+      this.drawRealReel(ctx, clipW, h, media, visL, visR);
     } else {
-      drawFilmReel(ctx, w, h);
+      drawFilmReel(ctx, clipW, h);
     }
   }
 
@@ -327,6 +348,8 @@ export class ArrClip extends MobxLitElement {
     w: number,
     h: number,
     media: NonNullable<Clip['source']>,
+    winL = 0,
+    winR = Infinity,
   ) {
     const sourceKey = media.sourceKey!;
     // Use the DECODER's true frame count + fps once known (drop-import only assumes 30fps),
@@ -387,14 +410,17 @@ export class ArrClip extends MobxLitElement {
     // so both segment edges (= markers) land a panel edge. The boundary thumbnails are
     // PINNED to the boundary content (loop start/end frames) so they don't change as the
     // panels reflow on zoom/resize.
-    const markerXs = this.loopMarkerBeats(loop, timeCtx, spb, w).map((b) => (b / lengthBeat) * w);
+    const wbL = (winL / w) * lengthBeat, wbR = (Number.isFinite(winR) ? winR / w : 1) * lengthBeat;
+    const markerXs = this.loopMarkerBeats(loop, timeCtx, spb, w, wbL, wbR).map((b) => (b / lengthBeat) * w);
     const bounds = [0, ...markerXs, w];
     const panels: Array<{ x: number; cl: number; cr: number; frame: number | null }> = [];
+    const onWin = (px: number) => px + panelW >= winL && px <= winR; // panel [px, px+panelW] intersects the window
     for (let s = 0; s < bounds.length - 1; s++) {
       const L = bounds[s];
       const R = bounds[s + 1];
       const segW = R - L;
       if (segW <= 0.5) continue;
+      if (R < winL || L > winR) continue; // segment wholly outside the visible window → skip
       const startFrame = frameAtBeat(beatAtX(L) + frameEps); // loop/clip start, just past the wrap
       const endFrame = frameAtBeat(beatAtX(R) - frameEps); // loop/clip end, just before the wrap
       if (segW <= panelW) {
@@ -402,12 +428,17 @@ export class ArrClip extends MobxLitElement {
         panels.push({ x: (L + R) / 2 - panelW / 2, cl: L, cr: R, frame: startFrame });
       } else {
         const nFull = Math.floor(segW / panelW);
-        for (let i = 0; i < nFull; i++) {
+        // Only iterate the panels in the window (a very long single segment otherwise
+        // loops over every off-screen panel).
+        const iStart = Number.isFinite(winL) ? Math.max(0, Math.floor((winL - L) / panelW)) : 0;
+        const iEnd = Number.isFinite(winR) ? Math.min(nFull, Math.ceil((winR - L) / panelW) + 1) : nFull;
+        for (let i = iStart; i < iEnd; i++) {
           const px = L + i * panelW;
+          if (!onWin(px)) continue;
           panels.push({ x: px, cl: L, cr: R, frame: i === 0 ? startFrame : frameAtX(px + panelW / 2) });
         }
         const px = R - panelW; // right-anchored final panel (may overlap the last full one)
-        panels.push({ x: px, cl: L, cr: R, frame: endFrame });
+        if (onWin(px)) panels.push({ x: px, cl: L, cr: R, frame: endFrame });
       }
     }
 
@@ -456,7 +487,7 @@ export class ArrClip extends MobxLitElement {
    * phase. Empty for one-shot/random, or when loops are sub-pixel dense (so we don't
    * draw a blur). Shared by the strip layout + the loop bars.
    */
-  private loopMarkerBeats(loop: Clip['loop'] | undefined, timeCtx: ClipTimeCtx, spb: number, w: number): number[] {
+  private loopMarkerBeats(loop: Clip['loop'] | undefined, timeCtx: ClipTimeCtx, spb: number, w: number, winBeatStart = 0, winBeatEnd = Infinity): number[] {
     if (!loop) return [];
     const loopStart = loop.startSec ?? 0;
     const loopEnd = loop.endSec ?? timeCtx.videoDurSec;
@@ -476,8 +507,11 @@ export class ArrClip extends MobxLitElement {
     let first = ((loopEnd - playStart) / loopLen) * periodBeats;
     while (first <= 1e-6) first += periodBeats; // first restart strictly inside the clip
     const out: number[] = [];
-    // Compute each marker as first + k·period (not accumulated) to avoid FP drift.
-    for (let k = 0; first + k * periodBeats < timeCtx.lengthBeat - 1e-6; k++) {
+    const hi = Math.min(timeCtx.lengthBeat, winBeatEnd);
+    // Only the markers inside the visible window (a long looping clip otherwise enumerates +
+    // draws every loop bar). Compute each as first + k·period (not accumulated) to avoid FP drift.
+    const kStart = Math.max(0, Math.ceil((winBeatStart - first) / periodBeats));
+    for (let k = kStart; first + k * periodBeats < hi - 1e-6; k++) {
       out.push(first + k * periodBeats);
     }
     return out;
