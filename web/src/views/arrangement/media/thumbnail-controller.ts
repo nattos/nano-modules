@@ -49,9 +49,12 @@ export interface ReelLayout {
  * mip level. Mirrors `drawFilmReel`'s cell layout (16:9 cells across full height)
  * so the read keys line up with the draw. Exported for unit tests.
  */
-export function reelLayout(width: number, height: number, frameCount: number): ReelLayout {
+export function reelLayout(width: number, height: number, frameCount: number, cellAspect = 16 / 9): ReelLayout {
   if (height <= 2 || width <= 0 || frameCount <= 0) return { cells: 0, frames: [], level: 0 };
-  const cellW = Math.max(8, height * (16 / 9));
+  // Cell width = the SOURCE aspect (the reel draws panels at h·aspect), so the decoded
+  // frame granularity (level) + cell count match the panels the strip actually tiles —
+  // otherwise a non-16:9 source decodes too few frames and the strip can't track the output.
+  const cellW = Math.max(8, height * cellAspect);
   const cells = Math.max(1, Math.round(width / cellW));
   const last = Math.max(0, frameCount - 1);
   const frames: number[] = [];

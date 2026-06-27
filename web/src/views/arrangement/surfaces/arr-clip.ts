@@ -333,7 +333,16 @@ export class ArrClip extends MobxLitElement {
     const fps = media.fps && media.fps > 0 ? media.fps : 30;
     thumbnailController.registerMedia({ sourceKey, url: media.url!, frameCount, fps: media.fps });
 
-    const layout = reelLayout(w, h, frameCount);
+    // Panel aspect = the SOURCE's aspect ratio (thumbnail tiles are a fixed 160×90, so
+    // their dims can't supply it); 1:1 when the source size is unknown — matching the
+    // placement widget. Each panel is then h·aspect wide and the tile fills it. The reel
+    // layout uses the SAME aspect so the decoded-frame granularity (level) matches the
+    // panels — else a non-16:9 source can't track the output.
+    const sw = media.width ?? 0, sh = media.height ?? 0;
+    const aspect = sw > 0 && sh > 0 ? sw / sh : 1;
+    const panelW = Math.max(4, h * aspect);
+
+    const layout = reelLayout(w, h, frameCount, aspect);
     if (layout.cells === 0) return;
     const level = layout.level;
 
@@ -343,13 +352,6 @@ export class ArrClip extends MobxLitElement {
     const lengthBeat = Math.max(1e-6, this.clip.lengthBeat);
     // Linear (warp-approx) clock — the strip is a visual aid; exact warp isn't needed.
     const timeCtx: ClipTimeCtx = { startBeat, lengthBeat, videoDurSec: frameCount / fps, secondsAt: (b) => b * spb, seed: clipNoiseSeed(this.clip.id) };
-
-    // Panel aspect = the SOURCE's aspect ratio (thumbnail tiles are a fixed 160×90, so
-    // their dims can't supply it); 1:1 when the source size is unknown — matching the
-    // placement widget. Each panel is then h·aspect wide and the tile fills it.
-    const sw = media.width ?? 0, sh = media.height ?? 0;
-    const aspect = sw > 0 && sh > 0 ? sw / sh : 1;
-    const panelW = Math.max(4, h * aspect);
 
     const beatAtX = (cx: number) => startBeat + (cx / w) * lengthBeat;
     const frameAtBeat = (beat: number): number | null =>
