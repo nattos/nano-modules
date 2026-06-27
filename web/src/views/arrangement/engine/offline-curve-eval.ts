@@ -160,35 +160,62 @@ function fold(acc: number, v: number, combine: RailCombine): number {
   }
 }
 
+/** The rail value at a SINGLE beat: base seeds mean/lo/hi, every active writer folds
+ *  in per its combine. The band [lo,hi] widens only where a stochastic writer
+ *  contributes; otherwise lo == hi == mean. `invT` = 1/totalBeats. */
+function railValueAt(spec: RailCurveSpec, beat: number, invT: number): { m: number; l: number; h: number } {
+  // Base is the rail's rest value DIRECTLY (already in the rail's domain — 0 ⇒ bottom
+  // unsigned / centre signed), so a flat base never drags the curve up and clips.
+  const base = evalCurveAt(spec.baseCurve, beat * invT);
+  let m = base, l = base, h = base;
+  for (const w of spec.writers) {
+    const b = writerBlockAt(w, spec.secondsPerBeat, beat);
+    if (!b) continue;
+    m = fold(m, toRail(b.mean, w.sourceSigned, spec.signed), w.combine);
+    // Interval fold (approximate for non-add combines): keep the bounds ordered.
+    const a = fold(l, toRail(b.lo, w.sourceSigned, spec.signed), w.combine);
+    const c = fold(h, toRail(b.hi, w.sourceSigned, spec.signed), w.combine);
+    l = Math.min(a, c);
+    h = Math.max(a, c);
+  }
+  return { m, l, h };
+}
+
+/** Sub-samples taken across each output sample's beat-bucket for the peak envelope. */
+const OVERSAMPLE = 8;
+
 /**
- * Assemble the rail's value curve over `spec.beats`: the base curve seeds each of the
- * mean / lo / hi accumulators, then every ACTIVE writer folds in per its combine. The
- * band [lo,hi] widens only where a stochastic writer contributes; everywhere else
- * lo == hi == mean.
+ * Assemble the rail's value curve over `spec.beats`. Each output sample covers a
+ * screen-pixel-wide BUCKET of beats; point-sampling one phase per bucket aliases a
+ * high-frequency LFO into a noisy squiggle. Instead we OVERSAMPLE the bucket and keep
+ * a PEAK ENVELOPE: `lo`/`hi` are the min/max across the bucket, and the `mean` line is
+ * the sample of greatest MAGNITUDE (signed) — so a fast, signed LFO reads as its true
+ * ±swing instead of collapsing to the DC average. Cheap (a few extra evals per pixel,
+ * all in the worker). Slow signals (bucket ≪ one cycle) collapse back to a clean line.
  */
 export function assembleRailCurve(spec: RailCurveSpec): RailCurve {
   const n = spec.beats.length;
   const mean = new Float32Array(n);
   const lo = new Float32Array(n);
   const hi = new Float32Array(n);
-  const T = Math.max(1e-6, spec.totalBeats);
+  const invT = 1 / Math.max(1e-6, spec.totalBeats);
+  const K = OVERSAMPLE;
   for (let i = 0; i < n; i++) {
     const beat = spec.beats[i];
-    // Base is the rail's rest value DIRECTLY (already in the rail's domain — 0 ⇒ bottom
-    // unsigned / centre signed), so a flat base never drags the curve up and clips.
-    const base = evalCurveAt(spec.baseCurve, beat / T);
-    let m = base, l = base, h = base;
-    for (const w of spec.writers) {
-      const b = writerBlockAt(w, spec.secondsPerBeat, beat);
-      if (!b) continue;
-      m = fold(m, toRail(b.mean, w.sourceSigned, spec.signed), w.combine);
-      // Interval fold (approximate for non-add combines): keep the bounds ordered.
-      const a = fold(l, toRail(b.lo, w.sourceSigned, spec.signed), w.combine);
-      const c = fold(h, toRail(b.hi, w.sourceSigned, spec.signed), w.combine);
-      l = Math.min(a, c);
-      h = Math.max(a, c);
+    // Bucket = half the gap to each neighbour (the pixel column this sample covers).
+    const dl = i > 0 ? (beat - spec.beats[i - 1]) : (n > 1 ? spec.beats[i + 1] - beat : 0);
+    const dr = i < n - 1 ? (spec.beats[i + 1] - beat) : (n > 1 ? beat - spec.beats[i - 1] : 0);
+    const lo0 = beat - dl * 0.5, hi0 = beat + dr * 0.5;
+    let peak = 0, peakMag = -1, l = Infinity, h = -Infinity;
+    for (let k = 0; k < K; k++) {
+      const t = (hi0 > lo0 && K > 1) ? lo0 + (hi0 - lo0) * (k / (K - 1)) : beat;
+      const v = railValueAt(spec, t, invT);
+      if (v.l < l) l = v.l;
+      if (v.h > h) h = v.h;
+      const mag = Math.abs(v.m);
+      if (mag > peakMag) { peakMag = mag; peak = v.m; } // signed peak = max magnitude
     }
-    mean[i] = m; lo[i] = l; hi[i] = h;
+    mean[i] = peak; lo[i] = l; hi[i] = h;
   }
   return { mean, lo, hi };
 }

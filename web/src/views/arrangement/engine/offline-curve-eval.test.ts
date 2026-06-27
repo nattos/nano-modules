@@ -33,10 +33,26 @@ describe('assembleRailCurve', () => {
     expect(Array.from(a.hi)).toEqual(Array.from(b.hi));
   });
 
-  it('a KNOWN deterministic modulator (mirrored LFO sine) has no error band (lo == hi)', () => {
-    const lfoSine = writer({ kind: 'lfo', sourceSigned: true, lfo: { mode: 0, rate: 0.5, period: 1, amplitude: 1, waveform: 0, shape: 0, invert: false } });
-    const c = assembleRailCurve({ baseCurve: flatBase, totalBeats: 16, secondsPerBeat: SPB, signed: false, writers: [lfoSine], beats: beats(24) });
-    for (let i = 0; i < c.mean.length; i++) expect(c.hi[i] - c.lo[i]).toBeCloseTo(0, 5);
+  it('peak envelope anti-aliases: a fast signed LFO bands to ~full swing (max-magnitude line); a slow one stays tight', () => {
+    const zeroBase = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
+    const mk = (rate: number) => assembleRailCurve({
+      baseCurve: zeroBase, totalBeats: 16, secondsPerBeat: SPB, signed: true,
+      // Span well beyond the sampled range so no bucket straddles the on/off edge —
+      // isolating the frequency-aliasing property the peak envelope fixes.
+      writers: [writer({ kind: 'lfo', sourceSigned: true, startBeat: -1000, endBeat: 1000, lfo: lfo({ rate, amplitude: 1 }) })],
+      beats: beats(12), // coarse: each bucket spans many cycles for a fast LFO
+    });
+    const stats = (c: ReturnType<typeof mk>) => {
+      let band = 0, peak = 0;
+      for (let i = 0; i < c.mean.length; i++) { band = Math.max(band, c.hi[i] - c.lo[i]); peak = Math.max(peak, Math.abs(c.mean[i])); }
+      return { band, peak };
+    };
+    const fast = stats(mk(1));      // 10 Hz → many cycles per bucket
+    const slow = stats(mk(0.005));  // 0.05 Hz → ≪ one cycle per bucket
+    expect(fast.band).toBeGreaterThan(1.5);            // ~full ±1 peak-to-peak (instead of aliasing)
+    expect(fast.peak).toBeGreaterThan(0.8);            // the line hugs the swing, not DC ≈ 0
+    expect(slow.band).toBeLessThan(0.6);               // a slow signal stays a tight line
+    expect(slow.band).toBeLessThan(fast.band * 0.5);   // and is clearly tighter than the fast one
   });
 
   it('an UNKNOWN (un-mirrored) modulator renders an uncertainty band (hi > lo)', () => {
