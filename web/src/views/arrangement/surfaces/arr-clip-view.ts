@@ -255,6 +255,8 @@ export class ArrClipView extends MobxLitElement {
     super.disconnectedCallback();
     this.thumbOff?.();
     if (this.lastClipId) thumbnailController.dropView(`clipview:${this.lastClipId}`);
+    for (const b of this.previewCache.values()) b.close();
+    this.previewCache.clear();
   }
 
   private duration(): number {
@@ -558,14 +560,56 @@ export class ArrClipView extends MobxLitElement {
     this.drawSourceFrame(ctx, w, h, sel.clip, this.scrubFrame);
   }
 
-  /** Draw one source frame: a real decoded thumbnail when available, else a
-   *  static neutral placeholder. Used by the big preview + the hover mini. */
+  /** Near-native preview frames decoded on demand (keyed sourceKey#frame), so the big
+   *  preview isn't the blurry 160×90 strip tile. Small bounded cache. */
+  private previewCache = new Map<string, ImageBitmap>();
+  private previewPending = new Set<string>();
+
+  /** FIT a bitmap into w×h centred (preserve `aspect`, letterbox — never stretch). */
+  private drawFit(ctx: CanvasRenderingContext2D, w: number, h: number, bmp: CanvasImageSource, aspect: number) {
+    let dw = w, dh = w / aspect;
+    if (dh > h) { dh = h; dw = h * aspect; }
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+
+  /** Kick off a near-native decode of `frame` (cached); repaint when it lands. */
+  private requestPreviewFrame(sourceKey: string, url: string, fps: number | undefined, frameCount: number, frame: number, key: string) {
+    if (this.previewCache.has(key) || this.previewPending.has(key)) return;
+    this.previewPending.add(key);
+    thumbnailController.registerMedia({ sourceKey, url, frameCount, fps });
+    thumbnailController.decodePreview(sourceKey, frame).then((bmp) => {
+      this.previewPending.delete(key);
+      if (!bmp) return;
+      if (this.previewCache.size > 16) { // bound it (close the oldest)
+        const oldKey = this.previewCache.keys().next().value as string;
+        this.previewCache.get(oldKey)?.close();
+        this.previewCache.delete(oldKey);
+      }
+      this.previewCache.set(key, bmp);
+      this.requestUpdate();
+    }).catch(() => this.previewPending.delete(key));
+  }
+
+  /** Draw one source frame: a near-native decoded frame when available (else the strip
+   *  thumbnail un-stretched to the source aspect, else a placeholder). Used by the big
+   *  preview + the hover mini. */
   private drawSourceFrame(ctx: CanvasRenderingContext2D, w: number, h: number, clip: any, frame: number) {
     const src = clip.source;
     if (src?.url && src.sourceKey) {
       const frameCount = Math.max(1, src.durationFrames);
       const f = Math.max(0, Math.min(frameCount - 1, Math.round(frame)));
-      const level = levelForFramesPerThumb(1); // finest level for a single big frame
+      const key = `${src.sourceKey}#${f}`;
+      // Source aspect (1:1 fallback) — the strip tile is a stretched 160×90, so we must
+      // supply the real aspect; a native-res frame carries its own dims.
+      const srcAspect = src.width && src.height ? src.width / src.height : 1;
+
+      const full = this.previewCache.get(key);
+      if (full) { this.drawFit(ctx, w, h, full, full.width / Math.max(1, full.height)); return; }
+      this.requestPreviewFrame(src.sourceKey, src.url, src.fps, frameCount, f, key);
+
+      // Quick placeholder while the native decode is in flight: the strip thumbnail.
+      const level = levelForFramesPerThumb(1);
       thumbnailController.registerMedia({ sourceKey: src.sourceKey, url: src.url, frameCount, fps: src.fps });
       thumbnailController.setView(`clipview:${clip.id}`, {
         sourceKey: src.sourceKey,
@@ -576,17 +620,7 @@ export class ArrClipView extends MobxLitElement {
         readaheadFrames: 0,
       });
       const hit = thumbnailController.peek(src.sourceKey, f, level);
-      if (hit) {
-        // FIT (preserve aspect, letterbox) — never stretch/cover.
-        const bmp = hit.value;
-        const ar = bmp.width / Math.max(1, bmp.height);
-        let dw = w;
-        let dh = w / ar;
-        if (dh > h) { dh = h; dw = h * ar; }
-        ctx.clearRect(0, 0, w, h);
-        ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
-        return;
-      }
+      if (hit) { this.drawFit(ctx, w, h, hit.value, srcAspect); return; }
     }
     drawPlaceholderCell(ctx, 0, 0, w, h);
   }

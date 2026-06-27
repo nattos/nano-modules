@@ -54,6 +54,28 @@ export class VideoThumbnailProducer implements ThumbnailProducer<ImageBitmap> {
     });
   }
 
+  /** Decode a frame for the LARGE clip-details preview: same pull + readback, but kept
+   *  near native resolution (capped to `maxDim` on the long edge, aspect preserved) so
+   *  it isn't the blurry 160×90 thumbnail. Not cached here — the caller memoizes. */
+  async producePreview(sourceKey: string, frame: number, maxDim = 720, signal?: AbortSignal): Promise<ImageBitmap> {
+    const clip = await this.clipFor(sourceKey);
+    const handle = await this.service.pull(clip, frame);
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const tex = this.gpuHost.getTextureByHandle(handle);
+    if (!tex) throw new Error(`preview: no texture for ${sourceKey}#${frame}`);
+    const w = tex.width, h = tex.height;
+    const rgba = await this.gpuHost.readbackTexture(handle, w, h);
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const img = new ImageData(new Uint8ClampedArray(rgba), w, h);
+    const scale = Math.min(1, maxDim / Math.max(1, w, h));
+    if (scale >= 1) return createImageBitmap(img); // already small enough → native size
+    return createImageBitmap(img, {
+      resizeWidth: Math.max(1, Math.round(w * scale)),
+      resizeHeight: Math.max(1, Math.round(h * scale)),
+      resizeQuality: 'high',
+    });
+  }
+
   /** Drop memoized clip handles (e.g. on workspace unmount). */
   reset() {
     this.clips.clear();

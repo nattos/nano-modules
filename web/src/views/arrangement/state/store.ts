@@ -41,6 +41,7 @@ import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import type { CompositeNode } from '../engine/clip-sketch';
+import { clipSourceTimeAt, type ClipTimeCtx } from '../engine/clip-time';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
@@ -150,6 +151,34 @@ function freshClipIds(clip: Clip): void {
  * draft `Track` inside a history recipe (clips are drafts; the JSON clone
  * yields a plain right-hand clip). Shared by all the time-region ops.
  */
+/**
+ * The source SECOND a looping clip is showing at arrangement `beat`, for re-anchoring
+ * a cut piece's `playStartSec` so its loop PHASE continues across the cut (the loop
+ * markers stay put on the timeline). Looping modes only (one-shot/random don't anchor);
+ * null when off-slice. Uses the un-warped clock (matches the strips); independent of
+ * the clip's length (the time/beat-sync mappers don't read lengthBeat).
+ */
+function clipLoopSourceSecAt(clip: Clip, beat: number): number | null {
+  const loop = clip.loop;
+  if (!loop || !clip.source || (loop.mode !== 'time' && loop.mode !== 'beat-sync')) return null;
+  const fps = clip.source.fps && clip.source.fps > 0 ? clip.source.fps : 30;
+  const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
+  const ctx: ClipTimeCtx = {
+    startBeat: clip.startBeat,
+    lengthBeat: clip.lengthBeat,
+    videoDurSec: (clip.source.durationFrames ?? 0) / fps,
+    secondsAt: (b) => b * spb,
+  };
+  return clipSourceTimeAt(loop, ctx, beat);
+}
+
+/** Re-anchor a cut RIGHT piece (left edge moved to `atBeat`) so its loop continues from
+ *  where `original` was at that beat, instead of restarting the loop from its old anchor. */
+function preserveLoopPhase(right: Clip, original: Clip, atBeat: number) {
+  const vt = clipLoopSourceSecAt(original, atBeat);
+  if (vt != null && right.loop) right.loop = { ...right.loop, playStartSec: vt };
+}
+
 function splitClipsAt(track: Track, beat: number) {
   const next: Clip[] = [];
   for (const clip of track.clips) {
@@ -160,6 +189,7 @@ function splitClipsAt(track: Track, beat: number) {
       freshClipIds(right);
       right.startBeat = beat;
       right.lengthBeat = end - beat;
+      preserveLoopPhase(right, clip, beat); // continue the loop across the cut
       clip.lengthBeat = beat - clip.startBeat;
       next.push(clip, right);
     } else {
@@ -195,6 +225,7 @@ function carveTrackSpan(track: Track, exceptId: string, start: number, end: numb
       freshClipIds(right);
       right.startBeat = end;
       right.lengthBeat = ce - end;
+      preserveLoopPhase(right, c, end); // continue the loop across the carve (c.startBeat unchanged)
       next.push(right);
     }
     // a clip wholly inside [start,end) contributes neither piece → removed

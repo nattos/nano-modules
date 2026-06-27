@@ -75,6 +75,7 @@ export class ThumbnailController {
   private device: GPUDevice | null = null;
   private gpuHostShared: GPUHost | null = null;
   private serviceShared: VideoPlaybackService | null = null;
+  private producer: VideoThumbnailProducer | null = null;
   private listeners = new Set<Listener>();
   /** Count of tiles that have landed in memory (test/diagnostic hook). */
   tilesFilled = 0;
@@ -144,6 +145,7 @@ export class ThumbnailController {
       };
 
       const producer = new VideoThumbnailProducer(service, gpuHost, openClip, 160, 90);
+      this.producer = producer;
       const mgr = new ThumbnailManager<ImageBitmap>(
         producer,
         new WorkerThumbStore(),
@@ -169,6 +171,16 @@ export class ThumbnailController {
   async sharedGpu(): Promise<{ device: GPUDevice; gpuHost: GPUHost; service: VideoPlaybackService }> {
     await this.ensure();
     return { device: this.device!, gpuHost: this.gpuHostShared!, service: this.serviceShared! };
+  }
+
+  /** Decode a single frame at near-native resolution for the large clip-details
+   *  preview (the strip's 160×90 tiles are too blurry there). `registerMedia` must
+   *  have been called for `sourceKey`. Returns null if the media can't be opened. */
+  async decodePreview(sourceKey: string, frame: number, maxDim = 720): Promise<ImageBitmap | null> {
+    await this.ensure();
+    if (!this.producer) return null;
+    try { return await this.producer.producePreview(sourceKey, frame, maxDim); }
+    catch { return null; }
   }
 
   /** Declare interest in a source's full frame range at `level` (prefetch). */
