@@ -899,18 +899,12 @@ export class ArrangementStore {
           // track) but must NOT yank the play-from marker / playhead — keep them put.
           this.setTimeSelection(0, full, [t.id], { movePlayhead: false });
         } else if (t && t.kind === 'group' && !this.isMainBus(t)) {
-          // Selecting a GROUP selects the full time across ALL of its contained
-          // tracks — exactly like vertically selecting the whole cluster. The caret
-          // spans the group's first→last descendant TRACK rows (groups themselves
-          // aren't caret rows); the contiguous order keeps everything between in scope.
-          const kids = this.displayTracks.filter(
-            (d) => d.kind === 'track' && this.isAncestorTrack(t.id, d.id),
-          );
-          if (kids.length) {
-            this.setTimeSelection(0, full, [kids[0].id, kids[kids.length - 1].id], { movePlayhead: false });
-          } else {
-            this.clearTimeSelection();
-          }
+          // Selecting a GROUP selects the full time across ALL its contained tracks
+          // — exactly like a vertical selection over the whole cluster. The caret
+          // spans the group row → its last visible row; `caretTrackIds` expands the
+          // group into its descendant tracks (even when collapsed).
+          const last = this.lastVisibleInGroup(t.id) ?? t.id;
+          this.setTimeSelection(0, full, [t.id, last], { movePlayhead: false });
         } else {
           this.clearTimeSelection();
         }
@@ -1343,7 +1337,12 @@ export class ArrangementStore {
    *  contribute exactly one caret row — but they DO participate in selection + the
    *  time box, matching how the grid hit-tests their rows. Groups stay excluded. */
   private get caretTrackOrder(): Track[] {
-    return this.displayTracks.filter((t) => t.kind === 'track' || t.kind === 'rail');
+    // Groups are first-class caret rows too (so a click/drag on a group lane targets
+    // the GROUP, not the track above — and group automation lanes have a home). The
+    // master bus stays out. `caretTrackIds` expands group rows to their tracks.
+    return this.displayTracks.filter(
+      (t) => t.kind === 'track' || t.kind === 'rail' || (t.kind === 'group' && !this.isMainBus(t)),
+    );
   }
 
   /** Lane shown AS the track's clip-row overlay (its selected-field lane, in
@@ -1400,9 +1399,25 @@ export class ArrangementStore {
    *  clips). Empty anchor+head ⇒ a GLOBAL span (every plain track). */
   get caretTrackIds(): string[] {
     if (!this.caretAnchorTrackId && !this.caretHeadTrackId) return [];
-    const ids: string[] = [];
-    for (const r of this.caretRowSpan()) if (r.laneId === '' && !ids.includes(r.trackId)) ids.push(r.trackId);
-    return ids;
+    const raw: string[] = [];
+    for (const r of this.caretRowSpan()) if (r.laneId === '' && !raw.includes(r.trackId)) raw.push(r.trackId);
+    // A group row in the span stands in for ALL the tracks it contains (groups hold
+    // no clips of their own; selecting one acts on everything inside, collapsed or
+    // not). Expand groups to their descendant tracks in array order, dropping the
+    // group ids themselves; plain tracks/rails pass through.
+    const out: string[] = [];
+    const push = (id: string) => { if (!out.includes(id)) out.push(id); };
+    for (const id of raw) {
+      const t = this.trackById(id);
+      if (t && t.kind === 'group') {
+        for (const d of this.composition.tracks) {
+          if (d.kind === 'track' && this.isAncestorTrack(id, d.id)) push(d.id);
+        }
+      } else {
+        push(id);
+      }
+    }
+    return out;
   }
 
   /** A non-degenerate time box exists only when the caret has time width. */

@@ -1199,13 +1199,14 @@ export class ArrGrid extends MobxLitElement {
     const rect = this.scrollEl.getBoundingClientRect();
     const contentY = clientY - rect.top + this.scrollEl.scrollTop;
     const layout = this.rowLayout();
-    // The caret / time-box system only targets track + rail rows (groups like the
-    // main bus aren't in store.caretRows). Clamp the hit to the last selectable
-    // row at-or-above it, so dragging past the bottom (over/below the main bus)
-    // extends the selection to the final lane instead of collapsing to one track.
+    // The caret / time-box system targets track, rail AND (non-bus) group rows —
+    // a group row stands in for its contained tracks. The master bus isn't a caret
+    // row. Clamp the hit to the last selectable row at-or-above it, so dragging past
+    // the bottom (over/below the main bus) extends to the final lane instead of
+    // collapsing to one track.
     const caretOK = (trackId: string) => {
-      const k = store.trackById(trackId)?.kind;
-      return k === 'track' || k === 'rail';
+      const t = store.trackById(trackId);
+      return !!t && (t.kind === 'track' || t.kind === 'rail' || (t.kind === 'group' && !store.isMainBus(t)));
     };
     let idx = layout.findIndex((r) => contentY < r.bottom);
     if (idx < 0) idx = layout.length - 1;
