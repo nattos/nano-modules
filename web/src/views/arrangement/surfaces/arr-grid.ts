@@ -117,25 +117,35 @@ export class ArrGrid extends MobxLitElement {
       cursor: pointer;
       z-index: 1;
     }
-    /* The visible line, centred in the column's hit area. Coloured by the group's
-       accent so distinct clusters read at a glance. */
+    /* One continuous bar per group: each row's segment spans the full row height so
+       adjacent segments connect; the group's first/last rows inset the ends. Hairline
+       by default (like a border); width grows on hover (whole group) and selection. */
     .gline::before {
       content: '';
       position: absolute;
       top: 0;
       bottom: 0;
       left: 50%;
-      width: 3px;
+      width: 1px;
       transform: translateX(-50%);
-      border-radius: 2px;
+      border-radius: 1px;
       background: var(--gline, var(--app-tint-4));
-      opacity: 0.7;
+      opacity: 0.5;
     }
-    .gline:hover::before {
-      opacity: 1;
-      width: 4px;
+    .gline.start::before {
+      top: 3px;
     }
+    .gline.end::before {
+      bottom: 3px;
+    }
+    /* Hover lights up EVERY segment of the group (driven by hoveredGroupId). */
+    .gline.hover::before {
+      width: 2px;
+      opacity: 0.85;
+    }
+    /* Selected group: a clearly thicker, full-strength bar. */
     .gline.on::before {
+      width: 3px;
       opacity: 1;
     }
     .header.selected {
@@ -426,6 +436,8 @@ export class ArrGrid extends MobxLitElement {
    *  (null = last child of `parentId`) and which group to land in (null = top). */
   @state() private reorderDrop: { beforeId: string | null; parentId: string | null } | null = null;
   @state() private reorderActive = false;
+  /** Group whose vertical bar is being hovered — highlights ALL of its segments. */
+  @state() private hoveredGroupId: string | null = null;
   /** Lane highlighted as the destination of a cross-track clip drag. */
   @state() private clipDropTrackId: string | null = null;
 
@@ -612,7 +624,10 @@ export class ArrGrid extends MobxLitElement {
     // faders share a width); EVERYTHING ELSE (name row, and the selected-automation
     // label) indents only to THIS track's own depth — as far left as it can go.
     const ownDepth = isBus ? 0 : store.trackDepth(track);
-    const ownIndent = ownDepth * GROUP_INDENT;
+    // A group draws its OWN vertical bar in its column, so its content sits one
+    // indent deeper (past that bar); leaves/rails indent to their own depth.
+    const contentDepth = ownDepth + (isGroup && !isBus ? 1 : 0);
+    const ownIndent = contentDepth * GROUP_INDENT;
     const autoSel = store.automationMode && !isBus && !isRail && !!store.autoField(`track/${track.id}`);
     const bottomIndent = autoSel ? ownIndent : store.groupGutterWidth;
     // Touch the clips array structure SYNCHRONOUSLY so the MobX reaction tracks
@@ -699,7 +714,7 @@ export class ArrGrid extends MobxLitElement {
    *  read as a continuous bracket down the cluster. The main bus reserves the
    *  gutter (so faders stay aligned) but draws no line. Clicking a line selects
    *  that group. */
-  private renderGroupLines(track: Track, isBus: boolean) {
+  private renderGroupLines(track: Track, isBus: boolean, withEnds = true) {
     const cols = store.groupGutterColumns;
     if (cols === 0 || isBus) return '';
     const depth = store.trackDepth(track);
@@ -709,16 +724,28 @@ export class ArrGrid extends MobxLitElement {
       // Ancestor line (c < depth) or this group's own line (c === depth).
       if (!(c < depth || (c === depth && isGroup))) continue;
       const gid = store.ancestorGroupAtDepth(track.id, c);
-      const g = gid ? store.trackById(gid) : null;
+      if (!gid) continue;
+      const g = store.trackById(gid);
       const accent = g?.color ?? 'var(--app-tint-4)';
+      // A continuous bar per group: inset its very top (the group header row) and
+      // very bottom (its last visible row) so it reads as a single bracket.
+      const isStart = withEnds && track.id === gid;
+      const isEnd = withEnds && store.lastVisibleInGroup(gid) === track.id;
+      const cls = [
+        'gline',
+        isStart ? 'start' : '',
+        isEnd ? 'end' : '',
+        store.isTrackShownSelected(gid) ? 'on' : '',
+        this.hoveredGroupId === gid ? 'hover' : '',
+      ].filter(Boolean).join(' ');
       out.push(html`<div
-        class="gline ${store.isTrackShownSelected(gid ?? '') ? 'on' : ''}"
+        class=${cls}
         style="left:${c * GROUP_INDENT}px; --gline: ${accent}"
-        title=${g ? `Select ${g.name}` : 'Select group'}
-        @pointerdown=${(e: Event) => {
-          e.stopPropagation();
-          if (gid) store.select(paths.track(gid));
-        }}
+        title=${g ? `${g.name} — click selects, double-click collapses` : ''}
+        @pointerenter=${() => { this.hoveredGroupId = gid; }}
+        @pointerleave=${() => { if (this.hoveredGroupId === gid) this.hoveredGroupId = null; }}
+        @pointerdown=${(e: Event) => { e.stopPropagation(); store.select(paths.track(gid)); }}
+        @dblclick=${(e: Event) => { e.stopPropagation(); store.toggleGroupCollapse(gid); }}
       ></div>`);
     }
     return out;
@@ -780,7 +807,7 @@ export class ArrGrid extends MobxLitElement {
     return html`
       <div class="row auto">
         <div class="auto-header">
-          ${this.renderGroupLines(track, store.isMainBus(track))}
+          ${this.renderGroupLines(track, store.isMainBus(track), false)}
           <div
             class="auto-header-label"
             style="padding-left: calc(var(--app-sp-3) + ${(store.isMainBus(track) ? 0 : store.trackDepth(track)) * GROUP_INDENT}px)"

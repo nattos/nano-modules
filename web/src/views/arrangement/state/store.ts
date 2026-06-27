@@ -3147,29 +3147,63 @@ export class ArrangementStore {
     return this.addTrack(anchor.id, anchor.parentId ?? null);
   }
 
-  /** Delete the focused track(s); never the main bus. Children reparent upward. */
+  /** Delete the focused track(s) AND everything they contain — deleting a group
+   *  removes its whole subtree (nested groups + tracks). Never the main bus. */
   deleteSelectedTracks() {
-    const ids = this.selectedTrackIds.filter((id) => {
+    const seeds = this.selectedTrackIds.filter((id) => {
       const t = this.trackById(id);
       return !!t && !this.isMainBus(t);
     });
-    if (!ids.length) return;
-    const idSet = new Set(ids);
+    if (!seeds.length) return;
+    const idSet = new Set<string>();
+    const addSubtree = (id: string) => {
+      if (idSet.has(id)) return;
+      idSet.add(id);
+      for (const t of this.composition.tracks) if (t.parentId === id) addSubtree(t.id);
+    };
+    for (const id of seeds) addSubtree(id);
     this.mutate('delete track', (d) => {
-      const resolveParent = (pid: string | null): string | null => {
-        let cur = pid;
-        while (cur && idSet.has(cur)) {
-          cur = d.tracks.find((x) => x.id === cur)?.parentId ?? null;
-        }
-        return cur;
-      };
-      for (const t of d.tracks) {
-        if (t.parentId && idSet.has(t.parentId)) t.parentId = resolveParent(t.parentId);
-      }
       d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks.filter((t) => !idSet.has(t.id)));
     });
     this.clearSelection();
     this.clearTimeSelection();
+  }
+
+  /** Dissolve a group: its direct children move up to the group's parent (keeping
+   *  order), then the group is removed. Selects the freed children. */
+  ungroup(groupId: string) {
+    const g = this.trackById(groupId);
+    if (!g || g.kind !== 'group' || this.isMainBus(g)) return;
+    const freed = this.composition.tracks.filter((t) => t.parentId === groupId).map((t) => t.id);
+    this.mutate('ungroup', (d) => {
+      const grp = d.tracks.find((t) => t.id === groupId);
+      if (!grp) return;
+      const parent = grp.parentId ?? null;
+      for (const t of d.tracks) if (t.parentId === groupId) t.parentId = parent;
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks.filter((t) => t.id !== groupId));
+    });
+    this.clearSelection();
+    if (freed.length) {
+      for (const id of freed) this.selection.add(paths.track(id));
+      this.primaryPath = paths.track(freed[0]);
+    }
+  }
+
+  /** The single focused non-bus GROUP, or null (drives the "Ungroup" affordance). */
+  get selectedSingleGroupId(): string | null {
+    const ids = this.selectedTrackIds;
+    if (ids.length !== 1) return null;
+    const t = this.trackById(ids[0]);
+    return t && t.kind === 'group' && !this.isMainBus(t) ? t.id : null;
+  }
+
+  /** Last VISIBLE display row inside `groupId` (or the group itself when collapsed/empty). */
+  lastVisibleInGroup(groupId: string): string | null {
+    let last: string | null = null;
+    for (const t of this.displayTracks) {
+      if (t.id === groupId || this.isAncestorTrack(groupId, t.id)) last = t.id;
+    }
+    return last;
   }
 
   /** True if a track may be dragged to reorder (everything but the main bus). */

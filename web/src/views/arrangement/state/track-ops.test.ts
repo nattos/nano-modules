@@ -105,13 +105,11 @@ describe('track structural ops', () => {
     expect(store.trackById(bus.id)).toBeDefined(); // bus survives
   });
 
-  it('deleting a nested group reparents its children upward', () => {
-    const bus = store.mainBusTrack!;
-    // A nested group (kind group, non-null parent) is deletable, unlike the bus.
+  it('deleting a group deletes its whole subtree (contained tracks included)', () => {
     const group = store.addTrack();
     const g = store.composition.tracks.find((t) => t.id === group)!;
     g.kind = 'group';
-    g.parentId = bus.id;
+    g.parentId = null;
     const child = store.addTrack();
     store.composition.tracks.find((t) => t.id === child)!.parentId = group;
     store.clearSelection();
@@ -119,7 +117,32 @@ describe('track structural ops', () => {
     (store as any).primaryPath = paths.track(group);
     store.deleteSelectedTracks();
     expect(store.trackById(group)).toBeUndefined();
-    expect(store.trackById(child)?.parentId).toBe(bus.id); // reparented to group's parent
+    expect(store.trackById(child)).toBeUndefined(); // the contained track is deleted too
+  });
+
+  it('ungroup dissolves a group and lifts its children to the parent level', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    store.selection.add(paths.track(b));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a, b], top level
+    store.ungroup(g);
+    expect(store.trackById(g)).toBeUndefined();
+    expect(store.trackById(a)?.parentId).toBeNull();
+    expect(store.trackById(b)?.parentId).toBeNull();
+  });
+
+  it('selectedSingleGroupId reports only a lone selected group', () => {
+    const a = store.addTrack();
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // addGroup selects the group
+    expect(store.selectedSingleGroupId).toBe(g);
+    store.select(paths.track(a)); // select a child track instead
+    expect(store.selectedSingleGroupId).toBeNull();
   });
 
   it('moveTrack reorders among non-bus tracks', () => {

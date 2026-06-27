@@ -172,6 +172,15 @@ export class ArrRuler extends MobxLitElement {
           >
             + Track
           </button>
+          ${store.selectedSingleGroupId
+            ? html`<button
+                class="addtrack"
+                title="Dissolve the group (its tracks move up a level)"
+                @click=${() => store.ungroup(store.selectedSingleGroupId!)}
+              >
+                Ungroup
+              </button>`
+            : ''}
         </div>`}
         <div
           class="time"
