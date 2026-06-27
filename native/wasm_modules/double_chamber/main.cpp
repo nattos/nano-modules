@@ -118,7 +118,7 @@ struct State {
   float big_point_size = 0.04f, big_opacity = 0.25f, big_render_hue = 0.0f;
   // Tracers (L block).
   int   l_count = 24;
-  float to_line_rate = 0.0f;
+  float spawn_on_line = 0.0f;   // P(respawn onto an existing tracer line)
   float l_length = 0.5f, l_step_speed = 0.02f, l_momentum = 0.5f, l_opacity = 0.5f;
   float l_width = 0.2f, l_soft = 1.0f, l_time_decay = 0.1f, l_adv_step = 0.1f, l_reseed_spread = 0.4f;
   float l_gradient_descent = 0.2f;  // 0 = level-curve/tangent, 1 = down-gradient
@@ -163,7 +163,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 1, 3},
+  state::init("source.legacy.double_chamber", {1, 2, 0},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -216,7 +216,7 @@ void module_init() {
       .floatField("big_render_hue", 0.0f,  0.0f, 1.0f,    state::SecondaryInput)
       // ---- Tracers (L block) ----
       .intField  ("l_count",        24,    0, MAX_TRACERS, state::PrimaryInput)
-      .floatField("to_line_rate",   0.0f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("spawn_on_line",  0.0f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("l_length",       0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("l_opacity",      0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("l_step_speed",   0.02f, 0.005f, 0.1f,  state::SecondaryInput)
@@ -394,7 +394,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "big_opacity"))    s->big_opacity = state::patchFloat(i);
     else if (state::pathIs(p, l, "big_render_hue")) s->big_render_hue = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_count"))        s->l_count = state::patchInt(i);
-    else if (state::pathIs(p, l, "to_line_rate"))   s->to_line_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "spawn_on_line"))  s->spawn_on_line = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_length"))       s->l_length = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_opacity"))      s->l_opacity = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_step_speed"))   s->l_step_speed = state::patchFloat(i);
@@ -466,7 +466,7 @@ void render(void* self, int vp_w, int vp_h) {
   pu.to_big_range = s->to_big_range;
   pu.image_smoothing = s->image_smoothing;
   int seg_total = (s->l_count > 0) ? s->l_count * MAX_SEG : 0;
-  pu.to_line_rate = (seg_total > 0) ? s->to_line_rate : 0.0f;
+  pu.to_line_rate = (seg_total > 0) ? s->spawn_on_line : 0.0f;
   pu.seg_total = (float)seg_total;
   s->p_uniform.writeOne(pu);
 

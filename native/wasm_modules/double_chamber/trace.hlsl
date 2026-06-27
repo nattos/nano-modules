@@ -81,7 +81,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float rr = reseed_spread * sqrt(dc_unit(dc_hash(h ^ 0xABCu)));
     seed = float2(cos(a2), sin(a2)) * rr;
     ang  = dc_unit(dc_hash(h ^ 0x55u)) * 6.28318530718;
-    time = 1.0;
+    // Staggered initial life so tracers don't all expire/reseed in lockstep —
+    // each gets a random time in [0.15, 1], decorrelated per tracer + frame.
+    time = lerp(0.15, 1.0, dc_unit(dc_hash(h ^ 0x0033u)));
   } else {
     float2 fd = flowDir(seed, aspect);
     float fl = length(fd);
