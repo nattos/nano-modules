@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 namespace double_chamber {
 
@@ -144,10 +145,12 @@ static inline uint32_t lcg(uint32_t& s) { s = s * 1664525u + 1013904223u; return
 static inline float lcgf(uint32_t& s) { return (lcg(s) >> 8) * (1.0f / float(1u << 24)); }
 static inline float as_float(uint32_t u) { float f; std::memcpy(&f, &u, 4); return f; }
 
-// Seed a pool's slots [from, to) with random uv + staggered life so they don't
-// all respawn on the same frame. Chunked to keep the wasm stack small. Seeded
-// lazily up to the live count (the pool can be 1M; we never upload all of it
-// unless the user dials count that high).
+// Seed a pool's slots [from, to) to match the STEADY STATE so there's no
+// startup "all at once" flash: positions on a centred disc (≈ the respawn
+// distribution), and a staggered remaining life against a FULL life_total so
+// life_norm starts spread across [0,1] (varied brightness) and deaths/respawns
+// are spread in time rather than synchronized. Chunked to keep the wasm stack
+// small; seeded lazily up to the live count (the pool can be 1M).
 static void seed_pool(gpu::Buffer& buf, int from, int to, float lifetime, uint32_t salt) {
   if (from >= to) return;
   uint32_t rng = (0x12345678u ^ salt) + (uint32_t)from * 2654435761u;
@@ -156,12 +159,16 @@ static void seed_pool(gpu::Buffer& buf, int from, int to, float lifetime, uint32
     int end = start + SEED_CHUNK; if (end > to) end = to;
     int m = end - start;
     for (int k = 0; k < m; k++) {
-      float ux = lcgf(rng), uy = lcgf(rng);
-      float life = lcgf(rng) * lifetime;
+      // Centred disc in uv (aspect-corrected by the first update); ~steady state.
+      float ang = lcgf(rng) * 6.2831853f;
+      float rad = 0.33f * std::sqrt(lcgf(rng));
+      float ux = 0.5f + std::cos(ang) * rad;
+      float uy = 0.5f + std::sin(ang) * rad;
+      float life_remain = lcgf(rng) * lifetime;   // staggered against full total
       uint32_t zbyte = (uint32_t)(lcgf(rng) * 255.0f) & 0xFFu;
       uint32_t packed = 0x00FFFFFFu | (zbyte << 24);
       GpuParticle& p = chunk[k];
-      p.a[0] = ux; p.a[1] = uy; p.a[2] = life; p.a[3] = (life > 1e-4f ? life : lifetime);
+      p.a[0] = ux; p.a[1] = uy; p.a[2] = life_remain; p.a[3] = lifetime;
       p.b[0] = 0.f; p.b[1] = 0.f; p.b[2] = 1.0f; p.b[3] = as_float(packed);
     }
     buf.writeBytes(chunk, int(sizeof(GpuParticle)) * m, int(sizeof(GpuParticle)) * start);
@@ -169,7 +176,7 @@ static void seed_pool(gpu::Buffer& buf, int from, int to, float lifetime, uint32
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 1},
+  state::init("source.legacy.double_chamber", {1, 4, 2},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
