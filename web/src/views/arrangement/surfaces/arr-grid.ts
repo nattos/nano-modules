@@ -451,10 +451,18 @@ export class ArrGrid extends MobxLitElement {
   /** Per-gesture wheel axis lock (kills spurious swipe-back). See onWheel. */
   private wheelAxis: 'h' | 'v' | null = null;
   private wheelIdleTimer = 0;
+  /** Scroll viewport height (px) — drives the trailing scroll-past pad; updated by
+   *  the ResizeObserver so the pad grows/shrinks with the panel. */
+  @state() private viewportH = 0;
+  /** Last-seen automation mode + a pending scroll anchor, so toggling automation
+   *  keeps a track pinned in the viewport (captured pre-relayout, restored after). */
+  private autoModeSeen = false;
+  private pendingAnchor: { ids: string[]; offset: number } | null = null;
 
   firstUpdated() {
-    this.ro = new ResizeObserver(() => this.draw());
+    this.ro = new ResizeObserver(() => { if (this.scrollEl) this.viewportH = this.scrollEl.clientHeight; this.draw(); });
     this.ro.observe(this.scrollEl);
+    this.viewportH = this.scrollEl.clientHeight;
     this.scrollEl.addEventListener('wheel', this.onWheel, { passive: false });
     this.draw();
   }
@@ -462,16 +470,76 @@ export class ArrGrid extends MobxLitElement {
     super.disconnectedCallback();
     this.ro?.disconnect();
   }
+  /** Before a re-render: if automation mode is flipping, capture a scroll anchor
+   *  from the CURRENT (pre-relayout) DOM so we can re-pin it after the lanes
+   *  appear/disappear. */
+  willUpdate() {
+    const mode = store.automationMode;
+    if (this.hasUpdated && mode !== this.autoModeSeen) {
+      this.pendingAnchor = this.captureScrollAnchor();
+    }
+    this.autoModeSeen = mode;
+  }
+
   updated() {
     // Drive the (drag-resizable) track-header column width through a CSS var the
     // styles read (var(--arr-hw)); the canvas geometry reads store.headerWidth.
     this.style.setProperty('--arr-hw', `${store.headerWidth}px`);
+    this.restoreScrollAnchor(); // re-pin a track across an automation-mode toggle
     this.draw();
     // Wire anchors for the main bus lane and (when shown) the beat-warp lane.
     setAnchor(AnchorKeys.mainbus(), this.renderRoot.querySelector('.lane.group'));
     setAnchor(AnchorKeys.beatwarp(), this.renderRoot.querySelector('.beatwarp-lane'));
     const tgt = store.consumeScrollTarget();
     if (tgt) this.scrollClipIntoView(tgt);
+  }
+
+  /** A track row's vertical position relative to the scroll viewport top (px). */
+  private rowRectVp(id: string, vpTop: number): { top: number; bottom: number; mid: number } | null {
+    const el = this.renderRoot.querySelector(`.row[data-track-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { top: r.top - vpTop, bottom: r.bottom - vpTop, mid: (r.top + r.bottom) / 2 - vpTop };
+  }
+
+  /** Choose tracks to anchor on + their average midpoint (viewport offset, px):
+   *  the SELECTED tracks currently in view, else the FIRST track fully in view. */
+  private captureScrollAnchor(): { ids: string[]; offset: number } | null {
+    const scroll = this.scrollEl;
+    if (!scroll) return null;
+    const vpTop = scroll.getBoundingClientRect().top;
+    const vpH = scroll.clientHeight;
+    const inView = (r: { top: number; bottom: number }) => r.bottom > 0 && r.top < vpH;
+
+    const sel = store.selectedTrackIds
+      .map((id) => ({ id, r: this.rowRectVp(id, vpTop) }))
+      .filter((x): x is { id: string; r: { top: number; bottom: number; mid: number } } => !!x.r && inView(x.r));
+
+    let picked = sel;
+    if (!picked.length) {
+      for (const t of store.displayTracks) {
+        const r = this.rowRectVp(t.id, vpTop);
+        if (r && r.top >= -0.5 && r.bottom <= vpH + 0.5) { picked = [{ id: t.id, r }]; break; }
+      }
+    }
+    if (!picked.length) return null;
+    const offset = picked.reduce((a, p) => a + p.r.mid, 0) / picked.length;
+    return { ids: picked.map((p) => p.id), offset };
+  }
+
+  /** After the relayout: nudge scrollTop so the captured anchor's average midpoint
+   *  sits at the same viewport offset it had before the toggle. */
+  private restoreScrollAnchor() {
+    const a = this.pendingAnchor;
+    if (!a) return;
+    this.pendingAnchor = null;
+    const scroll = this.scrollEl;
+    if (!scroll) return;
+    const vpTop = scroll.getBoundingClientRect().top;
+    const mids = a.ids.map((id) => this.rowRectVp(id, vpTop)?.mid).filter((v): v is number => v != null);
+    if (!mids.length) return;
+    const newOffset = mids.reduce((x, y) => x + y, 0) / mids.length;
+    scroll.scrollTop += newOffset - a.offset;
   }
 
   private renderBeatWarpRow() {
@@ -549,6 +617,9 @@ export class ArrGrid extends MobxLitElement {
           ${tracks.map((t) => this.renderTrack(t))}
           ${store.automationMode ? this.renderBeatWarpRow() : ''}
           ${this.reorderActive ? this.renderReorderLine() : ''}
+          <!-- Trailing space so the timeline scrolls DOWN past the main bus (bring
+               the bottom-most lanes up to the top of the viewport). -->
+          <div class="rows-pad" style="height:${Math.max(120, this.viewportH - ROW_HEIGHT)}px"></div>
         </div>
         <canvas class="grid-canvas-top" style="height:${totalH}px"></canvas>
       </div>
@@ -639,7 +710,7 @@ export class ArrGrid extends MobxLitElement {
     for (const c of track.clips) void c.id;
 
     return html`
-      <div class="row ${isBus ? 'bus' : ''}">
+      <div class="row ${isBus ? 'bus' : ''}" data-track-id=${track.id}>
         <div
           class="header ${isGroup ? 'group' : ''} ${selected ? 'selected' : ''} ${dragSrc ? 'dragsrc' : ''}"
           @pointerdown=${(e: PointerEvent) => this.onHeaderDown(e, track)}
