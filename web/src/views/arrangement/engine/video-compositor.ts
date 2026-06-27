@@ -437,7 +437,10 @@ export class VideoCompositor {
     const dReal = (tMs - prevMs) / 1000;
     if (dReal <= 1e-4) return p.rateEwma;
     const inst = (targetSec - prevSec) / dReal;
-    if (inst > 1e-3 && inst < 8) p.rateEwma = p.rateEwma * 0.7 + inst * 0.3; // steady forward play
+    // Heavy smoothing so the rate (→ playbackRate) is STEADY — the dReal jitter between rAF
+    // ticks makes `inst` noisy, and a noisy playbackRate judders the video. Snap immediately
+    // on resume (rateEwma was ~0) so playback starts at the right speed, then ease.
+    if (inst > 1e-3 && inst < 8) p.rateEwma = p.rateEwma > 1e-3 ? p.rateEwma * 0.9 + inst * 0.1 : inst;
     else if (inst <= 1e-3) p.rateEwma = 0; // paused / reversed → don't chase
     return p.rateEwma;
   }
