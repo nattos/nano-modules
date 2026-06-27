@@ -124,4 +124,13 @@ struct LineVsOut {
   nointerpolation float4 col : TEXCOORD1;
 };
 
+// ---- bridgers: stochastic chords between two P particles ----
+//   a.xy = endpoint A (uv), a.zw = endpoint B (uv)
+//   b.x  = asfloat(target particle index A), b.y = asfloat(target index B)
+//   b.z  = freshA flag (0 = uninitialised → snap, 1 = glide)
+//   b.w  = freshB flag
+// Each frame an endpoint re-targets to a random particle with prob bridger_rate,
+// then glides toward its live target's position; rendered as a Seg via line_vs/fs.
+struct BridgerState { float4 a; float4 b; };
+
 #endif // DOUBLE_CHAMBER_COMMON_HLSL

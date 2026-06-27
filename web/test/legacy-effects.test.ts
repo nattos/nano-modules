@@ -178,4 +178,35 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     const maxR = Math.max(...frame.samples.map(s => s.r));
     expect(maxR).toBeGreaterThan(8);  // tracer lines drew light
   });
+
+  it('renders bridger chords between particles', async () => {
+    // Particles on but invisible (size ~0), bridgers on: each bridger draws a
+    // chord between two particles, so the only light in the frame comes from
+    // the connector lines.
+    const frame = await runGpuEffectTest({
+      module: 'double_chamber.wasm',
+      bundle: 'legacy',
+      width: 128, height: 128,
+      inputColor: [0.0, 0.0, 0.0, 1.0],
+      params: [
+        ['p_count', 3000],
+        ['p_opacity', 0.0],       // hide the particles themselves
+        ['big_opacity', 0.0],
+        ['l_count', 0],           // no tracer lines
+        ['bridger_count', 384],
+        ['bridger_opacity', 1.0],
+        ['bridger_width', 0.6],
+        ['bridger_rate', 0.2],
+        ['bridger_color_contrib', 0.0],  // hue-driven (white-ish) chords
+        ['exposure', 2.0],
+      ],
+      samplePoints: [[64, 64], [40, 50], [88, 64], [50, 80], [64, 30], [80, 80]],
+      ticks: 6,
+      renderEachTick: true,
+      dumpName: 'double_chamber_bridgers',
+    });
+    expect(frame.success).toBe(true);
+    const maxR = Math.max(...frame.samples.map(s => s.r));
+    expect(maxR).toBeGreaterThan(8);  // bridger chords drew light
+  });
 });

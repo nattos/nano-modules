@@ -6,8 +6,9 @@
  * the team actually used: the "P" field-particles (a PetriDish polynomial
  * vector field), the "Big" attractors they orbit, curl steering, and optional
  * image coupling. The charged-collision "K accelerator" block and the PONK
- * output are intentionally dropped; output is a normal texture. (Tracers and
- * bridgers are planned follow-on phases.)
+ * output are intentionally dropped; output is a normal texture. Tracers (L
+ * block, field streamlines) and bridgers (stochastic chords between particles)
+ * are ported as additional default-off line systems sharing the line raster.
  *
  * Two persistent GPU storage buffers replace the old graph's LatchNode feedback
  * registers — a clean read-prev / write-next pool per system:
@@ -36,6 +37,7 @@ static constexpr int MAX_BIG = 64;
 static constexpr int SEED_CHUNK = 512;
 static constexpr int MAX_TRACERS = 96;
 static constexpr int MAX_SEG     = 96;   // segment slots per tracer (half each dir)
+static constexpr int MAX_BRIDGERS = 1024;  // chords between particles (one Seg each)
 // p_point_size slider [0,1] → effective isotropic-uv size [0, 0.01].
 static constexpr float POINT_SIZE_SCALE = 0.01f;
 // l_width slider [0,1] → effective line half-extent uv [0, 0.02].
@@ -65,6 +67,11 @@ struct TraceUniforms {
 };
 struct LineVsUniforms { float aspect_x, aspect_y, width, _pad; };
 struct LineFsUniforms { float soft, _a, _b, _c; };
+struct BridgerUniforms {
+  uint32_t count, p_count, frame_index; float dt;
+  float rate, motion, opacity, color_contrib;
+  float hue, tint_r, tint_g, tint_b;
+};
 struct BigUpdateUniforms {
   uint32_t count, frame_index; float dt, motion_rate;
   float big_speed, big_momentum, big_momentum_decay, drift;
@@ -85,9 +92,11 @@ enum BlendMode : int { BLEND_ADD = 0, BLEND_ALPHA = 1 };
 
 struct State {
   gpu::Buffer  p_buf, big_buf, tracer_buf, seg_buf;
+  gpu::Buffer  bridger_buf, bridger_seg_buf;
   gpu::Buffer  p_uniform, big_uniform, prefill_uniform, trace_uniform;
   gpu::Buffer  vs_uniform_p, vs_uniform_big, fs_uniform_p, fs_uniform_big;
   gpu::Buffer  line_vs_uniform, line_fs_uniform;
+  gpu::Buffer  bridger_uniform, bridger_vs_uniform, bridger_fs_uniform;
   gpu::Sampler sampler;
   gpu::Texture black_tex;   // 1×1 fallback when no input is wired (true generator)
   gpu::Texture field_tex;   // smoothed input for gradient/colour sampling
@@ -126,6 +135,15 @@ struct State {
   float l_width = 0.2f, l_soft = 1.0f, l_time_decay = 0.1f, l_adv_step = 0.1f, l_reseed_spread = 0.4f;
   float l_gradient_descent = 0.2f;  // 0 = level-curve/tangent, 1 = down-gradient
   float l_value_stop = 0.0f, l_grad_stop = 0.0f, l_time_stop_decay = 0.0f;  // early-death (0=off)
+  // Bridgers (stochastic chords between P particles). Off by default — the
+  // original shipped with Bridger Count 12, but defaulting off keeps the base
+  // look clean; raise the count to enable (see DNODE_MIGRATION_NOTES §4.2).
+  int   bridger_count = 0;
+  float bridger_rate = 0.05f;      // P(re-target) per endpoint per frame
+  float bridger_motion = 0.4f;     // glide lerp toward the live target
+  float bridger_opacity = 0.4f;
+  float bridger_width = 0.15f, bridger_soft = 1.0f;
+  float bridger_hue = 0.0f, bridger_color_contrib = 0.5f;
   // Composite.
   float input_alpha = 1.0f;
   int   blend_mode = BLEND_ADD;
@@ -136,6 +154,7 @@ static gpu::ComputePSO s_pso_big_update;
 static gpu::ComputePSO s_pso_p_update;
 static gpu::ComputePSO s_pso_prefill;
 static gpu::ComputePSO s_pso_trace;
+static gpu::ComputePSO s_pso_bridger;
 static gpu::RenderPSO  s_pso_render_add;
 static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_line_add;
@@ -175,8 +194,34 @@ static void seed_pool(gpu::Buffer& buf, int from, int to, float lifetime, uint32
   }
 }
 
+// Bridger state layout matches the HLSL BridgerState (two float4 = 32 B).
+struct GpuBridger { float a[4]; float b[4]; };
+static_assert(sizeof(GpuBridger) == 32, "bridger must be 32 bytes");
+
+// Seed all MAX_BRIDGERS slots with random initial targets (fresh flag 0 → the
+// shader snaps each endpoint onto its particle on the first frame). Stale
+// targets past the current p_count self-heal in-shader (re-pick), so no lazy
+// re-seed is needed when the count grows. 32 KB total — one cheap write.
+static void seed_bridgers(gpu::Buffer& buf, int p_count) {
+  uint32_t rng = 0xB12D9E37u;
+  GpuBridger chunk[SEED_CHUNK];
+  uint32_t pc = (uint32_t)(p_count < 1 ? 1 : p_count);
+  for (int start = 0; start < MAX_BRIDGERS; start += SEED_CHUNK) {
+    int end = start + SEED_CHUNK; if (end > MAX_BRIDGERS) end = MAX_BRIDGERS;
+    int m = end - start;
+    for (int k = 0; k < m; k++) {
+      uint32_t ta = (uint32_t)(lcgf(rng) * float(pc)); if (ta >= pc) ta = pc - 1u;
+      uint32_t tb = (uint32_t)(lcgf(rng) * float(pc)); if (tb >= pc) tb = pc - 1u;
+      GpuBridger& g = chunk[k];
+      g.a[0] = 0.5f; g.a[1] = 0.5f; g.a[2] = 0.5f; g.a[3] = 0.5f;
+      g.b[0] = as_float(ta); g.b[1] = as_float(tb); g.b[2] = 0.f; g.b[3] = 0.f;
+    }
+    buf.writeBytes(chunk, int(sizeof(GpuBridger)) * m, int(sizeof(GpuBridger)) * start);
+  }
+}
+
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 2},
+  state::init("source.legacy.double_chamber", {1, 4, 3},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -243,6 +288,15 @@ void module_init() {
       .floatField("l_value_stop",    0.0f, 0.0f, 1.0f,    state::SecondaryInput)
       .floatField("l_grad_stop",     0.0f, 0.0f, 1.0f,    state::SecondaryInput)
       .floatField("l_time_stop_decay", 0.0f, 0.0f, 2.0f,  state::SecondaryInput)
+      // ---- Bridgers (chords between particles) ----
+      .intField  ("bridger_count",  0,     0, MAX_BRIDGERS, state::PrimaryInput)
+      .floatField("bridger_rate",   0.05f, 0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("bridger_motion", 0.4f,  0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("bridger_opacity", 0.4f, 0.0f, 1.0f,    state::PrimaryInput)
+      .floatField("bridger_width",  0.15f, 0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("bridger_soft",   1.0f,  0.1f, 4.0f,    state::SecondaryInput)
+      .floatField("bridger_hue",    0.0f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("bridger_color_contrib", 0.5f, 0.0f, 1.0f, state::SecondaryInput)
       // ---- Composite ----
       .selectField("blend_mode",    BLEND_ADD,            state::SecondaryInput, {
         {"Add", BLEND_ADD}, {"Alpha", BLEND_ALPHA} })
@@ -261,6 +315,7 @@ void module_init() {
   state::registerShaderSPV("dc_vs",         VS_SPV,         VS_SPV_SIZE);
   state::registerShaderSPV("dc_fs",         FS_SPV,         FS_SPV_SIZE);
   state::registerShaderSPV("dc_trace",      TRACE_SPV,      TRACE_SPV_SIZE);
+  state::registerShaderSPV("dc_bridger",    BRIDGER_SPV,    BRIDGER_SPV_SIZE);
   state::registerShaderSPV("dc_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
   state::registerShaderSPV("dc_line_fs",    LINE_FS_SPV,    LINE_FS_SPV_SIZE);
 
@@ -268,11 +323,12 @@ void module_init() {
   auto cs_p   = gpu::Device::createShaderModuleByName("dc_p_update");
   auto cs_pre = gpu::Device::createShaderModuleByName("dc_prefill");
   auto cs_tr  = gpu::Device::createShaderModuleByName("dc_trace");
+  auto cs_br  = gpu::Device::createShaderModuleByName("dc_bridger");
   auto vs     = gpu::Device::createShaderModuleByName("dc_vs");
   auto fs     = gpu::Device::createShaderModuleByName("dc_fs");
   auto lvs    = gpu::Device::createShaderModuleByName("dc_line_vs");
   auto lfs    = gpu::Device::createShaderModuleByName("dc_line_fs");
-  if (!cs_big || !cs_p || !cs_pre || !cs_tr || !vs || !fs || !lvs || !lfs) return;
+  if (!cs_big || !cs_p || !cs_pre || !cs_tr || !cs_br || !vs || !fs || !lvs || !lfs) return;
 
   s_pso_big_update = gpu::Device::createComputePSO(cs_big, "main", gpu::Bindings()
       .storageRW(0).tex2d(1).sampler(2).uniform(3));
@@ -282,6 +338,8 @@ void module_init() {
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_pso_trace = gpu::Device::createComputePSO(cs_tr, "main", gpu::Bindings()
       .storageRW(0).storageRW(1).tex2d(2).sampler(3).uniform(4));
+  s_pso_bridger = gpu::Device::createComputePSO(cs_br, "main", gpu::Bindings()
+      .storageRW(0).storage(1).storageRW(2).uniform(3));
   s_pso_render_add = gpu::Device::createInstancedRenderPSO(vs, "main", fs, "main",
       gpu::TextureFormat::Surface,
       gpu::Bindings().storage(0).uniform(1).uniform(2),
@@ -309,6 +367,8 @@ void* create() {
   s->big_buf = gpu::Device::createBuffer(sizeof(GpuParticle) * MAX_BIG, gpu::BufferUsage::Storage);
   s->tracer_buf = gpu::Device::createBuffer(16 * MAX_TRACERS, gpu::BufferUsage::Storage);
   s->seg_buf = gpu::Device::createBuffer(32 * MAX_TRACERS * MAX_SEG, gpu::BufferUsage::Storage);
+  s->bridger_buf     = gpu::Device::createBuffer(sizeof(GpuBridger) * MAX_BRIDGERS, gpu::BufferUsage::Storage);
+  s->bridger_seg_buf = gpu::Device::createBuffer(32 * MAX_BRIDGERS, gpu::BufferUsage::Storage);
   s->p_uniform       = gpu::Device::createBuffer(sizeof(PUpdateUniforms), gpu::BufferUsage::Uniform);
   s->big_uniform     = gpu::Device::createBuffer(sizeof(BigUpdateUniforms), gpu::BufferUsage::Uniform);
   s->prefill_uniform = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
@@ -319,6 +379,9 @@ void* create() {
   s->fs_uniform_big  = gpu::Device::createBuffer(sizeof(FsUniforms), gpu::BufferUsage::Uniform);
   s->line_vs_uniform = gpu::Device::createBuffer(sizeof(LineVsUniforms), gpu::BufferUsage::Uniform);
   s->line_fs_uniform = gpu::Device::createBuffer(sizeof(LineFsUniforms), gpu::BufferUsage::Uniform);
+  s->bridger_uniform    = gpu::Device::createBuffer(sizeof(BridgerUniforms), gpu::BufferUsage::Uniform);
+  s->bridger_vs_uniform = gpu::Device::createBuffer(sizeof(LineVsUniforms), gpu::BufferUsage::Uniform);
+  s->bridger_fs_uniform = gpu::Device::createBuffer(sizeof(LineFsUniforms), gpu::BufferUsage::Uniform);
   s->sampler         = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   s->black_tex       = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA8);
   if (s->black_tex.valid()) gpu::Device::clear(s->black_tex, 0.f, 0.f, 0.f, 1.f);
@@ -329,10 +392,12 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->p_buf.release(); s->big_buf.release(); s->tracer_buf.release(); s->seg_buf.release();
+  s->bridger_buf.release(); s->bridger_seg_buf.release();
   s->p_uniform.release(); s->big_uniform.release(); s->prefill_uniform.release(); s->trace_uniform.release();
   s->vs_uniform_p.release(); s->vs_uniform_big.release();
   s->fs_uniform_p.release(); s->fs_uniform_big.release();
   s->line_vs_uniform.release(); s->line_fs_uniform.release();
+  s->bridger_uniform.release(); s->bridger_vs_uniform.release(); s->bridger_fs_uniform.release();
   s->sampler.release();
   s->black_tex.release();
   s->field_tex.release();
@@ -353,6 +418,7 @@ void init(void* self) {
     float zeros[4 * MAX_TRACERS] = {0};
     s->tracer_buf.write(zeros, 4 * MAX_TRACERS);
   }
+  if (s->bridger_buf.valid()) seed_bridgers(s->bridger_buf, s->p_count);
   s->initialized = true;
 }
 
@@ -425,12 +491,21 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "l_value_stop"))    s->l_value_stop = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_grad_stop"))     s->l_grad_stop = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_time_stop_decay")) s->l_time_stop_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_count"))  s->bridger_count = state::patchInt(i);
+    else if (state::pathIs(p, l, "bridger_rate"))   s->bridger_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_motion")) s->bridger_motion = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_opacity")) s->bridger_opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_width"))  s->bridger_width = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_soft"))   s->bridger_soft = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_hue"))    s->bridger_hue = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bridger_color_contrib")) s->bridger_color_contrib = state::patchFloat(i);
     else if (state::pathIs(p, l, "blend_mode"))     s->blend_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "input_alpha"))    s->input_alpha = state::patchFloat(i);
   }
   if (s->l_count < 0) s->l_count = 0; if (s->l_count > MAX_TRACERS) s->l_count = MAX_TRACERS;
   if (s->p_count < 1) s->p_count = 1; if (s->p_count > MAX_P) s->p_count = MAX_P;
   if (s->big_count < 0) s->big_count = 0; if (s->big_count > MAX_BIG) s->big_count = MAX_BIG;
+  if (s->bridger_count < 0) s->bridger_count = 0; if (s->bridger_count > MAX_BRIDGERS) s->bridger_count = MAX_BRIDGERS;
   // Lazily seed slots newly brought into play by a count increase.
   if (s->initialized && s->p_count > s->inited_count) {
     seed_pool(s->p_buf, s->inited_count, s->p_count, s->ttl * 8.0f, 0x1111u);
@@ -527,6 +602,18 @@ void render(void* self, int vp_w, int vp_h) {
   LineFsUniforms lf = { s->l_soft, 0.f, 0.f, 0.f };
   s->line_fs_uniform.writeOne(lf);
 
+  BridgerUniforms br = {};
+  br.count = (uint32_t)s->bridger_count; br.p_count = (uint32_t)s->p_count;
+  br.frame_index = s->frame_index; br.dt = dt;
+  br.rate = s->bridger_rate; br.motion = s->bridger_motion;
+  br.opacity = s->bridger_opacity; br.color_contrib = s->bridger_color_contrib;
+  br.hue = s->bridger_hue; br.tint_r = s->tint_r; br.tint_g = s->tint_g; br.tint_b = s->tint_b;
+  s->bridger_uniform.writeOne(br);
+  LineVsUniforms bv = { ax, ay, s->bridger_width * LINE_WIDTH_SCALE, 0.f };
+  s->bridger_vs_uniform.writeOne(bv);
+  LineFsUniforms bf = { s->bridger_soft, 0.f, 0.f, 0.f };
+  s->bridger_fs_uniform.writeOne(bf);
+
   // Pass 1 — Big update (must precede P so P reads fresh attractors).
   if (s->big_count > 0) {
     auto cp = gpu::ComputePass::begin();
@@ -563,6 +650,19 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->p_uniform, 4);
     cp.setBuffer(s->seg_buf, 5);
     cp.dispatch((s->p_count + 63) / 64, 1, 1);
+    cp.end();
+  }
+
+  // Pass 2b — bridgers (after P so endpoints track the freshly-updated
+  // particle positions). Emits one Seg per bridger into bridger_seg_buf.
+  if (s->bridger_count > 0) {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_bridger);
+    cp.setBuffer(s->bridger_buf, 0);
+    cp.setBuffer(s->p_buf, 1);
+    cp.setBuffer(s->bridger_seg_buf, 2);
+    cp.setBuffer(s->bridger_uniform, 3);
+    cp.dispatch((s->bridger_count + 63) / 64, 1, 1);
     cp.end();
   }
 
@@ -609,6 +709,18 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->line_vs_uniform, 1);
     rp.setBuffer(s->line_fs_uniform, 2);
     rp.draw(6, s->l_count * MAX_SEG);
+    rp.end();
+  }
+
+  // Pass 6 — bridger chords (reuse the line PSO; one quad per bridger).
+  if (s->bridger_count > 0 && s->bridger_opacity > 0.0f) {
+    auto lpso = (s->blend_mode == BLEND_ALPHA) ? s_pso_line_alpha : s_pso_line_add;
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(lpso);
+    rp.setBuffer(s->bridger_seg_buf, 0);
+    rp.setBuffer(s->bridger_vs_uniform, 1);
+    rp.setBuffer(s->bridger_fs_uniform, 2);
+    rp.draw(6, s->bridger_count);
     rp.end();
   }
 
