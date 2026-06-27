@@ -43,7 +43,7 @@ cbuffer Uniforms : register(b4) {
   float tint_b;
   float reseed_spread;
   float image_smoothing;
-  float _p2;
+  float gradient_descent; // 0 = follow the tangent (level curves), 1 = follow the gradient
 }
 
 float dc_lum(float3 c) { return max(c.r, max(c.g, c.b)); }
@@ -103,8 +103,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
     for (int k = 0; k < steps; ++k) {
       float2 fd = flowDir(pos, aspect);
       float fl = length(fd);
-      float2 fdir = (fl > 1e-5) ? (fd / fl) : dir;
-      dir = normalize(lerp(fdir, dir, saturate(momentum)));
+      if (fl > 1e-5) {
+        float2 g = fd / fl;                       // gradient direction
+        float2 tangent = float2(g.y, -g.x);       // perpendicular → along the level curve
+        if (dot(tangent, dir) < 0.0) tangent = -tangent;  // keep it forward-facing
+        // tangent-dominant, with a little descent along the gradient, then momentum.
+        float2 target = normalize(lerp(tangent, g, saturate(gradient_descent)));
+        dir = normalize(lerp(target, dir, saturate(momentum)));
+      }
       float2 nextPos = pos + dir * step_speed;
       if (segIdx < max_seg) {
         float2 uv0 = 0.5 + pos * aspect;

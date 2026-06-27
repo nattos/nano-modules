@@ -59,7 +59,7 @@ struct TraceUniforms {
   float to_image, momentum, step_speed, length01;
   float time_decay, adv_step, color_contrib, l_opacity;
   float aspect_x, aspect_y, tint_r, tint_g;
-  float tint_b, reseed_spread, image_smoothing, _p2;
+  float tint_b, reseed_spread, image_smoothing, gradient_descent;
 };
 struct LineVsUniforms { float aspect_x, aspect_y, width, _pad; };
 struct LineFsUniforms { float soft, _a, _b, _c; };
@@ -121,6 +121,7 @@ struct State {
   float to_line_rate = 0.0f;
   float l_length = 0.5f, l_step_speed = 0.02f, l_momentum = 0.5f, l_opacity = 0.5f;
   float l_width = 0.2f, l_soft = 1.0f, l_time_decay = 0.1f, l_adv_step = 0.1f, l_reseed_spread = 0.4f;
+  float l_gradient_descent = 0.2f;  // 0 = level-curve/tangent, 1 = down-gradient
   // Composite.
   float input_alpha = 1.0f;
   int   blend_mode = BLEND_ADD;
@@ -162,7 +163,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 1, 2},
+  state::init("source.legacy.double_chamber", {1, 1, 3},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -220,6 +221,7 @@ void module_init() {
       .floatField("l_opacity",      0.5f,  0.0f, 1.0f,    state::PrimaryInput)
       .floatField("l_step_speed",   0.02f, 0.005f, 0.1f,  state::SecondaryInput)
       .floatField("l_momentum",     0.5f,  0.0f, 1.0f,    state::SecondaryInput)
+      .floatField("l_gradient_descent", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
       .floatField("l_width",        0.2f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("l_soft",         1.0f,  0.1f, 4.0f,    state::SecondaryInput)
       .floatField("l_time_decay",   0.1f,  0.0f, 2.0f,    state::SecondaryInput)
@@ -397,6 +399,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "l_opacity"))      s->l_opacity = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_step_speed"))   s->l_step_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_momentum"))     s->l_momentum = state::patchFloat(i);
+    else if (state::pathIs(p, l, "l_gradient_descent")) s->l_gradient_descent = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_width"))        s->l_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_soft"))         s->l_soft = state::patchFloat(i);
     else if (state::pathIs(p, l, "l_time_decay"))   s->l_time_decay = state::patchFloat(i);
@@ -490,6 +493,7 @@ void render(void* self, int vp_w, int vp_h) {
   tu.time_decay = s->l_time_decay; tu.adv_step = s->l_adv_step; tu.color_contrib = s->color_contrib; tu.l_opacity = s->l_opacity;
   tu.aspect_x = ax; tu.aspect_y = ay; tu.tint_r = s->tint_r; tu.tint_g = s->tint_g;
   tu.tint_b = s->tint_b; tu.reseed_spread = s->l_reseed_spread; tu.image_smoothing = s->image_smoothing;
+  tu.gradient_descent = s->l_gradient_descent;
   s->trace_uniform.writeOne(tu);
 
   LineVsUniforms lv = { ax, ay, s->l_width * LINE_WIDTH_SCALE, 0.f };
