@@ -245,7 +245,7 @@ static void seed_bridgers(gpu::Buffer& buf, int p_count) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 5},
+  state::init("source.legacy.double_chamber", {1, 4, 6},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -832,26 +832,40 @@ void render(void* self, int vp_w, int vp_h) {
       LineMotionVsUniforms lmb = { ax, ay, s->bridger_width * LINE_WIDTH_SCALE, line_spd };
       s->lm_vs_uniform_b.writeOne(lmb);
 
+      // Motion mirrors VISIBILITY: an element only writes motion when it's
+      // actually drawn in the colour pass (same opacity gates). Otherwise an
+      // invisible element (e.g. big_opacity == 0) would still overwrite the
+      // particle motion in its footprint — reading as "holes" in the motion
+      // field once a downstream motion blur smears around them.
+      bool draw_p   = s->p_opacity > 0.0f;
+      bool draw_big = s->big_count > 0 && s->big_opacity > 0.0f;
+      bool draw_l   = line_spd > 0.0f && s->l_count > 0 && s->l_opacity > 0.0f;
+      bool draw_b   = line_spd > 0.0f && s->bridger_count > 0 && s->bridger_opacity > 0.0f;
+
       auto rp = gpu::RenderPass::beginLoad(s->motion_tex);
-      rp.setPSO(s_pso_motion_point);
-      rp.setBuffer(s->p_buf, 0);
-      rp.setBuffer(s->motion_vs_uniform_p, 1);
-      rp.setBuffer(s->motion_fs_uniform, 2);
-      rp.draw(6, s->p_count);
-      if (s->big_count > 0) {
-        rp.setBuffer(s->big_buf, 0);
-        rp.setBuffer(s->motion_vs_uniform_big, 1);
-        rp.draw(6, s->big_count);
+      if (draw_p || draw_big) {
+        rp.setPSO(s_pso_motion_point);
+        rp.setBuffer(s->motion_fs_uniform, 2);
+        if (draw_p) {
+          rp.setBuffer(s->p_buf, 0);
+          rp.setBuffer(s->motion_vs_uniform_p, 1);
+          rp.draw(6, s->p_count);
+        }
+        if (draw_big) {
+          rp.setBuffer(s->big_buf, 0);
+          rp.setBuffer(s->motion_vs_uniform_big, 1);
+          rp.draw(6, s->big_count);
+        }
       }
-      if (line_spd > 0.0f) {
+      if (draw_l || draw_b) {
         rp.setPSO(s_pso_motion_line);
-        if (s->l_count > 0) {
+        if (draw_l) {
           rp.setBuffer(s->seg_buf, 0);
           rp.setBuffer(s->lm_vs_uniform_l, 1);
           rp.setBuffer(s->line_fs_uniform, 2);   // reuse tracer soft
           rp.draw(6, s->l_count * MAX_SEG);
         }
-        if (s->bridger_count > 0) {
+        if (draw_b) {
           rp.setBuffer(s->bridger_seg_buf, 0);
           rp.setBuffer(s->lm_vs_uniform_b, 1);
           rp.setBuffer(s->bridger_fs_uniform, 2);  // reuse bridger soft

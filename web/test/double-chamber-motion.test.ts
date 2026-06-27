@@ -136,4 +136,36 @@ describe('Double Chamber motion-vector output (render_outputs/motion) E2E', () =
 
     hi.trace('out').expectDifferentFrom(off.trace('out'), 100);
   });
+
+  it('runs the motion path cleanly with large invisible Big points', async () => {
+    // Regression guard for the "Big holes" bug: big_opacity=0 with large Big
+    // quads used to overwrite the particle motion in their footprint, leaving
+    // holes in the smear. Motion now mirrors visibility (the colour pass's
+    // opacity gates), so an invisible Big writes nothing. We can't assert
+    // cross-run pixel equality here — host::deltaTime jitter makes two
+    // independent dynamic runs diverge — so this is a smoke test (clean run +
+    // a real smeared cloud); the absence of Big discs is confirmed by the
+    // double_chamber_motion_big_invisible dump.
+    const result = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.legacy', 'com.nano.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'dc_bigvis',
+          sketch: buildChain(32.0, {
+            big_count: 6, big_opacity: 0.0, big_point_size: 0.15,
+            l_count: 0, bridger_count: 0,
+          }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'dc_bigvis' } },
+        ]},
+      ],
+      waitFrames: 24,
+      captureTraceIds: ['out'],
+      dumpName: 'double_chamber_motion_big_invisible',
+    });
+    expect(result.success).toBe(true);
+    let lit = 0;
+    result.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) lit++; });
+    expect(lit).toBeGreaterThan(100);  // a real smeared cloud rendered
+  });
 });
