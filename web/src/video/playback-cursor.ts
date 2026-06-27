@@ -18,6 +18,7 @@
  */
 
 import type { GPUHost } from '../gpu-host';
+import { measureFps } from './video-element-frame-source';
 
 // ── Pure decision policy (unit-tested) ────────────────────────────────────────
 
@@ -106,6 +107,9 @@ export class PlaybackCursor {
   private released = false;
   /** Whether at least one frame has been copied into the texture. */
   private hasFrame = false;
+  /** Source second of the frame actually IN the texture (not the element's currentTime,
+   *  which jumps to a seek target before that frame has decoded). */
+  private lastPresentedSec = 0;
 
   /**
    * @param gpuHost   the shared GPU stack.
@@ -131,7 +135,7 @@ export class PlaybackCursor {
   ready(targetSec: number): boolean {
     if (this.released || !this.hasFrame || this.seeking) return false;
     if (this.video.readyState < 2) return false;
-    return Math.abs(this.video.currentTime - targetSec) <= 1.5 / Math.max(1, this.fps);
+    return Math.abs(this.lastPresentedSec - targetSec) <= 1.5 / Math.max(1, this.fps);
   }
 
   /**
@@ -140,7 +144,7 @@ export class PlaybackCursor {
    * current frame into the cursor's texture, and returns its handle. The compositor
    * blits this texture to the render size. Returns null until the first frame is ready.
    */
-  present(targetSec: number, rate: number): number | null {
+  present(targetSec: number, rate: number): { handle: number; sec: number } | null {
     if (this.released) return null;
     const v = this.video;
     if (v.readyState < 1 || !Number.isFinite(v.duration)) return null; // metadata not loaded yet
@@ -155,10 +159,16 @@ export class PlaybackCursor {
     });
 
     switch (action.kind) {
-      case 'play':
-        v.playbackRate = action.rate;
+      case 'play': {
+        // Phase-lock: nudge playbackRate to close any standing offset between the presented
+        // frame and the target (so ready() converges during steady play instead of sitting
+        // a constant fraction behind). +err ⇒ target ahead ⇒ speed up; bounded ±50%.
+        const err = targetSec - v.currentTime;
+        const corr = Math.max(-0.5, Math.min(0.5, err * 2));
+        v.playbackRate = clampPlaybackRate(action.rate * (1 + corr));
         if (v.paused) void v.play().catch(() => { /* autoplay blocked */ });
         break;
+      }
       case 'seek':
         if (!v.paused) v.pause();
         this.beginSeek(action.sec);
@@ -168,10 +178,11 @@ export class PlaybackCursor {
         break;
     }
 
-    // Sample whatever frame is current into the texture (best-available; the gate uses
-    // ready() to decide whether it's the RIGHT frame).
-    if (v.readyState >= 2) this.copyFrame();
-    return this.hasFrame ? this.texHandle : null;
+    // Sample the current frame — but NOT mid-seek (the element's currentTime has already
+    // jumped to the target while the old frame is still presented; copying it would
+    // mislabel a stale frame as the target). beginSeek's landing callback copies instead.
+    if (!this.seeking && v.readyState >= 2) this.copyFrame();
+    return this.hasFrame ? { handle: this.texHandle, sec: this.lastPresentedSec } : null;
   }
 
   /** Explicit seek (e.g. a scrub) — pauses + seeks; ready() flips true when it lands. */
@@ -204,6 +215,7 @@ export class PlaybackCursor {
         { width: this.video.videoWidth, height: this.video.videoHeight, depthOrArrayLayers: 1 },
       );
       this.hasFrame = true;
+      this.lastPresentedSec = this.video.currentTime;
     } catch { /* element not presentable this frame → keep the last copy */ }
   }
 
@@ -212,4 +224,60 @@ export class PlaybackCursor {
     this.released = true;
     try { this.video.pause(); this.video.removeAttribute('src'); this.video.load(); } catch { /* ignore */ }
   }
+}
+
+export interface CursorInfo {
+  width: number;
+  height: number;
+  fps: number;
+  frameCount: number;
+  durationSec: number;
+}
+
+/**
+ * Build a cursor for `blob`: load a dedicated <video> (metadata), measure its true fps
+ * (drop-import can't), allocate an rgba8 GPU texture for it, and return the cursor + the
+ * decoder-authoritative info. Main-thread only (uses `document`). Throws if the blob has
+ * no decodable dimensions/duration.
+ */
+export async function createPlaybackCursor(
+  gpuHost: GPUHost, blob: Blob, opts?: { fps?: number },
+): Promise<{ cursor: PlaybackCursor; info: CursorInfo; objectUrl: string }> {
+  if (typeof document === 'undefined') throw new Error('PlaybackCursor requires a DOM (main thread)');
+  const objectUrl = URL.createObjectURL(blob);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  video.crossOrigin = 'anonymous';
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onMeta = () => {
+        cleanup();
+        if (!video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) {
+          reject(new Error('video has no decodable dimensions/duration'));
+        } else resolve();
+      };
+      const onErr = () => { cleanup(); reject(new Error(`<video> load failed (code ${video.error?.code ?? '?'})`)); };
+      const cleanup = () => { video.removeEventListener('loadedmetadata', onMeta); video.removeEventListener('error', onErr); };
+      video.addEventListener('loadedmetadata', onMeta);
+      video.addEventListener('error', onErr);
+      video.src = objectUrl;
+    });
+  } catch (err) {
+    URL.revokeObjectURL(objectUrl);
+    throw err;
+  }
+  video.pause();
+  const fps = opts?.fps && opts.fps > 0 ? opts.fps : await measureFps(video);
+  try { video.currentTime = 0; } catch { /* ignore */ }
+  const width = video.videoWidth, height = video.videoHeight;
+  const durationSec = video.duration;
+  const texHandle = gpuHost.createTexture(width, height, 1 /* rgba8unorm */);
+  const cursor = new PlaybackCursor(gpuHost, video, texHandle, fps, durationSec);
+  return {
+    cursor,
+    info: { width, height, fps, frameCount: Math.max(1, Math.round(durationSec * fps)), durationSec },
+    objectUrl,
+  };
 }

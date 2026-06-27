@@ -15,10 +15,10 @@
  */
 
 import { GPUHost } from '../../../gpu-host';
-import { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
 import { FrameBlitter, type BlitFit, type BlitTransform } from '../../../video/frame-blitter';
+import { PlaybackCursor, createPlaybackCursor } from '../../../video/playback-cursor';
 import { thumbnailController } from '../media/thumbnail-controller';
-import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
+import { clipSourceTimeAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
 
@@ -68,12 +68,20 @@ const nowMs = (): number => globalThis.performance?.now?.() ?? Date.now();
 
 interface Pump {
   desc: VideoClipDesc;
-  clip: ClipHandle;
+  /** This clip's caller-held read cursor — its own <video> playing forward (native
+   *  speed), seeking only on a jump. Replaces per-frame service decode. */
+  cursor: PlaybackCursor;
   width: number;
   height: number;
   frameCount: number;
   fps: number;
+  durationSec: number;
   busy: boolean;
+  /** Rate tracking: the source-seconds-per-real-second the target is advancing at,
+   *  derived from the beat delta between ticks — drives the cursor's play-vs-seek. */
+  lastTargetSec?: number;
+  lastTickMs?: number;
+  rateEwma: number;
   /** Last injected {frame|scaleMode|size} — skip redundant re-decodes (a static
    *  image / a paused video would otherwise re-blit the same frame every rAF;
    *  the worker re-binds the stored texture each tick regardless). */
@@ -95,8 +103,7 @@ export class VideoCompositor {
   private device: GPUDevice | null = null;
   private gpuHost: GPUHost | null = null;
   private blitter: FrameBlitter | null = null;
-  private service: VideoPlaybackService | null = null;
-  private servicePromise: Promise<VideoPlaybackService> | null = null;
+  private gpuPromise: Promise<void> | null = null;
 
   /** Open pumps, keyed by clipId. */
   private pumps = new Map<string, Pump>();
@@ -154,22 +161,20 @@ export class VideoCompositor {
     this.compH = compH;
   }
 
-  private ensureService(): Promise<VideoPlaybackService> {
-    if (this.service) return Promise.resolve(this.service);
-    if (!this.servicePromise) {
-      this.servicePromise = (async () => {
-        // Reuse the thumbnailController's main-thread GPU device + decode service
-        // (one device per page — a second requestDevice fails under headless
-        // WebGPU). We only add our own FrameBlitter on the shared device.
-        const { device, gpuHost, service } = await thumbnailController.sharedGpu();
+  private ensureGpu(): Promise<void> {
+    if (this.gpuHost && this.blitter) return Promise.resolve();
+    if (!this.gpuPromise) {
+      this.gpuPromise = (async () => {
+        // Reuse the thumbnailController's main-thread GPU device (one device per page — a
+        // second requestDevice fails under headless WebGPU). Cursors own their own <video>
+        // elements; we only need the shared device + our own FrameBlitter on it.
+        const { device, gpuHost } = await thumbnailController.sharedGpu();
         this.device = device;
         this.gpuHost = gpuHost;
         this.blitter = new FrameBlitter(device);
-        this.service = service;
-        return service;
       })();
     }
-    return this.servicePromise;
+    return this.gpuPromise;
   }
 
   /**
@@ -183,7 +188,7 @@ export class VideoCompositor {
       if (!wanted.has(clipId)) {
         this.pumps.delete(clipId);
         pump.desc && this.setInstanceTexture(pump.desc.instanceKey, null);
-        this.service?.close(pump.clip).catch(() => {});
+        pump.cursor.release();
       }
     }
     // Forget broken clips that are no longer active (re-adding retries fresh).
@@ -197,7 +202,7 @@ export class VideoCompositor {
         // so it re-opens, else the pump keeps injecting the old clip's frames.
         if (existing.desc.sourceKey !== d.sourceKey || existing.desc.url !== d.url) {
           this.setInstanceTexture(existing.desc.instanceKey, null);
-          this.service?.close(existing.clip).catch(() => {});
+          existing.cursor.release();
           this.pumps.delete(d.clipId);
           this.failedAt.delete(d.clipId); // new source → give it a fresh chance
           if (!this.opening.has(d.clipId)) void this.openClip(d);
@@ -220,21 +225,23 @@ export class VideoCompositor {
   private async openClip(d: VideoClipDesc) {
     this.opening.add(d.clipId);
     try {
-      const service = await this.ensureService();
+      await this.ensureGpu();
       const resp = await fetch(d.url);
       const blob = await resp.blob();
-      // Random-access (not sequential): the timeline scrubs anywhere.
-      const clip = await service.open(blob, d.sourceKey, { sequential: false });
-      if (!this.opening.has(d.clipId)) { service.close(clip).catch(() => {}); return; } // canceled
-      const info = service.inspect(clip);
+      // Build this clip's read cursor — its own <video> that plays forward (native speed)
+      // and seeks only on jumps. createPlaybackCursor measures the TRUE fps + native size.
+      const { cursor, info } = await createPlaybackCursor(this.gpuHost!, blob);
+      if (!this.opening.has(d.clipId)) { cursor.release(); return; } // canceled mid-open
       this.pumps.set(d.clipId, {
         desc: d,
-        clip,
+        cursor,
         width: info.width,
         height: info.height,
         frameCount: info.frameCount > 0 ? info.frameCount : Math.max(1, d.durationFrames),
         fps: info.fps > 0 ? info.fps : d.fps ?? 30,
+        durationSec: info.durationSec,
         busy: false,
+        rateEwma: 0,
       });
       this.failedAt.delete(d.clipId); // opened cleanly → clear any prior failure
       // Backfill the clip's authoritative native size (the placement widget's aspect).
@@ -282,7 +289,7 @@ export class VideoCompositor {
    * or `null` to render transparent (one-shot off the slice). Warp-aware via the
    * installed time resolver; falls back to the base-BPM clock.
    */
-  private frameFor(p: Pump, beat: number, bpm: number): number | null {
+  private targetSecFor(p: Pump, beat: number, bpm: number): number | null {
     const d = p.desc;
     const secondsAt = this.secondsAt ?? ((b: number) => b * (60 / Math.max(1, bpm)));
     const ctx: ClipTimeCtx = {
@@ -295,8 +302,8 @@ export class VideoCompositor {
     const loop = d.loop ?? DEFAULT_LOOP;
     // 'random' is the REAL stochastic dwell-jump algorithm for playback (the strips use
     // the deterministic smooth-noise approximation in the mapper instead).
-    if (loop.mode === 'random') return this.randomFrame(p, loop, ctx, beat);
-    return clipSourceFrameAt(loop, ctx, beat, p.fps, p.frameCount);
+    if (loop.mode === 'random') return this.randomSec(p, loop, ctx, beat);
+    return clipSourceTimeAt(loop, ctx, beat);
   }
 
   /**
@@ -312,7 +319,7 @@ export class VideoCompositor {
    * until the playhead reaches its pre-seek position. A same-beat re-query (the Precise gate's
    * clipReady) sees delta 0 ⇒ returns the identical frame as pumpClip.
    */
-  private randomFrame(p: Pump, loop: ClipLoopConfig, ctx: ClipTimeCtx, beat: number): number {
+  private randomSec(p: Pump, loop: ClipLoopConfig, ctx: ClipTimeCtx, beat: number): number {
     const lo = loop.startSec ?? 0;
     const hi = loop.endSec ?? ctx.videoDurSec;
     const range = Math.max(0, hi - lo);
@@ -373,54 +380,75 @@ export class VideoCompositor {
         st.phase += 1;
       }
     }
-    return Math.min(p.frameCount - 1, Math.max(0, Math.floor(st.srcSec * p.fps)));
+    return st.srcSec; // source SECOND (the cursor maps to a frame); already folded into the slice
+  }
+
+  /** Source-seconds advanced per real-second the target is moving (from the beat delta
+   *  between ticks, so warp/speed/beat-sync all fold in). Drives the cursor's play vs
+   *  seek: a smooth forward value ⇒ play the element; 0 (paused) or a backward/huge spike
+   *  (loop wrap, scrub) ⇒ the cursor holds/seeks. EWMA-smoothed to steady playbackRate. */
+  private trackRate(p: Pump, targetSec: number | null): number {
+    const tMs = nowMs();
+    const prevSec = p.lastTargetSec, prevMs = p.lastTickMs;
+    if (targetSec != null) p.lastTargetSec = targetSec;
+    p.lastTickMs = tMs;
+    if (targetSec == null || prevSec == null || prevMs == null) return p.rateEwma;
+    const dReal = (tMs - prevMs) / 1000;
+    if (dReal <= 1e-4) return p.rateEwma;
+    const inst = (targetSec - prevSec) / dReal;
+    if (inst > 1e-3 && inst < 8) p.rateEwma = p.rateEwma * 0.7 + inst * 0.3; // steady forward play
+    else if (inst <= 1e-3) p.rateEwma = 0; // paused / reversed → don't chase
+    return p.rateEwma;
   }
 
   private async pumpClip(p: Pump, beat: number, bpm: number) {
     try {
-      if (!this.gpuHost || !this.blitter || !this.service) return;
+      if (!this.gpuHost || !this.blitter) return;
       const d = p.desc;
       const active = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
       const ahead = beat < d.startBeat - 1e-6;
-      // For a clip not yet reached, warm its ENTRY frame (what it shows AT its start),
-      // not the current beat extrapolated into the future (which is null / a wrong loop
-      // phase) — so the lookahead actually pre-decodes the frame we'll need on arrival.
-      const frame = this.frameFor(p, ahead ? d.startBeat : beat, bpm);
+      // For a clip not yet reached, target its ENTRY (what it shows AT its start) so the
+      // cursor pre-seeks there rather than chasing a future / wrong-phase frame.
+      const targetSec = this.targetSecFor(p, ahead ? d.startBeat : beat, bpm);
+      const rate = this.trackRate(p, targetSec);
+
+      if (!active) {
+        // LOOKAHEAD: pre-seek the cursor to the entry frame (no inject) so arrival doesn't
+        // stall — but DON'T inject (the instance isn't composited yet).
+        if (targetSec == null) return;
+        const key = `warm:${Math.floor(targetSec * p.fps)}`;
+        if (key === p.warmedKey) return;
+        p.cursor.present(targetSec, 0); // rate 0 ⇒ seek to the entry frame
+        p.warmedKey = key;
+        return;
+      }
+
+      if (targetSec == null) {
+        // Off the slice (one-shot before/after the source) → transparent. Mark lastKey
+        // BEFORE injecting: setInstanceTexture fires the Precise re-check synchronously.
+        if (p.lastKey === 'null') return;
+        p.lastKey = 'null';
+        this.setInstanceTexture(d.instanceKey, null);
+        return;
+      }
+
+      // Drive the cursor (play forward / seek / hold) and sample the current frame.
+      const res = p.cursor.present(targetSec, rate);
+      if (!res || !this.pumps.has(d.clipId)) return; // no frame ready yet
+      // Dedup on the PRESENTED frame: a playing frame advances (inject each new one); a
+      // held/paused frame repeats (skip the re-blit — the worker keeps the bound texture).
+      const presentedFrame = Math.max(0, Math.floor(res.sec * p.fps));
+      const key = this.frameKey(p, presentedFrame);
+      if (key === p.lastKey) return;
+      const tex = this.gpuHost.getTextureByHandle(res.handle);
+      if (!tex) { this.lastError = `no texture for handle ${res.handle}`; return; }
       const mode = d.scaleMode ?? 'fit';
       const xf = d.transform ?? IDENTITY_TRANSFORM;
-      const key = this.frameKey(p, frame);
-      if (!active) {
-        // LOOKAHEAD warming: decode the upcoming frame into the service cache so
-        // reaching this clip doesn't stall — but DON'T inject (the instance isn't
-        // composited yet, so the texture would go nowhere and poison `lastKey`).
-        if (frame === null || key === p.warmedKey) return; // nothing to warm off-slice
-        const h = await this.service.pull(p.clip, frame);
-        if (h > 0) p.warmedKey = key;
-        return;
-      }
-      if (key === p.lastKey) return; // unchanged → the bound texture is already correct
-      if (frame === null) {
-        // Off the slice (one-shot before/after the source): clear the bound texture so
-        // the clip composites as transparent rather than holding a stale frame.
-        // Mark lastKey BEFORE injecting: setInstanceTexture fires the bridge's Precise
-        // re-check synchronously, which reads lastKey via clipReady.
-        p.lastKey = key;
-        this.setInstanceTexture(p.desc.instanceKey, null);
-        return;
-      }
-      const handle = await this.service.pull(p.clip, frame);
-      if (handle <= 0 || !this.pumps.has(p.desc.clipId)) return;
-      const tex = this.gpuHost.getTextureByHandle(handle);
-      if (!tex) { this.lastError = `no texture for handle ${handle}`; return; }
-      // Blit + scale (per the clip's scale mode) to the composite render size,
-      // so source.video.file just copies a ready-to-composite frame.
       const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode, xf, this.compW, this.compH);
-      this.lastPulled[p.desc.clipId] = { frame, handle, w: bitmap.width, h: bitmap.height };
-      // Mark lastKey BEFORE injecting: setInstanceTexture fires the bridge's Precise
-      // re-check synchronously, and it reads lastKey via clipReady to know we're ready.
+      this.lastPulled[d.clipId] = { frame: presentedFrame, handle: res.handle, w: bitmap.width, h: bitmap.height };
       p.lastKey = key;
       this.framesInjected++;
-      this.setInstanceTexture(p.desc.instanceKey, bitmap);
+      this.setInstanceTexture(d.instanceKey, bitmap);
     } catch (err) {
       this.lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       console.debug('[video-compositor] pump failed', err);
@@ -443,7 +471,7 @@ export class VideoCompositor {
 
   destroy() {
     this.stop();
-    for (const pump of this.pumps.values()) this.service?.close(pump.clip).catch(() => {});
+    for (const pump of this.pumps.values()) pump.cursor.release();
     this.pumps.clear();
     this.opening.clear();
   }
@@ -462,8 +490,9 @@ export class VideoCompositor {
     if (this.opening.has(clipId)) return false;
     const pump = this.pumps.get(clipId);
     if (!pump) return false;
-    const frame = this.frameFor(pump, beat, bpm);
-    return pump.lastKey === this.frameKey(pump, frame);
+    const targetSec = this.targetSecFor(pump, beat, bpm);
+    if (targetSec == null) return true; // off-slice ⇒ transparent is a valid "ready"
+    return pump.cursor.ready(targetSec);
   }
 
   /** Per-frame inject/dedup key. Folds in the scale mode + placement transform +

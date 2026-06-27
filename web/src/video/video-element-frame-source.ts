@@ -272,7 +272,7 @@ async function probeSeekable(video: HTMLVideoElement, fps: number): Promise<bool
 /** Measure a video's real frame rate by sampling rVFC presentation
  *  timestamps. Plays muted for a handful of frames, takes the median
  *  inter-frame delta, then pauses. Falls back to 30 without rVFC. */
-function measureFps(video: HTMLVideoElement): Promise<number> {
+export function measureFps(video: HTMLVideoElement): Promise<number> {
   const rvfc = (video as unknown as {
     requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => void;
   }).requestVideoFrameCallback;
