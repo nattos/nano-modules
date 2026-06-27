@@ -112,6 +112,14 @@ function awaitFrame(video: HTMLVideoElement, timeoutMs: number): Promise<void> {
 /** Cap on a single seek's wait (matches the service's seekable budget). */
 const SEEK_TIMEOUT_MS = 300;
 
+/** Frames buffered per cursor for drift correction by FRAME SELECTION (present the neighbour
+ *  frame) instead of a speed change — the "nudge" the cache will eventually own. */
+const RING_CAP = 3;
+/** Play this far AHEAD of the target (in frames) so the ring straddles it — giving a
+ *  "future" frame to pick as well as past ones, so the presented frame can match the target
+ *  exactly without ever changing playbackRate. */
+const LEAD_FRAMES = 1;
+
 const now = (): number => globalThis.performance?.now?.() ?? Date.now();
 
 /** Per-cursor rolling telemetry (drained + reset by the pump's periodic logger). Answers
@@ -133,27 +141,29 @@ export class PlaybackCursor {
   private device: GPUDevice;
   private seeking = false;
   private released = false;
-  /** Whether at least one frame has been copied into the texture. */
-  private hasFrame = false;
-  /** Source second of the frame actually IN the texture (not the element's currentTime,
-   *  which jumps to a seek target before that frame has decoded). */
+  /** Source second of the frame actually selected/presented last (telemetry + gate). */
   private lastPresentedSec = 0;
   private stats = freshStats();
   private seekStartMs = 0;
   /** Full-file native-loop period (s); 0 ⇒ seek-on-wrap. Set by the pump. */
   private loopPeriodSec = 0;
+  /** Recent decoded frames (FIFO, newest last), each a GPUHost texture + its source second.
+   *  present() picks the one nearest the target ⇒ frame-exact phase with NO rate change. */
+  private ring: { tex: number; sec: number }[] = [];
+  /** Source second of the most recent frame copied into the ring (dedup repeats). */
+  private lastPushedSec = -1;
 
   /**
    * @param gpuHost   the shared GPU stack.
    * @param video     a loaded, paused <video> (its own element — cursors never share one).
-   * @param texHandle a GPUHost texture handle (width×height) the cursor copies frames into.
+   * @param texHandles RING_CAP GPUHost texture handles (width×height) cycled as the frame ring.
    * @param fps       source frame rate.
    * @param durationSec source duration.
    */
   constructor(
     private gpuHost: GPUHost,
     private video: HTMLVideoElement,
-    private texHandle: number,
+    private texHandles: number[],
     private fps: number,
     private durationSec: number,
   ) {
@@ -172,21 +182,33 @@ export class PlaybackCursor {
     this.video.loop = p > 0;
   }
 
-  /** Minimal signed (presented − target), folded around the native-loop period so a wrap
-   *  reads as ~0 instead of a full-file jump. */
-  private foldedOffset(targetSec: number): number {
-    let d = this.lastPresentedSec - targetSec;
+  /** Minimal signed distance `d`, folded around the native-loop period so a wrap reads as
+   *  ~0 instead of a full-file jump. */
+  private fold(d: number): number {
     const p = this.loopPeriodSec;
-    if (p > 1 / Math.max(1, this.fps)) d = (((d % p) + p + p / 2) % p) - p / 2;
-    return d;
+    return p > 1 / Math.max(1, this.fps) ? (((d % p) + p + p / 2) % p) - p / 2 : d;
   }
 
-  /** True when the presented frame is within ~a frame of `targetSec` and no seek is in
-   *  flight — i.e. the texture shows the right frame. The Precise gate reads this. */
+  /** The buffered frame whose source second is nearest `targetSec` (loop-folded), or null
+   *  if the ring is empty. This IS the "nudge": correct phase by picking the neighbour
+   *  frame, never by changing playbackRate. */
+  private pickClosest(targetSec: number): { tex: number; sec: number } | null {
+    let best: { tex: number; sec: number } | null = null;
+    let bestD = Infinity;
+    for (const e of this.ring) {
+      const d = Math.abs(this.fold(e.sec - targetSec));
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    return best;
+  }
+
+  /** True when a buffered frame sits within ~a frame of `targetSec` and no seek is in
+   *  flight — i.e. we can present the right frame. The Precise gate reads this. */
   ready(targetSec: number): boolean {
-    if (this.released || !this.hasFrame || this.seeking) return false;
+    if (this.released || this.seeking || !this.ring.length) return false;
     if (this.video.readyState < 2) return false;
-    return Math.abs(this.foldedOffset(targetSec)) <= 1.5 / Math.max(1, this.fps);
+    const best = this.pickClosest(targetSec)!;
+    return Math.abs(this.fold(best.sec - targetSec)) <= 1.5 / Math.max(1, this.fps);
   }
 
   /**
@@ -200,9 +222,14 @@ export class PlaybackCursor {
     const v = this.video;
     if (v.readyState < 1 || !Number.isFinite(v.duration)) return null; // metadata not loaded yet
 
+    // AIM the element a frame AHEAD of the target so the ring straddles it (a future frame to
+    // pick as well as past ones). present() then selects the buffered frame nearest the
+    // UN-led target — so phase is corrected by frame choice, not by touching playbackRate.
+    const lead = LEAD_FRAMES / Math.max(1, this.fps);
+    const aimSec = clampSec(targetSec + lead, this.durationSec, 1 / Math.max(1, this.fps));
     const action = decideCursorAction({
       curSec: v.currentTime,
-      targetSec,
+      targetSec: aimSec,
       durationSec: this.durationSec,
       fps: this.fps,
       rate,
@@ -235,17 +262,18 @@ export class PlaybackCursor {
         break;
     }
 
-    // Sample the current frame every tick (NOT mid-seek — the element's currentTime has
-    // jumped to the target while the old frame is still presented; the seek's landing
-    // callback copies instead). Per-rAF sampling proved steadier than an rVFC loop under
-    // the load of several 1080p decodes (rVFC fires less reliably when the decoder is hot).
-    if (!this.seeking && v.readyState >= 2) this.copyFrame();
-    // Telemetry: loop-folded offset of the presented frame from target + gate check.
-    const drift = Math.abs(this.foldedOffset(targetSec));
+    // Buffer the current frame each tick (NOT mid-seek — currentTime has already jumped to
+    // the aim while the old frame is still presented; the seek's landing callback pushes
+    // instead). Per-rAF sampling beat an rVFC loop under several 1080p decodes.
+    if (!this.seeking && v.readyState >= 2) this.pushFrame();
+    // SELECT the buffered frame nearest the (un-led) target — the phase nudge.
+    const best = this.pickClosest(targetSec);
+    if (best) this.lastPresentedSec = best.sec;
+    const drift = best ? Math.abs(this.fold(best.sec - targetSec)) : 0;
     this.stats.driftSumSec += drift;
     if (drift > this.stats.driftMaxSec) this.stats.driftMaxSec = drift;
     if (!this.ready(targetSec)) this.stats.notReady++;
-    return this.hasFrame ? { handle: this.texHandle, sec: this.lastPresentedSec } : null;
+    return best ? { handle: best.tex, sec: best.sec } : null;
   }
 
   /** Drain + reset the rolling telemetry (the pump logs it periodically). */
@@ -268,11 +296,13 @@ export class PlaybackCursor {
     if (Math.abs(v.currentTime - sec) < 0.5 / Math.max(1, this.fps) && v.readyState >= 2) return; // already there
     this.seeking = true;
     this.seekStartMs = now();
+    this.ring.length = 0; // the buffered frames are from the OLD position → drop them
+    this.lastPushedSec = -1;
     try { v.currentTime = sec; } catch { this.seeking = false; return; }
     void awaitFrame(v, SEEK_TIMEOUT_MS).then(() => {
       if (this.released) return;
       this.seeking = false;
-      if (v.readyState >= 2) this.copyFrame();
+      if (v.readyState >= 2) this.pushFrame();
       const ms = now() - this.seekStartMs;
       this.stats.seeksDone++;
       this.stats.seekMsSum += ms;
@@ -280,8 +310,17 @@ export class PlaybackCursor {
     });
   }
 
-  private copyFrame(): void {
-    const tex = this.gpuHost.getTextureByHandle(this.texHandle);
+  /** Copy the element's current frame into the ring (FIFO, reusing RING_CAP textures),
+   *  tagged with its source second. Skips a repeat of the same frame so the ring holds the
+   *  last RING_CAP *distinct* frames. */
+  private pushFrame(): void {
+    const cur = this.video.currentTime;
+    if (this.ring.length && Math.abs(cur - this.lastPushedSec) < 0.5 / Math.max(1, this.fps)) return; // same frame
+    // Reuse the oldest slot when full, else grab the next free texture.
+    const slot = this.ring.length < RING_CAP
+      ? { tex: this.texHandles[this.ring.length], sec: cur }
+      : (() => { const s = this.ring.shift()!; s.sec = cur; return s; })();
+    const tex = this.gpuHost.getTextureByHandle(slot.tex);
     if (!tex) return;
     try {
       this.device.queue.copyExternalImageToTexture(
@@ -289,9 +328,9 @@ export class PlaybackCursor {
         { texture: tex },
         { width: this.video.videoWidth, height: this.video.videoHeight, depthOrArrayLayers: 1 },
       );
-      this.hasFrame = true;
-      this.lastPresentedSec = this.video.currentTime;
-    } catch { /* element not presentable this frame → keep the last copy */ }
+      this.ring.push(slot);
+      this.lastPushedSec = cur;
+    } catch { /* element not presentable this frame → keep the ring as-is */ }
   }
 
   release(): void {
@@ -348,8 +387,9 @@ export async function createPlaybackCursor(
   try { video.currentTime = 0; } catch { /* ignore */ }
   const width = video.videoWidth, height = video.videoHeight;
   const durationSec = video.duration;
-  const texHandle = gpuHost.createTexture(width, height, 1 /* rgba8unorm */);
-  const cursor = new PlaybackCursor(gpuHost, video, texHandle, fps, durationSec);
+  // RING_CAP rgba8 textures cycled as the frame ring (drift correction by frame selection).
+  const texHandles = Array.from({ length: RING_CAP }, () => gpuHost.createTexture(width, height, 1 /* rgba8unorm */));
+  const cursor = new PlaybackCursor(gpuHost, video, texHandles, fps, durationSec);
   return {
     cursor,
     info: { width, height, fps, frameCount: Math.max(1, Math.round(durationSec * fps)), durationSec },
