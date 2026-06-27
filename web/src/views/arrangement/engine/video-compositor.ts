@@ -17,10 +17,31 @@
 import { GPUHost } from '../../../gpu-host';
 import { FrameBlitter, type BlitFit, type BlitTransform } from '../../../video/frame-blitter';
 import { PlaybackCursor, createPlaybackCursor } from '../../../video/playback-cursor';
+import type { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { clipSourceTimeAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
+
+/**
+ * Pick a decode path for a source: `<video>`-codec clips play smoothly via a PlaybackCursor;
+ * DXV + still images can ONLY be decoded by the service's FrameSource path (random access),
+ * so they route there. Detected by MIME (image) + a DXV codec-fourcc sniff — so the common
+ * `<video>` case never pays the service's open-time seek probe. A DXV false-positive (random
+ * 'DXD'/'DXT' bytes in an h264 file) self-corrects: the service's DXV open rejects it and we
+ * fall back to the cursor.
+ */
+function classifySource(buf: ArrayBuffer, blob: Blob): 'image' | 'dxv' | 'video' {
+  if (blob.type.startsWith('image/')) return 'image';
+  const b = new Uint8Array(buf);
+  // DXV codec tags (DXT1/DXT5/DXD3/DXDI/DXDA/DXDC…) live as ASCII in the .mov stsd: "DX" + D|T.
+  for (let i = 0; i + 3 < b.length; i++) {
+    if (b[i] === 0x44 /*D*/ && b[i + 1] === 0x58 /*X*/ && (b[i + 2] === 0x44 /*D*/ || b[i + 2] === 0x54 /*T*/)) {
+      return 'dxv';
+    }
+  }
+  return 'video';
+}
 
 /** The neutral placement transform (centred, unscaled, unrotated, unflipped). */
 const IDENTITY_TRANSFORM: BlitTransform = {
@@ -68,9 +89,12 @@ const nowMs = (): number => globalThis.performance?.now?.() ?? Date.now();
 
 interface Pump {
   desc: VideoClipDesc;
-  /** This clip's caller-held read cursor — its own <video> playing forward (native
-   *  speed), seeking only on a jump. Replaces per-frame service decode. */
-  cursor: PlaybackCursor;
+  /** `<video>`-codec clips: a caller-held read cursor (own <video> playing forward, native
+   *  speed, seeking only on a jump). EXACTLY ONE of cursor/clip is set. */
+  cursor?: PlaybackCursor;
+  /** DXV / still-image clips: a service handle decoded random-access via service.pull (the
+   *  cache path — the browser's <video> can't decode these). */
+  clip?: ClipHandle;
   width: number;
   height: number;
   frameCount: number;
@@ -109,6 +133,7 @@ export class VideoCompositor {
   private device: GPUDevice | null = null;
   private gpuHost: GPUHost | null = null;
   private blitter: FrameBlitter | null = null;
+  private service: VideoPlaybackService | null = null; // for DXV / image clips (random-access + cache)
   private gpuPromise: Promise<void> | null = null;
 
   /** Open pumps, keyed by clipId. */
@@ -171,12 +196,13 @@ export class VideoCompositor {
     if (this.gpuHost && this.blitter) return Promise.resolve();
     if (!this.gpuPromise) {
       this.gpuPromise = (async () => {
-        // Reuse the thumbnailController's main-thread GPU device (one device per page — a
-        // second requestDevice fails under headless WebGPU). Cursors own their own <video>
-        // elements; we only need the shared device + our own FrameBlitter on it.
-        const { device, gpuHost } = await thumbnailController.sharedGpu();
+        // Reuse the thumbnailController's main-thread GPU device + decode service (one device
+        // per page — a second requestDevice fails under headless WebGPU). Cursors own their
+        // own <video> elements; the service decodes DXV/images. Our own FrameBlitter on it.
+        const { device, gpuHost, service } = await thumbnailController.sharedGpu();
         this.device = device;
         this.gpuHost = gpuHost;
+        this.service = service;
         this.blitter = new FrameBlitter(device);
       })();
     }
@@ -194,7 +220,7 @@ export class VideoCompositor {
       if (!wanted.has(clipId)) {
         this.pumps.delete(clipId);
         pump.desc && this.setInstanceTexture(pump.desc.instanceKey, null);
-        pump.cursor.release();
+        this.disposePump(pump);
       }
     }
     // Forget broken clips that are no longer active (re-adding retries fresh).
@@ -208,7 +234,7 @@ export class VideoCompositor {
         // so it re-opens, else the pump keeps injecting the old clip's frames.
         if (existing.desc.sourceKey !== d.sourceKey || existing.desc.url !== d.url) {
           this.setInstanceTexture(existing.desc.instanceKey, null);
-          existing.cursor.release();
+          this.disposePump(existing);
           this.pumps.delete(d.clipId);
           this.failedAt.delete(d.clipId); // new source → give it a fresh chance
           if (!this.opening.has(d.clipId)) void this.openClip(d);
@@ -228,33 +254,57 @@ export class VideoCompositor {
     else this.stop();
   }
 
+  /** The Pump fields common to both decode paths (cursor + service). */
+  private pumpBase(width: number, height: number, frameCount: number, fps: number, durationSec: number, _d: VideoClipDesc) {
+    return {
+      width, height,
+      frameCount: Math.max(1, frameCount),
+      fps: fps > 0 ? fps : 30,
+      durationSec,
+      busy: false,
+      rateEwma: 0,
+      injectGapSumMs: 0,
+      injectGapMax: 0,
+      injectCount: 0,
+    };
+  }
+
   private async openClip(d: VideoClipDesc) {
     this.opening.add(d.clipId);
     try {
       await this.ensureGpu();
       const resp = await fetch(d.url);
       const blob = await resp.blob();
-      // Build this clip's read cursor — its own <video> that plays forward (native speed)
-      // and seeks only on jumps. createPlaybackCursor measures the TRUE fps + native size.
-      const { cursor, info } = await createPlaybackCursor(this.gpuHost!, blob);
-      if (!this.opening.has(d.clipId)) { cursor.release(); return; } // canceled mid-open
-      this.pumps.set(d.clipId, {
-        desc: d,
-        cursor,
-        width: info.width,
-        height: info.height,
-        frameCount: info.frameCount > 0 ? info.frameCount : Math.max(1, d.durationFrames),
-        fps: info.fps > 0 ? info.fps : d.fps ?? 30,
-        durationSec: info.durationSec,
-        busy: false,
-        rateEwma: 0,
-        injectGapSumMs: 0,
-        injectGapMax: 0,
-        injectCount: 0,
-      });
+      const kind = classifySource(await blob.arrayBuffer(), blob);
+
+      let pump: Pump;
+      if (kind === 'video') {
+        // <video>-codec clip: its own cursor — plays forward (native speed), seeks only on a
+        // jump. createPlaybackCursor measures the TRUE fps + native size.
+        const { cursor, info } = await createPlaybackCursor(this.gpuHost!, blob);
+        if (!this.opening.has(d.clipId)) { cursor.release(); return; } // canceled mid-open
+        pump = { desc: d, cursor, ...this.pumpBase(info.width, info.height, info.frameCount, info.fps, info.durationSec, d) };
+      } else {
+        // DXV / image: only the service's FrameSource path decodes these (random access + cache).
+        const clip = await this.service!.open(blob, d.sourceKey, { sequential: false });
+        if (!this.opening.has(d.clipId)) { void this.service!.close(clip); return; } // canceled
+        const info = this.service!.inspect(clip);
+        if (info.codec.startsWith('video:')) {
+          // DXV sniff was a false positive (it's really <video>) → use the cursor after all.
+          void this.service!.close(clip);
+          const { cursor, info: ci } = await createPlaybackCursor(this.gpuHost!, blob);
+          if (!this.opening.has(d.clipId)) { cursor.release(); return; }
+          pump = { desc: d, cursor, ...this.pumpBase(ci.width, ci.height, ci.frameCount, ci.fps, ci.durationSec, d) };
+        } else {
+          const fps = info.fps > 0 ? info.fps : d.fps ?? 30;
+          const frameCount = info.frameCount > 0 ? info.frameCount : Math.max(1, d.durationFrames);
+          pump = { desc: d, clip, ...this.pumpBase(info.width, info.height, frameCount, fps, frameCount / Math.max(1, fps), d) };
+        }
+      }
+      this.pumps.set(d.clipId, pump);
       this.failedAt.delete(d.clipId); // opened cleanly → clear any prior failure
       // Backfill the clip's authoritative native size (the placement widget's aspect).
-      if (info.width > 0 && info.height > 0) this.onClipInfo?.(d.clipId, info.width, info.height);
+      if (pump.width > 0 && pump.height > 0) this.onClipInfo?.(d.clipId, pump.width, pump.height);
     } catch (err) {
       console.warn('[video-compositor] open failed:', d.url, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
       // Record the failure (count + time). It's RETRIED with a backoff (the first clip
@@ -310,16 +360,18 @@ export class VideoCompositor {
         const l = p.desc.loop;
         console.log(`[vid ${id}] scenario ${p.width}x${p.height} fps=${p.fps.toFixed(2)} frames=${p.frameCount} dur=${p.durationSec.toFixed(2)}s mode=${l?.mode ?? 'time'} slice=[${(l?.startSec ?? 0).toFixed(2)},${(l?.endSec ?? p.durationSec).toFixed(2)}]s speed=${l?.speed ?? 1} dir=${l?.direction ?? 'forward'}`);
       }
-      const s = p.cursor.snapshotStats();
-      const driftAvg = s.ticks ? (s.driftSumSec / s.ticks) * 1000 : 0;
-      const seekAvg = s.seeksDone ? s.seekMsSum / s.seeksDone : 0;
       const injAvg = p.injectCount ? p.injectGapSumMs / p.injectCount : 0;
+      const path = p.cursor ? 'cursor' : 'service';
+      const s = p.cursor?.snapshotStats();
+      const cur = s
+        ? `${s.ticks}t play=${s.play} seek=${s.seek} hold=${s.hold} notReady=${s.notReady}`
+        + ` | drift avg=${(s.ticks ? (s.driftSumSec / s.ticks) * 1000 : 0).toFixed(0)}ms max=${(s.driftMaxSec * 1000).toFixed(0)}ms`
+        + ` | seeks=${s.seeksDone} avg=${(s.seeksDone ? s.seekMsSum / s.seeksDone : 0).toFixed(0)}ms max=${s.seekMsMax.toFixed(0)}ms`
+        : '';
       console.log(
-        `[vid ${id}] ${s.ticks}t play=${s.play} seek=${s.seek} hold=${s.hold} notReady=${s.notReady}` +
-        ` | drift avg=${driftAvg.toFixed(0)}ms max=${(s.driftMaxSec * 1000).toFixed(0)}ms` +
-        ` | seeks=${s.seeksDone} avg=${seekAvg.toFixed(0)}ms max=${s.seekMsMax.toFixed(0)}ms` +
+        `[vid ${id}] (${path}) ${cur}` +
         ` | inject n=${p.injectCount} avg=${injAvg.toFixed(0)}ms max=${p.injectGapMax.toFixed(0)}ms` +
-        ` | beat=${beat.toFixed(2)} rate=${p.rateEwma.toFixed(3)}`,
+        ` | beat=${beat.toFixed(2)}`,
       );
       p.injectGapSumMs = 0; p.injectGapMax = 0; p.injectCount = 0;
     }
@@ -476,71 +528,96 @@ export class VideoCompositor {
       const d = p.desc;
       const active = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
       const ahead = beat < d.startBeat - 1e-6;
-      // For a clip not yet reached, target its ENTRY (what it shows AT its start) so the
-      // cursor pre-seeks there rather than chasing a future / wrong-phase frame.
+      // For a clip not yet reached, target its ENTRY (what it shows AT its start) so we
+      // pre-warm/seek there rather than chasing a future / wrong-phase frame.
       const targetSec = this.targetSecFor(p, ahead ? d.startBeat : beat, bpm);
-      const rate = this.trackRate(p, targetSec); // play/seek/hold DECISION (0 ⇒ paused)
-      const speed = this.nominalSpeed(p, ahead ? d.startBeat : beat, bpm); // clean playbackRate magnitude
-      // Seamless native loop (like a plain <video loop>, no per-wrap seek) for a FORWARD,
-      // WHOLE-FILE looping slice — the wrap point matches the file end. Sub-slice / one-shot
-      // / reverse keep seek-on-wrap.
-      const loop = d.loop ?? DEFAULT_LOOP;
-      const fullFile = (loop.startSec ?? 0) <= 0.05 && (loop.endSec ?? p.durationSec) >= p.durationSec - 0.05;
-      const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
-      p.cursor.setNativeLoop(looping && fullFile && (loop.direction ?? 'forward') === 'forward' ? p.durationSec : 0);
 
-      if (!active) {
-        // LOOKAHEAD: pre-seek the cursor to the entry frame (no inject) so arrival doesn't
-        // stall — but DON'T inject (the instance isn't composited yet).
-        if (targetSec == null) return;
-        const key = `warm:${Math.floor(targetSec * p.fps)}`;
-        if (key === p.warmedKey) return;
-        p.cursor.present(targetSec, 0); // rate 0 ⇒ seek to the entry frame
-        p.warmedKey = key;
-        return;
-      }
-
-      if (targetSec == null) {
-        // Off the slice (one-shot before/after the source) → transparent. Mark lastKey
-        // BEFORE injecting: setInstanceTexture fires the Precise re-check synchronously.
+      // Off the slice (one-shot before/after) → transparent (both paths). Mark lastKey BEFORE
+      // injecting: setInstanceTexture fires the Precise re-check synchronously.
+      if (active && targetSec == null) {
         if (p.lastKey === 'null') return;
         p.lastKey = 'null';
         this.setInstanceTexture(d.instanceKey, null);
         return;
       }
 
-      // Drive the cursor (play forward / seek / hold) and sample the current frame.
-      const res = p.cursor.present(targetSec, rate, speed);
-      if (!res || !this.pumps.has(d.clipId)) return; // no frame ready yet
-      // Dedup on the PRESENTED frame: a playing frame advances (inject each new one); a
-      // held/paused frame repeats (skip the re-blit — the worker keeps the bound texture).
-      const presentedFrame = Math.max(0, Math.floor(res.sec * p.fps));
-      const key = this.frameKey(p, presentedFrame);
-      if (key === p.lastKey) return;
-      const tex = this.gpuHost.getTextureByHandle(res.handle);
-      if (!tex) { this.lastError = `no texture for handle ${res.handle}`; return; }
-      const mode = d.scaleMode ?? 'fit';
-      const xf = d.transform ?? IDENTITY_TRANSFORM;
-      const bitmap = this.blitter.toImageBitmap(tex, this.renderW, this.renderH, mode, xf, this.compW, this.compH);
-      this.lastPulled[d.clipId] = { frame: presentedFrame, handle: res.handle, w: bitmap.width, h: bitmap.height };
-      p.lastKey = key;
-      this.framesInjected++;
-      // Telemetry: gap since the last NEW frame was pushed (the real cadence the viewer sees).
-      const tNow = nowMs();
-      if (p.lastInjectMs != null) {
-        const gap = tNow - p.lastInjectMs;
-        p.injectGapSumMs += gap;
-        if (gap > p.injectGapMax) p.injectGapMax = gap;
-        p.injectCount++;
+      // Resolve a source texture + presented frame from the right decode path.
+      let handle: number, presentedFrame: number;
+      if (p.cursor) {
+        const rate = this.trackRate(p, targetSec); // play/seek/hold DECISION (0 ⇒ paused)
+        const speed = this.nominalSpeed(p, ahead ? d.startBeat : beat, bpm); // clean playbackRate
+        const loop = d.loop ?? DEFAULT_LOOP;
+        const fullFile = (loop.startSec ?? 0) <= 0.05 && (loop.endSec ?? p.durationSec) >= p.durationSec - 0.05;
+        const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
+        p.cursor.setNativeLoop(looping && fullFile && (loop.direction ?? 'forward') === 'forward' ? p.durationSec : 0);
+        if (!active) {
+          if (targetSec == null) return;
+          const key = `warm:${Math.floor(targetSec * p.fps)}`;
+          if (key === p.warmedKey) return;
+          p.cursor.present(targetSec, 0); // rate 0 ⇒ pre-seek the entry frame
+          p.warmedKey = key;
+          return;
+        }
+        const res = p.cursor.present(targetSec!, rate, speed);
+        if (!res || !this.pumps.has(d.clipId)) return; // no frame ready yet
+        handle = res.handle;
+        presentedFrame = Math.max(0, Math.floor(res.sec * p.fps));
+      } else if (p.clip) {
+        // DXV / image: random-access decode of the exact source frame (service cache).
+        const frame = Math.max(0, Math.min(p.frameCount - 1, Math.floor((targetSec ?? 0) * p.fps)));
+        if (!active) {
+          const key = `warm:${frame}`;
+          if (targetSec == null || key === p.warmedKey) return;
+          if ((await this.service!.pull(p.clip, frame)) > 0) p.warmedKey = key; // warm the cache
+          return;
+        }
+        const h = await this.service!.pull(p.clip, frame);
+        if (h <= 0 || !this.pumps.has(d.clipId)) return;
+        handle = h;
+        presentedFrame = frame;
+      } else {
+        return;
       }
-      p.lastInjectMs = tNow;
-      this.setInstanceTexture(d.instanceKey, bitmap);
+
+      this.injectFrame(p, handle, presentedFrame);
     } catch (err) {
       this.lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       console.debug('[video-compositor] pump failed', err);
     } finally {
       p.busy = false;
     }
+  }
+
+  /** Blit a decoded source texture to the render size + push it to the executor — deduped on
+   *  the presented frame (a held/paused frame repeats and is skipped). Shared by both paths. */
+  private injectFrame(p: Pump, handle: number, presentedFrame: number) {
+    const d = p.desc;
+    const key = this.frameKey(p, presentedFrame);
+    if (key === p.lastKey) return;
+    const tex = this.gpuHost!.getTextureByHandle(handle);
+    if (!tex) { this.lastError = `no texture for handle ${handle}`; return; }
+    const mode = d.scaleMode ?? 'fit';
+    const xf = d.transform ?? IDENTITY_TRANSFORM;
+    const bitmap = this.blitter!.toImageBitmap(tex, this.renderW, this.renderH, mode, xf, this.compW, this.compH);
+    this.lastPulled[d.clipId] = { frame: presentedFrame, handle, w: bitmap.width, h: bitmap.height };
+    p.lastKey = key;
+    this.framesInjected++;
+    // Telemetry: gap since the last NEW frame was pushed (the real cadence the viewer sees).
+    const tNow = nowMs();
+    if (p.lastInjectMs != null) {
+      const gap = tNow - p.lastInjectMs;
+      p.injectGapSumMs += gap;
+      if (gap > p.injectGapMax) p.injectGapMax = gap;
+      p.injectCount++;
+    }
+    p.lastInjectMs = tNow;
+    this.setInstanceTexture(d.instanceKey, bitmap);
+  }
+
+  /** Release a pump's decode resources (cursor's <video> or the service clip). */
+  private disposePump(p: Pump) {
+    if (p.cursor) p.cursor.release();
+    else if (p.clip) void this.service?.close(p.clip);
   }
 
   /** Force every active pump to RE-INJECT its current frame on the next tick. Call
@@ -557,7 +634,7 @@ export class VideoCompositor {
 
   destroy() {
     this.stop();
-    for (const pump of this.pumps.values()) pump.cursor.release();
+    for (const pump of this.pumps.values()) this.disposePump(pump);
     this.pumps.clear();
     this.opening.clear();
   }
@@ -578,7 +655,11 @@ export class VideoCompositor {
     if (!pump) return false;
     const targetSec = this.targetSecFor(pump, beat, bpm);
     if (targetSec == null) return true; // off-slice ⇒ transparent is a valid "ready"
-    return pump.cursor.ready(targetSec);
+    if (pump.cursor) return pump.cursor.ready(targetSec);
+    // Service path: ready once the target frame has been injected (key matches), like the
+    // pre-cursor pump — DXV decode is fast so this lands within a tick.
+    const frame = Math.max(0, Math.min(pump.frameCount - 1, Math.floor(targetSec * pump.fps)));
+    return pump.lastKey === this.frameKey(pump, frame);
   }
 
   /** Per-frame inject/dedup key. Folds in the scale mode + placement transform +
