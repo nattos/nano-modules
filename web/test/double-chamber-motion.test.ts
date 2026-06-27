@@ -14,7 +14,7 @@ import type { Sketch } from '../src/sketch-types';
  * real velocity. A visible difference proves the whole rail: produced →
  * published (setGpuTexture) → auto-connected → consumed.
  */
-function buildChain(blurStrength: number): Sketch {
+function buildChain(blurStrength: number, dcOverrides: Record<string, unknown> = {}): Sketch {
   return {
     anchor: null,
     wires: [],
@@ -39,6 +39,7 @@ function buildChain(blurStrength: number): Sketch {
           l_opacity: 1.0,
           motion_line_speed: 0.6,
           bridger_count: 0,
+          ...dcOverrides,
         },
       },
       {
@@ -94,5 +95,45 @@ describe('Double Chamber motion-vector output (render_outputs/motion) E2E', () =
     // strength=32 smears each particle along its motion vector; strength=0 is a
     // pass-through. They must differ → the motion rail carried real velocity.
     blurred.trace('out').expectDifferentFrom(sharp.trace('out'), 100);
+  });
+
+  it('motion_particle_scale scales the emitted particle velocity', async () => {
+    // Lines off, so the ONLY motion comes from particles. scale=0 zeroes their
+    // emitted velocity → motion.blur is a pass-through; scale=2 amplifies it →
+    // a strong smear. The two must differ, proving motion_particle_scale gates
+    // the particle motion magnitude.
+    const off = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.legacy', 'com.nano.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'dc_scale0',
+          sketch: buildChain(32.0, { l_count: 0, motion_particle_scale: 0.0 }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'dc_scale0' } },
+        ]},
+      ],
+      waitFrames: 24,
+      captureTraceIds: ['out'],
+      dumpName: 'double_chamber_motion_scale0',
+    });
+    expect(off.success).toBe(true);
+
+    const hi = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.legacy', 'com.nano.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'dc_scale2',
+          sketch: buildChain(32.0, { l_count: 0, motion_particle_scale: 2.0 }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'dc_scale2' } },
+        ]},
+      ],
+      waitFrames: 24,
+      captureTraceIds: ['out'],
+      dumpName: 'double_chamber_motion_scale2',
+    });
+    expect(hi.success).toBe(true);
+
+    hi.trace('out').expectDifferentFrom(off.trace('out'), 100);
   });
 });

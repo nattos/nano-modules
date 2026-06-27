@@ -15,7 +15,8 @@ cbuffer MotionVsUniforms : register(b1) {
   float point_size;   // isotropic-uv full size (footprint of the motion)
   float dt;
   float motion_rate;
-  float _m0, _m1, _m2;
+  float scale;        // extra multiplier on the emitted particle velocity
+  float _m1, _m2;
 };
 
 [shader("vertex")]
@@ -43,6 +44,6 @@ MotionVsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
 
   o.pos = float4(clip, 0.0, 1.0);
   o.corner = c;
-  o.motion = p.b.xy * dt * motion_rate * float2(aspect_x, aspect_y);
+  o.motion = p.b.xy * dt * motion_rate * scale * float2(aspect_x, aspect_y);
   return o;
 }

@@ -81,7 +81,7 @@ struct BridgerUniforms {
   float rate, motion, opacity, color_contrib;
   float hue, tint_r, tint_g, tint_b;
 };
-struct MotionVsUniforms { float aspect_x, aspect_y, point_size, dt; float motion_rate, _m0, _m1, _m2; };
+struct MotionVsUniforms { float aspect_x, aspect_y, point_size, dt; float motion_rate, scale, _m1, _m2; };
 struct MotionFsUniforms { uint32_t shape_kind; float shape_param, _f0, _f1; };
 struct LineMotionVsUniforms { float aspect_x, aspect_y, width, line_speed; };
 struct BigUpdateUniforms {
@@ -164,6 +164,7 @@ struct State {
   // Motion-vector output (render_outputs/motion) — only produced when a sink
   // is wired. Particles emit their integrated velocity; lines emit a tangent.
   float motion_line_speed = 0.3f;  // [0,1] slider → uv/frame via MOTION_LINE_SCALE
+  float motion_particle_scale = 1.0f;  // extra multiplier on emitted particle velocity
   // Composite.
   float input_alpha = 1.0f;
   int   blend_mode = BLEND_ADD;
@@ -244,7 +245,7 @@ static void seed_bridgers(gpu::Buffer& buf, int p_count) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 4, 4},
+  state::init("source.legacy.double_chamber", {1, 4, 5},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -322,6 +323,7 @@ void module_init() {
       .floatField("bridger_color_contrib", 0.5f, 0.0f, 1.0f, state::SecondaryInput)
       // ---- Motion-vector output ----
       .floatField("motion_line_speed", 0.3f, 0.0f, 1.0f,  state::SecondaryInput)
+      .floatField("motion_particle_scale", 1.0f, 0.0f, 4.0f, state::SecondaryInput)
       // ---- Composite ----
       .selectField("blend_mode",    BLEND_ADD,            state::SecondaryInput, {
         {"Add", BLEND_ADD}, {"Alpha", BLEND_ALPHA} })
@@ -564,6 +566,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "bridger_hue"))    s->bridger_hue = state::patchFloat(i);
     else if (state::pathIs(p, l, "bridger_color_contrib")) s->bridger_color_contrib = state::patchFloat(i);
     else if (state::pathIs(p, l, "motion_line_speed")) s->motion_line_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "motion_particle_scale")) s->motion_particle_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "blend_mode"))     s->blend_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "input_alpha"))    s->input_alpha = state::patchFloat(i);
   }
@@ -817,9 +820,9 @@ void render(void* self, int vp_w, int vp_h) {
         cp.end();
       }
 
-      MotionVsUniforms mvp = { ax, ay, s->p_point_size * POINT_SIZE_SCALE, dt, s->motion_rate, 0.f, 0.f, 0.f };
+      MotionVsUniforms mvp = { ax, ay, s->p_point_size * POINT_SIZE_SCALE, dt, s->motion_rate, s->motion_particle_scale, 0.f, 0.f };
       s->motion_vs_uniform_p.writeOne(mvp);
-      MotionVsUniforms mvb = { ax, ay, s->big_point_size, dt, s->motion_rate, 0.f, 0.f, 0.f };
+      MotionVsUniforms mvb = { ax, ay, s->big_point_size, dt, s->motion_rate, s->motion_particle_scale, 0.f, 0.f };
       s->motion_vs_uniform_big.writeOne(mvb);
       MotionFsUniforms mfu = { (uint32_t)s->p_shape, 0.5f, 0.f, 0.f };
       s->motion_fs_uniform.writeOne(mfu);
