@@ -30,7 +30,7 @@
 
 namespace double_chamber {
 
-static constexpr int MAX_P   = 50000;
+static constexpr int MAX_P   = 1000000;   // 1M × 32 B = 32 MB pool
 static constexpr int MAX_BIG = 64;
 static constexpr int SEED_CHUNK = 512;
 static constexpr int MAX_TRACERS = 96;
@@ -52,7 +52,6 @@ struct PUpdateUniforms {
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
   float to_big_range, image_smoothing, to_line_rate, seg_total;
-  float boundary_mode, _bp0, _bp1, _bp2;
 };
 struct TraceUniforms {
   uint32_t count, max_seg, frame_index; float dt;
@@ -93,6 +92,7 @@ struct State {
   int field_w = 0, field_h = 0;
   bool initialized = false;
   uint32_t frame_index = 0;
+  int  inited_count = 0;   // P slots seeded so far (lazy growth to p_count)
 
   // CPU param mirrors.
   int   p_count = 12000;
@@ -101,7 +101,6 @@ struct State {
   float momentum = 0.6f, momentum_decay = 0.98f;
   float to_big = 0.3f, to_big_curl = 0.2f, to_big_range = 0.4f, curl_dir = 1.0f, sink = 0.0f;
   float jitter = 0.04f;
-  int   boundary_mode = 0;   // 0 Recycle (fountain) · 1 Contain (soft) · 2 Wrap
   float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 1.2f;
   float to_image = 0.0f, to_image_curl = 0.0f, image_smoothing = 0.3f;
   float undertow_skew = 0.0f, undertow_squash = 1.0f;
@@ -143,13 +142,16 @@ static inline uint32_t lcg(uint32_t& s) { s = s * 1664525u + 1013904223u; return
 static inline float lcgf(uint32_t& s) { return (lcg(s) >> 8) * (1.0f / float(1u << 24)); }
 static inline float as_float(uint32_t u) { float f; std::memcpy(&f, &u, 4); return f; }
 
-// Seed a pool's slots [0, n) with random uv + staggered life so they don't all
-// respawn on the same frame. Chunked to keep the wasm stack small.
-static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
-  uint32_t rng = 0x12345678u ^ salt;
+// Seed a pool's slots [from, to) with random uv + staggered life so they don't
+// all respawn on the same frame. Chunked to keep the wasm stack small. Seeded
+// lazily up to the live count (the pool can be 1M; we never upload all of it
+// unless the user dials count that high).
+static void seed_pool(gpu::Buffer& buf, int from, int to, float lifetime, uint32_t salt) {
+  if (from >= to) return;
+  uint32_t rng = (0x12345678u ^ salt) + (uint32_t)from * 2654435761u;
   GpuParticle chunk[SEED_CHUNK];
-  for (int start = 0; start < n; start += SEED_CHUNK) {
-    int end = start + SEED_CHUNK; if (end > n) end = n;
+  for (int start = from; start < to; start += SEED_CHUNK) {
+    int end = start + SEED_CHUNK; if (end > to) end = to;
     int m = end - start;
     for (int k = 0; k < m; k++) {
       float ux = lcgf(rng), uy = lcgf(rng);
@@ -165,7 +167,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 3, 2},
+  state::init("source.legacy.double_chamber", {1, 4, 0},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -189,8 +191,6 @@ void module_init() {
       .floatField("to_image_curl",  0.0f, -2.0f, 2.0f,    state::SecondaryInput)
       .floatField("undertow_skew",  0.0f, -1.0f, 1.0f,    state::SecondaryInput)
       .floatField("undertow_squash",1.0f,  0.0f, 8.0f,    state::SecondaryInput)
-      .selectField("boundary_mode", 0,                    state::PrimaryInput, {
-        {"Recycle", 0}, {"Contain", 1}, {"Wrap", 2} })
       .floatField("boundary",       1.0f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("boundary_size",  0.42f, 0.05f, 0.7f,   state::SecondaryInput)
       .floatField("boundary_stiffness", 8.0f, 0.5f, 32.0f, state::SecondaryInput)
@@ -333,8 +333,9 @@ void init(void* self) {
   if (!s_pso_p_update.valid() || !s_pso_big_update.valid() || !s_pso_render_add.valid()) return;
   if (!s->p_buf.valid() || !s->big_buf.valid()) return;
   s->frame_index = 0;
-  seed_pool(s->p_buf,   MAX_P,   s->ttl * 8.0f,  0x1111u);
-  seed_pool(s->big_buf, MAX_BIG, s->big_ttl * 20.0f, 0x2222u);
+  seed_pool(s->p_buf,   0, s->p_count,  s->ttl * 8.0f,      0x1111u);
+  seed_pool(s->big_buf, 0, MAX_BIG,     s->big_ttl * 20.0f, 0x2222u);
+  s->inited_count = s->p_count;
   // Zero tracers (time=0 → each seeds itself on the first trace).
   {
     float zeros[4 * MAX_TRACERS] = {0};
@@ -373,7 +374,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "to_image_curl"))  s->to_image_curl = state::patchFloat(i);
     else if (state::pathIs(p, l, "undertow_skew"))  s->undertow_skew = state::patchFloat(i);
     else if (state::pathIs(p, l, "undertow_squash")) s->undertow_squash = state::patchFloat(i);
-    else if (state::pathIs(p, l, "boundary_mode"))  s->boundary_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "boundary"))       s->boundary = state::patchFloat(i);
     else if (state::pathIs(p, l, "boundary_size"))  s->boundary_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "boundary_stiffness")) s->boundary_stiffness = state::patchFloat(i);
@@ -416,6 +416,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   if (s->l_count < 0) s->l_count = 0; if (s->l_count > MAX_TRACERS) s->l_count = MAX_TRACERS;
   if (s->p_count < 1) s->p_count = 1; if (s->p_count > MAX_P) s->p_count = MAX_P;
   if (s->big_count < 0) s->big_count = 0; if (s->big_count > MAX_BIG) s->big_count = MAX_BIG;
+  // Lazily seed slots newly brought into play by a count increase.
+  if (s->initialized && s->p_count > s->inited_count) {
+    seed_pool(s->p_buf, s->inited_count, s->p_count, s->ttl * 8.0f, 0x1111u);
+    s->inited_count = s->p_count;
+  }
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -473,7 +478,6 @@ void render(void* self, int vp_w, int vp_h) {
   int seg_total = (s->l_count > 0) ? s->l_count * MAX_SEG : 0;
   pu.to_line_rate = (seg_total > 0) ? s->spawn_on_line : 0.0f;
   pu.seg_total = (float)seg_total;
-  pu.boundary_mode = (float)s->boundary_mode;
   s->p_uniform.writeOne(pu);
 
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
