@@ -450,6 +450,9 @@ export class EngineBridge {
         { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
       ]);
       this.refreshDeviceTraces();
+      // The reissued sketch recreated the video instances (blank); re-inject each
+      // active clip's current frame so a still image / paused first frame isn't blank.
+      this.video?.reinjectActive();
     }
     this.reconcilePump(warmDescs);
     this.displayedVideoDescs = videoDescs;

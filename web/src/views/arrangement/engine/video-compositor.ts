@@ -429,6 +429,18 @@ export class VideoCompositor {
     }
   }
 
+  /** Force every active pump to RE-INJECT its current frame on the next tick. Call
+   *  after the composite SKETCH is reissued: that recreates the `source.video.file`
+   *  instances (dropping their bound textures), and any frame injected DURING a Precise
+   *  hold went to an instance that didn't exist yet — so without this a static frame (a
+   *  still image, or a paused video's first frame) would stay blank, since its frame key
+   *  never changes and the `key === lastKey` guard blocks a re-inject. */
+  reinjectActive() {
+    let any = false;
+    for (const p of this.pumps.values()) { p.lastKey = undefined; p.warmedKey = undefined; any = true; }
+    if (any) this.start();
+  }
+
   destroy() {
     this.stop();
     for (const pump of this.pumps.values()) this.service?.close(pump.clip).catch(() => {});
