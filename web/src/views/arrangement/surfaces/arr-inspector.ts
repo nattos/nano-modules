@@ -762,6 +762,28 @@ export class ArrInspector extends MobxLitElement {
                 <arr-mixer-strip .trackId=${track.id}></arr-mixer-strip>
               </span>
             </div>
+            ${track.kind === 'group' && !store.isMainBus(track)
+              ? html`<div class="row">
+                  <label title="What this group's children draw over, before the group's effect chain runs">Input</label>
+                  <span class="val seg wrap">
+                    ${(['underlying', 'transparent', 'black', 'custom'] as const).map(
+                      (m) => html`<button
+                        class="segbtn ${store.groupInputMode(track.id) === m ? 'on' : ''}"
+                        title=${m === 'underlying' ? 'Pass-through: composite everything below the group, then run the group as an effects-only layer over it' : `Fresh ${m} base under the group's children`}
+                        @click=${() => store.setGroupInput(track.id, m)}
+                      >${m}</button>`,
+                    )}
+                    ${store.groupInputMode(track.id) === 'custom'
+                      ? html`<input
+                          type="color"
+                          .value=${store.groupInputColor(track.id)}
+                          @input=${(e: Event) => store.setGroupInput(track.id, 'custom', (e.target as HTMLInputElement).value)}
+                          style="width:26px;height:22px;padding:0;border:1px solid var(--app-tint-4);background:none;cursor:pointer;margin-left:6px"
+                        />`
+                      : ''}
+                  </span>
+                </div>`
+              : ''}
             <div class="row">
               <label>Blend</label>
               <span class="val seg wrap">
@@ -773,28 +795,6 @@ export class ArrInspector extends MobxLitElement {
                 )}
               </span>
             </div>`}
-        ${track.kind === 'group' && !store.isMainBus(track)
-          ? html`<div class="row">
-              <label title="What this group's children draw over, before the group's effect chain runs">Input</label>
-              <span class="val seg wrap">
-                ${(['underlying', 'transparent', 'black', 'custom'] as const).map(
-                  (m) => html`<button
-                    class="segbtn ${store.groupInputMode(track.id) === m ? 'on' : ''}"
-                    title=${m === 'underlying' ? 'Pass-through: composite everything below the group, then run the group as an effects-only layer over it' : `Fresh ${m} base under the group's children`}
-                    @click=${() => store.setGroupInput(track.id, m)}
-                  >${m}</button>`,
-                )}
-                ${store.groupInputMode(track.id) === 'custom'
-                  ? html`<input
-                      type="color"
-                      .value=${store.groupInputColor(track.id)}
-                      @input=${(e: Event) => store.setGroupInput(track.id, 'custom', (e.target as HTMLInputElement).value)}
-                      style="width:26px;height:22px;padding:0;border:1px solid var(--app-tint-4);background:none;cursor:pointer;margin-left:6px"
-                    />`
-                  : ''}
-              </span>
-            </div>`
-          : ''}
         ${store.isMainBus(track)
           ? ''
           : html`<div class="row">
