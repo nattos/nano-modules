@@ -105,7 +105,7 @@ export class ArrGrid extends MobxLitElement {
       gap: 3px;
       padding: var(--app-sp-2) 0; /* horizontal indent is per-row (own depth / gutter) */
       cursor: pointer;
-      overflow: hidden;
+      overflow: visible; /* let the group bar bleed 1px over the row border to connect */
     }
     /* Per-depth vertical group lines, one column (GROUP_INDENT) each, drawn in the
        left gutter behind the content (which is indented past them). */
@@ -124,11 +124,10 @@ export class ArrGrid extends MobxLitElement {
       content: '';
       position: absolute;
       top: 0;
-      bottom: 0;
+      bottom: -1px; /* bleed over the 1px row border so segments connect */
       left: 50%;
       width: 1px;
       transform: translateX(-50%);
-      border-radius: 1px;
       background: var(--gline, var(--app-tint-4));
       opacity: 0.5;
     }
@@ -136,7 +135,7 @@ export class ArrGrid extends MobxLitElement {
       top: 3px;
     }
     .gline.end::before {
-      bottom: 3px;
+      bottom: 3px; /* the last row insets the end (no border to bridge below it) */
     }
     /* Hover lights up EVERY segment of the group (driven by hoveredGroupId). */
     .gline.hover::before {
@@ -329,7 +328,7 @@ export class ArrGrid extends MobxLitElement {
       border-right: 1px solid var(--app-tint-3);
       background: var(--app-bg-color2);
       display: flex;
-      overflow: hidden;
+      overflow: visible; /* let the group bar bleed over the row border to connect */
     }
     /* The auto lane belongs to its track, so it carries the track's group lines;
        the label indents only to the track's OWN depth (as far left as possible). */
