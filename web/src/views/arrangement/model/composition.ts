@@ -109,6 +109,25 @@ export interface BackgroundConfig {
   color?: string;
 }
 
+/**
+ * A GROUP's compositing INPUT: what its children draw over, BEFORE the group's
+ * own effect chain runs and the result composites up into the parent.
+ *  - `underlying` (pass-through): seed with the composite of everything BELOW the
+ *    group, so the whole group acts like an effects-only / adjustment layer over
+ *    what's beneath it.
+ *  - `black` | `transparent` | `custom`: a FRESH base (the same three modes as the
+ *    composition {@link BackgroundConfig}); the group becomes a self-contained image
+ *    that then composites over what's beneath it.
+ * Omitted ⇒ `transparent` (the group composites its children over nothing, then
+ * blends up — equivalent to the old flat sum, but with group-level opacity/blend/FX).
+ */
+export type GroupInputMode = 'underlying' | 'black' | 'transparent' | 'custom';
+export interface GroupInput {
+  mode: GroupInputMode;
+  /** CSS color for `custom` mode (e.g. '#1a2b3c'). */
+  color?: string;
+}
+
 export interface CompositionMeta {
   resolution: Resolution;
   baseBPM: number;
@@ -465,6 +484,9 @@ export interface Track {
   /** Composite blend mode for this track's clips, layered over the tracks above —
    *  a {@link BLEND_MODE_NAMES} index (0 = Normal). Omitted ⇒ Normal. */
   blendMode?: number;
+  /** For kind 'group': the group's compositing input/background (what its children
+   *  draw over before the group's FX runs). Omitted ⇒ transparent. */
+  groupInput?: GroupInput;
   /** For kind 'rail': the rail this track visualizes. */
   railId?: string;
   /** For kind 'rail': the base value envelope (automation), points x,y in [0,1]. */

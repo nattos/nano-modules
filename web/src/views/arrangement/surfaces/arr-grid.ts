@@ -1179,11 +1179,13 @@ export class ArrGrid extends MobxLitElement {
     let y = 0;
     for (const t of store.displayTracks) {
       // The clip row carries the overlay lane id in automation mode (the row edits
-      // the selected-field automation), matching store.caretRows.
-      const overlay = t.kind === 'track' ? store.overlayLaneId(t.id) : '';
+      // the selected-field automation), matching store.caretRows. Both tracks AND
+      // non-bus GROUPS carry automation lanes (a group's FX bus is automatable too).
+      const autoOwner = t.kind === 'track' || (t.kind === 'group' && !store.isMainBus(t));
+      const overlay = autoOwner ? store.overlayLaneId(t.id) : '';
       out.push({ trackId: t.id, laneId: overlay, top: y, bottom: y + ROW_HEIGHT });
       y += ROW_HEIGHT;
-      if (store.automationMode && t.kind === 'track') {
+      if (store.automationMode && autoOwner) {
         for (const lane of t.automation) {
           if (lane.id === overlay) continue; // shown as the clip-row overlay
           out.push({ trackId: t.id, laneId: lane.id, top: y, bottom: y + AUTO_LANE_HEIGHT });

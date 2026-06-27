@@ -229,7 +229,7 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
         engine.setInstanceTexture(d.instanceKey, bmp);
       }
 
-      const render = buildCompositeRenderAtBeat(layers, fr.beat);
+      const render = buildCompositeRenderAtBeat(fr.beat, opts.ignoreSolo);
       let bitmap: ImageBitmap | undefined;
       if (render) {
         if (render.sig !== lastSig) {

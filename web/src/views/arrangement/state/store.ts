@@ -23,6 +23,8 @@ import {
   EnvelopePoint,
   ScaleMode,
   SourceTransform,
+  GroupInput,
+  GroupInputMode,
   deviceIsSource,
   resolveSourceTransform,
   compositionLengthBeats,
@@ -38,6 +40,7 @@ import {
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
+import type { CompositeNode } from '../engine/clip-sketch';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
@@ -1254,6 +1257,75 @@ export class ArrangementStore {
     // `tracks` is already top→bottom; paint in that order so each lower track
     // draws over the one above it (downward sum — bottom-most track on top).
     return layers;
+  }
+
+  /** Pick the single active clip on a track at `beat` (latest-started on overlap),
+   *  or undefined. Skips empty + bypassed clips. */
+  private pickActiveClip(track: Track, beat: number): Clip | undefined {
+    let pick: Clip | undefined;
+    for (const c of track.clips) {
+      if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
+      if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty clip
+      if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
+    }
+    return !pick || pick.bypassed ? undefined : pick;
+  }
+
+  /**
+   * The active composite as a TREE (the hierarchical counterpart to
+   * {@link compositeLayersAtBeat}). Each group becomes a {@link CompositeNode}
+   * whose children render into a sub-image (over the group's `input` base), the
+   * group's own FX chain runs over that, and the result composites up — so group
+   * effect chains + group opacity/blend act on the whole subtree as a unit. Leaf
+   * opacity is the track's OWN level (NOT ancestor-multiplied); the recursion folds
+   * in group opacity via each group's blend-up. Respects bypass + solo through the
+   * hierarchy, and DROPS groups with no contributing descendants. Top → bottom
+   * (downward sum); the main bus is excluded (it pins the bottom and isn't a content
+   * group). `ignoreSolo` (the exporter) renders the full mix. */
+  compositeTreeAtBeat(beat: number, ignoreSolo = false): CompositeNode[] {
+    const anySolo = !ignoreSolo && this.composition.tracks.some((t) => t.soloed);
+    const childrenOf = (parentId: string | null) =>
+      this.composition.tracks.filter((t) => t.parentId === parentId);
+
+    const build = (track: Track, ancestorSoloed: boolean): CompositeNode | null => {
+      if (track.bypassed) return null; // bypassed track/group → drop the subtree
+      const soloedHere = ancestorSoloed || !!track.soloed;
+      if (track.kind === 'group') {
+        if (this.isMainBus(track)) return null; // master bus isn't a content group
+        const children: CompositeNode[] = [];
+        for (const c of childrenOf(track.id)) {
+          const n = build(c, soloedHere);
+          if (n) children.push(n);
+        }
+        if (children.length === 0) return null; // nothing to composite → omit the group
+        return {
+          type: 'group',
+          group: track,
+          opacity: Math.max(0, Math.min(1, track.level ?? 1)),
+          blendMode: track.blendMode ?? 0,
+          input: track.groupInput ?? { mode: 'transparent' },
+          children,
+        };
+      }
+      if (track.kind !== 'track') return null; // rails aren't composite layers
+      if (anySolo && !soloedHere) return null; // solo restricts to soloed lineages
+      const clip = this.pickActiveClip(track, beat);
+      if (!clip) return null;
+      return {
+        type: 'clip',
+        clip,
+        track,
+        opacity: Math.max(0, Math.min(1, track.level ?? 1)),
+        blendMode: track.blendMode ?? clip.blendMode ?? 0,
+      };
+    };
+
+    const roots: CompositeNode[] = [];
+    for (const t of childrenOf(null)) {
+      const n = build(t, false);
+      if (n) roots.push(n);
+    }
+    return roots;
   }
 
   /** The active composite layers (the bridge folds these into one chain). */
@@ -3422,6 +3494,25 @@ export class ArrangementStore {
       const t = d.tracks.find((x) => x.id === trackId);
       if (t) t.blendMode = mode;
     });
+  }
+
+  /** A group's compositing input mode (what its children draw over). Omitted ⇒
+   *  transparent. */
+  groupInputMode(trackId: string): GroupInputMode {
+    return this.trackById(trackId)?.groupInput?.mode ?? 'transparent';
+  }
+  groupInputColor(trackId: string): string {
+    return this.trackById(trackId)?.groupInput?.color ?? '#000000';
+  }
+  /** Set a group's compositing input mode (+ custom color). */
+  setGroupInput(trackId: string, mode: GroupInputMode, color?: string) {
+    this.mutate('set group input', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      const keepColor = t.groupInput?.color;
+      const gi: GroupInput = { mode, ...(color !== undefined ? { color } : (keepColor ? { color: keepColor } : {})) };
+      t.groupInput = gi;
+    }, `groupInput:${trackId}`);
   }
 
   /** Set a return/rail track's signed (bipolar) vs unsigned mode. */

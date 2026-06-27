@@ -129,9 +129,20 @@ since making the two surfaces look and feel the same is a deliberate goal.
 - **Time-view unification.** `time-strip` (linear) vs `BeatGrid` (warped) are separate; unify behind
   one zoomable gridded time view.
 - **Other display-only edits.** Clip-view loop/in-out markers; track reorder / group DnD.
-- **Group-bus effect chains.** Blend modes are DONE (`Track`/`Clip.blendMode`, lock-step
-  `BLEND_MODE_NAMES`, 16-mode inspector selector, applied through the executor). Still open: a GROUP
-  track's own effect chain processing its summed children (groups currently only sum upward).
+- **Group-bus effect chains.** ✅ DONE. The compositor is now HIERARCHICAL: `buildCompositeSketch`
+  takes a node TREE (`store.compositeTreeAtBeat`), each GROUP composites its children into a sub-image
+  over the group's INPUT base, then runs the group's own `sketch` FX chain (`pushTrackFx`, keyed
+  `track_<groupId>_<dev>`) over that, then composites up (group blend mode + own opacity). A group's
+  INPUT mode (`Track.groupInput`, inspector "Input" segmented control): `underlying` (pass-through —
+  the group is an effects-only layer over everything composited BELOW it), or a fresh `black` /
+  `transparent` (default) / `custom` base (same three as the composition background). Group AUTOMATION
+  + lanes work exactly like tracks (the two `arr-grid` kind-gates were relaxed for non-bus groups;
+  `automationEntriesAtBeat` walks the tree and emits group lanes targeting the group FX keys). A flat
+  array of clip leaves still composites identically (a plain `{clip,opacity}` IS a clip leaf), so the
+  default top-level behaviour is unchanged. Leaf opacity is each track's OWN level; the recursion folds
+  in group opacity via the blend-up (so `compositeLayersAtBeat`'s ancestor-multiplied opacity is kept
+  only for the flat video/monitor consumers). The main bus is NOT a content group — it pins the bottom
+  and is excluded from the tree.
 - **Dynamic-generator film-strip thumbnails (push-capture).** Designed in `media/THUMBNAIL_CACHE.md`
   but not built: generators are non-deterministic, so flip from pull (decode-on-demand) to push
   (capture observed composited frames), keyed `clipId:paramFingerprint`, reusing the whole cache.

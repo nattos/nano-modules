@@ -22,7 +22,7 @@
 
 import type { Sketch, InstanceState, ChainEntry, Wire } from '../../../sketch-types';
 import type { ShowSketchOpts } from './arr-engine';
-import type { Clip, Device, Track, BackgroundConfig, RailRead, RailExport } from '../model/composition';
+import type { Clip, Device, Track, BackgroundConfig, GroupInput, RailRead, RailExport } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
 import { solidSketch } from './slice-sketches';
@@ -77,9 +77,14 @@ export function clipToRender(clip: Clip): ClipRender | null {
   return null;
 }
 
-/** One engine layer to fold into the composite (clip + effective opacity + blend). */
-export interface CompositeLayerInput {
+/** One clip LEAF to fold into the composite (clip + own opacity + blend). A plain
+ *  object with no `type` (the legacy flat-layer shape) IS a clip leaf, so callers
+ *  that pass a flat array of these still composite exactly as before. */
+export interface CompositeClipNode {
+  type?: 'clip';
   clip: Clip;
+  /** Own composite opacity (relative to the immediate parent — NOT ancestor-multiplied;
+   *  the recursion folds in ancestor group opacity via each group's own blend-up). */
   opacity: number;
   /** composite.blend mode for a source clip (0 = Normal/over). */
   blendMode?: number;
@@ -91,6 +96,31 @@ export interface CompositeLayerInput {
    *  (e.g. an LFO) to its CLIP-RELATIVE phase — keeps the displayed curve and the live
    *  output aligned even when you jump into the middle of the clip. */
   startSec?: number;
+}
+
+/** A GROUP node: its children composite into a sub-image (over the group's `input`
+ *  base), the group's own `sketch` FX chain runs over that, and the result composites
+ *  up into the parent (group blend mode + own opacity). Group FX is keyed per-group
+ *  (`track_<groupId>_<dev>`) so group automation lanes can target it, exactly like a
+ *  track FX bus. */
+export interface CompositeGroupNode {
+  type: 'group';
+  group: Track;
+  /** Own composite opacity (group level), applied as the group composites up. */
+  opacity: number;
+  blendMode?: number;
+  /** The group's compositing input (what its children draw over). */
+  input: GroupInput;
+  children: CompositeNode[];
+}
+
+export type CompositeNode = CompositeClipNode | CompositeGroupNode;
+
+/** @deprecated Back-compat alias — a clip leaf. */
+export type CompositeLayerInput = CompositeClipNode;
+
+function isGroupNode(n: CompositeNode): n is CompositeGroupNode {
+  return (n as CompositeGroupNode).type === 'group';
 }
 
 const BLEND = 'composite.blend';
@@ -123,7 +153,7 @@ function hexToRgb01(hex: string): [number, number, number] {
  * `sig` lets the bridge re-issue only when the composite changes.
  */
 export function buildCompositeSketch(
-  layers: CompositeLayerInput[],
+  nodes: CompositeNode[],
   bg?: BackgroundConfig,
   /** Per-rail base-curve value at the current beat — baked into the rail accumulator's
    *  authored `input` so writer wires fold ONTO it (the standard authored-value + wire
@@ -209,12 +239,23 @@ export function buildCompositeSketch(
     return last;
   };
 
+  // Flatten the node tree to its clip leaves (depth-first) — for the rail pre-pass
+  // and the composition-background gate, both of which are order-independent.
+  const flatClips: Clip[] = [];
+  const collectClips = (ns: CompositeNode[]) => {
+    for (const n of ns) {
+      if (isGroupNode(n)) collectClips(n.children);
+      else flatClips.push(n.clip);
+    }
+  };
+  collectClips(nodes);
+
   // Background base: an opaque solid-color layer UNDER all clips (so the bg is
   // baked into the composite, revealed by clip transparency / between clips).
-  // Only when there ARE clips — an empty timeline renders nothing (the monitor
+  // Only when there IS content — an empty timeline renders nothing (the monitor
   // draws its own backdrop). `transparent` keeps the old transparent base.
   const bgMode = bg?.mode ?? 'black';
-  if (layers.length > 0 && bgMode !== 'transparent') {
+  if (flatClips.length > 0 && bgMode !== 'transparent') {
     const rgb = bgMode === 'custom' ? hexToRgb01(bg?.color ?? '#000000') : [0, 0, 0];
     push('source.solid_color', 'arr_bg', { color: rgb });
     accKey = 'arr_bg';
@@ -224,7 +265,7 @@ export function buildCompositeSketch(
   // clip layers so a mod node never ends the chain (which would lose the output
   // texture). Each is an identity `mod.shaper.remap` relay: writers fold into its
   // `input`, readers pull its `output`. mod nodes are texture-passthrough.
-  for (const { clip } of layers) {
+  for (const clip of flatClips) {
     const catIds = new Set(clip.sketch.devices.filter((d) => catalogEffect(d.moduleType)).map((d) => d.id));
     for (const read of clip.reads ?? []) {
       if (!catIds.has(read.targetDeviceId)) continue;
@@ -243,7 +284,13 @@ export function buildCompositeSketch(
     }
   }
 
-  for (const { clip, opacity, blendMode, track, startSec } of layers) {
+  // ── Composite ONE clip leaf over the running accumulator `acc`, return the new
+  //    accumulator key. Two shapes: a SOURCE clip (self-contained image → wired
+  //    composite.blend OVER acc) and an EFFECT-only clip (chains inline, processing
+  //    acc as its linear input — an adjustment layer). Identical to the old per-layer
+  //    body; the recursion below just threads `acc` explicitly. ──
+  const compositeClip = (node: CompositeClipNode, acc: string | null): string | null => {
+    const { clip, opacity, blendMode, track, startSec } = node;
     const cat = clip.sketch.devices.filter((d) => catalogEffect(d.moduleType));
     const gen = cat.find((d) => catalogEffect(d.moduleType)!.role === 'generator');
     const fx = cat.filter((d) => catalogEffect(d.moduleType)!.role === 'effect');
@@ -267,18 +314,18 @@ export function buildCompositeSketch(
 
       if (lastKey) {
         lastKey = pushTrackFx(track, lastKey); // track FX bus over the clip output
-        if (accKey == null) {
+        if (acc == null) {
           // First (top) layer becomes the accumulator. A sub-1 opacity fades it
           // over the transparent base via the reserved wet/dry key.
           if (opacity < 1) instances[firstKey].state = { ...instances[firstKey].state, __opacity__: opacity };
-          accKey = lastKey;
+          acc = lastKey;
         } else {
           const b = clipInstanceKey(clip.id, 'blend');
           push(BLEND, b, { mode: blendMode ?? 0, opacity });
           // 0 = A (the accumulator / tracks above), 1 = B (this clip, drawn on top).
-          wires.push({ id: `w${wid++}`, src: { instanceKey: accKey, field: 'tex_out' }, dest: { instanceKey: b, field: '0' } });
+          wires.push({ id: `w${wid++}`, src: { instanceKey: acc, field: 'tex_out' }, dest: { instanceKey: b, field: '0' } });
           wires.push({ id: `w${wid++}`, src: { instanceKey: lastKey, field: 'tex_out' }, dest: { instanceKey: b, field: '1' } });
-          accKey = b;
+          acc = b;
         }
       }
     } else {
@@ -288,9 +335,9 @@ export function buildCompositeSketch(
         const state: Record<string, unknown> = { ...defaultStateFor(d.moduleType), ...(d.state ?? {}) };
         if (!isMod(d.moduleType) && !appliedOpacity && opacity < 1) { state['__opacity__'] = opacity; appliedOpacity = true; }
         push(d.moduleType, clipInstanceKey(clip.id, d.id), state, startSec);
-        if (!isMod(d.moduleType)) accKey = clipInstanceKey(clip.id, d.id);
+        if (!isMod(d.moduleType)) acc = clipInstanceKey(clip.id, d.id);
       });
-      if (accKey) accKey = pushTrackFx(track, accKey); // track FX bus over the adjustment
+      if (acc) acc = pushTrackFx(track, acc); // track FX bus over the adjustment
     }
 
     // Fold this clip's modulation wires into the composite, remapping device ids
@@ -323,7 +370,54 @@ export function buildCompositeSketch(
       if (!pushed.has(read.targetDeviceId)) continue;
       railReaders.push({ railId: read.railId, key: clipInstanceKey(clip.id, read.targetDeviceId), field: read.targetField, tap: read });
     }
+    return acc;
+  };
+
+  // ── Composite a GROUP over `acc`: its children render into a sub-image over the
+  //    group's INPUT base, the group's own FX chain runs over that, then the result
+  //    composites up into `acc` (group blend mode + own opacity). ──
+  const compositeGroup = (node: CompositeGroupNode, acc: string | null): string | null => {
+    const { group, opacity, blendMode } = node;
+    const mode = node.input?.mode ?? 'transparent';
+
+    // The group's starting sub-accumulator (what its children draw over):
+    let sub: string | null;
+    if (mode === 'underlying') {
+      sub = acc; // pass-through: seed with everything composited BELOW the group
+    } else if (mode === 'transparent') {
+      sub = null; // fresh transparent base
+    } else {
+      const rgb = mode === 'custom' ? hexToRgb01(node.input?.color ?? '#000000') : [0, 0, 0];
+      const bgKey = `group_${group.id}_bg`;
+      push('source.solid_color', bgKey, { color: rgb });
+      sub = bgKey;
+    }
+
+    // Children composite into `sub`, then the group's FX chain runs over the result.
+    let inner = compositeNodes(node.children, sub);
+    if (inner != null) inner = pushTrackFx(group, inner);
+    if (inner == null) return acc; // children produced nothing → leave the parent as-is
+
+    // `underlying` with full opacity already CONTAINS the below content — it just
+    // replaces the accumulator. Otherwise composite the group OVER the parent (and
+    // for a partially-opaque pass-through, the blend is a wet/dry crossfade between
+    // the original below `acc` and the processed `inner`).
+    const needBlend = acc != null && !(mode === 'underlying' && opacity >= 1);
+    if (!needBlend) return inner;
+    const b = `group_${group.id}_blend`;
+    push(BLEND, b, { mode: blendMode ?? 0, opacity });
+    wires.push({ id: `gw${wid++}`, src: { instanceKey: acc!, field: 'tex_out' }, dest: { instanceKey: b, field: '0' } });
+    wires.push({ id: `gw${wid++}`, src: { instanceKey: inner, field: 'tex_out' }, dest: { instanceKey: b, field: '1' } });
+    return b;
+  };
+
+  // Fold an ordered list of nodes (top → bottom) into `acc` — the downward sum.
+  function compositeNodes(ns: CompositeNode[], acc: string | null): string | null {
+    for (const n of ns) acc = isGroupNode(n) ? compositeGroup(n, acc) : compositeClip(n, acc);
+    return acc;
   }
+
+  accKey = compositeNodes(nodes, accKey);
 
   const railMag = (railId: string): 'signed' | 'unsigned' => (railSigned?.get(railId) ? 'signed' : 'unsigned');
   // Stage 1 — writers → the rail accumulator's `input` (per EXPORT combine).

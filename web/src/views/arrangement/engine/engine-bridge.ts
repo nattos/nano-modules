@@ -414,7 +414,7 @@ export class EngineBridge {
     // Fold the active engine layers into ONE composite sketch — rail base-curve
     // values + each clip's absolute start-seconds baked in (warp-aware). Shared
     // VERBATIM with the offline exporter (composite-frame.ts) so they render alike.
-    const render = buildCompositeRenderAtBeat(engineLayers, store.positionBeat);
+    const render = buildCompositeRenderAtBeat(store.positionBeat);
 
     if (!render) {
       // Issue the empty composite (clear the trace) BEFORE dropping pumps, so an on-

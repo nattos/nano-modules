@@ -15,7 +15,7 @@
  */
 
 import type { AutomationEntry } from './arr-engine';
-import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
+import { buildCompositeSketch, clipInstanceKey, trackInstanceKey, type CompositeNode, type CompositeClipNode, type CompositeGroupNode } from './clip-sketch';
 import { evalLaneAtBeat, evalCurveAt } from './automation-eval';
 import { makeWarpClock } from './warp-clock';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
@@ -56,16 +56,29 @@ export function videoDescFor(clip: Clip): VideoClipDesc | null {
   };
 }
 
+/** Every clip leaf in a composite tree (depth-first). */
+function flattenLeaves(tree: CompositeNode[]): CompositeClipNode[] {
+  const out: CompositeClipNode[] = [];
+  const walk = (ns: CompositeNode[]) => {
+    for (const n of ns) {
+      if ((n as CompositeGroupNode).type === 'group') walk((n as CompositeGroupNode).children);
+      else out.push(n as CompositeClipNode);
+    }
+  };
+  walk(tree);
+  return out;
+}
+
 /** Per-rail base value + signed flag at `beat` (the return track's contract). */
-function railBasesAtBeat(layers: EngineLayer[], beat: number): {
+function railBasesAtBeat(clips: Clip[], beat: number): {
   railBases: Map<string, number>;
   railSigned: Map<string, boolean>;
 } {
   const totalBeats = compositionLengthBeats(store.composition);
   const railBases = new Map<string, number>();
   const railSigned = new Map<string, boolean>();
-  for (const l of layers) {
-    for (const read of l.clip.reads ?? []) {
+  for (const clip of clips) {
+    for (const read of clip.reads ?? []) {
       if (railBases.has(read.railId)) continue;
       const rt = store.railTrackFor(read.railId);
       railBases.set(read.railId, rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? beat / totalBeats : 0) : 0);
@@ -76,27 +89,21 @@ function railBasesAtBeat(layers: EngineLayer[], beat: number): {
 }
 
 /**
- * Fold the active engine `layers` into ONE composite sketch at `beat` — rail
- * base-curve values and each clip's absolute start-seconds baked in (warp-aware).
- * Returns null when no layer contributes (the caller renders the backdrop). The
- * `sig` lets a caller re-issue to the engine only when the composite changes.
+ * Fold the active composite TREE at `beat` into ONE composite sketch — group effect
+ * chains run over their composited children, rail base-curve values and each clip's
+ * absolute start-seconds baked in (warp-aware). Returns null when nothing contributes
+ * (the caller renders the backdrop). `ignoreSolo` (the exporter) renders the full mix.
+ * The `sig` lets a caller re-issue to the engine only when the composite changes.
  */
-export function buildCompositeRenderAtBeat(layers: EngineLayer[], beat: number) {
-  if (layers.length === 0) return null;
-  const { railBases, railSigned } = railBasesAtBeat(layers, beat);
+export function buildCompositeRenderAtBeat(beat: number, ignoreSolo = false) {
+  const tree = store.compositeTreeAtBeat(beat, ignoreSolo);
+  if (tree.length === 0) return null;
   const clock = makeWarpClock(store.composition);
-  return buildCompositeSketch(
-    layers.map((l) => ({
-      clip: l.clip,
-      opacity: l.opacity ?? 1,
-      blendMode: l.blendMode,
-      track: l.track,
-      startSec: clock.secondsAt(l.clip.startBeat),
-    })),
-    store.composition.meta.background,
-    railBases,
-    railSigned,
-  );
+  // Bake each clip leaf's absolute start time (s) onto its node, for effect seeks.
+  const leaves = flattenLeaves(tree);
+  for (const leaf of leaves) leaf.startSec = clock.secondsAt(leaf.clip.startBeat);
+  const { railBases, railSigned } = railBasesAtBeat(leaves.map((l) => l.clip), beat);
+  return buildCompositeSketch(tree, store.composition.meta.background, railBases, railSigned);
 }
 
 /**
@@ -110,22 +117,9 @@ export function automationEntriesAtBeat(beat: number, ignoreSolo = false): Autom
   const totalBeats = compositionLengthBeats(store.composition);
   const entries: AutomationEntry[] = [];
   const seenRail = new Set<string>();
-  for (const { clip, track } of store.compositeLayersAtBeat(beat, ignoreSolo)) {
-    for (const lane of clip.automation ?? []) {
-      const ctx = {
-        kind: 'clip' as const,
-        startBeat: clip.startBeat,
-        spanBeats: clip.lengthBeat,
-        loopMode: store.clipAutoTiming === 'loop',
-      };
-      entries.push({
-        instance: clipInstanceKey(clip.id, lane.targetDeviceId),
-        field: lane.targetField,
-        value: evalLaneAtBeat(lane.points, ctx, beat),
-        combine: lane.combine ?? 'replace',
-        magnitude: lane.magnitude ?? 'unsigned',
-      });
-    }
+
+  // A TRACK / GROUP lane targets its per-track(-group) FX bus (absolute beats).
+  const pushTrackLanes = (track: Track) => {
     for (const lane of track.automation ?? []) {
       entries.push({
         instance: trackInstanceKey(track.id, lane.targetDeviceId),
@@ -135,16 +129,47 @@ export function automationEntriesAtBeat(beat: number, ignoreSolo = false): Autom
         magnitude: lane.magnitude ?? 'unsigned',
       });
     }
-    for (const read of clip.reads ?? []) {
-      if (seenRail.has(read.railId)) continue;
-      seenRail.add(read.railId);
-      const rt = store.railTrackFor(read.railId);
-      const base = rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? beat / totalBeats : 0) : 0;
-      entries.push({
-        instance: `rail_${read.railId}`, field: 'input', value: base,
-        combine: 'replace', magnitude: 'unsigned',
-      });
+  };
+
+  // Walk the composite tree so GROUP automation (whose FX runs over its children)
+  // emits alongside clip + track automation.
+  const walk = (nodes: CompositeNode[]) => {
+    for (const n of nodes) {
+      if ((n as CompositeGroupNode).type === 'group') {
+        const g = n as CompositeGroupNode;
+        pushTrackLanes(g.group);
+        walk(g.children);
+        continue;
+      }
+      const { clip, track } = n as CompositeClipNode;
+      for (const lane of clip.automation ?? []) {
+        const ctx = {
+          kind: 'clip' as const,
+          startBeat: clip.startBeat,
+          spanBeats: clip.lengthBeat,
+          loopMode: store.clipAutoTiming === 'loop',
+        };
+        entries.push({
+          instance: clipInstanceKey(clip.id, lane.targetDeviceId),
+          field: lane.targetField,
+          value: evalLaneAtBeat(lane.points, ctx, beat),
+          combine: lane.combine ?? 'replace',
+          magnitude: lane.magnitude ?? 'unsigned',
+        });
+      }
+      if (track) pushTrackLanes(track);
+      for (const read of clip.reads ?? []) {
+        if (seenRail.has(read.railId)) continue;
+        seenRail.add(read.railId);
+        const rt = store.railTrackFor(read.railId);
+        const base = rt?.baseCurve ? evalCurveAt(rt.baseCurve, totalBeats > 0 ? beat / totalBeats : 0) : 0;
+        entries.push({
+          instance: `rail_${read.railId}`, field: 'input', value: base,
+          combine: 'replace', magnitude: 'unsigned',
+        });
+      }
     }
-  }
+  };
+  walk(store.compositeTreeAtBeat(beat, ignoreSolo));
   return entries;
 }
