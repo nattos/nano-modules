@@ -59,6 +59,9 @@ cbuffer Uniforms : register(b4) {
   float image_smoothing; // matches the blur radius → scales the gradient step
   float to_line_rate;    // P(respawn onto a tracer line vertex)
   float seg_total;       // number of tracer segment slots (l_count * max_seg)
+
+  float boundary_mode;   // 0 Recycle · 1 Contain (soft force) · 2 Wrap
+  float _bp0, _bp1, _bp2;
 }
 
 static const float DC_FORCE_MAX = 6.0;
@@ -123,8 +126,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
       force += float2(dc_signed(dc_hash(h)), dc_signed(dc_hash(h ^ 0x68BC21EBu))) * jitter;
     }
 
-    // Soft circular boundary (inward restoring force outside boundary_size).
-    if (boundary > 1e-6) {
+    // Contain mode: soft circular boundary (inward force outside boundary_size).
+    // (Recycle / Wrap handle the boundary AFTER integration, below.)
+    if (boundary > 1e-6 && boundary_mode > 0.5 && boundary_mode < 1.5) {
       float over = max((r - boundary_size) * boundary_stiffness, 0.0);
       force += -rad * atan(over) * boundary_speed * boundary;
     }
@@ -150,16 +154,31 @@ void main(uint3 gid : SV_DispatchThreadID) {
     vel = dc_clamp_mag(vel, DC_VEL_MAX);
 
     s += vel * dt * motion_rate;
+
+    // Boundary handling for the non-force modes.
+    float rs = length(s);
+    if (boundary_mode < 0.5) {
+      // Recycle: cross the boundary → respawn (fountain; no pile-up band).
+      if (rs > boundary_size) life_remain = -1.0;
+    } else if (boundary_mode > 1.5) {
+      // Wrap: teleport to the opposite side at the boundary (toroidal flow).
+      if (rs > boundary_size && rs > 1e-4) s = -s * (boundary_size * 0.98 / rs);
+    }
+
     uv = 0.5 + s * aspect;
     life_remain -= dt;
-    if (length(s) > DC_ESCAPE_R) life_remain = 0.0;   // kill runaways
+    if (length(s) > DC_ESCAPE_R) life_remain = 0.0;   // safety kill for runaways
   } else {
     // Respawn on a uniform-area disc about centre (the original's spawn shape:
     // radius = spawn_size·sqrt(rand) gives equal density per unit area; full-
     // circle angle, no directional bias). Disc lives in s-space → round on
     // screen, concentric with the boundary circle.
     uint h = dc_hash3(i + 0x85EBCA77u, frame_index, 0x55u);
-    float rad = spawn_size * sqrt(dc_unit(dc_hash(h)));
+    // In Recycle/Wrap keep the spawn disc inside the boundary so fresh particles
+    // don't immediately cross it; Contain may spawn out to the full spawn_size.
+    float maxr = (boundary_mode > 0.5 && boundary_mode < 1.5)
+                 ? spawn_size : min(spawn_size, boundary_size * 0.9);
+    float rad = maxr * sqrt(dc_unit(dc_hash(h)));
     float theta = 6.28318530718 * dc_unit(dc_hash(h ^ 0xA17Fu));
     float2 sp = rad * float2(cos(theta), sin(theta));
     float2 nuv = saturate(0.5 + sp * aspect);

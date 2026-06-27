@@ -52,6 +52,7 @@ struct PUpdateUniforms {
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
   float to_big_range, image_smoothing, to_line_rate, seg_total;
+  float boundary_mode, _bp0, _bp1, _bp2;
 };
 struct TraceUniforms {
   uint32_t count, max_seg, frame_index; float dt;
@@ -100,6 +101,7 @@ struct State {
   float momentum = 0.6f, momentum_decay = 0.98f;
   float to_big = 0.3f, to_big_curl = 0.2f, to_big_range = 0.4f, curl_dir = 1.0f, sink = 0.0f;
   float jitter = 0.04f;
+  int   boundary_mode = 0;   // 0 Recycle (fountain) · 1 Contain (soft) · 2 Wrap
   float boundary = 1.0f, boundary_size = 0.42f, boundary_stiffness = 8.0f, boundary_speed = 1.2f;
   float to_image = 0.0f, to_image_curl = 0.0f, image_smoothing = 0.3f;
   float undertow_skew = 0.0f, undertow_squash = 1.0f;
@@ -163,7 +165,7 @@ static void seed_pool(gpu::Buffer& buf, int n, float lifetime, uint32_t salt) {
 }
 
 void module_init() {
-  state::init("source.legacy.double_chamber", {1, 2, 0},
+  state::init("source.legacy.double_chamber", {1, 3, 0},
     state::Schema()
       // ---- P system (standard) ----
       .intField  ("p_count",        12000, 1, MAX_P,      state::PrimaryInput)
@@ -187,6 +189,8 @@ void module_init() {
       .floatField("to_image_curl",  0.0f, -2.0f, 2.0f,    state::SecondaryInput)
       .floatField("undertow_skew",  0.0f, -1.0f, 1.0f,    state::SecondaryInput)
       .floatField("undertow_squash",1.0f,  0.0f, 8.0f,    state::SecondaryInput)
+      .selectField("boundary_mode", 0,                    state::PrimaryInput, {
+        {"Recycle", 0}, {"Contain", 1}, {"Wrap", 2} })
       .floatField("boundary",       1.0f,  0.0f, 1.0f,    state::SecondaryInput)
       .floatField("boundary_size",  0.42f, 0.05f, 0.7f,   state::SecondaryInput)
       .floatField("boundary_stiffness", 8.0f, 0.5f, 32.0f, state::SecondaryInput)
@@ -369,6 +373,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "to_image_curl"))  s->to_image_curl = state::patchFloat(i);
     else if (state::pathIs(p, l, "undertow_skew"))  s->undertow_skew = state::patchFloat(i);
     else if (state::pathIs(p, l, "undertow_squash")) s->undertow_squash = state::patchFloat(i);
+    else if (state::pathIs(p, l, "boundary_mode"))  s->boundary_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "boundary"))       s->boundary = state::patchFloat(i);
     else if (state::pathIs(p, l, "boundary_size"))  s->boundary_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "boundary_stiffness")) s->boundary_stiffness = state::patchFloat(i);
@@ -468,6 +473,7 @@ void render(void* self, int vp_w, int vp_h) {
   int seg_total = (s->l_count > 0) ? s->l_count * MAX_SEG : 0;
   pu.to_line_rate = (seg_total > 0) ? s->spawn_on_line : 0.0f;
   pu.seg_total = (float)seg_total;
+  pu.boundary_mode = (float)s->boundary_mode;
   s->p_uniform.writeOne(pu);
 
   PrefillUniforms pf = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
