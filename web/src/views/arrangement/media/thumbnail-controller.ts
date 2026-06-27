@@ -79,6 +79,10 @@ export class ThumbnailController {
   private gpuHostShared: GPUHost | null = null;
   private serviceShared: VideoPlaybackService | null = null;
   private producer: VideoThumbnailProducer | null = null;
+  /** Decoder-reported true {frameCount, fps} per source, learned on open (drop-import's
+   *  registered values only assume 30fps). The reel reads these so its mapping matches
+   *  the playback pump. */
+  private _realInfo = new Map<string, { frameCount: number; fps: number }>();
   private listeners = new Set<Listener>();
   /** Count of tiles that have landed in memory (test/diagnostic hook). */
   tilesFilled = 0;
@@ -86,6 +90,12 @@ export class ThumbnailController {
   /** Register (or update) media under its sourceKey. Idempotent. */
   registerMedia(media: ClipMedia) {
     this.media.set(media.sourceKey, media);
+  }
+
+  /** The decoder's TRUE frame count + fps for a source (once it's been opened), or
+   *  undefined if not yet known — callers fall back to the registered/assumed values. */
+  realInfo(sourceKey: string): { frameCount: number; fps: number } | undefined {
+    return this._realInfo.get(sourceKey);
   }
 
   hasMedia(sourceKey: string): boolean {
@@ -144,7 +154,21 @@ export class ThumbnailController {
           : name.endsWith('.webm') ? 'video/webm'
           : 'video/quicktime';
         const file = new File([buf], name, { type });
-        return service.open(file, `arr:${sourceKey}`);
+        const ch = await service.open(file, `arr:${sourceKey}`);
+        // Capture the DECODER's true frame count + fps (drop-import only assumes 30fps and
+        // can't probe it from a <video>). The reel reads this so its beat→frame mapping
+        // matches the playback pump — else e.g. a 60fps clip shows half-time frames.
+        try {
+          const info = service.inspect(ch);
+          if (info && info.frameCount > 0 && info.fps > 0) {
+            const prev = this._realInfo.get(sourceKey);
+            if (!prev || prev.frameCount !== info.frameCount || prev.fps !== info.fps) {
+              this._realInfo.set(sourceKey, { frameCount: info.frameCount, fps: info.fps });
+              for (const l of this.listeners) l(sourceKey, -1); // notify → consumers re-read real fps
+            }
+          }
+        } catch { /* inspect unsupported → keep the registered (assumed) values */ }
+        return ch;
       };
 
       const producer = new VideoThumbnailProducer(service, gpuHost, openClip, 160, 90);

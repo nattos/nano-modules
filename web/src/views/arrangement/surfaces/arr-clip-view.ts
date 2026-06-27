@@ -259,12 +259,18 @@ export class ArrClipView extends MobxLitElement {
     this.previewCache.clear();
   }
 
+  // duration()/fpsOf() prefer the DECODER's true values (drop-import only assumes 30fps,
+  // so e.g. a 60fps clip would map beats to half-time frames in the preview/strip).
   private duration(): number {
-    const sel = store.selectedClip;
-    return sel?.clip.source?.durationFrames ?? 300;
+    const src = store.selectedClip?.clip.source;
+    const real = src?.sourceKey ? thumbnailController.realInfo(src.sourceKey) : undefined;
+    return real?.frameCount ?? src?.durationFrames ?? 300;
   }
 
   private fpsOf(clip: any): number {
+    const sk = clip?.source?.sourceKey;
+    const real = sk ? thumbnailController.realInfo(sk) : undefined;
+    if (real?.fps && real.fps > 0) return real.fps;
     return clip?.source?.fps && clip.source.fps > 0 ? clip.source.fps : 30;
   }
 
@@ -597,7 +603,10 @@ export class ArrClipView extends MobxLitElement {
   private drawSourceFrame(ctx: CanvasRenderingContext2D, w: number, h: number, clip: any, frame: number) {
     const src = clip.source;
     if (src?.url && src.sourceKey) {
-      const frameCount = Math.max(1, src.durationFrames);
+      // Decoder's true frame count + fps once known (else drop-import's assumed 30fps).
+      const real = thumbnailController.realInfo(src.sourceKey);
+      const frameCount = Math.max(1, real?.frameCount ?? src.durationFrames);
+      const fps = real?.fps && real.fps > 0 ? real.fps : (src.fps && src.fps > 0 ? src.fps : 30);
       const f = Math.max(0, Math.min(frameCount - 1, Math.round(frame)));
       const key = `${src.sourceKey}#${f}`;
       // Source aspect (1:1 fallback) — the strip tile is a stretched 160×90, so we must
@@ -606,11 +615,12 @@ export class ArrClipView extends MobxLitElement {
 
       const full = this.previewCache.get(key);
       if (full) { this.drawFit(ctx, w, h, full, full.width / Math.max(1, full.height)); return; }
-      this.requestPreviewFrame(src.sourceKey, src.url, src.fps, frameCount, f, key);
+      this.requestPreviewFrame(src.sourceKey, src.url, fps, frameCount, f, key);
 
-      // Quick placeholder while the native decode is in flight: the strip thumbnail.
+      // Quick placeholder while the native decode is in flight: the strip thumbnail. Bound
+      // the substitution so it never borrows a frame from elsewhere in the clip.
       const level = levelForFramesPerThumb(1);
-      thumbnailController.registerMedia({ sourceKey: src.sourceKey, url: src.url, frameCount, fps: src.fps });
+      thumbnailController.registerMedia({ sourceKey: src.sourceKey, url: src.url, frameCount, fps });
       thumbnailController.setView(`clipview:${clip.id}`, {
         sourceKey: src.sourceKey,
         level,
@@ -619,7 +629,7 @@ export class ArrClipView extends MobxLitElement {
         pattern: 'window',
         readaheadFrames: 0,
       });
-      const hit = thumbnailController.peek(src.sourceKey, f, level);
+      const hit = thumbnailController.peek(src.sourceKey, f, level, 8);
       if (hit) { this.drawFit(ctx, w, h, hit.value, srcAspect); return; }
     }
     drawPlaceholderCell(ctx, 0, 0, w, h);

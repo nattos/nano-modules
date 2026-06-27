@@ -329,9 +329,13 @@ export class ArrClip extends MobxLitElement {
     media: NonNullable<Clip['source']>,
   ) {
     const sourceKey = media.sourceKey!;
-    const frameCount = Math.max(1, media.durationFrames);
-    const fps = media.fps && media.fps > 0 ? media.fps : 30;
-    thumbnailController.registerMedia({ sourceKey, url: media.url!, frameCount, fps: media.fps });
+    // Use the DECODER's true frame count + fps once known (drop-import only assumes 30fps),
+    // so the strip's beat→frame mapping matches the playback pump (a 60fps clip otherwise
+    // showed half-time frames).
+    const real = thumbnailController.realInfo(sourceKey);
+    const frameCount = Math.max(1, real?.frameCount ?? media.durationFrames);
+    const fps = real?.fps && real.fps > 0 ? real.fps : (media.fps && media.fps > 0 ? media.fps : 30);
+    thumbnailController.registerMedia({ sourceKey, url: media.url!, frameCount, fps });
 
     // Panel aspect = the SOURCE's aspect ratio (thumbnail tiles are a fixed 160×90, so
     // their dims can't supply it); 1:1 when the source size is unknown — matching the
@@ -345,6 +349,9 @@ export class ArrClip extends MobxLitElement {
     const layout = reelLayout(w, h, frameCount, aspect);
     if (layout.cells === 0) return;
     const level = layout.level;
+    // Max frames a peek may substitute by — roughly one cell, so a not-yet-decoded panel
+    // borrows a visually-adjacent tile (or a placeholder), never one from elsewhere.
+    const maxSub = Math.max(2, Math.ceil(frameCount / Math.max(1, layout.cells)));
 
     const loop = this.clip.loop;
     const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
@@ -426,7 +433,10 @@ export class ArrClip extends MobxLitElement {
         ctx.fillStyle = 'rgba(8,9,12,0.6)'; // off-slice (one-shot past the source) → dark
         ctx.fillRect(p.cl, 0, p.cr - p.cl, h);
       } else {
-        const hit = thumbnailController.peek(sourceKey, p.frame, level);
+        // Bound the substitution distance to ~one cell of frames: while the exact frame
+        // decodes show a CLOSE (visually adjacent) tile or a placeholder — never a tile
+        // from a far-away part of the clip (the intermittent "errant frame" bug).
+        const hit = thumbnailController.peek(sourceKey, p.frame, level, maxSub);
         if (hit) ctx.drawImage(hit.value, p.x, 0, panelW, h);
         else drawPlaceholderCell(ctx, p.x, 0, panelW, h);
       }
