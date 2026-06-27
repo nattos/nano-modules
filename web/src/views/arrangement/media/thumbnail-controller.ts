@@ -131,7 +131,12 @@ export class ThumbnailController {
         const res = await fetch(m.url);
         const buf = await res.arrayBuffer();
         const name = m.url.split('/').pop() || 'clip';
-        const type = name.endsWith('.mp4') ? 'video/mp4'
+        // A still image is a 1-frame source (drop-import: 1 frame / 1 fps). Tag it with
+        // an image MIME so the playback service routes it to ImageFrameSource instead of
+        // the video decoders (the blob URL has no extension to sniff). createImageBitmap
+        // decodes the real format regardless of this hint.
+        const type = m.frameCount <= 1 ? 'image/png'
+          : name.endsWith('.mp4') ? 'video/mp4'
           : name.endsWith('.webm') ? 'video/webm'
           : 'video/quicktime';
         const file = new File([buf], name, { type });
