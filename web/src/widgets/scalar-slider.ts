@@ -68,6 +68,9 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
   @property({ type: Number }) step = 0.01;
   @property() units = '';
   @property({ type: Number }) defaultValue = 0;
+  /** Render the filled bar as a solid accent GRADIENT (instead of the default
+   *  hatched stripes) — for prominent value sliders like opacity. */
+  @property({ type: Boolean, reflect: true }) gradient = false;
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
@@ -161,6 +164,16 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       background-color: rgba(65, 105, 225, 0.1);
       border-right-width: 3px;
       opacity: 1;
+    }
+
+    /* Gradient variant: a solid accent fill (no hatching) — reads as a filled level. */
+    :host([gradient]) .bar {
+      background-image: linear-gradient(
+        90deg,
+        rgba(65, 105, 225, 0.18),
+        rgba(65, 105, 225, 0.5)
+      );
+      background-size: auto;
     }
 
     /* Modulation overlay — a thin strip along the bottom edge. .mod-band is the

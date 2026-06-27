@@ -356,7 +356,7 @@ export class ArrInspector extends MobxLitElement {
     }
     /* Wrapping variant (the 16-mode blend selector): segments still connected, but
        the row flows onto multiple lines. */
-    .seg.wrap { display: flex; flex-wrap: wrap; }
+    .seg.wrap { display: flex; flex-wrap: wrap; justify-content: center; }
     .ws-list {
       display: flex;
       flex-direction: column;

@@ -17,12 +17,20 @@ import '../../../widgets/bars-beats-field';
 import '../../../widgets/scalar-slider';
 
 export const playModeControlsStyles = css`
+  /* Field-editor row: label on the left, control filling the right (same row). */
   .pm-row {
     font-size: var(--app-fs-sm);
     color: var(--app-text-color2);
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
+    min-height: 20px;
+  }
+  .pm-row > span:first-child {
+    min-width: 96px;
+    flex-shrink: 0;
   }
   .pm-seg {
     display: inline-flex;
@@ -46,7 +54,7 @@ export const playModeControlsStyles = css`
   }
   .pm-slider {
     font-size: var(--app-fs-xs);
-    width: 100%;
+    flex: 1;
     min-width: 0;
   }
   .pm-num {

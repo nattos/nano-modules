@@ -255,12 +255,22 @@ export class SourceTransformWidget extends LitElement {
     ></scalar-slider>`;
   }
 
-  /** A range-free number (scale) as an editable-number with jog + text entry. */
-  private num(label: string, val: number, key: keyof BlitTransform, step = 0.1) {
-    return html`<span>${label}</span><editable-number class="num" .value=${val} .step=${step} .precision=${3} .min=${0}
-      @input=${(e: CustomEvent<number>) =>
-        this.onChange?.({ [key]: e.detail } as Partial<BlitTransform>, `xform-text:${key}`)}
-    ></editable-number>`;
+  /** The scale as a PERCENT slider (100% = 1×), 0–200%. Double-click + type escapes
+   *  the bounds (scalar-slider doesn't clamp typed values). */
+  private scaleSlider(val: number) {
+    const apply = (e: Event) =>
+      this.onChange?.({ scale: (e as CustomEvent<number>).detail / 100 } as Partial<BlitTransform>, 'xform-text:scale');
+    return html`<scalar-slider
+      label="Scale"
+      .value=${(val ?? 1) * 100}
+      .min=${0}
+      .max=${200}
+      .step=${1}
+      .defaultValue=${100}
+      .units=${'%'}
+      @input=${apply}
+      @change=${apply}
+    ></scalar-slider>`;
   }
 
   render() {
@@ -278,7 +288,7 @@ export class SourceTransformWidget extends LitElement {
           <span class="sub">X</span>${this.slider('', t.anchorX, 'anchorX')}
           <span class="sub">Y</span>${this.slider('', t.anchorY, 'anchorY')}
         </div>
-        <div class="row">${this.num('Scale', t.scale, 'scale', 0.1)}</div>
+        <div class="row">${this.scaleSlider(t.scale)}</div>
         <div class="row"><span>Rotation</span>
           <div class="seg">
             ${([0, 90, 180, 270] as const).map((r) => html`<button class=${t.rotation === r ? 'on' : ''}
