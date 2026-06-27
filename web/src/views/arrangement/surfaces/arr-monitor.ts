@@ -84,18 +84,59 @@ export class ArrMonitor extends MobxLitElement {
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
   private compositeOff?: () => void;
+  private drawRaf = 0;
+  private lastDrawnBmp?: ImageBitmap;
+  // Presentation telemetry (logged when globalThis.__arrVideoLog is on).
+  private telLastMs = 0; private telDraws = 0; private telNew = 0; private telArrivals = 0;
+  private telGapSum = 0; private telGapMax = 0; private telLastNewMs = 0;
 
   firstUpdated() {
     this.ro = new ResizeObserver(() => this.redraw());
     this.ro.observe(this);
-    // Recomposite whenever the engine produces a new composite frame.
-    this.compositeOff = engineBridge.setOnComposite(() => this.redraw());
-    this.redraw();
+    // Count composite arrivals for telemetry; the VSYNC rAF loop does the actual draw so a
+    // frame is presented at the display refresh — NOT at the jittery postMessage-arrival
+    // time, which (with three independent 60Hz loops) made the on-screen cadence irregular.
+    this.compositeOff = engineBridge.setOnComposite(() => { this.telArrivals++; });
+    this.startDrawLoop();
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
     this.compositeOff?.();
+    if (this.drawRaf) cancelAnimationFrame(this.drawRaf);
+    this.drawRaf = 0;
+  }
+
+  /** Draw the latest retained composite once per display refresh (vsync-aligned), only
+   *  when it actually changed (so a paused/idle frame isn't redrawn every tick). */
+  private startDrawLoop() {
+    if (this.drawRaf) return;
+    const tick = () => {
+      this.drawRaf = requestAnimationFrame(tick);
+      const bmp = engineBridge.engineComposite();
+      const isNew = !!bmp && bmp !== this.lastDrawnBmp;
+      if (isNew) { this.lastDrawnBmp = bmp; this.redraw(); }
+      this.maybeLogPresentation(isNew);
+    };
+    this.drawRaf = requestAnimationFrame(tick);
+  }
+
+  private maybeLogPresentation(isNew: boolean) {
+    if (!(globalThis as unknown as { __arrVideoLog?: boolean }).__arrVideoLog) return;
+    const now = globalThis.performance?.now?.() ?? Date.now();
+    this.telDraws++;
+    if (isNew) {
+      this.telNew++;
+      if (this.telLastNewMs) { const g = now - this.telLastNewMs; this.telGapSum += g; if (g > this.telGapMax) this.telGapMax = g; }
+      this.telLastNewMs = now;
+    }
+    if (this.telLastMs && now - this.telLastMs >= 1000) {
+      const avg = this.telNew > 1 ? this.telGapSum / (this.telNew - 1) : 0;
+      console.log(`[monitor] vsync-draws=${this.telDraws} newFrames=${this.telNew} arrivals=${this.telArrivals} | composite gap avg=${avg.toFixed(1)}ms max=${this.telGapMax.toFixed(1)}ms`);
+      this.telDraws = 0; this.telNew = 0; this.telArrivals = 0; this.telGapSum = 0; this.telGapMax = 0; this.telLastMs = now;
+    } else if (!this.telLastMs) {
+      this.telLastMs = now;
+    }
   }
   updated() {
     // Reflect the TIMELINE at the playhead into the engine (deduped inside the
