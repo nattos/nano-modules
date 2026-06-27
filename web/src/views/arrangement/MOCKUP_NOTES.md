@@ -94,10 +94,16 @@ since making the two surfaces look and feel the same is a deliberate goal.
   `store.videoClipsInWindow`). NOT done: pre-instantiating upcoming clips' WASM effect modules /
   pre-loading their bundles ahead of the playhead. Video decode is the dominant hiccup (covered);
   effect-instance warming is the next lever if heavy effect-chain clips still hitch on activation.
-- **Real rail VALUES.** Rails don't yet modulate: the rail lane sums a MOCK oscillation
-  (`arr-rail-lane.contribAt`). NOTE the lock-step `web/src/tap-mod.ts` twin was **DELETED** (zombie;
-  modulation telemetry now comes from the native executor via the modulationData channel) — so this
-  is a fork: reintroduce a TS evaluator (+goldens) vs. native cross-clip integration. UNDECIDED.
+- **Rail-lane preview fidelity (rails MODULATE for real).** Rails/returns work end-to-end:
+  `composite-frame` folds rail bases (`evalCurveAt` on the return's `baseCurve`) + writer wires into
+  the executor's parameter-automation; the executor applies them; the `modulationData` channel
+  reports them. The rail LANE also draws the rail's real value (base + every active writer, evaluated
+  offline in `offline-curve-eval.ts`). The ONLY gap is PREVIEW fidelity for writers without a real
+  block source: `mod.source.lfo` uses a hand-written TS mirror (`lfoBlockAt`, an `env_lfo` twin) and
+  every other effect falls back to a generic seeded uncertainty band. The fix is the **offline-
+  evaluable modulation-block effect ABI** (effects emit their own `{mean,lo,hi}` blocks) — makes the
+  preview real for ALL modulators and retires the TS mirror. (The old "MOCK oscillation /
+  `contribAt`" claim here was stale — that code is gone.)
 - **Real empty-state / file-open flow.** App still boots `makeFakeComposition()`; Component A
   (workspace mount) is built but not wired into boot.
 - **Continuous rAF overlay.** `arr-overlay` reconciles wires every frame even when idle — gate it.
@@ -107,8 +113,12 @@ since making the two surfaces look and feel the same is a deliberate goal.
 - **Time-view unification.** `time-strip` (linear) vs `BeatGrid` (warped) are separate; unify behind
   one zoomable gridded time view.
 - **Other display-only edits.** Clip-view loop/in-out markers; track reorder / group DnD.
-- **Compositor features (not holes).** Blend modes (needs a model field) + group-bus effect chains
-  (a group's sketch processing its summed children).
+- **Group-bus effect chains.** Blend modes are DONE (`Track`/`Clip.blendMode`, lock-step
+  `BLEND_MODE_NAMES`, 16-mode inspector selector, applied through the executor). Still open: a GROUP
+  track's own effect chain processing its summed children (groups currently only sum upward).
+- **Dynamic-generator film-strip thumbnails (push-capture).** Designed in `media/THUMBNAIL_CACHE.md`
+  but not built: generators are non-deterministic, so flip from pull (decode-on-demand) to push
+  (capture observed composited frames), keyed `clipId:paramFingerprint`, reusing the whole cache.
 - **Single-keyframe video sources don't advance.** Video clips render via the main-thread decode
   pump (`engine/video-compositor.ts`), which opens sources with random access
   (`sequential: false`). Sources with sparse/single keyframes (e.g. some Adobe Stock `.mov`
@@ -131,8 +141,10 @@ since making the two surfaces look and feel the same is a deliberate goal.
 - ✅ **Worker diff mirror.** DONE for modulation telemetry — `onModulationDataDiff` →
   `store.applyModulationDataDiff` mirrors `appState.local.engine.modulationData`.
 - ⚠️ **Lock-step math.** automation/rail curves eval through `automation-eval.ts` → `envelope-math.ts`
-  (the real `envelope.h` twin). BUT the rail `tap_mod` twin `web/src/tap-mod.ts` was **DELETED** as a
-  zombie — there is no TS tap_mod anymore; real rail values are an open architecture fork (see above).
+  (the real `envelope.h` twin). The rail `tap_mod` twin `web/src/tap-mod.ts` was **DELETED** (zombie):
+  actual rail modulation is applied **natively** by the executor (no TS tap_mod). The rail-lane
+  PREVIEW uses `offline-curve-eval.ts`, which mirrors `env_lfo` for the LFO and stubs other writers
+  until the offline-evaluable modulation-block effect ABI lands (see "Still open" above).
 
 ---
 

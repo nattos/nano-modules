@@ -306,7 +306,8 @@ sketch; the worker precomputes a warp curve when the binding/source goes dirty.
 - **Rails are value-only return channels.** A clip **exports** a modulation by writing a sketch
   output value onto a named rail; other clips/tracks **read** the rail as a modulation source.
 - **Read/write reuse the wire system.** Writing-to / reading-from a rail uses the same
-  `tap_mod` pipeline as wires (`native/src/sketch/tap_mod.h` ↔ `web/src/tap-mod.ts`): remap
+  `tap_mod` pipeline as wires, applied **natively** by the executor (`native/src/sketch/tap_mod.h`;
+  the TS twin `web/src/tap-mod.ts` was retired): remap
   curves, scale, `combineTap` (Replace/Mix/Add/Mul) with `mixFactor`, and `applyMagnitude`
   (signed/unsigned folding into the destination field's `[min,max]`). The rail's declared
   `range` **is** its modulation contract, exactly as an output's `floatField` min/max is today.
@@ -399,9 +400,12 @@ faked sine sum (reconcile to the integrated tempo); binding a real LFO instance 
 ### Milestone 4 — Rails/returns + automation — ◐ PARTIAL
 ✅ **Automation**: editable curves (`<arr-automation-editor>` over the shared `<envelope-graph>`),
 lock-step eval (`automation-eval.ts` → `envelope.h` twin). ✅ **Dashboard**: real `<scalar-knob>` +
-`<spark-chart>` bindings. ⏳ **Rails (values)**: rail read/write still mocked — blocked on an
-architecture fork (the TS `tap-mod.ts` twin was deleted; reintroduce it +goldens vs. native
-cross-clip integration). ⏳ **Sketch-output "dashboard for outputs"** (promote fields → named outputs).
+`<spark-chart>` bindings. ✅ **Rails (values)**: rails modulate for real — `composite-frame` folds
+rail bases + writer wires into the executor's parameter-automation (the `modulationData` channel
+reports them); the rail lane draws the real curve offline (`offline-curve-eval.ts`). ⏳ Remaining:
+rail-lane PREVIEW fidelity for non-LFO / stochastic writers (an `env_lfo` TS mirror + seeded stub
+today) pending the **offline-evaluable modulation-block effect ABI** (effects emit their own
+`{mean,lo,hi}` blocks); ⏳ **Sketch-output "dashboard for outputs"** (promote fields → named outputs).
 
 ### Export — offline render to MP4 — ✅ BUILT
 Renders the timeline to an **MP4 (H.264)** file offline. A SECOND `ArrEngine` (own worker +
@@ -425,10 +429,13 @@ honors `transportSeconds` (a step lands exactly on the playhead at any fps).
   in-memory blob. Video-only (the arrangement model has no audio).
 
 ### Later
-Real empty-state/file-open boot (Component A is built but unused at boot); compositor blend modes +
-group-bus chains; overlay rAF-gating + z-order; time-view unification; clip loop/in-out editing +
-track reorder/group DnD; `offline_renderable` (generalize warps); Live mode; instancing; clip
-library/packages; session view; media manager; export audio (when the model grows audio).
+Real empty-state/file-open boot (Component A is built but unused at boot); compositor group-bus
+chains (a group's sketch processing its summed children — blend modes are DONE); offline-evaluable
+modulation-block effect ABI (real rail-lane previews for all modulators, retiring the `env_lfo` TS
+mirror); dynamic-generator film-strip thumbnails (push-capture, `media/THUMBNAIL_CACHE.md`); overlay
+rAF-gating + z-order; time-view unification; clip loop/in-out editing + track reorder/group DnD;
+`offline_renderable` (generalize warps); Live mode; instancing; clip library/packages; session view;
+media manager; export audio (when the model grows audio).
 
 ---
 
@@ -443,7 +450,7 @@ library/packages; session view; media manager; export audio (when the model grow
 | Field widgets / inspector | `widgets/*` (`scalar-slider` mod bands, `generic-inspector`, `field-layout-manager`, `texture-monitor`, `smart-input`) |
 | Automation editor | `editors/envelope-inspector.ts` + `native/src/sketch/envelope.h` |
 | Clip = sketch host | `sketch-types.ts` (`Sketch`/`ChainEntry`/`Wire`/`InstanceState`/`TapMod`) |
-| Rail read/write (mix/magnitude/curves) | `native/src/sketch/tap_mod.h` (⚠️ the TS twin `web/src/tap-mod.ts` was DELETED — no JS tap_mod; real rail values are an open fork) |
+| Rail read/write (mix/magnitude/curves) | `native/src/sketch/tap_mod.h` — applied natively by the executor (the TS twin `web/src/tap-mod.ts` was retired). Rail-lane PREVIEWS use `engine/offline-curve-eval.ts`, pending the offline-evaluable modulation-block effect ABI |
 | Warp source (v1) | `native/wasm_modules/env_lfo/main.cpp` (deterministic modes) |
 | Play modes / seeking | `video/playhead-controllers.ts`, `video/access-classifier.ts`, `video/playback-service.ts` |
 | Compositing | `native/wasm_modules/video_blend/main.cpp`, `native/src/sketch/host_blend.h` |
