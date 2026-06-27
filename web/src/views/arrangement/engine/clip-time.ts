@@ -183,6 +183,11 @@ export function clipSourceFrameAt(
   fps: number,
   frameCount: number,
 ): number | null {
+  // A single-frame source (a still image, or a 1-frame video) has nothing to seek:
+  // show its only frame for the whole clip span. Otherwise the time mapping (whose
+  // null guard uses videoDurSec = 1/fps ≈ a few ms) would flick it transparent almost
+  // immediately — i.e. a still image would never display.
+  if (frameCount <= 1) return 0;
   const vt = clipSourceTimeAt(loop, ctx, beat);
   if (vt === null) return null;
   const f = Math.floor(vt * fps);

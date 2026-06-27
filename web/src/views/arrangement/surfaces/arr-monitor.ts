@@ -56,14 +56,8 @@ export class ArrMonitor extends MobxLitElement {
          panel width changes the monitor's ASPECT rather than its height. */
       height: 180px;
       width: 100%;
-      /* Photoshop-style transparency checkerboard. */
-      background-color: #777;
-      background-image: linear-gradient(45deg, #999 25%, transparent 25%),
-        linear-gradient(-45deg, #999 25%, transparent 25%),
-        linear-gradient(45deg, transparent 75%, #999 75%),
-        linear-gradient(-45deg, transparent 75%, #999 75%);
-      background-size: 16px 16px;
-      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+      /* Neutral dark-gray backdrop (transparent areas + letterbox bars read here). */
+      background-color: #222;
     }
     canvas {
       position: absolute;

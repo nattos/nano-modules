@@ -188,9 +188,11 @@ export class EditableLabel extends LitElement {
       // The provider element manages its own focus (smart-input autofocuses).
       return;
     }
-    // selectOnFocus selects the whole value once focus lands.
+    // Focus the inner control AFTER <editable-text> has rendered its own <input>:
+    // focusing synchronously here often hit a not-yet-rendered control and silently
+    // no-op'd (the flaky "double-click didn't focus the field"). Await its update.
     const text = this.renderRoot.querySelector('editable-text') as EditableText | null;
-    text?.focus();
+    if (text) void text.updateComplete.then(() => { if (this.editing) text.focus(); });
   }
 
   disconnectedCallback() {

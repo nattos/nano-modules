@@ -178,8 +178,10 @@ export class EditableNumber extends LitElement {
     if (!want) return;
     this.pendingFocus = null;
     if (want === 'edit') {
+      // Await <editable-text>'s own render so its <input> exists before we focus it
+      // (a synchronous focus here often no-op'd → the flaky double-click-to-edit).
       const et = this.renderRoot.querySelector('editable-text') as EditableText | null;
-      if (this.selectOnEdit) et?.selectAll(); else et?.focus();
+      if (et) void et.updateComplete.then(() => { if (this.editing) (this.selectOnEdit ? et.selectAll() : et.focus()); });
     } else {
       this.focus();
     }
