@@ -44,6 +44,14 @@ describe('decideCursorAction', () => {
     expect(decideCursorAction({ ...base, rate: -1, curSec: 2.0, targetSec: 1.5 }).kind).toBe('seek');
   });
 
+  it('with native loop, a wrap reads as on-target → play (no per-loop seek)', () => {
+    // cur near the end, target just looped to the start: a full-file backward jump...
+    const noLoop = decideCursorAction({ ...base, rate: 1, curSec: 9.99, targetSec: 0.02, durationSec: 10 });
+    expect(noLoop.kind).toBe('seek'); // ...is a seek without native loop
+    const looped = decideCursorAction({ ...base, rate: 1, curSec: 9.99, targetSec: 0.02, durationSec: 10, loopPeriodSec: 10 });
+    expect(looped.kind).toBe('play'); // ...but the folded delta is ~0 with native loop
+  });
+
   it('clamps the seek target inside the decodable range', () => {
     const a = decideCursorAction({ ...base, rate: 0, curSec: 0, targetSec: 999, durationSec: 10 });
     expect(a.kind).toBe('seek');

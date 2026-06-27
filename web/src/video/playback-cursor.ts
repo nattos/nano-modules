@@ -45,6 +45,10 @@ export interface CursorDecisionInput {
   rate: number;
   /** A seek issued by a previous decision is still in flight. */
   seeking: boolean;
+  /** When the element loops the WHOLE file natively (`video.loop`), the target wraps at
+   *  this period; fold the delta so a wrap reads as ~0 (keep playing) rather than a
+   *  full-file backward jump (a seek). 0/undefined ⇒ no native loop. */
+  loopPeriodSec?: number;
 }
 
 /** Browser playbackRate is clamped to a sane window (very high rates desync audio-less
@@ -68,7 +72,14 @@ export function decideCursorAction(i: CursorDecisionInput): CursorAction {
   if (i.seeking) return { kind: 'hold' }; // an issued seek hasn't landed yet
   const frame = 1 / Math.max(1, i.fps);
   const tol = 1.5 * frame; // within ~1.5 frames ⇒ "on target"
-  const delta = i.targetSec - i.curSec; // how far AHEAD the target is
+  let delta = i.targetSec - i.curSec; // how far AHEAD the target is
+  // Under native loop, fold the delta to the minimal signed distance around the period, so
+  // a wrap (target just looped to 0 while the element is near the end, or vice-versa) reads
+  // as ~0 — the element's own loop kept playing, no seek needed.
+  if (i.loopPeriodSec && i.loopPeriodSec > frame) {
+    const p = i.loopPeriodSec;
+    delta = (((delta % p) + p + p / 2) % p) - p / 2;
+  }
 
   // Forward play: transport advancing + the target is at or a little ahead of us → let
   // the element play to track it (continuous decode, no per-frame seek).
@@ -129,6 +140,10 @@ export class PlaybackCursor {
   private lastPresentedSec = 0;
   private stats = freshStats();
   private seekStartMs = 0;
+  /** Full-file native-loop period (s); 0 ⇒ seek-on-wrap. Set by the pump. */
+  private loopPeriodSec = 0;
+  /** rVFC is actively copying each presented frame (i.e. the element is playing). */
+  private playing = false;
 
   /**
    * @param gpuHost   the shared GPU stack.
@@ -146,7 +161,26 @@ export class PlaybackCursor {
   ) {
     this.device = gpuHost.device;
     this.video.muted = true;
-    this.video.loop = false; // looping is a SLICE decision (the mapper wraps the target); we re-seek
+    this.video.loop = false; // default: sub-slice loops seek-on-wrap; setNativeLoop flips it
+  }
+
+  /** Enable seamless native looping over a WHOLE-file slice of length `periodSec` (the
+   *  element loops in the decoder like a plain <video loop> — no per-wrap seek). 0 ⇒ off
+   *  (sub-slice / one-shot, which seek on wrap). The pump sets this per the clip's slice. */
+  setNativeLoop(periodSec: number): void {
+    const p = Math.max(0, periodSec);
+    if (p === this.loopPeriodSec) return;
+    this.loopPeriodSec = p;
+    this.video.loop = p > 0;
+  }
+
+  /** Minimal signed (presented − target), folded around the native-loop period so a wrap
+   *  reads as ~0 instead of a full-file jump. */
+  private foldedOffset(targetSec: number): number {
+    let d = this.lastPresentedSec - targetSec;
+    const p = this.loopPeriodSec;
+    if (p > 1 / Math.max(1, this.fps)) d = (((d % p) + p + p / 2) % p) - p / 2;
+    return d;
   }
 
   /** True when the presented frame is within ~a frame of `targetSec` and no seek is in
@@ -154,7 +188,7 @@ export class PlaybackCursor {
   ready(targetSec: number): boolean {
     if (this.released || !this.hasFrame || this.seeking) return false;
     if (this.video.readyState < 2) return false;
-    return Math.abs(this.lastPresentedSec - targetSec) <= 1.5 / Math.max(1, this.fps);
+    return Math.abs(this.foldedOffset(targetSec)) <= 1.5 / Math.max(1, this.fps);
   }
 
   /**
@@ -175,6 +209,7 @@ export class PlaybackCursor {
       fps: this.fps,
       rate,
       seeking: this.seeking,
+      loopPeriodSec: this.loopPeriodSec,
     });
 
     this.stats.ticks++;
@@ -183,33 +218,56 @@ export class PlaybackCursor {
     switch (action.kind) {
       case 'play': {
         // Phase-lock: nudge playbackRate to close any standing offset between the presented
-        // frame and the target (so ready() converges during steady play instead of sitting
-        // a constant fraction behind). +err ⇒ target ahead ⇒ speed up; bounded ±50%.
-        const err = targetSec - v.currentTime;
+        // frame and the target (so ready() converges during steady play). Loop-folded so a
+        // wrap doesn't slam the correction. +err ⇒ target ahead ⇒ speed up; bounded ±50%.
+        const err = -this.foldedOffset(targetSec); // target − presented
         const corr = Math.max(-0.5, Math.min(0.5, err * 2));
         v.playbackRate = clampPlaybackRate(action.rate * (1 + corr));
         if (v.paused) void v.play().catch(() => { /* autoplay blocked */ });
+        this.startPlaying(); // rVFC now drives the per-frame copy
         break;
       }
       case 'seek':
+        this.stopPlaying();
         if (!v.paused) v.pause();
         this.beginSeek(action.sec);
         break;
       case 'hold':
+        this.stopPlaying();
         if (rate <= 1e-6 && !v.paused) v.pause(); // frozen transport → stop drifting
         break;
     }
 
-    // Sample the current frame — but NOT mid-seek (the element's currentTime has already
-    // jumped to the target while the old frame is still presented; copying it would
-    // mislabel a stale frame as the target). beginSeek's landing callback copies instead.
-    if (!this.seeking && v.readyState >= 2) this.copyFrame();
-    // Telemetry: how far the presented frame is from the target, and whether it'd pass the gate.
-    const drift = Math.abs(this.lastPresentedSec - targetSec);
+    // While PLAYING, rVFC copies each presented frame at its real present time (native
+    // cadence, no rAF-phase judder). Copy here only when NOT playing (held/paused) and not
+    // mid-seek, so a static frame is still captured.
+    if (!this.playing && !this.seeking && v.readyState >= 2) this.copyFrame();
+    // Telemetry: loop-folded offset of the presented frame from target + gate check.
+    const drift = Math.abs(this.foldedOffset(targetSec));
     this.stats.driftSumSec += drift;
     if (drift > this.stats.driftMaxSec) this.stats.driftMaxSec = drift;
     if (!this.ready(targetSec)) this.stats.notReady++;
     return this.hasFrame ? { handle: this.texHandle, sec: this.lastPresentedSec } : null;
+  }
+
+  /** Start the rVFC copy loop (each presented frame → texture) while the element plays. */
+  private startPlaying(): void {
+    if (this.playing || this.released) return;
+    this.playing = true;
+    this.scheduleRvfc();
+  }
+  private stopPlaying(): void {
+    this.playing = false;
+  }
+  private rvfcTick = (): void => {
+    if (this.released || !this.playing) return;
+    if (this.video.readyState >= 2) this.copyFrame();
+    this.scheduleRvfc();
+  };
+  private scheduleRvfc(): void {
+    const rvfc = (this.video as unknown as { requestVideoFrameCallback?: (cb: () => void) => void }).requestVideoFrameCallback;
+    if (typeof rvfc === 'function') rvfc.call(this.video, this.rvfcTick);
+    else this.playing = false; // no rVFC → present()'s !playing guard copies each tick instead
   }
 
   /** Drain + reset the rolling telemetry (the pump logs it periodically). */
@@ -261,6 +319,7 @@ export class PlaybackCursor {
   release(): void {
     if (this.released) return;
     this.released = true;
+    this.playing = false;
     try { this.video.pause(); this.video.removeAttribute('src'); this.video.load(); } catch { /* ignore */ }
   }
 }

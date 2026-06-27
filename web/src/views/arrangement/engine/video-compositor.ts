@@ -452,6 +452,13 @@ export class VideoCompositor {
       // cursor pre-seeks there rather than chasing a future / wrong-phase frame.
       const targetSec = this.targetSecFor(p, ahead ? d.startBeat : beat, bpm);
       const rate = this.trackRate(p, targetSec);
+      // Seamless native loop (like a plain <video loop>, no per-wrap seek) for a FORWARD,
+      // WHOLE-FILE looping slice — the wrap point matches the file end. Sub-slice / one-shot
+      // / reverse keep seek-on-wrap.
+      const loop = d.loop ?? DEFAULT_LOOP;
+      const fullFile = (loop.startSec ?? 0) <= 0.05 && (loop.endSec ?? p.durationSec) >= p.durationSec - 0.05;
+      const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
+      p.cursor.setNativeLoop(looping && fullFile && (loop.direction ?? 'forward') === 'forward' ? p.durationSec : 0);
 
       if (!active) {
         // LOOKAHEAD: pre-seek the cursor to the entry frame (no inject) so arrival doesn't
