@@ -95,28 +95,27 @@ export class ArrGrid extends MobxLitElement {
     }
     .header {
       width: var(--arr-hw, 184px);
+      position: relative; /* group lines are absolutely positioned within */
       flex-shrink: 0;
       box-sizing: border-box;
       border-right: 1px solid var(--app-tint-3);
       background: var(--app-bg-color2);
       display: flex;
-      flex-direction: row;
+      flex-direction: column;
+      gap: 3px;
+      padding: var(--app-sp-2) 0; /* horizontal indent is per-row (own depth / gutter) */
       cursor: pointer;
       overflow: hidden;
     }
-    /* Left group-gutter: holds the per-depth vertical group lines. Uniform width
-       across all rows (= store.groupGutterWidth) so the content/faders align. */
-    .hgutter {
-      position: relative;
-      flex-shrink: 0;
-      align-self: stretch;
-    }
+    /* Per-depth vertical group lines, one column (GROUP_INDENT) each, drawn in the
+       left gutter behind the content (which is indented past them). */
     .gline {
       position: absolute;
       top: 0;
       bottom: 0;
       width: ${GROUP_INDENT}px;
       cursor: pointer;
+      z-index: 1;
     }
     /* The visible line, centred in the column's hit area. Coloured by the group's
        accent so distinct clusters read at a glance. */
@@ -139,16 +138,6 @@ export class ArrGrid extends MobxLitElement {
     .gline.on::before {
       opacity: 1;
     }
-    .hcontent {
-      flex: 1;
-      min-width: 0;
-      box-sizing: border-box;
-      padding: var(--app-sp-2) var(--app-sp-3);
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      overflow: hidden;
-    }
     .header.selected {
       box-shadow: inset 2px 0 0 var(--app-hi-color2);
     }
@@ -157,16 +146,10 @@ export class ArrGrid extends MobxLitElement {
       align-items: center;
       gap: 5px;
       min-width: 0;
+      padding-right: var(--app-sp-3);
     }
-    .caret {
-      background: none;
-      border: none;
-      color: var(--app-text-color2);
-      cursor: pointer;
-      width: 12px;
-      flex-shrink: 0;
-      padding: 0;
-      --icon-size: 11px;
+    .h-bottom {
+      padding-right: var(--app-sp-3);
     }
     .dot {
       width: 8px;
@@ -330,21 +313,21 @@ export class ArrGrid extends MobxLitElement {
     }
     .auto-header {
       width: var(--arr-hw, 184px);
+      position: relative; /* group lines absolutely positioned within */
       flex-shrink: 0;
       box-sizing: border-box;
       border-right: 1px solid var(--app-tint-3);
       background: var(--app-bg-color2);
       display: flex;
-      flex-direction: row;
       overflow: hidden;
     }
-    /* The auto lane belongs to its track, so it carries the track's group lines
-       and the same gutter offset (the label aligns under the track name). */
+    /* The auto lane belongs to its track, so it carries the track's group lines;
+       the label indents only to the track's OWN depth (as far left as possible). */
     .auto-header-label {
       flex: 1;
       min-width: 0;
       box-sizing: border-box;
-      padding: 2px var(--app-sp-3) 2px 22px;
+      padding: 2px var(--app-sp-3) 2px 0;
       display: flex;
       align-items: center;
       font-size: var(--app-fs-xs);
@@ -625,6 +608,13 @@ export class ArrGrid extends MobxLitElement {
     const selected = store.isTrackShownSelected(track.id);
     const dragSrc = this.reorderActive && this.draggedTrackId === track.id;
     const accent = track.color ?? 'var(--app-cat-control)';
+    // Indentation: the OPACITY FADER aligns to the global max group depth (so all
+    // faders share a width); EVERYTHING ELSE (name row, and the selected-automation
+    // label) indents only to THIS track's own depth — as far left as it can go.
+    const ownDepth = isBus ? 0 : store.trackDepth(track);
+    const ownIndent = ownDepth * GROUP_INDENT;
+    const autoSel = store.automationMode && !isBus && !isRail && !!store.autoField(`track/${track.id}`);
+    const bottomIndent = autoSel ? ownIndent : store.groupGutterWidth;
     // Touch the clips array structure SYNCHRONOUSLY so the MobX reaction tracks
     // add/remove/move/undo — the repeat() directive below evaluates its template
     // lazily (during commit), which is outside the reaction's tracking window.
@@ -635,25 +625,10 @@ export class ArrGrid extends MobxLitElement {
         <div
           class="header ${isGroup ? 'group' : ''} ${selected ? 'selected' : ''} ${dragSrc ? 'dragsrc' : ''}"
           @pointerdown=${(e: PointerEvent) => this.onHeaderDown(e, track)}
+          @dblclick=${(e: MouseEvent) => this.onHeaderDblClick(e, track)}
         >
-          ${store.groupGutterWidth > 0
-            ? html`<div class="hgutter" style="width:${store.groupGutterWidth}px">
-                ${this.renderGroupLines(track, isBus)}
-              </div>`
-            : ''}
-          <div class="hcontent">
-          <div class="h-top">
-            ${isGroup && !isBus
-              ? html`<button
-                  class="caret"
-                  @pointerdown=${(e: Event) => {
-                    e.stopPropagation();
-                    store.toggleGroupCollapse(track.id);
-                  }}
-                >
-                  <ui-icon icon=${track.collapsed ? 'la-caret-right' : 'la-caret-down'}></ui-icon>
-                </button>`
-              : html`<span class="caret"></span>`}
+          ${this.renderGroupLines(track, isBus)}
+          <div class="h-top" style="padding-left: calc(var(--app-sp-3) + ${ownIndent}px)">
             ${isRail
               ? html`<ui-icon class="railico" icon="la-exchange-alt"></ui-icon>`
               : ''}
@@ -681,9 +656,8 @@ export class ArrGrid extends MobxLitElement {
                   >B</button>
                 `}
           </div>
-          <div class="h-bottom">
+          <div class="h-bottom" style="padding-left: calc(var(--app-sp-3) + ${bottomIndent}px)">
             ${this.renderHeaderBottom(track, isRail, isBus)}
-          </div>
           </div>
         </div>
         ${isRail
@@ -806,12 +780,11 @@ export class ArrGrid extends MobxLitElement {
     return html`
       <div class="row auto">
         <div class="auto-header">
-          ${store.groupGutterWidth > 0
-            ? html`<div class="hgutter" style="width:${store.groupGutterWidth}px">
-                ${this.renderGroupLines(track, store.isMainBus(track))}
-              </div>`
-            : ''}
-          <div class="auto-header-label">
+          ${this.renderGroupLines(track, store.isMainBus(track))}
+          <div
+            class="auto-header-label"
+            style="padding-left: calc(var(--app-sp-3) + ${(store.isMainBus(track) ? 0 : store.trackDepth(track)) * GROUP_INDENT}px)"
+          >
             <ui-icon icon="la-bezier-curve"></ui-icon><span>${lane.label}</span>
           </div>
         </div>
@@ -969,6 +942,13 @@ export class ArrGrid extends MobxLitElement {
     this.headerDrag = { y0: e.clientY, trackId: track.id };
     window.addEventListener('pointermove', this.onHeaderMove);
     window.addEventListener('pointerup', this.onHeaderUp);
+  }
+
+  /** Double-click a group header to expand/collapse it (no chevron). Renaming uses
+   *  dbl-click on the name, so ignore events from the editable label / controls. */
+  private onHeaderDblClick(e: MouseEvent, track: Track) {
+    if (e.target instanceof Element && e.target.closest('editable-label, button, .gline')) return;
+    if (track.kind === 'group' && !store.isMainBus(track)) store.toggleGroupCollapse(track.id);
   }
 
   private onHeaderMove = (e: PointerEvent) => {

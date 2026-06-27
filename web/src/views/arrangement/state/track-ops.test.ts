@@ -261,6 +261,50 @@ describe('track structural ops', () => {
     expect(store.trackById(a)?.parentId).toBe(g); // a stays in the group
   });
 
+  it('addTrackAfterSelection creates inside a selected group', () => {
+    const a = store.addTrack();
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // addGroup leaves the group selected
+    const created = store.addTrackAfterSelection();
+    expect(store.trackById(created)?.parentId).toBe(g);
+  });
+
+  it('addTrackAfterSelection creates a sibling inside the group when a child is selected', () => {
+    const a = store.addTrack();
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a]
+    store.select(paths.track(a)); // select the child
+    const created = store.addTrackAfterSelection();
+    expect(store.trackById(created)?.parentId).toBe(g); // lands in the same group
+  });
+
+  it('addTrackAfterSelection appends a top-level track when nothing is selected', () => {
+    store.clearSelection();
+    const created = store.addTrackAfterSelection();
+    expect(store.trackById(created)?.parentId).toBeNull();
+  });
+
+  it('addTrack normalizes so a stray insert never splits a group', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    store.selection.add(paths.track(b));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a, b]
+    // A plain top-level addTrack inserted mid-array must not wedge between a and b.
+    const x = store.addTrack(a); // afterTrackId = a (inside the group's span), parent null
+    expect(store.trackById(x)?.parentId).toBeNull();
+    const ids = order();
+    const gi = ids.indexOf(g);
+    expect(ids[gi + 1]).toBe(a);
+    expect(ids[gi + 2]).toBe(b); // group stays contiguous; x is pushed out
+  });
+
   it('moveTrackInto refuses to drop a group into its own subtree (no cycles)', () => {
     const a = store.addTrack();
     store.clearSelection();

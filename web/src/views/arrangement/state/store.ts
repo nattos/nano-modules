@@ -2970,13 +2970,13 @@ export class ArrangementStore {
    * regardless of array position, so this never needs special bus handling.
    * Returns the new track id and selects it.
    */
-  addTrack(afterTrackId?: string): string {
+  addTrack(afterTrackId?: string, parentId: string | null = null): string {
     const id = uid('trk');
     const track: Track = {
       id,
       name: 'New Track',
       kind: 'track',
-      parentId: null,
+      parentId,
       color: 'var(--app-cat-source)',
       level: 1, // start fully opaque (the mixer fader defaults undefined → 85%)
       sketch: { devices: [] },
@@ -2990,9 +2990,19 @@ export class ArrangementStore {
         if (ai >= 0) idx = ai + 1;
       }
       d.tracks.splice(idx, 0, track);
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks); // keep groups contiguous
     });
     this.select(paths.track(id));
     return id;
+  }
+
+  /** Last track in canonical order that sits inside `groupId` (its deepest/last child). */
+  private lastDescendantId(groupId: string): string | null {
+    let last: string | null = null;
+    for (const t of this.composition.tracks) {
+      if (!this.isMainBus(t) && this.isAncestorTrack(groupId, t.id)) last = t.id;
+    }
+    return last;
   }
 
   /** "+ Return" affordance: a value-only (rail) return channel. Inserted before
@@ -3017,6 +3027,7 @@ export class ArrangementStore {
       const busIdx = d.tracks.findIndex((t) => ArrangementStore.isMainBusTrack(t));
       const idx = busIdx >= 0 ? busIdx : d.tracks.length;
       d.tracks.splice(idx, 0, track);
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks);
     });
     this.select(paths.track(id));
     return id;
@@ -3115,14 +3126,25 @@ export class ArrangementStore {
     return groupId;
   }
 
-  /** "+ Track" affordance: insert after the last (bottom-most) shown-selected track. */
+  /**
+   * "+ Track" affordance. Inserts after the bottom-most shown-selected track — and
+   * INSIDE its group when the selection is a group (→ its last child) or a track
+   * within a group (→ a sibling right after it). With nothing selected, appends a
+   * top-level track.
+   */
   addTrackAfterSelection(): string {
     const shown = this.shownSelectedTrackIds;
-    let after: string | undefined;
+    let anchor: Track | undefined;
     for (const t of this.displayTracks) {
-      if (shown.has(t.id) && !this.isMainBus(t)) after = t.id;
+      if (shown.has(t.id) && !this.isMainBus(t)) anchor = t;
     }
-    return this.addTrack(after);
+    if (!anchor) return this.addTrack();
+    if (anchor.kind === 'group') {
+      // A group selected → create inside it, as its last child.
+      return this.addTrack(this.lastDescendantId(anchor.id) ?? anchor.id, anchor.id);
+    }
+    // A track selected → sibling right after it (inside its group when nested).
+    return this.addTrack(anchor.id, anchor.parentId ?? null);
   }
 
   /** Delete the focused track(s); never the main bus. Children reparent upward. */
