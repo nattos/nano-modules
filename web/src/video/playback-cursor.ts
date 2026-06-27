@@ -142,8 +142,6 @@ export class PlaybackCursor {
   private seekStartMs = 0;
   /** Full-file native-loop period (s); 0 ⇒ seek-on-wrap. Set by the pump. */
   private loopPeriodSec = 0;
-  /** rVFC is actively copying each presented frame (i.e. the element is playing). */
-  private playing = false;
 
   /**
    * @param gpuHost   the shared GPU stack.
@@ -224,50 +222,28 @@ export class PlaybackCursor {
         const corr = Math.max(-0.5, Math.min(0.5, err * 2));
         v.playbackRate = clampPlaybackRate(action.rate * (1 + corr));
         if (v.paused) void v.play().catch(() => { /* autoplay blocked */ });
-        this.startPlaying(); // rVFC now drives the per-frame copy
         break;
       }
       case 'seek':
-        this.stopPlaying();
         if (!v.paused) v.pause();
         this.beginSeek(action.sec);
         break;
       case 'hold':
-        this.stopPlaying();
         if (rate <= 1e-6 && !v.paused) v.pause(); // frozen transport → stop drifting
         break;
     }
 
-    // While PLAYING, rVFC copies each presented frame at its real present time (native
-    // cadence, no rAF-phase judder). Copy here only when NOT playing (held/paused) and not
-    // mid-seek, so a static frame is still captured.
-    if (!this.playing && !this.seeking && v.readyState >= 2) this.copyFrame();
+    // Sample the current frame every tick (NOT mid-seek — the element's currentTime has
+    // jumped to the target while the old frame is still presented; the seek's landing
+    // callback copies instead). Per-rAF sampling proved steadier than an rVFC loop under
+    // the load of several 1080p decodes (rVFC fires less reliably when the decoder is hot).
+    if (!this.seeking && v.readyState >= 2) this.copyFrame();
     // Telemetry: loop-folded offset of the presented frame from target + gate check.
     const drift = Math.abs(this.foldedOffset(targetSec));
     this.stats.driftSumSec += drift;
     if (drift > this.stats.driftMaxSec) this.stats.driftMaxSec = drift;
     if (!this.ready(targetSec)) this.stats.notReady++;
     return this.hasFrame ? { handle: this.texHandle, sec: this.lastPresentedSec } : null;
-  }
-
-  /** Start the rVFC copy loop (each presented frame → texture) while the element plays. */
-  private startPlaying(): void {
-    if (this.playing || this.released) return;
-    this.playing = true;
-    this.scheduleRvfc();
-  }
-  private stopPlaying(): void {
-    this.playing = false;
-  }
-  private rvfcTick = (): void => {
-    if (this.released || !this.playing) return;
-    if (this.video.readyState >= 2) this.copyFrame();
-    this.scheduleRvfc();
-  };
-  private scheduleRvfc(): void {
-    const rvfc = (this.video as unknown as { requestVideoFrameCallback?: (cb: () => void) => void }).requestVideoFrameCallback;
-    if (typeof rvfc === 'function') rvfc.call(this.video, this.rvfcTick);
-    else this.playing = false; // no rVFC → present()'s !playing guard copies each tick instead
   }
 
   /** Drain + reset the rolling telemetry (the pump logs it periodically). */
@@ -319,7 +295,6 @@ export class PlaybackCursor {
   release(): void {
     if (this.released) return;
     this.released = true;
-    this.playing = false;
     try { this.video.pause(); this.video.removeAttribute('src'); this.video.load(); } catch { /* ignore */ }
   }
 }
