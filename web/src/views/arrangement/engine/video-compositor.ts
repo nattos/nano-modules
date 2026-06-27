@@ -556,7 +556,11 @@ export class VideoCompositor {
         const loop = d.loop ?? DEFAULT_LOOP;
         const fullFile = (loop.startSec ?? 0) <= 0.05 && (loop.endSec ?? p.durationSec) >= p.durationSec - 0.05;
         const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
-        p.cursor.setNativeLoop(looping && fullFile && (loop.direction ?? 'forward') === 'forward' ? p.durationSec : 0);
+        const fwd = (loop.direction ?? 'forward') === 'forward';
+        p.cursor.setNativeLoop(looping && fullFile && fwd ? p.durationSec : 0);
+        // Sub-slice loop: PIN the slice in the cursor's cache so the wrap hits it (no seek
+        // freeze) instead of evicting it as the just-played tail. Full-file uses native loop.
+        p.cursor.setLoopSlice(looping && !fullFile && fwd ? loop.startSec ?? 0 : null, loop.endSec ?? p.durationSec);
         if (!active) {
           if (targetSec == null) return;
           const key = `warm:${Math.floor(targetSec * p.fps)}`;

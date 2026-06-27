@@ -19,6 +19,15 @@
 
 import type { GPUHost } from '../gpu-host';
 import { measureFps } from './video-element-frame-source';
+import { FrameCache } from './frame-cache';
+
+/** Per-cursor decoded-frame cache budget. Large on purpose: a video CACHE is most useful
+ *  when it can hold a whole loop SLICE (so the loop reads on-target frames = dense = smooth,
+ *  and the wrap is a hit not a seek) rather than just the recently-played tail. It fills
+ *  LAZILY (only frames actually played), so this is a CAP, not an eager allocation; if the
+ *  GPU can't allocate, createTexture fails and that frame just isn't cached (degrades to the
+ *  pre-cache seek path). A 4.5s 1080p60 slice ≈ 2.2 GB. Tune per VRAM / slice length. */
+const CACHE_BUDGET_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB cap (lazy fill)
 
 // ── Pure decision policy (unit-tested) ────────────────────────────────────────
 
@@ -133,33 +142,55 @@ export class PlaybackCursor {
   private device: GPUDevice;
   private seeking = false;
   private released = false;
-  /** Whether at least one frame has been copied into the texture. */
-  private hasFrame = false;
-  /** Source second of the frame actually IN the texture (not the element's currentTime,
-   *  which jumps to a seek target before that frame has decoded). */
+  /** Source second of the frame last PRESENTED (telemetry + the Precise gate). */
   private lastPresentedSec = 0;
+  /** Frame index last copied into the cache (dedup repeats of the same <video> frame). */
+  private lastFilledFrame = -1;
   private stats = freshStats();
   private seekStartMs = 0;
   /** Full-file native-loop period (s); 0 ⇒ seek-on-wrap. Set by the pump. */
   private loopPeriodSec = 0;
+  /** Currently-pinned slice [a,b] (frame indices), so we only re-pin on change. */
+  private pinned: [number, number] | null = null;
 
   /**
    * @param gpuHost   the shared GPU stack.
    * @param video     a loaded, paused <video> (its own element — cursors never share one).
-   * @param texHandle a GPUHost texture handle (width×height) the cursor copies frames into.
+   * @param cache     decoded-frame cache the <video> FILLS as it plays; reads hit it on a
+   *                  loop wrap / seek (the bridge) and it pins the loop slice.
+   * @param width/height native frame size (cache texture size).
    * @param fps       source frame rate.
    * @param durationSec source duration.
    */
   constructor(
     private gpuHost: GPUHost,
     private video: HTMLVideoElement,
-    private texHandle: number,
+    private cache: FrameCache,
+    private width: number,
+    private height: number,
     private fps: number,
     private durationSec: number,
   ) {
     this.device = gpuHost.device;
     this.video.muted = true;
     this.video.loop = false; // default: sub-slice loops seek-on-wrap; setNativeLoop flips it
+  }
+
+  /** Pin the loop SLICE in the cache so it survives across the loop (plain LRU would evict
+   *  it as the just-played "tail" — the least-likely-next frame). The wrap then hits the
+   *  cache instead of seeking. `null` ⇒ unpin (one-shot / full-file native loop). */
+  setLoopSlice(startSec: number | null, endSec: number): void {
+    if (startSec == null) {
+      if (this.pinned) { this.pinned = null; this.cache.setPinned([]); }
+      return;
+    }
+    const a = Math.max(0, Math.floor(startSec * this.fps));
+    const b = Math.max(a, Math.ceil(endSec * this.fps));
+    if (this.pinned && this.pinned[0] === a && this.pinned[1] === b) return;
+    this.pinned = [a, b];
+    const pins: number[] = [];
+    for (let i = a; i <= b; i++) pins.push(i);
+    this.cache.setPinned(pins);
   }
 
   /** Enable seamless native looping over a WHOLE-file slice of length `periodSec` (the
@@ -184,8 +215,11 @@ export class PlaybackCursor {
   /** True when the presented frame is within ~a frame of `targetSec` and no seek is in
    *  flight — i.e. the texture shows the right frame. The Precise gate reads this. */
   ready(targetSec: number): boolean {
-    if (this.released || !this.hasFrame || this.seeking) return false;
+    if (this.released || this.lastFilledFrame < 0 || this.seeking) return false;
     if (this.video.readyState < 2) return false;
+    // Ready if the target frame is resident in the cache (e.g. a pinned loop-start, mid-seek)
+    // OR the live element is within ~a frame of the target.
+    if (this.cache.has(Math.max(0, Math.floor(targetSec * this.fps)))) return true;
     return Math.abs(this.foldedOffset(targetSec)) <= 1.5 / Math.max(1, this.fps);
   }
 
@@ -235,17 +269,40 @@ export class PlaybackCursor {
         break;
     }
 
-    // Sample the current frame every tick (NOT mid-seek — the element's currentTime has
-    // jumped to the target while the old frame is still presented; the seek's landing
-    // callback copies instead). Per-rAF sampling proved steadier than an rVFC loop under
-    // the load of several 1080p decodes (rVFC fires less reliably when the decoder is hot).
-    if (!this.seeking && v.readyState >= 2) this.copyFrame();
-    // Telemetry: loop-folded offset of the presented frame from target + gate check.
+    // FILL the cache with the element's current frame each tick (not mid-seek — currentTime
+    // has jumped to the seek target while the old frame is still painted; the seek's landing
+    // callback fills instead). The <video> is the FILLER; the cache is what we read.
+    if (!this.seeking && v.readyState >= 2) this.fillCurrent();
+
+    // SELECT what to present:
+    //  • in sync (the live element is on the target — normal play) ⇒ present the CURRENT
+    //    frame. Reading the live frame keeps the media cadence; NO re-quantizing against the
+    //    engine clock (that was the ring's jitter).
+    //  • off target (loop wrap / seek / startup) ⇒ read the TARGET frame from the cache. A
+    //    hit (e.g. the pinned loop-start) bridges the seek with no freeze; a miss falls back
+    //    to whatever current frame we have.
+    const frame = 1 / Math.max(1, this.fps);
+    let curDelta = v.currentTime - targetSec;
+    if (this.loopPeriodSec > frame) { const p = this.loopPeriodSec; curDelta = (((curDelta % p) + p + p / 2) % p) - p / 2; }
+    const inSync = !this.seeking && Math.abs(curDelta) <= 1.5 * frame;
+    const curFrame = Math.max(0, Math.floor(v.currentTime * this.fps));
+    const tgtFrame = Math.max(0, Math.floor(targetSec * this.fps));
+    let handle = -1, sec = this.lastPresentedSec;
+    if (inSync) {
+      handle = this.cache.lookup(curFrame);
+      if (handle >= 0) sec = v.currentTime;
+    } else {
+      handle = this.cache.lookup(tgtFrame); // bridge from cache (pinned loop-start, etc.)
+      if (handle >= 0) sec = targetSec;
+    }
+    if (handle < 0) { handle = this.cache.lookup(curFrame); if (handle >= 0) sec = v.currentTime; } // best-available
+
+    this.lastPresentedSec = sec;
     const drift = Math.abs(this.foldedOffset(targetSec));
     this.stats.driftSumSec += drift;
     if (drift > this.stats.driftMaxSec) this.stats.driftMaxSec = drift;
     if (!this.ready(targetSec)) this.stats.notReady++;
-    return this.hasFrame ? { handle: this.texHandle, sec: this.lastPresentedSec } : null;
+    return handle >= 0 ? { handle, sec } : null;
   }
 
   /** Drain + reset the rolling telemetry (the pump logs it periodically). */
@@ -272,7 +329,7 @@ export class PlaybackCursor {
     void awaitFrame(v, SEEK_TIMEOUT_MS).then(() => {
       if (this.released) return;
       this.seeking = false;
-      if (v.readyState >= 2) this.copyFrame();
+      if (v.readyState >= 2) this.fillCurrent();
       const ms = now() - this.seekStartMs;
       this.stats.seeksDone++;
       this.stats.seekMsSum += ms;
@@ -280,23 +337,27 @@ export class PlaybackCursor {
     });
   }
 
-  private copyFrame(): void {
-    const tex = this.gpuHost.getTextureByHandle(this.texHandle);
-    if (!tex) return;
+  /** Copy the element's current frame into the cache, keyed by its frame index. Skips a
+   *  repeat of the same frame so we copy each distinct frame once. */
+  private fillCurrent(): void {
+    const f = Math.max(0, Math.floor(this.video.currentTime * this.fps));
+    if (f === this.lastFilledFrame) return; // same frame still painted
+    const handle = this.cache.reserve(f, this.width, this.height, 1 /* rgba8 */);
     try {
       this.device.queue.copyExternalImageToTexture(
         { source: this.video, flipY: false },
-        { texture: tex },
+        { texture: this.gpuHost.getTextureByHandle(handle)! },
         { width: this.video.videoWidth, height: this.video.videoHeight, depthOrArrayLayers: 1 },
       );
-      this.hasFrame = true;
-      this.lastPresentedSec = this.video.currentTime;
-    } catch { /* element not presentable this frame → keep the last copy */ }
+      this.cache.markReady(f);
+      this.lastFilledFrame = f;
+    } catch { /* element not presentable this frame → leave the reserved entry not-ready */ }
   }
 
   release(): void {
     if (this.released) return;
     this.released = true;
+    this.cache.clear();
     try { this.video.pause(); this.video.removeAttribute('src'); this.video.load(); } catch { /* ignore */ }
   }
 }
@@ -348,8 +409,8 @@ export async function createPlaybackCursor(
   try { video.currentTime = 0; } catch { /* ignore */ }
   const width = video.videoWidth, height = video.videoHeight;
   const durationSec = video.duration;
-  const texHandle = gpuHost.createTexture(width, height, 1 /* rgba8unorm */);
-  const cursor = new PlaybackCursor(gpuHost, video, texHandle, fps, durationSec);
+  const cache = new FrameCache(gpuHost, CACHE_BUDGET_BYTES);
+  const cursor = new PlaybackCursor(gpuHost, video, cache, width, height, fps, durationSec);
   return {
     cursor,
     info: { width, height, fps, frameCount: Math.max(1, Math.round(durationSec * fps)), durationSec },
