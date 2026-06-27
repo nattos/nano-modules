@@ -186,7 +186,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float rad = maxr * sqrt(dc_unit(dc_hash(h)));
     float theta = 6.28318530718 * dc_unit(dc_hash(h ^ 0xA17Fu));
     float2 sp = rad * float2(cos(theta), sin(theta));
-    float2 nuv = saturate(0.5 + sp * aspect);
+    // NO saturate: a spawn disc larger than the frame must place particles at
+    // their true (possibly off-screen) position, not clamp them onto the edge
+    // (which would pile + simulate from the viewport border). Colour capture
+    // below tolerates out-of-range uv via the ClampToEdge sampler.
+    float2 nuv = 0.5 + sp * aspect;
 
     // Spawn-on-line: with prob to_line_rate, snap onto a tracer vertex instead
     // (biased toward the line end, like the original's ChamberSpawnSelect).
@@ -196,7 +200,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float rr = dc_unit(dc_hash(h ^ 0x0999u));
       float r2 = 1.0 - (1.0 - rr) * (1.0 - rr);          // bias toward end
       uint si = min(segTotal - 1u, (uint)(r2 * (float)segTotal));
-      if (segs[si].b.w > 0.0) nuv = saturate(segs[si].a.xy);
+      if (segs[si].b.w > 0.0) nuv = segs[si].a.xy;
     }
 
     float4 capt = inputTex.SampleLevel(samp, nuv, 0);

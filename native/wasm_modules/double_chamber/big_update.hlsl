@@ -96,7 +96,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float ang = dc_unit(dc_hash(h)) * 6.28318530718;
     float rr = spread * (0.4 + 0.6 * dc_unit(dc_hash(h ^ 0x1234u)));
     float2 s = float2(cos(ang), sin(ang)) * rr;
-    uv = saturate(0.5 + s * aspect);
+    uv = 0.5 + s * aspect;   // no clamp — see p_update spawn note
     float4 capt = inputTex.SampleLevel(samp, uv, 0);
     uint packed = dc_pack_rgbz(capt.rgb, dc_unit(h));
     p.b.w = asfloat(packed);
