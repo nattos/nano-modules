@@ -214,6 +214,62 @@ describe('track structural ops', () => {
     store.setHeaderWidth(50 + gutter); // base clamps to its 120 minimum
     expect(store.headerWidth).toBe(120 + gutter);
   });
+
+  /** Non-bus tracks in array order (= composite/display order). */
+  const order = () => store.composition.tracks.filter((t) => !store.isMainBus(t)).map((t) => t.id);
+
+  it('a group and its children stay contiguous after a disruptive reorder', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    store.selection.add(paths.track(b));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a, b]
+    const outside = store.addTrack();
+    // Try to wedge `outside` between the group and its first child — must not split it.
+    store.moveTrack(outside, a);
+    const ids = order();
+    const gi = ids.indexOf(g);
+    expect(ids[gi + 1]).toBe(a); // children remain immediately under the group
+    expect(ids[gi + 2]).toBe(b);
+  });
+
+  it('moveTrackInto drops a track into a group as its last child (contiguous)', () => {
+    const a = store.addTrack();
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a]
+    const x = store.addTrack(); // top level
+    store.moveTrackInto(x, g, null); // into g, append
+    expect(store.trackById(x)?.parentId).toBe(g);
+    const ids = order();
+    expect(ids.indexOf(x)).toBe(ids.indexOf(g) + 2); // g, a, x
+  });
+
+  it('moveTrackInto pops a track out of a group to top level', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    store.selection.add(paths.track(b));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a, b]
+    store.moveTrackInto(b, null, null); // out to top level
+    expect(store.trackById(b)?.parentId).toBeNull();
+    expect(store.trackById(a)?.parentId).toBe(g); // a stays in the group
+  });
+
+  it('moveTrackInto refuses to drop a group into its own subtree (no cycles)', () => {
+    const a = store.addTrack();
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a]
+    store.moveTrackInto(g, a, null); // put g inside its child a → rejected
+    expect(store.trackById(g)?.parentId).toBeNull();
+  });
 });
 
 describe('cross-track clip moves', () => {

@@ -501,6 +501,7 @@ export class ArrangementStore {
       this.currentName = name;
       this.composition = comp;
       this.ensureMainBus(); // legacy / hand-made files may lack the master track
+      this.normalizeTrackOrder(); // heal any non-contiguous group nesting from older files
       // Restore persisted loop markers (omitted on legacy files ⇒ keep defaults).
       if (comp.loop) {
         this.loopEnabled = comp.loop.enabled;
@@ -3080,6 +3081,7 @@ export class ArrangementStore {
         };
         const busIdx = d.tracks.findIndex(isBusT);
         d.tracks.splice(busIdx >= 0 ? busIdx : d.tracks.length, 0, group, child);
+        d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks);
         return;
       }
 
@@ -3107,6 +3109,7 @@ export class ArrangementStore {
       const busIdx = d.tracks.findIndex(isBusT);
       if (busIdx >= 0 && at > busIdx) at = busIdx; // never below the bus
       d.tracks.splice(at, 0, group, ...block);
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks);
     });
     this.select(paths.track(groupId));
     return groupId;
@@ -3141,7 +3144,7 @@ export class ArrangementStore {
       for (const t of d.tracks) {
         if (t.parentId && idSet.has(t.parentId)) t.parentId = resolveParent(t.parentId);
       }
-      d.tracks = d.tracks.filter((t) => !idSet.has(t.id));
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks.filter((t) => !idSet.has(t.id)));
     });
     this.clearSelection();
     this.clearTimeSelection();
@@ -3172,8 +3175,87 @@ export class ArrangementStore {
       let to = beforeTrackId ? nonbus.findIndex((x) => x.id === beforeTrackId) : nonbus.length;
       if (to < 0) to = nonbus.length;
       nonbus.splice(to, 0, moved);
-      d.tracks = [...nonbus, ...buses];
+      d.tracks = ArrangementStore.canonicalTrackOrder([...nonbus, ...buses]);
     });
+  }
+
+  /**
+   * Reorder tracks into canonical TREE order: each group is immediately followed
+   * by its whole subtree (depth-first; siblings keep their current relative order),
+   * with the main bus pinned last. This is the single invariant that keeps a group
+   * and its tracks contiguous — and the array order IS the composite/display order
+   * (audio-style downward sum: tracks composite down within a group, then the group
+   * applies, then it composites into its parent).
+   */
+  private static canonicalTrackOrder(tracks: Track[]): Track[] {
+    const isBus = (t: Track) => ArrangementStore.isMainBusTrack(t);
+    const bus = tracks.filter(isBus);
+    const rest = tracks.filter((t) => !isBus(t));
+    const ids = new Set(rest.map((t) => t.id));
+    const childrenOf = new Map<string | null, Track[]>();
+    for (const t of rest) {
+      const key = t.parentId && ids.has(t.parentId) ? t.parentId : null;
+      const arr = childrenOf.get(key);
+      if (arr) arr.push(t);
+      else childrenOf.set(key, [t]);
+    }
+    const out: Track[] = [];
+    const seen = new Set<string>();
+    const visit = (key: string | null) => {
+      for (const t of childrenOf.get(key) ?? []) {
+        if (seen.has(t.id)) continue; // cycle guard
+        seen.add(t.id);
+        out.push(t);
+        visit(t.id);
+      }
+    };
+    visit(null);
+    for (const t of rest) if (!seen.has(t.id)) out.push(t); // any cycle stragglers
+    return [...out, ...bus];
+  }
+
+  /** Re-establish the canonical track order in place (after structural edits or on load). */
+  normalizeTrackOrder() {
+    this.composition.tracks = ArrangementStore.canonicalTrackOrder(this.composition.tracks);
+  }
+
+  /** True if `ancestorId` is an ancestor of the track `ofId` (via parentId). */
+  private isAncestorTrack(ancestorId: string, ofId: string): boolean {
+    let pid = this.trackById(ofId)?.parentId ?? null;
+    while (pid) {
+      if (pid === ancestorId) return true;
+      pid = this.trackById(pid)?.parentId ?? null;
+    }
+    return false;
+  }
+
+  /**
+   * Drag-drop a track to a new parent + sibling position. `parentId` null = top
+   * level; `beforeId` null = append as the LAST child of the parent. The dragged
+   * track keeps its own subtree, and the whole forest is re-contiguated. Rejects
+   * dropping a group into its own subtree (no cycles) and never moves the bus.
+   */
+  moveTrackInto(trackId: string, parentId: string | null, beforeId: string | null) {
+    const t = this.trackById(trackId);
+    if (!t || this.isMainBus(t)) return;
+    if (parentId === trackId) return;
+    if (parentId && this.isAncestorTrack(trackId, parentId)) return; // into own subtree → cycle
+    this.mutate('move track', (d) => {
+      const moved = d.tracks.find((x) => x.id === trackId);
+      if (!moved) return;
+      moved.parentId = parentId;
+      d.tracks = d.tracks.filter((x) => x.id !== trackId);
+      let idx: number;
+      if (beforeId) {
+        idx = d.tracks.findIndex((x) => x.id === beforeId);
+        if (idx < 0) idx = d.tracks.length;
+      } else {
+        const busIdx = d.tracks.findIndex((x) => ArrangementStore.isMainBusTrack(x));
+        idx = busIdx >= 0 ? busIdx : d.tracks.length;
+      }
+      d.tracks.splice(idx, 0, moved);
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks);
+    }, `movetrack:${trackId}`);
   }
 
   /**

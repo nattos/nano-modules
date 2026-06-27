@@ -40,6 +40,12 @@ since making the two surfaces look and feel the same is a deliberate goal.
   got pinned to the bottom like the bus and its children rendered above it. The master bus is now
   keyed by the reserved id `MAIN_BUS_ID` (`'main-bus'`). A user group is a normal top-level group:
   it renders ABOVE its (indented) children; the bus stays pinned last.
+- **`composition.tracks` is kept in canonical TREE order.** A group is always immediately followed
+  by its whole subtree (depth-first, siblings preserved), bus last — `store.canonicalTrackOrder`,
+  re-applied after every structural edit (`addGroup`/`moveTrack`/`moveTrackInto`/delete) and on load.
+  This is load-bearing: the array order IS the composite/display order (audio-style downward sum —
+  tracks composite down within a group, then the group applies, then it composites into its parent),
+  so group↔children must stay contiguous or the compositor and the gutter brackets both break.
 
 - **Lit host height collapse.** A component whose only content is an absolutely-positioned
   canvas collapses to height 0 unless the host is `position:absolute; inset:0` (or the parent is

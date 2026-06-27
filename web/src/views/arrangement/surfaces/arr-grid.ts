@@ -149,9 +149,6 @@ export class ArrGrid extends MobxLitElement {
       gap: 3px;
       overflow: hidden;
     }
-    .header.group {
-      background: #20242c;
-    }
     .header.selected {
       box-shadow: inset 2px 0 0 var(--app-hi-color2);
     }
@@ -337,6 +334,16 @@ export class ArrGrid extends MobxLitElement {
       box-sizing: border-box;
       border-right: 1px solid var(--app-tint-3);
       background: var(--app-bg-color2);
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+    }
+    /* The auto lane belongs to its track, so it carries the track's group lines
+       and the same gutter offset (the label aligns under the track name). */
+    .auto-header-label {
+      flex: 1;
+      min-width: 0;
+      box-sizing: border-box;
       padding: 2px var(--app-sp-3) 2px 22px;
       display: flex;
       align-items: center;
@@ -344,6 +351,12 @@ export class ArrGrid extends MobxLitElement {
       color: var(--app-cat-mod);
       gap: 4px;
       --icon-size: 10px;
+      overflow: hidden;
+    }
+    .auto-header-label span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .auto-lane {
       position: relative;
@@ -426,8 +439,9 @@ export class ArrGrid extends MobxLitElement {
     }
   `;
 
-  /** Insertion target while dragging a track header to reorder (display id / null = end). */
-  @state() private reorderBeforeId: string | null = null;
+  /** Drop target while dragging a track header: which sibling to land before
+   *  (null = last child of `parentId`) and which group to land in (null = top). */
+  @state() private reorderDrop: { beforeId: string | null; parentId: string | null } | null = null;
   @state() private reorderActive = false;
   /** Lane highlighted as the destination of a cross-track clip drag. */
   @state() private clipDropTrackId: string | null = null;
@@ -792,7 +806,14 @@ export class ArrGrid extends MobxLitElement {
     return html`
       <div class="row auto">
         <div class="auto-header">
-          <ui-icon icon="la-bezier-curve"></ui-icon><span>${lane.label}</span>
+          ${store.groupGutterWidth > 0
+            ? html`<div class="hgutter" style="width:${store.groupGutterWidth}px">
+                ${this.renderGroupLines(track, store.isMainBus(track))}
+              </div>`
+            : ''}
+          <div class="auto-header-label">
+            <ui-icon icon="la-bezier-curve"></ui-icon><span>${lane.label}</span>
+          </div>
         </div>
         <div class="auto-lane">
           <arr-automation-editor
@@ -958,7 +979,7 @@ export class ArrGrid extends MobxLitElement {
       this.reorderActive = true;
       this.draggedTrackId = d.trackId;
     }
-    this.reorderBeforeId = this.insertionBeforeId(e.clientY);
+    this.reorderDrop = this.computeDrop(e.clientY);
   };
 
   private onHeaderUp = () => {
@@ -966,41 +987,114 @@ export class ArrGrid extends MobxLitElement {
     window.removeEventListener('pointerup', this.onHeaderUp);
     const d = this.headerDrag;
     this.headerDrag = null;
-    if (this.reorderActive && d) store.moveTrack(d.trackId, this.reorderBeforeId);
+    if (this.reorderActive && d && this.reorderDrop) {
+      store.moveTrackInto(d.trackId, this.reorderDrop.parentId, this.reorderDrop.beforeId);
+    }
     this.reorderActive = false;
     this.draggedTrackId = null;
-    this.reorderBeforeId = null;
+    this.reorderDrop = null;
   };
 
-  /** Display track id to insert before for a header drag at `clientY` (null = end). */
-  private insertionBeforeId(clientY: number): string | null {
+  /** Depth of a display row (the bus counts as depth 0). */
+  private rowDepth(t: Track): number {
+    return store.isMainBus(t) ? 0 : store.trackDepth(t);
+  }
+
+  /**
+   * Resolve a header drag at `clientY` to a drop: which group to land in (parentId)
+   * and which sibling to land before (beforeId; null = append as the parent's last
+   * child). Upper half of a row drops before it; lower half drops after — into an
+   * expanded group, or, at a group's bottom edge, popping out a level per the
+   * vertical position (your "into the group as last track" vs "below the group").
+   */
+  private computeDrop(clientY: number): { beforeId: string | null; parentId: string | null } {
     const rect = this.scrollEl.getBoundingClientRect();
     const contentY = clientY - rect.top + this.scrollEl.scrollTop;
     const layout = this.trackRowLayout();
-    const tracks = store.displayTracks;
-    for (let i = 0; i < tracks.length; i++) {
-      if (store.isMainBus(tracks[i])) return null; // bus is pinned last → insert at end
-      const mid = (layout[i].top + layout[i].bottom) / 2;
-      if (contentY < mid) return tracks[i].id;
+    const rows = store.displayTracks;
+
+    let h = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (contentY < layout[i].bottom) { h = i; break; }
     }
-    return null;
+    if (h < 0) {
+      const bus = rows.find((r) => store.isMainBus(r));
+      return { beforeId: bus ? bus.id : null, parentId: null }; // below all → top-level end
+    }
+    const hovered = rows[h];
+    if (store.isMainBus(hovered)) return { beforeId: hovered.id, parentId: null };
+
+    const top = layout[h].top, bot = layout[h].bottom;
+    const rel = (contentY - top) / Math.max(1, bot - top);
+    const dHover = this.rowDepth(hovered);
+
+    if (rel < 0.5) {
+      // Upper half → land before `hovered`, as its sibling.
+      return { beforeId: hovered.id, parentId: hovered.parentId ?? null };
+    }
+    // Lower half → land after `hovered`.
+    if (hovered.kind === 'group') {
+      // Into the group, as its first child.
+      const next = rows[h + 1];
+      return { beforeId: next && !store.isMainBus(next) ? next.id : null, parentId: hovered.id };
+    }
+    const next = rows[h + 1];
+    const nextDepth = next && !store.isMainBus(next) ? this.rowDepth(next) : -1;
+    if (next && !store.isMainBus(next) && nextDepth >= dHover) {
+      // Continuation at the same-or-deeper level → simple sibling insert before next.
+      return { beforeId: next.id, parentId: next.parentId ?? null };
+    }
+    // Group-bottom boundary: `hovered` is the last descendant of one or more groups.
+    // Offer each enclosing level; pick by how far down the lower half we are
+    // (nearer 0.5 → stay in the innermost group; nearer 1 → pop further out).
+    const parents: (string | null)[] = [];
+    let cur: string | null = hovered.parentId ?? null;
+    let curDepth = dHover - 1;
+    while (curDepth >= nextDepth) {
+      parents.push(cur);
+      if (cur == null) break;
+      cur = store.trackById(cur)?.parentId ?? null;
+      curDepth--;
+    }
+    if (parents.length === 0) parents.push(hovered.parentId ?? null);
+    const t = Math.min(0.999, Math.max(0, (rel - 0.5) / 0.5));
+    const band = Math.min(parents.length - 1, Math.floor(t * parents.length));
+    return { beforeId: null, parentId: parents[band] };
+  }
+
+  /** True if display row `id` is the group `ancestorId` or sits inside it. */
+  private rowWithin(id: string, ancestorId: string): boolean {
+    let cur: string | null = id;
+    while (cur) {
+      if (cur === ancestorId) return true;
+      cur = store.trackById(cur)?.parentId ?? null;
+    }
+    return false;
   }
 
   private renderReorderLine() {
+    const drop = this.reorderDrop;
+    if (!drop) return '';
     const layout = this.trackRowLayout();
-    const tracks = store.displayTracks;
+    const rows = store.displayTracks;
     let y = 0;
-    if (this.reorderBeforeId) {
-      y = layout.find((x) => x.id === this.reorderBeforeId)?.top ?? 0;
+    if (drop.beforeId) {
+      y = layout[rows.findIndex((r) => r.id === drop.beforeId)]?.top ?? 0;
+    } else if (drop.parentId == null) {
+      const busIdx = rows.findIndex((t) => store.isMainBus(t));
+      y = busIdx >= 0 ? layout[busIdx].top : (layout.length ? layout[layout.length - 1].bottom : 0);
     } else {
-      const busIdx = tracks.findIndex((t) => store.isMainBus(t));
-      y = busIdx >= 0
-        ? layout[busIdx].top
-        : layout.length
-          ? layout[layout.length - 1].bottom
-          : 0;
+      // Append to a group → after its last visible descendant.
+      let last = -1;
+      for (let i = 0; i < rows.length; i++) {
+        if (this.rowWithin(rows[i].id, drop.parentId)) last = i;
+      }
+      y = last >= 0 ? layout[last].bottom : 0;
     }
-    return html`<div class="reorder-line" style="top:${y}px"></div>`;
+    // Indent the line into the target group's gutter column so the destination reads.
+    const pd = drop.parentId ? store.trackDepth(store.trackById(drop.parentId)!) : -1;
+    const indent = (pd + 1) * GROUP_INDENT;
+    return html`<div class="reorder-line" style="top:${y}px; left:${indent}px"></div>`;
   }
 
   /** Eligible (plain) display track id nearest a clientY, or null if none exist. */
