@@ -134,6 +134,23 @@ describe('track structural ops', () => {
     expect(store.trackById(b)?.parentId).toBeNull();
   });
 
+  it('selecting a group scopes the time box across all of its contained tracks', () => {
+    const a = store.addTrack();
+    const b = store.addTrack(a);
+    store.clearSelection();
+    store.selection.add(paths.track(a));
+    store.selection.add(paths.track(b));
+    (store as any).primaryPath = paths.track(a);
+    const g = store.addGroup(); // g ▸ [a, b]
+    store.select(paths.track(g));
+    expect(store.hasTimeSelection).toBe(true);
+    const scope = store.timeSelTrackIds;
+    expect(scope).toContain(a); // both children are in the time scope...
+    expect(scope).toContain(b);
+    expect(store.isTrackShownSelected(a)).toBe(true); // ...and render as selected
+    expect(store.isTrackShownSelected(b)).toBe(true);
+  });
+
   it('selectedSingleGroupId reports only a lone selected group', () => {
     const a = store.addTrack();
     store.clearSelection();

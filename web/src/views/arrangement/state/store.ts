@@ -893,10 +893,24 @@ export class ArrangementStore {
         );
       } else if (path.startsWith('track/')) {
         const t = this.trackById(path.split('/')[1]);
+        const full = compositionLengthBeats(this.composition);
         if (t && (t.kind === 'track' || t.kind === 'rail')) {
           // Selecting a track OR return/rail sets the time box (all beats × that
           // track) but must NOT yank the play-from marker / playhead — keep them put.
-          this.setTimeSelection(0, compositionLengthBeats(this.composition), [t.id], { movePlayhead: false });
+          this.setTimeSelection(0, full, [t.id], { movePlayhead: false });
+        } else if (t && t.kind === 'group' && !this.isMainBus(t)) {
+          // Selecting a GROUP selects the full time across ALL of its contained
+          // tracks — exactly like vertically selecting the whole cluster. The caret
+          // spans the group's first→last descendant TRACK rows (groups themselves
+          // aren't caret rows); the contiguous order keeps everything between in scope.
+          const kids = this.displayTracks.filter(
+            (d) => d.kind === 'track' && this.isAncestorTrack(t.id, d.id),
+          );
+          if (kids.length) {
+            this.setTimeSelection(0, full, [kids[0].id, kids[kids.length - 1].id], { movePlayhead: false });
+          } else {
+            this.clearTimeSelection();
+          }
         } else {
           this.clearTimeSelection();
         }
