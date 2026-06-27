@@ -145,6 +145,27 @@ export class ArrMonitor extends MobxLitElement {
         if (st) for (const k in st) void (st as Record<string, unknown>)[k];
       }
     }
+    // The flat layers above are tracks-only and don't cover GROUP composite props
+    // or the per-track(-group) FX bus. Walk the actual composite TREE so a paused
+    // edit to a group's opacity / blend / INPUT mode, or to any track/group FX-chain
+    // param, re-renders → showComposite rebuilds → engine update. Reading the tree
+    // also tracks structure (parentId / bypass / solo) so group edits re-issue too.
+    const trackComposite = (nodes: ReadonlyArray<Record<string, any>>) => {
+      for (const n of nodes) {
+        const sketch = n.type === 'group' ? n.group.sketch : n.track?.sketch;
+        if (sketch) for (const d of sketch.devices) {
+          void d.moduleType;
+          const st = d.state;
+          if (st) for (const k in st) void (st as Record<string, unknown>)[k];
+        }
+        if (n.type === 'group') {
+          void n.group.level; void n.group.blendMode;
+          void n.group.groupInput?.mode; void n.group.groupInput?.color;
+          trackComposite(n.children);
+        }
+      }
+    };
+    trackComposite(store.compositeTreeAtBeat(store.positionBeat));
     return html`
       <div class="mon-resize" @pointerdown=${this.onResize}></div>
       <div class="head">
