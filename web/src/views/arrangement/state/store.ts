@@ -44,6 +44,11 @@ import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-stor
 import { openMedia, resolveMedia } from '../workspace/media-store';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID } from '../model/composition';
 
+/** Per-nesting-level budget (px) for the group gutter: one vertical group line
+ *  per depth lives here, and every opacity fader is offset by the full gutter so
+ *  faders stay the same width regardless of nesting. */
+export const GROUP_INDENT = 20;
+
 export type SelectableKind =
   | 'track'
   | 'clip'
@@ -295,8 +300,9 @@ export class ArrangementStore {
 
   /** Right inspector panel width (px) — drag-resizable, persisted. */
   sidePanelWidth = 320;
-  /** Track-header column width (px) — drag-resizable, persisted (HEADER_WIDTH default). */
-  headerWidth = 184;
+  /** Resizable BASE width of the header content (px) — persisted. The effective
+   *  column width adds the group gutter on top (see `headerWidth`). */
+  private headerBaseWidth = 184;
   /** Output-monitor stage height (px) — drag-resizable, persisted. The composite
    *  is contain-fit into it (resizing the panel width changes aspect, not this). */
   monitorHeight = 180;
@@ -577,7 +583,7 @@ export class ArrangementStore {
       clipViewOpen: this.clipViewOpen,
       clipViewHeight: this.clipViewHeight,
       sidePanelWidth: this.sidePanelWidth,
-      headerWidth: this.headerWidth,
+      headerWidth: this.headerBaseWidth, // persist the resizable CONTENT width (gutter is derived)
       monitorHeight: this.monitorHeight,
       wiresMode: this.wiresMode,
       automationMode: this.automationMode,
@@ -595,7 +601,7 @@ export class ArrangementStore {
         if (typeof l.clipViewOpen === 'boolean') this.clipViewOpen = l.clipViewOpen;
         if (typeof l.clipViewHeight === 'number') this.setClipViewHeight(l.clipViewHeight);
         if (typeof l.sidePanelWidth === 'number') this.setSidePanelWidth(l.sidePanelWidth);
-        if (typeof l.headerWidth === 'number') this.setHeaderWidth(l.headerWidth);
+        if (typeof l.headerWidth === 'number') this.headerBaseWidth = Math.max(120, Math.min(380, Math.round(l.headerWidth)));
         if (typeof l.monitorHeight === 'number') this.setMonitorHeight(l.monitorHeight);
         if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
         if (typeof l.automationMode === 'boolean') this.automationMode = l.automationMode;
@@ -1119,9 +1125,46 @@ export class ArrangementStore {
     this.sidePanelWidth = Math.max(220, Math.min(680, Math.round(w)));
     this.requestLayoutSave();
   }
-  setHeaderWidth(w: number) {
-    this.headerWidth = Math.max(120, Math.min(380, Math.round(w)));
+  /** Number of group-gutter columns = the deepest group nesting on screen (a
+   *  group reserves its own column; a leaf only reserves its ancestors'). 0 when
+   *  nothing is grouped, so a flat project gets no gutter at all. */
+  get groupGutterColumns(): number {
+    let max = 0;
+    for (const t of this.composition.tracks) {
+      if (this.isMainBus(t)) continue;
+      const cols = this.trackDepth(t) + (t.kind === 'group' ? 1 : 0);
+      if (cols > max) max = cols;
+    }
+    return max;
+  }
+
+  /** Width (px) of the left group gutter — the uniform left-offset for every fader. */
+  get groupGutterWidth(): number {
+    return this.groupGutterColumns * GROUP_INDENT;
+  }
+
+  /** Effective header-column width: resizable content + the group gutter. Every
+   *  consumer (column width, timeline x-origin, ruler corner) reads this, so the
+   *  whole column widens by the gutter and faders stay the same width. */
+  get headerWidth(): number {
+    return this.headerBaseWidth + this.groupGutterWidth;
+  }
+
+  setHeaderWidth(total: number) {
+    // The drag handle sits at the column's right edge (= total). Resize the
+    // CONTENT; the gutter is additive and not user-resizable.
+    this.headerBaseWidth = Math.max(120, Math.min(380, Math.round(total - this.groupGutterWidth)));
     this.requestLayoutSave();
+  }
+
+  /** The ancestor-or-self group whose nesting line occupies gutter column `depth`
+   *  for the row `trackId` — used to select a group by clicking its line. */
+  ancestorGroupAtDepth(trackId: string, depth: number): string | null {
+    let t = this.trackById(trackId);
+    while (t && this.trackDepth(t) > depth) {
+      t = t.parentId ? this.trackById(t.parentId) : undefined;
+    }
+    return t && t.kind === 'group' && !this.isMainBus(t) ? t.id : null;
   }
   setMonitorHeight(h: number) {
     this.monitorHeight = Math.max(90, Math.min(520, Math.round(h)));

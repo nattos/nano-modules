@@ -10,7 +10,8 @@ import {
   compositionLengthBeats,
 } from '../model/composition';
 
-/** Fixed width of the left track-header column (px). */
+/** Base (resizable) width of the left track-header column content (px). The
+ *  effective column also grows by the group gutter — see `store.headerWidth`. */
 export const HEADER_WIDTH = 184;
 
 /** Lane row height and automation lane height (px). */

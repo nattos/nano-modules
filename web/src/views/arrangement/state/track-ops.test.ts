@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { store, paths } from './store';
+import { store, paths, GROUP_INDENT } from './store';
 import { compositionLengthBeats } from '../model/composition';
 
 /**
@@ -186,6 +186,33 @@ describe('track structural ops', () => {
     expect(store.composition.tracks.length).toBe(before + 2); // group + empty child
     store.undo();
     expect(store.composition.tracks.length).toBe(before);
+  });
+
+  it('ancestorGroupAtDepth resolves the group whose gutter line sits in a column', () => {
+    // Build a depth-2 nest: outer group ▸ inner group ▸ leaf.
+    const outer = store.addTrack();
+    const og = store.trackById(outer)!; og.kind = 'group'; og.parentId = null;
+    const inner = store.addTrack();
+    const ig = store.trackById(inner)!; ig.kind = 'group'; ig.parentId = outer;
+    const leaf = store.addTrack();
+    store.trackById(leaf)!.parentId = inner;
+
+    expect(store.trackDepth(store.trackById(leaf)!)).toBe(2);
+    expect(store.ancestorGroupAtDepth(leaf, 0)).toBe(outer); // outer ancestor in col 0
+    expect(store.ancestorGroupAtDepth(leaf, 1)).toBe(inner); // inner ancestor in col 1
+    expect(store.ancestorGroupAtDepth(leaf, 2)).toBeNull();  // a leaf has no own column
+    expect(store.ancestorGroupAtDepth(inner, 1)).toBe(inner); // a group resolves itself
+    // A depth-2 nest needs at least two gutter columns; width tracks the columns.
+    expect(store.groupGutterColumns).toBeGreaterThanOrEqual(2);
+    expect(store.groupGutterWidth).toBe(store.groupGutterColumns * GROUP_INDENT);
+  });
+
+  it('headerWidth = resizable base + group gutter (faders keep a constant width)', () => {
+    const gutter = store.groupGutterWidth;
+    store.setHeaderWidth(250 + gutter); // drag the column edge; base resolves to 250
+    expect(store.headerWidth).toBe(250 + gutter);
+    store.setHeaderWidth(50 + gutter); // base clamps to its 120 minimum
+    expect(store.headerWidth).toBe(120 + gutter);
   });
 });
 

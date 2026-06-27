@@ -13,7 +13,7 @@ import { html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
-import { store, paths } from '../state/store';
+import { store, paths, GROUP_INDENT } from '../state/store';
 import {
   buildBeatGrid,
   ROW_HEIGHT,
@@ -99,11 +99,54 @@ export class ArrGrid extends MobxLitElement {
       box-sizing: border-box;
       border-right: 1px solid var(--app-tint-3);
       background: var(--app-bg-color2);
+      display: flex;
+      flex-direction: row;
+      cursor: pointer;
+      overflow: hidden;
+    }
+    /* Left group-gutter: holds the per-depth vertical group lines. Uniform width
+       across all rows (= store.groupGutterWidth) so the content/faders align. */
+    .hgutter {
+      position: relative;
+      flex-shrink: 0;
+      align-self: stretch;
+    }
+    .gline {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: ${GROUP_INDENT}px;
+      cursor: pointer;
+    }
+    /* The visible line, centred in the column's hit area. Coloured by the group's
+       accent so distinct clusters read at a glance. */
+    .gline::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 3px;
+      transform: translateX(-50%);
+      border-radius: 2px;
+      background: var(--gline, var(--app-tint-4));
+      opacity: 0.7;
+    }
+    .gline:hover::before {
+      opacity: 1;
+      width: 4px;
+    }
+    .gline.on::before {
+      opacity: 1;
+    }
+    .hcontent {
+      flex: 1;
+      min-width: 0;
+      box-sizing: border-box;
       padding: var(--app-sp-2) var(--app-sp-3);
       display: flex;
       flex-direction: column;
       gap: 3px;
-      cursor: pointer;
       overflow: hidden;
     }
     .header.group {
@@ -565,7 +608,6 @@ export class ArrGrid extends MobxLitElement {
     const isGroup = track.kind === 'group';
     const isBus = store.isMainBus(track);
     const isRail = track.kind === 'rail';
-    const depth = isBus ? 0 : store.trackDepth(track);
     const selected = store.isTrackShownSelected(track.id);
     const dragSrc = this.reorderActive && this.draggedTrackId === track.id;
     const accent = track.color ?? 'var(--app-cat-control)';
@@ -578,9 +620,14 @@ export class ArrGrid extends MobxLitElement {
       <div class="row ${isBus ? 'bus' : ''}">
         <div
           class="header ${isGroup ? 'group' : ''} ${selected ? 'selected' : ''} ${dragSrc ? 'dragsrc' : ''}"
-          style="padding-left:${8 + depth * 14}px"
           @pointerdown=${(e: PointerEvent) => this.onHeaderDown(e, track)}
         >
+          ${store.groupGutterWidth > 0
+            ? html`<div class="hgutter" style="width:${store.groupGutterWidth}px">
+                ${this.renderGroupLines(track, isBus)}
+              </div>`
+            : ''}
+          <div class="hcontent">
           <div class="h-top">
             ${isGroup && !isBus
               ? html`<button
@@ -623,6 +670,7 @@ export class ArrGrid extends MobxLitElement {
           <div class="h-bottom">
             ${this.renderHeaderBottom(track, isRail, isBus)}
           </div>
+          </div>
         </div>
         ${isRail
           ? html`<div class="lane rail">
@@ -655,6 +703,37 @@ export class ArrGrid extends MobxLitElement {
             .map((lane) => this.renderAutoLane(track, lane))
         : ''}
     `;
+  }
+
+  /** The left group-gutter content for one row: one clickable vertical line per
+   *  nesting level this row belongs to (ancestor groups, plus its own column if it
+   *  IS a group). Consecutive rows in the same group share a column → the lines
+   *  read as a continuous bracket down the cluster. The main bus reserves the
+   *  gutter (so faders stay aligned) but draws no line. Clicking a line selects
+   *  that group. */
+  private renderGroupLines(track: Track, isBus: boolean) {
+    const cols = store.groupGutterColumns;
+    if (cols === 0 || isBus) return '';
+    const depth = store.trackDepth(track);
+    const isGroup = track.kind === 'group';
+    const out = [];
+    for (let c = 0; c < cols; c++) {
+      // Ancestor line (c < depth) or this group's own line (c === depth).
+      if (!(c < depth || (c === depth && isGroup))) continue;
+      const gid = store.ancestorGroupAtDepth(track.id, c);
+      const g = gid ? store.trackById(gid) : null;
+      const accent = g?.color ?? 'var(--app-tint-4)';
+      out.push(html`<div
+        class="gline ${store.isTrackShownSelected(gid ?? '') ? 'on' : ''}"
+        style="left:${c * GROUP_INDENT}px; --gline: ${accent}"
+        title=${g ? `Select ${g.name}` : 'Select group'}
+        @pointerdown=${(e: Event) => {
+          e.stopPropagation();
+          if (gid) store.select(paths.track(gid));
+        }}
+      ></div>`);
+    }
+    return out;
   }
 
   /** Track header bottom row: in automation mode with a selected field, show the
