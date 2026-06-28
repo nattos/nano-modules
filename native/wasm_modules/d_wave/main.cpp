@@ -123,11 +123,11 @@ static gpu::RenderPSO  s_pso_blob;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 2, 1},
+  state::init("warp.legacy.d_wave", {1, 2, 2},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Radial warp magnitude.")
+                  "Radial warp magnitude (quadratic, fine at the low end).")
       .floatField("rate",        0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Wave grain density (fraction of angles emitting).")
       .floatField("wave_speed",  0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
@@ -372,7 +372,9 @@ void render(void* self, int vp_w, int vp_h) {
   float maxDim = float(vp_w > vp_h ? vp_w : vp_h);
   WarpUniforms wu = {};
   wu.aspect       = float(vp_w) / float(vp_h);
-  wu.distortion   = s->distortion;
+  // Quadratic curve for fine low-end control, scaled to 1/10 of the old range
+  // (the previous linear [0,1] was far too strong across most of the slider).
+  wu.distortion   = s->distortion * s->distortion * 0.1f;
   wu.scale        = s->scale;
   wu.squeeze      = s->squeeze;
   wu.render_alpha = s->render_alpha;
