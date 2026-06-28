@@ -34,7 +34,7 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
     //  vector/colour fields, so it isn't asserted here; it is in the schema.)
     for (const n of ['min_scale', 'max_scale', 'scale_variance', 'target_min_radius',
                      'target_max_radius', 'sub_steps', 'sub_step_frames', 'flicker_rate',
-                     'sub_delay', 'sequence_delay', 'show_gizmo', 'retrigger',
+                     'sub_delay', 'sequence_delay', 'show_gizmo', 'retrigger', 'filter_mode',
                      'target_step_distance', 'origin_center_bias', 'gizmo_size',
                      'gizmo_alpha', 'gizmo_motion_scale']) {
       expect(names).toContain(n);
@@ -117,6 +117,39 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
 
     // 5× zoom magnifies the grid cells → the frames differ.
     z5.trace('out').expectDifferentFrom(z1.trace('out'), 100);
+  });
+
+  it('filter_mode changes the zoom reconstruction (bicubic ≠ linear)', async () => {
+    // Smooth (bicubic) softens the magnified pixel grid vs plain Linear, so on a
+    // strongly-zoomed high-frequency grid the two reconstructions differ.
+    const buildChain = (fm: number): Sketch => ({
+      anchor: null,
+      wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.grid', instance_key: 'grid@0', params: {} },
+        { type: 'module', module_type: 'warp.legacy.zoom_scroller', instance_key: 'zs@0',
+          params: { show_gizmo: 0, min_scale: 6, max_scale: 6, scale_variance: 0.0,
+                    flicker_rate: 15.0, filter_mode: fm } },
+      ],
+    });
+    const run = (id: string, fm: number, dump: string) => runEngineTest({
+      width: 256, height: 256,
+      modules: ['com.nano.core', 'com.nano.legacy'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(fm) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 16,
+      captureTraceIds: ['out'],
+      dumpName: dump,
+    });
+    const linear  = await run('zs_fm_lin', 1, 'zoom_fm_linear');
+    const bicubic = await run('zs_fm_bic', 2, 'zoom_fm_bicubic');
+    expect(linear.success).toBe(true);
+    expect(bicubic.success).toBe(true);
+    bicubic.trace('out').expectDifferentFrom(linear.trace('out'), 50);
   });
 
   it('pans over time (the camera moves)', async () => {

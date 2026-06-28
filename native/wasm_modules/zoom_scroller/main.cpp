@@ -34,7 +34,10 @@
  *
  * ── Render ────────────────────────────────────────────────────────────────
  *  apply.hlsl scale+translates a sample of tex_in (the "Transform") and draws
- *  the gizmo box outline over it (the "Shape Render" + "Video Mixer").
+ *  the gizmo box outline over it (the "Shape Render" + "Video Mixer"). The zoom
+ *  reconstruction filter is selectable (`filter_mode`): Crisp (nearest), Linear,
+ *  or Smooth (B-spline bicubic, default) — bicubic de-"crunches" the magnified
+ *  pixel grid that a plain LOD-0 bilinear tap leaves on a single-mip texture.
  *
  * Re-architecture notes (flagged per DNODE_MIGRATION_NOTES §3/§4):
  *  - Timing is real-time (dt seconds); `flicker_rate` is the metronome Hz that
@@ -74,8 +77,11 @@ struct Uniforms {
   float giz_show;
   float giz_alpha;
   float giz_r, giz_g, giz_b;
-  float _pad0, _pad1;
+  float filter_mode;          // 0 crisp / 1 linear / 2 smooth(bicubic)
+  float _pad1, _pad2, _pad3;  // pad to 80 bytes (cbuffer 16-float alignment)
 };
+
+enum FilterMode { FILTER_CRISP = 0, FILTER_LINEAR = 1, FILTER_SMOOTH = 2 };
 
 enum Phase { PHASE_PAN, PHASE_SUB_DWELL, PHASE_SEQ_DWELL };
 
@@ -95,6 +101,7 @@ struct State {
   float gizmo_size = 0.9f, gizmo_squash = 0.7f, gizmo_width = 0.3f;
   float gizmo_r = 1.0f, gizmo_g = 1.0f, gizmo_b = 1.0f, gizmo_a = 1.0f;
   float gizmo_alpha = 0.75f, gizmo_motion_scale = 1.0f;
+  int   filter_mode = FILTER_SMOOTH;   // bicubic by default (smooth zoom)
 
   // ---- runtime state machine ----
   bool   initialized = false;
@@ -170,6 +177,12 @@ void module_init() {
                   "Dwell (s) at the end of each pan before the next waypoint.")
       .floatField("sequence_delay",   0.6f, 0.0f, 1.0f,  state::PrimaryInput, nullptr, 0.0f, nullptr,
                   "Dwell (s) after a sequence ends before a new one starts.")
+      .selectField("filter_mode", FILTER_SMOOTH, state::PrimaryInput, {
+          {"Crisp (nearest)", FILTER_CRISP},
+          {"Linear",          FILTER_LINEAR},
+          {"Smooth (bicubic)",FILTER_SMOOTH},
+      }, /*wrap=*/false, "Image reconstruction filter for the zoom (Smooth = bicubic, "
+                         "softens the magnified pixel grid).")
       .boolField ("show_gizmo",       true,              state::PrimaryInput,
                   "Draw the motion-indicator box.")
       .eventField("retrigger",        state::PrimaryInput)
@@ -410,6 +423,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "flicker_rate"))        s->flicker_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "sub_steps"))           s->sub_steps = state::patchInt(i);
     else if (state::pathIs(p, l, "sub_step_frames"))     s->sub_step_frames = state::patchInt(i);
+    else if (state::pathIs(p, l, "filter_mode"))         s->filter_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "show_gizmo"))          s->show_gizmo = state::patchBool(i);
     else if (state::pathIs(p, l, "retrigger"))         { if (state::patchEvent(i)) s->pending_retrigger = true; }
     else if (state::pathIs(p, l, "gizmo_size"))          s->gizmo_size = state::patchFloat(i);
@@ -451,6 +465,7 @@ void render(void* self, int vp_w, int vp_h) {
   u.giz_show = (s->show_gizmo && s->phase == PHASE_PAN) ? 1.0f : 0.0f;
   u.giz_alpha = s->gizmo_alpha * s->gizmo_a;
   u.giz_r = s->gizmo_r; u.giz_g = s->gizmo_g; u.giz_b = s->gizmo_b;
+  u.filter_mode = (float)s->filter_mode;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
