@@ -40,6 +40,12 @@ export class ArrRuler extends MobxLitElement {
       padding: 0 var(--app-sp-3);
       font-size: var(--app-fs-xs);
       color: var(--app-text-color2);
+      /* Keep a single row: the +Group/+Return/+Track/Ungroup buttons may overflow
+         past the header width into the ruler. Give the corner its own stacking
+         context ABOVE the ruler canvas so those overflowing buttons stay clickable
+         (the canvas is absolutely positioned and would otherwise paint over them). */
+      position: relative;
+      z-index: 5;
     }
     .corner button {
       font-family: inherit;

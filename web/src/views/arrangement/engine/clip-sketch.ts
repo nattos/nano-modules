@@ -165,6 +165,11 @@ export function buildCompositeSketch(
    *  magnitude — signed ⇒ writers/readers interpret the source as bipolar −1..1,
    *  unsigned ⇒ 0..1. Omitted/false ⇒ unsigned. */
   railSigned?: Map<string, boolean>,
+  /** The MAIN BUS track, when its FX chain should run over the FINAL composite (the
+   *  master FX bus — every track/group sums here, then this chain processes the lot).
+   *  Keyed per-track (`track_<mainBusId>_<dev>`) so its automation lanes target it,
+   *  exactly like a group/track FX bus. Omitted (or bypassed) ⇒ no master FX. */
+  mainBus?: Track,
 ): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
   const chain: ChainEntry[] = [];
   const wires: Wire[] = [];
@@ -416,6 +421,12 @@ export function buildCompositeSketch(
   }
 
   accKey = compositeNodes(nodes, accKey);
+
+  // MASTER FX BUS: the main bus's own chain runs OVER the finished composite (every
+  // track/group has summed into `accKey` by now). Same per-track FX-bus machinery as
+  // a group, keyed `track_<mainBusId>_<dev>` so its automation lanes target it. Only
+  // when there IS a composite to process (an empty timeline gets no master FX).
+  if (mainBus && accKey != null) accKey = pushTrackFx(mainBus, accKey);
 
   const railMag = (railId: string): 'signed' | 'unsigned' => (railSigned?.get(railId) ? 'signed' : 'unsigned');
   // Stage 1 — writers → the rail accumulator's `input` (per EXPORT combine).

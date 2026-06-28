@@ -103,7 +103,12 @@ export function buildCompositeRenderAtBeat(beat: number, ignoreSolo = false) {
   const leaves = flattenLeaves(tree);
   for (const leaf of leaves) leaf.startSec = clock.secondsAt(leaf.clip.startBeat);
   const { railBases, railSigned } = railBasesAtBeat(leaves.map((l) => l.clip), beat);
-  return buildCompositeSketch(tree, store.composition.meta.background, railBases, railSigned);
+  // The MAIN BUS runs its FX chain over the final composite (master FX bus), unless
+  // bypassed. It's excluded from the composite tree (it isn't a content group), so
+  // pass it explicitly.
+  const bus = store.mainBusTrack;
+  const masterBus = bus && !bus.bypassed ? bus : undefined;
+  return buildCompositeSketch(tree, store.composition.meta.background, railBases, railSigned, masterBus);
 }
 
 /**
@@ -171,5 +176,9 @@ export function automationEntriesAtBeat(beat: number, ignoreSolo = false): Autom
     }
   };
   walk(store.compositeTreeAtBeat(beat, ignoreSolo));
+  // The MAIN BUS isn't in the composite tree, but its master-FX chain DOES run over
+  // the final composite (see buildCompositeRenderAtBeat), so emit its lanes too.
+  const bus = store.mainBusTrack;
+  if (bus && !bus.bypassed) pushTrackLanes(bus);
   return entries;
 }

@@ -708,7 +708,7 @@ export class ArrGrid extends MobxLitElement {
     // indent deeper (past that bar); leaves/rails indent to their own depth.
     const contentDepth = ownDepth + (isGroup && !isBus ? 1 : 0);
     const ownIndent = contentDepth * GROUP_INDENT;
-    const autoSel = store.automationMode && !isBus && !isRail && !!store.autoField(`track/${track.id}`);
+    const autoSel = store.automationMode && !isRail && !!store.autoField(`track/${track.id}`);
     const bottomIndent = autoSel ? ownIndent : store.groupGutterWidth;
     // Touch the clips array structure SYNCHRONOUSLY so the MobX reaction tracks
     // add/remove/move/undo — the repeat() directive below evaluates its template
@@ -837,7 +837,7 @@ export class ArrGrid extends MobxLitElement {
    *  the mixer strip. */
   private renderHeaderBottom(track: Track, isRail: boolean, isBus: boolean) {
     if (isRail) return '';
-    const sel = store.automationMode && !isBus ? store.autoField(`track/${track.id}`) : null;
+    const sel = store.automationMode ? store.autoField(`track/${track.id}`) : null;
     if (sel) {
       return html`<div class="auto-pick" title=${sel.label}>
         <ui-icon icon="la-bezier-curve"></ui-icon>
@@ -863,21 +863,23 @@ export class ArrGrid extends MobxLitElement {
     if (!store.automationMode) return '';
     const sel = store.autoField(`track/${track.id}`);
     const lane = sel ? store.selectedTrackLane(track.id) : undefined;
-    const laneId = lane?.id;
+    // An EXISTING lane lives in its OWN row (it is never hoisted onto the clip row,
+    // so selecting its param doesn't make the lane "disappear"). The clip-row overlay
+    // is ONLY a draw target for a selected field that has no lane yet — so there's no
+    // lane id to scope a cursor/selection to here (drawing creates the lane).
+    if (lane) return '';
     return html`<div class="track-auto-edit">
       <arr-automation-editor
         gridded
-        .lane=${lane}
+        .lane=${undefined}
         .ensureLaneId=${() => store.ensureSelectedTrackLane(track.id)}
         .timelineSpan=${compositionLengthBeats(store.composition)}
         .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
         .hideCurve=${!sel}
         .timeboxGestures=${true}
         .bubbleOffCurve=${true}
-        .cursorEnabled=${!!laneId && store.caretLaneIds.includes(laneId)}
-        .selection=${laneId && store.caretLaneId === laneId && store.hasTimeSelection
-          ? { x0: store.timeSelStart!, x1: store.timeSelEnd }
-          : null}
+        .cursorEnabled=${false}
+        .selection=${null}
       ></arr-automation-editor>
     </div>`;
   }
@@ -1258,8 +1260,9 @@ export class ArrGrid extends MobxLitElement {
   }
 
   // Drag selects a rectangular TIME × TRACK REGION (Ableton-style); a plain
-  // click sets the play-from marker. Dragging that starts in the main bus
-  // selects the whole time range across ALL tracks (rendered full-height).
+  // click sets the play-from marker. The main bus is a normal caret row (a group
+  // that pins to the bottom) — a gesture on it targets the bus row, which resolves
+  // to the GLOBAL (all-tracks) scope because the bus has no descendant tracks.
   private drag: {
     x0: number;
     y0: number;
@@ -1268,8 +1271,6 @@ export class ArrGrid extends MobxLitElement {
     startTrackId: string;
     /** Automation lane the gesture started on ('' = the track's clip row). */
     startLaneId: string;
-    /** Gesture started on the main bus ⇒ the caret spans ALL plain tracks. */
-    startIsBus: boolean;
     active: boolean;
     /** Set when the gesture began on a clip BODY: a plain click focuses this clip
      *  (no time box); a drag still does a region selection. */
@@ -1281,10 +1282,10 @@ export class ArrGrid extends MobxLitElement {
     const out: Array<{ trackId: string; laneId: string; top: number; bottom: number }> = [];
     let y = 0;
     for (const t of store.displayTracks) {
-      // The clip row carries the overlay lane id in automation mode (the row edits
-      // the selected-field automation), matching store.caretRows. Both tracks AND
-      // non-bus GROUPS carry automation lanes (a group's FX bus is automatable too).
-      const autoOwner = t.kind === 'track' || (t.kind === 'group' && !store.isMainBus(t));
+      // Tracks AND groups (incl. the MAIN BUS) carry automation lanes — every FX bus
+      // is automatable. The clip row's overlay lane id is always '' now (existing
+      // lanes live in their own rows), matching store.caretRows.
+      const autoOwner = t.kind === 'track' || t.kind === 'group';
       const overlay = autoOwner ? store.overlayLaneId(t.id) : '';
       out.push({ trackId: t.id, laneId: overlay, top: y, bottom: y + ROW_HEIGHT });
       y += ROW_HEIGHT;
@@ -1304,14 +1305,13 @@ export class ArrGrid extends MobxLitElement {
     const rect = this.scrollEl.getBoundingClientRect();
     const contentY = clientY - rect.top + this.scrollEl.scrollTop;
     const layout = this.rowLayout();
-    // The caret / time-box system targets track, rail AND (non-bus) group rows —
-    // a group row stands in for its contained tracks. The master bus isn't a caret
-    // row. Clamp the hit to the last selectable row at-or-above it, so dragging past
-    // the bottom (over/below the main bus) extends to the final lane instead of
-    // collapsing to one track.
+    // The caret / time-box system targets track, rail AND group rows (incl. the main
+    // bus) — a group row stands in for its contained tracks (the bus → all tracks).
+    // Clamp the hit to the last selectable row at-or-above it, so dragging past the
+    // bottom (below the main bus) extends to the final lane instead of collapsing.
     const caretOK = (trackId: string) => {
       const t = store.trackById(trackId);
-      return !!t && (t.kind === 'track' || t.kind === 'rail' || (t.kind === 'group' && !store.isMainBus(t)));
+      return !!t && (t.kind === 'track' || t.kind === 'rail' || t.kind === 'group');
     };
     let idx = layout.findIndex((r) => contentY < r.bottom);
     if (idx < 0) idx = layout.length - 1;
@@ -1513,17 +1513,16 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const startBeat = grid.xToBeat(e.clientX - laneLeft);
     const startRow = this.rowAtClientY(e.clientY);
-    const startTrack = store.trackById(startRow.trackId);
-    const startIsBus = !!startTrack && store.isMainBus(startTrack);
     const qBeat = store.quantize(startBeat, e.altKey);
-    // Set the 2D caret to a zero-width slice at the clicked time + ROW (a bus
-    // start spans all plain tracks). A drag below extends it into a box/slice.
-    const trackId = startIsBus ? '' : startRow.trackId;
-    let laneId = startIsBus ? '' : startRow.laneId;
-    // A clip-row click in automation mode on a track with a selected field edits
-    // that field's automation — materialize its overlay lane so the caret scopes
-    // there (and clips aren't selected).
-    if (!startIsBus && !laneId && store.automationMode && store.autoField(`track/${trackId}`)) {
+    // Set the 2D caret to a zero-width slice at the clicked time + ROW. The bus is a
+    // normal row here (it resolves to the global all-tracks scope downstream). A drag
+    // below extends it into a box/slice.
+    const trackId = startRow.trackId;
+    let laneId = startRow.laneId;
+    // A clip-row click in automation mode on a track/group with a selected field edits
+    // that field's automation — materialize its lane so the caret scopes there (and
+    // clips aren't selected).
+    if (!laneId && store.automationMode && store.autoField(`track/${trackId}`)) {
       laneId = store.ensureSelectedTrackLane(trackId);
     }
     store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, anchorLaneId: laneId, headBeat: qBeat, headTrackId: trackId, headLaneId: laneId });
@@ -1538,7 +1537,6 @@ export class ArrGrid extends MobxLitElement {
       laneLeft,
       startTrackId: startRow.trackId,
       startLaneId: startRow.laneId,
-      startIsBus,
       active: false,
       clickFocusPath,
     };
@@ -1559,13 +1557,13 @@ export class ArrGrid extends MobxLitElement {
     const free = e.altKey;
     const headBeat = cur < 0 ? 0 : store.quantize(cur, free);
     const anchorBeat = store.quantize(d.startBeat, free);
-    // Vertical span: a bus start stays global; otherwise anchor ROW → the row
-    // currently under the cursor (tracks AND automation lanes).
-    const headRow = d.startIsBus ? { trackId: '', laneId: '' } : this.rowAtClientY(e.clientY);
+    // Vertical span: anchor ROW → the row currently under the cursor (tracks, groups
+    // AND automation lanes). A bus row resolves to the global all-tracks scope.
+    const headRow = this.rowAtClientY(e.clientY);
     store.setCaret({
       anchorBeat,
-      anchorTrackId: d.startIsBus ? '' : d.startTrackId,
-      anchorLaneId: d.startIsBus ? '' : d.startLaneId,
+      anchorTrackId: d.startTrackId,
+      anchorLaneId: d.startLaneId,
       headBeat,
       headTrackId: headRow.trackId,
       headLaneId: headRow.laneId,
@@ -1582,17 +1580,22 @@ export class ArrGrid extends MobxLitElement {
     this.drag = null;
     if (!d || d.active) return;
     // Plain click (no drag): the caret was set on pointerdown. Clicking a clip BODY
-    // selects that clip AND snaps the time box to its extent (so the time under it is
-    // selected — Cmd+L then loops it); a DRAG instead carves a sub-region (handled
-    // above, where d.active short-circuits this). Otherwise select what's under the
-    // head — a clip if present, else the track (the cursor always lands somewhere).
-    if (d.clickFocusPath) { store.select(d.clickFocusPath); return; }
+    // just FOCUSES the clip (inspector) and leaves the caret/time box exactly where
+    // the down-click put it — equivalent to clicking the bare grid. (selectClipOnly
+    // already ran on pointerdown; we must NOT snap the time box to the clip extent.)
+    // A DRAG instead carves a sub-region (handled above, where d.active short-circuits
+    // this). Otherwise select what's under the head — a clip if present, else the
+    // track (the cursor always lands somewhere).
+    if (d.clickFocusPath) return;
     // On an automation lane → the caret marks the lane; don't touch clip/track sel.
     if (d.startLaneId) { store.clearSelection(); return; }
-    if (d.startIsBus || !d.startTrackId) {
+    if (!d.startTrackId) {
       store.clearSelection();
       return;
     }
+    // A plain click selects what's under the head: a clip if present, else the
+    // track/group/bus row itself (so it shows in the inspector). The bus + groups
+    // hold no clips, so they select their own row.
     const clip = store.clipAtBeat(d.startTrackId, store.playFromBeat);
     store.selectClipOnly(clip ? paths.clip(d.startTrackId, clip.id) : paths.track(d.startTrackId));
   };

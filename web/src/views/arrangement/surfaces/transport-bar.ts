@@ -49,12 +49,6 @@ export class TransportBar extends MobxLitElement {
       color: var(--app-text-color2);
       font-size: var(--app-fs-sm);
     }
-    .right .export {
-      display: flex;
-      align-items: center;
-      gap: var(--app-sp-2);
-      width: auto;
-    }
     button {
       font-family: inherit;
       color: var(--app-text-color1);
@@ -168,20 +162,6 @@ export class TransportBar extends MobxLitElement {
     return html`
       <div class="brand">
         nano <b>arrangement</b>
-        <button
-          title="Undo (⌘Z)"
-          ?disabled=${!store.canUndo}
-          @click=${() => store.undo()}
-        >
-          <ui-icon icon="la-undo"></ui-icon>
-        </button>
-        <button
-          title="Redo (⇧⌘Z)"
-          ?disabled=${!store.canRedo}
-          @click=${() => store.redo()}
-        >
-          <ui-icon icon="la-redo"></ui-icon>
-        </button>
       </div>
 
       <div class="center">
@@ -256,9 +236,19 @@ export class TransportBar extends MobxLitElement {
       </div>
 
       <div class="right">
-        <button class="export ${store.activeRightTab === 'export' ? 'active' : ''}"
-          title="Export video (MP4 / H.264)" @click=${() => store.setRightTab('export')}>
-          <ui-icon icon="la-file-export"></ui-icon> Export
+        <button
+          title="Undo (⌘Z)"
+          ?disabled=${!store.canUndo}
+          @click=${() => store.undo()}
+        >
+          <ui-icon icon="la-undo"></ui-icon>
+        </button>
+        <button
+          title="Redo (⇧⌘Z)"
+          ?disabled=${!store.canRedo}
+          @click=${() => store.redo()}
+        >
+          <ui-icon icon="la-redo"></ui-icon>
         </button>
       </div>
     `;

@@ -998,11 +998,12 @@ export class ArrangementStore {
           // Selecting a track OR return/rail sets the time box (all beats × that
           // track) but must NOT yank the play-from marker / playhead — keep them put.
           this.setTimeSelection(0, full, [t.id], { movePlayhead: false });
-        } else if (t && t.kind === 'group' && !this.isMainBus(t)) {
+        } else if (t && t.kind === 'group') {
           // Selecting a GROUP selects the full time across ALL its contained tracks
           // — exactly like a vertical selection over the whole cluster. The caret
           // spans the group row → its last visible row; `caretTrackIds` expands the
-          // group into its descendant tracks (even when collapsed).
+          // group into its descendant tracks (even when collapsed). The MAIN BUS has
+          // no descendants, so it resolves to the global (all-tracks) scope.
           const last = this.lastVisibleInGroup(t.id) ?? t.id;
           this.setTimeSelection(0, full, [t.id, last], { movePlayhead: false });
         } else {
@@ -1525,17 +1526,22 @@ export class ArrangementStore {
   private get caretTrackOrder(): Track[] {
     // Groups are first-class caret rows too (so a click/drag on a group lane targets
     // the GROUP, not the track above — and group automation lanes have a home). The
-    // master bus stays out. `caretTrackIds` expands group rows to their tracks.
+    // MAIN BUS is a caret row as well (it's a group at heart — clickable, selectable,
+    // automatable like any group; it just pins to the bottom). `caretTrackIds` expands
+    // group rows to their tracks — the bus has no descendant tracks, so a bus-only
+    // span resolves to the GLOBAL (all-tracks) scope, matching "everything sums here".
     return this.displayTracks.filter(
-      (t) => t.kind === 'track' || t.kind === 'rail' || (t.kind === 'group' && !this.isMainBus(t)),
+      (t) => t.kind === 'track' || t.kind === 'rail' || t.kind === 'group',
     );
   }
 
-  /** Lane shown AS the track's clip-row overlay (its selected-field lane, in
-   *  automation mode) — that row edits this lane, so it isn't also a lane row. */
-  overlayLaneId(trackId: string): string {
-    if (!this.automationMode) return '';
-    return this.selectedTrackLane(trackId)?.id ?? '';
+  /** Lane shown AS the track's clip-row overlay (in automation mode). The clip-row
+   *  overlay is now ONLY a draw target for a selected field that has no lane YET — an
+   *  EXISTING lane always lives in its OWN row (it is never hoisted onto the clip row
+   *  nor hidden from the lane list). So no existing lane is ever an overlay → ''.
+   *  (Kept as a method so the `!== overlay` row filters stay wired and self-document.) */
+  overlayLaneId(_trackId: string): string {
+    return '';
   }
 
   /** The vertical ROW axis: each plain track's clip row, then its automation lane

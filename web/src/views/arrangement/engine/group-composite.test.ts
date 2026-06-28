@@ -117,6 +117,28 @@ describe('group compositing', () => {
     expect(keys(r).indexOf(gfx)).toBeGreaterThan(keys(r).indexOf(clipInstanceKey('C', 'Cd0')));
   });
 
+  it('the MAIN BUS runs its FX chain over the FINAL composite (master FX bus)', () => {
+    const mainBus = { id: 'main-bus', sketch: { devices: [dev('color.invert', 'mbfx0')] } } as any;
+    const r = buildCompositeSketch(
+      [leaf(clip('A', 'source.noise')), leaf(clip('B', 'source.noise'))],
+      undefined, undefined, undefined, mainBus,
+    )!;
+    const mfx = trackInstanceKey('main-bus', 'mbfx0');
+    // Master FX present and keyed per the bus track (so its automation targets it).
+    expect(keys(r)).toContain(mfx);
+    expect(types(r)).toContain('color.invert');
+    // It is the LAST chain entry — it processes everything that summed before it.
+    expect(keys(r).indexOf(mfx)).toBe(r.sketch.chain!.length - 1);
+    expect(keys(r).indexOf(mfx)).toBeGreaterThan(keys(r).indexOf(clipInstanceKey('B', 'Bd0')));
+  });
+
+  it('an empty timeline gets NO master FX (nothing to process)', () => {
+    const mainBus = { id: 'main-bus', sketch: { devices: [dev('color.invert', 'mbfx0')] } } as any;
+    // No nodes → null composite; the bus FX must not resurrect an empty chain.
+    const r = buildCompositeSketch([], undefined, undefined, undefined, mainBus);
+    expect(r).toBeNull();
+  });
+
   it('nested groups compose (inner group blends inside the outer)', () => {
     // Default (black) composition bg → the outer group has a base to blend up over.
     const r = buildCompositeSketch([

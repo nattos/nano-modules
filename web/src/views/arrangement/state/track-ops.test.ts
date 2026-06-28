@@ -178,6 +178,45 @@ describe('track structural ops', () => {
     expect(store.composition.tracks.map((t) => t.id).join(',')).toBe(before);
   });
 
+  it('the main bus is a caret row (selectable), and selecting it scopes globally', () => {
+    store.addTrack();
+    const bus = store.mainBusTrack!;
+    // It participates in the caret row axis (a group at heart) — not excluded.
+    expect(store.caretRows.some((r) => r.trackId === bus.id && r.laneId === '')).toBe(true);
+    // Selecting it resolves to the GLOBAL scope (it has no descendant tracks, so the
+    // group-expansion yields the empty/all-tracks span — "everything sums here").
+    store.select(paths.track(bus.id));
+    expect(store.hasTimeSelection).toBe(true);
+    expect(store.timeSelTrackIds).toEqual([]); // [] = global (all plain tracks)
+    expect(store.primaryPath).toBe(paths.track(bus.id)); // shows in the inspector
+  });
+
+  it('the main bus can host automation lanes (its FX bus is automatable)', () => {
+    const bus = store.mainBusTrack!;
+    bus.sketch.devices.push({ id: 'mbfx', moduleType: 'color.invert', name: 'invert', capabilities: [], state: {} } as any);
+    if (!store.automationMode) store.toggleAutomationMode();
+    store.selectAutoField(paths.track(bus.id), 'mbfx', 'amount');
+    const laneId = store.ensureSelectedTrackLane(bus.id);
+    expect(laneId).toBeTruthy();
+    // The lane is a navigable caret row under the bus.
+    expect(store.caretRows.some((r) => r.trackId === bus.id && r.laneId === laneId)).toBe(true);
+    if (store.automationMode) store.toggleAutomationMode();
+  });
+
+  it('selecting a param that already has a lane keeps the lane as its own row (no overlay hoist)', () => {
+    const t = store.addTrack();
+    if (!store.automationMode) store.toggleAutomationMode();
+    store.selectAutoField(paths.track(t), 'devX', 'amount');
+    const laneId = store.ensureSelectedTrackLane(t);
+    // Even with the field selected, the existing lane is NEVER hoisted to the clip
+    // row (overlayLaneId === '') — so it stays visible as a standalone caret row.
+    expect(store.overlayLaneId(t)).toBe('');
+    expect(store.caretRows.some((r) => r.trackId === t && r.laneId === laneId)).toBe(true);
+    // The clip row stays a clip row (laneId ''), not the lane's overlay.
+    expect(store.caretRows.some((r) => r.trackId === t && r.laneId === '')).toBe(true);
+    if (store.automationMode) store.toggleAutomationMode();
+  });
+
   it('addGroup with no selection creates a group containing one empty track', () => {
     store.clearSelection();
     const gid = store.addGroup();
