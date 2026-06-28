@@ -121,6 +121,11 @@ export class ArrAutomationEditor extends MobxLitElement {
    *  up sometimes" bug). The rAF still drives the continuous bits (playhead cursor,
    *  zoom/pan grid). */
   updated() {
+    if ((window as { __autoDebug?: boolean }).__autoDebug) {
+      const g = this.graph;
+      const c = g?.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null;
+      console.log('[auto] 3. editor.updated', { hideCurve: this.hideCurve, lane: this.lane?.id ?? null, hasGraph: !!g, graphConnected: g?.isConnected, canvasW: c?.clientWidth, canvasH: c?.clientHeight });
+    }
     this.syncGraph();
     // Paint NOW — the graph's plain-field inputs (hideCurve/points) were just pushed
     // in syncGraph; don't wait on its throttled rAF (which left the overlay curve
@@ -131,7 +136,10 @@ export class ArrAutomationEditor extends MobxLitElement {
   /** Push the current editor config onto the child <envelope-graph>. Idempotent. */
   private syncGraph() {
       const g = this.graph;
-      if (!g) return;
+      if (!g) {
+        if ((window as { __autoDebug?: boolean }).__autoDebug) console.log('[auto] 3b. syncGraph: NO GRAPH ELEMENT');
+        return;
+      }
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;

@@ -137,7 +137,13 @@ export class EnvelopeGraph extends MobxLitElement {
    *  (points / hideCurve / grid) and need the canvas to reflect them this frame
    *  instead of waiting on the next throttled rAF tick (which can lag noticeably,
    *  e.g. the automation overlay's curve not appearing until a reflow/resize). */
-  redraw() { this.draw(); }
+  redraw() {
+    if ((window as { __autoDebug?: boolean }).__autoDebug) {
+      const c = this.canvas;
+      console.log('[auto] 4. graph.redraw', { hideCurve: this.hideCurve, points: this.points?.length, clientW: c?.clientWidth, clientH: c?.clientHeight, bufW: c?.width, bufH: c?.height, connected: this.isConnected });
+    }
+    this.draw();
+  }
 
   private get canvas(): HTMLCanvasElement | null {
     return this.renderRoot?.querySelector('canvas') ?? null;

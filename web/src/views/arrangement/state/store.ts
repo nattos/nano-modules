@@ -1146,6 +1146,7 @@ export class ArrangementStore {
   }
   /** Select (or replace) the owner's automation field. */
   selectAutoField(ownerKey: string, deviceId: string, field: string) {
+    if ((globalThis as { __autoDebug?: boolean }).__autoDebug) console.log('[auto] 1. selectAutoField', { ownerKey, deviceId, field, automationMode: this.automationMode });
     runInAction(() => {
       const label = this.autoFieldLabel(ownerKey, deviceId, field);
       this.selectedAutoField = { ...this.selectedAutoField, [ownerKey]: { deviceId, field, label } };

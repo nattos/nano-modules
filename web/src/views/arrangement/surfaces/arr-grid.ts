@@ -886,6 +886,7 @@ export class ArrGrid extends MobxLitElement {
     if (!store.automationMode) return '';
     const sel = store.autoField(`track/${track.id}`);
     const lane = sel ? store.selectedTrackLane(track.id) : undefined;
+    if ((window as { __autoDebug?: boolean }).__autoDebug && sel) console.log('[auto] 2. renderTrackAutoOverlay', track.id, { sel: `${sel.deviceId}/${sel.field}`, lane: lane?.id ?? null, willRenderOverlay: !lane });
     // An EXISTING lane lives in its OWN row (it is never hoisted onto the clip row,
     // so selecting its param doesn't make the lane "disappear"). The clip-row overlay
     // is ONLY a draw target for a selected field that has no lane yet — so there's no
