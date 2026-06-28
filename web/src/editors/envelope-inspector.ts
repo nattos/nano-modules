@@ -138,8 +138,15 @@ export class EnvelopeGraph extends MobxLitElement {
    *  instead of waiting on the next throttled rAF tick (which can lag noticeably,
    *  e.g. the automation overlay's curve not appearing until a reflow/resize). */
   redraw() {
+    // Force the canvas backing store to be RE-ALLOCATED so the browser recomposites
+    // the layer. Drawing alone doesn't always invalidate a separately-composited
+    // layer (the absolutely-positioned, z-indexed automation OVERLAY canvas), so the
+    // freshly-drawn curve stayed blank until a reflow — the user's resize workaround.
+    // Setting width to a throwaway value makes draw()'s `c.width !== w` reset the
+    // bitmap; it happens synchronously before paint, so there's no visible flash.
+    const c = this.canvas;
+    if (c && c.clientWidth > 0) c.width = 1;
     if ((window as { __autoDebug?: boolean }).__autoDebug) {
-      const c = this.canvas;
       console.log('[auto] 4. graph.redraw', { hideCurve: this.hideCurve, points: this.points?.length, clientW: c?.clientWidth, clientH: c?.clientHeight, bufW: c?.width, bufH: c?.height, connected: this.isConnected });
     }
     this.draw();
