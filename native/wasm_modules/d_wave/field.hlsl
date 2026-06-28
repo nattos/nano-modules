@@ -24,12 +24,10 @@ cbuffer Uniforms : register(b3) {
   float sharp;       // gaussian radial thickness of the freshly injected band
 
   float ang_cells;   // grain frequency: noise cells around the circle
-  float spawn_amp;   // amplitude of the injected noise
-  float burst;       // forced full-strength ring emission (trigger), 0 normally
+  float noise_power; // grain contrast (power curve on the per-segment noise)
+  float burst;       // trigger burst envelope (boosts jittered injection), 0 idle
   uint  frame;       // frame index → fresh noise every frame
 }
-
-static const float DW_NOISE_POWER = 2.0;   // grain contrast / sparsity
 
 uint dw_hash(uint x) {
   x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
@@ -52,16 +50,19 @@ float dw_noise01(float a01, float cells, uint seed) {
 }
 
 // The D-wave's turbulent grain: a fresh value-noise band around the circle
-// (frequency `cells`) is generated EVERY frame; `rate` thresholds it so only
-// the brightest fraction of angles inject (sparse grain), and a power curve
-// sets the contrast. Independent per-frame noise injected at the centre then
-// advects outward → radial turbulent streaks (the original's per-frame random
-// array, FillArray Source:Random). No fixed angular structure → no valleys.
-float dw_inject(float a01, float cells, uint frame, float rate) {
-  float r   = dw_noise01(a01, cells, dw_hash(frame * 0x9E3779B1u));
-  float thr = 1.0 - rate;
-  float n   = saturate((r - thr) / max(rate, 1e-3));
-  return pow(n, DW_NOISE_POWER);
+// (frequency `cells`) is generated EVERY frame; `rate` thresholds it so only the
+// brightest fraction of angular segments inject, and `power` sets the grain
+// contrast. A trigger `burst` raises BOTH the firing fraction and the amplitude
+// — so a triggered pulse stays JITTERED per segment (a grainy ring) instead of
+// a flat uniform ring. The random rows advect outward → turbulent radial streaks
+// (the original's per-frame FillArray Source:Random). No fixed structure → no
+// valleys.
+float dw_inject(float a01, float cells, uint frame, float rate, float power, float burst) {
+  float r       = dw_noise01(a01, cells, dw_hash(frame * 0x9E3779B1u));
+  float effRate = saturate(rate + burst);          // burst fires more segments
+  float thr     = 1.0 - effRate;
+  float n       = saturate((r - thr) / max(effRate, 1e-3));
+  return pow(n, power) * (1.0 + burst);            // burst lifts amplitude too
 }
 
 [numthreads(8, 8, 1)]
@@ -85,10 +86,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Inject fresh per-angle noise into the centre band (row ≈ 0). The band is a
   // gaussian in radius (thickness from `sharp`) so each frame's noise is born
   // tight at the centre and marches outward over subsequent frames, leaving
-  // turbulent radial streaks. burst (trigger) forces a full coherent ring.
-  float inj  = dw_inject(uv.x, ang_cells, frame, rate);
+  // turbulent radial streaks. burst (trigger) boosts the same jittered grain.
+  float inj  = dw_inject(uv.x, ang_cells, frame, rate, noise_power, burst);
   float ring = exp(-sharp * uv.y * uv.y);
-  val += spawn_amp * ring * saturate(inj + burst);
+  val += ring * saturate(inj);
 
   curField[gid.xy] = float4(val, 0.0, 0.0, 0.0);
 }

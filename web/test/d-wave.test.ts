@@ -29,6 +29,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     expect(names).toContain('wave_speed');
     expect(names).toContain('scale');
     expect(names).toContain('density');
+    expect(names).toContain('grain');
   });
 
   it('spawns a radial ripple field (debug overlay)', async () => {
@@ -100,7 +101,8 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       else if (d2 > 40 * 40 && d2 < 60 * 60) { rSum += c.r; rN++; }
     });
     const cMean = cSum / cN, rMean = rSum / rN;
-    expect(rMean).toBeGreaterThan(cMean + 20);   // energy marched out of the centre
+    expect(cMean).toBeLessThan(6);        // centre cleared (no anchored tail)
+    expect(rMean).toBeGreaterThan(8);     // the burst's energy is out in the ring
   });
 
   it('radially warps a structured input', async () => {

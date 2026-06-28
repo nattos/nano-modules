@@ -46,7 +46,7 @@ static constexpr float BURST_TAU          = 0.18f;   // trigger-burst envelope h
 
 struct FieldUniforms {
   float y_shift, decay, rate, sharp;
-  float ang_cells, spawn_amp, burst;
+  float ang_cells, noise_power, burst;
   uint32_t frame;
 };
 struct WarpUniforms {
@@ -74,6 +74,7 @@ struct State {
   // Tuning
   float wave_decay = 0.5f;
   float soften     = 0.5f;
+  float grain      = 0.43f;      // grain contrast (→ noise power curve)
   float squeeze    = 0.0f;
   float render_alpha = 1.0f;
   float center_x   = 0.0f;       // cover-square anchor
@@ -95,7 +96,7 @@ static gpu::ComputePSO s_pso_field;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 0, 3},
+  state::init("warp.legacy.d_wave", {1, 0, 4},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
@@ -116,6 +117,8 @@ void module_init() {
                   "How fast ripples fade as they travel.")
       .floatField("soften",      0.5f,  0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Radial thickness/softness of each ring.")
+      .floatField("grain",       0.43f, 0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Grain contrast: low = soft dense haze, high = sparse sparkle.")
       .floatField("squeeze",     0.0f, -1.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Radial offset of the ring pattern.")
       .floatField("render_alpha", 1.0f, 0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
@@ -214,6 +217,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "density"))       s->density = state::patchFloat(i);
     else if (state::pathIs(p, l, "wave_decay"))    s->wave_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "soften"))        s->soften = state::patchFloat(i);
+    else if (state::pathIs(p, l, "grain"))         s->grain = state::patchFloat(i);
     else if (state::pathIs(p, l, "squeeze"))       s->squeeze = state::patchFloat(i);
     else if (state::pathIs(p, l, "render_alpha"))  s->render_alpha = state::patchFloat(i);
     else if (state::pathIs(p, l, "burst_strength")) s->burst_strength = state::patchFloat(i);
@@ -256,9 +260,9 @@ void render(void* self, int vp_w, int vp_h) {
   fu.decay     = std::exp(-s->wave_decay * DECAY_MAX * dt);
   fu.rate      = s->rate;     // direct threshold: fraction of angular cells injecting
   fu.sharp     = SHARP_MAX + (SHARP_MIN - SHARP_MAX) * s->soften;
-  fu.ang_cells = std::round(1.0f + s->density * MAX_CELLS);
-  fu.spawn_amp = 1.0f;
-  fu.burst     = s->burst_env * s->burst_strength;
+  fu.ang_cells   = std::round(1.0f + s->density * MAX_CELLS);
+  fu.noise_power = 0.5f + s->grain * 3.5f;   // grain 0→soft(0.5)  1→sparse(4.0)
+  fu.burst       = s->burst_env * s->burst_strength;
   fu.frame     = s->frame;
   s->field_uniform.writeOne(fu);
 
