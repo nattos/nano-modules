@@ -26,47 +26,72 @@ export class ArrDebug extends LitElement {
     .v.bad { color: var(--app-err-color, #e05050); }
     .card { background: var(--app-bg-color2, rgba(255,255,255,0.03)); border: 1px solid var(--app-tint-2, rgba(255,255,255,0.06));
             border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+    /* Stale = stopped updating (clip ended / playback stopped) but still remembered (~60s). */
+    .card.stale { border-style: dashed; border-color: var(--app-tint-3, rgba(255,255,255,0.14)); opacity: 0.6; }
     .card .title { display: flex; justify-content: space-between; font-family: var(--app-font, inherit);
                    font-size: 11px; margin-bottom: 4px; }
     .badge { font-size: 9px; padding: 1px 5px; border-radius: 4px; background: var(--app-tint-2, rgba(255,255,255,0.08));
              color: var(--app-text-color2); }
+    .badge.age { background: none; }
     .empty { color: var(--app-text-color2); padding: 12px 0; font-family: var(--app-font, inherit); }
     .note { color: var(--app-text-color2); font-size: 10px; margin-top: 10px; font-family: var(--app-font, inherit); }
   `;
 
+  /** Stale once a producer hasn't published for this long (it publishes ≈2×/s). */
+  private static readonly STALE_MS = 1500;
+  /** Drop a remembered clip after this long with no update. */
+  private static readonly FORGET_MS = 60_000;
+
   @state() private tick = 0;
   private timer = 0;
+  /** Remembered clips (incl. recently-ended ones), keyed by clipId. */
+  private history = new Map<string, { perf: ClipPerf; lastSeen: number }>();
+  private lastClipsAt = 0;
 
   connectedCallback() {
     super.connectedCallback();
     debugPerf.active = true; // turns ON the (otherwise free) per-frame collection
-    this.timer = window.setInterval(() => { this.tick++; }, 333);
+    this.timer = window.setInterval(() => { this.collect(); this.tick++; }, 333);
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     debugPerf.active = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = 0;
+    this.history.clear();
+  }
+
+  /** Fold each fresh publish into the 60s history; expire old entries. */
+  private collect() {
+    const now = performance.now();
+    if (debugPerf.clipsAt > this.lastClipsAt) { // a fresh clips publish
+      this.lastClipsAt = debugPerf.clipsAt;
+      for (const c of debugPerf.clips) this.history.set(c.clipId, { perf: c, lastSeen: now });
+    }
+    for (const [id, e] of this.history) if (now - e.lastSeen > ArrDebug.FORGET_MS) this.history.delete(id);
   }
 
   private row(k: string, v: string, cls = ''): TemplateResult {
     return html`<div class="row"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
   }
 
-  private clipCard(c: ClipPerf): TemplateResult {
+  private clipCard(c: ClipPerf, stale: boolean, ageMs: number): TemplateResult {
     const fpsActual = c.injectAvgMs ? 1000 / c.injectAvgMs : 0;
-    const jitter = (c.injectMaxMs ?? 0) > (c.injectAvgMs ?? 0) * 1.6 ? 'warn' : '';
+    const jitter = !stale && (c.injectMaxMs ?? 0) > (c.injectAvgMs ?? 0) * 1.6 ? 'warn' : '';
     return html`
-      <div class="card">
-        <div class="title"><span>${c.label} · ${c.width}×${c.height}</span><span class="badge">${c.path}</span></div>
+      <div class="card ${stale ? 'stale' : ''}">
+        <div class="title">
+          <span>${c.label} · ${c.width}×${c.height}</span>
+          <span class="badge ${stale ? 'age' : ''}">${stale ? `${(ageMs / 1000).toFixed(0)}s ago` : c.path}</span>
+        </div>
         ${this.row('source', `${c.fps.toFixed(2)}fps · ${c.frameCount}f`)}
         ${this.row('presented', `${fpsActual.toFixed(1)}fps`)}
         ${this.row('inject gap', `${(c.injectAvgMs ?? 0).toFixed(0)} / ${(c.injectMaxMs ?? 0).toFixed(0)}ms avg/max`, jitter)}
         ${c.path === 'cursor' ? html`
-          ${this.row('actions', `play ${c.play} · seek ${c.seek} · hold ${c.hold}`, (c.seek ?? 0) > 1 ? 'warn' : '')}
-          ${this.row('notReady', `${c.notReady}`, (c.notReady ?? 0) > 4 ? 'warn' : '')}
+          ${this.row('actions', `play ${c.play} · seek ${c.seek} · hold ${c.hold}`, !stale && (c.seek ?? 0) > 1 ? 'warn' : '')}
+          ${this.row('notReady', `${c.notReady}`, !stale && (c.notReady ?? 0) > 4 ? 'warn' : '')}
           ${this.row('drift', `${(c.driftAvgMs ?? 0).toFixed(0)} / ${(c.driftMaxMs ?? 0).toFixed(0)}ms avg/max`,
-            (c.driftMaxMs ?? 0) > 200 ? 'bad' : (c.driftMaxMs ?? 0) > 60 ? 'warn' : '')}
+            stale ? '' : (c.driftMaxMs ?? 0) > 200 ? 'bad' : (c.driftMaxMs ?? 0) > 60 ? 'warn' : '')}
           ${this.row('seeks', `${c.seeks} · ${(c.seekAvgMs ?? 0).toFixed(0)}ms`)}
           ${this.row('cache', `${c.cacheEntries}f · ${(c.cacheMB ?? 0).toFixed(0)}MB · ${((c.cacheHitRate ?? 0) * 100).toFixed(0)}% hit · ${c.cachePinned} pinned`)}
         ` : ''}
@@ -75,23 +100,28 @@ export class ArrDebug extends LitElement {
 
   render() {
     void this.tick; // establish tracking so the interval re-renders
+    const now = performance.now();
     const m = debugPerf.monitor;
-    const stale = debugPerf.updatedAt > 0 && performance.now() - debugPerf.updatedAt > 2000;
+    const monStale = !m || now - debugPerf.monitorAt > ArrDebug.STALE_MS;
+    // Most-recently-seen first → active clips on top, recently-ended ones (dashed) below.
+    const clips = [...this.history.values()].sort((a, b) => b.lastSeen - a.lastSeen);
     return html`
       <h3>Output monitor</h3>
       ${m ? html`
-        ${this.row('vsync draws', `${m.drawsPerSec.toFixed(0)}/s`)}
-        ${this.row('new frames', `${m.newFramesPerSec.toFixed(0)}/s`)}
-        ${this.row('composite gap', `${m.gapAvgMs.toFixed(1)} / ${m.gapMaxMs.toFixed(1)}ms avg/max`,
-          m.gapMaxMs > m.gapAvgMs * 2 ? 'warn' : '')}
+        <div class="card ${monStale ? 'stale' : ''}">
+          ${this.row('vsync draws', `${m.drawsPerSec.toFixed(0)}/s`)}
+          ${this.row('new frames', `${m.newFramesPerSec.toFixed(0)}/s`)}
+          ${this.row('composite gap', `${m.gapAvgMs.toFixed(1)} / ${m.gapMaxMs.toFixed(1)}ms avg/max`,
+            !monStale && m.gapMaxMs > m.gapAvgMs * 2 ? 'warn' : '')}
+        </div>
       ` : html`<div class="empty">No composite yet — start playback.</div>`}
 
-      <h3>Video clips${stale ? ' (paused)' : ''}</h3>
-      ${debugPerf.clips.length
-        ? debugPerf.clips.map((c) => this.clipCard(c))
-        : html`<div class="empty">No active video clips.</div>`}
+      <h3>Video clips</h3>
+      ${clips.length
+        ? clips.map((e) => this.clipCard(e.perf, now - e.lastSeen > ArrDebug.STALE_MS, now - e.lastSeen))
+        : html`<div class="empty">No video clips played yet.</div>`}
 
-      <div class="note">Collected only while this tab is open.</div>
+      <div class="note">Collected only while this tab is open · ended clips kept ~60s (dashed).</div>
     `;
   }
 }

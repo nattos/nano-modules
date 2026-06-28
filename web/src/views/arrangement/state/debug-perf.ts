@@ -51,8 +51,10 @@ class DebugPerf {
   active = false;
   monitor: MonitorPerf | null = null;
   clips: ClipPerf[] = [];
-  /** performance.now() of the last publish, so the tab can show staleness. */
-  updatedAt = 0;
+  /** performance.now() of the last clips / monitor publish — the tab uses these to detect
+   *  staleness (a section/clip that stopped updating) and to retain it briefly before drop. */
+  clipsAt = 0;
+  monitorAt = 0;
 }
 
 export const debugPerf = new DebugPerf();

@@ -379,7 +379,7 @@ export class VideoCompositor {
       p.injectGapSumMs = 0; p.injectGapMax = 0; p.injectCount = 0;
     }
     debugPerf.clips = out;
-    debugPerf.updatedAt = t;
+    debugPerf.clipsAt = t;
   }
 
   /**

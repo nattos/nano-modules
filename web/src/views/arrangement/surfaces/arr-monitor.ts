@@ -141,6 +141,7 @@ export class ArrMonitor extends MobxLitElement {
         gapAvgMs: this.telNew > 1 ? this.telGapSum / (this.telNew - 1) : 0,
         gapMaxMs: this.telGapMax,
       };
+      debugPerf.monitorAt = now;
       this.telDraws = 0; this.telNew = 0; this.telArrivals = 0; this.telGapSum = 0; this.telGapMax = 0; this.telLastMs = now;
     } else if (!this.telLastMs) {
       this.telLastMs = now;
