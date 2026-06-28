@@ -6,20 +6,25 @@
  * Darkburst (the bursting star system, glowing core, laser-line output) is
  * dropped — per the catalogue, everything except the D wave was rarely used.
  *
- * Mechanism (see field.hlsl / warp.hlsl): a persistent polar buffer
- * (angle × radius) in which ripples are stochastically spawned at the centre,
- * march outward in radius over time, and decay. Each output pixel reads the
- * buffer in polar space and is radially displaced by the local strength,
- * giving concentric expanding distortion arcs. A trigger fires a full-circle
- * shock ripple (the original drove rate/speed from an audio envelope).
+ * The wave field is a polar buffer (angle × radius) built each frame from a pool
+ * of N "wave particles": each particle is a thin, radially-elongated blob that
+ * drifts OUTWARD (increasing radius) by forward time integration, with a
+ * staggered phase and per-particle speed. When it reaches the rim it loops back
+ * to the centre and respawns at a fresh angle with jittered size/strength. This
+ * breaks the field up temporally — the waves are organic and desynchronised
+ * rather than perfectly concentric. Each output pixel reads the field in polar
+ * space and is radially displaced by the local strength. A trigger resets every
+ * particle to the centre at once → a synchronised shock wave that then desyncs.
  *
- * Two passes/frame, both compute:
- *   1. field  (ping-pong) — propagate + decay the previous buffer, spawn fresh
- *               ripples. Writes an RGBA16F polar buffer (.r only).
- *   2. warp   — polar lookup + radial UV warp + composite over the input.
+ * Passes/frame:
+ *   1. particles (compute) — seed / forward-integrate / loop+respawn the pool.
+ *   2. blobs     (instanced render, additive) — splat the pool into the RGBA16F
+ *                 polar field (cleared first; the texture is a pure function of
+ *                 the current particle positions — the integration lives in the
+ *                 pool, not the texture).
+ *   3. warp      (compute) — polar lookup + radial UV warp + composite.
  *
- * Stateful (feedback buffer) but self-clearing as ripples expire → seekable
- * only approximately.
+ * Stateful (particle pool) but self-recycling → seekable only approximately.
  */
 
 #include <gpu.h>
@@ -31,23 +36,26 @@
 
 namespace d_wave {
 
-// Polar buffer resolution. Independent of viewport: angle columns × radius rows.
+// Polar field resolution. Independent of viewport: angle columns × radius rows.
 static constexpr int   ANG = 512;
 static constexpr int   RAD = 256;
-static constexpr float PI  = 3.14159265358979323846f;
+static constexpr int   MAX_PARTICLES = 4096;
 
 // Tuning constants behind the normalized sliders.
-static constexpr float SPEED_ROWS_PER_SEC = 600.0f;  // wave_speed=1 → rows/sec
-static constexpr float DECAY_MAX          = 4.0f;    // wave_decay=1 → e-folds/sec
-static constexpr float SHARP_MIN          = 3.0f;    // soften=1 → wide ring
-static constexpr float SHARP_MAX          = 60.0f;   // soften=0 → tight ring
-static constexpr float MAX_CELLS          = 47.0f;   // density=1 → 48 noise cells
-static constexpr float BURST_TAU          = 0.18f;   // trigger-burst envelope half-life (s)
+static constexpr float SPEED_SCALE = 2.0f;    // wave_speed=1 → radius units/sec
+static constexpr float AW_WIDE     = 0.045f;  // density=0 → angular half-width
+static constexpr float AW_THIN     = 0.004f;  // density=1 → angular half-width
+static constexpr float LEN_MIN     = 0.04f;   // soften=0 → radial half-length
+static constexpr float LEN_MAX     = 0.24f;   // soften=1 → radial half-length
 
-struct FieldUniforms {
-  float y_shift, decay, rate, sharp;
-  float ang_cells, noise_power, burst;
-  uint32_t frame;
+struct ParticleUniforms {
+  uint32_t count, frame, seed, pulse;
+  float dt, speed, spread, _p;
+};
+struct BlobUniforms {
+  uint32_t count;
+  float ang_halfwidth, rad_halflen, decay;
+  float grain, _a, _b, _c;
 };
 struct WarpUniforms {
   float aspect, distortion, scale, squeeze;
@@ -55,80 +63,81 @@ struct WarpUniforms {
 };
 
 struct State {
-  gpu::Texture field[2];          // ping-pong polar buffers (RGBA16F)
-  int   cur = 0;                  // index of the buffer holding the latest field
-  bool  cleared = false;
-
-  gpu::Buffer  field_uniform;
+  gpu::Texture field;             // polar field (RGBA16F), rebuilt each frame
+  gpu::Buffer  particle_buf;      // pool of MAX_PARTICLES × float4
+  gpu::Buffer  particle_uniform;
+  gpu::Buffer  blob_uniform;
   gpu::Buffer  warp_uniform;
   gpu::Sampler samp_field;        // Linear + Repeat (angle wrap)
   gpu::Sampler samp_in;          // Linear + ClampToEdge
   bool initialized = false;
+  bool seeded      = false;
 
   // CPU mirrors of schema params.
   float distortion = 0.5f;
-  float rate       = 0.5f;
+  int   count      = 256;
   float wave_speed = 0.3f;
   float scale      = 1.0f;
   float density    = 0.3f;
   // Tuning
-  float wave_decay = 0.5f;
-  float soften     = 0.5f;
-  float grain      = 0.43f;      // grain contrast (→ noise power curve)
+  float spread     = 0.5f;       // per-particle speed variation (temporal break-up)
+  float wave_decay = 0.5f;       // fade toward the rim
+  float soften     = 0.5f;       // radial blob length
+  float grain      = 0.43f;      // per-particle strength jitter
   float squeeze    = 0.0f;
   float render_alpha = 1.0f;
   float center_x   = 0.0f;       // cover-square anchor
   float center_y   = 0.0f;
-  // Trigger
-  float burst_strength = 1.0f;
-  bool  gate_prev = false;
-  bool  trigger_prev = false;
   // Debug
   float debug_field = 0.0f;
+
+  // Trigger.
+  bool  gate_prev = false;
+  bool  trigger_prev = false;
+  bool  pulse_pending = false;
 
   // Per-frame, set in tick().
   float    dt = 1.0f / 60.0f;
   uint32_t frame = 0;
-  float    burst_env = 0.0f;     // decaying trigger envelope → tapering pulse train
 };
 
-static gpu::ComputePSO s_pso_field;
+static gpu::ComputePSO s_pso_particles;
+static gpu::RenderPSO  s_pso_blob;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 0, 4},
+  state::init("warp.legacy.d_wave", {1, 1, 0},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Radial warp magnitude.")
-      .floatField("rate",        0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Noise density: fraction of angles emitting grain.")
+      .intField  ("count",       256,   1,    MAX_PARTICLES, state::PrimaryInput)
       .floatField("wave_speed",  0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "How fast the grain streaks outward.")
+                  "How fast the waves drift outward.")
       .floatField("scale",       1.0f,  0.1f, 4.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Spatial size of the ripple field.")
+                  "Spatial size of the wave field.")
       .floatField("density",     0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Grain frequency around the circle.")
+                  "Angular thinness of each wave streak.")
       .boolField ("gate",        false, state::PrimaryInput,
-                  "Rising edge fires a full-circle shock ripple.")
+                  "Rising edge fires a synchronised shock wave.")
       .eventField("trigger",     state::PrimaryInput)
       // ---- Tuning ----
+      .floatField("spread",      0.5f,  0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Per-wave speed variation — breaks the waves up temporally.")
       .floatField("wave_decay",  0.5f,  0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "How fast ripples fade as they travel.")
+                  "How much the waves fade as they reach the rim.")
       .floatField("soften",      0.5f,  0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Radial thickness/softness of each ring.")
+                  "Radial length of each wave streak.")
       .floatField("grain",       0.43f, 0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Grain contrast: low = soft dense haze, high = sparse sparkle.")
+                  "Per-wave strength jitter: low = even, high = sparkly.")
       .floatField("squeeze",     0.0f, -1.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Radial offset of the ring pattern.")
+                  "Radial offset of the wave pattern.")
       .floatField("render_alpha", 1.0f, 0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Opacity of the distorted layer over the input.")
-      .floatField("burst_strength", 1.0f, 0.0f, 4.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Amplitude of a triggered shock ripple.")
       .vec2Field ("center",      0.0f, 0.0f, state::SecondaryInput, -1.0f, 1.0f)
       // ---- Debug ----
       .floatField("debug_field",  0.0f, 0.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Overlay the raw ripple field.")
+                  "Overlay the raw wave field.")
       // ---- I/O ----
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
@@ -137,17 +146,26 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  // The field pass writes an RGBA16F storage texture → override naga's default
-  // rgba32float (warp writes the default rgba8unorm tex_out, no override).
-  state::registerShaderSPV("dw_field", FIELD_SPV, FIELD_SPV_SIZE, "rgba16float", "write");
-  state::registerShaderSPV("dw_warp",  WARP_SPV,  WARP_SPV_SIZE);
+  state::registerShaderSPV("dw_particles", PARTICLES_SPV, PARTICLES_SPV_SIZE);
+  state::registerShaderSPV("dw_blob_vs",   BLOB_VS_SPV,   BLOB_VS_SPV_SIZE);
+  state::registerShaderSPV("dw_blob_fs",   BLOB_FS_SPV,   BLOB_FS_SPV_SIZE);
+  state::registerShaderSPV("dw_warp",      WARP_SPV,      WARP_SPV_SIZE);
 
-  auto cs_field = gpu::Device::createShaderModuleByName("dw_field");
-  auto cs_warp  = gpu::Device::createShaderModuleByName("dw_warp");
-  if (!cs_field || !cs_warp) return;
+  auto cs_particles = gpu::Device::createShaderModuleByName("dw_particles");
+  auto vs_blob      = gpu::Device::createShaderModuleByName("dw_blob_vs");
+  auto fs_blob      = gpu::Device::createShaderModuleByName("dw_blob_fs");
+  auto cs_warp      = gpu::Device::createShaderModuleByName("dw_warp");
+  if (!cs_particles || !vs_blob || !fs_blob || !cs_warp) return;
 
-  s_pso_field = gpu::Device::createComputePSO(cs_field, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA16F).uniform(3));
+  s_pso_particles = gpu::Device::createComputePSO(cs_particles, "main", gpu::Bindings()
+      .storageRW(0).uniform(1));
+  // Blobs splat additively into the RGBA16F polar field.
+  s_pso_blob = gpu::Device::createInstancedRenderPSO(
+      vs_blob, "main", fs_blob, "main",
+      gpu::TextureFormat::RGBA16F,
+      gpu::Bindings().storage(0).uniform(1),
+      gpu::Device::BlendMode::Additive);
+  // warp writes the default rgba8unorm tex_out (no format override).
   s_pso_warp = gpu::Device::createComputePSO(cs_warp, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).sampler(2).sampler(3).storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
 
@@ -156,10 +174,11 @@ void module_init() {
 
 void* create() {
   auto* s = new State();
-  s->field[0] = gpu::Device::createTexture(ANG, RAD, gpu::TextureFormat::RGBA16F);
-  s->field[1] = gpu::Device::createTexture(ANG, RAD, gpu::TextureFormat::RGBA16F);
-  s->field_uniform = gpu::Device::createBuffer(sizeof(FieldUniforms), gpu::BufferUsage::Uniform);
-  s->warp_uniform  = gpu::Device::createBuffer(sizeof(WarpUniforms), gpu::BufferUsage::Uniform);
+  s->field = gpu::Device::createTexture(ANG, RAD, gpu::TextureFormat::RGBA16F);
+  s->particle_buf = gpu::Device::createBuffer(MAX_PARTICLES * 4 * sizeof(float), gpu::BufferUsage::Storage);
+  s->particle_uniform = gpu::Device::createBuffer(sizeof(ParticleUniforms), gpu::BufferUsage::Uniform);
+  s->blob_uniform = gpu::Device::createBuffer(sizeof(BlobUniforms), gpu::BufferUsage::Uniform);
+  s->warp_uniform = gpu::Device::createBuffer(sizeof(WarpUniforms), gpu::BufferUsage::Uniform);
   s->samp_field = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::Repeat);
   s->samp_in    = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   return s;
@@ -168,9 +187,10 @@ void* create() {
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->field[0].release();
-  s->field[1].release();
-  s->field_uniform.release();
+  s->field.release();
+  s->particle_buf.release();
+  s->particle_uniform.release();
+  s->blob_uniform.release();
   s->warp_uniform.release();
   s->samp_field.release();
   s->samp_in.release();
@@ -180,11 +200,10 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  if (!s_pso_field.valid() || !s_pso_warp.valid()) return;
-  s->cleared = false;
-  s->cur = 0;
+  if (!s_pso_particles.valid() || !s_pso_blob.valid() || !s_pso_warp.valid()) return;
+  s->seeded = false;
   s->frame = 0;
-  s->burst_env = 0.0f;
+  s->pulse_pending = false;
   s->initialized = true;
 }
 
@@ -193,11 +212,6 @@ void tick(void* self, double dt) {
   if (!s) return;
   s->dt = (float)dt;
   s->frame++;
-  // Decay the trigger burst → a tapering train of pulses. wave_decay then fades
-  // each emitted ring further as it travels outward (so a higher wave_decay
-  // tails off faster, as observed).
-  s->burst_env *= std::exp(-(float)dt / BURST_TAU);
-  if (s->burst_env < 1e-3f) s->burst_env = 0.0f;
 }
 
 void on_resolume_param(void*, long long, double) {}
@@ -211,26 +225,26 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const char* p = pb + off[i];
     int l = len[i];
     if      (state::pathIs(p, l, "distortion"))    s->distortion = state::patchFloat(i);
-    else if (state::pathIs(p, l, "rate"))          s->rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "count"))         s->count = state::patchInt(i);
     else if (state::pathIs(p, l, "wave_speed"))    s->wave_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "scale"))         s->scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "density"))       s->density = state::patchFloat(i);
+    else if (state::pathIs(p, l, "spread"))        s->spread = state::patchFloat(i);
     else if (state::pathIs(p, l, "wave_decay"))    s->wave_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "soften"))        s->soften = state::patchFloat(i);
     else if (state::pathIs(p, l, "grain"))         s->grain = state::patchFloat(i);
     else if (state::pathIs(p, l, "squeeze"))       s->squeeze = state::patchFloat(i);
     else if (state::pathIs(p, l, "render_alpha"))  s->render_alpha = state::patchFloat(i);
-    else if (state::pathIs(p, l, "burst_strength")) s->burst_strength = state::patchFloat(i);
     else if (state::pathIs(p, l, "debug_field"))   s->debug_field = state::patchFloat(i);
     else if (state::pathIs(p, l, "center"))        { auto v = state::patchVec2(i); s->center_x = v.x; s->center_y = v.y; }
     else if (state::pathIs(p, l, "gate")) {
       bool g = state::patchBool(i);
-      if (g && !s->gate_prev) s->burst_env = 1.0f;   // rising edge → fire burst
+      if (g && !s->gate_prev) s->pulse_pending = true;   // rising edge → shock wave
       s->gate_prev = g;
     }
     else if (state::pathIs(p, l, "trigger")) {
       bool t = state::patchFloat(i) != 0.0f;
-      if (t && !s->trigger_prev) s->burst_env = 1.0f; // rising edge → fire burst
+      if (t && !s->trigger_prev) s->pulse_pending = true; // rising edge → shock wave
       s->trigger_prev = t;
     }
   }
@@ -243,45 +257,53 @@ void render(void* self, int vp_w, int vp_h) {
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
-  if (!s->field[0].valid() || !s->field[1].valid()) return;
+  if (!s->field.valid() || !s->particle_buf.valid()) return;
 
-  // Clear both polar buffers once (createTexture isn't zero-guaranteed).
-  if (!s->cleared) {
-    gpu::Device::clear(s->field[0], 0.f, 0.f, 0.f, 0.f);
-    gpu::Device::clear(s->field[1], 0.f, 0.f, 0.f, 0.f);
-    s->cleared = true;
-  }
-
+  int count = s->count;
+  if (count < 1) count = 1;
+  if (count > MAX_PARTICLES) count = MAX_PARTICLES;
   float dt = s->dt;
 
-  // --- Field uniforms (dt-baked → frame-rate independent) ---
-  FieldUniforms fu = {};
-  fu.y_shift   = (s->wave_speed * SPEED_ROWS_PER_SEC * dt) / float(RAD);
-  fu.decay     = std::exp(-s->wave_decay * DECAY_MAX * dt);
-  fu.rate      = s->rate;     // direct threshold: fraction of angular cells injecting
-  fu.sharp     = SHARP_MAX + (SHARP_MIN - SHARP_MAX) * s->soften;
-  fu.ang_cells   = std::round(1.0f + s->density * MAX_CELLS);
-  fu.noise_power = 0.5f + s->grain * 3.5f;   // grain 0→soft(0.5)  1→sparse(4.0)
-  fu.burst       = s->burst_env * s->burst_strength;
-  fu.frame     = s->frame;
-  s->field_uniform.writeOne(fu);
-
-  int rd = s->cur, wr = s->cur ^ 1;
-
-  // Pass 1 — field update (prev → cur).
+  // --- Pass 1: particle pool (seed once, then forward-integrate + recycle) ---
+  ParticleUniforms pu = {};
+  pu.count  = (uint32_t)count;
+  pu.frame  = s->frame;
+  pu.seed   = s->seeded ? 0u : 1u;
+  pu.pulse  = s->pulse_pending ? 1u : 0u;
+  pu.dt     = dt;
+  pu.speed  = s->wave_speed * SPEED_SCALE;
+  pu.spread = s->spread;
+  s->particle_uniform.writeOne(pu);
+  s->seeded = true;
+  s->pulse_pending = false;
   {
     auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_field);
-    cp.setTexture(s->field[rd], 0, 0);
-    cp.setSampler(s->samp_field, 1);
-    cp.setTexture(s->field[wr], 2, 1);
-    cp.setBuffer(s->field_uniform, 3);
-    cp.dispatch((ANG + 7) / 8, (RAD + 7) / 8);
+    cp.setPSO(s_pso_particles);
+    cp.setBuffer(s->particle_buf, 0);
+    cp.setBuffer(s->particle_uniform, 1);
+    cp.dispatch((MAX_PARTICLES + 63) / 64);   // seed covers the whole pool
     cp.end();
   }
 
-  // --- Warp uniforms ---
-  // Cover-square anchor → uv offset (half-extent = 0.5 · maxDim / dim).
+  // --- Pass 2: splat the pool as elongated blobs into the polar field ---
+  BlobUniforms bu = {};
+  bu.count         = (uint32_t)count;
+  bu.ang_halfwidth = AW_WIDE + (AW_THIN - AW_WIDE) * s->density;
+  bu.rad_halflen   = LEN_MIN + (LEN_MAX - LEN_MIN) * s->soften;
+  bu.decay         = s->wave_decay;
+  bu.grain         = s->grain;
+  s->blob_uniform.writeOne(bu);
+  gpu::Device::clear(s->field, 0.f, 0.f, 0.f, 0.f);
+  {
+    auto rp = gpu::RenderPass::beginLoad(s->field);
+    rp.setPSO(s_pso_blob);
+    rp.setBuffer(s->particle_buf, 0);
+    rp.setBuffer(s->blob_uniform, 1);
+    rp.draw(6, count);
+    rp.end();
+  }
+
+  // --- Pass 3: warp + composite ---
   float maxDim = float(vp_w > vp_h ? vp_w : vp_h);
   WarpUniforms wu = {};
   wu.aspect       = float(vp_w) / float(vp_h);
@@ -293,13 +315,11 @@ void render(void* self, int vp_w, int vp_h) {
   wu.center_x     = s->center_x * (0.5f * maxDim / float(vp_w));
   wu.center_y     = s->center_y * (0.5f * maxDim / float(vp_h));
   s->warp_uniform.writeOne(wu);
-
-  // Pass 2 — warp + composite (reads the freshly written buffer).
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_warp);
     cp.setTexture(in, 0, 0);
-    cp.setTexture(s->field[wr], 1, 1);
+    cp.setTexture(s->field, 1, 0);
     cp.setSampler(s->samp_in, 2);
     cp.setSampler(s->samp_field, 3);
     cp.setTexture(out, 4, 1);
@@ -308,7 +328,6 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  s->cur = wr;   // cur now holds the latest field
   gpu::Device::submit();
 }
 

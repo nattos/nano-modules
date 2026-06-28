@@ -25,18 +25,18 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     expect(frame.metadata?.id).toBe('warp.legacy.d_wave');
     const names = frame.params.map(p => p.name);
     expect(names).toContain('distortion');
-    expect(names).toContain('rate');
+    expect(names).toContain('count');
     expect(names).toContain('wave_speed');
     expect(names).toContain('scale');
     expect(names).toContain('density');
+    expect(names).toContain('spread');
     expect(names).toContain('grain');
   });
 
-  it('spawns a radial ripple field (debug overlay)', async () => {
-    // debug_field=1 paints the raw polar strength field (red ramp) regardless
-    // of the input, so this isolates the field-update + polar-lookup passes. A
-    // gate rising edge fires a guaranteed full-circle burst; continuous `rate`
-    // keeps the field populated. Expect a structured (non-uniform) red field.
+  it('builds a structured wave field from the particle pool (debug overlay)', async () => {
+    // debug_field=1 paints the raw polar wave field (red) regardless of the
+    // input, isolating the particle splat + polar lookup. The pool of elongated
+    // blobs makes a structured (non-uniform) field — streaks with gaps between.
     const frame = await runGpuEffectTest({
       module: 'd_wave.wasm',
       bundle: 'legacy',
@@ -44,12 +44,10 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       inputColor: [0.0, 0.0, 0.0, 1.0],
       params: [
         ['distortion', 0.0],   // overlay only — no warp
-        ['rate', 0.8],
-        ['density', 0.7],      // high density used to carve black "valleys"
+        ['count', 400],
+        ['density', 0.6],      // thin streaks
         ['wave_speed', 0.3],
-        ['wave_decay', 0.3],
         ['debug_field', 1.0],
-        ['gate', 1.0],         // rising edge → full-circle burst
       ],
       ticks: 10,
       renderEachTick: true,
@@ -63,46 +61,9 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       if (c.r > 40) lit++;
       if (c.r < 8) dark++;
     });
-    expect(maxR).toBeGreaterThan(60);    // ripples present
+    expect(maxR).toBeGreaterThan(60);    // waves present
     expect(lit).toBeGreaterThan(50);     // a real field, not a stray pixel
-    expect(dark).toBeGreaterThan(50);    // and gaps between rings → structured
-  });
-
-  it('a trigger burst leaves the centre instead of tailing forever', async () => {
-    // rate=0 → no continuous grain, so the trigger is the ONLY source. A clamp
-    // bug used to re-leak the bright CENTRE every frame → an endless comet tail
-    // anchored at the middle. With correct outward advection the burst marches
-    // out and the centre clears once the (decaying) pulse train has passed.
-    const frame = await runGpuEffectTest({
-      module: 'd_wave.wasm',
-      bundle: 'legacy',
-      width: 128, height: 128,
-      inputColor: [0.0, 0.0, 0.0, 1.0],
-      params: [
-        ['rate', 0.0],          // no continuous injection
-        ['distortion', 0.0],
-        ['wave_speed', 0.5],
-        ['wave_decay', 0.4],
-        ['debug_field', 1.0],
-        ['gate', 1.0],          // one rising edge → one burst
-      ],
-      ticks: 40,                // long enough for the train to leave the centre
-      renderEachTick: true,
-      dumpName: 'd_wave_burst_clear',
-    });
-    expect(frame.success).toBe(true);
-    // The clamp bug anchored brightness at the centre (a tail that never left);
-    // correct advection carries the burst OUTWARD, so the ring annulus is
-    // brighter than the centre.
-    let cSum = 0, cN = 0, rSum = 0, rN = 0;
-    frame.forEachPixel((c, x, y) => {
-      const d2 = (x - 64) * (x - 64) + (y - 64) * (y - 64);
-      if (d2 < 14 * 14) { cSum += c.r; cN++; }
-      else if (d2 > 40 * 40 && d2 < 60 * 60) { rSum += c.r; rN++; }
-    });
-    const cMean = cSum / cN, rMean = rSum / rN;
-    expect(cMean).toBeLessThan(6);        // centre cleared (no anchored tail)
-    expect(rMean).toBeGreaterThan(8);     // the burst's energy is out in the ring
+    expect(dark).toBeGreaterThan(50);    // gaps between streaks → structured
   });
 
   it('radially warps a structured input', async () => {
@@ -141,7 +102,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       modules: ['com.nano.core', 'com.nano.legacy'],
       commands: [
         { type: 'createSketch', sketchId: 'dw_warp',
-          sketch: buildChain({ distortion: 1.0, rate: 0.6, wave_speed: 0.4, wave_decay: 0.2, gate: 1.0 }) },
+          sketch: buildChain({ distortion: 1.0, count: 400, spread: 0.6, wave_speed: 0.4 }) },
         { type: 'setTracePoints', tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'dw_warp' } },
         ]},
