@@ -125,6 +125,50 @@ look scary but are just bootstrap:
 - The `.aot` files are a **native** speed sidecar; the web path never loads them.
   Don't chase them.
 
+### 2.9 Baking a 2D-strip LUT? Use the GL texel-centre convention, not `u*(N-1)`
+The nastiest bug of the `lut_collection` (Wire "LUT 2") port, and invisible for a
+long time. The source LUTs are the classic **GPUImage 8×8-tile strips** (a 64³
+cube packed into 512×512: blue selects the 64px tile, red/green index within it
+— the iOS CoreImage CIPhotoEffect look-up tables). Re-baking them into a real
+32³/64³ 3D texture means *resampling the strip*, and the sampler convention is
+load-bearing:
+
+- GL / ISF `IMG_NORM_PIXEL` (and the strip's `0.5/512` + `(0.125 - 1/512)`
+  addressing math) assume **texel centres at `(i+0.5)/N`** — i.e. a normalized
+  `u` maps to texel-space `u*N - 0.5`. Bake with `u*(N-1)` instead and every
+  sample lands **~half a texel off**.
+- Inside a tile that half-texel is harmless. **At the 64px tile boundaries it
+  bleeds the *adjacent blue-tile* into the result.** Dark / low-blue inputs sit
+  right at tile 0's edges, so they pull in higher-blue tiles → wrong, posterized
+  colours (our Process LUT turned dark-blue **red**; `(0,0,0.1)` gave `(74,17,59)`
+  instead of `(0,30,221)`). It corrupts **every preset**, worst in the shadows.
+- The fix is one line in the bake's bilinear: `fx = u*W - 0.5` (then clamp),
+  never `u*(W-1)`. The *runtime* 3D-texture sample (`uvw=(coord*(N-1)+0.5)/N` +
+  hardware trilinear) is correct as-is — a 3D texture has no tiles to bleed
+  across; the bug only ever lives in the **2D-strip → cube bake**.
+
+Two lessons that generalise beyond LUTs (both cost real time here):
+
+- **"We match the reference shader" can be false confidence.** Our Python/E2E
+  reference model had the *identical* `u*(N-1)` bug, so "GPU output == our model"
+  proved nothing against the real Resolume output. Validate against the *external*
+  ground truth (probe the source asset directly, or render the user's own frame
+  and compare), not against a model that shares your assumptions.
+- **A symmetric validator can't catch an asymmetric bug.** "Mono LUT → grayscale"
+  passed the whole time — but *every* cell of a mono LUT is gray regardless of
+  axis orientation or boundary bleed, so it validates nothing about addressing.
+  Add a **chromatic** check: a pure-channel input must stay on-hue (we assert
+  Process pure-blue keeps `B > R`). When a port has an orientation/layout degree
+  of freedom, test the dimension that the freedom actually moves.
+
+Debugging method that worked (per §5 "render and look"): dump the source strip's
+structure directly (tile-grid base values `qx×qy` + within-tile gradients) to
+learn its real layout, then render the user's actual frame through candidate
+models and compare the images — don't reason about it in the abstract. And rule
+things out cheaply: the user noting *"the comp is 8bpp"* killed the bit-depth
+theory, and *"harsh on all presets, none in the original"* proved it was
+systematic (the bake) rather than per-LUT.
+
 ---
 
 ## 3. Where we missed features from the original
@@ -234,6 +278,10 @@ Before calling a port "at parity":
 - [ ] Renders correctly with **no input** wired.
 - [ ] Sliders are `[0,1]`-normalized with internal scaling (IDE 2-decimal clip).
 - [ ] Quality/smoothing stages from the original are present.
+- [ ] Baked/resampled assets (LUT cubes, atlases) sampled with the GL
+      texel-centre convention (`u*N - 0.5`, not `u*(N-1)`); validated against the
+      *external* ground truth, not a model that shares the bake's assumptions
+      (§2.9). A chromatic/asymmetric check, not just a symmetric one.
 - [ ] Re-architecture decisions are documented in the effect header.
 - [ ] Demoed to the live user; "does this match what you remember?" answered yes.
 
