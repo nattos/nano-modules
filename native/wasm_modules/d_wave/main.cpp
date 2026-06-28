@@ -123,7 +123,7 @@ static gpu::RenderPSO  s_pso_blob;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 2, 0},
+  state::init("warp.legacy.d_wave", {1, 2, 1},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,

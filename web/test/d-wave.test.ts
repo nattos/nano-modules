@@ -69,6 +69,37 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     expect(dark).toBeGreaterThan(50);    // gaps → structured grain
   });
 
+  it('low density still covers all directions (no dead axis)', async () => {
+    // At very low density the wave noise has few angular cells; without a
+    // per-frame rotation the dim cell-midpoints sit at fixed angles → a dead
+    // axis (e.g. only left/right fire, top/bottom black). The rotation sweeps
+    // them, so over a handful of frames every cardinal direction sees waves.
+    const frame = await runGpuEffectTest({
+      module: 'd_wave.wasm', bundle: 'legacy', width: 128, height: 128,
+      inputColor: [0.0, 0.0, 0.0, 1.0],
+      params: [
+        ['distortion', 0.0], ['rate', 0.6], ['density', 0.02],
+        ['wave_speed', 0.5], ['damp', 0.0], ['debug_field', 1.0],
+      ],
+      ticks: 16, renderEachTick: true,
+      dumpName: 'd_wave_lowdensity',
+    });
+    expect(frame.success).toBe(true);
+
+    // Lit pixels in the four cardinal mid-radius regions (R/L/T/B).
+    const reg = { R: 0, L: 0, T: 0, B: 0 };
+    frame.forEachPixel((c, x, y) => {
+      const dx = x - 64, dy = y - 64, d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 24 || d > 56 || c.r <= 30) return;
+      if (Math.abs(dx) > Math.abs(dy)) (dx > 0 ? reg.R++ : reg.L++);
+      else (dy > 0 ? reg.B++ : reg.T++);
+    });
+    // Every direction must have waves — none of the four can be dead.
+    for (const k of ['R', 'L', 'T', 'B'] as const) {
+      expect(reg[k]).toBeGreaterThan(15);
+    }
+  });
+
   it('dampening flashes subtract from the wave field', async () => {
     // A near-full wave (rate=1) lit via the debug overlay. Turning the flash
     // layer on (damp + many fast flashes) carves streaks of reduced strength,

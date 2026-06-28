@@ -61,7 +61,13 @@ float dw_noise01(float a01, float cells, uint seed) {
 // (the original's per-frame FillArray Source:Random). No fixed structure → no
 // valleys.
 float dw_inject(float a01, float cells, uint frame, float rate, float power, float burst) {
-  float r       = dw_noise01(a01, cells, dw_hash(frame * 0x9E3779B1u));
+  // Rotate the noise by a per-frame random angular phase. Without this the cell
+  // midpoints (averages of adjacent randoms → low variance, dimmer) sit at FIXED
+  // angles, so at low `cells` the rate threshold carves a permanent dead axis
+  // (e.g. only left/right fire). Rotating sweeps those dim spots around the
+  // circle every frame → omnidirectional coverage even at very low density.
+  float phase   = dw_unit(dw_hash(frame * 0x2545F491u));
+  float r       = dw_noise01(a01 + phase, cells, dw_hash(frame * 0x9E3779B1u));
   float effRate = saturate(rate + burst);          // burst fires more segments
   float thr     = 1.0 - effRate;
   float n       = saturate((r - thr) / max(effRate, 1e-3));
