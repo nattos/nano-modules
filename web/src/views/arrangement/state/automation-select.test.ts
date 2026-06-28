@@ -88,3 +88,66 @@ describe('automation field selection', () => {
     expect(store.autoField(paths.clip(trk, b))!.field).toBe('prescale');
   });
 });
+
+describe('automation lane removal', () => {
+  beforeEach(() => {
+    store.clearSelection();
+    store.selectedAutoField = {};
+  });
+
+  it('removeAutomationLane deletes a TRACK lane and clears a selection pointing at it', () => {
+    const trk = store.addTrack();
+    store.insertTrackDeviceAt(trk, 0, 'color.saturate');
+    const dev = store.trackById(trk)!.sketch.devices[0];
+    const owner = paths.track(trk);
+    store.selectAutoField(owner, dev.id, 'amount');
+    const laneId = store.ensureSelectedTrackLane(trk);
+    expect(store.trackById(trk)!.automation.length).toBe(1);
+
+    store.removeAutomationLane(laneId);
+    expect(store.trackById(trk)!.automation.length).toBe(0); // gone
+    expect(store.autoField(owner)).toBeNull();               // selection cleared (no resurrect)
+  });
+
+  it('removeAutomationLane deletes a CLIP lane', () => {
+    const trk = store.addTrack();
+    const clip = store.createEmptyClip(trk, 0, 8)!.split('/')[2];
+    store.addClipDeviceType(trk, clip, 'color.saturate');
+    const dev = store.trackById(trk)!.clips.find((c) => c.id === clip)!.sketch.devices[0];
+    store.selectAutoField(paths.clip(trk, clip), dev.id, 'amount');
+    const laneId = store.ensureSelectedClipLane(trk, clip);
+    expect(store.trackById(trk)!.clips.find((c) => c.id === clip)!.automation.length).toBe(1);
+
+    store.removeAutomationLane(laneId);
+    expect(store.trackById(trk)!.clips.find((c) => c.id === clip)!.automation.length).toBe(0);
+  });
+
+  it('removing a TRACK device drops its orphan automation lanes + clears its field selection', () => {
+    const trk = store.addTrack();
+    store.insertTrackDeviceAt(trk, 0, 'color.saturate');
+    const dev = store.trackById(trk)!.sketch.devices[0];
+    const owner = paths.track(trk);
+    store.selectAutoField(owner, dev.id, 'amount');
+    store.ensureSelectedTrackLane(trk);
+    expect(store.trackById(trk)!.automation.length).toBe(1);
+
+    store.removeTrackDevice(trk, dev.id);
+    expect(store.trackById(trk)!.sketch.devices.length).toBe(0);
+    expect(store.trackById(trk)!.automation.length).toBe(0); // orphan lane removed
+    expect(store.autoField(owner)).toBeNull();               // dangling selection cleared
+  });
+
+  it('removing a CLIP device drops its orphan automation lanes', () => {
+    const trk = store.addTrack();
+    const clip = store.createEmptyClip(trk, 0, 8)!.split('/')[2];
+    store.addClipDeviceType(trk, clip, 'color.saturate');
+    const dev = store.trackById(trk)!.clips.find((c) => c.id === clip)!.sketch.devices[0];
+    store.selectAutoField(paths.clip(trk, clip), dev.id, 'amount');
+    store.ensureSelectedClipLane(trk, clip);
+    expect(store.trackById(trk)!.clips.find((c) => c.id === clip)!.automation.length).toBe(1);
+
+    store.removeClipDevice(trk, clip, dev.id);
+    expect(store.trackById(trk)!.clips.find((c) => c.id === clip)!.automation.length).toBe(0);
+    expect(store.autoField(paths.clip(trk, clip))).toBeNull();
+  });
+});

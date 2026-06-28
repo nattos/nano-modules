@@ -352,9 +352,25 @@ export class ArrGrid extends MobxLitElement {
       overflow: hidden;
     }
     .auto-header-label span {
+      flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    /* Delete-lane button, revealed on row hover (a permanent × is too noisy). */
+    .sb.del {
+      --icon-size: 9px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      color: var(--app-text-color2);
+    }
+    .row.auto:hover .sb.del { opacity: 0.7; }
+    .sb.del:hover {
+      opacity: 1;
+      border-color: var(--app-error);
+      color: var(--app-error);
     }
     .auto-lane {
       position: relative;
@@ -896,6 +912,11 @@ export class ArrGrid extends MobxLitElement {
             style="padding-left: calc(var(--app-sp-3) + ${(store.isMainBus(track) ? 0 : store.trackDepth(track)) * GROUP_INDENT}px)"
           >
             <ui-icon icon="la-bezier-curve"></ui-icon><span>${lane.label}</span>
+            <button
+              class="sb del"
+              title="Delete this automation lane"
+              @pointerdown=${(e: Event) => { e.stopPropagation(); store.removeAutomationLane(lane.id); }}
+            ><ui-icon icon="la-times"></ui-icon></button>
           </div>
         </div>
         <div class="auto-lane">
@@ -1518,13 +1539,11 @@ export class ArrGrid extends MobxLitElement {
     // normal row here (it resolves to the global all-tracks scope downstream). A drag
     // below extends it into a box/slice.
     const trackId = startRow.trackId;
-    let laneId = startRow.laneId;
-    // A clip-row click in automation mode on a track/group with a selected field edits
-    // that field's automation — materialize its lane so the caret scopes there (and
-    // clips aren't selected).
-    if (!laneId && store.automationMode && store.autoField(`track/${trackId}`)) {
-      laneId = store.ensureSelectedTrackLane(trackId);
-    }
+    const laneId = startRow.laneId;
+    // NB: a clip-row click does NOT materialize an automation lane — lanes are only
+    // created by an explicit pin or by actually DRAWING on the clip-row overlay
+    // (its editor calls ensureLaneId on draw). Merely clicking/selecting must not
+    // mint a lane.
     store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, anchorLaneId: laneId, headBeat: qBeat, headTrackId: trackId, headLaneId: laneId });
     // Clicking a clip body focuses it right away; a drag below overrides this.
     if (clickFocusPath) store.selectClipOnly(clickFocusPath);

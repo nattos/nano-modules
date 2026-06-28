@@ -2755,7 +2755,12 @@ export class ArrangementStore {
         c.sketch.wires = c.sketch.wires.filter(
           (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
       }
+      // A device's automation lanes have no target once it's gone — drop them so
+      // they don't linger as orphan lanes (their points would never apply).
+      c.automation = c.automation.filter((l) => l.targetDeviceId !== deviceId);
     }, coalesceKey);
+    const owner = `clip/${trackId}/${clipId}`;
+    if (this.selectedAutoField[owner]?.deviceId === deviceId) this.clearAutoField(owner);
   }
 
   /** Reorder: move the clip device at `from` to insertion index `to`. */
@@ -2819,7 +2824,11 @@ export class ArrangementStore {
         t.sketch.wires = t.sketch.wires.filter(
           (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
       }
+      // Drop the device's now-orphan automation lanes (their target is gone).
+      t.automation = t.automation.filter((l) => l.targetDeviceId !== deviceId);
     }, coalesceKey);
+    const owner = paths.track(trackId);
+    if (this.selectedAutoField[owner]?.deviceId === deviceId) this.clearAutoField(owner);
   }
 
   /** Reorder: move the track device at `from` to insertion index `to`. */
@@ -4051,6 +4060,37 @@ export class ArrangementStore {
     });
     this.clearAutoField(ownerKey);
     return laneId;
+  }
+
+  /** Delete an automation lane (track OR clip) by id. Also clears any selected
+   *  field that points at it, so its clip-row draw overlay doesn't immediately
+   *  re-offer (and a stray draw can't resurrect the lane the user just removed). */
+  removeAutomationLane(laneId: string) {
+    let clearOwner: string | null = null;
+    this.mutate('remove automation lane', (d) => {
+      for (const t of d.tracks) {
+        const ti = t.automation.findIndex((l) => l.id === laneId);
+        if (ti >= 0) {
+          const lane = t.automation[ti];
+          const sel = this.selectedAutoField[paths.track(t.id)];
+          if (sel && sel.deviceId === lane.targetDeviceId && sel.field === lane.targetField) clearOwner = paths.track(t.id);
+          t.automation.splice(ti, 1);
+          return;
+        }
+        for (const c of t.clips) {
+          const ci = c.automation.findIndex((l) => l.id === laneId);
+          if (ci >= 0) {
+            const lane = c.automation[ci];
+            const owner = `clip/${t.id}/${c.id}`;
+            const sel = this.selectedAutoField[owner];
+            if (sel && sel.deviceId === lane.targetDeviceId && sel.field === lane.targetField) clearOwner = owner;
+            c.automation.splice(ci, 1);
+            return;
+          }
+        }
+      }
+    });
+    if (clearOwner) this.clearAutoField(clearOwner);
   }
 
   /** Flip all of a track's automation lanes open/closed together. */
