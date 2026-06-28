@@ -90,6 +90,14 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var d_wave field particles warp motion blob_vs blob_fs
 echo "  d_wave shaders compiled (SPV: field + particles + warp + motion + blob_vs/fs)"
 
+# lut_collection — "LUT Collection 1": baked preset colour LUTs (Wire "LUT 2").
+#   fill  (compute) — copy a baked 32^3 rgba8 cube (storage buffer) into a 3D texture.
+#   apply (compute) — pow pregain curve + single hardware-trilinear 3D LUT sample + mix.
+compile_shaders_compute_var_spv lut_collection fill
+compile_shaders_compute_var_spv lut_collection apply
+_emit_spv_header_var lut_collection fill apply
+echo "  lut_collection shaders compiled (SPV: fill + apply)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
 compile_shaders_compute_spv blur
 echo "  blur shader compiled (SPV) for effect_blur.h"
@@ -111,6 +119,7 @@ wasm_build \
   ../bicolor_grad/main.cpp \
   ../glisten/main.cpp \
   ../double_chamber/main.cpp \
-  ../d_wave/main.cpp
+  ../d_wave/main.cpp \
+  ../lut_collection/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

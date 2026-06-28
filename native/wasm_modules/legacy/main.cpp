@@ -17,6 +17,8 @@ NANO_DECLARE_INSTANCE_EFFECT(bicolor_grad)
 NANO_DECLARE_INSTANCE_EFFECT(glisten)
 NANO_DECLARE_INSTANCE_EFFECT(double_chamber)
 NANO_DECLARE_INSTANCE_EFFECT(d_wave)
+NANO_DECLARE_INSTANCE_EFFECT(lut_collection)
+namespace lut_collection { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -76,6 +78,20 @@ void nano_module_main() {
         "warp",
         "distortion,ripple,wave,warp,radial,darkburst,legacy",
         NANO_INSTANCE_LIFECYCLE(d_wave),
+    });
+
+    nano::registerEffect({
+        2,
+        "color.legacy.lut_collection",
+        "LUT Collection 1",
+        "Preset colour LUT grader. Applies one of 13 baked film/stylize look-up "
+        "tables with a pregain tone push and a mix amount. The LUTs are baked "
+        "into real 32³ 3D textures and applied in a single hardware-trilinear "
+        "sample. v2 of the shipped Resolume Wire \"LUT 2\" patch.",
+        "color",
+        "lut,color,grade,film,look,preset,cube,legacy",
+        NANO_INSTANCE_LIFECYCLE(lut_collection),
+        &lut_collection::is_identity,
     });
 }
 
