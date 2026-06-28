@@ -204,6 +204,11 @@ export class EnvelopeGraph extends MobxLitElement {
   private onPointerDown(e: PointerEvent) {
     if (!this.interactive) return;
     if (e.button !== 0) return;
+    // Track lane with no curve shown (no automation field selected): there's nothing
+    // to edit, so don't claim the pointer — let it bubble to the timeline behind us
+    // (set the caret / region). Without this the hidden default curve still hit-tests
+    // at the lane's vertical center, swallowing clicks there. (bug: A-mode dead band)
+    if (this.hideCurve && this.bubbleOffCurve) { this.mode = 'none'; return; }
     const [px, py] = this.eventXY(e);
     this.began = false;
     this.startPx = px; this.startPy = py;

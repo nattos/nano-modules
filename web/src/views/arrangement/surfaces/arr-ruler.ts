@@ -245,8 +245,12 @@ export class ArrRuler extends MobxLitElement {
       const x0 = grid.beatToX(store.loopStartBeat);
       const x1 = grid.beatToX(store.loopEndBeat);
       if (on) {
-        ctx.fillStyle = 'rgba(88,196,130,0.22)';
-        ctx.fillRect(x0, 0, x1 - x0, 6); // brace bar between markers — enabled only
+        // Shaded band across the full ruler height between the markers, with a
+        // brighter brace bar at the top (enabled only).
+        ctx.fillStyle = 'rgba(88,196,130,0.14)';
+        ctx.fillRect(x0, 0, x1 - x0, h);
+        ctx.fillStyle = 'rgba(88,196,130,0.55)';
+        ctx.fillRect(x0, 0, x1 - x0, 6);
       }
       ctx.fillStyle = on ? 'rgba(88,196,130,0.9)' : 'rgba(120,150,135,0.4)';
       ctx.fillRect(x0, 0, 2, h);

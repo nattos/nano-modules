@@ -628,8 +628,16 @@ export class ArrClip extends MobxLitElement {
       store.selectClipOnly(path); // keep the box → split + move region
     } else {
       store.select(path); // box tracks the clip
-      // …and the play-from cursor (+ playhead, if paused) jumps to the clip start.
-      store.setPlayFrom(this.clip.startBeat);
+      // Keep the time box = the clip's range, with play-from (the caret HEAD) at the
+      // clip START — so Space plays from the clip and Cmd+L loops it. Using the box
+      // form (anchor=end, head=start) instead of setPlayFrom, which would collapse
+      // the box to a zero-width caret (anchor==head ⇒ no time selection).
+      store.setTimeSelection(
+        this.clip.startBeat,
+        this.clip.startBeat + this.clip.lengthBeat,
+        [this.trackId],
+        { movePlayhead: false },
+      );
     }
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };
