@@ -11,7 +11,7 @@ StructuredBuffer<uint> data : register(t1);
 // LUT side length (matches lut_data.h LUT_DIM). Querying a write-access 3D
 // storage texture's dimensions isn't portable, so it's a compile-time const
 // and the dispatch covers exactly N^3 threads.
-static const uint N = 32u;
+static const uint N = 64u;
 
 [numthreads(4, 4, 4)]
 void main(uint3 gid : SV_DispatchThreadID) {

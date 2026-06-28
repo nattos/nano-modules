@@ -80,6 +80,23 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
     process.expectDifferentFrom(mono, 100);
   });
 
+  it('trilinearly interpolates between LUT cells (not nearest-neighbour)', async () => {
+    // Two input greys that sit INSIDE a single LUT cell (64^3 cell width along
+    // an axis = 1/63 ≈ 0.0159; nodes 31=0.4921 and 32=0.5079 bracket both
+    // samples). Nearest-neighbour would snap them to the same node -> identical
+    // output. Hardware trilinear varies the output smoothly across the cell.
+    const grade = (v: number) => runGpuEffectTest({
+      module: 'lut_collection.wasm', bundle: 'legacy',
+      inputColor: [v, v, v, 1.0],
+      params: [['lut', 0], ['amount', 1.0]],
+    }).then(f => { expect(f.success).toBe(true); return f.averageColor(); });
+
+    const lo = await grade(0.498);
+    const hi = await grade(0.505);
+    const spread = Math.abs(lo.r - hi.r) + Math.abs(lo.g - hi.g) + Math.abs(lo.b - hi.b);
+    expect(spread).toBeGreaterThan(1);   // 0 would mean nearest-neighbour
+  });
+
   it('pregain reshapes the grade', async () => {
     const run = (pregain: number, dump: string) => runGpuEffectTest({
       module: 'lut_collection.wasm', bundle: 'legacy',

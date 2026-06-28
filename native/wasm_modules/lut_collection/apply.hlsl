@@ -21,7 +21,7 @@ cbuffer Uniforms : register(b4) {
   float _pad;
 }
 
-static const float LUT_N = 32.0;
+static const float LUT_N = 64.0;
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
