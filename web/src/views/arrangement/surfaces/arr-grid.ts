@@ -628,6 +628,13 @@ export class ArrGrid extends MobxLitElement {
     void store.selectedWireId;
     void store.selection.size;
     void store.headerWidth; // re-render (→ updated() resets --arr-hw) on resize
+    // Selecting an automation FIELD must re-render so its clip-row overlay curve
+    // shows. `store.autoField()` is read deep inside renderTrack, but it's an
+    // (auto)action under makeAutoObservable — reads there are UNTRACKED — so touch
+    // the backing observable directly here to establish the dependency. (Without
+    // this the overlay only appeared after some other re-render, e.g. a header
+    // resize.) The whole map is replaced on select/clear, so a ref read suffices.
+    void store.selectedAutoField;
 
     const tracks = store.displayTracks;
     const totalH = this.contentHeight(tracks);
