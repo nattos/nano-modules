@@ -109,6 +109,23 @@ export class ArrAutomationEditor extends MobxLitElement {
     super.connectedCallback();
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
+      this.syncGraph();
+    };
+    this.rafId = requestAnimationFrame(tick);
+  }
+
+  /** Lit calls this after every reactive property change. Sync the graph here too
+   *  (not ONLY from the rAF) so a property flip — e.g. `hideCurve` when a field is
+   *  selected — reflects DETERMINISTICALLY, instead of waiting for a rAF tick that
+   *  can be throttled while the page/lane is idle (the "automation curve only shows
+   *  up sometimes" bug). The rAF still drives the continuous bits (playhead cursor,
+   *  zoom/pan grid). */
+  updated() {
+    this.syncGraph();
+  }
+
+  /** Push the current editor config onto the child <envelope-graph>. Idempotent. */
+  private syncGraph() {
       const g = this.graph;
       if (!g) return;
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
@@ -179,8 +196,6 @@ export class ArrAutomationEditor extends MobxLitElement {
         g.xUnmap = null;
         g.gridLines = null;
       }
-    };
-    this.rafId = requestAnimationFrame(tick);
   }
   disconnectedCallback() {
     super.disconnectedCallback();
