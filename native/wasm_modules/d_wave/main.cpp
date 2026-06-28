@@ -42,6 +42,7 @@ static constexpr float DECAY_MAX          = 4.0f;    // wave_decay=1 → e-folds
 static constexpr float SHARP_MIN          = 3.0f;    // soften=1 → wide ring
 static constexpr float SHARP_MAX          = 60.0f;   // soften=0 → tight ring
 static constexpr float MAX_CELLS          = 47.0f;   // density=1 → 48 noise cells
+static constexpr float BURST_TAU          = 0.18f;   // trigger-burst envelope half-life (s)
 
 struct FieldUniforms {
   float y_shift, decay, rate, sharp;
@@ -87,14 +88,14 @@ struct State {
   // Per-frame, set in tick().
   float    dt = 1.0f / 60.0f;
   uint32_t frame = 0;
-  float    pending_burst = 0.0f; // consumed by the next field pass
+  float    burst_env = 0.0f;     // decaying trigger envelope → tapering pulse train
 };
 
 static gpu::ComputePSO s_pso_field;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 0, 2},
+  state::init("warp.legacy.d_wave", {1, 0, 3},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
@@ -180,6 +181,7 @@ void init(void* self) {
   s->cleared = false;
   s->cur = 0;
   s->frame = 0;
+  s->burst_env = 0.0f;
   s->initialized = true;
 }
 
@@ -188,6 +190,11 @@ void tick(void* self, double dt) {
   if (!s) return;
   s->dt = (float)dt;
   s->frame++;
+  // Decay the trigger burst → a tapering train of pulses. wave_decay then fades
+  // each emitted ring further as it travels outward (so a higher wave_decay
+  // tails off faster, as observed).
+  s->burst_env *= std::exp(-(float)dt / BURST_TAU);
+  if (s->burst_env < 1e-3f) s->burst_env = 0.0f;
 }
 
 void on_resolume_param(void*, long long, double) {}
@@ -214,12 +221,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "center"))        { auto v = state::patchVec2(i); s->center_x = v.x; s->center_y = v.y; }
     else if (state::pathIs(p, l, "gate")) {
       bool g = state::patchBool(i);
-      if (g && !s->gate_prev) s->pending_burst = s->burst_strength;   // rising edge
+      if (g && !s->gate_prev) s->burst_env = 1.0f;   // rising edge → fire burst
       s->gate_prev = g;
     }
     else if (state::pathIs(p, l, "trigger")) {
       bool t = state::patchFloat(i) != 0.0f;
-      if (t && !s->trigger_prev) s->pending_burst = s->burst_strength; // rising edge
+      if (t && !s->trigger_prev) s->burst_env = 1.0f; // rising edge → fire burst
       s->trigger_prev = t;
     }
   }
@@ -251,10 +258,9 @@ void render(void* self, int vp_w, int vp_h) {
   fu.sharp     = SHARP_MAX + (SHARP_MIN - SHARP_MAX) * s->soften;
   fu.ang_cells = std::round(1.0f + s->density * MAX_CELLS);
   fu.spawn_amp = 1.0f;
-  fu.burst     = s->pending_burst;
+  fu.burst     = s->burst_env * s->burst_strength;
   fu.frame     = s->frame;
   s->field_uniform.writeOne(fu);
-  s->pending_burst = 0.0f;       // consumed
 
   int rd = s->cur, wr = s->cur ^ 1;
 

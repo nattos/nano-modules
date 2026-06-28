@@ -72,12 +72,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float2 uv = (float2(gid.xy) + 0.5) / float2(W, H);
 
-  // Propagate: row y is fed from row (y - y_shift) of the previous frame, so
-  // content moves toward larger radius (outward). Clamp the source row into
-  // [0,1] so the Repeat sampler (needed for the angle wrap in the warp pass)
-  // doesn't wrap the radius axis. X is unshifted, so its addressing is moot.
-  float ySrc = clamp(uv.y - y_shift, 0.0, 1.0);
-  float prev = prevField.SampleLevel(samp, float2(uv.x, ySrc), 0).r;
+  // Advect outward: row y is fed from row (y - y_shift) of the previous frame,
+  // so content moves toward larger radius. Rows inside the spawn radius
+  // (y < y_shift) have nothing flowing into them from further in — they must
+  // read ZERO, not clamp to row 0. Clamping re-copies the bright centre into
+  // the inner band every frame, which then advects out → a comet tail of
+  // phantom pulses trailing each real one. (ySrc stays < 1, so no radius wrap.)
+  float ySrc = uv.y - y_shift;
+  float prev = (ySrc > 0.0) ? prevField.SampleLevel(samp, float2(uv.x, ySrc), 0).r : 0.0;
   float val = prev * decay;
 
   // Inject fresh per-angle noise into the centre band (row ≈ 0). The band is a

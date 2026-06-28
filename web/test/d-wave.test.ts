@@ -67,6 +67,42 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     expect(dark).toBeGreaterThan(50);    // and gaps between rings → structured
   });
 
+  it('a trigger burst leaves the centre instead of tailing forever', async () => {
+    // rate=0 → no continuous grain, so the trigger is the ONLY source. A clamp
+    // bug used to re-leak the bright CENTRE every frame → an endless comet tail
+    // anchored at the middle. With correct outward advection the burst marches
+    // out and the centre clears once the (decaying) pulse train has passed.
+    const frame = await runGpuEffectTest({
+      module: 'd_wave.wasm',
+      bundle: 'legacy',
+      width: 128, height: 128,
+      inputColor: [0.0, 0.0, 0.0, 1.0],
+      params: [
+        ['rate', 0.0],          // no continuous injection
+        ['distortion', 0.0],
+        ['wave_speed', 0.5],
+        ['wave_decay', 0.4],
+        ['debug_field', 1.0],
+        ['gate', 1.0],          // one rising edge → one burst
+      ],
+      ticks: 40,                // long enough for the train to leave the centre
+      renderEachTick: true,
+      dumpName: 'd_wave_burst_clear',
+    });
+    expect(frame.success).toBe(true);
+    // The clamp bug anchored brightness at the centre (a tail that never left);
+    // correct advection carries the burst OUTWARD, so the ring annulus is
+    // brighter than the centre.
+    let cSum = 0, cN = 0, rSum = 0, rN = 0;
+    frame.forEachPixel((c, x, y) => {
+      const d2 = (x - 64) * (x - 64) + (y - 64) * (y - 64);
+      if (d2 < 14 * 14) { cSum += c.r; cN++; }
+      else if (d2 > 40 * 40 && d2 < 60 * 60) { rSum += c.r; rN++; }
+    });
+    const cMean = cSum / cN, rMean = rSum / rN;
+    expect(rMean).toBeGreaterThan(cMean + 20);   // energy marched out of the centre
+  });
+
   it('radially warps a structured input', async () => {
     // source.grid → d_wave. distortion=0 is a pure passthrough (warpFactor==1),
     // so run A is the clean grid (deterministic, static generator). Run B warps
