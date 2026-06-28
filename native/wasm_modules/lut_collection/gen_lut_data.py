@@ -54,12 +54,17 @@ DEFAULT_SRC = os.path.expanduser(
 
 
 def sample_bilinear(px, W, H, u, v):
-    """Bilinear sample of a top-origin RGB image at normalized (u,v) in [0,1]."""
-    fx = min(max(u, 0.0), 1.0) * (W - 1)
-    fy = min(max(v, 0.0), 1.0) * (H - 1)
+    """Bilinear sample of a top-origin RGB image at normalized (u,v) in [0,1],
+    matching GL/IMG_NORM_PIXEL convention: texel centres at (i+0.5)/N, so the
+    sample position in texel space is u*N - 0.5 (NOT u*(N-1)). This matters at
+    the strip's 64px tile boundaries — using u*(N-1) shifts ~half a texel and
+    bleeds the adjacent blue-tile in, which corrupts the LUT (harsh/red darks)."""
+    fx = min(max(u, 0.0), 1.0) * W - 0.5
+    fy = min(max(v, 0.0), 1.0) * H - 0.5
     x0 = int(math.floor(fx)); y0 = int(math.floor(fy))
-    x1 = min(x0 + 1, W - 1);  y1 = min(y0 + 1, H - 1)
     tx = fx - x0; ty = fy - y0
+    x0 = max(0, min(x0, W - 1)); y0 = max(0, min(y0, H - 1))
+    x1 = min(x0 + 1, W - 1);     y1 = min(y0 + 1, H - 1)
     def g(x, y):
         return px[y * W + x]
     c00 = g(x0, y0); c10 = g(x1, y0); c01 = g(x0, y1); c11 = g(x1, y1)
@@ -128,16 +133,25 @@ def main():
         print(f"baking {name:30s} <- {fname}")
         luts.append((name, bake_one(p)))
 
-    # --- validation: Mono should output grayscale (R==G==B) for any input.
+    # --- validation: Mono must be grayscale (R==G==B) everywhere AND the axes
+    # must be oriented right. Mono-gray alone is insufficient (every cell of a
+    # mono LUT is gray even with scrambled axes), so also assert a chromatic LUT
+    # keeps a pure-channel input on-hue: Process pure-blue stays blue-dominant
+    # (the tile-boundary bake bug turned it red — this guards against that).
+    N = LUT_DIM
+    def cell(data, x, y, z):
+        i = (x + y * N + z * N * N) * 4
+        return tuple(data[i:i + 3])
     for name, data in luts:
         if name == "Mono":
-            N = LUT_DIM
-            worst = 0
-            for (x, y, z) in [(8, 24, 16), (31, 0, 7), (15, 15, 15), (4, 28, 20)]:
-                idx = (x + y * N + z * N * N) * 4
-                rgb = data[idx:idx + 3]
-                worst = max(worst, max(rgb) - min(rgb))
-            print(f"   [validate] Mono max channel spread = {worst} (expect small => addressing OK)")
+            worst = max(max(c) - min(c) for c in
+                       [cell(data, 8, 24, 16), cell(data, 31, 0, 7), cell(data, 4, 28, 20)])
+            print(f"   [validate] Mono max channel spread = {worst} (must be ~0)")
+            assert worst <= 2, "Mono not grayscale -> axis/orientation bug"
+        if name == "Process":
+            pb = cell(data, 0, 0, N - 1)   # pure blue input
+            print(f"   [validate] Process pure-blue -> {pb} (must be blue-dominant, B>R)")
+            assert pb[2] > pb[0], "Process pure-blue not blue -> tile-boundary bake bug"
 
     n_total = sum(len(d) for _, d in luts)
     flat = bytearray()
