@@ -312,11 +312,13 @@ export class ArrGrid extends MobxLitElement {
     .lane.bypassed {
       opacity: 0.4;
     }
+    /* Gold solo tint as background-COLOR so it layers under the group's stripe
+       background-IMAGE (a soloed group shows the tint through the stripe gaps). */
     .lane.soloed {
-      background: rgba(214, 161, 60, 0.05);
+      background-color: rgba(214, 161, 60, 0.08);
     }
     .lane.group {
-      background: repeating-linear-gradient(
+      background-image: repeating-linear-gradient(
         -45deg,
         transparent,
         transparent 7px,

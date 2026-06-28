@@ -52,7 +52,11 @@ export class ArrangementApp extends MobxLitElement {
   static styles = css`
     :host {
       display: grid;
-      grid-template-columns: 1fr auto auto;
+      /* minmax(0, 1fr): the timeline column must be allowed to shrink to ZERO so the
+         side panel + tab bar can never push past the viewport's right edge. A bare
+         '1fr' is minmax(auto, 1fr), whose 'auto' min keeps the timeline at its
+         content width and lets the side panel overflow off-screen. */
+      grid-template-columns: minmax(0, 1fr) auto auto;
       grid-template-rows: auto 1fr auto;
       grid-template-areas:
         'transport side tabbar'
@@ -99,6 +103,8 @@ export class ArrangementApp extends MobxLitElement {
     }
     .side {
       grid-area: side;
+      /* Hard ceiling regardless of the dragged width (tab bar + a sliver of timeline). */
+      max-width: calc(100vw - 100px);
       position: relative;
       display: flex;
       flex-direction: column;
@@ -489,6 +495,14 @@ export class ArrangementApp extends MobxLitElement {
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
       e.preventDefault();
       store.splitAtCursor(); // split at the caret
+    } else if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === 'b') {
+      // Cmd+Option+B → collapse/expand the bottom (clip-details) panel.
+      e.preventDefault();
+      store.toggleClipView();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+      // Cmd+B → collapse/expand the side (inspector) panel.
+      e.preventDefault();
+      store.setSideCollapsed(!store.sideCollapsed);
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'i') {
       e.preventDefault();
       store.insertTime();
