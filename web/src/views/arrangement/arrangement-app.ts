@@ -495,8 +495,8 @@ export class ArrangementApp extends MobxLitElement {
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
       e.preventDefault();
       store.splitAtCursor(); // split at the caret
-    } else if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === 'b') {
-      // Cmd+Option+B → collapse/expand the bottom (clip-details) panel.
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
+      // Cmd+Shift+B → collapse/expand the bottom (clip-details) panel.
       e.preventDefault();
       store.toggleClipView();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
