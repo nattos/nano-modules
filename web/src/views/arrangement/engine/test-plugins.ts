@@ -19,7 +19,7 @@ import { store } from '../state/store';
 
 interface FieldSpec { key: string; min?: number; max?: number; def?: number; out?: boolean; }
 
-function plugin(id: string, generator: boolean, fields: FieldSpec[]): PluginInfo {
+function plugin(id: string, generator: boolean, fields: FieldSpec[], extraCaps: string[] = []): PluginInfo {
   const schema: Record<string, any> = {};
   fields.forEach((f, i) => {
     schema[f.key] = {
@@ -43,25 +43,26 @@ function plugin(id: string, generator: boolean, fields: FieldSpec[]): PluginInfo
       .map((f, i) => ({ index: i, name: f.key, type: 10, defaultValue: f.def ?? 0, min: f.min ?? 0, max: f.max ?? 1 })),
     io: [],
     schema,
-    capabilities: generator ? ['generator'] : [],
+    capabilities: [...(generator ? ['generator'] : []), ...extraCaps],
   };
 }
 
 /** The minimal plugin set the offline arrangement tests reference. */
 export const TEST_PLUGINS: PluginInfo[] = [
-  plugin('source.solid_color', true, []),
+  plugin('source.solid_color', true, [], ['time_independent']),
+  // Time-VARYING generator (noise evolves) — no time_independent tag.
   plugin('source.noise', true, [{ key: 'scale', def: 0.5 }, { key: 'contrast', min: -1, max: 1 }]),
   plugin('source.video.file', true, []),
-  plugin('color.invert', false, []),
-  plugin('color.saturate', false, [{ key: 'prescale', min: 0, max: 4, def: 1 }]),
+  plugin('color.invert', false, [], ['time_independent']),
+  plugin('color.saturate', false, [{ key: 'prescale', min: 0, max: 4, def: 1 }], ['time_independent']),
   plugin('color.tone.brightness_contrast', false, [
     { key: 'brightness', min: -1, max: 1 }, { key: 'contrast', min: -1, max: 1 },
-  ]),
+  ], ['time_independent']),
   plugin('color.hsl', false, [
     { key: 'hue_shift', min: -1, max: 1 },
     { key: 'saturation', min: -1, max: 1 },
     { key: 'lightness', min: -1, max: 1 },
-  ]),
+  ], ['time_independent']),
   plugin('composite.blend', false, [{ key: 'opacity', def: 0.5 }]),
   // Signed [-1,1] modulation source — the rail tests assert srcMin/srcMax = -1/1.
   plugin('mod.source.lfo', false, [

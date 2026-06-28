@@ -18,6 +18,7 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
 import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
+import { generatorThumbCapturer } from './media/generator-thumb-capture';
 import { importVideoFile } from './media/drop-import';
 import { linkMedia } from './workspace/media-store';
 import { DirectoryBackend } from './workspace/backend';
@@ -416,6 +417,10 @@ export class ArrangementApp extends MobxLitElement {
     // Evaluate automation curves at the playhead and push them to the executor
     // (deduped inside the bridge, so a paused/unedited playhead stays quiet).
     engineBridge.pushAutomation();
+    // Opportunistically push-capture generator-clip thumbnails from the live render
+    // (throttled + only while a clip has uncached samples — see the capturer). Never
+    // blocks: it taps the worker-produced trace bitmap and downscales async.
+    generatorThumbCapturer.tick(store.positionBeat);
     this.raf = requestAnimationFrame(this.tick);
   };
 

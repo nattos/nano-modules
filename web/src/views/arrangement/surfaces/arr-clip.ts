@@ -10,6 +10,9 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { drawFilmReel, drawPlaceholderCell } from './film-reel';
 import { thumbnailController, reelLayout } from '../media/thumbnail-controller';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
+import { generatorFingerprint, generatorIsTimeIndependent, isGeneratorClip } from '../engine/generator-fingerprint';
+import { generatorThumbCache } from '../media/generator-thumb-cache';
+import { GENERATOR_THUMB_SAMPLES } from '../media/generator-thumb-capture';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { store, paths } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
@@ -224,6 +227,7 @@ export class ArrClip extends MobxLitElement {
   @query('.trace-card canvas') private traceCanvas?: HTMLCanvasElement;
   private ro?: ResizeObserver;
   private thumbOff?: () => void;
+  private genThumbOff?: () => void;
   private reelRedrawQueued = false;
 
   firstUpdated() {
@@ -236,11 +240,16 @@ export class ArrClip extends MobxLitElement {
     this.thumbOff = thumbnailController.subscribe((sk) => {
       if (this.clip?.source?.sourceKey === sk) this.queueReelRedraw();
     });
+    // Redraw as live generator-thumbnail samples land (cheap: only for generator clips).
+    this.genThumbOff = generatorThumbCache.subscribe(() => {
+      if (this.clip && isGeneratorClip(this.clip)) this.queueReelRedraw();
+    });
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
     this.thumbOff?.();
+    this.genThumbOff?.();
     if (this.clip) {
       thumbnailController.dropView(`clip:${this.clip.id}`);
       clearAnchor(AnchorKeys.clip(this.clip.id));
@@ -329,8 +338,43 @@ export class ArrClip extends MobxLitElement {
     const media = clip.source;
     if (media?.url && media.sourceKey) {
       this.drawRealReel(ctx, clipW, h, media, visL, visR);
+    } else if (isGeneratorClip(clip)) {
+      this.drawGeneratorReel(ctx, clipW, h, visL, visR);
     } else {
       drawFilmReel(ctx, clipW, h);
+    }
+  }
+
+  /**
+   * Draw the strip for a GENERATOR/procedural clip from live push-captured frames
+   * (#120). Cells tile across the clip at the SOURCE aspect (like the video reel);
+   * each cell maps its centre to a fixed capture SAMPLE and reads the fingerprint-
+   * keyed cache (uncached → placeholder, so the strip fills in as the playhead
+   * sweeps). A time-independent generator uses sample 0 for every cell.
+   */
+  private drawGeneratorReel(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    winL = 0,
+    winR = Infinity,
+  ) {
+    const clip = this.clip;
+    const fp = generatorFingerprint(clip);
+    if (!fp) { drawFilmReel(ctx, w, h); return; }
+    const ti = generatorIsTimeIndependent(clip);
+    const aspect = store.compositionAspect || 16 / 9;
+    const layout = reelLayout(w, h, GENERATOR_THUMB_SAMPLES, aspect);
+    if (layout.cells === 0) { drawPlaceholderCell(ctx, 0, 0, w, h); return; }
+    const cellW = w / layout.cells;
+    for (let i = 0; i < layout.cells; i++) {
+      const x = i * cellW;
+      if (x > winR || x + cellW < winL) continue; // window cull (off-screen)
+      const frac = (i + 0.5) / layout.cells;
+      const sample = ti ? 0 : Math.min(GENERATOR_THUMB_SAMPLES - 1, Math.floor(frac * GENERATOR_THUMB_SAMPLES));
+      const bmp = generatorThumbCache.peekNearest(fp, sample);
+      if (bmp) ctx.drawImage(bmp, x, 0, cellW, h);
+      else drawPlaceholderCell(ctx, x, 0, cellW, h);
     }
   }
 
@@ -544,6 +588,10 @@ export class ArrClip extends MobxLitElement {
     // the inspector wouldn't re-render this element and the strip would stay stale until
     // another store change kicked an update. Touch them all so any change redraws.
     if (clip.loop) void Object.values(clip.loop).join('|');
+    // Likewise touch every device's editable state: a generator clip's film strip
+    // (drawGeneratorReel) is keyed on a fingerprint of these params, so an inspector
+    // param edit must re-render this element to redraw the strip with the new key.
+    for (const d of clip.sketch.devices) if (d.state) void Object.values(d.state).join('|');
     const grid = buildBeatGrid();
     const left = grid.beatToX(clip.startBeat);
     const width = Math.max(8, grid.spanWidth(clip.startBeat, clip.lengthBeat));
