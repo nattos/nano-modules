@@ -122,6 +122,10 @@ export class ArrAutomationEditor extends MobxLitElement {
    *  zoom/pan grid). */
   updated() {
     this.syncGraph();
+    // Paint NOW — the graph's plain-field inputs (hideCurve/points) were just pushed
+    // in syncGraph; don't wait on its throttled rAF (which left the overlay curve
+    // blank until a reflow/resize after selecting a parameter).
+    this.graph?.redraw();
   }
 
   /** Push the current editor config onto the child <envelope-graph>. Idempotent. */

@@ -133,6 +133,12 @@ export class EnvelopeGraph extends MobxLitElement {
     this.rafId = 0;
   }
 
+  /** Draw NOW, synchronously — for callers that just pushed new plain-field inputs
+   *  (points / hideCurve / grid) and need the canvas to reflect them this frame
+   *  instead of waiting on the next throttled rAF tick (which can lag noticeably,
+   *  e.g. the automation overlay's curve not appearing until a reflow/resize). */
+  redraw() { this.draw(); }
+
   private get canvas(): HTMLCanvasElement | null {
     return this.renderRoot?.querySelector('canvas') ?? null;
   }
