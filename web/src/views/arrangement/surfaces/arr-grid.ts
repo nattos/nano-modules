@@ -607,6 +607,8 @@ export class ArrGrid extends MobxLitElement {
     void store.timeSelStart;
     void store.timeSelEnd;
     void store.timeSelTrackIds.length;
+    void store.loopEnabled; void store.loopStartBeat; void store.loopEndBeat; // loop bars
+    void store.playing; // play state gates the orange sweep line
     void store.selectedWireId;
     void store.selection.size;
     void store.headerWidth; // re-render (→ updated() resets --arr-hw) on resize
@@ -944,13 +946,6 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const beatsPerBar = store.composition.meta.timeSignature[0];
 
-    if (store.loopEnabled) {
-      const x0 = grid.beatToX(store.loopStartBeat);
-      const x1 = grid.beatToX(store.loopEndBeat);
-      ctx.fillStyle = 'rgba(65,105,225,0.05)';
-      ctx.fillRect(x0, 0, x1 - x0, h);
-    }
-
     const stride = store.pxPerBeat >= 13 ? 1 : beatsPerBar;
     for (const ln of grid.visibleBeatLines(w, beatsPerBar, stride)) {
       if (ln.x < 0 || ln.x > w) continue;
@@ -968,6 +963,23 @@ export class ArrGrid extends MobxLitElement {
     if (!p) return;
     const { ctx, w, h } = p;
     const grid = buildBeatGrid();
+
+    // Loop boundary bars: prominent vertical markers (with a little top flag) at the
+    // loop start/end. Bright when the loop is enabled, dim when it's only parked.
+    {
+      const lx0 = grid.beatToX(store.loopStartBeat);
+      const lx1 = grid.beatToX(store.loopEndBeat);
+      const on = store.loopEnabled;
+      ctx.fillStyle = on ? 'rgba(88,196,130,0.9)' : 'rgba(120,150,135,0.4)';
+      if (lx0 >= -2 && lx0 <= w + 2) {
+        ctx.fillRect(Math.round(lx0), 0, 2, h);
+        ctx.fillRect(Math.round(lx0), 0, 7, 5); // flag pointing INTO the loop
+      }
+      if (lx1 >= -2 && lx1 <= w + 2) {
+        ctx.fillRect(Math.round(lx1) - 2, 0, 2, h);
+        ctx.fillRect(Math.round(lx1) - 7, 0, 7, 5);
+      }
+    }
 
     // Time-region selection. Global scope (empty trackIds) fills the full
     // height with no top/bottom edges; a track-range scope draws a bounded
@@ -998,15 +1010,10 @@ export class ArrGrid extends MobxLitElement {
     const fx = grid.beatToX(store.playFromBeat);
     if (fx >= -2 && fx <= w + 2) {
       const [yTop, yBottom] = this.caretSpanY(h);
+      // Just the faint I-beam caret line — the play-from HEAD triangle now lives only
+      // in the ruler (the white marker), so the timeline isn't double-flagged.
       ctx.fillStyle = 'rgba(234,234,234,0.5)';
       ctx.fillRect(Math.round(fx), yTop, 1, yBottom - yTop);
-      ctx.fillStyle = 'rgba(255,140,0,0.95)';
-      ctx.beginPath();
-      ctx.moveTo(fx - 4, 0);
-      ctx.lineTo(fx + 5, 0);
-      ctx.lineTo(fx + 0.5, 6);
-      ctx.closePath();
-      ctx.fill();
     }
     // Playhead: the bright orange sweeping line, only WHILE PLAYING.
     if (store.playing) {
@@ -1574,10 +1581,12 @@ export class ArrGrid extends MobxLitElement {
     const d = this.drag;
     this.drag = null;
     if (!d || d.active) return;
-    // Plain click (no drag): the caret was set on pointerdown. A clip body stays
-    // focused; otherwise select what's under the head — a clip if present, else
-    // the track underneath (text-caret: the cursor always lands somewhere).
-    if (d.clickFocusPath) return;
+    // Plain click (no drag): the caret was set on pointerdown. Clicking a clip BODY
+    // selects that clip AND snaps the time box to its extent (so the time under it is
+    // selected — Cmd+L then loops it); a DRAG instead carves a sub-region (handled
+    // above, where d.active short-circuits this). Otherwise select what's under the
+    // head — a clip if present, else the track (the cursor always lands somewhere).
+    if (d.clickFocusPath) { store.select(d.clickFocusPath); return; }
     // On an automation lane → the caret marks the lane; don't touch clip/track sel.
     if (d.startLaneId) { store.clearSelection(); return; }
     if (d.startIsBus || !d.startTrackId) {

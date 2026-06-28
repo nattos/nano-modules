@@ -337,25 +337,7 @@ export class ArrRailLane extends MobxLitElement {
       ctx.stroke();
     }
 
-    // Playhead tick + the live mean value at the playhead (cheap CPU eval — no worker
-    // round-trip, so it tracks the transport smoothly). During a scroll the tick is
-    // baked and rides the transform; an independent transport move re-bakes (above).
-    const px = grid.beatToX(store.positionBeat) + margin;
-    if (px >= 0 && px <= w) {
-      ctx.fillStyle = 'rgba(255,140,0,0.7)';
-      ctx.fillRect(Math.round(px), 0, 1, h);
-      const vNow = railMeanAt(
-        { baseCurve: track.baseCurve ?? [{ x: 0, y: 0 }], totalBeats: compositionLengthBeats(store.composition),
-          secondsPerBeat: this.secondsPerBeat(), signed, writers: this.writerSpecs(track.railId ?? '') },
-        store.positionBeat);
-      ctx.beginPath();
-      ctx.arc(px, yOf(vNow), 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = accent;
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
+    // (No playhead tick / value dot on rail lanes — the curve alone reads cleaner.)
   }
 }
 

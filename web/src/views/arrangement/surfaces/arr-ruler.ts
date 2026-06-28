@@ -149,6 +149,7 @@ export class ArrRuler extends MobxLitElement {
     // Track the raw loop range + enabled flag too: `v.loop` is null while disabled
     // (so it stops tracking start/end), but we still draw the markers then.
     void store.loopEnabled; void store.loopStartBeat; void store.loopEndBeat;
+    void store.playing; // play state gates the playhead sweep bar
     void v.timeSel;
     void v.beatsPerBar;
     void v.headerWidth;
@@ -244,10 +245,10 @@ export class ArrRuler extends MobxLitElement {
       const x0 = grid.beatToX(store.loopStartBeat);
       const x1 = grid.beatToX(store.loopEndBeat);
       if (on) {
-        ctx.fillStyle = 'rgba(65,105,225,0.18)';
+        ctx.fillStyle = 'rgba(88,196,130,0.22)';
         ctx.fillRect(x0, 0, x1 - x0, 6); // brace bar between markers — enabled only
       }
-      ctx.fillStyle = on ? 'rgba(65,105,225,0.8)' : 'rgba(150,158,178,0.4)';
+      ctx.fillStyle = on ? 'rgba(88,196,130,0.9)' : 'rgba(120,150,135,0.4)';
       ctx.fillRect(x0, 0, 2, h);
       ctx.fillRect(x1 - 2, 0, 2, h);
     }
@@ -283,23 +284,24 @@ export class ArrRuler extends MobxLitElement {
       ctx.fillRect(rx0, h - 3, rx1 - rx0, 3);
     }
 
-    // Play-from / insert marker (hollow triangle).
+    // Play-from / insert marker (white triangle) — at the TOP, pointing down.
     const fx = grid.beatToX(v.playFromBeat);
     if (v.playFromBeat >= 0 && fx >= -6 && fx <= w + 6) {
       ctx.fillStyle = '#EAEAEA';
       ctx.beginPath();
-      ctx.moveTo(fx, h - 1);
-      ctx.lineTo(fx - 4, h - 8);
-      ctx.lineTo(fx + 4, h - 8);
+      ctx.moveTo(fx - 4, 0);
+      ctx.lineTo(fx + 4, 0);
+      ctx.lineTo(fx, 7);
       ctx.closePath();
       ctx.fill();
     }
 
-    // Playhead.
+    // Playhead: the orange head triangle (always) — its vertical sweep bar only
+    // shows WHILE PLAYING (matching the main timeline's orange line).
     const px = grid.beatToX(v.positionBeat);
     if (v.positionBeat >= 0 && px >= 0 && px <= w) {
       ctx.fillStyle = '#FF8C00';
-      ctx.fillRect(Math.round(px), 0, 2, h);
+      if (store.playing) ctx.fillRect(Math.round(px), 0, 2, h);
       ctx.beginPath();
       ctx.moveTo(px - 4, 0);
       ctx.lineTo(px + 5, 0);
