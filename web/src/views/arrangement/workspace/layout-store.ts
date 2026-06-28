@@ -13,6 +13,7 @@ export interface ArrLayout {
   clipViewOpen?: boolean;
   clipViewHeight?: number;
   sidePanelWidth?: number;
+  sideCollapsed?: boolean;
   headerWidth?: number;
   monitorHeight?: number;
   wiresMode?: boolean;

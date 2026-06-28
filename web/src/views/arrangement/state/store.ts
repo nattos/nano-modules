@@ -334,6 +334,9 @@ export class ArrangementStore {
 
   /** Right inspector panel width (px) — drag-resizable, persisted. */
   sidePanelWidth = 320;
+  /** Right inspector panel collapsed (hidden) — clicking the active tab toggles it.
+   *  The output monitor floats over the timeline while collapsed. Persisted. */
+  sideCollapsed = false;
   /** Resizable BASE width of the header content (px) — persisted. The effective
    *  column width adds the group gutter on top (see `headerWidth`). */
   private headerBaseWidth = 184;
@@ -618,6 +621,7 @@ export class ArrangementStore {
       clipViewOpen: this.clipViewOpen,
       clipViewHeight: this.clipViewHeight,
       sidePanelWidth: this.sidePanelWidth,
+      sideCollapsed: this.sideCollapsed,
       headerWidth: this.headerBaseWidth, // persist the resizable CONTENT width (gutter is derived)
       monitorHeight: this.monitorHeight,
       wiresMode: this.wiresMode,
@@ -636,6 +640,7 @@ export class ArrangementStore {
         if (typeof l.clipViewOpen === 'boolean') this.clipViewOpen = l.clipViewOpen;
         if (typeof l.clipViewHeight === 'number') this.setClipViewHeight(l.clipViewHeight);
         if (typeof l.sidePanelWidth === 'number') this.setSidePanelWidth(l.sidePanelWidth);
+        if (typeof l.sideCollapsed === 'boolean') this.sideCollapsed = l.sideCollapsed;
         if (typeof l.headerWidth === 'number') this.headerBaseWidth = Math.max(120, Math.min(380, Math.round(l.headerWidth)));
         if (typeof l.monitorHeight === 'number') this.setMonitorHeight(l.monitorHeight);
         if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
@@ -976,7 +981,7 @@ export class ArrangementStore {
       // A new top-level selection resets any chain card/field focus.
       this.chainFocusPath = null;
       this.chainFieldKey = null;
-      this.activeRightTab = 'inspector';
+      // (Selection no longer force-switches the right tab — the user drives tabs.)
       // Selecting a clip syncs the time region to the clip's extent;
       // selecting a track selects a time box spanning the whole track.
       const found = this.clipByPath(path);
@@ -1047,7 +1052,6 @@ export class ArrangementStore {
       this.tapPopup = null;
       this.chainFocusPath = null;
       this.chainFieldKey = null;
-      this.activeRightTab = 'inspector';
     });
   }
 
@@ -1064,7 +1068,6 @@ export class ArrangementStore {
         this.primaryPath = path;
       }
       this.selection = next;
-      this.activeRightTab = 'inspector';
     });
   }
 
@@ -1198,8 +1201,15 @@ export class ArrangementStore {
   }
 
   // ── Right tab ─────────────────────────────────────────────────────────
+  /** Pick a right-panel tab. Re-clicking the ALREADY-ACTIVE tab collapses the
+   *  panel (and clicking any tab while collapsed re-opens it). */
   setRightTab(tab: RightTab) {
-    this.activeRightTab = tab;
+    if (tab === this.activeRightTab) this.sideCollapsed = !this.sideCollapsed;
+    else { this.activeRightTab = tab; this.sideCollapsed = false; }
+    this.requestLayoutSave();
+  }
+  setSideCollapsed(collapsed: boolean) {
+    this.sideCollapsed = collapsed;
     this.requestLayoutSave();
   }
 
@@ -1222,11 +1232,17 @@ export class ArrangementStore {
     this.clipViewMode = m;
   }
   setClipViewHeight(h: number) {
-    this.clipViewHeight = Math.max(90, Math.min(520, h));
+    // Clamp to the viewport too, so the panel never grows past the document edge
+    // (leave room for the transport + ruler above it).
+    const vhMax = typeof window !== 'undefined' ? Math.max(90, window.innerHeight - 160) : 520;
+    this.clipViewHeight = Math.max(90, Math.min(520, vhMax, h));
     this.requestLayoutSave();
   }
   setSidePanelWidth(w: number) {
-    this.sidePanelWidth = Math.max(220, Math.min(680, Math.round(w)));
+    // Clamp to the viewport too (minus the tab bar + a timeline minimum), so the
+    // panel's right edge never clips off the right side of the document.
+    const vwMax = typeof window !== 'undefined' ? Math.max(220, window.innerWidth - 240) : 680;
+    this.sidePanelWidth = Math.max(220, Math.min(680, vwMax, Math.round(w)));
     this.requestLayoutSave();
   }
   /** Number of group-gutter columns = the deepest group nesting on screen (a
@@ -1273,6 +1289,12 @@ export class ArrangementStore {
   setMonitorHeight(h: number) {
     this.monitorHeight = Math.max(90, Math.min(520, Math.round(h)));
     this.requestLayoutSave();
+  }
+  /** Composition output aspect ratio (width/height) — the floating monitor sizes
+   *  its width to this so the composite shows with no padding/letterboxing. */
+  get compositionAspect(): number {
+    const r = this.composition.meta.resolution;
+    return r && r.height > 0 ? r.width / r.height : 16 / 9;
   }
   setClipAutoTiming(t: 'loop' | 'clip') {
     this.clipAutoTiming = t;
@@ -3554,10 +3576,19 @@ export class ArrangementStore {
     });
   }
 
-  toggleSolo(trackId: string) {
+  /**
+   * Solo a track. Solo is MUTUALLY EXCLUSIVE by default (like Ableton): soloing a
+   * track clears every other solo. Clicking the only-soloed track clears it.
+   * `additive` (Cmd-click) instead toggles just this track, allowing a multi-solo.
+   */
+  toggleSolo(trackId: string, additive = false) {
     this.mutate('toggle solo', (d) => {
       const t = d.tracks.find((x) => x.id === trackId);
-      if (t) t.soloed = !t.soloed;
+      if (!t) return;
+      if (additive) { t.soloed = !t.soloed; return; }
+      const onlyThis = t.soloed && d.tracks.every((x) => x.id === trackId || !x.soloed);
+      for (const x of d.tracks) x.soloed = false;
+      if (!onlyThis) t.soloed = true; // turning the sole solo off leaves none soloed
     });
   }
 

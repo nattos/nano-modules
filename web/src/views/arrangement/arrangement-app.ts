@@ -131,6 +131,32 @@ export class ArrangementApp extends MobxLitElement {
     .tabbar {
       grid-area: tabbar;
     }
+    /* Output monitor floating over the timeline while the inspector is collapsed.
+       Anchored bottom-right (above the tab bar); width is locked to the composition
+       aspect so the composite shows with no padding. */
+    .float-monitor {
+      position: fixed;
+      z-index: 50;
+      background: var(--app-bg-color1);
+      border: 1px solid var(--app-tint-3);
+      border-radius: 4px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+    }
+    .float-monitor arr-monitor {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .fm-edge {
+      position: absolute;
+      z-index: 2;
+    }
+    .fm-edge.top { top: 0; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+    .fm-edge.left { left: 0; top: 8px; bottom: 0; width: 6px; cursor: ew-resize; }
+    .fm-edge.corner { left: 0; top: 0; width: 12px; height: 12px; cursor: nwse-resize; z-index: 3; }
+    .fm-edge:hover { background: var(--app-hi-color2); opacity: 0.4; }
+    .fm-edge.corner:hover { background: var(--app-hi-color2); opacity: 0.6; }
     .clipview {
       grid-area: clipview;
       position: relative;
@@ -165,6 +191,7 @@ export class ArrangementApp extends MobxLitElement {
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onKey);
+    window.addEventListener('resize', this.onWindowResize);
     window.addEventListener('pointerdown', this.onPointerDownCapture, true);
     this.addEventListener('dragover', this.onDragOver);
     this.addEventListener('dragleave', this.onDragLeave);
@@ -181,6 +208,7 @@ export class ArrangementApp extends MobxLitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('pointerdown', this.onPointerDownCapture, true);
     this.removeEventListener('dragover', this.onDragOver);
     this.removeEventListener('dragleave', this.onDragLeave);
@@ -214,6 +242,13 @@ export class ArrangementApp extends MobxLitElement {
       dedupeKey: 'back-trap',
       actions: [{ label: 'Go back', run: () => { this.backLeaving = true; history.back(); } }],
     });
+  };
+
+  /** Re-clamp the resizable panels when the window shrinks, so neither the side
+   *  inspector nor the clip-details panel ends up extending past the document edge. */
+  private onWindowResize = () => {
+    store.setSidePanelWidth(store.sidePanelWidth);
+    store.setClipViewHeight(store.clipViewHeight);
   };
 
   /** Track the interacted surface via the composed path (crosses shadow roots). */
@@ -512,15 +547,26 @@ export class ArrangementApp extends MobxLitElement {
         <arr-ruler></arr-ruler>
         <arr-grid></arr-grid>
       </div>
-      <div class="side" style="width:${store.sidePanelWidth}px">
-        <div class="side-resize" @pointerdown=${this.onSideResize}></div>
-        <arr-inspector></arr-inspector>
-        <arr-monitor></arr-monitor>
-      </div>
+      ${store.sideCollapsed
+        ? ''
+        : html`<div class="side" style="width:${store.sidePanelWidth}px">
+            <div
+              class="side-resize"
+              @pointerdown=${this.onSideResize}
+              @dblclick=${() => store.setSideCollapsed(true)}
+            ></div>
+            <arr-inspector></arr-inspector>
+            <arr-monitor></arr-monitor>
+          </div>`}
+      ${store.sideCollapsed ? this.renderFloatingMonitor() : ''}
       <div class="tabbar"><arr-tabbar></arr-tabbar></div>
       ${store.clipViewOpen
         ? html`<div class="clipview" style="height:${store.clipViewHeight}px">
-            <div class="clipview-resize" @pointerdown=${this.onClipResize}></div>
+            <div
+              class="clipview-resize"
+              @pointerdown=${this.onClipResize}
+              @dblclick=${() => store.toggleClipView()}
+            ></div>
             <arr-clip-view></arr-clip-view>
           </div>`
         : ''}
@@ -528,6 +574,52 @@ export class ArrangementApp extends MobxLitElement {
       <snackbar-host></snackbar-host>
     `;
   }
+
+  /** The output monitor floating over the timeline while the inspector is
+   *  collapsed. Height = the user's monitor height; width locked to the
+   *  composition aspect (no padding); anchored bottom-right above the tab bar. */
+  private renderFloatingMonitor() {
+    const h = store.monitorHeight;
+    const w = h * store.compositionAspect;
+    const right = 44 + 12; // tab bar width + margin
+    const bottom = (store.clipViewOpen ? store.clipViewHeight : 0) + 12;
+    return html`<div
+      class="float-monitor"
+      style="width:${w}px; height:${h}px; right:${right}px; bottom:${bottom}px"
+    >
+      <div class="fm-edge top" @pointerdown=${(e: PointerEvent) => this.onFloatResize(e, true, false)}></div>
+      <div class="fm-edge left" @pointerdown=${(e: PointerEvent) => this.onFloatResize(e, false, true)}></div>
+      <div class="fm-edge corner" @pointerdown=${(e: PointerEvent) => this.onFloatResize(e, true, true)}></div>
+      <arr-monitor floating></arr-monitor>
+    </div>`;
+  }
+
+  /** Resize the floating monitor by dragging an edge/corner. Width is aspect-locked,
+   *  so every gesture resolves to a new monitor HEIGHT (a left-edge drag is mapped
+   *  through the aspect; a corner takes whichever axis moved more). */
+  private onFloatResize = (e: PointerEvent, top: boolean, left: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.target as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const startH = store.monitorHeight;
+    const aspect = store.compositionAspect || 16 / 9;
+    const x0 = e.clientX, y0 = e.clientY;
+    const move = (ev: PointerEvent) => {
+      const deltas: number[] = [];
+      if (top) deltas.push(y0 - ev.clientY);              // drag up → taller
+      if (left) deltas.push((x0 - ev.clientX) / aspect);  // drag left → wider → taller
+      const dH = deltas.length ? Math.max(...deltas) : 0;
+      store.setMonitorHeight(startH + dH);
+    };
+    const up = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   private onSideResize = (e: PointerEvent) => {
     e.preventDefault();

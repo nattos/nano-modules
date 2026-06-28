@@ -635,9 +635,13 @@ export class ArrClip extends MobxLitElement {
   };
 
   /** True when the pointer grabbed a part of the header inside the current time
-   *  box (and this track is in the box's scope). */
+   *  box (and this track is in the box's scope) — i.e. a deliberate sub-region the
+   *  header drag should split+move rather than replacing. A box that came from a
+   *  TRACK/GROUP selection (full-width) yields instead: clicking a clip's header
+   *  snaps the time box to that clip's range (the expected select-the-clip result). */
   private grabWithinTimeBox(e: PointerEvent): boolean {
     if (!store.hasTimeSelection) return false;
+    if (store.primaryPath?.startsWith('track/')) return false;
     const scope = store.timeSelTrackIds;
     if (scope.length && !scope.includes(this.trackId)) return false;
     const beat = buildBeatGrid().xToBeat(e.clientX - this.laneRect().left);

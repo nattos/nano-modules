@@ -15,7 +15,7 @@
  */
 
 import { html, css } from 'lit';
-import { customElement, query } from 'lit/decorators.js';
+import { customElement, query, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { engineBridge } from '../engine/engine-bridge';
@@ -81,6 +81,11 @@ export class ArrMonitor extends MobxLitElement {
       pointer-events: none;
     }
   `;
+
+  /** Floating mode: the app pins this over the timeline while the inspector is
+   *  collapsed. Drops the head + own resize handle and fills its (aspect-locked)
+   *  wrapper — the wrapper owns the size/resize. */
+  @property({ type: Boolean }) floating = false;
 
   @query('canvas') private canvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
@@ -223,6 +228,11 @@ export class ArrMonitor extends MobxLitElement {
       }
     };
     trackComposite(store.compositeTreeAtBeat(store.positionBeat));
+    if (this.floating) {
+      // The floating wrapper (in arrangement-app) is sized to the composition
+      // aspect, so the stage fills it edge-to-edge with no letterbox.
+      return html`<div class="stage" style="height:100%"><canvas></canvas></div>`;
+    }
     return html`
       <div class="mon-resize" @pointerdown=${this.onResize}></div>
       <div class="head">

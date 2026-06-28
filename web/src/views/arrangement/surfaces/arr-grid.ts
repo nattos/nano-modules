@@ -738,8 +738,8 @@ export class ArrGrid extends MobxLitElement {
               : html`
                   <button
                     class="sb solo ${track.soloed ? 'on' : ''}"
-                    title="Solo"
-                    @pointerdown=${(e: Event) => { e.stopPropagation(); store.toggleSolo(track.id); }}
+                    title="Solo (exclusive) · Cmd-click to add to a multi-solo"
+                    @pointerdown=${(e: PointerEvent) => { e.stopPropagation(); store.toggleSolo(track.id, e.metaKey || e.ctrlKey); }}
                   >S</button>
                   <button
                     class="sb bypass ${track.bypassed ? 'on' : ''}"
@@ -821,7 +821,7 @@ export class ArrGrid extends MobxLitElement {
         title=${g ? `${g.name} — click selects, double-click collapses` : ''}
         @pointerenter=${() => { this.hoveredGroupId = gid; }}
         @pointerleave=${() => { if (this.hoveredGroupId === gid) this.hoveredGroupId = null; }}
-        @pointerdown=${(e: Event) => { e.stopPropagation(); store.select(paths.track(gid)); }}
+        @pointerdown=${(e: PointerEvent) => this.onGroupLineDown(e, gid)}
         @dblclick=${(e: Event) => { e.stopPropagation(); store.toggleGroupCollapse(gid); }}
       ></div>`);
     }
@@ -1042,8 +1042,24 @@ export class ArrGrid extends MobxLitElement {
     // Arm a reorder drag — but not from an inline rename field or a control,
     // and never for the main bus (pinned).
     if (!store.canReorderTrack(track.id)) return;
-    if (e.target instanceof Element && e.target.closest('editable-label, button')) return;
+    // Allow dragging from the name LABEL too (the header is mostly the label) — but
+    // not from a control or an ACTIVELY-EDITING field (editable-text/input). The
+    // label's display <span> stays draggable; a click/dbl-click on it (no >5px move)
+    // never reorders, so inline rename still works.
+    if (e.target instanceof Element && e.target.closest('button, input, textarea, editable-text')) return;
     this.headerDrag = { y0: e.clientY, trackId: track.id };
+    window.addEventListener('pointermove', this.onHeaderMove);
+    window.addEventListener('pointerup', this.onHeaderUp);
+  }
+
+  /** Pointer-down on a group's bracket line: select it, and arm a reorder drag for
+   *  the WHOLE group (its bracket is the easiest grab target). A plain click (no
+   *  >5px move) just selects; a double-click toggles collapse (handled separately). */
+  private onGroupLineDown(e: PointerEvent, gid: string) {
+    e.stopPropagation();
+    store.select(paths.track(gid));
+    if (!store.canReorderTrack(gid)) return;
+    this.headerDrag = { y0: e.clientY, trackId: gid };
     window.addEventListener('pointermove', this.onHeaderMove);
     window.addEventListener('pointerup', this.onHeaderUp);
   }

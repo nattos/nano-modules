@@ -758,7 +758,15 @@ export class ArrInspector extends MobxLitElement {
     if (!track) return html`<div class="empty">Track not found.</div>`;
     const isRail = track.kind === 'rail';
     return html`
-      <div class="section-header">${track.kind === 'group' ? 'Group' : isRail ? 'Return' : 'Track'} · ${store.trackDisplayName(track)}</div>
+      <div class="section-header">
+        ${track.kind === 'group' ? 'Group' : isRail ? 'Return' : 'Track'} ·
+        <editable-label
+          .value=${track.name}
+          .displayValue=${store.trackDisplayName(track)}
+          placeholder=${track.kind === 'group' ? 'Untitled group' : isRail ? 'Untitled return' : 'Untitled track'}
+          @commit=${(e: CustomEvent) => store.renameTrack(track.id, e.detail)}
+        ></editable-label>
+      </div>
       <div class="body">
         ${isRail
           ? html`<div class="row">

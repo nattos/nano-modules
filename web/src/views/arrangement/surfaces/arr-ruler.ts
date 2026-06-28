@@ -14,6 +14,7 @@ import { store } from '../state/store';
 import { compositionLengthBeats } from '../model/composition';
 import { RULER_HEIGHT } from './grid-shared';
 import { mainTimelineView, ClipTimelineView, type RulerView } from './timeline-view';
+import '../../../widgets/ui-icon';
 
 @customElement('arr-ruler')
 export class ArrRuler extends MobxLitElement {
@@ -86,9 +87,14 @@ export class ArrRuler extends MobxLitElement {
       border-radius: 2px;
       width: 18px;
       height: 16px;
+      padding: 0;
       cursor: pointer;
       line-height: 1;
       opacity: 0.85;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      --icon-size: 12px;
     }
     .zoomfloat button:hover {
       background: var(--app-tint-2);
@@ -195,8 +201,18 @@ export class ArrRuler extends MobxLitElement {
           ${this.compact
             ? ''
             : html`<div class="zoomfloat">
-                <button title="Zoom out" @pointerdown=${(e: Event) => e.stopPropagation()} @click=${() => this.zoomCenter(1 / 1.3)}>−</button>
-                <button title="Zoom in" @pointerdown=${(e: Event) => e.stopPropagation()} @click=${() => this.zoomCenter(1.3)}>+</button>
+                <button
+                  title="Zoom out"
+                  @pointerdown=${(e: Event) => e.stopPropagation()}
+                  @dblclick=${(e: Event) => e.stopPropagation()}
+                  @click=${() => this.zoomCenter(1 / 1.3)}
+                ><ui-icon icon="la-search-minus"></ui-icon></button>
+                <button
+                  title="Zoom in"
+                  @pointerdown=${(e: Event) => e.stopPropagation()}
+                  @dblclick=${(e: Event) => e.stopPropagation()}
+                  @click=${() => this.zoomCenter(1.3)}
+                ><ui-icon icon="la-search-plus"></ui-icon></button>
               </div>`}
         </div>
       </div>
