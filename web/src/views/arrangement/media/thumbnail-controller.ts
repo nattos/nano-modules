@@ -79,9 +79,6 @@ export class ThumbnailController {
   private gpuHostShared: GPUHost | null = null;
   private serviceShared: VideoPlaybackService | null = null;
   private producer: VideoThumbnailProducer | null = null;
-  /** The OPFS-backed persistent tier (shared by the video manager AND generator
-   *  thumbnails). Created lazily WITHOUT booting the GPU — persistence needs no device. */
-  private store: WorkerThumbStore | null = null;
   /** Decoder-reported true {frameCount, fps} per source, learned on open (drop-import's
    *  registered values only assume 30fps). The reel reads these so its mapping matches
    *  the playback pump. */
@@ -178,7 +175,7 @@ export class ThumbnailController {
       this.producer = producer;
       const mgr = new ThumbnailManager<ImageBitmap>(
         producer,
-        this.ensureStore(),
+        new WorkerThumbStore(),
         identityCodec<ImageBitmap>(),
         { dispose: (b) => b.close(), baseCapacity: 128 },
       );
@@ -229,24 +226,6 @@ export class ThumbnailController {
    */
   peek(sourceKey: string, frame: number, level: number, maxDistanceFrames = Infinity): ThumbHit<ImageBitmap> | null {
     return this.manager?.peek(sourceKey, frame, level, maxDistanceFrames) ?? null;
-  }
-
-  // ── Generic persistent tier (OPFS) — shared with the generator-thumbnail cache ──
-  // The store is created on first use WITHOUT the GPU stack (persistence needs no
-  // device), so generator thumbnails reuse the same worker + OPFS root as video.
-
-  private ensureStore(): WorkerThumbStore {
-    return (this.store ??= new WorkerThumbStore());
-  }
-
-  /** Read a persisted thumbnail by arbitrary key (e.g. a generator `g<hash>#<sample>`). */
-  async persistRead(key: string): Promise<ImageBitmap | null> {
-    try { return await this.ensureStore().read(key); } catch { return null; }
-  }
-
-  /** Persist a thumbnail under an arbitrary key (best-effort; never throws). */
-  async persistWrite(key: string, bitmap: ImageBitmap): Promise<void> {
-    try { await this.ensureStore().write(key, bitmap); } catch { /* OPFS unavailable → memory-only */ }
   }
 }
 
