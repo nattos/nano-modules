@@ -183,4 +183,48 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     // The ripples displaced the grid lines → the frames differ.
     warped.trace('out').expectDifferentFrom(flat.trace('out'), 100);
   });
+
+  it('drives downstream motion blur via render_outputs/motion', async () => {
+    // grid → d_wave → motion.blur. d_wave only emits render_outputs/motion when a
+    // sink reads it; motion.blur is that sink (wires:[] struct auto-connect). The
+    // d_wave stage is identical across both runs, so the ONLY difference between
+    // blur strength 0 (pass-through) and 32 is whether the motion rail carried
+    // the warp's per-frame velocity. A visible difference proves the whole rail.
+    const build = (blur: number): Sketch => ({
+      anchor: null,
+      wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.grid', instance_key: 'grid@0', params: {} },
+        { type: 'module', module_type: 'warp.legacy.d_wave', instance_key: 'dw@0',
+          params: { distortion: 1.0, wave_speed: 0.6, damp: 0.0, motion_scale: 3.0, render_alpha: 1.0 } },
+        { type: 'module', module_type: 'motion.blur', instance_key: 'blur@0',
+          params: { strength: blur, samples: 16, quality: 1 } },
+      ],
+    });
+    const run = (id: string, blur: number, dump: string) => runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.core', 'com.nano.testonly', 'com.nano.legacy'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: build(blur) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 24,
+      captureTraceIds: ['out'],
+      dumpName: dump,
+    });
+
+    const blurred = await run('dwm_b', 32.0, 'd_wave_motion_blurred');
+    expect(blurred.success).toBe(true);
+    const sharp = await run('dwm_s', 0.0, 'd_wave_motion_sharp');
+    expect(sharp.success).toBe(true);
+
+    let lit = 0;
+    sharp.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) lit++; });
+    expect(lit).toBeGreaterThan(100);   // the warped grid actually rendered
+
+    // strength=32 smears along the warp's motion; strength=0 is a pass-through.
+    blurred.trace('out').expectDifferentFrom(sharp.trace('out'), 100);
+  });
 });

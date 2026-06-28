@@ -80,14 +80,15 @@ echo "  double_chamber shaders compiled (SPV: + motion_prefill/vs/fs + line_moti
 compile_shaders_compute_var_spv d_wave field
 compile_shaders_compute_var_spv d_wave particles
 compile_shaders_compute_var_spv d_wave warp
+compile_shaders_compute_var_spv d_wave motion
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../d_wave/blob_vs.hlsl -Fo "$TMP_DIR/d_wave_blob_vs.spv"
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../d_wave/blob_fs.hlsl -Fo "$TMP_DIR/d_wave_blob_fs.spv"
-_emit_spv_header_var d_wave field particles warp blob_vs blob_fs
-echo "  d_wave shaders compiled (SPV: field + particles + warp + blob_vs/fs)"
+_emit_spv_header_var d_wave field particles warp motion blob_vs blob_fs
+echo "  d_wave shaders compiled (SPV: field + particles + warp + motion + blob_vs/fs)"
 
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
 compile_shaders_compute_spv blur
