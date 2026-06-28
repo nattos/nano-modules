@@ -20,22 +20,44 @@ RWTexture2D<float4> curField  : register(u2);
 cbuffer Uniforms : register(b3) {
   float y_shift;     // normalized rows the field marches outward this frame
   float decay;       // per-frame amplitude multiplier (≤ 1)
-  float spawn_prob;  // P(a sector emits a ripple) this frame (Poisson)
+  float spawn_prob;  // P(a fresh ripple ring is emitted) this frame (Poisson)
   float sharp;       // gaussian radial sharpness of a fresh ring
 
-  float sectors;     // number of angular spawn sectors (ripple arcs)
+  float ang_cells;   // angular frequency of the ring's brightness variation
   float spawn_amp;   // amplitude of a fresh ripple
-  float burst;       // forced full-circle emission (trigger), 0 normally
+  float burst;       // forced full-strength emission (trigger), 0 normally
   uint  frame;       // frame index → decorrelates the per-frame spawn hash
 }
-
-static const float DW_PI = 3.14159265358979323846;
 
 uint dw_hash(uint x) {
   x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
   return x;
 }
 float dw_unit(uint h) { return (h >> 8) * (1.0 / 16777216.0); }
+
+// C1 wrapping value-noise band around the circle: `cells` integer cells, hashed
+// per cell with `seed`, smoothstep-interpolated. Continuous across the angle
+// seam (cell index wraps mod n) so there's no discontinuity at angle 0/2π.
+float dw_noise01(float a01, float cells, uint seed) {
+  float n = max(cells, 1.0);
+  float a = a01 * n;
+  uint  i0 = (uint)floor(a) % (uint)n;
+  uint  i1 = (i0 + 1u) % (uint)n;
+  float f  = frac(a);
+  float h0 = dw_unit(dw_hash(i0 * 0x85EBCA77u ^ seed));
+  float h1 = dw_unit(dw_hash(i1 * 0x85EBCA77u ^ seed));
+  return lerp(h0, h1, f * f * (3.0 - 2.0 * f));
+}
+
+// Emission shape for THIS frame's ripple ring: a per-frame Poisson gate decides
+// whether a ring is born; the smooth angular band shapes its brightness. The
+// band is reseeded every frame and biased to [0.3, 1] so it never blacks out —
+// any dim angle is transient (different next frame) and old rings keep
+// propagating through it, so the field has no fixed angular "valleys".
+float dw_emit(float a01, float cells, uint frame, float prob) {
+  if (dw_unit(dw_hash(frame * 0xD1B54A33u)) >= prob) return 0.0;
+  return 0.3 + 0.7 * dw_noise01(a01, cells, dw_hash(frame * 0x9E3779B1u));
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -53,20 +75,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float prev = prevField.SampleLevel(samp, float2(uv.x, ySrc), 0).r;
   float val = prev * decay;
 
-  // Spawn: divide the circle into `sectors` arcs; each arc fires a fresh ripple
-  // with probability spawn_prob this frame. A Hann window across the arc fades
-  // its angular ends so it reads as an arc/blob, not a hard-edged sector. The
-  // ripple is a gaussian centred at the middle (row 0) so it's born small and
-  // marches out over subsequent frames.
-  float ang = uv.x * sectors;
-  float sec = floor(ang);
-  float win = sin((ang - sec) * DW_PI);              // 0 at sector edges
-  uint  h   = dw_hash((uint)sec * 0x9E3779B1u ^ (frame * 0x85EBCA77u));
-  float fire = (dw_unit(h) < spawn_prob) ? 1.0 : 0.0;
+  // Spawn: a fresh ripple ring is born at the centre (row ≈ 0) on a per-frame
+  // Poisson schedule, with a smooth angular brightness band (frequency
+  // `ang_cells`) so the ring shimmers around the circle without hard-edged
+  // sectors. The ring is a gaussian in radius so it's born tight at the centre
+  // and marches outward over subsequent frames. burst (trigger) forces a
+  // full-strength ring regardless of the Poisson gate.
+  float emit = dw_emit(uv.x, ang_cells, frame, spawn_prob);
   float ring = exp(-sharp * uv.y * uv.y);
-
-  // burst (trigger) lights every sector at once — a full-circle shock ripple.
-  val += spawn_amp * ring * (fire * win + burst);
+  val += spawn_amp * ring * saturate(emit + burst);
 
   curField[gid.xy] = float4(val, 0.0, 0.0, 0.0);
 }

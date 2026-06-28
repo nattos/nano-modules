@@ -43,7 +43,8 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       inputColor: [0.0, 0.0, 0.0, 1.0],
       params: [
         ['distortion', 0.0],   // overlay only — no warp
-        ['rate', 0.5],
+        ['rate', 0.8],
+        ['density', 0.7],      // high density used to carve black "valleys"
         ['wave_speed', 0.3],
         ['wave_decay', 0.3],
         ['debug_field', 1.0],

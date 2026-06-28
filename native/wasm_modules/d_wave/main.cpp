@@ -41,11 +41,11 @@ static constexpr float SPEED_ROWS_PER_SEC = 600.0f;  // wave_speed=1 → rows/se
 static constexpr float DECAY_MAX          = 4.0f;    // wave_decay=1 → e-folds/sec
 static constexpr float SHARP_MIN          = 3.0f;    // soften=1 → wide ring
 static constexpr float SHARP_MAX          = 60.0f;   // soften=0 → tight ring
-static constexpr float MAX_SECTORS        = 23.0f;   // density=1 → 24 arcs
+static constexpr float MAX_CELLS          = 23.0f;   // density=1 → 24 angular cells
 
 struct FieldUniforms {
   float y_shift, decay, spawn_prob, sharp;
-  float sectors, spawn_amp, burst;
+  float ang_cells, spawn_amp, burst;
   uint32_t frame;
 };
 struct WarpUniforms {
@@ -66,7 +66,7 @@ struct State {
 
   // CPU mirrors of schema params.
   float distortion = 0.5f;
-  float rate       = 0.25f;
+  float rate       = 0.5f;
   float wave_speed = 0.3f;
   float scale      = 1.0f;
   float density    = 0.3f;
@@ -94,12 +94,12 @@ static gpu::ComputePSO s_pso_field;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 0, 0},
+  state::init("warp.legacy.d_wave", {1, 0, 1},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Radial warp magnitude.")
-      .floatField("rate",        0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("rate",        0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Ripple spawn rate (Poisson; exponential curve).")
       .floatField("wave_speed",  0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "How fast ripples expand outward.")
@@ -250,7 +250,7 @@ void render(void* self, int vp_w, int vp_h) {
   float rate_hz = std::pow(60.0f, s->rate) - 1.0f;     // style guide §4.1
   fu.spawn_prob = 1.0f - std::exp(-rate_hz * dt);
   fu.sharp     = SHARP_MAX + (SHARP_MIN - SHARP_MAX) * s->soften;
-  fu.sectors   = std::round(1.0f + s->density * MAX_SECTORS);
+  fu.ang_cells = std::round(1.0f + s->density * MAX_CELLS);
   fu.spawn_amp = 1.0f;
   fu.burst     = s->pending_burst;
   fu.frame     = s->frame;
