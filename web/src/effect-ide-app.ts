@@ -9,6 +9,7 @@
 import { boot } from './boot';
 import { appState } from './state/app-state';
 import { appController } from './state/controller';
+import { EFFECT_BUNDLES } from './effect-bundles';
 
 // Import the root IDE component (self-registering)
 import './views/effect-ide/effect-ide-app';
@@ -34,13 +35,8 @@ async function main() {
     (id) => id === appState.local.userSettings.selectedProjectId,
   );
 
-  // The IDE loads the shipping effect bundles. `testonly` is intentionally
-  // not loaded here — it's reserved for integration tests.
-  appController.loadModule('com.nano.core');
-  appController.loadModule('com.nano.nano');
-  appController.loadModule('com.nano.lights');
-  appController.loadModule('com.nano.text');
-  appController.loadModule('com.nano.richtext');   // source.text.rich (Blitz HTML/CSS)
+  // The IDE loads the shipping effect bundles (shared list; `testonly` excluded).
+  for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
 }
 
 main();

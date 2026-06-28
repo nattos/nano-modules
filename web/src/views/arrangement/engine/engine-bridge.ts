@@ -25,6 +25,7 @@ import { automationEntriesAtBeat, buildCompositeRenderAtBeat, videoDescFor } fro
 import { store } from '../state/store';
 import { deviceIsSource, type Clip, type Track } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
+import { EFFECT_BUNDLES } from '../../../effect-bundles';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
 /** Fired once per rendered frame after the latest engine frame is retained. */
@@ -218,6 +219,9 @@ export class EngineBridge {
     // Real plugin schemas → store, so the inspector renders complete editors
     // (color/bool/enum/vec) instead of the catalog's float-only synthesis.
     e.onPlugins = (plugins) => store.setEnginePlugins(plugins);
+    // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
+    // all effects are reachable — not just those a clip already references.
+    void e.warmBundles(EFFECT_BUNDLES);
     this.engine = e;
     return e;
   }

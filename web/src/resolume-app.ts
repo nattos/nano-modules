@@ -11,6 +11,7 @@ import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
+import { EFFECT_BUNDLES } from './effect-bundles';
 
 // Import the root component (self-registering)
 import './views/sketch-app';
@@ -68,11 +69,7 @@ async function main() {
   // Barrel mode skips this — the worker never instantiates anything; the
   // plugin list comes from the barrel's WS state subtree (see connectBarrel).
   if (!barrelMode) {
-    appController.loadModule('com.nano.core');
-    appController.loadModule('com.nano.nano');
-    appController.loadModule('com.nano.lights');
-    appController.loadModule('com.nano.text');      // source.text.plain
-    appController.loadModule('com.nano.richtext');  // source.text.rich (Blitz HTML/CSS)
+    for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
   }
 
   if (barrelMode) connectBarrel(barrelUrl!);

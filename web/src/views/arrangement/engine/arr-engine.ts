@@ -106,6 +106,22 @@ export class ArrEngine {
     return this.readyPromise;
   }
 
+  /**
+   * Eagerly load effect bundles (deduped) so EVERY shipping effect is reachable —
+   * not just the ones a clip already references. Matches the IDEs, which load the
+   * full shared set on boot. Fire-and-forget; later showSketch/showComposite calls
+   * skip any already-loaded bundle.
+   */
+  async warmBundles(bundles: readonly string[]) {
+    await this.readyPromise;
+    for (const bundle of bundles) {
+      if (this.loadedBundles.has(bundle)) continue;
+      this.proxy.loadModule(bundle);
+      this.loadedBundles.add(bundle);
+      await delay(60);
+    }
+  }
+
   private waitReady(): Promise<void> {
     return new Promise((resolve, reject) => {
       const t0 = Date.now();
