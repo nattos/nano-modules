@@ -72,6 +72,14 @@ _emit_spv_header_var double_chamber big_update p_update prefill trace bridger mo
   vs fs line_vs line_fs motion_vs motion_fs line_motion_vs line_motion_fs
 echo "  double_chamber shaders compiled (SPV: + motion_prefill/vs/fs + line_motion vs/fs)"
 
+# d_wave — Darkburst's polar radial-ripple distortion field ("D wave").
+#   field (compute) — propagate + decay + spawn the polar ripple buffer (RGBA16F).
+#   warp  (compute) — polar lookup + radial UV warp + composite over the input.
+compile_shaders_compute_var_spv d_wave field
+compile_shaders_compute_var_spv d_wave warp
+_emit_spv_header_var d_wave field warp
+echo "  d_wave shaders compiled (SPV: field + warp)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
 compile_shaders_compute_spv blur
 echo "  blur shader compiled (SPV) for effect_blur.h"
@@ -92,6 +100,7 @@ wasm_build \
   main.cpp \
   ../bicolor_grad/main.cpp \
   ../glisten/main.cpp \
-  ../double_chamber/main.cpp
+  ../double_chamber/main.cpp \
+  ../d_wave/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

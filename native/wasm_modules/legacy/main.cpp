@@ -16,6 +16,7 @@
 NANO_DECLARE_INSTANCE_EFFECT(bicolor_grad)
 NANO_DECLARE_INSTANCE_EFFECT(glisten)
 NANO_DECLARE_INSTANCE_EFFECT(double_chamber)
+NANO_DECLARE_INSTANCE_EFFECT(d_wave)
 
 extern "C" {
 
@@ -61,6 +62,20 @@ void nano_module_main() {
         "source",
         "particles,field,chamber,attractor,curl,generative,legacy",
         NANO_INSTANCE_LIFECYCLE(double_chamber),
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.d_wave",
+        "D Wave",
+        "Radial-ripple distortion field. Ripples are stochastically spawned at "
+        "the centre, expand outward as concentric arcs, and decay — radially "
+        "warping the input image as they pass. A trigger fires a full-circle "
+        "shock ripple. v2 port of the distortion field (\"D wave\") from the "
+        "shipped NanoGraph Darkburst (the one block we actually used live).",
+        "warp",
+        "distortion,ripple,wave,warp,radial,darkburst,legacy",
+        NANO_INSTANCE_LIFECYCLE(d_wave),
     });
 }
 
