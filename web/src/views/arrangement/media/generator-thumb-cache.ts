@@ -19,26 +19,49 @@ class GeneratorThumbCache {
 
   /** Exact bitmap for (fingerprint, sample), or undefined. Touches LRU. */
   peek(fp: string, sample: number): ImageBitmap | undefined {
+    return this.touch(fp)?.get(sample);
+  }
+
+  /**
+   * Best available bitmap for `sample`, searching the clip's recent fingerprints
+   * (`fps[0]` = current, then older ones most-recent-first), with a freshness flag:
+   *   - `stale:false` — the EXACT sample under the CURRENT fingerprint (fully up to date);
+   *   - `stale:true`  — a fallback: the exact sample (right time) from an older fingerprint,
+   *     or the NEAREST captured sample (wrong time) from the most-recent non-empty one.
+   * So a cell always shows the latest valid frame it can (across substitution AND param
+   * edits) and the caller can shade the stale ones. Undefined only when nothing is cached.
+   */
+  peekBest(fps: string[], sample: number): { bitmap: ImageBitmap; stale: boolean } | undefined {
+    if (!fps.length) return undefined;
+    // Fresh: exact sample under the current fingerprint.
+    const exactCur = this.touch(fps[0])?.get(sample);
+    if (exactCur) return { bitmap: exactCur, stale: false };
+    // Stale, RIGHT time: exact sample from the most-recent fingerprint that has it.
+    for (const fp of fps) {
+      const b = this.touch(fp)?.get(sample);
+      if (b) return { bitmap: b, stale: true };
+    }
+    // Stale, wrong time: nearest captured sample from the most-recent non-empty fingerprint.
+    for (const fp of fps) {
+      const cells = this.map.get(fp);
+      if (cells && cells.size) {
+        const b = this.nearestIn(cells, sample);
+        if (b) return { bitmap: b, stale: true };
+      }
+    }
+    return undefined;
+  }
+
+  /** Look up a fingerprint's cells and bump it to most-recent (LRU touch). */
+  private touch(fp: string): Map<number, ImageBitmap> | undefined {
     const cells = this.map.get(fp);
     if (!cells) return undefined;
     this.map.delete(fp);
     this.map.set(fp, cells);
-    return cells.get(sample);
+    return cells;
   }
 
-  /**
-   * Bitmap for `sample`, or the NEAREST captured sample for this fingerprint when
-   * that exact one isn't in yet — so a film-strip cell shows a visually-adjacent
-   * frame while it fills, instead of a placeholder (mirrors the video reel's
-   * substitution). Returns undefined only when the fingerprint has no samples at all.
-   */
-  peekNearest(fp: string, sample: number): ImageBitmap | undefined {
-    const cells = this.map.get(fp);
-    if (!cells || cells.size === 0) return undefined;
-    this.map.delete(fp);
-    this.map.set(fp, cells);
-    const exact = cells.get(sample);
-    if (exact) return exact;
+  private nearestIn(cells: Map<number, ImageBitmap>, sample: number): ImageBitmap | undefined {
     let best: ImageBitmap | undefined;
     let bestD = Infinity;
     for (const [s, b] of cells) {

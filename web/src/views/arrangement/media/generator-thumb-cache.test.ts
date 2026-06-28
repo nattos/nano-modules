@@ -17,15 +17,25 @@ describe('generatorThumbCache', () => {
     expect(generatorThumbCache.count('fp')).toBe(1);
   });
 
-  it('peekNearest substitutes the closest captured sample, undefined when empty', () => {
-    expect(generatorThumbCache.peekNearest('fp', 12)).toBeUndefined();
-    const b5 = bmp();
-    const b20 = bmp();
-    generatorThumbCache.put('fp', 5, b5);
-    generatorThumbCache.put('fp', 20, b20);
-    expect(generatorThumbCache.peekNearest('fp', 5)).toBe(b5);   // exact
-    expect(generatorThumbCache.peekNearest('fp', 11)).toBe(b5);  // 11 closer to 5
-    expect(generatorThumbCache.peekNearest('fp', 16)).toBe(b20); // 16 closer to 20
+  it('peekBest: fresh exact, stale nearest, stale cross-fingerprint fallback', () => {
+    expect(generatorThumbCache.peekBest(['cur'], 12)).toBeUndefined();
+
+    // Current fingerprint, exact sample → fresh.
+    const exact = bmp();
+    generatorThumbCache.put('cur', 12, exact);
+    expect(generatorThumbCache.peekBest(['cur'], 12)).toEqual({ bitmap: exact, stale: false });
+
+    // Current fingerprint, only a NEARBY sample → stale (wrong time).
+    const near = bmp();
+    generatorThumbCache.put('cur', 5, near);
+    expect(generatorThumbCache.peekBest(['cur'], 7)).toEqual({ bitmap: near, stale: true }); // 7→nearest of {12,5}=5
+    expect(generatorThumbCache.peekBest(['cur'], 12)).toEqual({ bitmap: exact, stale: false }); // exact still fresh
+
+    // After a param change: current 'new' has nothing yet → fall back to old 'cur'
+    // at the RIGHT time (sample 12), marked stale.
+    expect(generatorThumbCache.peekBest(['new', 'cur'], 12)).toEqual({ bitmap: exact, stale: true });
+    // No exact anywhere for sample 30 → nearest from the most-recent non-empty fp.
+    expect(generatorThumbCache.peekBest(['new', 'cur'], 30)?.stale).toBe(true);
   });
 
   it('replacing a sample closes the stale bitmap', () => {

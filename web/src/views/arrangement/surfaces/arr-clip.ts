@@ -7,7 +7,7 @@
 import { html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
-import { drawFilmReel, drawPlaceholderCell } from './film-reel';
+import { drawFilmReel, drawPlaceholderCell, drawStaleCell } from './film-reel';
 import { thumbnailController, reelLayout } from '../media/thumbnail-controller';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
 import { generatorFingerprint, generatorIsTimeIndependent, isGeneratorClip } from '../engine/generator-fingerprint';
@@ -366,16 +366,33 @@ export class ArrClip extends MobxLitElement {
     const aspect = store.compositionAspect || 16 / 9;
     const layout = reelLayout(w, h, GENERATOR_THUMB_SAMPLES, aspect);
     if (layout.cells === 0) { drawPlaceholderCell(ctx, 0, 0, w, h); return; }
+    // Search the current fingerprint first, then recent (pre-edit) ones — so a cell
+    // shows the latest valid frame it has even after a param change, shaded as stale.
+    const fps = this.recentGenFingerprints(fp);
     const cellW = w / layout.cells;
     for (let i = 0; i < layout.cells; i++) {
       const x = i * cellW;
       if (x > winR || x + cellW < winL) continue; // window cull (off-screen)
       const frac = (i + 0.5) / layout.cells;
       const sample = ti ? 0 : Math.min(GENERATOR_THUMB_SAMPLES - 1, Math.floor(frac * GENERATOR_THUMB_SAMPLES));
-      const bmp = generatorThumbCache.peekNearest(fp, sample);
-      if (bmp) ctx.drawImage(bmp, x, 0, cellW, h);
-      else drawPlaceholderCell(ctx, x, 0, cellW, h);
+      const hit = generatorThumbCache.peekBest(fps, sample);
+      if (!hit) { drawPlaceholderCell(ctx, x, 0, cellW, h); continue; }
+      ctx.drawImage(hit.bitmap, x, 0, cellW, h);
+      if (hit.stale) drawStaleCell(ctx, x, 0, cellW, h); // substitute / old-fingerprint frame
     }
+  }
+
+  /**
+   * The clip's recent generator fingerprints, most-recent first (capped). Updated
+   * here so a param edit pushes the new key to the front while the previous keys
+   * (whose captured frames are still in the cache) remain as stale fallbacks.
+   */
+  private genFpHistory: string[] = [];
+  private recentGenFingerprints(currentFp: string): string[] {
+    if (this.genFpHistory[0] !== currentFp) {
+      this.genFpHistory = [currentFp, ...this.genFpHistory.filter((f) => f !== currentFp)].slice(0, 5);
+    }
+    return this.genFpHistory;
   }
 
   /**

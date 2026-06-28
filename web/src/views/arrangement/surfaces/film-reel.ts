@@ -28,3 +28,34 @@ export function drawFilmReel(ctx: CanvasRenderingContext2D, w: number, h: number
   if (h <= 2) return;
   drawPlaceholderCell(ctx, 0, 0, w, h);
 }
+
+/**
+ * Overlay marking a cell's thumbnail as STALE — a substituted frame from a nearby
+ * time or an older param fingerprint, shown while the up-to-date one is (re)captured.
+ * A dim veil (darkens regardless of content luma, so it reads even on B&W frames)
+ * plus a faint diagonal hatch that says "not final".
+ */
+export function drawStaleCell(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.fillStyle = 'rgba(6,6,10,0.42)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  const step = 7;
+  for (let d = -h; d < w; d += step) {
+    ctx.beginPath();
+    ctx.moveTo(x + d, y + h);
+    ctx.lineTo(x + d + h, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
