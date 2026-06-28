@@ -41,10 +41,10 @@ static constexpr float SPEED_ROWS_PER_SEC = 600.0f;  // wave_speed=1 → rows/se
 static constexpr float DECAY_MAX          = 4.0f;    // wave_decay=1 → e-folds/sec
 static constexpr float SHARP_MIN          = 3.0f;    // soften=1 → wide ring
 static constexpr float SHARP_MAX          = 60.0f;   // soften=0 → tight ring
-static constexpr float MAX_CELLS          = 23.0f;   // density=1 → 24 angular cells
+static constexpr float MAX_CELLS          = 47.0f;   // density=1 → 48 noise cells
 
 struct FieldUniforms {
-  float y_shift, decay, spawn_prob, sharp;
+  float y_shift, decay, rate, sharp;
   float ang_cells, spawn_amp, burst;
   uint32_t frame;
 };
@@ -94,19 +94,19 @@ static gpu::ComputePSO s_pso_field;
 static gpu::ComputePSO s_pso_warp;
 
 void module_init() {
-  state::init("warp.legacy.d_wave", {1, 0, 1},
+  state::init("warp.legacy.d_wave", {1, 0, 2},
     state::Schema()
       // ---- Standard ---- (floatField: name,def,min,max,io,magnitude,step,units,description)
       .floatField("distortion",  0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Radial warp magnitude.")
       .floatField("rate",        0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Ripple spawn rate (Poisson; exponential curve).")
+                  "Noise density: fraction of angles emitting grain.")
       .floatField("wave_speed",  0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "How fast ripples expand outward.")
+                  "How fast the grain streaks outward.")
       .floatField("scale",       1.0f,  0.1f, 4.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Spatial size of the ripple rings.")
+                  "Spatial size of the ripple field.")
       .floatField("density",     0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Number of angular ripple arcs.")
+                  "Grain frequency around the circle.")
       .boolField ("gate",        false, state::PrimaryInput,
                   "Rising edge fires a full-circle shock ripple.")
       .eventField("trigger",     state::PrimaryInput)
@@ -247,8 +247,7 @@ void render(void* self, int vp_w, int vp_h) {
   FieldUniforms fu = {};
   fu.y_shift   = (s->wave_speed * SPEED_ROWS_PER_SEC * dt) / float(RAD);
   fu.decay     = std::exp(-s->wave_decay * DECAY_MAX * dt);
-  float rate_hz = std::pow(60.0f, s->rate) - 1.0f;     // style guide §4.1
-  fu.spawn_prob = 1.0f - std::exp(-rate_hz * dt);
+  fu.rate      = s->rate;     // direct threshold: fraction of angular cells injecting
   fu.sharp     = SHARP_MAX + (SHARP_MIN - SHARP_MAX) * s->soften;
   fu.ang_cells = std::round(1.0f + s->density * MAX_CELLS);
   fu.spawn_amp = 1.0f;

@@ -20,14 +20,16 @@ RWTexture2D<float4> curField  : register(u2);
 cbuffer Uniforms : register(b3) {
   float y_shift;     // normalized rows the field marches outward this frame
   float decay;       // per-frame amplitude multiplier (≤ 1)
-  float spawn_prob;  // P(a fresh ripple ring is emitted) this frame (Poisson)
-  float sharp;       // gaussian radial sharpness of a fresh ring
+  float rate;        // noise density: fraction of angular cells that inject
+  float sharp;       // gaussian radial thickness of the freshly injected band
 
-  float ang_cells;   // angular frequency of the ring's brightness variation
-  float spawn_amp;   // amplitude of a fresh ripple
-  float burst;       // forced full-strength emission (trigger), 0 normally
-  uint  frame;       // frame index → decorrelates the per-frame spawn hash
+  float ang_cells;   // grain frequency: noise cells around the circle
+  float spawn_amp;   // amplitude of the injected noise
+  float burst;       // forced full-strength ring emission (trigger), 0 normally
+  uint  frame;       // frame index → fresh noise every frame
 }
+
+static const float DW_NOISE_POWER = 2.0;   // grain contrast / sparsity
 
 uint dw_hash(uint x) {
   x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
@@ -49,14 +51,17 @@ float dw_noise01(float a01, float cells, uint seed) {
   return lerp(h0, h1, f * f * (3.0 - 2.0 * f));
 }
 
-// Emission shape for THIS frame's ripple ring: a per-frame Poisson gate decides
-// whether a ring is born; the smooth angular band shapes its brightness. The
-// band is reseeded every frame and biased to [0.3, 1] so it never blacks out —
-// any dim angle is transient (different next frame) and old rings keep
-// propagating through it, so the field has no fixed angular "valleys".
-float dw_emit(float a01, float cells, uint frame, float prob) {
-  if (dw_unit(dw_hash(frame * 0xD1B54A33u)) >= prob) return 0.0;
-  return 0.3 + 0.7 * dw_noise01(a01, cells, dw_hash(frame * 0x9E3779B1u));
+// The D-wave's turbulent grain: a fresh value-noise band around the circle
+// (frequency `cells`) is generated EVERY frame; `rate` thresholds it so only
+// the brightest fraction of angles inject (sparse grain), and a power curve
+// sets the contrast. Independent per-frame noise injected at the centre then
+// advects outward → radial turbulent streaks (the original's per-frame random
+// array, FillArray Source:Random). No fixed angular structure → no valleys.
+float dw_inject(float a01, float cells, uint frame, float rate) {
+  float r   = dw_noise01(a01, cells, dw_hash(frame * 0x9E3779B1u));
+  float thr = 1.0 - rate;
+  float n   = saturate((r - thr) / max(rate, 1e-3));
+  return pow(n, DW_NOISE_POWER);
 }
 
 [numthreads(8, 8, 1)]
@@ -75,15 +80,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float prev = prevField.SampleLevel(samp, float2(uv.x, ySrc), 0).r;
   float val = prev * decay;
 
-  // Spawn: a fresh ripple ring is born at the centre (row ≈ 0) on a per-frame
-  // Poisson schedule, with a smooth angular brightness band (frequency
-  // `ang_cells`) so the ring shimmers around the circle without hard-edged
-  // sectors. The ring is a gaussian in radius so it's born tight at the centre
-  // and marches outward over subsequent frames. burst (trigger) forces a
-  // full-strength ring regardless of the Poisson gate.
-  float emit = dw_emit(uv.x, ang_cells, frame, spawn_prob);
+  // Inject fresh per-angle noise into the centre band (row ≈ 0). The band is a
+  // gaussian in radius (thickness from `sharp`) so each frame's noise is born
+  // tight at the centre and marches outward over subsequent frames, leaving
+  // turbulent radial streaks. burst (trigger) forces a full coherent ring.
+  float inj  = dw_inject(uv.x, ang_cells, frame, rate);
   float ring = exp(-sharp * uv.y * uv.y);
-  val += spawn_amp * ring * saturate(emit + burst);
+  val += spawn_amp * ring * saturate(inj + burst);
 
   curField[gid.xy] = float4(val, 0.0, 0.0, 0.0);
 }
