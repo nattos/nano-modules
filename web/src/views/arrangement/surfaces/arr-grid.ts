@@ -885,12 +885,15 @@ export class ArrGrid extends MobxLitElement {
   private renderTrackAutoOverlay(track: Track) {
     if (!store.automationMode) return '';
     const sel = store.autoField(`track/${track.id}`);
-    const lane = sel ? store.selectedTrackLane(track.id) : undefined;
-    // An EXISTING lane lives in its OWN row (it is never hoisted onto the clip row,
-    // so selecting its param doesn't make the lane "disappear"). The clip-row overlay
-    // is ONLY a draw target for a selected field that has no lane yet — so there's no
-    // lane id to scope a cursor/selection to here (drawing creates the lane).
-    if (lane) return '';
+    // The overlay is ONLY the draw target for a SELECTED field that has no lane yet.
+    // With no field selected there's nothing to edit — DON'T cover the clip row with
+    // an empty grid (it draws a faint grid over every track's clips → "grid lines
+    // everywhere" + per-frame redraw churn on the absolutely-positioned canvases).
+    if (!sel) return '';
+    // An EXISTING lane lives in its OWN row (never hoisted onto the clip row, so
+    // selecting its param doesn't make the lane "disappear"); the overlay is just the
+    // not-yet-pinned draw target (drawing on it creates the lane).
+    if (store.selectedTrackLane(track.id)) return '';
     return html`<div class="track-auto-edit">
       <arr-automation-editor
         gridded
@@ -898,7 +901,7 @@ export class ArrGrid extends MobxLitElement {
         .ensureLaneId=${() => store.ensureSelectedTrackLane(track.id)}
         .timelineSpan=${compositionLengthBeats(store.composition)}
         .beatsPerBar=${store.composition.meta.timeSignature?.[0] ?? 4}
-        .hideCurve=${!sel}
+        .hideCurve=${false}
         .timeboxGestures=${true}
         .bubbleOffCurve=${true}
         .cursorEnabled=${false}
