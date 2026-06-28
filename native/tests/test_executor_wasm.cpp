@@ -101,6 +101,111 @@ TEST_CASE("executor.wasm renders pixel-identical to the native executor", "[exec
   CHECK(diffs == 0);
 }
 
+TEST_CASE("a trailing effect keeps rendering on CLEAN (non-dirty) frames", "[executor_wasm]") {
+  // Repro for the arrangement MAIN BUS FX "works only on single-frame bursts":
+  // the bus FX is the FINAL chain entry over the composite. On the dirty frame
+  // (sketch re-issued) it renders; the worry is a later CLEAN frame (dirty=0,
+  // cached plan, state not re-applied) collapsing to identity → passthrough.
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  WasmExecutorDriver driver;
+  REQUIRE(driver.init(executorWasmDir(), &rt, backend.get(), registry.schemas()));
+
+  // A single brightness_contrast at brightness=1.0 — the trailing/final stage.
+  const std::string sketch = R"JSON({
+    "chain": [ { "type":"module","module_type": "color.tone.brightness_contrast", "instance_key": "mbfx@0" } ],
+    "instances": { "mbfx@0": { "module_type": "color.tone.brightness_contrast",
+                               "state": { "brightness": 1.0, "contrast": 0.0 } } },
+    "wires": []
+  })JSON";
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> inPix(W * H * 4, 96);
+  for (size_t i = 3; i < inPix.size(); i += 4) inPix[i] = 255;
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+  const double inMean = mean_rgb(inPix);
+
+  // Frame 1 — DIRTY (the re-issue): applies state, builds the plan.
+  int32_t h1 = driver.execute(&rt, sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, /*dirty=*/true);
+  backend->submit();
+  const double m1 = mean_rgb(backend->readbackTexture(h1, W, H));
+
+  // Frames 2..4 — CLEAN (steady state): same sketch, dirty=0, cached plan.
+  double m2 = 0;
+  for (int f = 0; f < 3; ++f) {
+    int32_t h = driver.execute(&rt, sketch, inTex, outTex, (int)W, (int)H, 1.0/60.0, /*dirty=*/false);
+    backend->submit();
+    m2 = mean_rgb(backend->readbackTexture(h, W, H));
+  }
+
+  INFO("in " << inMean << "  dirty " << m1 << "  clean " << m2);
+  CHECK(m1 > inMean + 20.0);  // the burst: brightened on the dirty frame
+  CHECK(m2 > inMean + 20.0);  // MUST still be brightened on clean frames (not passthrough)
+}
+
+TEST_CASE("a trailing effect AFTER a composite.blend renders on clean frames (main-bus shape)", "[executor_wasm]") {
+  // The EXACT main-bus structure: bg solid + a source clip composited via
+  // composite.blend, then a trailing brightness_contrast (the master FX bus) as
+  // the final entry. Reproduces the arrangement composite verbatim, over a dirty
+  // then several clean frames.
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  WasmExecutorDriver driver;
+  REQUIRE(driver.init(executorWasmDir(), &rt, backend.get(), registry.schemas()));
+
+  // arr_bg(black) , clip(red) , blend(bg over red) , brightness(+1) trailing.
+  const std::string sketch = R"JSON({
+    "chain": [
+      { "type":"module","module_type":"source.solid_color","instance_key":"arr_bg" },
+      { "type":"module","module_type":"source.solid_color","instance_key":"clip_gen" },
+      { "type":"module","module_type":"composite.blend","instance_key":"clip_blend" },
+      { "type":"module","module_type":"color.tone.brightness_contrast","instance_key":"track_main-bus_mbfx" }
+    ],
+    "instances": {
+      "arr_bg":   { "module_type":"source.solid_color","state":{ "color":[0.0,0.0,0.0] } },
+      "clip_gen": { "module_type":"source.solid_color","state":{ "color":[0.4,0.0,0.0] } },
+      "clip_blend": { "module_type":"composite.blend","state":{ "mode":0,"opacity":1.0 } },
+      "track_main-bus_mbfx": { "module_type":"color.tone.brightness_contrast","state":{ "brightness":1.0,"contrast":0.0 } }
+    },
+    "wires": [
+      { "id":"w0","src":{"instanceKey":"arr_bg","field":"tex_out"},"dest":{"instanceKey":"clip_blend","field":"0"} },
+      { "id":"w1","src":{"instanceKey":"clip_gen","field":"tex_out"},"dest":{"instanceKey":"clip_blend","field":"1"} }
+    ]
+  })JSON";
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  auto run = [&](bool dirty) -> double {
+    int32_t h = driver.execute(&rt, sketch, /*inTex*/-1, outTex, (int)W, (int)H, 1.0/60.0, dirty);
+    backend->submit();
+    return mean_rgb(backend->readbackTexture(h, W, H));
+  };
+
+  const double m1 = run(true);            // dirty (re-issue) — the burst
+  double m2 = 0;
+  for (int f = 0; f < 3; ++f) m2 = run(false);  // clean frames — steady state
+
+  // Red 0.4 ≈ 102/255; the R channel alone gives mean_rgb ≈ 34 at identity.
+  // brightness=+1 must lift it well above that on BOTH dirty and clean frames.
+  INFO("dirty " << m1 << "  clean " << m2);
+  CHECK(m1 > 50.0);   // brightened on the dirty frame
+  CHECK(m2 > 50.0);   // STILL brightened on clean frames (not collapsed to passthrough)
+  CHECK(std::abs(m1 - m2) < 2.0);  // identical frame-to-frame (no flicker)
+}
+
 TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[executor_wasm]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
