@@ -611,7 +611,14 @@ export class ArrClip extends MobxLitElement {
     // Likewise touch every device's editable state: a generator clip's film strip
     // (drawGeneratorReel) is keyed on a fingerprint of these params, so an inspector
     // param edit must re-render this element to redraw the strip with the new key.
-    for (const d of clip.sketch.devices) if (d.state) void Object.values(d.state).join('|');
+    // Touch the effect REGISTRY for each device too: on project load the clip can render
+    // BEFORE the engine discovers its plugins, so isGeneratorClip() is briefly false and
+    // the generator reel (incl. its disk prefetch) is skipped — re-render when discovery
+    // lands so the strip starts drawing without needing a click.
+    for (const d of clip.sketch.devices) {
+      if (d.state) void Object.values(d.state).join('|');
+      void store.enginePlugin(d.moduleType);
+    }
     const grid = buildBeatGrid();
     const left = grid.beatToX(clip.startBeat);
     const width = Math.max(8, grid.spanWidth(clip.startBeat, clip.lengthBeat));
