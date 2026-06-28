@@ -22,6 +22,7 @@ import { thumbnailController } from '../media/thumbnail-controller';
 import { clipSourceTimeAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import type { ClipLoopConfig } from '../model/composition';
 import { RANDOM_DEFAULTS } from '../model/composition';
+import { debugPerf, type ClipPerf } from '../state/debug-perf';
 
 /**
  * Pick a decode path for a source: `<video>`-codec clips play smoothly via a PlaybackCursor;
@@ -130,7 +131,6 @@ interface Pump {
 }
 
 export class VideoCompositor {
-  private device: GPUDevice | null = null;
   private gpuHost: GPUHost | null = null;
   private blitter: FrameBlitter | null = null;
   private service: VideoPlaybackService | null = null; // for DXV / image clips (random-access + cache)
@@ -200,7 +200,6 @@ export class VideoCompositor {
         // per page — a second requestDevice fails under headless WebGPU). Cursors own their
         // own <video> elements; the service decodes DXV/images. Our own FrameBlitter on it.
         const { device, gpuHost, service } = await thumbnailController.sharedGpu();
-        this.device = device;
         this.gpuHost = gpuHost;
         this.service = service;
         this.blitter = new FrameBlitter(device);
@@ -348,40 +347,39 @@ export class VideoCompositor {
       pump.busy = true;
       void this.pumpClip(pump, beat, bpm);
     }
-    this.maybeLog(beat);
+    this.maybeLog();
   }
 
   private lastLogMs = 0;
-  /** Periodic playback telemetry (≈1Hz). Enable in the console with
-   *  `globalThis.__arrVideoLog = true`. Logs each clip's action mix (play/seek/hold),
-   *  drift, seek durations, and the real inject cadence — so a stutter's cause (loop-wrap
-   *  seeks vs decode lag vs gate holds) is visible. */
-  private maybeLog(beat: number) {
-    if (!(globalThis as unknown as { __arrVideoLog?: boolean }).__arrVideoLog) return;
+  /** Publish per-clip playback stats to the Debug tab (≈1Hz) — ONLY while the tab is open
+   *  (`debugPerf.active`), so the per-clip snapshot/cache-stats work is free otherwise. */
+  private maybeLog() {
+    if (!debugPerf.active) return;
     const t = nowMs();
-    if (this.lastLogMs && t - this.lastLogMs < 1000) return;
+    if (this.lastLogMs && t - this.lastLogMs < 500) return;
     this.lastLogMs = t;
+    const out: ClipPerf[] = [];
     for (const [id, p] of this.pumps) {
-      if (!p.loggedScenario) {
-        p.loggedScenario = true;
-        const l = p.desc.loop;
-        console.log(`[vid ${id}] scenario ${p.width}x${p.height} fps=${p.fps.toFixed(2)} frames=${p.frameCount} dur=${p.durationSec.toFixed(2)}s mode=${l?.mode ?? 'time'} slice=[${(l?.startSec ?? 0).toFixed(2)},${(l?.endSec ?? p.durationSec).toFixed(2)}]s speed=${l?.speed ?? 1} dir=${l?.direction ?? 'forward'}`);
-      }
-      const injAvg = p.injectCount ? p.injectGapSumMs / p.injectCount : 0;
-      const path = p.cursor ? 'cursor' : 'service';
+      const injN = p.injectCount;
+      const e: ClipPerf = {
+        clipId: id, label: p.desc.loop?.mode ?? 'time', path: p.cursor ? 'cursor' : 'service',
+        width: p.width, height: p.height, fps: p.fps, frameCount: p.frameCount,
+        injectN: injN, injectAvgMs: injN ? p.injectGapSumMs / injN : 0, injectMaxMs: p.injectGapMax,
+      };
       const s = p.cursor?.snapshotStats();
-      const cur = s
-        ? `${s.ticks}t play=${s.play} seek=${s.seek} hold=${s.hold} notReady=${s.notReady}`
-        + ` | drift avg=${(s.ticks ? (s.driftSumSec / s.ticks) * 1000 : 0).toFixed(0)}ms max=${(s.driftMaxSec * 1000).toFixed(0)}ms`
-        + ` | seeks=${s.seeksDone} avg=${(s.seeksDone ? s.seekMsSum / s.seeksDone : 0).toFixed(0)}ms max=${s.seekMsMax.toFixed(0)}ms`
-        : '';
-      console.log(
-        `[vid ${id}] (${path}) ${cur}` +
-        ` | inject n=${p.injectCount} avg=${injAvg.toFixed(0)}ms max=${p.injectGapMax.toFixed(0)}ms` +
-        ` | beat=${beat.toFixed(2)}`,
-      );
+      if (s) {
+        e.ticks = s.ticks; e.play = s.play; e.seek = s.seek; e.hold = s.hold; e.notReady = s.notReady;
+        e.driftAvgMs = s.ticks ? (s.driftSumSec / s.ticks) * 1000 : 0;
+        e.driftMaxMs = s.driftMaxSec * 1000;
+        e.seeks = s.seeksDone; e.seekAvgMs = s.seeksDone ? s.seekMsSum / s.seeksDone : 0;
+        const c = p.cursor!.cacheStats();
+        e.cacheEntries = c.entries; e.cacheMB = c.bytes / (1024 * 1024); e.cacheHitRate = c.hitRate; e.cachePinned = c.pinned;
+      }
+      out.push(e);
       p.injectGapSumMs = 0; p.injectGapMax = 0; p.injectCount = 0;
     }
+    debugPerf.clips = out;
+    debugPerf.updatedAt = t;
   }
 
   /**

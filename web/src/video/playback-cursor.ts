@@ -312,6 +312,13 @@ export class PlaybackCursor {
     return s;
   }
 
+  /** Frame-cache snapshot for the Debug tab: resident entries, bytes, recent hit-rate, and
+   *  how many frames are pinned (the loop slice). */
+  cacheStats(): { entries: number; bytes: number; hitRate: number; pinned: number } {
+    const s = this.cache.stats();
+    return { entries: s.entries, bytes: s.bytes, hitRate: s.recentHitRate, pinned: this.pinned ? this.pinned[1] - this.pinned[0] + 1 : 0 };
+  }
+
   /** Explicit seek (e.g. a scrub) — pauses + seeks; ready() flips true when it lands. */
   seek(targetSec: number): void {
     if (this.released) return;

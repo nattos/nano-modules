@@ -66,7 +66,7 @@ export interface Selection {
   path: string;
 }
 
-export type RightTab = 'inspector' | 'workspace' | 'settings' | 'export';
+export type RightTab = 'inspector' | 'workspace' | 'settings' | 'export' | 'debug';
 
 /** A resolved composite layer (the monitor draws these bottom→top). */
 export interface CompositeLayer {

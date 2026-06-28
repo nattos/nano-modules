@@ -15,6 +15,7 @@ const TABS: Array<{ id: RightTab; icon: string; label: string }> = [
   { id: 'workspace', icon: 'la-folder', label: 'Files' },
   { id: 'settings', icon: 'la-cog', label: 'Settings' },
   { id: 'export', icon: 'la-file-export', label: 'Export' },
+  { id: 'debug', icon: 'la-tachometer-alt', label: 'Debug' },
 ];
 
 @customElement('arr-tabbar')

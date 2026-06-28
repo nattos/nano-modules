@@ -19,6 +19,7 @@ import { customElement, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { engineBridge } from '../engine/engine-bridge';
+import { debugPerf } from '../state/debug-perf';
 
 @customElement('arr-monitor')
 export class ArrMonitor extends MobxLitElement {
@@ -121,8 +122,9 @@ export class ArrMonitor extends MobxLitElement {
     this.drawRaf = requestAnimationFrame(tick);
   }
 
+  /** Publish the on-screen composite cadence to the Debug tab — only while it's open. */
   private maybeLogPresentation(isNew: boolean) {
-    if (!(globalThis as unknown as { __arrVideoLog?: boolean }).__arrVideoLog) return;
+    if (!debugPerf.active) return;
     const now = globalThis.performance?.now?.() ?? Date.now();
     this.telDraws++;
     if (isNew) {
@@ -130,9 +132,15 @@ export class ArrMonitor extends MobxLitElement {
       if (this.telLastNewMs) { const g = now - this.telLastNewMs; this.telGapSum += g; if (g > this.telGapMax) this.telGapMax = g; }
       this.telLastNewMs = now;
     }
-    if (this.telLastMs && now - this.telLastMs >= 1000) {
-      const avg = this.telNew > 1 ? this.telGapSum / (this.telNew - 1) : 0;
-      console.log(`[monitor] vsync-draws=${this.telDraws} newFrames=${this.telNew} arrivals=${this.telArrivals} | composite gap avg=${avg.toFixed(1)}ms max=${this.telGapMax.toFixed(1)}ms`);
+    if (this.telLastMs && now - this.telLastMs >= 500) {
+      const elapsedSec = (now - this.telLastMs) / 1000;
+      debugPerf.monitor = {
+        drawsPerSec: this.telDraws / elapsedSec,
+        newFramesPerSec: this.telNew / elapsedSec,
+        arrivalsPerSec: this.telArrivals / elapsedSec,
+        gapAvgMs: this.telNew > 1 ? this.telGapSum / (this.telNew - 1) : 0,
+        gapMaxMs: this.telGapMax,
+      };
       this.telDraws = 0; this.telNew = 0; this.telArrivals = 0; this.telGapSum = 0; this.telGapMax = 0; this.telLastMs = now;
     } else if (!this.telLastMs) {
       this.telLastMs = now;

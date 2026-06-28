@@ -15,6 +15,7 @@ import { libraryPaths } from '../../../state/library-paths';
 import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
+import './arr-debug';
 import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
@@ -529,6 +530,7 @@ export class ArrInspector extends MobxLitElement {
       case 'workspace': content = this.renderWorkspace(); break;
       case 'settings': content = this.renderSettings(); break;
       case 'export': content = this.renderExport(); break;
+      case 'debug': content = html`<arr-debug></arr-debug>`; break;
       default: content = this.renderSelection(); break;
     }
     // The confirmation popover overlays whichever tab is active.
