@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './clip-sketch';
+import { seedTestPlugins } from './test-plugins';
+
+// The registry derives roles/fields from store.enginePlugins (empty offline) — seed
+// the fakes so catalogEffect resolves source/effect roles + the LFO's signed output.
+seedTestPlugins();
 
 /**
  * buildCompositeSketch — the layer pipeline. A SOURCE clip (generator at the top)

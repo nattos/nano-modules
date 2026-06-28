@@ -25,6 +25,7 @@ import type { ShowSketchOpts } from './arr-engine';
 import type { Clip, Device, Track, BackgroundConfig, GroupInput, RailRead, RailExport } from '../model/composition';
 import { deviceIsSource, clipProcessesTexture } from '../model/composition';
 import { catalogEffect, defaultStateFor, IMPLICIT_ANCHOR } from './effect-catalog';
+import { EFFECT_BUNDLES } from '../../../effect-bundles';
 import { solidSketch } from './slice-sketches';
 
 export interface ClipRender {
@@ -165,7 +166,6 @@ export function buildCompositeSketch(
    *  unsigned ⇒ 0..1. Omitted/false ⇒ unsigned. */
   railSigned?: Map<string, boolean>,
 ): { sig: string; sketch: Sketch; opts: ShowSketchOpts } | null {
-  const bundles = new Set<string>();
   const chain: ChainEntry[] = [];
   const wires: Wire[] = [];
   const instances: Record<string, InstanceState> = {};
@@ -196,8 +196,6 @@ export function buildCompositeSketch(
     // types → the executor retypes + recreates the instance every frame (1000s of
     // "module initialized"). Keep the first; drop the collision.
     if (instances[key]) return;
-    const cat = catalogEffect(moduleType);
-    bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle);
     const entry: ChainEntry = { type: 'module', module_type: moduleType, instance_key: key };
     // Static per clip (clip start in seconds) → doesn't churn the sketch hash; the
     // executor seeks a newly-activated effect to (transportSec − startSec).
@@ -458,19 +456,20 @@ export function buildCompositeSketch(
 
   if (chain.length === 0) return null;
   const sketch: Sketch = { anchor: null, chain, wires, instances };
-  const opts: ShowSketchOpts = { bundles: [...bundles], traceId: TRACE };
+  // Declare ALL shipping bundles (the chain can reference any discovered effect, and
+  // we no longer carry a per-effect bundle). showSketch/showComposite load+await them
+  // BEFORE createSketch, so the modules are present when the chain is built; once the
+  // engine has warmed them at boot this is a dedup no-op.
+  const opts: ShowSketchOpts = { bundles: [...EFFECT_BUNDLES], traceId: TRACE };
   const sig = JSON.stringify({ chain, wires, instances });
   return { sig, sketch, opts };
 }
 
 function buildRealChain(clip: Clip, catDevices: Device[]): ClipRender {
-  const bundles = new Set<string>();
   const chain: ChainEntry[] = [];
   const instances: Record<string, InstanceState> = {};
 
   const addEntry = (moduleType: string, keySuffix: string, state: Record<string, unknown>) => {
-    const cat = catalogEffect(moduleType);
-    bundles.add(cat ? cat.bundle : IMPLICIT_ANCHOR.bundle); // solid_color ships in core
     const key = clipInstanceKey(clip.id, keySuffix);
     chain.push({ type: 'module', module_type: moduleType, instance_key: key });
     instances[key] = { module_type: moduleType, state };
@@ -493,7 +492,7 @@ function buildRealChain(clip: Clip, catDevices: Device[]): ClipRender {
   }
 
   const sketch: Sketch = { anchor: null, chain, instances };
-  const opts: ShowSketchOpts = { bundles: [...bundles], traceId: TRACE };
+  const opts: ShowSketchOpts = { bundles: [...EFFECT_BUNDLES], traceId: TRACE };
   const sig = JSON.stringify({ chain, instances });
   return { sig, sketch, opts };
 }

@@ -39,7 +39,7 @@ import {
 // on demand via `loadDemoComposition()` (a "Load demo" affordance + e2e fixtures).
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
-import { EFFECTS, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
+import { effects, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import type { CompositeNode } from '../engine/clip-sketch';
 import { clipSourceTimeAt, type ClipTimeCtx } from '../engine/clip-time';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
@@ -2968,8 +2968,12 @@ export class ArrangementStore {
         state: {},
       };
     }
-    // Rotate through the real effect catalog.
-    const pick = EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+    // Rotate through the real (discovered) effects.
+    const pool = effects();
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (!pick) {
+      return { id: uid('dev'), moduleType: 'source.solid_color', name: 'Solid Color', capabilities: ['generator'], state: {} };
+    }
     return {
       id: uid('dev'),
       moduleType: pick.type,

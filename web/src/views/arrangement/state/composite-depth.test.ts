@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
+import { seedTestPlugins } from "../engine/test-plugins";
+seedTestPlugins(); // offline registry: catalogEffect resolves source/effect roles
 import type { Track } from '../model/composition';
 
 /**

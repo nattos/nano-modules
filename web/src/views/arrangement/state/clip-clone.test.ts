@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { store } from './store';
+import { seedTestPlugins } from "../engine/test-plugins";
+seedTestPlugins(); // offline registry: catalogEffect resolves source/effect roles
 
 /**
  * Duplicating a clip (cmd-drag → insertClipClone, paste, split) must mint FRESH

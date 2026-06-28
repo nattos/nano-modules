@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { buildCompositeSketch, clipInstanceKey, trackInstanceKey, type CompositeNode } from './clip-sketch';
+import { seedTestPlugins } from './test-plugins';
+
+// Seed the offline registry so catalogEffect resolves source/effect roles.
+seedTestPlugins();
 
 /**
  * GROUP compositing: a group's children render into a sub-image over the group's

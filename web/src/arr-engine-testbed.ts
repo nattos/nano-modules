@@ -9,6 +9,8 @@
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
 import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './views/arrangement/engine/clip-sketch';
+import { EFFECT_BUNDLES } from './effect-bundles';
+import { store } from './views/arrangement/state/store';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -28,7 +30,20 @@ engine.onFrame = (_id, bitmap) => {
   status.textContent = `frames: ${frames}`;
 };
 engine.onError = (m) => { status.textContent = `error: ${m}`; };
-engine.ready.then(() => { status.textContent = 'ready'; });
+// Mirror the real arrangement boot (engineBridge.ensureEngine):
+//  - feed discovered plugin schemas into the store so the effect registry
+//    (catalogEffect/role/defaultStateFor) resolves — WITHOUT this, buildCompositeSketch
+//    can't recognize a clip's devices and falls back to a default solid stand-in;
+//  - warm EVERY shipping bundle (buildCompositeSketch issues no per-sketch bundle
+//    list, relying on this warm), then settle briefly so the worker finishes
+//    registering modules before the first render (the real app renders well after
+//    boot, so it never hits this window).
+engine.onPlugins = (plugins) => store.setEnginePlugins(plugins);
+const settle = () => new Promise<void>((r) => setTimeout(r, 800));
+engine.ready
+  .then(() => engine.warmBundles(EFFECT_BUNDLES))
+  .then(settle)
+  .then(() => { status.textContent = 'ready'; });
 
 document.getElementById('blue')!.addEventListener('click', () => void show('blue'));
 document.getElementById('tris')!.addEventListener('click', () => void show('tris'));

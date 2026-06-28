@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store, paths } from './store';
+import { seedTestPlugins } from "../engine/test-plugins";
+seedTestPlugins(); // offline registry: catalogEffect resolves source/effect roles
 
 /**
  * Clip editing semantics added for hands-on use: clips are mutually exclusive

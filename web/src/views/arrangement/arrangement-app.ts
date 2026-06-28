@@ -204,6 +204,11 @@ export class ArrangementApp extends MobxLitElement {
     this.addEventListener('drop', this.onDrop);
     this.lastT = performance.now();
     this.tick(this.lastT);
+    // Boot the engine eagerly so it discovers every effect's schema — the
+    // add-effect palette + inspector read store.enginePlugins, which is empty
+    // until the engine warms the bundles (an empty timeline never triggers the
+    // lazy boot otherwise).
+    engineBridge.warm();
     // Restore the saved workspace layout (panels/tabs/modes + last file) BEFORE
     // mounting, so the remembered file re-opens; then re-open the last workspace
     // (silently if permission persists, else on the first user gesture).

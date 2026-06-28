@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
+import { seedTestPlugins } from "../engine/test-plugins";
+seedTestPlugins(); // offline registry: catalogEffect resolves source/effect roles
 
 /**
  * Store-side automation point editing (Component F: editable automation).

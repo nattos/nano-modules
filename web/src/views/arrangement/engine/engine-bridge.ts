@@ -334,6 +334,12 @@ export class EngineBridge {
     return this.engine !== null;
   }
 
+  /** Boot the engine eagerly (idempotent) so it warms every shipping bundle and
+   *  discovers their schemas — populating `store.enginePlugins`, which the
+   *  add-effect palette + inspector editors read. Without this an EMPTY timeline
+   *  (no renderable selection to trigger the lazy boot) would show no effects. */
+  warm() { this.ensureEngine(); }
+
   /** Effect ids discovered across loaded bundles (diagnostic). */
   discoveredEffects(): string[] {
     return this.engine ? [...this.engine.discovered] : [];

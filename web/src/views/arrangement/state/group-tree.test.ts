@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
 import type { Track } from '../model/composition';
 import type { CompositeNode, CompositeGroupNode } from '../engine/clip-sketch';
+import { seedTestPlugins } from '../engine/test-plugins';
+
+// addClipDeviceType('color.hsl') needs the registry to resolve offline.
+seedTestPlugins();
 
 /**
  * compositeTreeAtBeat — the hierarchical composite the group-effect compositor

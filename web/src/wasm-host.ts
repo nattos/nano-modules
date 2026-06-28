@@ -249,6 +249,13 @@ export class WasmHost {
   // is live; effect version rides bridgeCore, module version rides this map).
   static moduleVersionsById = new Map<string, string>();
 
+  // Per-effect-id capability tags, captured on EVERY set_schema and kept here for
+  // the same reason as moduleVersionsById: broadcastState must surface an effect's
+  // capabilities (e.g. 'generator') even for effects that were merely LOADED but
+  // never instantiated (no live host) — the entire palette. The per-instance
+  // `capabilities` field below only exists while a host is live.
+  static capabilitiesById = new Map<string, string[]>();
+
   // Pending patches for the current on_state_patched call
   pendingPatches: PatchOp[] = [];
 
@@ -574,6 +581,7 @@ export class WasmHost {
               this.moduleVersion = schemaJson.moduleVersion.map((n: any) => n | 0).join('.');
             }
             WasmHost.moduleVersionsById.set(id, this.moduleVersion);
+            WasmHost.capabilitiesById.set(id, this.capabilities);
 
             // Derive params and ioDecls from schema for backward compat
             this.params = [];
@@ -631,6 +639,7 @@ export class WasmHost {
           } catch {
             this.schema = {};
             this.capabilities = [];
+            WasmHost.capabilitiesById.set(id, []);
           }
 
           if (bc) {

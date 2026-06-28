@@ -1492,7 +1492,12 @@ function broadcastState() {
         })),
         io,
         schema,
-        capabilities: matchedHost?.capabilities ?? [],
+        // Capabilities ride a static per-id map (captured at set_schema / loadModule
+        // time) so DISCOVERED-but-not-instantiated effects — the whole palette — still
+        // surface their tags (e.g. 'generator'); a live host, when present, wins.
+        capabilities: matchedHost?.capabilities
+          ?? WasmHost.capabilitiesById.get(entry.metadata?.id ?? '')
+          ?? [],
       });
     }
   }

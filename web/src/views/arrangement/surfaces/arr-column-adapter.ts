@@ -25,7 +25,7 @@ import type { Device } from '../model/composition';
 import { store } from '../state/store';
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
-import { EFFECT_CATALOG, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
+import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
 import { clipInstanceKey } from '../engine/clip-sketch';
 
 const CAPS: ColumnCapabilities = {
@@ -42,13 +42,21 @@ const CAPS: ColumnCapabilities = {
   inlineWirePanel: true,  // STABLE: pip click opens the floating wire-mod panel (any mode)
 };
 
-const AVAILABLE: AvailableEffect[] = EFFECT_CATALOG.filter((c) => c.type !== VIDEO_SOURCE_TYPE).map((c) => ({
-  id: c.type,
-  name: c.name,
-  description: '',
-  category: c.type.split('.')[0],
-  keywords: [],
-}));
+// The add-effect palette, derived LIVE from discovered effects (reactive: reading
+// effectCatalog() in a render ties it to store.enginePlugins, so it fills in as
+// bundles warm). The host-fed video source is excluded — it's added automatically
+// for media clips, not picked from the palette.
+function availableEffects(): AvailableEffect[] {
+  return effectCatalog()
+    .filter((c) => c.type !== VIDEO_SOURCE_TYPE)
+    .map((c) => ({
+      id: c.type,
+      name: c.name,
+      description: '',
+      category: c.type.split('.')[0],
+      keywords: [],
+    }));
+}
 
 /** Binds the adapter to a clip's or track's device list + store mutators. */
 export interface DeviceTarget {
@@ -167,7 +175,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
       return { ...CAPS, wiring: store.wiresMode, inlineWireArcs: store.wiresMode };
     },
     get tappingMode() { return store.wiresMode; },
-    get availableEffects() { return AVAILABLE; },
+    get availableEffects() { return availableEffects(); },
     getSketch: (sketchId: string): Sketch | undefined => {
       const devices = this.target.getDevices();
       if (!devices) return undefined;
@@ -188,55 +196,26 @@ export class ArrColumnAdapter implements ColumnAdapter {
       };
     },
     getPlugin: (moduleType: string): PluginInfo | undefined => {
-      // Prefer the engine's REAL schema (complete editors: color/bool/enum/vec,
-      // exact ranges). Reading store.enginePlugins here ties column-group's render
-      // to it, so editors upgrade automatically once the bundle warms up. The
-      // real schema carries no display names, so overlay the catalog's curated
-      // labels where present. Falls back to the float-only synthesis until the
-      // schema lands.
+      // The engine's REAL schema (complete editors: color/bool/enum/vec, exact
+      // ranges). Reading store.enginePlugins here ties column-group's render to it,
+      // so editors appear once the bundle warms up. The real schema carries no
+      // display names, so overlay the registry's humanized labels onto the float
+      // fields. Returns undefined until the schema lands (no synthesis fallback —
+      // every effect is a discovered plugin).
       const real = store.enginePlugin(moduleType);
-      if (real) {
-        const mergedKey = `real:${moduleType}`;
-        const cachedReal = this.pluginCache.get(mergedKey);
-        if (cachedReal) return cachedReal;
-        const cat = catalogEffect(moduleType);
-        const schema: Record<string, any> = {};
-        for (const [k, def] of Object.entries((real.schema ?? {}) as Record<string, any>)) {
-          const label = cat?.fields.find((f) => f.key === k)?.label;
-          schema[k] = label && def && def.name == null ? { ...def, name: label } : def;
-        }
-        const merged: PluginInfo = { ...(real as unknown as PluginInfo), schema };
-        this.pluginCache.set(mergedKey, merged);
-        return merged;
-      }
-      const cached = this.pluginCache.get(moduleType);
-      if (cached) return cached;
+      if (!real) return undefined;
+      const mergedKey = `real:${moduleType}`;
+      const cachedReal = this.pluginCache.get(mergedKey);
+      if (cachedReal) return cachedReal;
       const cat = catalogEffect(moduleType);
-      if (!cat) return undefined;
-      // schema drives the slider label (def.name); params drive the editor.
       const schema: Record<string, any> = {};
-      cat.fields.forEach((f, i) => {
-        schema[f.key] = {
-          name: f.label, type: 'float', io: 1,
-          min: f.min, max: f.max, default: f.default, order: i,
-        };
-      });
-      // Declared outputs (io&2) → connectable wire sources + output trace cards.
-      (cat.outputs ?? []).forEach((f, i) => {
-        schema[f.key] = {
-          name: f.label, type: 'float', io: 2,
-          min: f.min, max: f.max, default: f.default, order: 1000 + i,
-        };
-      });
-      const plugin: PluginInfo = {
-        key: moduleType, id: moduleType, version: '0.0.0', io: [],
-        params: cat.fields.map((f, i) => ({
-          index: i, name: f.key, type: 10, defaultValue: f.default, min: f.min, max: f.max,
-        })),
-        schema,
-      };
-      this.pluginCache.set(moduleType, plugin);
-      return plugin;
+      for (const [k, def] of Object.entries((real.schema ?? {}) as Record<string, any>)) {
+        const label = cat?.fields.find((f) => f.key === k)?.label;
+        schema[k] = label && def && def.name == null ? { ...def, name: label } : def;
+      }
+      const merged: PluginInfo = { ...(real as unknown as PluginInfo), schema };
+      this.pluginCache.set(mergedKey, merged);
+      return merged;
     },
     // instanceKey is the device id; translate to the engine key the live output
     // state is published under, then read the store (so output traces animate).
