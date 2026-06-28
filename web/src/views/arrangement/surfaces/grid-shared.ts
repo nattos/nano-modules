@@ -19,14 +19,24 @@ export const ROW_HEIGHT = 56;
 export const AUTO_LANE_HEIGHT = 48;
 export const RULER_HEIGHT = 30;
 
+/** Cached warp curve — rebuilt only when the document changes (`store.warpEpoch`),
+ *  NOT on every scroll/zoom/playhead frame. buildBeatGrid is called per editor per
+ *  rAF frame; recomputing `derivedWarpSegments` (reads every clip → heavy MobX get
+ *  traffic) each time was the dominant scroll-jank cost (per a CPU trace). */
+let _warpCache: { epoch: number; curve: WarpCurve } | null = null;
+
 /**
- * Build the current BeatGrid (warp curve + zoom + scroll). Rebuilt per call;
- * cheap for mockup-sized compositions. Extends the curve well past content so
- * scrolling/zoom-out never runs off the table.
+ * Build the current BeatGrid (warp curve + zoom + scroll). The warp CURVE is
+ * memoized on `store.warpEpoch` (bumped on every edit/undo/redo/load); only the
+ * cheap zoom/scroll-dependent BeatGrid is built per call. Extends the curve well
+ * past content so scrolling/zoom-out never runs off the table.
  */
 export function buildBeatGrid(): BeatGrid {
-  const segments = derivedWarpSegments(store.composition);
-  const total = compositionLengthBeats(store.composition) + 32;
-  const curve = new WarpCurve(segments, total);
-  return new BeatGrid(curve, store.pxPerBeat, store.scrollUnits);
+  const epoch = store.warpEpoch;
+  if (!_warpCache || _warpCache.epoch !== epoch) {
+    const segments = derivedWarpSegments(store.composition);
+    const total = compositionLengthBeats(store.composition) + 32;
+    _warpCache = { epoch, curve: new WarpCurve(segments, total) };
+  }
+  return new BeatGrid(_warpCache.curve, store.pxPerBeat, store.scrollUnits);
 }

@@ -189,8 +189,16 @@ export class ArrAutomationEditor extends MobxLitElement {
         g.xUnmap = (px) => grid.xToBeat(px);
         g.xMin = 0; g.xMax = Infinity; g.pinEndpoints = false;
         const bpb = this.beatsPerBar || 4;
+        // Only emit grid lines in the VISIBLE beat window (a composition can be many
+        // hundreds of beats — building/mapping all of them every frame, per lane, was
+        // the scroll-jank + "grid lines everywhere" mess). And, like the main grid,
+        // drop per-beat lines when zoomed out so a lane isn't a wall of lines.
+        const cw = (g.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null)?.clientWidth ?? 0;
+        const stride = store.pxPerBeat >= 13 ? 1 : bpb;
+        const startB = Math.max(0, Math.floor(grid.xToBeat(0)));
+        const endB = Math.min(Math.floor(span + 1e-6), Math.ceil(grid.xToBeat(cw)) + 1);
         const lines: Array<{ x: number; bar: boolean }> = [];
-        for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b, bar: b % bpb === 0 });
+        for (let b = Math.ceil(startB / stride) * stride; b <= endB; b += stride) lines.push({ x: b, bar: b % bpb === 0 });
         g.gridLines = lines;
         // The playhead time/value cursor only shows when the caret is on this
         // lane's track (otherwise it reads as a confusing line on every lane).

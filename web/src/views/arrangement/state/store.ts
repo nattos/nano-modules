@@ -459,6 +459,9 @@ export class ArrangementStore {
         // Ephemeral clip clipboard — no reactivity / undo needed.
         clipClipboard: false,
         autoClipboard: false,
+        // Plain edit counter for the warp-curve cache — must NOT be observable
+        // (it bumps on every edit; nothing should react to it).
+        warpEpoch: false,
       },
       { autoBind: true },
     );
@@ -470,19 +473,27 @@ export class ArrangementStore {
 
   // ── Document mutation + undo ──────────────────────────────────────────
   /** The single funnel for every write to `composition` (recorded + saved). */
+  /** Bumped on every document change. Non-observable; read by the (per-frame,
+   *  per-editor) `buildBeatGrid` warp-curve cache so it rebuilds the expensive warp
+   *  curve only after an EDIT, not on every scroll/zoom/playhead frame. */
+  warpEpoch = 0;
+
   private mutate(
     description: string,
     recipe: (d: Composition) => void,
     coalesceKey?: string,
   ) {
     this.history.record(description, recipe, coalesceKey);
+    this.warpEpoch++;
   }
 
   undo() {
     this.applyHistoryWithAutoSelect(() => this.history.undo());
+    this.warpEpoch++;
   }
   redo() {
     this.applyHistoryWithAutoSelect(() => this.history.redo());
+    this.warpEpoch++;
   }
 
   /** Snapshot every clip id + track id across the document. */
@@ -543,6 +554,7 @@ export class ArrangementStore {
       this.backend = backend;
       this.currentName = name;
       this.composition = comp;
+      this.warpEpoch++; // fresh document → invalidate the warp-curve cache
       this.ensureMainBus(); // legacy / hand-made files may lack the master track
       this.normalizeTrackOrder(); // heal any non-contiguous group nesting from older files
       // Restore persisted loop markers (omitted on legacy files ⇒ keep defaults).
@@ -795,6 +807,7 @@ export class ArrangementStore {
       this.currentName = null;
       this.persistenceEnabled = false;
       this.composition = demo;
+      this.warpEpoch++;
       this.ensureMainBus();
       this.clearSelection();
     });
@@ -830,6 +843,7 @@ export class ArrangementStore {
       runInAction(() => {
         this.currentName = null;
         this.composition = emptyComposition();
+        this.warpEpoch++;
         this.persistenceEnabled = false;
         this.clearSelection();
       });

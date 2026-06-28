@@ -98,16 +98,27 @@ function fieldsFrom(p: PluginInfo, want: 'input' | 'output'): EffectField[] {
     }));
 }
 
+// A discovered plugin's schema is STATIC (set once at boot, replaced only on a
+// rare re-discovery), but catalogEffect()/defaultStateFor() are called per device
+// per frame (composite build, grid render). Memoize the derivation on the stable
+// PluginInfo object so each plugin's catalog entry is built once, not every call
+// (fieldsFrom — Object.entries+sort+map of the schema — showed up hot in a trace).
+const _catalogCache = new WeakMap<PluginInfo, CatalogEffect>();
+
 function pluginToCatalog(p: PluginInfo): CatalogEffect {
+  const hit = _catalogCache.get(p);
+  if (hit) return hit;
   const role = (p.capabilities ?? []).includes('generator') ? 'generator' : 'effect';
   const outputs = fieldsFrom(p, 'output');
-  return {
+  const entry: CatalogEffect = {
     type: p.id,
     name: effectName(p.id),
     role,
     fields: fieldsFrom(p, 'input'),
     ...(outputs.length ? { outputs } : {}),
   };
+  _catalogCache.set(p, entry);
+  return entry;
 }
 
 // ── Public API (reads the live discovered plugins) ───────────────────────────
