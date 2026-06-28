@@ -121,16 +121,27 @@ export class ArrAutomationEditor extends MobxLitElement {
    *  up sometimes" bug). The rAF still drives the continuous bits (playhead cursor,
    *  zoom/pan grid). */
   updated() {
-    if ((window as { __autoDebug?: boolean }).__autoDebug) {
-      const g = this.graph;
-      const c = g?.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-      console.log('[auto] 3. editor.updated', { hideCurve: this.hideCurve, lane: this.lane?.id ?? null, hasGraph: !!g, graphConnected: g?.isConnected, canvasW: c?.clientWidth, canvasH: c?.clientHeight });
-    }
     this.syncGraph();
     // Paint NOW — the graph's plain-field inputs (hideCurve/points) were just pushed
     // in syncGraph; don't wait on its throttled rAF (which left the overlay curve
     // blank until a reflow/resize after selecting a parameter).
     this.graph?.redraw();
+    if ((window as { __autoDebug?: boolean }).__autoDebug && !this.hideCurve) {
+      // Only the editors actually drawing a curve (the selected-field overlay + any
+      // lane rows). Log on-screen geometry + visibility to catch a drawn-but-hidden one.
+      const r = this.getBoundingClientRect();
+      const cs = getComputedStyle(this);
+      const host = this.parentElement as HTMLElement | null; // .track-auto-edit (overlay) or .auto-lane (row)
+      const hr = host?.getBoundingClientRect();
+      const hcs = host ? getComputedStyle(host) : null;
+      console.log('[auto] 5. VISIBLE?', {
+        which: this.lane?.id ?? 'OVERLAY',
+        rect: { y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        disp: cs.display, vis: cs.visibility, op: cs.opacity,
+        hostClass: host?.className, hostRect: hr && { y: Math.round(hr.y), w: Math.round(hr.width), h: Math.round(hr.height) },
+        hostDisp: hcs?.display, hostVis: hcs?.visibility, hostZ: hcs?.zIndex, hostOverflow: hcs?.overflow,
+      });
+    }
   }
 
   /** Push the current editor config onto the child <envelope-graph>. Idempotent. */
