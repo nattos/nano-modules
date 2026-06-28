@@ -228,6 +228,20 @@ export class ArrMonitor extends MobxLitElement {
       }
     };
     trackComposite(store.compositeTreeAtBeat(store.positionBeat));
+    // The MAIN BUS runs its master FX over the final composite but is NOT in the tree
+    // (it's excluded as a content group), so track ITS devices/state/wires + bypass
+    // explicitly — else editing a bus effect only re-issues the composite when some
+    // OTHER observable happens to change (the "main bus FX works only sometimes" bug).
+    const bus = store.mainBusTrack;
+    if (bus) {
+      void bus.bypassed;
+      for (const d of bus.sketch.devices) {
+        void d.moduleType;
+        const st = d.state;
+        if (st) for (const k in st) void (st as Record<string, unknown>)[k];
+      }
+      for (const w of bus.sketch.wires ?? []) void w.id;
+    }
     if (this.floating) {
       // The floating wrapper (in arrangement-app) is sized to the composition
       // aspect, so the stage fills it edge-to-edge with no letterbox.

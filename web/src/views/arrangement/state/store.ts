@@ -388,6 +388,12 @@ export class ArrangementStore {
   // scopes envelope edits to that one lane.
   caretAnchorLaneId = ''; // '' = the anchor track's clip row
   caretHeadLaneId = ''; // '' = the head track's clip row
+  /** An EXPLICIT time-box span that does NOT ride the play-from caret. Set when you
+   *  SELECT a track/group (its box spans all that track's time) so the box appears
+   *  WITHOUT yanking the play-from marker / playhead to an endpoint. The vertical
+   *  scope still comes from `caret*TrackId`. Any caret/scrub edit clears it (a fresh
+   *  gesture takes over and the box rides the caret again, as a drag does). */
+  private timeBoxSpan: { start: number; end: number } | null = null;
 
   /** Ephemeral clip clipboard (copy/cut → paste). Offsets are relative to the
    *  copy origin so paste lands at the caret. Not observed / undoable. */
@@ -1612,14 +1618,18 @@ export class ArrangementStore {
     return out;
   }
 
-  /** A non-degenerate time box exists only when the caret has time width. */
+  /** A non-degenerate time box exists when there's an explicit track-selection span,
+   *  or the caret itself has time width. */
   get hasTimeSelection(): boolean {
+    if (this.timeBoxSpan) return Math.abs(this.timeBoxSpan.end - this.timeBoxSpan.start) > 1e-6;
     return Math.abs(this.caretAnchorBeat - this.playFromBeat) > 1e-6;
   }
   get timeSelStart(): number | null {
+    if (this.timeBoxSpan) return Math.min(this.timeBoxSpan.start, this.timeBoxSpan.end);
     return this.hasTimeSelection ? Math.min(this.caretAnchorBeat, this.playFromBeat) : null;
   }
   get timeSelEnd(): number {
+    if (this.timeBoxSpan) return Math.max(this.timeBoxSpan.start, this.timeBoxSpan.end);
     return Math.max(this.caretAnchorBeat, this.playFromBeat);
   }
   get timeSelTrackIds(): string[] {
@@ -1643,6 +1653,7 @@ export class ArrangementStore {
     anchorLaneId?: string; headLaneId?: string;
   }) {
     runInAction(() => {
+      this.timeBoxSpan = null; // a fresh caret gesture: the box rides the caret again
       this.caretAnchorBeat = Math.max(0, opts.anchorBeat);
       this.caretAnchorTrackId = opts.anchorTrackId;
       this.caretHeadTrackId = opts.headTrackId;
@@ -1661,23 +1672,24 @@ export class ArrangementStore {
       this.caretAnchorLaneId = '';
       this.caretHeadLaneId = ''; // clip-row selection
       if (movePlayhead) {
-        // Map the [start,end] × trackIds box onto the caret (anchor=start, head=end).
+        // A real time drag: the box rides the caret (anchor=start, head=play-from=end).
+        this.timeBoxSpan = null;
         this.caretAnchorBeat = Math.max(0, Math.min(start, end));
         this.playFromBeat = Math.max(start, end);
         if (!this.playing) this.positionBeat = this.playFromBeat;
       } else {
-        // Select the FULL region and move the caret (anchor at the far end, head/
-        // play-from at the start) WITHOUT moving the visible playhead. Selecting a
-        // track still selects all its time; only `positionBeat` is left untouched.
-        this.caretAnchorBeat = Math.max(0, Math.max(start, end));
-        this.playFromBeat = Math.max(0, Math.min(start, end));
-        // (intentionally NOT touching this.positionBeat)
+        // SELECTING a track/group: span all its time as an EXPLICIT box that does NOT
+        // ride the play-from caret — keep the play-from marker AND the playhead exactly
+        // where they are (only the vertical scope + the box change). The scope rides
+        // `caret*TrackId` (set above); the beat caret stays untouched.
+        this.timeBoxSpan = { start: Math.max(0, Math.min(start, end)), end: Math.max(0, Math.max(start, end)) };
       }
     });
   }
 
   clearTimeSelection() {
     runInAction(() => {
+      this.timeBoxSpan = null;
       // Collapse the box to a caret at the head (keeps the head's track + lane).
       this.caretAnchorBeat = this.playFromBeat;
       this.caretAnchorTrackId = this.caretHeadTrackId;
@@ -2211,6 +2223,7 @@ export class ArrangementStore {
    */
   setPlayFrom(beat: number) {
     runInAction(() => {
+      this.timeBoxSpan = null;
       this.playFromBeat = Math.max(0, beat);
       // A horizontal scrub (ruler/transport) collapses any time box to a caret,
       // keeping the head's vertical track span.

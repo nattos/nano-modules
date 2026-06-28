@@ -178,6 +178,25 @@ describe('track structural ops', () => {
     expect(store.composition.tracks.map((t) => t.id).join(',')).toBe(before);
   });
 
+  it('selecting a track sets an all-time box WITHOUT moving the play-from caret', () => {
+    const t = store.addTrack();
+    // Put the play-from caret at beat 12 (as a grid click would).
+    store.setCaret({ anchorBeat: 12, anchorTrackId: t, headBeat: 12, headTrackId: t });
+    expect(store.playFromBeat).toBe(12);
+    expect(store.hasTimeSelection).toBe(false);
+    // Selecting the track scopes a full-time box but must NOT yank play-from / playhead.
+    store.select(paths.track(t));
+    expect(store.hasTimeSelection).toBe(true);
+    expect(store.timeSelStart).toBe(0);
+    expect(store.timeSelEnd).toBeGreaterThan(0);
+    expect(store.playFromBeat).toBe(12); // marker stays put (the regression)
+    expect(store.positionBeat).toBe(12); // playhead stays put
+    // A fresh caret gesture takes the box back to riding the caret (zero-width here).
+    store.setCaret({ anchorBeat: 4, anchorTrackId: t, headBeat: 4, headTrackId: t });
+    expect(store.hasTimeSelection).toBe(false);
+    expect(store.playFromBeat).toBe(4);
+  });
+
   it('the main bus is a caret row (selectable), and selecting it scopes globally', () => {
     store.addTrack();
     const bus = store.mainBusTrack!;

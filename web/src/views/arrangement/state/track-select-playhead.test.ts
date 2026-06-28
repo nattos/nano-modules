@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { store, paths } from './store';
 
 /**
- * Selecting a TRACK selects ALL its time and moves the caret to the beginning of
- * time (play-from → 0), but must NOT move the visible playhead (`positionBeat`).
- * Only clip selection + ruler scrubs move the playhead.
+ * Selecting a TRACK selects ALL its time WITHOUT disturbing the transport: neither
+ * the play-from marker (`playFromBeat`) nor the visible playhead (`positionBeat`)
+ * move — the full-time box is an explicit span that doesn't ride the caret. Only a
+ * grid click / clip selection / ruler scrub moves the play-from caret.
  */
 describe('selecting a track selects all time without moving the playhead', () => {
   beforeEach(() => {
@@ -26,12 +27,15 @@ describe('selecting a track selects all time without moving the playhead', () =>
     expect(store.positionBeat).toBe(0); // visible playhead unchanged
   });
 
-  it('keeps a NON-zero playhead put while caret jumps to the beginning of time', () => {
+  it('keeps a NON-zero play-from marker AND playhead put (box spans all time anyway)', () => {
     const a = store.addTrack();
     store.setPlayFrom(7); // pf = pos = 7 (paused)
     store.select(paths.track(a));
     expect(store.positionBeat).toBe(7); // playhead stays where it was
-    expect(store.playFromBeat).toBe(0); // caret/play-from jumped to the start
+    expect(store.playFromBeat).toBe(7); // play-from marker stays put (NOT yanked to 0)
+    expect(store.hasTimeSelection).toBe(true);
+    expect(store.timeSelStart).toBe(0); // ...the box still spans all time
+    expect(store.timeSelEnd).toBeGreaterThan(0);
     expect(store.timeSelTrackIds).toEqual([a]);
   });
 
