@@ -366,6 +366,9 @@ export class ArrClip extends MobxLitElement {
     const aspect = store.compositionAspect || 16 / 9;
     const layout = reelLayout(w, h, GENERATOR_THUMB_SAMPLES, aspect);
     if (layout.cells === 0) { drawPlaceholderCell(ctx, 0, 0, w, h); return; }
+    // Warm the memory tier from disk (OPFS) for this fingerprint — strips repopulate
+    // after a restart without re-rendering (deduped, once per fingerprint).
+    generatorThumbCache.prefetch(fp, ti ? [0] : Array.from({ length: GENERATOR_THUMB_SAMPLES }, (_, i) => i));
     // Search the current fingerprint first, then recent (pre-edit) ones — so a cell
     // shows the latest valid frame it has even after a param change, shaded as stale.
     const fps = this.recentGenFingerprints(fp);

@@ -32,8 +32,11 @@ export function drawFilmReel(ctx: CanvasRenderingContext2D, w: number, h: number
 /**
  * Overlay marking a cell's thumbnail as STALE — a substituted frame from a nearby
  * time or an older param fingerprint, shown while the up-to-date one is (re)captured.
- * A dim veil (darkens regardless of content luma, so it reads even on B&W frames)
- * plus a faint diagonal hatch that says "not final".
+ *
+ * Generator frames are usually DARK, so we deliberately do NOT darken (that would
+ * blend stale cells toward black and kill the contrast against fresh ones). Instead a
+ * cool MID-tone wash pulls the cell toward a faded grey — lifting darks, muting brights
+ * — plus a bright diagonal hatch that reads as "provisional / refreshing" on any luma.
  */
 export function drawStaleCell(
   ctx: CanvasRenderingContext2D,
@@ -46,9 +49,11 @@ export function drawStaleCell(
   ctx.beginPath();
   ctx.rect(x, y, w, h);
   ctx.clip();
-  ctx.fillStyle = 'rgba(6,6,10,0.42)';
+  // Mid-tone wash → "faded", never blacked-out.
+  ctx.fillStyle = 'rgba(122,132,156,0.30)';
   ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  // Bright diagonal hatch → the unmistakable "not final" texture.
+  ctx.strokeStyle = 'rgba(232,238,255,0.16)';
   ctx.lineWidth = 1;
   const step = 7;
   for (let d = -h; d < w; d += step) {

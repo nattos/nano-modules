@@ -19,6 +19,8 @@ import { store } from './state/store';
 import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { generatorThumbCapturer } from './media/generator-thumb-capture';
+import { setGeneratorThumbPersist } from './media/generator-thumb-cache';
+import { thumbnailController } from './media/thumbnail-controller';
 import { importVideoFile } from './media/drop-import';
 import { linkMedia } from './workspace/media-store';
 import { DirectoryBackend } from './workspace/backend';
@@ -210,6 +212,12 @@ export class ArrangementApp extends MobxLitElement {
     // until the engine warms the bundles (an empty timeline never triggers the
     // lazy boot otherwise).
     engineBridge.warm();
+    // Back generator-clip thumbnails with the same OPFS disk tier the video reel uses,
+    // so their film strips survive app restarts (best-effort; no GPU needed).
+    setGeneratorThumbPersist({
+      read: (key) => thumbnailController.persistRead(key),
+      write: (key, bmp) => thumbnailController.persistWrite(key, bmp),
+    });
     // Restore the saved workspace layout (panels/tabs/modes + last file) BEFORE
     // mounting, so the remembered file re-opens; then re-open the last workspace
     // (silently if permission persists, else on the first user gesture).

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { generatorThumbCache } from './generator-thumb-cache';
+import { generatorThumbCache, setGeneratorThumbPersist } from './generator-thumb-cache';
 
 // jsdom has no real ImageBitmap; the cache only stores them + calls .close().
 const bmp = () => ({ close: vi.fn() } as unknown as ImageBitmap);
 
-beforeEach(() => generatorThumbCache.clear());
+beforeEach(() => { generatorThumbCache.clear(); setGeneratorThumbPersist(null); });
 
 describe('generatorThumbCache', () => {
   it('peek / put / has / count', () => {
@@ -65,6 +65,34 @@ describe('generatorThumbCache', () => {
     expect(first.close).toHaveBeenCalled();
     expect(generatorThumbCache.peek('fp0', 0)).toBeUndefined();
     expect(generatorThumbCache.peek('fp64', 0)).toBeDefined();
+  });
+
+  it('put persists to the disk tier; prefetch repopulates memory from it', async () => {
+    const disk = new Map<string, ImageBitmap>();
+    setGeneratorThumbPersist({
+      write: async (k, b) => { disk.set(k, b); },
+      read: async (k) => disk.get(k) ?? null,
+    });
+    const b = bmp();
+    generatorThumbCache.put('fpX', 7, b);
+    expect([...disk.keys()][0]).toMatch(/^g.+#7$/); // hashed `g<hash>#<sample>` key
+
+    // Lose the memory tier (e.g. an app restart), then warm it back from disk.
+    generatorThumbCache.clear();
+    setGeneratorThumbPersist({ write: async () => {}, read: async (k) => disk.get(k) ?? null });
+    expect(generatorThumbCache.peek('fpX', 7)).toBeUndefined();
+    generatorThumbCache.prefetch('fpX', [7]);
+    await new Promise((r) => setTimeout(r, 0)); // let the async disk read resolve
+    expect(generatorThumbCache.peek('fpX', 7)).toBe(b);
+  });
+
+  it('fill keeps a live-captured sample over a slower disk read', () => {
+    const captured = bmp();
+    const fromDisk = bmp();
+    generatorThumbCache.put('fp', 3, captured);
+    generatorThumbCache.fill('fp', 3, fromDisk); // disk read lands after capture
+    expect(fromDisk.close).toHaveBeenCalled();    // disk copy dropped
+    expect(generatorThumbCache.peek('fp', 3)).toBe(captured);
   });
 
   it('peek touches LRU so a recently-read fingerprint survives eviction', () => {

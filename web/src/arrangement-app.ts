@@ -12,6 +12,7 @@ import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 import { store } from './views/arrangement/state/store';
 import { engineBridge } from './views/arrangement/engine/engine-bridge';
 import { thumbnailController, reelLayout } from './views/arrangement/media/thumbnail-controller';
+import { generatorThumbCache } from './views/arrangement/media/generator-thumb-cache';
 import * as workspaceBackend from './views/arrangement/workspace/backend';
 import { libraryPaths } from './state/library-paths';
 import * as handleRef from './state/handle-ref';
@@ -22,6 +23,7 @@ import { exportComposition, canExport } from './views/arrangement/engine/export-
 (window as any).arrangementStore = store;
 (window as any).__engineBridge = engineBridge;
 (window as any).__thumbCtl = thumbnailController;
+(window as any).__genThumbCache = generatorThumbCache;
 (window as any).__reelLayout = reelLayout;
 (window as any).__workspaceBackend = workspaceBackend;
 (window as any).__libraryPaths = libraryPaths;
