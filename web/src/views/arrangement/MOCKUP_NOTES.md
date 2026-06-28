@@ -18,7 +18,8 @@ since making the two surfaces look and feel the same is a deliberate goal.
 > **WIRES (2026-06-23):** intra-sketch modulation wiring is live behind the inspector "Wires"
 > toggle — click/drag a field port to connect; arcs draw in-column (`column-group`, scoped to
 > its shadow); double-click an arc to remove. `mod.*` sources/shapers (LFO, ADSR, Spectral LFO,
-> Remap, Smooth, Delay) are in the arrangement catalog with a declared `output`. NOT yet wired:
+> Remap, Smooth, Delay) are discovered from the engine schema (the hand-kept EFFECT_CATALOG was
+> dropped — see "Resolved" below) with a declared `output`. NOT yet wired:
 > **DONE since:** (a) wires now EXECUTE — `buildCompositeSketch` folds `ClipSketch.wires` into the
 > composite (remapped to `clip_<clipId>_<deviceId>`); the executor applies them. (b) SCALAR output
 > traces are LIVE — the engine's `pluginStatesDiff` is routed to `store.pluginStates` and read by the
@@ -30,6 +31,12 @@ since making the two surfaces look and feel the same is a deliberate goal.
 > Caveat: a clip's device only previews while the clip is ACTIVE at the playhead (it must be in the
 > composite). Still open: **rail/return endpoints** for wires (`connectSketchWire` requires same-sketch;
 > the `Wire` model is instanceKey-based and ready) and migrating the IDE off `taps-overlay`.
+
+> **DISCOVERY + THUMBNAILS (2026-06-28):** (a) the hand-kept `EFFECT_CATALOG` is GONE — the arrangement
+> discovers effects from the engine schema (role from the `generator` capability); see "Resolved".
+> (b) generator/procedural clips now have real, DYNAMIC film strips — live push-captured from the engine
+> while under the playhead, fingerprint-cached, stale-shaded, and persisted to OPFS (direct WebP files)
+> so they survive reload; see "Resolved" + the updated `media/THUMBNAIL_CACHE.md`.
 
 ---
 
@@ -100,6 +107,19 @@ since making the two surfaces look and feel the same is a deliberate goal.
 - **(new) Multi-track compositing** — the monitor plays the timeline: `store.compositeLayersAtBeat`
   (groups/bypass/solo/opacity) → bridge renders engine layers → monitor composites engine + media
   bottom→top at per-track opacity.
+- **(new) EFFECT_CATALOG dropped → runtime schema discovery.** The arrangement no longer hand-keeps an
+  effect catalog; `engine/effect-catalog.ts` now DERIVES every effect (role/fields/outputs/defaults/name)
+  from the engine's discovered `PluginInfo` (`store.enginePlugins`). Role = `capabilities.includes('generator')`;
+  text/richtext effects now appear in the palette. A web plumbing gap (capabilities only reached INSTANTIATED
+  effects) was fixed with a static `WasmHost.capabilitiesById` map read in `engine-worker`. Tests seed fake
+  plugins via `engine/test-plugins.ts`.
+- **(new) Dynamic-generator film-strip thumbnails (#120)** — generator/procedural clips show a real strip,
+  LIVE push-captured from the engine while under the playhead (per-clip output trace), cached by a
+  tolerance-bucketed param fingerprint, stale-shaded (`drawStaleCell`), and persisted to OPFS as direct
+  WebP files so strips survive reload. Non-blocking (trace only while uncached, async encode). See the
+  updated `media/THUMBNAIL_CACHE.md` (the shipped design diverged — direct OPFS, not the packed store).
+  Files: `engine/generator-fingerprint.ts`, `media/generator-thumb-{cache,capture,disk}.ts`,
+  `surfaces/arr-clip.ts` `drawGeneratorReel`.
 
 **⏳ Still open (real TODOs):**
 - **Precache: warm effect/sketch instances (PUNTED).** The Precise transport gate + video-decode
@@ -143,9 +163,6 @@ since making the two surfaces look and feel the same is a deliberate goal.
   in group opacity via the blend-up (so `compositeLayersAtBeat`'s ancestor-multiplied opacity is kept
   only for the flat video/monitor consumers). The main bus is NOT a content group — it pins the bottom
   and is excluded from the tree.
-- **Dynamic-generator film-strip thumbnails (push-capture).** Designed in `media/THUMBNAIL_CACHE.md`
-  but not built: generators are non-deterministic, so flip from pull (decode-on-demand) to push
-  (capture observed composited frames), keyed `clipId:paramFingerprint`, reusing the whole cache.
 - **Single-keyframe video sources don't advance.** Video clips render via the main-thread decode
   pump (`engine/video-compositor.ts`), which opens sources with random access
   (`sequential: false`). Sources with sparse/single keyframes (e.g. some Adobe Stock `.mov`

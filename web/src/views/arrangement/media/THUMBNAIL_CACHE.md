@@ -64,7 +64,43 @@ OPFS is quota-bound; a derived cache must self-trim.
 
 ---
 
-## Dynamic generator sources (design, deferred)
+## Dynamic generator sources — BUILT (#120), diverged from the design below
+
+Generator film strips now work end-to-end. The original design (kept below for the
+reasoning) assumed it would REUSE the static packed-atlas cache; in practice it didn't
+fit, so the shipped version is a small dedicated subsystem. What was actually built:
+
+- **Live push-capture, per-clip trace.** While a generator clip is under the playhead its
+  OUTPUT is tapped from the live composite via the existing per-device trace seam
+  (`engine-bridge` `traceSource` → `remapDeviceTrace` → `store.tracedFrames`) and
+  downscaled async (`createImageBitmap`). Non-blocking: GPU-side bitmap, off-main resize,
+  and the trace is registered ONLY while a clip has uncached samples then dropped — so the
+  compositor does no thumbnail work in steady state. Driven from the arrangement rAF tick
+  (`media/generator-thumb-capture.ts`). Fixed 24 samples across a clip, decoupled from the
+  zoom-dependent draw cell count.
+- **Tolerance-bucketed fingerprint** (`engine/generator-fingerprint.ts`): the clip device
+  chain's float params bucketed (≈1.5%) + vec/other numbers + fps. So a continuous slider
+  drag doesn't thrash the cache. `time_independent` generators capture ONE representative
+  frame for the whole strip.
+- **Bespoke two-tier cache** (`media/generator-thumb-cache.ts`), NOT `ThumbnailManager`:
+  a hot in-memory LRU over the disk tier. `peekBest(fps, sample)` searches the clip's
+  recent fingerprints (current → pre-edit) and returns a `stale` flag — so a cell always
+  shows the latest valid frame (substitute or older-fingerprint) and `drawGeneratorReel`
+  shades stale ones (`drawStaleCell`, a mid-tone wash that reads on dark generator frames).
+  A param edit never blanks the strip — it shows the old frame shaded until re-capture.
+- **Disk tier = DIRECT OPFS files** (`media/generator-thumb-disk.ts`), NOT the packed store.
+  One WebP per `g<hash>#<sample>` under `gen-thumbs/`, durably flushed on `close()`. The
+  packed store was tried first and lost most tiles across a reload (its per-chunk index
+  flushes on a debounce that a reload races); direct files survive restarts reliably.
+  `prefetch()` warms memory from disk when a clip becomes visible (deduped). `arr-clip`
+  `render()` touches `store.enginePlugin(type)` so the strip redraws once plugin discovery
+  lands on load (otherwise the clip renders before the registry → reel skipped until a click).
+- **Still TODO:** disk eviction — fingerprints are unbounded as params edit (files are tiny
+  WebP, deferred); see the per-source LRU sketch above, adapted to `g<hash>` keys.
+
+---
+
+## Dynamic generator sources (ORIGINAL design — superseded in parts by the above)
 
 ### The problem
 Static video sources are **deterministic**: frame N always decodes to the same pixels,

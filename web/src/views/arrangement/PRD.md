@@ -260,8 +260,9 @@ A bottom panel (toggled from the tab bar's bottom icon, resizable, right edge at
 with a **shared zoomable gridded time view** (`time-strip`: pan/zoom/scrub/hover, playhead, loop
 shading). **Source mode**: preview + film strip, hover mini-preview, drag-scrub, play-mode
 shading; preview hides when short. **Automation mode**: curve editor + film strip + loop/clip
-timing toggle. Procedural film frames stand in for real thumbnails (`film-reel.ts`
-`drawFrameCell`). Intended to grow Ableton-style editing of loop markers + automation nodes.
+timing toggle. Film strips are REAL now — decoded frames for video clips, live push-captured frames
+for generator clips (`drawStaleCell` marks substitutes); `film-reel.ts` is only the no-thumbnail
+fallback. Intended to grow Ableton-style editing of loop markers + automation nodes.
 
 ---
 
@@ -387,7 +388,9 @@ All surfaces run against fake state (`model/fake-data.ts`); no engine/worker. St
 ### Milestone 2 — Engine vertical slice — ✅ BUILT
 Real render through `executor.wasm` (NOT a bespoke timeline-native worker — reuses `EngineProxy`/
 `engine-worker.ts`): `engine/` ArrEngine + engine-bridge + clip-sketch; real clip effect chains
-(`effect-catalog.ts`); modulation telemetry diff-mirrored to the store. **Now MULTI-TRACK**: the
+(effects DISCOVERED from the engine schema — `effect-catalog.ts` is now a discovery-backed registry,
+the hand-kept catalog dropped, role from the `generator` capability); modulation telemetry
+diff-mirrored to the store. **Now MULTI-TRACK**: the
 monitor composites the active clip per track at the playhead (groups/bypass/solo/opacity; engine +
 media layers) — `store.compositeLayersAtBeat` → bridge renders engine layers → monitor composites.
 (Global-GPU-sync question moot for now: layers render as independent traced sketches.)
@@ -432,7 +435,7 @@ honors `transportSeconds` (a step lands exactly on the playhead at any fps).
 Compositor group-bus
 chains (a group's sketch processing its summed children — blend modes are DONE); offline-evaluable
 modulation-block effect ABI (real rail-lane previews for all modulators, retiring the `env_lfo` TS
-mirror); dynamic-generator film-strip thumbnails (push-capture, `media/THUMBNAIL_CACHE.md`); overlay
+mirror); overlay
 rAF-gating + z-order; time-view unification; clip loop/in-out editing + track reorder/group DnD;
 `offline_renderable` (generalize warps); Live mode; instancing; clip library/packages; session view;
 media manager; export audio (when the model grows audio).
