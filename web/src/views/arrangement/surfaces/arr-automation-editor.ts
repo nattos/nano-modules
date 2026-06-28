@@ -126,31 +126,12 @@ export class ArrAutomationEditor extends MobxLitElement {
     // in syncGraph; don't wait on its throttled rAF (which left the overlay curve
     // blank until a reflow/resize after selecting a parameter).
     this.graph?.redraw();
-    if ((window as { __autoDebug?: boolean }).__autoDebug && !this.hideCurve) {
-      // Only the editors actually drawing a curve (the selected-field overlay + any
-      // lane rows). Log on-screen geometry + visibility (FLAT string so nothing
-      // collapses in the console) to catch a drawn-but-hidden one.
-      const r = this.getBoundingClientRect();
-      const cs = getComputedStyle(this);
-      const host = this.parentElement as HTMLElement | null; // .track-auto-edit (overlay) or .auto-lane (row)
-      const hr = host?.getBoundingClientRect();
-      const hcs = host ? getComputedStyle(host) : null;
-      const cv = this.graph?.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-      const cr = cv?.getBoundingClientRect();
-      console.log(`[auto] 5. VISIBLE? which=${this.lane?.id ?? 'OVERLAY'}`
-        + ` | ed rect y=${Math.round(r.y)} w=${Math.round(r.width)} h=${Math.round(r.height)} disp=${cs.display} vis=${cs.visibility} op=${cs.opacity}`
-        + ` | host=${host?.className?.trim()} rect y=${hr ? Math.round(hr.y) : '?'} w=${hr ? Math.round(hr.width) : '?'} h=${hr ? Math.round(hr.height) : '?'} disp=${hcs?.display} vis=${hcs?.visibility} z=${hcs?.zIndex} overflow=${hcs?.overflow}`
-        + ` | canvas rect y=${cr ? Math.round(cr.y) : '?'} w=${cr ? Math.round(cr.width) : '?'} h=${cr ? Math.round(cr.height) : '?'} bufW=${cv?.width} bufH=${cv?.height}`);
-    }
   }
 
   /** Push the current editor config onto the child <envelope-graph>. Idempotent. */
   private syncGraph() {
       const g = this.graph;
-      if (!g) {
-        if ((window as { __autoDebug?: boolean }).__autoDebug) console.log('[auto] 3b. syncGraph: NO GRAPH ELEMENT');
-        return;
-      }
+      if (!g) return;
       // Push lane points into the graph EXCEPT while dragging (don't clobber).
       if (!g.interacting) g.points = this.lane ? toEnvPoints(this.lane.points) : DEFAULT_POINTS;
       g.cursor = this.cursor;

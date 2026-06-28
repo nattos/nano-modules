@@ -146,9 +146,6 @@ export class EnvelopeGraph extends MobxLitElement {
     // bitmap; it happens synchronously before paint, so there's no visible flash.
     const c = this.canvas;
     if (c && c.clientWidth > 0) c.width = 1;
-    if ((window as { __autoDebug?: boolean }).__autoDebug) {
-      console.log('[auto] 4. graph.redraw', { hideCurve: this.hideCurve, points: this.points?.length, clientW: c?.clientWidth, clientH: c?.clientHeight, bufW: c?.width, bufH: c?.height, connected: this.isConnected });
-    }
     this.draw();
   }
 
