@@ -9,6 +9,7 @@
 
 import { html, css } from 'lit';
 import { customElement, query, property } from 'lit/decorators.js';
+import { reaction, type IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { compositionLengthBeats } from '../model/composition';
@@ -135,27 +136,37 @@ export class ArrRuler extends MobxLitElement {
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(this.timeEl);
     this.draw();
+    // The playhead is CANVAS — redraw it from a reaction so the per-frame transport
+    // tick doesn't re-commit the ruler DOM during playback (see arr-grid for the
+    // same fix). `view` can change (clip editor), so read it fresh each tick.
+    this.transportDraw = reaction(
+      () => `${this.view.positionBeat}|${store.playing}`,
+      () => this.draw(),
+    );
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
+    this.transportDraw?.();
+    this.transportDraw = undefined;
   }
+  private transportDraw?: IReactionDisposer;
   updated() {
     this.draw();
   }
 
   render() {
-    // Touch the view's observables so MobX re-renders → updated() redraws.
+    // Touch the view's observables so MobX re-renders → updated() redraws. NB:
+    // positionBeat + playing are NOT read here (they tick every frame and only move
+    // the canvas playhead — a dedicated reaction redraws it).
     const v = this.view;
     void v.pxPerBeat;
     void v.scrollUnits;
-    void v.positionBeat;
     void v.playFromBeat;
     void v.loop;
     // Track the raw loop range + enabled flag too: `v.loop` is null while disabled
     // (so it stops tracking start/end), but we still draw the markers then.
     void store.loopEnabled; void store.loopStartBeat; void store.loopEndBeat;
-    void store.playing; // play state gates the playhead sweep bar
     void v.timeSel;
     void v.beatsPerBar;
     void v.headerWidth;

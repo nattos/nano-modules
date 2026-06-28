@@ -12,6 +12,7 @@
 import { html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { reaction, type IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths, GROUP_INDENT } from '../state/store';
 import {
@@ -485,11 +486,23 @@ export class ArrGrid extends MobxLitElement {
     this.viewportH = this.scrollEl.clientHeight;
     this.scrollEl.addEventListener('wheel', this.onWheel, { passive: false });
     this.draw();
+    // The playhead / play-from / sweep line are CANVAS, not DOM — so the transport
+    // observables that tick every frame during playback must NOT go through render()
+    // (re-committing the whole tracks×clips×lanes template per frame was the slider-
+    // drag/playback stall). Redraw the canvas DIRECTLY from a reaction instead.
+    this.transportDraw = reaction(
+      () => `${store.positionBeat}|${store.playing}`,
+      () => this.draw(),
+    );
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.ro?.disconnect();
+    this.transportDraw?.();
+    this.transportDraw = undefined;
   }
+  /** Disposer for the canvas-only transport redraw reaction (see firstUpdated). */
+  private transportDraw?: IReactionDisposer;
   /** Before a re-render: if automation mode is flipping, capture a scroll anchor
    *  from the CURRENT (pre-relayout) DOM so we can re-pin it after the lanes
    *  appear/disappear. */
@@ -617,14 +630,16 @@ export class ArrGrid extends MobxLitElement {
   render() {
     void store.pxPerBeat;
     void store.scrollUnits;
-    void store.positionBeat;
+    // NB: positionBeat + playing are deliberately NOT read here — they tick every
+    // frame during playback and only affect the CANVAS (playhead/sweep line), which
+    // a dedicated reaction redraws (see firstUpdated). Reading them here would
+    // re-commit the entire tracks×clips×lanes DOM every frame.
     void store.playFromBeat;
     void store.automationMode;
     void store.timeSelStart;
     void store.timeSelEnd;
     void store.timeSelTrackIds.length;
     void store.loopEnabled; void store.loopStartBeat; void store.loopEndBeat; // loop bars
-    void store.playing; // play state gates the orange sweep line
     void store.selectedWireId;
     void store.selection.size;
     void store.headerWidth; // re-render (→ updated() resets --arr-hw) on resize
