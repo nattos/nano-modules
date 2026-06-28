@@ -16,6 +16,7 @@
  */
 
 import { ArrEngine } from './arr-engine';
+import { debugPerf } from '../state/debug-perf';
 import { clipInstanceKey } from './clip-sketch';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { makeWarpClock } from './warp-clock';
@@ -206,6 +207,7 @@ export class EngineBridge {
     const e = new ArrEngine(this.renderW, this.renderH);
     e.onFrameSet = (frames) => this.onFrameSet(frames);
     e.onFps = (f) => { this.fps = f; };
+    e.onGpuTime = (g) => { if (debugPerf.active) debugPerf.lastGpuMs = g; };
     e.onError = (m) => { this.error = m; };
     // Wire-modulation telemetry → store, mirroring the IDE's
     // appState.local.engine.modulationData (sliders draw live mod bands from it).

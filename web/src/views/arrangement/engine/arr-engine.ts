@@ -64,6 +64,8 @@ export class ArrEngine {
    */
   onFrameSet: ((frames: Record<string, ImageBitmap>) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
+  /** Per-frame GPU time (ms) the worker reported (diagnostic). */
+  onGpuTime: ((gpuMs: number) => void) | null = null;
   onError: ((message: string) => void) | null = null;
   /** Per-frame wire-modulation telemetry (keyed by engine instance key). */
   onModulationDataDiff: ((diff: StateDiff) => void) | null = null;
@@ -87,6 +89,7 @@ export class ArrEngine {
       for (const id in frames) this.onFrame?.(id, frames[id]);
     };
     this.proxy.onFps = (fps) => this.onFps?.(fps);
+    this.proxy.onGpuTime = (g) => this.onGpuTime?.(g);
     this.proxy.onError = (m) => this.onError?.(m);
     this.proxy.onModulationDataDiff = (diff) => this.onModulationDataDiff?.(diff);
     this.proxy.onPluginStatesDiff = (diff) => this.onPluginStatesDiff?.(diff);

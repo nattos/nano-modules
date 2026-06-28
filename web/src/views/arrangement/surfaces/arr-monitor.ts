@@ -129,7 +129,16 @@ export class ArrMonitor extends MobxLitElement {
     this.telDraws++;
     if (isNew) {
       this.telNew++;
-      if (this.telLastNewMs) { const g = now - this.telLastNewMs; this.telGapSum += g; if (g > this.telGapMax) this.telGapMax = g; }
+      if (this.telLastNewMs) {
+        const g = now - this.telLastNewMs;
+        this.telGapSum += g; if (g > this.telGapMax) this.telGapMax = g;
+        // SYSTEM-timing ring: one sample per presented frame, with the concurrent worker
+        // GPU time + engine fps, so the Debug tab can summarise 60s and attribute spikes.
+        const fr = debugPerf.frames;
+        fr.push({ t: now, gapMs: g, gpuMs: debugPerf.lastGpuMs, fps: engineBridge.fps });
+        const cutoff = now - 60_000;
+        while (fr.length && fr[0].t < cutoff) fr.shift();
+      }
       this.telLastNewMs = now;
     }
     if (this.telLastMs && now - this.telLastMs >= 500) {

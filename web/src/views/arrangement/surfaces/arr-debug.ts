@@ -11,6 +11,12 @@ import { LitElement, html, css, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { debugPerf, type ClipPerf } from '../state/debug-perf';
 
+/** Percentile of an ASCENDING-sorted array (nearest-rank). */
+function pct(sorted: number[], p: number): number {
+  if (!sorted.length) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+}
+
 @customElement('arr-debug')
 export class ArrDebug extends LitElement {
   static styles = css`
@@ -28,6 +34,7 @@ export class ArrDebug extends LitElement {
             border-radius: 6px; padding: 8px; margin-bottom: 8px; }
     /* Stale = stopped updating (clip ended / playback stopped) but still remembered (~60s). */
     .card.stale { border-style: dashed; border-color: var(--app-tint-3, rgba(255,255,255,0.14)); opacity: 0.6; }
+    .card.warnborder { border-color: var(--app-warn-color, #e0a030); }
     .card .title { display: flex; justify-content: space-between; font-family: var(--app-font, inherit);
                    font-size: 11px; margin-bottom: 4px; }
     .badge { font-size: 9px; padding: 1px 5px; border-radius: 4px; background: var(--app-tint-2, rgba(255,255,255,0.08));
@@ -98,6 +105,44 @@ export class ArrDebug extends LitElement {
       </div>`;
   }
 
+  /** Summarise the 60s system-timing ring: percentiles of the on-screen frame interval, the
+   *  worst frame + its concurrent GPU time (so a spike can be attributed to GPU vs not), and
+   *  a jank count. This is the "did the SYSTEM hitch?" view — independent of any one clip. */
+  private renderSystem(now: number): TemplateResult {
+    const frames = debugPerf.frames;
+    if (frames.length < 4) return html`<div class="empty">Gathering frames — start playback.</div>`;
+    const gaps = frames.map((f) => f.gapMs).sort((a, b) => a - b);
+    const n = gaps.length;
+    const avg = gaps.reduce((a, b) => a + b, 0) / n;
+    const p50 = pct(gaps, 0.5), p90 = pct(gaps, 0.9), p99 = pct(gaps, 0.99), max = gaps[n - 1];
+    const gpus = frames.map((f) => f.gpuMs).sort((a, b) => a - b);
+    const gpuP90 = pct(gpus, 0.9), gpuMax = gpus[n - 1];
+    const jankMs = Math.max(p50 * 2, 20); // a frame longer than 2× median (or >20ms) is "janky"
+    const jank = frames.reduce((c, f) => c + (f.gapMs > jankMs ? 1 : 0), 0);
+    const worst = frames.reduce((w, f) => (f.gapMs > w.gapMs ? f : w), frames[0]);
+    const fpsNow = frames[frames.length - 1].fps;
+    let fpsMin = Infinity; for (const f of frames) if (f.fps > 0 && f.fps < fpsMin) fpsMin = f.fps;
+    const spanS = (now - frames[0].t) / 1000;
+    // Attribute the worst frame: GPU-bound if its concurrent GPU time was most of the stall.
+    const cause = worst.gpuMs > worst.gapMs * 0.5 ? 'GPU-bound'
+      : worst.gpuMs > Math.max(8, avg) ? 'GPU + other'
+      : 'main / engine / transfer';
+    const hitchy = p99 > p50 * 2 || max > jankMs;
+    return html`
+      <div class="card ${hitchy ? 'warnborder' : ''}">
+        ${this.row('frame interval', `avg ${avg.toFixed(1)} · p50 ${p50.toFixed(1)} · p90 ${p90.toFixed(1)}ms`)}
+        ${this.row('· tail', `p99 ${p99.toFixed(1)} · max ${max.toFixed(1)}ms`, max > jankMs ? 'bad' : '')}
+        ${this.row('janky frames', `${jank} / ${n} (${((jank / n) * 100).toFixed(1)}%) over ${spanS.toFixed(0)}s`,
+          jank > 0 ? (jank / n > 0.02 ? 'bad' : 'warn') : '')}
+        ${this.row('engine fps', `${fpsNow.toFixed(0)} now · ${Number.isFinite(fpsMin) ? fpsMin.toFixed(0) : '—'} min`,
+          Number.isFinite(fpsMin) && fpsMin < fpsNow * 0.7 ? 'warn' : '')}
+        ${this.row('gpu time', `p90 ${gpuP90.toFixed(1)} · max ${gpuMax.toFixed(1)}ms`, gpuMax > 12 ? 'warn' : '')}
+        ${this.row('worst frame', `${worst.gapMs.toFixed(0)}ms · ${((now - worst.t) / 1000).toFixed(0)}s ago · gpu ${worst.gpuMs.toFixed(1)}ms`,
+          max > jankMs ? 'bad' : '')}
+        ${max > jankMs ? this.row('→ likely cause', cause, 'warn') : ''}
+      </div>`;
+  }
+
   render() {
     void this.tick; // establish tracking so the interval re-renders
     const now = performance.now();
@@ -106,6 +151,9 @@ export class ArrDebug extends LitElement {
     // Most-recently-seen first → active clips on top, recently-ended ones (dashed) below.
     const clips = [...this.history.values()].sort((a, b) => b.lastSeen - a.lastSeen);
     return html`
+      <h3>System · last 60s</h3>
+      ${this.renderSystem(now)}
+
       <h3>Output monitor</h3>
       ${m ? html`
         <div class="card ${monStale ? 'stale' : ''}">

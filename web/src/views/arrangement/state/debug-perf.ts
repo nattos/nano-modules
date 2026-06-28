@@ -46,11 +46,26 @@ export interface ClipPerf {
   cachePinned?: number;
 }
 
+/** One on-screen composite frame — the SYSTEM-level timing the top panel summarises over
+ *  60s. `gapMs` is the end-to-end interval since the previous presented frame (captures any
+ *  stall: engine, GPU, postMessage, main thread); `gpuMs`/`fps` are the worker's concurrent
+ *  numbers so a spike can be attributed (GPU-bound vs not). */
+export interface FrameSample {
+  t: number;
+  gapMs: number;
+  gpuMs: number;
+  fps: number;
+}
+
 class DebugPerf {
   /** True while the Debug tab is mounted. Producers gate expensive collection on this. */
   active = false;
   monitor: MonitorPerf | null = null;
   clips: ClipPerf[] = [];
+  /** Per-presented-frame samples over ~60s (the system-timing ring; pruned by the monitor). */
+  frames: FrameSample[] = [];
+  /** Latest worker GPU time (ms), stamped onto each frame sample. */
+  lastGpuMs = 0;
   /** performance.now() of the last clips / monitor publish — the tab uses these to detect
    *  staleness (a section/clip that stopped updating) and to retain it briefly before drop. */
   clipsAt = 0;
