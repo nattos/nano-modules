@@ -1,19 +1,19 @@
-// warp.legacy.d_wave — wave-blob vertex shader.
+// warp.legacy.d_wave — dampening-flash vertex shader.
 //
-// One instanced quad per particle, splatted into the polar field texture
-// (X = angle, Y = radius). The quad is thin in angle and elongated in radius —
-// a vertical streak in field space. Dead/idle slots collapse to a degenerate
-// triangle outside clip space so the rasterizer skips them.
+// One instanced quad per particle, splatted into the SEPARATE damp texture
+// (X = angle, Y = radius) — NOT the wave field. The warp pass subtracts this
+// from the wave field, so a blob reads as a fast streak of REDUCED distortion.
+// Thin in angle, short-elongated in radius. A flash envelope fades each blob in
+// and out across its mid-radius band so it pops and vanishes rather than
+// hard-appearing. Idle slots collapse outside clip space.
 
 StructuredBuffer<float4> particles : register(t0);
 
 cbuffer Uniforms : register(b1) {
   uint  count;
   float ang_halfwidth;   // angular half-extent (thinness)
-  float rad_halflen;     // radial half-extent (elongation)
-  float decay;           // [0,1] fade toward the rim
-  float grain;           // [0,1] per-particle strength jitter
-  float _a, _b, _c;
+  float rad_halflen;     // radial half-extent (short elongation)
+  float grain;           // [0,1] per-particle size/strength jitter
 }
 
 struct VsOut {
@@ -40,15 +40,16 @@ VsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   float ang = p.x, r = p.y, sj = p.z;
   float2 c = corners[vid % 6u];
 
-  // grain jitters each particle's size AND strength (correlated → big = bright).
+  // grain jitters each flash's size AND strength (correlated).
   float lenJit = lerp(1.0, 0.4 + 1.2 * sj, grain);
   float2 center = float2(ang, r);
-  float2 uv = center + c * float2(ang_halfwidth, rad_halflen * lenJit);   // field uv
-  o.pos = float4(uv * 2.0 - 1.0, 0.0, 1.0);                               // → clip
+  float2 uv = center + c * float2(ang_halfwidth, rad_halflen * lenJit);
+  o.pos = float4(uv * 2.0 - 1.0, 0.0, 1.0);
   o.local = c;
 
-  // Strength fades toward the rim; grain dials in per-particle variety.
-  float fade = saturate(1.0 - decay * r);
-  o.strength = lerp(1.0, 0.2 + 1.6 * sj, grain) * fade;
+  // Flash envelope: fade in/out across the mid band (matches particles.hlsl
+  // BAND_LO=0.12 / BAND_OUT=0.82) so flashes pop and vanish, not pop-in.
+  float env = smoothstep(0.10, 0.24, r) * (1.0 - smoothstep(0.64, 0.82, r));
+  o.strength = lerp(1.0, 0.3 + 1.4 * sj, grain) * env;
   return o;
 }

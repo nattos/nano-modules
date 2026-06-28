@@ -1,9 +1,9 @@
-// warp.legacy.d_wave — wave-blob fragment shader.
+// warp.legacy.d_wave — dampening-flash fragment shader.
 //
-// Soft elongated profile: sharp falloff across the streak (angle) and a gentle,
-// long falloff along it (radius). Writes additively into the polar field's red
-// channel; overlapping blobs accumulate (the field is RGBA16F, so >1 is fine —
-// the warp pass clamps the displacement).
+// Soft elongated profile (thin × short) written ADDITIVELY (positive) into the
+// damp texture; the warp pass subtracts this accumulated damp from the wave
+// field, so overlapping flashes dampen more. Additive blend is src*src.a + dst,
+// so alpha MUST be 1 for the strength to accumulate.
 
 struct In {
   float4 pos      : SV_Position;
@@ -14,8 +14,6 @@ struct In {
 [shader("pixel")]
 float4 main(In i) : SV_Target {
   float ax = i.local.x, ay = i.local.y;
-  float mask = exp(-ax * ax * 8.0) * exp(-ay * ay * 2.5);   // thin × long
-  // Additive blend is src*src.a + dst, so alpha MUST be 1 for the red strength
-  // to accumulate (alpha 0 would add nothing).
+  float mask = exp(-ax * ax * 8.0) * exp(-ay * ay * 4.0);   // thin × short
   return float4(i.strength * mask, 0.0, 0.0, 1.0);
 }

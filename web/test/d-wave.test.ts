@@ -25,18 +25,20 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     expect(frame.metadata?.id).toBe('warp.legacy.d_wave');
     const names = frame.params.map(p => p.name);
     expect(names).toContain('distortion');
-    expect(names).toContain('count');
+    expect(names).toContain('rate');
     expect(names).toContain('wave_speed');
     expect(names).toContain('scale');
     expect(names).toContain('density');
-    expect(names).toContain('spread');
     expect(names).toContain('grain');
+    expect(names).toContain('damp');
+    expect(names).toContain('damp_count');
+    expect(names).toContain('damp_rate');
   });
 
-  it('builds a structured wave field from the particle pool (debug overlay)', async () => {
-    // debug_field=1 paints the raw polar wave field (red) regardless of the
-    // input, isolating the particle splat + polar lookup. The pool of elongated
-    // blobs makes a structured (non-uniform) field — streaks with gaps between.
+  it('builds a structured, propagating wave field (debug overlay)', async () => {
+    // debug_field=1 paints the raw polar wave field (red) regardless of input,
+    // isolating the stateful inject+advect field. damp=0 removes the flash layer
+    // so this is the pure wave. Expect a structured (non-uniform) grainy field.
     const frame = await runGpuEffectTest({
       module: 'd_wave.wasm',
       bundle: 'legacy',
@@ -44,12 +46,13 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       inputColor: [0.0, 0.0, 0.0, 1.0],
       params: [
         ['distortion', 0.0],   // overlay only — no warp
-        ['count', 400],
-        ['density', 0.6],      // thin streaks
+        ['rate', 0.8],
+        ['density', 0.6],
         ['wave_speed', 0.3],
+        ['damp', 0.0],         // wave only
         ['debug_field', 1.0],
       ],
-      ticks: 10,
+      ticks: 12,
       renderEachTick: true,
       dumpName: 'd_wave_field',
     });
@@ -63,7 +66,35 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     });
     expect(maxR).toBeGreaterThan(60);    // waves present
     expect(lit).toBeGreaterThan(50);     // a real field, not a stray pixel
-    expect(dark).toBeGreaterThan(50);    // gaps between streaks → structured
+    expect(dark).toBeGreaterThan(50);    // gaps → structured grain
+  });
+
+  it('dampening flashes subtract from the wave field', async () => {
+    // A near-full wave (rate=1) lit via the debug overlay. Turning the flash
+    // layer on (damp + many fast flashes) carves streaks of reduced strength,
+    // so the field's mean brightness drops vs damp=0.
+    const meanRed = async (damp: number, dampCount: number) => {
+      const f = await runGpuEffectTest({
+        module: 'd_wave.wasm', bundle: 'legacy', width: 128, height: 128,
+        inputColor: [0.0, 0.0, 0.0, 1.0],
+        params: [
+          ['distortion', 0.0], ['rate', 1.0], ['density', 0.4], ['wave_speed', 0.25],
+          ['grain', 0.0],                       // even wave (no sparkle) → clean measure
+          ['damp', damp], ['damp_count', dampCount], ['damp_rate', 0.4],
+          ['debug_field', 1.0],
+        ],
+        ticks: 14, renderEachTick: true,
+        dumpName: `d_wave_damp_${damp}`,
+      });
+      expect(f.success).toBe(true);
+      let sum = 0, n = 0;
+      f.forEachPixel((c) => { sum += c.r; n++; });
+      return sum / n;
+    };
+    const off = await meanRed(0.0, 0);
+    const on  = await meanRed(1.0, 1500);
+    expect(off).toBeGreaterThan(10);       // the wave actually lit the field
+    expect(on).toBeLessThan(off * 0.85);   // flashes measurably dampened it
   });
 
   it('radially warps a structured input', async () => {
@@ -102,7 +133,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
       modules: ['com.nano.core', 'com.nano.legacy'],
       commands: [
         { type: 'createSketch', sketchId: 'dw_warp',
-          sketch: buildChain({ distortion: 1.0, count: 400, spread: 0.6, wave_speed: 0.4 }) },
+          sketch: buildChain({ distortion: 1.0, rate: 0.7, wave_speed: 0.4, damp: 0.0 }) },
         { type: 'setTracePoints', tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: 'dw_warp' } },
         ]},
