@@ -19,6 +19,7 @@ NANO_DECLARE_INSTANCE_EFFECT(double_chamber)
 NANO_DECLARE_INSTANCE_EFFECT(d_wave)
 NANO_DECLARE_INSTANCE_EFFECT(lut_collection)
 namespace lut_collection { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(zoom_scroller)
 
 extern "C" {
 
@@ -92,6 +93,20 @@ void nano_module_main() {
         "lut,color,grade,film,look,preset,cube,legacy",
         NANO_INSTANCE_LIFECYCLE(lut_collection),
         &lut_collection::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.zoom_scroller",
+        "Zoom Scroller",
+        "Procedural pan-and-zoom sequence camera. Generates randomized tours "
+        "across the frame — picking a far target, a zoom level, and an L-shaped "
+        "grid path — then pans through it in quantized, choppy sub-steps with a "
+        "white box gizmo that juts in the direction of motion. Good for idle "
+        "moments. v2 port of the Resolume Wire \"ZoomScroller\" patch.",
+        "warp",
+        "zoom,pan,scroll,camera,sequence,gizmo,idle,legacy",
+        NANO_INSTANCE_LIFECYCLE(zoom_scroller),
     });
 }
 

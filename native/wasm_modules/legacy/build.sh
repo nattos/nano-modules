@@ -98,6 +98,13 @@ compile_shaders_compute_var_spv lut_collection apply
 _emit_spv_header_var lut_collection fill apply
 echo "  lut_collection shaders compiled (SPV: fill + apply)"
 
+# zoom_scroller — procedural pan/zoom sequence camera (Wire "ZoomScroller").
+#   apply (compute) — scale+translate sample of tex_in + analytic gizmo box.
+#   All sequencing/state-machine logic lives in main.cpp (tick).
+compile_shaders_compute_var_spv zoom_scroller apply
+_emit_spv_header_var zoom_scroller apply
+echo "  zoom_scroller shaders compiled (SPV: apply)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
 compile_shaders_compute_spv blur
 echo "  blur shader compiled (SPV) for effect_blur.h"
@@ -120,6 +127,7 @@ wasm_build \
   ../glisten/main.cpp \
   ../double_chamber/main.cpp \
   ../d_wave/main.cpp \
-  ../lut_collection/main.cpp
+  ../lut_collection/main.cpp \
+  ../zoom_scroller/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
