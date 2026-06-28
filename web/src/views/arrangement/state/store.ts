@@ -3585,10 +3585,10 @@ export class ArrangementStore {
     this.mutate('toggle solo', (d) => {
       const t = d.tracks.find((x) => x.id === trackId);
       if (!t) return;
-      // A return/rail has no picture — soloing it renders black. Allow toggling it
-      // OFF (e.g. the "S" key landed on one), but never solo it ON, and don't let it
-      // clear the other tracks' solos.
-      if (t.kind === 'rail') { t.soloed = false; return; }
+      // A return/rail has no picture — soloing it renders black, so it never solos
+      // ON. Hitting solo on a return instead acts as "clear solo": it turns OFF every
+      // track's solo (returning the mix to normal).
+      if (t.kind === 'rail') { for (const x of d.tracks) x.soloed = false; return; }
       if (additive) { t.soloed = !t.soloed; return; }
       const onlyThis = t.soloed && d.tracks.every((x) => x.id === trackId || !x.soloed);
       for (const x of d.tracks) x.soloed = false;
