@@ -484,7 +484,14 @@ export class ArrangementStore {
     coalesceKey?: string,
   ) {
     this.history.record(description, recipe, coalesceKey);
-    this.warpEpoch++;
+    // Bump the warp/structure epoch (warp-curve cache + the bridge's warp-clock
+    // refresh key) — but NOT for continuously-dragged edits that can't change the
+    // beat grid or warp timing: effect PARAM values and clip TRANSFORM. Bumping on
+    // those made a slider drag rebuild the warp curve + re-resolve the warp clock
+    // every frame, stalling the playhead during playback.
+    if (!coalesceKey || (!coalesceKey.startsWith('param:') && !coalesceKey.startsWith('xform:'))) {
+      this.warpEpoch++;
+    }
   }
 
   undo() {

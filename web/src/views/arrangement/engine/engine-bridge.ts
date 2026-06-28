@@ -134,24 +134,28 @@ export class EngineBridge {
 
   /** Main-thread video decode pump (lazily created on first video clip). */
   private video: VideoCompositor | null = null;
-  /** Signature of the warp resolver currently installed on the pump; rebuilt only
-   *  when the base tempo or any clip warp changes. */
-  private warpSig = '';
+  /** `store.warpEpoch` the warp resolver was last installed for. Reset to -1 when the
+   *  pump is (re)created so the next refresh re-installs onto the fresh compositor. */
+  private warpResolverEpoch = -1;
 
   /** Keep the pump's warp-aware beat→seconds resolver in sync with the composition,
-   *  so video timing seeks through warped regions the same way the grid draws them. */
+   *  so video timing seeks through warped regions the same way the grid draws them.
+   *  Gated on the cheap `warpEpoch` COUNTER — this runs on every composite reconcile
+   *  (i.e. every frame + every edit); rebuilding a JSON warp signature here each time
+   *  stalled the playhead during a slider drag. `warpEpoch` doesn't bump on param /
+   *  transform edits, so a slider drag is a no-op here. */
   private refreshWarpResolver() {
-    const comp = store.composition;
-    const warps = comp.tracks.flatMap((t) => (t.clips ?? []).flatMap((c) => c.warps ?? []));
-    const sig = `${comp.meta.baseBPM}|${JSON.stringify(warps)}`;
-    if (sig === this.warpSig) return;
-    this.warpSig = sig;
-    const clock = makeWarpClock(comp);
+    if (this.warpResolverEpoch === store.warpEpoch) return;
+    const clock = makeWarpClock(store.composition);
+    // videoCompositor() may CREATE the pump (which resets warpResolverEpoch to -1),
+    // so stamp the epoch AFTER installing the resolver.
     this.videoCompositor().setTimeResolver((beat) => clock.secondsAt(beat));
+    this.warpResolverEpoch = store.warpEpoch;
   }
 
   private videoCompositor(): VideoCompositor {
     if (!this.video) {
+      this.warpResolverEpoch = -1; // fresh pump → force the next refresh to install the resolver
       const r = store.composition.meta.resolution;
       this.video = new VideoCompositor(
         (key, bmp) => this.setInstanceTexture(key, bmp),

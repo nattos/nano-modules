@@ -17,7 +17,7 @@
 import type { AutomationEntry } from './arr-engine';
 import { buildCompositeSketch, clipInstanceKey, trackInstanceKey, type CompositeNode, type CompositeClipNode, type CompositeGroupNode } from './clip-sketch';
 import { evalLaneAtBeat, evalCurveAt } from './automation-eval';
-import { makeWarpClock } from './warp-clock';
+import { makeWarpClock, type WarpClock } from './warp-clock';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import type { VideoClipDesc } from './video-compositor';
 import { store } from '../state/store';
@@ -95,10 +95,22 @@ function railBasesAtBeat(clips: Clip[], beat: number): {
  * (the caller renders the backdrop). `ignoreSolo` (the exporter) renders the full mix.
  * The `sig` lets a caller re-issue to the engine only when the composite changes.
  */
+/** Warp clock memoized on `store.warpEpoch` — buildCompositeRenderAtBeat runs every
+ *  monitor frame + every edit; rebuilding the clock (reads every clip's warp) each
+ *  time was needless work on the slider-drag path. warpEpoch doesn't bump on param/
+ *  transform edits, so a drag reuses the cached clock. */
+let _clockCache: { epoch: number; clock: WarpClock } | null = null;
+function cachedWarpClock(): WarpClock {
+  if (!_clockCache || _clockCache.epoch !== store.warpEpoch) {
+    _clockCache = { epoch: store.warpEpoch, clock: makeWarpClock(store.composition) };
+  }
+  return _clockCache.clock;
+}
+
 export function buildCompositeRenderAtBeat(beat: number, ignoreSolo = false) {
   const tree = store.compositeTreeAtBeat(beat, ignoreSolo);
   if (tree.length === 0) return null;
-  const clock = makeWarpClock(store.composition);
+  const clock = cachedWarpClock();
   // Bake each clip leaf's absolute start time (s) onto its node, for effect seeks.
   const leaves = flattenLeaves(tree);
   for (const leaf of leaves) leaf.startSec = clock.secondsAt(leaf.clip.startBeat);
