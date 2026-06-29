@@ -275,6 +275,21 @@ export function reconcileWires(clips: ClipList, dev: DeviceReconciliation): Wire
     }
   }
 
+  // Wires on a NON-template clip whose key isn't common are ragged too (e.g. an
+  // extra wire between two common devices that clips[0] simply doesn't have). The
+  // tmpl-driven loop above can't see these, so sweep them here.
+  const commonKeys = new Set(common.map((c) => wireKeyStr(c.key)));
+  for (const clip of clips) {
+    if (clip.id === clips[0]?.id) continue;
+    for (const [ks, { id }] of perClip.get(clip.id) ?? []) {
+      if (commonKeys.has(ks)) continue;
+      const arr = raggedIdsByClip.get(clip.id) ?? [];
+      arr.push(id);
+      raggedIdsByClip.set(clip.id, arr);
+      raggedCount += 1;
+    }
+  }
+
   return { common, raggedIdsByClip, raggedCount };
 }
 
@@ -333,6 +348,19 @@ function reconcileTaps<T extends { id: string }, K>(
         raggedByClip.set(clips[0].id, arr);
         raggedCount += 1;
       }
+    }
+  }
+  // Non-template taps whose key isn't common are ragged too (same gap the
+  // tmpl-driven loop misses — an extra tap on a common device only some clips have).
+  const commonKeys = new Set(common.map((c) => keyStr(c.key)));
+  for (const clip of clips) {
+    if (clip.id === clips[0]?.id) continue;
+    for (const [ks, { id }] of perClip.get(clip.id) ?? []) {
+      if (commonKeys.has(ks)) continue;
+      const arr = raggedByClip.get(clip.id) ?? [];
+      arr.push(id);
+      raggedByClip.set(clip.id, arr);
+      raggedCount += 1;
     }
   }
   return { common, raggedByClip, raggedCount };

@@ -160,6 +160,19 @@ describe('reconcileWires', () => {
     expect(wr.raggedCount).toBe(1);
     expect(wr.raggedIdsByClip.get('b')).toEqual(['wb']);
   });
+
+  it('an EXTRA wire between two common devices on a NON-template clip → ragged', () => {
+    // Both share the common a1→a2 wire; b additionally has b2→b1 (both common
+    // devices) that the template lacks. The tmpl-driven pass can't see it.
+    const a = clip('a', [dev('a1', 'lfo'), dev('a2', 'sat')], [wire('wa', 'a1', 'out', 'a2', 'amount')]);
+    const b = clip('b', [dev('b1', 'lfo'), dev('b2', 'sat')],
+      [wire('wb', 'b1', 'out', 'b2', 'amount'), wire('wb2', 'b2', 'out', 'b1', 'rate')]);
+    const dr = reconcileDevices([a, b]);
+    const wr = reconcileWires([a, b], dr);
+    expect(wr.common).toHaveLength(1);
+    expect(wr.raggedCount).toBe(1);
+    expect(wr.raggedIdsByClip.get('b')).toEqual(['wb2']);
+  });
 });
 
 describe('reconcileRails', () => {
@@ -179,6 +192,20 @@ describe('reconcileRails', () => {
     expect(rr.reads).toHaveLength(0);
     expect(rr.raggedCount).toBe(1);
     expect(rr.raggedReadIdsByClip.get('a')).toEqual(['ra']);
+  });
+
+  it('an EXTRA rail export on a NON-template clip (common device) → ragged', () => {
+    const exp = (id: string, dev: string, field = 'out') => ({
+      id, railId: 'r1', sourceDeviceId: dev, sourceField: field, combine: 'add' as const, magnitude: 'auto' as const,
+    });
+    // Both share a1/b1→r1; b additionally exports b1.gain→r1 that a lacks.
+    const a = clip('a', [dev('a1', 'sat')], [], { exports: [exp('ea', 'a1')], reads: [] });
+    const b = clip('b', [dev('b1', 'sat')], [], { exports: [exp('eb', 'b1'), exp('eb2', 'b1', 'gain')], reads: [] });
+    const dr = reconcileDevices([a, b]);
+    const rr = reconcileRails([a, b], dr);
+    expect(rr.exports).toHaveLength(1);
+    expect(rr.raggedCount).toBe(1);
+    expect(rr.raggedExportIdsByClip.get('b')).toEqual(['eb2']);
   });
 });
 

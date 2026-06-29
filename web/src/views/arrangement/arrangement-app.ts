@@ -290,7 +290,7 @@ export class ArrangementApp extends MobxLitElement {
       // (the card's own handler then sets focus). The wire POPUP is preserved
       // ONLY when the click lands on the popup itself or a pip — so clicking an
       // effect card (incl. its output-trace area) still dismisses an open popup.
-      if (!inClass(['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel', 'other-effects'])) store.clearChainFocus();
+      if (!inClass(['effect-card', 'cat-chip', 'wire-hit', 'wire-mod-panel', 'other-effects', 'other-badge'])) store.clearChainFocus();
       if (!inClass(['tap-card', 'wire-mod-panel', 'field-option-pip', 'fpip'])) store.dismissPopups();
     }
   };

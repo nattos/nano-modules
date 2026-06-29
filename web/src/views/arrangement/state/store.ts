@@ -1235,7 +1235,9 @@ export class ArrangementStore {
     return !!this.chainFocusPath && (
       this.chainFocusPath.startsWith('effect/') ||
       this.chainFocusPath.startsWith('wire/') ||
-      this.chainFocusPath.startsWith('other/'));
+      this.chainFocusPath.startsWith('other/') ||
+      this.chainFocusPath.startsWith('otherwires/') ||
+      this.chainFocusPath.startsWith('otherrails/'));
   }
 
   /** The selected CLIPS as `{trackId, clipId}`, primary (last-clicked) first so
@@ -1268,6 +1270,16 @@ export class ArrangementStore {
     if (path?.startsWith('other/')) {
       // other / multi/<set> / <gapIndex> — delete the ragged effects in that gap.
       this.deleteMultiRaggedGap(path);
+      this.clearChainFocus();
+      return;
+    }
+    if (path?.startsWith('otherwires/')) {
+      this.deleteMultiRaggedWires(path.slice('otherwires/'.length));
+      this.clearChainFocus();
+      return;
+    }
+    if (path?.startsWith('otherrails/')) {
+      this.deleteMultiRaggedRails(path.slice('otherrails/'.length));
       this.clearChainFocus();
       return;
     }
@@ -1354,6 +1366,30 @@ export class ArrangementStore {
       for (const deviceId of ids) targets.push({ trackId, clipId, deviceId });
     }
     if (targets.length) this.removeClipsDevice(targets);
+  }
+
+  /** Delete the ragged (non-common) intra-sketch wires of the multi-edit panel. */
+  private deleteMultiRaggedWires(sketchId: string) {
+    const m = this.liveMultiModel(sketchId);
+    if (!m) return;
+    const trackByClip = new Map(m.clips.map((c) => [c.id, this.trackIdOfClip(c.id)]));
+    const targets: { trackId: string; clipId: string; wireId: string }[] = [];
+    for (const [clipId, ids] of m.wires.raggedIdsByClip) {
+      const trackId = trackByClip.get(clipId);
+      if (!trackId) continue;
+      for (const wireId of ids) targets.push({ trackId, clipId, wireId });
+    }
+    this.removeClipsWire(targets);
+  }
+
+  /** Delete the ragged (non-common) return-track rail taps of the multi-edit panel. */
+  private deleteMultiRaggedRails(sketchId: string) {
+    const m = this.liveMultiModel(sketchId);
+    if (!m) return;
+    const taps: { kind: 'w' | 'r'; id: string }[] = [];
+    for (const ids of m.rails.raggedExportIdsByClip.values()) for (const id of ids) taps.push({ kind: 'w', id });
+    for (const ids of m.rails.raggedReadIdsByClip.values()) for (const id of ids) taps.push({ kind: 'r', id });
+    this.removeClipsRailTaps(taps);
   }
 
   // ── Right tab ─────────────────────────────────────────────────────────
@@ -3064,6 +3100,12 @@ export class ArrangementStore {
   }
 
   removeSketchWire(sketchId: string, wireId: string) {
+    if (sketchId.startsWith('multi/')) {
+      // A common wire in the multi-edit panel: remove the matched wire in every
+      // selected clip (one undo). `wireId` is clip[0]'s representative id.
+      this.removeClipsWire(this.commonWireTargets(sketchId, wireId));
+      return;
+    }
     this.mutate('remove wire', (d) => {
       const sk = draftSketch(d, sketchId);
       if (sk?.wires) sk.wires = sk.wires.filter((w) => w.id !== wireId);
@@ -3071,6 +3113,10 @@ export class ArrangementStore {
   }
 
   updateSketchWire(sketchId: string, wireId: string, patch: Record<string, unknown>, coalesceKey?: string) {
+    if (sketchId.startsWith('multi/')) {
+      this.updateClipsWire(this.commonWireTargets(sketchId, wireId), patch, coalesceKey);
+      return;
+    }
     this.mutate('update wire', (d) => {
       const w = draftSketch(d, sketchId)?.wires?.find((x) => x.id === wireId);
       if (w) Object.assign(w, JSON.parse(JSON.stringify(patch)));
@@ -3230,6 +3276,66 @@ export class ArrangementStore {
       for (const t of targets) {
         const devs = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId)?.sketch.devices;
         if (devs) moveInArray(devs, t.from, t.to);
+      }
+    });
+  }
+
+  // ── Multi-clip wire / rail-tap fan-out ────────────────────────────────────
+
+  /** clip → wire-id targets for a COMMON wire (clip[0]'s rep id), via the live
+   *  reconciliation (primary-first order, set must match the current selection). */
+  private commonWireTargets(sketchId: string, repWireId: string): { trackId: string; clipId: string; wireId: string }[] {
+    const m = this.liveMultiModel(sketchId);
+    const cw = m?.wires.common.find((w) => w.repId === repWireId);
+    if (!m || !cw) return [];
+    const trackByClip = new Map(m.clips.map((c) => [c.id, this.trackIdOfClip(c.id)]));
+    const out: { trackId: string; clipId: string; wireId: string }[] = [];
+    for (const [clipId, wireId] of cw.idByClip) {
+      const trackId = trackByClip.get(clipId);
+      if (trackId) out.push({ trackId, clipId, wireId });
+    }
+    return out;
+  }
+
+  /** Remove the matched wire from each clip (one undo). */
+  removeClipsWire(wires: { trackId: string; clipId: string; wireId: string }[]) {
+    if (!wires.length) return;
+    this.mutate('remove wire', (d) => {
+      for (const w of wires) {
+        const c = d.tracks.find((x) => x.id === w.trackId)?.clips.find((x) => x.id === w.clipId);
+        if (c?.sketch.wires) c.sketch.wires = c.sketch.wires.filter((x) => x.id !== w.wireId);
+      }
+    });
+  }
+
+  /** Patch the matched wire in each clip (one undo; coalesces param drags). */
+  updateClipsWire(
+    wires: { trackId: string; clipId: string; wireId: string }[],
+    patch: Record<string, unknown>,
+    coalesceKey?: string,
+  ) {
+    if (!wires.length) return;
+    this.mutate('update wire', (d) => {
+      for (const w of wires) {
+        const wi = d.tracks.find((x) => x.id === w.trackId)?.clips.find((x) => x.id === w.clipId)
+          ?.sketch.wires?.find((x) => x.id === w.wireId);
+        if (wi) Object.assign(wi, JSON.parse(JSON.stringify(patch)));
+      }
+    }, coalesceKey);
+  }
+
+  /** Remove rail export/read taps by id across all clips (one undo). Ids are
+   *  globally unique, so this scans every clip (mirrors deleteWire). */
+  removeClipsRailTaps(taps: { kind: 'w' | 'r'; id: string }[]) {
+    if (!taps.length) return;
+    const exp = new Set(taps.filter((t) => t.kind === 'w').map((t) => t.id));
+    const rd = new Set(taps.filter((t) => t.kind === 'r').map((t) => t.id));
+    this.mutate('remove rail taps', (d) => {
+      for (const t of d.tracks) {
+        for (const c of t.clips) {
+          if (exp.size && c.exports) c.exports = c.exports.filter((x) => !exp.has(x.id));
+          if (rd.size && c.reads) c.reads = c.reads.filter((x) => !rd.has(x.id));
+        }
       }
     });
   }

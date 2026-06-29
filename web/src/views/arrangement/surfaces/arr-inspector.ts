@@ -380,6 +380,31 @@ export class ArrInspector extends MobxLitElement {
       background: rgba(65, 105, 225, 0.12);
     }
     .src-missing { color: var(--app-error, #e0564a); font-weight: 600; }
+    /* Multi-edit "other wires/rails" badges — the ragged-tally analog of the
+       "other effects" row. Selectable into chainFocusPath; ⌫ fans out removal. */
+    .other-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: -2px 0 2px;
+    }
+    .other-badge {
+      font: inherit;
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color2);
+      background: var(--app-tint-2);
+      border: 1px dashed var(--app-tint-4);
+      border-radius: 3px;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .other-badge:hover { background: var(--app-tint-3); }
+    .other-badge.sel {
+      color: var(--app-hi-color2);
+      border-color: var(--app-hi-color2);
+      border-style: solid;
+      background: var(--app-tint-3);
+    }
     /* Enum tab bar: one connected control, segments sharing 1px dividers, the
        active one marked by a subtle raised tint + an accent underline (no bright
        fill). The outer border + radius + overflow:hidden round the whole group. */
@@ -671,11 +696,33 @@ export class ArrInspector extends MobxLitElement {
           Editing ${refs.length} clips together. Shared effects edit all at once;
           a field that differs shows “many”.
         </div>`;
+    const raggedWires = target.raggedWireCount?.() ?? 0;
+    const raggedRails = target.raggedRailCount?.() ?? 0;
+    const badge = (path: string, n: number, label: string, title: string) => {
+      const sel = store.chainFocusPath === path;
+      return html`<button
+        class="other-badge ${sel ? 'sel' : ''}"
+        title=${title}
+        @click=${(e: Event) => { e.stopPropagation(); store.setChainFocus(path); }}
+      >${n} ${label}${n === 1 ? '' : 's'} (not shared)</button>`;
+    };
     return html`
       <div class="section-header">${refs.length} clips</div>
       <div class="body">
         ${note}
         <div class="group-title chain-hdr"><span>Chain (common)</span></div>
+        ${raggedWires > 0 || raggedRails > 0
+          ? html`<div class="other-badges">
+              ${raggedWires > 0
+                ? badge(`otherwires/${target.id}`, raggedWires, 'other wire',
+                    'Modulation wires present on only some of the selected clips. Select + ⌫ to remove them.')
+                : ''}
+              ${raggedRails > 0
+                ? badge(`otherrails/${target.id}`, raggedRails, 'other rail',
+                    'Return-track modulations present on only some of the selected clips. Select + ⌫ to remove them.')
+                : ''}
+            </div>`
+          : ''}
         <column-group
           class="chain"
           .colIdx=${0}

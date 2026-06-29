@@ -17,7 +17,7 @@ import type {
   ColumnAdapter, ColumnCapabilities, ColumnDataSource, ColumnController,
   ColumnTaps, EditHandle, PluginInfo, FieldModulation,
 } from '../../../widgets/column-adapter';
-import type { Sketch } from '../../../sketch-types';
+import type { Sketch, Wire } from '../../../sketch-types';
 import type { ParamValue } from '../../../engine-types';
 import type { Selectable, EffectClipboard, AvailableEffect } from '../../../state/types';
 import type { FieldBinding } from '../../../widgets/field-editor';
@@ -105,6 +105,13 @@ export interface DeviceTarget {
   /** Multi-edit only: ragged (non-common) device runs by gap, for the collapsed
    *  "other effects" placeholder rows. `gapIndex` ∈ `[0, commonCount]`. */
   raggedSegments?(): { gapIndex: number; count: number }[];
+  /** Multi-edit only: the wires COMMON to every clip (clip[0]'s rep wires), so
+   *  the panel shows + edits them (edits fan out via the store's multi/ branch). */
+  commonWires?(): Wire[];
+  /** Multi-edit only: count of intra-sketch wires present on only SOME clips. */
+  raggedWireCount?(): number;
+  /** Multi-edit only: count of return-track rail taps present on only SOME clips. */
+  raggedRailCount?(): number;
   /** Optional capability overrides merged over the defaults (e.g. multi disables
    *  reorder/wiring/tracing in early phases). */
   capsOverride?: Partial<ColumnCapabilities>;
@@ -227,6 +234,18 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
     },
     raggedSegments: () =>
       model().devices.ragged.map((s) => ({ gapIndex: s.gapIndex, count: s.count })),
+    commonWires: () => {
+      const m = model();
+      const c0 = m.clips[0];
+      if (!c0) return [];
+      // Rep wires = clip[0]'s actual wire objects (so combine/curve/scale/etc.
+      // flow through). Their endpoint instance keys are clip[0]'s device ids,
+      // which match the synthesized chain — so pips + the wire-mod panel work.
+      const byId = new Map((c0.sketch.wires ?? []).map((w) => [w.id, w]));
+      return m.wires.common.map((cw) => byId.get(cw.repId)).filter((w): w is Wire => !!w);
+    },
+    raggedWireCount: () => model().wires.raggedCount,
+    raggedRailCount: () => model().rails.raggedCount,
     // Reorder of common devices fans out (each clip moves its matched device).
     // Wiring overlay + output-trace cards stay off — no single live engine
     // instance for a multi-selection (lifted/addressed in later phases).
@@ -332,7 +351,9 @@ export class ArrColumnAdapter implements ColumnAdapter {
           devices.map((d) => [d.id, { module_type: d.moduleType, state: (d.state ?? {}) as Record<string, unknown> }]),
         ),
         // Read through the store so the overlay re-renders when wires change.
-        wires: store.sketchWires(sketchId),
+        // Multi-edit synthesizes the COMMON wires (rep ids); single-clip/track
+        // targets fall back to the real per-sketch wire list.
+        wires: this.target.commonWires?.() ?? store.sketchWires(sketchId),
       };
     },
     getPlugin: (moduleType: string): PluginInfo | undefined => {
