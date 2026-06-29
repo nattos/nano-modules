@@ -39,12 +39,6 @@ cbuffer Uniforms : register(b3) {
   float _pad1, _pad2, _pad3;
 };
 
-// Signed distance to an axis-aligned box of half-extents `b`, centred at origin.
-float sdBox(float2 p, float2 b) {
-  float2 d = abs(p) - b;
-  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-}
-
 // B-spline bicubic via 4 bilinear taps (Sigg & Hadwiger, GPU Gems 2). B-spline
 // weights are all non-negative, so the s0/s1 = wA+wB denominators are always
 // positive — unlike Catmull-Rom, whose negative lobes make this 4-tap trick
@@ -110,16 +104,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   // Gizmo outline box, centred at the frame centre, nudged by motion.
-  // Analytic AA line: coverage of a band of half-width `giz_thick` around the
-  // outline. The +0.5 half-pixel term gives an infinitely thin line a 1px
-  // footprint (so a hairline still shows, just dimmer) instead of vanishing
-  // between pixel centres. giz_alpha already carries the width-fade, so the
-  // line cleanly disappears as gizmo_width → 0.
+  // The outline is drawn from the axis-aligned rectangle "box value"
+  // b = max(|x|-Hx, |y|-Hy): b == 0 on the outline, and its level sets are
+  // concentric rectangles with SQUARE corners (a euclidean SDF would round the
+  // outer corners). The band |b| < giz_thick is the frame.
+  // Analytic AA: the +0.5 half-pixel term keeps an infinitely thin line a 1px
+  // footprint (hairline still shows, just dimmer) instead of vanishing between
+  // pixel centres; giz_alpha carries the width-fade so it disappears at width 0.
   if (giz_show > 0.5 && giz_alpha > 0.0) {
-    float2 p = sq - float2(giz_off_x, giz_off_y);
-    float d = abs(sdBox(p, float2(giz_hw, giz_hh)));   // distance to the outline
+    float2 q = abs(sq - float2(giz_off_x, giz_off_y));
+    float b = max(q.x - giz_hw, q.y - giz_hh);
     float aa = max(1.5 * aspect_y * 2.0 / float(h), 1e-5);
-    float cov = clamp((giz_thick - d) / aa + 0.5, 0.0, 1.0);
+    float cov = clamp((giz_thick - abs(b)) / aa + 0.5, 0.0, 1.0);
     float a = cov * giz_alpha;
     color.rgb = lerp(color.rgb, float3(giz_r, giz_g, giz_b), a);
   }
