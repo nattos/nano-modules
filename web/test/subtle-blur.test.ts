@@ -96,9 +96,9 @@ describe('Subtle Blur (filter.legacy.subtle_blur) E2E', () => {
     split.trace('out').expectDifferentFrom(none.trace('out'), 100);
   });
 
-  it('is a passthrough at blur=0, amount=0 (is_identity)', async () => {
+  it('is a passthrough at blur=0, amount=0, movement=0 (is_identity)', async () => {
     const grid = await runGridOnly('sb_grid', 'subtle_gridonly');
-    const passthrough = await runChain('sb_pass', { blur: 0.0, amount: 0.0 }, 'subtle_passthrough');
+    const passthrough = await runChain('sb_pass', { blur: 0.0, amount: 0.0, movement: 0.0 }, 'subtle_passthrough');
     expect(grid.success).toBe(true);
     expect(passthrough.success).toBe(true);
     passthrough.trace('out').expectSameAs(grid.trace('out'), 2);

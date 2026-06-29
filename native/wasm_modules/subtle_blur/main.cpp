@@ -42,16 +42,19 @@ namespace subtle_blur {
 
 static constexpr float TAU          = 6.28318530717958647692f;
 static constexpr float OFFSET_SCALE = 0.02f; // amount=1 → 2% of short axis
-static constexpr float DRIFT_RATE   = 0.15f; // movement=1 → 0.15 turns/sec
+static constexpr float SAW_RATE     = 0.7f;  // sawtooth resets/sec (fixed frequency)
+static constexpr float MOVE_AMP     = 0.04f; // movement=1 → up to 4% short-axis slide
 static constexpr float BLUR_SCALE   = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
 
 struct Uniforms {
   float aspect_x;
   float aspect_y;
-  float mag;
-  float base_angle;
+  float axis_x;
+  float axis_y;
+  float spread;
+  float _p0, _p1, _p2;
 };
-static_assert(sizeof(Uniforms) == 16, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
 
 struct State {
   gpu::Buffer  uniform_buf;
@@ -61,14 +64,14 @@ struct State {
   bool         initialized = false;
 
   // Schema-mirrored params.
-  float blur     = 0.1f;
-  float amount   = 0.25f;
+  float blur     = 0.05f;
+  float amount   = 0.09f;
   float movement = 0.2f;
-  float hue      = 0.22f;  // the Wire patch's exposed Hue Rotate default
+  float hue      = 0.22f;  // the Wire patch's exposed Hue Rotate default (the slant)
   float quality  = 0.3f;   // lower = sparser taps = a "harder" (less smooth) blur
 
-  // Runtime: continuous drift of the chroma basis angle (turns).
-  double drift = 0.0;
+  // Runtime: sawtooth phase (ramps then hard-resets) for `movement`.
+  double saw_phase = 0.0;
 };
 
 // Type-shared, compiled once.
@@ -78,14 +81,14 @@ static fx::GaussianBlur  s_blur;
 void module_init() {
   state::init("filter.legacy.subtle_blur", {1, 0, 0},
     state::Schema()
-      .floatField("blur",     0.1f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("blur",     0.05f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Blur amount.")
-      .floatField("amount",   0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("amount",   0.09f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Chromatic offset magnitude — RGB fringe width.")
       .floatField("movement", 0.2f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Drift speed of the chromatic offset direction.")
+                  nullptr, "Sawtooth slide amplitude (ramp + hard reset) along the slant.")
       .floatField("hue",      0.22f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Base direction of the colour split (0..1 = full turn).")
+                  nullptr, "Angle of the slanted split axis (0..1 = full turn).")
       .floatField("quality",  0.3f,  0.05f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Blur sample density — lower is harder/less smooth (tuning).")
       .capability(state::Capability::SeekableApproximate)
@@ -124,7 +127,7 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->drift = 0.0;
+  s->saw_phase = 0.0;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
 }
@@ -133,11 +136,10 @@ void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   if (dt < 0.0) dt = 0.0;
-  // Continuous drift of the colour-split basis (style guide §2.1: accumulate,
-  // don't multiply time × rate — so turning `movement` never jumps the phase).
-  s->drift += dt * (double)s->movement * (double)DRIFT_RATE;
-  // Keep it bounded (a turn is 2π-periodic anyway).
-  if (s->drift > 1.0e6 || s->drift < -1.0e6) s->drift = std::fmod(s->drift, 1.0);
+  // Fixed-frequency sawtooth phase (the slide amplitude is `movement`, applied
+  // in render). frac() of this gives the ramp + hard periodic reset.
+  s->saw_phase += dt * (double)SAW_RATE;
+  if (s->saw_phase > 1.0e6) s->saw_phase = std::fmod(s->saw_phase, 1.0);
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -164,7 +166,7 @@ void on_resolume_param(void* self, long long, double) { (void)self; }
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  return (s->blur <= 1e-3f && s->amount <= 1e-3f) ? 1 : 0;
+  return (s->blur <= 1e-3f && s->amount <= 1e-3f && s->movement <= 1e-3f) ? 1 : 0;
 }
 
 static void ensureBlurTex(State* s, int w, int h) {
@@ -200,12 +202,19 @@ void render(void* self, int vp_w, int vp_h) {
     src = s->blur_tex;
   }
 
+  // Fixed slant axis from `hue`; chroma half-spread = base (amount) + a
+  // sawtooth ramp (amplitude `movement`) that hard-resets each cycle.
+  float slant = s->hue * TAU;
+  float saw   = (float)(s->saw_phase - std::floor(s->saw_phase)); // frac → 0..1, hard reset
+  float spread = s->amount * OFFSET_SCALE + saw * MOVE_AMP * s->movement;
+
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
   Uniforms u = {};
-  u.aspect_x   = (float)min_dim / (float)vp_w;
-  u.aspect_y   = (float)min_dim / (float)vp_h;
-  u.mag        = s->amount * OFFSET_SCALE;
-  u.base_angle = s->hue * TAU + (float)(s->drift) * TAU;
+  u.aspect_x = (float)min_dim / (float)vp_w;
+  u.aspect_y = (float)min_dim / (float)vp_h;
+  u.axis_x   = std::cos(slant);
+  u.axis_y   = std::sin(slant);
+  u.spread   = spread;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
