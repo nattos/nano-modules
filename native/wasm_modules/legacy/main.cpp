@@ -26,6 +26,7 @@ NANO_DECLARE_INSTANCE_EFFECT(sphr_blur)
 namespace sphr_blur { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(burn_out)
 NANO_DECLARE_INSTANCE_EFFECT(chroma_wobble)
+NANO_DECLARE_INSTANCE_EFFECT(wobble_master)
 
 extern "C" {
 
@@ -168,6 +169,20 @@ void nano_module_main() {
         "warp",
         "wobble,chroma,aberration,noise,glitch,trigger,legacy",
         NANO_INSTANCE_LIFECYCLE(chroma_wobble),
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.wobble_master",
+        "Wobble Master",
+        "Beat-pulsed radial-ripple wobble with chromatic dispersion. A "
+        "concentric sine ripple travels outward from a centre, displacing the "
+        "image radially and splitting the colour channels along the radius "
+        "(red out, blue in); the ripple pumps on a trigger/gate and decays. "
+        "v2 of the Resolume Wire \"Wobble Master\" family.",
+        "warp",
+        "wobble,ripple,chroma,aberration,beat,pulse,radial,legacy",
+        NANO_INSTANCE_LIFECYCLE(wobble_master),
     });
 }
 

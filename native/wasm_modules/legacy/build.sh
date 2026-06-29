@@ -134,6 +134,12 @@ compile_shaders_compute_var_spv chroma_wobble wobble
 _emit_spv_header_var chroma_wobble wobble
 echo "  chroma_wobble shaders compiled (SPV: wobble)"
 
+# wobble_master — beat-pulsed radial-ripple wobble + chromatic dispersion
+#   (Wire "Wobble Master 2", v2). Uses shared nano_chroma.hlsl.
+compile_shaders_compute_var_spv wobble_master wobble
+_emit_spv_header_var wobble_master wobble
+echo "  wobble_master shaders compiled (SPV: wobble)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -162,6 +168,7 @@ wasm_build \
   ../subtle_blur/main.cpp \
   ../sphr_blur/main.cpp \
   ../burn_out/main.cpp \
-  ../chroma_wobble/main.cpp
+  ../chroma_wobble/main.cpp \
+  ../wobble_master/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
