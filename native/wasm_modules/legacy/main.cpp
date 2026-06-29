@@ -29,6 +29,7 @@ NANO_DECLARE_INSTANCE_EFFECT(chroma_wobble)
 NANO_DECLARE_INSTANCE_EFFECT(wobble_master)
 NANO_DECLARE_INSTANCE_EFFECT(stutter_scale)
 namespace stutter_scale { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(freeze_pulse)
 
 extern "C" {
 
@@ -200,6 +201,19 @@ void nano_module_main() {
         "stutter,scale,zoom,glitch,beat,jitter,flip,legacy",
         NANO_INSTANCE_LIFECYCLE(stutter_scale),
         &stutter_scale::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.freeze_pulse",
+        "Freeze Pulse",
+        "Stutter-freeze pulse. On a trigger it freezes the current frame, then "
+        "scale-pops, jitters and grades that frozen frame and composites it over "
+        "the still-running live video using a randomly-chosen blend mode, fading "
+        "out over the set time. v2 of the Resolume Wire \"Freeze Pulse\" patch.",
+        "warp",
+        "freeze,pulse,stutter,glitch,beat,blend,snapshot,legacy",
+        NANO_INSTANCE_LIFECYCLE(freeze_pulse),
     });
 }
 

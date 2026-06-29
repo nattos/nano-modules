@@ -146,6 +146,14 @@ compile_shaders_compute_var_spv stutter_scale stutter
 _emit_spv_header_var stutter_scale stutter
 echo "  stutter_scale shaders compiled (SPV: stutter)"
 
+# freeze_pulse — frame-freeze + randomized-blend stutter pulse (Wire "Freeze Pulse").
+#   capture (compute) — copy the live frame into the freeze buffer on trigger.
+#   pulse   (compute) — scale-pop/jitter/grade the frozen frame, blend over live.
+compile_shaders_compute_var_spv freeze_pulse capture
+compile_shaders_compute_var_spv freeze_pulse pulse
+_emit_spv_header_var freeze_pulse capture pulse
+echo "  freeze_pulse shaders compiled (SPV: capture + pulse)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -176,6 +184,7 @@ wasm_build \
   ../burn_out/main.cpp \
   ../chroma_wobble/main.cpp \
   ../wobble_master/main.cpp \
-  ../stutter_scale/main.cpp
+  ../stutter_scale/main.cpp \
+  ../freeze_pulse/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
