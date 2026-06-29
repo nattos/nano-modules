@@ -29,6 +29,45 @@ import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
 import { clipInstanceKey } from '../engine/clip-sketch';
 
+/**
+ * Last-known hidden-field set per effect TYPE — mirrors the inspector's
+ * `inspectorScrollMemory` LRU (arr-inspector.ts), but for conditional field
+ * visibility. An effect's field hiding (e.g. warp.crop hiding inset_* in Span
+ * mode) is published only once its instance EXECUTES and fires on_state_ready —
+ * which lags selection by a frame or two, and never happens at all for a
+ * multi-selected clip that isn't under the playhead. The published per-type
+ * schema then has NO `hidden` flags, so the fields flash in ("pop"). Remembering
+ * the last set we DID see and overlaying it until the live schema reasserts its
+ * own keeps the inspector stable. Capped LRU so it can't grow unbounded.
+ */
+const HIDDEN_MEMORY_N = 64;
+const pluginHiddenMemory = new Map<string, string[]>();
+function rememberHidden(moduleType: string, fields: string[]) {
+  pluginHiddenMemory.delete(moduleType);
+  pluginHiddenMemory.set(moduleType, fields);
+  while (pluginHiddenMemory.size > HIDDEN_MEMORY_N) {
+    const oldest = pluginHiddenMemory.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    pluginHiddenMemory.delete(oldest);
+  }
+}
+/**
+ * Return `plugin` with the hidden-field overlay applied: when the live schema
+ * already carries `hidden` flags, trust it (and refresh the memory); otherwise
+ * re-apply the last-known hidden set so a not-yet-executed effect doesn't flash
+ * its full field list. Cheap — only clones the schema on the overlay path.
+ */
+function applyHiddenMemory(moduleType: string, plugin: PluginInfo): PluginInfo {
+  const schema = (plugin.schema ?? {}) as Record<string, any>;
+  const liveHidden = Object.keys(schema).filter((k) => schema[k]?.hidden);
+  if (liveHidden.length > 0) { rememberHidden(moduleType, liveHidden); return plugin; }
+  const cached = pluginHiddenMemory.get(moduleType);
+  if (!cached || cached.length === 0) return plugin;
+  const overlaid: Record<string, any> = {};
+  for (const [k, d] of Object.entries(schema)) overlaid[k] = cached.includes(k) ? { ...d, hidden: true } : d;
+  return { ...plugin, schema: overlaid } as PluginInfo;
+}
+
 const CAPS: ColumnCapabilities = {
   // Tracing on → output trace cards render, exposing output fields as connectable
   // wire endpoints. The cards are display-only for now (the arrangement
@@ -318,17 +357,20 @@ export class ArrColumnAdapter implements ColumnAdapter {
       // every effect is a discovered plugin).
       const real = store.enginePlugin(moduleType);
       if (!real) return undefined;
-      const cachedReal = this.pluginCache.get(real);
-      if (cachedReal) return cachedReal;
-      const cat = catalogEffect(moduleType);
-      const schema: Record<string, any> = {};
-      for (const [k, def] of Object.entries((real.schema ?? {}) as Record<string, any>)) {
-        const label = cat?.fields.find((f) => f.key === k)?.label;
-        schema[k] = label && def && def.name == null ? { ...def, name: label } : def;
+      let base = this.pluginCache.get(real);
+      if (!base) {
+        const cat = catalogEffect(moduleType);
+        const schema: Record<string, any> = {};
+        for (const [k, def] of Object.entries((real.schema ?? {}) as Record<string, any>)) {
+          const label = cat?.fields.find((f) => f.key === k)?.label;
+          schema[k] = label && def && def.name == null ? { ...def, name: label } : def;
+        }
+        base = { ...(real as unknown as PluginInfo), schema };
+        this.pluginCache.set(real, base);
       }
-      const merged: PluginInfo = { ...(real as unknown as PluginInfo), schema };
-      this.pluginCache.set(real, merged);
-      return merged;
+      // Overlay the last-known hidden set (computed per-call, NOT cached on the
+      // `real` ref, since the memory updates independently of the engine schema).
+      return applyHiddenMemory(moduleType, base);
     },
     // instanceKey is the device id; translate to the engine key the live output
     // state is published under, then read the store (so output traces animate).
