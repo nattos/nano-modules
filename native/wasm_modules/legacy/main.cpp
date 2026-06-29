@@ -25,7 +25,7 @@ namespace subtle_blur { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(sphr_blur)
 namespace sphr_blur { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(burn_out)
-namespace burn_out { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(chroma_wobble)
 
 extern "C" {
 
@@ -155,7 +155,19 @@ void nano_module_main() {
         "color",
         "burn,blowout,exposure,fade,envelope,grade,trigger,legacy",
         NANO_INSTANCE_LIFECYCLE(burn_out),
-        &burn_out::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.chroma_wobble",
+        "Chroma Wobble",
+        "Triggered chromatic-aberration wobble. An animated fractal-noise field "
+        "warps the image with RGB fringing on a trigger (or held gate), then "
+        "decays via an Attack/Release envelope. v2 of the Resolume Wire "
+        "\"ChromaWobble\" patch (analytic noise, no feedback texture).",
+        "warp",
+        "wobble,chroma,aberration,noise,glitch,trigger,legacy",
+        NANO_INSTANCE_LIFECYCLE(chroma_wobble),
     });
 }
 

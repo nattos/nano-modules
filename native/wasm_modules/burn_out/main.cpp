@@ -206,12 +206,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
 void on_resolume_param(void* self, long long, double) { (void)self; }
 
-// Pure passthrough while the burn is fully at rest.
-int32_t is_identity(void* self) {
-  auto* s = static_cast<State*>(self);
-  if (!s) return 0;
-  return (s->burn <= 1e-3f) ? 1 : 0;
-}
+// NOTE: deliberately NO is_identity. The burn intensity is a tick-evolved
+// envelope value, not config — and the executor can permanently sideline a
+// stage that reports identity (it stops ticking it), so an armed-but-idle
+// burn_out would never fire on a trigger. is_identity must depend only on
+// config; a triggerable stateful effect always runs its (cheap) grade pass.
 
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);

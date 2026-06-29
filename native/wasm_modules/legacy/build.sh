@@ -127,6 +127,13 @@ compile_shaders_compute_var_spv burn_out burn
 _emit_spv_header_var burn_out burn
 echo "  burn_out shaders compiled (SPV: burn)"
 
+# chroma_wobble — triggered fbm-noise UV wobble + chromatic split (Wire "ChromaWobble").
+#   wobble (compute) — analytic fbm displacement → warp + nano_chroma_offset split.
+#   Envelope/drift live in main.cpp (tick). Uses shared nano_chroma.hlsl + nano_hash.hlsl.
+compile_shaders_compute_var_spv chroma_wobble wobble
+_emit_spv_header_var chroma_wobble wobble
+echo "  chroma_wobble shaders compiled (SPV: wobble)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -154,6 +161,7 @@ wasm_build \
   ../zoom_scroller/main.cpp \
   ../subtle_blur/main.cpp \
   ../sphr_blur/main.cpp \
-  ../burn_out/main.cpp
+  ../burn_out/main.cpp \
+  ../chroma_wobble/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
