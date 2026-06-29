@@ -18,6 +18,7 @@ import { libraryPaths } from './state/library-paths';
 import * as handleRef from './state/handle-ref';
 import * as mediaStore from './views/arrangement/workspace/media-store';
 import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
+import { debugPerf } from './views/arrangement/state/debug-perf';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -30,3 +31,6 @@ import { exportComposition, canExport } from './views/arrangement/engine/export-
 (window as any).__handleRef = handleRef;
 (window as any).__mediaStore = mediaStore;
 (window as any).__export = { exportComposition, canExport };
+// Per-clip provider telemetry bus (cache hit rate, seeks, notReady, decode path).
+// Producers only collect while `active` — the stall benchmark flips it on.
+(window as any).__debugPerf = debugPerf;
