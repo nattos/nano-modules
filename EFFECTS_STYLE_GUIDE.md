@@ -410,7 +410,24 @@ Consequences:
 - **Keep per-frame GPU work bounded.** The cost model is exactly the dispatches you issue in `render()` this frame (§"Skip whole stages"). One huge submission stalls the loop for the whole column, not just your stage.
 - **Amortize heavy work across frames in bounded slices**, not one mega-dispatch. Do a fixed chunk per `render()` and carry the partial result on `State` — the particle pools and the multigrid solvers (`height_from_gradient`) already work this way (a fixed N steps per frame, never "iterate to convergence now"). This stays responsive *and* interruptible.
 - **Don't lean on async GPU completion racing ahead of the display.** There's no independent async path that escapes frame pacing.
-- **One-off precomputes** (atlas bake, LUT build) belong in `module_init` / `create` / `init`, cached on `State` — not repeated per frame. If a one-off must happen mid-run, expect that single frame to hitch and don't redo it.
+- **One-off precomputes** (atlas bake, LUT build) belong in `module_init` / `create` / `init`, cached on `State` — not repeated per frame. If a one-off must happen mid-run, expect that single frame to hitch and don't redo it. **But "one-off" is per-HOST, not per-session** — see the next section.
+
+### Heavy one-time resources — the cooperative warm lifecycle
+
+`module_init` is "run once per effect TYPE" — but only *per host instance of that type*. The arrangement tears an effect's host down when its clip goes off the playhead and **builds a fresh one when the clip is re-entered** (to bound worker memory across a long timeline). A fresh host re-runs `module_init` from scratch. So an effect that does real work there — compile a stack of PSOs, **decode a multi-MB atlas**, build a big LUT — re-pays all of it *every time the playhead crosses into its clip*. That's a real, measured playback hitch (`source.shape_fold`'s 2.2 MB baked atlas + four compute PSOs ≈ ½ s, GPU idle the whole time — it's pure CPU/instantiate).
+
+Two halves of the cost, two owners:
+
+**The engine owns the GPU-compile half.** `createShaderModuleByName` (SPV→WGSL) and `createComputePSO` results are cached **globally by content** (`WasmHost.spvWgslCache`, `GpuHost.shaderModuleCache` / `computePipelineCache`) and shared across instances — a re-instantiated effect reuses the compiled shaders/pipelines instead of recompiling. You get this for free; don't try to cache PSOs yourself on `State`.
+
+**The effect owns the data half — cooperatively.** Don't make the engine guess how to keep your host alive (opaque host pooling is fragile and forces a one-size policy). Instead, *declare* what's heavy and how to acquire/free it, via two optional type-level (self-less) descriptor hooks. **Status: PROPOSED — not yet wired into the ABI; this is the intended shape.**
+
+- `module_warm()` — **async, idempotent, type-level.** Acquire heavy SHARED resources here (decode the atlas, build the master LUT, fetch a data blob), into module-static storage that all instances read. The host calls it ONCE per type during warmup / look-ahead precache — **off the playback critical path** — and keeps the result resident across instance churn. It never re-runs `module_warm` while the type is resident, so a clip re-entry pays nothing. Keep `module_init` for the cheap, synchronous setup (schema, PSO registration); move the expensive acquisition out of it and into `module_warm`.
+- `module_release()` — **optional, cooperative.** The host MAY call it under genuine memory pressure to free what `module_warm` acquired; the effect re-acquires lazily (`module_warm` again) on next use. Omit it and the resource stays resident for the session. The effect declares *what* to free and *how*; the host decides *when* — it never reaches into your memory itself.
+
+The rule of ownership: **heavy resources are TYPE-owned and shared, never per-instance.** `create()` / `destroy()` stay cheap — per-instance `State` only (uniform buffer, small scratch, a *pointer* to the shared resource). Instance churn (clips entering/leaving, multiple clips of the same effect) then never touches the heavy data.
+
+And prefer **host-provided data over baked-in constants.** A big array compiled into the bundle (shape_fold's atlas makes `nano.wasm` 2.46 MB vs ~400 KB for `core`) is copied into *every* fresh host's linear memory and bloats every instantiate. Load it in `module_warm` from a host data service / fetch (see "expose heavy/shared capabilities as a host-ABI service, don't statically link") so the bundle stays lean and the data is shared, not re-copied per host.
 
 ---
 

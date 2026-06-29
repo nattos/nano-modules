@@ -99,7 +99,28 @@ struct EffectDesc_v2 {
     const char* keywords;       // Comma-separated, e.g. "color,adjust"
 
     // Type-level: run once per effect type before any instance is created.
+    // KEEP THIS CHEAP + SYNCHRONOUS (schema, PSO registration). It re-runs on
+    // every FRESH host — and the arrangement builds a fresh host each time a clip
+    // is re-entered — so heavy work here (decode a multi-MB atlas, build a big
+    // LUT) re-pays as a playback hitch on every re-entry. Move that to the
+    // cooperative warm lifecycle below.
     void  (*module_init)();
+
+    // PROPOSED (design only — not yet wired): the cooperative WARM lifecycle for
+    // heavy, TYPE-shared resources. See EFFECTS_STYLE_GUIDE.md §"Heavy one-time
+    // resources — the cooperative warm lifecycle".
+    //   void module_warm();     // async, idempotent, type-level: acquire heavy
+    //                           // SHARED resources (atlas/LUT/data) into module-
+    //                           // static storage. Host calls ONCE per type during
+    //                           // warmup/precache, OFF the playback path, and keeps
+    //                           // the result resident across instance churn — so a
+    //                           // clip re-entry pays nothing.
+    //   void module_release();  // optional + cooperative: host MAY call under
+    //                           // memory pressure to free what module_warm got;
+    //                           // the effect re-acquires lazily on next use.
+    // The effect declares WHAT is heavy + HOW to free it; the host owns WHEN.
+    // (The GPU-compile half — shaders/PSOs — is already cached engine-side by
+    // content and shared across instances; effects need do nothing for that.)
 
     // Instance lifecycle.
     void* (*create)();                  // construct + return per-instance state
