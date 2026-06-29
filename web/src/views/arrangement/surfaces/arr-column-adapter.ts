@@ -89,31 +89,23 @@ function resolveStaticHiddenMulti(moduleType: string, states: Record<string, unk
  * 1. `staticHidden` (the effect's `eval_visibility` resolved for THIS target's
  *    actual state) is AUTHORITATIVE when present — it overrides any live `hidden`
  *    flags, which for a multi-select are the last-instance-wins single mode, not
- *    the per-clip union. (Crop has no permanently-hidden fields, so toggling the
- *    full set is exact; effects with always-hidden fields land in the rollout.)
+ *    the per-clip union. Every dynamic-visibility effect declares the evaluator,
+ *    so this is the path for any clip with conditional fields, on or off playhead.
  * 2. Otherwise, when the live schema already carries `hidden` flags (an
  *    on-playhead instance executed + fired on_state_ready), trust it as-is.
- * 3. Otherwise — off-playhead, no static evaluator — overlay the last-known
- *    hidden set (`store.hiddenFieldMemory`, refreshed reactively in
- *    setEnginePlugins). Reading it here ties the render to it (no stale-until-
- *    reselect). Cheap — only clones the schema on an overlay path.
+ * 3. Otherwise — no static evaluator and no live flags — render the schema as-is
+ *    (an effect with no conditional visibility, or a transient before the static
+ *    query lands; the tracked reads in the resolver re-render when it does).
  */
 function applyHidden(moduleType: string, plugin: PluginInfo, staticHidden: string[] | null): PluginInfo {
+  if (!staticHidden) return plugin;
   const schema = (plugin.schema ?? {}) as Record<string, any>;
-  if (staticHidden) {
-    const set = new Set(staticHidden);
-    const overlaid: Record<string, any> = {};
-    for (const [k, d] of Object.entries(schema)) {
-      const wantHidden = set.has(k);
-      overlaid[k] = (!!d?.hidden === wantHidden) ? d : { ...d, hidden: wantHidden };
-    }
-    return { ...plugin, schema: overlaid } as PluginInfo;
-  }
-  const cached = store.hiddenFieldMemory[moduleType]; // tracked read (reactive)
-  const liveHidden = Object.keys(schema).some((k) => schema[k]?.hidden);
-  if (liveHidden || !cached || cached.length === 0) return plugin;
+  const set = new Set(staticHidden);
   const overlaid: Record<string, any> = {};
-  for (const [k, d] of Object.entries(schema)) overlaid[k] = cached.includes(k) ? { ...d, hidden: true } : d;
+  for (const [k, d] of Object.entries(schema)) {
+    const wantHidden = set.has(k);
+    overlaid[k] = (!!d?.hidden === wantHidden) ? d : { ...d, hidden: wantHidden };
+  }
   return { ...plugin, schema: overlaid } as PluginInfo;
 }
 
