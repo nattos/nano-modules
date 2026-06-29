@@ -40,11 +40,10 @@
 
 namespace subtle_blur {
 
-static constexpr float TAU          = 6.28318530717958647692f;
-static constexpr float OFFSET_SCALE = 0.02f; // amount=1 → 2% of short axis
-static constexpr float SAW_RATE     = 0.7f;  // sawtooth resets/sec (fixed frequency)
-static constexpr float MOVE_AMP     = 0.04f; // movement=1 → up to 4% short-axis slide
-static constexpr float BLUR_SCALE   = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
+static constexpr float TAU             = 6.28318530717958647692f;
+static constexpr float OFFSET_SCALE    = 0.02f; // amount=1 → 2% of short axis (the slide DISTANCE)
+static constexpr float MOVE_RATE_SCALE = 1.0f;  // movement=1 → 1 sawtooth reset/sec (the RATE)
+static constexpr float BLUR_SCALE      = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
 
 struct Uniforms {
   float aspect_x;
@@ -64,7 +63,7 @@ struct State {
   bool         initialized = false;
 
   // Schema-mirrored params.
-  float blur     = 0.05f;
+  float blur     = 0.09f;
   float amount   = 0.09f;
   float movement = 0.2f;
   float hue      = 0.22f;  // the Wire patch's exposed Hue Rotate default (the slant)
@@ -81,12 +80,12 @@ static fx::GaussianBlur  s_blur;
 void module_init() {
   state::init("filter.legacy.subtle_blur", {1, 0, 0},
     state::Schema()
-      .floatField("blur",     0.05f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("blur",     0.09f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Blur amount.")
       .floatField("amount",   0.09f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Chromatic offset magnitude — RGB fringe width.")
+                  nullptr, "Chromatic offset distance — RGB fringe width along the slant.")
       .floatField("movement", 0.2f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Sawtooth slide amplitude (ramp + hard reset) along the slant.")
+                  nullptr, "Sawtooth RATE — how fast the offset sweeps + hard-resets (0 = static).")
       .floatField("hue",      0.22f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Angle of the slanted split axis (0..1 = full turn).")
       .floatField("quality",  0.3f,  0.05f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -136,9 +135,9 @@ void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   if (dt < 0.0) dt = 0.0;
-  // Fixed-frequency sawtooth phase (the slide amplitude is `movement`, applied
-  // in render). frac() of this gives the ramp + hard periodic reset.
-  s->saw_phase += dt * (double)SAW_RATE;
+  // `movement` is the RATE: it advances the sawtooth phase. frac() in render
+  // gives the ramp + hard periodic reset; movement=0 freezes it (static offset).
+  s->saw_phase += dt * (double)s->movement * (double)MOVE_RATE_SCALE;
   if (s->saw_phase > 1.0e6) s->saw_phase = std::fmod(s->saw_phase, 1.0);
 }
 
@@ -166,7 +165,7 @@ void on_resolume_param(void* self, long long, double) { (void)self; }
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  return (s->blur <= 1e-3f && s->amount <= 1e-3f && s->movement <= 1e-3f) ? 1 : 0;
+  return (s->blur <= 1e-3f && s->amount <= 1e-3f) ? 1 : 0;
 }
 
 static void ensureBlurTex(State* s, int w, int h) {
@@ -202,11 +201,14 @@ void render(void* self, int vp_w, int vp_h) {
     src = s->blur_tex;
   }
 
-  // Fixed slant axis from `hue`; chroma half-spread = base (amount) + a
-  // sawtooth ramp (amplitude `movement`) that hard-resets each cycle.
+  // Fixed slant axis from `hue`. The chroma offset distance is `amount`; the
+  // sawtooth sweeps it 0→full then hard-resets at rate `movement`. At
+  // movement=0 the offset is static at full (no motion).
   float slant = s->hue * TAU;
-  float saw   = (float)(s->saw_phase - std::floor(s->saw_phase)); // frac → 0..1, hard reset
-  float spread = s->amount * OFFSET_SCALE + saw * MOVE_AMP * s->movement;
+  float saw   = (s->movement > 1e-4f)
+                  ? (float)(s->saw_phase - std::floor(s->saw_phase)) // frac → 0..1, hard reset
+                  : 1.0f;
+  float spread = s->amount * OFFSET_SCALE * saw;
 
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
   Uniforms u = {};
