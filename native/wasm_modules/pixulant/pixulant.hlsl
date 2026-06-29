@@ -61,13 +61,15 @@ float2 rss_scatter(float2 uv, float salt, float strength) {
 
 // Sample the input, optionally reproducing Resolume's bottom-edge bug: sampling
 // past the bottom (here uv.y > 1, since HLSL row 0 is the TOP — the screen
-// bottom is large uv.y) returned TRANSPARENT (RGBA 0). A transparent sample
-// doesn't cancel in the abs-difference, so it survives as a bright pixel that
-// the Exposure then boosts → the bright grainy band along the bottom edge.
+// bottom is large uv.y) returned a constant edge value that survives the
+// abs-difference (doesn't cancel), so the Exposure boosts it → the bright grainy
+// band along the bottom edge. The original returned TRANSPARENT there, which
+// punched holes downstream — so we use OPAQUE WHITE instead: same bright flair,
+// no transparency.
 float4 sample_in(float2 uv) {
   float4 c = inputTex.SampleLevel(linearSampler, uv, 0.0);
   if (edge_artifacts > 0.0 && uv.y > 1.0)
-    c = lerp(c, float4(0.0, 0.0, 0.0, 0.0), edge_artifacts);
+    c = lerp(c, float4(1.0, 1.0, 1.0, 1.0), edge_artifacts);
   return c;
 }
 

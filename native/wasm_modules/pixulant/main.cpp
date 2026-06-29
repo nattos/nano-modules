@@ -40,10 +40,12 @@
  *    Defaults 0.15 (a gentle rolloff); 0 disables it for the faithful behaviour.
  *  - OPT-IN knob `edge_artifacts` (default 0/off): the ISF clamps the sample y
  *    to work around a Resolume bug where sampling past the bottom edge returned
- *    TRANSPARENT pixels — which, surviving the abs-difference and boosted by the
- *    Exposure, made the bright bottom-edge grain the team actually liked. Turn
- *    it up to drop the clamp and reproduce that "bug" as flair. (HLSL row 0 is
- *    the top, so the screen bottom is uv.y > 1 — that's where it fires.)
+ *    a constant edge value — which, surviving the abs-difference and boosted by
+ *    the Exposure, made the bright bottom-edge grain the team actually liked.
+ *    Turn it up to drop the clamp and reproduce that "bug" as flair. The
+ *    original returned TRANSPARENT (which punched holes downstream — a recurring
+ *    headache), so we use OPAQUE WHITE: same flair, no transparency. (HLSL row 0
+ *    is the top, so the screen bottom is uv.y > 1 — that's where it fires.)
  *
  * Animated (Motion drift + Scatter-2 smoothing) → SeekableApproximate, and NO
  * is_identity: the state that would make it a passthrough is tick-evolved, and a
@@ -134,8 +136,8 @@ void module_init() {
       .floatField("scatter_1_modulate", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Multiplier on the primary Scatter only.")
       .floatField("edge_artifacts", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Reproduce the original's bottom-edge sampling bug — "
-                  "bright grainy pixels along the bottom (0 = clean/fixed).")
+                  nullptr, "Reproduce the original's bottom-edge sampling bug as "
+                  "bright white grain along the bottom (0 = clean/fixed).")
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));

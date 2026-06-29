@@ -120,24 +120,28 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
     expect(litRolled).toBeGreaterThan(litFull);
   });
 
-  it('edge_artifacts lights up the bottom edge (the reproduced Resolume bug)', async () => {
-    // Off = clamped/clean; on = sampling past the bottom returns transparent,
-    // which survives the abs-difference + exposure as bright bottom-edge grain.
+  it('edge_artifacts changes only the bottom edge (the reproduced Resolume bug)', async () => {
+    // Off = clamped/clean; on = sampling past the bottom injects opaque WHITE,
+    // which survives the abs-difference + exposure as the bottom-edge grain.
+    // The artifact can only fire where the scatter reaches past uv.y>1, i.e. the
+    // bottom region — so the top rows must stay unchanged and the bottom differ.
     const clean = await runChain('px_ec', { dive: 1.0, scatter: 0.6, motion: 0.0, edge_artifacts: 0.0 }, 'pixulant_edge_off');
     const buggy = await runChain('px_eo', { dive: 1.0, scatter: 0.6, motion: 0.0, edge_artifacts: 1.0 }, 'pixulant_edge_on');
     expect(clean.success).toBe(true);
     expect(buggy.success).toBe(true);
-    buggy.trace('out').expectDifferentFrom(clean.trace('out'), 50);
-    // Count bright pixels in the bottom 12 rows for each.
-    const H = buggy.trace('out').height;
-    const brightBottom = (f: ReturnType<typeof buggy.trace>) => {
-      let n = 0;
-      f.forEachPixel((c, _x, y) => {
-        if (y >= H - 12 && c.r + c.g + c.b > 360) n++;
-      });
-      return n;
-    };
-    expect(brightBottom(buggy.trace('out'))).toBeGreaterThan(brightBottom(clean.trace('out')));
+    const a = buggy.trace('out'), b = clean.trace('out');
+    const H = a.height;
+    let topDiff = 0, bottomDiff = 0;
+    a.forEachPixel((c, x, y) => {
+      const o = b.pixelAt(x, y);
+      const d = Math.abs(c.r - o.r) + Math.abs(c.g - o.g) + Math.abs(c.b - o.b);
+      if (d > 30) {
+        if (y < H * 0.3) topDiff++;
+        else if (y >= H - 12) bottomDiff++;
+      }
+    });
+    expect(bottomDiff).toBeGreaterThan(20);   // artifact present along the bottom
+    expect(topDiff).toBeLessThan(bottomDiff); // localized there (top unreached)
   });
 
   it('motion animates the scatter field over time', async () => {
