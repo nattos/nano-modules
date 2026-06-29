@@ -24,6 +24,8 @@ NANO_DECLARE_INSTANCE_EFFECT(subtle_blur)
 namespace subtle_blur { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(sphr_blur)
 namespace sphr_blur { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(burn_out)
+namespace burn_out { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -139,6 +141,21 @@ void nano_module_main() {
         "blur,sphere,equirect,dome,sphr,soft,legacy",
         NANO_INSTANCE_LIFECYCLE(sphr_blur),
         &sphr_blur::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "color.legacy.burn_out",
+        "Burn Out",
+        "Triggered exposure-blowout grade for emotional fade-outs. Tap the "
+        "trigger (or hold the gate) and the image blows out — saturation and "
+        "contrast lift, exposure pushes highlights toward white, then it decays "
+        "back over the release. Can also drop alpha for a compositing fade-out. "
+        "v2 of the Resolume Wire \"Burn Out\" patch.",
+        "color",
+        "burn,blowout,exposure,fade,envelope,grade,trigger,legacy",
+        NANO_INSTANCE_LIFECYCLE(burn_out),
+        &burn_out::is_identity,
     });
 }
 

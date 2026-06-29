@@ -120,6 +120,13 @@ compile_shaders_compute_var_spv sphr_blur expand
 _emit_spv_header_var sphr_blur expand
 echo "  sphr_blur shaders compiled (SPV: expand)"
 
+# burn_out — AR-envelope-driven exposure-blowout grade (Wire "Burn Out").
+#   burn (compute) — per-pixel saturation/contrast lift + exposure + white fade.
+#   Envelope lives in main.cpp (tick).
+compile_shaders_compute_var_spv burn_out burn
+_emit_spv_header_var burn_out burn
+echo "  burn_out shaders compiled (SPV: burn)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -146,6 +153,7 @@ wasm_build \
   ../lut_collection/main.cpp \
   ../zoom_scroller/main.cpp \
   ../subtle_blur/main.cpp \
-  ../sphr_blur/main.cpp
+  ../sphr_blur/main.cpp \
+  ../burn_out/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
