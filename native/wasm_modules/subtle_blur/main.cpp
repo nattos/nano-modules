@@ -42,7 +42,7 @@ namespace subtle_blur {
 
 static constexpr float TAU             = 6.28318530717958647692f;
 static constexpr float OFFSET_SCALE    = 0.02f; // amount=1 → 2% of short axis (the slide DISTANCE)
-static constexpr float MOVE_RATE_SCALE = 1.0f;  // movement=1 → 1 sawtooth reset/sec (the RATE)
+static constexpr float MOVE_RATE_SCALE = 2.5f;  // movement=1 → 2.5 sawtooth resets/sec (the RATE)
 static constexpr float BLUR_SCALE      = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
 // Fixed spatial slant of the split (a gentle diagonal). `hue` rotates the
 // COLOUR basis, not this direction.
@@ -66,7 +66,7 @@ struct State {
 
   // Schema-mirrored params.
   float blur     = 0.09f;
-  float amount   = 0.09f;
+  float amount   = 0.2f;
   float movement = 0.2f;
   float hue      = 0.22f;  // the Wire patch's exposed Hue Rotate default (the slant)
   float quality  = 0.3f;   // lower = sparser taps = a "harder" (less smooth) blur
@@ -84,7 +84,7 @@ void module_init() {
     state::Schema()
       .floatField("blur",     0.09f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Blur amount.")
-      .floatField("amount",   0.09f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("amount",   0.2f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Chromatic offset distance — RGB fringe width along the slant.")
       .floatField("movement", 0.2f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Sawtooth RATE — how fast the offset sweeps + hard-resets (0 = static).")
