@@ -265,7 +265,12 @@ export class GPUHost {
 
   createShaderModule(source: string): number {
     try {
-      const module = this.device.createShaderModule({ code: source });
+      // Reuse the compiled module for identical WGSL across effect INSTANCES — a
+      // GPUShaderModule is immutable and `release()` never destroys it, so sharing is
+      // safe and skips a re-parse. (Re-instantiating a heavy effect the playhead
+      // re-enters otherwise re-compiled the same shaders from scratch.)
+      let module = this.shaderModuleCache.get(source);
+      if (!module) { module = this.device.createShaderModule({ code: source }); this.shaderModuleCache.set(source, module); }
       const handle = this.alloc('shader', module);
       // Stash the source alongside the handle. The constants resolver
       // uses it to translate `{NAME: value}` constants maps into the
@@ -279,6 +284,7 @@ export class GPUHost {
     }
   }
   private shaderSources: Map<number, string> = new Map();
+  private shaderModuleCache: Map<string, GPUShaderModule> = new Map();
 
   createBuffer(size: number, usage: number): number {
     let gpuUsage = GPUBufferUsage.COPY_DST;
@@ -365,6 +371,18 @@ export class GPUHost {
       constants?: Record<string, number>): number {
     const shaderModule = this.get(shaderHandle) as GPUShaderModule;
     if (!shaderModule) return -1;
+    // Reuse the COMPILED pipeline for the same (shader, entry, bindings, constants) across
+    // effect instances. createComputePipeline is the heavy GPU compile (hundreds of ms per
+    // shader on a fresh instance), and a pipeline is immutable + never destroyed by release(),
+    // so sharing it is safe — this is what makes re-entering a heavy effect (shape_fold) cheap.
+    const src = this.shaderSources.get(shaderHandle);
+    const cacheKey = src !== undefined
+      ? `${entryPoint} ${JSON.stringify(bindings)} ${constants ? JSON.stringify(constants) : ''} ${src}`
+      : '';
+    if (cacheKey) {
+      const hit = this.computePipelineCache.get(cacheKey);
+      if (hit) return this.alloc('compute_pipeline', hit);
+    }
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(bindings, GPUShaderStage.COMPUTE);
     // Specialization constants come from C++ as a name → value map
     // (matching the HLSL `[[vk::constant_id(N)]] const T NAME = ...;`
@@ -382,8 +400,10 @@ export class GPUHost {
       compute: computeDesc,
     });
     const entry: PipelineEntry = { pipeline, bindGroupLayout, bindings };
+    if (cacheKey) this.computePipelineCache.set(cacheKey, entry);
     return this.alloc('compute_pipeline', entry);
   }
+  private computePipelineCache: Map<string, PipelineEntry> = new Map();
 
   /**
    * Compute pipeline with WebGPU-derived layout ('layout: "auto"'). Used by the

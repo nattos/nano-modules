@@ -109,6 +109,15 @@ const LEVELS = ['log', 'warn', 'error'];
  * shader). We log a warning here but don't throw, so the fusion
  * dispatcher can fall back to the standalone path if needed.
  */
+/** FNV-1a (32-bit) over a byte buffer → base36 string. Cheap, used only as a
+ *  content key for the SPV→WGSL translation cache (paired with byte length, so a
+ *  collision would also need an identical length — astronomically unlikely). */
+function fnv1a32(bytes: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i++) { h ^= bytes[i]; h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+
 function stripFragmentMain(text: string): string {
   // Drop standalone `var<private> global:` and `var _fuse_out:` lines.
   text = text.replace(/^\s*var<private>\s+global\s*:[^\n]*\n/gm, '');
@@ -255,6 +264,11 @@ export class WasmHost {
   // never instantiated (no live host) — the entire palette. The per-instance
   // `capabilities` field below only exists while a host is live.
   static capabilitiesById = new Map<string, string[]>();
+
+  // Global SPV→WGSL translation cache, keyed by shader content (see fetchShaderWgsl).
+  // Shared across ALL host instances so re-instantiating an effect never re-pays the
+  // synchronous naga round-trip per shader — the fix for the heavy-effect re-entry hitch.
+  static spvWgslCache = new Map<string, string>();
 
   // Pending patches for the current on_state_patched call
   pendingPatches: PatchOp[] = [];
@@ -1419,6 +1433,16 @@ export class WasmHost {
       console.error(`[wasm-host] shader '${name}' not registered (state::registerShaderSPV missing?)`);
       return null;
     }
+    // The SPV→WGSL naga translation is a PURE function of (bytes, storageFormat,
+    // storageAccess, mode), so cache it GLOBALLY by content. Each effect instance is
+    // a fresh WasmHost whose per-host cache starts empty, and the translation is a
+    // SYNCHRONOUS XHR to the dev-server naga bridge — so re-instantiating a heavy
+    // effect (e.g. a shape_fold clip the playhead re-enters) re-blocked the worker on
+    // several round-trips (~½s+). Same SPV ⇒ same WGSL, so a content hash is a safe key
+    // shared across all host instances; the first translation pays, every later one is free.
+    const key = `${entry.bytes.length}:${fnv1a32(entry.bytes)}:${entry.storageFormat}:${entry.storageAccess}:${mode}`;
+    const cached = WasmHost.spvWgslCache.get(key);
+    if (cached !== undefined) return cached;
     try {
       const xhr = new XMLHttpRequest();
       const url = `/__naga/wgsl?storageFormat=${encodeURIComponent(entry.storageFormat)}&storageAccess=${encodeURIComponent(entry.storageAccess)}`;
@@ -1434,6 +1458,7 @@ export class WasmHost {
       }
       let wgsl = xhr.responseText;
       if (mode === 'pixel') wgsl = stripFragmentMain(wgsl);
+      WasmHost.spvWgslCache.set(key, wgsl);
       return wgsl;
     } catch (err) {
       console.error(`[wasm-host] naga bridge fetch failed for shader '${name}':`, err);
