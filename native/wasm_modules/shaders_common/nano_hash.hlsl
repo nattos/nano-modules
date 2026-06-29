@@ -20,6 +20,32 @@ float nano_hash31(float3 p) {
   return frac(p.x * p.y * p.z);
 }
 
+// Integer-domain hash. The float hashes above multiply by ~127 then take
+// frac(), so they collapse for large coordinates: once the product exceeds a
+// few hundred thousand the float32 ULP grows past ~0.1 and frac() only yields a
+// handful of distinct levels → structured banding instead of noise. Use this
+// for fine integer grids (e.g. per-pixel white noise) where the inputs are
+// large integers — bitwise integer mixing is exact regardless of magnitude.
+uint nano_uhash(uint x) {
+  x ^= x >> 17;
+  x *= 0xed5ad4bbu;
+  x ^= x >> 11;
+  x *= 0xac4c1b51u;
+  x ^= x >> 15;
+  x *= 0x31848babu;
+  x ^= x >> 14;
+  return x;
+}
+
+// 3D integer hash → [0, 1). Sequentially mixes the three components so any one
+// changing decorrelates the result.
+float nano_hash31i(int3 p) {
+  uint h = nano_uhash(uint(p.x));
+  h = nano_uhash(h + uint(p.y));
+  h = nano_uhash(h + uint(p.z));
+  return float(h) * (1.0 / 4294967296.0);
+}
+
 // Smoothed value noise on a 2D grid. Cubic Hermite (smoothstep) interpolation
 // between four corner hashes.
 float nano_value_noise2(float2 p) {

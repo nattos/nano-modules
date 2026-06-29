@@ -70,6 +70,10 @@ describe('Arrangement renders a core generator (testonly dropped)', () => {
       const [, trackId, clipId] = path.split('/');
       store.addClipDeviceType(trackId, clipId, gen);
       store.select(path);
+      // Park the playhead INSIDE the clip [0,8): creating/selecting it leaves the
+      // playhead at the clip's exclusive end (beat 8), where nothing is active and
+      // the monitor draws only the backdrop (hasContent never commits).
+      store.setPosition(4);
     }, GENERATOR);
 
     // Engine boots lazily; wait for real frames of THIS clip's content.

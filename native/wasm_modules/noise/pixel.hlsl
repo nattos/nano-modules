@@ -32,8 +32,14 @@ float channel_for(float2 sq, float chan_offset) {
   float t_cont   = u_fuse.static_phase * (1.0 / 30.0);
 
   if (u_fuse.algorithm == 0) {
-    // White: spatial white noise rerolled each frame.
-    return nano_hash31(float3(floor(p * 256.0), frame_id) + u_fuse.seed * 1024.0);
+    // White: fine per-pixel white noise rerolled each frame. The fine grid
+    // (p * 256) produces large coords that collapse the float hash to a few
+    // banded levels, so hash in the integer domain instead. Seed offsets the
+    // three axes by coprime strides to avoid diagonal correlation.
+    int seed_i = int(u_fuse.seed * 4096.0);
+    int3 cell = int3(int2(floor(p * 256.0)) + int2(seed_i, seed_i * 7),
+                     int(frame_id) + seed_i * 13);
+    return nano_hash31i(cell);
   }
   if (u_fuse.algorithm == 1) {
     return nano_value_noise3(float3(p + u_fuse.seed * 16.0, t_cont));
