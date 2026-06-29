@@ -46,8 +46,8 @@ static constexpr float MOVE_RATE_SCALE = 2.5f;  // movement=1 → 2.5 sawtooth r
 static constexpr float BLUR_SCALE      = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
 // Fixed spatial slant of the split (a gentle diagonal). `hue` rotates the
 // COLOUR basis, not this direction.
-static constexpr float SLANT_X         = 0.70710678f;
-static constexpr float SLANT_Y         = 0.70710678f;
+static constexpr float SLANT_X         =  0.70710678f;
+static constexpr float SLANT_Y         = -0.70710678f; // tilt diagonally UP (uv y is down)
 
 struct Uniforms {
   float off_x;
