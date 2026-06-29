@@ -73,7 +73,7 @@ describe('Arrangement real clip inspector (column-group)', () => {
     // color.hsl exposes hue_shift / saturation / lightness as real params.
     expect(probed.paths).toEqual(expect.arrayContaining(['hue_shift', 'saturation', 'lightness']));
     expect(probed.hue).not.toBeNull();
-    expect(probed.hue!.label).toBe('Hue'); // catalog label, not the raw key
+    expect(probed.hue!.label).toBe('Hue Shift'); // humanized catalog label, not the raw key
 
     // READ path: a store edit flows into the slider's binding.
     await page.evaluate((d) => {
