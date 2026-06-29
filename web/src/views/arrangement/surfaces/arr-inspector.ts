@@ -434,6 +434,13 @@ export class ArrInspector extends MobxLitElement {
       background: var(--app-tint-3);
       box-shadow: inset 0 -2px 0 var(--app-hi-color2);
     }
+    /* Multi-edit: an option in use by SOME (not all) selected clips — no single
+       option is "on", but every in-use one gets a muted fill so you can see the
+       spread. Picking one aligns all (then it reads as a normal single value). */
+    .segbtn.inuse:not(.on) {
+      background: var(--app-tint-2);
+      color: var(--app-text-color1);
+    }
     /* Wrapping variant (the 16-mode blend selector): segments still connected, but
        the row flows onto multiple lines. */
     .seg.wrap { display: flex; flex-wrap: wrap; justify-content: center; }
@@ -696,6 +703,20 @@ export class ArrInspector extends MobxLitElement {
           Editing ${refs.length} clips together. Shared effects edit all at once;
           a field that differs shows “many”.
         </div>`;
+    // The concrete selected clips, for plain-field (name/scale/bypass) aggregation.
+    const clips = refs
+      .map((r) => store.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
+      .filter((c): c is NonNullable<typeof c> => !!c);
+    const agg = <T,>(vals: T[]): { mixed: boolean; value: T | undefined; inUse: T[] } => {
+      const inUse: T[] = [];
+      for (const v of vals) if (!inUse.some((u) => u === v)) inUse.push(v);
+      return { mixed: inUse.length > 1, value: vals[0], inUse };
+    };
+    const nameAgg = agg(clips.map((c) => c.name));
+    const sourceClips = clips.filter((c) => !!c.source);
+    const scaleAgg = agg(sourceClips.map((c) => c.source?.scaleMode ?? 'fit'));
+    const bypassAgg = agg(clips.map((c) => !!c.bypassed));
+
     const raggedWires = target.raggedWireCount?.() ?? 0;
     const raggedRails = target.raggedRailCount?.() ?? 0;
     const badge = (path: string, n: number, label: string, title: string) => {
@@ -707,9 +728,41 @@ export class ArrInspector extends MobxLitElement {
       >${n} ${label}${n === 1 ? '' : 's'} (not shared)</button>`;
     };
     return html`
-      <div class="section-header">${refs.length} clips</div>
+      <div class="section-header">
+        ${refs.length} clips ·
+        <editable-label
+          .value=${nameAgg.mixed ? '' : nameAgg.value ?? ''}
+          .displayValue=${nameAgg.mixed ? '' : nameAgg.value ?? ''}
+          placeholder=${nameAgg.mixed ? 'many — rename all' : 'Untitled clip'}
+          @commit=${(e: CustomEvent) => store.renameClips(refs, e.detail)}
+        ></editable-label>
+      </div>
       <div class="body">
         ${note}
+        ${sourceClips.length
+          ? html`<div class="row">
+              <label>Scale</label>
+              <span class="val seg">
+                ${(['fit', 'cover', 'stretch', 'none'] as const).map(
+                  (m) => html`<button
+                    class="segbtn ${!scaleAgg.mixed && scaleAgg.value === m ? 'on' : ''} ${scaleAgg.inUse.includes(m) ? 'inuse' : ''}"
+                    @click=${() => store.setClipsScaleMode(refs, m)}
+                  >${m}</button>`,
+                )}
+              </span>
+            </div>`
+          : ''}
+        <div class="row">
+          <label>State</label>
+          <span class="val seg">
+            ${([['Active', false], ['Bypassed', true]] as const).map(
+              ([label, val]) => html`<button
+                class="segbtn ${!bypassAgg.mixed && bypassAgg.value === val ? 'on' : ''} ${bypassAgg.inUse.includes(val) ? 'inuse' : ''}"
+                @click=${() => store.setClipsBypassed(refs, val)}
+              >${label}</button>`,
+            )}
+          </span>
+        </div>
         <div class="group-title chain-hdr"><span>Chain (common)</span></div>
         ${raggedWires > 0 || raggedRails > 0
           ? html`<div class="other-badges">

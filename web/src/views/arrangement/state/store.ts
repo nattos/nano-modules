@@ -3324,6 +3324,25 @@ export class ArrangementStore {
     }, coalesceKey);
   }
 
+  // ── Multi-clip plain-field fan-out (rename / scale / bypass) ──────────────
+
+  /** Rename every selected clip to the same name (one undo). No-op if blank. */
+  renameClips(refs: { trackId: string; clipId: string }[], name: string) {
+    const next = name.trim();
+    if (!next) return;
+    this.mutateClips('rename clips', refs, (c) => { c.name = next; }, 'rename:clips');
+  }
+
+  /** Set the scale mode on every selected SOURCE clip (one undo). */
+  setClipsScaleMode(refs: { trackId: string; clipId: string }[], mode: ScaleMode) {
+    this.mutateClips('set scale mode', refs, (c) => { if (c.source) c.source.scaleMode = mode; }, 'scale:clips');
+  }
+
+  /** Set the bypass state on every selected clip (aligns all, one undo). */
+  setClipsBypassed(refs: { trackId: string; clipId: string }[], bypassed: boolean) {
+    this.mutateClips('set clip bypass', refs, (c) => { c.bypassed = bypassed; });
+  }
+
   /** Remove rail export/read taps by id across all clips (one undo). Ids are
    *  globally unique, so this scans every clip (mirrors deleteWire). */
   removeClipsRailTaps(taps: { kind: 'w' | 'r'; id: string }[]) {
