@@ -63,9 +63,10 @@
 
 namespace zoom_scroller {
 
-static constexpr int   MAX_WAYPOINTS = 8;   // matches the original's 8-wide array
-static constexpr float TWO_PI        = 6.28318530717958647692f;
-static constexpr float PAN_GAIN      = 1.0f;// cover-square units per position unit
+static constexpr int    MAX_WAYPOINTS = 8;   // matches the original's 8-wide array
+static constexpr float  TWO_PI        = 6.28318530717958647692f;
+static constexpr float  PAN_GAIN      = 1.0f;// cover-square units per position unit
+static constexpr double MAX_TICK_DT   = 0.1; // clamp starved frames (see tick())
 
 struct Uniforms {
   float pan_x, pan_y;
@@ -372,6 +373,17 @@ void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized) return;
   if (dt < 0.0) dt = 0.0;
+  // Clamp a starved frame's delta. When the tab is backgrounded / the display
+  // sleeps / requestAnimationFrame throttles to sub-1fps, the runtime hands us a
+  // multi-second dt; the metronome catch-up below would then fast-forward an
+  // ENTIRE pan in a single frame — the quantized stepping collapses to a
+  // teleport ("motion incorrect") and the motion gizmo, which draws the
+  // held-vs-smooth lag (zero at a pan's start and end), never gets a frame to
+  // show, so it just blinks once per sequence. Capping dt makes the effect run
+  // in slow-motion under starvation but stay visually correct — the right call
+  // for a live/"playable" effect. (Mirrors engine-worker's own reset of
+  // `lastTime` "so the next frame's dt isn't a giant" on resume.)
+  if (dt > MAX_TICK_DT) dt = MAX_TICK_DT;
 
   if (s->pending_retrigger) { s->pending_retrigger = false; start_new_sequence(s); }
   if (!s->seq_started)      { start_new_sequence(s); }
