@@ -47,6 +47,7 @@ import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, remembered
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMedia, resolveMedia } from '../workspace/media-store';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID } from '../model/composition';
+import { buildMultiEditModel, multiSketchId } from './multi-edit';
 
 /** Per-nesting-level budget (px) for the group gutter: one vertical group line
  *  per depth lives here, and every opacity fader is offset by the full gutter so
@@ -1228,12 +1229,32 @@ export class ArrangementStore {
     runInAction(() => { this.chainFocusPath = null; this.chainFieldKey = null; });
   }
 
-  /** True when a deletable chain item (effect card or wire) is focused. */
+  /** True when a deletable chain item (effect card, wire, or the multi-edit
+   *  "other effects" placeholder) is focused. */
   get hasChainFocus(): boolean {
-    return !!this.chainFocusPath && (this.chainFocusPath.startsWith('effect/') || this.chainFocusPath.startsWith('wire/'));
+    return !!this.chainFocusPath && (
+      this.chainFocusPath.startsWith('effect/') ||
+      this.chainFocusPath.startsWith('wire/') ||
+      this.chainFocusPath.startsWith('other/'));
   }
 
-  /** Delete the focused effect card or wire. */
+  /** The selected CLIPS as `{trackId, clipId}`, primary (last-clicked) first so
+   *  it's the multi-edit reconciliation template. De-duped; non-clip selections
+   *  are dropped. Single source of truth for the multi-edit panel + fan-out. */
+  selectedClipRefs(): { trackId: string; clipId: string }[] {
+    const refs: { trackId: string; clipId: string }[] = [];
+    const add = (p: string) => {
+      const [kind, trackId, clipId] = p.split('/');
+      if (kind === 'clip' && trackId && clipId && !refs.some((r) => r.clipId === clipId)) {
+        refs.push({ trackId, clipId });
+      }
+    };
+    if (this.primaryPath) add(this.primaryPath);
+    for (const p of this.selection) add(p);
+    return refs;
+  }
+
+  /** Delete the focused effect card, wire, or multi-edit ragged-effects gap. */
   deleteChainFocus() {
     const path = this.chainFocusPath;
     if (path?.startsWith('wire/')) {
@@ -1241,6 +1262,12 @@ export class ArrangementStore {
       const rest = path.slice('wire/'.length).split('/');
       const wireId = rest.pop()!;
       this.removeSketchWire(rest.join('/'), wireId);
+      this.clearChainFocus();
+      return;
+    }
+    if (path?.startsWith('other/')) {
+      // other / multi/<set> / <gapIndex> — delete the ragged effects in that gap.
+      this.deleteMultiRaggedGap(path);
       this.clearChainFocus();
       return;
     }
@@ -1260,8 +1287,73 @@ export class ArrangementStore {
       const trackId = sketchId.split('/')[1];
       const dev = this.trackById(trackId)?.sketch.devices[chainIdx];
       if (dev) this.removeTrackDevice(trackId, dev.id);
+    } else if (sketchId.startsWith('multi/')) {
+      // A COMMON effect in the multi-edit panel: fan the delete out to the
+      // matched device in every selected clip (one undo).
+      const m = this.liveMultiModel(sketchId);
+      const common = m?.devices.common[chainIdx];
+      if (m && common) this.removeClipsDevice(this.targetsFromIdByClip(m, common.idByClip));
     }
     this.clearChainFocus();
+  }
+
+  /** Rebuild the multi-edit reconciliation for the CURRENT selection, but only
+   *  when it still matches the focus path's clip set (the panel that produced the
+   *  path is still live). Uses the live selection's primary-first order so gap /
+   *  common indices line up exactly with what the inspector rendered — never the
+   *  sketch id's sorted order. */
+  private liveMultiModel(sketchId: string): ReturnType<typeof buildMultiEditModel> | null {
+    const refs = this.selectedClipRefs();
+    if (refs.length < 2 || multiSketchId(refs) !== sketchId) return null;
+    const clips = refs
+      .map((r) => this.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
+      .filter((c): c is Clip => !!c);
+    if (clips.length < 2) return null;
+    return buildMultiEditModel(clips);
+  }
+
+  /** Map a reconciliation `clipId → deviceId` to removeClipsDevice targets. */
+  private targetsFromIdByClip(
+    m: ReturnType<typeof buildMultiEditModel>,
+    idByClip: Map<string, string>,
+  ): { trackId: string; clipId: string; deviceId: string }[] {
+    const trackByClip = new Map(m.clips.map((c) => [c.id, this.trackIdOfClip(c.id)]));
+    const out: { trackId: string; clipId: string; deviceId: string }[] = [];
+    for (const [clipId, deviceId] of idByClip) {
+      const trackId = trackByClip.get(clipId);
+      if (trackId) out.push({ trackId, clipId, deviceId });
+    }
+    return out;
+  }
+
+  /** Find the track owning a clip id (used to rebuild fan-out targets). */
+  private trackIdOfClip(clipId: string): string | undefined {
+    for (const t of this.composition.tracks) {
+      if (t.clips.some((c) => c.id === clipId)) return t.id;
+    }
+    return undefined;
+  }
+
+  /** Delete the ragged (non-common) effects in one gap of the multi-edit panel. */
+  private deleteMultiRaggedGap(path: string) {
+    // other / <sketchId...> / <gapIndex>
+    const rest = path.slice('other/'.length);
+    const parts = rest.split('/');
+    const gap = Number(parts.pop());
+    const sketchId = parts.join('/');
+    if (!Number.isFinite(gap)) return;
+    const m = this.liveMultiModel(sketchId);
+    if (!m) return;
+    const seg = m.devices.ragged.find((s) => s.gapIndex === gap);
+    if (!seg) return;
+    const trackByClip = new Map(m.clips.map((c) => [c.id, this.trackIdOfClip(c.id)]));
+    const targets: { trackId: string; clipId: string; deviceId: string }[] = [];
+    for (const [clipId, ids] of seg.idsByClip) {
+      const trackId = trackByClip.get(clipId);
+      if (!trackId) continue;
+      for (const deviceId of ids) targets.push({ trackId, clipId, deviceId });
+    }
+    if (targets.length) this.removeClipsDevice(targets);
   }
 
   // ── Right tab ─────────────────────────────────────────────────────────

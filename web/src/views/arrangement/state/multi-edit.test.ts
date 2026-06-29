@@ -6,6 +6,8 @@ import {
   reconcileRails,
   clipInsertIndex,
   buildMultiEditModel,
+  multiSketchId,
+  parseMultiSketchId,
 } from './multi-edit';
 import type { Clip, Device } from '../model/composition';
 import type { Wire } from '../../../sketch-types';
@@ -193,6 +195,22 @@ describe('clipInsertIndex', () => {
     const a = clip('a', [dev('a1', 'sat')]);
     const dr = reconcileDevices([a]);
     expect(clipInsertIndex(a, dr, 1)).toBe(1);
+  });
+});
+
+describe('multiSketchId / parseMultiSketchId', () => {
+  it('is order-independent (sorted) and round-trips the clip set', () => {
+    const a = [{ trackId: 't2', clipId: 'c2' }, { trackId: 't1', clipId: 'c1' }];
+    const b = [{ trackId: 't1', clipId: 'c1' }, { trackId: 't2', clipId: 'c2' }];
+    expect(multiSketchId(a)).toBe(multiSketchId(b));
+    expect(multiSketchId(a)).toBe('multi/t1/c1,t2/c2');
+    expect(parseMultiSketchId(multiSketchId(a))).toEqual([
+      { trackId: 't1', clipId: 'c1' },
+      { trackId: 't2', clipId: 'c2' },
+    ]);
+  });
+  it('parse rejects non-multi ids', () => {
+    expect(parseMultiSketchId('clip/t1/c1')).toEqual([]);
   });
 });
 

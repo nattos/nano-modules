@@ -19,6 +19,32 @@ import type { Wire } from '../../../sketch-types';
 /** Selected clips in selection order; `clips[0]` is the reconciliation template. */
 export type ClipList = readonly Clip[];
 
+// ── Multi-selection sketch id (one place owns the format) ────────────────────
+
+/**
+ * The stable column/sketch id for a multi-clip selection: order-INDEPENDENT (the
+ * clip set is sorted) so the same selection re-uses the same adapter + mounted
+ * column-group. NOTE: this deliberately discards the primary-first order, so it's
+ * an identity key only — never reconstruct the reconciliation template order from
+ * it (use the live selection's primary-first order instead).
+ */
+export function multiSketchId(refs: readonly { trackId: string; clipId: string }[]): string {
+  return 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+}
+
+/** Inverse of {@link multiSketchId} (sorted order — see the caveat there). */
+export function parseMultiSketchId(id: string): { trackId: string; clipId: string }[] {
+  if (!id.startsWith('multi/')) return [];
+  return id
+    .slice('multi/'.length)
+    .split(',')
+    .filter(Boolean)
+    .map((chunk) => {
+      const [trackId, clipId] = chunk.split('/');
+      return { trackId, clipId };
+    });
+}
+
 // ── Devices ────────────────────────────────────────────────────────────────
 
 /** One effect present (by type, positionally) in EVERY selected clip. */

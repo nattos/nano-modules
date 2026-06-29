@@ -178,6 +178,14 @@ export interface ColumnGroupCallbacks {
   onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number): void;
   getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null;
   onGutterWidthChanged?(): void;
+  /**
+   * Optional placeholder row drawn in the gap BEFORE chain card `gapIndex`
+   * (`0..chain.length`, `chain.length` ⇒ after the last card). Multi-edit uses it
+   * to surface a collapsed "N other effects" row for ragged effects that aren't
+   * common across the selected clips. Returns null/undefined to draw nothing —
+   * inert for single-clip/track panels that don't implement it.
+   */
+  renderInterstitial?(sketchId: string, gapIndex: number): TemplateResult | null;
 }
 
 @customElement('column-group')
@@ -831,10 +839,17 @@ export class ColumnGroup extends MobxLitElement {
 
   private renderChain(sketch: Sketch, column: SketchColumn) {
     const items: (TemplateResult | typeof nothing)[] = [];
+    // Optional gap placeholder (multi-edit "other effects" row); inert otherwise.
+    const inter = (gap: number) => {
+      const r = this.callbacks?.renderInterstitial?.(this.sketchId, gap);
+      if (r) items.push(r);
+    };
     // Implicit texture input marker on top — not stored in chain.
     items.push(this.renderInputMarker(column));
+    inter(0);
     for (let i = 0; i < column.chain.length; i++) {
       items.push(this.renderEffectCard(i, column.chain[i]));
+      inter(i + 1);
     }
     // Implicit texture output marker on the bottom.
     items.push(this.renderOutputMarker(column));

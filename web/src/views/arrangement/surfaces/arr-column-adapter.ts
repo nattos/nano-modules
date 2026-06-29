@@ -23,7 +23,7 @@ import type { Selectable, EffectClipboard, AvailableEffect } from '../../../stat
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Clip, Device } from '../model/composition';
 import { store } from '../state/store';
-import { buildMultiEditModel, clipInsertIndex, aggregateField, type MultiEditModel } from '../state/multi-edit';
+import { buildMultiEditModel, clipInsertIndex, aggregateField, multiSketchId, type MultiEditModel } from '../state/multi-edit';
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
@@ -102,6 +102,9 @@ export interface DeviceTarget {
   isFieldMixed?(deviceId: string, field: string): boolean;
   /** Multi-edit only: distinct values used across the clips (enum highlight). */
   fieldInUseValues?(deviceId: string, field: string): unknown[];
+  /** Multi-edit only: ragged (non-common) device runs by gap, for the collapsed
+   *  "other effects" placeholder rows. `gapIndex` ∈ `[0, commonCount]`. */
+  raggedSegments?(): { gapIndex: number; count: number }[];
   /** Optional capability overrides merged over the defaults (e.g. multi disables
    *  reorder/wiring/tracing in early phases). */
   capsOverride?: Partial<ColumnCapabilities>;
@@ -147,7 +150,7 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
   const trackByClip = new Map(refs.map((r) => [r.clipId, r.trackId]));
   // Stable id keyed by the (order-independent) clip set → the adapter + the
   // mounted column-group instance are reused when the same set is re-selected.
-  const id = 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+  const id = multiSketchId(refs);
 
   const clips = (): Clip[] =>
     refs
@@ -222,9 +225,12 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
       const common = m.devices.common.find((c) => c.repId === repId);
       return common ? aggregateField(m.clips, common, field, resolveDefault).inUse : [];
     },
-    // Phase 1: no reorder, no wiring overlay, no output-trace cards (no single live
-    // engine instance for a multi-selection). Lifted in later phases.
-    capsOverride: { reorder: false, wiring: false, inlineWireArcs: false, tracing: false },
+    raggedSegments: () =>
+      model().devices.ragged.map((s) => ({ gapIndex: s.gapIndex, count: s.count })),
+    // Reorder of common devices fans out (each clip moves its matched device).
+    // Wiring overlay + output-trace cards stay off — no single live engine
+    // instance for a multi-selection (lifted/addressed in later phases).
+    capsOverride: { wiring: false, inlineWireArcs: false, tracing: false },
     // engineKeyFor omitted on purpose (no aggregated live telemetry).
   };
 }

@@ -17,6 +17,7 @@ import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
 import { ArrColumnAdapter, clipTarget, trackTarget, multiClipTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
+import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
@@ -109,6 +110,32 @@ export class ArrInspector extends MobxLitElement {
         el.binding = binding; // rebind (single ⇄ multi panel, or live binding swap)
       }
       return el;
+    },
+    // Multi-edit only: a collapsed "N other effects" row in a gap that holds
+    // ragged (non-common) effects. Selectable into chainFocusPath; Backspace
+    // then fans the delete out across the selected clips (deleteMultiRaggedGap).
+    renderInterstitial: (sketchId: string, gapIndex: number): TemplateResult | null => {
+      if (!sketchId.startsWith('multi/')) return null;
+      const target = this.multiTargets.get(sketchId);
+      const seg = target?.raggedSegments?.().find((s) => s.gapIndex === gapIndex);
+      if (!seg || seg.count === 0) return null;
+      const path = `other/${sketchId}/${gapIndex}`;
+      const sel = store.chainFocusPath === path;
+      // Rendered inside column-group's shadow root → inline styles (the --app-*
+      // custom props pierce the boundary; class rules in arr-inspector wouldn't).
+      const style = [
+        'margin:3px 10px', 'padding:5px 10px', 'border-radius:4px',
+        'border:1px dashed ' + (sel ? 'var(--app-hi-color2)' : 'var(--app-tint-4)'),
+        'background:' + (sel ? 'var(--app-tint-3)' : 'transparent'),
+        'color:' + (sel ? 'var(--app-hi-color2)' : 'var(--app-text-color2)'),
+        'font-size:var(--app-fs-xs)', 'text-align:center', 'cursor:pointer',
+      ].join(';');
+      return html`<div
+        class="other-effects"
+        style=${style}
+        title="Effects present on only some of the selected clips. Select + ⌫ to remove them."
+        @click=${(e: Event) => { e.stopPropagation(); store.setChainFocus(path); }}
+      >⋯ ${seg.count} other effect${seg.count === 1 ? '' : 's'} (not shared)</div>`;
     },
   };
 
@@ -518,8 +545,8 @@ export class ArrInspector extends MobxLitElement {
   private inspectorKey(): string | null {
     if (store.activeRightTab !== 'inspector') return null;
     if (store.selection.size > 1) {
-      const refs = this.selectedClipRefs();
-      if (refs.length > 1) return 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+      const refs = store.selectedClipRefs();
+      if (refs.length > 1) return multiSketchId(refs);
     }
     return store.primaryPath;
   }
@@ -613,19 +640,10 @@ export class ArrInspector extends MobxLitElement {
     return html`<div class="empty">Selected: ${path}</div>`;
   }
 
-  /** The selected CLIPS as {trackId, clipId}, primary (last-clicked) first so it's
-   *  the reconciliation template. De-duped; non-clip selections are dropped. */
+  /** The selected CLIPS, primary-first (the store owns the truth — see
+   *  store.selectedClipRefs). */
   private selectedClipRefs(): { trackId: string; clipId: string }[] {
-    const refs: { trackId: string; clipId: string }[] = [];
-    const add = (p: string) => {
-      const [kind, trackId, clipId] = p.split('/');
-      if (kind === 'clip' && trackId && clipId && !refs.some((r) => r.clipId === clipId)) {
-        refs.push({ trackId, clipId });
-      }
-    };
-    if (store.primaryPath) add(store.primaryPath);
-    for (const p of store.selection) add(p);
-    return refs;
+    return store.selectedClipRefs();
   }
 
   /** One multiClipTarget per selection set (stable across re-renders so its
@@ -633,7 +651,7 @@ export class ArrInspector extends MobxLitElement {
    *  (which encodes the sorted clip set). */
   private multiTargets = new Map<string, DeviceTarget>();
   private multiTargetFor(refs: { trackId: string; clipId: string }[]): DeviceTarget {
-    const id = 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+    const id = multiSketchId(refs);
     let t = this.multiTargets.get(id);
     if (!t) { t = multiClipTarget(refs); this.multiTargets.set(id, t); }
     return t;
