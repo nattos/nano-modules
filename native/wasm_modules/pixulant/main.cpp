@@ -34,6 +34,10 @@
  *    are kept faithful, with all eight knobs exposed.
  *  - No actual frame feedback (the patch has no Video Mixer): the "dive" is the
  *    multi-pass scatter+difference animated by Motion, not a recursive buffer.
+ *  - NEW knob `dive_rolloff` (not in the patch): below that scatter level the
+ *    dive gently rolls off to zero, so one scatter automation brings the picture
+ *    back — the coupling the team used to fake with a separate dive envelope.
+ *    Defaults 0 (off) → faithful behaviour.
  *
  * Animated (Motion drift + Scatter-2 smoothing) → SeekableApproximate, and NO
  * is_identity: the state that would make it a passthrough is tick-evolved, and a
@@ -74,6 +78,7 @@ struct State {
   // Schema-mirrored params.
   float dive               = 1.0f;
   float dive_cap           = 1.0f;
+  float dive_rolloff       = 0.0f;
   float dive_contrast_bias = 1.0f;
   float scatter            = 0.0f;
   float scatter_2          = 0.0f;
@@ -114,6 +119,9 @@ void module_init() {
                   nullptr, "Exposure/contrast ceiling at full dive — brightness of the grain.")
       .floatField("dive_cap", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Upper clamp on Dive (limits how far the dive can go).")
+      .floatField("dive_rolloff", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Below this scatter level, Dive (and its halo) rolls "
+                  "off toward zero so the picture returns (0 = no rolloff).")
       .floatField("scatter_modulate", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Overall multiplier on the combined scatter amount.")
       .floatField("scatter_1_modulate", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -190,6 +198,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "motion"))             s->motion             = state::patchFloat(i);
     else if (state::pathIs(p, l, "dive_contrast_bias")) s->dive_contrast_bias = state::patchFloat(i);
     else if (state::pathIs(p, l, "dive_cap"))           s->dive_cap           = state::patchFloat(i);
+    else if (state::pathIs(p, l, "dive_rolloff"))       s->dive_rolloff       = state::patchFloat(i);
     else if (state::pathIs(p, l, "scatter_modulate"))   s->scatter_modulate   = state::patchFloat(i);
     else if (state::pathIs(p, l, "scatter_1_modulate")) s->scatter_1_modulate = state::patchFloat(i);
   }
@@ -207,14 +216,23 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // Dive: clamp(Dive, 0, Dive Cap) (nodes 242/240).
-  float dive_c = clamp01(s->dive);
-  if (dive_c > s->dive_cap) dive_c = clamp01(s->dive_cap);
-
-  // Base scatter: (Scatter·Scatter1Mod + smooth(Scatter2)) · ScatterModulate,
-  // floored to keep the resting edge halo alive (nodes 228/230/232/234/203/202).
+  // Base scatter: (Scatter·Scatter1Mod + smooth(Scatter2)) · ScatterModulate
+  // (nodes 228/230/232/234). This is also the rolloff's input below.
   float sc_raw  = clamp01(s->scatter * s->scatter_1_modulate + s->smooth_s2);
   float S       = clamp01(sc_raw * s->scatter_modulate);
+
+  // Dive: clamp(Dive, 0, Dive Cap) (nodes 242/240), then the dive ROLLOFF — a v2
+  // addition (not in the patch): below `dive_rolloff` scatter, the dive (and its
+  // halo) gently smoothsteps to zero, so a single scatter automation brings the
+  // picture back without a second envelope. dive_rolloff = the scatter level at
+  // which Dive reaches full (0 = no rolloff = faithful). Uses the pre-floor S so
+  // the dive can actually reach zero.
+  float dive_c = clamp01(s->dive);
+  if (dive_c > s->dive_cap) dive_c = clamp01(s->dive_cap);
+  if (s->dive_rolloff > 1e-4f) dive_c *= ease(S / s->dive_rolloff);
+
+  // Scatter floored to keep the resting edge halo alive while dived (203/202).
+  // The floor scales with dive_c, so as the dive rolls off the halo fades too.
   float floor_s = SCATTER_FLOOR * dive_c;
   float Sc      = S > floor_s ? S : floor_s;
 

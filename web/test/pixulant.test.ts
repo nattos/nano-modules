@@ -26,7 +26,7 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
     expect(frame.metadata?.id).toBe('warp.legacy.pixulant');
     const names = frame.params.map(p => p.name);
     for (const n of ['dive', 'scatter', 'scatter_2', 'motion',
-                     'dive_contrast_bias', 'dive_cap',
+                     'dive_contrast_bias', 'dive_cap', 'dive_rolloff',
                      'scatter_modulate', 'scatter_1_modulate']) {
       expect(names).toContain(n);
     }
@@ -102,6 +102,22 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
     expect(dim.success).toBe(true);
     expect(bright.success).toBe(true);
     bright.trace('out').expectDifferentFrom(dim.trace('out'), 100);
+  });
+
+  it('dive_rolloff fades the dive toward the image at low scatter', async () => {
+    // At low scatter, rolloff on ⇒ dive rolls off ⇒ output approaches the
+    // (lightly-scattered) image, differing from rolloff off (full dive grain).
+    const rolled = await runChain('px_ro', { dive: 1.0, scatter: 0.05, motion: 0.0, dive_rolloff: 0.5 }, 'pixulant_rolloff_on');
+    const full   = await runChain('px_rf', { dive: 1.0, scatter: 0.05, motion: 0.0, dive_rolloff: 0.0 }, 'pixulant_rolloff_off');
+    expect(rolled.success).toBe(true);
+    expect(full.success).toBe(true);
+    // The rolled-off frame keeps more of the (bright) image; the fully-dived one
+    // is differenced toward black — so they differ, and rolled is brighter.
+    rolled.trace('out').expectDifferentFrom(full.trace('out'), 100);
+    let litRolled = 0, litFull = 0;
+    rolled.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) litRolled++; });
+    full.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) litFull++; });
+    expect(litRolled).toBeGreaterThan(litFull);
   });
 
   it('motion animates the scatter field over time', async () => {
