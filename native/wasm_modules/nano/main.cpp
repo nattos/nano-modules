@@ -77,6 +77,7 @@ void nano_module_main() {
         "filter",
         "height,gradient,poisson,reconstruction,relief,normals,multigrid,math",
         NANO_INSTANCE_LIFECYCLE(height_from_gradient),
+        nullptr, nullptr, nullptr, &height_from_gradient::eval_visibility,
     });
 
     nano::registerEffect({
@@ -87,6 +88,7 @@ void nano_module_main() {
         "source",
         "generator,sdf,shape,evolving,autopilot,procedural,math",
         NANO_INSTANCE_LIFECYCLE(shape_fold),
+        nullptr, nullptr, nullptr, &shape_fold::eval_visibility,
     });
 
     nano::registerEffect({
@@ -97,6 +99,7 @@ void nano_module_main() {
         "source",
         "generator,phase-portrait,limit-cycle,streamlines,flow,vector-field,autopilot,procedural,math",
         NANO_INSTANCE_LIFECYCLE(phase_fold),
+        nullptr, nullptr, nullptr, &phase_fold::eval_visibility,
     });
 
     nano::registerEffect({
@@ -107,6 +110,7 @@ void nano_module_main() {
         "source",
         "particles,swarm,flow,vector-field,advection,gpu,instanced,generator,renderer",
         NANO_INSTANCE_LIFECYCLE(flow_swarm),
+        nullptr, nullptr, nullptr, &flow_swarm::eval_visibility,
     });
 
     nano::registerEffect({
@@ -117,6 +121,7 @@ void nano_module_main() {
         "mod",
         "lfo,oscillator,modulation,automation,morph,spectral,generator",
         NANO_INSTANCE_LIFECYCLE(spectral_lfo),
+        nullptr, nullptr, nullptr, &spectral_lfo::eval_visibility,
     });
 
     nano::registerEffect({

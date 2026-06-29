@@ -270,4 +270,8 @@ private:
     void  render(void* self, int vp_w, int vp_h);                             \
     void  on_state_patched(void* self, int n, const char* pb, const int* off,\
                            const int* len, const int* ops);                   \
+    /* Optional static visibility evaluator (EffectDesc_v2.eval_visibility):  \
+       declared for every effect, defined only by those that opt in. */       \
+    void  eval_visibility(int n, const char* pb, const int* off,             \
+                          const int* len, const int* ops);                    \
   }

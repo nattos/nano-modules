@@ -182,17 +182,18 @@ struct State {
   float wwalk = 0;                              // rate random-walk accumulator
 };
 
-static void apply_visibility(const State* s) {
-  state::setFieldHidden("stream_width", !s->show_streamlines);
-  state::setFieldHidden("stream_spread", !s->show_streamlines);
-  state::setFieldHidden("flow_speed",   !s->show_streamlines);
-  state::setFieldHidden("ap_speed",     !s->autopilot);
+static void apply_visibility(bool show_streamlines, bool autopilot,
+                             bool show_limit_cycle, int cycle_mode) {
+  state::setFieldHidden("stream_width", !show_streamlines);
+  state::setFieldHidden("stream_spread", !show_streamlines);
+  state::setFieldHidden("flow_speed",   !show_streamlines);
+  state::setFieldHidden("ap_speed",     !autopilot);
 
   // Limit-cycle params depend on the selected algorithm.
-  bool cyc   = s->show_limit_cycle;
-  bool relax = cyc && s->cycle_mode == 0;                       // GPU spring solver
-  bool ring  = cyc && s->cycle_mode == 1;                       // Tracer (drawn ring)
-  bool trace = cyc && (s->cycle_mode == 1 || s->cycle_mode == 2); // any flow tracer
+  bool cyc   = show_limit_cycle;
+  bool relax = cyc && cycle_mode == 0;                       // GPU spring solver
+  bool ring  = cyc && cycle_mode == 1;                       // Tracer (drawn ring)
+  bool trace = cyc && (cycle_mode == 1 || cycle_mode == 2);  // any flow tracer
   state::setFieldHidden("cycle_mode",   !cyc);
   state::setFieldHidden("cycle_width",  !cyc);
   state::setFieldHidden("momentum",     !(relax || ring));
@@ -212,6 +213,21 @@ static void apply_visibility(const State* s) {
   state::setFieldHidden("trace_steps",  !trace);
   state::setFieldHidden("trace_eps",    !trace);
   state::setFieldHidden("trace_pull",   !ring);   // only the Tracer ring uses pull
+}
+
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  bool show_streamlines = true, autopilot = false, show_limit_cycle = true;
+  int cycle_mode = 0;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i]; int l = len[i];
+    if      (state::pathIs(p, l, "show_streamlines")) show_streamlines = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "autopilot"))        autopilot = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "show_limit_cycle")) show_limit_cycle = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "cycle_mode"))       cycle_mode = (int)state::patchFloat(i);
+  }
+  apply_visibility(show_streamlines, autopilot, show_limit_cycle, cycle_mode);
 }
 
 static void on_state_ready(void* self);
@@ -480,7 +496,7 @@ void init(void* self) {
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  apply_visibility(s);
+  apply_visibility(s->show_streamlines, s->autopilot, s->show_limit_cycle, s->cycle_mode);
 }
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -748,7 +764,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "jitter"))         s->jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter_speed"))   s->jitter_speed = state::patchFloat(i);
   }
-  if (vis_changed) apply_visibility(s);
+  if (vis_changed) apply_visibility(s->show_streamlines, s->autopilot, s->show_limit_cycle, s->cycle_mode);
 }
 
 // ---- Tracer mode (CPU) — a different limit-cycle algorithm ----------------

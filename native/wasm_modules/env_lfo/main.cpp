@@ -138,6 +138,16 @@ static void apply_mode_visibility(int mode) {
   state::setFieldHidden("period", !period);
 }
 
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int mode = ModeFreq;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "mode")) mode = (int)state::patchFloat(i);
+  }
+  apply_mode_visibility(mode);
+}
+
 static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type.

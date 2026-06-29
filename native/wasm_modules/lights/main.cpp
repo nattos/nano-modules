@@ -89,6 +89,7 @@ void nano_module_main() {
         "source",
         "resonator,bounce,coupled,trigger,physics,bar",
         NANO_INSTANCE_LIFECYCLE(bounce_resonator),
+        nullptr, nullptr, nullptr, &bounce_resonator::eval_visibility,
     });
 
     nano::registerEffect({
@@ -139,6 +140,7 @@ void nano_module_main() {
         "source",
         "sparkle,tingle,particles,cut-in,trigger,bar",
         NANO_INSTANCE_LIFECYCLE(tingle_top),
+        nullptr, nullptr, nullptr, &tingle_top::eval_visibility,
     });
 
     nano::registerEffect({

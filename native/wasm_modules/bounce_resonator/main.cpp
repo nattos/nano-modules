@@ -158,6 +158,16 @@ static void apply_mode_visibility(int mode) {
   state::setFieldHidden("tex_in_boost",   mode != MODE_TEX_IN);
 }
 
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int mode = MODE_ONE_BAR;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "impulse_mode")) mode = (int)state::patchFloat(i);
+  }
+  apply_mode_visibility(mode);
+}
+
 // On any trigger: flag it (tex_in mode samples on the GPU), and in the bar
 // modes queue the per-bar amount per impulse_mode.
 static void fire_impulse(State& s) {

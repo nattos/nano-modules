@@ -156,6 +156,21 @@ static void apply_visibility(int source, int present_mode, int bias_mode, int ed
   // debug_show_gradient.
 }
 
+// Static (self-less) visibility evaluator — pure over state. Decodes the mode
+// fields from a candidate state and reuses apply_visibility (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int source = 0, present_mode = 0, bias_mode = 0, edge_mode = 0;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i]; int l = len[i];
+    if      (state::pathIs(p, l, "source"))       source = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "present_mode")) present_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "bias_mode"))    bias_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "edge_mode"))    edge_mode = (int)state::patchFloat(i);
+  }
+  apply_visibility(source, present_mode, bias_mode, edge_mode);
+}
+
 static void on_state_ready(void* self);
 
 // Type-shared, compiled once in module_init().

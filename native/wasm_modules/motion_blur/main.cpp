@@ -182,16 +182,26 @@ static void apply_quality(State& st, int quality) {
 /// Show R/G/B chroma fields only when chroma_delay is on. Called from
 /// on_state_ready (once after init + state replay) and from
 /// on_state_patched whenever chroma_delay changes.
-static void apply_chroma_visibility(State& st) {
-  bool hide = !st.chroma_delay;
+static void apply_chroma_visibility(bool chroma_delay) {
+  bool hide = !chroma_delay;
   state::setFieldHidden("chroma_r", hide);
   state::setFieldHidden("chroma_g", hide);
   state::setFieldHidden("chroma_b", hide);
 }
 
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  bool chroma_delay = true;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "chroma_delay")) chroma_delay = state::patchFloat(i) != 0.0f;
+  }
+  apply_chroma_visibility(chroma_delay);
+}
+
 static void on_state_ready(void* self) {
   auto* st = static_cast<State*>(self);
-  if (st) apply_chroma_visibility(*st);
+  if (st) apply_chroma_visibility(st->chroma_delay);
 }
 
 // Type-level setup: schema + shared shader modules, pyramid-reduce PSO,
@@ -324,7 +334,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     rebuild_psos(*st);
   }
   if (chroma_toggled) {
-    apply_chroma_visibility(*st);
+    apply_chroma_visibility(st->chroma_delay);
   }
 }
 

@@ -114,6 +114,18 @@ static void apply_visibility(bool autopilot, bool ap_snap) {
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
 }
 
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  bool autopilot = false, ap_snap = false;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i]; int l = len[i];
+    if      (state::pathIs(p, l, "autopilot")) autopilot = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "ap_snap"))   ap_snap   = state::patchFloat(i) != 0.0f;
+  }
+  apply_visibility(autopilot, ap_snap);
+}
+
 static void on_state_ready(void* self);
 
 // Type-shared, compiled once in module_init().

@@ -260,10 +260,10 @@ static void apply_count_change(State& s) {
 }
 
 // Hide params the inactive mode / disabled interactions don't use (§0).
-static void apply_mode_visibility(const State& s) {
-  state::setFieldHidden("momentum", s.mode != MODE_VELOCITY);
-  state::setFieldHidden("weight",   s.mode != MODE_FORCE);
-  bool ix = !s.interactions;
+static void apply_mode_visibility(int mode, bool interactions) {
+  state::setFieldHidden("momentum", mode != MODE_VELOCITY);
+  state::setFieldHidden("weight",   mode != MODE_FORCE);
+  bool ix = !interactions;
   state::setFieldHidden("interaction_radius", ix);
   state::setFieldHidden("density_threshold",  ix);
   state::setFieldHidden("density_death",      ix);
@@ -275,9 +275,21 @@ static void apply_mode_visibility(const State& s) {
   state::setFieldHidden("debug_density",      ix);
 }
 
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int mode = MODE_VELOCITY; bool interactions = false;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i]; int l = len[i];
+    if      (state::pathIs(p, l, "mode"))         mode = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "interactions")) interactions = state::patchFloat(i) != 0.0f;
+  }
+  apply_mode_visibility(mode, interactions);
+}
+
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
-  if (s) apply_mode_visibility(*s);
+  if (s) apply_mode_visibility(s->mode, s->interactions);
 }
 
 void module_init() {
@@ -494,7 +506,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const char* path = pb + off[i];
     int plen = len[i];
     if      (state::pathIs(path, plen, "count"))        { s->count = (int)state::patchFloat(i); apply_count_change(*s); }
-    else if (state::pathIs(path, plen, "mode"))         { int v = (int)state::patchFloat(i); if (v != s->mode) { s->mode = v; apply_mode_visibility(*s); } }
+    else if (state::pathIs(path, plen, "mode"))         { int v = (int)state::patchFloat(i); if (v != s->mode) { s->mode = v; apply_mode_visibility(s->mode, s->interactions); } }
     else if (state::pathIs(path, plen, "speed"))        s->speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "momentum"))     s->momentum = state::patchFloat(i);
     else if (state::pathIs(path, plen, "weight"))       s->weight = state::patchFloat(i);
@@ -520,7 +532,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->undertow_tint_r = v.x; s->undertow_tint_g = v.y; s->undertow_tint_b = v.z;
     }
     else if (state::pathIs(path, plen, "undertow_alpha"))    s->undertow_alpha = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "interactions"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->interactions) { s->interactions = v; apply_mode_visibility(*s); } }
+    else if (state::pathIs(path, plen, "interactions"))      { bool v = state::patchFloat(i) != 0.0f; if (v != s->interactions) { s->interactions = v; apply_mode_visibility(s->mode, s->interactions); } }
     else if (state::pathIs(path, plen, "interaction_radius")) s->interaction_radius = state::patchFloat(i);
     else if (state::pathIs(path, plen, "density_threshold")) s->density_threshold = state::patchFloat(i);
     else if (state::pathIs(path, plen, "density_death"))     s->density_death = state::patchFloat(i);

@@ -131,6 +131,17 @@ static inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (
 static void apply_mode_visibility(int mode) {
   state::setFieldHidden("one_bar_target", mode != BAR_ONE);
 }
+
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int mode = BAR_ALL;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "bar_target_mode")) mode = (int)state::patchFloat(i);
+  }
+  apply_mode_visibility(mode);
+}
+
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
   if (s) apply_mode_visibility(s->bar_target_mode);

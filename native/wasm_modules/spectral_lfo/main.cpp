@@ -91,14 +91,27 @@ struct State {
   CurveCache sat[3];
 };
 
-static void apply_visibility(const State* s) {
-  state::setFieldHidden("ap_speed", !s->autopilot);
-  state::setFieldHidden("sat_spread", !s->satellites);
-  state::setFieldHidden("sat_rotation", !s->satellites);
+static void apply_visibility(bool autopilot, bool satellites) {
+  state::setFieldHidden("ap_speed", !autopilot);
+  state::setFieldHidden("sat_spread", !satellites);
+  state::setFieldHidden("sat_rotation", !satellites);
 }
+
+// Static (self-less) visibility evaluator — pure over state (see crop).
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  bool autopilot = false, satellites = false;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i]; int l = len[i];
+    if      (state::pathIs(p, l, "autopilot"))  autopilot = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "satellites")) satellites = state::patchFloat(i) != 0.0f;
+  }
+  apply_visibility(autopilot, satellites);
+}
+
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
-  if (s) apply_visibility(s);
+  if (s) apply_visibility(s->autopilot, s->satellites);
 }
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────
@@ -251,7 +264,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   // Clamp metric to the valid range (guards bad serialized state).
   if (s->metric < 0) s->metric = 0;
   if (s->metric >= SPECTRAL_NUM_METRICS) s->metric = SPECTRAL_NUM_METRICS - 1;
-  if (visibility_changed) apply_visibility(s);
+  if (visibility_changed) apply_visibility(s->autopilot, s->satellites);
 }
 
 void render(void* self, int vp_w, int vp_h) {

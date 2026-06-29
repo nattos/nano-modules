@@ -71,7 +71,6 @@ namespace sharpen { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(edges)
 
 NANO_DECLARE_INSTANCE_EFFECT(crop)
-namespace crop { void eval_visibility(int, const char*, const int*, const int*, const int*); }
 
 NANO_DECLARE_INSTANCE_EFFECT(transform)
 namespace transform { int32_t is_identity(void* self); }
@@ -437,6 +436,7 @@ void nano_module_main() {
         "motion",
         "blur,motion,velocity,render-outputs",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
+        nullptr, nullptr, nullptr, &motion_blur::eval_visibility,
     });
 
     nano::registerEffect({
@@ -512,6 +512,7 @@ void nano_module_main() {
         nullptr,            // is_identity
         nullptr,            // on_active
         env_lfo::seek,      // backward-seekable: recompute phase from absolute time
+        &env_lfo::eval_visibility,  // static visibility evaluator (rate vs period)
     });
 
     nano::registerEffect({

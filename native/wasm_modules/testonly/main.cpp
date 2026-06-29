@@ -170,6 +170,7 @@ void nano_module_main() {
         "mod",
         "oscillator,modulation,automation",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
+        nullptr, nullptr, nullptr, &env_lfo::eval_visibility,
     });
 
     nano::registerEffect({
@@ -362,6 +363,7 @@ void nano_module_main() {
         "motion",
         "blur,motion,velocity,render-outputs",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
+        nullptr, nullptr, nullptr, &motion_blur::eval_visibility,
     });
 
     // Registered LAST: trap_test's module_init deliberately traps. A trapped
