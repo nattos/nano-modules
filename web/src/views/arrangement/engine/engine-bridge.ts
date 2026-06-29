@@ -287,6 +287,13 @@ export class EngineBridge {
     return store.transportMode !== 'precise' || this.videoInputsReady();
   }
 
+  /** True when there are active video clips at the playhead still waiting on a
+   *  decoded frame — i.e. the disk is busy (regardless of transport mode). Drives
+   *  the transport bar's "D" light. */
+  decodePending(): boolean {
+    return this.lastVideoDescs.length > 0 && !this.videoInputsReady();
+  }
+
   private clearPreciseHold() {
     this.pendingPrecise = null;
     if (this.preciseTimer) { clearTimeout(this.preciseTimer); this.preciseTimer = null; }

@@ -415,6 +415,14 @@ export class ArrangementApp extends MobxLitElement {
     // beat is still decoding (time must never run ahead of the picture). The
     // pump keeps decoding the held beat, so the stall self-resolves.
     if (!(store.playing && !engineBridge.inputsReady())) this.transport.advance(store, dt);
+    // Disk-activity light: while playing, are active video clips still decoding?
+    // Precise → we're STALLED (the gate above held the playhead); Live → we're
+    // STREAMING (barrelling through frames that aren't decoded yet). Else idle.
+    store.setDiskState(
+      store.playing && engineBridge.decodePending()
+        ? (store.transportMode === 'precise' ? 'stalled' : 'streaming')
+        : 'idle',
+    );
     // Drive the engine's effect clock from the transport: effects animate in
     // lock-step with the playhead (and hold still when it's paused), instead of
     // free-running on wall time. Deduped inside the bridge.

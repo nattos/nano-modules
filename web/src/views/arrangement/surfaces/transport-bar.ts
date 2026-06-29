@@ -71,6 +71,37 @@ export class TransportBar extends MobxLitElement {
     button[disabled]:hover {
       background: var(--app-bg-color1);
     }
+    /* Disk-activity light — a monospaced "D" that lights up while video is
+       decoding. Stalled (Precise hold) = amber; streaming (Live) = green. */
+    .disk {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      margin-left: var(--app-sp-2);
+      border-radius: 2px;
+      border: 1px solid var(--app-tint-4);
+      font-weight: 700;
+      font-size: var(--app-fs-md);
+      color: var(--app-tint-5, var(--app-text-color2));
+      background: var(--app-bg-color1);
+      transition: color 80ms, border-color 80ms, background 80ms;
+    }
+    .disk.stalled {
+      color: var(--app-warn);
+      border-color: var(--app-warn);
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+      animation: disk-blink 0.7s steps(1, end) infinite;
+    }
+    .disk.streaming {
+      color: var(--app-ok);
+      border-color: var(--app-ok);
+      background: color-mix(in srgb, var(--app-ok) 14%, transparent);
+    }
+    @keyframes disk-blink {
+      50% { opacity: 0.35; }
+    }
     button.active {
       border-color: var(--app-hi-color2);
       color: var(--app-hi-color2);
@@ -250,6 +281,14 @@ export class TransportBar extends MobxLitElement {
         >
           <ui-icon icon="la-redo"></ui-icon>
         </button>
+        <span
+          class="disk ${store.diskState}"
+          title=${store.diskState === 'stalled'
+            ? 'Disk: waiting on video decode (Precise — playhead held until the frame is ready)'
+            : store.diskState === 'streaming'
+            ? 'Disk: streaming video (Live — playing through frames as they decode)'
+            : 'Disk: idle'}
+        >D</span>
       </div>
     `;
   }

@@ -369,6 +369,15 @@ export class ArrangementStore {
   transportMode: 'precise' | 'live' = 'precise';
 
   /**
+   * Disk-activity indicator (the "D" light in the transport bar). Set per-frame
+   * by the transport tick from the engine's video-input readiness:
+   *  - `idle`      — no decode wait (paused, or every active clip is ready).
+   *  - `stalled`   — Precise mode is HOLDING the playhead on an undecoded frame.
+   *  - `streaming` — Live mode is barrelling through frames that aren't decoded yet.
+   */
+  diskState: 'idle' | 'stalled' | 'streaming' = 'idle';
+
+  /**
    * 2D edit caret (text-cursor model). The caret has a HEAD (current time =
    * `playFromBeat`, on `caretHeadTrackId`) and an ANCHOR (where the gesture /
    * selection started). The selected region is the rectangle anchor→head in BOTH
@@ -2364,6 +2373,11 @@ export class ArrangementStore {
   }
   setTransportMode(mode: 'precise' | 'live') {
     this.transportMode = mode;
+  }
+  /** Per-frame disk-activity light. Cheap no-op when unchanged so the transport
+   *  bar only re-renders on a genuine state transition (not every rAF). */
+  setDiskState(state: 'idle' | 'stalled' | 'streaming') {
+    if (this.diskState !== state) this.diskState = state;
   }
   setBpm(bpm: number) {
     const v = Math.max(20, Math.min(300, bpm));
