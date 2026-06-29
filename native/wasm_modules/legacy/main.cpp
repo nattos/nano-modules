@@ -22,6 +22,8 @@ namespace lut_collection { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(zoom_scroller)
 NANO_DECLARE_INSTANCE_EFFECT(subtle_blur)
 namespace subtle_blur { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(sphr_blur)
+namespace sphr_blur { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -122,6 +124,21 @@ void nano_module_main() {
         "blur,soft,bloom,chroma,fringe,aberration,legacy",
         NANO_INSTANCE_LIFECYCLE(subtle_blur),
         &subtle_blur::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.legacy.sphr_blur",
+        "SPHR Blur",
+        "Sphere-aware blur. Treats the frame as an equirectangular map and "
+        "blurs horizontally with a radius that grows toward the top and bottom "
+        "edges, then adds an isotropic Gaussian softening on top — a "
+        "seam-correct blur for dome content that's also a distinctive "
+        "edge-softener off-sphere. v2 of the Resolume Wire \"SPHR Blur\" patch.",
+        "filter",
+        "blur,sphere,equirect,dome,sphr,soft,legacy",
+        NANO_INSTANCE_LIFECYCLE(sphr_blur),
+        &sphr_blur::is_identity,
     });
 }
 

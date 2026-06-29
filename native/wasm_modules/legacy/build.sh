@@ -112,6 +112,14 @@ compile_shaders_compute_var_spv subtle_blur chroma
 _emit_spv_header_var subtle_blur chroma
 echo "  subtle_blur shaders compiled (SPV: chroma)"
 
+# sphr_blur — sphere-aware (latitude-dependent) horizontal blur + Gaussian
+#   (Wire "SPHR Blur"). Useful off-sphere too.
+#   expand (compute) — SPHR Expand ISF: lat-dependent horizontal weighted blur.
+#   Gaussian stage uses the shared fx::GaussianBlur (blur shader below).
+compile_shaders_compute_var_spv sphr_blur expand
+_emit_spv_header_var sphr_blur expand
+echo "  sphr_blur shaders compiled (SPV: expand)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -137,6 +145,7 @@ wasm_build \
   ../d_wave/main.cpp \
   ../lut_collection/main.cpp \
   ../zoom_scroller/main.cpp \
-  ../subtle_blur/main.cpp
+  ../subtle_blur/main.cpp \
+  ../sphr_blur/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
