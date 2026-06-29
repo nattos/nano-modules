@@ -449,6 +449,19 @@ export class ArrangementStore {
    */
   enginePlugins: Record<string, PluginInfo> = {};
 
+  /**
+   * Last-known set of HIDDEN field names per effect type. An effect's conditional
+   * field visibility (e.g. warp.crop hiding inset_* in Span mode) is published
+   * only once its instance executes + fires on_state_ready — which lags selection
+   * and never happens for an off-playhead (multi-)selected clip, so the live
+   * `enginePlugins` schema momentarily has NO `hidden` flags and fields flash in.
+   * This remembers the last NON-EMPTY hidden set we saw (updated reactively here,
+   * NOT during a render) so the inspector can overlay it immediately. Observable
+   * → any panel reading it re-renders when a republish refreshes it (fixes the
+   * "multi-select visibility only updates after a reselect" staleness).
+   */
+  hiddenFieldMemory: Record<string, string[]> = {};
+
   constructor() {
     makeAutoObservable<
       ArrangementStore,
@@ -912,7 +925,21 @@ export class ArrangementStore {
   setEnginePlugins(plugins: PluginInfo[]) {
     if (!plugins.length) return;
     runInAction(() => {
-      for (const p of plugins) mobxSet(this.enginePlugins as object, p.id, p);
+      for (const p of plugins) {
+        mobxSet(this.enginePlugins as object, p.id, p);
+        // Remember this type's hidden set whenever the schema actually carries
+        // `hidden` flags (an executed effect republished). A schema WITHOUT them
+        // (warmed default / idle instance) doesn't clear the memory — that's the
+        // whole point: it bridges the gap until the effect runs again.
+        const schema = (p.schema ?? {}) as Record<string, { hidden?: boolean }>;
+        const hidden = Object.keys(schema).filter((k) => schema[k]?.hidden);
+        if (hidden.length > 0) {
+          const prev = this.hiddenFieldMemory[p.id];
+          if (!prev || prev.length !== hidden.length || hidden.some((k, i) => prev[i] !== k)) {
+            mobxSet(this.hiddenFieldMemory as object, p.id, hidden);
+          }
+        }
+      }
     });
   }
 

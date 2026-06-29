@@ -30,39 +30,20 @@ import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effec
 import { clipInstanceKey } from '../engine/clip-sketch';
 
 /**
- * Last-known hidden-field set per effect TYPE — mirrors the inspector's
- * `inspectorScrollMemory` LRU (arr-inspector.ts), but for conditional field
- * visibility. An effect's field hiding (e.g. warp.crop hiding inset_* in Span
- * mode) is published only once its instance EXECUTES and fires on_state_ready —
- * which lags selection by a frame or two, and never happens at all for a
- * multi-selected clip that isn't under the playhead. The published per-type
- * schema then has NO `hidden` flags, so the fields flash in ("pop"). Remembering
- * the last set we DID see and overlaying it until the live schema reasserts its
- * own keeps the inspector stable. Capped LRU so it can't grow unbounded.
- */
-const HIDDEN_MEMORY_N = 64;
-const pluginHiddenMemory = new Map<string, string[]>();
-function rememberHidden(moduleType: string, fields: string[]) {
-  pluginHiddenMemory.delete(moduleType);
-  pluginHiddenMemory.set(moduleType, fields);
-  while (pluginHiddenMemory.size > HIDDEN_MEMORY_N) {
-    const oldest = pluginHiddenMemory.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    pluginHiddenMemory.delete(oldest);
-  }
-}
-/**
- * Return `plugin` with the hidden-field overlay applied: when the live schema
- * already carries `hidden` flags, trust it (and refresh the memory); otherwise
- * re-apply the last-known hidden set so a not-yet-executed effect doesn't flash
- * its full field list. Cheap — only clones the schema on the overlay path.
+ * Return `plugin` with the conditional-visibility overlay applied. When the live
+ * schema already carries `hidden` flags (the effect's instance executed + fired
+ * on_state_ready), trust it as-is. Otherwise — a not-yet-executed or off-playhead
+ * instance whose schema momentarily lost its flags — overlay the last-known
+ * hidden set the store remembered (`store.hiddenFieldMemory`, refreshed reactively
+ * in setEnginePlugins). Reading it here ties the render to it, so the inspector
+ * re-renders when a republish refreshes the memory (no stale-until-reselect).
+ * Cheap — only clones the schema on the overlay path.
  */
 function applyHiddenMemory(moduleType: string, plugin: PluginInfo): PluginInfo {
   const schema = (plugin.schema ?? {}) as Record<string, any>;
-  const liveHidden = Object.keys(schema).filter((k) => schema[k]?.hidden);
-  if (liveHidden.length > 0) { rememberHidden(moduleType, liveHidden); return plugin; }
-  const cached = pluginHiddenMemory.get(moduleType);
-  if (!cached || cached.length === 0) return plugin;
+  const cached = store.hiddenFieldMemory[moduleType]; // tracked read (reactive)
+  const liveHidden = Object.keys(schema).some((k) => schema[k]?.hidden);
+  if (liveHidden || !cached || cached.length === 0) return plugin;
   const overlaid: Record<string, any> = {};
   for (const [k, d] of Object.entries(schema)) overlaid[k] = cached.includes(k) ? { ...d, hidden: true } : d;
   return { ...plugin, schema: overlaid } as PluginInfo;
