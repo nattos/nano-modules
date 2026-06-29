@@ -37,7 +37,7 @@
  *  - NEW knob `dive_rolloff` (not in the patch): below that scatter level the
  *    dive gently rolls off to zero, so one scatter automation brings the picture
  *    back — the coupling the team used to fake with a separate dive envelope.
- *    Defaults 0 (off) → faithful behaviour.
+ *    Defaults 0.15 (a gentle rolloff); 0 disables it for the faithful behaviour.
  *
  * Animated (Motion drift + Scatter-2 smoothing) → SeekableApproximate, and NO
  * is_identity: the state that would make it a passthrough is tick-evolved, and a
@@ -78,7 +78,7 @@ struct State {
   // Schema-mirrored params.
   float dive               = 1.0f;
   float dive_cap           = 1.0f;
-  float dive_rolloff       = 0.0f;
+  float dive_rolloff       = 0.15f;
   float dive_contrast_bias = 1.0f;
   float scatter            = 0.0f;
   float scatter_2          = 0.0f;
@@ -119,7 +119,7 @@ void module_init() {
                   nullptr, "Exposure/contrast ceiling at full dive — brightness of the grain.")
       .floatField("dive_cap", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Upper clamp on Dive (limits how far the dive can go).")
-      .floatField("dive_rolloff", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("dive_rolloff", 0.15f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Below this scatter level, Dive (and its halo) rolls "
                   "off toward zero so the picture returns (0 = no rolloff).")
       .floatField("scatter_modulate", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
