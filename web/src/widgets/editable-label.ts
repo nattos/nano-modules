@@ -168,16 +168,13 @@ export class EditableLabel extends LitElement {
   private onTextCancel = () => this.cancel();
 
   private onDisplayKeydown = (e: KeyboardEvent) => {
+    // Only an EXPLICIT Enter/F2 enters edit mode. Type-to-edit (a printable char
+    // starting an edit) is deliberately NOT supported for free-form text: on a
+    // focusable label like a track header it's far too easy to clobber the name by
+    // typing while it happens to hold focus. Numeric fields keep type-to-edit.
     if (e.key === 'Enter' || e.key === 'F2') {
       e.preventDefault();
       this.beginEdit();
-    } else if (
-      // Type-to-edit: a printable character starts editing seeded with it
-      // (replace), so focus + typing flows straight into the edit box.
-      e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
-    ) {
-      e.preventDefault();
-      this.beginEdit(e.key);
     }
   };
 

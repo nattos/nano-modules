@@ -453,6 +453,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     if (this.isEditing) return;
 
     if (/^[0-9.\-]$/.test(e.key) || e.key === 'Enter') {
+      this.editCancelled = false;
       this.isEditing = true;
       this.tempValue = e.key === 'Enter' ? this.effectiveValue.toString() : e.key;
       e.preventDefault();
@@ -476,6 +477,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
 
   private async handleDoubleClick(e?: Event) {
     e?.stopPropagation();
+    this.editCancelled = false;
     this.isEditing = true;
     this.tempValue = this.effectiveValue.toString();
 
@@ -496,13 +498,21 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     if (e.key === 'Enter') {
       this.commitEdit();
     } else if (e.key === 'Escape') {
+      // REVERT: exiting edit mode removes the <input>, which fires its @blur — and
+      // blur commits. Flag the cancel so that trailing commit is suppressed and the
+      // original value stands. (Clicking away still blurs WITHOUT this flag → commits.)
+      this.editCancelled = true;
       this.isEditing = false;
       this.focus();
     }
     e.stopPropagation();
   }
 
+  /** Set by Escape so the blur fired by tearing down the <input> doesn't commit. */
+  private editCancelled = false;
+
   private commitEdit() {
+    if (this.editCancelled) { this.editCancelled = false; this.isEditing = false; return; }
     if (this.tempValue.trim() === '') {
       this.setValue(this.defaultValue);
       this.dispatchEvent(new CustomEvent('change', { detail: this.defaultValue }));

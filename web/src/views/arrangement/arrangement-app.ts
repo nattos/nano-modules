@@ -495,8 +495,6 @@ export class ArrangementApp extends MobxLitElement {
       else if (e.key === 'ArrowRight') store.caretMoveHorizontal(1, { extend, toEvent });
       else if (e.key === 'ArrowUp') store.caretMoveVertical(-1, extend);
       else if (e.key === 'ArrowDown') store.caretMoveVertical(1, extend);
-    } else if (e.key === 'Escape') {
-      store.clearSelection();
     } else if (e.code === 'Space' || e.key === ' ') {
       // Use e.code: Option/Alt+Space on macOS yields a non-breaking space for
       // e.key, so matching ' ' alone would miss it. Alt+Space → rewind + play.

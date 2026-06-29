@@ -1,5 +1,8 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import { modBandGeometry } from './scalar-slider';
+import './scalar-slider';
+import type { ScalarSlider } from './scalar-slider';
 
 // modBandGeometry maps a modulation band {value,min,max,neutral} (field units)
 // into the slider's [min,max] as 0..100 percentages: the dim full-range .mod-band
@@ -71,5 +74,50 @@ describe('modBandGeometry', () => {
     expect(g.hi).toBe(0);
     expect(g.width).toBe(0);
     expect(g.fillWidth).toBe(0);
+  });
+});
+
+describe('<scalar-slider> text-edit commit/revert', () => {
+  async function mount(value: number): Promise<ScalarSlider> {
+    const el = document.createElement('scalar-slider') as ScalarSlider;
+    el.min = 0; el.max = 10; el.step = 1; el.value = value;
+    document.body.appendChild(el);
+    await el.updateComplete;
+    return el;
+  }
+  // Enter edit mode (Enter on the host) and type a new value into the inner <input>.
+  async function typeInto(el: ScalarSlider, text: string): Promise<HTMLInputElement> {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await el.updateComplete; await el.updateComplete;
+    const input = el.renderRoot.querySelector('input') as HTMLInputElement;
+    input.value = text;
+    input.dispatchEvent(new Event('input'));
+    return input;
+  }
+
+  it('Escape reverts — the blur fired as the input loses focus does NOT commit', async () => {
+    const el = await mount(5);
+    const input = await typeInto(el, '9');
+    // Escape exits edit mode and focuses the host; that blurs the <input>, whose @blur
+    // would otherwise commit. The cancel guard must absorb it so the value reverts.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await el.updateComplete;
+    expect(el.value).toBe(5);
+  });
+
+  it('blur (click-away) commits the typed value', async () => {
+    const el = await mount(5);
+    const input = await typeInto(el, '9');
+    input.dispatchEvent(new FocusEvent('blur')); // no Escape → accept
+    await el.updateComplete;
+    expect(el.value).toBe(9);
+  });
+
+  it('Enter commits the typed value', async () => {
+    const el = await mount(5);
+    const input = await typeInto(el, '8');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await el.updateComplete;
+    expect(el.value).toBe(8);
   });
 });
