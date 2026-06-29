@@ -38,6 +38,12 @@
  *    dive gently rolls off to zero, so one scatter automation brings the picture
  *    back — the coupling the team used to fake with a separate dive envelope.
  *    Defaults 0.15 (a gentle rolloff); 0 disables it for the faithful behaviour.
+ *  - OPT-IN knob `edge_artifacts` (default 0/off): the ISF clamps the sample y
+ *    to work around a Resolume bug where sampling past the bottom edge returned
+ *    TRANSPARENT pixels — which, surviving the abs-difference and boosted by the
+ *    Exposure, made the bright bottom-edge grain the team actually liked. Turn
+ *    it up to drop the clamp and reproduce that "bug" as flair. (HLSL row 0 is
+ *    the top, so the screen bottom is uv.y > 1 — that's where it fires.)
  *
  * Animated (Motion drift + Scatter-2 smoothing) → SeekableApproximate, and NO
  * is_identity: the state that would make it a passthrough is tick-evolved, and a
@@ -66,7 +72,7 @@ static constexpr float MOTION_RATE     = 0.8f;   // motion=1 → 0.8 salt-cycles
 struct Uniforms {
   float str_rhs, str_mid, str_lhs, diff_t;
   float salt_rhs, salt_mid, salt_lhs, exposure_gain;
-  float aspect, inv_h, _pad0, _pad1;
+  float aspect, inv_h, edge_artifacts, _pad1;
 };
 static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch");
 
@@ -85,6 +91,7 @@ struct State {
   float scatter_modulate   = 1.0f;
   float scatter_1_modulate = 1.0f;
   float motion             = 0.7f;
+  float edge_artifacts     = 0.0f;
 
   // Runtime: salt animation (Saw + on-change Random) + Scatter-2 smoothing.
   double    phase    = 0.0;
@@ -126,6 +133,9 @@ void module_init() {
                   nullptr, "Overall multiplier on the combined scatter amount.")
       .floatField("scatter_1_modulate", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Multiplier on the primary Scatter only.")
+      .floatField("edge_artifacts", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Reproduce the original's bottom-edge sampling bug — "
+                  "bright grainy pixels along the bottom (0 = clean/fixed).")
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
@@ -201,6 +211,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "dive_rolloff"))       s->dive_rolloff       = state::patchFloat(i);
     else if (state::pathIs(p, l, "scatter_modulate"))   s->scatter_modulate   = state::patchFloat(i);
     else if (state::pathIs(p, l, "scatter_1_modulate")) s->scatter_1_modulate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "edge_artifacts"))     s->edge_artifacts     = state::patchFloat(i);
   }
 }
 
@@ -258,6 +269,7 @@ void render(void* self, int vp_w, int vp_h) {
 
   u.aspect = (float)vp_w / (float)vp_h;
   u.inv_h  = 1.0f / (float)vp_h;
+  u.edge_artifacts = s->edge_artifacts;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

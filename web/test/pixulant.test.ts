@@ -27,7 +27,7 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
     const names = frame.params.map(p => p.name);
     for (const n of ['dive', 'scatter', 'scatter_2', 'motion',
                      'dive_contrast_bias', 'dive_cap', 'dive_rolloff',
-                     'scatter_modulate', 'scatter_1_modulate']) {
+                     'scatter_modulate', 'scatter_1_modulate', 'edge_artifacts']) {
       expect(names).toContain(n);
     }
   });
@@ -118,6 +118,26 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
     rolled.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) litRolled++; });
     full.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b > 24) litFull++; });
     expect(litRolled).toBeGreaterThan(litFull);
+  });
+
+  it('edge_artifacts lights up the bottom edge (the reproduced Resolume bug)', async () => {
+    // Off = clamped/clean; on = sampling past the bottom returns transparent,
+    // which survives the abs-difference + exposure as bright bottom-edge grain.
+    const clean = await runChain('px_ec', { dive: 1.0, scatter: 0.6, motion: 0.0, edge_artifacts: 0.0 }, 'pixulant_edge_off');
+    const buggy = await runChain('px_eo', { dive: 1.0, scatter: 0.6, motion: 0.0, edge_artifacts: 1.0 }, 'pixulant_edge_on');
+    expect(clean.success).toBe(true);
+    expect(buggy.success).toBe(true);
+    buggy.trace('out').expectDifferentFrom(clean.trace('out'), 50);
+    // Count bright pixels in the bottom 12 rows for each.
+    const H = buggy.trace('out').height;
+    const brightBottom = (f: ReturnType<typeof buggy.trace>) => {
+      let n = 0;
+      f.forEachPixel((c, _x, y) => {
+        if (y >= H - 12 && c.r + c.g + c.b > 360) n++;
+      });
+      return n;
+    };
+    expect(brightBottom(buggy.trace('out'))).toBeGreaterThan(brightBottom(clean.trace('out')));
   });
 
   it('motion animates the scatter field over time', async () => {

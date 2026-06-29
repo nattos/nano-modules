@@ -38,7 +38,7 @@ cbuffer Uniforms : register(b3) {
 
   float aspect;         // W/H, for scatterDir.y *= aspect (round scatter on screen)
   float inv_h;          // 1/H, Resolume's bottom-row clamp
-  float _pad0;
+  float edge_artifacts; // 0 = clamp (fixed); >0 = reproduce the bottom-edge bug
   float _pad1;
 };
 
@@ -53,8 +53,22 @@ float2 rss_scatter(float2 uv, float salt, float strength) {
   float2 dir = (float2(rss_rand(uv, 0.0 + salt), rss_rand(uv, 0.1 + salt)) - 0.5) * 2.0;
   dir.y *= aspect;
   float2 outUV = uv + dir * strength;
-  outUV.y = max(outUV.y, inv_h); // Resolume's bottom-clamp quirk (kept on purpose)
+  // The ISF's workaround for Resolume's bottom-edge bug. With edge_artifacts on
+  // we DON'T clamp — we let the sample run past the bottom so the bug can show.
+  if (edge_artifacts <= 0.0) outUV.y = max(outUV.y, inv_h);
   return outUV;
+}
+
+// Sample the input, optionally reproducing Resolume's bottom-edge bug: sampling
+// past the bottom (here uv.y > 1, since HLSL row 0 is the TOP — the screen
+// bottom is large uv.y) returned TRANSPARENT (RGBA 0). A transparent sample
+// doesn't cancel in the abs-difference, so it survives as a bright pixel that
+// the Exposure then boosts → the bright grainy band along the bottom edge.
+float4 sample_in(float2 uv) {
+  float4 c = inputTex.SampleLevel(linearSampler, uv, 0.0);
+  if (edge_artifacts > 0.0 && uv.y > 1.0)
+    c = lerp(c, float4(0.0, 0.0, 0.0, 0.0), edge_artifacts);
+  return c;
 }
 
 [numthreads(8, 8, 1)]
@@ -66,7 +80,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // rhs = one light scatter of the input (RSS191 at this uv).
   float2 uvR = rss_scatter(uv, salt_rhs, str_rhs);
-  float4 rhs = inputTex.SampleLevel(linearSampler, uvR, 0.0);
+  float4 rhs = sample_in(uvR);
 
   // lhs = the three-deep cascade (RSS185 ∘ RSS180 ∘ RSS191). Each pass
   // re-randomizes from its own destination uv, so chain the displacements
@@ -74,7 +88,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 uvB = rss_scatter(uv,  salt_lhs, str_lhs); // outer (3rd) pass
   float2 uvA = rss_scatter(uvB, salt_mid, str_mid); // middle (2nd) pass
   float2 uvT = rss_scatter(uvA, salt_rhs, str_rhs); // inner (1st) pass = RSS191
-  float4 lhs = inputTex.SampleLevel(linearSampler, uvT, 0.0);
+  float4 lhs = sample_in(uvT);
 
   // ISF "Difference": mix(rhs, abs(lhs-rhs), Alpha*2). diff_t = Alpha*2 = Dive.
   float3 diff = abs(lhs.rgb - rhs.rgb);
