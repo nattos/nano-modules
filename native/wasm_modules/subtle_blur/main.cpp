@@ -44,16 +44,18 @@ static constexpr float TAU             = 6.28318530717958647692f;
 static constexpr float OFFSET_SCALE    = 0.02f; // amount=1 → 2% of short axis (the slide DISTANCE)
 static constexpr float MOVE_RATE_SCALE = 1.0f;  // movement=1 → 1 sawtooth reset/sec (the RATE)
 static constexpr float BLUR_SCALE      = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
+// Fixed spatial slant of the split (a gentle diagonal). `hue` rotates the
+// COLOUR basis, not this direction.
+static constexpr float SLANT_X         = 0.70710678f;
+static constexpr float SLANT_Y         = 0.70710678f;
 
 struct Uniforms {
-  float aspect_x;
-  float aspect_y;
-  float axis_x;
-  float axis_y;
-  float spread;
-  float _p0, _p1, _p2;
+  float off_x;
+  float off_y;
+  float hue_shift;
+  float _pad;
 };
-static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 16, "Uniforms layout mismatch");
 
 struct State {
   gpu::Buffer  uniform_buf;
@@ -201,10 +203,10 @@ void render(void* self, int vp_w, int vp_h) {
     src = s->blur_tex;
   }
 
-  // Fixed slant axis from `hue`. The chroma offset distance is `amount`; the
-  // sawtooth sweeps it 0→full then hard-resets at rate `movement`. At
-  // movement=0 the offset is static at full (no motion).
-  float slant = s->hue * TAU;
+  // The chroma offset distance is `amount`; the sawtooth sweeps it 0→full then
+  // hard-resets at rate `movement` (movement=0 → static at full). `hue` rotates
+  // the colour basis the split happens in (not the spatial slant, which is
+  // fixed). Offset is aspect-corrected so the slant looks the same on any AR.
   float saw   = (s->movement > 1e-4f)
                   ? (float)(s->saw_phase - std::floor(s->saw_phase)) // frac → 0..1, hard reset
                   : 1.0f;
@@ -212,11 +214,9 @@ void render(void* self, int vp_w, int vp_h) {
 
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
   Uniforms u = {};
-  u.aspect_x = (float)min_dim / (float)vp_w;
-  u.aspect_y = (float)min_dim / (float)vp_h;
-  u.axis_x   = std::cos(slant);
-  u.axis_y   = std::sin(slant);
-  u.spread   = spread;
+  u.off_x     = SLANT_X * spread * ((float)min_dim / (float)vp_w);
+  u.off_y     = SLANT_Y * spread * ((float)min_dim / (float)vp_h);
+  u.hue_shift = s->hue * TAU;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
