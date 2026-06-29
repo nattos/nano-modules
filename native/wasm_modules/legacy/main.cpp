@@ -20,6 +20,8 @@ NANO_DECLARE_INSTANCE_EFFECT(d_wave)
 NANO_DECLARE_INSTANCE_EFFECT(lut_collection)
 namespace lut_collection { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(zoom_scroller)
+NANO_DECLARE_INSTANCE_EFFECT(subtle_blur)
+namespace subtle_blur { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -107,6 +109,19 @@ void nano_module_main() {
         "warp",
         "zoom,pan,scroll,camera,sequence,gizmo,idle,legacy",
         NANO_INSTANCE_LIFECYCLE(zoom_scroller),
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.legacy.subtle_blur",
+        "Subtle Blur",
+        "Light Gaussian blur with a slowly-drifting chromatic colour offset — a "
+        "soft bloom with a faint, shifting RGB fringe on edges. Good for "
+        "breaking up sharp edges. v2 of the Resolume Wire \"Subtle Blur\" patch.",
+        "filter",
+        "blur,soft,bloom,chroma,fringe,aberration,legacy",
+        NANO_INSTANCE_LIFECYCLE(subtle_blur),
+        &subtle_blur::is_identity,
     });
 }
 

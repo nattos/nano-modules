@@ -105,7 +105,15 @@ compile_shaders_compute_var_spv zoom_scroller apply
 _emit_spv_header_var zoom_scroller apply
 echo "  zoom_scroller shaders compiled (SPV: apply)"
 
-# Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing.
+# subtle_blur — light Gaussian blur + drifting chromatic offset (Wire "Subtle Blur").
+#   chroma (compute) — resample R/G/B at a slowly-rotating 120°-split basis.
+#   Blur stage uses the shared fx::GaussianBlur (effect_blur.h / blur shader below).
+compile_shaders_compute_var_spv subtle_blur chroma
+_emit_spv_header_var subtle_blur chroma
+echo "  subtle_blur shaders compiled (SPV: chroma)"
+
+# Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
+# subtle_blur's blur stage.
 compile_shaders_compute_spv blur
 echo "  blur shader compiled (SPV) for effect_blur.h"
 
@@ -128,6 +136,7 @@ wasm_build \
   ../double_chamber/main.cpp \
   ../d_wave/main.cpp \
   ../lut_collection/main.cpp \
-  ../zoom_scroller/main.cpp
+  ../zoom_scroller/main.cpp \
+  ../subtle_blur/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
