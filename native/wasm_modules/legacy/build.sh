@@ -154,6 +154,13 @@ compile_shaders_compute_var_spv freeze_pulse pulse
 _emit_spv_header_var freeze_pulse capture pulse
 echo "  freeze_pulse shaders compiled (SPV: capture + pulse)"
 
+# pixulant — scatter-cascade + Difference "dive" (Wire "Pixulant").
+#   pixulant (compute) — 3-deep Radial Stretch Sample cascade composed into one
+#                        pass + abs-difference + exposure.
+compile_shaders_compute_var_spv pixulant pixulant
+_emit_spv_header_var pixulant pixulant
+echo "  pixulant shaders compiled (SPV: pixulant)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -185,6 +192,7 @@ wasm_build \
   ../chroma_wobble/main.cpp \
   ../wobble_master/main.cpp \
   ../stutter_scale/main.cpp \
-  ../freeze_pulse/main.cpp
+  ../freeze_pulse/main.cpp \
+  ../pixulant/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

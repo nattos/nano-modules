@@ -30,6 +30,7 @@ NANO_DECLARE_INSTANCE_EFFECT(wobble_master)
 NANO_DECLARE_INSTANCE_EFFECT(stutter_scale)
 namespace stutter_scale { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(freeze_pulse)
+NANO_DECLARE_INSTANCE_EFFECT(pixulant)
 
 extern "C" {
 
@@ -214,6 +215,21 @@ void nano_module_main() {
         "warp",
         "freeze,pulse,stutter,glitch,beat,blend,snapshot,legacy",
         NANO_INSTANCE_LIFECYCLE(freeze_pulse),
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.pixulant",
+        "Pixulant",
+        "Roiling pixel-scatter dive. The image is randomly scattered three times "
+        "(light, mid, heavy) and the heavy copy is abs-differenced against the "
+        "light one, leaving coloured edge halos that bloom out of flat regions "
+        "and churn over time. Turn up Dive to push the picture into the grain, "
+        "Scatter to widen it, Motion to set the churn rate. v2 of the Resolume "
+        "Wire \"Pixulant\" patch.",
+        "warp",
+        "scatter,dive,difference,feedback,grain,glitch,pixulant,legacy",
+        NANO_INSTANCE_LIFECYCLE(pixulant),
     });
 }
 
