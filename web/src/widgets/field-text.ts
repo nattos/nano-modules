@@ -70,13 +70,16 @@ export class FieldText extends MobxLitElement implements FieldEditorElement {
 
   render() {
     if (this.multiline) this.classList.add('multiline');
+    // Multi-edit: bound clips disagree → show an empty control with a "many"
+    // placeholder; typing commits one value to every clip (clearing mixed).
+    const mixed = this.binding?.isMixed?.(this.fieldPath) ?? false;
     return html`
       <span class="label">${this.label}</span>
       <editable-text
-        .value=${this.value}
+        .value=${mixed ? '' : this.value}
         ?multiline=${this.multiline}
         ?monospace=${this.multiline}
-        placeholder=${this.placeholder}
+        placeholder=${mixed ? 'many' : this.placeholder}
         @input=${this.onInput}
       ></editable-text>
     `;

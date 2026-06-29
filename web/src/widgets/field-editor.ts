@@ -53,6 +53,22 @@ export interface FieldBinding {
    * more than one field per drag. Optional: widgets should fall back if absent.
    */
   beginContinuousEditMulti?(values: Record<string, any>): MultiContinuousEditHandle;
+
+  /**
+   * Multi-edit only: true when the bound targets (e.g. several selected clips)
+   * don't all share one value for this field. Widgets render a "many" placeholder
+   * instead of a concrete value, and the first edit aligns every target (clearing
+   * mixed). Absent on single-target bindings — widgets treat absence as `false`.
+   */
+  isMixed?(fieldPath: string): boolean;
+
+  /**
+   * Multi-edit only: the distinct values currently in use across the bound
+   * targets — for enum / segmented widgets to gray-highlight every option that
+   * any target uses (rather than fully selecting one). Absent on single-target
+   * bindings.
+   */
+  inUseValues?(fieldPath: string): unknown[];
 }
 
 /** Handle for an in-progress multi-field continuous edit (XY pad, etc.). */

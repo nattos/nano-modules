@@ -21,8 +21,9 @@ import type { Sketch } from '../../../sketch-types';
 import type { ParamValue } from '../../../engine-types';
 import type { Selectable, EffectClipboard, AvailableEffect } from '../../../state/types';
 import type { FieldBinding } from '../../../widgets/field-editor';
-import type { Device } from '../model/composition';
+import type { Clip, Device } from '../model/composition';
 import { store } from '../state/store';
+import { buildMultiEditModel, clipInsertIndex, aggregateField, type MultiEditModel } from '../state/multi-edit';
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
@@ -76,6 +77,14 @@ export interface DeviceTarget {
    * track targets omit it (no live modulation).
    */
   engineKeyFor?(deviceId: string): string | undefined;
+
+  /** Multi-edit only: whether the edited clips disagree on a field (→ "many"). */
+  isFieldMixed?(deviceId: string, field: string): boolean;
+  /** Multi-edit only: distinct values used across the clips (enum highlight). */
+  fieldInUseValues?(deviceId: string, field: string): unknown[];
+  /** Optional capability overrides merged over the defaults (e.g. multi disables
+   *  reorder/wiring/tracing in early phases). */
+  capsOverride?: Partial<ColumnCapabilities>;
 }
 
 export function clipTarget(trackId: string, clipId: string): DeviceTarget {
@@ -102,6 +111,101 @@ export function trackTarget(trackId: string): DeviceTarget {
     insertAt: (i, t, ck) => store.insertTrackDeviceAt(trackId, i, t, ck),
     remove: (d, ck) => store.removeTrackDevice(trackId, d, ck),
     move: (from, to) => store.moveTrackDevice(trackId, from, to),
+  };
+}
+
+/**
+ * A `DeviceTarget` that edits SEVERAL selected clips at once. Its `getDevices()`
+ * returns the synthesized list of devices COMMON to every clip (rep ids +
+ * clip[0]'s state), so `ArrColumnAdapter` + `<column-group>` render it unchanged;
+ * every mutation fans out through the matching device in each clip (one undo via
+ * the `store.*Clips*` actions). Field reads report a `mixed` flag when the clips
+ * disagree. The reconciliation model is rebuilt lazily per call so MobX
+ * re-renders when any clip's chain changes. (Phase 1: reorder/wiring/tracing off.)
+ */
+export function multiClipTarget(refs: { trackId: string; clipId: string }[]): DeviceTarget {
+  const trackByClip = new Map(refs.map((r) => [r.clipId, r.trackId]));
+  // Stable id keyed by the (order-independent) clip set → the adapter + the
+  // mounted column-group instance are reused when the same set is re-selected.
+  const id = 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+
+  const clips = (): Clip[] =>
+    refs
+      .map((r) => store.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
+      .filter((c): c is Clip => !!c);
+  const model = (): MultiEditModel => buildMultiEditModel(clips());
+  const resolveDefault = (moduleType: string, field: string): unknown =>
+    catalogEffect(moduleType)?.fields.find((f) => f.key === field)?.default;
+
+  // Bridge between an insert and the retype that immediately follows it: the new
+  // devices aren't in the reconciliation yet, so map the rep id (clip[0]'s new
+  // device) → each clip's new device id until the next rebuild catches up.
+  const pendingInserts = new Map<string, Map<string, string>>();
+  const targetsFor = (repId: string): { trackId: string; clipId: string; deviceId: string }[] => {
+    const common = model().devices.common.find((c) => c.repId === repId);
+    if (common) {
+      return [...common.idByClip].map(([clipId, deviceId]) => ({ trackId: trackByClip.get(clipId)!, clipId, deviceId }));
+    }
+    const pend = pendingInserts.get(repId);
+    if (pend) return [...pend].map(([clipId, deviceId]) => ({ trackId: trackByClip.get(clipId)!, clipId, deviceId }));
+    return [];
+  };
+
+  return {
+    id,
+    getDevices: () => {
+      const c0 = clips()[0];
+      if (!c0) return [];
+      // Representative device = clip[0]'s matched device (real Device → real state
+      // drives the card; mixed-ness is resolved separately via isFieldMixed).
+      return model().devices.common
+        .map((cd) => c0.sketch.devices.find((d) => d.id === cd.repId))
+        .filter((d): d is Device => !!d);
+    },
+    setField: (repId, key, value) => store.setClipsDeviceField(targetsFor(repId), key, value),
+    setType: (repId, type, ck) => store.setClipsDeviceType(targetsFor(repId), type, ck),
+    replace: (repId, snap, ck) => store.replaceClipsDevice(targetsFor(repId), snap, ck),
+    insertAt: (index, type) => {
+      const m = model();
+      const cs = clips();
+      const targets = cs.map((c) => ({
+        trackId: trackByClip.get(c.id)!, clipId: c.id, index: clipInsertIndex(c, m.devices, index),
+      }));
+      const newIds = store.insertClipsDeviceAt(targets, type); // Map<clipId, newId>
+      const repId = newIds.get(cs[0]?.id ?? '') ?? null;
+      if (repId) pendingInserts.set(repId, newIds);
+      return repId;
+    },
+    remove: (repId, ck) => {
+      store.removeClipsDevice(targetsFor(repId), ck);
+      pendingInserts.delete(repId);
+    },
+    move: (from, to) => {
+      const m = model();
+      const targets: { trackId: string; clipId: string; from: number; to: number }[] = [];
+      for (const c of clips()) {
+        const fromId = m.devices.common[from]?.idByClip.get(c.id);
+        if (fromId === undefined) continue;
+        const fromIdx = c.sketch.devices.findIndex((d) => d.id === fromId);
+        if (fromIdx < 0) continue;
+        targets.push({ trackId: trackByClip.get(c.id)!, clipId: c.id, from: fromIdx, to: clipInsertIndex(c, m.devices, to) });
+      }
+      store.moveClipsDevice(targets);
+    },
+    isFieldMixed: (repId, field) => {
+      const m = model();
+      const common = m.devices.common.find((c) => c.repId === repId);
+      return common ? aggregateField(m.clips, common, field, resolveDefault).mixed : false;
+    },
+    fieldInUseValues: (repId, field) => {
+      const m = model();
+      const common = m.devices.common.find((c) => c.repId === repId);
+      return common ? aggregateField(m.clips, common, field, resolveDefault).inUse : [];
+    },
+    // Phase 1: no reorder, no wiring overlay, no output-trace cards (no single live
+    // engine instance for a multi-selection). Lifted in later phases.
+    capsOverride: { reorder: false, wiring: false, inlineWireArcs: false, tracing: false },
+    // engineKeyFor omitted on purpose (no aggregated live telemetry).
   };
 }
 
@@ -168,11 +272,15 @@ export class ArrColumnAdapter implements ColumnAdapter {
     connectWire: (a, b) => store.connectSketchWire(a, b),
   });
 
-  data: ColumnDataSource = {
+  // `self` capture: the `get caps()` getter rebinds `this` to the data object, so
+  // it can't read `this.target`. An IIFE binds the adapter as `self`; the arrow
+  // members below still see the adapter via lexical `this` unchanged.
+  data: ColumnDataSource = ((self: ArrColumnAdapter): ColumnDataSource => ({
     // Wiring follows the global wires-mode toggle: on → tap overlay + pips +
-    // click-to-connect; the gutter reappears to host the pips.
+    // click-to-connect; the gutter reappears to host the pips. A target may
+    // override caps (multi-edit disables reorder/wiring/tracing in early phases).
     get caps(): ColumnCapabilities {
-      return { ...CAPS, wiring: store.wiresMode, inlineWireArcs: store.wiresMode };
+      return { ...CAPS, wiring: store.wiresMode, inlineWireArcs: store.wiresMode, ...(self.target.capsOverride ?? {}) };
     },
     get tappingMode() { return store.wiresMode; },
     get availableEffects() { return availableEffects(); },
@@ -229,7 +337,13 @@ export class ArrColumnAdapter implements ColumnAdapter {
       const ek = this.target.engineKeyFor?.(instanceKey);
       return ek ? store.modulationData[ek] : undefined;
     },
-  };
+    // Multi-edit: delegate the "many"/in-use signal to the target (undefined on
+    // single-clip + track targets → the binding treats it as not-mixed).
+    fieldMixed: (instanceKey: string, fieldPath: string): boolean =>
+      this.target.isFieldMixed?.(instanceKey, fieldPath) ?? false,
+    fieldInUse: (instanceKey: string, fieldPath: string): unknown[] =>
+      this.target.fieldInUseValues?.(instanceKey, fieldPath) ?? [],
+  }))(this);
 
   // ── controller ──
   controller: ColumnController = {

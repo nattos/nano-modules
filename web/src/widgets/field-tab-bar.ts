@@ -42,6 +42,17 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
     return this.defaultValue ?? this.options[0]?.value;
   }
 
+  /** Multi-edit: true when the bound targets disagree on this field — no option
+   *  is fully selected; instead every in-use option gets a gray background. */
+  private get mixed(): boolean {
+    return this.binding?.isMixed?.(this.fieldPath) ?? false;
+  }
+  /** Multi-edit: the distinct values any bound target uses (for the gray
+   *  in-use highlight when mixed). */
+  private get inUse(): unknown[] {
+    return this.binding?.inUseValues?.(this.fieldPath) ?? [];
+  }
+
   private onPick(opt: FieldTabBarOption) {
     // Pass the option's typed value (number, usually) — never the
     // string-coerced label. Same lesson as <field-select>: serialised
@@ -104,6 +115,10 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       box-shadow: inset 0 -2px 0 var(--app-hi-color2, #4169E1);
     }
     button[active]:hover { background: var(--app-tint-3); }
+    /* Multi-edit "in use": clips disagree, so no option is fully selected;
+       every value used by any clip gets a gray fill (no accent / underline). */
+    button[inuse] { background: var(--app-tint-2); color: var(--app-text-color1, #eaeaea); }
+    button[inuse]:hover { background: var(--app-tint-2); }
 
     /* Wrap mode (large enums like blend modes): the connected segments flow onto
        multiple rows, centred. */
@@ -118,12 +133,15 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
 
   render() {
     const v = this.value;
+    const mixed = this.mixed;
+    const inUse = mixed ? this.inUse.map((u) => String(u)) : [];
     return html`
       ${this.label ? html`<span class="label">${this.label}</span>` : nothing}
       <div class="tabs">
         ${this.options.map(opt => html`
           <button
-            ?active=${String(opt.value) === String(v)}
+            ?active=${!mixed && String(opt.value) === String(v)}
+            ?inuse=${mixed && inUse.includes(String(opt.value))}
             @click=${() => this.onPick(opt)}
           >${opt.label}</button>
         `)}

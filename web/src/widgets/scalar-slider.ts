@@ -217,6 +217,8 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       white-space: nowrap;
       text-overflow: ellipsis;
     }
+    /* Multi-edit: clips disagree → a dimmed italic "many" placeholder. */
+    .value-display.mixed { color: var(--app-text-color2, #888); font-style: italic; }
 
     input {
       position: relative;
@@ -315,13 +317,16 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     }
 
     const val = this.effectiveValue;
+    // Multi-edit: the bound clips disagree on this field — suppress the fill bar
+    // and show a "many" placeholder until the first drag/edit aligns them all.
+    const mixed = this.binding?.isMixed?.(this.fieldPath) ?? false;
     let barWidth = 0;
-    if (Number.isFinite(this.min) && Number.isFinite(this.max) && this.max > this.min) {
+    if (!mixed && Number.isFinite(this.min) && Number.isFinite(this.max) && this.max > this.min) {
       const clamped = Math.max(this.min, Math.min(this.max, val));
       barWidth = ((clamped - this.min) / (this.max - this.min)) * 100;
     }
 
-    const mod = this.binding?.getModulation?.(this.fieldPath) ?? null;
+    const mod = mixed ? null : (this.binding?.getModulation?.(this.fieldPath) ?? null);
 
     return html`
       ${labelEl}
@@ -329,8 +334,8 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
            @pointerdown=${this.handlePointerDown}
            @dblclick=${this.handleDoubleClick}>
         <div class="bar" style="width: ${barWidth}%"></div>
-        <div class="value-display">
-          ${this.formatValue(val)}
+        <div class="value-display ${mixed ? 'mixed' : ''}">
+          ${mixed ? 'many' : this.formatValue(val)}
         </div>
         ${mod ? this.renderModStrip(mod) : nothing}
       </div>

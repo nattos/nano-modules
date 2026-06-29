@@ -1580,6 +1580,10 @@ export class ColumnGroup extends MobxLitElement {
           cancel: () => edit.cancel(),
         };
       },
+      // Multi-edit: forward the adapter's mixed/in-use signal (absent on
+      // single-target adapters, so single-clip + track cards never see it).
+      isMixed: (fieldPath: string) => this.ds.fieldMixed?.(entry.instance_key, fieldPath) ?? false,
+      inUseValues: (fieldPath: string) => this.ds.fieldInUse?.(entry.instance_key, fieldPath) ?? [],
     };
   }
 

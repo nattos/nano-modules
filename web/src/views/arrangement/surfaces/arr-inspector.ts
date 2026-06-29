@@ -16,7 +16,7 @@ import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type Ex
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
-import { ArrColumnAdapter, clipTarget, trackTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
+import { ArrColumnAdapter, clipTarget, trackTarget, multiClipTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
@@ -547,6 +547,10 @@ export class ArrInspector extends MobxLitElement {
       </div>`;
     }
     if (count > 1) {
+      // Two or more CLIPS → the multi-edit panel (edit their common chain at
+      // once). A mixed selection (clips + tracks/rails) edits only the clips.
+      const refs = this.selectedClipRefs();
+      if (refs.length > 1) return this.renderMultiClipInspector(refs, count);
       return html`
         <div class="section-header">${count} items selected</div>
         <div class="body">
@@ -567,6 +571,63 @@ export class ArrInspector extends MobxLitElement {
     if (kind === 'track') return this.renderTrackInspector(path);
     if (kind === 'rail') return this.renderRailInspector(path);
     return html`<div class="empty">Selected: ${path}</div>`;
+  }
+
+  /** The selected CLIPS as {trackId, clipId}, primary (last-clicked) first so it's
+   *  the reconciliation template. De-duped; non-clip selections are dropped. */
+  private selectedClipRefs(): { trackId: string; clipId: string }[] {
+    const refs: { trackId: string; clipId: string }[] = [];
+    const add = (p: string) => {
+      const [kind, trackId, clipId] = p.split('/');
+      if (kind === 'clip' && trackId && clipId && !refs.some((r) => r.clipId === clipId)) {
+        refs.push({ trackId, clipId });
+      }
+    };
+    if (store.primaryPath) add(store.primaryPath);
+    for (const p of store.selection) add(p);
+    return refs;
+  }
+
+  /** One multiClipTarget per selection set (stable across re-renders so its
+   *  pending-insert bridge + the cached adapter survive). Keyed by the target id
+   *  (which encodes the sorted clip set). */
+  private multiTargets = new Map<string, DeviceTarget>();
+  private multiTargetFor(refs: { trackId: string; clipId: string }[]): DeviceTarget {
+    const id = 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+    let t = this.multiTargets.get(id);
+    if (!t) { t = multiClipTarget(refs); this.multiTargets.set(id, t); }
+    return t;
+  }
+
+  private renderMultiClipInspector(
+    refs: { trackId: string; clipId: string }[],
+    totalSelected: number,
+  ): TemplateResult {
+    const target = this.multiTargetFor(refs);
+    const note = totalSelected > refs.length
+      ? html`<div class="empty" style="padding:0 0 4px">
+          Editing the ${refs.length} selected clips (other selected items are skipped).
+          Shared effects edit all at once; a field that differs shows “many”.
+        </div>`
+      : html`<div class="empty" style="padding:0 0 4px">
+          Editing ${refs.length} clips together. Shared effects edit all at once;
+          a field that differs shows “many”.
+        </div>`;
+    return html`
+      <div class="section-header">${refs.length} clips</div>
+      <div class="body">
+        ${note}
+        <div class="group-title chain-hdr"><span>Chain (common)</span></div>
+        <column-group
+          class="chain"
+          .colIdx=${0}
+          .sketchId=${target.id}
+          .columnWidth=${280}
+          .adapter=${this.adapterFor(target)}
+          .callbacks=${ARR_COLUMN_CALLBACKS}
+        ></column-group>
+      </div>
+    `;
   }
 
   private onDashPip(e: PointerEvent, wire: any) {

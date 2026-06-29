@@ -88,6 +88,14 @@ export interface ColumnDataSource {
   pluginState(instanceKey: string): Record<string, any> | undefined;
   /** Per-field modulation telemetry for an instance, if any. */
   modulation(instanceKey: string): Record<string, FieldModulation> | undefined;
+
+  /** Multi-edit only: true when the edited targets (e.g. several selected clips)
+   *  disagree on this field, so widgets render a "many" placeholder. Absent on
+   *  single-target adapters → treated as not-mixed. */
+  fieldMixed?(instanceKey: string, fieldPath: string): boolean;
+  /** Multi-edit only: distinct values in use across the targets (enum multi-
+   *  highlight). Absent on single-target adapters. */
+  fieldInUse?(instanceKey: string, fieldPath: string): unknown[];
 }
 
 /** Mutations. Signatures mirror AppController so the IDE adapter forwards 1:1. */

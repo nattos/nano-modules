@@ -2985,6 +2985,136 @@ export class ArrangementStore {
     );
   }
 
+  // ── Multi-clip fan-out (edit several selected clips as one undo step) ──────
+  // Each action wraps a SINGLE `mutate`, so touching N clips records exactly one
+  // undo point. The per-clip recipes mirror the single-clip bodies above.
+
+  /** Run one undoable recipe across many clips (single undo point). */
+  mutateClips(
+    description: string,
+    refs: { trackId: string; clipId: string }[],
+    recipe: (clip: Clip) => void,
+    coalesceKey?: string,
+  ) {
+    this.mutate(description, (d) => {
+      for (const r of refs) {
+        const c = d.tracks.find((t) => t.id === r.trackId)?.clips.find((x) => x.id === r.clipId);
+        if (c) recipe(c);
+      }
+    }, coalesceKey);
+  }
+
+  /** Set one field on the matched device in each clip (one undo). */
+  setClipsDeviceField(
+    targets: { trackId: string; clipId: string; deviceId: string }[],
+    key: string,
+    value: unknown,
+  ) {
+    this.mutate('set param', (d) => {
+      for (const t of targets) {
+        const dev = d.tracks.find((x) => x.id === t.trackId)?.clips.find((c) => c.id === t.clipId)
+          ?.sketch.devices.find((x) => x.id === t.deviceId);
+        if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
+      }
+    }, `param:multi:${key}`);
+  }
+
+  /** Replace the matched device in each clip with a snapshot (one undo). */
+  replaceClipsDevice(
+    targets: { trackId: string; clipId: string; deviceId: string }[],
+    snap: Partial<Device>,
+    coalesceKey?: string,
+  ) {
+    this.mutate('change device', (d) => {
+      for (const t of targets) {
+        const dev = d.tracks.find((x) => x.id === t.trackId)?.clips.find((c) => c.id === t.clipId)
+          ?.sketch.devices.find((x) => x.id === t.deviceId);
+        if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
+      }
+    }, coalesceKey);
+  }
+
+  /** Retype the matched device in each clip to `moduleType` (resets to defaults). */
+  setClipsDeviceType(
+    targets: { trackId: string; clipId: string; deviceId: string }[],
+    moduleType: string,
+    coalesceKey?: string,
+  ) {
+    const cat = catalogEffect(moduleType);
+    if (!cat) return;
+    this.replaceClipsDevice(targets, {
+      moduleType: cat.type, name: cat.name,
+      capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+      state: defaultStateFor(cat.type),
+    }, coalesceKey);
+  }
+
+  /** Insert a catalog effect into each clip at its own index; returns clipId → new
+   *  device id. All clips share one undo point. */
+  insertClipsDeviceAt(
+    targets: { trackId: string; clipId: string; index: number }[],
+    moduleType: string,
+  ): Map<string, string> {
+    const cat = catalogEffect(moduleType);
+    const out = new Map<string, string>();
+    if (!cat) return out;
+    const ids = targets.map((t) => ({ ...t, id: uid('dev') }));
+    this.mutate('insert device', (d) => {
+      for (const t of ids) {
+        const c = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId);
+        if (!c) continue;
+        const dev: Device = {
+          id: t.id, moduleType: cat.type, name: cat.name,
+          capabilities: cat.role === 'generator' ? ['generator'] : ['time_independent'],
+          state: defaultStateFor(cat.type),
+        };
+        const i = Math.max(0, Math.min(t.index, c.sketch.devices.length));
+        c.sketch.devices.splice(i, 0, dev);
+        if (deviceIsSource(dev) && c.kind === 'effect') {
+          c.kind = 'video';
+          c.source = c.source ?? { label: dev.name, durationFrames: 300 };
+        }
+      }
+    });
+    for (const t of ids) out.set(t.clipId, t.id);
+    return out;
+  }
+
+  /** Remove the matched device from each clip (drops touching wires + orphan
+   *  automation lanes, mirroring removeClipDevice). One undo point. */
+  removeClipsDevice(
+    targets: { trackId: string; clipId: string; deviceId: string }[],
+    coalesceKey?: string,
+  ) {
+    this.mutate('remove device', (d) => {
+      for (const t of targets) {
+        const c = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId);
+        if (!c) continue;
+        const i = c.sketch.devices.findIndex((x) => x.id === t.deviceId);
+        if (i >= 0) c.sketch.devices.splice(i, 1);
+        if (c.sketch.wires) {
+          c.sketch.wires = c.sketch.wires.filter(
+            (w) => w.src.instanceKey !== t.deviceId && w.dest.instanceKey !== t.deviceId);
+        }
+        c.automation = c.automation.filter((l) => l.targetDeviceId !== t.deviceId);
+      }
+    }, coalesceKey);
+    for (const t of targets) {
+      const owner = `clip/${t.trackId}/${t.clipId}`;
+      if (this.selectedAutoField[owner]?.deviceId === t.deviceId) this.clearAutoField(owner);
+    }
+  }
+
+  /** Reorder: move the matched device in each clip from→to (one undo). */
+  moveClipsDevice(targets: { trackId: string; clipId: string; from: number; to: number }[]) {
+    this.mutate('reorder device', (d) => {
+      for (const t of targets) {
+        const devs = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId)?.sketch.devices;
+        if (devs) moveInArray(devs, t.from, t.to);
+      }
+    });
+  }
+
   /** Rename a clip (inline edit). No-op if unchanged. */
   renameClip(trackId: string, clipId: string, name: string) {
     const next = name.trim();

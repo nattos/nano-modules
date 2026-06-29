@@ -33,8 +33,15 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
     return this.defaultValue > 0.5;
   }
 
+  /** Multi-edit: true when the bound targets disagree — neither ON nor OFF is
+   *  active and the button shows "many" until the first click aligns them. */
+  private get mixed(): boolean {
+    return this.binding?.isMixed?.(this.fieldPath) ?? false;
+  }
+
   private onClick() {
-    this.binding?.setValue(this.fieldPath, this.value ? 0 : 1);
+    // Mixed → align everyone to ON; otherwise plain toggle.
+    this.binding?.setValue(this.fieldPath, this.mixed ? 1 : this.value ? 0 : 1);
   }
 
   static styles = css`
@@ -68,13 +75,17 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
       border-color: var(--app-hi-color2, #4169E1);
       color: #fff;
     }
+    button[mixed] { font-style: italic; color: var(--app-text-color2, #888); }
   `;
 
   render() {
+    const mixed = this.mixed;
     const on = this.value;
     return html`
       <span class="label">${this.label}</span>
-      <button ?active=${on} @click=${this.onClick}>${on ? 'ON' : 'OFF'}</button>
+      <button ?active=${!mixed && on} ?mixed=${mixed} @click=${this.onClick}>
+        ${mixed ? 'many' : on ? 'ON' : 'OFF'}
+      </button>
     `;
   }
 }
