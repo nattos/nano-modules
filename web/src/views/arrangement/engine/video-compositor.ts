@@ -32,9 +32,16 @@ import { debugPerf, type ClipPerf } from '../state/debug-perf';
  * 'DXD'/'DXT' bytes in an h264 file) self-corrects: the service's DXV open rejects it and we
  * fall back to the cursor.
  */
-function classifySource(buf: ArrayBuffer, blob: Blob): 'image' | 'dxv' | 'video' {
+async function classifySource(blob: Blob): Promise<'image' | 'dxv' | 'video'> {
   if (blob.type.startsWith('image/')) return 'image';
-  const b = new Uint8Array(buf);
+  // DXV is a QuickTime (.mov) codec, so mp4/webm/etc. are never DXV — decide them by MIME
+  // alone and skip the full-blob read + byte scan (scanning a multi-MB mp4 byte-by-byte just
+  // to conclude 'video' burned main-thread time on EVERY open, delaying the pump past the
+  // moment the clip went active → a Precise "still opening" stall at clip entry). QuickTime /
+  // unknown-type blobs keep the exact prior full-scan sniff, so DXV detection is unchanged.
+  const t = blob.type;
+  if (t.startsWith('video/') && !t.includes('quicktime')) return 'video';
+  const b = new Uint8Array(await blob.arrayBuffer());
   // DXV codec tags (DXT1/DXT5/DXD3/DXDI/DXDA/DXDC…) live as ASCII in the .mov stsd: "DX" + D|T.
   for (let i = 0; i + 3 < b.length; i++) {
     if (b[i] === 0x44 /*D*/ && b[i + 1] === 0x58 /*X*/ && (b[i + 2] === 0x44 /*D*/ || b[i + 2] === 0x54 /*T*/)) {
@@ -274,13 +281,16 @@ export class VideoCompositor {
       await this.ensureGpu();
       const resp = await fetch(d.url);
       const blob = await resp.blob();
-      const kind = classifySource(await blob.arrayBuffer(), blob);
+      const kind = await classifySource(blob);
 
       let pump: Pump;
       if (kind === 'video') {
         // <video>-codec clip: its own cursor — plays forward (native speed), seeks only on a
         // jump. createPlaybackCursor measures the TRUE fps + native size.
-        const { cursor, info } = await createPlaybackCursor(this.gpuHost!, blob);
+        // Pass the clip's known fps so the cursor skips measureFps() — that probe PLAYS the
+        // element to count frames (hundreds of ms+), which delayed the pump past the moment
+        // the clip went active → a Precise "still opening" stall at every clip entry.
+        const { cursor, info } = await createPlaybackCursor(this.gpuHost!, blob, d.fps && d.fps > 0 ? { fps: d.fps } : undefined);
         if (!this.opening.has(d.clipId)) { cursor.release(); return; } // canceled mid-open
         pump = { desc: d, cursor, ...this.pumpBase(info.width, info.height, info.frameCount, info.fps, info.durationSec, d) };
       } else {
@@ -291,7 +301,7 @@ export class VideoCompositor {
         if (info.codec.startsWith('video:')) {
           // DXV sniff was a false positive (it's really <video>) → use the cursor after all.
           void this.service!.close(clip);
-          const { cursor, info: ci } = await createPlaybackCursor(this.gpuHost!, blob);
+          const { cursor, info: ci } = await createPlaybackCursor(this.gpuHost!, blob, d.fps && d.fps > 0 ? { fps: d.fps } : undefined);
           if (!this.opening.has(d.clipId)) { cursor.release(); return; }
           pump = { desc: d, cursor, ...this.pumpBase(ci.width, ci.height, ci.frameCount, ci.fps, ci.durationSec, d) };
         } else {
