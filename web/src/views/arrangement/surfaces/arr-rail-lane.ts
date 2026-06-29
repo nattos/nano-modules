@@ -82,9 +82,11 @@ export class ArrRailLane extends MobxLitElement {
       this.rafId = requestAnimationFrame(tick);
       const pp = store.pxPerBeat, su = store.scrollUnits, pos = store.positionBeat;
       if (pp === this.bakedPp && su === this.bakedSu && pos === this.bakedPos) return; // idle
-      // Keep coverage fresh during continuous motion (throttled re-sample).
-      const reqSig = this.requestSig();
-      if (reqSig !== this.lastReqSig) { this.lastReqSig = reqSig; this.scheduleRequest(); }
+      // The VIEW moved (pp/su/pos) — keep the offline coverage fresh for newly-revealed
+      // beats (scheduleRequest THROTTLES, so this is cheap). Don't recompute requestSig
+      // here: it reads clientWidth (layout) + JSON.stringifies the curve every frame,
+      // and input changes are already tracked via render()/updated().
+      this.scheduleRequest();
       // The exact affine that maps the baked grid → the current grid (origin at the
       // host's left, i.e. 25% of the over-rendered canvas): scaleX = pp/bakedPp,
       // translateX = (bakedSu − su)·pp. Holds even under a warp (the warp is baked
@@ -129,9 +131,12 @@ export class ArrRailLane extends MobxLitElement {
   }
 
   render() {
-    // Tracked reads: grid (pxPerBeat/scroll) + playhead drive redraws; the base curve
-    // + writers drive re-requests (read here so MobX fires updated() on any change).
-    void store.pxPerBeat; void store.scrollUnits; void store.positionBeat;
+    // Track ONLY the curve INPUTS (base curve + writers) here, so MobX fires
+    // updated() → a re-request when the curve actually CHANGES. Pan/zoom/playhead are
+    // NOT read: the rAF loop owns the canvas (bake + CSS-transform) and re-samples on
+    // motion, so reading pxPerBeat/scrollUnits/positionBeat here would re-commit this
+    // lane's DOM AND recompute the expensive requestSig (clientWidth layout +
+    // JSON.stringify) every scroll frame — the scroll-jank with automation lanes on.
     const t = store.trackById(this.trackId);
     void t?.railSigned;
     if (t?.baseCurve) for (const p of t.baseCurve) { void p.x; void p.y; }
