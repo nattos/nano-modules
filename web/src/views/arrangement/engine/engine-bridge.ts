@@ -460,15 +460,25 @@ export class EngineBridge {
     // tick landing between the two messages shows the OLD composite with a torn-down
     // texture (the layers beneath flash through). This is the video→video flash.
     if (render.sig !== this.compositeSig) {
+      const newKeys = (render.sketch.chain ?? []).map((e) => (e as { instance_key?: string }).instance_key ?? '');
+      // STRUCTURE = the chain's instance keys. A PARAM-only edit (slider drag) keeps
+      // the SAME structure — only state values differ — so the worker reuses the same
+      // video instances and their bound textures persist (re-bound each tick). Only a
+      // STRUCTURE change actually recreates the source.video.file instances (dropping
+      // their textures) and needs a frame re-inject.
+      const sameStructure =
+        newKeys.length === this.compositeKeys.length && newKeys.every((k, i) => k === this.compositeKeys[i]);
       this.compositeSig = render.sig;
-      this.compositeKeys = (render.sketch.chain ?? []).map((e) => (e as { instance_key?: string }).instance_key ?? '');
+      this.compositeKeys = newKeys;
       void this.ensureEngine().showComposite([
         { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
       ]);
       this.refreshDeviceTraces();
-      // The reissued sketch recreated the video instances (blank); re-inject each
-      // active clip's current frame so a still image / paused first frame isn't blank.
-      this.video?.reinjectActive();
+      // Re-inject ONLY on a structure change. Doing it on a param-only re-issue marks
+      // each clip's frame not-ready (reinjectActive resets lastKey), which makes the
+      // Precise transport gate stall the playhead for a frame — so a continuous slider
+      // drag over a still image stalled it EVERY frame (the playhead crawled).
+      if (!sameStructure) this.video?.reinjectActive();
     }
     this.reconcilePump(warmDescs);
     this.displayedVideoDescs = videoDescs;
