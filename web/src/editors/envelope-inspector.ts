@@ -153,10 +153,17 @@ export class EnvelopeGraph extends MobxLitElement {
     return this.renderRoot?.querySelector('canvas') ?? null;
   }
 
+  // Canvas CSS size, cached once per draw() — reading clientWidth/clientHeight forces
+  // a layout reflow, and toPx() (which calls dims()) runs ~100× per draw; during a
+  // timeline scroll (clips writing style.left every frame dirty layout) that thrashed.
+  private _cw = 0;
+  private _ch = 0;
+
   // --- Coordinate transforms (data [0,1] ↔ canvas px, y up) ---
   private dims() {
-    const c = this.canvas!;
-    return { w: c.clientWidth, h: c.clientHeight };
+    if (this._cw > 0) return { w: this._cw, h: this._ch };
+    const c = this.canvas; // not yet drawn (e.g. a pointer event before the first draw)
+    return c ? { w: c.clientWidth, h: c.clientHeight } : { w: 0, h: 0 };
   }
   private toPx(x: number, y: number): [number, number] {
     const { w, h } = this.dims();
@@ -472,9 +479,12 @@ export class EnvelopeGraph extends MobxLitElement {
   private draw() {
     const c = this.canvas;
     if (!c) return;
+    // ONE layout read per draw; dims()/toPx() reuse these (see _cw/_ch).
+    this._cw = c.clientWidth;
+    this._ch = c.clientHeight;
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.round(c.clientWidth * dpr));
-    const h = Math.max(1, Math.round(c.clientHeight * dpr));
+    const w = Math.max(1, Math.round(this._cw * dpr));
+    const h = Math.max(1, Math.round(this._ch * dpr));
     if (c.width !== w) c.width = w;
     if (c.height !== h) c.height = h;
     const ctx = c.getContext('2d');
