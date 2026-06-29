@@ -649,7 +649,7 @@ export class ArrInspector extends MobxLitElement {
       // Two or more CLIPS → the multi-edit panel (edit their common chain at
       // once). A mixed selection (clips + tracks/rails) edits only the clips.
       const refs = this.selectedClipRefs();
-      if (refs.length > 1) return this.renderMultiClipInspector(refs, count);
+      if (refs.length > 1) return this.renderMultiClipInspector(refs);
       return html`
         <div class="section-header">${count} items selected</div>
         <div class="body">
@@ -691,19 +691,11 @@ export class ArrInspector extends MobxLitElement {
 
   private renderMultiClipInspector(
     refs: { trackId: string; clipId: string }[],
-    totalSelected: number,
   ): TemplateResult {
     const target = this.multiTargetFor(refs);
-    const note = totalSelected > refs.length
-      ? html`<div class="empty" style="padding:0 0 4px">
-          Editing the ${refs.length} selected clips (other selected items are skipped).
-          Shared effects edit all at once; a field that differs shows “many”.
-        </div>`
-      : html`<div class="empty" style="padding:0 0 4px">
-          Editing ${refs.length} clips together. Shared effects edit all at once;
-          a field that differs shows “many”.
-        </div>`;
-    // The concrete selected clips, for plain-field (name/scale/bypass) aggregation.
+    // The concrete selected clips, for plain-field aggregation. A field that all
+    // clips agree on renders as the single value; one that differs shows “many”
+    // (mirroring the single-clip inspector's rows as closely as possible).
     const clips = refs
       .map((r) => store.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
       .filter((c): c is NonNullable<typeof c> => !!c);
@@ -713,8 +705,13 @@ export class ArrInspector extends MobxLitElement {
       return { mixed: inUse.length > 1, value: vals[0], inUse };
     };
     const nameAgg = agg(clips.map((c) => c.name));
+    const kindAgg = agg(clips.map((c) => c.kind));
+    const processesAgg = agg(clips.map((c) => clipProcessesTexture(c)));
     const clip0 = clips[0];
     const sourceClips = clips.filter((c) => !!c.source);
+    // Source label: include clips WITHOUT a source (as undefined) so a ragged
+    // mix of has-source / no-source also reads as “many”.
+    const sourceAgg = agg(clips.map((c) => c.source?.label));
     const scaleAgg = agg(sourceClips.map((c) => c.source?.scaleMode ?? 'fit'));
     const c0scale = clip0?.source?.scaleMode ?? 'fit';
     const showPlacement = !!clip0?.source && (['fit', 'cover', 'none'] as const).includes(c0scale as any);
@@ -740,7 +737,13 @@ export class ArrInspector extends MobxLitElement {
         ></editable-label>
       </div>
       <div class="body">
-        ${note}
+        <div class="row">
+          <label>Kind</label>
+          <span class="val">
+            <span class="tag">${kindAgg.mixed ? 'many' : kindAgg.value}</span>
+            <span class="tag">${processesAgg.mixed ? 'many' : (processesAgg.value ? 'processes frames' : 'modulation-only')}</span>
+          </span>
+        </div>
         ${clip0
           ? renderPlayModeControls(
               clip0.loop,
@@ -748,6 +751,12 @@ export class ArrInspector extends MobxLitElement {
               (patch) => store.updateClipsLoop(refs, patch),
               store.composition.meta.timeSignature[0],
             )
+          : ''}
+        ${sourceClips.length
+          ? html`<div class="row">
+              <label>Source</label>
+              <span class="val">${sourceAgg.mixed ? 'many' : sourceAgg.value}</span>
+            </div>`
           : ''}
         ${sourceClips.length
           ? html`<div class="row">
