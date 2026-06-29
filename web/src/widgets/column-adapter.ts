@@ -81,8 +81,12 @@ export interface ColumnDataSource {
 
   /** The sketch document for `sketchId` (reactive). */
   getSketch(sketchId: string): Sketch | undefined;
-  /** The plugin descriptor (schema/params/io) for a module type. */
-  getPlugin(moduleType: string): PluginInfo | undefined;
+  /** The plugin descriptor (schema/params/io) for a module type. `instanceKey`
+   *  (the chain entry's instance key) lets the adapter resolve PER-CARD
+   *  conditional visibility — two same-type effects in one chain each get their
+   *  own hidden set. Omitted by callers without an entry (e.g. wire endpoints);
+   *  adapters without per-instance state ignore it. */
+  getPlugin(moduleType: string, instanceKey?: string): PluginInfo | undefined;
 
   /** Engine-published live values for an instance (outputs/broadcasts), if any. */
   pluginState(instanceKey: string): Record<string, any> | undefined;

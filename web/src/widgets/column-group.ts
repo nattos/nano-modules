@@ -953,7 +953,7 @@ export class ColumnGroup extends MobxLitElement {
     if (entry.module_type === DASHBOARD_MODULE_TYPE) return nothing;
     // No trace pipeline on this surface → no output-trace monitors.
     if (!this.ds.caps.tracing) return nothing;
-    const plugin = this.ds.getPlugin(entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
     const outputs = this.collectModuleOutputs(entry);
     const tappingMode = this.ds.tappingMode;
     const cardKey = `${this.sketchId}/${this.colIdx}/${chainIdx}`;
@@ -1242,7 +1242,7 @@ export class ColumnGroup extends MobxLitElement {
     if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) return names;
     // util.dashboard's knob_i fields are io = in|out, so the generic io&2 scan
     // below surfaces them as outputs (wire sources) like any other effect.
-    const plugin = this.ds.getPlugin(entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
     // Schema io-declared outputs (io bit 2).
     const schema = plugin?.schema ?? {};
     for (const [name, def] of Object.entries(schema)) {
@@ -1268,7 +1268,7 @@ export class ColumnGroup extends MobxLitElement {
     isTexture: boolean;
     schemaDef: any | null;
   }> {
-    const plugin = this.ds.getPlugin(entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
     const rows: Array<{
       fieldPath: string;
       displayName: string;
@@ -1340,7 +1340,7 @@ export class ColumnGroup extends MobxLitElement {
     if (!innerEl) return html`<div class="tap-overlay-container"></div>`;
 
     const outputFieldNames = this.getOutputFieldNames(entry);
-    const schema = this.ds.getPlugin(entry.module_type)?.schema ?? {};
+    const schema = this.ds.getPlugin(entry.module_type, entry.instance_key)?.schema ?? {};
 
     const hits: TemplateResult[] = [];
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
@@ -1464,7 +1464,7 @@ export class ColumnGroup extends MobxLitElement {
     // exposed only as the output-trace row below (wire DEST endpoints).
     if (entry.module_type === SKETCH_OUTPUT_MODULE_TYPE) return nothing;
 
-    const plugin = this.ds.getPlugin(entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
 
     const binding = this.buildFieldBinding(chainIdx, entry, plugin);
 
@@ -1847,7 +1847,7 @@ export class ColumnGroup extends MobxLitElement {
     const cardRect = cardEl.getBoundingClientRect();
     const gutterRect = gutterEl.getBoundingClientRect();
     const baseY = cardRect.top + cardRect.height / 2 - gutterRect.top;
-    const schema = this.ds.getPlugin(entry.module_type)?.schema ?? {};
+    const schema = this.ds.getPlugin(entry.module_type, entry.instance_key)?.schema ?? {};
 
     fieldPaths.forEach((fieldPath, j) => {
       const fieldKey = `${this.sketchId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
@@ -2215,7 +2215,7 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Register an effect card as a selectable with full inspector content. */
   private registerEffectSelectable(path: string, chainIdx: number, entry: ModuleEntry) {
-    const plugin = this.ds.getPlugin(entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
     const availEffect = this.ds.availableEffects.find(e => e.id === entry.module_type);
 
     this.ctl.defineSelectable({
@@ -2336,7 +2336,7 @@ export class ColumnGroup extends MobxLitElement {
   private renderFieldInspector(
     chainIdx: number, entry: ModuleEntry, fieldPath: string, isOutput: boolean) {
     const sId = this.sketchId, cI = this.colIdx;
-    const plugin = this.ds.getPlugin(entry.module_type);
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
     const binding = this.buildFieldBinding(chainIdx, entry, plugin);
 
     // Single field editor (input fields only; pure outputs have no inline editor).

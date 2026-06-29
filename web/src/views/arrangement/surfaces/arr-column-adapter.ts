@@ -197,8 +197,13 @@ export interface DeviceTarget {
    * async query is still pending (caller falls back to live/last-known). Multi
    * targets return the INTERSECTION across clips (a field any clip needs stays
    * visible). Track targets omit it (their FX execute live).
+   *
+   * `instanceKey` (the rendering card's device id / rep id) pins resolution to
+   * THAT specific device — two same-type effects in one chain resolve their own
+   * states independently. When omitted, falls back to the first device of the
+   * type (back-compat for callers without an entry in scope).
    */
-  staticHiddenFor?(moduleType: string): string[] | null;
+  staticHiddenFor?(moduleType: string, instanceKey?: string): string[] | null;
   /** Optional capability overrides merged over the defaults (e.g. multi disables
    *  reorder/wiring/tracing in early phases). */
   capsOverride?: Partial<ColumnCapabilities>;
@@ -215,11 +220,15 @@ export function clipTarget(trackId: string, clipId: string): DeviceTarget {
     remove: (d, ck) => store.removeClipDevice(trackId, clipId, d, ck),
     move: (from, to) => store.moveClipDevice(trackId, clipId, from, to),
     engineKeyFor: (d) => clipInstanceKey(clipId, d),
-    staticHiddenFor: (mt) => {
+    staticHiddenFor: (mt, instanceKey) => {
       // Resolve visibility against THIS clip's own device state — correct even
-      // off-playhead, where no instance executes to publish a hidden set.
-      const dev = store.trackById(trackId)?.clips.find((c) => c.id === clipId)
-        ?.sketch.devices?.find((d) => d.moduleType === mt);
+      // off-playhead, where no instance executes to publish a hidden set. Prefer
+      // the exact device by id (instance_key === device.id) so duplicate
+      // same-type effects each resolve their own state; fall back to the first
+      // of the type when no key is supplied.
+      const devices = store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices;
+      const dev = (instanceKey ? devices?.find((d) => d.id === instanceKey) : undefined)
+        ?? devices?.find((d) => d.moduleType === mt);
       if (!dev) return null;
       return resolveStaticHiddenSingle(mt, (dev.state ?? {}) as Record<string, unknown>);
     },
@@ -361,12 +370,15 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
       }
       return out;
     },
-    staticHiddenFor: (mt) => {
+    staticHiddenFor: (mt, instanceKey) => {
       // Per-clip states for the common device of this type → INTERSECTION of
       // hidden sets (a field any clip needs stays visible). Fixes mixed-mode
       // multi-select (e.g. one crop in Span, one in Inset) and off-playhead.
+      // Pin to the exact common entry by repId (= the synthesized instance_key)
+      // so duplicate same-type common devices resolve independently.
       const m = model();
-      const common = m.devices.common.find((c) => c.moduleType === mt);
+      const common = (instanceKey ? m.devices.common.find((c) => c.repId === instanceKey) : undefined)
+        ?? m.devices.common.find((c) => c.moduleType === mt);
       if (!common) return null;
       const states = clips().map((c) => {
         const devId = common.idByClip.get(c.id);
@@ -518,7 +530,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
         wires: this.target.commonWires?.() ?? store.sketchWires(sketchId),
       };
     },
-    getPlugin: (moduleType: string): PluginInfo | undefined => {
+    getPlugin: (moduleType: string, instanceKey?: string): PluginInfo | undefined => {
       // The engine's REAL schema (complete editors: color/bool/enum/vec, exact
       // ranges). Reading store.enginePlugins here ties column-group's render to it,
       // so editors appear once the bundle warms up. The real schema carries no
@@ -539,9 +551,10 @@ export class ArrColumnAdapter implements ColumnAdapter {
         this.pluginCache.set(real, base);
       }
       // Overlay conditional visibility (computed per-call, NOT cached on the
-      // `real` ref): the effect's static evaluator for THIS target's state(s)
-      // when available, else the live/last-known set. Reactive reads inside.
-      const staticHidden = this.target.staticHiddenFor?.(moduleType) ?? null;
+      // `real` ref): the effect's static evaluator for THIS card's state(s) when
+      // available, else the live/last-known set. `instanceKey` pins it to THIS
+      // device so two same-type effects in one chain resolve independently.
+      const staticHidden = this.target.staticHiddenFor?.(moduleType, instanceKey) ?? null;
       return applyHidden(moduleType, base, staticHidden);
     },
     // instanceKey is the device id; translate to the engine key the live output
