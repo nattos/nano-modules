@@ -27,6 +27,8 @@ namespace sphr_blur { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(burn_out)
 NANO_DECLARE_INSTANCE_EFFECT(chroma_wobble)
 NANO_DECLARE_INSTANCE_EFFECT(wobble_master)
+NANO_DECLARE_INSTANCE_EFFECT(stutter_scale)
+namespace stutter_scale { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -183,6 +185,21 @@ void nano_module_main() {
         "warp",
         "wobble,ripple,chroma,aberration,beat,pulse,radial,legacy",
         NANO_INSTANCE_LIFECYCLE(wobble_master),
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.legacy.stutter_scale",
+        "Stutter Scale",
+        "Beat-stutter scale glitch. A phase is quantized into discrete steps; "
+        "each step holds a fresh random transform — a zoom, a jitter shift, an "
+        "optional flip and colour inversion, plus a hue and contrast push — "
+        "crossfaded with the input. Great for stuttering overlays and logos. "
+        "v2 of the Resolume Wire \"Stutter Scale 2\" patch.",
+        "warp",
+        "stutter,scale,zoom,glitch,beat,jitter,flip,legacy",
+        NANO_INSTANCE_LIFECYCLE(stutter_scale),
+        &stutter_scale::is_identity,
     });
 }
 

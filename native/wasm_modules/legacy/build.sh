@@ -140,6 +140,12 @@ compile_shaders_compute_var_spv wobble_master wobble
 _emit_spv_header_var wobble_master wobble
 echo "  wobble_master shaders compiled (SPV: wobble)"
 
+# stutter_scale — beat-stutter scale/flip/hue/invert glitch (Wire "Stutter Scale 2").
+#   stutter (compute) — per-step transform + grade; scheduler in main.cpp.
+compile_shaders_compute_var_spv stutter_scale stutter
+_emit_spv_header_var stutter_scale stutter
+echo "  stutter_scale shaders compiled (SPV: stutter)"
+
 # Shared Gaussian blur helper (effect_blur.h) — double_chamber's image smoothing,
 # subtle_blur's blur stage.
 compile_shaders_compute_spv blur
@@ -169,6 +175,7 @@ wasm_build \
   ../sphr_blur/main.cpp \
   ../burn_out/main.cpp \
   ../chroma_wobble/main.cpp \
-  ../wobble_master/main.cpp
+  ../wobble_master/main.cpp \
+  ../stutter_scale/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
