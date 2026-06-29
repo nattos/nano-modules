@@ -84,6 +84,20 @@ static void apply_mode_visibility(int mode) {
 
 static void on_state_ready(void* self);
 
+// Static (self-less) inspector-visibility evaluator. Pure function of state:
+// the host hands a candidate state as replace-patches (off the render path, for
+// an off-playhead or multi-selected clip) and we resolve which fields the
+// active mode hides WITHOUT a live instance. Reads only the gating field
+// (`mode`); everything else is reused from the shared apply helper.
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int mode = ModeSpan;  // default when `mode` is unset in the candidate state
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "mode")) mode = (int)state::patchFloat(i);
+  }
+  apply_mode_visibility(mode);
+}
+
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
   state::init("warp.crop", {1, 0, 0},

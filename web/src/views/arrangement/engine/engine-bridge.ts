@@ -223,6 +223,11 @@ export class EngineBridge {
     // Real plugin schemas → store, so the inspector renders complete editors
     // (color/bool/enum/vec) instead of the catalog's float-only synthesis.
     e.onPlugins = (plugins) => store.setEnginePlugins(plugins);
+    // Static field-visibility resolver: lets the inspector resolve conditional
+    // field visibility for off-playhead / multi-selected clips (whose instances
+    // never execute) via the effect's `eval_visibility` evaluator. See store
+    // `ensureFieldVisibility` + the adapter's static-hidden overlay.
+    store.visibilityResolver = (moduleType, state) => e.evaluateVisibility(moduleType, state);
     // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
     // all effects are reachable — not just those a clip already references.
     void e.warmBundles(EFFECT_BUNDLES);

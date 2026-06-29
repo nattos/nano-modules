@@ -309,6 +309,18 @@ export class WasmHost {
   // shipping the schema to the main thread.
   hiddenFields: Set<string> = new Set();
 
+  // Non-null only DURING an `evaluateVisibility()` call: `set_field_hidden`
+  // writes here (and skips `hiddenFields` + `onSchemaChanged`) so a static
+  // visibility query never disturbs the host's live overlay. See
+  // `evaluateVisibility`.
+  private evalHiddenScratch: Set<string> | null = null;
+
+  // Function-table callable for the effect's STATIC visibility evaluator
+  // (EffectDesc_v2.eval_visibility), or null if the effect didn't register one.
+  // Self-less: computes the hidden-field set purely from a candidate state.
+  // Resolved in `activateEffect`.
+  evalVisibilityFn: ((n: number, pb: number, off: number, len: number, ops: number) => void) | null = null;
+
   // Optional callback fired when the visibility overlay (or any other
   // schema-affecting state) changes, so the engine worker can mark the
   // engine state dirty and trigger a broadcast.
@@ -764,6 +776,13 @@ export class WasmHost {
           // schema or losing serialized state.
           const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
           const isHidden = hidden !== 0;
+          // During a static visibility query, route into the scratch set and
+          // leave the live overlay (and onSchemaChanged) untouched.
+          if (this.evalHiddenScratch) {
+            if (isHidden) this.evalHiddenScratch.add(path);
+            else this.evalHiddenScratch.delete(path);
+            return;
+          }
           const wasHidden = this.hiddenFields.has(path);
           if (isHidden === wasHidden) return;
           if (isHidden) this.hiddenFields.add(path);
@@ -1302,6 +1321,10 @@ export class WasmHost {
     const isIdentityFn = fn<(self: number) => number>('is_identity');
     const onActiveFn = fn<(self: number, active: number) => void>('on_active');
     const seekFn = fn<(self: number, from: number, to: number) => void>('seek');
+    // Static (self-less) visibility evaluator — type-level, stored on the host
+    // so `evaluateVisibility()` can run it against an arbitrary candidate state.
+    this.evalVisibilityFn = fn<
+      (n: number, pb: number, off: number, len: number, ops: number) => void>('eval_visibility') ?? null;
 
     // Call init immediately, threading the instance's self pointer.
     if (initFn) initFn(self);
@@ -1486,16 +1509,28 @@ export class WasmHost {
    */
   notifyStatePatched(module: WasmModule, patches: PatchOp[]) {
     if (patches.length === 0) return;
+    this.dispatchPatches(patches, (n, pb, off, len, ops) =>
+      module.onStatePatched(n, pb, off, len, ops));
+  }
 
-    // Store patches for state.get_patch() access
+  /**
+   * Marshal `patches` into WASM memory (paths buffer + offsets/lengths/ops
+   * arrays) and the value-accessor (`pendingPatches`, served by
+   * `state.get_patch`), invoke `dispatch` with the marshaled pointers, then
+   * free everything. Shared by `notifyStatePatched` (instance on_state_patched)
+   * and `evaluateVisibility` (the self-less static visibility evaluator).
+   */
+  private dispatchPatches(
+    patches: PatchOp[],
+    dispatch: (n: number, pb: number, off: number, len: number, ops: number) => void,
+  ) {
+    // Store patches for state.get_patch() value access.
     this.pendingPatches = patches;
 
-    // Marshal patch paths and ops into WASM memory
     const encoder = new TextEncoder();
     const pathStrings = patches.map(p => encoder.encode(p.path));
     const totalPathBytes = pathStrings.reduce((sum, s) => sum + s.length, 0);
 
-    // Allocate WASM memory for: paths_buf + offsets + lengths + ops
     const malloc = this.instance.exports.malloc as ((size: number) => number) | undefined;
     const free = this.instance.exports.free as ((ptr: number) => void) | undefined;
 
@@ -1533,7 +1568,7 @@ export class WasmHost {
       pathOffset += pathStrings[i].length;
     }
 
-    module.onStatePatched(n, pathsBufPtr, offsetsPtr, lengthsPtr, opsPtr);
+    dispatch(n, pathsBufPtr, offsetsPtr, lengthsPtr, opsPtr);
 
     free(pathsBufPtr);
     free(offsetsPtr);
@@ -1541,5 +1576,40 @@ export class WasmHost {
     free(opsPtr);
 
     this.pendingPatches = [];
+  }
+
+  /**
+   * STATIC visibility query: resolve which fields the effect hides for a given
+   * candidate `state`, WITHOUT a live instance executing. The effect's
+   * registered `eval_visibility` (self-less, pure over state) is run against the
+   * state marshaled as replace-patches; its `set_field_hidden` calls are
+   * captured into a scratch set (the host's live `hiddenFields` is untouched).
+   * Returns the hidden field names, or `null` if this effect declared no static
+   * evaluator (the caller should then fall back to live/last-known visibility).
+   */
+  evaluateVisibility(state: Record<string, unknown>): string[] | null {
+    if (!this.evalVisibilityFn) return null;
+    const patches: PatchOp[] = Object.entries(state)
+      // Skip UI-only / internal keys (e.g. `__ui_only__`) — they never gate
+      // visibility and would needlessly vary the query.
+      .filter(([k]) => !k.startsWith('__'))
+      .map(([path, value]) => ({ op: 'replace', path, value }));
+    const scratch = new Set<string>();
+    this.evalHiddenScratch = scratch;
+    try {
+      // An empty candidate state still resolves defaults: dispatch a single
+      // no-op (the evaluator defaults every gating field itself).
+      if (patches.length === 0) {
+        this.evalVisibilityFn(0, 0, 0, 0, 0);
+      } else {
+        this.dispatchPatches(patches, (n, pb, off, len, ops) =>
+          this.evalVisibilityFn!(n, pb, off, len, ops));
+      }
+    } catch (err) {
+      console.warn('[wasm-host] evaluateVisibility threw:', err);
+    } finally {
+      this.evalHiddenScratch = null;
+    }
+    return [...scratch];
   }
 }

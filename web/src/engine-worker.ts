@@ -359,6 +359,20 @@ async function handleCommand(cmd: WorkerCommand) {
       // Drain any debug stats so the next frame starts clean.
       executor?.consumeDebugStats();
       break;
+    case 'requestFieldVisibility': {
+      // Static visibility query (off the render path): resolve which fields the
+      // effect hides for a candidate state, via its `eval_visibility` evaluator.
+      // `hidden: null` means the effect declared no static evaluator.
+      let hidden: string[] | null = null;
+      try {
+        const host = await evalHostForType(cmd.moduleType);
+        hidden = host ? host.evaluateVisibility(cmd.state) : null;
+      } catch (err) {
+        console.warn(`[visibility] eval failed for ${cmd.moduleType}:`, err);
+      }
+      post({ type: 'fieldVisibility', reqId: cmd.reqId, hidden });
+      break;
+    }
     case 'debugDump': {
       const bridgeState = bridgeCore ? bridgeCore.getAt('/') : null;
       const sketchRecord: Record<string, any> = {};
@@ -1310,6 +1324,48 @@ async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string
     } catch (err) {
       console.warn(`[warmup] schema registration failed for ${eff.id}:`, err);
     }
+  }
+}
+
+// Dedicated, never-rendered hosts used only to answer static visibility
+// queries for a type whose warmup host has already been promoted to a live
+// instance (and removed from `warmupByEffect`). Lazily created, cached by type.
+const visibilityHosts = new Map<string, WasmHost>();
+
+/**
+ * Resolve a host capable of answering a static visibility query for `moduleType`.
+ * `eval_visibility` is self-less (pure over state), so ANY host of that type can
+ * answer — preference order: a still-parked warmup host, a live instance, then a
+ * dedicated lazily-built eval host. Returns null if the type isn't loaded.
+ */
+async function evalHostForType(moduleType: string): Promise<WasmHost | null> {
+  const resolved = resolveEffectId(moduleType);
+  // 1. A parked warmup host (already loaded + activated for this exact effect).
+  const warm = warmupByEffect.get(resolved) ?? warmupByEffect.get(moduleType);
+  if (warm) return warm.host;
+  // 2. A live instance of this type (its host carries the same evaluator).
+  for (const [key, v] of realModules) {
+    if (key === `${resolved}@0` || key.startsWith(`${resolved}@`)) {
+      if (v.host.evalVisibilityFn) return v.host;
+    }
+  }
+  // 3. A dedicated eval host (cached) — only reached once the warmup host has
+  //    been promoted to a live instance with no evaluator-bearing sibling.
+  const cached = visibilityHosts.get(resolved);
+  if (cached) return cached;
+  const found = findCompiledModule(resolved);
+  if (!found || !bridgeCore || !gpuHost) return null;
+  try {
+    const wh = new WasmHost();
+    wh.bridgeCore = bridgeCore;
+    wh.gpuHost = gpuHost;
+    await wh.load(found.compiled);
+    wh.activateEffect(found.resolvedId);
+    visibilityHosts.set(resolved, wh);
+    return wh;
+  } catch (err) {
+    console.warn(`[visibility] failed to build eval host for ${moduleType}:`, err);
+    return null;
   }
 }
 

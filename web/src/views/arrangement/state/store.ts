@@ -463,11 +463,50 @@ export class ArrangementStore {
    */
   hiddenFieldMemory: Record<string, string[]> = {};
 
+  // ── Static field-visibility cache ────────────────────────────────────────
+  // Conditional field visibility (e.g. warp.crop's inset_* gated by `mode`) is
+  // a pure function of state, resolved by the effect's `eval_visibility` static
+  // ABI method — so we can compute it for an OFF-PLAYHEAD or MULTI-selected
+  // clip whose instance never executes. Results are memoized by a
+  // `${moduleType} ${stableJSON(state)}` fingerprint (observable: the
+  // adapter reads it during render, so a landed async result re-renders).
+  fieldVisCache = new Map<string, string[]>();
+  // Effect types whose `eval_visibility` query returned null (no static
+  // evaluator) — observable so the adapter stops re-asking and falls back.
+  fieldVisUnsupported = new Set<string>();
+  // In-flight fingerprints (non-observable: only read inside the action below).
+  private fieldVisPending = new Set<string>();
+  // Set by the engine bridge — resolves (moduleType, state) → hidden[] | null.
+  visibilityResolver: ((moduleType: string, state: Record<string, unknown>) => Promise<string[] | null>) | null = null;
+
+  /**
+   * Ensure a static visibility result for (moduleType, state) is cached or in
+   * flight. Pure side-effect (fires the worker RPC); the OBSERVABLE READS that
+   * drive re-render live in the adapter (see `resolveStaticHidden`), since reads
+   * inside this auto-action would be untracked. Idempotent per fingerprint.
+   */
+  ensureFieldVisibility(moduleType: string, state: Record<string, unknown>, fp: string) {
+    if (this.fieldVisUnsupported.has(moduleType)) return;
+    if (this.fieldVisCache.has(fp) || this.fieldVisPending.has(fp)) return;
+    const resolver = this.visibilityResolver;
+    if (!resolver) return;
+    this.fieldVisPending.add(fp);
+    const plain = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+    resolver(moduleType, plain)
+      .then((hidden) => runInAction(() => {
+        this.fieldVisPending.delete(fp);
+        if (hidden == null) this.fieldVisUnsupported.add(moduleType);
+        else this.fieldVisCache.set(fp, hidden);
+      }))
+      .catch(() => runInAction(() => { this.fieldVisPending.delete(fp); }));
+  }
+
   constructor() {
     makeAutoObservable<
       ArrangementStore,
       'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
       | 'layoutReady' | 'layoutSaveTimer' | 'clipClipboard' | 'autoClipboard'
+      | 'fieldVisPending'
     >(
       this,
       {
@@ -485,6 +524,10 @@ export class ArrangementStore {
         // Plain edit counter for the warp-curve cache — must NOT be observable
         // (it bumps on every edit; nothing should react to it).
         warpEpoch: false,
+        // Visibility-query plumbing: the in-flight set is read only inside its
+        // own action (untracked); the resolver is a plain injected callback.
+        fieldVisPending: false,
+        visibilityResolver: false,
       },
       { autoBind: true },
     );

@@ -182,6 +182,10 @@ export type WorkerCommand =
   // OS-resolved fallback face (Local Font Access, main thread) → the engine's
   // fallback chain, tagged with its CJK region `lang` (ja/ko/zh-Hant/zh-Hans).
   | { type: 'registerFallback'; lang: string; bytes: ArrayBuffer }
+  // Static inspector-visibility query (off the render path): resolve which
+  // fields effect `moduleType` hides for `state`, via its registered
+  // `eval_visibility` evaluator. Answered with a `fieldVisibility` event.
+  | { type: 'requestFieldVisibility'; reqId: number; moduleType: string; state: Record<string, unknown> }
   | { type: 'debugDump' };
 
 // --- Worker events (worker → main) ---
@@ -209,6 +213,9 @@ export type WorkerEvent =
   // asks the main thread to resolve it via Local Font Access and register it
   // under `req.key`.
   | { type: 'fontRequest'; req: FontRequest }
+  // Reply to `requestFieldVisibility`. `hidden` is the hidden-field set, or
+  // `null` when the effect declared no static visibility evaluator.
+  | { type: 'fieldVisibility'; reqId: number; hidden: string[] | null }
   | { type: 'debugDump'; data: any };
 
 /** A request to resolve one styled face. `key` is the engine face-registry key

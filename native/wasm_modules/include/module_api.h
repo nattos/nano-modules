@@ -146,6 +146,22 @@ struct EffectDesc_v2 {
     // replay frame-by-frame, or skip seeking, per the effect's other temporal
     // capabilities). NOTE: declared as ABI; no effect implements it yet.
     void (*seek)(void* self, double from_seconds, double to_seconds);
+
+    // Optional: STATIC (self-less) inspector-visibility evaluator. A pure
+    // function of state: given a candidate state (marshaled like
+    // on_state_patched — full set of replace ops, one per authored field), the
+    // effect calls state::setFieldHidden(...) for exactly the fields its current
+    // mode hides. No `self` — it touches only the type-shared schema, never
+    // instance state, so the host can resolve field visibility for a clip whose
+    // instance is NOT executing (off-playhead / multi-select) WITHOUT standing
+    // up a live instance. Declaring this is the opt-in signal that an effect's
+    // visibility is derivable purely from state; effects that omit it are
+    // assumed to have no dynamic visibility (or to require a live run). The
+    // host calls it off the render path and reads back the resulting hidden set.
+    // Native barrels never call it (no inspector); web/editor only.
+    // Trailing + optional: nullptr means "no static visibility evaluator".
+    void (*eval_visibility)(int n, const char* pb,
+                            const int* off, const int* len, const int* ops);
 };
 
 /// Register an effect with the host. On WASM this emits the name-keyed builder
@@ -178,6 +194,7 @@ inline void registerEffect(const EffectDesc_v2& d) {
     fn("is_identity",      reinterpret_cast<void*>(d.is_identity));
     fn("on_active",        reinterpret_cast<void*>(d.on_active));
     fn("seek",             reinterpret_cast<void*>(d.seek));
+    fn("eval_visibility",  reinterpret_cast<void*>(d.eval_visibility));
     nano_register_effect_end(h);
 #else
     nano_register_effect(&d);
@@ -218,6 +235,10 @@ public:
     EffectBuilder& isIdentity(int32_t (*f)(void*))     { d_.is_identity = f; return *this; }
     EffectBuilder& onActive(void (*f)(void*, int32_t)) { d_.on_active = f; return *this; }
     EffectBuilder& seek(void (*f)(void*, double, double)) { d_.seek = f; return *this; }
+    EffectBuilder& evalVisibility(
+        void (*f)(int, const char*, const int*, const int*, const int*)) {
+        d_.eval_visibility = f; return *this;
+    }
 
     void register_() const { registerEffect(d_); }
 

@@ -34,6 +34,8 @@ export class EngineProxy {
   /// The main thread resolves it via Local Font Access and calls registerFont().
   onFontRequest: ((req: FontRequest) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
+  private fieldVisReqId = 0;
+  private fieldVisResolvers = new Map<number, (hidden: string[] | null) => void>();
 
   constructor(width: number, height: number, barrelMode = false) {
     this.worker = new Worker(
@@ -73,6 +75,14 @@ export class EngineProxy {
         case 'fontRequest':
           this.onFontRequest?.(event.req);
           break;
+        case 'fieldVisibility': {
+          const resolve = this.fieldVisResolvers.get(event.reqId);
+          if (resolve) {
+            this.fieldVisResolvers.delete(event.reqId);
+            resolve(event.hidden);
+          }
+          break;
+        }
         case 'debugDump':
           this.debugDumpResolve?.(event.data);
           this.debugDumpResolve = null;
@@ -106,6 +116,25 @@ export class EngineProxy {
 
   instantiateEffect(effectId: string) {
     this.send({ type: 'instantiateEffect', effectId });
+  }
+
+  /**
+   * Resolve which fields `moduleType` hides for `state`, via the effect's static
+   * `eval_visibility` evaluator (no live instance required). Resolves to the
+   * hidden-field set, or `null` if the effect has no static evaluator (or the
+   * query times out). Caller should fall back to live/last-known visibility on
+   * null. Memoization is the caller's concern.
+   */
+  requestFieldVisibility(moduleType: string, state: Record<string, unknown>): Promise<string[] | null> {
+    const reqId = ++this.fieldVisReqId;
+    return new Promise((resolve) => {
+      this.fieldVisResolvers.set(reqId, resolve);
+      // Safety net: never leak a pending resolver if the worker drops the reply.
+      setTimeout(() => {
+        if (this.fieldVisResolvers.delete(reqId)) resolve(null);
+      }, 5000);
+      this.send({ type: 'requestFieldVisibility', reqId, moduleType, state });
+    });
   }
 
   changeInstanceType(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {

@@ -233,6 +233,17 @@ export class ArrEngine {
     this.applyTraces();
   }
 
+  /**
+   * Resolve which inspector fields `moduleType` hides for a candidate `state`,
+   * via the effect's static visibility evaluator — WITHOUT a live instance (so
+   * an off-playhead or multi-selected clip resolves correctly). Resolves to the
+   * hidden-field set, or `null` if the effect declared no static evaluator.
+   */
+  async evaluateVisibility(moduleType: string, state: Record<string, unknown>): Promise<string[] | null> {
+    await this.readyPromise;
+    return this.proxy.requestFieldVisibility(moduleType, state);
+  }
+
   /** Drop a composite layer's sketch entirely. */
   deleteSketch(sketchId: string) {
     if (!this.shownSketches.has(sketchId)) return;

@@ -30,17 +30,85 @@ import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effec
 import { clipInstanceKey } from '../engine/clip-sketch';
 
 /**
- * Return `plugin` with the conditional-visibility overlay applied. When the live
- * schema already carries `hidden` flags (the effect's instance executed + fired
- * on_state_ready), trust it as-is. Otherwise — a not-yet-executed or off-playhead
- * instance whose schema momentarily lost its flags — overlay the last-known
- * hidden set the store remembered (`store.hiddenFieldMemory`, refreshed reactively
- * in setEnginePlugins). Reading it here ties the render to it, so the inspector
- * re-renders when a republish refreshes the memory (no stale-until-reselect).
- * Cheap — only clones the schema on the overlay path.
+ * Stable fingerprint of a candidate device state for the static-visibility
+ * cache. Mirrors `WasmHost.evaluateVisibility`'s own filtering: `__`-prefixed
+ * (UI-only / internal) keys never gate visibility, so they're excluded — both
+ * so the key is order-stable and so a UI-only state change (e.g. collapse) never
+ * re-queries.
  */
-function applyHiddenMemory(moduleType: string, plugin: PluginInfo): PluginInfo {
+function stableStateKey(v: unknown): string {
+  if (v === null || v === undefined || typeof v !== 'object') return JSON.stringify(v ?? null);
+  if (Array.isArray(v)) return '[' + v.map(stableStateKey).join(',') + ']';
+  const o = v as Record<string, unknown>;
+  return '{' + Object.keys(o).filter((k) => !k.startsWith('__')).sort()
+    .map((k) => JSON.stringify(k) + ':' + stableStateKey(o[k])).join(',') + '}';
+}
+function visFingerprint(moduleType: string, state: Record<string, unknown>): string {
+  return moduleType + ' ' + stableStateKey(state);
+}
+
+/**
+ * Resolve a single clip's static hidden set for (moduleType, state). Reads the
+ * store's observable cache HERE (so column-group's render tracks it and
+ * re-renders when the async result lands), and fires the query as a pure side
+ * effect via the store action. Returns null when unsupported or still pending.
+ */
+function resolveStaticHiddenSingle(moduleType: string, state: Record<string, unknown>): string[] | null {
+  if (store.fieldVisUnsupported.has(moduleType)) return null; // tracked read
+  const fp = visFingerprint(moduleType, state);
+  const hit = store.fieldVisCache.get(fp);                    // tracked read
+  if (hit) return hit;
+  store.ensureFieldVisibility(moduleType, state, fp);
+  return null;
+}
+
+/**
+ * Resolve the INTERSECTION of hidden sets across several clips' states (a field
+ * hidden in EVERY clip stays hidden; one any clip needs stays visible). Returns
+ * null until every clip's result is cached (caller falls back meanwhile; the
+ * tracked reads re-render once they land).
+ */
+function resolveStaticHiddenMulti(moduleType: string, states: Record<string, unknown>[]): string[] | null {
+  if (store.fieldVisUnsupported.has(moduleType)) return null;
+  if (states.length === 0) return null;
+  const sets: string[][] = [];
+  let allReady = true;
+  for (const st of states) {
+    const fp = visFingerprint(moduleType, st);
+    const hit = store.fieldVisCache.get(fp);
+    if (hit) sets.push(hit);
+    else { store.ensureFieldVisibility(moduleType, st, fp); allReady = false; }
+  }
+  if (!allReady || sets.length === 0) return null;
+  return sets[0].filter((f) => sets.every((s) => s.includes(f)));
+}
+
+/**
+ * Return `plugin` with the conditional-visibility overlay applied.
+ *
+ * 1. `staticHidden` (the effect's `eval_visibility` resolved for THIS target's
+ *    actual state) is AUTHORITATIVE when present — it overrides any live `hidden`
+ *    flags, which for a multi-select are the last-instance-wins single mode, not
+ *    the per-clip union. (Crop has no permanently-hidden fields, so toggling the
+ *    full set is exact; effects with always-hidden fields land in the rollout.)
+ * 2. Otherwise, when the live schema already carries `hidden` flags (an
+ *    on-playhead instance executed + fired on_state_ready), trust it as-is.
+ * 3. Otherwise — off-playhead, no static evaluator — overlay the last-known
+ *    hidden set (`store.hiddenFieldMemory`, refreshed reactively in
+ *    setEnginePlugins). Reading it here ties the render to it (no stale-until-
+ *    reselect). Cheap — only clones the schema on an overlay path.
+ */
+function applyHidden(moduleType: string, plugin: PluginInfo, staticHidden: string[] | null): PluginInfo {
   const schema = (plugin.schema ?? {}) as Record<string, any>;
+  if (staticHidden) {
+    const set = new Set(staticHidden);
+    const overlaid: Record<string, any> = {};
+    for (const [k, d] of Object.entries(schema)) {
+      const wantHidden = set.has(k);
+      overlaid[k] = (!!d?.hidden === wantHidden) ? d : { ...d, hidden: wantHidden };
+    }
+    return { ...plugin, schema: overlaid } as PluginInfo;
+  }
   const cached = store.hiddenFieldMemory[moduleType]; // tracked read (reactive)
   const liveHidden = Object.keys(schema).some((k) => schema[k]?.hidden);
   if (liveHidden || !cached || cached.length === 0) return plugin;
@@ -129,6 +197,16 @@ export interface DeviceTarget {
   /** Multi-edit only: the rail taps COMMON to every clip, for the dashboard
    *  (knob/spark bound to clip[0]'s rep device; deletes fan out by tap id). */
   commonRailTaps?(): CommonRailTapView[];
+  /**
+   * Resolved HIDDEN field set for effect `moduleType`, computed via the effect's
+   * static `eval_visibility` evaluator against this target's actual state(s) —
+   * authoritative for off-playhead / multi-selected clips whose instances never
+   * run. Returns `null` when the effect has no static evaluator, or while the
+   * async query is still pending (caller falls back to live/last-known). Multi
+   * targets return the INTERSECTION across clips (a field any clip needs stays
+   * visible). Track targets omit it (their FX execute live).
+   */
+  staticHiddenFor?(moduleType: string): string[] | null;
   /** Optional capability overrides merged over the defaults (e.g. multi disables
    *  reorder/wiring/tracing in early phases). */
   capsOverride?: Partial<ColumnCapabilities>;
@@ -145,6 +223,14 @@ export function clipTarget(trackId: string, clipId: string): DeviceTarget {
     remove: (d, ck) => store.removeClipDevice(trackId, clipId, d, ck),
     move: (from, to) => store.moveClipDevice(trackId, clipId, from, to),
     engineKeyFor: (d) => clipInstanceKey(clipId, d),
+    staticHiddenFor: (mt) => {
+      // Resolve visibility against THIS clip's own device state — correct even
+      // off-playhead, where no instance executes to publish a hidden set.
+      const dev = store.trackById(trackId)?.clips.find((c) => c.id === clipId)
+        ?.sketch.devices?.find((d) => d.moduleType === mt);
+      if (!dev) return null;
+      return resolveStaticHiddenSingle(mt, (dev.state ?? {}) as Record<string, unknown>);
+    },
   };
 }
 
@@ -282,6 +368,20 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
         if (dev) out.push({ kind: 'read', railId: r.key.railId, repTapId: r.repId, repDeviceId: dev.repId, field: r.key.targetField, tapIdsByClip: r.idByClip });
       }
       return out;
+    },
+    staticHiddenFor: (mt) => {
+      // Per-clip states for the common device of this type → INTERSECTION of
+      // hidden sets (a field any clip needs stays visible). Fixes mixed-mode
+      // multi-select (e.g. one crop in Span, one in Inset) and off-playhead.
+      const m = model();
+      const common = m.devices.common.find((c) => c.moduleType === mt);
+      if (!common) return null;
+      const states = clips().map((c) => {
+        const devId = common.idByClip.get(c.id);
+        const dev = devId ? c.sketch.devices.find((d) => d.id === devId) : undefined;
+        return (dev?.state ?? {}) as Record<string, unknown>;
+      });
+      return resolveStaticHiddenMulti(mt, states);
     },
     // Reorder of common devices fans out (each clip moves its matched device).
     // Wiring overlay + output-trace cards stay off — no single live engine
@@ -446,9 +546,11 @@ export class ArrColumnAdapter implements ColumnAdapter {
         base = { ...(real as unknown as PluginInfo), schema };
         this.pluginCache.set(real, base);
       }
-      // Overlay the last-known hidden set (computed per-call, NOT cached on the
-      // `real` ref, since the memory updates independently of the engine schema).
-      return applyHiddenMemory(moduleType, base);
+      // Overlay conditional visibility (computed per-call, NOT cached on the
+      // `real` ref): the effect's static evaluator for THIS target's state(s)
+      // when available, else the live/last-known set. Reactive reads inside.
+      const staticHidden = this.target.staticHiddenFor?.(moduleType) ?? null;
+      return applyHidden(moduleType, base, staticHidden);
     },
     // instanceKey is the device id; translate to the engine key the live output
     // state is published under, then read the store (so output traces animate).
