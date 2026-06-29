@@ -246,10 +246,14 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   float env = (float)s->env;
+  // The frozen frame GROWS over the pulse: scale starts at 1 (matching the live
+  // frame at the trigger instant) and zooms IN as the pulse fades out — env
+  // runs 1→0, so progress = (1-env).
+  float grow = 1.0f - env;
   Uniforms u = {};
-  u.scale       = 1.0f + s->max_scale * env;
-  u.trans_x     = s->jx * s->jitter * JITTER_SCALE * env;
-  u.trans_y     = s->jy * s->jitter * JITTER_SCALE * env;
+  u.scale       = 1.0f + s->max_scale * grow;
+  u.trans_x     = s->jx * s->jitter * JITTER_SCALE * grow;
+  u.trans_y     = s->jy * s->jitter * JITTER_SCALE * grow;
   u.bright      = 0.0f;
   u.contrast    = s->contrast * env;
   u.blend_phase = s->intensity * s->alpha * env;

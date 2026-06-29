@@ -23,7 +23,8 @@ cbuffer Uniforms : register(b3) {
   float bright;      // brightness add
   float contrast;    // contrast add (around mid-grey)
   float intensity;   // crossfade with the untouched input
-  float _p0, _p1, _p2;
+  float alpha_scale; // output alpha multiplier (transparent endpoints)
+  float _p0, _p1;
 };
 
 [numthreads(8, 8, 1)]
@@ -49,7 +50,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (invert > 0.5) col.rgb = 1.0 - col.rgb;
   col.rgb = saturate(col.rgb);
 
-  // Crossfade with the untouched input.
+  // Crossfade with the untouched input, then scale alpha (transparent
+  // endpoints fade the whole output toward 0 alpha).
   float4 base = inputTex.SampleLevel(linearSampler, uv, 0.0);
-  outputTex[gid.xy] = lerp(base, col, saturate(intensity));
+  float4 outc = lerp(base, col, saturate(intensity));
+  outc.a *= saturate(alpha_scale);
+  outputTex[gid.xy] = outc;
 }

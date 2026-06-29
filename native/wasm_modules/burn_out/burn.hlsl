@@ -13,8 +13,8 @@ RWTexture2D<float4> outputTex : register(u1);
 cbuffer Uniforms : register(b2) {
   float sat_amt;     // saturation add (>0 boosts; soft-clipped in C++)
   float con_amt;     // contrast add (around mid-grey)
-  float exposure;    // exposure push (toward white)
-  float white_fade;  // crossfade to pure white at the burn peak
+  float brightness;  // tone lift/crush before the fade (optional flash)
+  float fade_black;  // crossfade to black at the burn peak (the fade-out)
   float alpha_fade;  // alpha reduction (compositing fade-out)
   float _p0, _p1, _p2;
 };
@@ -28,16 +28,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float4 c = inputTex[gid.xy];
   float3 rgb = c.rgb;
 
-  // Saturation around luma.
+  // The "burn": saturation + contrast lift (the colours intensify on the way
+  // down), an optional brightness flash, then a crossfade to BLACK — Burn Out
+  // is an emotional fade-OUT, not a white blow-out.
   float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + sat_amt);
-
-  // Contrast around mid-grey.
   rgb = (rgb - 0.5) * (1.0 + con_amt) + 0.5;
-
-  // Exposure push, then crossfade to white at the peak — the blow-out.
-  rgb *= (1.0 + exposure);
-  rgb = lerp(rgb, float3(1.0, 1.0, 1.0), saturate(white_fade));
+  rgb += brightness;
+  rgb = lerp(rgb, float3(0.0, 0.0, 0.0), saturate(fade_black));
   rgb = saturate(rgb);
 
   float a = c.a * (1.0 - saturate(alpha_fade));

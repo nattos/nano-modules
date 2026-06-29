@@ -14,16 +14,20 @@
  * Flip Y, Hue Rotate, Invert RGB, with Bright.Contrast (Cutoff/Boost), an
  * Attack-Release env (Env Time/Trigger) and an Alpha-Mode blend out.
  *
- * v2 RE-ARCHITECTURE (flagged per DNODE_MIGRATION_NOTES §3): the scheduler is a
- * clean internal phase clock (`rate`) plus an additive `sweep` input (drive it
- * from a beat tap for sync); each step's transform is seeded by the step index
- * (deterministic, reproducible). DROPPED for v2 (recoverable later): the 22 Alpha
- * blend modes (we crossfade), the start/end deadzones, the optical-flow "Use
- * Motion" motion-blur path, and the explicit Attack-Release env (use `intensity`
- * or a tap). `min/max_scale` are raw scale factors; the rest are [0,1].
+ * This is a MANUALLY-driven effect: `sweep` ∈ [0,1] (a knob or an automation
+ * curve) is the sole time source — at sweep=0 it's a clean identity, and it
+ * stutters through `levels` steps as you sweep up. Each step's transform is
+ * seeded by the step index (deterministic, reproducible). A start/end deadzone
+ * eases the endpoints back to rest, and `transparent_endpoints` fades the
+ * output to TRANSPARENT there (the original's deadzone/alpha behaviour).
  *
- * Stateful only in the phase clock; is_identity is CONFIG-only (intensity≈0),
- * which is safe (raising intensity is a config change → un-aliased).
+ * v2 RE-ARCHITECTURE (flagged per DNODE_MIGRATION_NOTES §3): DROPPED for v2
+ * (recoverable later): the 22 Alpha blend modes (we crossfade), the optical-flow
+ * "Use Motion" motion-blur path, and the explicit Attack-Release env (use
+ * `intensity` or a tap). `min/max_scale` are raw scale factors; the rest [0,1].
+ *
+ * Stateless (pure function of sweep + params) → TimeIndependent, and is_identity
+ * (config-only) at sweep in the deadzone or intensity 0.
  */
 
 #include <gpu.h>
@@ -36,7 +40,6 @@
 namespace stutter_scale {
 
 static constexpr float TAU          = 6.28318530717958647692f;
-static constexpr float RATE_SCALE   = 2.0f;  // rate=1 → 2 phase units/sec
 static constexpr float JITTER_SCALE = 0.5f;  // jitter=1 → up to 0.5 uv translation
 
 struct Uniforms {
@@ -49,7 +52,8 @@ struct Uniforms {
   float bright;
   float contrast;
   float intensity;
-  float _p0, _p1, _p2;
+  float alpha_scale;
+  float _p0, _p1;
 };
 static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch");
 
@@ -59,7 +63,6 @@ struct State {
   bool initialized = false;
 
   // Schema-mirrored params.
-  float rate       = 0.6f;
   float sweep      = 0.0f;
   int   levels     = 10;
   float min_scale  = 1.0f;
@@ -68,12 +71,27 @@ struct State {
   float hue        = 0.0f;
   float boost      = 0.25f;
   float intensity  = 1.0f;
+  float deadzone   = 0.05f;
+  bool  end_deadzone = true;
+  bool  transparent_endpoints = false;
   bool  do_flip    = true;
   bool  do_invert  = false;
   int   seed       = 1234;
-
-  double clock = 0.0; // internal phase accumulator
 };
+
+// Endpoint ease: 0 at sweep≈0 (and ≈1 if end_deadzone), 1 across the middle.
+static inline float deadzoneFade(const State* s) {
+  float sw = s->sweep < 0.0f ? 0.0f : (s->sweep > 1.0f ? 1.0f : s->sweep);
+  float dz = s->deadzone;
+  float f = (dz <= 1e-4f) ? (sw > 0.0f ? 1.0f : 0.0f)
+                          : (sw / dz < 1.0f ? sw / dz : 1.0f);
+  if (s->end_deadzone) {
+    float fe = (dz <= 1e-4f) ? (sw < 1.0f ? 1.0f : 0.0f)
+                             : ((1.0f - sw) / dz < 1.0f ? (1.0f - sw) / dz : 1.0f);
+    f = f < fe ? f : fe;
+  }
+  return f < 0.0f ? 0.0f : f;
+}
 
 static gpu::ComputePSO s_pso;
 
@@ -86,10 +104,8 @@ static inline float rand01(uint32_t h) { return (h >> 8) * (1.0f / 16777216.0f);
 void module_init() {
   state::init("warp.legacy.stutter_scale", {1, 0, 0},
     state::Schema()
-      .floatField("rate", 0.6f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Internal stutter clock speed (0 = driven only by sweep).")
       .floatField("sweep", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Phase offset — drive from a beat tap for sync.")
+                  nullptr, "The stutter playhead (knob / automation). 0 = identity.")
       .intField  ("levels", 10, 1, 25, state::PrimaryInput, 0, nullptr,
                   "Number of discrete stutter steps per phase unit.")
       .floatField("min_scale", 1.0f, 1.0f, 16.0f, state::PrimaryInput, nullptr, 0.05f,
@@ -104,9 +120,15 @@ void module_init() {
                   nullptr, "Contrast/brightness boost.")
       .floatField("intensity", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Crossfade with the untouched input.")
+      .floatField("deadzone", 0.05f, 0.0f, 0.5f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Endpoint ease — fraction of the sweep that returns to rest.")
+      .boolField ("end_deadzone", true, state::PrimaryInput, "Also ease back to rest near sweep=1.")
+      .boolField ("transparent_endpoints", false, state::PrimaryInput,
+                  "At the endpoints fade to transparent instead of the input.")
       .boolField ("flip", true, state::PrimaryInput, "Allow random Y-flips per step.")
       .boolField ("color_invert", false, state::PrimaryInput, "Allow random colour inversion per step.")
       .intField  ("seed", 1234, 0, 65535, state::PrimaryInput, 0, nullptr, "Random seed.")
+      .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
 
@@ -140,18 +162,11 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->clock = 0.0;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
 }
 
-void tick(void* self, double dt) {
-  auto* s = static_cast<State*>(self);
-  if (!s) return;
-  if (dt < 0.0) dt = 0.0;
-  s->clock += dt * (double)s->rate * (double)RATE_SCALE;
-  if (s->clock > 1.0e9) s->clock = std::fmod(s->clock, 1.0e6);
-}
+void tick(void* self, double dt) { (void)self; (void)dt; }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
@@ -161,8 +176,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
     int l = len[i];
-    if      (state::pathIs(p, l, "rate"))         s->rate      = state::patchFloat(i);
-    else if (state::pathIs(p, l, "sweep"))        s->sweep     = state::patchFloat(i);
+    if      (state::pathIs(p, l, "sweep"))        s->sweep     = state::patchFloat(i);
     else if (state::pathIs(p, l, "levels"))       s->levels    = state::patchInt(i);
     else if (state::pathIs(p, l, "min_scale"))    s->min_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "max_scale"))    s->max_scale = state::patchFloat(i);
@@ -170,6 +184,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "hue"))          s->hue       = state::patchFloat(i);
     else if (state::pathIs(p, l, "boost"))        s->boost     = state::patchFloat(i);
     else if (state::pathIs(p, l, "intensity"))    s->intensity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "deadzone"))     s->deadzone  = state::patchFloat(i);
+    else if (state::pathIs(p, l, "end_deadzone")) s->end_deadzone = state::patchBool(i);
+    else if (state::pathIs(p, l, "transparent_endpoints")) s->transparent_endpoints = state::patchBool(i);
     else if (state::pathIs(p, l, "flip"))         s->do_flip   = state::patchBool(i);
     else if (state::pathIs(p, l, "color_invert")) s->do_invert = state::patchBool(i);
     else if (state::pathIs(p, l, "seed"))         s->seed      = state::patchInt(i);
@@ -178,13 +195,14 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
 void on_resolume_param(void* self, long long, double) { (void)self; }
 
-// Config-only identity (intensity ≈ 0 → crossfade is all input). Safe: the
-// stutter clock is irrelevant when intensity is 0, and raising intensity is a
-// config change that un-aliases the stage.
+// Config-only identity: intensity 0, or the sweep sits in a deadzone where the
+// output equals the input (only when NOT fading to transparent there).
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  return (s->intensity <= 1e-3f) ? 1 : 0;
+  if (s->intensity <= 1e-3f) return 1;
+  if (!s->transparent_endpoints && deadzoneFade(s) <= 1e-3f) return 1;
+  return 0;
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -194,10 +212,11 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // Quantize phase into the current step, then seed this step's transform.
+  // Quantize the sweep into the current step, then seed this step's transform.
   int levels = s->levels < 1 ? 1 : s->levels;
-  double phase = s->clock + (double)s->sweep;
-  long step = (long)std::floor(phase * (double)levels);
+  float sweep = s->sweep < 0.0f ? 0.0f : (s->sweep > 1.0f ? 1.0f : s->sweep);
+  long step = (long)std::floor((double)sweep * (double)levels);
+  float fade = deadzoneFade(s);
   uint32_t h = hash_u32((uint32_t)(step * 2654435761u) ^ (uint32_t)s->seed);
 
   float r0 = rand01(h);              h = hash_u32(h);
@@ -217,7 +236,10 @@ void render(void* self, int vp_w, int vp_h) {
   u.hue_shift = (r5 * 2.0f - 1.0f) * s->hue * TAU;
   u.bright    = 0.0f;
   u.contrast  = s->boost;
-  u.intensity = s->intensity;
+  // In the deadzone, ease back to rest: transparent → drop alpha; otherwise
+  // crossfade back to the untouched input.
+  u.intensity = s->transparent_endpoints ? s->intensity : (s->intensity * fade);
+  u.alpha_scale = s->transparent_endpoints ? fade : 1.0f;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

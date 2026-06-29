@@ -64,7 +64,7 @@ void module_init() {
       .floatField("strength", 0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Sphere-aware horizontal blur — wider toward the top/bottom edges.")
       .floatField("gaussian", 0.4f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Plain isotropic Gaussian softening on top.")
+                  nullptr, "Isotropic Gaussian softening on top (scaled by strength).")
       .floatField("quality",  0.25f, 0.05f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Sample density of both blur stages (tuning).")
       .capability(state::Capability::TimeIndependent)
@@ -128,7 +128,8 @@ void on_resolume_param(void* self, long long, double) { (void)self; }
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  return (s->strength <= 1e-3f && s->gaussian <= 1e-3f) ? 1 : 0;
+  // Both stages are gated by strength, so strength=0 ⇒ pure passthrough.
+  return (s->strength <= 1e-3f) ? 1 : 0;
 }
 
 static void ensureExpandTex(State* s, int w, int h) {
@@ -169,8 +170,10 @@ void render(void* self, int vp_w, int vp_h) {
     src = s->expand_tex;
   }
 
-  // Gaussian softening on top (radius≈0 → a straight passthrough copy).
-  s_blur.applyWithRadius(src, out, vp_w, vp_h, s->gaussian, s->quality);
+  // Gaussian softening on top, gated by strength so strength=0 is a true
+  // identity (the `gaussian` knob is the soften AMOUNT within the blur, not an
+  // independent always-on blur). radius≈0 → a straight passthrough copy.
+  s_blur.applyWithRadius(src, out, vp_w, vp_h, s->strength * s->gaussian, s->quality);
   gpu::Device::submit();
 }
 

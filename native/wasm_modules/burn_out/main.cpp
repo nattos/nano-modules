@@ -43,13 +43,12 @@ namespace burn_out {
 // buried in Map/Curve nodes and are approximated here).
 static constexpr float SAT_K = 1.6f;  // saturation_boost=1 → up to +160% sat
 static constexpr float CON_K = 1.0f;  // contrast_boost=1   → up to +100% contrast
-static constexpr float EXP_K = 2.0f;  // brightness_boost=1 → up to +200% exposure
 
 struct Uniforms {
   float sat_amt;
   float con_amt;
-  float exposure;
-  float white_fade;
+  float brightness;
+  float fade_black;
   float alpha_fade;
   float _p0, _p1, _p2;
 };
@@ -65,8 +64,8 @@ struct State {
   float release          = 1.0f;  // seconds
   float saturation_boost = 0.5f;
   float contrast_boost   = 0.5f;
-  float brightness_boost = 0.5f;
-  float white_fade       = 0.5f;
+  float brightness       = 0.0f; // tone lift/crush (flash), [-1,1]
+  float darkness         = 1.0f; // how black the peak gets
   bool  modulate_alpha   = false;
 
   // Trigger/gate edge tracking.
@@ -100,13 +99,13 @@ void module_init() {
       .floatField("release", 1.0f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
                   "s", "Decay time of the burn envelope.")
       .floatField("saturation_boost", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Saturation lift at the burn peak.")
+                  nullptr, "Saturation lift on the way down (the burn).")
       .floatField("contrast_boost", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Contrast lift at the burn peak.")
-      .floatField("brightness_boost", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Exposure push toward white at the burn peak.")
-      .floatField("white_fade", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "How far the peak crossfades to pure white.")
+                  nullptr, "Contrast lift on the way down (the burn).")
+      .floatField("darkness", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "How black the peak fades to (1 = full black).")
+      .floatField("brightness", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Tone lift/crush before the fade (a flash).")
       .boolField ("modulate_alpha", false, state::PrimaryInput,
                   "Also drop alpha with the burn (compositing fade-out).")
       .textureField("tex_in",  state::PrimaryInput)
@@ -187,8 +186,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "release"))          s->release          = state::patchFloat(i);
     else if (state::pathIs(p, l, "saturation_boost")) s->saturation_boost = state::patchFloat(i);
     else if (state::pathIs(p, l, "contrast_boost"))   s->contrast_boost   = state::patchFloat(i);
-    else if (state::pathIs(p, l, "brightness_boost")) s->brightness_boost = state::patchFloat(i);
-    else if (state::pathIs(p, l, "white_fade"))       s->white_fade       = state::patchFloat(i);
+    else if (state::pathIs(p, l, "darkness"))         s->darkness         = state::patchFloat(i);
+    else if (state::pathIs(p, l, "brightness"))       s->brightness       = state::patchFloat(i);
     else if (state::pathIs(p, l, "modulate_alpha"))   s->modulate_alpha   = state::patchBool(i);
     else if (state::pathIs(p, l, "gate")) {
       bool g = state::patchBool(i);
@@ -226,8 +225,8 @@ void render(void* self, int vp_w, int vp_h) {
   Uniforms u = {};
   u.sat_amt    = soft * s->saturation_boost * SAT_K;
   u.con_amt    = soft * s->contrast_boost   * CON_K;
-  u.exposure   = B    * s->brightness_boost * EXP_K;
-  u.white_fade = B    * s->white_fade;
+  u.brightness = s->brightness * soft;
+  u.fade_black = B * s->darkness;
   u.alpha_fade = s->modulate_alpha ? B : 0.0f;
   s->uniform_buf.writeOne(u);
 

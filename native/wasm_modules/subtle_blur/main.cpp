@@ -41,8 +41,9 @@
 namespace subtle_blur {
 
 static constexpr float TAU          = 6.28318530717958647692f;
-static constexpr float OFFSET_SCALE = 0.04f; // amount=1 → 4% of short axis
+static constexpr float OFFSET_SCALE = 0.02f; // amount=1 → 2% of short axis
 static constexpr float DRIFT_RATE   = 0.15f; // movement=1 → 0.15 turns/sec
+static constexpr float BLUR_SCALE   = 0.5f;  // blur=1 → half the GaussianBlur ceiling
 
 struct Uniforms {
   float aspect_x;
@@ -60,9 +61,9 @@ struct State {
   bool         initialized = false;
 
   // Schema-mirrored params.
-  float blur     = 0.3f;
-  float amount   = 0.5f;
-  float movement = 0.25f;
+  float blur     = 0.15f;
+  float amount   = 0.25f;
+  float movement = 0.2f;
   float hue      = 0.0f;
   float quality  = 0.5f;
 
@@ -77,11 +78,11 @@ static fx::GaussianBlur  s_blur;
 void module_init() {
   state::init("filter.legacy.subtle_blur", {1, 0, 0},
     state::Schema()
-      .floatField("blur",     0.3f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("blur",     0.15f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Gaussian blur amount.")
-      .floatField("amount",   0.5f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("amount",   0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Chromatic offset magnitude — RGB fringe width.")
-      .floatField("movement", 0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("movement", 0.2f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Drift speed of the chromatic offset direction.")
       .floatField("hue",      0.0f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Base direction of the colour split (0..1 = full turn).")
@@ -186,7 +187,7 @@ void render(void* self, int vp_w, int vp_h) {
 
   if (!do_chroma) {
     // Blur straight to output (applyWithRadius handles radius≈0 as a copy).
-    s_blur.applyWithRadius(in, out, vp_w, vp_h, s->blur, s->quality);
+    s_blur.applyWithRadius(in, out, vp_w, vp_h, s->blur * BLUR_SCALE, s->quality);
     gpu::Device::submit();
     return;
   }
@@ -195,7 +196,7 @@ void render(void* self, int vp_w, int vp_h) {
   if (do_blur) {
     ensureBlurTex(s, vp_w, vp_h);
     if (!s->blur_tex.valid()) return;
-    s_blur.applyWithRadius(in, s->blur_tex, vp_w, vp_h, s->blur, s->quality);
+    s_blur.applyWithRadius(in, s->blur_tex, vp_w, vp_h, s->blur * BLUR_SCALE, s->quality);
     src = s->blur_tex;
   }
 

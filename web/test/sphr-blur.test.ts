@@ -81,9 +81,11 @@ describe('SPHR Blur (filter.legacy.sphr_blur) E2E', () => {
     expanded.trace('out').expectDifferentFrom(sharp.trace('out'), 100);
   });
 
-  it('Gaussian stage softens on top', async () => {
-    const none = await runChain('sphr_gn', { strength: 0.0, gaussian: 0.0 }, 'sphr_gauss_off');
-    const soft = await runChain('sphr_gs', { strength: 0.0, gaussian: 1.0, quality: 0.6 }, 'sphr_gauss_on');
+  it('Gaussian stage softens on top (gated by strength)', async () => {
+    // gaussian is scaled by strength, so both need strength>0; the extra
+    // gaussian softening is what differs.
+    const none = await runChain('sphr_gn', { strength: 0.3, gaussian: 0.0, quality: 0.6 }, 'sphr_gauss_off');
+    const soft = await runChain('sphr_gs', { strength: 0.3, gaussian: 1.0, quality: 0.6 }, 'sphr_gauss_on');
     expect(none.success).toBe(true);
     expect(soft.success).toBe(true);
     soft.trace('out').expectDifferentFrom(none.trace('out'), 100);

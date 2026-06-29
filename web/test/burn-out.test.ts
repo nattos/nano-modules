@@ -23,13 +23,13 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
     expect(frame.metadata?.id).toBe('color.legacy.burn_out');
     const names = frame.params.map(p => p.name);
     for (const n of ['trigger', 'gate', 'amount', 'attack', 'release',
-                     'saturation_boost', 'contrast_boost', 'brightness_boost',
-                     'white_fade', 'modulate_alpha']) {
+                     'saturation_boost', 'contrast_boost', 'darkness',
+                     'brightness', 'modulate_alpha']) {
       expect(names).toContain(n);
     }
   });
 
-  it('manual amount blows the image out toward white', async () => {
+  it('manual amount fades the image out to black', async () => {
     const burned = await runGpuEffectTest({
       module: 'burn_out.wasm', bundle: 'legacy',
       inputColor: MID,
@@ -38,11 +38,11 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
       dumpName: 'burn_amount',
     });
     expect(burned.success).toBe(true);
-    // The mid input (~76/76/128) should lift well toward white.
+    // amount=1, darkness=1 → the mid input fades to (near) black.
     const p = burned.pixelAt(32, 32);
-    expect(p.r).toBeGreaterThan(140);
-    expect(p.g).toBeGreaterThan(140);
-    expect(p.b).toBeGreaterThan(140);
+    expect(p.r).toBeLessThan(30);
+    expect(p.g).toBeLessThan(30);
+    expect(p.b).toBeLessThan(30);
   });
 
   it('is a passthrough at rest (is_identity)', async () => {
@@ -68,7 +68,7 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
     });
     expect(fired.success).toBe(true);
     const p = fired.pixelAt(32, 32);
-    expect(p.r).toBeGreaterThan(140); // blown out, not the resting 76
+    expect(p.r).toBeLessThan(50); // faded toward black, not the resting 76
   });
 
   it('modulate_alpha drops alpha with the burn', async () => {
