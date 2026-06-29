@@ -447,8 +447,12 @@ void render(void* self, int vp_w, int vp_h) {
   // Gizmo box geometry (cover-square half-extents) + motion offset.
   float box_hw = 0.5f * s->gizmo_size;
   float box_hh = 0.5f * s->gizmo_size * s->gizmo_squash;
-  // curve10(gizmo_width) → outline half-thickness; gentle ease, calibrated small.
-  float thick = 0.5f * lerpf(0.004f, 0.06f, s->gizmo_width * s->gizmo_width);
+  // Outline half-thickness (cover-square), linear from 0 (~1.5px at the 0.3
+  // default, up to ~5px). The shader's +0.5 AA keeps a sub-pixel line visible as
+  // a 1px hairline; a width-fade folded into the alpha takes it cleanly to zero
+  // over the bottom of the range so the box can be dialled out entirely.
+  float thick = 0.04f * s->gizmo_width;
+  float width_fade = clampf(s->gizmo_width / 0.04f, 0.0f, 1.0f);  // 0 at 0 → hairline → gone
   // Motion velocity = (held − smooth) × 2 × scale × motion_scale (the original).
   float gox = (s->px - s->sx) * 2.0f * s->cur_scale * s->gizmo_motion_scale;
   float goy = (s->py - s->sy) * 2.0f * s->cur_scale * s->gizmo_motion_scale;
@@ -463,7 +467,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Shown only while actively panning (hidden during sub/sequence dwells —
   // faithful to the original's "motion frame" gate, minus the per-tick blink).
   u.giz_show = (s->show_gizmo && s->phase == PHASE_PAN) ? 1.0f : 0.0f;
-  u.giz_alpha = s->gizmo_alpha * s->gizmo_a;
+  u.giz_alpha = s->gizmo_alpha * s->gizmo_a * width_fade;
   u.giz_r = s->gizmo_r; u.giz_g = s->gizmo_g; u.giz_b = s->gizmo_b;
   u.filter_mode = (float)s->filter_mode;
   s->uniform_buf.writeOne(u);

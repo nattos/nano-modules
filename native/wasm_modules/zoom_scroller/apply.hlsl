@@ -110,12 +110,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   // Gizmo outline box, centred at the frame centre, nudged by motion.
+  // Analytic AA line: coverage of a band of half-width `giz_thick` around the
+  // outline. The +0.5 half-pixel term gives an infinitely thin line a 1px
+  // footprint (so a hairline still shows, just dimmer) instead of vanishing
+  // between pixel centres. giz_alpha already carries the width-fade, so the
+  // line cleanly disappears as gizmo_width → 0.
   if (giz_show > 0.5 && giz_alpha > 0.0) {
     float2 p = sq - float2(giz_off_x, giz_off_y);
     float d = abs(sdBox(p, float2(giz_hw, giz_hh)));   // distance to the outline
-    float aa = 1.5 * aspect_y * 2.0 / float(h);
-    float edge = 1.0 - smoothstep(giz_thick, giz_thick + aa, d);
-    float a = edge * giz_alpha;
+    float aa = max(1.5 * aspect_y * 2.0 / float(h), 1e-5);
+    float cov = clamp((giz_thick - d) / aa + 0.5, 0.0, 1.0);
+    float a = cov * giz_alpha;
     color.rgb = lerp(color.rgb, float3(giz_r, giz_g, giz_b), a);
   }
 

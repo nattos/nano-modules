@@ -77,6 +77,30 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
     expect(brightOff).toBe(0);              // solid pan/zoom adds nothing
   });
 
+  it('gizmo_width scales from bold to hairline to gone', async () => {
+    // The line width must reach a true hairline and fully disappear at 0 (for
+    // "playability"), with a bolder line at the top — no fixed minimum width.
+    const litCount = async (gw: number, dump: string) => {
+      const f = await runGpuEffectTest({
+        module: 'zoom_scroller.wasm', bundle: 'legacy', width: 128, height: 128,
+        inputColor: SOLID,
+        params: [['show_gizmo', 1], ['gizmo_alpha', 1.0], ['gizmo_width', gw]],
+        ticks: 16, renderEachTick: true, dumpName: dump,
+      });
+      expect(f.success).toBe(true);
+      // Count pixels lifted toward the white box vs the blue background.
+      let lit = 0;
+      f.forEachPixel((c) => { if ((c.r - 38) + (c.g - 76) > 15) lit++; });
+      return lit;
+    };
+    const bold     = await litCount(1.0,  'zoom_gw_bold');
+    const hairline = await litCount(0.05, 'zoom_gw_hairline');
+    const gone     = await litCount(0.0,  'zoom_gw_gone');
+    expect(bold).toBeGreaterThan(hairline);   // bolder at the top
+    expect(hairline).toBeGreaterThan(0);      // a faint hairline still draws
+    expect(gone).toBe(0);                     // width 0 → fully disappears
+  });
+
   it('zooms a structured input (different scales differ)', async () => {
     // source.grid → zoom_scroller. Pin the zoom to two very different levels via
     // min==max; the grid magnified 5× must differ from 1× (gizmo off so only the
