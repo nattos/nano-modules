@@ -20,6 +20,7 @@ import {
 } from '../dxv-decoder';
 import type { FrameSource } from './frame-source';
 import { DxvFrameSource } from './dxv-frame-source';
+import { classifySource } from './dxv-sniff';
 import { VideoElementFrameSource } from './video-element-frame-source';
 import { ImageFrameSource } from './image-frame-source';
 import { FrameCache, type FrameCacheStats } from './frame-cache';
@@ -185,27 +186,48 @@ export class VideoPlaybackService {
     // which emits the same RGBA8 GPUTexture and the same FrameSource API.
     // For <video>, pass the persisted seek-strategy verdict so we skip
     // re-probing a source we've classified before.
+    // The browser-decoder fallback (a <video> element). Factored out so both the
+    // non-DXV path and the DXV-false-positive recovery reuse one open.
+    const openVideoElement = () => VideoElementFrameSource.create(
+      this.gpuHost, blob, {
+        // Sequential intent forces play-forward; otherwise use the persisted
+        // seek-strategy verdict (or probe at open if neither).
+        streaming: opts?.sequential ? true : persistedSource?.videoStreaming,
+      });
+
     let frameSource: FrameSource;
     if (blob.type.startsWith('image/')) {
       // A still image masquerades as a 1-frame source (same cache/pump path).
       frameSource = await ImageFrameSource.create(this.gpuHost, blob);
     } else {
-    try {
-      frameSource = await DxvFrameSource.create(this.gpuHost, bytesSource, this.dxvWasmUrl);
-    } catch (dxvErr) {
-      try {
-        // Sequential intent forces play-forward; otherwise use the
-        // persisted seek-strategy verdict (or probe at open if neither).
-        frameSource = await VideoElementFrameSource.create(
-          this.gpuHost, blob, {
-            streaming: opts?.sequential ? true : persistedSource?.videoStreaming,
-          });
-      } catch (videoErr) {
-        throw new Error(
-          `could not open clip — not DXV (${(dxvErr as Error).message}) `
-          + `and <video> rejected it (${(videoErr as Error).message})`);
+      // Decide the backend by a cheap, decoder-free container sniff — do NOT
+      // probe by instantiating the DXV decoder. Instantiating that WASM module
+      // (its own WebAssembly.Memory) just to self-reject every non-DXV clip
+      // leaked a linear-memory instance per open and OOM'd long exports
+      // ("Cannot allocate Wasm memory for new instance"). Only genuine DXV
+      // streams pay for the DXV module now; everything else goes to <video>.
+      const kind = await classifySource(blob);   // 'dxv' | 'video' (image handled above)
+      if (kind === 'dxv') {
+        try {
+          frameSource = await DxvFrameSource.create(this.gpuHost, bytesSource, this.dxvWasmUrl);
+        } catch (dxvErr) {
+          // Sniff false-positive (a stray "DX" tag in an h264 file) or a real
+          // DXV decode failure → recover via <video>.
+          try {
+            frameSource = await openVideoElement();
+          } catch (videoErr) {
+            throw new Error(
+              `could not open clip — not DXV (${(dxvErr as Error).message}) `
+              + `and <video> rejected it (${(videoErr as Error).message})`);
+          }
+        }
+      } else {
+        try {
+          frameSource = await openVideoElement();
+        } catch (videoErr) {
+          throw new Error(`could not open clip — <video> rejected it (${(videoErr as Error).message})`);
+        }
       }
-    }
     }
     const cache = new FrameCache(this.gpuHost, this.budgetBytes);
     const cost = new CostTracker();
