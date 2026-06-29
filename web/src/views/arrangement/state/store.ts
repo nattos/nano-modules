@@ -3338,9 +3338,22 @@ export class ArrangementStore {
     this.mutateClips('set scale mode', refs, (c) => { if (c.source) c.source.scaleMode = mode; }, 'scale:clips');
   }
 
-  /** Set the bypass state on every selected clip (aligns all, one undo). */
-  setClipsBypassed(refs: { trackId: string; clipId: string }[], bypassed: boolean) {
-    this.mutateClips('set clip bypass', refs, (c) => { c.bypassed = bypassed; });
+  /** Play-mode / loop edits across clips — fans out the PATCH (not the whole loop
+   *  config) so per-clip slice points the patch doesn't touch are preserved. These
+   *  fields are clip-position-independent, so editing them together is safe. */
+  updateClipsLoop(refs: { trackId: string; clipId: string }[], patch: Partial<ClipLoopConfig>) {
+    const fields = Object.keys(patch).sort().join(',');
+    this.mutateClips('clip play mode', refs, (c) => { c.loop = { ...c.loop, ...patch }; }, `loop:clips:${fields}`);
+  }
+
+  /** Placement-transform edits across SOURCE clips — fans out the patch (anchor /
+   *  scale / rotation / flip), preserving any field the patch doesn't set. */
+  setClipsSourceTransform(
+    refs: { trackId: string; clipId: string }[], patch: Partial<SourceTransform>, coalesceKey?: string,
+  ) {
+    this.mutateClips('adjust source placement', refs, (c) => {
+      if (c.source) c.source.transform = { ...resolveSourceTransform(c.source.transform), ...patch };
+    }, coalesceKey ?? 'xform:clips');
   }
 
   /** Remove rail export/read taps by id across all clips (one undo). Ids are

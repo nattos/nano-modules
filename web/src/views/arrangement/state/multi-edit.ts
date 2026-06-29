@@ -173,6 +173,16 @@ function fieldValue(
   return dev && resolveDefault ? resolveDefault(dev.moduleType, field) : v;
 }
 
+/**
+ * Canonicalize a value for mixed-comparison. Booleans are stored by some widgets
+ * as numbers (`0`/`1`) and authored elsewhere as `false`/`true`; an unset clip
+ * resolves to its default (which may be either form). Collapsing booleans to
+ * numbers makes "all off" read as agreement instead of a spurious "many".
+ */
+function canonField(v: unknown): unknown {
+  return typeof v === 'boolean' ? (v ? 1 : 0) : v;
+}
+
 export function aggregateField(
   clips: ClipList,
   common: CommonDevice,
@@ -184,9 +194,10 @@ export function aggregateField(
   for (const clip of clips) {
     const id = common.idByClip.get(clip.id);
     if (id === undefined) continue;
-    const v = fieldValue(clip, id, field, resolveDefault);
-    if (clip === clips[0]) repValue = v;
-    if (!inUse.some((u) => u === v)) inUse.push(v); // exact `===` over authored values
+    const raw = fieldValue(clip, id, field, resolveDefault);
+    const v = canonField(raw);
+    if (clip === clips[0]) repValue = raw; // widgets read clip[0]'s RAW value
+    if (!inUse.some((u) => u === v)) inUse.push(v); // canon `===` (bool≡0/1)
   }
   return { mixed: inUse.length > 1, value: repValue, inUse };
 }

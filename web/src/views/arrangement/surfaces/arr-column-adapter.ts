@@ -79,6 +79,20 @@ function availableEffects(): AvailableEffect[] {
     }));
 }
 
+/** A common rail tap surfaced in the multi-edit dashboard. */
+export interface CommonRailTapView {
+  kind: 'export' | 'read';
+  railId: string;
+  /** clip[0]'s tap id (for the pip's `w:`/`r:` wire id). */
+  repTapId: string;
+  /** clip[0]'s device the tap touches (a common device → fan-out via setField). */
+  repDeviceId: string;
+  /** The device field (sourceField for exports, targetField for reads). */
+  field: string;
+  /** clipId → that clip's tap id, for fan-out deletion across the selection. */
+  tapIdsByClip: Map<string, string>;
+}
+
 /** Binds the adapter to a clip's or track's device list + store mutators. */
 export interface DeviceTarget {
   /** Stable key — used as the column sketchId and the adapter-cache key. */
@@ -112,6 +126,9 @@ export interface DeviceTarget {
   raggedWireCount?(): number;
   /** Multi-edit only: count of return-track rail taps present on only SOME clips. */
   raggedRailCount?(): number;
+  /** Multi-edit only: the rail taps COMMON to every clip, for the dashboard
+   *  (knob/spark bound to clip[0]'s rep device; deletes fan out by tap id). */
+  commonRailTaps?(): CommonRailTapView[];
   /** Optional capability overrides merged over the defaults (e.g. multi disables
    *  reorder/wiring/tracing in early phases). */
   capsOverride?: Partial<ColumnCapabilities>;
@@ -164,8 +181,15 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
       .map((r) => store.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
       .filter((c): c is Clip => !!c);
   const model = (): MultiEditModel => buildMultiEditModel(clips());
-  const resolveDefault = (moduleType: string, field: string): unknown =>
-    catalogEffect(moduleType)?.fields.find((f) => f.key === field)?.default;
+  // The engine schema is authoritative (it carries EVERY field's default — incl.
+  // bool/enum, which the float-only catalog skips, so an unset bool no longer
+  // reads "mixed" vs an explicit-off clip). Fall back to the catalog, then undefined.
+  const resolveDefault = (moduleType: string, field: string): unknown => {
+    const schema = store.enginePlugin(moduleType)?.schema as Record<string, { default?: unknown }> | undefined;
+    const sd = schema?.[field]?.default;
+    if (sd !== undefined && sd !== null) return sd;
+    return catalogEffect(moduleType)?.fields.find((f) => f.key === field)?.default;
+  };
 
   // Bridge between an insert and the retype that immediately follows it: the new
   // devices aren't in the reconciliation yet, so map the rep id (clip[0]'s new
@@ -246,6 +270,19 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
     },
     raggedWireCount: () => model().wires.raggedCount,
     raggedRailCount: () => model().rails.raggedCount,
+    commonRailTaps: (): CommonRailTapView[] => {
+      const m = model();
+      const out: CommonRailTapView[] = [];
+      for (const e of m.rails.exports) {
+        const dev = m.devices.common[e.key.srcCommon];
+        if (dev) out.push({ kind: 'export', railId: e.key.railId, repTapId: e.repId, repDeviceId: dev.repId, field: e.key.sourceField, tapIdsByClip: e.idByClip });
+      }
+      for (const r of m.rails.reads) {
+        const dev = m.devices.common[r.key.destCommon];
+        if (dev) out.push({ kind: 'read', railId: r.key.railId, repTapId: r.repId, repDeviceId: dev.repId, field: r.key.targetField, tapIdsByClip: r.idByClip });
+      }
+      return out;
+    },
     // Reorder of common devices fans out (each clip moves its matched device).
     // Wiring overlay + output-trace cards stay off — no single live engine
     // instance for a multi-selection (lifted/addressed in later phases).
@@ -284,6 +321,39 @@ export function buildClipFieldBinding(trackId: string, clipId: string, deviceId:
         update: (v: unknown) => store.setClipDeviceField(trackId, clipId, deviceId, field, v),
         accept: () => {},
         cancel: () => store.setClipDeviceField(trackId, clipId, deviceId, field, orig),
+      };
+    },
+  };
+}
+
+/**
+ * A `FieldBinding` for a multi-edit dashboard knob/spark: reads clip[0]'s value
+ * (representative) but WRITES fan out to the matched common device in every
+ * selected clip via the multi target's `setField`. No live modulation (there's no
+ * single aggregated telemetry stream across a selection).
+ */
+export function buildMultiDashBinding(
+  target: DeviceTarget, getClip0: () => Clip | undefined, repDeviceId: string,
+): FieldBinding {
+  const dev = (): Device | undefined => getClip0()?.sketch.devices.find((d) => d.id === repDeviceId);
+  const fallback = (field: string): number =>
+    catalogEffect(dev()?.moduleType ?? '')?.fields.find((f) => f.key === field)?.default ?? 0;
+  const read = (field: string): number => {
+    const v = dev()?.state?.[field];
+    return typeof v === 'number' ? v : fallback(field);
+  };
+  return {
+    instanceKey: repDeviceId,
+    getValue: read,
+    getModulation: () => null,
+    setValue: (field, value) => target.setField(repDeviceId, field, value),
+    beginContinuousEdit: (field, value) => {
+      const orig = read(field);
+      target.setField(repDeviceId, field, value);
+      return {
+        update: (v: unknown) => target.setField(repDeviceId, field, v),
+        accept: () => {},
+        cancel: () => target.setField(repDeviceId, field, orig),
       };
     },
   };

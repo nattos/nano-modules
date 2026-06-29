@@ -125,6 +125,24 @@ describe('aggregateField', () => {
     expect(agg.mixed).toBe(false);
     expect(agg.value).toBe(0.5);
   });
+
+  it('a boolean stored as 0 vs unset/false is NOT mixed (canon bool≡0/1)', () => {
+    // field-toggle writes numeric 0/1; an untouched clip resolves to its default
+    // (false here). All "off" → must read as agreement, not a spurious "many".
+    const a = clip('a', [dev('a1', 'sat', { invert: 0 })]);
+    const b = clip('b', [dev('b1', 'sat')]); // unset → default false
+    const r = reconcileDevices([a, b]);
+    const agg = aggregateField([a, b], r.common[0], 'invert', () => false);
+    expect(agg.mixed).toBe(false);
+  });
+
+  it('a boolean genuinely differing (1 vs 0) IS mixed', () => {
+    const a = clip('a', [dev('a1', 'sat', { invert: 1 })]);
+    const b = clip('b', [dev('b1', 'sat', { invert: false })]);
+    const r = reconcileDevices([a, b]);
+    const agg = aggregateField([a, b], r.common[0], 'invert');
+    expect(agg.mixed).toBe(true);
+  });
 });
 
 describe('reconcileWires', () => {

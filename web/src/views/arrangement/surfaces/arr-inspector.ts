@@ -16,7 +16,7 @@ import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type Ex
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
-import { ArrColumnAdapter, clipTarget, trackTarget, multiClipTarget, buildClipFieldBinding, type DeviceTarget } from './arr-column-adapter';
+import { ArrColumnAdapter, clipTarget, trackTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
 import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
@@ -713,9 +713,11 @@ export class ArrInspector extends MobxLitElement {
       return { mixed: inUse.length > 1, value: vals[0], inUse };
     };
     const nameAgg = agg(clips.map((c) => c.name));
+    const clip0 = clips[0];
     const sourceClips = clips.filter((c) => !!c.source);
     const scaleAgg = agg(sourceClips.map((c) => c.source?.scaleMode ?? 'fit'));
-    const bypassAgg = agg(clips.map((c) => !!c.bypassed));
+    const c0scale = clip0?.source?.scaleMode ?? 'fit';
+    const showPlacement = !!clip0?.source && (['fit', 'cover', 'none'] as const).includes(c0scale as any);
 
     const raggedWires = target.raggedWireCount?.() ?? 0;
     const raggedRails = target.raggedRailCount?.() ?? 0;
@@ -739,6 +741,14 @@ export class ArrInspector extends MobxLitElement {
       </div>
       <div class="body">
         ${note}
+        ${clip0
+          ? renderPlayModeControls(
+              clip0.loop,
+              clip0.source && clip0.source.fps ? clip0.source.durationFrames / clip0.source.fps : 0,
+              (patch) => store.updateClipsLoop(refs, patch),
+              store.composition.meta.timeSignature[0],
+            )
+          : ''}
         ${sourceClips.length
           ? html`<div class="row">
               <label>Scale</label>
@@ -752,17 +762,24 @@ export class ArrInspector extends MobxLitElement {
               </span>
             </div>`
           : ''}
-        <div class="row">
-          <label>State</label>
-          <span class="val seg">
-            ${([['Active', false], ['Bypassed', true]] as const).map(
-              ([label, val]) => html`<button
-                class="segbtn ${!bypassAgg.mixed && bypassAgg.value === val ? 'on' : ''} ${bypassAgg.inUse.includes(val) ? 'inuse' : ''}"
-                @click=${() => store.setClipsBypassed(refs, val)}
-              >${label}</button>`,
-            )}
-          </span>
-        </div>
+        ${showPlacement && clip0?.source
+          ? html`<div class="row">
+              <label>Placement</label>
+              <span class="val" style="flex:1; min-width:0;">
+                <source-transform-widget
+                  .canvasW=${store.composition.meta.resolution.width}
+                  .canvasH=${store.composition.meta.resolution.height}
+                  .videoW=${clip0.source.width ?? 0}
+                  .videoH=${clip0.source.height ?? 0}
+                  .srcUrl=${clip0.source.url ?? ''}
+                  .mode=${c0scale}
+                  .transform=${resolveSourceTransform(clip0.source.transform)}
+                  .onChange=${(patch: any, ck?: string) => store.setClipsSourceTransform(refs, patch, ck)}
+                ></source-transform-widget>
+              </span>
+            </div>`
+          : ''}
+        ${this.renderMultiDashboard(target, () => this.multiClipsFor(refs))}
         <div class="group-title chain-hdr"><span>Chain (common)</span></div>
         ${raggedWires > 0 || raggedRails > 0
           ? html`<div class="other-badges">
@@ -848,6 +865,70 @@ export class ArrInspector extends MobxLitElement {
               </div>`;
             })
           : html`<div class="dash-empty">No rail outputs.</div>`}
+      </div>
+    `;
+  }
+
+  /** clip[0] (the multi-edit reconciliation template) of a selection. */
+  private multiClipsFor(refs: { trackId: string; clipId: string }[]) {
+    const r = refs[0];
+    return r ? store.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId) : undefined;
+  }
+
+  /** Stable multi-edit dashboard bindings (fan-out writes), keyed per device. */
+  private multiDashBindings = new Map<string, FieldBinding>();
+  private multiDashBindingFor(target: DeviceTarget, getClip0: () => any, repDeviceId: string): FieldBinding {
+    const key = `${target.id}/${repDeviceId}`;
+    let b = this.multiDashBindings.get(key);
+    if (!b) { b = buildMultiDashBinding(target, getClip0, repDeviceId); this.multiDashBindings.set(key, b); }
+    return b;
+  }
+
+  /** The multi-edit dashboard: the rail taps COMMON to every selected clip. Knob/
+   *  spark edits fan out; dbl-clicking a pip removes that rail tap from ALL clips.
+   *  Ragged (clip-specific) taps are tallied separately by the "other rails" badge. */
+  private renderMultiDashboard(
+    target: DeviceTarget, getClip0: () => any,
+  ): TemplateResult {
+    const clip0 = getClip0();
+    const taps = clip0 ? target.commonRailTaps?.() ?? [] : [];
+    const inputs = taps.filter((t) => t.kind === 'read');
+    const outputs = taps.filter((t) => t.kind === 'export');
+    const delTaps = (t: { kind: 'export' | 'read'; tapIdsByClip: Map<string, string> }) =>
+      store.removeClipsRailTaps([...t.tapIdsByClip.values()].map((id) => ({ kind: t.kind === 'export' ? 'w' as const : 'r' as const, id })));
+    return html`
+      <div class="group-title" style="border-top:none">Dashboard · inputs</div>
+      <div class="dash-row">
+        ${inputs.length
+          ? inputs.map((t) => {
+              const m = this.fieldMeta(clip0, t.repDeviceId, t.field);
+              return html`<div class="dnode">
+                <span class="fpip in" title=${`rail → ${m.label} (double-click to remove from all)`}
+                  @pointerdown=${(e: Event) => e.stopPropagation()}
+                  @dblclick=${(e: Event) => { e.stopPropagation(); delTaps(t); }}></span>
+                <scalar-knob
+                  .binding=${this.multiDashBindingFor(target, getClip0, t.repDeviceId)}
+                  .fieldPath=${t.field} .label=${m.label} .min=${m.min} .max=${m.max}></scalar-knob>
+              </div>`;
+            })
+          : html`<div class="dash-empty">No shared rail inputs.</div>`}
+      </div>
+      <div class="group-title">Dashboard · outputs</div>
+      <div class="dash-row">
+        ${outputs.length
+          ? outputs.map((t) => {
+              const m = this.fieldMeta(clip0, t.repDeviceId, t.field);
+              return html`<div class="dnode">
+                <span class="fpip out" title=${`${m.label} → rail (double-click to remove from all)`}
+                  @pointerdown=${(e: Event) => e.stopPropagation()}
+                  @dblclick=${(e: Event) => { e.stopPropagation(); delTaps(t); }}></span>
+                <spark-chart
+                  .binding=${this.multiDashBindingFor(target, getClip0, t.repDeviceId)}
+                  .fieldPath=${t.field} .min=${m.min} .max=${m.max} .width=${44} .height=${20}></spark-chart>
+                <span class="dlabel">${m.label}</span>
+              </div>`;
+            })
+          : html`<div class="dash-empty">No shared rail outputs.</div>`}
       </div>
     `;
   }
