@@ -573,6 +573,18 @@ export class WasmSketchExecutor {
       this.exports.free(jptr);
     }
     this.accumulateDebugStats(slot.exPtr);
+
+    // Fire each effect's `on_state_ready` hook ONCE, now that the executor has
+    // applied this instance's initial state. It's the post-load hook effects use
+    // to set their initial inspector field visibility (e.g. warp.crop hides the
+    // inactive mode's fields via setFieldHidden). Without it that visibility was
+    // only ever applied on a LATER state patch — so a freshly-loaded clip showed
+    // the wrong fields until you nudged a value. `fireStateReady` is idempotent
+    // per host (stateReadyFired guard), so calling it every frame is a cheap
+    // no-op after the first.
+    for (const entry of chain) {
+      if (entry.type === 'module') this.instances.get(entry.instance_key)?.host.fireStateReady();
+    }
     return outHandle;
   }
 
