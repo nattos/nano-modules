@@ -250,7 +250,13 @@ interface ArrEditHandle extends EditHandle {
 }
 
 export class ArrColumnAdapter implements ColumnAdapter {
-  private pluginCache = new Map<string, PluginInfo>();
+  // Keyed by the REAL PluginInfo object identity (NOT by module-type string): the
+  // worker republishes a fresh PluginInfo whenever the schema changes — including
+  // when an effect hides/shows fields via setFieldHidden (e.g. warp.crop's inset
+  // params). A string key would pin the first merge forever and the label-merged
+  // copy would never pick up the new `hidden` flags. A WeakMap on the source ref
+  // rebuilds exactly when (and only when) the engine ships a new schema.
+  private pluginCache = new WeakMap<PluginInfo, PluginInfo>();
 
   constructor(private target: DeviceTarget) {}
 
@@ -312,8 +318,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
       // every effect is a discovered plugin).
       const real = store.enginePlugin(moduleType);
       if (!real) return undefined;
-      const mergedKey = `real:${moduleType}`;
-      const cachedReal = this.pluginCache.get(mergedKey);
+      const cachedReal = this.pluginCache.get(real);
       if (cachedReal) return cachedReal;
       const cat = catalogEffect(moduleType);
       const schema: Record<string, any> = {};
@@ -322,7 +327,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
         schema[k] = label && def && def.name == null ? { ...def, name: label } : def;
       }
       const merged: PluginInfo = { ...(real as unknown as PluginInfo), schema };
-      this.pluginCache.set(mergedKey, merged);
+      this.pluginCache.set(real, merged);
       return merged;
     },
     // instanceKey is the device id; translate to the engine key the live output

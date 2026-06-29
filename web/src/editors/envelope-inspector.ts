@@ -647,6 +647,14 @@ export class EnvelopeInspector extends MobxLitElement implements FieldEditorElem
       font-size: var(--app-fs-xs); color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
       padding: 4px 0 2px; line-height: 1.4;
     }
+    /* Multi-edit: the selected clips have DIFFERENT curves. We show clip[0]'s as a
+       representative (dimmed/dashed) and flag it; editing replaces all of them. */
+    .mixed-tag {
+      margin-left: 6px; font-style: italic; color: var(--app-text-color2, #888);
+      font-size: var(--app-fs-xs);
+    }
+    envelope-graph.mixed { opacity: 0.55; outline: 1px dashed var(--app-tint-4); outline-offset: -1px; }
+    .hint.mixed { color: var(--app-warn, #c90); opacity: 0.9; }
   `;
 
   connectedCallback() {
@@ -686,15 +694,24 @@ export class EnvelopeInspector extends MobxLitElement implements FieldEditorElem
 
   render() {
     if (!this.binding) return html``;
+    // Multi-edit cooperation: the fan-out binding reports whether the selected
+    // clips disagree on the curve. We render clip[0]'s curve as a representative
+    // and flag it; any edit fans out to every clip (clearing the mixed state).
+    const mixed = this.binding.isMixed?.(this.fieldPath) ?? false;
     // `points` is synced imperatively via the rAF loop (so a drag isn't clobbered
     // by re-renders); here we just wire the element + its callbacks.
     return html`
-      ${this.label ? html`<div class="label">${this.label}</div>` : ''}
+      ${this.label ? html`<div class="label">${this.label}${mixed ? html`<span class="mixed-tag">multiple</span>` : ''}</div>` : ''}
       <envelope-graph
+        class=${mixed ? 'mixed' : ''}
         .onChange=${this.onChange}
         .onInteractionStart=${this.onStart}
         .onInteractionEnd=${this.onEnd}></envelope-graph>
-      <div class="hint">double-click to add / remove a node · drag a segment to bend its easing</div>
+      <div class="hint ${mixed ? 'mixed' : ''}">
+        ${mixed
+          ? 'These clips have different curves — editing replaces all with one.'
+          : 'double-click to add / remove a node · drag a segment to bend its easing'}
+      </div>
       <!-- The modulation input (the curve's x). Shown even when auto-connected so
            it exposes a wire port AND lets you scrub it by hand for testing; when a
            wire drives it the slider shows the live value + modulation band. -->

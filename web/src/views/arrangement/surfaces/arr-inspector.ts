@@ -22,6 +22,8 @@ import { exportController } from '../engine/export-controller';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
+import { editorRegistry } from '../../../editor-registry';
+import '../../../editors/all-inspectors'; // self-registering custom inspectors (envelope, adsr, …)
 import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-label';
@@ -46,12 +48,6 @@ function timeAgo(ms: number): string {
   if (mo < 12) return `${Math.round(mo)}mo ago`;
   return `${Math.round(d / 365)}y ago`;
 }
-
-/** Minimal callbacks: the arrangement has no custom inspectors or card-reorder. */
-const ARR_COLUMN_CALLBACKS: ColumnGroupCallbacks = {
-  onCardPointerDown: () => {},
-  getInspectorElement: () => null,
-};
 
 /**
  * Per-selection inspector scroll memory: when you re-select a thing, its panel
@@ -84,6 +80,38 @@ export class ArrInspector extends MobxLitElement {
     }
     return a;
   }
+  /** Custom inspector elements (envelope, adsr, …) cached by engine instance key,
+   *  re-bound each render — mirrors edit-tab's getInspectorElement. The binding
+   *  passed in is whatever the active panel built: a single-clip binding OR the
+   *  multi-edit fan-out binding (which reports isMixed/inUseValues), so custom
+   *  editors get multi-clip fan-out for free and can opt into mixed indication. */
+  private inspectorCache = new Map<string, HTMLElement & { moduleType?: string; binding?: FieldBinding }>();
+  /** column-group callbacks (instance-scoped so the inspector cache lives here).
+   *  Shared by the clip / track / multi panels — one cache, keyed by the unique
+   *  engine instance key. */
+  private columnCallbacks: ColumnGroupCallbacks = {
+    onCardPointerDown: () => {},
+    getInspectorElement: (instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null => {
+      const factory = editorRegistry.getInspectorFactory(moduleType);
+      if (!factory) return null;
+      let el = this.inspectorCache.get(instanceKey);
+      // The same key may host a different module type after a retype — rebuild.
+      if (el && el.moduleType !== moduleType) {
+        editorRegistry.getInspectorFactory(el.moduleType ?? '')?.destroy(el);
+        this.inspectorCache.delete(instanceKey);
+        el = undefined;
+      }
+      if (!el) {
+        el = factory.create(instanceKey, binding) as HTMLElement & { moduleType?: string; binding?: FieldBinding };
+        el.moduleType = moduleType;
+        this.inspectorCache.set(instanceKey, el);
+      } else {
+        el.binding = binding; // rebind (single ⇄ multi panel, or live binding swap)
+      }
+      return el;
+    },
+  };
+
   /** Stable per device-field-source FieldBinding for the dashboard widgets. */
   private dashBindings = new Map<string, FieldBinding>();
   private dashBindingFor(trackId: string, clipId: string, deviceId: string): FieldBinding {
@@ -481,8 +509,20 @@ export class ArrInspector extends MobxLitElement {
     | { message: string; confirmLabel: string; danger: boolean; x: number; y: number; onYes: () => void | Promise<void> }
     | null = null;
 
-  /** The selection path whose panel is currently displayed (for scroll memory). */
+  /** The key whose panel is currently displayed (for scroll memory). */
   private inspectedPath: string | null = null;
+
+  /** The scroll-memory key for whatever the inspector currently shows. A multi-
+   *  clip selection gets its OWN key (the multi target id) so scrolling the
+   *  multi panel doesn't clobber the primary clip's remembered offset. */
+  private inspectorKey(): string | null {
+    if (store.activeRightTab !== 'inspector') return null;
+    if (store.selection.size > 1) {
+      const refs = this.selectedClipRefs();
+      if (refs.length > 1) return 'multi/' + refs.map((r) => `${r.trackId}/${r.clipId}`).sort().join(',');
+    }
+    return store.primaryPath;
+  }
 
   connectedCallback() {
     super.connectedCallback();
@@ -514,7 +554,7 @@ export class ArrInspector extends MobxLitElement {
     // When the inspected thing changes, restore its remembered scroll (or top).
     // The prior path's offset was already captured by onScroll. Restore after a
     // frame so the new content has laid out (scrollTop clamps to scrollHeight).
-    const path = store.activeRightTab === 'inspector' ? store.primaryPath : null;
+    const path = this.inspectorKey();
     if (path !== this.inspectedPath) {
       this.inspectedPath = path;
       const saved = path ? inspectorScrollMemory.get(path) ?? 0 : 0;
@@ -624,7 +664,7 @@ export class ArrInspector extends MobxLitElement {
           .sketchId=${target.id}
           .columnWidth=${280}
           .adapter=${this.adapterFor(target)}
-          .callbacks=${ARR_COLUMN_CALLBACKS}
+          .callbacks=${this.columnCallbacks}
         ></column-group>
       </div>
     `;
@@ -786,7 +826,7 @@ export class ArrInspector extends MobxLitElement {
           .sketchId=${`clip/${found.track.id}/${clip.id}`}
           .columnWidth=${280}
           .adapter=${this.adapterFor(clipTarget(found.track.id, clip.id))}
-          .callbacks=${ARR_COLUMN_CALLBACKS}
+          .callbacks=${this.columnCallbacks}
         ></column-group>
 
         ${clip.warps.length
@@ -896,7 +936,7 @@ export class ArrInspector extends MobxLitElement {
               .sketchId=${`track/${track.id}`}
               .columnWidth=${280}
               .adapter=${this.adapterFor(trackTarget(track.id))}
-              .callbacks=${ARR_COLUMN_CALLBACKS}
+              .callbacks=${this.columnCallbacks}
             ></column-group>`}
         <!-- Track envelopes are edited ONLY on the timeline (automation lanes),
              not the inspector. -->
