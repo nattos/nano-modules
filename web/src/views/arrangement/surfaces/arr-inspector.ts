@@ -357,28 +357,6 @@ export class ArrInspector extends MobxLitElement {
       justify-content: space-between;
       gap: 6px;
     }
-    .wires-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font: inherit;
-      font-size: var(--app-fs-xs);
-      text-transform: none;
-      letter-spacing: 0;
-      color: var(--app-text-color2);
-      background: var(--app-tint-2);
-      border: 1px solid var(--app-tint-4);
-      border-radius: 3px;
-      padding: 2px 7px;
-      cursor: pointer;
-    }
-    .wires-toggle ui-icon { --icon-size: 12px; }
-    .wires-toggle:hover { background: var(--app-tint-3); }
-    .wires-toggle.on {
-      color: var(--app-hi-color2);
-      border-color: var(--app-hi-color2);
-      background: rgba(65, 105, 225, 0.12);
-    }
     .src-missing { color: var(--app-error, #e0564a); font-weight: 600; }
     /* Multi-edit "other wires/rails" badges — the ragged-tally analog of the
        "other effects" row. Selectable into chainFocusPath; ⌫ fans out removal. */
@@ -906,7 +884,7 @@ export class ArrInspector extends MobxLitElement {
     const delTaps = (t: { kind: 'export' | 'read'; tapIdsByClip: Map<string, string> }) =>
       store.removeClipsRailTaps([...t.tapIdsByClip.values()].map((id) => ({ kind: t.kind === 'export' ? 'w' as const : 'r' as const, id })));
     return html`
-      <div class="group-title" style="border-top:none">Dashboard · inputs</div>
+      <div class="group-title" style="border-top:none;margin-top:0;padding-top:0">Dashboard · inputs</div>
       <div class="dash-row">
         ${inputs.length
           ? inputs.map((t) => {
@@ -1020,14 +998,7 @@ export class ArrInspector extends MobxLitElement {
 
         ${this.renderDashboard(clip, path)}
 
-        <div class="group-title chain-hdr">
-          <span>Chain (sketch)</span>
-          <button
-            class="wires-toggle ${store.wiresMode ? 'on' : ''}"
-            title="Toggle wires mode — click/drag a field port to connect"
-            @click=${() => store.toggleWiresMode()}
-          ><ui-icon icon="la-project-diagram"></ui-icon> Wires</button>
-        </div>
+        <div class="group-title chain-hdr"><span>Chain (sketch)</span></div>
         <column-group
           class="chain"
           .colIdx=${0}
@@ -1130,14 +1101,7 @@ export class ArrInspector extends MobxLitElement {
             </div>`}
         ${isRail
           ? '' /* Returns carry no effect chain — they're value-only rails. */
-          : html`<div class="group-title chain-hdr">
-              <span>Chain (sketch)</span>
-              <button
-                class="wires-toggle ${store.wiresMode ? 'on' : ''}"
-                title="Toggle wires mode — click/drag a field port to connect"
-                @click=${() => store.toggleWiresMode()}
-              ><ui-icon icon="la-project-diagram"></ui-icon> Wires</button>
-            </div>
+          : html`<div class="group-title chain-hdr"><span>Chain (sketch)</span></div>
             <column-group
               class="chain"
               .colIdx=${0}
