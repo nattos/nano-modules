@@ -25,8 +25,8 @@ describe('Freeze Pulse (warp.legacy.freeze_pulse) E2E', () => {
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('warp.legacy.freeze_pulse');
     const names = frame.params.map(p => p.name);
-    for (const n of ['trigger', 'gate', 'time', 'intensity', 'alpha', 'max_scale',
-                     'jitter', 'contrast', 'blend_mode', 'random_mode', 'seed']) {
+    for (const n of ['trigger', 'gate', 'time', 'intensity', 'alpha', 'start_offset',
+                     'max_scale', 'jitter', 'contrast', 'blend_mode', 'random_mode', 'seed']) {
       expect(names).toContain(n);
     }
   });

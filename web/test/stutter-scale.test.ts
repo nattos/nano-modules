@@ -24,7 +24,7 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
     const names = frame.params.map(p => p.name);
     for (const n of ['sweep', 'levels', 'min_scale', 'max_scale', 'jitter',
                      'hue', 'boost', 'intensity', 'deadzone', 'end_deadzone',
-                     'transparent_endpoints', 'flip', 'color_invert', 'seed']) {
+                     'flip', 'color_invert', 'seed']) {
       expect(names).toContain(n);
     }
   });
@@ -92,12 +92,16 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
     b.trace('out').expectDifferentFrom(a.trace('out'), 100);
   });
 
-  it('is a passthrough at sweep=0 (deadzone identity)', async () => {
-    const grid = await runGridOnly('ss_grid', 'ss_gridonly');
-    const rest = await runChain('ss_rest',
-      { intensity: 1.0, sweep: 0.0, min_scale: 2.0, max_scale: 8.0 }, 'ss_rest');
-    expect(grid.success).toBe(true);
-    expect(rest.success).toBe(true);
-    rest.trace('out').expectSameAs(grid.trace('out'), 2);
+  it('the endpoint deadzone turns the stutter off (≠ the active stutter)', async () => {
+    // sweep=0 sits in the start deadzone → output goes transparent/off, which
+    // differs from the active stutter mid-sweep. (Transparency itself isn't
+    // assertable — the GPU runner reads back opaque — so we compare states.)
+    const dead = await runChain('ss_dead',
+      { intensity: 1.0, sweep: 0.0, min_scale: 2.0, max_scale: 8.0 }, 'ss_dead');
+    const active = await runChain('ss_active',
+      { intensity: 1.0, sweep: 0.5, min_scale: 2.0, max_scale: 8.0 }, 'ss_active');
+    expect(dead.success).toBe(true);
+    expect(active.success).toBe(true);
+    active.trace('out').expectDifferentFrom(dead.trace('out'), 100);
   });
 });

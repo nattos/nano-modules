@@ -43,7 +43,7 @@ namespace subtle_blur {
 static constexpr float TAU          = 6.28318530717958647692f;
 static constexpr float OFFSET_SCALE = 0.02f; // amount=1 → 2% of short axis
 static constexpr float DRIFT_RATE   = 0.15f; // movement=1 → 0.15 turns/sec
-static constexpr float BLUR_SCALE   = 0.5f;  // blur=1 → half the GaussianBlur ceiling
+static constexpr float BLUR_SCALE   = 0.35f; // blur=1 → a fraction of the GaussianBlur ceiling
 
 struct Uniforms {
   float aspect_x;
@@ -61,11 +61,11 @@ struct State {
   bool         initialized = false;
 
   // Schema-mirrored params.
-  float blur     = 0.15f;
+  float blur     = 0.1f;
   float amount   = 0.25f;
   float movement = 0.2f;
-  float hue      = 0.0f;
-  float quality  = 0.5f;
+  float hue      = 0.22f;  // the Wire patch's exposed Hue Rotate default
+  float quality  = 0.3f;   // lower = sparser taps = a "harder" (less smooth) blur
 
   // Runtime: continuous drift of the chroma basis angle (turns).
   double drift = 0.0;
@@ -78,16 +78,16 @@ static fx::GaussianBlur  s_blur;
 void module_init() {
   state::init("filter.legacy.subtle_blur", {1, 0, 0},
     state::Schema()
-      .floatField("blur",     0.15f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Gaussian blur amount.")
+      .floatField("blur",     0.1f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Blur amount.")
       .floatField("amount",   0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Chromatic offset magnitude — RGB fringe width.")
       .floatField("movement", 0.2f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Drift speed of the chromatic offset direction.")
-      .floatField("hue",      0.0f,  0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+      .floatField("hue",      0.22f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Base direction of the colour split (0..1 = full turn).")
-      .floatField("quality",  0.5f,  0.05f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Blur sample density (tuning).")
+      .floatField("quality",  0.3f,  0.05f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Blur sample density — lower is harder/less smooth (tuning).")
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));

@@ -61,7 +61,7 @@ struct State {
   // Schema-mirrored params.
   float amount           = 0.0f;
   float attack           = 0.15f; // seconds
-  float release          = 1.0f;  // seconds
+  float release          = 0.0f;  // seconds (instant cut back by default)
   float saturation_boost = 0.5f;
   float contrast_boost   = 0.5f;
   float brightness       = 0.0f; // tone lift/crush (flash), [-1,1]
@@ -96,8 +96,8 @@ void module_init() {
                   nullptr, "Manual burn intensity (combines with the trigger envelope).")
       .floatField("attack", 0.15f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   "s", "Ramp-up time of the burn envelope.")
-      .floatField("release", 1.0f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
-                  "s", "Decay time of the burn envelope.")
+      .floatField("release", 0.0f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
+                  "s", "Decay time of the burn envelope (0 = instant cut back).")
       .floatField("saturation_boost", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Saturation lift on the way down (the burn).")
       .floatField("contrast_boost", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,

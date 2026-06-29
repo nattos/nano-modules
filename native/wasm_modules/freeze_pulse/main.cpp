@@ -59,6 +59,7 @@ struct State {
   float time       = 0.7f;
   float intensity  = 1.0f;
   float alpha      = 1.0f;
+  float start_offset = 0.3f; // initial zoom fraction at the trigger instant
   float max_scale  = 2.0f;
   float jitter     = 0.3f;
   float contrast   = 0.4f;
@@ -114,8 +115,10 @@ void module_init() {
                   nullptr, "Blend strength of the frozen pulse over the live frame.")
       .floatField("alpha", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Overall pulse opacity.")
+      .floatField("start_offset", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Initial zoom of the frozen frame at the trigger (it grows from here).")
       .floatField("max_scale", 2.0f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "How much the frozen frame zooms at the pulse peak.")
+                  nullptr, "How much the frozen frame zooms by the end of the pulse.")
       .floatField("jitter", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Random translation of the frozen frame.")
       .floatField("contrast", 0.4f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -197,6 +200,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if      (state::pathIs(p, l, "time"))        s->time       = state::patchFloat(i);
     else if (state::pathIs(p, l, "intensity"))   s->intensity  = state::patchFloat(i);
     else if (state::pathIs(p, l, "alpha"))       s->alpha      = state::patchFloat(i);
+    else if (state::pathIs(p, l, "start_offset")) s->start_offset = state::patchFloat(i);
     else if (state::pathIs(p, l, "max_scale"))   s->max_scale  = state::patchFloat(i);
     else if (state::pathIs(p, l, "jitter"))      s->jitter     = state::patchFloat(i);
     else if (state::pathIs(p, l, "contrast"))    s->contrast   = state::patchFloat(i);
@@ -246,10 +250,10 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   float env = (float)s->env;
-  // The frozen frame GROWS over the pulse: scale starts at 1 (matching the live
-  // frame at the trigger instant) and zooms IN as the pulse fades out — env
-  // runs 1→0, so progress = (1-env).
-  float grow = 1.0f - env;
+  // The frozen frame GROWS over the pulse: it pops to `start_offset` of the
+  // zoom at the trigger instant, then keeps zooming IN to the full max_scale as
+  // the pulse fades out — env runs 1→0, so progress = (1-env).
+  float grow = s->start_offset + (1.0f - s->start_offset) * (1.0f - env);
   Uniforms u = {};
   u.scale       = 1.0f + s->max_scale * grow;
   u.trans_x     = s->jx * s->jitter * JITTER_SCALE * grow;

@@ -15,11 +15,11 @@
  * Attack-Release env (Env Time/Trigger) and an Alpha-Mode blend out.
  *
  * This is a MANUALLY-driven effect: `sweep` ∈ [0,1] (a knob or an automation
- * curve) is the sole time source — at sweep=0 it's a clean identity, and it
- * stutters through `levels` steps as you sweep up. Each step's transform is
- * seeded by the step index (deterministic, reproducible). A start/end deadzone
- * eases the endpoints back to rest, and `transparent_endpoints` fades the
- * output to TRANSPARENT there (the original's deadzone/alpha behaviour).
+ * curve) is the sole time source. It stutters through `levels` steps as you
+ * sweep — full strength immediately (no ease-in; it's meant to be stuttery).
+ * Each step's transform is seeded by the step index (deterministic). A start/end
+ * `deadzone` band at the endpoints makes the output go fully TRANSPARENT (off),
+ * NOT the input — so the effect cleanly disappears at the ends of the sweep.
  *
  * v2 RE-ARCHITECTURE (flagged per DNODE_MIGRATION_NOTES §3): DROPPED for v2
  * (recoverable later): the 22 Alpha blend modes (we crossfade), the optical-flow
@@ -73,24 +73,20 @@ struct State {
   float intensity  = 1.0f;
   float deadzone   = 0.05f;
   bool  end_deadzone = true;
-  bool  transparent_endpoints = false;
   bool  do_flip    = true;
   bool  do_invert  = false;
   int   seed       = 1234;
 };
 
-// Endpoint ease: 0 at sweep≈0 (and ≈1 if end_deadzone), 1 across the middle.
-static inline float deadzoneFade(const State* s) {
+// HARD endpoint deadzone: true when the sweep sits in the start band [0, dz)
+// (or the end band (1-dz, 1] if end_deadzone). In the deadzone the effect goes
+// fully TRANSPARENT — no ease-in, the stutter is hard. Outside, full strength.
+static inline bool inDeadzone(const State* s) {
   float sw = s->sweep < 0.0f ? 0.0f : (s->sweep > 1.0f ? 1.0f : s->sweep);
   float dz = s->deadzone;
-  float f = (dz <= 1e-4f) ? (sw > 0.0f ? 1.0f : 0.0f)
-                          : (sw / dz < 1.0f ? sw / dz : 1.0f);
-  if (s->end_deadzone) {
-    float fe = (dz <= 1e-4f) ? (sw < 1.0f ? 1.0f : 0.0f)
-                             : ((1.0f - sw) / dz < 1.0f ? (1.0f - sw) / dz : 1.0f);
-    f = f < fe ? f : fe;
-  }
-  return f < 0.0f ? 0.0f : f;
+  if (sw <= dz) return true;
+  if (s->end_deadzone && sw >= 1.0f - dz) return true;
+  return false;
 }
 
 static gpu::ComputePSO s_pso;
@@ -121,10 +117,8 @@ void module_init() {
       .floatField("intensity", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Crossfade with the untouched input.")
       .floatField("deadzone", 0.05f, 0.0f, 0.5f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Endpoint ease — fraction of the sweep that returns to rest.")
-      .boolField ("end_deadzone", true, state::PrimaryInput, "Also ease back to rest near sweep=1.")
-      .boolField ("transparent_endpoints", false, state::PrimaryInput,
-                  "At the endpoints fade to transparent instead of the input.")
+                  nullptr, "Endpoint band where the output goes transparent (off).")
+      .boolField ("end_deadzone", true, state::PrimaryInput, "Also go transparent near sweep=1.")
       .boolField ("flip", true, state::PrimaryInput, "Allow random Y-flips per step.")
       .boolField ("color_invert", false, state::PrimaryInput, "Allow random colour inversion per step.")
       .intField  ("seed", 1234, 0, 65535, state::PrimaryInput, 0, nullptr, "Random seed.")
@@ -186,7 +180,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "intensity"))    s->intensity = state::patchFloat(i);
     else if (state::pathIs(p, l, "deadzone"))     s->deadzone  = state::patchFloat(i);
     else if (state::pathIs(p, l, "end_deadzone")) s->end_deadzone = state::patchBool(i);
-    else if (state::pathIs(p, l, "transparent_endpoints")) s->transparent_endpoints = state::patchBool(i);
     else if (state::pathIs(p, l, "flip"))         s->do_flip   = state::patchBool(i);
     else if (state::pathIs(p, l, "color_invert")) s->do_invert = state::patchBool(i);
     else if (state::pathIs(p, l, "seed"))         s->seed      = state::patchInt(i);
@@ -195,14 +188,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
 void on_resolume_param(void* self, long long, double) { (void)self; }
 
-// Config-only identity: intensity 0, or the sweep sits in a deadzone where the
-// output equals the input (only when NOT fading to transparent there).
+// Config-only identity: only when intensity is 0. (The deadzone produces a
+// TRANSPARENT output, which is NOT a passthrough, so it can't claim identity.)
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  if (s->intensity <= 1e-3f) return 1;
-  if (!s->transparent_endpoints && deadzoneFade(s) <= 1e-3f) return 1;
-  return 0;
+  return (s->intensity <= 1e-3f) ? 1 : 0;
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -216,7 +207,7 @@ void render(void* self, int vp_w, int vp_h) {
   int levels = s->levels < 1 ? 1 : s->levels;
   float sweep = s->sweep < 0.0f ? 0.0f : (s->sweep > 1.0f ? 1.0f : s->sweep);
   long step = (long)std::floor((double)sweep * (double)levels);
-  float fade = deadzoneFade(s);
+  bool dead = inDeadzone(s);
   uint32_t h = hash_u32((uint32_t)(step * 2654435761u) ^ (uint32_t)s->seed);
 
   float r0 = rand01(h);              h = hash_u32(h);
@@ -236,10 +227,9 @@ void render(void* self, int vp_w, int vp_h) {
   u.hue_shift = (r5 * 2.0f - 1.0f) * s->hue * TAU;
   u.bright    = 0.0f;
   u.contrast  = s->boost;
-  // In the deadzone, ease back to rest: transparent → drop alpha; otherwise
-  // crossfade back to the untouched input.
-  u.intensity = s->transparent_endpoints ? s->intensity : (s->intensity * fade);
-  u.alpha_scale = s->transparent_endpoints ? fade : 1.0f;
+  // Hard stutter outside the deadzone; fully transparent inside it.
+  u.intensity = dead ? 0.0f : s->intensity;
+  u.alpha_scale = dead ? 0.0f : 1.0f;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
