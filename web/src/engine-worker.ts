@@ -1303,13 +1303,14 @@ async function loadModule(moduleType: string) {
 const warmupHosts: WasmHost[] = [];
 // Warmup hosts indexed by resolved effect id, available for the FIRST
 // instantiateEffect of that id to reuse (instead of spawning a second host).
-// Each warmup activation already registered a `<id>@0` plugin key; reusing it
-// means the first live instance is `@0` rather than `@1`, so plugin_output
-// traces / metadata that reference `@0` resolve to the live, rendered instance.
-// The host stays in warmupHosts[] too, so its plugin registration (and palette
-// schema) persists even if the instance is later removed. Consumed entries are
+// Each warmup ran `describeEffect` (module_init only), which already registered
+// a `<id>@0` plugin key + schema — so the first instantiateEffect promotes THIS
+// host to the live `@0` (just create()+init() on it), so plugin_output traces /
+// metadata that reference `@0` resolve to the live, rendered instance. No
+// instance exists at warmup (the schema is type-level); the host stays in
+// warmupHosts[] so its plugin registration persists. Consumed entries are
 // deleted so a 2nd instance of the same id correctly gets a fresh `@1` host.
-const warmupByEffect = new Map<string, { host: WasmHost; module: WasmModule }>();
+const warmupByEffect = new Map<string, WasmHost>();
 
 async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string }[]) {
   for (const eff of effects) {
@@ -1318,9 +1319,11 @@ async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string
       wh.bridgeCore = bridgeCore;
       wh.gpuHost = gpuHost;
       await wh.load(compiled);
-      const mod = wh.activateEffect(eff.id);
+      // Schema-only: run module_init (publishes the schema, registers the
+      // plugin + `@0` key) WITHOUT standing up a rendering instance.
+      wh.describeEffect(eff.id);
       warmupHosts.push(wh);
-      warmupByEffect.set(eff.id, { host: wh, module: mod });
+      warmupByEffect.set(eff.id, wh);
     } catch (err) {
       console.warn(`[warmup] schema registration failed for ${eff.id}:`, err);
     }
@@ -1340,9 +1343,10 @@ const visibilityHosts = new Map<string, WasmHost>();
  */
 async function evalHostForType(moduleType: string): Promise<WasmHost | null> {
   const resolved = resolveEffectId(moduleType);
-  // 1. A parked warmup host (already loaded + activated for this exact effect).
+  // 1. A parked warmup host (already loaded + described for this exact effect;
+  //    describeEffect resolved its self-less eval_visibility fn).
   const warm = warmupByEffect.get(resolved) ?? warmupByEffect.get(moduleType);
-  if (warm) return warm.host;
+  if (warm) return warm;
   // 2. A live instance of this type (its host carries the same evaluator).
   for (const [key, v] of realModules) {
     if (key === `${resolved}@0` || key.startsWith(`${resolved}@`)) {
@@ -1360,7 +1364,9 @@ async function evalHostForType(moduleType: string): Promise<WasmHost | null> {
     wh.bridgeCore = bridgeCore;
     wh.gpuHost = gpuHost;
     await wh.load(found.compiled);
-    wh.activateEffect(found.resolvedId);
+    // Schema-only describe — a visibility host never renders, so it needs no
+    // instance, just module_init + the resolved eval_visibility fn.
+    wh.describeEffect(found.resolvedId);
     visibilityHosts.set(resolved, wh);
     return wh;
   } catch (err) {
@@ -1386,16 +1392,18 @@ async function instantiateEffect(effectId: string) {
 
   try {
     // Reuse the bundle-warmup host for the first instantiation of this effect
-    // (it's already loaded + activated as `<id>@0`), so the live instance is
-    // `@0` rather than a fresh `@1`. Subsequent instantiations of the same id
-    // fall through to a fresh host.
+    // (already loaded + described as `<id>@0`), so the live instance is `@0`
+    // rather than a fresh `@1`. Promotion only needs create()+init() — the
+    // warmup host's module_init already ran, so activateEffect skips it and
+    // just stands up the instance on the same `@0` plugin key. Subsequent
+    // instantiations of the same id fall through to a fresh host.
     const warm = warmupByEffect.get(found.resolvedId);
     let host: WasmHost;
     let mod: WasmModule;
     if (warm) {
       warmupByEffect.delete(found.resolvedId);
-      host = warm.host;
-      mod = warm.module;
+      host = warm;
+      mod = host.activateEffect(found.resolvedId);
     } else {
       host = new WasmHost();
       host.bridgeCore = bridgeCore;

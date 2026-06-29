@@ -611,3 +611,72 @@ describe('is_identity name-keyed dispatch', () => {
     expect(capturedSelf.value).toBe(0xABCD);
   });
 });
+
+// ---------------------------------------------------------------------------
+// describeEffect — type-level schema discovery WITHOUT an instance
+//
+// The schema is published by module_init (type-level, self-less, GPU-guarded),
+// so describeEffect runs only module_init + resolves the self-less
+// eval_visibility fn — never create()/init(). A later activateEffect on the
+// same host PROMOTES it to a live instance (create()+init()) WITHOUT re-running
+// module_init. This is the bundle-warmup / visibility-host path.
+// ---------------------------------------------------------------------------
+describe('describeEffect — schema-only, no instance', () => {
+  function makeHost(): {
+    host: WasmHost;
+    counts: { moduleInit: number; create: number; init: number };
+  } {
+    const host = new WasmHost();
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const counts = { moduleInit: 0, create: 0, init: 0 };
+    const SELF = 0x1234;
+    const IDX_MODULE_INIT = 1, IDX_CREATE = 2, IDX_INIT = 3, IDX_EVAL = 4;
+    const table = {
+      get(idx: number): any {
+        switch (idx) {
+          case IDX_MODULE_INIT: return () => { counts.moduleInit++; };
+          case IDX_CREATE: return () => { counts.create++; return SELF; };
+          case IDX_INIT: return (_self: number) => { counts.init++; };
+          case IDX_EVAL: return () => {};
+          default: return null;
+        }
+      },
+    };
+    (host as any).memory = memory;
+    (host as any).instance = { exports: { __indirect_function_table: table } };
+    (host as any).registeredEffects.push({
+      id: 'video.test_identity', name: 'Test', description: '', category: 'video', keywords: [],
+      _fns: new Map<string, number>([
+        ['module_init', IDX_MODULE_INIT], ['create', IDX_CREATE],
+        ['init', IDX_INIT], ['eval_visibility', IDX_EVAL],
+      ]),
+    });
+    return { host, counts };
+  }
+
+  it('runs module_init once + resolves eval_visibility, never creating an instance', () => {
+    const { host, counts } = makeHost();
+    host.describeEffect('video.test_identity');
+    expect(counts.moduleInit).toBe(1);
+    expect(counts.create).toBe(0);
+    expect(counts.init).toBe(0);
+    expect(host.evalVisibilityFn).not.toBeNull();
+  });
+
+  it('is idempotent — module_init runs once across repeated describes', () => {
+    const { host, counts } = makeHost();
+    host.describeEffect('video.test_identity');
+    host.describeEffect('video.test_identity');
+    expect(counts.moduleInit).toBe(1);
+  });
+
+  it('promotion: activateEffect after describe creates the instance but does NOT re-run module_init', () => {
+    const { host, counts } = makeHost();
+    host.describeEffect('video.test_identity');
+    const mod = host.activateEffect('video.test_identity');
+    expect(counts.moduleInit).toBe(1); // already ran in describe — not repeated
+    expect(counts.create).toBe(1);
+    expect(counts.init).toBe(1);
+    expect(mod).toBeTruthy();
+  });
+});

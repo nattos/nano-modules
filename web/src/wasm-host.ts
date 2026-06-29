@@ -1284,28 +1284,62 @@ export class WasmHost {
    * Calls the effect's init() via the function table and returns a
    * WasmModule interface that dispatches through the table.
    */
-  activateEffect(effectId: string): WasmModule {
+  /**
+   * Resolve an effect's name-keyed callbacks to indirect-table functions. The
+   * returned `fn(name)` yields the function or undefined when the effect didn't
+   * register that name ("not provided"). Throws if the effect id is unknown.
+   */
+  private effectFns(effectId: string): {
+    effect: EffectInfo;
+    fn: <T>(name: string) => T | undefined;
+  } {
     const effect = this.registeredEffects.find(e => e.id === effectId);
     if (!effect) {
       throw new Error(`Effect "${effectId}" not found. Available: ${this.registeredEffects.map(e => e.id).join(', ')}`);
     }
-
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
-    // Resolve a named callback to a table function, or undefined when the
-    // effect didn't register that name ("not provided").
     const fn = <T>(name: string): T | undefined => {
       const idx = effect._fns.get(name);
       return idx ? (table.get(idx) as T) : undefined;
     };
+    return { effect, fn };
+  }
 
-    // Class-like instance ABI: module_init (once per type) → create() →
-    // init(self), then instance callbacks thread self.
+  /**
+   * Run an effect's TYPE-LEVEL setup WITHOUT creating an instance: `module_init`
+   * (once per type) publishes the schema via the `set_schema` host import, which
+   * registers the plugin (schema + capabilities + `<id>@0` pluginKey + schema-
+   * derived default state) in bridge core — everything the editor needs to show
+   * the palette/inspector and resolve drop-time defaults. Also resolves the
+   * self-less `eval_visibility` evaluator so this host can answer static
+   * visibility queries. `create()`/`init()` are NOT called — there is no live
+   * instance until `activateEffect`. Idempotent per effect id.
+   *
+   * This is the cheap path for schema discovery (bundle warmup) and for static
+   * visibility hosts: neither needs a rendering instance.
+   */
+  describeEffect(effectId: string): void {
+    const { effect, fn } = this.effectFns(effectId);
     if (!this.moduleInitedIds.has(effect.id)) {
       const moduleInitFn = fn<() => void>('module_init');
       if (moduleInitFn) moduleInitFn();
       this.moduleInitedIds.add(effect.id);
     }
+    // Static (self-less) visibility evaluator — type-level, stored on the host
+    // so `evaluateVisibility()` can run it against an arbitrary candidate state.
+    this.evalVisibilityFn = fn<
+      (n: number, pb: number, off: number, len: number, ops: number) => void>('eval_visibility') ?? null;
+  }
 
+  activateEffect(effectId: string): WasmModule {
+    // Type-level setup first (module_init publishes the schema; resolves the
+    // visibility evaluator). Skips module_init if a prior describeEffect/
+    // activateEffect already ran it on this host.
+    this.describeEffect(effectId);
+    const { fn } = this.effectFns(effectId);
+
+    // Class-like instance ABI: (module_init, above) → create() → init(self),
+    // then instance callbacks thread self.
     let self = 0;
     const createFn = fn<() => number>('create');
     if (createFn) self = createFn() | 0;
@@ -1321,10 +1355,7 @@ export class WasmHost {
     const isIdentityFn = fn<(self: number) => number>('is_identity');
     const onActiveFn = fn<(self: number, active: number) => void>('on_active');
     const seekFn = fn<(self: number, from: number, to: number) => void>('seek');
-    // Static (self-less) visibility evaluator — type-level, stored on the host
-    // so `evaluateVisibility()` can run it against an arbitrary candidate state.
-    this.evalVisibilityFn = fn<
-      (n: number, pb: number, off: number, len: number, ops: number) => void>('eval_visibility') ?? null;
+    // (eval_visibility resolved type-level in describeEffect, above.)
 
     // Call init immediately, threading the instance's self pointer.
     if (initFn) initFn(self);
