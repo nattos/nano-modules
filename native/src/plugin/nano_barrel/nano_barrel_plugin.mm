@@ -122,16 +122,15 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       SetParamInfo(P_MACRO_00 + i, name, FF_TYPE_STANDARD, 0.0f);
     }
 
-    // Bring up the Metal runtime + register all known effects + run their
-    // `init()`s up-front (must happen before the host scans params, since
-    // some host-thread hooks fire during init). EffectRuntime documents
-    // single-instance-per-effect-type as a hard invariant.
-    //
-    // NOTE: the shared bridge server is acquired in InitGL, NOT here — the
-    // host constructs throwaway prototype instances during its param scan,
-    // and we must not spin up the WS server / register a phantom instance
-    // for those (mirrors looper_plugin.cpp, which also defers to InitGL).
-    initEffectRuntime();
+    // The Metal runtime + WASM effect loading is deferred to InitGL, NOT done
+    // here. Resolume constructs a throwaway PROTOTYPE of every FFGL plugin at
+    // startup just to enumerate params — those prototypes never call InitGL.
+    // Loading all 63 effect modules per prototype floods the process-global
+    // (refcounted) WAMR heap pool, so a later real clip instance's load fails
+    // and it comes up with zero effects (→ empty plugin_schemas → no editor
+    // chips). Params are static (config + 16 macros), so the prototype scan
+    // needs nothing more than the SetParamInfo calls above. The shared bridge
+    // server is likewise acquired in InitGL, not here.
 
     // Stash the persisted payload (envelope JSON) for InitGL to apply once
     // the bridge is up. On a host cold start this is empty (the host will
@@ -184,6 +183,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     BARREL_LOG("InitGL", "viewport=%ux%u", vp->width, vp->height);
     CFFGLPlugin::InitGL(vp);
     glGenFramebuffers(1, &src_fbo_);
+    // Load effects now (this is a real, GL-active instance — not a param-scan
+    // prototype). Guarded so a repeated InitGL doesn't reload. publishInitialState
+    // (in setupBridge) reads registry_->schemas(), so this must run first.
+    if (!rt_) initEffectRuntime();
     setupBridge();
     return FF_SUCCESS;
   }
