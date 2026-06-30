@@ -47,7 +47,24 @@ void BridgeCore::handle_message(int client_id, const std::string& msg) {
 
     state_doc_.apply_client_patch(plugin_key, ops);
     if (client_patch_cb_) client_patch_cb_(plugin_key);
+
+    // Per-key listener (multiplexed instances). Invoked under the registry
+    // lock so a concurrent unregister_patch_listener (on instance teardown)
+    // cannot return while this dereferences the listener's captured `this`.
+    std::lock_guard<std::mutex> lk(listeners_mu_);
+    auto it = patch_listeners_.find(plugin_key);
+    if (it != patch_listeners_.end()) it->second(plugin_key);
   }
+}
+
+void BridgeCore::register_patch_listener(const std::string& key, ClientPatchCallback cb) {
+  std::lock_guard<std::mutex> lk(listeners_mu_);
+  patch_listeners_[key] = std::move(cb);
+}
+
+void BridgeCore::unregister_patch_listener(const std::string& key) {
+  std::lock_guard<std::mutex> lk(listeners_mu_);
+  patch_listeners_.erase(key);
 }
 
 void BridgeCore::remove_client(int client_id) {

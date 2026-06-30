@@ -4,6 +4,10 @@
 #include "resolume/ws_client.h"
 #include "wasm/wasm_host.h"
 
+#include <chrono>
+#include <cstdio>
+#include <utility>
+
 #include <nlohmann/json.hpp>
 
 namespace bridge {
@@ -43,44 +47,163 @@ void BridgeServer::init_subsystems() {
   resolume_client_->connect();
 
   ws_server_ = std::make_unique<WsServer>();
+  // The ix callbacks ONLY enqueue — never touch tick_mutex_ or core_ (see
+  // the deadlock note in the header). The pump thread drains + processes.
   ws_server_->set_message_callback([this](int client_id, const std::string& msg) {
-    std::lock_guard lock(tick_mutex_);
-    core_.handle_message(client_id, msg);
+    std::lock_guard lock(inbox_mu_);
+    inbox_.push_back({client_id, /*is_message=*/true, msg});
   });
   ws_server_->set_disconnect_callback([this](int client_id) {
-    std::lock_guard lock(tick_mutex_);
-    core_.remove_client(client_id);
+    std::lock_guard lock(inbox_mu_);
+    inbox_.push_back({client_id, /*is_message=*/false, std::string()});
   });
 
-  // Wire up BridgeCore's send callback to the WS server
+  // Wire up BridgeCore's send callback to the WS server. send_to snapshots
+  // the target socket under clients_mutex_ and sends outside it, so this is
+  // safe to call from the pump thread while holding tick_mutex_.
   core_.set_send_callback([this](int client_id, const std::string& msg) {
     ws_server_->send_to(client_id, msg);
   });
 
-  ws_server_->start(8081);
+  if (!ws_server_->start(8081)) {
+    std::fprintf(stderr,
+        "[bridge] WsServer failed to bind port 8081 (already in use?)\n");
+  }
+
+  pump_stop_.store(false, std::memory_order_release);
+  pump_thread_ = std::thread([this] { pump_loop(); });
 
   subsystems_initialized_ = true;
 }
 
 void BridgeServer::shutdown_subsystems() {
-  std::lock_guard lock(tick_mutex_);
-  if (!subsystems_initialized_) return;
+  {
+    std::lock_guard lock(tick_mutex_);
+    if (!subsystems_initialized_) return;
+    // Mark down first so any concurrent ABI op bails out, then drop the lock
+    // so the pump (which takes tick_mutex_ each iteration) can finish its
+    // current pass and observe pump_stop_.
+    subsystems_initialized_ = false;
+  }
 
+  // Stop + join the pump BEFORE tearing down the WS server, so no in-flight
+  // broadcast touches a destroyed ws_server_. Join outside tick_mutex_.
+  pump_stop_.store(true, std::memory_order_release);
+  if (pump_thread_.joinable()) pump_thread_.join();
+
+  std::lock_guard lock(tick_mutex_);
   if (ws_server_) { ws_server_->stop(); ws_server_.reset(); }
   if (resolume_client_) { resolume_client_->disconnect(); resolume_client_.reset(); }
   if (wasm_host_) { wasm_host_->shutdown(); wasm_host_.reset(); }
 
+  {
+    std::lock_guard ilock(inbox_mu_);
+    inbox_.clear();
+  }
   draw_lists_.clear();
   frame_states_.clear();
-  subsystems_initialized_ = false;
+}
+
+void BridgeServer::pump_loop() {
+  using namespace std::chrono_literals;
+  while (!pump_stop_.load(std::memory_order_acquire)) {
+    {
+      // Drain WS inbox, then do resolume polling + state broadcast, all
+      // under tick_mutex_ so doc reads/writes from render threads (which
+      // also take tick_mutex_ via the ABI) stay serialized.
+      std::vector<InboxEvent> events;
+      {
+        std::lock_guard ilock(inbox_mu_);
+        events.swap(inbox_);
+      }
+      // ws_server_/core_/resolume_client_ stay alive until after the pump is
+      // joined, so it's safe to use them here even once subsystems_initialized_
+      // has been flipped false at the start of shutdown.
+      std::lock_guard lock(tick_mutex_);
+      for (auto& e : events) {
+        if (e.is_message) core_.handle_message(e.cid, e.msg);
+        else core_.remove_client(e.cid);
+      }
+      process_resolume_messages();
+      flush_outbox();
+      core_.broadcast_state_patches();
+    }
+    std::this_thread::sleep_for(5ms);
+  }
 }
 
 void BridgeServer::tick() {
+  // The pump thread now drives message processing + resolume polling +
+  // broadcasting. tick() is retained as a no-op for ABI back-compat (the
+  // looper calls bridge_tick() every frame).
+}
+
+// --- Multiplexed plugin instances ---
+
+std::string BridgeServer::register_plugin(const std::string& id, int major, int minor,
+    int patch, const std::string& schema_json, const std::string& requested_key) {
   std::lock_guard lock(tick_mutex_);
-  if (!subsystems_initialized_) return;
-  process_resolume_messages();
-  flush_outbox();
-  core_.broadcast_state_patches();
+  PluginMetadata meta{id, major, minor, patch};
+  if (schema_json.empty()) {
+    return core_.state_document().register_plugin(meta, requested_key);
+  }
+  return core_.state_document().register_plugin_with_schema(meta, schema_json, requested_key);
+}
+
+void BridgeServer::unregister_plugin(const std::string& key) {
+  std::lock_guard lock(tick_mutex_);
+  core_.state_document().unregister_plugin(key);
+}
+
+void BridgeServer::register_patch_listener(const std::string& key,
+    BridgeCore::ClientPatchCallback cb) {
+  // BridgeCore guards its own listener registry; no tick_mutex_ needed and
+  // taking it here could deadlock against the pump (which holds tick_mutex_
+  // while invoking listeners).
+  core_.register_patch_listener(key, std::move(cb));
+}
+
+void BridgeServer::unregister_patch_listener(const std::string& key) {
+  core_.unregister_patch_listener(key);
+}
+
+void BridgeServer::set_plugin_state(const std::string& key, const std::string& state_json) {
+  auto j = nlohmann::json::parse(state_json, nullptr, false);
+  if (j.is_discarded()) return;
+  std::lock_guard lock(tick_mutex_);
+  core_.state_document().set_plugin_state(key, j);
+}
+
+std::string BridgeServer::get_plugin_state(const std::string& key) {
+  std::lock_guard lock(tick_mutex_);
+  return core_.state_document().get_plugin_state(key).dump();
+}
+
+void BridgeServer::set_at(const std::string& path, const std::string& value_json) {
+  auto j = nlohmann::json::parse(value_json, nullptr, false);
+  if (j.is_discarded()) return;
+  std::lock_guard lock(tick_mutex_);
+  core_.state_document().set_at(path, j);
+}
+
+std::string BridgeServer::get_at(const std::string& path) {
+  std::lock_guard lock(tick_mutex_);
+  return core_.state_document().get_at(path).dump();
+}
+
+void BridgeServer::broadcast_binary(const void* data, size_t len) {
+  std::lock_guard lock(tick_mutex_);
+  if (ws_server_) ws_server_->broadcast_binary(data, len);
+}
+
+bool BridgeServer::has_clients() {
+  std::lock_guard lock(tick_mutex_);
+  return ws_server_ && ws_server_->has_open_clients();
+}
+
+bool BridgeServer::key_observed(const std::string& key) {
+  std::lock_guard lock(tick_mutex_);
+  return core_.observers().is_anyone_observing("/plugins/" + key + "/state");
 }
 
 void BridgeServer::process_resolume_messages() {

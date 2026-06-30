@@ -28,6 +28,11 @@ public:
   /// Check if a client is observing a specific path.
   bool is_observing(ClientId client, const std::string& path) const;
 
+  /// True if ANY client has a subscription that would receive a patch at
+  /// `path` (exact, child, or ancestor match — same rule as filter_patches).
+  /// Used to gate per-instance work on whether anyone is actually watching.
+  bool is_anyone_observing(const std::string& path) const;
+
   /// Get all paths a client is observing.
   std::unordered_set<std::string> client_paths(ClientId client) const;
 

@@ -32,6 +32,22 @@ bool BridgeLoader::load(const char* dylib_path) {
   bridge_call_on_param = reinterpret_cast<BridgeCallOnParamFn>(dlsym(handle_, "bridge_call_on_param"));
   bridge_set_audio_callback = reinterpret_cast<BridgeSetAudioCallbackFn>(dlsym(handle_, "bridge_set_audio_callback"));
 
+  // Multiplexed-instance functions (FFGL barrel). Not in the required-symbol
+  // check below so older dylibs still load for the looper/repatch path; the
+  // barrel checks the specific pointers it needs before first use.
+  bridge_register_plugin = reinterpret_cast<BridgeRegisterPluginFn>(dlsym(handle_, "bridge_register_plugin"));
+  bridge_unregister_plugin = reinterpret_cast<BridgeUnregisterPluginFn>(dlsym(handle_, "bridge_unregister_plugin"));
+  bridge_register_patch_listener = reinterpret_cast<BridgeRegisterPatchListenerFn>(dlsym(handle_, "bridge_register_patch_listener"));
+  bridge_unregister_patch_listener = reinterpret_cast<BridgeUnregisterPatchListenerFn>(dlsym(handle_, "bridge_unregister_patch_listener"));
+  bridge_set_plugin_state = reinterpret_cast<BridgeSetPluginStateFn>(dlsym(handle_, "bridge_set_plugin_state"));
+  bridge_get_plugin_state = reinterpret_cast<BridgeGetPluginStateFn>(dlsym(handle_, "bridge_get_plugin_state"));
+  bridge_set_at = reinterpret_cast<BridgeSetAtFn>(dlsym(handle_, "bridge_set_at"));
+  bridge_get_at = reinterpret_cast<BridgeGetAtFn>(dlsym(handle_, "bridge_get_at"));
+  bridge_free_string = reinterpret_cast<BridgeFreeStringFn>(dlsym(handle_, "bridge_free_string"));
+  bridge_broadcast_binary = reinterpret_cast<BridgeBroadcastBinaryFn>(dlsym(handle_, "bridge_broadcast_binary"));
+  bridge_has_clients = reinterpret_cast<BridgeHasClientsFn>(dlsym(handle_, "bridge_has_clients"));
+  bridge_key_observed = reinterpret_cast<BridgeKeyObservedFn>(dlsym(handle_, "bridge_key_observed"));
+
   if (!bridge_init || !bridge_release || !bridge_get_param ||
       !bridge_set_param || !bridge_tick) {
     unload();
@@ -64,6 +80,18 @@ void BridgeLoader::unload() {
   bridge_call_tick = nullptr;
   bridge_call_on_param = nullptr;
   bridge_set_audio_callback = nullptr;
+  bridge_register_plugin = nullptr;
+  bridge_unregister_plugin = nullptr;
+  bridge_register_patch_listener = nullptr;
+  bridge_unregister_patch_listener = nullptr;
+  bridge_set_plugin_state = nullptr;
+  bridge_get_plugin_state = nullptr;
+  bridge_set_at = nullptr;
+  bridge_get_at = nullptr;
+  bridge_free_string = nullptr;
+  bridge_broadcast_binary = nullptr;
+  bridge_has_clients = nullptr;
+  bridge_key_observed = nullptr;
 }
 
 } // namespace plugin

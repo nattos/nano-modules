@@ -794,6 +794,7 @@ if(APPLE)
   )
   target_link_libraries(ffgl_runner PRIVATE
     ffgl::sdk
+    nlohmann_json::nlohmann_json
     "-framework OpenGL"
     "-framework Metal"
     "-framework MetalKit"
@@ -805,31 +806,31 @@ if(APPLE)
   target_compile_options(ffgl_runner PRIVATE -Wno-attributes -Wno-deprecated-declarations)
 
   # --- NanoBarrel FFGL bundle ---
-  # The full-fat barrel: one FFGL bundle that hosts a sketch + bridge
-  # (FF_TYPE_FILE config persisted by Resolume + per-instance WS) AND
-  # executes the sketch each frame via the Metal-backed effect runtime.
-  # NO static effects: every effect (text included) loads as a WASM bundle
-  # from Resources/wasm/ via sketch_executor's WasmEffectBundles. InteropTexture
-  # supplies the GL↔Metal bridge.
+  # The full-fat barrel: one FFGL bundle that hosts a sketch AND executes it
+  # each frame via the Metal-backed effect runtime. The editor bridge is NOT
+  # per-instance — the barrel is a CLIENT of the shared libbridge_server.dylib
+  # singleton (located via dladdr next to the bundle, dlopen'd through
+  # BridgeLoader at InitGL), so it links NONE of the bridge statics itself
+  # (the singleton must live only in the dylib). The FF_TYPE_FILE config is
+  # still persisted by Resolume. NO static effects: every effect (text
+  # included) loads as a WASM bundle from Resources/wasm/ via sketch_executor's
+  # WasmEffectBundles. InteropTexture supplies the GL↔Metal bridge.
   set(FFGL_BUNDLE_LINK_FLAGS_BARREL "-undefined dynamic_lookup")
   add_library(NanoBarrel MODULE
     src/plugin/nano_barrel/nano_barrel_plugin.mm
     src/plugin/nano_barrel/InteropTexture.m
+    src/plugin/bridge_loader.cpp
   )
+  # The shared dylib is dlopen'd at runtime, not linked — but it must be built
+  # before NanoBarrel's POST_BUILD copies it next to the bundle.
+  add_dependencies(NanoBarrel bridge_server)
   target_include_directories(NanoBarrel PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
   )
   target_link_libraries(NanoBarrel PRIVATE
     sketch_executor      # brings in sketch_augment + effect_runtime + gpu_backend
-    bridge_core
-    bridge_ws_server
-    state_system
-    param_cache
-    resolume_protocol
-    json_utils
     nlohmann_json::nlohmann_json
-    ixwebsocket
     ffgl::sdk
     "-framework OpenGL"
     "-framework Metal"
@@ -898,6 +899,23 @@ if(APPLE)
       endif()
     endforeach()
   endforeach()
+
+  # Deploy libbridge_server.dylib as a SIBLING of the bundle. dlopen shares one
+  # image only for the same path, so shipping the dylib next to the bundle(s)
+  # is what lets a SINGLE shared singleton back every NanoBarrel (and the
+  # looper) in the process — embedding a private copy per bundle would create
+  # multiple singletons and the second WsServer::start(8081) would fail. The
+  # dylib must be codesigned too or Gatekeeper rejects the dlopen. Resolume
+  # install: ship libbridge_server.dylib alongside the .bundle(s).
+  add_custom_command(TARGET NanoBarrel POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:bridge_server>"
+            "$<TARGET_BUNDLE_DIR:NanoBarrel>/../libbridge_server.dylib"
+    COMMAND codesign --force --sign "${NANOBARREL_CODESIGN_IDENTITY}"
+            "$<TARGET_BUNDLE_DIR:NanoBarrel>/../libbridge_server.dylib"
+    COMMENT "Deploying + signing libbridge_server.dylib next to NanoBarrel.bundle"
+    VERBATIM
+  )
 
   add_custom_command(TARGET NanoBarrel POST_BUILD
     COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh

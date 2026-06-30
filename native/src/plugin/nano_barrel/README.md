@@ -2,13 +2,19 @@
 
 A single FFGL bundle that:
 
-- **Persists a sketch graph** as a single `FF_TYPE_FILE` parameter on the
-  Resolume composition (no sidecar files; round-trips up to 16 MB —
-  see probes 1–3 history under `~/Library/Logs/NanoProbe*/` and
-  `~/Library/Logs/NanoBarrel/`).
-- **Hosts a per-instance WebSocket bridge** on an auto-allocated port
-  so the web sketch editor can connect, observe state, and push
-  patches. Re-uses the existing `bridge_core` JSON-patch protocol.
+- **Persists a sketch graph + a stable instance UUID** as a single
+  `FF_TYPE_FILE` parameter on the Resolume composition (no sidecar files;
+  round-trips up to 16 MB — see probes 1–3 history under
+  `~/Library/Logs/NanoProbe*/` and `~/Library/Logs/NanoBarrel/`). The param
+  value is a wrapped `{"uuid":..,"sketch":..}` envelope.
+- **Registers with the shared in-process server** (`libbridge_server.dylib`,
+  located via `dladdr` next to the bundle and `dlopen`'d through
+  `BridgeLoader` at `InitGL`). That singleton owns the ONE WebSocket server
+  (fixed port **8081**) and the ONE unified state document — every NanoBarrel
+  instance in the process is multiplexed under `/plugins/<key>/state`, where
+  `<key>` is this instance's persisted UUID. The web editor connects to the
+  single port, enumerates instances from `/global/plugins`, and picks one.
+  Re-uses the existing `bridge_core` JSON-patch protocol.
 - **Runs the sketch's effects every frame** through the shared
   `sketch_executor` library, blitting Resolume's GL input texture
   through GL↔Metal interop into the executor's Metal pipeline and
@@ -29,13 +35,14 @@ A single FFGL bundle that:
 | `InteropTexture.{h,m}` | CVPixelBuffer-backed GL↔Metal texture pair. The canonical copy — `ffgl_runner` (the headless host) borrows this same source. |
 | `Info.plist.in` (via parent dir) | Boilerplate bundle metadata. |
 
-## Parameter layout (always 18)
+## Parameter layout (always 17)
 
 | Idx | Name | Type | Purpose |
 |---|---|---|---|
-| 0 | `config` | `FF_TYPE_FILE` | `nanobarrel://config?<base64>` — the whole sketch JSON, persisted by Resolume |
-| 1 | `port` | `FF_TYPE_TEXT` | The WS port the bridge bound, for the editor to read |
-| 2..17 | `macro_00..macro_15` | `FF_TYPE_STANDARD` | 16 user-mappable floats |
+| 0 | `config` | `FF_TYPE_FILE` | `nanobarrel://config?<base64>` of a `{"uuid":..,"sketch":..}` envelope, persisted by Resolume |
+| 1..16 | `macro_00..macro_15` | `FF_TYPE_STANDARD` | 16 user-mappable floats |
+
+(The old `port` text param is gone — there's a single shared server on 8081.)
 
 Why 16 fixed macros instead of dynamic registration per effect param:
 probe 1 confirmed Resolume only re-scans the param surface on plugin
@@ -75,14 +82,19 @@ executor's domain; this file's job is the I/O around it.
 
 ## Bridge wiring
 
-One `BridgeCore` + one `WsServer` per FFGL instance, both created in
-the ctor. The WS server binds the first available port starting at
-9090 (per-process counter, retries up to 100). The bound port is
-written back to `port_str_` and surfaced via `RaiseParamEvent(P_PORT,
-FF_EVENT_FLAG_VALUE)` so the editor can read it.
+No per-instance server. At `InitGL` the barrel locates `libbridge_server.dylib`
+next to its bundle (`dladdr` → sibling path), `dlopen`s it via `BridgeLoader`,
+and `bridge_init()` (acquire) the ref-counted singleton — the first instance in
+the process spins up the ONE `WsServer` (fixed port **8081**), the ONE
+`BridgeCore`/`StateDocument`, and the server's own pump thread; the last
+instance to `bridge_release()` tears them down. Acquisition is in `InitGL`, NOT
+the ctor (the host constructs throwaway prototype instances during its param
+scan, which must not start a server).
 
-The barrel registers itself as a plugin in the bridge's state document
-under `com.nano.nanobarrel@0`, with this initial state shape:
+The barrel registers itself via `bridge_register_plugin(requested_key=<uuid>)`
+and uses the returned key (the server remints on collision — duplicated clips
+carrying the same persisted UUID get a unique derivative the barrel re-persists)
+as `barrel_plugin_key_`, with this initial state shape:
 
 ```jsonc
 {
@@ -94,11 +106,12 @@ under `com.nano.nanobarrel@0`, with this initial state shape:
 ```
 
 State document mutations from the editor (`{action:"patch", target:"/plugins/<key>/state", ops:[...]}`)
-trigger the `BridgeCore`'s `client_patch_callback`, which sets
-`dirty_=true` and timestamps `dirty_since_ms_`. After 200 ms of quiet
-the plugin re-encodes the sketch as `nanobarrel://config?<base64>` and
-raises `FF_EVENT_FLAG_VALUE` on the FILE param so Resolume persists
-the value. (Probe 3 established that 200 ms is below the threshold
+fire this instance's per-key patch listener (`onPatchTrampoline`, registered via
+`bridge_register_patch_listener` — invoked on the shared server's pump thread, so
+it only flips atomics), which sets `dirty_=true` and timestamps `dirty_since_ms_`.
+After 200 ms of quiet the plugin re-encodes the `{uuid,sketch}` envelope as
+`nanobarrel://config?<base64>` and raises `FF_EVENT_FLAG_VALUE` on the FILE param
+so Resolume persists it. (Probe 3 established that 200 ms is below the threshold
 that makes Resolume's inspector chug on FILE param mutations.)
 
 A process-wide static `g_cache_blob()` holds the latest sketch JSON
@@ -140,11 +153,10 @@ an optional per-platform speed bonus (nothing ships per-user beyond the small
 
 **Schemas reach the editor independently of the bridge doc.** The WASM modules
 are deliberately given a NULL state document — a WASM effect's `state.set_val`
-would otherwise write to the doc on the *render* thread (diff under the doc
-mutex), deadlocking against the WS thread on a sketch change
-(`tick_mu_` → doc mutex → `WsServer` → `tick_mu_`). Schemas still publish: the
-barrel sends them from `registry_->schemas()` (parsed off each `EffectInstance`
-via the host sink), independent of the doc.
+would otherwise write to the shared doc on the *render* thread every frame
+(diff under the doc mutex), needless contention with the server's pump thread.
+Schemas still publish: the barrel sends them from `registry_->schemas()` (parsed
+off each `EffectInstance` via the host sink), independent of the doc.
 
 **To add an effect:** write the WASM module under `wasm_modules/<name>/`, add it
 to a bundle's `build.sh`, rebuild that bundle (and optionally re-run
@@ -227,9 +239,9 @@ logs were used during bring-up and have been removed. Re-add ad-hoc
 ## Known limitations / future work
 
 - **No HTTP-serve of the editor JS bundle.** The editor is hosted
-  elsewhere; the user opens
-  `http://localhost:5173/resolume/?barrel=ws://localhost:<port>` to
-  connect.
+  elsewhere; the user opens `http://localhost:5173/resolume/` (which connects
+  to the shared server on `ws://localhost:8081` by default; `?barrel=ws://host:port`
+  remains an optional override) and picks an instance from the Organize tab.
 - **Executor runs native in-process, not as WASM.** Only the *effects* are WASM
   here. The per-frame executor loop is CPU-heavy and WAMR interp was measured
   28–46× too slow; the same source still compiles to `executor.wasm` for the web

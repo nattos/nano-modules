@@ -31,6 +31,20 @@ public:
   BridgeCallOnParamFn bridge_call_on_param = nullptr;
   BridgeSetAudioCallbackFn bridge_set_audio_callback = nullptr;
 
+  // Multiplexed-instance function pointers (FFGL barrel)
+  BridgeRegisterPluginFn bridge_register_plugin = nullptr;
+  BridgeUnregisterPluginFn bridge_unregister_plugin = nullptr;
+  BridgeRegisterPatchListenerFn bridge_register_patch_listener = nullptr;
+  BridgeUnregisterPatchListenerFn bridge_unregister_patch_listener = nullptr;
+  BridgeSetPluginStateFn bridge_set_plugin_state = nullptr;
+  BridgeGetPluginStateFn bridge_get_plugin_state = nullptr;
+  BridgeSetAtFn bridge_set_at = nullptr;
+  BridgeGetAtFn bridge_get_at = nullptr;
+  BridgeFreeStringFn bridge_free_string = nullptr;
+  BridgeBroadcastBinaryFn bridge_broadcast_binary = nullptr;
+  BridgeHasClientsFn bridge_has_clients = nullptr;
+  BridgeKeyObservedFn bridge_key_observed = nullptr;
+
 private:
   void* handle_ = nullptr;
 };

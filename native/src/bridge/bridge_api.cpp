@@ -1,7 +1,23 @@
 #include "bridge/bridge_api.h"
 #include "bridge/bridge_server.h"
 
+#include <cstdlib>
+#include <cstring>
+#include <string>
+
 using bridge::BridgeServer;
+
+namespace {
+// Heap-copy a std::string into a malloc'd, NUL-terminated C string the
+// caller frees with bridge_free_string (same allocator, inside the dylib).
+char* dup_string(const std::string& s) {
+  char* out = static_cast<char*>(std::malloc(s.size() + 1));
+  if (!out) return nullptr;
+  std::memcpy(out, s.data(), s.size());
+  out[s.size()] = '\0';
+  return out;
+}
+} // namespace
 
 extern "C" {
 
@@ -79,6 +95,83 @@ void bridge_set_audio_callback(BridgeHandle h, int32_t module_id,
     AudioTriggerCallback fn, void* userdata) {
   if (!h) return;
   static_cast<BridgeServer*>(h)->set_audio_callback(module_id, fn, userdata);
+}
+
+// --- Multiplexed plugin instances ---
+
+int32_t bridge_register_plugin(BridgeHandle h, const char* id,
+    int major, int minor, int patch,
+    const char* schema_json, const char* requested_key,
+    char* out_key, int32_t out_key_cap) {
+  if (!h || !id) return 0;
+  std::string key = static_cast<BridgeServer*>(h)->register_plugin(
+      id, major, minor, patch,
+      schema_json ? schema_json : "",
+      requested_key ? requested_key : "");
+  if (out_key && out_key_cap > 0) {
+    int32_t n = static_cast<int32_t>(key.size());
+    int32_t copy = n < out_key_cap - 1 ? n : out_key_cap - 1;
+    std::memcpy(out_key, key.data(), copy);
+    out_key[copy] = '\0';
+  }
+  return static_cast<int32_t>(key.size());
+}
+
+void bridge_unregister_plugin(BridgeHandle h, const char* key) {
+  if (!h || !key) return;
+  static_cast<BridgeServer*>(h)->unregister_plugin(key);
+}
+
+void bridge_register_patch_listener(BridgeHandle h, const char* key,
+    BridgePatchListenerFn fn, void* userdata) {
+  if (!h || !key || !fn) return;
+  std::string k = key;
+  static_cast<BridgeServer*>(h)->register_patch_listener(k,
+      [fn, userdata](const std::string& pk) { fn(pk.c_str(), userdata); });
+}
+
+void bridge_unregister_patch_listener(BridgeHandle h, const char* key) {
+  if (!h || !key) return;
+  static_cast<BridgeServer*>(h)->unregister_patch_listener(key);
+}
+
+void bridge_set_plugin_state(BridgeHandle h, const char* key, const char* json) {
+  if (!h || !key || !json) return;
+  static_cast<BridgeServer*>(h)->set_plugin_state(key, json);
+}
+
+char* bridge_get_plugin_state(BridgeHandle h, const char* key) {
+  if (!h || !key) return nullptr;
+  return dup_string(static_cast<BridgeServer*>(h)->get_plugin_state(key));
+}
+
+void bridge_set_at(BridgeHandle h, const char* path, const char* json) {
+  if (!h || !path || !json) return;
+  static_cast<BridgeServer*>(h)->set_at(path, json);
+}
+
+char* bridge_get_at(BridgeHandle h, const char* path) {
+  if (!h || !path) return nullptr;
+  return dup_string(static_cast<BridgeServer*>(h)->get_at(path));
+}
+
+void bridge_free_string(char* s) {
+  std::free(s);
+}
+
+void bridge_broadcast_binary(BridgeHandle h, const uint8_t* data, uint32_t len) {
+  if (!h || !data || len == 0) return;
+  static_cast<BridgeServer*>(h)->broadcast_binary(data, len);
+}
+
+int bridge_has_clients(BridgeHandle h) {
+  if (!h) return 0;
+  return static_cast<BridgeServer*>(h)->has_clients() ? 1 : 0;
+}
+
+int bridge_key_observed(BridgeHandle h, const char* key) {
+  if (!h || !key) return 0;
+  return static_cast<BridgeServer*>(h)->key_observed(key) ? 1 : 0;
 }
 
 } // extern "C"

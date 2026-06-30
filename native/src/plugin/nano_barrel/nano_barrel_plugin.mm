@@ -1,23 +1,32 @@
 // nano_barrel_plugin.mm — NanoBarrel FFGL plugin.
 //
-// Hosts one sketch + a per-instance BridgeCore/WsServer for the editor
-// + a Metal-backed effect runtime that actually executes the sketch
-// each frame. The frame body walks the sketch graph stored in the
-// bridge's state document, looks each module up in the static module
-// registry (currently brightness_contrast / soft_glow / motion_blur),
-// applies the instance's persisted state, and dispatches the effect's
-// compute kernels through `effect_runtime`. GL↔Metal interop is the
-// IOSurface-backed `InteropTexture` we share with StreakyBlobs.
+// Hosts one sketch + a Metal-backed effect runtime that actually executes
+// the sketch each frame. The editor bridge is NOT per-instance: every
+// NanoBarrel instance in the process registers itself with the shared
+// in-process server (libbridge_server.dylib, located via dladdr next to the
+// bundle and dlopen'd through BridgeLoader). That singleton owns the ONE
+// WebSocket server (port 8081) and the ONE unified state document; each
+// instance lives under `/plugins/<key>/state`, where `<key>` is this
+// instance's stable persisted UUID. The frame body pulls the sketch out of
+// the shared doc, walks the graph against the module registry, applies the
+// instance's persisted state, and dispatches the effect's compute kernels
+// through `effect_runtime`. GL↔Metal interop is the IOSurface-backed
+// `InteropTexture`.
 //
 // Multi-instance-per-effect-type is NOT supported (effects use
 // file-static state; documented hard invariant of EffectRuntime).
 // Unknown module types passthrough — the executor just skips them.
 //
-// Params (18 total, all registered at construction so Resolume sees
+// Identity: each instance carries a UUID generated once and persisted in
+// the FILE param envelope; it registers with the shared server under that
+// UUID. Duplicated clips (same persisted UUID) are reminted by the server,
+// and the instance adopts + re-persists the returned key.
+//
+// Params (17 total, all registered at construction so Resolume sees
 // them during the prototype scan):
-//   0  config   FILE  — `nanobarrel://config?<base64-of-sketch-json>`.
-//   1  port    TEXT   — the WS port the bridge bound.
-//   2..17 macro_00..15 STANDARD — user-mappable floats.
+//   0  config   FILE  — `nanobarrel://config?<base64>` of an envelope
+//                        `{"uuid":<uuid>,"sketch":<sketch-json>}`.
+//   1..16 macro_00..15 STANDARD — user-mappable floats.
 
 #include <array>
 #include <atomic>
@@ -46,9 +55,8 @@
 #include <ffgl/FFGLPluginInfo.h>
 #include <ffgl/FFGLLib.h>
 
-#include "bridge/bridge_core.h"
-#include "bridge/state_document.h"
-#include "bridge/ws_server.h"
+#include "plugin/bridge_loader.h"
+#include "bridge/bridge_api.h"
 
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
@@ -73,15 +81,18 @@ namespace effect_runtime {
 namespace {
 
 constexpr unsigned int P_CONFIG    = 0;
-constexpr unsigned int P_PORT      = 1;
-constexpr unsigned int P_MACRO_00  = 2;
+constexpr unsigned int P_MACRO_00  = 1;
 constexpr unsigned int N_MACROS    = 16;
 constexpr unsigned int N_PARAMS    = P_MACRO_00 + N_MACROS;
 
 constexpr double kRegenDebounceMs = 200.0;
-constexpr int    kPortStart       = 9090;
-constexpr int    kPortRetries     = 100;
 
+// Process-global cache of this instance's last persisted payload (the
+// `{"uuid":..,"sketch":..}` envelope JSON, NOT wrapped). Only used for the
+// in-process delete+undo workflow where Resolume destroys + recreates the
+// C++ instance within the same process before re-pushing the saved param;
+// the recreated ctor reads this so it can repopulate before SetTextParameter
+// fires. Lost on host restart (P_CONFIG is the restart-durable store).
 std::mutex&  g_cache_mu()    { static std::mutex m; return m; }
 std::string& g_cache_blob()  { static std::string s; return s; }
 
@@ -98,7 +109,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     SetTimeSupported(true);
 
     config_blob_.clear();
-    port_str_.clear();
     macros_.fill(0.0f);
     macros_prev_.fill(0.0f);
 
@@ -106,7 +116,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       std::vector<std::string> exts = {"nanocfg"};
       SetFileParamInfo(P_CONFIG, "config", exts, "");
     }
-    SetParamInfo(P_PORT, "port", FF_TYPE_TEXT, "");
     for (unsigned int i = 0; i < N_MACROS; ++i) {
       char name[16];
       snprintf(name, sizeof(name), "macro_%02u", i);
@@ -117,99 +126,27 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // `init()`s up-front (must happen before the host scans params, since
     // some host-thread hooks fire during init). EffectRuntime documents
     // single-instance-per-effect-type as a hard invariant.
+    //
+    // NOTE: the shared bridge server is acquired in InitGL, NOT here — the
+    // host constructs throwaway prototype instances during its param scan,
+    // and we must not spin up the WS server / register a phantom instance
+    // for those (mirrors looper_plugin.cpp, which also defers to InitGL).
     initEffectRuntime();
 
-    bridge::PluginMetadata meta;
-    meta.id    = "com.nano.nanobarrel";
-    meta.major = 0;
-    meta.minor = 1;
-    meta.patch = 0;
-    barrel_plugin_key_ =
-        bridge_core_.state_document().register_plugin(meta);
-    BARREL_LOG("register_plugin", "key=%s", barrel_plugin_key_.c_str());
-
-    bridge_core_.set_send_callback(
-        [this](int client_id, const std::string& msg) {
-          if (ws_server_) ws_server_->send_to(client_id, msg);
-        });
-    bridge_core_.set_client_patch_callback(
-        [this](const std::string& key) {
-          if (key != barrel_plugin_key_) return;
-          // Fired from inside bridge_core_.handle_message — now drained on the
-          // RENDER thread under tick_mu_ (WS messages are queued into ws_inbox_
-          // and processed in ProcessOpenGL), so this is already on the render
-          // thread. We still just park dirty flags rather than refresh inline:
-          // dirty_ / dirty_since_ms_ feed the debounced config regen, and
-          // preview_requests_ is refreshed by the existing dirty-flag path —
-          // keeping this a pure flag-flip avoids reentrancy with that machinery.
-          dirty_ = true;
-          dirty_since_ms_ = ::nano_barrel_log::now_ms();
-          preview_requests_dirty_.store(true, std::memory_order_release);
-          // The sketch changed → drop the cached snapshot so the next frame
-          // re-fetches it (see the sketch_snapshot_ cache in ProcessOpenGL).
-          sketch_snapshot_dirty_.store(true, std::memory_order_release);
-        });
-
-    {
-      nlohmann::json column_one = {
-        {"name", "Column 1"},
-        {"chain", nlohmann::json::array()},
-      };
-      // Publish the registered effects' schemas so the web client can
-      // populate its inspector + augmenter without instantiating any
-      // effects locally. Shape mirrors web/src/state/types.ts PluginInfo;
-      // `params` and `io` are derived web-side from the schema fields,
-      // so we publish only the raw schema + identity here.
-      nlohmann::json plugin_schemas = nlohmann::json::object();
-      if (registry_) {
-        for (const auto& [module_type, schema_fields] :
-             registry_->schemas()) {
-          plugin_schemas[module_type] = {
-            {"key",     module_type},
-            {"id",      module_type},
-            {"version", "0.0.0"},
-            {"schema",  schema_fields},
-          };
-        }
-      }
-      nlohmann::json initial = {
-        {"sketch", {
-          {"anchor", nullptr},
-          {"columns", nlohmann::json::array({column_one})},
-        }},
-        {"macros", nlohmann::json::array()},
-        {"triggers", nlohmann::json::object()},
-        {"host", nlohmann::json::object()},
-        {"plugin_schemas", plugin_schemas},
-        // Editor preview-request inbox. Pre-populating with an empty
-        // object lets the editor target it with a JSON Patch `replace`
-        // (it would also accept `add`, but every other path here is
-        // pre-populated so this stays consistent).
-        {"preview_requests", nlohmann::json::object()},
-      };
-      for (int i = 0; i < (int)N_MACROS; ++i) {
-        initial["macros"].push_back(0.0);
-      }
-      std::lock_guard<std::mutex> lock(tick_mu_);
-      bridge_core_.state_document().set_plugin_state(
-          barrel_plugin_key_, initial);
-    }
-
-    std::string cached;
+    // Stash the persisted payload (envelope JSON) for InitGL to apply once
+    // the bridge is up. On a host cold start this is empty (the host will
+    // restore it via SetTextParameter before InitGL); on in-process
+    // delete+undo it's the live envelope from the process cache.
     {
       std::lock_guard<std::mutex> lock(g_cache_mu());
-      cached = g_cache_blob();
+      pending_payload_ = g_cache_blob();
     }
-    if (!cached.empty()) {
-      BARREL_LOG("ctor",
-                 "bootstrapping from process cache (json_size=%zu)",
-                 cached.size());
-      applyConfigJson(cached);
-      config_blob_ = barrel_codec::wrap_config(cached);
+    if (!pending_payload_.empty()) {
+      config_blob_ = barrel_codec::wrap_config(pending_payload_);
     }
 
     BARREL_LOG("ctor-done",
-               "params=%u port_pending=true config_blob_size=%zu effects=%zu",
+               "params=%u config_blob_size=%zu effects=%zu",
                N_PARAMS, config_blob_.size(),
                registry_ ? registry_->size() : 0);
   }
@@ -223,8 +160,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     //     its bytes into send_queue_ AND for the worker to ship them
     //     (in_flight_previews_ counts both, decremented post-send),
     // (2) signal the worker to stop and join. Only after both does
-    //     stopBridge tear down ws_server_, which both the handlers and
-    //     the worker dereference.
+    //     teardownBridge release the shared server handle the worker's
+    //     broadcast dereferences.
     int spins = 0;
     while (in_flight_previews_.load() > 0 && spins < 200) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -236,7 +173,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     send_cv_.notify_one();
     if (send_thread_.joinable()) send_thread_.join();
-    stopBridge();
+    // Safety net: DeInitGL normally tears the bridge down, but the host may
+    // destroy us without a matching DeInitGL. The send worker is already
+    // joined above, so no broadcast can fire after release.
+    teardownBridge();
   }
 
   // -- Lifecycle -------------------------------------------------------
@@ -244,13 +184,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     BARREL_LOG("InitGL", "viewport=%ux%u", vp->width, vp->height);
     CFFGLPlugin::InitGL(vp);
     glGenFramebuffers(1, &src_fbo_);
-    startBridge();
+    setupBridge();
     return FF_SUCCESS;
   }
 
   FFResult DeInitGL() override {
     BARREL_LOG("DeInitGL", "frame=%d", frame_);
-    stopBridge();
+    teardownBridge();
     if (src_fbo_) { glDeleteFramebuffers(1, &src_fbo_); src_fbo_ = 0; }
     input_interop_.reset();
     output_interop_.reset();
@@ -280,9 +220,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       {"name",    hostname ? hostname : ""},
       {"version", version  ? version  : ""},
     };
-    std::lock_guard<std::mutex> lock(tick_mu_);
-    bridge_core_.state_document().set_at(
-        "/plugins/" + barrel_plugin_key_ + "/state/host", host_info);
+    host_info_ = host_info;               // applied in setupBridge if early
+    if (bridge_ && loader_.bridge_set_at) {
+      loader_.bridge_set_at(bridge_,
+          ("/plugins/" + barrel_plugin_key_ + "/state/host").c_str(),
+          host_info.dump().c_str());
+    }
   }
 
   FFResult SetTime(double t) override {
@@ -301,14 +244,20 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         if (macros_prev_[m] < 0.5f && value >= 0.5f) {
           fire_trigger = true;
           trig_seq = ++trigger_seq_;
-          std::string trig_path = "/plugins/" + barrel_plugin_key_ +
-                                  "/state/triggers/macro_" + std::to_string(m);
-          bridge_core_.state_document().set_at(trig_path, (int)trig_seq);
+          if (bridge_ && loader_.bridge_set_at) {
+            std::string trig_path = "/plugins/" + barrel_plugin_key_ +
+                                    "/state/triggers/macro_" + std::to_string(m);
+            loader_.bridge_set_at(bridge_, trig_path.c_str(),
+                                  std::to_string((int)trig_seq).c_str());
+          }
         }
         macros_prev_[m] = value;
-        std::string path = "/plugins/" + barrel_plugin_key_ +
-                           "/state/macros/" + std::to_string(m);
-        bridge_core_.state_document().set_at(path, (double)value);
+        if (bridge_ && loader_.bridge_set_at) {
+          std::string path = "/plugins/" + barrel_plugin_key_ +
+                             "/state/macros/" + std::to_string(m);
+          loader_.bridge_set_at(bridge_, path.c_str(),
+                                nlohmann::json((double)value).dump().c_str());
+        }
       }
       if (fire_trigger) {
         BARREL_LOG("trigger", "macro=%u value=%.3f seq=%u",
@@ -330,27 +279,27 @@ class NanoBarrelPlugin : public CFFGLPlugin {
                  "idx=config size=%zu head=%s",
                  len, BARREL_REDACT(v, 80).c_str());
       std::string received(v, len);
-      bool cache_was_empty;
-      {
-        std::lock_guard<std::mutex> lock(g_cache_mu());
-        cache_was_empty = g_cache_blob().empty();
-      }
-      if (cache_was_empty && !received.empty()) {
-        std::string sketch_json = barrel_codec::unwrap_config(received);
-        if (!sketch_json.empty()) {
-          applyConfigJson(sketch_json);
-        } else {
-          BARREL_LOG("SetTextParameter",
-                     "config: unrecognized payload (not nanobarrel://), keeping empty sketch");
-        }
-      } else if (!cache_was_empty) {
-        BARREL_LOG("SetTextParameter",
-                   "config: process cache already populated, ignoring persisted value");
-      }
       config_blob_ = received;
-      return FF_SUCCESS;
-    }
-    if (idx == P_PORT) {
+      std::string payload = received.empty()
+          ? std::string()
+          : barrel_codec::unwrap_config(received);
+      if (payload.empty()) {
+        BARREL_LOG("SetTextParameter",
+                   "config: empty/unrecognized payload, keeping current state");
+        return FF_SUCCESS;
+      }
+      if (bridge_) {
+        // Post-init reload (uncommon) — apply directly.
+        applyPayload(payload);
+      } else if (pending_payload_.empty()) {
+        // Cold start: the host is restoring the saved value before InitGL.
+        // (On in-process delete+undo pending_payload_ was already seeded
+        // from the live process cache, so we keep that and ignore this.)
+        pending_payload_ = payload;
+      } else {
+        BARREL_LOG("SetTextParameter",
+                   "config: live payload already pending, ignoring persisted value");
+      }
       return FF_SUCCESS;
     }
     return FF_SUCCESS;
@@ -375,11 +324,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       config_return_buf_[config_blob_.size()] = '\0';
       return config_return_buf_.data();
     }
-    if (idx == P_PORT) {
-      snprintf(port_return_buf_, sizeof(port_return_buf_),
-               "%s", port_str_.c_str());
-      return port_return_buf_;
-    }
     small_return_buf_[0] = '\0';
     return small_return_buf_;
   }
@@ -389,23 +333,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     ++frame_;
     BARREL_CTX_FRAME(frame_);
 
-    // Drain WS events the WS thread queued lock-free, then process them on THIS
-    // (render) thread under tick_mu_ — so the WS thread never takes tick_mu_
-    // while ix holds the WsServer mutex (the disconnect-deadlock fix). The swap
-    // is done first under the leaf inbox lock, so tick_mu_ never nests it.
-    std::vector<WsInboxEvent> ws_events;
-    {
-      std::lock_guard<std::mutex> lk(ws_inbox_mu_);
-      ws_events.swap(ws_inbox_);
-    }
-    {
-      std::lock_guard<std::mutex> lock(tick_mu_);
-      for (auto& e : ws_events) {
-        if (e.is_message) bridge_core_.handle_message(e.cid, e.msg);
-        else              bridge_core_.remove_client(e.cid);
-      }
-      bridge_core_.tick();
-    }
+    // WS message handling + state broadcast now live entirely in the shared
+    // server's pump thread; this render thread only reads/writes the shared
+    // state doc via the BridgeLoader ABI (each call is internally locked).
     maybeRegenerateConfig();
 
     if (pGL->numInputTextures < 1 || !pGL->inputTextures ||
@@ -450,22 +380,24 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     effect_runtime::setHostDeltaTime(dt);
     effect_runtime::setHostViewport((int)W, (int)H);
 
-    // Pull the current sketch out of the bridge's state document and
-    // hand it to the shared executor. The executor owns the augmenter,
-    // intermediate pool, and tap routing; the plugin's only job here
-    // is the FFGL ↔ Metal interop around it.
-    // Compute this ONCE, OUTSIDE tick_mu_. has_open_clients() takes the WsServer
-    // mutex; acquiring it while holding tick_mu_ deadlocks against a WS
-    // disconnect (which holds the WsServer mutex and, in its close callback,
-    // wants tick_mu_). Reused for every "publish only when watched" gate below.
-    const bool hasClients = ws_server_ && ws_server_->has_open_clients();
+    // Pull the current sketch out of the shared state document and hand it
+    // to the executor. The executor owns the augmenter, intermediate pool,
+    // and tap routing; the plugin's only job here is the FFGL ↔ Metal interop
+    // around it. `watched` gates "publish only when an editor observes THIS
+    // instance" — with many instances multiplexed onto one server we don't
+    // want one connected editor to make every instance do telemetry/preview
+    // work. (If the editor observes the doc root, key_observed is true for
+    // all — conservative but correct.)
+    const bool watched = bridge_ && loader_.bridge_key_observed &&
+                         loader_.bridge_key_observed(bridge_,
+                             barrel_plugin_key_.c_str());
 
     bool sketchRefetched = false;
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
       // Re-snapshot the sketch ONLY when it actually changed — an editor patch
-      // (client_patch_callback) or a Resolume config (applyConfigJson) flips
-      // sketch_snapshot_dirty_. get_at deep-copies the whole sketch subtree
+      // (onPatchTrampoline) or a Resolume config (applyConfigJson) flips
+      // sketch_snapshot_dirty_. The fetch deep-copies the whole sketch subtree
       // (every instance state, incl. multi-KB richtext html/css), which profiled
       // as the bulk of per-frame JSON churn once the layout was cached. Caching
       // the snapshot is the native analogue of the web's compile-once
@@ -474,7 +406,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       sketchRefetched =
           sketch_snapshot_dirty_.exchange(false, std::memory_order_acq_rel);
       if (sketchRefetched) {
-        sketch_snapshot_ = bridge_core_.state_document().get_at(
+        sketch_snapshot_ = getAtJson(
             "/plugins/" + barrel_plugin_key_ + "/state/sketch");
       }
       // Route the live macro knobs into any control.barrel_macros instance's state.
@@ -507,10 +439,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // of the sketch (above), so without this the web — which mirrors only the
       // persisted sketch — would never see them. One JSON string → one patch op;
       // only while an editor is watching.
-      if (hasClients && !macroOut.empty()) {
-        bridge_core_.state_document().set_at(
-            "/plugins/" + barrel_plugin_key_ + "/state/macro_outputs",
-            macroOut.dump());
+      if (watched && bridge_ && loader_.bridge_set_at && !macroOut.empty()) {
+        loader_.bridge_set_at(bridge_,
+            ("/plugins/" + barrel_plugin_key_ + "/state/macro_outputs").c_str(),
+            macroOut.dump().c_str());
       }
       // Drain any preview-request changes the WS thread has signalled.
       // Doing the actual map rebuild here keeps it on the render thread
@@ -525,7 +457,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // When off, the executor hooks early-return and publishPreviewFrames
     // never gets called — the cost of having an idle editor connected
     // (or no editor at all) is just this single check.
-    captures_enabled_ = hasClients && !preview_requests_.empty();
+    captures_enabled_ = watched && !preview_requests_.empty();
     // Snapshots for the editor's preview push are gathered during the
     // executor's render via the chain-entry / sketch-output hooks bound
     // in initEffectRuntime. Clear them each frame so a request that's
@@ -547,11 +479,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // the native mirror of the web executor's /sketch_state publish. Only when
     // an editor is watching; stored as one JSON string so the state-doc diff
     // emits a single patch (and nothing at all while the rails are static).
-    if (executor_ && hasClients) {
-      std::lock_guard<std::mutex> lock(tick_mu_);
-      bridge_core_.state_document().set_at(
-          "/plugins/" + barrel_plugin_key_ + "/state/sketch_state",
-          executor_->lastRailState().dump());
+    if (executor_ && watched && bridge_ && loader_.bridge_set_at) {
+      loader_.bridge_set_at(bridge_,
+          ("/plugins/" + barrel_plugin_key_ + "/state/sketch_state").c_str(),
+          executor_->lastRailState().dump().c_str());
     }
 
     // After submit() returns the GPU work is fully complete; intermediates
@@ -597,6 +528,197 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     auto pos = p.find(".bundle/");
     if (pos == std::string::npos) return "";
     return p.substr(0, pos + 8) + "Contents/Resources/wasm/" + name + ".wasm";
+  }
+
+  // Resolve libbridge_server.dylib, shipped as a SIBLING of the bundle (so a
+  // single shared singleton is dlopen'd across barrel + looper bundles — same
+  // path → same image). Mirrors looper_plugin.cpp's discovery.
+  static std::string bundleDylibPath() {
+    Dl_info info;
+    if (!dladdr(reinterpret_cast<const void*>(&bundleDylibPath), &info) ||
+        !info.dli_fname)
+      return "";
+    std::string p = info.dli_fname;
+    auto pos = p.rfind(".bundle");
+    if (pos == std::string::npos) return "";
+    p = p.substr(0, pos);
+    auto slash = p.rfind('/');
+    if (slash != std::string::npos) p = p.substr(0, slash + 1);
+    return p + "libbridge_server.dylib";
+  }
+
+  static std::string generateUuid() {
+    @autoreleasepool {
+      NSString* u = [[NSUUID UUID] UUIDString];
+      return u ? std::string(u.UTF8String) : std::string();
+    }
+  }
+
+  // Read a JSON pointer out of the shared doc via the loader ABI, returning a
+  // parsed json (object() on any failure). Frees the dylib-allocated string.
+  nlohmann::json getAtJson(const std::string& path) {
+    if (!bridge_ || !loader_.bridge_get_at || !loader_.bridge_free_string)
+      return nlohmann::json::object();
+    char* raw = loader_.bridge_get_at(bridge_, path.c_str());
+    if (!raw) return nlohmann::json::object();
+    auto j = nlohmann::json::parse(raw, nullptr, false);
+    loader_.bridge_free_string(raw);
+    return j.is_discarded() ? nlohmann::json::object() : j;
+  }
+
+  // -- Shared-bridge lifecycle ----------------------------------------
+  // Located + acquired in InitGL (NOT the ctor — see ctor note). Registers
+  // this instance under its persisted UUID, seeds initial state, applies any
+  // pending sketch, and subscribes for editor patches targeting this key.
+  void setupBridge() {
+    if (bridge_) return;  // already up (InitGL re-entry without DeInitGL)
+
+    std::string dylib = bundleDylibPath();
+    if (dylib.empty() || !loader_.load(dylib.c_str())) {
+      BARREL_LOG("setupBridge", "FAILED to load %s — running render-only",
+                 dylib.c_str());
+      return;
+    }
+    if (!loader_.bridge_init || !loader_.bridge_register_plugin) {
+      BARREL_LOG("setupBridge", "dylib missing required symbols");
+      return;
+    }
+    bridge_ = loader_.bridge_init();
+    if (!bridge_) { BARREL_LOG("setupBridge", "bridge_init returned null"); return; }
+
+    // Identity: prefer the UUID from the pending payload (cold start / undo),
+    // else mint a fresh one + persist it after registration.
+    bool need_persist = false;
+    if (instance_uuid_.empty()) {
+      instance_uuid_ = payloadUuid(pending_payload_);
+      if (instance_uuid_.empty()) {
+        instance_uuid_ = generateUuid();
+        need_persist = true;
+      }
+    }
+
+    char keybuf[128] = {0};
+    int n = loader_.bridge_register_plugin(
+        bridge_, "com.nano.nanobarrel", 0, 1, 0,
+        /*schema_json=*/"", instance_uuid_.c_str(), keybuf, sizeof(keybuf));
+    std::string actual_key(keybuf, (n > 0 && n < (int)sizeof(keybuf)) ? n : (int)strlen(keybuf));
+    if (!actual_key.empty() && actual_key != instance_uuid_) {
+      // Collision (duplicated clip) — server reminted. Adopt + persist.
+      BARREL_LOG("setupBridge", "key collision: requested=%s actual=%s",
+                 instance_uuid_.c_str(), actual_key.c_str());
+      instance_uuid_ = actual_key;
+      need_persist = true;
+    }
+    barrel_plugin_key_ = actual_key.empty() ? instance_uuid_ : actual_key;
+    BARREL_LOG("setupBridge", "registered key=%s", barrel_plugin_key_.c_str());
+
+    publishInitialState();
+
+    if (loader_.bridge_register_patch_listener) {
+      loader_.bridge_register_patch_listener(
+          bridge_, barrel_plugin_key_.c_str(), &NanoBarrelPlugin::onPatchTrampoline, this);
+    }
+
+    // Apply the persisted sketch (if any), then push host info.
+    if (!pending_payload_.empty()) {
+      applyPayload(pending_payload_);
+      pending_payload_.clear();
+    }
+    if (!host_info_.is_null() && loader_.bridge_set_at) {
+      loader_.bridge_set_at(bridge_,
+          ("/plugins/" + barrel_plugin_key_ + "/state/host").c_str(),
+          host_info_.dump().c_str());
+    }
+
+    if (need_persist) {
+      // Schedule a config regen so the (new/reminted) UUID lands in P_CONFIG.
+      dirty_ = true;
+      dirty_since_ms_ = ::nano_barrel_log::now_ms() - kRegenDebounceMs;
+    }
+    sketch_snapshot_dirty_.store(true, std::memory_order_release);
+  }
+
+  void teardownBridge() {
+    if (!bridge_) return;
+    if (loader_.bridge_unregister_patch_listener)
+      loader_.bridge_unregister_patch_listener(bridge_, barrel_plugin_key_.c_str());
+    if (loader_.bridge_unregister_plugin)
+      loader_.bridge_unregister_plugin(bridge_, barrel_plugin_key_.c_str());
+    if (loader_.bridge_release)
+      loader_.bridge_release(bridge_);
+    bridge_ = nullptr;
+  }
+
+  // Fired from the shared server's pump thread when an editor patches this
+  // instance's state. MUST touch only atomics / debounce flags — never take
+  // tick_mu_ or call back into the bridge (the pump holds the server lock).
+  static void onPatchTrampoline(const char* /*key*/, void* userdata) {
+    auto* self = static_cast<NanoBarrelPlugin*>(userdata);
+    if (!self) return;
+    self->dirty_ = true;
+    self->dirty_since_ms_ = ::nano_barrel_log::now_ms();
+    self->preview_requests_dirty_.store(true, std::memory_order_release);
+    self->sketch_snapshot_dirty_.store(true, std::memory_order_release);
+  }
+
+  // Publish the schemas + empty state skeleton for this instance.
+  void publishInitialState() {
+    if (!bridge_ || !loader_.bridge_set_plugin_state) return;
+    nlohmann::json column_one = {
+      {"name", "Column 1"},
+      {"chain", nlohmann::json::array()},
+    };
+    nlohmann::json plugin_schemas = nlohmann::json::object();
+    if (registry_) {
+      for (const auto& [module_type, schema_fields] : registry_->schemas()) {
+        plugin_schemas[module_type] = {
+          {"key",     module_type},
+          {"id",      module_type},
+          {"version", "0.0.0"},
+          {"schema",  schema_fields},
+        };
+      }
+    }
+    nlohmann::json initial = {
+      {"sketch", {
+        {"anchor", nullptr},
+        {"columns", nlohmann::json::array({column_one})},
+      }},
+      {"macros", nlohmann::json::array()},
+      {"triggers", nlohmann::json::object()},
+      {"host", nlohmann::json::object()},
+      {"plugin_schemas", plugin_schemas},
+      {"preview_requests", nlohmann::json::object()},
+    };
+    for (int i = 0; i < (int)N_MACROS; ++i) initial["macros"].push_back(0.0);
+    loader_.bridge_set_plugin_state(
+        bridge_, barrel_plugin_key_.c_str(), initial.dump().c_str());
+  }
+
+  // -- Persistence envelope: {"uuid":..,"sketch":..} ------------------
+  static std::string payloadUuid(const std::string& payload) {
+    if (payload.empty()) return "";
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    if (j.is_object()) return j.value("uuid", std::string());
+    return "";
+  }
+  static std::string payloadSketch(const std::string& payload) {
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    if (j.is_object() && j.contains("sketch")) return j["sketch"].dump();
+    return payload;  // tolerate a bare sketch payload
+  }
+  std::string buildPayload(const std::string& sketch_json) const {
+    auto sketch = nlohmann::json::parse(sketch_json, nullptr, false);
+    if (sketch.is_discarded()) sketch = nlohmann::json::object();
+    nlohmann::json env = {{"uuid", instance_uuid_}, {"sketch", sketch}};
+    return env.dump();
+  }
+
+  // Apply a persisted payload: extract uuid (if we don't have one) + sketch.
+  void applyPayload(const std::string& payload) {
+    if (instance_uuid_.empty()) instance_uuid_ = payloadUuid(payload);
+    std::string sketch_json = payloadSketch(payload);
+    if (!sketch_json.empty()) applyConfigJson(sketch_json);
   }
 
   // -- Effect runtime setup -------------------------------------------
@@ -744,9 +866,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         bytes = std::move(send_queue_.front());
         send_queue_.pop_front();
       }
-      // ws_server_ outlives the worker (dtor stops + joins us first).
-      if (ws_server_) {
-        ws_server_->broadcast_binary(bytes.data(), bytes.size());
+      // bridge_ may be null between DeInitGL/InitGL; the ABI no-ops on a null
+      // handle (and on a shut-down server), so a stray late frame is harmless.
+      if (bridge_ && loader_.bridge_broadcast_binary) {
+        loader_.bridge_broadcast_binary(bridge_, bytes.data(),
+                                        (uint32_t)bytes.size());
       }
       in_flight_previews_.fetch_sub(1, std::memory_order_acq_rel);
     }
@@ -845,48 +969,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     glDisable(GL_SCISSOR_TEST);
   }
 
-  // -- Bridge lifecycle ------------------------------------------------
-  void startBridge() {
-    if (ws_server_) return;
-    static std::atomic<int> next_port{kPortStart};
-    for (int tries = 0; tries < kPortRetries; ++tries) {
-      int p = next_port.fetch_add(1, std::memory_order_relaxed);
-      auto srv = std::make_unique<bridge::WsServer>();
-      // Queue WS events lock-free (NO tick_mu_ here — see ws_inbox_ comment).
-      // ProcessOpenGL drains + processes them on the render thread under tick_mu_.
-      srv->set_message_callback(
-          [this](int cid, const std::string& msg) {
-            std::lock_guard<std::mutex> lk(ws_inbox_mu_);
-            ws_inbox_.push_back({cid, /*is_message=*/true, msg});
-          });
-      srv->set_disconnect_callback(
-          [this](int cid) {
-            std::lock_guard<std::mutex> lk(ws_inbox_mu_);
-            ws_inbox_.push_back({cid, /*is_message=*/false, std::string()});
-          });
-      if (srv->start(p)) {
-        ws_server_ = std::move(srv);
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d", p);
-        port_str_ = buf;
-        RaiseParamEvent(P_PORT, FF_EVENT_FLAG_VALUE);
-        BARREL_LOG("startBridge",
-                   "ws_server bound port=%d (after %d retries)", p, tries);
-        return;
-      }
-    }
-    BARREL_LOG("startBridge",
-               "FAILED to bind a port after %d retries", kPortRetries);
-  }
-
-  void stopBridge() {
-    if (!ws_server_) return;
-    BARREL_LOG("stopBridge", "port=%s", port_str_.c_str());
-    ws_server_->stop();
-    ws_server_.reset();
-  }
-
   // -- Config <-> state document --------------------------------------
+  // Writes the sketch into this instance's shared-doc state and refreshes the
+  // process cache (as the {uuid,sketch} envelope) for in-process delete+undo.
   void applyConfigJson(const std::string& sketch_json) {
     auto sketch = nlohmann::json::parse(sketch_json, nullptr, false);
     if (sketch.is_discarded()) {
@@ -894,31 +979,26 @@ class NanoBarrelPlugin : public CFFGLPlugin {
                  sketch_json.size());
       return;
     }
-    {
-      std::lock_guard<std::mutex> lock(tick_mu_);
-      auto state = bridge_core_.state_document().get_plugin_state(
-          barrel_plugin_key_);
-      state["sketch"] = sketch;
-      bridge_core_.state_document().set_plugin_state(
-          barrel_plugin_key_, state);
-      // Invalidate the render thread's cached sketch snapshot (set under
-      // tick_mu_ so ProcessOpenGL's locked fetch block sees it next frame).
+    if (bridge_ && loader_.bridge_set_at) {
+      loader_.bridge_set_at(bridge_,
+          ("/plugins/" + barrel_plugin_key_ + "/state/sketch").c_str(),
+          sketch.dump().c_str());
       sketch_snapshot_dirty_.store(true, std::memory_order_release);
     }
     {
       std::lock_guard<std::mutex> lock(g_cache_mu());
-      g_cache_blob() = sketch_json;
+      g_cache_blob() = buildPayload(sketch_json);
     }
     BARREL_LOG("applyConfigJson",
                "applied sketch (json_size=%zu)", sketch_json.size());
   }
 
   // -- Preview helpers ------------------------------------------------
-  // Rebuild preview_requests_ from the bridge state document. Caller
+  // Rebuild preview_requests_ from the shared state document. Caller
   // must hold tick_mu_.
   void refreshPreviewRequests() {
-    auto path = "/plugins/" + barrel_plugin_key_ + "/state/preview_requests";
-    auto raw = bridge_core_.state_document().get_at(path);
+    auto raw = getAtJson(
+        "/plugins/" + barrel_plugin_key_ + "/state/preview_requests");
     preview_requests_.clear();
     if (!raw.is_object()) return;
     for (auto it = raw.begin(); it != raw.end(); ++it) {
@@ -948,32 +1028,47 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
   }
 
-  // Format described inline; the matching decoder lives in
-  // web/src/widgets/texture-monitor.ts (handleBinaryFrame).
+  // NBPV v2 binary preview frame. One shared WS server now multiplexes many
+  // instances, so the plugin key is embedded in the header and the web routes
+  // each frame to the right instance. Matching decoder: web/src/widgets/
+  // texture-monitor.ts (handleBinaryFrame).
+  //   [0..3]  "NBPV"
+  //   [4]     version = 2
+  //   [5]     format  = 1 (RGBA8)
+  //   [6..7]  u16 keyLen   (little-endian)
+  //   [8..9]  u16 idLen    (traceId length)
+  //   [10..11] u16 width
+  //   [12..13] u16 height
+  //   [14 ..] key bytes, then traceId bytes, then RGBA8 pixels
   static std::vector<uint8_t> buildPreviewFrameBytes(
-      const std::string& traceId, uint16_t width, uint16_t height,
+      const std::string& key, const std::string& traceId,
+      uint16_t width, uint16_t height,
       const std::vector<uint8_t>& pixels) {
-    const size_t headerSize = 12 + traceId.size();
+    const uint16_t keyLen = (uint16_t)key.size();
+    const uint16_t idLen  = (uint16_t)traceId.size();
+    const size_t headerSize = 14 + keyLen + idLen;
     std::vector<uint8_t> out;
     out.reserve(headerSize + pixels.size());
     out.resize(headerSize);
     out[0] = 'N'; out[1] = 'B'; out[2] = 'P'; out[3] = 'V';
-    out[4] = 1;             // version
+    out[4] = 2;             // version
     out[5] = 1;             // format: RGBA8
-    uint16_t idLen = (uint16_t)traceId.size();
-    out[6] = (uint8_t)(idLen & 0xFF);
-    out[7] = (uint8_t)(idLen >> 8);
-    out[8] = (uint8_t)(width  & 0xFF);
-    out[9] = (uint8_t)(width  >> 8);
-    out[10] = (uint8_t)(height & 0xFF);
-    out[11] = (uint8_t)(height >> 8);
-    memcpy(out.data() + 12, traceId.data(), idLen);
+    out[6] = (uint8_t)(keyLen & 0xFF);
+    out[7] = (uint8_t)(keyLen >> 8);
+    out[8] = (uint8_t)(idLen  & 0xFF);
+    out[9] = (uint8_t)(idLen  >> 8);
+    out[10] = (uint8_t)(width  & 0xFF);
+    out[11] = (uint8_t)(width  >> 8);
+    out[12] = (uint8_t)(height & 0xFF);
+    out[13] = (uint8_t)(height >> 8);
+    memcpy(out.data() + 14, key.data(), keyLen);
+    memcpy(out.data() + 14 + keyLen, traceId.data(), idLen);
     out.insert(out.end(), pixels.begin(), pixels.end());
     return out;
   }
 
   void publishPreviewFrames() {
-    if (!gpu_ || !ws_server_) return;
+    if (!gpu_ || !bridge_) return;
     // preview_requests_ is single-writer (render thread, inside the
     // tick_mu_ scope above where the dirty flag is drained). It's stable
     // for the rest of this frame, so iterate it directly — no lock.
@@ -984,8 +1079,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // that just disconnected (we don't actively clear them); they'll
     // be replaced wholesale next time an editor connects and patches
     // /preview_requests, so leaving them stable here is fine.
-    if (!ws_server_->has_open_clients()) return;
-    bridge::WsServer* ws_server_raw = ws_server_.get();
+    if (loader_.bridge_has_clients && !loader_.bridge_has_clients(bridge_)) return;
     // Batch every readback this frame into a single cmd buffer + one
     // completion handler. For a sketch with N chain entries the editor
     // typically mounts ~N+2 monitors (column input + per-effect output
@@ -1026,15 +1120,15 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // back-pressures the render thread's [cb commit].
       in_flight_previews_.fetch_add(1, std::memory_order_acq_rel);
       std::string traceId = req.traceId;
-      (void)ws_server_raw;  // worker owns the broadcast now
+      std::string key = barrel_plugin_key_;
       gpu_->readbackTextureScaledAsync(
           slot.handle,
           (uint32_t)slot.width, (uint32_t)slot.height,
           outW, outH,
-          [this, traceId = std::move(traceId), outW, outH]
+          [this, key = std::move(key), traceId = std::move(traceId), outW, outH]
           (std::vector<uint8_t> pixels) {
             auto bytes = buildPreviewFrameBytes(
-                traceId, (uint16_t)outW, (uint16_t)outH, pixels);
+                key, traceId, (uint16_t)outW, (uint16_t)outH, pixels);
             {
               std::lock_guard<std::mutex> lock(send_mu_);
               // Bound the queue so we don't grow memory + latency when
@@ -1056,36 +1150,36 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
   void maybeRegenerateConfig() {
     bool should_regen = false;
-    std::string sketch_json;
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
       if (dirty_ && (::nano_barrel_log::now_ms() - dirty_since_ms_)
                        >= kRegenDebounceMs) {
-        auto state = bridge_core_.state_document().get_plugin_state(
-            barrel_plugin_key_);
-        auto sketch = state.value("sketch", nlohmann::json::object());
-        sketch_json = sketch.dump();
         dirty_ = false;
         should_regen = true;
       }
     }
-    if (!should_regen) return;
+    if (!should_regen || !bridge_) return;
 
-    config_blob_ = barrel_codec::wrap_config(sketch_json);
+    std::string sketch_json =
+        getAtJson("/plugins/" + barrel_plugin_key_ + "/state/sketch").dump();
+    // Persist the {uuid,sketch} envelope so identity survives reload/restart.
+    std::string payload = buildPayload(sketch_json);
+    config_blob_ = barrel_codec::wrap_config(payload);
     {
       std::lock_guard<std::mutex> lock(g_cache_mu());
-      g_cache_blob() = sketch_json;
+      g_cache_blob() = payload;
     }
     BARREL_LOG("regenerate",
-               "json_size=%zu wrapped_size=%zu",
-               sketch_json.size(), config_blob_.size());
+               "json_size=%zu wrapped_size=%zu key=%s",
+               sketch_json.size(), config_blob_.size(),
+               barrel_plugin_key_.c_str());
     RaiseParamEvent(P_CONFIG, FF_EVENT_FLAG_VALUE);
   }
 
   // -- Preview push (per-frame texture snapshots over WS binary) ------
   // The editor publishes a map of { traceId → { target, width, height } }
   // at /plugins/<key>/state/preview_requests. We re-read the full map
-  // each time the bridge's client_patch_callback fires (cheap; the map
+  // each time the per-key patch listener fires (cheap; the map
   // is tiny). Each frame we run the executor with hooks that record the
   // texture handles for every chain entry + the final sketch output,
   // then iterate requests and ship each one as a binary WS frame.
@@ -1106,26 +1200,20 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   };
 
   std::mutex                       tick_mu_;
-  bridge::BridgeCore               bridge_core_;
-  std::unique_ptr<bridge::WsServer> ws_server_;
-  std::string                      barrel_plugin_key_;
+  // Shared in-process server, located + acquired in InitGL via the loader.
+  plugin::BridgeLoader             loader_;
+  BridgeHandle                     bridge_ = nullptr;
+  std::string                      barrel_plugin_key_;   // == instance_uuid_
+  std::string                      instance_uuid_;       // stable, persisted
+  std::string                      pending_payload_;     // envelope to apply in InitGL
+  nlohmann::json                   host_info_;           // applied once bridge is up
 
   // Active preview requests (guarded by tick_mu_). Refreshed lazily on
-  // the render thread when `preview_requests_dirty_` is set — the WS
-  // patch callback only flips the flag, never mutates the map directly.
+  // the render thread when `preview_requests_dirty_` is set — the patch
+  // listener only flips the flag, never mutates the map directly.
   std::unordered_map<std::string, PreviewRequest> preview_requests_;
   std::atomic<bool> preview_requests_dirty_{false};
 
-  // Incoming WS messages + disconnects, queued lock-free by the WS thread and
-  // drained on the RENDER thread (under tick_mu_) at the top of ProcessOpenGL.
-  // The WS callbacks MUST NOT take tick_mu_ directly: ix invokes them while
-  // holding the WsServer mutex, while the render thread takes
-  // tick_mu_ → WsServer mutex (via bridge_core_.tick()'s send) — so a direct
-  // lock there deadlocks on disconnect. Deferring removes the WsServer→tick_mu_
-  // edge, breaking the cycle (same trick as the client-patch dirty flag above).
-  struct WsInboxEvent { int cid; bool is_message; std::string msg; };
-  std::mutex                ws_inbox_mu_;
-  std::vector<WsInboxEvent> ws_inbox_;
   // Outstanding async preview readbacks. Each `readbackTextureScaledAsync`
   // call increments before issuing; the send worker decrements after
   // the broadcast completes. The dtor drains this to zero before
@@ -1180,7 +1268,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   bool                             time_initialized_ = false;
 
   std::string  config_blob_;
-  std::string  port_str_;
   std::array<float, N_MACROS> macros_{};
   std::array<float, N_MACROS> macros_prev_{};
 
@@ -1196,7 +1283,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   nlohmann::json    sketch_snapshot_;
 
   std::vector<char> config_return_buf_;
-  char              port_return_buf_[16]{};
   char              small_return_buf_[64]{};
 
   int    frame_   = 0;

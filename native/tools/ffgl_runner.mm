@@ -18,6 +18,7 @@
 #include <ffgl/FFGLLib.h>
 
 #include "../src/plugin/nano_barrel/barrel_codec.h"  // wrap a sketch JSON into the config param
+#include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -72,6 +73,60 @@ static bool ws_send_text(int port, const std::string& payload) {
   std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let the server apply
   close(fd);
   return ok;
+}
+
+// Send one WS text request and read back one text response frame (server
+// frames are unmasked). Returns the response payload, or "" on failure.
+// Used to discover the barrel instance key from /global/plugins now that the
+// shared server multiplexes many instances under runtime-assigned UUID keys.
+static std::string ws_request(int port, const std::string& payload) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return "";
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)port);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+  if (connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) { close(fd); return ""; }
+  std::string req =
+    "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
+    "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+    "Sec-WebSocket-Version: 13\r\n\r\n";
+  if (write(fd, req.data(), req.size()) < 0) { close(fd); return ""; }
+  char buf[4096]; std::string resp;
+  while (resp.find("\r\n\r\n") == std::string::npos) {
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n <= 0) { close(fd); return ""; }
+    resp.append(buf, n);
+  }
+  // Send masked client text frame (zero mask).
+  std::vector<uint8_t> frame;
+  frame.push_back(0x81);
+  size_t len = payload.size();
+  if (len < 126) { frame.push_back(0x80 | (uint8_t)len); }
+  else if (len < 65536) { frame.push_back(0x80 | 126); frame.push_back((len>>8)&0xff); frame.push_back(len&0xff); }
+  else { frame.push_back(0x80 | 127); for (int i=7;i>=0;i--) frame.push_back((len>>(8*i))&0xff); }
+  frame.insert(frame.end(), {0,0,0,0});
+  frame.insert(frame.end(), payload.begin(), payload.end());
+  if (write(fd, frame.data(), frame.size()) != (ssize_t)frame.size()) { close(fd); return ""; }
+  // Read one server text frame (poll up to ~1s).
+  std::string acc;
+  for (int tries = 0; tries < 100; ++tries) {
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n > 0) { acc.append(buf, n); }
+    else { std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
+    // Parse a single unmasked text frame from the front of acc.
+    if (acc.size() < 2) continue;
+    size_t pos = 2;
+    uint64_t plen = (uint8_t)acc[1] & 0x7f;
+    if (plen == 126) { if (acc.size() < 4) continue; plen = ((uint8_t)acc[2]<<8)|(uint8_t)acc[3]; pos = 4; }
+    else if (plen == 127) { if (acc.size() < 10) continue; plen = 0; for (int i=0;i<8;i++) plen=(plen<<8)|(uint8_t)acc[2+i]; pos = 10; }
+    if (acc.size() < pos + plen) continue;
+    std::string out = acc.substr(pos, plen);
+    close(fd);
+    return out;
+  }
+  close(fd);
+  return "";
 }
 
 typedef FFMixed (*FFGLPluginMainPtr)(FFUInt32, FFMixed, FFInstanceID);
@@ -291,23 +346,33 @@ int main(int argc, const char* argv[]) {
       std::cerr << "[ffgl_runner] config set (" << configWrapped.size() << " bytes wrapped)\n";
     }
 
-    // Barrel WS path: push the sketch over the plugin's bridge like the editor.
+    // Barrel WS path: push the sketch over the shared server like the editor.
+    // The shared server listens on the fixed port 8081 and multiplexes every
+    // instance under a runtime-assigned UUID key — so discover this instance's
+    // key from /global/plugins rather than assuming the old "@0" form.
     if (!wsSketch.empty()) {
-      // Port lives in text param 1 (P_PORT), set once the bridge bound.
-      std::string portStr;
-      for (int tries = 0; tries < 50 && portStr.empty(); ++tries) {
-        const char* p = (const char*)plugMain(
-            FF_GET_PARAMETER, (FFMixed){.UIntValue = 1}, instanceID).PointerValue;
-        if (p && p[0]) portStr = p;
-        else std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      constexpr int kPort = 8081;
+      std::string key;
+      for (int tries = 0; tries < 50 && key.empty(); ++tries) {
+        std::string snap = ws_request(kPort, R"({"action":"get","path":"/global/plugins"})");
+        auto j = nlohmann::json::parse(snap, nullptr, false);
+        if (!j.is_discarded() && j.contains("data") && j["data"].is_array()) {
+          for (auto& p : j["data"]) {
+            if (p.value("key", std::string()).empty()) continue;
+            if (p.contains("metadata") &&
+                p["metadata"].value("id", std::string()) == "com.nano.nanobarrel") {
+              key = p["key"].get<std::string>();
+              break;
+            }
+          }
+        }
+        if (key.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
-      int port = portStr.empty() ? 0 : std::stoi(portStr);
-      // key = meta.id@<instance>; each plugin's StateDocument counts from 0.
       std::string msg =
-        "{\"action\":\"patch\",\"target\":\"/plugins/com.nano.nanobarrel@0/state\","
+        "{\"action\":\"patch\",\"target\":\"/plugins/" + key + "/state\","
         "\"ops\":[{\"op\":\"replace\",\"path\":\"/sketch\",\"value\":" + wsSketch + "}]}";
-      bool ok = port && ws_send_text(port, msg);
-      std::cerr << "[ffgl_runner] ws-patch port=" << port << " sent=" << ok << "\n";
+      bool ok = !key.empty() && ws_send_text(kPort, msg);
+      std::cerr << "[ffgl_runner] ws-patch key=" << key << " sent=" << ok << "\n";
     }
 
     // 4. Host FBO for the plugin to render INTO. Use an IOSurface-backed

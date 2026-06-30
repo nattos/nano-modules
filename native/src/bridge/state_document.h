@@ -69,14 +69,25 @@ public:
 
   StateDocument();
 
-  /// Register a plugin. Returns its key (e.g. "com.nano.nanolooper@0").
-  /// Keys are allocated per plugin type with an incrementing suffix.
-  std::string register_plugin(const PluginMetadata& meta);
+  /// Register a plugin. Returns the key actually registered.
+  ///
+  /// If `requested_key` is non-empty (e.g. a barrel instance's persisted
+  /// UUID), it is used verbatim when free; on collision (a duplicated
+  /// instance carrying the same persisted UUID) a unique derivative is
+  /// minted and returned instead — callers should compare the returned key
+  /// against what they requested and persist the result if it changed.
+  /// If `requested_key` is empty, a "<id>@<n>" key is minted from a
+  /// per-type incrementing counter (the legacy behavior).
+  std::string register_plugin(const PluginMetadata& meta,
+                              const std::string& requested_key = "");
 
-  /// Register a plugin with a full schema JSON. Returns the plugin key.
+  /// Register a plugin with a full schema JSON. Returns the key actually
+  /// registered (see register_plugin for `requested_key` semantics).
   /// The schema defines all fields, their types, defaults, and I/O mappings.
   /// Replaces the separate declare_param/declare_io calls.
-  std::string register_plugin_with_schema(const PluginMetadata& meta, const std::string& schema_json);
+  std::string register_plugin_with_schema(const PluginMetadata& meta,
+                                          const std::string& schema_json,
+                                          const std::string& requested_key = "");
 
   /// Declare a parameter on a plugin (legacy — use register_plugin_with_schema).
   void declare_param(const std::string& plugin_key, const ParamDecl& param);
@@ -136,6 +147,10 @@ private:
 
   void emit(const std::string& op, const std::string& path,
             const nlohmann::json& value = {});
+
+  // Resolve the key to register under. Caller must hold mutex_.
+  // See register_plugin for the requested_key/collision semantics.
+  std::string allocate_key(const std::string& id, const std::string& requested_key);
 
   // Build initial state by walking the schema recursively.
   nlohmann::json build_initial_state(const nlohmann::json& fields);

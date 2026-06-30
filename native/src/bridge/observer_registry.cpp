@@ -65,6 +65,15 @@ static bool path_matches(const std::string& patch_path_in,
   return false;
 }
 
+bool ObserverRegistry::is_anyone_observing(const std::string& path) const {
+  for (const auto& [client, paths] : subscriptions_) {
+    for (const auto& sub_path : paths) {
+      if (path_matches(path, sub_path)) return true;
+    }
+  }
+  return false;
+}
+
 std::unordered_map<ClientId, std::vector<json_patch::PatchOp>>
 ObserverRegistry::filter_patches(const std::vector<json_patch::PatchOp>& patches) const {
   std::unordered_map<ClientId, std::vector<json_patch::PatchOp>> result;

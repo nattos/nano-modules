@@ -25,11 +25,28 @@ void StateDocument::emit(const std::string& op, const std::string& path,
   pending_.push_back(std::move(p));
 }
 
-std::string StateDocument::register_plugin(const PluginMetadata& meta) {
+std::string StateDocument::allocate_key(const std::string& id,
+                                        const std::string& requested_key) {
+  // Empty request → legacy per-type incrementing key.
+  if (requested_key.empty()) {
+    int instance = next_instance_[id]++;
+    return id + "@" + std::to_string(instance);
+  }
+  // Requested key free → use it verbatim.
+  if (!doc_["plugins"].contains(requested_key)) return requested_key;
+  // Collision (e.g. a duplicated instance with the same persisted UUID) →
+  // mint a unique derivative the caller can adopt + persist.
+  for (int k = 2;; ++k) {
+    std::string candidate = requested_key + "-" + std::to_string(k);
+    if (!doc_["plugins"].contains(candidate)) return candidate;
+  }
+}
+
+std::string StateDocument::register_plugin(const PluginMetadata& meta,
+                                           const std::string& requested_key) {
   platform::LockGuard<platform::Mutex> lock(mutex_);
 
-  int instance = next_instance_[meta.id]++;
-  std::string key = meta.id + "@" + std::to_string(instance);
+  std::string key = allocate_key(meta.id, requested_key);
 
   // Add to global plugin listing
   json entry = {
@@ -173,11 +190,12 @@ json StateDocument::strip_gpu_fields(const json& state, const json& schema_field
   return out;
 }
 
-std::string StateDocument::register_plugin_with_schema(const PluginMetadata& meta, const std::string& schema_json) {
+std::string StateDocument::register_plugin_with_schema(const PluginMetadata& meta,
+                                                       const std::string& schema_json,
+                                                       const std::string& requested_key) {
   platform::LockGuard<platform::Mutex> lock(mutex_);
 
-  int instance = next_instance_[meta.id]++;
-  std::string key = meta.id + "@" + std::to_string(instance);
+  std::string key = allocate_key(meta.id, requested_key);
 
   // Parse the schema
   auto schema = json::parse(schema_json, nullptr, false);
