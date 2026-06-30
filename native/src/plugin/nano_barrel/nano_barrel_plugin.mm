@@ -58,25 +58,19 @@
 #include "plugin/bridge_loader.h"
 #include "bridge/bridge_api.h"
 
-#include "gpu/gpu_backend.h"
-#include "runtime/effect_runtime.h"
-#include "runtime/text_host.h"
-#include "sketch/module_registry.h"
-#include "sketch/wasm_bundles.h"
-
 #include <dlfcn.h>
 #include <fstream>
-#include "sketch/sketch_executor.h"
 
 #import "InteropTexture.h"
 #include "barrel_log.h"
 #include "barrel_codec.h"
 
-namespace effect_runtime {
-  void setHostTime(double t);
-  void setHostDeltaTime(double dt);
-  void setHostViewport(int w, int h);
-}
+// The barrel is a THIN client: it links NONE of the effect engine. The shared
+// runtime (Metal backend + WAMR + effect bundles + executor) lives in
+// libbridge_server.dylib as a process singleton (bridge::BarrelRuntime), reached
+// purely through the C ABI in bridge_api.h. This plugin owns only its FFGL shell,
+// identity/persistence, the GL↔Metal InteropTexture pair (built against the
+// dylib's shared MTLDevice), and the bridge loader.
 
 namespace {
 
@@ -145,36 +139,16 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
 
     BARREL_LOG("ctor-done",
-               "params=%u config_blob_size=%zu effects=%zu",
-               N_PARAMS, config_blob_.size(),
-               registry_ ? registry_->size() : 0);
+               "params=%u config_blob_size=%zu",
+               N_PARAMS, config_blob_.size());
   }
 
   ~NanoBarrelPlugin() override {
     BARREL_LOG("dtor", "this=%p frame=%d", (void*)this, frame_);
-    // Order matters here. Resolume has already returned from any
-    // ProcessOpenGL call by the time the dtor fires, so no NEW
-    // readbacks will be issued. We drain in two steps:
-    // (1) wait for every Metal completion handler to finish enqueuing
-    //     its bytes into send_queue_ AND for the worker to ship them
-    //     (in_flight_previews_ counts both, decremented post-send),
-    // (2) signal the worker to stop and join. Only after both does
-    //     teardownBridge release the shared server handle the worker's
-    //     broadcast dereferences.
-    int spins = 0;
-    while (in_flight_previews_.load() > 0 && spins < 200) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-      ++spins;
-    }
-    {
-      std::lock_guard<std::mutex> lock(send_mu_);
-      send_thread_stop_.store(true, std::memory_order_release);
-    }
-    send_cv_.notify_one();
-    if (send_thread_.joinable()) send_thread_.join();
-    // Safety net: DeInitGL normally tears the bridge down, but the host may
-    // destroy us without a matching DeInitGL. The send worker is already
-    // joined above, so no broadcast can fire after release.
+    // Safety net: DeInitGL normally destroys the executor + tears the bridge
+    // down, but the host may destroy us without a matching DeInitGL. The shared
+    // runtime owns the preview send worker now, so there's nothing here to drain
+    // — destroyExecutor (under the render lock) frees this key's effect state.
     teardownBridge();
   }
 
@@ -183,10 +157,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     BARREL_LOG("InitGL", "viewport=%ux%u", vp->width, vp->height);
     CFFGLPlugin::InitGL(vp);
     glGenFramebuffers(1, &src_fbo_);
-    // Load effects now (this is a real, GL-active instance — not a param-scan
-    // prototype). Guarded so a repeated InitGL doesn't reload. publishInitialState
-    // (in setupBridge) reads registry_->schemas(), so this must run first.
-    if (!rt_) initEffectRuntime();
+    // setupBridge acquires the shared runtime (loading effects ONCE for the whole
+    // process), registers this instance, and creates its per-key executor. This
+    // is a real, GL-active instance — NOT a param-scan prototype (those never
+    // call InitGL, so they never touch the runtime).
     setupBridge();
     return FF_SUCCESS;
   }
@@ -336,9 +310,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     ++frame_;
     BARREL_CTX_FRAME(frame_);
 
-    // WS message handling + state broadcast now live entirely in the shared
-    // server's pump thread; this render thread only reads/writes the shared
-    // state doc via the BridgeLoader ABI (each call is internally locked).
+    // WS message handling, sketch fetch, telemetry publish, and preview readback
+    // all live in the shared runtime now (libbridge_server.dylib). This render
+    // thread only does the FFGL ↔ Metal interop around a single ABI call.
     maybeRegenerateConfig();
 
     if (pGL->numInputTextures < 1 || !pGL->inputTextures ||
@@ -350,7 +324,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     const unsigned int W = currentViewport.width;
     const unsigned int H = currentViewport.height;
     if (W == 0 || H == 0) return FF_SUCCESS;
-    if (!rt_ || !gpu_) {
+    if (!rt_ready_ || !bridge_ || !shared_device_ ||
+        !loader_.bridge_executor_render) {
       drawBadgeOnly(pGL);
       return FF_SUCCESS;
     }
@@ -363,12 +338,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     blitGlInputToInterop(pGL, pInput);
 
-    // Adopt both interop MTLTextures as runtime-side handles for this frame.
-    int32_t inputHandle = gpu_->adoptExternalTexture(
-        (__bridge void*)input_interop_->getMetalTexture());
-    int32_t outputHandle = gpu_->adoptExternalTexture(
-        (__bridge void*)output_interop_->getMetalTexture());
-
     // Frame-time bookkeeping for effects that care.
     double hostT = hostTime / 1000.0;
     if (!time_initialized_) {
@@ -379,124 +348,33 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     double rawDt = hostT - time_prev_;
     double dt    = std::max(0.0, std::min(rawDt, 0.1));
     time_prev_   = hostT;
-    effect_runtime::setHostTime(hostT - time_start_);
-    effect_runtime::setHostDeltaTime(dt);
-    effect_runtime::setHostViewport((int)W, (int)H);
 
-    // Pull the current sketch out of the shared state document and hand it
-    // to the executor. The executor owns the augmenter, intermediate pool,
-    // and tap routing; the plugin's only job here is the FFGL ↔ Metal interop
-    // around it. `watched` gates "publish only when an editor observes THIS
-    // instance" — with many instances multiplexed onto one server we don't
-    // want one connected editor to make every instance do telemetry/preview
-    // work. (If the editor observes the doc root, key_observed is true for
-    // all — conservative but correct.)
-    const bool watched = bridge_ && loader_.bridge_key_observed &&
-                         loader_.bridge_key_observed(bridge_,
-                             barrel_plugin_key_.c_str());
-
-    bool sketchRefetched = false;
+    // Snapshot the macro knobs (written under tick_mu_ by SetFloatParameter)
+    // for the dylib to inject into any control.barrel_macros instance.
+    std::array<float, N_MACROS> macros_snapshot;
     {
       std::lock_guard<std::mutex> lock(tick_mu_);
-      // Re-snapshot the sketch ONLY when it actually changed — an editor patch
-      // (onPatchTrampoline) or a Resolume config (applyConfigJson) flips
-      // sketch_snapshot_dirty_. The fetch deep-copies the whole sketch subtree
-      // (every instance state, incl. multi-KB richtext html/css), which profiled
-      // as the bulk of per-frame JSON churn once the layout was cached. Caching
-      // the snapshot is the native analogue of the web's compile-once
-      // GraphDefinition: re-walk a stable object each frame instead of
-      // re-copying (and re-destroying) the entire sketch.
-      sketchRefetched =
-          sketch_snapshot_dirty_.exchange(false, std::memory_order_acq_rel);
-      if (sketchRefetched) {
-        sketch_snapshot_ = getAtJson(
-            "/plugins/" + barrel_plugin_key_ + "/state/sketch");
-      }
-      // Route the live macro knobs into any control.barrel_macros instance's state.
-      // The executor's write-tap capture reads scalar outputs from the sketch
-      // instance state, so this is what makes the FFGL macros usable inside a
-      // sketch (write-tap a macro_N output onto a rail). Done on a local copy of
-      // the JSON — the persisted sketch is untouched. macros_ is consistent
-      // here (written under tick_mu_ by SetFloatParameter).
-      nlohmann::json macroOut = nlohmann::json::object();
-      if (sketch_snapshot_.contains("instances") &&
-          sketch_snapshot_["instances"].is_object()) {
-        for (auto& [key, inst] : sketch_snapshot_["instances"].items()) {
-          if (!inst.is_object()) continue;
-          if (inst.value("module_type", std::string()) != "control.barrel_macros") {
-            continue;
-          }
-          auto& st = inst["state"];
-          if (!st.is_object()) st = nlohmann::json::object();
-          nlohmann::json fields = nlohmann::json::object();
-          for (unsigned int i = 0; i < N_MACROS; ++i) {
-            double v = (double)macros_[i];
-            st["macro_" + std::to_string(i)] = v;
-            fields["macro_" + std::to_string(i)] = v;
-          }
-          macroOut[key] = std::move(fields);
-        }
-      }
-      // Publish the macros as per-instance "plugin state" so the editor's output
-      // trace cards show live values. The macros are injected into a LOCAL copy
-      // of the sketch (above), so without this the web — which mirrors only the
-      // persisted sketch — would never see them. One JSON string → one patch op;
-      // only while an editor is watching.
-      if (watched && bridge_ && loader_.bridge_set_at && !macroOut.empty()) {
-        loader_.bridge_set_at(bridge_,
-            ("/plugins/" + barrel_plugin_key_ + "/state/macro_outputs").c_str(),
-            macroOut.dump().c_str());
-      }
-      // Drain any preview-request changes the WS thread has signalled.
-      // Doing the actual map rebuild here keeps it on the render thread
-      // (single writer) so publishPreviewFrames can iterate later in
-      // the frame without further locking ceremony.
-      if (preview_requests_dirty_.exchange(false,
-                                            std::memory_order_acq_rel)) {
-        refreshPreviewRequests();
-      }
+      macros_snapshot = macros_;
     }
-    // Decide once per frame whether the capture machinery should run.
-    // When off, the executor hooks early-return and publishPreviewFrames
-    // never gets called — the cost of having an idle editor connected
-    // (or no editor at all) is just this single check.
-    captures_enabled_ = watched && !preview_requests_.empty();
-    // Snapshots for the editor's preview push are gathered during the
-    // executor's render via the chain-entry / sketch-output hooks bound
-    // in initEffectRuntime. Clear them each frame so a request that's
-    // been removed (or whose chain entry no longer exists) doesn't
-    // resurrect last frame's pixels.
-    if (captures_enabled_) frame_captures_.clear();
-    // The in-process native SketchExecutor — the same C++ source compiled to
-    // executor.wasm for the web, but linked natively here (interp/AOT through
-    // WAMR would be slower / need per-arch artifacts; see the migration notes).
-    int32_t finalHandle =
-        executor_ ? executor_->execute(sketch_snapshot_, inputHandle, outputHandle,
-                                       (int)W, (int)H, dt, sketchRefetched)
-                  : inputHandle;
+    // `dirty` drives the dylib's sketch + preview-request re-fetch. Set on any
+    // editor patch (onPatchTrampoline) or host config apply (applyConfigJson);
+    // cleared here. A false value lets the dylib reuse its cached sketch parse.
+    const bool dirty =
+        sketch_snapshot_dirty_.exchange(false, std::memory_order_acq_rel);
 
-    gpu_->submit();
-    rt_->drainConsoleLog();
+    // The shared runtime pulls this instance's sketch from the state doc, runs
+    // its per-key executor (namespaced effect state), writes the output interop
+    // texture, and publishes rail telemetry + preview frames over the shared WS.
+    // Returns nonzero iff it wrote the output texture (else the sketch passed
+    // through and we present the input).
+    int outputUsed = loader_.bridge_executor_render(
+        bridge_, barrel_plugin_key_.c_str(),
+        (__bridge void*)input_interop_->getMetalTexture(),
+        (__bridge void*)output_interop_->getMetalTexture(),
+        (int)W, (int)H, dt, hostT - time_start_, dirty ? 1 : 0,
+        macros_snapshot.data(), (int)N_MACROS);
 
-    // Publish this frame's float-rail values for the editor's spark charts —
-    // the native mirror of the web executor's /sketch_state publish. Only when
-    // an editor is watching; stored as one JSON string so the state-doc diff
-    // emits a single patch (and nothing at all while the rails are static).
-    if (executor_ && watched && bridge_ && loader_.bridge_set_at) {
-      loader_.bridge_set_at(bridge_,
-          ("/plugins/" + barrel_plugin_key_ + "/state/sketch_state").c_str(),
-          executor_->lastRailState().dump().c_str());
-    }
-
-    // After submit() returns the GPU work is fully complete; intermediates
-    // and the output interop carry this frame's pixels. Publish any
-    // requested previews before next frame's execute() rotates the pool.
-    if (captures_enabled_) publishPreviewFrames();
-
-    gpu_->release(inputHandle);
-    gpu_->release(outputHandle);
-
-    blitInteropToGlOutput(pGL, finalHandle == outputHandle);
+    blitInteropToGlOutput(pGL, outputUsed != 0);
     return FF_SUCCESS;
   }
 
@@ -517,20 +395,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     return p;
   }
 
-  // Resolve an effect bundle .wasm path. NANO_BARREL_WASM_DIR overrides (for
-  // ffgl_runner / dev pointing at build/wasm); otherwise the bundled copy under
-  // Contents/Resources/wasm/. Empty if the bundle can't be located.
-  static std::string bundleWasmPath(const char* name) {
+  // Resolve the directory holding the effect .wasm bundles. NANO_BARREL_WASM_DIR
+  // overrides (for ffgl_runner / dev pointing at build/wasm); otherwise the
+  // bundled copy under Contents/Resources/wasm/. The shared runtime appends
+  // "/<bundle>.wasm". Empty if the bundle can't be located.
+  static std::string bundleWasmDir() {
     if (const char* dir = getenv("NANO_BARREL_WASM_DIR"); dir && *dir)
-      return std::string(dir) + "/" + name + ".wasm";
+      return std::string(dir);
     Dl_info info;
-    if (!dladdr(reinterpret_cast<const void*>(&bundleWasmPath), &info) ||
+    if (!dladdr(reinterpret_cast<const void*>(&bundleWasmDir), &info) ||
         !info.dli_fname)
       return "";
     std::string p = info.dli_fname;
     auto pos = p.find(".bundle/");
     if (pos == std::string::npos) return "";
-    return p.substr(0, pos + 8) + "Contents/Resources/wasm/" + name + ".wasm";
+    return p.substr(0, pos + 8) + "Contents/Resources/wasm";
   }
 
   // Resolve libbridge_server.dylib, shipped as a SIBLING of the bundle (so a
@@ -589,6 +468,27 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     bridge_ = loader_.bridge_init();
     if (!bridge_) { BARREL_LOG("setupBridge", "bridge_init returned null"); return; }
 
+    // Acquire the shared effect runtime (Metal backend + WAMR + effect bundles +
+    // executor pool), loading the effect set ONCE for the whole process. The
+    // shared MTLDevice it returns is what our InteropTexture pair must be built
+    // against (the executor renders on that device). Without these symbols the
+    // dylib is too old — we stay render-only (badge).
+    if (loader_.bridge_rt_acquire && loader_.bridge_executor_create &&
+        loader_.bridge_executor_render && loader_.bridge_rt_metal_device) {
+      std::string wasmDir  = bundleWasmDir();
+      std::string fontPath = bundleFontPath("default.ttf");
+      rt_ready_ = loader_.bridge_rt_acquire(bridge_, wasmDir.c_str(),
+                                            fontPath.c_str()) != 0;
+      if (rt_ready_) {
+        shared_device_ =
+            (__bridge id<MTLDevice>)loader_.bridge_rt_metal_device(bridge_);
+      }
+      BARREL_LOG("setupBridge", "rt_acquire=%d wasmDir=%s device=%p",
+                 rt_ready_ ? 1 : 0, wasmDir.c_str(), (void*)shared_device_);
+    } else {
+      BARREL_LOG("setupBridge", "dylib lacks shared-runtime symbols — render-only");
+    }
+
     // Identity: prefer the UUID from the pending payload (cold start / undo),
     // else mint a fresh one + persist it after registration.
     bool need_persist = false;
@@ -614,6 +514,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     barrel_plugin_key_ = actual_key.empty() ? instance_uuid_ : actual_key;
     BARREL_LOG("setupBridge", "registered key=%s", barrel_plugin_key_.c_str());
+
+    // Create this instance's executor in the shared runtime, namespaced by the
+    // plugin key so its effect state is isolated from every other barrel.
+    if (rt_ready_ && loader_.bridge_executor_create) {
+      loader_.bridge_executor_create(bridge_, barrel_plugin_key_.c_str());
+    }
 
     publishInitialState();
 
@@ -645,6 +551,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (!bridge_) return;
     if (loader_.bridge_unregister_patch_listener)
       loader_.bridge_unregister_patch_listener(bridge_, barrel_plugin_key_.c_str());
+    // Destroy this key's executor + its namespaced effect instances in the shared
+    // runtime (GPU-idle under the render lock there), then drop our acquire ref.
+    if (rt_ready_ && loader_.bridge_executor_destroy)
+      loader_.bridge_executor_destroy(bridge_, barrel_plugin_key_.c_str());
+    if (rt_ready_ && loader_.bridge_rt_release)
+      loader_.bridge_rt_release(bridge_);
+    rt_ready_ = false;
+    shared_device_ = nil;
     if (loader_.bridge_unregister_plugin)
       loader_.bridge_unregister_plugin(bridge_, barrel_plugin_key_.c_str());
     if (loader_.bridge_release)
@@ -660,7 +574,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (!self) return;
     self->dirty_ = true;
     self->dirty_since_ms_ = ::nano_barrel_log::now_ms();
-    self->preview_requests_dirty_.store(true, std::memory_order_release);
+    // The dylib re-fetches both the sketch AND preview_requests whenever we pass
+    // dirty=1 to render, so a single flag covers any editor patch to this key.
     self->sketch_snapshot_dirty_.store(true, std::memory_order_release);
   }
 
@@ -671,15 +586,15 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       {"name", "Column 1"},
       {"chain", nlohmann::json::array()},
     };
+    // The effect schema catalog comes from the shared runtime (it owns the
+    // ModuleRegistry now) as a ready-made JSON object string.
     nlohmann::json plugin_schemas = nlohmann::json::object();
-    if (registry_) {
-      for (const auto& [module_type, schema_fields] : registry_->schemas()) {
-        plugin_schemas[module_type] = {
-          {"key",     module_type},
-          {"id",      module_type},
-          {"version", "0.0.0"},
-          {"schema",  schema_fields},
-        };
+    if (rt_ready_ && loader_.bridge_rt_schemas && loader_.bridge_free_string) {
+      char* raw = loader_.bridge_rt_schemas(bridge_);
+      if (raw) {
+        auto parsed = nlohmann::json::parse(raw, nullptr, false);
+        loader_.bridge_free_string(raw);
+        if (parsed.is_object()) plugin_schemas = std::move(parsed);
       }
     }
     nlohmann::json initial = {
@@ -724,162 +639,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (!sketch_json.empty()) applyConfigJson(sketch_json);
   }
 
-  // -- Effect runtime setup -------------------------------------------
-  // Builds the Metal-backed EffectRuntime, registers every shader MSL
-  // string from the effects_native bundle by the name each effect
-  // expects to find at `state::registerShaderSPV`, populates the
-  // ModuleRegistry with the editor module_types we statically link,
-  // and creates the SketchExecutor that walks them per frame.
-  void initEffectRuntime() {
-    device_ = MTLCreateSystemDefaultDevice();
-    if (!device_) {
-      BARREL_LOG("initEffectRuntime", "MTLCreateSystemDefaultDevice failed");
-      return;
-    }
-    gpu_ = gpu::createMetalBackend();
-    if (!gpu_) {
-      BARREL_LOG("initEffectRuntime", "createMetalBackend failed");
-      return;
-    }
-    rt_ = std::make_unique<effect_runtime::EffectRuntime>(gpu_.get());
-    registry_ = std::make_unique<sketch_executor::ModuleRegistry>(rt_.get());
-
-    // Effect registration. Effects load from their WASM bundles (core/lights/
-    // nano, shipped in Resources/wasm/, each preferring its per-arch .aot
-    // sidecar) — the same artifacts the web loads, never linked statically. There
-    // is NO static fallback: a load failure means a broken install and is logged.
-    // Deliberately DO NOT give the WASM modules the bridge state doc — WASM
-    // effects' state.set_val would write to it on the RENDER thread (diff under
-    // the doc mutex), which deadlocks against the WS thread on a sketch change
-    // (tick_mu_ → doc mutex → WsServer mutex → tick_mu_). Schemas still reach the
-    // editor: the barrel publishes them from registry_->schemas() (parsed off the
-    // EffectInstance via the host sink), independent of the doc.
-    bundles_ = std::make_unique<sketch_executor::WasmEffectBundles>();
-    int total = 0;
-    if (bundles_->init()) {
-      for (const char* name : {"core", "lights", "nano", "text", "richtext"}) {
-        std::string path = bundleWasmPath(name);
-        int n = path.empty() ? 0
-            : bundles_->loadBundleFile(path, *registry_, gpu_.get(), nullptr);
-        BARREL_LOG("initEffectRuntime", "wasm bundle '%s': %d effect(s) from %s",
-                   name, n, path.c_str());
-        total += n;
-      }
-    }
-    if (total > 0) {
-      BARREL_LOG("initEffectRuntime", "loaded %d WASM effect(s)", total);
-    } else {
-      BARREL_LOG("initEffectRuntime",
-                 "ERROR: no WASM effects loaded (bundles missing from Resources/wasm/?)");
-      bundles_.reset();
-    }
-
-    // Text effects (source.text.plain / source.text.rich) load from text.wasm / richtext.wasm
-    // in the bundle loop above — same as every other effect. They need NO
-    // registerShaderMSL (the text.* host service owns its MSDF compositor PSO),
-    // but the engine needs font BYTES: install the bundled default.ttf as the
-    // parity-exact Latin primary (falling back to the system UI font if absent),
-    // plus the OS's CJK faces as the fallback chain. This is host-side — the
-    // text.wasm bridge (WasmEffectBundles::init → registerTextHostFunctions)
-    // routes the effects' text.* imports to this same TextEngine.
-    effect_runtime::textInstallDefaultFonts(bundleFontPath("default.ttf").c_str());
-
-    executor_ = std::make_unique<sketch_executor::SketchExecutor>(
-        rt_.get(), registry_.get(), gpu_.get());
-
-    // Force-disable GPU fusion when NANO_BARREL_FUSION=0. Production default is
-    // on (fuse runs of per-pixel effects into one dispatch). Useful for A/B
-    // diagnosis: WASM effects don't fuse yet (register_fusion is a no-op), so
-    // comparing WASM vs static with fusion OFF isolates the fusion difference
-    // from everything else.
-    if (const char* f = getenv("NANO_BARREL_FUSION"); f && (*f == '0')) {
-      executor_->setFusionEnabled(false);
-      BARREL_LOG("initEffectRuntime", "GPU fusion force-disabled");
-    }
-
-    // Wire the executor's capture hooks into the per-frame snapshot map.
-    // Hooks fire DURING execute() (between chain-entry encodes), so
-    // we only record handles — actual readback happens later this frame,
-    // after submit(), when the GPU work has completed.
-    executor_->setChainEntryHook(
-        [this](int colIdx, int chainIdx,
-               int32_t inputHandle, int32_t outputHandle, int W, int H) {
-          if (!captures_enabled_) return;
-          // Single-sketch barrel → no sketchId in the key.
-          char buf[64];
-          snprintf(buf, sizeof(buf), "ce:%d/%d/input", colIdx, chainIdx);
-          frame_captures_[buf] = {inputHandle, W, H};
-          snprintf(buf, sizeof(buf), "ce:%d/%d/output", colIdx, chainIdx);
-          frame_captures_[buf] = {outputHandle, W, H};
-        });
-    executor_->setSketchOutputHook(
-        [this](int32_t handle, int W, int H) {
-          if (!captures_enabled_) return;
-          frame_captures_["so"] = {handle, W, H};
-        });
-    // Tell the executor's fusion planner which chain entries' outputs
-    // need to land in real intermediate textures. A monitor on
-    // `ce:<col>/<k>/output` materialises stage k; a monitor on
-    // `ce:<col>/<k>/input` materialises the upstream (stage k-1's
-    // output). The planner splits fused groups at these barriers so
-    // the requested texture is readable post-execute.
-    executor_->setBarrierPredicate(
-        [this](int colIdx, int chainIdx) -> bool {
-          if (!captures_enabled_) return false;
-          for (const auto& [_, req] : preview_requests_) {
-            const std::string& tk = req.targetKey;
-            // Format: "ce:<col>/<chain>/<side>"
-            if (tk.rfind("ce:", 0) != 0) continue;
-            int rcol = -1, rchain = -1;
-            char side[16] = {0};
-            if (std::sscanf(tk.c_str(), "ce:%d/%d/%15s",
-                            &rcol, &rchain, side) != 3) continue;
-            if (rcol != colIdx) continue;
-            if (rchain == chainIdx && std::strcmp(side, "output") == 0) {
-              return true;
-            }
-            if (rchain == chainIdx + 1 && std::strcmp(side, "input") == 0) {
-              return true;
-            }
-          }
-          return false;
-        });
-
-    // Spin up the preview send worker. See member-var comment for why
-    // this exists.
-    send_thread_ = std::thread([this] { runSendWorker(); });
-
-    rt_->drainConsoleLog();
-    BARREL_LOG("initEffectRuntime", "effects=%zu", registry_->size());
-  }
-
-  void runSendWorker() {
-    while (true) {
-      std::vector<uint8_t> bytes;
-      {
-        std::unique_lock<std::mutex> lock(send_mu_);
-        send_cv_.wait(lock, [this] {
-          return send_thread_stop_.load(std::memory_order_acquire)
-              || !send_queue_.empty();
-        });
-        if (send_queue_.empty()) {
-          if (send_thread_stop_.load(std::memory_order_acquire)) return;
-          continue;
-        }
-        bytes = std::move(send_queue_.front());
-        send_queue_.pop_front();
-      }
-      // bridge_ may be null between DeInitGL/InitGL; the ABI no-ops on a null
-      // handle (and on a shut-down server), so a stray late frame is harmless.
-      if (bridge_ && loader_.bridge_broadcast_binary) {
-        loader_.bridge_broadcast_binary(bridge_, bytes.data(),
-                                        (uint32_t)bytes.size());
-      }
-      in_flight_previews_.fetch_sub(1, std::memory_order_acq_rel);
-    }
-  }
-
-
   // -- Interop management ---------------------------------------------
   // (Re)create the input/output `InteropTexture` pair on viewport size
   // changes. Both interops are CVPixelBuffer-backed so the GL FBO side
@@ -887,19 +646,19 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // ping-pong between the host's GL pipeline and the executor's Metal
   // dispatches.
   void ensureInterop(int inW, int inH, int outW, int outH) {
-    if (!device_) return;
+    if (!shared_device_) return;
     if (!input_interop_ ||
         input_interop_->getWidth() != inW ||
         input_interop_->getHeight() != inH) {
       input_interop_ = std::make_unique<InteropTexture>(
-          device_, [NSOpenGLContext currentContext], true,
+          shared_device_, [NSOpenGLContext currentContext], true,
           MTLPixelFormatBGRA8Unorm, inW, inH);
     }
     if (!output_interop_ ||
         output_interop_->getWidth() != outW ||
         output_interop_->getHeight() != outH) {
       output_interop_ = std::make_unique<InteropTexture>(
-          device_, [NSOpenGLContext currentContext], true,
+          shared_device_, [NSOpenGLContext currentContext], true,
           MTLPixelFormatBGRA8Unorm, outW, outH);
     }
   }
@@ -996,161 +755,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
                "applied sketch (json_size=%zu)", sketch_json.size());
   }
 
-  // -- Preview helpers ------------------------------------------------
-  // Rebuild preview_requests_ from the shared state document. Caller
-  // must hold tick_mu_.
-  void refreshPreviewRequests() {
-    auto raw = getAtJson(
-        "/plugins/" + barrel_plugin_key_ + "/state/preview_requests");
-    preview_requests_.clear();
-    if (!raw.is_object()) return;
-    for (auto it = raw.begin(); it != raw.end(); ++it) {
-      const auto& entry = it.value();
-      if (!entry.is_object()) continue;
-      PreviewRequest req;
-      req.traceId = it.key();
-      req.width   = (uint32_t)entry.value("width",  128);
-      req.height  = (uint32_t)entry.value("height", 72);
-      const auto& target = entry.value("target", nlohmann::json::object());
-      const std::string ttype = target.value("type", std::string());
-      if (ttype == "sketch_output") {
-        req.targetKey = "so";
-      } else if (ttype == "chain_entry") {
-        const int col   = target.value("colIdx",   -1);
-        const int chain = target.value("chainIdx", -1);
-        const std::string side = target.value("side", std::string("output"));
-        if (col < 0 || chain < 0) continue;
-        char buf[64];
-        snprintf(buf, sizeof(buf), "ce:%d/%d/%s",
-                 col, chain, side.c_str());
-        req.targetKey = buf;
-      } else {
-        continue;
-      }
-      preview_requests_[req.traceId] = std::move(req);
-    }
-  }
-
-  // NBPV v2 binary preview frame. One shared WS server now multiplexes many
-  // instances, so the plugin key is embedded in the header and the web routes
-  // each frame to the right instance. Matching decoder: web/src/widgets/
-  // texture-monitor.ts (handleBinaryFrame).
-  //   [0..3]  "NBPV"
-  //   [4]     version = 2
-  //   [5]     format  = 1 (RGBA8)
-  //   [6..7]  u16 keyLen   (little-endian)
-  //   [8..9]  u16 idLen    (traceId length)
-  //   [10..11] u16 width
-  //   [12..13] u16 height
-  //   [14 ..] key bytes, then traceId bytes, then RGBA8 pixels
-  static std::vector<uint8_t> buildPreviewFrameBytes(
-      const std::string& key, const std::string& traceId,
-      uint16_t width, uint16_t height,
-      const std::vector<uint8_t>& pixels) {
-    const uint16_t keyLen = (uint16_t)key.size();
-    const uint16_t idLen  = (uint16_t)traceId.size();
-    const size_t headerSize = 14 + keyLen + idLen;
-    std::vector<uint8_t> out;
-    out.reserve(headerSize + pixels.size());
-    out.resize(headerSize);
-    out[0] = 'N'; out[1] = 'B'; out[2] = 'P'; out[3] = 'V';
-    out[4] = 2;             // version
-    out[5] = 1;             // format: RGBA8
-    out[6] = (uint8_t)(keyLen & 0xFF);
-    out[7] = (uint8_t)(keyLen >> 8);
-    out[8] = (uint8_t)(idLen  & 0xFF);
-    out[9] = (uint8_t)(idLen  >> 8);
-    out[10] = (uint8_t)(width  & 0xFF);
-    out[11] = (uint8_t)(width  >> 8);
-    out[12] = (uint8_t)(height & 0xFF);
-    out[13] = (uint8_t)(height >> 8);
-    memcpy(out.data() + 14, key.data(), keyLen);
-    memcpy(out.data() + 14 + keyLen, traceId.data(), idLen);
-    out.insert(out.end(), pixels.begin(), pixels.end());
-    return out;
-  }
-
-  void publishPreviewFrames() {
-    if (!gpu_ || !bridge_) return;
-    // preview_requests_ is single-writer (render thread, inside the
-    // tick_mu_ scope above where the dirty flag is drained). It's stable
-    // for the rest of this frame, so iterate it directly — no lock.
-    if (preview_requests_.empty()) return;
-    // If no editor is connected, every readback below is wasted work —
-    // the bytes would have nowhere to go. Bail before touching the GPU.
-    // Note: preview_requests_ may still hold entries from an editor
-    // that just disconnected (we don't actively clear them); they'll
-    // be replaced wholesale next time an editor connects and patches
-    // /preview_requests, so leaving them stable here is fine.
-    if (loader_.bridge_has_clients && !loader_.bridge_has_clients(bridge_)) return;
-    // Batch every readback this frame into a single cmd buffer + one
-    // completion handler. For a sketch with N chain entries the editor
-    // typically mounts ~N+2 monitors (column input + per-effect output
-    // + main preview); without batching that's N+2 commits per frame,
-    // each carrying Metal driver overhead and a separate completion
-    // callback. Batching collapses that to 1 + 1.
-    // Chain-entry intermediate thumbnails refresh on every-other-frame
-    // (so 30 fps when Resolume is at 60). Each one adds a Metal cmd
-    // buffer encode + render-pass setup; on a long chain (eg 10×
-    // brightness_contrast) the editor mounts ~12 of them, and the
-    // FFGL host's render-thread time spent in AGX state encoding was
-    // the dominant cost on the profile. The main edit preview
-    // (`so`) keeps running every frame so slider feedback stays
-    // smooth.
-    const bool include_intermediates = (frame_ & 1) == 0;
-    gpu_->beginPreviewBatch();
-    for (const auto& [_, req] : preview_requests_) {
-      if (!include_intermediates && req.targetKey != "so") continue;
-      auto it = frame_captures_.find(req.targetKey);
-      if (it == frame_captures_.end()) continue;
-      const auto& slot = it->second;
-      if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
-      // Editor sends 0/0 to mean "capture at the source texture's
-      // native resolution" — used by high-res requests like the main
-      // edit preview where we want full fidelity, not a 128×72 thumb.
-      const uint32_t outW = req.width  ? req.width
-                                       : (uint32_t)slot.width;
-      const uint32_t outH = req.height ? req.height
-                                       : (uint32_t)slot.height;
-      // Async readback: the render thread encodes + commits a tiny MPS
-      // cmd buffer and returns immediately. The Metal completion
-      // handler fires on Metal's serial dispatch queue once the GPU
-      // finishes; it does the bare minimum (getBytes + frame
-      // assembly + enqueue) before yielding. The actual WS broadcast
-      // runs on send_thread_ to keep Metal's completion queue moving
-      // — otherwise high-entropy preview content (where
-      // permessage-deflate is slow) stalls completions and
-      // back-pressures the render thread's [cb commit].
-      in_flight_previews_.fetch_add(1, std::memory_order_acq_rel);
-      std::string traceId = req.traceId;
-      std::string key = barrel_plugin_key_;
-      gpu_->readbackTextureScaledAsync(
-          slot.handle,
-          (uint32_t)slot.width, (uint32_t)slot.height,
-          outW, outH,
-          [this, key = std::move(key), traceId = std::move(traceId), outW, outH]
-          (std::vector<uint8_t> pixels) {
-            auto bytes = buildPreviewFrameBytes(
-                key, traceId, (uint16_t)outW, (uint16_t)outH, pixels);
-            {
-              std::lock_guard<std::mutex> lock(send_mu_);
-              // Bound the queue so we don't grow memory + latency when
-              // the worker can't keep up. ~half a second of headroom
-              // at 60fps × 3 monitors; we drop oldest first to prefer
-              // freshness over completeness.
-              constexpr size_t kMaxQueue = 32;
-              while (send_queue_.size() >= kMaxQueue) {
-                send_queue_.pop_front();
-                in_flight_previews_.fetch_sub(1, std::memory_order_acq_rel);
-              }
-              send_queue_.push_back(std::move(bytes));
-            }
-            send_cv_.notify_one();
-          });
-    }
-    gpu_->commitPreviewBatch();
-  }
-
   void maybeRegenerateConfig() {
     bool should_regen = false;
     {
@@ -1179,29 +783,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     RaiseParamEvent(P_CONFIG, FF_EVENT_FLAG_VALUE);
   }
 
-  // -- Preview push (per-frame texture snapshots over WS binary) ------
-  // The editor publishes a map of { traceId → { target, width, height } }
-  // at /plugins/<key>/state/preview_requests. We re-read the full map
-  // each time the per-key patch listener fires (cheap; the map
-  // is tiny). Each frame we run the executor with hooks that record the
-  // texture handles for every chain entry + the final sketch output,
-  // then iterate requests and ship each one as a binary WS frame.
-  struct PreviewRequest {
-    // Editor-facing trace ID — the only thing routed back to the web.
-    std::string traceId;
-    // "so:<sketchId>" or "ce:<sketchId>/<col>/<chain>/<side>". Same shape
-    // as the web's trace-controller targetKey so the executor hooks can
-    // store under matching keys.
-    std::string targetKey;
-    uint32_t    width  = 128;
-    uint32_t    height = 72;
-  };
-  struct CaptureSlot {
-    int32_t  handle = -1;
-    int      width  = 0;
-    int      height = 0;
-  };
-
   std::mutex                       tick_mu_;
   // Shared in-process server, located + acquired in InitGL via the loader.
   plugin::BridgeLoader             loader_;
@@ -1211,57 +792,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   std::string                      pending_payload_;     // envelope to apply in InitGL
   nlohmann::json                   host_info_;           // applied once bridge is up
 
-  // Active preview requests (guarded by tick_mu_). Refreshed lazily on
-  // the render thread when `preview_requests_dirty_` is set — the patch
-  // listener only flips the flag, never mutates the map directly.
-  std::unordered_map<std::string, PreviewRequest> preview_requests_;
-  std::atomic<bool> preview_requests_dirty_{false};
+  // Shared effect runtime (lives in the dylib). rt_ready_ is true once
+  // bridge_rt_acquire succeeded + our per-key executor was created; shared_device_
+  // is the dylib's MTLDevice that our InteropTexture pair is built against (it
+  // MUST match the device the executor renders on). Both cleared in teardownBridge.
+  bool                             rt_ready_ = false;
+  id<MTLDevice>                    shared_device_ = nil;
 
-  // Outstanding async preview readbacks. Each `readbackTextureScaledAsync`
-  // call increments before issuing; the send worker decrements after
-  // the broadcast completes. The dtor drains this to zero before
-  // tearing the WS server down so handlers don't fire on a destroyed
-  // instance.
-  std::atomic<int> in_flight_previews_{0};
-
-  // Flipped at the top of each ProcessOpenGL — true iff the WS bridge
-  // has an open client AND there's at least one active preview
-  // request. The capture hooks consult it before touching
-  // frame_captures_ so a disconnected editor doesn't pay for
-  // per-chain-entry string formatting + map inserts.
-  bool captures_enabled_ = false;
-
-  // Send worker: takes the Metal completion handler off the critical
-  // path. Without this, broadcast_binary (which involves
-  // ixwebsocket's send queueing + per-message deflate compression on
-  // high-entropy preview pixels) runs on Metal's serial completion
-  // dispatch queue. When that backs up, Metal can't free committed
-  // cmd buffers fast enough and new commits from the render thread
-  // start blocking — which is exactly the "content-complexity-driven
-  // FPS drop" symptom that motivated this.
-  std::thread          send_thread_;
-  std::mutex           send_mu_;
-  std::condition_variable send_cv_;
-  std::deque<std::vector<uint8_t>> send_queue_;
-  std::atomic<bool>    send_thread_stop_{false};
-  // Per-frame texture snapshots (NOT guarded — only touched on render
-  // thread between executor->execute() and the publish loop below it).
-  std::unordered_map<std::string, CaptureSlot> frame_captures_;
-
-  // Effect runtime. The plugin owns everything above the executor;
-  // the executor manages its own intermediate textures + per-frame
-  // tap state.
-  id<MTLDevice>                                            device_ = nil;
-  std::unique_ptr<gpu::GPUBackend>                         gpu_;
-  // Owns the WasmHost backing WASM-loaded effects. Declared before rt_ so it is
-  // destroyed AFTER it: rt_'s EffectInstance destructors call_indirect into the
-  // WasmHost (and gpu_) to run each effect's destroy(). Null in static mode.
-  std::unique_ptr<sketch_executor::WasmEffectBundles>      bundles_;
-  std::unique_ptr<effect_runtime::EffectRuntime>           rt_;
-  std::unique_ptr<sketch_executor::ModuleRegistry>         registry_;
-  std::unique_ptr<sketch_executor::SketchExecutor>         executor_;
-
-  // GL ↔ Metal interop.
+  // GL ↔ Metal interop (the only Metal the barrel itself owns).
   std::unique_ptr<InteropTexture>  input_interop_;
   std::unique_ptr<InteropTexture>  output_interop_;
 
@@ -1278,12 +816,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   double  dirty_since_ms_  = 0.0;
   uint32_t trigger_seq_    = 0;
 
-  // Render-thread cache of the sketch JSON. Re-fetched from the state document
-  // only when sketch_snapshot_dirty_ is set (editor patch or Resolume config);
-  // otherwise the per-frame deep copy + destruction of the whole sketch (the
-  // dominant JSON cost after the richtext layout cache) is skipped entirely.
+  // Flips the dylib's sketch + preview-request re-fetch. Set on any editor patch
+  // (onPatchTrampoline) or host config apply (applyConfigJson); read+cleared each
+  // frame and passed as `dirty` to bridge_executor_render. Starts true so the
+  // first frame always fetches.
   std::atomic<bool> sketch_snapshot_dirty_{true};
-  nlohmann::json    sketch_snapshot_;
 
   std::vector<char> config_return_buf_;
   char              small_return_buf_[64]{};

@@ -778,6 +778,19 @@ if(APPLE)
     catch_discover_tests(test_effect_render)
   endif()
 
+  # Shared-runtime instance isolation: two namespaced executors on one runtime.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    add_executable(test_barrel_isolation tests/test_barrel_isolation.cpp)
+    target_link_libraries(test_barrel_isolation PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_barrel_isolation PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_barrel_isolation PRIVATE -Wno-attributes)
+    catch_discover_tests(test_barrel_isolation)
+  endif()
+
   # B3 end-to-end: drive executor.wasm through WAMR vs the native executor.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
      AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
@@ -841,8 +854,13 @@ if(APPLE)
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
   )
+  # Thin client: NO engine. The whole effect runtime (sketch_executor +
+  # effect_runtime + gpu_backend + wasm_host + text_engine) lives in
+  # libbridge_server.dylib as a process singleton (BarrelRuntime), dlopen'd at
+  # runtime via BridgeLoader. The barrel links only the FFGL shell, the bridge
+  # loader (compiled in this target), nlohmann_json (header-only), and the
+  # Metal/GL frameworks its InteropTexture pair needs.
   target_link_libraries(NanoBarrel PRIVATE
-    sketch_executor      # brings in sketch_augment + effect_runtime + gpu_backend
     nlohmann_json::nlohmann_json
     ffgl::sdk
     "-framework OpenGL"

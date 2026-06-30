@@ -52,7 +52,7 @@ public:
   BridgeRtSchemasFn bridge_rt_schemas = nullptr;
   BridgeExecutorCreateFn bridge_executor_create = nullptr;
   BridgeExecutorDestroyFn bridge_executor_destroy = nullptr;
-  BridgeExecutorRenderFn bridge_executor_render = nullptr;
+  BridgeExecutorRenderFn bridge_executor_render = nullptr;  // returns int (output-used)
 
 private:
   void* handle_ = nullptr;

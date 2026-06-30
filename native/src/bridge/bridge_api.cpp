@@ -208,12 +208,12 @@ void bridge_executor_destroy(BridgeHandle h, const char* key) {
   bridge::BarrelRuntime::instance().destroyExecutor(key);
 }
 
-void bridge_executor_render(BridgeHandle h, const char* key,
+int bridge_executor_render(BridgeHandle h, const char* key,
     void* in_tex, void* out_tex, int w, int hgt, double dt, double elapsed,
-    const char* sketch_json, int dirty) {
-  if (!h || !key) return;
-  bridge::BarrelRuntime::instance().render(key, in_tex, out_tex, w, hgt, dt, elapsed,
-      sketch_json ? sketch_json : "", dirty != 0);
+    int dirty, const float* macros, int n_macros) {
+  if (!h || !key) return 0;
+  return bridge::BarrelRuntime::instance().render(key, in_tex, out_tex, w, hgt,
+      dt, elapsed, dirty != 0, macros, n_macros) ? 1 : 0;
 }
 
 } // extern "C"

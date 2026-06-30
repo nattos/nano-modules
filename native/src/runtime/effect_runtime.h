@@ -341,6 +341,11 @@ class EffectRuntime {
   // the GPU is idle.
   void destroyInstancesWithKeyPrefix(const std::string& prefix);
 
+  // Live count of pooled per-(type, instance_key) render instances. Introspection
+  // for tests proving instance-key namespacing keeps barrels isolated in the
+  // shared pool (two namespaces × one bare key → two distinct instances).
+  size_t instancePoolSize() const { return instance_pool_.size(); }
+
   // The bundle's nano_module_main calls `nano_register_effect`, which
   // routes here. The runtime expects bundles to be initialized via
   // direct C++ entry points (effect namespaces' `init()`s) rather than

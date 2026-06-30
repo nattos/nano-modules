@@ -89,10 +89,17 @@ char* bridge_rt_schemas(BridgeHandle h);
 void bridge_executor_create(BridgeHandle h, const char* key);
 void bridge_executor_destroy(BridgeHandle h, const char* key);
 // Render one frame for `key`: read in_tex, write out_tex (id<MTLTexture> void*).
-// `sketch_json` is this instance's sketch; reused from cache when dirty==0.
-void bridge_executor_render(BridgeHandle h, const char* key,
+// The dylib pulls this instance's sketch + preview_requests from its own state
+// doc (it owns it), re-fetching only when `dirty`!=0 (an editor patch or a
+// host config restore). `macros`/`n_macros` carry the FFGL macro knobs (injected
+// into any control.barrel_macros instance + published as macro_outputs). The
+// dylib also publishes rail telemetry (sketch_state) + broadcasts preview frames
+// for this key — the barrel does none of that anymore. Returns 1 if the output
+// texture was written, 0 if the sketch passed through (caller should present the
+// INPUT texture instead).
+int bridge_executor_render(BridgeHandle h, const char* key,
     void* in_tex, void* out_tex, int w, int hgt, double dt, double elapsed,
-    const char* sketch_json, int dirty);
+    int dirty, const float* macros, int n_macros);
 
 // Function pointer typedefs for dlsym loading
 typedef BridgeHandle (*BridgeInitFn)(void);
@@ -129,7 +136,7 @@ typedef void* (*BridgeRtMetalDeviceFn)(BridgeHandle);
 typedef char* (*BridgeRtSchemasFn)(BridgeHandle);
 typedef void (*BridgeExecutorCreateFn)(BridgeHandle, const char*);
 typedef void (*BridgeExecutorDestroyFn)(BridgeHandle, const char*);
-typedef void (*BridgeExecutorRenderFn)(BridgeHandle, const char*, void*, void*, int, int, double, double, const char*, int);
+typedef int (*BridgeExecutorRenderFn)(BridgeHandle, const char*, void*, void*, int, int, double, double, int, const float*, int);
 
 #ifdef __cplusplus
 }

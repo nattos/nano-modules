@@ -44,12 +44,18 @@ class BarrelRuntime {
   void destroyExecutor(const std::string& key);
 
   // Render one frame for `key` into `out_tex` (id<MTLTexture>), reading from
-  // `in_tex`. `sketch_json` is this instance's sketch; when `dirty` is false a
-  // cached parse is reused. Serialized across all instances by the global
-  // render lock (process-global runtime/effrt/host state + unlocked backend).
-  void render(const std::string& key, void* in_tex, void* out_tex,
-              int w, int h, double dt, double elapsed,
-              const std::string& sketch_json, bool dirty);
+  // `in_tex`. The runtime owns the state doc, so it fetches this instance's
+  // sketch + preview_requests itself (re-fetched only when `dirty`); `macros`
+  // (n_macros floats) are injected into any control.barrel_macros instance and
+  // published as macro_outputs. After the executor runs the runtime publishes
+  // rail telemetry (sketch_state) and broadcasts requested preview frames over
+  // the shared WS — all in-process, no extra ABI. Serialized across all
+  // instances by the global render lock (process-global runtime/effrt/host state
+  // + the single unlocked backend). Returns true if the output texture was
+  // written, false if the sketch passed through (present the input instead).
+  bool render(const std::string& key, void* in_tex, void* out_tex,
+              int w, int h, double dt, double elapsed, bool dirty,
+              const float* macros, int n_macros);
 
  private:
   BarrelRuntime();
