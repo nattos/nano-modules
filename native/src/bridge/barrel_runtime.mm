@@ -36,7 +36,7 @@ void textInstallDefaultFonts(const char* primaryTtfPath);
 namespace bridge {
 
 namespace {
-constexpr const char* kBundleNames[] = {"core", "lights", "nano", "text", "richtext"};
+constexpr const char* kBundleNames[] = {"core", "lights", "nano", "text", "richtext", "legacy"};
 constexpr unsigned kNumMacros = 16;
 
 #define BRT_LOG(fmt, ...) \

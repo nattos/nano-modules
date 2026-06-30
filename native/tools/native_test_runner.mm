@@ -198,6 +198,7 @@ int main(int argc, char** argv) {
         + bundles.loadBundleFile(NANO_WASM_DIR "/nano.wasm",     registry, gpu.get(), nullptr)
         + bundles.loadBundleFile(NANO_WASM_DIR "/text.wasm",     registry, gpu.get(), nullptr)
         + bundles.loadBundleFile(NANO_WASM_DIR "/richtext.wasm", registry, gpu.get(), nullptr)
+        + bundles.loadBundleFile(NANO_WASM_DIR "/legacy.wasm",   registry, gpu.get(), nullptr)
         : 0;
     if (loaded < 1) {
       std::fprintf(stderr, "failed to load effect bundles from %s\n", NANO_WASM_DIR);

@@ -933,7 +933,7 @@ if(APPLE)
   # must exist at CONFIGURE time (run build_aot.sh, then reconfigure) to be
   # picked up. (executor.wasm is NOT bundled — the barrel runs the executor
   # natively; executor.wasm is a web-only artifact.)
-  foreach(_b core lights nano text richtext)
+  foreach(_b core lights nano text richtext legacy)
     set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
     if(EXISTS "${_wsrc}")
       add_custom_command(TARGET NanoBarrel POST_BUILD
