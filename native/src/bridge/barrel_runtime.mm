@@ -2,9 +2,11 @@
 
 #import <Metal/Metal.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -98,6 +100,29 @@ nlohmann::json parseOrObject(const std::string& s) {
   auto j = nlohmann::json::parse(s, nullptr, false);
   return j.is_discarded() ? nlohmann::json::object() : j;
 }
+
+// Preview cadence + size caps (read once). The editor's preview readbacks
+// dominate the watched-frame cost — each one's GPU scale/copy serializes on the
+// render queue ahead of the next frame's blocking submit, so cost scales with
+// readback pixels × rate. Decouple the preview rate from the render rate
+// (default 30 Hz) and bound the readback long-edge (default 512) so a native-res
+// main preview can't read back a full frame every frame. Both env-tunable.
+double previewIntervalSec() {
+  static double v = [] {
+    const char* e = getenv("NANO_BARREL_PREVIEW_HZ");
+    double hz = e ? atof(e) : 30.0;
+    return hz > 0.0 ? 1.0 / hz : 0.0;
+  }();
+  return v;
+}
+uint32_t previewMaxDim() {
+  static uint32_t v = [] {
+    const char* e = getenv("NANO_BARREL_PREVIEW_MAXDIM");
+    int d = e ? atoi(e) : 512;
+    return d > 0 ? (uint32_t)d : 512u;
+  }();
+  return v;
+}
 }  // namespace
 
 struct BarrelRuntime::Impl {
@@ -133,6 +158,8 @@ struct BarrelRuntime::Impl {
     nlohmann::json lastMacroOut;
     bool haveLastRail = false;
     bool haveLastMacroOut = false;
+    // Host-elapsed time of the last preview-capture frame, for rate limiting.
+    double lastPreviewElapsed = -1e9;
   };
   std::unordered_map<std::string, PerExecutor> executors;
 
@@ -217,22 +244,29 @@ struct BarrelRuntime::Impl {
 
   // Encode + commit this frame's preview readbacks for `key`. Runs under
   // render_mu, immediately after submit() (GPU work complete). The async
-  // completion handlers ship bytes via the send worker. See nano_barrel_plugin
-  // history for the batching + alternate-frame-intermediates rationale.
+  // completion handlers ship bytes via the send worker. Frequency is bounded by
+  // the render()-side rate limiter (previewIntervalSec); size by previewMaxDim.
   void publishPreviewFrames(const std::string& key, PerExecutor& pe) {
     if (!gpu) return;
     if (pe.preview_requests.empty()) return;
     if (!BridgeServer::instance().has_clients()) return;
-    const bool include_intermediates = (pe.frame & 1) == 0;
+    const uint32_t maxDim = previewMaxDim();
     gpu->beginPreviewBatch();
     for (const auto& [_, req] : pe.preview_requests) {
-      if (!include_intermediates && req.targetKey != "so") continue;
       auto it = pe.frame_captures.find(req.targetKey);
       if (it == pe.frame_captures.end()) continue;
       const auto& slot = it->second;
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
-      const uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
-      const uint32_t outH = req.height ? req.height : (uint32_t)slot.height;
+      uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
+      uint32_t outH = req.height ? req.height : (uint32_t)slot.height;
+      // Cap the long edge: a native-res main preview ('so' requests 0×0 → source
+      // size) otherwise reads back a full frame, whose GPU scale/copy serializes
+      // ahead of the next render's blocking submit (the dominant watched cost).
+      if (outW > maxDim || outH > maxDim) {
+        double s = (double)maxDim / (double)std::max(outW, outH);
+        outW = std::max(1u, (uint32_t)(outW * s));
+        outH = std::max(1u, (uint32_t)(outH * s));
+      }
       in_flight.fetch_add(1, std::memory_order_acq_rel);
       std::string traceId = req.traceId;
       std::string keyCopy = key;
@@ -462,8 +496,21 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     }
   }
 
-  pe.captures_enabled = watched && !pe.preview_requests.empty();
-  if (pe.captures_enabled) pe.frame_captures.clear();
+  // Diagnostic knobs (read once): isolate the watched-path cost in benchmarks.
+  static const bool kSkipPreview   = getenv("NANO_BARREL_NO_PREVIEW")   != nullptr;
+  static const bool kSkipTelemetry = getenv("NANO_BARREL_NO_TELEMETRY") != nullptr;
+
+  // Rate-limit previews independently of the render rate. On non-capture frames
+  // captures_enabled is false, so the executor's capture hooks + fusion-barrier
+  // predicate are inert — GPU fusion stays on and no readback is encoded, so
+  // those frames run at full render speed.
+  const double pvInterval = previewIntervalSec();
+  pe.captures_enabled = watched && !kSkipPreview && !pe.preview_requests.empty() &&
+      (pvInterval <= 0.0 || (elapsed - pe.lastPreviewElapsed) >= pvInterval);
+  if (pe.captures_enabled) {
+    pe.frame_captures.clear();
+    pe.lastPreviewElapsed = elapsed;
+  }
 
   effect_runtime::setHostTime(elapsed);
   effect_runtime::setHostDeltaTime(dt);
@@ -483,7 +530,7 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // the last publish: a static sketch's rails don't change, so this skips the
   // dump + parse + RFC-6902 diff entirely (the per-frame cost that, under
   // tick_mutex_, throttled the render thread when a client was connected).
-  if (watched) {
+  if (watched && !kSkipTelemetry) {
     const nlohmann::json& rail = pe.executor->lastRailState();
     if (!pe.haveLastRail || rail != pe.lastRail) {
       pe.lastRail = rail;

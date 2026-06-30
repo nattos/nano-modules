@@ -129,6 +129,99 @@ static std::string ws_request(int port, const std::string& payload) {
   return "";
 }
 
+// Persistent WS client for the benchmark: connects, observes a path (so the
+// instance counts as "watched"), and keeps the socket open with a background
+// reader that drains incoming patch/preview frames (so the server's send buffer
+// never backpressures and skews the measurement). This reproduces a connected
+// web editor headlessly — the condition under which the barrel does its
+// telemetry + preview work.
+struct WsWatcher {
+  int fd = -1;
+  std::thread reader;
+  std::atomic<bool> stop{false};
+
+  bool open(int port) {
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) { ::close(fd); fd = -1; return false; }
+    std::string req =
+      "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
+      "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+      "Sec-WebSocket-Version: 13\r\n\r\n";
+    if (write(fd, req.data(), req.size()) < 0) { ::close(fd); fd = -1; return false; }
+    char buf[2048]; std::string resp;
+    while (resp.find("\r\n\r\n") == std::string::npos) {
+      ssize_t n = read(fd, buf, sizeof(buf));
+      if (n <= 0) { ::close(fd); fd = -1; return false; }
+      resp.append(buf, n);
+    }
+    // Drain everything the server pushes (patches + binary previews) and discard.
+    reader = std::thread([this] {
+      char rbuf[65536];
+      while (!stop.load(std::memory_order_acquire)) {
+        ssize_t n = read(fd, rbuf, sizeof(rbuf));
+        if (n <= 0) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+      }
+    });
+    return true;
+  }
+
+  bool send_text(const std::string& payload) {
+    if (fd < 0) return false;
+    std::vector<uint8_t> frame;
+    frame.push_back(0x81);
+    size_t len = payload.size();
+    if (len < 126) { frame.push_back(0x80 | (uint8_t)len); }
+    else if (len < 65536) { frame.push_back(0x80 | 126); frame.push_back((len>>8)&0xff); frame.push_back(len&0xff); }
+    else { frame.push_back(0x80 | 127); for (int i=7;i>=0;i--) frame.push_back((len>>(8*i))&0xff); }
+    frame.insert(frame.end(), {0,0,0,0});  // zero mask key
+    frame.insert(frame.end(), payload.begin(), payload.end());
+    return write(fd, frame.data(), frame.size()) == (ssize_t)frame.size();
+  }
+
+  void close_() {
+    stop.store(true, std::memory_order_release);
+    if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); }
+    if (reader.joinable()) reader.join();
+    if (fd >= 0) { ::close(fd); fd = -1; }
+  }
+};
+
+// Generate a sketch of N chained brightness_contrasts (slightly non-identity so
+// each stage does real work). Mirrors the editor's single-stack "chain" shape.
+static std::string gen_chain_sketch(int n) {
+  nlohmann::json chain = nlohmann::json::array();
+  nlohmann::json instances = nlohmann::json::object();
+  for (int i = 0; i < n; ++i) {
+    std::string key = "bc" + std::to_string(i);
+    chain.push_back({{"type", "module"},
+                     {"module_type", "color.tone.brightness_contrast"},
+                     {"instance_key", key}});
+    instances[key] = {{"module_type", "color.tone.brightness_contrast"},
+                      {"state", {{"brightness", 0.05}, {"contrast", 0.02}}}};
+  }
+  return nlohmann::json{{"chain", chain}, {"instances", instances}, {"wires", nlohmann::json::array()}}.dump();
+}
+
+// Preview-request map an editor mounts for an N-stage chain: the main sketch
+// output (full-res) + each stage's output thumbnail. This is what drives the
+// barrel's per-frame readback + broadcast.
+static std::string gen_preview_requests(int n, int w, int h) {
+  nlohmann::json reqs = nlohmann::json::object();
+  reqs["so"] = {{"target", {{"type", "sketch_output"}}}, {"width", 0}, {"height", 0}};
+  for (int i = 0; i < n; ++i) {
+    reqs["ce0_" + std::to_string(i)] = {
+      {"target", {{"type", "chain_entry"}, {"colIdx", 0}, {"chainIdx", i}, {"side", "output"}}},
+      {"width", 128}, {"height", 72}};
+  }
+  (void)w; (void)h;
+  return reqs.dump();
+}
+
 typedef FFMixed (*FFGLPluginMainPtr)(FFUInt32, FFMixed, FFInstanceID);
 
 // --- Minimal PNG encoder (lifted from web/test/gpu-test-helpers.ts pattern) ---
@@ -220,10 +313,22 @@ int main(int argc, const char* argv[]) {
     std::string wsSketch;
     // --text IDX <string>: set an arbitrary text param verbatim.
     std::vector<std::pair<int, std::string>> textOverrides;
+    // --gen-chain N: generate + apply a sketch of N chained brightness_contrasts.
+    // --bench-watch: connect a persistent observing client + preview requests
+    //   (a simulated web editor) so the watched telemetry/preview path runs, and
+    //   report ms/frame both WITHOUT and WITH the watcher to isolate its cost.
+    int genChain = 0;
+    bool benchWatch = false;
     int positional = 0;
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
-      if (arg == "--param" && i + 2 < argc) {
+      if (arg == "--gen-chain" && i + 1 < argc) {
+        genChain = std::stoi(argv[i + 1]);
+        configWrapped = barrel_codec::wrap_config(gen_chain_sketch(genChain));
+        i += 1;
+      } else if (arg == "--bench-watch") {
+        benchWatch = true;
+      } else if (arg == "--param" && i + 2 < argc) {
         int idx = std::stoi(argv[i + 1]);
         float val = std::stof(argv[i + 2]);
         paramOverrides.push_back({idx, val});
@@ -441,21 +546,81 @@ int main(int argc, const char* argv[]) {
     // useless for CPU-side work. Thread-CPU excludes those blocks, so it
     // isolates ProcessOpenGL's actual CPU cost (the executor walk, encode, etc.).
     double dt_ms = 1000.0 / 60.0;
-    timespec cpu0{}, cpu1{};
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu0);
-    for (int f = 0; f < numFrames; ++f) {
-      double t = f * dt_ms;
-      plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
-      plugMain(FF_PROCESS_OPENGL,
-               (FFMixed){.PointerValue = &ps}, instanceID);
-      glFlush();
+    int timebase = 0;  // advance FF_SET_TIME monotonically across phases
+
+    // Run numFrames and report BOTH wall-clock (captures the render-thread stalls
+    // the FPS drop is made of — lock waits, GPU waits) and thread-CPU. Wall is
+    // the metric that matters here; thread-CPU misses time blocked on tick_mutex_.
+    auto bench = [&](const char* label) {
+      timespec c0{}, c1{};
+      auto w0 = std::chrono::steady_clock::now();
+      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
+      for (int f = 0; f < numFrames; ++f) {
+        double t = (timebase + f) * dt_ms;
+        plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
+        plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
+        glFlush();
+      }
+      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+      auto w1 = std::chrono::steady_clock::now();
+      timebase += numFrames;
+      double cpuMs = (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
+      double wallMs = std::chrono::duration<double, std::milli>(w1 - w0).count();
+      std::fprintf(stderr,
+          "[ffgl_runner] %-9s %d frames | wall %.3f ms/frame (%.1f fps) | CPU %.3f ms/frame\n",
+          label, numFrames, wallMs / numFrames, 1000.0 * numFrames / wallMs,
+          cpuMs / numFrames);
+    };
+
+    bench("unwatched");
+
+    // Watched phase: connect a persistent observing client + preview requests
+    // (a simulated web editor) and re-measure. The delta is the cost the barrel
+    // pays per frame while a client is connected.
+    WsWatcher watcher;
+    if (benchWatch) {
+      constexpr int kPort = 8081;
+      std::string key;
+      for (int tries = 0; tries < 50 && key.empty(); ++tries) {
+        std::string snap = ws_request(kPort, R"({"action":"get","path":"/global/plugins"})");
+        auto j = nlohmann::json::parse(snap, nullptr, false);
+        if (!j.is_discarded() && j.contains("data") && j["data"].is_array()) {
+          for (auto& p : j["data"]) {
+            if (p.value("key", std::string()).empty()) continue;
+            if (p.contains("metadata") &&
+                p["metadata"].value("id", std::string()) == "com.nano.nanobarrel") {
+              key = p["key"].get<std::string>(); break;
+            }
+          }
+        }
+        if (key.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      if (!key.empty() && watcher.open(kPort)) {
+        watcher.send_text(
+            "{\"action\":\"observe\",\"path\":\"/plugins/" + key + "/state\"}");
+        int n = genChain > 0 ? genChain : 1;
+        std::string reqs = gen_preview_requests(n, width, height);
+        watcher.send_text(
+            "{\"action\":\"patch\",\"target\":\"/plugins/" + key + "/state\","
+            "\"ops\":[{\"op\":\"replace\",\"path\":\"/preview_requests\",\"value\":" + reqs + "}]}");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // let pump apply
+        // Warm up so the preview-request patch's dirty flag propagates into the
+        // dylib (it re-reads preview_requests on the next dirty frame).
+        for (int f = 0; f < 30; ++f) {
+          double t = (timebase + f) * dt_ms;
+          plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
+          plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
+          glFlush();
+        }
+        timebase += 30;
+        std::fprintf(stderr, "[ffgl_runner] watching key=%s (%d preview reqs)\n",
+                     key.c_str(), n + 1);
+        bench("watched");
+      } else {
+        std::fprintf(stderr,
+            "[ffgl_runner] bench-watch: connect/observe FAILED (key='%s')\n", key.c_str());
+      }
     }
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu1);
-    double cpuMs = (cpu1.tv_sec - cpu0.tv_sec) * 1e3 +
-                   (cpu1.tv_nsec - cpu0.tv_nsec) / 1e6;
-    std::cerr << "[ffgl_runner] processed " << numFrames << " frames; "
-              << "ProcessOpenGL thread-CPU " << cpuMs << " ms total, "
-              << (cpuMs / numFrames) << " ms/frame\n";
 
     // 7. Readback host FBO → RGBA.
     std::vector<uint8_t> pixels((size_t)width * height * 4);
@@ -478,6 +643,7 @@ int main(int argc, const char* argv[]) {
     std::cerr << "[ffgl_runner] wrote " << outPath << "\n";
 
     // 8. Cleanup. (fbo + its color texture are owned by outputInterop.)
+    watcher.close_();
     plugMain(FF_DEINSTANTIATE_GL, (FFMixed){.PointerValue = nullptr},
              instanceID);
     plugMain(FF_DEINITIALISE, (FFMixed){.PointerValue = nullptr}, 0);
