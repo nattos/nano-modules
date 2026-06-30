@@ -499,8 +499,8 @@ int main(int argc, const char* argv[]) {
     glClear(GL_COLOR_BUFFER_BIT);
 
     // 5. One InteropTexture as the plugin's input (also IOSurface-backed) —
-    // filled with a horizontal red gradient so we can tell input handoff apart
-    // from pure-output cases.
+    // filled with a 2D gradient (R = x, G = y) so we can tell input handoff
+    // apart from pure-output cases AND detect X/Y orientation flips.
     auto inputInterop = std::make_unique<InteropTexture>(
         device, context, /*createOpenGLFBO=*/ false,
         MTLPixelFormatBGRA8Unorm, width, height);
@@ -510,8 +510,8 @@ int main(int argc, const char* argv[]) {
       for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
           size_t idx = (size_t)(y * width + x) * 4;
-          data[idx + 0] = (uint8_t)((float)x / width * 255.0f);
-          data[idx + 1] = 0;
+          data[idx + 0] = (uint8_t)((float)x / width * 255.0f);   // R ramps L→R
+          data[idx + 1] = (uint8_t)((float)y / height * 255.0f);  // G ramps row0→last
           data[idx + 2] = 0;
           data[idx + 3] = 255;
         }

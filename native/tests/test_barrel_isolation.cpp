@@ -142,9 +142,16 @@ TEST_CASE("final passthrough copies into a BGRA output without swapping R/B",
   int inTex   = backend->createTexture(W, H, RGBA8);
   int outRef  = backend->createTexture(W, H, BGRA8);   // matches the barrel interop
   int outCopy = backend->createTexture(W, H, BGRA8);
-  // Pure red: R and B are maximally distinct, so a swap is unmistakable.
+  // Red overall (R/B distinct → a swap is unmistakable) AND a vertical gradient
+  // in G (Y-asymmetric → a Y-flip is unmistakable too).
   std::vector<uint8_t> inPix(W * H * 4, 0);
-  for (size_t i = 0; i < inPix.size(); i += 4) { inPix[i] = 255; inPix[i + 3] = 255; }
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x) {
+      size_t i = (size_t)(y * W + x) * 4;
+      inPix[i] = 255;                                  // R
+      inPix[i + 1] = (uint8_t)(y * 255 / (H - 1));     // G ramps top→bottom
+      inPix[i + 3] = 255;
+    }
   backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
 
   // Reference: one non-identity stage renders DIRECTLY into the BGRA output.

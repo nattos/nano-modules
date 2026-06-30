@@ -694,6 +694,15 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // GL-side FBO. Zero shader work — just glBlitFramebuffer between two
   // FBOs. Handles both GL_TEXTURE_2D and GL_TEXTURE_RECTANGLE inputs;
   // glFramebufferTexture2D's target argument is the texture target.
+  //
+  // The destination Y is flipped (dst goes H→0) so the input lands in the
+  // interop with Metal's top-left origin — the same convention the executor's
+  // effects render in, and the mirror of blitInteropToGlOutput's flip on the
+  // way back. Without this the input enters Metal upside-down: a passthrough
+  // (and every effect) comes out vertically flipped, since only the output blit
+  // flipped. The two flips now net to zero for the displayed image while keeping
+  // the executor in proper top-left space (so orientation-sensitive effects —
+  // text, gradients — are upright).
   void blitGlInputToInterop(ProcessOpenGLStruct* pGL,
                             const FFGLTextureStruct* pInput) {
     GLenum target = GL_TEXTURE_RECTANGLE;
@@ -710,8 +719,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
                            target, pInput->Handle, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, input_interop_->getOpenGLFBO());
     glBlitFramebuffer(0, 0, (GLint)pInput->Width, (GLint)pInput->Height,
-                      0, 0, input_interop_->getWidth(),
-                            input_interop_->getHeight(),
+                      0, (GLint)input_interop_->getHeight(),
+                      (GLint)input_interop_->getWidth(), 0,
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevRead);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
