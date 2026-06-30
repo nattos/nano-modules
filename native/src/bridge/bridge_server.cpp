@@ -40,8 +40,13 @@ void BridgeServer::init_subsystems() {
   std::lock_guard lock(tick_mutex_);
   if (subsystems_initialized_) return;
 
-  wasm_host_ = std::make_unique<wasm::WasmHost>(core_.param_cache());
-  wasm_host_->init();
+  // NOTE: the WasmHost (and its WAMR runtime) is created LAZILY in load_wasm,
+  // NOT here. The FFGL barrel already runs its own WAMR runtime in-process to
+  // execute effects; if this dylib also called wasm_runtime_init() eagerly on
+  // acquire(), the two runtimes' process-global SIGSEGV stack-guard handlers
+  // collide and abort ("Could not determine thread index for stack guard
+  // region"). Only the looper path uses bridge_load_wasm, so defer WAMR init
+  // until it's actually needed — the barrel never triggers a second runtime.
 
   resolume_client_ = std::make_unique<resolume::WsClient>();
   resolume_client_->connect();
@@ -245,6 +250,13 @@ void BridgeServer::flush_outbox() {
 
 int32_t BridgeServer::load_wasm(const uint8_t* bytecode, uint32_t len) {
   std::lock_guard lock(tick_mutex_);
+  // Lazily bring up the WASM host (and its WAMR runtime) on first use — see
+  // the note in init_subsystems about avoiding a second WAMR runtime in
+  // barrel-hosted processes. Only the looper reaches here.
+  if (!wasm_host_) {
+    wasm_host_ = std::make_unique<wasm::WasmHost>(core_.param_cache());
+    wasm_host_->init();
+  }
   if (!wasm_host_) return -1;
   int32_t id = wasm_host_->load_module(bytecode, len);
   if (id >= 0) {
