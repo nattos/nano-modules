@@ -192,7 +192,6 @@ export interface ColumnGroupCallbacks {
 export class ColumnGroup extends MobxLitElement {
   @property({ type: Number }) colIdx = -1;
   @property() sketchId = '';
-  @property({ type: Boolean }) isPlaceholder = false;
   @property({ type: Number }) columnWidth = 300;
   @property({ attribute: false }) callbacks: ColumnGroupCallbacks | null = null;
   /** Injected data/controller/taps seam. The effect IDE passes `ideColumnAdapter`
@@ -745,19 +744,7 @@ export class ColumnGroup extends MobxLitElement {
     const colRect = colEl.getBoundingClientRect();
     const centerX = colRect.left + colRect.width / 2;
 
-    if (this.isPlaceholder) {
-      // Placeholder column: single insertion point at vertical center
-      results.push({
-        colIdx: this.colIdx,
-        insertIdx: 0, // implicit input is on top; first module goes at 0
-        x: centerX,
-        y: colRect.top + colRect.height / 2,
-        isPlaceholder: true,
-      });
-      return results;
-    }
-
-    // Tabs are gone — insertion points are the gaps between cards. One above
+    // Insertion points are the gaps between cards. One above
     // each card (insert at that index) plus one below the last card (append).
     const cards = [...this.renderRoot.querySelectorAll('.effect-card[data-chain-idx]')] as HTMLElement[];
     for (const card of cards) {
@@ -792,18 +779,6 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   render() {
-    if (this.isPlaceholder) {
-      return html`
-        <div class="column" style="position:relative">
-          <div class="column-header">Column ${this.colIdx + 1}</div>
-          <div class="column-placeholder" data-placeholder-col=${this.colIdx}>
-            Drop effects here
-          </div>
-          <div class="drag-insert-marker"></div>
-        </div>
-      `;
-    }
-
     const sketch = this.ds.getSketch(this.sketchId);
     if (!sketch || this.colIdx !== 0) {
       return nothing;
@@ -2028,7 +2003,12 @@ export class ColumnGroup extends MobxLitElement {
    *  order. Clicking begins an insertion drilled into that category. */
   private renderInsertHeader(_column: SketchColumn) {
     if (!this.ds.caps.typeEditing) return nothing;
-    const present = new Set(this.ds.availableEffects.map((e) => e.category));
+    // Category = the effect id's first segment (its taxonomy domain), the same
+    // derivation the per-card dot and smart-input use. The `category` meta
+    // field is essentially never populated (and is '' in barrel mode), so
+    // keying off it collapsed every chip into one blank button.
+    const present = new Set(
+      this.ds.availableEffects.map((e) => effectDomain(e.id)).filter(Boolean));
     const cats: string[] = CATEGORY_DOMAINS.filter((c) => present.has(c));
     for (const c of present) if (!cats.includes(c)) cats.push(c); // any extras last
     if (cats.length === 0) return nothing;

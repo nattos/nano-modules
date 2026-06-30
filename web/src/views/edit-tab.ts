@@ -39,8 +39,6 @@ import { isTypingInEditable } from '../utils/keyboard';
 // the effects IDE so the lists can't drift.
 import '../editors/all-inspectors';
 
-const EXTRA_COLUMNS = 2;
-
 @customElement('edit-tab')
 export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
   private previewDisposer: IReactionDisposer | null = null;
@@ -67,8 +65,9 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     if (!sketchId) return 0;
     const sketch = appState.database.sketches[sketchId];
     if (!sketch) return 0;
-    // Single linear stack: always exactly one real column (index 0).
-    return 1 + EXTRA_COLUMNS;
+    // Single linear stack — one chain, one column. (Multi-column mode is
+    // retired; the data model has been single-`chain` for a while.)
+    return 1;
   }
 
   connectedCallback() {
@@ -373,13 +372,10 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     if (cached) return cached;
 
     const sketchId = appState.local.editingSketchId ?? '';
-    const sketch = appState.database.sketches[sketchId];
-    const isPlaceholder = !sketch || index >= 1;
 
     const colGroup = document.createElement('column-group') as any;
     colGroup.colIdx = index;
     colGroup.sketchId = sketchId;
-    colGroup.isPlaceholder = isPlaceholder;
     colGroup.callbacks = this;
     colGroup.adapter = ideColumnAdapter;
     this.columnCache.set(index, colGroup as HTMLElement);
