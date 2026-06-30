@@ -196,13 +196,18 @@ struct WsWatcher {
 static std::string gen_chain_sketch(int n) {
   nlohmann::json chain = nlohmann::json::array();
   nlohmann::json instances = nlohmann::json::object();
+  // NANO_BENCH_TAIL_IDENTITY=1 makes the LAST stage an identity (brightness 0,
+  // contrast 0) — reproduces the trailing-identity flicker.
+  const bool tailIdentity = getenv("NANO_BENCH_TAIL_IDENTITY") != nullptr;
   for (int i = 0; i < n; ++i) {
     std::string key = "bc" + std::to_string(i);
     chain.push_back({{"type", "module"},
                      {"module_type", "color.tone.brightness_contrast"},
                      {"instance_key", key}});
+    const bool ident = tailIdentity && (i == n - 1);
     instances[key] = {{"module_type", "color.tone.brightness_contrast"},
-                      {"state", {{"brightness", 0.05}, {"contrast", 0.02}}}};
+                      {"state", {{"brightness", ident ? 0.0 : 0.05},
+                                 {"contrast",   ident ? 0.0 : 0.02}}}};
   }
   return nlohmann::json{{"chain", chain}, {"instances", instances}, {"wires", nlohmann::json::array()}}.dump();
 }

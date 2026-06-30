@@ -1311,7 +1311,20 @@ int32_t SketchExecutor::execute(
                             groupInput, groupInput, W, H);
           }
         }
-        finalHandle = groupInput;   // alias; colInput unchanged
+        // A FINAL all-identity group must still land the result in outputHandle
+        // (the caller presents that texture), exactly like the standalone path's
+        // passthroughOutput. Without this, a trailing identity effect that fusion
+        // happens to place in its own group (e.g. split out by a preview barrier)
+        // leaves finalHandle pointing at an upstream intermediate — so the host
+        // presents the INPUT instead of the processed image. When the barrier
+        // is present only on some frames (rate-limited previews), that alternates
+        // → flicker. Mid-chain identity groups keep aliasing (no copy).
+        if (isFinalStage && groupInput != outputHandle) {
+          gpu_copy_texture(groupInput, outputHandle);
+          finalHandle = outputHandle;
+        } else {
+          finalHandle = groupInput;   // alias; colInput unchanged
+        }
         return;
       }
 
