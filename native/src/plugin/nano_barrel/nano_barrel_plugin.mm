@@ -126,10 +126,15 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // needs nothing more than the SetParamInfo calls above. The shared bridge
     // server is likewise acquired in InitGL, not here.
 
-    // Stash the persisted payload (envelope JSON) for InitGL to apply once
-    // the bridge is up. On a host cold start this is empty (the host will
-    // restore it via SetTextParameter before InitGL); on in-process
-    // delete+undo it's the live envelope from the process cache.
+    // Stash the persisted payload (envelope JSON) for InitGL to apply once the
+    // bridge is up. The process cache holds ONLY the most-recently-DESTROYED
+    // instance's envelope (written in ~NanoBarrelPlugin, consumed once in
+    // setupBridge) — the in-process delete→undo bridge, where Resolume destroys
+    // + recreates the SAME C++ instance and the recreated ctor needs the state
+    // before SetTextParameter fires. It is empty during normal operation, so a
+    // freshly ADDED instance (while siblings are alive) starts blank instead of
+    // inheriting a sibling's sketch. On a host cold start it's also empty (the
+    // host restores via SetTextParameter before InitGL).
     {
       std::lock_guard<std::mutex> lock(g_cache_mu());
       pending_payload_ = g_cache_blob();
@@ -145,6 +150,20 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
   ~NanoBarrelPlugin() override {
     BARREL_LOG("dtor", "this=%p frame=%d", (void*)this, frame_);
+    // Hand THIS instance's persisted envelope to the process cache so an
+    // immediate in-process recreation (delete→undo: Resolume destroys + rebuilds
+    // the same C++ instance) can repopulate from it before SetTextParameter
+    // fires. Only the dying instance writes the cache — a newly ADDED sibling
+    // therefore never inherits a live instance's sketch. config_blob_ is the
+    // wrapped form GetTextParameter returns (the host's durable store); unwrap
+    // to the bare envelope the ctor/SetTextParameter expect.
+    if (!config_blob_.empty()) {
+      std::string payload = barrel_codec::unwrap_config(config_blob_);
+      if (!payload.empty()) {
+        std::lock_guard<std::mutex> lock(g_cache_mu());
+        g_cache_blob() = payload;
+      }
+    }
     // Safety net: DeInitGL normally destroys the executor + tears the bridge
     // down, but the host may destroy us without a matching DeInitGL. The shared
     // runtime owns the preview send worker now, so there's nothing here to drain
@@ -533,6 +552,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       applyPayload(pending_payload_);
       pending_payload_.clear();
     }
+    // The undo crutch is spent: this real instance has captured its state, so
+    // clear the process cache. A subsequently ADDED instance then sees an empty
+    // cache and starts blank instead of inheriting this one (or a sibling's).
+    {
+      std::lock_guard<std::mutex> lock(g_cache_mu());
+      g_cache_blob().clear();
+    }
     if (!host_info_.is_null() && loader_.bridge_set_at) {
       loader_.bridge_set_at(bridge_,
           ("/plugins/" + barrel_plugin_key_ + "/state/host").c_str(),
@@ -732,8 +758,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   }
 
   // -- Config <-> state document --------------------------------------
-  // Writes the sketch into this instance's shared-doc state and refreshes the
-  // process cache (as the {uuid,sketch} envelope) for in-process delete+undo.
+  // Writes the sketch into this instance's shared-doc state. The process cache
+  // is NOT touched here — it's written only on destruction (see ~ctor), so a
+  // live instance's edits never leak into a newly added sibling.
   void applyConfigJson(const std::string& sketch_json) {
     auto sketch = nlohmann::json::parse(sketch_json, nullptr, false);
     if (sketch.is_discarded()) {
@@ -746,10 +773,6 @@ class NanoBarrelPlugin : public CFFGLPlugin {
           ("/plugins/" + barrel_plugin_key_ + "/state/sketch").c_str(),
           sketch.dump().c_str());
       sketch_snapshot_dirty_.store(true, std::memory_order_release);
-    }
-    {
-      std::lock_guard<std::mutex> lock(g_cache_mu());
-      g_cache_blob() = buildPayload(sketch_json);
     }
     BARREL_LOG("applyConfigJson",
                "applied sketch (json_size=%zu)", sketch_json.size());
@@ -769,13 +792,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     std::string sketch_json =
         getAtJson("/plugins/" + barrel_plugin_key_ + "/state/sketch").dump();
-    // Persist the {uuid,sketch} envelope so identity survives reload/restart.
+    // Persist the {uuid,sketch} envelope into the FILE param (config_blob_ is
+    // what GetTextParameter returns) so identity + sketch survive reload/restart.
+    // The process cache is NOT updated here — only on destruction (see ~ctor) —
+    // so a live instance never seeds the next added sibling.
     std::string payload = buildPayload(sketch_json);
     config_blob_ = barrel_codec::wrap_config(payload);
-    {
-      std::lock_guard<std::mutex> lock(g_cache_mu());
-      g_cache_blob() = payload;
-    }
     BARREL_LOG("regenerate",
                "json_size=%zu wrapped_size=%zu key=%s",
                sketch_json.size(), config_blob_.size(),
