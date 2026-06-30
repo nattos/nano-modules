@@ -112,7 +112,12 @@ private:
   std::atomic<bool> pump_stop_{false};
 
   std::unique_ptr<resolume::WsClient> resolume_client_;
-  std::unique_ptr<WsServer> ws_server_;
+  // shared_ptr (not unique): broadcast_binary copies the pointer under a brief
+  // tick_mutex_ hold, then runs the (CPU-heavy) permessage-deflate + send on the
+  // copy OUTSIDE the lock — so a preview frame's compression never stalls the
+  // render thread, which needs tick_mutex_ each frame. The local copy keeps the
+  // server alive across a concurrent shutdown reset().
+  std::shared_ptr<WsServer> ws_server_;
   std::unique_ptr<wasm::WasmHost> wasm_host_;
 
   std::unordered_map<int32_t, canvas::DrawList> draw_lists_;

@@ -51,7 +51,7 @@ void BridgeServer::init_subsystems() {
   resolume_client_ = std::make_unique<resolume::WsClient>();
   resolume_client_->connect();
 
-  ws_server_ = std::make_unique<WsServer>();
+  ws_server_ = std::make_shared<WsServer>();
   // The ix callbacks ONLY enqueue — never touch tick_mutex_ or core_ (see
   // the deadlock note in the header). The pump thread drains + processes.
   ws_server_->set_message_callback([this](int client_id, const std::string& msg) {
@@ -197,8 +197,17 @@ std::string BridgeServer::get_at(const std::string& path) {
 }
 
 void BridgeServer::broadcast_binary(const void* data, size_t len) {
-  std::lock_guard lock(tick_mutex_);
-  if (ws_server_) ws_server_->broadcast_binary(data, len);
+  // Grab a ref under the lock, but run the deflate + send WITHOUT it: preview
+  // frames are high-entropy and slow to compress, and the render thread takes
+  // tick_mutex_ every frame (key_observed / sketch_state). Holding it across the
+  // send serialized render behind preview compression (120→45 FPS). The local
+  // shared_ptr keeps the server alive if shutdown resets the member meanwhile.
+  std::shared_ptr<WsServer> ws;
+  {
+    std::lock_guard lock(tick_mutex_);
+    ws = ws_server_;
+  }
+  if (ws) ws->broadcast_binary(data, len);
 }
 
 bool BridgeServer::has_clients() {

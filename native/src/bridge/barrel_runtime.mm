@@ -126,6 +126,13 @@ struct BarrelRuntime::Impl {
     std::unordered_map<std::string, CaptureSlot>    frame_captures;
     bool captures_enabled = false;
     int  frame = 0;
+    // Last-published telemetry, so a static sketch publishes NOTHING per frame.
+    // Without this every frame ran a full JSON dump→parse→RFC-6902 diff (on the
+    // render thread, under tick_mutex_) even when the rails never changed.
+    nlohmann::json lastRail;
+    nlohmann::json lastMacroOut;
+    bool haveLastRail = false;
+    bool haveLastMacroOut = false;
   };
   std::unordered_map<std::string, PerExecutor> executors;
 
@@ -445,7 +452,12 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
       }
       macroOut[ikey] = std::move(fields);
     }
-    if (watched && !macroOut.empty()) {
+    // Publish only when watched AND the values actually changed — knobs are
+    // static most frames, so this is normally a no-op (no doc diff, no patch).
+    if (watched && !macroOut.empty() &&
+        (!pe.haveLastMacroOut || macroOut != pe.lastMacroOut)) {
+      pe.lastMacroOut = macroOut;
+      pe.haveLastMacroOut = true;
       server.set_at(base + "/macro_outputs", macroOut.dump());
     }
   }
@@ -467,10 +479,17 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   impl_->rt->drainConsoleLog();
 
   // Publish this frame's float-rail values for the editor's spark charts (the
-  // native mirror of the web executor's /sketch_state publish). One JSON string
-  // → one patch op; nothing while the rails are static.
+  // native mirror of the web executor's /sketch_state publish). Dedup against
+  // the last publish: a static sketch's rails don't change, so this skips the
+  // dump + parse + RFC-6902 diff entirely (the per-frame cost that, under
+  // tick_mutex_, throttled the render thread when a client was connected).
   if (watched) {
-    server.set_at(base + "/sketch_state", pe.executor->lastRailState().dump());
+    const nlohmann::json& rail = pe.executor->lastRailState();
+    if (!pe.haveLastRail || rail != pe.lastRail) {
+      pe.lastRail = rail;
+      pe.haveLastRail = true;
+      server.set_at(base + "/sketch_state", rail.dump());
+    }
   }
 
   // After submit() the GPU work is complete; publish any requested previews
