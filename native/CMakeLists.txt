@@ -700,6 +700,19 @@ if(APPLE)
     target_compile_definitions(sketch_executor PRIVATE NANO_WASM_AOT_ENABLED=1)
   endif()
 
+  # --- Shared render engine inside the dylib ---
+  # The whole effect runtime lives in libbridge_server.dylib as a process
+  # singleton (BarrelRuntime), so every NanoBarrel instance shares ONE Metal
+  # backend + WAMR runtime + loaded effect set. Because the runtime relies on
+  # process-global state (g_runtime, the effrt frame table, g_host_*), only ONE
+  # image may link it — the dylib here; the barrel bundle must NOT (see its
+  # link list). sketch_executor PUBLIC-pulls effect_runtime/gpu_backend/
+  # wasm_host/text_engine/spv_to_msl transitively.
+  target_sources(bridge_server PRIVATE src/bridge/barrel_runtime.mm)
+  target_link_libraries(bridge_server PRIVATE sketch_executor)
+  set_source_files_properties(src/bridge/barrel_runtime.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
   # Config-driven CLI test runner — JSON config on stdin, JSON pixel
   # result on stdout. Mirrors web/public/gpu-test-runner.html for the
   # dual-backend tests.

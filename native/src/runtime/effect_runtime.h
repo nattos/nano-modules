@@ -335,6 +335,12 @@ class EffectRuntime {
   // user_state). Caller must ensure the GPU is idle. No-op if absent.
   void destroyInstance(const std::string& type, const std::string& instanceKey);
 
+  // Destroy every pooled instance whose instance_key begins with `prefix` (the
+  // namespace a SketchExecutor was given via setKeyNamespace). Frees one
+  // barrel's effect state from the SHARED pool on teardown. Caller must ensure
+  // the GPU is idle.
+  void destroyInstancesWithKeyPrefix(const std::string& prefix);
+
   // The bundle's nano_module_main calls `nano_register_effect`, which
   // routes here. The runtime expects bundles to be initialized via
   // direct C++ entry points (effect namespaces' `init()`s) rather than

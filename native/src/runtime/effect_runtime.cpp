@@ -491,6 +491,19 @@ void EffectRuntime::destroyInstance(const std::string& type,
   instance_pool_.erase(it);  // ~EffectInstance runs doDestroy
 }
 
+void EffectRuntime::destroyInstancesWithKeyPrefix(const std::string& prefix) {
+  // Pool keys are "type|instanceKey"; match the instanceKey part against prefix.
+  for (auto it = instance_pool_.begin(); it != instance_pool_.end();) {
+    const std::string& k = it->first;
+    auto bar = k.find('|');
+    bool match = bar != std::string::npos &&
+                 k.size() - (bar + 1) >= prefix.size() &&
+                 k.compare(bar + 1, prefix.size(), prefix) == 0;
+    if (match) it = instance_pool_.erase(it);  // ~EffectInstance runs doDestroy
+    else ++it;
+  }
+}
+
 void EffectRuntime::registerShaderMSL(const std::string& name, std::string msl) {
   msl_by_name_[name] = std::move(msl);
 }

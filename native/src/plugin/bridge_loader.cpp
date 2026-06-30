@@ -48,6 +48,14 @@ bool BridgeLoader::load(const char* dylib_path) {
   bridge_has_clients = reinterpret_cast<BridgeHasClientsFn>(dlsym(handle_, "bridge_has_clients"));
   bridge_key_observed = reinterpret_cast<BridgeKeyObservedFn>(dlsym(handle_, "bridge_key_observed"));
 
+  bridge_rt_acquire = reinterpret_cast<BridgeRtAcquireFn>(dlsym(handle_, "bridge_rt_acquire"));
+  bridge_rt_release = reinterpret_cast<BridgeRtReleaseFn>(dlsym(handle_, "bridge_rt_release"));
+  bridge_rt_metal_device = reinterpret_cast<BridgeRtMetalDeviceFn>(dlsym(handle_, "bridge_rt_metal_device"));
+  bridge_rt_schemas = reinterpret_cast<BridgeRtSchemasFn>(dlsym(handle_, "bridge_rt_schemas"));
+  bridge_executor_create = reinterpret_cast<BridgeExecutorCreateFn>(dlsym(handle_, "bridge_executor_create"));
+  bridge_executor_destroy = reinterpret_cast<BridgeExecutorDestroyFn>(dlsym(handle_, "bridge_executor_destroy"));
+  bridge_executor_render = reinterpret_cast<BridgeExecutorRenderFn>(dlsym(handle_, "bridge_executor_render"));
+
   if (!bridge_init || !bridge_release || !bridge_get_param ||
       !bridge_set_param || !bridge_tick) {
     unload();
@@ -92,6 +100,13 @@ void BridgeLoader::unload() {
   bridge_broadcast_binary = nullptr;
   bridge_has_clients = nullptr;
   bridge_key_observed = nullptr;
+  bridge_rt_acquire = nullptr;
+  bridge_rt_release = nullptr;
+  bridge_rt_metal_device = nullptr;
+  bridge_rt_schemas = nullptr;
+  bridge_executor_create = nullptr;
+  bridge_executor_destroy = nullptr;
+  bridge_executor_render = nullptr;
 }
 
 } // namespace plugin

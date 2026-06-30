@@ -465,7 +465,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
       // Fusion eligibility — structural (fusion kind/fragment/prepare, tap-free)
       // plus bypass/opacity, which are sketch state and thus only change on a
       // dirty frame. instanceFor materialises the per-key instance here.
-      EffectRef inst = instanceRef(mt, instKey);
+      EffectRef inst = instanceRef(mt, keyNamespace_ + instKey);
       bool e = false;
       if (inst.valid()) {
         // A modulation source (no output texture) is a passthrough, never fused.
@@ -1052,7 +1052,7 @@ int32_t SketchExecutor::execute(
       const std::string& instKey = pe.instanceKey;
 
       const RegisteredModule* reg = pe.reg;
-      EffectRef inst = instanceRef(mt, instKey);
+      EffectRef inst = instanceRef(mt, keyNamespace_ + instKey);
       if (!inst.valid()) return;
 
       // For a passthrough stage that is the column's FINAL output, the result
@@ -1263,7 +1263,7 @@ int32_t SketchExecutor::execute(
       bool stagesOK = true;
       for (size_t k = g.firstK; k <= g.lastK; ++k) {
         const std::string& instKey = R[k].instanceKey;
-        EffectRef inst = instanceRef(R[k].moduleType, instKey);
+        EffectRef inst = instanceRef(R[k].moduleType, keyNamespace_ + instKey);
         if (!inst.valid()) { stagesOK = false; break; }
         if (const json* st = findState(instances, instKey)) {
           maybeApplyState(inst, instKey, *st);

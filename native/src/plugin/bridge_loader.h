@@ -45,6 +45,15 @@ public:
   BridgeHasClientsFn bridge_has_clients = nullptr;
   BridgeKeyObservedFn bridge_key_observed = nullptr;
 
+  // Shared effect runtime (barrel render service)
+  BridgeRtAcquireFn bridge_rt_acquire = nullptr;
+  BridgeRtReleaseFn bridge_rt_release = nullptr;
+  BridgeRtMetalDeviceFn bridge_rt_metal_device = nullptr;
+  BridgeRtSchemasFn bridge_rt_schemas = nullptr;
+  BridgeExecutorCreateFn bridge_executor_create = nullptr;
+  BridgeExecutorDestroyFn bridge_executor_destroy = nullptr;
+  BridgeExecutorRenderFn bridge_executor_render = nullptr;
+
 private:
   void* handle_ = nullptr;
 };

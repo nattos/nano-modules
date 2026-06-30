@@ -128,6 +128,18 @@ class SketchExecutor {
    */
   void setAutomation(const nlohmann::json& entries);
 
+  /**
+   * Prefix applied to every effect instance_key before it reaches the shared
+   * EffectRuntime instance pool (via effrt_instance_for). Lets many executors
+   * share ONE runtime without colliding: the FFGL barrel sets this to its
+   * stable per-instance UUID so two barrels' identical bare keys ("inv@0") map
+   * to distinct EffectInstances/user_state_. Default empty → single-runtime
+   * hosts (executor.wasm web, one-barrel) behave exactly as before. Only the
+   * shared-pool lookup is namespaced; the executor's own per-(bare-key) maps
+   * stay bare (they're already per-executor objects).
+   */
+  void setKeyNamespace(std::string ns) { keyNamespace_ = std::move(ns); }
+
   /** Set (or clear with empty) the per-chain-entry capture hook. */
   void setChainEntryHook(ChainEntryHook hook) { chainEntryHook_ = std::move(hook); }
   /** Set (or clear with empty) the sketch-output hook. */
@@ -375,6 +387,7 @@ class SketchExecutor {
   // a rebuild. Has no effect on rendering.
   int planBuildCount_ = 0;
   bool fusionEnabled_ = true;   // force-off disables GPU fusion (test hook)
+  std::string keyNamespace_;    // prefix into the SHARED instance pool (per-barrel)
 
   // Per-frame debug counters, reset at the top of each execute() and surfaced
   // via fillDebugStats() (see above). `fusedRuns` doubles as the fusion-test

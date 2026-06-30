@@ -75,6 +75,25 @@ void bridge_broadcast_binary(BridgeHandle h, const uint8_t* data, uint32_t len);
 int  bridge_has_clients(BridgeHandle h);
 int  bridge_key_observed(BridgeHandle h, const char* key);
 
+// --- Shared effect runtime (the dylib hosts ONE; barrels are thin clients) ---
+// Build/refcount the shared runtime, loading effect bundles from `wasm_dir` and
+// the text font from `font_path` on first call. Returns 1 if usable.
+int  bridge_rt_acquire(BridgeHandle h, const char* wasm_dir, const char* font_path);
+void bridge_rt_release(BridgeHandle h);
+// The shared MTLDevice (id<MTLDevice> as void*) for the barrel's InteropTexture.
+void* bridge_rt_metal_device(BridgeHandle h);
+// Effect schema catalog JSON ({module_type:{key,id,version,schema}}); free with
+// bridge_free_string.
+char* bridge_rt_schemas(BridgeHandle h);
+// Per-barrel executor lifecycle, keyed by the barrel's plugin key (UUID).
+void bridge_executor_create(BridgeHandle h, const char* key);
+void bridge_executor_destroy(BridgeHandle h, const char* key);
+// Render one frame for `key`: read in_tex, write out_tex (id<MTLTexture> void*).
+// `sketch_json` is this instance's sketch; reused from cache when dirty==0.
+void bridge_executor_render(BridgeHandle h, const char* key,
+    void* in_tex, void* out_tex, int w, int hgt, double dt, double elapsed,
+    const char* sketch_json, int dirty);
+
 // Function pointer typedefs for dlsym loading
 typedef BridgeHandle (*BridgeInitFn)(void);
 typedef void (*BridgeReleaseFn)(BridgeHandle);
@@ -103,6 +122,14 @@ typedef void (*BridgeFreeStringFn)(char*);
 typedef void (*BridgeBroadcastBinaryFn)(BridgeHandle, const uint8_t*, uint32_t);
 typedef int (*BridgeHasClientsFn)(BridgeHandle);
 typedef int (*BridgeKeyObservedFn)(BridgeHandle, const char*);
+
+typedef int (*BridgeRtAcquireFn)(BridgeHandle, const char*, const char*);
+typedef void (*BridgeRtReleaseFn)(BridgeHandle);
+typedef void* (*BridgeRtMetalDeviceFn)(BridgeHandle);
+typedef char* (*BridgeRtSchemasFn)(BridgeHandle);
+typedef void (*BridgeExecutorCreateFn)(BridgeHandle, const char*);
+typedef void (*BridgeExecutorDestroyFn)(BridgeHandle, const char*);
+typedef void (*BridgeExecutorRenderFn)(BridgeHandle, const char*, void*, void*, int, int, double, double, const char*, int);
 
 #ifdef __cplusplus
 }

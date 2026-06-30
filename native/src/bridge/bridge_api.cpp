@@ -1,5 +1,6 @@
 #include "bridge/bridge_api.h"
 #include "bridge/bridge_server.h"
+#include "bridge/barrel_runtime.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -172,6 +173,47 @@ int bridge_has_clients(BridgeHandle h) {
 int bridge_key_observed(BridgeHandle h, const char* key) {
   if (!h || !key) return 0;
   return static_cast<BridgeServer*>(h)->key_observed(key) ? 1 : 0;
+}
+
+// --- Shared effect runtime ---
+
+int bridge_rt_acquire(BridgeHandle h, const char* wasm_dir, const char* font_path) {
+  if (!h) return 0;
+  return bridge::BarrelRuntime::instance().acquire(
+      wasm_dir ? wasm_dir : "", font_path ? font_path : "") ? 1 : 0;
+}
+
+void bridge_rt_release(BridgeHandle h) {
+  if (!h) return;
+  bridge::BarrelRuntime::instance().release();
+}
+
+void* bridge_rt_metal_device(BridgeHandle h) {
+  if (!h) return nullptr;
+  return bridge::BarrelRuntime::instance().metalDevice();
+}
+
+char* bridge_rt_schemas(BridgeHandle h) {
+  if (!h) return nullptr;
+  return dup_string(bridge::BarrelRuntime::instance().schemasJson());
+}
+
+void bridge_executor_create(BridgeHandle h, const char* key) {
+  if (!h || !key) return;
+  bridge::BarrelRuntime::instance().createExecutor(key);
+}
+
+void bridge_executor_destroy(BridgeHandle h, const char* key) {
+  if (!h || !key) return;
+  bridge::BarrelRuntime::instance().destroyExecutor(key);
+}
+
+void bridge_executor_render(BridgeHandle h, const char* key,
+    void* in_tex, void* out_tex, int w, int hgt, double dt, double elapsed,
+    const char* sketch_json, int dirty) {
+  if (!h || !key) return;
+  bridge::BarrelRuntime::instance().render(key, in_tex, out_tex, w, hgt, dt, elapsed,
+      sketch_json ? sketch_json : "", dirty != 0);
 }
 
 } // extern "C"
