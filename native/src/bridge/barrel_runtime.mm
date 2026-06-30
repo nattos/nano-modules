@@ -496,16 +496,12 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     }
   }
 
-  // Diagnostic knobs (read once): isolate the watched-path cost in benchmarks.
-  static const bool kSkipPreview   = getenv("NANO_BARREL_NO_PREVIEW")   != nullptr;
-  static const bool kSkipTelemetry = getenv("NANO_BARREL_NO_TELEMETRY") != nullptr;
-
   // Rate-limit previews independently of the render rate. On non-capture frames
   // captures_enabled is false, so the executor's capture hooks + fusion-barrier
   // predicate are inert — GPU fusion stays on and no readback is encoded, so
   // those frames run at full render speed.
   const double pvInterval = previewIntervalSec();
-  pe.captures_enabled = watched && !kSkipPreview && !pe.preview_requests.empty() &&
+  pe.captures_enabled = watched && !pe.preview_requests.empty() &&
       (pvInterval <= 0.0 || (elapsed - pe.lastPreviewElapsed) >= pvInterval);
   if (pe.captures_enabled) {
     pe.frame_captures.clear();
@@ -530,7 +526,7 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // the last publish: a static sketch's rails don't change, so this skips the
   // dump + parse + RFC-6902 diff entirely (the per-frame cost that, under
   // tick_mutex_, throttled the render thread when a client was connected).
-  if (watched && !kSkipTelemetry) {
+  if (watched) {
     const nlohmann::json& rail = pe.executor->lastRailState();
     if (!pe.haveLastRail || rail != pe.lastRail) {
       pe.lastRail = rail;

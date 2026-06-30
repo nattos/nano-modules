@@ -119,3 +119,72 @@ TEST_CASE("two namespaced executors isolate effect state in one shared runtime",
     CHECK(rt.instancePoolSize() == 2);
   }
 }
+
+// Regression: a final passthrough/identity stage lands its result in the output
+// via a copy. The barrel's output is a BGRA8 interop while intermediates are
+// RGBA8, so a raw cross-format blit byte-copies and swaps R/B (a red sketch went
+// blue). The copy must instead go through a format-correct render. Existing tests
+// all use RGBA8 outputs, so they never exercised the mismatch — hence this one
+// pins a BGRA8 output and compares the copy path against a direct render.
+TEST_CASE("final passthrough copies into a BGRA output without swapping R/B",
+          "[barrel_isolation]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 32, H = 32;
+  const int RGBA8 = 1, BGRA8 = 0;
+  int inTex   = backend->createTexture(W, H, RGBA8);
+  int outRef  = backend->createTexture(W, H, BGRA8);   // matches the barrel interop
+  int outCopy = backend->createTexture(W, H, BGRA8);
+  // Pure red: R and B are maximally distinct, so a swap is unmistakable.
+  std::vector<uint8_t> inPix(W * H * 4, 0);
+  for (size_t i = 0; i < inPix.size(); i += 4) { inPix[i] = 255; inPix[i + 3] = 255; }
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  // Reference: one non-identity stage renders DIRECTLY into the BGRA output.
+  const std::string direct = R"JSON({
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "a" } ],
+    "instances": { "a": { "module_type": "color.tone.brightness_contrast",
+                          "state": { "brightness": 0.2, "contrast": 0.0 } } }, "wires": [] })JSON";
+  // Test: same visual result, but the FINAL stage is an identity at partial
+  // opacity → fusion-ineligible → standalone → identity-skip → copy-to-output.
+  const std::string viaCopy = R"JSON({
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "a" },
+               { "module_type": "color.tone.brightness_contrast", "instance_key": "b" } ],
+    "instances": { "a": { "module_type": "color.tone.brightness_contrast",
+                          "state": { "brightness": 0.2, "contrast": 0.0 } },
+                   "b": { "module_type": "color.tone.brightness_contrast",
+                          "state": { "brightness": 0.0, "contrast": 0.0, "__opacity__": 0.9 } } },
+    "wires": [] })JSON";
+
+  SketchExecutor ex(&rt, &registry, backend.get());
+
+  auto jd = nlohmann::json::parse(direct);
+  int32_t hd = ex.execute(jd, inTex, outRef, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto ref = backend->readbackTexture(hd, W, H);
+
+  auto jc = nlohmann::json::parse(viaCopy);
+  int32_t hc = ex.execute(jc, inTex, outCopy, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  auto got = backend->readbackTexture(hc, W, H);
+
+  REQUIRE(ref.size() == W * H * 4);
+  REQUIRE(got.size() == W * H * 4);
+  // The trailing identity is a pure passthrough, so the copy path must produce
+  // the SAME bytes as the direct render. A raw cross-format blit would swap R/B.
+  size_t diffs = 0;
+  for (size_t i = 0; i < got.size(); ++i) {
+    int d = (int)got[i] - (int)ref[i];
+    if (d < -2 || d > 2) ++diffs;
+  }
+  INFO("ref bgra[0..2]=" << (int)ref[0] << "," << (int)ref[1] << "," << (int)ref[2]
+       << "  got bgra[0..2]=" << (int)got[0] << "," << (int)got[1] << "," << (int)got[2]);
+  CHECK(diffs == 0);
+}
