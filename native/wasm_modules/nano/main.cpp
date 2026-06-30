@@ -18,6 +18,7 @@ NANO_DECLARE_INSTANCE_EFFECT(flash_particles)
 NANO_DECLARE_INSTANCE_EFFECT(local_delay)
 NANO_DECLARE_INSTANCE_EFFECT(height_from_gradient)
 NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
+NANO_DECLARE_INSTANCE_EFFECT(brutal_fold)
 NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
 NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
@@ -89,6 +90,17 @@ void nano_module_main() {
         "generator,sdf,shape,evolving,autopilot,procedural,math",
         NANO_INSTANCE_LIFECYCLE(shape_fold),
         nullptr, nullptr, nullptr, &shape_fold::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "source.brutal_fold",
+        "Brutal Fold",
+        "Brutalist axonometric-prism generator. A baked control surface — axes complexity (x), order (y), and liveliness (z), with a co-folded second structure — is interpolated each frame into an algebraic occupancy field, rendered as solid oblique-depth prisms (\"3D without a vanishing point\") in grayscale, with fog fading distant receding layers toward the light sky tone. The XY pad picks the cell; balance plays the two structures' parallax against each other; extrude sets the recession depth. A seamless bounded loop animates prisms birthing in and out (with an easing/time-warp lever); speeds map through a quadratic bend onto a low max, so it reads best very slow. An optional autopilot spirals the XY and broadcasts its live position (autopilot_x/y) without mutating the inputs. Pure generator (no input).",
+        "source",
+        "generator,brutalist,architecture,prisms,axonometric,fog,depth,volumetric,autopilot,procedural",
+        NANO_INSTANCE_LIFECYCLE(brutal_fold),
+        nullptr, nullptr, nullptr, &brutal_fold::eval_visibility,
     });
 
     nano::registerEffect({

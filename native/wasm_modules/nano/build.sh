@@ -119,6 +119,16 @@ compile_shaders_compute_var_spv shape_fold present
 _emit_spv_header_var shape_fold minmax hist buildlut present
 echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present)"
 
+# brutal_fold — brutalist axonometric-prism generator. CPU resolves a baked
+# control surface (complexity × order × liveliness, + a co-folded second
+# structure) to two structures' terms; the GPU composites the receding prism
+# layers with depth fog in a single pass (the solid threshold is CPU-resolved,
+# so no auto-levels):
+#   present  — composite both structures' depth layers → grayscale (rgba8).
+compile_shaders_compute_var_spv brutal_fold present
+_emit_spv_header_var brutal_fold present
+echo "  brutal_fold shaders compiled (SPV: present)"
+
 # phase_fold — emergent limit-cycle phase-portrait generator. A baked atlas of
 # limit-cycle fields is uploaded to the GPU; the field, streamline tracing,
 # arrow animation and limit-cycle integration all run as GPU compute passes,
@@ -169,6 +179,7 @@ wasm_build \
   ../local_delay/main.cpp \
   ../height_from_gradient/main.cpp \
   ../shape_fold/main.cpp \
+  ../brutal_fold/main.cpp \
   ../phase_fold/main.cpp \
   ../flow_swarm/main.cpp \
   ../spectral_lfo/main.cpp \

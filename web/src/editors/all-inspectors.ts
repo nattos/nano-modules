@@ -11,6 +11,7 @@
  */
 
 import './shape-fold-inspector';
+import './brutal-fold-inspector';
 import './phase-fold-inspector';
 import './spectral-lfo-inspector';
 import './mod-spectral-inspector';
