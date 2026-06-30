@@ -11,7 +11,7 @@ import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard } from './types';
+import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard, BarrelInstanceInfo } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, ChainEntry, Wire, UiOnlyState, InstanceState, FieldConnectInfo } from '../sketch-types';
@@ -90,6 +90,11 @@ export class AppController {
   // controller stays the single hub: texture-monitors register the
   // same way in both modes.
   private barrelPreviewPusher: ((tracePoints: TracePoint[]) => void) | null = null;
+  // Invoked when the user (or default-selection logic) picks a different
+  // barrel instance. resolume-app registers this to (re)wire the WS
+  // subscriptions/pushers for the newly selected key. Not a MobX reaction
+  // — selection is an explicit action, so we call the handler from it.
+  private barrelSelectHandler: ((key: string) => void) | null = null;
 
   // -- Persistence scheduling (no MobX reactions; fired explicitly by
   //    every method that mutates the relevant slice) --
@@ -1341,6 +1346,48 @@ export class AppController {
   }
 
   /**
+   * Register the closure that (re)wires the WS bridge for a selected
+   * barrel instance. resolume-app owns the transport; the controller owns
+   * selection state — so selection calls back into resolume-app here.
+   */
+  setBarrelSelectHandler(fn: ((key: string) => void) | null) {
+    this.barrelSelectHandler = fn;
+  }
+
+  getSelectedBarrelKey(): string | null {
+    return appState.local.selectedBarrelKey;
+  }
+
+  /**
+   * Adopt the live instance list enumerated from the shared server's
+   * `/global/plugins`. Preserves the current selection if it's still
+   * present; otherwise selects the last-used (localStorage) instance if
+   * live, else the first — and (re)wires it via the select handler.
+   */
+  setBarrelInstances(list: BarrelInstanceInfo[]) {
+    runInAction(() => { appState.local.barrelInstances = list; });
+    const has = (k: string | null) => !!k && list.some(i => i.key === k);
+    if (has(appState.local.selectedBarrelKey)) return;  // keep current
+
+    let next: string | null = null;
+    try {
+      const saved = localStorage.getItem('barrel.selectedKey');
+      if (has(saved)) next = saved;
+    } catch { /* ignore */ }
+    if (!next && list.length > 0) next = list[0].key;
+
+    if (next) this.selectBarrelInstance(next);
+    else runInAction(() => { appState.local.selectedBarrelKey = null; });
+  }
+
+  /** Pick the barrel instance to edit; persists + rewires the bridge. */
+  selectBarrelInstance(key: string) {
+    runInAction(() => { appState.local.selectedBarrelKey = key; });
+    try { localStorage.setItem('barrel.selectedKey', key); } catch { /* ignore */ }
+    this.barrelSelectHandler?.(key);
+  }
+
+  /**
    * Adopt a plugin list published by the remote barrel through the WS
    * bridge. Bypasses the engine worker entirely — in barrel mode the
    * worker never instantiates effects, so its schemas would otherwise
@@ -1504,37 +1551,46 @@ export class AppController {
   }
 
   /**
-   * Decode + ingest a binary WS frame from the barrel. Frame layout:
+   * Decode + ingest a binary WS frame from the shared barrel server.
+   * NBPV v2 layout (one server multiplexes many instances → the plugin
+   * key is in the header so we can route to the selected instance):
    *
-   *   bytes 0-3: magic "NBPV"
-   *   byte 4:    version (1)
-   *   byte 5:    pixel format (1 = RGBA8)
-   *   bytes 6-7: u16 traceId length
-   *   bytes 8-9: u16 width
-   *   bytes 10-11: u16 height
-   *   bytes 12 ..: traceId (UTF-8) followed by tightly-packed RGBA8 pixels
+   *   bytes 0-3:  magic "NBPV"
+   *   byte 4:     version (2)
+   *   byte 5:     pixel format (1 = RGBA8)
+   *   bytes 6-7:  u16 key length
+   *   bytes 8-9:  u16 traceId length
+   *   bytes 10-11: u16 width
+   *   bytes 12-13: u16 height
+   *   bytes 14 ..: key (UTF-8), then traceId (UTF-8), then RGBA8 pixels
    *
-   * On success the decoded ImageBitmap lands at
+   * Frames whose key isn't the selected instance are dropped (another
+   * instance's preview). On success the decoded ImageBitmap lands at
    * `appState.local.engine.tracedFrames[traceId]`, which existing
-   * texture-monitor autoruns already redraw from. Foreign / malformed
-   * frames are dropped silently.
+   * texture-monitor autoruns already redraw from. Malformed frames are
+   * dropped silently.
    */
   async ingestBarrelPreviewFrame(buf: ArrayBuffer) {
-    if (buf.byteLength < 12) return;
+    if (buf.byteLength < 14) return;
     const dv = new DataView(buf);
     if (dv.getUint8(0) !== 0x4E || dv.getUint8(1) !== 0x42 ||  // 'N' 'B'
         dv.getUint8(2) !== 0x50 || dv.getUint8(3) !== 0x56) {  // 'P' 'V'
       return;
     }
-    if (dv.getUint8(4) !== 1) return;        // unknown version
+    if (dv.getUint8(4) !== 2) return;        // unknown version (clean break: v2 only)
     if (dv.getUint8(5) !== 1) return;        // unknown pixel format
-    const idLen  = dv.getUint16(6, true);
-    const width  = dv.getUint16(8, true);
-    const height = dv.getUint16(10, true);
-    const headerEnd = 12 + idLen;
+    const keyLen = dv.getUint16(6, true);
+    const idLen  = dv.getUint16(8, true);
+    const width  = dv.getUint16(10, true);
+    const height = dv.getUint16(12, true);
+    const keyEnd = 14 + keyLen;
+    const headerEnd = keyEnd + idLen;
     const pixelBytes = width * height * 4;
     if (buf.byteLength < headerEnd + pixelBytes) return;
-    const traceId = new TextDecoder().decode(new Uint8Array(buf, 12, idLen));
+    const key = new TextDecoder().decode(new Uint8Array(buf, 14, keyLen));
+    // Route: ignore frames for any instance other than the one being edited.
+    if (key !== appState.local.selectedBarrelKey) return;
+    const traceId = new TextDecoder().decode(new Uint8Array(buf, keyEnd, idLen));
     // ImageData requires its backing Uint8ClampedArray to span its own
     // buffer (byteOffset 0, full length). A subview over the incoming
     // ArrayBuffer would be cheaper but breaks the spec — so we copy

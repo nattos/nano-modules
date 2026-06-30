@@ -44,6 +44,8 @@ export class AppState {
     clipboard: null,
     userSettings: defaultUserSettings(),
     barrelMode: false,
+    barrelInstances: [],
+    selectedBarrelKey: null,
   };
 
   constructor() {

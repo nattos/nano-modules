@@ -9,6 +9,7 @@ import { boot } from './boot';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
+import type { BarrelInstanceInfo } from './state/types';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
 import { EFFECT_BUNDLES } from './effect-bundles';
@@ -33,9 +34,14 @@ async function main() {
   // sketches would feed into syncSketchesToEngine the moment effects
   // are discovered, and any of them with malformed shape would crash
   // augmentSketchWithImplicitConnections).
+  // Barrel mode is entered with `?barrel` present. The shared server lives
+  // on a single fixed port (8081) now, so the value is optional and only an
+  // override (`?barrel=ws://host:port`); bare `?barrel` connects to the
+  // default. Plain `/resolume/` stays the local-simulation IDE (the effect
+  // dev surface + the e2e harness target).
   const params = new URLSearchParams(location.search);
-  const barrelUrl = params.get('barrel');
-  const barrelMode = !!barrelUrl;
+  const barrelMode = params.has('barrel');
+  const barrelUrl = params.get('barrel') || 'ws://localhost:8081';
 
   // Local mode simulates the sketch in-worker — render at full 1920×1080 (the
   // boot default is a tiny 320×180). Barrel mode never simulates (the plugin
@@ -72,30 +78,38 @@ async function main() {
     for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
   }
 
-  if (barrelMode) connectBarrel(barrelUrl!);
+  if (barrelMode) connectBarrel(barrelUrl);
 }
 
 /**
- * Connect to a running NanoBarrel FFGL plugin via its per-instance WS
- * server. On the initial snapshot we discover the plugin key, mirror
- * the remote sketch into `appState.database.sketches[BARREL_SKETCH_ID]`,
- * and auto-select it for editing. On subsequent patches that touch the
- * sketch subtree we re-fetch the sketch and replace the local mirror.
+ * Connect to the shared NanoBarrel server (one WS server on a fixed port,
+ * multiplexing every plugin instance under `/plugins/<uuid>/state`).
  *
- * The client is also exposed on `window.__barrel` / `window.__barrelState`
- * for ad-hoc devtools-console patching while we bring up the UI:
+ * Flow:
+ *   - Observe `/global/plugins` → maintain the live instance list (the
+ *     Organize tab renders it; the controller picks/persists a selection).
+ *   - For the SELECTED instance, observe its `/plugins/<key>/state`, mirror
+ *     its sketch into `appState.database.sketches[BARREL_SKETCH_ID]`, and
+ *     wire the editor→bridge push + preview-request relay at that key.
+ *   - Switching instances (Organize tab) re-points all of the above.
  *
- *   window.__barrel.patch('/plugins/com.nano.nanobarrel@0/state',
- *                         [{op:'replace', path:'/sketch', value:{...}}])
+ * We deliberately observe only `/global/plugins` + the selected state path
+ * (not the doc root) so the native `key_observed` gate does real work:
+ * only the instance being edited produces per-frame telemetry/preview data.
  *
- * Editor-side mutations don't push back yet — that's the next slice.
+ * Exposed on `window.__barrel` for ad-hoc devtools patching.
  */
 function connectBarrel(url: string) {
   const barrel = new WsBridgeClient(url);
   (window as any).__barrel = barrel;
 
-  let barrelPluginKey: string | null = null;
-  let sketchSubscribed = false;
+  // The instance currently wired for editing, and the state path we have an
+  // active `observe` on (so we can unobserve when switching).
+  let currentKey: string | null = null;
+  let observedStatePath: string | null = null;
+  // Snapshot handlers are keyed by exact path; register each instance's
+  // handlers once and have them bail if they're no longer the selected key.
+  const handlersWired = new Set<string>();
 
   const applySketchFromSnapshot = (sketch: any) => {
     appController.setBarrelSketch(BARREL_SKETCH_ID, coerceSketch(sketch));
@@ -103,11 +117,9 @@ function connectBarrel(url: string) {
   };
 
   /**
-   * Adopt the barrel's published effect schemas. Each entry is one
-   * registered effect on the native side (module_type → PluginInfo-ish
-   * shape). The controller derives `params` / `io` from the raw schema
-   * fields so its inspector + augmenter behave the same as in local
-   * mode — except no WasmHost ever runs on the web.
+   * Adopt the barrel's published effect schemas. The controller derives
+   * `params` / `io` from the raw schema fields so its inspector + augmenter
+   * behave the same as local mode — except no WasmHost runs on the web.
    */
   const applyPluginSchemasFromSnapshot = (schemasObj: any) => {
     if (!schemasObj || typeof schemasObj !== 'object') return;
@@ -116,10 +128,8 @@ function connectBarrel(url: string) {
     appController.setBarrelPlugins(remotePlugins);
   };
 
-  // Per-frame float-rail telemetry the barrel publishes (native mirror of the
-  // local executor's /sketch_state). Stored as a JSON string so it rides as one
-  // patch op; we parse it and feed engine.sketchState so the rail spark charts
-  // show live values in barrel mode (where the web never simulates).
+  // Per-frame float-rail telemetry (native mirror of the local executor's
+  // /sketch_state), a JSON string carried in one patch op.
   const ingestRailState = (jsonStr: any) => {
     if (typeof jsonStr !== 'string') return;
     let railState: any;
@@ -130,10 +140,7 @@ function connectBarrel(url: string) {
     });
   };
 
-  // Per-instance output values the barrel publishes for control.barrel_macros (the
-  // live macro knobs). Injected into a local sketch copy natively, so otherwise
-  // invisible to the web. Feeds engine.pluginStates so the effect's output trace
-  // cards (which read pluginStates[instanceKey][field]) show live values.
+  // Per-instance control.barrel_macros output values (live macro knobs).
   const ingestMacroOutputs = (jsonStr: any) => {
     if (typeof jsonStr !== 'string') return;
     let states: any;
@@ -142,59 +149,72 @@ function connectBarrel(url: string) {
     appController.applyPluginStatesDiff({ changed: states, removed: [] });
   };
 
-  barrel.onSnapshot('/', (data) => {
-    (window as any).__barrelState = data;
-    const plugins = data?.plugins ?? {};
-    const keys = Object.keys(plugins);
-    if (keys.length === 0) {
-      console.warn('[barrel] root snapshot had no plugins');
+  // Apply a full /plugins/<key>/state object (schemas first — the sketch
+  // apply path backfills instance defaults from them).
+  const applyInstanceState = (state: any) => {
+    if (!state || typeof state !== 'object') return;
+    applyPluginSchemasFromSnapshot(state.plugin_schemas);
+    applySketchFromSnapshot(state.sketch ?? {});
+    ingestRailState(state.sketch_state);
+    ingestMacroOutputs(state.macro_outputs);
+  };
+
+  // Parse /global/plugins (array of {key, metadata, schema, ...}) into the
+  // NanoBarrel instance list for the Organize tab.
+  const parseInstances = (arr: any): BarrelInstanceInfo[] => {
+    if (!Array.isArray(arr)) return [];
+    const out: BarrelInstanceInfo[] = [];
+    for (const p of arr) {
+      const key = p?.key;
+      const id = p?.metadata?.id;
+      if (typeof key !== 'string' || id !== 'com.nano.nanobarrel') continue;
+      out.push({ key, id, label: key.split('-')[0] || key });
+    }
+    return out;
+  };
+
+  // (Re)wire the bridge for the selected instance key. Registered as the
+  // controller's barrel select handler, and also called for the initial pick.
+  const wireInstance = (key: string) => {
+    if (currentKey === key && observedStatePath) {
+      // Already wired — just refetch so the editor reflects latest.
+      barrel.get(`/plugins/${key}/state`);
       return;
     }
-    barrelPluginKey = keys[0];
-    const pluginState = plugins[barrelPluginKey!]?.state ?? {};
-    const sketch = pluginState.sketch ?? {};
-    // Plugin schemas must land before applying the sketch — the
-    // inspector + augmenter rely on them, and the sketch apply path
-    // calls `backfillEmptyInstanceStates` which needs the schemas to
-    // fill in defaults for instances the user dropped before any
-    // schema was known.
-    applyPluginSchemasFromSnapshot(pluginState.plugin_schemas);
-    applySketchFromSnapshot(sketch);
-    ingestRailState(pluginState.sketch_state);     // seed rail telemetry if present
-    ingestMacroOutputs(pluginState.macro_outputs); // seed macro output cards if present
-    console.log(`[barrel] mirrored sketch from /plugins/${barrelPluginKey}/state/sketch`);
+    currentKey = key;
+    const statePath = `/plugins/${key}/state`;
+    const sketchPath = `${statePath}/sketch`;
 
-    // Now that we know the plugin key, register a snapshot handler for
-    // the sketch path so subsequent re-fetches land in the same spot.
-    if (!sketchSubscribed) {
-      sketchSubscribed = true;
-      const sketchPath = `/plugins/${barrelPluginKey}/state/sketch`;
+    // Move the active observation to this instance (precise gating).
+    if (observedStatePath && observedStatePath !== statePath) {
+      barrel.unobserve(observedStatePath);
+    }
+    barrel.observe(statePath);
+    observedStatePath = statePath;
+
+    // Register snapshot handlers once per key; they no-op once superseded.
+    if (!handlersWired.has(key)) {
+      handlersWired.add(key);
+      barrel.onSnapshot(statePath, (state) => {
+        if (key !== currentKey) return;
+        applyInstanceState(state);
+      });
       barrel.onSnapshot(sketchPath, (latest) => {
+        if (key !== currentKey) return;
         applySketchFromSnapshot(latest);
       });
     }
 
-    // Wire the editor → barrel push direction. Every committed mutation
-    // of the mirrored sketch fires this pusher with the post-mutation
-    // sketch object, which we wrap in a replace-/sketch JSON patch
-    // targeting the barrel plugin's state subtree.
+    // Editor → bridge push for this instance's sketch.
     appController.setBarrelPusher(BARREL_SKETCH_ID, (snapshot) => {
-      if (!barrelPluginKey) return;
-      barrel.patch(`/plugins/${barrelPluginKey}/state`, [
-        { op: 'replace', path: '/sketch', value: snapshot },
-      ]);
+      if (currentKey !== key) return;
+      barrel.patch(statePath, [{ op: 'replace', path: '/sketch', value: snapshot }]);
     });
 
-    // Wire the trace controller → bridge preview-request relay. Every
-    // texture-monitor mount or unmount triggers a flush; we translate
-    // the consolidated tracepoint set into a JSON map at
-    // /preview_requests so the barrel knows which textures to capture
-    // and ship back. Only the `width`/`height` from `tp.size` ride
-    // through — the barrel ignores resolution metadata and just
-    // honours the requested dimensions.
+    // Trace controller → bridge preview-request relay for this instance.
     let lastPushedRequestsJson: string | null = null;
     appController.setBarrelPreviewPusher((tracePoints) => {
-      if (!barrelPluginKey) return;
+      if (currentKey !== key) return;
       const requests: Record<string, any> = {};
       for (const tp of tracePoints) {
         const target = tp.target;
@@ -212,11 +232,6 @@ function connectBarrel(url: string) {
         } else {
           continue;  // plugin_output not yet supported in barrel mode
         }
-        // trace-controller only sets `tp.size` for 'low' registrations;
-        // 'high' leaves it undefined, meaning "capture at the source
-        // texture's native resolution". Send `0/0` to the barrel as a
-        // sentinel for that case — the barrel substitutes the live
-        // source dimensions in publishPreviewFrames.
         requests[tp.id] = {
           target: serialized,
           width:  tp.size?.width  ?? 0,
@@ -226,52 +241,64 @@ function connectBarrel(url: string) {
       const json = JSON.stringify(requests);
       if (json === lastPushedRequestsJson) return;
       lastPushedRequestsJson = json;
-      // `add` on an existing path replaces (RFC 6902 §4.1); on a missing
-      // path it creates. `replace` would fail silently if the barrel
-      // hadn't pre-populated `/preview_requests` in its initial state,
-      // so `add` keeps us robust against both old + new barrel binaries.
-      barrel.patch(`/plugins/${barrelPluginKey}/state`, [
-        { op: 'add', path: '/preview_requests', value: requests },
-      ]);
+      barrel.patch(statePath, [{ op: 'add', path: '/preview_requests', value: requests }]);
     });
+
+    // Fetch the newly selected instance's full state.
+    barrel.get(statePath);
+    console.log(`[barrel] editing instance ${key}`);
+  };
+
+  // The controller drives instance selection (Organize tab + default pick);
+  // it calls back here to rewire the transport.
+  appController.setBarrelSelectHandler(wireInstance);
+
+  // Maintain the live instance list from /global/plugins.
+  barrel.onSnapshot('/global/plugins', (arr) => {
+    (window as any).__barrelInstances = arr;
+    appController.setBarrelInstances(parseInstances(arr));
   });
 
-  // Binary frames from the bridge carry preview snapshots. The decoder
-  // lives on the controller because it owns appState; resolume-app is
-  // just the transport wire.
+  // Binary preview frames — the controller decodes (NBPV v2) and drops any
+  // frame whose key isn't the selected instance.
   barrel.onBinaryFrame = (buf) => {
     void appController.ingestBarrelPreviewFrame(buf);
   };
 
   barrel.onPatch((ops) => {
-    if (!barrelPluginKey) return;
-    const sketchPath = `/plugins/${barrelPluginKey}/state/sketch`;
-    const sketchStatePath = `/plugins/${barrelPluginKey}/state/sketch_state`;
-    const macroOutputsPath = `/plugins/${barrelPluginKey}/state/macro_outputs`;
+    let globalTouched = false;
+    const statePath = currentKey ? `/plugins/${currentKey}/state` : null;
+    const sketchPath = statePath ? `${statePath}/sketch` : null;
+    const sketchStatePath = statePath ? `${statePath}/sketch_state` : null;
+    const macroOutputsPath = statePath ? `${statePath}/macro_outputs` : null;
     let sketchTouched = false;
     for (const op of ops) {
       const p = typeof op?.path === 'string' ? op.path : '';
-      if (p === sketchPath || p.startsWith(sketchPath + '/')) {
+      if (p === '/global/plugins' || p.startsWith('/global/plugins')) {
+        globalTouched = true;          // instance added/removed
+      } else if (sketchPath && (p === sketchPath || p.startsWith(sketchPath + '/'))) {
         sketchTouched = true;
       } else if (p === sketchStatePath) {
-        // Live rail telemetry: apply the value directly (no re-fetch needed —
-        // it's a single string op carrying the whole snapshot).
         ingestRailState(op.value);
       } else if (p === macroOutputsPath) {
         ingestMacroOutputs(op.value);
       }
     }
-    if (sketchTouched) barrel.get(sketchPath);
+    if (globalTouched) barrel.get('/global/plugins');  // refresh the list
+    if (sketchTouched && sketchPath) barrel.get(sketchPath);
   });
 
   const subscribe = () => {
-    barrel.get('/');
-    barrel.observe('/');
+    barrel.get('/global/plugins');
+    barrel.observe('/global/plugins');
+    // If a selection already exists (reconnect), rewire it.
+    const sel = appController.getSelectedBarrelKey();
+    if (sel) wireInstance(sel);
   };
   if (barrel.isOpen) subscribe();
   else barrel.onOpen = subscribe;
 
-  console.log(`[barrel] connecting ${url} (window.__barrel / __barrelState)`);
+  console.log(`[barrel] connecting ${url} (window.__barrel / __barrelInstances)`);
 }
 
 /**

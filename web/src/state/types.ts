@@ -216,11 +216,29 @@ export interface LocalState {
   userSettings: UserSettings;
 
   /**
-   * True when this editor session is bound to a remote NanoBarrel FFGL
-   * plugin (entered via `?barrel=ws://…`). Locks the UI into the
-   * single-sketch edit view, hides the Create/Organize tabs, and
-   * disables the dev-only auto-instantiation of demo effects. The
-   * remote bridge is the source of truth for the sketch.
+   * True when this editor session is bound to the shared NanoBarrel server
+   * (entered via `?barrel` — URL defaults to ws://localhost:8081). The
+   * remote bridge is the source of truth; the Organize tab lists the live
+   * plugin instances and the edit tab edits the selected one.
    */
   barrelMode: boolean;
+
+  /**
+   * Live NanoBarrel instances enumerated from the shared server's
+   * `/global/plugins`. Empty outside barrel mode. The Organize tab lists
+   * these; `selectedBarrelKey` is the one open in the edit tab.
+   */
+  barrelInstances: BarrelInstanceInfo[];
+  /** Key (stable UUID) of the barrel instance currently being edited. */
+  selectedBarrelKey: string | null;
+}
+
+/** One NanoBarrel plugin instance live on the shared server. */
+export interface BarrelInstanceInfo {
+  /** Stable per-instance key (the persisted UUID) — the routing key. */
+  key: string;
+  /** Plugin id, e.g. "com.nano.nanobarrel". */
+  id: string;
+  /** Short human label derived from the key (first UUID segment). */
+  label: string;
 }

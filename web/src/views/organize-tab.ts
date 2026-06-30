@@ -65,6 +65,8 @@ export class OrganizeTab extends MobxLitElement {
   `;
 
   render() {
+    if (appState.local.barrelMode) return this.renderBarrelInstances();
+
     const sketches = appState.database.sketches;
     const ids = Object.keys(sketches);
     const selectedId = appState.local.selectedSketchId;
@@ -106,6 +108,49 @@ export class OrganizeTab extends MobxLitElement {
           }}>Edit</button>
           `
         : html`<div class="empty-state" style="padding:16px 0">Select a sketch to see details</div>`}
+      </div>
+    `;
+  }
+
+  /** Barrel mode: list the live NanoBarrel instances on the shared server. */
+  private renderBarrelInstances() {
+    const instances = appState.local.barrelInstances;
+    const selectedKey = appState.local.selectedBarrelKey;
+    const selected = instances.find(i => i.key === selectedKey) ?? null;
+
+    const open = (key: string) => {
+      appController.selectBarrelInstance(key);
+      appController.setActiveTab('edit');
+    };
+
+    return html`
+      <div class="main-area">
+        ${instances.length === 0
+        ? html`<div class="empty-state">No NanoBarrel instances connected.<br>Add a NanoBarrel effect in Resolume.</div>`
+        : html`
+            <div class="sketch-list">
+              ${instances.map(inst => html`
+                <div class="sketch-card" ?selected=${inst.key === selectedKey}
+                  @click=${() => appController.selectBarrelInstance(inst.key)}
+                  @dblclick=${() => open(inst.key)}>
+                  <div class="sketch-card-name">${inst.label}</div>
+                  <div class="sketch-card-info">${inst.key}</div>
+                </div>
+              `)}
+            </div>
+          `}
+      </div>
+      <div class="right-panel">
+        ${selected
+        ? html`
+            <div class="section-header">Instance: ${selected.label}</div>
+            <div class="summary">
+              <div>Key: ${selected.key}</div>
+              <div>Plugin: ${selected.id}</div>
+            </div>
+            <button class="btn" @click=${() => open(selected.key)}>Edit</button>
+          `
+        : html`<div class="empty-state" style="padding:16px 0">Select an instance to edit</div>`}
       </div>
     `;
   }

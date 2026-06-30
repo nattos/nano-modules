@@ -91,20 +91,22 @@ export class SketchApp extends MobxLitElement {
   `;
 
   render() {
-    // Barrel mode: the editor is bound to a remote NanoBarrel sketch.
-    // Lock to the edit tab and hide the Create / Organize tabs entirely
-    // — there is only one sketch to edit, and it lives in the FFGL
-    // plugin instance, not in IndexedDB.
+    // Barrel mode: the editor is bound to the shared NanoBarrel server.
+    // Hide Create (no IndexedDB sketches here) but keep Organize — it now
+    // lists the live plugin instances so the operator can pick which one to
+    // edit. Outside barrel mode it's the usual Create/Organize/Edit IDE.
     const barrelMode = appState.local.barrelMode;
-    const tab = barrelMode ? 'edit' : appState.local.activeTab;
+    const tab = appState.local.activeTab === 'create' && barrelMode
+      ? 'edit'
+      : appState.local.activeTab;
     return html`
       <div class="tab-bar">
         ${barrelMode ? '' : html`
           <button class="tab-btn" ?active=${tab === 'create'}
             @click=${() => appController.setActiveTab('create')}>Create</button>
-          <button class="tab-btn" ?active=${tab === 'organize'}
-            @click=${() => appController.setActiveTab('organize')}>Organize</button>
         `}
+        <button class="tab-btn" ?active=${tab === 'organize'}
+          @click=${() => appController.setActiveTab('organize')}>${barrelMode ? 'Instances' : 'Organize'}</button>
         <button class="tab-btn" ?active=${tab === 'edit'}
           @click=${() => appController.setActiveTab('edit')}>Edit</button>
         <div class="tab-status">
@@ -113,7 +115,7 @@ export class SketchApp extends MobxLitElement {
       </div>
       <div class="app-content">
         ${!barrelMode && tab === 'create' ? html`<create-tab></create-tab>` : ''}
-        ${!barrelMode && tab === 'organize' ? html`<organize-tab></organize-tab>` : ''}
+        ${tab === 'organize' ? html`<organize-tab></organize-tab>` : ''}
         ${tab === 'edit' ? html`<edit-tab></edit-tab>` : ''}
       </div>
     `;
