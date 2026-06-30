@@ -419,6 +419,14 @@ class SketchExecutor {
   // Lazily-created host-side wet/dry blend pass for per-effect opacity.
   std::unique_ptr<WetDryBlend> blend_;
 
+  // Format-correct copy of src → dst (a render-pass copy via the wet/dry blend
+  // at full opacity). Unlike gpu_copy_texture (a raw byte blit, correct only
+  // between matching formats), this respects each texture's channel order — so
+  // copying an RGBA8 intermediate into the BGRA8 output interop doesn't swap
+  // R/B. Used for final passthrough/identity stages whose result must land in
+  // the caller's output texture.
+  void copyToOutput(int32_t src, int32_t dst, int W, int H);
+
   // --- Positional-delay (feedback) wire state, persisted across frames. ---
   // A delayed wire's producer sits at/below its consumer in the chain, so the
   // consumer (processed first) must read the PREVIOUS frame's value. Because

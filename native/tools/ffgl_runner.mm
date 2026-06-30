@@ -199,15 +199,18 @@ static std::string gen_chain_sketch(int n) {
   // NANO_BENCH_TAIL_IDENTITY=1 makes the LAST stage an identity (brightness 0,
   // contrast 0) — reproduces the trailing-identity flicker.
   const bool tailIdentity = getenv("NANO_BENCH_TAIL_IDENTITY") != nullptr;
+  const char* tailOpEnv = getenv("NANO_BENCH_TAIL_OPACITY");  // e.g. "0.9"
   for (int i = 0; i < n; ++i) {
     std::string key = "bc" + std::to_string(i);
     chain.push_back({{"type", "module"},
                      {"module_type", "color.tone.brightness_contrast"},
                      {"instance_key", key}});
     const bool ident = tailIdentity && (i == n - 1);
+    nlohmann::json state = {{"brightness", ident ? 0.0 : 0.05},
+                            {"contrast",   ident ? 0.0 : 0.02}};
+    if (tailOpEnv && i == n - 1) state["__opacity__"] = atof(tailOpEnv);
     instances[key] = {{"module_type", "color.tone.brightness_contrast"},
-                      {"state", {{"brightness", ident ? 0.0 : 0.05},
-                                 {"contrast",   ident ? 0.0 : 0.02}}}};
+                      {"state", state}};
   }
   return nlohmann::json{{"chain", chain}, {"instances", instances}, {"wires", nlohmann::json::array()}}.dump();
 }
@@ -621,6 +624,29 @@ int main(int argc, const char* argv[]) {
         std::fprintf(stderr, "[ffgl_runner] watching key=%s (%d preview reqs)\n",
                      key.c_str(), n + 1);
         bench("watched");
+
+        // Flicker detector: read back the host FBO every frame and report the
+        // sequence of distinct output means. A stable render → one cluster; a
+        // frame-to-frame flip (e.g. processed vs input) → alternating clusters.
+        if (getenv("NANO_BENCH_FLICKER")) {
+          std::vector<uint8_t> fb((size_t)width * height * 4);
+          std::vector<std::array<int,3>> seq;
+          for (int f = 0; f < 24; ++f) {
+            double t = (timebase + f) * dt_ms;
+            plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
+            plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
+            glFlush();
+            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, fb.data());
+            long s[3] = {0,0,0};
+            for (size_t i = 0; i + 3 < fb.size(); i += 4) { s[0]+=fb[i]; s[1]+=fb[i+1]; s[2]+=fb[i+2]; }
+            long px = (long)width * height;
+            seq.push_back({(int)(s[0]/px), (int)(s[1]/px), (int)(s[2]/px)});
+          }
+          timebase += 24;
+          std::fprintf(stderr, "[ffgl_runner] flicker means (R,G,B) per frame:\n");
+          for (size_t f = 0; f < seq.size(); ++f)
+            std::fprintf(stderr, "   f%02zu  %3d %3d %3d\n", f, seq[f][0], seq[f][1], seq[f][2]);
+        }
       } else {
         std::fprintf(stderr,
             "[ffgl_runner] bench-watch: connect/observe FAILED (key='%s')\n", key.c_str());

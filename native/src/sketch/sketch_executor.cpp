@@ -1069,7 +1069,7 @@ int32_t SketchExecutor::execute(
           gpu_clear_texture(src, 0.0f, 0.0f, 0.0f, 0.0f);
         }
         if (isFinalStage && src != outputHandle) {
-          gpu_copy_texture(src, outputHandle);
+          copyToOutput(src, outputHandle, W, H);
           return outputHandle;
         }
         return src;
@@ -1320,7 +1320,7 @@ int32_t SketchExecutor::execute(
         // is present only on some frames (rate-limited previews), that alternates
         // → flicker. Mid-chain identity groups keep aliasing (no copy).
         if (isFinalStage && groupInput != outputHandle) {
-          gpu_copy_texture(groupInput, outputHandle);
+          copyToOutput(groupInput, outputHandle, W, H);
           finalHandle = outputHandle;
         } else {
           finalHandle = groupInput;   // alias; colInput unchanged
@@ -1475,6 +1475,16 @@ int32_t SketchExecutor::execute(
   // (clip stopped) leaves the set, so re-activation re-seeks.
   knownKeys_.swap(framedKeys);
   return anyDispatched ? finalHandle : inputHandle;
+}
+
+void SketchExecutor::copyToOutput(int32_t src, int32_t dst, int W, int H) {
+  if (src == dst || src < 0 || dst < 0) return;
+  if (!blend_) blend_ = std::make_unique<WetDryBlend>();
+  // out = mix(src, src, 1.0) = src, written through a render pass that respects
+  // dst's channel order (Metal stores logical RGBA into a BGRA target correctly).
+  if (!blend_->encode(src, src, dst, 1.0f, W, H)) {
+    gpu_copy_texture(src, dst);  // degraded fallback (blend PSO failed)
+  }
 }
 
 int32_t SketchExecutor::nextIntermediate(int W, int H) {
