@@ -53,6 +53,9 @@ export class TextureMonitor extends MobxLitElement {
   @property() resolution: 'low' | 'high' = 'low';
 
   private frameDisposer: IReactionDisposer | null = null;
+  /** Viewport-visibility gate: we only register a trace while on-screen. */
+  private io: IntersectionObserver | null = null;
+  private visible = false;
 
   static styles = css`
     :host {
@@ -105,12 +108,33 @@ export class TextureMonitor extends MobxLitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    // Register via the trace controller in both modes. In barrel mode
-    // the controller routes the flush to a bridge JSON-patch (see
-    // `setBarrelPreviewPusher`); the barrel captures the matching
-    // textures and ships them back as binary WS frames, which land in
-    // the same `tracedFrames` map that the autorun below drives.
-    this.registerTrace();
+    // Only register a trace while the monitor is actually on-screen. Each
+    // registration becomes a /preview_requests entry the barrel reads back +
+    // ships every (rate-limited) frame; an off-screen monitor scrolled out of a
+    // long chain would otherwise keep its trace live, costing GPU readback on
+    // the render thread for pixels nobody can see. The IntersectionObserver
+    // (rootMargin pre-warms so scrolling doesn't pop in blank) registers on
+    // enter and unregisters on exit. In barrel mode the controller routes the
+    // flush to a bridge JSON-patch (see `setBarrelPreviewPusher`); the barrel
+    // ships the matching textures back as binary WS frames into the same
+    // `tracedFrames` map the autorun below draws from.
+    if (typeof IntersectionObserver !== 'undefined') {
+      this.io = new IntersectionObserver(
+        (entries) => {
+          const vis = entries[entries.length - 1]?.isIntersecting ?? false;
+          if (vis === this.visible) return;
+          this.visible = vis;
+          if (vis) this.registerTrace();
+          else (this.traceSource ?? traceController).unregister(this.traceId);
+        },
+        { rootMargin: '200px' },
+      );
+      this.io.observe(this);
+    } else {
+      // No IntersectionObserver (jsdom tests / unsupported env): always-on.
+      this.visible = true;
+      this.registerTrace();
+    }
 
     this.frameDisposer = autorun(() => {
       const bitmap = this.traceSource
@@ -128,6 +152,9 @@ export class TextureMonitor extends MobxLitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.io?.disconnect();
+    this.io = null;
+    this.visible = false;
     this.frameDisposer?.();
     this.frameDisposer = null;
     (this.traceSource ?? traceController).unregister(this.traceId);
@@ -145,6 +172,10 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   private registerTrace() {
+    // Gated on viewport visibility — see connectedCallback. updated() also calls
+    // this on target/id/resolution changes; off-screen, it stays a no-op until
+    // the IntersectionObserver brings us back on-screen.
+    if (!this.visible) return;
     if (!this.traceId || !this.traceTarget) return;
     // Ask for exactly the pixel count we'll display. devicePixelRatio
     // can drift (multi-monitor moves, browser zoom) but a one-frame
