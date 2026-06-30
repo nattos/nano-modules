@@ -1466,6 +1466,11 @@ export class AppController {
       appState.local.plugins = plugins;
       appState.local.availableEffects = availableEffects;
     });
+    if (availableEffects.length === 0) {
+      console.warn('[barrel] connected instance published no effect schemas — ' +
+        'the NanoBarrel loaded 0 wasm effects (stale/empty Contents/Resources/wasm). ' +
+        'Rebuild the bundle (native/wasm_modules/build_all.sh) and redeploy it.');
+    }
 
     // Any sketch instances whose state landed before the schemas arrived
     // (typical in barrel mode where the WS snapshot races schema and

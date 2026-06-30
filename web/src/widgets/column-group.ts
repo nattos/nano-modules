@@ -292,6 +292,18 @@ export class ColumnGroup extends MobxLitElement {
       background: var(--app-bg-color2);
       border-top: 1px solid var(--app-tint-3);
     }
+    .insert-header--empty {
+      display: block;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      padding: 8px 0;
+      line-height: 1.4;
+    }
+    .insert-header--empty .insert-hint {
+      display: block;
+      color: var(--app-warn, var(--app-text-color2));
+      opacity: 0.85;
+    }
     .cat-chip {
       display: inline-flex;
       align-items: center;
@@ -2004,14 +2016,23 @@ export class ColumnGroup extends MobxLitElement {
   private renderInsertHeader(_column: SketchColumn) {
     if (!this.ds.caps.typeEditing) return nothing;
     // Category = the effect id's first segment (its taxonomy domain), the same
-    // derivation the per-card dot and smart-input use. The `category` meta
-    // field is essentially never populated (and is '' in barrel mode), so
-    // keying off it collapsed every chip into one blank button.
-    const present = new Set(
-      this.ds.availableEffects.map((e) => effectDomain(e.id)).filter(Boolean));
+    // derivation the per-card dot and smart-input use — robust even when the
+    // `category` meta field is '' (barrel mode hardcodes it empty).
+    const ae = this.ds.availableEffects ?? [];
+    const present = new Set(ae.map((e) => effectDomain(e.id)).filter(Boolean));
     const cats: string[] = CATEGORY_DOMAINS.filter((c) => present.has(c));
     for (const c of present) if (!cats.includes(c)) cats.push(c); // any extras last
-    if (cats.length === 0) return nothing;
+    if (cats.length === 0) {
+      // No effects to insert. In barrel mode this almost always means the
+      // connected NanoBarrel loaded no wasm effects (stale/empty
+      // Contents/Resources/wasm) — surface it instead of an empty bar.
+      return html`
+        <div class="insert-header insert-header--empty">
+          No effects available to insert.${this.ds.barrelMode ? html`
+            <span class="insert-hint">This NanoBarrel instance reported no
+            effects — rebuild/redeploy its bundle's wasm.</span>` : nothing}
+        </div>`;
+    }
     return html`
       <div class="insert-header">
         ${cats.map((cat) => html`

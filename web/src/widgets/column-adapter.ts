@@ -78,6 +78,10 @@ export interface ColumnDataSource {
   readonly caps: ColumnCapabilities;
   readonly tappingMode: boolean;
   readonly availableEffects: AvailableEffect[];
+  /** True in the resolume/barrel editor (bound to a NanoBarrel instance). Lets
+   *  shared widgets tailor empty-states — e.g. "this barrel reported no
+   *  effects". False in the arrangement editor. */
+  readonly barrelMode: boolean;
 
   /** The sketch document for `sketchId` (reactive). */
   getSketch(sketchId: string): Sketch | undefined;

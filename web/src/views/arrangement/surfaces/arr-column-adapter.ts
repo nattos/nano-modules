@@ -509,6 +509,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
     },
     get tappingMode() { return store.wiresMode; },
     get availableEffects() { return availableEffects(); },
+    get barrelMode() { return false; },   // arrangement editor is never barrel-bound
     getSketch: (sketchId: string): Sketch | undefined => {
       const devices = this.target.getDevices();
       if (!devices) return undefined;

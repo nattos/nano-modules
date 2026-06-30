@@ -36,6 +36,7 @@ const data: ColumnDataSource = {
   get caps() { return ALL_CAPS; },
   get tappingMode() { return appState.local.tappingMode; },
   get availableEffects(): AvailableEffect[] { return appState.local.availableEffects; },
+  get barrelMode(): boolean { return appState.local.barrelMode; },
   getSketch(sketchId: string): Sketch | undefined { return appState.database.sketches[sketchId]; },
   getPlugin(moduleType: string): PluginInfo | undefined {
     return appState.local.plugins.find((p) => p.id === moduleType);
