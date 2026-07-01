@@ -117,6 +117,7 @@ void nano_module_main() {
         .description("Adjusts brightness and contrast of a texture input")
         .category("color")
         .keywords("color,adjust,filter")
+        .icon("la-adjust")   // optional web picker glyph (Line Awesome class)
         .moduleInit(&brightness_contrast::module_init)
         .create(&brightness_contrast::create)
         .destroy(&brightness_contrast::destroy)
@@ -134,6 +135,7 @@ void nano_module_main() {
         "Fills the render target with a uniform RGB color",
         "source",
         "color,fill",
+        "la-square-full",
         NANO_INSTANCE_LIFECYCLE(solid_color),
     });
 
@@ -144,6 +146,7 @@ void nano_module_main() {
         "Outputs a decoded video frame injected by the host",
         "source",
         "video,source,clip,file",
+        "la-film",
         NANO_INSTANCE_LIFECYCLE(video_file),
     });
 
@@ -154,6 +157,7 @@ void nano_module_main() {
         "Blends two texture inputs with opacity control",
         "composite",
         "blend,mix,composite,opacity",
+        "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(video_blend),
     });
 
@@ -164,6 +168,7 @@ void nano_module_main() {
         "Links two Resolume parameters together via learn mechanism",
         "control",
         "resolume,parameter,link,automation",
+        "la-link",
         NANO_INSTANCE_LIFECYCLE(paramlinker),
     });
 
@@ -174,6 +179,7 @@ void nano_module_main() {
         "Exposes the NanoBarrel macro knobs as tappable float outputs",
         "control",
         "macro,knob,barrel,control,rail",
+        "la-cubes",
         NANO_INSTANCE_LIFECYCLE(barrel_macros),
         &barrel_macros::is_identity,
     });
@@ -185,6 +191,7 @@ void nano_module_main() {
         "A bank of 8 knobs — each a wire source and sink for macro control",
         "control",
         "knob,macro,control,dashboard,util",
+        "la-tachometer-alt",
         NANO_INSTANCE_LIFECYCLE(dashboard),
         &dashboard::is_identity,
     });
@@ -196,6 +203,7 @@ void nano_module_main() {
         "8 output traces — wire a producer's scalar into each to expose it as a sketch output",
         "control",
         "output,trace,sketch,macro,control,util",
+        "la-sign-out-alt",
         NANO_INSTANCE_LIFECYCLE(sketch_output),
         &sketch_output::is_identity,
     });
@@ -207,6 +215,7 @@ void nano_module_main() {
         "Premultiplies RGB by alpha (mixable amount)",
         "composite",
         "alpha,premultiply,composite",
+        "la-clone",
         NANO_INSTANCE_LIFECYCLE(bake_alpha),
     });
 
@@ -217,6 +226,7 @@ void nano_module_main() {
         "Power curve applied to RGB and alpha (-1 squashes down, +1 lifts up)",
         "color",
         "curve,gamma,tonemap",
+        "la-bezier-curve",
         NANO_INSTANCE_LIFECYCLE(curve),
     });
 
@@ -227,6 +237,7 @@ void nano_module_main() {
         "Multiplicative gain measured in stops",
         "color",
         "exposure,gain,brightness,stops",
+        "la-sun",
         NANO_INSTANCE_LIFECYCLE(exposure),
         &exposure::is_identity,
     });
@@ -238,6 +249,7 @@ void nano_module_main() {
         "Warm/cool white-balance shift on the orange/blue axis",
         "color",
         "temperature,warmth,white-balance,tint,color",
+        "la-thermometer-half",
         NANO_INSTANCE_LIFECYCLE(color_temperature),
         &color_temperature::is_identity,
     });
@@ -249,6 +261,7 @@ void nano_module_main() {
         "Color inversion with optional alpha invert",
         "color",
         "invert,negative,color",
+        "la-yin-yang",
         NANO_INSTANCE_LIFECYCLE(invert),
     });
 
@@ -259,6 +272,7 @@ void nano_module_main() {
         "Quantizes RGB (and optionally alpha) to a small number of levels",
         "color",
         "posterize,quantize,bitcrush",
+        "la-th-large",
         NANO_INSTANCE_LIFECYCLE(posterize),
     });
 
@@ -269,6 +283,7 @@ void nano_module_main() {
         "Photoshop-style input/output remap with a gamma midtone control",
         "color",
         "levels,gamma,contrast,remap",
+        "la-sliders-h",
         NANO_INSTANCE_LIFECYCLE(levels),
     });
 
@@ -279,6 +294,7 @@ void nano_module_main() {
         "Hue rotation, saturation pull, and bipolar lightness in HSL space",
         "color",
         "hue,saturation,lightness,color",
+        "la-palette",
         NANO_INSTANCE_LIFECYCLE(hsl),
     });
 
@@ -289,6 +305,7 @@ void nano_module_main() {
         "Convert RGB between sRGB and Linear encodings",
         "color",
         "color,space,srgb,linear,gamma,encoding",
+        "la-swatchbook",
         NANO_INSTANCE_LIFECYCLE(color_space),
     });
 
@@ -299,6 +316,7 @@ void nano_module_main() {
         "Channel-mix into a basis defined by three hues; white-preserving forward, NaN-free reverse",
         "color",
         "hue,basis,channel-mixer,color,matrix",
+        "la-tint",
         NANO_INSTANCE_LIFECYCLE(hue_basis),
     });
 
@@ -309,6 +327,7 @@ void nano_module_main() {
         "Per-channel tanh soft-clip with linear deadzone and asymmetric drive",
         "color",
         "saturate,softclip,tanh,waveshaper,compressor,rolloff",
+        "la-fill-drip",
         NANO_INSTANCE_LIFECYCLE(saturate),
     });
 
@@ -319,6 +338,7 @@ void nano_module_main() {
         "Saturation boost biased toward already-unsaturated pixels",
         "color",
         "vibrance,saturation,color",
+        "la-tint",
         NANO_INSTANCE_LIFECYCLE(vibrance),
     });
 
@@ -329,6 +349,7 @@ void nano_module_main() {
         "Radial darken/lighten around a cover-square anchor with soft falloff",
         "filter",
         "vignette,edge,fade,corner",
+        "la-dot-circle",
         NANO_INSTANCE_LIFECYCLE(vignette),
     });
 
@@ -339,6 +360,7 @@ void nano_module_main() {
         "Single-pass Gaussian blur with adjustable radius",
         "filter",
         "blur,gaussian,defocus,soften",
+        "la-cloud",
         NANO_INSTANCE_LIFECYCLE(blur),
     });
 
@@ -349,6 +371,7 @@ void nano_module_main() {
         "Iterative dual-filter blur (CoD/SIGGRAPH 2014). Cheaper than Gaussian for large radii.",
         "filter",
         "blur,bloom,dual-filter,downsample,upsample,fast",
+        "la-wind",
         NANO_INSTANCE_LIFECYCLE(fast_blur),
     });
 
@@ -359,6 +382,7 @@ void nano_module_main() {
         "Discrete Laplacian sharpen with adjustable radius",
         "filter",
         "sharpen,detail,laplacian",
+        "la-crosshairs",
         NANO_INSTANCE_LIFECYCLE(sharpen),
         &sharpen::is_identity,
     });
@@ -370,6 +394,7 @@ void nano_module_main() {
         "Sobel edges with adjustable threshold and overlay colours",
         "filter",
         "edge,sobel,outline,detect",
+        "la-border-style",
         NANO_INSTANCE_LIFECYCLE(edges),
     });
 
@@ -380,6 +405,7 @@ void nano_module_main() {
         "Soft-edged rectangular crop in cover-square coordinates",
         "warp",
         "crop,mask,frame,window",
+        "la-crop-alt",
         NANO_INSTANCE_LIFECYCLE(crop),
         nullptr,  // is_identity
         nullptr,  // on_active
@@ -394,6 +420,7 @@ void nano_module_main() {
         "2D affine resample (scale, rotate, translate around a pivot)",
         "warp",
         "transform,scale,rotate,translate,affine",
+        "la-arrows-alt",
         NANO_INSTANCE_LIFECYCLE(transform),
         &transform::is_identity,
     });
@@ -405,6 +432,7 @@ void nano_module_main() {
         "Two-colour linear gradient with adjustable angle, offset, and softness",
         "source",
         "gradient,ramp,linear",
+        "la-fill",
         NANO_INSTANCE_LIFECYCLE(gradient),
     });
 
@@ -415,6 +443,7 @@ void nano_module_main() {
         "Tiled grid pattern with adjustable cell size, line width, and softness",
         "source",
         "grid,pattern,tile,lines",
+        "la-th",
         NANO_INSTANCE_LIFECYCLE(grid),
     });
 
@@ -425,6 +454,7 @@ void nano_module_main() {
         "Procedural noise: white, value, fbm, or animated static",
         "source",
         "noise,perlin,static,grain,procedural",
+        "la-braille",
         NANO_INSTANCE_LIFECYCLE(noise),
     });
 
@@ -435,6 +465,7 @@ void nano_module_main() {
         "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
         "motion",
         "blur,motion,velocity,render-outputs",
+        "la-running",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
         nullptr, nullptr, nullptr, &motion_blur::eval_visibility,
     });
@@ -446,6 +477,7 @@ void nano_module_main() {
         "Histogram auto-leveler: equalize the luminance distribution and/or pull the median toward a target, chroma-preserving",
         "color",
         "auto,level,histogram,equalize,contrast,exposure,median",
+        "la-magic",
         NANO_INSTANCE_LIFECYCLE(auto_level),
         &auto_level::is_identity,
     });
@@ -457,6 +489,7 @@ void nano_module_main() {
         "Roaming vignette glitch: suppresses a random oval region each frame (bipolar shape blacks the rim or the centre)",
         "filter",
         "twitch,glitch,vignette,flicker,mask,random",
+        "la-bolt",
         NANO_INSTANCE_LIFECYCLE(twitch_mask),
         &twitch_mask::is_identity,
     });
@@ -468,6 +501,7 @@ void nano_module_main() {
         "Unary modulation shaper: range-remaps a modulation value with the same curves as the wire remap (in/out window, ease-in/out, foldback, scale)",
         "mod",
         "modulation,remap,shaper,curve,range,envelope",
+        "la-exchange-alt",
         NANO_INSTANCE_LIFECYCLE(mod_remap),
     });
 
@@ -478,6 +512,7 @@ void nano_module_main() {
         "Unary modulation shaper: linearly smooths a modulation value over a duration (same linear ramp as the wire smoothing option)",
         "mod",
         "modulation,smooth,slew,ramp,glide,shaper,filter",
+        "la-stream",
         NANO_INSTANCE_LIFECYCLE(mod_smooth),
     });
 
@@ -488,6 +523,7 @@ void nano_module_main() {
         "Unary modulation shaper: delays a modulation signal by a parameterized time via a delay line",
         "mod",
         "modulation,delay,line,echo,offset,lag,shaper",
+        "la-clock",
         NANO_INSTANCE_LIFECYCLE(mod_delay),
     });
 
@@ -498,6 +534,7 @@ void nano_module_main() {
         "Unary modulation shaper: remaps a modulation value through an arbitrary drawn envelope curve (per-segment exponential easing)",
         "mod",
         "modulation,envelope,remap,curve,shaper,draw,easing",
+        "la-drafting-compass",
         NANO_INSTANCE_LIFECYCLE(mod_envelope),
     });
 
@@ -508,6 +545,7 @@ void nano_module_main() {
         "Low frequency oscillator: a normalized [0,1] modulation source. Selectable waveform (sine/square/triangle/saw/random walk/random FM) with a shape morph, rate (0..10 Hz), amplitude, and invert.",
         "mod",
         "oscillator,modulation,automation,lfo,wave",
+        "la-wave-square",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
         nullptr,            // is_identity
         nullptr,            // on_active
@@ -522,6 +560,7 @@ void nano_module_main() {
         "ADSR envelope generator (modulation source). A trigger / gate / Poisson auto-rate drives an attack-decay-sustain-release phase machine that publishes a scalar 'output' in [0,1]. The 'mode' selector enables phases (Decay = instant falling pluck by default, through full ADSR); attack/decay/release are phase TIMES and sustain a held LEVEL, each ramp shaped by a per-phase ease curve (shared with mod.shaper.envelope). Polyphonic: up to 'voices' overlapping envelopes (output = their max) with Reset / Legato / Poly retrigger styles. Pure data module (no GPU, no input).",
         "mod",
         "envelope,adsr,modulation,automation,trigger,gate,generator",
+        "la-chart-line",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
     });
 }

@@ -55,6 +55,10 @@ export interface EffectInfo {
   description: string;
   category: string;
   keywords: string[];
+  /** Optional Line Awesome icon class the effect declares for its picker glyph. */
+  icon?: string;
+  /** Optional base64 PNG thumbnail (bare or data: URI) for the picker glyph. */
+  thumbnail?: string;
   /**
    * @internal Lifecycle callbacks by name → WASM indirect-function-table index,
    * captured from the name-keyed `module.register_effect_*` builder imports.
@@ -1287,6 +1291,10 @@ export class WasmHost {
             description: b.meta.get('description') ?? '',
             category: b.meta.get('category') ?? '',
             keywords: keywords.split(',').filter(k => k.length > 0),
+            // Optional picker glyph — kept raw here (an untrusted wasm string);
+            // the UI sanitizes/validates it at render (see effect-glyph.ts).
+            icon: b.meta.get('icon') || undefined,
+            thumbnail: b.meta.get('thumbnail') || undefined,
             _fns: b.fns,
           });
         },

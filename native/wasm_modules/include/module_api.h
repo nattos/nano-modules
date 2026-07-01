@@ -97,6 +97,10 @@ struct EffectDesc_v2 {
     const char* description;    // Human-readable description
     const char* category;       // e.g. "Video", "Source", "Data"
     const char* keywords;       // Comma-separated, e.g. "color,adjust"
+    const char* icon;           // Optional web picker glyph — a Line Awesome
+                                // class, e.g. "la-bolt" (nullptr => none). Part
+                                // of the metadata block so positional inits read
+                                // { 2, id, name, desc, cat, kw, icon, LIFECYCLE… }.
 
     // Type-level: run once per effect type before any instance is created.
     // KEEP THIS CHEAP + SYNCHRONOUS (schema, PSO registration). It re-runs on
@@ -183,6 +187,17 @@ struct EffectDesc_v2 {
     // Trailing + optional: nullptr means "no static visibility evaluator".
     void (*eval_visibility)(int n, const char* pb,
                             const int* off, const int* len, const int* ops);
+
+    // Optional picker glyph (web frontends only; native barrels ignore it). An
+    // effect may declare EITHER an `icon` (in the metadata block above) OR a
+    // `thumbnail`; the picker prefers the thumbnail. This one sits at the TAIL so
+    // the 100+ positional `registerEffect({ 2, id, name, ... })` inits that don't
+    // ship a thumbnail stay valid — omitting it value-initializes to nullptr.
+    //   thumbnail — a small (≈32×32) PNG, base64-encoded (bare, no data: prefix).
+    //               The web UI wraps it in a data: URI, length-capped.
+    // Crosses the boundary as an ordinary name-keyed metadata string, so it needs
+    // no ABI version bump (absent name == not provided).
+    const char* thumbnail;
 };
 
 /// Register an effect with the host. On WASM this emits the name-keyed builder
@@ -205,6 +220,8 @@ inline void registerEffect(const EffectDesc_v2& d) {
     str("description", d.description);
     str("category", d.category);
     str("keywords", d.keywords);
+    str("icon", d.icon);            // optional web picker glyph (Line Awesome class)
+    str("thumbnail", d.thumbnail);  // optional web picker glyph (base64 PNG)
     fn("module_init",      reinterpret_cast<void*>(d.module_init));
     fn("create",           reinterpret_cast<void*>(d.create));
     fn("destroy",          reinterpret_cast<void*>(d.destroy));
@@ -242,6 +259,10 @@ public:
     EffectBuilder& description(const char* v)  { d_.description = v; return *this; }
     EffectBuilder& category(const char* v)     { d_.category = v; return *this; }
     EffectBuilder& keywords(const char* v)     { d_.keywords = v; return *this; }
+    // Optional web picker glyph — an `icon` (Line Awesome class, e.g. "la-bolt")
+    // OR a `thumbnail` (base64 PNG). The picker prefers the thumbnail.
+    EffectBuilder& icon(const char* v)         { d_.icon = v; return *this; }
+    EffectBuilder& thumbnail(const char* v)    { d_.thumbnail = v; return *this; }
 
     EffectBuilder& moduleInit(void (*f)())             { d_.module_init = f; return *this; }
     EffectBuilder& create(void* (*f)())                { d_.create = f; return *this; }
@@ -273,8 +294,9 @@ private:
 // (module_init/create/destroy + self-taking callbacks). Use inside
 // nano_module_main:
 //
-//   nano::registerEffect({ 2, "id","Name","desc","cat","kw",
+//   nano::registerEffect({ 2, "id","Name","desc","cat","kw","la-icon",
 //                          NANO_INSTANCE_LIFECYCLE(my_effect) });
+// (the icon slot is nullable — pass nullptr for no picker glyph.)
 #define NANO_INSTANCE_LIFECYCLE(ns)                                           \
     ns::module_init, ns::create, ns::destroy, ns::init,                       \
     ns::tick, ns::render, ns::on_state_patched

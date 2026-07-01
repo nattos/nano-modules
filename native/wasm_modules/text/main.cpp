@@ -207,6 +207,7 @@ void nano_module_main() {
     "Renders multiline text via the host text engine (FreeType + msdfgen)",
     "source",
     "text,type,font,glyph,label,caption",
+    "la-font",
     NANO_INSTANCE_LIFECYCLE(gen_text),
   });
 }

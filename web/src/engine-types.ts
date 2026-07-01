@@ -14,6 +14,10 @@ export interface EffectInfo {
   keywords: string[];
   /** The wasm bundle that registered this effect (e.g. "com.nano.lights"). */
   bundle?: string;
+  /** Optional Line Awesome icon class the effect declares for its picker glyph. */
+  icon?: string;
+  /** Optional base64 PNG thumbnail (bare or data: URI) for the picker glyph. */
+  thumbnail?: string;
 }
 
 // --- Plugin info (read-only snapshot for UI) ---

@@ -43,6 +43,7 @@ import './ui-icon';
 
 import type { Selectable } from '../state/types';
 import { categoryColor, effectDomain, CATEGORY_DOMAINS } from './category-color';
+import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
 
 /** Line-awesome icon per effect category, for the insert-header chips. */
 const CATEGORY_ICON: Record<string, string> = {
@@ -455,6 +456,19 @@ export class ColumnGroup extends MobxLitElement {
       border-radius: 50%;
       margin-right: 6px;
       opacity: 0.8;
+    }
+    /* Per-effect header glyph (icon or thumbnail) — sits in the dot's slot. */
+    .effect-glyph {
+      flex: 0 0 auto;
+      width: 14px; height: 14px;
+      margin-right: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .effect-glyph.effect-thumb {
+      border-radius: 2px;
+      object-fit: cover;
     }
     .effect-card-name-wrapper {
       flex: 1;
@@ -1076,8 +1090,7 @@ export class ColumnGroup extends MobxLitElement {
                 e.stopPropagation();
                 this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
               }}>⏻</button>
-            <span class="effect-cat-dot" title=${effectDomain(entry.module_type)}
-              style="background:${categoryColor(effectDomain(entry.module_type))}"></span>
+            ${this.renderEffectGlyph(entry.module_type)}
             <div class="effect-card-name-wrapper" style=${isEditingType ? 'flex:1' : 'flex:0 1 auto'}>
               ${isEditingType ? html`
                 <smart-input
@@ -1141,6 +1154,28 @@ export class ColumnGroup extends MobxLitElement {
   private effectDisplayName(moduleType: string): string {
     const eff = this.ds.availableEffects?.find(e => e.id === moduleType);
     return eff?.name || shortName(moduleType);
+  }
+
+  /**
+   * Leading glyph for an effect-card header: the effect's own declared icon (or
+   * base64 thumbnail), sanitized and tinted with the category accent — falling
+   * back to the plain category dot when it declares neither. Mirrors the
+   * smart-input picker so a card and its autocomplete row read identically.
+   */
+  private renderEffectGlyph(moduleType: string) {
+    const domain = effectDomain(moduleType);
+    const eff = this.ds.availableEffects?.find(e => e.id === moduleType);
+    const thumb = thumbnailDataUri(eff?.thumbnail);
+    if (thumb) {
+      return html`<img class="effect-glyph effect-thumb" src=${thumb} alt="" title=${domain}>`;
+    }
+    const icon = sanitizeIconName(eff?.icon);
+    if (icon) {
+      return html`<ui-icon class="effect-glyph" icon=${icon} title=${domain}
+        style=${`--icon-color:${categoryColor(domain)};--icon-size:13px`}></ui-icon>`;
+    }
+    return html`<span class="effect-cat-dot" title=${domain}
+      style="background:${categoryColor(domain)}"></span>`;
   }
 
   /** Open the smart-input for a chain entry. */

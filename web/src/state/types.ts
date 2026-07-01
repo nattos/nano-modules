@@ -55,6 +55,16 @@ export interface AvailableEffect {
   /** The wasm bundle that registered this effect (e.g. "com.nano.lights"). */
   bundle?: string;
   /**
+   * Optional Line Awesome icon class (e.g. "la-bolt") the effect declares for
+   * its picker glyph. Untrusted — sanitize via `effect-glyph.ts` before use.
+   */
+  icon?: string;
+  /**
+   * Optional 32×32 PNG thumbnail for the picker glyph, base64-encoded (bare, or
+   * a full data: URI). Untrusted — validate via `effect-glyph.ts` before use.
+   */
+  thumbnail?: string;
+  /**
    * Effect kind. Defaults to a normal WASM-backed image `'effect'`. Distinct
    * kinds (e.g. `'dashboard'`) are handled specially by the UI — different card
    * rendering, no generic inspector. See column-group's util.dashboard case.

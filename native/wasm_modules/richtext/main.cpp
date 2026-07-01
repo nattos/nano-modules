@@ -272,6 +272,7 @@ void nano_module_main() {
     "HTML/CSS rich text laid out by Blitz (Stylo+Taffy+parley), via the host text engine",
     "source",
     "text,html,css,rich,layout,flexbox,type",
+    "la-align-left",
     NANO_INSTANCE_LIFECYCLE(gen_richtext),
   });
 }

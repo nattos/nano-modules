@@ -104,6 +104,7 @@ void nano_module_main() {
         "Adjusts brightness and contrast of a texture input",
         "color",
         "color,adjust,filter",
+        "la-adjust",
         NANO_INSTANCE_LIFECYCLE(brightness_contrast),
         &brightness_contrast::is_identity,
     });
@@ -115,6 +116,7 @@ void nano_module_main() {
         "Fills the render target with a uniform RGB color",
         "source",
         "color,fill",
+        "la-square-full",
         NANO_INSTANCE_LIFECYCLE(solid_color),
     });
 
@@ -125,6 +127,7 @@ void nano_module_main() {
         "Blends two texture inputs with opacity control",
         "composite",
         "blend,mix,composite,opacity",
+        "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(video_blend),
     });
 
@@ -137,6 +140,7 @@ void nano_module_main() {
         "Adds an RGB offset and clamps. Test-only fusion mapper.",
         "debug",
         "test,fusion,mapper",
+        "la-plus",
         NANO_INSTANCE_LIFECYCLE(fuse_add),
     });
 
@@ -147,6 +151,7 @@ void nano_module_main() {
         "Multiplies RGB by a uniform scale and clamps. Test-only fusion mapper.",
         "debug",
         "test,fusion,mapper",
+        "la-times",
         NANO_INSTANCE_LIFECYCLE(fuse_mul),
     });
 
@@ -157,6 +162,7 @@ void nano_module_main() {
         "Writes a uniform color to every pixel. Test-only strict-output generator.",
         "debug",
         "test,fusion,strict-output,generator",
+        "la-square-full",
         NANO_INSTANCE_LIFECYCLE(fuse_solid),
     });
 
@@ -169,6 +175,7 @@ void nano_module_main() {
         "Low frequency oscillator outputting a sine wave",
         "mod",
         "oscillator,modulation,automation",
+        "la-wave-square",
         NANO_INSTANCE_LIFECYCLE(env_lfo),
         nullptr, nullptr, nullptr, &env_lfo::eval_visibility,
     });
@@ -180,6 +187,7 @@ void nano_module_main() {
         "ADSR envelope generator modulation source",
         "mod",
         "envelope,adsr,modulation,automation,trigger,generator",
+        "la-chart-line",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
     });
 
@@ -190,6 +198,7 @@ void nano_module_main() {
         "Unary modulation shaper: range-remaps a modulation value (wire-identical remap)",
         "mod",
         "modulation,remap,shaper,curve,range,envelope",
+        "la-exchange-alt",
         NANO_INSTANCE_LIFECYCLE(mod_remap),
     });
 
@@ -200,6 +209,7 @@ void nano_module_main() {
         "Unary modulation shaper: linear smoothing over a duration (wire-identical smoothing)",
         "mod",
         "modulation,smooth,slew,ramp,glide,shaper,filter",
+        "la-stream",
         NANO_INSTANCE_LIFECYCLE(mod_smooth),
     });
 
@@ -210,6 +220,7 @@ void nano_module_main() {
         "Unary modulation shaper: delays a modulation signal by a parameterized time (delay line)",
         "mod",
         "modulation,delay,line,echo,offset,lag,shaper",
+        "la-clock",
         NANO_INSTANCE_LIFECYCLE(mod_delay),
     });
 
@@ -220,6 +231,7 @@ void nano_module_main() {
         "Unary modulation shaper: remaps a modulation value through a drawn envelope curve",
         "mod",
         "modulation,envelope,remap,curve,shaper,draw,easing",
+        "la-drafting-compass",
         NANO_INSTANCE_LIFECYCLE(mod_envelope),
     });
 
@@ -230,6 +242,7 @@ void nano_module_main() {
         "GPU pipeline test rendering a solid color",
         "debug",
         "test,gpu,pipeline",
+        "la-microchip",
         NANO_INSTANCE_LIFECYCLE(gpu_test),
     });
 
@@ -240,6 +253,7 @@ void nano_module_main() {
         "Animated spinning triangles GPU demo",
         "debug",
         "demo,triangles,animation,generative",
+        "la-shapes",
         NANO_INSTANCE_LIFECYCLE(spinningtris),
     });
 
@@ -250,6 +264,7 @@ void nano_module_main() {
         "Emits a stream of 2D particles into a GPU storage buffer",
         "debug",
         "particles,gpu,emit,physics",
+        "la-star",
         NANO_INSTANCE_LIFECYCLE(particles_emitter),
     });
 
@@ -260,6 +275,7 @@ void nano_module_main() {
         "Renders quads for each particle in an input GPU buffer",
         "debug",
         "particles,gpu,quads,instanced",
+        "la-braille",
         NANO_INSTANCE_LIFECYCLE(particles_renderer),
     });
 
@@ -272,6 +288,7 @@ void nano_module_main() {
         "Verifies rgba16float storage textures via a 4x → 0.25x round trip",
         "debug",
         "test,hdr,float,texture-format",
+        "la-sun",
         NANO_INSTANCE_LIFECYCLE(hdr_test),
     });
 
@@ -282,6 +299,7 @@ void nano_module_main() {
         "Verifies atomic InterlockedAdd into a storage buffer via per-pixel histogram",
         "debug",
         "test,atomic,storage-buffer,histogram",
+        "la-chart-bar",
         NANO_INSTANCE_LIFECYCLE(atomic_test),
     });
 
@@ -292,6 +310,7 @@ void nano_module_main() {
         "Verifies read_write access on r32float storage textures via in-place RMW",
         "debug",
         "test,rw,storage-texture,r32float",
+        "la-database",
         NANO_INSTANCE_LIFECYCLE(rw_storage_test),
     });
 
@@ -302,6 +321,7 @@ void nano_module_main() {
         "Verifies gpu::Device::clear and gpu::Device::copy via clear-then-copy round trip",
         "debug",
         "test,clear,copy,texture",
+        "la-copy",
         NANO_INSTANCE_LIFECYCLE(clear_copy_test),
     });
 
@@ -312,6 +332,7 @@ void nano_module_main() {
         "Verifies multi-target render passes via fragment shader writing two color attachments",
         "debug",
         "test,mrt,render-target,fragment",
+        "la-th-large",
         NANO_INSTANCE_LIFECYCLE(mrt_test),
     });
 
@@ -322,6 +343,7 @@ void nano_module_main() {
         "Verifies 3D textures via an identity 16x16x16 color LUT",
         "debug",
         "test,3d,lut,texture-3d",
+        "la-cube",
         NANO_INSTANCE_LIFECYCLE(lut3d_test),
     });
 
@@ -332,6 +354,7 @@ void nano_module_main() {
         "Test producer for the canonical RenderOutputs rail. Overlays a moving colored rectangle and writes per-pixel velocity vectors.",
         "debug",
         "test,motion,render-outputs,producer",
+        "la-vector-square",
         NANO_INSTANCE_LIFECYCLE(motion_rect),
     });
 
@@ -342,6 +365,7 @@ void nano_module_main() {
         "A swarm of randomly-coloured rectangles curling around the viewport center, each emitting its own velocity into render_outputs/motion. Test producer for non-uniform motion fields.",
         "debug",
         "test,motion,render-outputs,producer,swarm,curl",
+        "la-bug",
         NANO_INSTANCE_LIFECYCLE(motion_swarm),
     });
 
@@ -352,6 +376,7 @@ void nano_module_main() {
         "Per-pixel thresholded-noise motion field rotating around the viewport center. Stress test for fine-grained motion blur input. Opacity overlays an HSV-polar visualization of the motion vectors.",
         "debug",
         "test,motion,render-outputs,producer,noise,static",
+        "la-image",
         NANO_INSTANCE_LIFECYCLE(motion_static),
     });
 
@@ -362,6 +387,7 @@ void nano_module_main() {
         "Per-pixel motion blur driven by a RenderOutputs motion-vector rail. Falls back to pass-through when no motion is bound.",
         "motion",
         "blur,motion,velocity,render-outputs",
+        "la-running",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
         nullptr, nullptr, nullptr, &motion_blur::eval_visibility,
     });
@@ -379,6 +405,7 @@ void nano_module_main() {
         "Test-only effect whose module_init deliberately traps (trap-reporting check).",
         "debug",
         "test,trap,internal",
+        "la-exclamation-triangle",
         NANO_INSTANCE_LIFECYCLE(trap_test),
     });
 }

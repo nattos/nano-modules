@@ -34,8 +34,10 @@ import {
 } from '@codemirror/autocomplete';
 import { standardKeymap } from '@codemirror/commands';
 import type { AvailableEffect } from '../state/types';
-import { effectDomain } from './category-color';
+import { effectDomain, categoryColor } from './category-color';
 import { EFFECT_BUNDLE_NAMES } from '../effect-bundles';
+import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
+import './ui-icon';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
@@ -202,6 +204,19 @@ export class SmartInput extends LitElement {
     .cm-tooltip-autocomplete > ul > li.cat-mod::before { background: var(--app-cat-mod); }
     .cm-tooltip-autocomplete > ul > li.cat-control::before { background: var(--app-cat-control); }
     .cm-tooltip-autocomplete > ul > li.cat-debug::before { background: var(--app-cat-debug); }
+    /* Per-effect picker glyph (thumbnail or icon), rendered at the dot's slot.
+       Sized to sit on the text baseline row, matching the dot's leading gap. */
+    .cm-tooltip-autocomplete > ul > li .cm-effect-glyph {
+      display: inline-flex;
+      width: 14px; height: 14px;
+      margin-right: 6px;
+      vertical-align: middle;
+      flex: 0 0 auto;
+    }
+    .cm-tooltip-autocomplete > ul > li .cm-effect-thumb {
+      border-radius: 2px;
+      object-fit: cover;
+    }
   `;
 
   protected firstUpdated() {
@@ -315,10 +330,17 @@ export class SmartInput extends LitElement {
         override: [this.completionSource.bind(this)],
         icons: false,
         defaultKeymap: false,
+        // Render an effect's declared glyph (thumbnail/icon) at the icon slot,
+        // ahead of the label. Rows without one return null and fall back to the
+        // cat-* accent dot below.
+        addToOptions: [{ render: (opt) => this.renderGlyph(opt as any), position: 20 }],
         optionClass: (opt) => {
           // `category` is stashed on the completion in completionSource so each
           // row can carry a subtle per-domain accent dot (see the cat-* CSS).
-          const cat = (opt as any).category ? `cat-${(opt as any).category}` : '';
+          // Rows that render their own glyph suppress the dot (no cat-* class).
+          const o = opt as any;
+          const hasGlyph = !!(o.thumbnail || o.iconName);
+          const cat = o.category && !hasGlyph ? `cat-${o.category}` : '';
           return opt.type === 'namespace' ? `namespace-option ${cat}`.trim() : cat;
         },
       }),
@@ -372,6 +394,33 @@ export class SmartInput extends LitElement {
         this.emitCancel('blur');
       }, 150);
     });
+  }
+
+  /**
+   * Build the leading glyph element for a completion row: a validated base64
+   * thumbnail (`<img>`) or a Line Awesome icon (`<ui-icon>`, tinted with the
+   * category accent). Returns null when the row declares neither — CodeMirror
+   * then draws nothing here and the cat-* CSS dot shows instead. Values are
+   * already sanitized in completionSource, so this only shapes DOM.
+   */
+  private renderGlyph(opt: any): HTMLElement | null {
+    if (opt.thumbnail) {
+      const img = document.createElement('img');
+      img.className = 'cm-effect-glyph cm-effect-thumb';
+      img.src = opt.thumbnail; // a validated data: URI — cannot execute script
+      img.alt = '';
+      return img;
+    }
+    if (opt.iconName) {
+      const el = document.createElement('ui-icon') as HTMLElement & { icon: string };
+      el.className = 'cm-effect-glyph cm-effect-icon';
+      el.icon = opt.iconName;
+      const color = opt.category ? categoryColor(opt.category) : 'var(--app-text-color2)';
+      el.style.setProperty('--icon-color', color);
+      el.style.setProperty('--icon-size', '13px');
+      return el;
+    }
+    return null;
   }
 
   private completionSource(context: CompletionContext): CompletionResult | null {
@@ -531,10 +580,18 @@ export class SmartInput extends LitElement {
 
     for (let i = 0; i < effects.length; i++) {
       const effect = effects[i];
+      // Optional per-effect picker glyph. A validated base64 thumbnail wins over
+      // an icon (more specific); either replaces the category dot (see the
+      // has-glyph handling in optionClass + renderGlyph). Sanitized here so an
+      // invalid/hostile value simply falls back to the dot.
+      const thumbnail = thumbnailDataUri(effect.thumbnail);
+      const iconName = thumbnail ? null : sanitizeIconName(effect.icon);
       options.push({
         label: effect.name,
         detail: effect.id,
         category: effectDomain(effect.id),
+        thumbnail: thumbnail ?? undefined,
+        iconName: iconName ?? undefined,
         apply: () => { this.emitCommit(effect.id, true); },
         boost: effects.length - i,
       });

@@ -536,6 +536,8 @@ void EffectRuntime::registerFromDesc(const void* desc_v2_ptr) {
     const char* description;
     const char* category;
     const char* keywords;
+    const char* icon;   // web picker glyph — unused natively, but present in the
+                        // layout so the callbacks below read at the right offset.
     void  (*module_init)();
     void* (*create)();
     void  (*destroy)(void*);

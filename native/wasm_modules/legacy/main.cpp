@@ -48,6 +48,7 @@ void nano_module_main() {
         "Port of the shipped NanoGraph BicolorGrad.",
         "color",
         "gradient,palette,color,analysis,legacy,bicolor",
+        "la-fill",
         NANO_INSTANCE_LIFECYCLE(bicolor_grad),
     });
 
@@ -61,6 +62,7 @@ void nano_module_main() {
         "colour gradient, with a twinkling flicker. Port of NanoGraph Glisten.",
         "filter",
         "sparkle,glint,glisten,lens,star,legacy",
+        "la-star",
         NANO_INSTANCE_LIFECYCLE(glisten),
     });
 
@@ -75,6 +77,7 @@ void nano_module_main() {
         "accelerator, no laser output).",
         "source",
         "particles,field,chamber,attractor,curl,generative,legacy",
+        "la-columns",
         NANO_INSTANCE_LIFECYCLE(double_chamber),
     });
 
@@ -89,6 +92,7 @@ void nano_module_main() {
         "shipped NanoGraph Darkburst (the one block we actually used live).",
         "warp",
         "distortion,ripple,wave,warp,radial,darkburst,legacy",
+        "la-wave-square",
         NANO_INSTANCE_LIFECYCLE(d_wave),
     });
 
@@ -102,6 +106,7 @@ void nano_module_main() {
         "sample. v2 of the shipped Resolume Wire \"LUT 2\" patch.",
         "color",
         "lut,color,grade,film,look,preset,cube,legacy",
+        "la-table",
         NANO_INSTANCE_LIFECYCLE(lut_collection),
         &lut_collection::is_identity,
     });
@@ -117,6 +122,7 @@ void nano_module_main() {
         "moments. v2 port of the Resolume Wire \"ZoomScroller\" patch.",
         "warp",
         "zoom,pan,scroll,camera,sequence,gizmo,idle,legacy",
+        "la-search-plus",
         NANO_INSTANCE_LIFECYCLE(zoom_scroller),
     });
 
@@ -129,6 +135,7 @@ void nano_module_main() {
         "breaking up sharp edges. v2 of the Resolume Wire \"Subtle Blur\" patch.",
         "filter",
         "blur,soft,bloom,chroma,fringe,aberration,legacy",
+        "la-water",
         NANO_INSTANCE_LIFECYCLE(subtle_blur),
         &subtle_blur::is_identity,
     });
@@ -144,6 +151,7 @@ void nano_module_main() {
         "edge-softener off-sphere. v2 of the Resolume Wire \"SPHR Blur\" patch.",
         "filter",
         "blur,sphere,equirect,dome,sphr,soft,legacy",
+        "la-globe",
         NANO_INSTANCE_LIFECYCLE(sphr_blur),
         &sphr_blur::is_identity,
     });
@@ -159,6 +167,7 @@ void nano_module_main() {
         "v2 of the Resolume Wire \"Burn Out\" patch.",
         "color",
         "burn,blowout,exposure,fade,envelope,grade,trigger,legacy",
+        "la-fire",
         NANO_INSTANCE_LIFECYCLE(burn_out),
     });
 
@@ -172,6 +181,7 @@ void nano_module_main() {
         "\"ChromaWobble\" patch (analytic noise, no feedback texture).",
         "warp",
         "wobble,chroma,aberration,noise,glitch,trigger,legacy",
+        "la-water",
         NANO_INSTANCE_LIFECYCLE(chroma_wobble),
     });
 
@@ -186,6 +196,7 @@ void nano_module_main() {
         "v2 of the Resolume Wire \"Wobble Master\" family.",
         "warp",
         "wobble,ripple,chroma,aberration,beat,pulse,radial,legacy",
+        "la-water",
         NANO_INSTANCE_LIFECYCLE(wobble_master),
     });
 
@@ -200,6 +211,7 @@ void nano_module_main() {
         "v2 of the Resolume Wire \"Stutter Scale 2\" patch.",
         "warp",
         "stutter,scale,zoom,glitch,beat,jitter,flip,legacy",
+        "la-expand",
         NANO_INSTANCE_LIFECYCLE(stutter_scale),
         &stutter_scale::is_identity,
     });
@@ -214,6 +226,7 @@ void nano_module_main() {
         "out over the set time. v2 of the Resolume Wire \"Freeze Pulse\" patch.",
         "warp",
         "freeze,pulse,stutter,glitch,beat,blend,snapshot,legacy",
+        "la-snowflake",
         NANO_INSTANCE_LIFECYCLE(freeze_pulse),
     });
 
@@ -229,6 +242,7 @@ void nano_module_main() {
         "Wire \"Pixulant\" patch.",
         "warp",
         "scatter,dive,difference,feedback,grain,glitch,pixulant,legacy",
+        "la-th",
         NANO_INSTANCE_LIFECYCLE(pixulant),
     });
 }
