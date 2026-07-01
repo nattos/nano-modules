@@ -158,6 +158,14 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var phase_fold backdrop stream solve cycle select flow line_vs line_fs contour_vs contour_fs
 echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+flow+line+contour)"
 
+# triangulate — topology-following GPU Delaunay triangulation. Feature maps
+# (blur + derivatives) → JFA Voronoi → stochastic-takeover seed relaxation →
+# triple-point Delaunay edges rasterized as instanced line quads.
+#   P0: passthrough (tex_in → tex_out) only; later phases add the passes above.
+compile_shaders_compute_var_spv triangulate passthrough
+_emit_spv_header_var triangulate passthrough
+echo "  triangulate shaders compiled (SPV: passthrough)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -184,6 +192,7 @@ wasm_build \
   ../flow_swarm/main.cpp \
   ../spectral_lfo/main.cpp \
   ../spectral_lfo/spectral_curve.cpp \
-  ../mod_spectral/main.cpp
+  ../mod_spectral/main.cpp \
+  ../triangulate/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

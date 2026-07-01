@@ -23,6 +23,7 @@ NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
 NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
 NANO_DECLARE_INSTANCE_EFFECT(mod_spectral)
+NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 
 extern "C" {
 
@@ -144,6 +145,16 @@ void nano_module_main() {
         "mod",
         "modulation,spectral,morph,remap,curve,shaper,envelope",
         NANO_INSTANCE_LIFECYCLE(mod_spectral),
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.mesh.triangulate",
+        "Triangulate",
+        "Renders a Delaunay triangulation that follows the topology of an input's density — accentuating ridgelines first, then corners, then filling voids. Convolutions build ridge/corner/density feature maps from the input; a persistent seed pool is partitioned by a GPU Jump-Flood Voronoi pass and relaxed by stochastic confidence-gated takeover (seeds stay locked and only teleport when a candidate is a confidently better match — no continuous drift, no swim); Voronoi triple-points give the Delaunay edges, drawn as instanced line quads. Works on video frames or sparse point-cloud inputs alike.",
+        "filter",
+        "triangulation,delaunay,voronoi,mesh,topology,ridges,stippling,jfa,gpu,stylize",
+        NANO_INSTANCE_LIFECYCLE(triangulate),
     });
 }
 
