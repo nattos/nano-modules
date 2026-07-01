@@ -242,32 +242,48 @@ static void on_state_ready(void* self);
 static gpu::ComputePSO s_pso_present;
 
 void module_init() {
-  state::init("source.brutal_fold", {1, 0, 0},
+  state::init("source.brutal_fold", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Brutal Fold\n"
+        "A brutalist axonometric-prism generator — solid 3D forms **without a "
+        "vanishing point**. Drag the XY pad to explore the baked atlas: **X** adds "
+        "structural complexity, **Y** adds order.\n\n"
+        "**Try:** keep *Speed* low (it reads best slow); add a little *Volumetrics* "
+        "for a drifting fog blob; flip on *Autopilot* to let it wander on its own.")
       // --- Shape (the custom XY pad drives complexity + order) ---
-      .floatField("complexity", 0.6f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("order", 0.6f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("shape", "Form")
+        .groupHelp(
+          "The **atlas** is a montage of pre-baked structures. *Complexity* (X) and "
+          "*Order* (Y) interpolate between neighbouring cells; *Liveliness* picks how "
+          "richly the cell animates. *Scale* zooms the form; *Balance* trades zoom "
+          "between the two co-folded structures.")
+      .floatField("complexity", 0.6f, 0.0f, 1.0f, state::PrimaryInput).label("Complexity", "Cplx")
+      .floatField("order", 0.6f, 0.0f, 1.0f, state::PrimaryInput).label("Order", "Ord")
       // Liveliness (z): 0 = hold still → 1 = animate as richly as the cell allows.
-      .floatField("liveliness", 1.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("liveliness", 1.0f, 0.0f, 1.0f, state::PrimaryInput).label("Liveliness", "Live")
       // --- Form ---
-      .floatField("scale", 1.0f, 0.3f, 10.0f, state::PrimaryInput)
+      .floatField("scale", 1.0f, 0.3f, 10.0f, state::PrimaryInput).label("Scale", "Scl")
       // Signed: zoom structure 1 IN as structure 2 zooms OUT (parallax balance).
-      .floatField("balance", 0.0f, -1.5f, 1.5f, state::PrimaryInput)
+      .floatField("balance", 0.0f, -1.5f, 1.5f, state::PrimaryInput).label("Balance", "Bal")
       // Recession depth — how far the prisms extrude back.
-      .floatField("extrude", 1.0f, 0.0f, 6.0f, state::PrimaryInput)
-      .boolField("second_structure", true, state::PrimaryInput)
-      .boolField("interp_cells", true, state::PrimaryInput)
+      .floatField("extrude", 1.0f, 0.0f, 6.0f, state::PrimaryInput).label("Extrude", "Extr")
+      .boolField("second_structure", true, state::PrimaryInput).label("2nd Structure", "2nd")
+      .boolField("interp_cells", true, state::PrimaryInput).label("Interpolate Cells", "Interp")
       // --- Animation ---
+      .group("animation", "Animation")
       // Autoplay clock speed (0 = frozen). [0,1] with a QUADRATIC bend onto a low
       // actual max, so the bottom of the slider is mostly very-slow.
-      .floatField("time_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("time_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Speed", "Spd")
       // Time-warp (bipolar). τ(t) = t − (ease/2π)·sin(2π t). +1 = rest at the
       // loop point, surge through the middle; 0 = uniform. |ease|≤1 keeps it monotone.
-      .floatField("ease", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("ease", 0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Ease", "Ease")
       // In/out (birth) oscillation amplitude — how strongly prisms pop in and out.
-      .floatField("anim_amount", 1.0f, 0.0f, 2.5f, state::PrimaryInput)
-      // --- Atmosphere ---
-      .floatField("fog", 1.0f, 0.0f, 5.0f, state::PrimaryInput)
+      .floatField("anim_amount", 1.0f, 0.0f, 2.5f, state::PrimaryInput).label("Anim Amount", "Anim")
+      // --- Atmosphere / colour grade ---
+      .group("color", "Colour & Atmosphere")
+      .floatField("fog", 1.0f, 0.0f, 5.0f, state::PrimaryInput).label("Fog", "Fog")
       // --- Colour grade (3-control-point tone→hue twist; sat 0 = grayscale) ---
       // Diffuse: hue at panel shadows / mids / highlights, + tint strength.
       .floatField("diff_hue_lo", 0.58f, 0.0f, 1.0f, state::PrimaryInput)
@@ -300,27 +316,34 @@ void module_init() {
       // Reroll speed for BOTH statics: 0 = frozen, 1 ≈ 30 Hz.
       .floatField("noise_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
       // --- Volumetric fog: a 3D shape blob modulating the fog (0 = uniform) ---
-      .floatField("vol_amount", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("vol_anchor_x", 0.0f, -1.5f, 1.5f, state::PrimaryInput)
-      .floatField("vol_anchor_y", 0.0f, -1.5f, 1.5f, state::PrimaryInput)
-      .floatField("vol_z", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("volumetrics", "Volumetrics")
+        .groupHelp(
+          "A 3D **fog blob** that concentrates the depth fog into a shape instead of "
+          "a uniform haze. *Amount* blends it in (0 = the old uniform fog). *Shape* "
+          "morphs sphere → slab → solid; *Radius*, *Depth* and the two *Softness* "
+          "knobs size and feather it. Pair with **Drift** to make it breathe.")
+      .floatField("vol_amount", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Amount", "Amt")
+      .floatField("vol_anchor_x", 0.0f, -1.5f, 1.5f, state::PrimaryInput).label("Anchor X", "X")
+      .floatField("vol_anchor_y", 0.0f, -1.5f, 1.5f, state::PrimaryInput).label("Anchor Y", "Y")
+      .floatField("vol_z", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Depth Anchor", "Z")
       // Bipolar: |1| sphere → |0.5| planar slab → |0| solid; sign flips polarity.
-      .floatField("vol_shape", 1.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("vol_shape", 1.0f, -1.0f, 1.0f, state::PrimaryInput).label("Shape", "Shp")
       // Turns; rotates the linear band in screen-space (depth is set by vol_depth).
-      .floatField("vol_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("vol_radius", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("vol_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Angle", "Ang")
+      .floatField("vol_radius", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Radius", "Rad")
       // Edge softness, split: screen-space (xy) and depth (z).
-      .floatField("vol_softness_xy", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("vol_softness_z", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("vol_softness_xy", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Screen Softness", "Soft XY")
+      .floatField("vol_softness_z", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Depth Softness", "Soft Z")
       // Blob Z extent: small = very selective (a thin depth slice), large = spans
       // many depths. (vol_z is the Z anchor.) Normalized; maps to 0..kVolDepthMax.
-      .floatField("vol_depth", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("vol_depth", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Depth Extent", "Ext")
       // --- Drift: bounded 2nd-order random walk per quantity, + overall speed ---
-      .floatField("drift_xy", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_z", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_shape", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_speed", 0.3f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("drift", "Drift")
+      .floatField("drift_xy", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Drift XY", "XY")
+      .floatField("drift_z", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Depth", "Z")
+      .floatField("drift_shape", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Shape", "Shp")
+      .floatField("drift_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Angle", "Ang")
+      .floatField("drift_speed", 0.3f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Speed", "Spd")
       // Broadcast: the live (drifted) blob values, for the fog preview widget.
       .floatField("vol_x_live", 0.0f, -1.5f, 1.5f, state::SecondaryOutput)
       .floatField("vol_y_live", 0.0f, -1.5f, 1.5f, state::SecondaryOutput)
@@ -328,11 +351,17 @@ void module_init() {
       .floatField("vol_shape_live", 1.0f, -1.0f, 1.0f, state::SecondaryOutput)
       .floatField("vol_angle_live", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- Autopilot (non-destructive XY override + broadcast) ---
-      .boolField("autopilot", false, state::PrimaryInput)
-      .floatField("ap_speed", 0.43f, 0.0f, 1.0f, state::PrimaryInput)
-      .boolField("ap_snap", false, state::PrimaryInput)
-      .floatField("ap_hold_period", 2.0f, 0.0f, 8.0f, state::PrimaryInput)
-      .floatField("ap_hold_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("autopilot", "Autopilot")
+        .groupHelp(
+          "Spirals the shape's XY position on its own, **without touching** your "
+          "Complexity/Order inputs (it broadcasts the live position instead). *Speed* "
+          "sets the orbit rate. Turn on **Snap** to hop between held positions every "
+          "*Hold* seconds (with optional *Jitter*), or fire **Jump** to leap manually.")
+      .boolField("autopilot", false, state::PrimaryInput).label("Autopilot", "Auto")
+      .floatField("ap_speed", 0.43f, 0.0f, 1.0f, state::PrimaryInput).label("Orbit Speed", "Spd")
+      .boolField("ap_snap", false, state::PrimaryInput).label("Snap", "Snap")
+      .floatField("ap_hold_period", 2.0f, 0.0f, 8.0f, state::PrimaryInput).label("Hold Period", "Hold")
+      .floatField("ap_hold_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Hold Jitter", "Jit")
       .eventField("ap_jump", state::PrimaryInput)
       // Broadcast: the effective XY so the custom editor can show the live position.
       .floatField("autopilot_x", 0.6f, 0.0f, 1.0f, state::SecondaryOutput)

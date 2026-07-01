@@ -680,3 +680,60 @@ describe('describeEffect — schema-only, no instance', () => {
     expect(mod).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Schema metadata round-trip — the C++ Schema builder (host.h) emits groups,
+// per-field display/short names + group ids, and help fields; this asserts they
+// survive native emission → JSON. Instantiates the real nano bundle and captures
+// the schema JSON brutal_fold publishes from its module_init.
+// ---------------------------------------------------------------------------
+describe('schema metadata round-trip (groups / names / help)', () => {
+  it('brutal_fold emits groups, per-field name/short/group, and a help field', async () => {
+    const bytes = getWasmBytes();
+    if (!bytes) { console.warn('no nano.wasm — skipping'); return; }
+
+    const host = new WasmHost();
+    const imports = buildImports(host);
+    const captured = new Map<string, string>();
+    const dec = new TextDecoder();
+    // Override the stub set_schema to capture the raw JSON per effect id.
+    (imports.state as any).set_schema = (idPtr: number, idLen: number, _v: number,
+                                         sPtr: number, sLen: number) => {
+      const mem = (host as any).memory as WebAssembly.Memory;
+      const id = dec.decode(new Uint8Array(mem.buffer, idPtr, idLen));
+      const s = dec.decode(new Uint8Array(mem.buffer, sPtr, sLen));
+      captured.set(id, s);
+    };
+
+    const result = await WebAssembly.instantiate(bytes as BufferSource, imports);
+    const instance = (result as WebAssembly.WebAssemblyInstantiatedSource).instance;
+    (host as any).instance = instance;
+    (host as any).memory = instance.exports.memory as WebAssembly.Memory;
+    (instance.exports._initialize as (() => void) | undefined)?.();
+    (instance.exports.nano_module_main as (() => void))();
+    host.activateEffect('source.brutal_fold');   // runs module_init → set_schema
+
+    const raw = captured.get('source.brutal_fold');
+    expect(raw).toBeTruthy();
+    const schema = JSON.parse(raw!);
+
+    // First-class groups with metadata.
+    expect(schema.groups?.shape?.name).toBe('Form');
+    expect(typeof schema.groups?.shape?.help).toBe('string');
+    expect(schema.groups.shape.help).toContain('atlas');
+    expect(schema.groups?.volumetrics?.name).toBe('Volumetrics');
+    expect(schema.groups?.autopilot?.name).toBe('Autopilot');
+
+    // Per-field display name + short name + group id.
+    expect(schema.fields?.complexity?.name).toBe('Complexity');
+    expect(schema.fields?.complexity?.short).toBe('Cplx');
+    expect(schema.fields?.complexity?.group).toBe('shape');
+    expect(schema.fields?.vol_softness_xy?.name).toBe('Screen Softness');
+    expect(schema.fields?.vol_softness_xy?.group).toBe('volumetrics');
+
+    // Help field — a help slot with no instance-state backing.
+    expect(schema.fields?.intro?.type).toBe('help');
+    expect(schema.fields?.intro?.io).toBe(0);
+    expect(schema.fields?.intro?.default).toContain('Brutal Fold');
+  });
+});

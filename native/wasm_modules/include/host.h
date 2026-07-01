@@ -766,8 +766,10 @@ public:
 
   /// Finalize the schema JSON and call the host function.
   void apply(const char* moduleId, Version version) const {
-    // Close the JSON
-    char finalized[65536];
+    // Close the JSON. `static` (not a stack array) for the same reason buf_ is
+    // inline static — a 64 KB stack local would overflow the WASM stack. Safe:
+    // apply() is called synchronously at the end of one module_init's Schema.
+    static char finalized[65536];
     int flen = len_;
     if (flen > (int)sizeof(finalized) - 64) flen = (int)sizeof(finalized) - 64;
     for (int i = 0; i < flen; i++) finalized[i] = buf_[i];
@@ -820,19 +822,25 @@ private:
   // markdown defaults don't silently overflow — a truncated schema yields
   // invalid JSON that the web's strict JSON.parse drops entirely, so the
   // inspector shows NO parameters. Keep `finalized[]` in apply() the same size.
-  char buf_[65536];
+  //
+  // These big accumulators are `inline static` (NOT per-instance members) so a
+  // Schema temporary stays tiny on the stack — two 64 KB stack arrays (buf_ +
+  // apply()'s finalized) overflow the small WASM stack in module_init. Sharing
+  // one buffer is safe: module_init runs one effect's Schema at a time (never
+  // concurrently or reentrantly), and each fresh Schema rewrites from index 0.
+  inline static char buf_[65536];
   int len_ = 0;
   // Capability tags, accumulated as the body of the top-level `capabilities`
   // array (e.g. `"modulation_source","modulation_source_single"`) and emitted
   // in apply(). Kept separate from buf_ because the `fields` object is still
   // open while fields are declared.
-  char capBuf_[512];
+  inline static char capBuf_[512];
   int capLen_ = 0;
   int capCount_ = 0;
   // Group metadata, accumulated as the body of the top-level `groups` object
   // (e.g. `"form":{"name":"Form","order":0}`). Separate from buf_ because the
   // `fields` object is still open while fields (and their groups) are declared.
-  char groupsBuf_[8192];
+  inline static char groupsBuf_[8192];
   int groupsLen_ = 0;
   int groupCount_ = 0;
   // The sticky current group id (NUL-terminated) stamped onto each field's

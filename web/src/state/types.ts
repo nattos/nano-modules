@@ -21,6 +21,11 @@ export interface PluginInfo {
    * palettes / pickers. See `state::Capability` in host.h. Empty when none.
    */
   capabilities?: string[];
+  /**
+   * First-class parameter GROUPS from the schema's top-level `groups` object,
+   * keyed by group id → { name?, short?, help?, order? }. See `.group()` in host.h.
+   */
+  groups?: Record<string, { name?: string; short?: string; help?: string; order?: number }>;
 }
 
 export interface ParamInfo {
