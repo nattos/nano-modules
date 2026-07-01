@@ -725,6 +725,7 @@ export class ArrangementStore {
       monitorHeight: this.monitorHeight,
       wiresMode: this.wiresMode,
       automationMode: this.automationMode,
+      helpMode: this.helpMode,
       lastFile: this.currentName,
     };
   }
@@ -744,6 +745,7 @@ export class ArrangementStore {
         if (typeof l.monitorHeight === 'number') this.setMonitorHeight(l.monitorHeight);
         if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
         if (typeof l.automationMode === 'boolean') this.automationMode = l.automationMode;
+        if (typeof l.helpMode === 'boolean') this.helpMode = l.helpMode;
         this.preferredFile = l.lastFile ?? null;
       });
     }
@@ -1563,6 +1565,11 @@ export class ArrangementStore {
   toggleWiresMode() {
     this.wiresMode = !this.wiresMode;
     if (!this.wiresMode) this.tapPopup = null;
+    this.requestLayoutSave();
+  }
+
+  toggleHelpMode() {
+    this.helpMode = !this.helpMode;
     this.requestLayoutSave();
   }
 

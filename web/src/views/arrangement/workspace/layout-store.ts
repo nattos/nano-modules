@@ -18,6 +18,7 @@ export interface ArrLayout {
   monitorHeight?: number;
   wiresMode?: boolean;
   automationMode?: boolean;
+  helpMode?: boolean;
   /** Name of the last-opened arrangement file (re-opened on next mount). */
   lastFile?: string | null;
 }

@@ -1179,6 +1179,13 @@ export class AppController {
     }
   }
 
+  /** Toggle "?" help mode (inline effect help text + section help). */
+  setHelpMode(on: boolean) {
+    runInAction(() => {
+      appState.local.helpMode = on;
+    });
+  }
+
   /**
    * Select a field by its key `<sketchId>/<col>/<chain>/<fieldPath>`. Routed
    * through the unified `Selectable` registry as a `field/…` path so field,

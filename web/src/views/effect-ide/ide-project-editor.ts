@@ -274,6 +274,13 @@ export class IdeProjectEditor extends MobxLitElement implements ColumnHost, Colu
       appController.setTappingMode(!appState.local.tappingMode);
       return;
     }
+    // `?` toggles help mode (global, when not typing) — sibling of W, same key
+    // across all surfaces.
+    if (e.key === '?') {
+      e.preventDefault();
+      appController.setHelpMode(!appState.local.helpMode);
+      return;
+    }
     if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     const selection = appState.local.selection;
     if (!selection) return;

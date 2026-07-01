@@ -249,6 +249,13 @@ export class TransportBar extends MobxLitElement {
         >
           <ui-icon icon="la-project-diagram"></ui-icon> W
         </button>
+        <button
+          class="autobtn help ${store.helpMode ? 'active' : ''}"
+          title="Help mode — show inline effect help text (?)"
+          @click=${() => store.toggleHelpMode()}
+        >
+          <ui-icon icon="la-question-circle"></ui-icon> ?
+        </button>
 
         <div class="seg" title="Precise waits until every active frame is decoded. Live plays straight through (may briefly show an undecoded frame).">
           <button

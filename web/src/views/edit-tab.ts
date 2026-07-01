@@ -106,6 +106,13 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       appController.setTappingMode(!appState.local.tappingMode);
       return;
     }
+    // `?` toggles help mode (global, when not typing) — a sibling of W/A, and
+    // the same key as the arrangement view for consistency.
+    if (e.key === '?') {
+      e.preventDefault();
+      appController.setHelpMode(!appState.local.helpMode);
+      return;
+    }
     if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
     const selection = appState.local.selection;
     if (!selection) return;

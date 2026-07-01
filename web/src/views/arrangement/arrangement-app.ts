@@ -576,6 +576,9 @@ export class ArrangementApp extends MobxLitElement {
     } else if (!e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'w') {
       e.preventDefault();
       store.toggleWiresMode();
+    } else if (!e.metaKey && !e.ctrlKey && e.key === '?') {
+      e.preventDefault();
+      store.toggleHelpMode();
     } else if (!e.metaKey && !e.ctrlKey && e.key === '0') {
       e.preventDefault();
       store.toggleBypassShortcut();
