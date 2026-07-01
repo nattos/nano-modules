@@ -7,6 +7,7 @@
 StructuredBuffer<uint>  accum : register(t0);
 Texture2D<float4>       feat  : register(t1);   // a = importance W
 RWStructuredBuffer<Seed> seeds : register(u2);
+StructuredBuffer<uint>  nbr   : register(t4);   // per-seed neighbour-max weight
 
 cbuffer TakeoverUniforms : register(b3) {
   uint  u_count;
@@ -17,7 +18,7 @@ cbuffer TakeoverUniforms : register(b3) {
   float u_churn;        // 0..1 → Poisson rate
   float u_confidence;   // 0..1 → takeover margin (deadband)
   float u_aspect;       // proc_w / proc_h
-  uint  u_mode;         // 0 cell-residual, 1 feature-weight, 2 weight+blue-noise
+  uint  u_mode;         // 0 ridge-protect, 1 cell-residual, 2 feature-weight, 3 blue-noise
   uint  u_pad0, u_pad1, u_pad2;
 };
 
@@ -57,8 +58,22 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   float2 target;
-  float confidence;   // 0..1 margin-normalized improvement
+  float confidence;   // 0..1 margin-normalized merge strength
   if (u_mode == 0u) {
+    // Ridge protect: compare the seed's own weight to its Delaunay neighbours'.
+    //   local max (>= every neighbour)  → PROTECT: it's a ridge/corner, lock it.
+    //   uphill neighbour exists (slope) → MERGE uphill toward the feature, with
+    //     strength ∝ the gradient (steep slope merges hard → contrast; flat void
+    //     barely moves → coverage kept).
+    float my_w    = s.score;                       // stamped in seed_prep
+    float nbr_max = tri_dqw(nbr[i]);
+    float slope   = nbr_max - my_w;
+    float protect = 0.005 + u_confidence * 0.10;
+    if (slope <= protect) { seeds[i] = s; return; }  // feature / flat void → keep
+    target = candPos;                              // climb toward the cell's peak
+    float slope_scale = 0.04 + u_confidence * 0.30;
+    confidence = saturate(slope / slope_scale);
+  } else if (u_mode == 1u) {
     // Cell residual: how far the seed sits from its cell's weighted centre.
     target = ctr;
     float2 d = (s.pos - ctr) * float2(u_aspect, 1.0);
@@ -70,7 +85,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     target = candPos;
     float w_inc = feat_at(s.pos);
     float improvement = candW - w_inc;
-    if (u_mode == 2u) improvement *= saturate(mass * 4.0);  // blue-noise: damp in sparse cells
+    if (u_mode == 3u) improvement *= saturate(mass * 4.0);  // blue-noise: damp in sparse cells
     float margin = 0.02 + u_confidence * 0.4;
     confidence = saturate((improvement - margin) / max(margin, 1e-4));
   }
@@ -79,7 +94,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float p = 1.0 - exp(-lambda);
   if (tri_hash_f(i * 2654435761u + u_frame) < p) {
     s.pos = saturate(target);
-    s.score = (u_mode == 0u) ? candW : candW;
   }
 
   seeds[i] = s;

@@ -73,6 +73,7 @@ struct State {
   gpu::Buffer accum_buf;     // uint[MAX_SEEDS * 4]
   gpu::Buffer edge_buf;      // uint[MAX_EDGES] packed (a<<16)|b
   gpu::Buffer edge_count_buf;// uint append counter
+  gpu::Buffer nbr_buf;       // uint[MAX_SEEDS] per-seed neighbour-max weight
 
   // Uniform buffers (one write per pass, per frame).
   gpu::Buffer feature_buf, splat_buf, clear_buf, score_buf, takeover_buf, present_buf;
@@ -104,13 +105,13 @@ struct State {
 // ---- type-shared PSOs ------------------------------------------------------
 static gpu::ComputePSO s_pso_downsample, s_pso_feature, s_pso_jfa_init,
                        s_pso_jfa_splat, s_pso_jfa_step, s_pso_score_clear,
-                       s_pso_score, s_pso_takeover, s_pso_present,
+                       s_pso_score, s_pso_seed_prep, s_pso_takeover, s_pso_present,
                        s_pso_edge_clear, s_pso_edges;
 static gpu::RenderPSO s_pso_lines;
 static fx::GaussianBlur s_blur;
 
 void module_init() {
-  state::init("filter.mesh.triangulate", {1, 0, 0},
+  state::init("filter.mesh.triangulate", {1, 1, 0},
     state::Schema()
       .floatField("density",      0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Mesh density — how many seed points populate the triangulation.")
@@ -131,8 +132,8 @@ void module_init() {
       .floatField("confidence",   0.4f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
                   nullptr, "Takeover margin — a candidate must beat the incumbent by this much to displace it (higher = crisper/stiller).")
       .selectField("scoring_mode", 0, state::SecondaryInput,
-                   {{"Cell Residual", 0}, {"Feature Weight", 1}, {"Weight + Blue-noise", 2}},
-                   false, "What defines 'a better match' for a takeover candidate.")
+                   {{"Ridge Protect", 0}, {"Cell Residual", 1}, {"Feature Weight", 2}, {"Weight + Blue-noise", 3}},
+                   false, "Seed dynamics. Ridge Protect (default): lock feature maxima, merge slopes uphill for contrast, keep voids. Others are relaxation variants.")
       .selectField("bg_mode", 1, state::SecondaryInput,
                    {{"Input", 0}, {"Dark", 1}, {"Feature", 2}},
                    false, "Backdrop the mesh is drawn over.")
@@ -163,6 +164,7 @@ void module_init() {
   state::registerShaderSPV("triangulate_jfa_step",   JFA_STEP_SPV,   JFA_STEP_SPV_SIZE);
   state::registerShaderSPV("triangulate_score_clear",SCORE_CLEAR_SPV,SCORE_CLEAR_SPV_SIZE);
   state::registerShaderSPV("triangulate_score",      SCORE_SPV,      SCORE_SPV_SIZE);
+  state::registerShaderSPV("triangulate_seed_prep",  SEED_PREP_SPV,  SEED_PREP_SPV_SIZE);
   state::registerShaderSPV("triangulate_takeover",   TAKEOVER_SPV,   TAKEOVER_SPV_SIZE);
   state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE, "rgba8unorm", "write");
   state::registerShaderSPV("triangulate_edge_clear", EDGE_CLEAR_SPV, EDGE_CLEAR_SPV_SIZE);
@@ -177,13 +179,14 @@ void module_init() {
   auto cs_js  = gpu::Device::createShaderModuleByName("triangulate_jfa_step");
   auto cs_sc  = gpu::Device::createShaderModuleByName("triangulate_score_clear");
   auto cs_s   = gpu::Device::createShaderModuleByName("triangulate_score");
+  auto cs_sp  = gpu::Device::createShaderModuleByName("triangulate_seed_prep");
   auto cs_tk  = gpu::Device::createShaderModuleByName("triangulate_takeover");
   auto cs_pr  = gpu::Device::createShaderModuleByName("triangulate_present");
   auto cs_ec  = gpu::Device::createShaderModuleByName("triangulate_edge_clear");
   auto cs_ed  = gpu::Device::createShaderModuleByName("triangulate_edges");
   auto vs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_vs");
   auto fs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_fs");
-  if (!cs_ds || !cs_ft || !cs_ji || !cs_jp || !cs_js || !cs_sc || !cs_s || !cs_tk || !cs_pr
+  if (!cs_ds || !cs_ft || !cs_ji || !cs_jp || !cs_js || !cs_sc || !cs_s || !cs_sp || !cs_tk || !cs_pr
       || !cs_ec || !cs_ed || !vs_ln || !fs_ln) return;
 
   s_pso_downsample = gpu::Device::createComputePSO(cs_ds, "main", gpu::Bindings()
@@ -201,15 +204,18 @@ void module_init() {
       .storageRW(0).uniform(1));
   s_pso_score = gpu::Device::createComputePSO(cs_s, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F).tex2d(1).storageRW(2).uniform(3));
+  s_pso_seed_prep = gpu::Device::createComputePSO(cs_sp, "main", gpu::Bindings()
+      .storageRW(0).tex2d(1).storageRW(2).uniform(3));
   s_pso_takeover = gpu::Device::createComputePSO(cs_tk, "main", gpu::Bindings()
-      .storage(0).tex2d(1).storageRW(2).uniform(3));
+      .storage(0).tex2d(1).storageRW(2).uniform(3).storage(4));
   s_pso_present = gpu::Device::createComputePSO(cs_pr, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).storageTex2dRW(2, gpu::TextureFormat::R32F).storage(3)
       .storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
   s_pso_edge_clear = gpu::Device::createComputePSO(cs_ec, "main", gpu::Bindings()
       .storageRW(0).storageRW(1).uniform(2));
   s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()
-      .storageTex2dRW(0, gpu::TextureFormat::R32F).storageRW(1).storageRW(2).uniform(3));
+      .storageTex2dRW(0, gpu::TextureFormat::R32F).storageRW(1).storageRW(2)
+      .storage(3).storageRW(4).uniform(5));
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_ln, "main", fs_ln, "main", gpu::TextureFormat::Surface,
       gpu::Bindings().uniform(0).storage(1).storage(2),
@@ -225,6 +231,7 @@ void* create() {
   s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
   s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
+  s->nbr_buf   = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->feature_buf  = gpu::Device::createBuffer(sizeof(FeatureUniforms),  gpu::BufferUsage::Uniform);
   s->splat_buf    = gpu::Device::createBuffer(sizeof(SplatUniforms),    gpu::BufferUsage::Uniform);
   s->clear_buf    = gpu::Device::createBuffer(sizeof(ClearUniforms),    gpu::BufferUsage::Uniform);
@@ -244,7 +251,7 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->seed_buf.release(); s->accum_buf.release();
-  s->edge_buf.release(); s->edge_count_buf.release();
+  s->edge_buf.release(); s->edge_count_buf.release(); s->nbr_buf.release();
   s->feature_buf.release(); s->splat_buf.release(); s->clear_buf.release();
   s->score_buf.release(); s->takeover_buf.release(); s->present_buf.release();
   s->edge_clear_buf.release(); s->edge_uniform_buf.release(); s->line_buf.release();
@@ -450,9 +457,25 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // 4b. Delaunay edges (only when the mesh is actually shown).
+  // 4b. Seed prep: stamp each seed's own importance weight + clear its
+  // neighbour-max accumulator (feeds the Ridge Protect dynamics). Reuses the
+  // splat uniform (same {count, w, h}).
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_seed_prep);
+    cp.setBuffer(s->seed_buf, 0);
+    cp.setTexture(s->feat_tex, 1, 0);
+    cp.setBuffer(s->nbr_buf, 2);
+    cp.setBuffer(s->splat_buf, 3);
+    cp.dispatch(sgx, 1);
+    cp.end();
+  }
+
+  // 4c. Delaunay edges + per-seed adjacency. Runs EVERY frame: the mesh render
+  // consumes the edge buffer only when shown, but the takeover dynamics always
+  // need the neighbour-max weights this pass accumulates.
   const bool show_mesh = (s->debug_view == 0);
-  if (show_mesh) {
+  {
     ClearEdgeUniforms ce = { (uint32_t)MAX_EDGES, 0, 0, 0 };
     s->edge_clear_buf.writeOne(ce);
     {
@@ -472,7 +495,9 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setTexture(*id_tex, 0, 2);
       cp.setBuffer(s->edge_buf, 1);
       cp.setBuffer(s->edge_count_buf, 2);
-      cp.setBuffer(s->edge_uniform_buf, 3);
+      cp.setBuffer(s->seed_buf, 3);
+      cp.setBuffer(s->nbr_buf, 4);
+      cp.setBuffer(s->edge_uniform_buf, 5);
       cp.dispatch(pgx, pgy);
       cp.end();
     }
@@ -528,6 +553,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(s->feat_tex, 1, 0);
     cp.setBuffer(s->seed_buf, 2);
     cp.setBuffer(s->takeover_buf, 3);
+    cp.setBuffer(s->nbr_buf, 4);
     cp.dispatch(sgx, 1);
     cp.end();
   }

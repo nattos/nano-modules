@@ -10,8 +10,10 @@
 [[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u0);
 RWStructuredBuffer<uint> edges   : register(u1);
 RWStructuredBuffer<uint> counter : register(u2);
+StructuredBuffer<Seed>   seeds   : register(t3);
+RWStructuredBuffer<uint> nbr     : register(u4);   // per-seed neighbour-max weight
 
-cbuffer EdgeUniforms : register(b3) {
+cbuffer EdgeUniforms : register(b5) {
   uint u_w;
   uint u_h;
   uint u_max;
@@ -20,6 +22,14 @@ cbuffer EdgeUniforms : register(b3) {
 
 void emit(uint a, uint b) {
   if (a == b) return;
+  // Delaunay adjacency: record each endpoint's best neighbour weight (for the
+  // feature-protect dynamics). Idempotent, so duplicate emits are harmless.
+  uint wa = tri_qw(seeds[a].score);
+  uint wb = tri_qw(seeds[b].score);
+  uint old;
+  InterlockedMax(nbr[a], wb, old);
+  InterlockedMax(nbr[b], wa, old);
+  // Edge append for the mesh render.
   uint lo = min(a, b), hi = max(a, b);
   uint slot;
   InterlockedAdd(counter[0], 1u, slot);

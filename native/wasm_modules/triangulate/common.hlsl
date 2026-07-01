@@ -37,6 +37,10 @@ uint  tri_cand_py(uint p) { return (p >> 10) & 1023u; }
 // Fixed-point scale for the atomic mass / weighted-centroid sums.
 static const float TRI_FX = 1024.0;
 
+// Quantize/dequantize an importance weight for InterlockedMax adjacency.
+uint  tri_qw(float w)  { return (uint)(saturate(w) * 65535.0); }
+float tri_dqw(uint q)  { return (float)q / 65535.0; }
+
 // Accumulator layout: 4 uints per seed.
 //   [0] massFx   = Σ W·TRI_FX
 //   [1] wxFx     = Σ W·x·TRI_FX
