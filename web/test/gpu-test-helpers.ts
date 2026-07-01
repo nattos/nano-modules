@@ -512,8 +512,11 @@ export async function runGpuTest(config: GpuTestConfig): Promise<Frame> {
 
   await page.waitForFunction(
     () => {
+      // Ready once the result is JSON (starts with '{'); the status states are
+      // "Waiting for test config..." / "Running...". Don't substring-test for
+      // those words — effect help-text schemas can contain them and hang the wait.
       const el = document.getElementById('result');
-      return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
+      return !!el && el.textContent!.trim().startsWith('{');
     },
     { timeout: 15000 },
   );
@@ -651,8 +654,11 @@ async function runRawConfig(cfg: any, dumpName?: string): Promise<Frame> {
 
   await page.waitForFunction(
     () => {
+      // Ready once the result is JSON (starts with '{'); the status states are
+      // "Waiting for test config..." / "Running...". Don't substring-test for
+      // those words — effect help-text schemas can contain them and hang the wait.
       const el = document.getElementById('result');
-      return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
+      return !!el && el.textContent!.trim().startsWith('{');
     },
     { timeout: 15000 },
   );

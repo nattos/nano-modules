@@ -173,13 +173,24 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
       (window as any).__engineTestConfig = cfg;
       (window as any).__engineTestRun();
     }, runnerConfig);
-    await page.waitForFunction(
-      () => {
-        const el = document.getElementById('result');
-        return el && !el.textContent!.includes('Waiting') && !el.textContent!.includes('Running');
-      },
-      { timeout: 25000 },
-    );
+    try {
+      await page.waitForFunction(
+        // The runner shows "Waiting for test config..." → "Running..." → the
+        // JSON result (always an object). Detect readiness by "is it JSON yet"
+        // (starts with '{'); DON'T test for the absence of the substrings
+        // "Waiting"/"Running" — effect schemas now carry help-text markdown that
+        // legitimately contains those words, which would hang the check forever.
+        () => {
+          const el = document.getElementById('result');
+          return !!el && el.textContent!.trim().startsWith('{');
+        },
+        { timeout: 25000 },
+      );
+    } catch (e) {
+      const cur = await page.$eval('#result', (el) => el.textContent).catch(() => '(no #result)');
+      console.error('--- TIMEOUT browser logs ---\n' + logs.join('\n') + '\n#result=' + cur + '\n--- end ---');
+      throw e;
+    }
     const text = await page.$eval('#result', (el) => el.textContent);
     const result = JSON.parse(text!);
     if (!result.success || process.env.DEBUG_E2E) {
