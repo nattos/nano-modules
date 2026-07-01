@@ -1658,10 +1658,22 @@ export class ColumnGroup extends MobxLitElement {
         return an.localeCompare(bn);
       });
 
-    const fields: InspectorFieldDef[] = [];
+    // Collect each field def with its group id, then insert section headers on
+    // group transitions in a second pass (below).
+    const collected: { def: InspectorFieldDef; group?: string }[] = [];
+    let curGroup: string | undefined;
+    const push = (fdef: InspectorFieldDef) => collected.push({ def: fdef, group: curGroup });
     for (const [name, def] of entries) {
       const d: any = def;
+      curGroup = typeof d.group === 'string' ? d.group : undefined;
       const io = d?.io ?? 0;
+      // Help slots (state::Schema::helpField) — UI-only documentation, io=0.
+      // Emitted before the input filter; <help-slot> self-gates on help mode.
+      if (d.type === 'help') {
+        push({ type: 'help', label: name, path: name,
+          default: typeof d.default === 'string' ? d.default : '' });
+        continue;
+      }
       const isInput = !!(io & 1);
       if (!isInput) continue; // pure outputs handled by the trace-card row
       // Hidden fields are still in the schema (and still receive
@@ -1671,7 +1683,7 @@ export class ColumnGroup extends MobxLitElement {
       if (d.hidden) continue;
       const label = schemaFieldDisplayName(d, name);
       if (d.type === 'texture') {
-        fields.push({ type: 'placeholder', label, path: name,
+        push({ type: 'placeholder', label, path: name,
           kind: 'texture', direction: 'input' });
         continue;
       }
@@ -1679,7 +1691,7 @@ export class ColumnGroup extends MobxLitElement {
         // Int fields carrying an `options` list become dropdown
         // selects (state::Schema::selectField on the C++ side).
         if (d.type === 'int' && Array.isArray(d.options) && d.options.length > 0) {
-          fields.push({
+          push({
             type: 'select', label, path: name,
             options: d.options.map((o: any) => ({
               label: String(o?.label ?? o?.value ?? ''),
@@ -1702,14 +1714,14 @@ export class ColumnGroup extends MobxLitElement {
             if (typeof d.units === 'string') fieldDef.units = d.units;
           }
           if (typeof d.description === 'string') (fieldDef as any).description = d.description;
-          fields.push(fieldDef);
+          push(fieldDef);
           continue;
         }
         // No legacy param row (shouldn't happen for scalars) — fall through.
       }
       // Font-family picker (state::Schema::fontField) — searchable list editor.
       if (d.type === 'font') {
-        fields.push({
+        push({
           type: 'font', label, path: name,
           default: typeof d.default === 'string' ? d.default : '',
           description: typeof d.description === 'string' ? d.description : undefined,
@@ -1721,15 +1733,15 @@ export class ColumnGroup extends MobxLitElement {
       // hint="color".
       const vecCount = d.type === 'float2' ? 2 : d.type === 'float3' ? 3 : d.type === 'float4' ? 4 : 0;
       if (vecCount > 0) {
-        const def: number[] = Array.isArray(d.default) ? (d.default as number[]) : new Array(vecCount).fill(0);
+        const dval: number[] = Array.isArray(d.default) ? (d.default as number[]) : new Array(vecCount).fill(0);
         if ((vecCount === 3 || vecCount === 4) && d.hint === 'color') {
-          fields.push({
+          push({
             type: 'color', label, path: name,
             components: vecCount as 3 | 4,
-            default: def,
+            default: dval,
           });
         } else {
-          fields.push({
+          push({
             type: 'vec', label, path: name,
             components: vecCount as 2 | 3 | 4,
             // Default the slider range to the vec field's natural [0,1]
@@ -1737,15 +1749,36 @@ export class ColumnGroup extends MobxLitElement {
             min: typeof d.min === 'number' ? d.min : 0,
             max: typeof d.max === 'number' ? d.max : 1,
             step: typeof d.step === 'number' ? d.step : 0.01,
-            default: def,
+            default: dval,
           });
         }
         continue;
       }
-      fields.push({
+      push({
         type: 'placeholder', label, path: name,
         kind: schemaFieldKindLabel(d), direction: 'input',
       });
+    }
+
+    // Second pass: insert a group SECTION HEADER whenever the group changes.
+    // Group display name + section help come from the schema's `groups` object.
+    const groups = plugin.groups ?? {};
+    const fields: InspectorFieldDef[] = [];
+    let lastGroup: string | undefined;
+    for (const { def: fdef, group } of collected) {
+      if (group !== lastGroup) {
+        if (group) {
+          const gi = groups[group];
+          fields.push({
+            type: 'section',
+            label: gi?.name ?? group,
+            path: `@group/${group}`,
+            help: typeof gi?.help === 'string' ? gi.help : undefined,
+          });
+        }
+        lastGroup = group;
+      }
+      fields.push(fdef);
     }
     return fields;
   }

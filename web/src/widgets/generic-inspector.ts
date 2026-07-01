@@ -28,6 +28,7 @@ import './field-placeholder';
 import './field-vec';
 import './field-color';
 import './field-font';
+import './help-slot';
 
 // --- Field definitions ---
 
@@ -58,7 +59,14 @@ export type InspectorFieldDef =
    * `path` is the slot path (used to key global/local overrides); `default` is
    * the effect-authored markdown. Has no instance-state backing.
    */
-  | { type: 'help'; label: string; path: string; default: string; group?: string };
+  | { type: 'help'; label: string; path: string; default: string; group?: string }
+  /**
+   * A group SECTION HEADER (first-class schema `groups`). Renders a section
+   * label and, when the group carries help, an embedded <help-slot> keyed by
+   * `@group/<id>` (visible only in "?" help mode). Always shown (grouping is a
+   * general layout aid, independent of help mode).
+   */
+  | { type: 'section'; label: string; path: string; help?: string };
 
 // --- Field renderers ---
 
@@ -170,6 +178,21 @@ const renderColor = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type
   ></field-color>
 `;
 
+const renderHelp = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'help' }>) => html`
+  <help-slot .binding=${binding} .path=${f.path} .default=${f.default}></help-slot>
+`;
+
+// Group section header. The label is always shown (grouping is a general layout
+// aid); the embedded <help-slot> self-gates on "?" help mode. Inline styles mirror
+// column-group's `.section-header` so it reads the same regardless of host.
+const renderSection = (binding: FieldBinding, f: Extract<InspectorFieldDef, { type: 'section' }>) => html`
+  <div style="font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
+              color: var(--app-text-color2); margin: 10px 0 3px; opacity: 0.75;">${f.label}</div>
+  ${f.help
+    ? html`<help-slot .binding=${binding} .path=${f.path} .default=${f.help}></help-slot>`
+    : nothing}
+`;
+
 // --- Factory ---
 
 export const createGenericInspector = (fields: InspectorFieldDef[]) => {
@@ -188,6 +211,8 @@ export const createGenericInspector = (fields: InspectorFieldDef[]) => {
             case 'vec':         return renderVec(binding, field);
             case 'color':       return renderColor(binding, field);
             case 'placeholder': return renderPlaceholder(binding, field);
+            case 'help':        return renderHelp(binding, field);
+            case 'section':     return renderSection(binding, field);
             default:            return nothing;
           }
         })}
