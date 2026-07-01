@@ -12,6 +12,19 @@ A real module instance (`realModules`) that appears in more than one sketch chai
 ### Empty columns left behind after drag-drop
 When a module is dragged out of a column, the empty column (just `texture_input` → `texture_output`) is not automatically removed. This is cosmetic — the executor correctly skips empty columns for output — but it clutters the UI.
 
+### E2E: four known-failing suites (as of 2026-07)
+Surfaced while getting the full Puppeteer e2e suite green (run against this workspace's dev server: `GPU_TEST_BASE_URL=http://localhost:5174 npx jest <name>`). The bulk of the earlier failures were a stale harness readiness-check and tests that hadn't caught up to the LFO going signed — both fixed. These four are genuine, independent, and still open:
+
+- **`engine-wires.test.ts` — "delayed/backward texture wire = self-feedback accumulator"**: the accumulator plateaus at `102` where the test asserts it's still climbing (`> 102`). The other feedback assertions pass; this is a marginal saturation near the `≤ 110` src ceiling. Likely a real solver/timing edge (not the harness bug). Needs a look at whether the effect should keep climbing or the assertion's bound is too tight.
+
+- **`video-stall-benchmark.test.ts` — "plays a multi-codec, multi-play-mode arrangement and records stalls"**: runs fine now (uses the committed `/media/` + `/test-videos/bench/` fixtures) but fails `expect(errors).toEqual([])` — ~594 `pageerror`/console-error entries collected during the multi-codec playback (collector at test lines ~68-76). Triage what those errors are (real decode/provider errors vs. benign warnings) before deciding whether to fix the provider or scope the assertion.
+
+- **`arr-engine-testbed-smoke.test.ts` — "renders a real clip sketch (gpu_test → blue) into the monitor"**: times out waiting for `window.__arrEngine.frames > 4` (25s) — the arrangement engine testbed (`arr-engine-testbed.html`) never advances past a few frames. Arrangement-specific; distinct from the engine-test-runner path.
+
+- **`arrangement-workspace.test.ts` — "refreshes the panel reactively on mount, and renames + deletes files"**: 5s timeout on a panel-reactivity assertion. Likely a MobX/Lit reactivity or file-store-refresh issue on mount.
+
+Fixed in the same pass (for context): the engine/gpu test-runner readiness check (was fooled by effect help-text containing "Running"), the `mod.shaper.remap`/`mod-shaper-chain` auto-connect tests and `wire-magnitude` (updated for the now-signed `mod.source.lfo` output), `capabilities` (`lfo.hasSeek`), and repointing the DXV/h264 media tests at the committed small fixtures.
+
 ## Future Work
 
 - **Instance cloning for multi-sketch** (see above)
