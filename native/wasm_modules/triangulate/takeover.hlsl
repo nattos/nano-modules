@@ -43,6 +43,17 @@ float feat_at(float2 pos) {
   return max(0.0, feat.Load(int3(p, 0)).a);
 }
 
+// Rejection-sample a position with probability ∝ the balanced importance W, so a
+// respawned / reactivated seed lands on a feature (ridge or maximum), not a void.
+float2 importance_sample(uint id) {
+  [loop]
+  for (uint k = 0u; k < 24u; ++k) {
+    float2 p = tri_hash2(id * 17u + k, u_frame * 5u + 1u);
+    if (tri_hash_f(id * 4099u + k * 131u + u_frame) < feat_at(p)) return p;
+  }
+  return tri_hash2(id, u_frame);   // fallback: uniform
+}
+
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
   uint i = gid.x;
@@ -92,11 +103,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float keep  = pow(max(my_w, 1e-3), u_decimation * DEC_GAMMA);
     if (tri_hash_f(i * 3266489917u + u_frame) < pflip) {
       if (active) { if (keep < r_i - DEC_HYST) active = false; }
-      else        { if (keep > r_i + DEC_HYST) active = true; }
+      else        { if (keep > r_i + DEC_HYST) { active = true; s.pos = importance_sample(i); } }
     }
     if (active) {
-      if (mass < 1e-4) {                                // active but homeless → respawn
-        if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = tri_hash2(i + 1u, u_frame * 3u + 1u);
+      if (mass < 1e-4) {                                // active but homeless → respawn onto a feature
+        if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = importance_sample(i);
       } else {
         float2 dd = (s.pos - ctr) * float2(u_aspect, 1.0);
         float conf = saturate(length(dd) / 0.10);

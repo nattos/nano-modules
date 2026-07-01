@@ -37,8 +37,13 @@ static constexpr int   PROC_MAX          = 640;    // internal long-edge cap (< 
 static constexpr int   MAX_JFA_STEPS     = 12;
 static constexpr float FEATURE_BLUR_SCALE= 0.6f;
 static constexpr float STENCIL_MAX_PX    = 7.0f;
-static constexpr float RIDGE_GAIN        = 40.0f;
-static constexpr float CORNER_GAIN       = 4000.0f;
+// Rough pre-scale gains — the histogram/percentile pass does the real per-frame
+// auto-leveling, so these only need to keep the responses off saturation.
+static constexpr float RIDGE_GAIN        = 15.0f;
+static constexpr float CORNER_GAIN       = 1500.0f;
+static constexpr int   HIST_BINS         = 64;
+static constexpr int   HIST_WORDS        = 2 * HIST_BINS;   // ridge + corner
+static constexpr float FEAT_PERCENTILE   = 0.97f;
 static constexpr float POINT_RADIUS_UV   = 0.006f;
 static constexpr float LINE_HALF_W_MAX   = 5.0f;   // line_width=1 → 0.5..5.5 px half-width
 
@@ -48,6 +53,9 @@ struct FeatureUniforms {
   float ridge_gain, corner_gain, _p0, _p1;
 };
 struct SplatUniforms { uint32_t count, w, h, _p; };
+struct HistUniforms  { uint32_t w, h, bins, _p; };
+struct CdfUniforms   { uint32_t bins; float percentile; float _p0, _p1; };
+struct RemapUniforms { float ridge_w, corner_w, void_w, _p; };
 struct StepUniforms  { int32_t step; uint32_t w, h; float aspect; };
 struct ClearUniforms { uint32_t count, _p0, _p1, _p2; };
 struct ScoreUniforms { uint32_t w, h; float _p0, _p1; };
@@ -76,16 +84,20 @@ struct State {
   gpu::Buffer edge_buf;      // uint[MAX_EDGES] packed (a<<16)|b
   gpu::Buffer edge_count_buf;// uint append counter
   gpu::Buffer seen_buf;      // uint[SEEN_WORDS] per-pair edge dedup bitmask
+  gpu::Buffer hist_buf;      // uint[HIST_WORDS] ridge+corner histogram
+  gpu::Buffer pct_buf;       // float[4] percentile divisors
 
   // Uniform buffers (one write per pass, per frame).
   gpu::Buffer feature_buf, splat_buf, clear_buf, score_buf, takeover_buf, present_buf;
   gpu::Buffer edge_clear_buf, edge_uniform_buf, line_buf;
+  gpu::Buffer hist_buf_u, cdf_buf_u, remap_buf_u;
   gpu::Buffer step_buf[MAX_JFA_STEPS];
 
   // Textures (proc-res unless noted).
   gpu::Texture small_tex;    // RGBA8 downsampled input
   gpu::Texture blur_tex;     // RGBA8 blurred
-  gpu::Texture feat_tex;     // RGBA16F feature/importance field
+  gpu::Texture feat_raw;     // RGBA16F raw feature maps (pre auto-level)
+  gpu::Texture feat_tex;     // RGBA16F balanced feature/importance field
   gpu::Texture jfa_a, jfa_b; // R32F seed-id ping-pong
   gpu::Sampler sampler;
   int proc_w = 0, proc_h = 0;
@@ -111,7 +123,7 @@ struct State {
 static gpu::ComputePSO s_pso_downsample, s_pso_feature, s_pso_jfa_init,
                        s_pso_jfa_splat, s_pso_jfa_step, s_pso_score_clear,
                        s_pso_score, s_pso_seed_prep, s_pso_takeover, s_pso_present,
-                       s_pso_edge_clear, s_pso_edges;
+                       s_pso_edge_clear, s_pso_edges, s_pso_hist, s_pso_cdf, s_pso_remap;
 static gpu::RenderPSO s_pso_lines;
 static fx::GaussianBlur s_blur;
 
@@ -167,6 +179,9 @@ void module_init() {
 
   state::registerShaderSPV("triangulate_downsample", DOWNSAMPLE_SPV, DOWNSAMPLE_SPV_SIZE, "rgba8unorm", "write");
   state::registerShaderSPV("triangulate_feature",    FEATURE_SPV,    FEATURE_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("triangulate_hist",       HIST_SPV,       HIST_SPV_SIZE);
+  state::registerShaderSPV("triangulate_cdf",        CDF_SPV,        CDF_SPV_SIZE);
+  state::registerShaderSPV("triangulate_remap",      REMAP_SPV,      REMAP_SPV_SIZE,      "rgba16float", "write");
   // JFA/score/edges pin their r32f id textures with [[vk::image_format]] and
   // bind them read_write (WebGPU rejects r32f write-only / sampled), so no
   // format override is needed. present carries an rgba8 output too, so it takes
@@ -186,6 +201,9 @@ void module_init() {
 
   auto cs_ds  = gpu::Device::createShaderModuleByName("triangulate_downsample");
   auto cs_ft  = gpu::Device::createShaderModuleByName("triangulate_feature");
+  auto cs_hi  = gpu::Device::createShaderModuleByName("triangulate_hist");
+  auto cs_cd  = gpu::Device::createShaderModuleByName("triangulate_cdf");
+  auto cs_rm  = gpu::Device::createShaderModuleByName("triangulate_remap");
   auto cs_ji  = gpu::Device::createShaderModuleByName("triangulate_jfa_init");
   auto cs_jp  = gpu::Device::createShaderModuleByName("triangulate_jfa_splat");
   auto cs_js  = gpu::Device::createShaderModuleByName("triangulate_jfa_step");
@@ -199,12 +217,18 @@ void module_init() {
   auto vs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_vs");
   auto fs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_fs");
   if (!cs_ds || !cs_ft || !cs_ji || !cs_jp || !cs_js || !cs_sc || !cs_s || !cs_sp || !cs_tk || !cs_pr
-      || !cs_ec || !cs_ed || !vs_ln || !fs_ln) return;
+      || !cs_ec || !cs_ed || !vs_ln || !fs_ln || !cs_hi || !cs_cd || !cs_rm) return;
 
   s_pso_downsample = gpu::Device::createComputePSO(cs_ds, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8));
   s_pso_feature = gpu::Device::createComputePSO(cs_ft, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
+  s_pso_hist = gpu::Device::createComputePSO(cs_hi, "main", gpu::Bindings()
+      .tex2d(0).storageRW(1).uniform(2));
+  s_pso_cdf = gpu::Device::createComputePSO(cs_cd, "main", gpu::Bindings()
+      .storageRW(0).storageRW(1).uniform(2));
+  s_pso_remap = gpu::Device::createComputePSO(cs_rm, "main", gpu::Bindings()
+      .tex2d(0).storage(1).storageTex2d(2, gpu::TextureFormat::RGBA16F).uniform(3));
   s_pso_jfa_init = gpu::Device::createComputePSO(cs_ji, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F));
   s_pso_jfa_splat = gpu::Device::createComputePSO(cs_jp, "main", gpu::Bindings()
@@ -244,12 +268,18 @@ void* create() {
   s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
   s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
   s->seen_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * SEEN_WORDS, gpu::BufferUsage::Storage);
+  s->hist_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * HIST_WORDS, gpu::BufferUsage::Storage);
+  s->pct_buf   = gpu::Device::createBuffer(sizeof(float) * 4, gpu::BufferUsage::Storage);
+  { uint32_t zero[HIST_WORDS] = {}; s->hist_buf.writeBytes(zero, sizeof(zero), 0); }
   s->feature_buf  = gpu::Device::createBuffer(sizeof(FeatureUniforms),  gpu::BufferUsage::Uniform);
   s->splat_buf    = gpu::Device::createBuffer(sizeof(SplatUniforms),    gpu::BufferUsage::Uniform);
   s->clear_buf    = gpu::Device::createBuffer(sizeof(ClearUniforms),    gpu::BufferUsage::Uniform);
   s->score_buf    = gpu::Device::createBuffer(sizeof(ScoreUniforms),    gpu::BufferUsage::Uniform);
   s->takeover_buf = gpu::Device::createBuffer(sizeof(TakeoverUniforms), gpu::BufferUsage::Uniform);
   s->present_buf  = gpu::Device::createBuffer(sizeof(PresentUniforms),  gpu::BufferUsage::Uniform);
+  s->hist_buf_u   = gpu::Device::createBuffer(sizeof(HistUniforms),  gpu::BufferUsage::Uniform);
+  s->cdf_buf_u    = gpu::Device::createBuffer(sizeof(CdfUniforms),   gpu::BufferUsage::Uniform);
+  s->remap_buf_u  = gpu::Device::createBuffer(sizeof(RemapUniforms), gpu::BufferUsage::Uniform);
   s->edge_clear_buf   = gpu::Device::createBuffer(sizeof(ClearEdgeUniforms), gpu::BufferUsage::Uniform);
   s->edge_uniform_buf = gpu::Device::createBuffer(sizeof(EdgeUniforms),      gpu::BufferUsage::Uniform);
   s->line_buf         = gpu::Device::createBuffer(sizeof(LineUniforms),      gpu::BufferUsage::Uniform);
@@ -264,12 +294,15 @@ void destroy(void* self) {
   if (!s) return;
   s->seed_buf.release(); s->accum_buf.release();
   s->edge_buf.release(); s->edge_count_buf.release(); s->seen_buf.release();
+  s->hist_buf.release(); s->pct_buf.release();
   s->feature_buf.release(); s->splat_buf.release(); s->clear_buf.release();
   s->score_buf.release(); s->takeover_buf.release(); s->present_buf.release();
+  s->hist_buf_u.release(); s->cdf_buf_u.release(); s->remap_buf_u.release();
   s->edge_clear_buf.release(); s->edge_uniform_buf.release(); s->line_buf.release();
   for (int i = 0; i < MAX_JFA_STEPS; i++) s->step_buf[i].release();
   if (s->small_tex.valid()) s->small_tex.release();
   if (s->blur_tex.valid())  s->blur_tex.release();
+  if (s->feat_raw.valid())  s->feat_raw.release();
   if (s->feat_tex.valid())  s->feat_tex.release();
   if (s->jfa_a.valid())     s->jfa_a.release();
   if (s->jfa_b.valid())     s->jfa_b.release();
@@ -346,11 +379,13 @@ static void ensureTextures(State* s, int vp_w, int vp_h) {
   if (s->small_tex.valid() && s->proc_w == pw && s->proc_h == ph) return;
   if (s->small_tex.valid()) s->small_tex.release();
   if (s->blur_tex.valid())  s->blur_tex.release();
+  if (s->feat_raw.valid())  s->feat_raw.release();
   if (s->feat_tex.valid())  s->feat_tex.release();
   if (s->jfa_a.valid())     s->jfa_a.release();
   if (s->jfa_b.valid())     s->jfa_b.release();
   s->small_tex = gpu::Device::createTexture(pw, ph, gpu::TextureFormat::RGBA8);
   s->blur_tex  = gpu::Device::createTexture(pw, ph, gpu::TextureFormat::RGBA8);
+  s->feat_raw  = gpu::Device::createTexture(pw, ph, gpu::TextureFormat::RGBA16F);
   s->feat_tex  = gpu::Device::createTexture(pw, ph, gpu::TextureFormat::RGBA16F);
   s->jfa_a     = gpu::Device::createTexture(pw, ph, gpu::TextureFormat::R32F);
   s->jfa_b     = gpu::Device::createTexture(pw, ph, gpu::TextureFormat::R32F);
@@ -412,8 +447,46 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_feature);
     cp.setTexture(s->blur_tex, 0, 0);
-    cp.setTexture(s->feat_tex, 1, 1);
+    cp.setTexture(s->feat_raw, 1, 1);
     cp.setBuffer(s->feature_buf, 2);
+    cp.dispatch(pgx, pgy);
+    cp.end();
+  }
+
+  // 2b. Histogram auto-level: hist(ridge,corner) → percentile divisors → remap
+  // into the balanced importance field feat_tex. Data-driven per frame, so
+  // ridges and corners land on a common distribution (no magic gains).
+  {
+    HistUniforms hu = { (uint32_t)pw, (uint32_t)ph, (uint32_t)HIST_BINS, 0 };
+    s->hist_buf_u.writeOne(hu);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_hist);
+    cp.setTexture(s->feat_raw, 0, 0);
+    cp.setBuffer(s->hist_buf, 1);
+    cp.setBuffer(s->hist_buf_u, 2);
+    cp.dispatch(pgx, pgy);
+    cp.end();
+  }
+  {
+    CdfUniforms cu = { (uint32_t)HIST_BINS, FEAT_PERCENTILE, 0.f, 0.f };
+    s->cdf_buf_u.writeOne(cu);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_cdf);
+    cp.setBuffer(s->hist_buf, 0);
+    cp.setBuffer(s->pct_buf, 1);
+    cp.setBuffer(s->cdf_buf_u, 2);
+    cp.dispatch(1, 1);
+    cp.end();
+  }
+  {
+    RemapUniforms ru = { s->ridge_weight, s->corner_weight, s->void_weight, 0.f };
+    s->remap_buf_u.writeOne(ru);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_remap);
+    cp.setTexture(s->feat_raw, 0, 0);
+    cp.setBuffer(s->pct_buf, 1);
+    cp.setTexture(s->feat_tex, 2, 1);
+    cp.setBuffer(s->remap_buf_u, 3);
     cp.dispatch(pgx, pgy);
     cp.end();
   }

@@ -54,16 +54,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float det = dxx * dyy - dxy * dxy;
   float corner_raw = (det > 0.0 && laplacian < 0.0) ? det : 0.0; // peak / corner
 
-  // Soft self-normalizing map into [0,1): saturates any positive response.
+  // Rough soft-normalize into [0,1). Deliberately gentle (no saturation) — the
+  // histogram/percentile pass (hist → cdf → remap) does the real per-frame
+  // auto-leveling and the ridge/corner/void blend. Output = raw-ish maps only.
   float density = saturate(v);
   float ridge   = 1.0 - exp(-u_ridge_gain  * ridge_raw);
   float corner  = 1.0 - exp(-u_corner_gain * corner_raw);
 
-  // Normalize by the weight sum so W stays in [0,1] regardless of weight
-  // magnitude: no saturation downstream (the argmax candidate stays accurate),
-  // and only the RELATIVE ridge/corner/void mix steers the field.
-  float wsum = u_ridge_w + u_corner_w + u_void_w;
-  float W = (u_ridge_w * ridge + u_corner_w * corner + u_void_w * density) / max(wsum, 1e-3);
-
-  featTex[gid.xy] = float4(density, ridge, corner, W);
+  featTex[gid.xy] = float4(density, ridge, corner, 0.0);
 }
