@@ -330,6 +330,26 @@ static void seed_pool(State* s) {
   s->seeded = true;
 }
 
+// Mode-dependent parameter visibility (style guide §0). Every field is always in
+// the schema; we just hide the ones the active mode/view can't use.
+static void apply_visibility(const State* s) {
+  const bool mesh = (s->debug_view == 0);   // the mesh is only drawn when debug is off
+  state::setFieldHidden("line_width",     !mesh);
+  state::setFieldHidden("line_color",     !mesh);
+  state::setFieldHidden("feature_color",  !mesh);
+  state::setFieldHidden("edge_threshold", !mesh);
+  state::setFieldHidden("fill_opacity",   !mesh);
+  state::setFieldHidden("bg_mode",        !mesh);
+  // `confidence` is the takeover deadband for the relaxation modes; Ridge Protect
+  // (mode 0) relaxes to a fixed-gate centroid and never reads it.
+  state::setFieldHidden("confidence",     s->scoring_mode == 0);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) apply_visibility(s);
+}
+
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
@@ -337,6 +357,7 @@ void init(void* self) {
   s->frame = 0;
   seed_pool(s);
   s->initialized = true;
+  state::setOnStateReady(&on_state_ready);
 }
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
@@ -345,6 +366,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
@@ -362,12 +384,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "frame_points"))   s->frame_points    = state::patchInt(i);
     else if (state::pathIs(p, l, "feature_scale")) s->feature_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "confidence"))    s->confidence    = state::patchFloat(i);
-    else if (state::pathIs(p, l, "scoring_mode"))  s->scoring_mode  = state::patchInt(i);
+    else if (state::pathIs(p, l, "scoring_mode")) { s->scoring_mode = state::patchInt(i); vis_changed = true; }
     else if (state::pathIs(p, l, "bg_mode"))       s->bg_mode       = state::patchInt(i);
     else if (state::pathIs(p, l, "fill_opacity"))  s->fill_opacity  = state::patchFloat(i);
     else if (state::pathIs(p, l, "quality"))       s->quality       = state::patchFloat(i);
-    else if (state::pathIs(p, l, "debug_view"))    s->debug_view    = state::patchInt(i);
+    else if (state::pathIs(p, l, "debug_view"))   { s->debug_view   = state::patchInt(i); vis_changed = true; }
   }
+  if (vis_changed) apply_visibility(s);
 }
 
 static void ensureTextures(State* s, int vp_w, int vp_h) {
