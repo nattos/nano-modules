@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 
 const URL = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/video-testbed.html';
-const VIDEO = process.env.TESTBED_VIDEO || '/test-videos/test01_dxv.mov';
+const VIDEO = process.env.TESTBED_VIDEO || '/media/test_dxv.mov';
 const OUT_PATH = process.env.TESTBED_OUT || '/tmp/gpu-test-dumps/video-testbed.png';
 
 describe('Video testbed screenshot', () => {

@@ -6,7 +6,7 @@
  */
 
 const RUNNER = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/video-service-test-runner.html';
-const VIDEO  = '/test-videos/test01_dxv.mov';
+const VIDEO  = '/media/test_dxv.mov';
 
 // Each test uses a distinct salt so clip-profile state doesn't bleed
 // across tests within a single page session.
@@ -59,9 +59,9 @@ describe('VideoPlaybackService E2E', () => {
     }, { video: VIDEO, salt });
 
     expect(snap.codec).toBe('DXV-DXD3');
-    expect(snap.width).toBe(1920);
-    expect(snap.height).toBe(1080);
-    expect(snap.frameCount).toBe(250);
+    expect(snap.width).toBe(1280);
+    expect(snap.height).toBe(720);
+    expect(snap.frameCount).toBe(57);
     expect(snap.access.mode).toBe('Sequential');     // cold-start default
     expect(snap.cost.costClass).toBe('Unknown');     // < 32 samples
   });
@@ -72,7 +72,7 @@ describe('VideoPlaybackService E2E', () => {
     const result = await page.evaluate(async ({ video, salt }) => {
       const svc = (window as any).__videoService;
       const clip = await svc.openByUrl(video, salt);
-      for (let i = 0; i < 64; i++) await svc.pull(clip, i);
+      for (let i = 0; i < 50; i++) await svc.pull(clip, i);
       return { snap: svc.inspect(clip), hints: svc.hints(clip) };
     }, { video: VIDEO, salt });
 
@@ -89,7 +89,7 @@ describe('VideoPlaybackService E2E', () => {
     const snap = await page.evaluate(async ({ video, salt }) => {
       const svc = (window as any).__videoService;
       const clip = await svc.openByUrl(video, salt);
-      const A = 30, B = 60;
+      const A = 20, B = 50;
       for (let c = 0; c < 5; c++) {
         for (let i = A; i <= B; i++) await svc.pull(clip, i);
       }
@@ -98,8 +98,8 @@ describe('VideoPlaybackService E2E', () => {
 
     expect(snap.access.mode).toBe('Loop');
     expect(snap.access.loopRange).toBeDefined();
-    expect(snap.access.loopRange[0]).toBeCloseTo(30, 0);
-    expect(snap.access.loopRange[1]).toBeCloseTo(60, 0);
+    expect(snap.access.loopRange[0]).toBeCloseTo(20, 0);
+    expect(snap.access.loopRange[1]).toBeCloseTo(50, 0);
     // Pin count should match the loop range.
     expect(snap.cache.entries).toBeGreaterThanOrEqual(31);
   });
@@ -113,7 +113,7 @@ describe('VideoPlaybackService E2E', () => {
       // Drive a mix of contiguous + seek pulls so both cost EWMAs get
       // samples beyond the 32-sample classification threshold.
       for (let i = 0; i < 40; i++) await svc.pull(clip, i);
-      for (let i = 0; i < 40; i++) await svc.pull(clip, (i * 7) % 200);
+      for (let i = 0; i < 40; i++) await svc.pull(clip, (i * 7) % 57);
       return svc.inspect(clip);
     }, { video: VIDEO, salt });
 
@@ -129,7 +129,7 @@ describe('VideoPlaybackService E2E', () => {
       // Phase 1: drive a Loop pattern, close.
       const c1 = await svc.openByUrl(video, salt);
       for (let c = 0; c < 5; c++) {
-        for (let i = 30; i <= 60; i++) await svc.pull(c1, i);
+        for (let i = 20; i <= 50; i++) await svc.pull(c1, i);
       }
       const before = svc.inspect(c1);
       await svc.close(c1);
@@ -142,8 +142,8 @@ describe('VideoPlaybackService E2E', () => {
 
     expect(result.before.access.mode).toBe('Loop');
     expect(result.after.access.mode).toBe('Loop');
-    expect(result.after.access.loopRange?.[0]).toBeCloseTo(30, 0);
-    expect(result.after.access.loopRange?.[1]).toBeCloseTo(60, 0);
+    expect(result.after.access.loopRange?.[0]).toBeCloseTo(20, 0);
+    expect(result.after.access.loopRange?.[1]).toBeCloseTo(50, 0);
     // Cost class persists too.
     expect(result.after.cost.samples).toBeGreaterThanOrEqual(32);
   });
@@ -156,7 +156,7 @@ describe('VideoPlaybackService E2E', () => {
       // Phase 1: train the clip into a Loop classification.
       const c1 = await svc.openByUrl(video, salt);
       for (let c = 0; c < 5; c++) {
-        for (let i = 30; i <= 60; i++) await svc.pull(c1, i);
+        for (let i = 20; i <= 50; i++) await svc.pull(c1, i);
       }
       await svc.close(c1);
 
@@ -189,7 +189,7 @@ describe('VideoPlaybackService E2E', () => {
       const clip = await svc.openByUrl(video, salt);
       let peakBytes = 0;
       for (let i = 0; i < 200; i++) {
-        await svc.pull(clip, i);
+        await svc.pull(clip, i % 57);
         const s = svc.inspect(clip);
         if (s.cache.bytes > peakBytes) peakBytes = s.cache.bytes;
       }
@@ -197,9 +197,9 @@ describe('VideoPlaybackService E2E', () => {
       return { peakBytes, final, budget };
     }, { video: VIDEO, salt, budget });
 
-    // 1080p RGBA = ~8.3 MB; a small overshoot from a single late-eviction
+    // 720p RGBA = ~3.7 MB; a small overshoot from a single late-eviction
     // pass is acceptable. Cap at budget + 1 frame.
-    const oneFrame = 1920 * 1080 * 4;
+    const oneFrame = 1280 * 720 * 4;
     expect(snap.peakBytes).toBeLessThanOrEqual(snap.budget + oneFrame);
     expect(snap.final.cache.entries).toBeGreaterThan(0);
     expect(snap.final.cache.entries).toBeLessThan(200);  // some got evicted
@@ -208,7 +208,7 @@ describe('VideoPlaybackService E2E', () => {
 
 describe('VideoPlaybackService — browser-decoder (h264) path', () => {
   jest.setTimeout(90_000);
-  const H264 = '/test-videos/test01_h264.mp4';
+  const H264 = '/media/test_h264.mp4';
 
   async function boot() {
     await page.goto(RUNNER, { waitUntil: 'networkidle0' });
@@ -234,8 +234,8 @@ describe('VideoPlaybackService — browser-decoder (h264) path', () => {
 
     // Routed to the browser-decoder path, NOT the DXV WASM path.
     expect(snap.codec.startsWith('video:')).toBe(true);
-    expect(snap.width).toBe(1920);
-    expect(snap.height).toBe(1080);
+    expect(snap.width).toBe(1280);
+    expect(snap.height).toBe(720);
     expect(snap.frameCount).toBeGreaterThan(0);
   });
 
@@ -283,7 +283,7 @@ describe('VideoPlaybackService — browser-decoder (h264) path', () => {
   });
 
   it('classifies a well-behaved clip as seekable and scrubs to distinct frames', async () => {
-    // test01_h264 is a re-encode with frequent keyframes — it seeks
+    // test_h264 is a re-encode with frequent keyframes — it seeks
     // cleanly, so the source profile should mark it seekable (not
     // streaming) and random-access scrubbing should yield distinct,
     // non-black frames.

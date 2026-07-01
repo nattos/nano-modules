@@ -3,7 +3,7 @@
  *
  * Drives /dxv-test-runner.html via Puppeteer:
  *   1. boots WebGPU + DxvDecoder,
- *   2. fetches /test-videos/test01_dxv.mov (symlink — see web/public/test-videos),
+ *   2. fetches /media/test_dxv.mov (small self-generated DXD3 fixture, committed),
  *   3. asserts container metadata,
  *   4. decodes frame 0 (and a couple more) into RGBA8 textures,
  *   5. reads back pixels and checks for structural correctness:
@@ -23,7 +23,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 
 const RUNNER = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/dxv-test-runner.html';
-const VIDEO  = '/test-videos/test01_dxv.mov';
+const VIDEO  = '/media/test_dxv.mov';
 const DUMP_DIR = '/tmp/gpu-test-dumps';
 
 // Minimal RGBA8 → PNG encoder. Duplicated from gpu-test-helpers (which
@@ -118,11 +118,11 @@ describe('DXV decoder E2E', () => {
     console.log('[dxv-test] BC textures supported?', status.bcSupported);
   });
 
-  it('parses container metadata for test01_dxv.mov', async () => {
+  it('parses container metadata for test_dxv.mov', async () => {
     const info = await page.evaluate(() => (window as any).__dxvDecoder.decoder.videoInfo);
-    expect(info.width).toBe(1920);
-    expect(info.height).toBe(1080);
-    expect(info.frameCount).toBe(250);   // ffprobe reports 250 frames
+    expect(info.width).toBe(1280);
+    expect(info.height).toBe(720);
+    expect(info.frameCount).toBe(57);    // ffprobe reports 57 frames
     expect(info.fourccStr).toBe('DXD3');
   });
 
@@ -174,9 +174,9 @@ describe('DXV decoder E2E', () => {
   });
 
   it('different frames produce different pixels (frame table is keyed correctly)', async () => {
-    const f0   = await decodeFrameInBrowser(0);
-    const f125 = await decodeFrameInBrowser(125);
-    const f249 = await decodeFrameInBrowser(249);
+    const f0  = await decodeFrameInBrowser(0);
+    const f28 = await decodeFrameInBrowser(28);
+    const f56 = await decodeFrameInBrowser(56);
 
     const diff = (a: number[], b: number[]) => {
       let acc = 0;
@@ -184,8 +184,8 @@ describe('DXV decoder E2E', () => {
       for (let i = 0; i < n; i++) acc += Math.abs(a[i] - b[i]);
       return acc;
     };
-    expect(diff(f0.pixels, f125.pixels)).toBeGreaterThan(1000);
-    expect(diff(f0.pixels, f249.pixels)).toBeGreaterThan(1000);
-    expect(diff(f125.pixels, f249.pixels)).toBeGreaterThan(1000);
+    expect(diff(f0.pixels, f28.pixels)).toBeGreaterThan(1000);
+    expect(diff(f0.pixels, f56.pixels)).toBeGreaterThan(1000);
+    expect(diff(f28.pixels, f56.pixels)).toBeGreaterThan(1000);
   });
 });
